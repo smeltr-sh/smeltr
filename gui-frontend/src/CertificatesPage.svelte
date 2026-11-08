@@ -7,6 +7,7 @@
   upload and goes back to that chooser once the certificate is added.
 -->
 <script lang="ts">
+  import { Busy } from './busy.svelte';
   import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import { untrack } from 'svelte';
   import { reported } from './errors.svelte';
@@ -17,6 +18,7 @@
   import Segmented from './Segmented.svelte';
   import { ask } from './Confirm.svelte';
   import SortButton from './SortButton.svelte';
+  import CopyButton from './CopyButton.svelte';
   import { TableSort } from './sort.svelte';
   import {
     listCertificates,
@@ -27,6 +29,7 @@
     deleteSecret,
     OWN_CERTIFICATE,
     currentVersion,
+    shownFingerprint,
     type CertificateDto,
   } from './api';
   import { ago, expiringSoon, expiry } from './time';
@@ -56,7 +59,7 @@
   let newDescription = $state('');
   let pem = $state('');
   let privateKey = $state('');
-  let saving = $state(false);
+  const saving = new Busy();
   /** How a new certificate arrives: pasted, or issued by this leader. */
   let origin = $state<'upload' | 'issued'>('upload');
   const ORIGINS = [
@@ -89,27 +92,27 @@
   const issuing = $derived(editing?.name === null && origin === 'issued');
 
   const canSave = $derived(
-    !saving &&
+    !saving.on &&
       (issuing ? namesAsked.length > 0 : pem.trim() !== '' && privateKey.trim() !== '') &&
       (editing?.name != null || (newName.trim() !== '' && nameProblem(newName) === null)),
   );
 
   /** Refused while the upload is in flight: closing then would hide whether it landed. */
   function cancel() {
-    if (saving) return;
+    if (saving.on) return;
     editing = null;
     if (startAdding) history.back();
   }
 
   async function save() {
     if (!canSave || !editing) return;
-    saving = true;
-    try {
+    const replacing = editing.name;
+    await saving.run(async () => {
       const res = issuing
         ? await issueCertificate(newName.trim(), newDescription.trim(), namesAsked, validityDays)
-        : editing.name === null
+        : replacing === null
           ? await createCertificate(newName.trim(), newDescription.trim(), pem, privateKey)
-          : await replaceCertificate(editing.name, pem, privateKey);
+          : await replaceCertificate(replacing, pem, privateKey);
       if (!res.ok) return;
       editing = null;
       privateKey = '';
@@ -118,11 +121,7 @@
         return;
       }
       await load();
-    } catch (e) {
-      reported(e);
-    } finally {
-      saving = false;
-    }
+    });
   }
 
   async function remove(c: CertificateDto) {
@@ -248,9 +247,13 @@
       {/if}
     </div>
     {#snippet actions()}
-      <Button type="button" onclick={cancel} disabled={saving ? BUSY : ''}>Cancel</Button>
-      <Button type="submit" class="primary" disabled={saving ? BUSY : !canSave ? INCOMPLETE : ''}>
-        {saving ? 'Saving…' : editing?.name ? 'Replace' : 'Add'}
+      <Button type="button" onclick={cancel} disabled={saving.on ? BUSY : ''}>Cancel</Button>
+      <Button
+        type="submit"
+        class="primary"
+        disabled={saving.on ? BUSY : !canSave ? INCOMPLETE : ''}
+      >
+        {saving.on ? 'Saving…' : editing?.name ? 'Replace' : 'Add'}
       </Button>
     {/snippet}
   </Dialog>
@@ -308,6 +311,13 @@
               </td>
               <td class="dim one-line">{current ? ago(current.setAt / 1000) : '--'}</td>
               <td class="row-actions">
+                {#if leaf(c)}
+                  <CopyButton
+                    text={shownFingerprint(leaf(c).fingerprint)}
+                    title={shownFingerprint(leaf(c).fingerprint)}
+                    label="Copy fingerprint"
+                  />
+                {/if}
                 {#if !c.kept}
                   <button type="button" onclick={() => open(c.name)}>Replace</button>
                 {/if}
@@ -401,9 +411,5 @@
     border-radius: 0.6rem;
     font-size: var(--text-micro);
     color: var(--dim);
-  }
-
-  .mono {
-    font-family: var(--mono);
   }
 </style>

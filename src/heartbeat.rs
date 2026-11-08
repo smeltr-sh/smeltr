@@ -72,6 +72,17 @@ pub struct LogDto {
     pub seq: u64,
     pub timestamp_ms: i64,
     pub level: String,
+    /// Absent on a library's line said outside any span of ours (`crate::logs::Event::class`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
+    /// Empty from a build before lines had types: a field added to a heartbeat is optional.
+    #[serde(default)]
+    pub r#type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    /// The line's class and type as `class.type`, or its type alone, as a build before lines had types named it. A
+    /// leader of such a build refuses a heartbeat without it, and a worker of one sends only this.
+    #[serde(default)]
     pub site: String,
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -107,7 +118,16 @@ impl From<&crate::logs::Event> for LogDto {
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or_default(),
             level: event.level.as_str().to_lowercase(),
-            site: truncate(&event.site, MAX_TEXT_LEN),
+            class: event.class.as_deref().map(|class| truncate(class, MAX_TEXT_LEN)),
+            r#type: truncate(&event.r#type, MAX_TEXT_LEN),
+            service: event.service.as_deref().map(|service| truncate(service, MAX_TEXT_LEN)),
+            site: truncate(
+                &event
+                    .class
+                    .as_deref()
+                    .map_or_else(|| event.r#type.to_string(), |class| format!("{class}.{}", event.r#type)),
+                MAX_TEXT_LEN,
+            ),
             message: truncate(&event.message, MAX_TEXT_LEN),
             thread: event.thread.clone(),
             boot_id: None,
@@ -122,14 +142,28 @@ impl From<&crate::logs::Event> for LogDto {
 }
 
 impl LogDto {
+    /// Its class and type, read from `site` when a build before lines had types sent it, split at its first dot as
+    /// the logs store's step that split each stored site does.
+    pub fn class_and_type(&self) -> (Option<&str>, &str) {
+        if !self.r#type.is_empty() || self.site.is_empty() {
+            return (self.class.as_deref(), &self.r#type);
+        }
+        match self.site.split_once('.') {
+            Some((class, kind)) => (Some(class), kind),
+            None => (None, &self.site),
+        }
+    }
+
     /// The event this carries, for a process that reads it rather than delivers it: a runtime handed its
-    /// supervisor's logs to mirror. Named for no worker, which the reading process supplies. `None` for a severity
-    /// this build does not know.
+    /// supervisor's logs to mirror. Named for no worker, which the reading process supplies. `None` for a level this
+    /// build does not know.
     pub fn into_event(self) -> Option<crate::logs::Event> {
         Some(crate::logs::Event {
             timestamp: std::time::UNIX_EPOCH + std::time::Duration::from_millis(self.timestamp_ms.max(0) as u64),
             level: crate::logs::level_for_label(&self.level)?,
-            site: self.site.into(),
+            class: self.class.map(Into::into),
+            r#type: self.r#type.into(),
+            service: self.service.map(Into::into),
             message: self.message,
             fields: self
                 .fields
@@ -394,10 +428,19 @@ pub struct ResourceReport {
     pub disk_free_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disk_total_bytes: Option<u64>,
+    /// How many files the worker may hold open (`RLIMIT_NOFILE`). Absent from a worker older than this field, and
+    /// where the platform sets no such limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_file_limit: Option<u64>,
+    /// How many connections the worker's receivers may hold together, within its open-file limit
+    /// (`io::connections::Budget`). Absent from a worker older than this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_budget: Option<u64>,
 }
 
 impl From<crate::resources::ResourceUsage> for ResourceReport {
     fn from(u: crate::resources::ResourceUsage) -> ResourceReport {
+        let files = crate::io::connections::open_files();
         ResourceReport {
             cpu_percent: u.cpu_percent,
             cpu_limit_cores: Some(u.cpu_limit_cores),
@@ -407,6 +450,8 @@ impl From<crate::resources::ResourceUsage> for ResourceReport {
             memory_limited: u.memory_limited,
             disk_free_bytes: u.disk_free_bytes,
             disk_total_bytes: u.disk_total_bytes,
+            open_file_limit: files.limit,
+            connection_budget: Some(files.budget as u64),
         }
     }
 }
@@ -794,11 +839,105 @@ pub struct HeartbeatResponse {
     /// is deployed, and from a leader too old to say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployed: Option<String>,
+    /// The levels this worker keeps its lines at, whole on every answer. Absent while an operator has set nothing,
+    /// and from a leader too old to say: every line is then kept at the process's startup level
+    /// (`crate::startup_config::log_level`).
+    #[serde(default, skip_serializing_if = "LogLevels::is_empty")]
+    pub log_levels: LogLevels,
     /// How often the leader has its workers beat, which is the pace it judges them by. A worker beats at this from
     /// the answer that carries it on. Absent from a leader older than this field, and then the worker keeps
     /// [`crate::startup_config::DEFAULT_HEARTBEAT_INTERVAL`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heartbeat_interval_ms: Option<u64>,
+}
+
+/// The levels lines are kept at (`crate::logs::levels`), each a label of [`crate::logs::LEVEL_LABELS`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogLevels {
+    /// Every line no override names. Absent is the process's startup level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub overrides: Vec<LevelOverride>,
+}
+
+/// The level the lines one override names are kept at. It names a class and a type, a class, or a service.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LevelOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    pub level: String,
+}
+
+/// What one override names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Named<'a> {
+    Type { class: &'a str, kind: &'a str },
+    Class(&'a str),
+    Service(&'a str),
+}
+
+impl LevelOverride {
+    /// What this names, or `None` for any other mix of class, type and service, which names no line.
+    pub fn names(&self) -> Option<Named<'_>> {
+        match (self.class.as_deref(), self.r#type.as_deref(), self.service.as_deref()) {
+            (Some(class), Some(kind), None) => Some(Named::Type { class, kind }),
+            (Some(class), None, None) => Some(Named::Class(class)),
+            (None, None, Some(service)) => Some(Named::Service(service)),
+            _ => None,
+        }
+    }
+}
+
+impl LogLevels {
+    pub fn is_empty(&self) -> bool {
+        self.default.is_none() && self.overrides.is_empty()
+    }
+
+    /// What a process keeps its lines at, `fallback` where these name no default. A label this build does not know
+    /// is one it cannot keep, and an override naming anything else is one it cannot follow, so those lines stay at
+    /// the default.
+    pub fn levels(&self, fallback: tracing::Level) -> crate::logs::levels::Levels {
+        let default = self
+            .default
+            .as_deref()
+            .and_then(crate::logs::level_for_label)
+            .unwrap_or(fallback);
+        let mut levels = crate::logs::levels::Levels::at(default);
+        for named in &self.overrides {
+            let Some(level) = crate::logs::level_for_label(&named.level) else {
+                continue;
+            };
+            match named.names() {
+                Some(Named::Type { class, kind }) => {
+                    levels
+                        .types
+                        .entry(class.to_string())
+                        .or_default()
+                        .insert(kind.to_string(), level);
+                }
+                Some(Named::Class(class)) => {
+                    levels.classes.insert(class.to_string(), level);
+                }
+                Some(Named::Service(service)) => {
+                    levels.services.insert(service.to_string(), level);
+                }
+                None => {}
+            }
+        }
+        levels
+    }
+
+    /// Keep this process's lines at these levels from now on.
+    pub fn apply(&self) {
+        crate::logs::levels::set(self.levels(crate::startup_config::log_level()));
+    }
 }
 
 /// One thing an operator asked of one worker. The id tells a repeat from a new request: a worker acts on each id
@@ -880,6 +1019,12 @@ pub struct CaptureInvitation {
     /// since what a deployment taps is only what arrives now. `None` reads from the latest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start: Option<crate::config_file::StartPositionDto>,
+    /// The source is a receiver, captured as sent: each read of a sender's connection and each datagram, before the
+    /// receiver frames any of it (`io::raw`), in place of its records. It takes no filter, since a filter reads a
+    /// record. A worker running the receiver taps it; one that is not listens on its address itself and answers
+    /// nothing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub raw: bool,
     /// Bounds, each holding back a different thing: how many records this worker may return, how much memory its
     /// buffer may hold, and how long it may wait. The first one reached ends the capture here, and an answer that
     /// no longer lists it ends it sooner.
@@ -1509,7 +1654,7 @@ mod client {
         pub fn send(&self, req: &HeartbeatRequest) -> Result<HeartbeatResponse, HeartbeatError> {
             match self.send_once(req) {
                 Err(e) if e.retryable => {
-                    tracing::debug!(target: "heartbeat.retried", error = %e.error, "a heartbeat's connection failed, so it is sent once more");
+                    tracing::debug!(name: "retried", target: "heartbeats", error = %e.error, "a heartbeat's connection failed, so it is sent once more");
                     self.send_once(req).map_err(|e| e.error)
                 }
                 other => other.map_err(|e| e.error),
@@ -1656,7 +1801,9 @@ mod tests {
         let event = crate::logs::Event {
             timestamp: std::time::UNIX_EPOCH,
             level: tracing::Level::ERROR,
-            site: "runtime.rows_rejected".into(),
+            class: Some("pipelines".into()),
+            r#type: "rows_rejected".into(),
+            service: None,
             message: "x".repeat(10_000),
             fields: (0..64)
                 .map(|i| (format!("field{i}").into(), crate::logs::Value::Str("y".repeat(10_000))))
@@ -1701,7 +1848,10 @@ mod tests {
             seq: 3,
             timestamp_ms: 1_757_689_445_123,
             level: "error".to_string(),
-            site: "runtime.rows_rejected".to_string(),
+            class: Some("pipelines".to_string()),
+            r#type: "rows_rejected".to_string(),
+            service: None,
+            site: String::new(),
             message: "a destination refused rows".to_string(),
             thread: Some("egress-1".to_string()),
             boot_id: None,
@@ -1713,7 +1863,9 @@ mod tests {
         let json = serde_json::to_value(&dto).unwrap();
         assert_eq!(json["seq"], 3);
         assert_eq!(json["timestampMs"], 1_757_689_445_123i64);
-        assert_eq!(json["site"], "runtime.rows_rejected");
+        assert_eq!(json["class"], "pipelines");
+        assert_eq!(json["type"], "rows_rejected");
+        assert!(json.get("service").is_none(), "absent, not null");
         assert_eq!(json["fields"][0][0], "subject");
         assert_eq!(json["fields"][0][1], serde_json::json!({"kind": "str", "value": "d1"}));
         assert_eq!(json["fields"][1][1], serde_json::json!({"kind": "uint", "value": 4000}));
@@ -1721,6 +1873,43 @@ mod tests {
         let back: LogDto = serde_json::from_value(json).unwrap();
         assert_eq!(back.seq, dto.seq);
         assert_eq!(back.fields.len(), 2);
+    }
+
+    /// A released leader requires `site`, and a released worker sends only it.
+    #[test]
+    fn a_line_names_its_site_for_a_build_before_lines_had_types() {
+        let mut event = crate::logs::Event {
+            timestamp: std::time::UNIX_EPOCH,
+            level: tracing::Level::WARN,
+            class: Some("sources".into()),
+            r#type: "assigned".into(),
+            service: Some("kafka".into()),
+            message: "the group assigned partitions to this client".into(),
+            fields: Vec::new(),
+            worker: None,
+            thread: None,
+            local_only: false,
+            seq: 1,
+        };
+        assert_eq!(
+            serde_json::to_value(LogDto::from(&event)).unwrap()["site"],
+            "sources.assigned"
+        );
+        event.class = None;
+        event.r#type = "ureq".into();
+        assert_eq!(serde_json::to_value(LogDto::from(&event)).unwrap()["site"], "ureq");
+
+        let released = |site: &str| -> LogDto {
+            serde_json::from_value(serde_json::json!({
+                "seq": 1, "timestampMs": 1, "level": "warn", "site": site, "message": "m",
+            }))
+            .unwrap()
+        };
+        assert_eq!(
+            released("runtime.rows_rejected").class_and_type(),
+            (Some("runtime"), "rows_rejected")
+        );
+        assert_eq!(released("ureq").class_and_type(), (None, "ureq"));
     }
 
     use super::*;
@@ -1877,6 +2066,8 @@ mod tests {
             memory_limited: true,
             disk_free_bytes: Some(21_474_836_480),
             disk_total_bytes: Some(107_374_182_400),
+            open_file_limit: Some(524_288),
+            connection_budget: Some(516_096),
         })
         .unwrap();
         for key in [
@@ -1888,6 +2079,8 @@ mod tests {
             "memoryLimited",
             "diskFreeBytes",
             "diskTotalBytes",
+            "openFileLimit",
+            "connectionBudget",
         ] {
             assert!(json.get(key).is_some(), "{key} is not on the wire: {json}");
         }
@@ -2068,7 +2261,10 @@ mod tests {
                 seq: 0,
                 timestamp_ms: 1,
                 level: "warn".to_string(),
-                site: "worker.started".to_string(),
+                class: Some("processes".to_string()),
+                r#type: "started".to_string(),
+                service: None,
+                site: String::new(),
                 message: "worker starting".to_string(),
                 thread: None,
                 boot_id: None,
@@ -2091,6 +2287,7 @@ mod tests {
             captures: Vec::new(),
             secrets: Vec::new(),
             directive: None,
+            log_levels: LogLevels::default(),
             heartbeat_interval_ms: None,
         };
         let json = serde_json::to_string(&resp).unwrap();
@@ -2314,6 +2511,7 @@ mod tests {
         assert!(direct.contains("kafka-cred") && direct.contains("v4"), "{direct}");
 
         let invitation = CaptureInvitation {
+            raw: false,
             session: "s1".to_string(),
             group: "g".to_string(),
             source: serde_json::from_str(r#"{"id":"probe","type":"metrics","bucketSeconds":5}"#).unwrap(),
@@ -2339,6 +2537,7 @@ mod tests {
             captures: vec![Invited::Readable(Box::new(invitation))],
             secrets: vec![delivery.clone()],
             directive: None,
+            log_levels: LogLevels::default(),
             heartbeat_interval_ms: None,
         };
         assert!(!format!("{response:?}").contains("hunter2"));

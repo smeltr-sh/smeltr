@@ -1,8 +1,7 @@
 //! The routes the AI agent can call, as its system prompt describes them (`leader::agent`).
 //!
 //! Every gated route is here or in [`LEFT_OUT`], which a test holds to the router. What is left out is what an agent
-//! cannot send as a JSON request; what is the person's own (signing in and out, their conversations); and what
-//! answers a key, which only the person is shown.
+//! cannot send as a JSON request, and what is the person's own; the list is on [`LEFT_OUT`].
 
 use smeltr::leader::agent::Route;
 
@@ -77,13 +76,13 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "POST",
         path: "/api/preview/schema-read",
-        what: "A file read as a schema, its table of fields: a JSON Schema document, ECS's fields.csv or ecs_flat.yml, one class of ocsf-schema-compiler's output (cut to depth keys deep and to the requirement levels named; by default 2, required and recommended), or a CSV of fields under a header row. With builtIn, ECS or OCSF is the release smeltr carries (GET /api/preview/schema-standards) and text is not read. A CSV's columns are found by header name (field, type, and optionally required, description, example, elasticsearch) unless `columns` gives each by index; a type is smeltr's spelling, a common name for one (string, int, timestamp, ...), or as `types` says. With `preview`, a CSV is not read: the answer's `preview` holds its header, its first rows and the first row of each type value they lack (`first` counts the first rows), guessed columns, and each type value (`value`, `readsAs`, null where unknown, and `fields`, how many rows hold it). No query.",
-        body: "{ id?: string, format: \"json-schema\" | \"ecs\" | \"ocsf\" | \"csv\", text?: string, builtIn?: boolean, class?: string, cut?: { depth?: number, levels?: (\"required\" | \"recommended\" | \"optional\")[] }, columns?: { field?: number, type?: number, required?: number, description?: number, example?: number, elasticsearch?: number }, types?: { [value: string]: string }, preview?: boolean }",
+        what: "A file read as a schema, its table of fields: a JSON Schema document, ECS's fields.csv or ecs_flat.yml, one class of ocsf-schema-compiler's output (cut to depth keys deep and to the requirement levels named; by default 2, required and recommended), or a CSV of fields under a header row. Format otlp takes no file. It describes the records of one OpenTelemetry signal (`signal`: logs, metrics or traces) as the OTLP receiver gives them, with the resource and scope the OTLP destination reads. With builtIn, ECS or OCSF is read from a release smeltr carries (GET /api/preview/schema-standards), the one `release` names by its version or else the newest, and text is not read. A CSV's columns are found by header name (field, type, and optionally required, description, example, elasticsearch) unless `columns` gives each by index; a type is smeltr's spelling, a common name for one (string, int, timestamp, ...), or as `types` says. With `preview`, a CSV is not read: the answer's `preview` holds its header, its first rows and the first row of each type value they lack (`first` counts the first rows), guessed columns, and each type value (`value`, `readsAs`, null where unknown, and `fields`, how many rows hold it). No query.",
+        body: "{ id?: string, format: \"json-schema\" | \"ecs\" | \"ocsf\" | \"csv\" | \"otlp\", text?: string, builtIn?: boolean, release?: string, class?: string, cut?: { depth?: number, levels?: (\"required\" | \"recommended\" | \"optional\")[] }, signal?: \"logs\" | \"metrics\" | \"traces\", columns?: { field?: number, type?: number, required?: number, description?: number, example?: number, elasticsearch?: number }, types?: { [value: string]: string }, preview?: boolean }",
     },
     Route {
         method: "GET",
         path: "/api/preview/schema-standards",
-        what: "The releases of ECS and OCSF smeltr carries, each with its version and where it is published, and OCSF's classes, each its name, caption and category. A schema-read with builtIn reads one of them rather than a file. No query.",
+        what: "The releases of ECS and OCSF smeltr carries, a list for each, newest first, each release with its version and where it is published, and an OCSF release with its classes, each its name, caption and category. A schema-read with builtIn reads one of them rather than a file. No query.",
         body: "",
     },
     Route {
@@ -136,6 +135,18 @@ pub const CATALOG: &[Route] = &[
     },
     Route {
         method: "GET",
+        path: "/api/areas/:area/pipelines/:id/export",
+        what: "A pipeline and what it reads, as a bundle in a zip to download: the pipelines it calls, its lookup tables with their files, its grok patterns, schemas, and the samples and tests that lock it. Query: branch, at, routes (true also includes the routes that run it, with their sources and destinations).",
+        body: "",
+    },
+    Route {
+        method: "GET",
+        path: "/api/areas/:area/pipelines/:id/export/contents",
+        what: "What that export holds, by kind and id, with each lookup table's file and its size in bytes. Query: as the export's.",
+        body: "",
+    },
+    Route {
+        method: "GET",
         path: "/api/areas/:area/pipeline-callers",
         what: "Map of pipeline id to the pipelines that call it directly. Query: branch.",
         body: "",
@@ -155,8 +166,8 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "POST",
         path: "/api/areas/:area/preview/pipeline",
-        what: "Run a draft bundle's pipeline over a saved sample and show the rows; nothing is written. Query: branch.",
-        body: "{ config: string (bundle JSON as a string), pipeline?: id, sample?: id, show_internal?: bool, at_micros?: number }",
+        what: "Run a draft bundle's pipeline over a saved sample and show the rows; with `dictionary: true`, also the dictionary of what the pipeline writes (large). Nothing is written. Query: branch.",
+        body: "{ config: string (bundle JSON as a string), pipeline?: id, sample?: id, show_internal?: bool, at_micros?: number, dictionary?: bool }",
     },
     Route {
         method: "POST",
@@ -302,7 +313,7 @@ pub const CATALOG: &[Route] = &[
         method: "POST",
         path: "/api/captures",
         what: "Open a capture of one source or at one destination in a group; returns the session id and clamped bounds. No query.",
-        body: "{ group, source?: SourceDto, destination?: id, filter?, start?: StartPosition, maxMatches?, maxBytes?, deadlineSecs? }",
+        body: "{ group, source?: SourceDto, destination?: id, filter?, start?: StartPosition, raw?: boolean (a receiver as sent, before framing; no filter), maxMatches?, maxBytes?, deadlineSecs? }",
     },
     Route {
         method: "GET",
@@ -317,9 +328,21 @@ pub const CATALOG: &[Route] = &[
         body: "",
     },
     Route {
+        method: "GET",
+        path: "/api/captures/:session/download",
+        what: "A finished capture's records as NDJSON, as a sample would hold them; the capture stays. No query.",
+        body: "",
+    },
+    Route {
         method: "DELETE",
         path: "/api/captures/:session",
         what: "Give up on a capture without saving. No query.",
+        body: "",
+    },
+    Route {
+        method: "GET",
+        path: "/api/captures/mine",
+        what: "The capture the caller holds, as `capture`, while the leader still holds it and the caller views its group; otherwise no `capture`. No query.",
         body: "",
     },
     Route {
@@ -454,8 +477,14 @@ pub const CATALOG: &[Route] = &[
     },
     Route {
         method: "GET",
+        path: "/api/metrics",
+        what: "The warnings the caller sees, in Prometheus text, as a scraper reads them; `/api/warnings` gives them as JSON. No query.",
+        body: "",
+    },
+    Route {
+        method: "GET",
         path: "/api/logs",
-        what: "One page of fleet log rows. Query: level (comma-separated), worker, group, site, q, sinceMillis, untilMillis, limit, before, after.",
+        what: "One page of fleet log rows. Query: level (comma-separated), worker, group, class, type (part of one), typeExact (true matches type whole), service, q, sinceMillis, untilMillis, limit, before, after.",
         body: "",
     },
     Route {
@@ -587,6 +616,12 @@ pub const CATALOG: &[Route] = &[
         body: "",
     },
     Route {
+        method: "POST",
+        path: "/api/accounts/:id/keys",
+        what: "Give a key account a new key. The answer holds the key itself, this once. No query.",
+        body: "{ label?: string, expiresInDays?: number (1 or more; left out, the key never expires) }",
+    },
+    Route {
         method: "DELETE",
         path: "/api/accounts/:id/keys/:key",
         what: "Revoke one of a key account's keys. No query.",
@@ -607,7 +642,19 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/docs/page",
-        what: "One page of the user docs as text, or with section one heading's text and what is under it. Query: path (/docs/...), section (a heading's id).",
+        what: "One page of the user docs: its opening text, and its headings as `headings`, each with the id that `section` takes; or with section one heading's text and what is under it. Query: path (/docs/...), section (a heading's id).",
+        body: "",
+    },
+    Route {
+        method: "GET",
+        path: "/api/agent/models",
+        what: "The models the person can pick from, as `models`, and the default, as `default`. No query.",
+        body: "",
+    },
+    Route {
+        method: "GET",
+        path: "/api/agent/conversations/:id",
+        what: "Read back this conversation, the only one you can read, with `this` as its id, by a range of turns or a search: `items`, each with the `turn` it is of, and `turns`, how many there are. Query, at least one of: from (the first turn, counted from 0), to (stop before this turn; without it, only the `from` turn is read, or with no `from` every turn through the last), q (instead of whole turns, a snippet of each item whose text holds every word of q, within the turns from and to name: the newest 20 hits, and `found`, how many items match), skip (with q, pass over that many of the newest hits to read older ones).",
         body: "",
     },
     Route {
@@ -660,6 +707,18 @@ pub const CATALOG: &[Route] = &[
         body: "{ sourceRowsBandPercent: number }",
     },
     Route {
+        method: "POST",
+        path: "/api/areas/:area/sources/:id/lower",
+        what: "Lower the source's Rows below or above normal warning that holds to info until it ends. The area is the source's worker group. No query.",
+        body: "",
+    },
+    Route {
+        method: "POST",
+        path: "/api/areas/:area/sources/:id/reset-history",
+        what: "Reset the source's history, so its normal is learned again from now: it has none, and does not warn on rows, for the first 3 days. The area is the source's worker group. No query.",
+        body: "",
+    },
+    Route {
         method: "GET",
         path: "/api/settings/updates",
         what: "Whether this leader looks for a newer smeltr release once a day. No query.",
@@ -706,6 +765,18 @@ pub const CATALOG: &[Route] = &[
         path: "/api/settings/workers",
         what: "Set how long a silent ephemeral worker is kept. No query.",
         body: "{ ephemeralForgetAfterSeconds: number }",
+    },
+    Route {
+        method: "GET",
+        path: "/api/settings/log-levels",
+        what: "The levels the fleet keeps its log lines at, and the classes, services and levels an override may name. No query.",
+        body: "",
+    },
+    Route {
+        method: "PUT",
+        path: "/api/settings/log-levels",
+        what: "Set the levels the fleet keeps its log lines at. Replaces all current levels. No query.",
+        body: "{ default?: 'error'|'warn'|'info'|'debug'|'trace', overrides?: [{ class?: string, type?: string, service?: string, level: 'error'|'warn'|'info'|'debug'|'trace' }] }",
     },
     Route {
         method: "GET",
@@ -891,27 +962,35 @@ pub const CATALOG: &[Route] = &[
 ];
 
 #[cfg(test)]
-/// Gated paths the agent cannot call: its person's conversations and the models they pick from, a file upload that
-/// is no JSON request, what a person sets for their own agent, which no agent changes, and the warnings as a scraper
-/// reads them, which `/api/warnings` gives the agent as JSON.
+/// Gated paths the agent cannot call: its person's conversations, except reading the one it works in; a file upload
+/// that is no JSON request; and what a person sets for their own agent, which no agent changes.
 pub const LEFT_OUT: &[(&str, &str)] = &[
     ("POST", "/api/agent/conversations"),
     ("GET", "/api/agent/conversations"),
-    ("GET", "/api/agent/conversations/:id"),
     ("DELETE", "/api/agent/conversations/:id"),
-    ("GET", "/api/agent/models"),
     ("POST", "/api/agent/conversations/:id/messages"),
     ("POST", "/api/agent/conversations/:id/stop"),
     ("POST", "/api/agent/conversations/:id/context"),
     ("POST", "/api/areas/:area/lookups/upload"),
+    ("POST", "/api/areas/:area/imports"),
     ("PUT", "/api/me/agent-permissions"),
-    ("POST", "/api/accounts/:id/keys"),
-    ("GET", "/api/metrics"),
 ];
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The catalog entry names the hits a search answers with. A string cannot be built from the constant, so this
+    /// test holds them together.
+    #[test]
+    fn the_read_back_route_says_how_many_hits_a_search_gives() {
+        let route = CATALOG
+            .iter()
+            .find(|r| r.path == "/api/agent/conversations/:id")
+            .unwrap();
+        let hits = format!("the newest {} hits", crate::chat_api::SEARCH_HITS);
+        assert!(route.what.contains(&hits), "{}", route.what);
+    }
 
     /// Routes outside the gate: signing in, and what workers and enrollment use, each with its own credential.
     const UNGATED: &[(&str, &str)] = &[

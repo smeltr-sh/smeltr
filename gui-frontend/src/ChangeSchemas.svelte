@@ -117,8 +117,4 @@
   .dim {
     color: var(--dim);
   }
-
-  .mono {
-    font-family: var(--mono);
-  }
 </style>

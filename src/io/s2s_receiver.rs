@@ -220,7 +220,7 @@ impl Handler {
 
     /// Serves one forwarder's connection until it ends, and logs why when it was refused.
     pub(super) async fn serve(self: Arc<Self>, connection: Connection) {
-        let Connection { stream, inlet, .. } = connection;
+        let Connection { stream, inlet } = connection;
         let (reader, writer) = tokio::io::split(stream);
         let mut wire = Wire {
             reader,
@@ -238,7 +238,8 @@ impl Handler {
         match ended {
             End::Gone | End::Stopping => {}
             End::Malformed { at, within, what } => tracing::warn!(
-                target: "worker.receiver_s2s_malformed",
+                name: "malformed",
+                target: "sources",
                 subject = %remote,
                 forwarder,
                 offset = at,
@@ -248,20 +249,23 @@ impl Handler {
                  was not acknowledged"
             ),
             End::Token(why) => tracing::warn!(
-                target: "worker.receiver_s2s_token_refused",
+                name: "token_refused",
+                target: "sources",
                 subject = %remote,
                 forwarder,
                 why,
                 "a forwarder's connection is closed: its token was refused"
             ),
             End::Silent => tracing::debug!(
-                target: "worker.receiver_s2s_silent",
+                name: "silent",
+                target: "sources",
                 subject = %remote,
                 forwarder,
                 "a connection is closed: it did not finish its S2S handshake in time"
             ),
             End::OldProtocol => tracing::warn!(
-                target: "worker.receiver_s2s_old_protocol",
+                name: "old_protocol",
+                target: "sources",
                 subject = %remote,
                 forwarder,
                 "a forwarder's connection is closed: it is set to send S2S v3 (enableOldS2SProtocol), and this \
@@ -428,7 +432,8 @@ impl Handler {
                         let records = channels.close_quiet(Instant::now());
                         if !records.is_empty() {
                             tracing::warn!(
-                                target: "worker.receiver_s2s_line_cut",
+                                name: "line_cut",
+                                target: "sources",
                                 subject = %inlet.remote,
                                 forwarder,
                                 "a forwarder sent no more of a line for 30 s, and it is cut where it stopped: its file \

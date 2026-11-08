@@ -75,9 +75,6 @@ export type LeaderSecret = { secret: string; version: number };
 export const isLeaderStored = (r: SecretRef | undefined): r is LeaderSecret =>
   typeof r === 'object' && r !== null;
 
-/** How a leader-stored reference reads where there is no picker for one. */
-export const secretLabel = (r: LeaderSecret) => `${r.secret} @ v${r.version}`;
-
 /** The TLS a connector speaks of its own: what it presents to the far end, and what it verifies the far end
  * against. A client under none presents no certificate and trusts the public roots; a receiver under none serves
  * plain TCP. Mirrors `config_file::dto::TlsDto`. */
@@ -90,6 +87,11 @@ export type TlsDto = {
   trustedAuthorities?: string;
   /** Absent is true: a client trusts the public roots and `trustedAuthorities` both. False trusts `trustedAuthorities` alone. */
   trustPublic?: boolean;
+  /** A receiver's: senders it admits by their own certificate, whoever issued it, as RFC 5425 writes a fingerprint,
+   * `sha-256:AB:CD:…`. Mirrors `config_file::dto::ServedTlsDto`. */
+  senderFingerprints?: string[];
+  /** A receiver's: of the senders `trustedAuthorities` vouch for, only those issued to one of these hosts. */
+  senderNames?: string[];
 };
 
 /** Extra librdkafka properties, split by whether the value is a secret.
@@ -178,26 +180,23 @@ export type SourceDto =
         type: 's3Sqs';
         /** The queue's own URL, which names its region and account. */
         queueUrl: string;
-        /** Absent is `lines`. */
-        framing?: Framing;
-        lineBreaker?: string;
         /** As a Kafka source's. */
         encoding?: string;
         visibilitySecs?: number;
-      } & ReadFormat)
+      } & FramingSettings &
+      ReadFormat)
   | (TlsDto &
       AzureAccess & {
         id: string;
         type: 'azureBlobQueue';
         /** The Storage queue's own URL. */
         queueUrl: string;
-        framing?: Framing;
-        lineBreaker?: string;
         encoding?: string;
         visibilitySecs?: number;
         /** Receives before a message is moved to `<queue>-poison`. */
         maxDeliveries?: number;
-      } & ReadFormat)
+      } & FramingSettings &
+      ReadFormat)
   | (TlsDto &
       GcsAccess & {
         id: string;
@@ -206,12 +205,11 @@ export type SourceDto =
         subscription: string;
         /** Another Pub/Sub address, such as an emulator's. Absent is Google's. */
         pubsubEndpoint?: string;
-        framing?: Framing;
-        lineBreaker?: string;
         encoding?: string;
         /** The ack deadline: at most `LIMITS.ackDeadlineSecs.max`. */
         visibilitySecs?: number;
-      } & ReadFormat)
+      } & FramingSettings &
+      ReadFormat)
   | (TlsDto &
       S3Access &
       ListingSettings & {
@@ -289,80 +287,100 @@ export type SourceDto =
       /** Which of the app's keys `privateKey` is, for an app with several. */
       keyId?: string;
     })
-  | (ReceiverSettings & {
-      id: string;
-      type: 'httpReceiver';
-      /** The path senders POST to. Absent is `/`. */
-      path?: string;
-      /** Token name to the credential holding a token a sender presents as `Authorization: Bearer`. */
-      tokens?: Record<string, SecretRef>;
-      /** Absent is `body`. */
-      records?: ApiRecords;
-      /** The JSON pointer to the array `array` reads. Absent is a body that is the array. */
-      recordsAt?: string;
-    })
-  | (ReceiverSettings & {
-      id: string;
-      type: 'hecReceiver';
-      /** Token name to a token a sender presents as `Authorization: Splunk`. */
-      tokens?: Record<string, HecToken>;
-      /** Sourcetype to where a raw request's events end, by the request's `sourcetype`. A sourcetype not named
-       * here is an event per line. */
-      sourcetypes?: Record<string, Sourcetype>;
-    })
-  | (ReceiverSettings & {
-      id: string;
-      type: 'otlpReceiver';
-      /** The signal it takes. Absent is `logs`. The receivers of other signals may share its port. */
-      signal?: OtlpSignal;
-      /** Token name to the credential holding a token an exporter presents as `Authorization: Bearer`. */
-      tokens?: Record<string, SecretRef>;
-    })
-  | (ReceiverSettings & {
-      id: string;
-      type: 'prometheusReceiver';
-      /** Token name to the credential holding a token a sender presents as `Authorization: Bearer`. */
-      tokens?: Record<string, SecretRef>;
-    })
-  | (ReceiverSettings & {
-      id: string;
-      type: 'elasticReceiver';
-      /** Token name to the credential holding a token a sender presents as `Authorization: Bearer` or `ApiKey`, or
-       * as a Basic password. */
-      tokens?: Record<string, SecretRef>;
-    })
-  | (ReceiverSettings & {
-      id: string;
-      type: 's2sReceiver';
-      /** Token name to the credential holding a token a forwarder presents, its outputs.conf `token`. */
-      tokens?: Record<string, SecretRef>;
-      /** Sourcetype to where its events end. A sourcetype not named here is an event per line. */
-      sourcetypes?: Record<string, Sourcetype>;
-    })
-  | (ReceiverSettings & {
-      id: string;
-      type: 'syslogReceiver';
-      /** The networks a sender may connect from, as CIDR blocks such as `10.0.0.0/8`. Syslog carries no token,
-       * so this admits a sender, unless the receiver names authorities a sender's certificate must chain to. */
-      allowFrom?: string[];
-      /** As a Kafka source's. */
-      encoding?: string;
-      /** What senders send over. Absent is `tcp`. Over `udp` each datagram is a message, served without TLS, so it
-       * takes no certificate or authorities and only `allowFrom` admits a sender. */
-      transport?: 'tcp' | 'udp';
-      /** Where a message over TCP ends, as an object source's `lineBreaker`. Absent, at a newline. Octet counting
-       * still frames a message that starts with its length. */
-      lineBreaker?: string;
-    })
+  | (ReceiverSettings &
+      ConnectionLimits & {
+        id: string;
+        type: 'httpReceiver';
+        /** The path senders POST to. Absent is `/`. */
+        path?: string;
+        /** Token name to the credential holding a token a sender presents as `Authorization: Bearer`. */
+        tokens?: Record<string, SecretRef>;
+        /** Absent is `body`. */
+        records?: ApiRecords;
+        /** The JSON pointer to the array `array` reads. Absent is a body that is the array. */
+        recordsAt?: string;
+      })
+  | (ReceiverSettings &
+      ConnectionLimits & {
+        id: string;
+        type: 'hecReceiver';
+        /** Token name to a token a sender presents as `Authorization: Splunk`. */
+        tokens?: Record<string, HecToken>;
+        /** Sourcetype to where a raw request's events end, by the request's `sourcetype`. A sourcetype not named
+         * here is an event per line. */
+        sourcetypes?: Record<string, Sourcetype>;
+      })
+  | (ReceiverSettings &
+      ConnectionLimits & {
+        id: string;
+        type: 'otlpReceiver';
+        /** The signal it takes. Absent is `logs`. The receivers of other signals may share its port. */
+        signal?: OtlpSignal;
+        /** Token name to the credential holding a token an exporter presents as `Authorization: Bearer`. */
+        tokens?: Record<string, SecretRef>;
+      })
+  | (ReceiverSettings &
+      ConnectionLimits & {
+        id: string;
+        type: 'prometheusReceiver';
+        /** Token name to the credential holding a token a sender presents as `Authorization: Bearer`. */
+        tokens?: Record<string, SecretRef>;
+      })
+  | (ReceiverSettings &
+      ConnectionLimits & {
+        id: string;
+        type: 'elasticReceiver';
+        /** Token name to the credential holding a token a sender presents as `Authorization: Bearer` or `ApiKey`, or
+         * as a Basic password. */
+        tokens?: Record<string, SecretRef>;
+      })
+  | (ReceiverSettings &
+      ConnectionLimits & {
+        id: string;
+        type: 's2sReceiver';
+        /** Token name to the credential holding a token a forwarder presents, its outputs.conf `token`. */
+        tokens?: Record<string, SecretRef>;
+        /** Sourcetype to where its events end. A sourcetype not named here is an event per line. */
+        sourcetypes?: Record<string, Sourcetype>;
+      })
+  | (ReceiverSettings &
+      ConnectionLimits & {
+        id: string;
+        type: 'syslogReceiver';
+        /** The networks a sender may connect from, as CIDR blocks such as `10.0.0.0/8`. Syslog carries no token,
+         * so this admits a sender, unless the receiver names authorities a sender's certificate must chain to. */
+        allowFrom?: string[];
+        /** As a Kafka source's. */
+        encoding?: string;
+        /** What senders send over. Absent is `tcp`. Over `udp` each datagram is a message, served without TLS, so it
+         * takes no certificate or authorities and only `allowFrom` admits a sender. */
+        transport?: 'tcp' | 'udp';
+        /** Where a message over TCP ends, as an object source's `lineBreaker`. Absent, at a newline. A message that
+         * starts with a digit 1 to 9 is framed by octet counting, whatever this says. */
+        lineBreaker?: string;
+      })
+  | (ReceiverSettings &
+      ConnectionLimits &
+      FramingSettings & {
+        id: string;
+        type: 'socketReceiver';
+        /** As a syslog receiver's: nothing it receives carries a token. */
+        allowFrom?: string[];
+        /** As a Kafka source's. */
+        encoding?: string;
+        /** What senders send over. Absent is `tcp`. Over `udp` each datagram is a record, served without TLS
+         * and cut by no framing. */
+        transport?: 'tcp' | 'udp';
+      })
   | (SqlConnection & { type: 'postgres' })
   | (SqlConnection & { type: 'mysql' })
   | { id: string; type: 'metrics'; bucketSeconds: number }
   | {
       id: string;
       type: 'logs';
-      /** The lowest severity it carries: `error`, `warn`, `info` (absent),
-       * `debug` or `trace`. The process collects at `SMELTR_LOG_LEVEL`, and
-       * what it never collected is not there to read. */
+      /** The lowest level it carries: `error`, `warn`, `info` (absent),
+       * `debug` or `trace`. A line its process did not keep is not there to
+       * read. */
       minLevel?: string;
     };
 
@@ -474,7 +492,8 @@ export function sqlStatement(source: SourceDto): Promise<SqlStatementsResult> {
   return post('/api/preview/sql', { source }, 'quiet');
 }
 
-/** Which of OpenTelemetry's signals an OTLP receiver takes, mirroring `plan::topology::Signal`. */
+/** Which of OpenTelemetry's signals an OTLP receiver takes or an OTLP destination sends, mirroring
+ * `plan::topology::Signal`. */
 export type OtlpSignal = 'logs' | 'metrics' | 'traces';
 
 /** What happens when the same document reaches Elasticsearch twice.
@@ -512,15 +531,14 @@ export const LIMITS = {
   /** A Log Analytics destination's `maxRequestBytes`: at most what the Logs Ingestion API takes in one call. */
   logAnalyticsRequestBytes: { min: 4 * 1024, max: 1024 * 1024, default: 1024 * 1024 },
   /** A receiver's `maxRequestBytes` (`MaxRequestBytes`): at most what one request may hold of its inbox. */
-  receiverRequestBytes: { min: 1024, max: 64 * 1024 * 1024, default: 10 * 1024 * 1024 },
+  receiverRequestBytes: { min: 2048, max: 64 * 1024 * 1024, default: 10 * 1024 * 1024 },
+  /** A receiver's `maxConnections` (`ConnectionLimits::MOST`), on each worker. Absent, the worker's budget. */
+  maxConnections: { min: 1, max: 1_000_000 },
   maxObjectBytes: { min: 64 * 1024, max: 64 * 1024 * 1024 * 1024, default: 64 * 1024 * 1024 },
   stallAfterSecs: { min: 1, max: 120, default: 30 },
   bufferBytes: { min: 4 * 1024 * 1024, max: 1024 * 1024 * 1024, default: 64 * 1024 * 1024 },
-  /** An object store destination's `fileIntervalSecs` (`FileInterval`). */
-  fileIntervalSecs: { min: 5, max: 3600, default: 60 },
-  /** A table destination's `fileIntervalSecs` (`config_file::load::TABLE_FILE_INTERVAL_MAX`): a source waits that
-   * long for its batches' acknowledgement, and a Kafka reader that waits past its poll interval is evicted. */
-  tableFileIntervalSecs: { min: 5, max: 240, default: 60 },
+  /** An object store or table destination's `fileIntervalSecs` (`FileInterval`). */
+  fileIntervalSecs: { min: 5, max: 3600, default: 300 },
   /** An object store destination's `bufferBytes`: it sizes the files (`BufferBytes::OBJECT_DEFAULT`). */
   objectBufferBytes: {
     min: 4 * 1024 * 1024,
@@ -535,6 +553,19 @@ export const LIMITS = {
   /** The load bounds it only from below. */
   pollIntervalSecs: { min: 1, max: Number.MAX_SAFE_INTEGER, default: 60 },
 } as const;
+
+/** What the HTTP, Prometheus and OTLP destinations share: each POSTs to its url over the HTTP destination core. */
+type HttpRequestsDto = TlsDto & {
+  id: string;
+  exceptions?: ExceptionsDto;
+  /** Header name to its value, committed to the config repository. */
+  headers?: Record<string, string>;
+  /** Header name to where its value lives. */
+  credentials?: Record<string, SecretRef>;
+  maxRequestBytes?: ByteCount;
+  bufferBytes?: ByteCount;
+  stallAfterSecs?: number;
+};
 
 /** A destination, discriminated on `type`. A union rather than one flat
  * shape: the two kinds share only `id`, and the loader rejects unknown
@@ -630,10 +661,8 @@ export type DestinationDto = {
       bufferBytes?: ByteCount;
       stallAfterSecs?: number;
     })
-  | (TlsDto & {
-      id: string;
+  | (HttpRequestsDto & {
       type: 'http';
-      exceptions?: ExceptionsDto;
       /** The whole address each request is POSTed to. */
       url: string;
       /** Zone to the address a worker in that zone sends to instead of `url`. */
@@ -648,30 +677,25 @@ export type DestinationDto = {
       field?: string;
       /** Absent is `none`. */
       compression?: HttpCompression;
-      /** Header name to its value, committed to the config repository. */
-      headers?: Record<string, string>;
-      /** Header name to where its value lives. */
-      credentials?: Record<string, SecretRef>;
       inFlight?: number;
-      maxRequestBytes?: ByteCount;
-      bufferBytes?: ByteCount;
-      stallAfterSecs?: number;
     })
-  | (TlsDto & {
-      id: string;
+  | (HttpRequestsDto & {
       type: 'prometheus';
-      exceptions?: ExceptionsDto;
       /** The store's remote_write endpoint, the whole address each request is POSTed to. */
       url: string;
       /** The remote_write protocol version sent. Absent is `1.0`. */
       version?: '1.0' | '2.0';
-      /** Header name to its value, committed to the config repository. */
-      headers?: Record<string, string>;
-      /** Header name to where its value lives. */
-      credentials?: Record<string, SecretRef>;
-      maxRequestBytes?: ByteCount;
-      bufferBytes?: ByteCount;
-      stallAfterSecs?: number;
+    })
+  | (HttpRequestsDto & {
+      type: 'otlp';
+      /** The OTLP endpoint. Each request goes to its signal's path after it: `/v1/logs`, `/v1/metrics` or
+       * `/v1/traces`. */
+      url: string;
+      /** The signal it sends. Absent is `logs`. */
+      signal?: OtlpSignal;
+      /** Absent is `none`. */
+      compression?: HttpCompression;
+      inFlight?: number;
     })
   | (TlsDto &
       EntraSignIn & {
@@ -755,7 +779,7 @@ export type DestinationDto = {
         /** Memory for records not yet committed. Absent is `LIMITS.objectBufferBytes.default`. */
         bufferBytes?: ByteCount;
         stallAfterSecs?: number;
-        /** Seconds files stay open before they are committed. Within `LIMITS.tableFileIntervalSecs`. */
+        /** Seconds files stay open before they are committed. Within `LIMITS.fileIntervalSecs`. */
         fileIntervalSecs?: number;
       })
   | (TlsDto &
@@ -777,7 +801,7 @@ export type DestinationDto = {
         /** Memory for records not yet committed. Absent is `LIMITS.objectBufferBytes.default`. */
         bufferBytes?: ByteCount;
         stallAfterSecs?: number;
-        /** Seconds files stay open before they are committed. Within `LIMITS.tableFileIntervalSecs`. */
+        /** Seconds files stay open before they are committed. Within `LIMITS.fileIntervalSecs`. */
         fileIntervalSecs?: number;
       })
 );
@@ -893,10 +917,25 @@ export type ApiRecords = 'body' | 'lines' | 'array';
 /** What every receiver takes, mirroring `config_file::dto::ReceiverSettingsDto`: where it listens, the TLS it serves
  * and how large a request it reads. Every worker of the group listens on `port`, at the address its own startup
  * settings name. */
-export interface ReceiverSettings extends Pick<TlsDto, 'certificate' | 'trustedAuthorities'> {
+export interface ReceiverSettings extends Pick<
+  TlsDto,
+  'certificate' | 'trustedAuthorities' | 'senderFingerprints' | 'senderNames'
+> {
   port: number;
   /** Absent is `LIMITS.receiverRequestBytes.default`. */
   maxRequestBytes?: number;
+  /** Absent answers a request once received. Only a receiver that answers each request takes it. */
+  answerAfterDelivery?: boolean;
+}
+
+/** How many connections a receiver holds open over TCP, mirroring `config_file::dto::ConnectionLimitsDto`. */
+export interface ConnectionLimits {
+  /** Absent, as many as the worker's budget for every receiver's connections. */
+  maxConnections?: number;
+  /** Absent, as many as `maxConnections`. */
+  maxConnectionsPerSender?: number;
+  /** Absent keeps an idle connection open while there is room. */
+  idleTimeoutSecs?: number;
 }
 
 /** A token a HEC receiver admits, mirroring `config_file::dto::HecTokenDto`. */
@@ -925,12 +964,9 @@ export interface ApiSettings extends TlsDto {
 }
 
 /** What every listing source takes besides where it lists and how it signs in. */
-export interface ListingSettings extends ReadFormat {
+export interface ListingSettings extends ReadFormat, FramingSettings {
   /** Only keys that start with it. Absent is all of them. */
   prefix?: string;
-  /** Absent is `lines`. */
-  framing?: Framing;
-  lineBreaker?: string;
   /** As a Kafka source's. */
   encoding?: string;
   /** Seconds from the start of one listing to the start of the next. Absent is
@@ -944,11 +980,36 @@ export interface ListingSettings extends ReadFormat {
   movePrefix?: string;
 }
 
-/** How an object source cuts an object into records: one per line, the whole object as one, or one per line
- * unescaped as a `bytes` object destination wrote it. `lines` alone takes the source's `lineBreaker`, a regex
- * whose first capture group is where a record ends, the group dropped, as Splunk's `LINE_BREAKER`; absent, a
- * record ends at a line end. */
-export type Framing = 'lines' | 'object' | 'escapedLines';
+/** How a stream's bytes become records, an object source's objects or what a socket receiver's senders send over
+ * TCP: one per line, the whole stream as one, one per line unescaped as a `bytes` object destination wrote it, one
+ * per message or record that says its own length, or one per so many bytes. `lines` alone takes the source's
+ * `lineBreaker`, a regex whose first capture group is where a record ends, the group dropped, as Splunk's
+ * `LINE_BREAKER`; absent, a record ends at a line end. */
+export type Framing = 'lines' | 'object' | 'escapedLines' | 'lengthPrefix' | 'fixed';
+
+/** Mirrors `config_file::dto::FramingSettingsDto`. */
+export interface FramingSettings {
+  /** Absent is `lines`. */
+  framing?: Framing;
+  lineBreaker?: string;
+  /** `lengthPrefix` only, and required there. */
+  lengthPrefix?: LengthPrefix;
+  /** `fixed` only, and required there: how many bytes every record is. */
+  fixedBytes?: number;
+}
+
+/** Where a message's or record's length is and what it counts, mirroring `config_file::dto::LengthPrefixDto`. */
+export interface LengthPrefix {
+  /** How many bytes come before the length. Absent is none. */
+  offset?: number;
+  /** How many bytes the length is, 1 to 8. */
+  bytes: number;
+  /** Absent is `big`. */
+  order?: 'big' | 'little';
+  /** What the length counts: the bytes after it, or the whole message or record, its header and length included.
+   * Absent is `rest`. */
+  counts?: 'rest' | 'message';
+}
 
 /** An object store's kind, as a destination names it and as an object source's access is drawn. */
 export type ObjectStore = CloudStore | 'sftp';
@@ -1380,11 +1441,6 @@ function noBranchChosen<T>(): T {
   } as T;
 }
 
-/** The commit the editor is working from, `null` before its first read. */
-export function currentBaseCommit(): string | null {
-  return baseCommit;
-}
-
 // -- the scope being edited -------------------------------------------------
 //
 // Which bundle a config call reads or writes within the branch: the one every
@@ -1538,12 +1594,9 @@ async function configJson<T extends { commit?: string | null }>(
   return result;
 }
 
-function putBody(body: unknown): RequestInit {
-  return {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  };
+/** A request sending `body` as JSON; `send` names its type. */
+function json(method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', body: unknown): RequestInit {
+  return { method, body: JSON.stringify(body) };
 }
 
 export function getConfig(): Promise<GetConfigResult> {
@@ -1626,14 +1679,14 @@ export async function undoChanges(
 }
 
 export function putSources(sources: SourceDto[], base?: string | null): Promise<MutationResult> {
-  return configJson(inArea('/sources'), putBody(sources), { base });
+  return configJson(inArea('/sources'), json('PUT', sources), { base });
 }
 
 export function putDestinations(
   destinations: DestinationDto[],
   base?: string | null,
 ): Promise<MutationResult> {
-  return configJson(inArea('/destinations'), putBody(destinations), { base });
+  return configJson(inArea('/destinations'), json('PUT', destinations), { base });
 }
 
 /** What the leader reads out of a PEM: every certificate in it, or why it is
@@ -1653,7 +1706,7 @@ export async function describeCertificates(
 }
 
 export function putRoutes(routes: RouteDto[], base?: string | null): Promise<MutationResult> {
-  return configJson(inArea('/routes'), putBody(routes), { base });
+  return configJson(inArea('/routes'), json('PUT', routes), { base });
 }
 
 /** The group's manifest. A `null` leaves the built-in answers. Refused in `shared/`: the manifest is a group's own. */
@@ -1663,25 +1716,25 @@ export function putManifest(
   },
   base?: string | null,
 ): Promise<MutationResult> {
-  return configJson(inArea('/manifest'), putBody(manifest), { base });
+  return configJson(inArea('/manifest'), json('PUT', manifest), { base });
 }
 
 export function putGrokPatterns(
   grokPatterns: GrokPatternDto[],
   base?: string | null,
 ): Promise<MutationResult> {
-  return configJson(inArea('/grok-patterns'), putBody(grokPatterns), { base });
+  return configJson(inArea('/grok-patterns'), json('PUT', grokPatterns), { base });
 }
 
 export function putSchemas(schemas: SchemaDto[], base?: string | null): Promise<MutationResult> {
-  return configJson(inArea('/schemas'), putBody(schemas), { base });
+  return configJson(inArea('/schemas'), json('PUT', schemas), { base });
 }
 
 export function putLookupTables(
   lookupTables: LookupTableDto[],
   base?: string | null,
 ): Promise<MutationResult> {
-  return configJson(inArea('/lookups'), putBody(lookupTables), { base });
+  return configJson(inArea('/lookups'), json('PUT', lookupTables), { base });
 }
 
 /** A lookup file upload: one commit on the branch, like every other save. */
@@ -1813,7 +1866,7 @@ export function putConfigFile(
   text: string,
   base?: string | null,
 ): Promise<MutationResult> {
-  return configJson(fileRoute(path), putBody({ text }), { base });
+  return configJson(fileRoute(path), json('PUT', { text }), { base });
 }
 
 export function deleteConfigFile(path: string, base?: string | null): Promise<MutationResult> {
@@ -1833,11 +1886,145 @@ export function putPipeline(
   pipeline: PipelineDto,
   base?: string | null,
 ): Promise<MutationResult> {
-  return configJson(inArea(`/pipelines/${encodeURIComponent(id)}`), putBody(pipeline), { base });
+  return configJson(inArea(`/pipelines/${encodeURIComponent(id)}`), json('PUT', pipeline), {
+    base,
+  });
 }
 
 export function deletePipeline(id: string): Promise<MutationResult> {
   return configJson(inArea(`/pipelines/${encodeURIComponent(id)}`), { method: 'DELETE' });
+}
+
+// -- export -----------------------------------------------------------------
+//
+// One pipeline and what it reads, as a bundle in a zip (`config_file::export`). With `routes`, the export also
+// includes the routes that run it, with their sources and destinations.
+
+/** A lookup table an export holds, with the file it reads and that file's size. An inline table reads none. */
+export interface ExportTable {
+  id: string;
+  file?: string;
+  bytes?: number;
+}
+
+/** What an export holds, by kind and id. */
+export interface ExportContents {
+  pipelines: string[];
+  lookupTables: ExportTable[];
+  grokPatterns: string[];
+  schemas: string[];
+  /** Each test with the sample it runs over: a sample is exported while a test that reads it is. */
+  tests: { id: string; sample: string }[];
+  routes: string[];
+  sources: string[];
+  destinations: string[];
+  /** Each secret and certificate an exported source or destination names, and which of them name it. */
+  credentials: ImportCredential[];
+}
+
+export type ExportContentsResult = {
+  ok: boolean;
+  errors: ApiError[];
+  commit?: string;
+} & Partial<ExportContents>;
+
+function exportRoute(id: string, routes: boolean, rest = '', leftOut: PartId[] = []): string {
+  const query = new URLSearchParams();
+  if (routes) query.set('routes', 'true');
+  if (leftOut.length > 0) query.set('leftOut', JSON.stringify(leftOut));
+  const q = query.size > 0 ? `?${query}` : '';
+  return inArea(`/pipelines/${encodeURIComponent(id)}/export${rest}${q}`);
+}
+
+/** Everything the export of `id` can hold, so a person can choose what to leave out. */
+export function exportContents(id: string, routes: boolean): Promise<ExportContentsResult> {
+  return configJson<ExportContentsResult>(exportRoute(id, routes, '/contents'), undefined, {
+    adopt: false,
+  });
+}
+
+/** The export itself, without `leftOut`. A plain link rather than a fetch: the browser names the file and puts it
+ * where downloads go. */
+export function exportUrl(id: string, routes: boolean, leftOut: PartId[]): string {
+  return branched(exportRoute(id, routes, '', leftOut));
+}
+
+// -- import -----------------------------------------------------------------
+//
+// An export read into this area (`config_file::Objects`). Sent once without answers, it writes nothing and lists what
+// the file holds; sent again with an answer for each taken id and credential, it saves.
+
+/** The kinds of object an export holds. */
+export type ImportPart =
+  | 'pipeline'
+  | 'lookupTable'
+  | 'grokPattern'
+  | 'schema'
+  | 'sample'
+  | 'test'
+  | 'route'
+  | 'source'
+  | 'destination';
+
+/** One object the file holds, and how it stands beside this area. A taken one carries both versions as JSON. */
+export interface ImportListed {
+  part: ImportPart;
+  id: string;
+  standing: 'new' | 'same' | 'taken';
+  imported?: string;
+  here?: string;
+  /** The one here is in shared and the import is into a group, so it can be kept or renamed beside, not replaced. */
+  inShared?: boolean;
+}
+
+/** A secret or certificate the file's sources and destinations name, and which of them name it. */
+export interface ImportCredential {
+  name: string;
+  certificate: boolean;
+  namedBy: string[];
+}
+
+/** The answer for a taken id: keep the imported object, keep the one here, or keep both, the imported one renamed. */
+export type ImportKeep = { keep: 'imported' } | { keep: 'here' } | { keep: 'renamed'; as: string };
+
+/** One object an import or an export leaves out. */
+export interface PartId {
+  part: ImportPart;
+  id: string;
+}
+
+export interface ImportAnswers {
+  taken: ({ part: ImportPart; id: string } & ImportKeep)[];
+  /** The secret here each one the file names is matched to, by name. */
+  secrets: Record<string, string>;
+  certificates: Record<string, string>;
+  /** The objects not to import. The save is refused if what is left names one that isn't already held where it is imported. */
+  leftOut: PartId[];
+}
+
+export type ImportResult = {
+  ok: boolean;
+  errors: ApiError[];
+  listed?: ImportListed[];
+  credentials?: ImportCredential[];
+  /** The commit the area was read at, which the answers are sent against. */
+  at?: string;
+  /** The commit the import was saved in. */
+  commit?: string;
+};
+
+/** `file` read into the area `into`, shared or a group: listed when `answers` is absent, saved against `at` when it
+ * is present. */
+export function importExport(
+  file: File,
+  into: string,
+  answers?: ImportAnswers,
+  at?: string,
+): Promise<ImportResult> {
+  const body = new FormData();
+  body.append('file', file);
+  if (answers) body.append('answers', JSON.stringify(answers));
+  return configJson(inArea('/imports', into), { method: 'POST', body }, { base: at ?? null });
 }
 
 // -- samples ----------------------------------------------------------------
@@ -1951,7 +2138,7 @@ export function sampleAt(
 
 /** Create or replace, by the sample's own id. */
 export function putSample(sample: SampleDto): Promise<MutationResult> {
-  return configJson(inArea(`/samples/${encodeURIComponent(sample.id)}`), putBody(sample));
+  return configJson(inArea(`/samples/${encodeURIComponent(sample.id)}`), json('PUT', sample));
 }
 
 export function deleteSample(id: string): Promise<MutationResult> {
@@ -1970,7 +2157,7 @@ export interface PreviewRequest {
   config: string;
   /** Defaults to the config's first pipeline. */
   pipeline?: string;
-  /** A saved sample, by id. Omitted runs no records. */
+  /** A saved sample, by id, or a capture the caller holds, as `heldChoice` names it. Omitted runs no records. */
   sample?: string;
   /** Show `__`-prefixed control variables in the output. */
   showInternal?: boolean;
@@ -1982,6 +2169,8 @@ export interface PreviewRequest {
   /** Say which steps changed each row's fields and dropped it. The leader
    * runs the pipeline once more per step for it. */
   attribution?: boolean;
+  /** Also return the rows as a sample holds them (`PreviewResult.as_sample`), to save as one. */
+  asSample?: boolean;
   /** Asks what may follow a `.` instead of running the sample. */
   afterDot?: { text: string; dot: number; at: DotAt };
   /** A capture filter at a destination to check against each route delivering there. Asked, the preview answers it
@@ -2072,6 +2261,15 @@ export interface PreviewResult {
   schema_findings?: number;
   /** The fields the schemas the pipeline produces require or recommend and its rows lack. */
   missing?: MissingField[];
+  /** Answers `PreviewRequest.asSample`. */
+  as_sample?: AsSample;
+}
+
+/** A sample's columns and records, without its name, and each record's `PreviewRow.row`. */
+export interface AsSample {
+  columns: { name: string; type: string }[];
+  records: SampleRecordDto[];
+  rows: number[];
 }
 
 /** A field a schema requires or recommends that a pipeline's rows lack (`schema::Missing`). */
@@ -2103,17 +2301,31 @@ export interface DictionaryOut {
   sampled: Dictionary | null;
 }
 
+/** A capture the caller holds, named where a sample's id goes. No sample id starts with a NUL. */
+const HELD = '\0capture:';
+export function heldChoice(session: string): string {
+  return `${HELD}${session}`;
+}
+/** The capture's session `choice` names, if it names one rather than a sample. */
+export function heldSession(choice: string): string | undefined {
+  return choice.startsWith(HELD) ? choice.slice(HELD.length) : undefined;
+}
+
 export function previewPipeline(req: PreviewRequest): Promise<PreviewResult> {
+  const capture = req.sample && heldSession(req.sample);
   return post(
     branched(inArea('/preview/pipeline')),
     {
       config: req.config,
       pipeline: req.pipeline ?? null,
-      sample: req.sample ?? null,
+      sample: (!capture && req.sample) || null,
+      capture: capture || null,
       show_internal: req.showInternal ?? false,
       at_micros: req.atMicros ?? null,
       filter: req.filter ?? null,
       attribution: req.attribution ?? false,
+      as_sample: req.asSample ?? false,
+      dictionary: true,
       after_dot: req.afterDot ?? null,
       capture_filter: req.captureFilter ?? null,
     },
@@ -2207,7 +2419,15 @@ export function formatCode(code: string, kind: 'expr' | 'block'): Promise<Format
 export interface OnboardProposal {
   steps?: unknown[];
   format?:
-    'json' | 'cef' | 'keyValue' | 'csv' | 'syslog' | 'syslog5424' | 'commonLog' | 'combinedLog';
+    | 'json'
+    | 'cef'
+    | 'keyValue'
+    | 'csv'
+    | 'syslog'
+    | 'syslog5424'
+    | 'ciscoAsa'
+    | 'commonLog'
+    | 'combinedLog';
   read: number;
   of: number;
   structured: boolean;
@@ -2426,7 +2646,7 @@ export function testAt(
 
 /** Lock a test, or replace one under the same id. */
 export function putTest(test: TestDto): Promise<MutationResult> {
-  return configJson(inArea(`/tests/${encodeURIComponent(test.id)}`), putBody(test));
+  return configJson(inArea(`/tests/${encodeURIComponent(test.id)}`), json('PUT', test));
 }
 
 export function deleteTest(id: string): Promise<MutationResult> {
@@ -2615,9 +2835,11 @@ export interface WarningDto {
    * that never heartbeated may have just enrolled, or been quiet since before a restart. */
   sinceMillis: number | null;
   message: string;
-  /** The log site a `workerLoggedWarnings` is about: one worker raises it once per site.
-   * Absent on every other condition. */
-  site?: string;
+  /** The class and type of the log line a `workerLoggedWarnings` is about: one worker raises
+   * it once per class and type. Absent on every other condition, and `class` on a library's
+   * line said outside any span. */
+  class?: string;
+  type?: string;
   /** The area whose bundle declares a pipeline subject: `shared` or its group. Absent on every
    * other subject, and where the deployed commit does not say. */
   area?: string;
@@ -2704,7 +2926,7 @@ export function conditionLabel(condition: WarningCondition): string {
 }
 
 /** The catalog the caller sees. Info entries come only with `info`: every view that judges health reads without
- * it, so a notice can never make anything look unhealthy. */
+ * it, so info can never make anything look unhealthy. */
 export async function listWarnings(opts: { info?: boolean } = {}): Promise<WarningDto[]> {
   const url = opts.info ? '/api/warnings?info=true' : '/api/warnings';
   return (await readJson<{ warnings: WarningDto[] }>(url)).warnings;
@@ -2781,6 +3003,8 @@ export interface CaptureWorkerDto {
 
 export interface CaptureStatusDto {
   session: string;
+  /** The source a capture of one reads: what a sample saved from it stands for. */
+  source?: string;
   done: boolean;
   /** Ended by whoever was watching, before its deadline or its total. What it
    * holds is what it will ever hold. */
@@ -2891,6 +3115,8 @@ export function startCapture(
           filter?: string;
           /** Where a Kafka or Event Hubs source's capture starts. Absent, it reads from the latest. */
           start?: StartPosition;
+          /** A receiver captured as sent: what arrives before it frames any of it. Takes no filter. */
+          raw?: boolean;
         }
       | {
           group: string;
@@ -2902,6 +3128,22 @@ export function startCapture(
     ),
 ): Promise<StartCaptureResult> {
   return post('/api/captures', body, 'quiet');
+}
+
+/** The capture the leader holds for whoever is signed in, which a preview may run over. */
+export function myCapture(): Promise<CaptureStatusResult> {
+  return expandStatus(apiJson('/api/captures/mine', undefined, 'quiet'));
+}
+
+/** A finished capture's records, as a sample holds them. */
+export async function capturedRecords(session: string): Promise<SampleRecordDto[]> {
+  const res = await fetch(captureDownloadUrl(session));
+  if (!res.ok) throw new Error(`the capture's records could not be read (${res.status})`);
+  const text = await res.text();
+  return text
+    .split('\n')
+    .filter((line) => line.trim() !== '')
+    .map((line) => JSON.parse(line) as SampleRecordDto);
 }
 
 export function captureStatus(session: string): Promise<CaptureStatusResult> {
@@ -2931,14 +3173,16 @@ export function saveCapture(
 ): Promise<SaveCaptureResult & { commit?: string }> {
   return configJson(
     inArea('/samples', into),
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ capture: session, id, name, source }),
-    },
+    json('POST', { capture: session, id, name, source }),
     // A capture says what went wrong in its own flow, from start to save.
     { base, weight: 'quiet' },
   );
+}
+
+/** A finished capture's records as NDJSON. A plain link rather than a fetch: the browser names the file and puts it
+ * where downloads go. */
+export function captureDownloadUrl(session: string): string {
+  return `/api/captures/${encodeURIComponent(session)}/download`;
 }
 
 export function discardCapture(session: string): Promise<{ ok: boolean }> {
@@ -3044,6 +3288,11 @@ export type ResourceReport = {
    * would not answer. */
   diskFreeBytes?: number;
   diskTotalBytes?: number;
+  /** How many files the worker may hold open. Absent from a worker older than this field, and where the
+   * platform sets no such limit. */
+  openFileLimit?: number;
+  /** How many connections the worker's receivers may hold together. Absent from a worker older than this field. */
+  connectionBudget?: number;
 };
 
 /** One worker thread as last heartbeated. `lastSeenMillisAgo` is the only
@@ -3202,11 +3451,10 @@ export function createWorkerGroup(
   name: string,
   hue?: number,
 ): Promise<CreateWorkerGroupResult> {
-  return configJson('/api/worker-groups', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id, name, ...(hue === undefined ? {} : { hue }) }),
-  });
+  return configJson(
+    '/api/worker-groups',
+    json('POST', { id, name, ...(hue === undefined ? {} : { hue }) }),
+  );
 }
 
 /** Renames an existing group. A config write on a branch like any other, so
@@ -3216,11 +3464,7 @@ export function createWorkerGroup(
 export function updateWorkerGroup(id: string, name: string): Promise<CreateWorkerGroupResult> {
   return configJson(
     `/api/worker-groups/${encodeURIComponent(id)}`,
-    {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name }),
-    },
+    json('PUT', { name }),
     // Refused beside the name being edited.
     { weight: 'quiet' },
   );
@@ -3241,15 +3485,7 @@ export type SetGroupHueResult = { ok: boolean; errors: ApiError[] };
  * write, this is not a config write and needs no branch or deploy -- valid
  * for any id, including `SHARED_SCOPE`. */
 export function updateGroupHue(id: string, hue: number): Promise<SetGroupHueResult> {
-  return apiJson(
-    `/api/worker-groups/${encodeURIComponent(id)}/hue`,
-    {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hue }),
-    },
-    'quiet',
-  );
+  return apiJson(`/api/worker-groups/${encodeURIComponent(id)}/hue`, json('PUT', { hue }), 'quiet');
 }
 
 /** An enrollment code, as it is shown the once. The leader keeps only the hash
@@ -3282,10 +3518,7 @@ export type MintEnrollmentCodeRequest =
 export function mintEnrollmentCode(
   request: MintEnrollmentCodeRequest,
 ): Promise<MintEnrollmentCodeResult> {
-  return apiJson('/api/enrollment-codes', {
-    method: 'POST',
-    body: JSON.stringify(request),
-  });
+  return apiJson('/api/enrollment-codes', json('POST', request));
 }
 
 /** An enrollment code still outstanding: not spent out, not expired, not withdrawn. */
@@ -3354,10 +3587,7 @@ export function getWorkerSettings(): Promise<WorkerSettingsResult> {
 export function putWorkerSettings(
   ephemeralForgetAfterSeconds: number,
 ): Promise<WorkerSettingsResult> {
-  return apiJson('/api/settings/workers', {
-    method: 'PUT',
-    body: JSON.stringify({ ephemeralForgetAfterSeconds }),
-  });
+  return apiJson('/api/settings/workers', json('PUT', { ephemeralForgetAfterSeconds }));
 }
 
 /** How much of a source's past throughput at this time of day its normal holds,
@@ -3380,10 +3610,42 @@ export function getWarningSettings(): Promise<WarningSettingsResult> {
 }
 
 export function putWarningSettings(sourceRowsBandPercent: number): Promise<WarningSettingsResult> {
-  return apiJson('/api/settings/warnings', {
-    method: 'PUT',
-    body: JSON.stringify({ sourceRowsBandPercent }),
-  });
+  return apiJson('/api/settings/warnings', json('PUT', { sourceRowsBandPercent }));
+}
+
+/** The level the lines one override names are kept at. It names a class and a type, a class,
+ * or a service (`heartbeat::LevelOverride`). */
+export interface LevelOverrideDto {
+  class?: string;
+  type?: string;
+  service?: string;
+  level: string;
+}
+
+/** The levels the fleet keeps its log lines at: `default` for every line no override names. An absent default
+ * is each process's startup log level. */
+export interface LogLevelsDto {
+  default?: string;
+  overrides?: LevelOverrideDto[];
+}
+
+export type LogLevelsResult = {
+  ok: boolean;
+  errors: ApiError[];
+  levels: LogLevelsDto | null;
+  /** Every class a line can be in, and every service one can name. */
+  classes: string[];
+  services: string[];
+  /** The levels, most severe first. */
+  labels: string[];
+};
+
+export function getLogLevels(): Promise<LogLevelsResult> {
+  return apiJson('/api/settings/log-levels');
+}
+
+export function putLogLevels(levels: LogLevelsDto): Promise<LogLevelsResult> {
+  return apiJson('/api/settings/log-levels', json('PUT', levels));
 }
 
 /** Whether this leader looks for a newer release. */
@@ -3402,7 +3664,7 @@ export function getUpdateSettings(): Promise<UpdateSettingsResult> {
 }
 
 export function putUpdateSettings(check: boolean): Promise<UpdateSettingsResult> {
-  return apiJson('/api/settings/updates', { method: 'PUT', body: JSON.stringify({ check }) });
+  return apiJson('/api/settings/updates', json('PUT', { check }));
 }
 
 /** Why the last sync did not leave `main` at the remote's head. */
@@ -3453,7 +3715,7 @@ export function putRemoteSettings(req: {
   pollSeconds: number;
   approvePushes: boolean;
 }): Promise<RemoteSettingsResult> {
-  return apiJson('/api/settings/git-remote', { method: 'PUT', body: JSON.stringify(req) });
+  return apiJson('/api/settings/git-remote', json('PUT', req));
 }
 
 export function syncRemote(): Promise<RemoteSettingsResult> {
@@ -3538,17 +3800,14 @@ export function getAlertSettings(): Promise<AlertSettingsResult> {
 
 /** `password` undefined keeps the stored one; empty removes it. */
 export function putAlertMail(req: AlertMail & { password?: string }): Promise<AlertSettingsResult> {
-  return apiJson('/api/settings/alerts/mail', { method: 'PUT', body: JSON.stringify(req) });
+  return apiJson('/api/settings/alerts/mail', json('PUT', req));
 }
 
 /** Every channel; one left out is removed. `secret` undefined keeps the stored one; empty removes it. */
 export function putAlertChannels(
   channels: (AlertChannel & { secret?: string })[],
 ): Promise<AlertSettingsResult> {
-  return apiJson('/api/settings/alerts/channels', {
-    method: 'PUT',
-    body: JSON.stringify({ channels }),
-  });
+  return apiJson('/api/settings/alerts/channels', json('PUT', { channels }));
 }
 
 export type AlertTestResult = { ok: boolean; errors: ApiError[]; host?: string; status?: number };
@@ -3557,11 +3816,7 @@ export type AlertTestResult = { ok: boolean; errors: ApiError[]; host?: string; 
 export function testAlertChannel(
   channel: AlertChannel & { secret?: string },
 ): Promise<AlertTestResult> {
-  return apiJson(
-    '/api/settings/alerts/test',
-    { method: 'POST', body: JSON.stringify(channel) },
-    'quiet',
-  );
+  return apiJson('/api/settings/alerts/test', json('POST', channel), 'quiet');
 }
 
 /** Asks a heartbeating worker to restart its deployment, on its next heartbeat. */
@@ -3644,21 +3899,16 @@ export function createSecret(
   description: string,
   value?: string,
 ): Promise<AdminActionResult> {
-  return apiJson('/api/secrets', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, custody, description, ...(value === undefined ? {} : { value }) }),
-  });
+  return apiJson(
+    '/api/secrets',
+    json('POST', { name, custody, description, ...(value === undefined ? {} : { value }) }),
+  );
 }
 
 /** Stores a value as a new version, keeping the ones still in use. It is
  * staged, not live: what deploys it is a bundle quoting that version. */
 export function storeSecretValue(name: string, value: string): Promise<AdminActionResult> {
-  return apiJson(`/api/secrets/${encodeURIComponent(name)}/versions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ value }),
-  });
+  return apiJson(`/api/secrets/${encodeURIComponent(name)}/versions`, json('POST', { value }));
 }
 
 /** What a rotation's second half is: a change, drafted on `branch`, pointing
@@ -3681,11 +3931,7 @@ export async function pointSecretAt(
 ): Promise<PointSecretResult> {
   const result = await apiJson<PointSecretResult>(
     `/api/secrets/${encodeURIComponent(name)}/references`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ version, branch }),
-    },
+    json('POST', { version, branch }),
   );
   // A config write like any other -- it drafts or advances a change -- but it goes through
   // apiJson rather than configJson, since it takes its branch in the body and carries no base
@@ -3758,11 +4004,10 @@ export function createCertificate(
   certificate: string,
   privateKey: string,
 ): Promise<AdminActionResult> {
-  return apiJson('/api/certificates', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ kind: 'supplied', name, description, certificate, privateKey }),
-  });
+  return apiJson(
+    '/api/certificates',
+    json('POST', { kind: 'supplied', name, description, certificate, privateKey }),
+  );
 }
 
 /** Has this leader issue a certificate for `names` under its own authority. */
@@ -3772,11 +4017,10 @@ export function issueCertificate(
   names: string[],
   validityDays: number,
 ): Promise<AdminActionResult> {
-  return apiJson('/api/certificates', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ kind: 'issued', name, description, names, validityDays }),
-  });
+  return apiJson(
+    '/api/certificates',
+    json('POST', { kind: 'issued', name, description, names, validityDays }),
+  );
 }
 
 /** The lifetimes offered for a certificate this leader issues. Each renewal lasts the same. */
@@ -3788,11 +4032,10 @@ export function replaceCertificate(
   certificate: string,
   privateKey: string,
 ): Promise<AdminActionResult> {
-  return apiJson(`/api/certificates/${encodeURIComponent(name)}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ certificate, privateKey }),
-  });
+  return apiJson(
+    `/api/certificates/${encodeURIComponent(name)}`,
+    json('PUT', { certificate, privateKey }),
+  );
 }
 
 /** Whether a candidate is the stored value -- what answers "does this still
@@ -3803,11 +4046,10 @@ export function verifySecret(
   version: number,
   candidate: string,
 ): Promise<{ matches: boolean }> {
-  return apiJson(`/api/secrets/${encodeURIComponent(name)}/verify`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ version, candidate }),
-  });
+  return apiJson(
+    `/api/secrets/${encodeURIComponent(name)}/verify`,
+    json('POST', { version, candidate }),
+  );
 }
 
 /** Where the secrets encryption key stands (`EncryptionKeyOut`). `missing` and
@@ -3866,6 +4108,18 @@ export type FlowResponseDto = {
    * falls behind, so this is the weight of what landed, not of what `rowsOut`
    * says left. */
   bytesOut: FlowSeriesDto[];
+  /** Every source's last half hour against its normal, whatever the window. */
+  normals: FlowNormalDto[];
+};
+
+/** One source's last half hour against its normal (`throughput::Reading`), in rows per second:
+ * its normal holds `low` to `high`. */
+export type FlowNormalDto = {
+  group: string;
+  subjectId: string;
+  now: number;
+  low: number;
+  high: number;
 };
 
 /** Clamped leader-side to at least one minute and at most thirty days. */
@@ -3879,7 +4133,10 @@ export type LogRowDto = {
   group?: string | null;
   thread?: string | null;
   level: string;
-  site: string;
+  /** Absent on a library's line said outside any span. */
+  class?: string | null;
+  type: string;
+  service?: string | null;
   message: string;
   fields: unknown[];
 };
@@ -3897,6 +4154,9 @@ export type LogsResponseDto = {
   /** The cursor for "newer", present only while a row exists above the page.
    * Absent from the head, which a page reached with no cursor already is. */
   nextAfter: number | null;
+  /** Every class a line can be in, and every service one can name. */
+  classes: string[];
+  services: string[];
 };
 
 /** `query` is `logs.ts`'s `toQuery` output: the filters plus a limit. */
@@ -3906,6 +4166,24 @@ export function getLogs(query: string): Promise<LogsResponseDto> {
 
 export function getFlow(windowMinutes: number): Promise<FlowResponseDto> {
   return readJson(`/api/flow?windowMinutes=${windowMinutes}`);
+}
+
+/** Lowers the Rows below or above normal warning that holds for `group`'s `source` to info until it ends. */
+export function lowerSourceRows(
+  group: string,
+  source: string,
+): Promise<{ ok: boolean; errors: ApiError[] }> {
+  return apiJson(inArea(`/sources/${encodeURIComponent(source)}/lower`, group), { method: 'POST' });
+}
+
+/** Resets `group`'s `source`'s history, so its normal is learned again from now. */
+export function resetSourceHistory(
+  group: string,
+  source: string,
+): Promise<{ ok: boolean; errors: ApiError[] }> {
+  return apiJson(inArea(`/sources/${encodeURIComponent(source)}/reset-history`, group), {
+    method: 'POST',
+  });
 }
 
 // -- the topology map (design doc "The map", `src/leader/map.rs`) ---------
@@ -3954,6 +4232,8 @@ export type MapNode = {
   kind: MapNodeKind;
   /** Absent for a pipeline. */
   system?: MapSystem;
+  /** A source's or destination's `type`, as its config names it. Absent for a pipeline. */
+  type?: SourceDto['type'] | DestinationDto['type'];
   /** Declared in `shared/` rather than in this group's own subtree -- still one running thing
    * per group that merges it in, just not authored here. */
   shared: boolean;
@@ -4243,6 +4523,9 @@ export type SourceStatsDto = {
   bytesRate?: SpreadDto;
   /** Microseconds inside the source's own read per row read, over the buckets that read a row. */
   pollPerRow?: SpreadDto;
+  /** Its lag in records, bucket by bucket: each partition's highest reading, summed. Absent for a
+   * source that reports no lag. */
+  lag?: SpreadDto;
   /** What the source was expected to read per second, span by span, oldest first. Absent while it
    * has too little history (`throughput::expected_over`). */
   expected?: ExpectedPointDto[];
@@ -4461,8 +4744,6 @@ export type BranchDto = {
   commits: number;
   behind: number;
   touches: string[];
-  /** Those of `touches` that are samples no test names, which a deploy leaves out. */
-  leftOut?: string[];
   change?: ChangeDto;
   /** Present only while a git remote is set. */
   push?: PushDto;
@@ -4533,15 +4814,7 @@ export interface MergeConflicts {
 }
 
 function post<T>(url: string, body?: unknown, weight?: Weight): Promise<T> {
-  return apiJson(
-    url,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body ?? {}),
-    },
-    weight,
-  );
+  return apiJson(url, json('POST', body ?? {}), weight);
 }
 
 export function createBranch(name: string): Promise<BranchMutationResult> {
@@ -4637,11 +4910,7 @@ export function retitleChange(
   return announced(
     apiJson(
       `/api/branches/${encodeURIComponent(branch)}`,
-      {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, description }),
-      },
+      json('PATCH', { title, description }),
       'quiet',
     ),
   );
@@ -4912,10 +5181,10 @@ export function createLocalAccount(
   displayName: string,
   roles: string[],
 ): Promise<TemporaryPasswordDto | AccountRefusal> {
-  return accountCall('/api/accounts', {
-    method: 'POST',
-    body: JSON.stringify({ authSource: 'local', username, displayName, roles }),
-  });
+  return accountCall(
+    '/api/accounts',
+    json('POST', { authSource: 'local', username, displayName, roles }),
+  );
 }
 
 /** An enabled key account holding no key yet. */
@@ -4923,10 +5192,7 @@ export function createKeyAccount(
   displayName: string,
   roles: string[],
 ): Promise<AccountDto | AccountRefusal> {
-  return accountCall('/api/accounts', {
-    method: 'POST',
-    body: JSON.stringify({ authSource: 'key', displayName, roles }),
-  });
+  return accountCall('/api/accounts', json('POST', { authSource: 'key', displayName, roles }));
 }
 
 /** One change to an account: the leader takes one field per request, and roles only for a local or
@@ -4937,10 +5203,7 @@ export function changeAccount(
   id: string,
   change: AccountChange,
 ): Promise<AccountDto | AccountRefusal> {
-  return accountCall(`/api/accounts/${encodeURIComponent(id)}`, {
-    method: 'PATCH',
-    body: JSON.stringify(change),
-  });
+  return accountCall(`/api/accounts/${encodeURIComponent(id)}`, json('PATCH', change));
 }
 
 export function resetAccountPassword(id: string): Promise<TemporaryPasswordDto | AccountRefusal> {
@@ -4966,9 +5229,6 @@ export function deleteAccount(id: string): Promise<object | AccountRefusal> {
 // A role is what holding it gives, and the provider groups that give it (`roles_api.rs`).
 // Administrators only, like the roster.
 
-/** The built-in role that holds everything. */
-export const ADMINISTRATOR = 'administrator';
-
 export interface RoleDto {
   name: string;
   /** The administrator role, which holds everything, gives no level in an area, and is never removed. */
@@ -4990,14 +5250,7 @@ export function putRole(
   groups: string[],
   areas: Record<string, AccessLevel>,
 ): Promise<{ ok: boolean; errors: ApiError[] }> {
-  return apiJson(
-    `/api/roles/${encodeURIComponent(name)}`,
-    {
-      method: 'PUT',
-      body: JSON.stringify({ groups, areas }),
-    },
-    'quiet',
-  );
+  return apiJson(`/api/roles/${encodeURIComponent(name)}`, json('PUT', { groups, areas }), 'quiet');
 }
 
 export function deleteRole(name: string): Promise<{ ok: boolean; errors: ApiError[] }> {
@@ -5035,10 +5288,10 @@ export function createKey(
   label: string,
   expiresInDays: number | null,
 ): Promise<CreatedKeyDto | AccountRefusal> {
-  return accountCall(`/api/accounts/${encodeURIComponent(id)}/keys`, {
-    method: 'POST',
-    body: JSON.stringify({ label, expiresInDays }),
-  });
+  return accountCall(
+    `/api/accounts/${encodeURIComponent(id)}/keys`,
+    json('POST', { label, expiresInDays }),
+  );
 }
 
 export function revokeKey(id: string, key: string): Promise<object | AccountRefusal> {
@@ -5067,10 +5320,7 @@ export function getAgentPermissions(): Promise<AgentPermissionsDto> {
 export function putAgentPermissions(
   permissions: AgentPermissionsDto,
 ): Promise<AgentPermissionsDto | AccountRefusal> {
-  return accountCall('/api/me/agent-permissions', {
-    method: 'PUT',
-    body: JSON.stringify(permissions),
-  });
+  return accountCall('/api/me/agent-permissions', json('PUT', permissions));
 }
 
 // -- what belongs to the leader rather than to a person ----------------------
@@ -5149,10 +5399,7 @@ export function putSessionSettings(
   idleSeconds: number,
   absoluteSeconds: number,
 ): Promise<SessionSettingsDto | AccountRefusal> {
-  return accountCall('/api/settings/sessions', {
-    method: 'PUT',
-    body: JSON.stringify({ idleSeconds, absoluteSeconds }),
-  });
+  return accountCall('/api/settings/sessions', json('PUT', { idleSeconds, absoluteSeconds }));
 }
 
 /** The Single sign-on tab of Admin -> Accounts (`oidc_api.rs`). The client
@@ -5186,7 +5433,7 @@ export function putOidcSettings(req: {
   clientSecret?: string;
   groupsClaim: string;
 }): Promise<OidcSettingsResult | AccountRefusal> {
-  return accountCall('/api/settings/oidc', { method: 'PUT', body: JSON.stringify(req) });
+  return accountCall('/api/settings/oidc', json('PUT', req));
 }
 
 /** Which API the model endpoint speaks: Anthropic's Messages API, OpenAI's, or another service that speaks
@@ -5228,13 +5475,14 @@ export function putAgentSettings(req: {
   keepDays?: number;
   contextTokens?: number;
 }): Promise<AgentSettingsResult | AccountRefusal> {
-  return accountCall('/api/settings/agent', { method: 'PUT', body: JSON.stringify(req) });
+  return accountCall('/api/settings/agent', json('PUT', req));
 }
 
 /** What one certificate says about itself. Epoch milliseconds, like every
  * other time the leader sends. */
 export interface DescribedCertificate {
   subject: string;
+  /** SHA-256 over its DER, lowercase hex. [`shownFingerprint`] is how a person reads it. */
   fingerprint: string;
   names: string[];
   notBeforeMillis: number;
@@ -5309,10 +5557,7 @@ export const OWN_CERTIFICATE = 'leader';
 
 /** Serves the certificate `name` from the list. */
 export function putCertificate(name: string): Promise<CertificatesDto | AccountRefusal> {
-  return accountCall('/api/settings/tls', {
-    method: 'PUT',
-    body: JSON.stringify({ certificate: name }),
-  });
+  return accountCall('/api/settings/tls', json('PUT', { certificate: name }));
 }
 
 /** How long a rotation may wait for the fleet, mirroring
@@ -5329,10 +5574,10 @@ export function beginRotation(
   waitHours: number,
   authorityValidityDays: number,
 ): Promise<CertificatesDto | AccountRefusal> {
-  return accountCall('/api/settings/tls/rotation', {
-    method: 'POST',
-    body: JSON.stringify({ waitHours, authorityValidityDays }),
-  });
+  return accountCall(
+    '/api/settings/tls/rotation',
+    json('POST', { waitHours, authorityValidityDays }),
+  );
 }
 
 /** Signs under the incoming authority now. A worker that has not yet taken it
@@ -5347,10 +5592,7 @@ export function cutOverRotation(): Promise<CertificatesDto | AccountRefusal> {
 export function setRotationDeadline(
   deadlineMillis: number,
 ): Promise<CertificatesDto | AccountRefusal> {
-  return accountCall('/api/settings/tls/rotation/deadline', {
-    method: 'PUT',
-    body: JSON.stringify({ deadlineMillis }),
-  });
+  return accountCall('/api/settings/tls/rotation/deadline', json('PUT', { deadlineMillis }));
 }
 
 /** Drops the incoming authority. This leader keeps serving what it serves today. */
@@ -5425,10 +5667,7 @@ export function getAcme(): Promise<AcmeDto> {
 }
 
 export function putAcme(settings: AcmeSettings): Promise<AcmeDto | AccountRefusal> {
-  return accountCall('/api/settings/tls/acme', {
-    method: 'PUT',
-    body: JSON.stringify(settings),
-  });
+  return accountCall('/api/settings/tls/acme', json('PUT', settings));
 }
 
 /** Begins ordering a certificate from the authority the settings name, served once issued: at once under the
@@ -5466,7 +5705,9 @@ export type ConversationItem =
   | { kind: 'result'; callId: string; output: string; isError: boolean }
   | { kind: 'unreadable'; error: string }
   /** Where the agent's reading begins again: from this summary, or from nothing where it was cleared. */
-  | { kind: 'fresh'; summary: string | null };
+  | { kind: 'fresh'; summary: string | null }
+  /** Where the provider summarized what is before, in a summary it does not show. */
+  | { kind: 'compacted' };
 
 export interface ConversationDto extends ConversationSummaryDto {
   /** How the last turn ended: `answered`, `stopped` or `rounds`. */
@@ -5528,10 +5769,7 @@ export function startConversation(
   message: string,
   asked: Asked = {},
 ): Promise<{ id: string } | AccountRefusal> {
-  return accountCall('/api/agent/conversations', {
-    method: 'POST',
-    body: JSON.stringify({ message, ...asked }),
-  });
+  return accountCall('/api/agent/conversations', json('POST', { message, ...asked }));
 }
 
 export function sendToConversation(
@@ -5539,10 +5777,7 @@ export function sendToConversation(
   message: string,
   asked: Asked = {},
 ): Promise<object | AccountRefusal> {
-  return accountCall(conversationPath(id, '/messages'), {
-    method: 'POST',
-    body: JSON.stringify({ message, ...asked }),
-  });
+  return accountCall(conversationPath(id, '/messages'), json('POST', { message, ...asked }));
 }
 
 export function stopConversation(id: string): Promise<object | AccountRefusal> {
@@ -5555,10 +5790,7 @@ export function restartConversation(
   id: string,
   summarize: boolean,
 ): Promise<object | AccountRefusal> {
-  return accountCall(conversationPath(id, '/context'), {
-    method: 'POST',
-    body: JSON.stringify({ summarize }),
-  });
+  return accountCall(conversationPath(id, '/context'), json('POST', { summarize }));
 }
 
 export function deleteConversation(id: string): Promise<object | AccountRefusal> {
@@ -5606,7 +5838,7 @@ export interface CsvTypeValue {
 
 /** A file a schema is read from: JSON Schema, ECS's `fields.csv` or `ecs_flat.yml`, `ocsf-schema-compiler`'s output,
  * or a CSV of fields under a header row. */
-export type SchemaReadFormat = 'json-schema' | 'ecs' | 'ocsf' | 'csv';
+export type SchemaReadFormat = 'json-schema' | 'ecs' | 'ocsf' | 'csv' | 'otlp';
 
 /** Whose requirements an ECS schema's fields take: ECS's own, or Elastic Security's in their place. */
 export type EcsRequirements = 'ecs' | 'elastic-security';
@@ -5625,11 +5857,11 @@ export interface OcsfClass {
   category: string;
 }
 
-/** The releases of ECS and OCSF the leader carries, which `readSchema` reads with `builtIn`. */
+/** The releases of ECS and OCSF the leader carries, each newest first, which `readSchema` reads with `builtIn`. */
 export interface SchemaStandards {
-  ecs: StandardRelease;
+  ecs: StandardRelease[];
   /** With OCSF's classes. */
-  ocsf: StandardRelease & { classes: OcsfClass[] };
+  ocsf: (StandardRelease & { classes: OcsfClass[] })[];
 }
 
 export function getSchemaStandards(): Promise<SchemaStandards> {
@@ -5641,14 +5873,18 @@ export function readSchema(req: {
   id: string;
   format: SchemaReadFormat;
   text: string;
-  /** Read the release of ECS or OCSF the leader carries rather than `text`. */
+  /** Read a release of ECS or OCSF the leader carries rather than `text`. */
   builtIn?: boolean;
+  /** The release `builtIn` reads, by its version; absent, the newest. */
+  release?: string;
   /** Whose requirements an ECS schema's fields take. */
   requirements?: EcsRequirements;
   /** The OCSF class to read. */
   class?: string;
   /** How much of the OCSF class: how many keys deep, and which requirement levels. */
   cut?: { depth: number; levels: Requirement[] };
+  /** The OpenTelemetry signal whose records an `otlp` schema holds; absent, `logs`. */
+  signal?: OtlpSignal;
   /** Which column of a CSV holds what; absent, its header says. */
   columns?: CsvColumns;
   /** The type of each value of a CSV's type column the reader does not know. */
@@ -5718,4 +5954,10 @@ export function branchSchemaFindings(
   branch: string,
 ): Promise<{ ok: boolean; errors: ApiError[]; findings: SchemaFindingDto[] }> {
   return apiJson(`/api/branches/${encodeURIComponent(branch)}/schema-findings`, undefined, 'quiet');
+}
+
+/** `fingerprint`, a [`DescribedCertificate`]'s, as RFC 5425 (4.2.1) writes one: `sha-256:AB:CD:…`. The form a
+ * receiver's sender fingerprints take, and a syslog sender pins. */
+export function shownFingerprint(fingerprint: string): string {
+  return `sha-256:${(fingerprint.toUpperCase().match(/../g) ?? []).join(':')}`;
 }

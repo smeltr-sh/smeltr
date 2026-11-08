@@ -24,6 +24,16 @@ pub const MAX_DEADLINE_SECS: u64 = 300;
 /// also serves the GUI and every heartbeat.
 pub const SESSION_BYTES_CEILING: usize = MAX_BYTES_CEILING;
 
+/// What every capture the leader holds may weigh together. A capture still running is charged all it may grow to,
+/// a finished one what it holds; a new one drops the oldest until it fits ([`Captures::open`]).
+pub const HELD_BYTES_CEILING: usize = 8 * SESSION_BYTES_CEILING;
+
+/// How long a finished capture is held once nobody reads it: its status, its records or a preview over them.
+pub const HELD_IDLE: Duration = Duration::from_secs(20 * 60);
+
+/// How long any capture is held from when it opened, however much it is read.
+pub const HELD_AT_MOST: Duration = Duration::from_secs(12 * 60 * 60);
+
 /// What one worker's report may weigh encoded, on the leader's endpoint and on the runtime pipe alike: the raw
 /// ceiling with JSON escaping at its worst of six bytes per one, and room for what a record carries beside its
 /// raw text.
@@ -51,6 +61,10 @@ pub struct CaptureRequest {
     /// Where a Kafka or Event Hubs source's capture starts. Absent, it reads from the latest.
     #[serde(default)]
     pub start: Option<crate::config_file::StartPositionDto>,
+    /// Capture a receiver as sent: what arrives at it before it frames any of it, in place of its records
+    /// (`CaptureInvitation::raw`).
+    #[serde(default)]
+    pub raw: bool,
     /// How many records the capture wants in all, at most what a sample holds. Each worker is handed the same
     /// number as its own bound, so any one of them can fill the capture alone, and the leader stops at that many
     /// whoever sent them.
@@ -70,6 +84,9 @@ pub struct CaptureStatus {
     /// The destination a capture there reads, by name. Absent on a capture of a source.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub destination: Option<String>,
+    /// The source this capture was taken from, by name: what a sample saved from the capture stands for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     pub done: bool,
     /// Ended by whoever was watching, before its deadline or its total. What it holds is what it will ever hold.
     pub stopped: bool,
@@ -119,7 +136,11 @@ pub enum WorkerState {
 
 struct Session {
     invitation: CaptureInvitation,
+    /// Who opened it, by `Actor::id`. A person holds one capture at a time.
+    owner: String,
     started: Instant,
+    /// When it was last read ([`Captures::status`]), which keeps a finished capture held ([`HELD_IDLE`]).
+    used: Instant,
     /// When it opened, in microseconds since the epoch, and the commit the fleet ran then: what a sample saved from
     /// it records ([`Captures::capture_fields`]).
     opened_micros: i64,
@@ -291,6 +312,11 @@ impl Session {
         self.started.elapsed()
     }
 
+    /// What it counts against [`HELD_BYTES_CEILING`]: all it may still grow to while it runs, what it holds once over.
+    fn charge(&self) -> usize {
+        if self.done() { self.bytes } else { SESSION_BYTES_CEILING }
+    }
+
     fn seconds_left(&self) -> u64 {
         Duration::from_secs(self.invitation.deadline_secs)
             .saturating_sub(self.elapsed())
@@ -301,6 +327,10 @@ impl Session {
         CaptureStatus {
             session: session.to_string(),
             destination: self.invitation.destination.clone(),
+            source: match &self.invitation.destination {
+                Some(_) => None,
+                None => self.invitation.source.as_ref().map(|s| s.id.clone()),
+            },
             done: self.done(),
             stopped: self.stopped,
             max_matches: self.invitation.max_matches,
@@ -329,6 +359,72 @@ fn rows_in(batches: &[CaptureBatch]) -> usize {
     batches.iter().map(|b| b.rows.len()).sum()
 }
 
+/// How a pipeline's output was made, as the `__capture` fields a sample saved from it carries on every record in place of
+/// its input's: the instant it ran at, the pipeline by id, and the sample it ran over by id. A field with nothing to say
+/// is left out.
+pub fn output_fields(
+    at_micros: i64,
+    pipeline: &str,
+    sample: Option<&str>,
+) -> Vec<(crate::heartbeat::CaptureColumn, serde_json::Value)> {
+    use crate::core::column::DataType;
+    let text = |v: &str| serde_json::Value::String(v.to_string());
+    [
+        ("timestamp", DataType::DateTime, Some(text(&instant(at_micros)))),
+        ("pipeline", DataType::Str, Some(text(pipeline))),
+        ("sample", DataType::Str, sample.map(text)),
+    ]
+    .into_iter()
+    .filter_map(said)
+    .collect()
+}
+
+/// `micros` as a `__capture.timestamp` spells it.
+fn instant(micros: i64) -> String {
+    let mut timestamp = Vec::new();
+    crate::ops::datetime::write_iso8601_micros_bare(micros, &mut timestamp);
+    String::from_utf8(timestamp).expect("an instant is written as ASCII")
+}
+
+/// One `__capture` field, as its column and value, if it has something to say.
+fn said(
+    (name, ty, value): (&str, crate::core::column::DataType, Option<serde_json::Value>),
+) -> Option<(crate::heartbeat::CaptureColumn, serde_json::Value)> {
+    let column = crate::heartbeat::CaptureColumn {
+        name: format!("__capture.{name}"),
+        ty: ty.spell(),
+    };
+    value.map(|v| (column, v))
+}
+
+/// Who opened a capture, and the commit the fleet ran then, for a sample saved from it to record.
+pub struct Opened {
+    /// By `Actor::id`. A person holds one capture at a time.
+    pub owner: String,
+    pub config: Option<String>,
+}
+
+/// Make room for a capture `owner` opens: drop the one they hold, then the oldest until one more running capture fits
+/// [`HELD_BYTES_CEILING`].
+fn drop_to_hold(sessions: &mut HashMap<String, Session>, owner: &str) {
+    let theirs: Vec<String> = sessions
+        .iter()
+        .filter(|(_, s)| s.owner == owner)
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in theirs {
+        sessions.remove(&id);
+        tracing::info!(name: "dropped_for_next", target: "captures", session = %id, owner, "a capture was dropped for its owner's next one");
+    }
+    while sessions.values().map(Session::charge).sum::<usize>() + SESSION_BYTES_CEILING > HELD_BYTES_CEILING {
+        let Some(oldest) = sessions.iter().min_by_key(|(_, s)| s.started).map(|(id, _)| id.clone()) else {
+            break;
+        };
+        let dropped = sessions.remove(&oldest).map(|s| s.owner).unwrap_or_default();
+        tracing::info!(name: "dropped_for_room", target: "captures", session = %oldest, owner = %dropped, "the oldest capture was dropped to make room for a new one");
+    }
+}
+
 /// Every capture the leader is running.
 #[derive(Default)]
 pub struct Captures(Mutex<HashMap<String, Session>>);
@@ -339,8 +435,10 @@ impl Captures {
     /// `expected` is the workers in this capture's group the leader has heard from: who it waits for before calling
     /// itself finished. `holding` is those of them holding rows a block keeps, which its total waits for. `secrets`
     /// is what this source's own credentials resolved to, which the caller reads out of the store once here rather
-    /// than on every heartbeat that hands the invitation on. `config` is the commit the fleet ran when it opened, for
-    /// a sample saved from it to record.
+    /// than on every heartbeat that hands the invitation on.
+    ///
+    /// Its owner holds this capture in place of any other they held, which is dropped, running or not. Then the
+    /// oldest captures are dropped until this one fits [`HELD_BYTES_CEILING`].
     pub fn open(
         &self,
         id: String,
@@ -348,8 +446,9 @@ impl Captures {
         expected: HashSet<String>,
         holding: HashSet<String>,
         secrets: Vec<crate::heartbeat::SecretDelivery>,
-        config: Option<String>,
+        opened: Opened,
     ) -> CaptureInvitation {
+        let Opened { owner, config } = opened;
         let one_worker = request.source.as_ref().is_some_and(|s| s.kind.single_worker());
         let invitation = CaptureInvitation {
             session: id.clone(),
@@ -361,6 +460,7 @@ impl Captures {
             start: request
                 .start
                 .filter(|s| *s != crate::config_file::StartPositionDto::Latest),
+            raw: request.raw,
             // A capture ends as a sample, so it asks for no more than one holds.
             max_matches: request
                 .max_matches
@@ -376,12 +476,16 @@ impl Captures {
                 .clamp(1, MAX_DEADLINE_SECS),
             secrets,
         };
-        self.0.lock().unwrap().insert(
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        drop_to_hold(&mut sessions, &owner);
+        sessions.insert(
             id,
             Session {
                 stopped: false,
                 invitation: invitation.clone(),
+                owner,
                 started: Instant::now(),
+                used: Instant::now(),
                 opened_micros: crate::core::ctx::wall_clock_micros(),
                 config,
                 expected,
@@ -422,7 +526,7 @@ impl Captures {
         group: &str,
         holder: impl Fn(&str) -> Option<String>,
     ) -> Vec<CaptureInvitation> {
-        let mut sessions = self.0.lock().unwrap();
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let mut out = Vec::new();
         for session in sessions.values_mut() {
             if session.invitation.group != group || session.done() || session.answered.contains(worker_id) {
@@ -452,13 +556,18 @@ impl Captures {
     /// from anyone else is not a late answer -- it is records the leader never asked for, from a credential that
     /// has no part in this capture.
     pub fn record(&self, report: CaptureReport) {
-        let mut sessions = self.0.lock().unwrap();
+        // Late reports come in runs as a capture ends, so one is said at debug every RELOG_EVERY and the rest at trace.
+        static DROPPED: std::sync::Mutex<crate::logs::Repeat> = std::sync::Mutex::new(crate::logs::Repeat::new());
+        let dropped = |why: &str| {
+            crate::debug_when!(DROPPED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).due(), name: "report_dropped", target: "captures", subject = %report.worker_id, session = %report.session, why, "a capture report was dropped");
+        };
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let Some(session) = sessions.get_mut(&report.session) else {
-            tracing::debug!(target: "capture.report_dropped", subject = %report.worker_id, session = %report.session, why = "no such session", "a capture report was dropped");
+            dropped("no such session");
             return;
         };
         if !session.invited.contains(&report.worker_id) || session.answered.contains(&report.worker_id) {
-            tracing::debug!(target: "capture.report_dropped", subject = %report.worker_id, session = %report.session, why = "not invited, or answered already", "a capture report was dropped");
+            dropped("not invited, or answered already");
             return;
         }
         // Checked before this report's own answer is noted, so the final that completes the capture is folded.
@@ -492,21 +601,41 @@ impl Captures {
         }
     }
 
+    /// Where `session` stands. Reading it keeps it held.
     pub fn status(&self, session: &str) -> Option<CaptureStatus> {
-        self.0.lock().unwrap().get(session).map(|s| s.status(session))
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let s = sessions.get_mut(session)?;
+        s.used = Instant::now();
+        Some(s.status(session))
+    }
+
+    /// Who opened `session`, by `Actor::id`.
+    pub fn owner(&self, session: &str) -> Option<String> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session)
+            .map(|s| s.owner.clone())
+    }
+
+    /// The capture `owner` holds, by its session id.
+    pub fn held_by(&self, owner: &str) -> Option<String> {
+        let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        sessions
+            .iter()
+            .find(|(_, s)| s.owner == owner)
+            .map(|(id, _)| id.clone())
     }
 
     /// How `session` was taken, as the `__capture` fields a sample saved from it carries on every record: when it
     /// opened, what it read, in which group, under which filter, on which commit, and each worker that failed with
     /// why. A field with nothing to say is left out.
     pub fn capture_fields(&self, session: &str) -> Vec<(crate::heartbeat::CaptureColumn, serde_json::Value)> {
-        let sessions = self.0.lock().unwrap();
+        let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let Some(s) = sessions.get(session) else {
             return Vec::new();
         };
-        let mut timestamp = Vec::new();
-        crate::ops::datetime::write_iso8601_micros_bare(s.opened_micros, &mut timestamp);
-        let timestamp = String::from_utf8(timestamp).expect("an instant is written as ASCII");
+        let timestamp = instant(s.opened_micros);
         let failed: Vec<serde_json::Value> = s
             .ended
             .iter()
@@ -546,19 +675,17 @@ impl Captures {
             ),
         ]
         .into_iter()
-        .filter_map(|(name, ty, value)| {
-            let column = crate::heartbeat::CaptureColumn {
-                name: format!("__capture.{name}"),
-                ty: ty.spell(),
-            };
-            value.map(|v| (column, v))
-        })
+        .filter_map(said)
         .collect()
     }
 
     /// The group `session` was opened against, which is the area whoever follows it must edit.
     pub fn group(&self, session: &str) -> Option<String> {
-        self.0.lock().unwrap().get(session).map(|s| s.invitation.group.clone())
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session)
+            .map(|s| s.invitation.group.clone())
     }
 
     /// End a capture still running where it stands. What it holds is what it will ever hold: records that land
@@ -566,7 +693,7 @@ impl Captures {
     /// its next heartbeat's answer no longer lists it -- a supervisor's own capture on that beat, a runtime's on the
     /// deployer's next turn. A capture already over is answered as it ended.
     pub fn stop(&self, session: &str) -> Option<CaptureStatus> {
-        let mut sessions = self.0.lock().unwrap();
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let s = sessions.get_mut(session)?;
         if !s.done() {
             s.stopped = true;
@@ -576,21 +703,31 @@ impl Captures {
 
     /// Forget a session. Called when its records have been saved as a sample, or when whoever started it gave up.
     pub fn close(&self, session: &str) -> Option<CaptureStatus> {
-        let mut sessions = self.0.lock().unwrap();
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         sessions.remove(session).map(|s| s.status(session))
     }
 
-    /// Drop every session that finished more than `keep` ago. A capture nobody collected must not hold its records
-    /// forever: this is the only thing that bounds the leader's memory across sessions.
-    pub fn sweep(&self, keep: Duration) {
-        let mut sessions = self.0.lock().unwrap();
-        sessions.retain(|_, s| !s.done() || s.elapsed() < Duration::from_secs(s.invitation.deadline_secs) + keep);
+    /// Drop every finished session nobody has read for `idle`, and every session opened more than `at_most` ago. A
+    /// capture nobody collected must not hold its records forever; with [`HELD_BYTES_CEILING`], this is what bounds
+    /// the leader's memory across sessions.
+    pub fn sweep(&self, idle: Duration, at_most: Duration) {
+        let _pass =
+            tracing::trace_span!(target: "captures", "a background pass", task = "drop finished captures").entered();
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.retain(|id, s| {
+            let keep = (!s.done() || s.used.elapsed() < idle) && s.elapsed() < at_most;
+            if !keep {
+                tracing::info!(name: "dropped_unread", target: "captures", session = %id, owner = %s.owner, "a capture nobody read was dropped");
+            }
+            keep
+        });
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config_file::KafkaSourceDto;
     use crate::config_file::{SourceDto, SourceKindDto};
 
     fn expect(workers: &[&str]) -> HashSet<String> {
@@ -599,10 +736,12 @@ mod tests {
 
     fn request(deadline_secs: Option<u64>) -> CaptureRequest {
         CaptureRequest {
+            raw: false,
             group: "prod-west".to_string(),
             source: Some(SourceDto {
                 id: "orders".to_string(),
-                kind: SourceKindDto::Kafka {
+                kind: SourceKindDto::Kafka(KafkaSourceDto {
+                    unknown: Default::default(),
                     schema_registry: None,
                     read: Default::default(),
                     brokers: "b1:9092".to_string(),
@@ -614,7 +753,7 @@ mod tests {
                     fetch_bytes: Default::default(),
                     encoding: Default::default(),
                     props: Default::default(),
-                },
+                }),
             }),
             destination: None,
             filter: None,
@@ -690,7 +829,10 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
-            Some("54bf84a1".to_string()),
+            Opened {
+                owner: "s1".to_string(),
+                config: Some("54bf84a1".to_string()),
+            },
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.invitations_for("w2", "prod-west", |_| None);
@@ -745,7 +887,10 @@ mod tests {
             expect(&["w1", "w2", "w3"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
         assert_eq!(invitation.max_matches, 3, "each worker may fill it alone");
         captures.invitations_for("w1", "prod-west", |_| None);
@@ -782,7 +927,10 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.invitations_for("w2", "prod-west", |_| None);
@@ -818,7 +966,10 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
         assert_eq!(captures.invitations_for("w2", "prod-west", |_| None).len(), 1);
         assert!(
@@ -865,7 +1016,10 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
         let held_by_w1 = |source: &str| (source == "pg").then(|| "w1".to_string());
         assert!(
@@ -887,7 +1041,10 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.record(progress_report("s1", "w1", &["a"]));
@@ -932,7 +1089,10 @@ mod tests {
             expect(&["w1", "w2", "w3"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
         for worker in ["w1", "w2", "w3"] {
             captures.invitations_for(worker, "prod-west", |_| None);
@@ -989,7 +1149,10 @@ mod tests {
             expect(&["w1", "w2"]),
             expect(&["w2"]),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
         for worker in ["w1", "w2"] {
             captures.invitations_for(worker, "prod-west", |_| None);
@@ -1016,7 +1179,10 @@ mod tests {
             expect(&["w1", "w2"]),
             expect(&["w2"]),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
         for worker in ["w1", "w2"] {
             captures.invitations_for(worker, "prod-west", |_| None);
@@ -1048,7 +1214,10 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.invitations_for("w2", "prod-west", |_| None);
@@ -1082,7 +1251,10 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.invitations_for("w2", "prod-west", |_| None);
@@ -1112,7 +1284,10 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
         for worker in ["w2", "w1", "w3"] {
             captures.invitations_for(worker, "prod-west", |_| None);
@@ -1158,7 +1333,10 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
         assert_eq!(captures.invitations_for("w1", "prod-west", |_| None).len(), 1);
         captures.stop("s1");
@@ -1177,7 +1355,10 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s2".to_string(),
+                config: None,
+            },
         );
         let listed: Vec<String> = captures
             .invitations_for("w1", "prod-west", |_| None)
@@ -1200,7 +1381,10 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
 
         assert_eq!(captures.invitations_for("w1", "prod-west", |_| None).len(), 1);
@@ -1229,7 +1413,10 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.record(report("s1", "w1", &["a"]));
@@ -1247,7 +1434,10 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.record(report("s1", "w1", &["a"]));
@@ -1268,7 +1458,10 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
         captures.invitations_for("w1", "prod-west", |_| None);
 
@@ -1290,7 +1483,10 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.invitations_for("w2", "prod-west", |_| None);
@@ -1322,7 +1518,10 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
         captures.invitations_for("w1", "prod-west", |_| None);
 
@@ -1349,7 +1548,10 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
         captures.invitations_for("w1", "prod-west", |_| None);
 
@@ -1378,7 +1580,10 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.invitations_for("w2", "prod-west", |_| None);
@@ -1409,7 +1614,10 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.invitations_for("w2", "prod-west", |_| None);
@@ -1449,7 +1657,10 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.invitations_for("w2", "prod-west", |_| None);
@@ -1475,7 +1686,10 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.invitations_for("w2", "prod-west", |_| None);
@@ -1502,7 +1716,10 @@ mod tests {
             expect(&["w1", "w2"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
 
         // Only w1 has heartbeated so far, and it answers immediately.
@@ -1536,7 +1753,10 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
 
         assert!(
@@ -1558,7 +1778,10 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
         assert_eq!(captures.group("s1").as_deref(), Some("prod-west"));
         captures.stop("s1");
@@ -1579,7 +1802,10 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
         captures.record(report("s1", "impostor", &["forged", "forged"]));
 
@@ -1607,7 +1833,10 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
         assert_eq!(invitation.max_matches, crate::config_file::MAX_SAMPLE_RECORDS);
         assert_eq!(invitation.max_bytes, MAX_BYTES_CEILING);
@@ -1627,7 +1856,10 @@ mod tests {
                 expect(&["w1"]),
                 Default::default(),
                 Vec::new(),
-                None,
+                Opened {
+                    owner: id.to_string(),
+                    config: None,
+                },
             )
         };
         assert_eq!(open("s1", Some(StartPositionDto::Latest)).start, None);
@@ -1637,29 +1869,118 @@ mod tests {
         );
     }
 
-    /// Nothing collects a capture nobody came back for, so the sweep is what stops finished sessions accumulating.
+    /// Nothing collects a capture nobody came back for, so the sweep is what stops finished sessions accumulating:
+    /// one nobody reads goes after the idle time, and any goes after the most it is held for.
     #[test]
-    fn the_sweep_drops_a_finished_session_nobody_collected() {
+    fn the_sweep_drops_a_finished_session_nobody_read_and_any_held_too_long() {
         let captures = Captures::default();
         // One expected worker, which answers: the session is finished and nobody ever collects it.
         captures.open(
             "s1".to_string(),
-            request(Some(1)),
+            request(Some(60)),
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "alice".to_string(),
+                config: None,
+            },
         );
         captures.invitations_for("w1", "prod-west", |_| None);
         captures.record(report("s1", "w1", &["a"]));
         assert!(captures.status("s1").unwrap().done);
 
-        captures.sweep(Duration::from_secs(3600));
-        assert!(captures.status("s1").is_some(), "still inside the keep window");
+        captures.sweep(Duration::from_secs(3600), Duration::from_secs(3600));
+        assert!(captures.status("s1").is_some(), "read within the idle time");
 
-        std::thread::sleep(Duration::from_millis(1100));
-        captures.sweep(Duration::from_secs(0));
-        assert!(captures.status("s1").is_none(), "swept");
+        std::thread::sleep(Duration::from_millis(50));
+        captures.sweep(Duration::from_millis(40), Duration::from_secs(3600));
+        assert!(
+            captures.status("s1").is_none(),
+            "nobody read it for longer than the idle time"
+        );
+
+        // A running capture is never idle, but is held no longer than the most.
+        captures.open(
+            "s2".to_string(),
+            request(Some(60)),
+            expect(&["w1"]),
+            Default::default(),
+            Vec::new(),
+            Opened {
+                owner: "bob".to_string(),
+                config: None,
+            },
+        );
+        std::thread::sleep(Duration::from_millis(50));
+        captures.sweep(Duration::from_millis(40), Duration::from_secs(3600));
+        assert!(captures.status("s2").is_some(), "still running");
+        captures.sweep(Duration::from_secs(3600), Duration::from_millis(40));
+        assert!(captures.status("s2").is_none(), "held past the most");
+    }
+
+    /// A person holds one capture: opening another drops the first, running or not, and leaves everyone else's.
+    #[test]
+    fn a_new_capture_replaces_its_owners_last() {
+        let captures = Captures::default();
+        for (id, owner) in [("s1", "alice"), ("s2", "bob"), ("s3", "alice")] {
+            captures.open(
+                id.to_string(),
+                request(Some(60)),
+                expect(&["w1"]),
+                Default::default(),
+                Vec::new(),
+                Opened {
+                    owner: owner.to_string(),
+                    config: None,
+                },
+            );
+        }
+        assert!(captures.status("s1").is_none(), "alice's first, replaced");
+        assert!(captures.status("s2").is_some(), "bob's own");
+        assert_eq!(captures.held_by("alice").as_deref(), Some("s3"));
+        assert_eq!(captures.owner("s2").as_deref(), Some("bob"));
+    }
+
+    /// Every running capture is charged all it may grow to, so once they fill the ceiling a new one drops the oldest.
+    #[test]
+    fn a_new_capture_past_the_ceiling_drops_the_oldest() {
+        let captures = Captures::default();
+        let fit = HELD_BYTES_CEILING / SESSION_BYTES_CEILING;
+        for i in 0..=fit {
+            captures.open(
+                format!("s{i}"),
+                request(Some(60)),
+                expect(&["w1"]),
+                Default::default(),
+                Vec::new(),
+                Opened {
+                    owner: format!("owner{i}"),
+                    config: None,
+                },
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(captures.status("s0").is_none(), "the oldest made room");
+        assert!((1..=fit).all(|i| captures.status(&format!("s{i}")).is_some()));
+
+        // A finished capture is charged only what it holds, so it leaves room for running ones.
+        captures.stop("s1");
+        captures.open(
+            "late".to_string(),
+            request(Some(60)),
+            expect(&["w1"]),
+            Default::default(),
+            Vec::new(),
+            Opened {
+                owner: "late".to_string(),
+                config: None,
+            },
+        );
+        assert!(
+            (1..=fit).all(|i| captures.status(&format!("s{i}")).is_some()),
+            "an empty finished capture took no room"
+        );
     }
 
     /// A capture at a destination says so in its status, which is how a save knows to refuse it: what a destination
@@ -1677,11 +1998,35 @@ mod tests {
             expect(&["w1"]),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
         );
         assert_eq!(invitation.destination.as_deref(), Some("es"));
         assert!(invitation.source.is_none());
         assert_eq!(captures.status("s1").unwrap().destination.as_deref(), Some("es"));
+        assert!(captures.status("s1").unwrap().source.is_none());
         assert!(captures.status("s1").is_some_and(|s| !s.done));
+    }
+
+    /// A source's capture names the source, so a sample saved from it later stands for that source.
+    #[test]
+    fn a_source_capture_names_its_source() {
+        let captures = Captures::default();
+        captures.open(
+            "s1".to_string(),
+            request(Some(60)),
+            expect(&["w1"]),
+            Default::default(),
+            Vec::new(),
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
+        );
+        let status = captures.status("s1").unwrap();
+        assert_eq!(status.source.as_deref(), Some("orders"));
+        assert!(status.destination.is_none());
     }
 }

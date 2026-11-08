@@ -62,6 +62,9 @@ export interface FunctionEntry {
   examples: Example[];
   /** The label over the run of functions this one belongs to. See `Grouped`. */
   group?: string;
+  /** The type of the first argument this entry documents the function for. The function's entry without `on` documents
+   * every other type. */
+  on?: string;
 }
 
 /** One type category: the operators that produce it, then the functions over it. */
@@ -91,6 +94,42 @@ export interface Rejected {
 
 export const GROUPS: Group[] = data.groups;
 
+/** The page's anchor for `fn`: its name, and its `on` where it has one. */
+export function anchor(fn: FunctionEntry): string {
+  return fn.on ? `${fn.name}-${fn.on}` : fn.name;
+}
+
+/** How a search lists `fn`: its name, and where it has an `on`, the word "on" and that type after it. */
+export function title(fn: FunctionEntry): string {
+  return fn.on ? `${fn.name} on ${fn.on}` : fn.name;
+}
+
+/** The `on` of each name's entries that have one. */
+const ON = new Map<string, string[]>();
+for (const fn of GROUPS.flatMap((g) => g.functions)) {
+  if (fn.on) ON.set(fn.name, [...(ON.get(fn.name) ?? []), fn.on]);
+}
+
+/** The types a typed row takes as its first argument, by their first word: `(bytes, i64)` -> `bytes`,
+ * `(str/bytes/array)` -> `str`, `bytes`, `array`. */
+function firsts(row: TypedRow): string[] {
+  return row.params
+    .slice(1)
+    .split(/[,)]/)[0]
+    .split('/')
+    .map((t) => t.split(' ')[0]);
+}
+
+/** The typed rows `fn` documents: those whose first argument may be its `on`, or, for the entry without `on`, those
+ * whose first argument may be a type no other entry of the name takes. A row of several types shows under each. */
+export function typedRows(fn: FunctionEntry): TypedRow[] {
+  const rows = SIGNATURES[fn.name] ?? [];
+  const taken = ON.get(fn.name) ?? [];
+  return rows.filter((row) =>
+    fn.on ? firsts(row).includes(fn.on) : firsts(row).some((t) => !taken.includes(t)),
+  );
+}
+
 /** One exception kind: its name, its category, and when it happens. */
 export interface ExceptionKind {
   kind: string;
@@ -109,6 +148,15 @@ export interface RecordField {
 }
 
 export const RECORD_FIELDS: RecordField[] = data.recordFields as RecordField[];
+
+/** How one kind of value is written: its form, what it is, and examples. */
+export interface LiteralRow {
+  form: string;
+  rule: string;
+  examples: Example[];
+}
+
+export const LITERALS: LiteralRow[] = data.literals;
 
 /** One type of the language: its name as a declaration spells it, what it holds, and a value of it. */
 export interface TypeRow {

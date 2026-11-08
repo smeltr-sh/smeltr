@@ -17,6 +17,7 @@
 </script>
 
 <script lang="ts">
+  import { Busy } from './busy.svelte';
   import Button, { BUSY } from './Button.svelte';
   import ConversationEntry from './ConversationEntry.svelte';
   import ConversationEvent from './ConversationEvent.svelte';
@@ -65,7 +66,7 @@
 
   let shown = $state<ConversationDto | null>(null);
   let message = $state('');
-  let busy = $state(false);
+  const busy = new Busy();
   let available = $state<AgentModelDto[]>([]);
   let fallback = $state('');
   let model = $state('');
@@ -85,7 +86,7 @@
   async function read(id: string) {
     try {
       const got = await getConversation(id);
-      if (refused(got)) return;
+      if (refused(got) || id !== open) return;
       shown = got.conversation;
     } catch (e) {
       reported(e);
@@ -118,10 +119,9 @@
   async function send(e: SubmitEvent) {
     e.preventDefault();
     const text = message.trim();
-    if (busy || !text) return;
-    busy = true;
+    if (busy.on || !text) return;
     const asked = { model: model || undefined, effort: effort || undefined };
-    try {
+    await busy.run(async () => {
       if (open) {
         const sent = await sendToConversation(open, text, asked);
         if (refused(sent)) return;
@@ -134,11 +134,7 @@
         onstarted(started.id);
       }
       onchanged?.();
-    } catch (e) {
-      reported(e);
-    } finally {
-      busy = false;
-    }
+    });
   }
 
   async function stop() {
@@ -185,7 +181,8 @@
     | { kind: 'message' | 'answer'; text: string }
     | { kind: 'call'; label: string; input: unknown; result?: { output: string; isError: boolean } }
     | { kind: 'unreadable'; error: string }
-    | { kind: 'fresh'; summary: string | null };
+    | { kind: 'fresh'; summary: string | null }
+    | { kind: 'compacted' };
 
   function arrange(items: ConversationItem[]): Shown[] {
     const results = new Map(
@@ -207,6 +204,8 @@
           return [{ kind: 'unreadable', error: i.error }];
         case 'fresh':
           return [{ kind: 'fresh', summary: i.summary }];
+        case 'compacted':
+          return [{ kind: 'compacted' }];
       }
     });
   }
@@ -281,10 +280,15 @@
           {:else}
             <Collapsible variant="row">
               {#snippet summary()}Summarized. Your agent reads this summary in place of what is
-                above.{/snippet}
+                above, except the last answer above.{/snippet}
               <div class="summary"><Markdown text={item.summary} /></div>
             </Collapsible>
           {/if}
+        </ConversationEvent>
+      {:else if item.kind === 'compacted'}
+        <ConversationEvent>
+          Summarized by the provider. Your agent reads the provider's summary, which is not shown,
+          in place of what is above.
         </ConversationEvent>
       {:else if item.kind === 'unreadable'}
         <InlineError message={item.error} />
@@ -361,7 +365,7 @@
           <Button
             type="submit"
             class="primary"
-            disabled={busy
+            disabled={busy.on
               ? BUSY
               : !message.trim()
                 ? 'Write a message first.'
@@ -369,7 +373,7 @@
                   ? BUSY
                   : ''}
           >
-            {busy ? 'Sending…' : 'Send'}
+            {busy.on ? 'Sending…' : 'Send'}
           </Button>
         </div>
       </form>

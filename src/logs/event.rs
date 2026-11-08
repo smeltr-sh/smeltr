@@ -1,4 +1,4 @@
-//! What a log is once it has left its call site: when, how bad, where from, a sentence, and whatever that
+//! What a log is once it has left its call site: when, how bad, its class and type, a sentence, and whatever that
 //! site knew at the time.
 
 use std::borrow::Cow;
@@ -22,9 +22,14 @@ pub enum Value {
 pub struct Event {
     pub timestamp: SystemTime,
     pub level: tracing::Level,
-    /// Where it came from, and what a filter names. Our own sites are `tracing` targets and cost nothing to
-    /// carry; one that arrived through the `log` facade owns a copy of its library's target.
-    pub site: Cow<'static, str>,
+    /// The part of smeltr it is about: a call site's `tracing` target. A library's line takes the class of the span
+    /// of ours it was said inside, and has none outside any.
+    pub class: Option<Cow<'static, str>>,
+    /// What happened: a call site's `tracing` name, `finished` for a span's end, and a library's own name for its
+    /// line.
+    pub r#type: Cow<'static, str>,
+    /// The outside service the code that said it talks to (`levels::service`).
+    pub service: Option<Cow<'static, str>>,
     /// The constant sentence for this site. Anything that varies belongs in `fields`.
     pub message: String,
     /// What varied this time. `subject` by convention names the identity the event is about -- a destination, a

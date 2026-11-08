@@ -197,9 +197,9 @@ fn log_refused_at(method: &str, path: &str, status: StatusCode, error: &str, now
             }
         };
         drop(failed);
-        tracing::error!(target: "api.failed", method, path, status = status.as_u16(), error, repeats, "an API call failed");
+        tracing::error!(name: "failed", target: "api", method, path, status = status.as_u16(), error, repeats, "an API call failed");
     } else if status.is_client_error() {
-        tracing::debug!(target: "api.refused", method, path, status = status.as_u16(), error, "an API call was refused");
+        tracing::debug!(name: "refused", target: "api", method, path, status = status.as_u16(), error, "an API call was refused");
     }
 }
 
@@ -452,7 +452,7 @@ mod tests {
         });
         let repeats: Vec<Option<String>> = seen
             .iter()
-            .map(|(_, _, f)| f.iter().find(|(n, _)| n == "repeats").map(|(_, v)| v.clone()))
+            .map(|(_, _, _, f)| f.iter().find(|(n, _)| n == "repeats").map(|(_, v)| v.clone()))
             .collect();
         assert_eq!(repeats, vec![None, Some("2".to_string())], "{seen:?}");
         // Another path is its own failure.
@@ -475,12 +475,18 @@ mod tests {
             log_refused("GET", "/api/logs-once", StatusCode::OK, "");
         });
         assert_eq!(seen.len(), 2, "{seen:?}");
-        let field = |i: usize, k: &str| seen[i].2.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
-        assert_eq!((seen[0].0, seen[0].1.as_str()), (tracing::Level::DEBUG, "api.refused"));
+        let field = |i: usize, k: &str| seen[i].3.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+        assert_eq!(
+            (seen[0].0, seen[0].1.as_str(), seen[0].2.as_str()),
+            (tracing::Level::DEBUG, "api", "refused")
+        );
         assert_eq!(field(0, "status").as_deref(), Some("409"));
         assert_eq!(field(0, "error").as_deref(), Some("a stale base"));
         assert_eq!(field(0, "message").as_deref(), Some("an API call was refused"));
-        assert_eq!((seen[1].0, seen[1].1.as_str()), (tracing::Level::ERROR, "api.failed"));
+        assert_eq!(
+            (seen[1].0, seen[1].1.as_str(), seen[1].2.as_str()),
+            (tracing::Level::ERROR, "api", "failed")
+        );
         assert_eq!(field(1, "path").as_deref(), Some("/api/logs-once"));
         assert_eq!(field(1, "message").as_deref(), Some("an API call failed"));
     }

@@ -10,7 +10,7 @@ use std::sync::mpsc;
 
 use smeltr::heartbeat::{HeartbeatClient, HeartbeatRequest, MetricSampleDto, PartitionRef, ThreadHeartbeat};
 use smeltr::leader::registry::Registry;
-use smeltr::leader::sqlite_store::SqliteStore;
+use smeltr::leader::store::Store;
 use smeltr::leader::{AppState, router};
 
 /// A path under the temp directory that no other test in this binary can
@@ -31,7 +31,7 @@ fn scratch_dir(prefix: &str) -> std::path::PathBuf {
 }
 
 /// A leader's state over `store`, as `main` builds it, for a server a test runs itself.
-fn app_state(store: SqliteStore, data_dir: std::path::PathBuf) -> AppState {
+fn app_state(store: Store, data_dir: std::path::PathBuf) -> AppState {
     AppState {
         store: Arc::new(store),
         registry: Arc::new(Registry::default()),
@@ -47,6 +47,7 @@ fn app_state(store: SqliteStore, data_dir: std::path::PathBuf) -> AppState {
         alerts: Default::default(),
         data_dir,
         directives: Default::default(),
+        log_levels: Default::default(),
     }
 }
 
@@ -72,7 +73,7 @@ fn start_leader_with_registry(registry: Arc<Registry>) -> (String, std::path::Pa
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let store = SqliteStore::open(
+            let store = Store::open(
                 std::path::Path::new(":memory:"),
                 &scratch_dir("smeltr-leader-key").join("sealing.key"),
             )
@@ -103,7 +104,7 @@ fn a_client_that_never_finishes_its_headers_is_cut_off() {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let store = SqliteStore::open(
+            let store = Store::open(
                 std::path::Path::new(":memory:"),
                 &scratch_dir("smeltr-leader-slow-key").join("sealing.key"),
             )
@@ -179,7 +180,7 @@ fn start_leader_tls() -> (String, Vec<u8>) {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let store = SqliteStore::open(
+            let store = Store::open(
                 std::path::Path::new(":memory:"),
                 &scratch_dir("smeltr-leader-flow-key").join("sealing.key"),
             )

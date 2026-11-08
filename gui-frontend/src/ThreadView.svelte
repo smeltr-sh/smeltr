@@ -86,7 +86,7 @@
         </div>
       </div>
     {/each}
-    <Locked refusedInDemo
+    <Locked
       ><form class="reply" onsubmit={submit}>
         <input type="text" aria-label="Reply" placeholder="Reply" bind:value={reply} />
         {#if reply.trim()}

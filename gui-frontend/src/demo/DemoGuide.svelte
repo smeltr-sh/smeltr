@@ -1,10 +1,12 @@
 <!--
   The demo's guide, under its strip: the tasks a visitor works through (`guide.ts`), each ticked when its work is
   there. It opens on a first visit and remembers being closed. While open, it rings the control the next task,
-  or the one whose Show me was followed, is done with, wherever the visitor is.
+  or the one whose Show me was followed, is done with, wherever the visitor is. A click on it, off its links and
+  buttons, folds it.
 -->
 <script lang="ts">
-  import { onMount, untrack } from 'svelte';
+  import { onMount } from 'svelte';
+  import CopyButton from '../CopyButton.svelte';
   import { currentBranch, setScope } from '../api';
   import {
     CHANGED_EVENT,
@@ -35,6 +37,13 @@
   let shown = $state(-1);
   let ringing = $derived(shown >= 0 && !done[shown] ? shown : next);
 
+  /** Folds the guide on a click anywhere in it but its links and buttons, or text being selected. */
+  function fold(e: MouseEvent) {
+    if ((e.target as Element).closest('a, button, code')) return;
+    if (getSelection()?.toString()) return;
+    toggle();
+  }
+
   async function refresh() {
     world = await look(currentBranch(), sawStatus(location.hash, store));
   }
@@ -42,14 +51,12 @@
   let ringed: Element | null = null;
   // Raw: a proxy of the step's hint would never be the step's own, and the ring compares them.
   let hint = $state.raw<Step['hint']>();
-  let copied = $state(false);
 
   /** Moves the ring to the next task's control on screen, and brings a newly ringed one into view. */
   function ring() {
     const task = open && world ? TASKS[ringing] : undefined;
     const found = task ? stepOnScreen(task, location.hash) : null;
     const el = found?.el ?? null;
-    if (found?.step.hint !== untrack(() => hint)) copied = false;
     hint = found?.step.hint;
     if (el === ringed) return;
     ringed?.removeAttribute(RING);
@@ -59,15 +66,6 @@
   }
 
   $effect(ring);
-
-  async function copy(text: string) {
-    try {
-      await navigator.clipboard.writeText(text);
-      copied = true;
-    } catch {
-      // No clipboard here; the text stays on screen to select.
-    }
-  }
 
   function toggle() {
     open = !open;
@@ -115,7 +113,9 @@
 </button>
 
 {#if open}
-  <div class="guide" id="demo-guide">
+  <!-- The Guide button folds it from the keyboard; a click on the guide itself is a shortcut for the mouse. -->
+  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+  <div class="guide" id="demo-guide" onclick={fold}>
     <h2>Fix two problems</h2>
     <p>
       Cisco ASA logs are arriving with no route to take them, and one FortiGate's firmware now sends
@@ -143,16 +143,15 @@
           <li class="hint">
             <span class="text">{hint.text}</span>
             <code>{hint.copy}</code>
-            <button type="button" onclick={() => copy(hint!.copy)}
-              >{copied ? 'Copied' : 'Copy'}</button
-            >
+            <CopyButton text={hint.copy} />
           </li>
         {/if}
       {/each}
       <li class="last" class:next={next === -1}>
         <span class="mark" aria-hidden="true">→</span>
         <span class="text">
-          Ready to ship it? On a real fleet you'd deploy now, and Status would clear.
+          Ready to ship it? On a real fleet a reviewer would approve and deploy it now, and Status
+          would clear.
           <a href="https://smeltr.sh/get/" target="_blank" rel="noopener">Get smeltr</a>
         </span>
       </li>
@@ -174,6 +173,7 @@
 
   .guide {
     flex-basis: 100%;
+    cursor: pointer;
     padding-block: 0.4rem 0.6rem;
   }
 
@@ -219,7 +219,7 @@
     overflow-wrap: anywhere;
   }
 
-  li.hint button {
+  li.hint :global(button) {
     font: inherit;
     font-size: var(--text-micro);
     background: none;

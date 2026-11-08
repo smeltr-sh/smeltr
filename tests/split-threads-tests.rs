@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use smeltr::config_file::KafkaSourceDto;
 use smeltr::core::buffer::MemoryBudget;
 use smeltr::core::id::{DestId, FunctionId};
 use smeltr::egress::Egress;
@@ -741,6 +742,7 @@ fn capturing_routes(
 
 fn at_destination(filter: Option<&str>) -> smeltr::heartbeat::CaptureInvitation {
     smeltr::heartbeat::CaptureInvitation {
+        raw: false,
         session: "s1".to_string(),
         group: "g".to_string(),
         source: None,
@@ -905,7 +907,8 @@ fn at_source() -> smeltr::heartbeat::CaptureInvitation {
     smeltr::heartbeat::CaptureInvitation {
         source: Some(smeltr::config_file::SourceDto {
             id: "source-0".to_string(),
-            kind: smeltr::config_file::SourceKindDto::Kafka {
+            kind: smeltr::config_file::SourceKindDto::Kafka(KafkaSourceDto {
+                unknown: Default::default(),
                 schema_registry: None,
                 read: Default::default(),
                 brokers: "b1:9092".to_string(),
@@ -917,7 +920,7 @@ fn at_source() -> smeltr::heartbeat::CaptureInvitation {
                 fetch_bytes: Default::default(),
                 encoding: Default::default(),
                 props: Default::default(),
-            },
+            }),
         }),
         destination: None,
         ..at_destination(None)

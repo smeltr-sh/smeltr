@@ -52,7 +52,7 @@ impl Directives {
         took: Option<&str>,
         stopping: bool,
     ) -> Option<Directive> {
-        let mut workers = self.0.lock().unwrap();
+        let mut workers = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let held = workers.entry(worker_id.to_string()).or_default();
         held.accepts = accepts;
         if stopping || held.current().is_some_and(|d| Some(d.id.as_str()) == took) {
@@ -64,7 +64,7 @@ impl Directives {
     /// Asks `worker_id` for `action` on its next heartbeat, in place of anything it has not yet taken. Refused for
     /// a worker that has not said it does that.
     pub fn ask(&self, worker_id: &str, action: DirectiveAction) -> Result<(), String> {
-        let mut workers = self.0.lock().unwrap();
+        let mut workers = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let Some(held) = workers.get_mut(worker_id).filter(|h| h.accepts.contains(&action)) else {
             return Err(format!(
                 "worker {worker_id:?} has not said it can {} since this leader started",
@@ -84,7 +84,7 @@ impl Directives {
     pub fn accepts(&self, worker_id: &str) -> Vec<DirectiveAction> {
         self.0
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get(worker_id)
             .map(|h| h.accepts.clone())
             .unwrap_or_default()
@@ -94,14 +94,14 @@ impl Directives {
     pub fn pending(&self, worker_id: &str) -> Option<DirectiveAction> {
         self.0
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get_mut(worker_id)
             .and_then(|h| h.current().map(|d| d.action))
     }
 
     /// Drops everything held about `worker_id`.
     pub fn forget(&self, worker_id: &str) {
-        self.0.lock().unwrap().remove(worker_id);
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).remove(worker_id);
     }
 }
 

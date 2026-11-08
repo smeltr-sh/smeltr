@@ -31,6 +31,8 @@
     streamsIn,
     type MapGroupError,
     type MapNode,
+    type SourceDto,
+    type DestinationDto,
     type NodeReadingDto,
     type MapResponse,
     type MeasurementsResponse,
@@ -53,6 +55,8 @@
     type Attention,
   } from './mapTerms';
   import { mapGlyph, SYSTEM_LABELS } from './systemGlyphs';
+  import { typeLabel as sourceTypeLabel } from './sources';
+  import { typeLabel as destinationTypeLabel } from './destinations';
   import {
     HEAD_H,
     NODE_H,
@@ -291,11 +295,18 @@
     return `<svg viewBox="0 0 64 64" width="${px}" height="${px}" aria-hidden="true"><path d="${g.d}" fill="currentColor" fill-rule="${rule}"/></svg>`;
   }
 
-  /** A card's second line: the system behind a source or destination, or how many routes run
-   * through a pipeline. */
+  /** A card's second line: a source's or destination's type, as its own page names it, or how
+   * many routes run through a pipeline. */
   function cardMeta(n: MapNode): string {
     if (n.kind === 'pipeline')
       return count(routesThrough(allEdges, nodeKey(n.group, n.kind, n.authorId)).size, 'route');
+    // A type this build does not know has no name here: the name of its system stands in.
+    const named =
+      n.type &&
+      (n.kind === 'source'
+        ? sourceTypeLabel(n.type as SourceDto['type'])
+        : destinationTypeLabel(n.type as DestinationDto['type']));
+    if (named) return named;
     if (!n.system) return '';
     // `MapSystem` mirrors the leader's enum by hand: a system this build does not know reads as
     // the leader named it.
@@ -349,8 +360,8 @@
   }
 
   /** A stack's card title. */
-  function stackTitle(count: number, kind: MapNode['kind']): string {
-    return `${count} ${kind === 'source' ? 'sources' : 'destinations'}`;
+  function stackTitle(count: number, kind: MapNode['kind'], prefix: string): string {
+    return `${prefix}* · ${count} ${kind === 'source' ? 'sources' : 'destinations'}`;
   }
 
   /** Whether the warning catalog names a node now: its polled warnings once there are any
@@ -640,18 +651,13 @@
         });
         continue;
       }
+      const edges = stacked.edges.filter((e) => groupOfKey(e.from) === group);
       const diagram = layout(
         drawnCards.filter((n) => n.group === group),
+        edges,
         nodeW,
       );
-      out.push({
-        group,
-        diagram,
-        edges: bandEdges(
-          diagram,
-          stacked.edges.filter((e) => groupOfKey(e.from) === group),
-        ),
-      });
+      out.push({ group, diagram, edges: bandEdges(diagram, edges) });
     }
     return out;
   });
@@ -689,7 +695,10 @@
   /** What the panel lists as connected: the path, in drawing order, without the selection. */
   let connected = $derived(
     path && selected
-      ? layout(stacked.cards.filter((c) => path.nodes.has(cardKey(c))))
+      ? layout(
+          stacked.cards.filter((c) => path.nodes.has(cardKey(c))),
+          stacked.edges,
+        )
           .positions.map((p) => p.node)
           .filter((c) => cardKey(c) !== selectedKey)
           .map((c) => ({ node: c, hash: cardHash(c) }))
@@ -932,9 +941,7 @@
           </button>
         {/if}
         {#if selectedTarget && mayCapture(selectedTarget)}
-          <button type="button" data-guide="capture" onclick={() => (capturing = selectedTarget)}
-            >Capture</button
-          >
+          <button type="button" onclick={() => (capturing = selectedTarget)}>Capture</button>
         {/if}
       </span>
     {/snippet}
@@ -1070,7 +1077,7 @@
                       >
                         <span class="node-head">
                           <span class="node-shape">{@html shapeGlyph(p.node, 14)}</span>
-                          <span class="node-label">{p.node.name}</span>
+                          <span class="node-label ellipsis">{p.node.name}</span>
                           {#if mark}<StateMark state={mark} />{/if}
                         </span>
                         <span class="node-meta">
@@ -1160,7 +1167,7 @@
           {:else}
             <MapRows
               rows={needs.map((a) => ({
-                key: `${a.group}|${a.node ? nodeKey(a.group, a.node.kind, a.node.authorId) : a.subject}|${a.text}|${a.site ?? ''}`,
+                key: `${a.group}|${a.node ? nodeKey(a.group, a.node.kind, a.node.authorId) : a.subject}|${a.text}|${a.line ?? ''}`,
                 href: attentionHash(a),
                 subject: a.subject,
                 note: a.text,
@@ -1180,10 +1187,6 @@
 </main>
 
 <style>
-  .mono {
-    font-family: var(--mono);
-  }
-
   .subtitle {
     margin: 0 0 1rem;
     font-size: var(--text-body);
@@ -1572,9 +1575,6 @@
   .node-label {
     font-family: var(--mono);
     font-size: var(--text-note);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 
   .node.warning .node-label {

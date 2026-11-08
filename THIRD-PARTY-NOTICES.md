@@ -249,7 +249,7 @@ Rules and lists the built-in functions read, and the standards a schema is read 
 | uap-core `regexes.yaml` (`src/ops/useragent/regexes.yaml`) | `parseUserAgent` | Apache-2.0 |
 | Public Suffix List, through the `psl` crate | `registeredDomain` | MPL-2.0 |
 | Elastic Common Schema `fields.csv` (`src/schema/standards/ecs-fields.csv`) | Add schema, ECS built in | Apache-2.0 |
-| Open Cybersecurity Schema Framework, compiled (`src/schema/standards/ocsf.json`) | Add schema, OCSF built in | Apache-2.0 |
+| Open Cybersecurity Schema Framework, compiled (`src/schema/standards/ocsf-*.json`) | Add schema, OCSF built in | Apache-2.0 |
 
 > Copyright 2009 Google Inc. (uap-core, https://github.com/ua-parser/uap-core)
 
@@ -264,8 +264,8 @@ license is https://mozilla.org/MPL/2.0/.
 
 ## Rust crates
 
-- Apache License 2.0 (389)
-- MIT License (93)
+- Apache License 2.0 (390)
+- MIT License (94)
 - Unicode License v3 (20)
 - BSD 3-Clause "New" or "Revised" License (13)
 - ISC License (7)
@@ -9824,6 +9824,7 @@ Used by:
 - [time-core 0.1.9](https://github.com/time-rs/time)
 - [time-macros 0.2.32](https://github.com/time-rs/time)
 - [time 0.3.55](https://github.com/time-rs/time)
+- [typed-path 0.13.0](https://github.com/chipsenkbeil/typed-path)
 - [unicode-ident 1.0.27](https://github.com/dtolnay/unicode-ident)
 - [utf8-zero 0.8.1](https://github.com/algesten/utf8-zero)
 - [whoami 2.1.3](https://github.com/ardaku/whoami)
@@ -12890,6 +12891,7 @@ SOFTWARE.
 Used by:
 
 - [tracing-core 0.1.36](https://github.com/tokio-rs/tracing)
+- [zip 9.4.1](https://github.com/zip-rs/zip2)
 
 ```
 The MIT License (MIT)

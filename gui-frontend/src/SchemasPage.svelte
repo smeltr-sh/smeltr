@@ -23,7 +23,7 @@
   import SchemaFields from './SchemaFields.svelte';
   import NewSchema, { READ_FORMATS, type SchemaDraft } from './NewSchema.svelte';
   import CrossButton from './CrossButton.svelte';
-  import { resourcesTabs } from './nav';
+  import { RESOURCES_TABS } from './nav';
   import {
     readSchema,
     importSchema,
@@ -124,12 +124,13 @@
         format: READ_FORMATS[draft.type]!,
         text: draft.text,
         ...((draft.type === 'ecs' || draft.type === 'ocsf') && draft.builtIn
-          ? { builtIn: true }
+          ? { builtIn: true, ...(draft.release ? { release: draft.release } : {}) }
           : {}),
         ...(draft.type === 'ocsf'
           ? { class: draft.class, cut: { depth: draft.depth, levels: draft.levels } }
           : {}),
         ...(draft.type === 'ecs' ? { requirements: draft.requirements } : {}),
+        ...(draft.type === 'otlp' ? { signal: draft.signal } : {}),
         ...(draft.type === 'csv' ? { columns: draft.columns, types: draft.types } : {}),
       });
       if (!read.ok) throw new Error(read.errors.map((e) => e.message).join(' '));
@@ -192,7 +193,7 @@
         its rows do not fit them. A destination can name the schemas it accepts.
       {/snippet}
     </PageHeader>
-    <SecondaryTabs tabs={resourcesTabs()} active="#/build/schemas" ariaLabel="Resources" />
+    <SecondaryTabs tabs={RESOURCES_TABS} active="#/build/schemas" ariaLabel="Resources" />
 
     <div>
       <UnreadableFiles problems={editor.bundleProblems} onchanged={() => editor.load()} />
@@ -502,9 +503,5 @@
 
   .dim {
     color: var(--dim);
-  }
-
-  .mono {
-    font-family: var(--mono);
   }
 </style>

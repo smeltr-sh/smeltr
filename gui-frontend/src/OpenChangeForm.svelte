@@ -122,13 +122,15 @@
 
   async function loadReviewers() {
     try {
-      // Any account that could approve, however it signs in: a key account approves through the API.
+      // Any account that could approve, however it signs in, the author's own among them: a key account approves
+      // through the API.
       reviewers = (await listAccounts())
-        .filter(
-          (u) =>
-            u.enabled && deployBlocker(entry.touches, u.access) === '' && u.id !== session().userId,
-        )
-        .map((u) => ({ id: u.id, name: u.displayName }));
+        .filter((u) => u.enabled && deployBlocker(entry.touches, u.access) === '')
+        // The author is marked, so a lone administrator does not read as somebody else reviewing.
+        .map((u) => ({
+          id: u.id,
+          name: u.id === session().userId ? `${u.displayName} (you)` : u.displayName,
+        }));
     } catch {
       reviewers = null;
     }
@@ -207,7 +209,7 @@
         {#if reviewers === null}
           <span class="dim">every administrator and deployer</span>
         {:else if reviewers.length === 0}
-          <span class="dim">no other administrator or deployer</span>
+          <span class="dim">no administrator or deployer</span>
         {:else}
           {#each reviewers as r (r.id)}<span class="reviewer">{r.name}</span>{/each}
         {/if}
@@ -251,10 +253,11 @@
   <div class="actions">
     <InlineError message={error} inline />
     <Button type="button" onclick={onclose} disabled={busy ? BUSY : ''}>Cancel</Button>
-    <Locked refusedInDemo>
+    <Locked>
       <Button
         type="submit"
         class="primary"
+        data-guide="review-submit"
         disabled={busy || drafting ? BUSY : !ready ? INCOMPLETE : ''}
       >
         {busy ? 'Opening…' : 'Open for review'}

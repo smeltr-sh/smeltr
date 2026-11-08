@@ -3,7 +3,7 @@
 //! `length`, `slice` and `indexOf` all count Unicode characters, so the three agree and a slice never lands
 //! mid-codepoint. JS counts UTF-16 code units, and can. Case mapping and `trim` are Unicode-aware.
 
-use super::helpers::{Operand, alloc_with_merged_validity, short_circuit_empty, side};
+use super::helpers::{Operand, alloc_with_merged_validity, side};
 use crate::core::bits;
 use crate::core::column::{Column, DataType, StrBuilder, VarType};
 use crate::core::ctx::Ctx;
@@ -12,9 +12,6 @@ use crate::core::ctx::Ctx;
 /// one value, written into every row.
 pub fn concat_n(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
-        return e;
-    }
 
     let parts: Vec<_> = ins.iter().map(|c| side::var(c).unwrap()).collect();
     let total: usize = parts.iter().map(|p| p.total_bytes(len)).sum();
@@ -54,9 +51,6 @@ pub fn concat_str_str(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 /// `length`: characters for `Str`, bytes for `Bytes`. An all-ASCII column is an offset subtraction per row.
 pub fn str_length(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::I64, len) {
-        return e;
-    }
     let v = ins[0].var().unwrap();
     let mut out = Column::alloc(ctx.pool, &DataType::I64, len);
     {
@@ -97,9 +91,6 @@ fn char_slice_bytes(text: &str, ascii: bool, start: i64, end: i64) -> (usize, us
 /// `slice(value, start[, end])`. `start >= end` after clamping yields `""`.
 pub fn str_slice(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
-        return e;
-    }
     let v = ins[0].var().unwrap();
     let starts = side::i64(ins[1]);
     let ends = ins.get(2).and_then(|c| side::i64(c));
@@ -132,13 +123,26 @@ pub fn str_slice(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 /// The character position of `needle` in `text`, from the start or the end, or `None`. `ascii` says the text is, so
 /// the byte index is the answer. The one search behind `indexOf`, `lastIndexOf` and `includes`: sharing it is what
 /// stops the three disagreeing about what containment means, on a `Bytes` column or anywhere else.
-fn find_char_pos(text: &[u8], ascii: bool, needle: &[u8], from_end: bool) -> Option<i64> {
+///
+/// `from` is a character position, as JavaScript reads it on text: a negative one is 0 and one past the end is the
+/// end. From the start, an occurrence begins at or after it; from the end, at or before it.
+fn find_char_pos(text: &[u8], ascii: bool, needle: &[u8], from_end: bool, from: Option<i64>) -> Option<i64> {
     let text = String::from_utf8_lossy(text);
     let pat = String::from_utf8_lossy(needle);
-    let byte_idx = if from_end {
-        text.rfind(pat.as_ref())
-    } else {
-        text.find(pat.as_ref())
+    let start = from.map(|p| char_slice_bytes(&text, ascii, p.max(0), 0).0);
+    let byte_idx = match (from_end, start) {
+        (false, None) => text.find(pat.as_ref()),
+        (false, Some(s)) => text[s..].find(pat.as_ref()).map(|i| i + s),
+        (true, None) => text.rfind(pat.as_ref()),
+        (true, Some(s)) => {
+            // An occurrence that starts at or before `s` ends by `s + pat.len()`. That point can fall inside a
+            // character, and slicing there panics, so it moves back to the character's start.
+            let mut end = (s + pat.len()).min(text.len());
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text[..end].rfind(pat.as_ref())
+        }
     }?;
     Some(if ascii {
         byte_idx as i64
@@ -147,20 +151,24 @@ fn find_char_pos(text: &[u8], ascii: bool, needle: &[u8], from_end: bool) -> Opt
     })
 }
 
-/// `indexOf` and `lastIndexOf`: character position of an occurrence, or `-1`.
+/// `indexOf` and `lastIndexOf`: character position of an occurrence, or `-1`. A null `from` is a null answer.
 fn index_of(ctx: &mut Ctx, ins: &[&Column], from_end: bool) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::I64, len) {
-        return e;
-    }
     let v = ins[0].var().unwrap();
     let needle = side::var(ins[1]).unwrap();
-    let mut out = alloc_with_merged_validity(ctx, &DataType::I64, len, &[Some(v.validity), needle.validity()]);
+    let from = ins.get(2).map(|c| side::i64(c).unwrap());
+    let validity = [
+        Some(v.validity),
+        needle.validity(),
+        from.as_ref().and_then(|f| f.validity()),
+    ];
+    let mut out = alloc_with_merged_validity(ctx, &DataType::I64, len, &validity);
     {
         let o = out.i64_mut().unwrap();
         for i in 0..len {
             o.values[i] = if o.validity.is_valid(i) {
-                find_char_pos(v.get(i), v.ascii, needle.at(i), from_end).unwrap_or(-1)
+                let from = from.as_ref().map(|f| f.at(i));
+                find_char_pos(v.get(i), v.ascii, needle.at(i), from_end, from).unwrap_or(-1)
             } else {
                 -1
             };
@@ -178,9 +186,6 @@ macro_rules! str_predicate {
     ($name:ident, $f:expr) => {
         pub fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
             let len = ins[0].len();
-            if let Some(e) = short_circuit_empty(ins, &DataType::Bool, len) {
-                return e;
-            }
             let v = ins[0].var().unwrap();
             let pat = side::var(ins[1]).unwrap();
             let mut out = alloc_with_merged_validity(ctx, &DataType::Bool, len, &[Some(v.validity), pat.validity()]);
@@ -204,16 +209,20 @@ str_predicate!(str_ends_with, |v, p| v.ends_with(p));
 /// construction rather than by agreement.
 pub fn str_includes(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Bool, len) {
-        return e;
-    }
     let v = ins[0].var().unwrap();
     let needle = side::var(ins[1]).unwrap();
-    let mut out = alloc_with_merged_validity(ctx, &DataType::Bool, len, &[Some(v.validity), needle.validity()]);
+    let from = ins.get(2).map(|c| side::i64(c).unwrap());
+    let validity = [
+        Some(v.validity),
+        needle.validity(),
+        from.as_ref().and_then(|f| f.validity()),
+    ];
+    let mut out = alloc_with_merged_validity(ctx, &DataType::Bool, len, &validity);
     {
         let o = out.bool_mut().unwrap();
         for i in 0..len {
-            let hit = o.validity.is_valid(i) && find_char_pos(v.get(i), v.ascii, needle.at(i), false).is_some();
+            let from = from.as_ref().map(|f| f.at(i));
+            let hit = o.validity.is_valid(i) && find_char_pos(v.get(i), v.ascii, needle.at(i), false, from).is_some();
             bits::set_row(o.values, i, hit);
         }
     }
@@ -224,9 +233,6 @@ macro_rules! str_case {
     ($name:ident, $f:ident) => {
         pub fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
             let len = ins[0].len();
-            if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
-                return e;
-            }
             let v = ins[0].var().unwrap();
             let mut b = StrBuilder::new(ctx.pool, VarType::Str, len);
             for i in 0..len {
@@ -248,9 +254,6 @@ str_case!(str_to_lower, to_lowercase);
 
 pub fn str_trim(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
-        return e;
-    }
     let v = ins[0].var().unwrap();
     let mut b = StrBuilder::new(ctx.pool, VarType::Str, len);
     for i in 0..len {
@@ -268,9 +271,6 @@ macro_rules! str_trim_side {
     ($name:ident, $f:ident) => {
         pub fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
             let len = ins[0].len();
-            if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
-                return e;
-            }
             let v = ins[0].var().unwrap();
             let mut b = StrBuilder::new(ctx.pool, VarType::Str, len);
             for i in 0..len {
@@ -314,9 +314,6 @@ macro_rules! str_pad {
         /// `(value, length[, pad])`; the pad defaults to a space.
         pub fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
             let len = ins[0].len();
-            if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
-                return e;
-            }
             let v = ins[0].var().unwrap();
             let target = side::i64(ins[1]).unwrap();
             let pad_col = ins.get(2).and_then(|c| side::var(c));
@@ -352,9 +349,6 @@ const BUILD_MAX_BYTES: usize = 16 << 20;
 /// `repeat(value, count)`. A negative count, or a result over [`BUILD_MAX_BYTES`], is null.
 pub fn str_repeat(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
-        return e;
-    }
     let v = ins[0].var().unwrap();
     let count = side::i64(ins[1]).unwrap();
     let mut b = StrBuilder::new(ctx.pool, VarType::Str, len);
@@ -384,9 +378,6 @@ pub fn str_last_index_of(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 /// JS gives `undefined`, and an `IndexOutOfRange` warning, as on an array.
 pub fn str_at(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
-        return e;
-    }
     let v = ins[0].var().unwrap();
     let index = side::i64(ins[1]).unwrap();
     let mut b = StrBuilder::new(ctx.pool, VarType::Str, len);

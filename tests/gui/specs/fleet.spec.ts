@@ -392,7 +392,7 @@ test('a capture of a blocked source shows the records that blocked it, and why',
   await dialog.getByRole('spinbutton', { name: 'records' }).fill('1');
   await dialog.getByRole('button', { name: 'Start' }).click();
 
-  const saving = admin.getByRole('dialog', { name: /Save the capture/ });
+  const saving = admin.getByRole('dialog', { name: /^Captured (from|at) / });
   await expect(saving).toBeVisible({ timeout: 60_000 });
   await expect(saving).toContainText('__exception.message');
   await expect(saving).toContainText('matched no route');
@@ -455,7 +455,7 @@ test('a capture at a destination set to block shows the rows it refused, and why
   await dialog.getByRole('spinbutton', { name: 'records' }).fill('1');
   await dialog.getByRole('button', { name: 'Start' }).click();
 
-  const saving = admin.getByRole('dialog', { name: /Save the capture/ });
+  const saving = admin.getByRole('dialog', { name: /^Captured (from|at) / });
   await expect(saving).toBeVisible({ timeout: 60_000 });
   await expect(saving).toContainText('__exception.message');
   await expect(saving).toContainText('mapper_parsing_exception');
@@ -662,11 +662,11 @@ test('sources of one system into the same pipeline are one stack, whose panel li
 
   await goto(admin, leader, '#/map');
   const east = band(admin, 'east');
-  await expect(east.getByRole('link', { name: /^3 sources/ })).toBeVisible();
+  await expect(east.getByRole('link', { name: /^metrics-\* · 3 sources/ })).toBeVisible();
   await expect(east.getByRole('link', { name: /metrics-a/ })).toHaveCount(0);
 
-  await east.getByRole('link', { name: /^3 sources/ }).click();
-  const stack = focus(admin, '3 sources');
+  await east.getByRole('link', { name: /^metrics-\* · 3 sources/ }).click();
+  const stack = focus(admin, 'metrics-* · 3 sources');
   for (const id of ids)
     await expect(stack.getByRole('link', { name: new RegExp(id) })).toBeVisible();
 
@@ -675,7 +675,7 @@ test('sources of one system into the same pipeline are one stack, whose panel li
   await expect(focus(admin, 'metrics-b')).toBeVisible();
   await expect(east.getByRole('link', { name: /metrics-b/ })).toBeVisible();
   await admin.goBack();
-  await expect(focus(admin, '3 sources')).toBeVisible();
+  await expect(focus(admin, 'metrics-* · 3 sources')).toBeVisible();
 });
 
 test('logic shared by several groups is written once and a change to it reaches each', async ({
@@ -758,7 +758,7 @@ test('a capture at a destination shows each row its pipeline finished for it, an
   await dialog.getByRole('button', { name: 'Start' }).click();
 
   // Saved as a sample like any capture, naming no source, its `__` fields kept.
-  const saving = admin.getByRole('dialog', { name: /Save the capture/ });
+  const saving = admin.getByRole('dialog', { name: /^Captured (from|at) / });
   await expect(saving).toBeVisible({ timeout: 60_000 });
   await expect(saving).toContainText('__destination.route');
   await expect(saving).toContainText('__source.');
@@ -789,7 +789,7 @@ test('a capture at a destination shows each row its pipeline finished for it, an
     .getByRole('button', { name: 'Start' })
     .click();
   // A hundred rows fill in seconds, and the dialog is then the save's.
-  const fromMap = admin.getByRole('dialog', { name: /Save the capture/ });
+  const fromMap = admin.getByRole('dialog', { name: /^Captured (from|at) / });
   await expect(fromMap).toContainText('__destination.route', { timeout: 60_000 });
   await admin.screenshot({ path: 'results/destination-capture-map.png' });
 });
@@ -840,7 +840,7 @@ test('a capture whose routes type one field two ways saves it as a variant', asy
   await dialog.getByRole('spinbutton', { name: 'records' }).fill('1000');
   await dialog.getByRole('button', { name: 'Start' }).click();
 
-  const saving = admin.getByRole('dialog', { name: /Save the capture/ });
+  const saving = admin.getByRole('dialog', { name: /^Captured (from|at) / });
   await expect(saving).toBeVisible({ timeout: 60_000 });
   await saving.getByLabel('Save as').fill('both routes');
   await saving.getByRole('button', { name: 'Save sample' }).click();

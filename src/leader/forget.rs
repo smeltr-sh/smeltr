@@ -7,9 +7,9 @@
 //! registry holds for it. The roster, the registry and a rotation's wait then have nothing of it to account for.
 //!
 //! Gone is one of two things. The worker said it was stopping, and is forgotten on that heartbeat. Or it has said
-//! nothing for longer than this leader's setting allows, and is forgotten by the next look -- which rides the
-//! heartbeat and the pages that read the fleet, since the leader has no clock of its own. Until then its silence is
-//! reported like any other worker's.
+//! nothing for longer than the Workers page's "Forget one after it has been silent for" allows, and is forgotten
+//! the next time [`sweep`] runs, which the leader's housekeeping does (`leader::housekeeping`). Until then its
+//! silence is reported like any other worker's.
 //!
 //! Silence is what this leader was up to hear. While it was down it heard nobody, and that says nothing about who
 //! was still there: a fleet that ran on through a leader outage is not forgotten for it.
@@ -48,7 +48,7 @@ const LOOK_EVERY: Duration = Duration::from_secs(10);
 ///
 /// A stored value that is no longer allowed -- written by hand, or by an older build with other bounds -- is
 /// reported rather than replaced.
-pub fn forget_after(store: &dyn Store) -> Result<Duration, String> {
+pub fn forget_after(store: &Store) -> Result<Duration, String> {
     match store.setting(FORGET_AFTER_KEY).map_err(|e| e.to_string())? {
         None => Ok(DEFAULT_FORGET_AFTER),
         Some(text) => {
@@ -82,14 +82,14 @@ pub async fn forget(state: &AppState, worker_id: &str) {
             state.directives.forget(worker_id);
             free_holds(state, worker_id).await;
             tracing::info!(
-                target: "leader.worker_forgotten",
+                name: "forgotten", target: "enrollment",
                 subject = %worker_id,
                 "an ephemeral worker stopped, so this leader forgot it"
             );
         }
         Ok(false) => {}
         Err(e) => tracing::warn!(
-            target: "leader.worker_not_forgotten",
+            name: "not_forgotten", target: "enrollment",
             subject = %worker_id,
             error = %e,
             "an ephemeral worker stopped and could not be forgotten, so it is looked for again"
@@ -103,7 +103,7 @@ pub(crate) async fn free_holds(state: &AppState, worker_id: &str) {
     let (registry, worker) = (state.registry.clone(), worker_id.to_string());
     if let Err(e) = tokio::task::spawn_blocking(move || registry.holds.forget(&worker)).await {
         tracing::warn!(
-            target: "leader.holds_not_freed",
+            name: "holds_not_freed", target: "heartbeats",
             subject = %worker_id,
             error = %e,
             "a gone worker's single-worker sources wait out the hold time instead of moving at once"
@@ -121,6 +121,7 @@ pub async fn sweep(state: &AppState, now_ms: i64) {
     if !state.registry.sweep_due(now_ms, LOOK_EVERY) {
         return;
     }
+    let _pass = tracing::trace_span!(target: "heartbeats", "a background pass", task = "forget departed workers");
     let read = run_store(state.store.clone(), |s| {
         let forget_after = forget_after(s).map_err(crate::leader::store::StoreError::failed)?;
         Ok((forget_after, s.list_worker_credentials()?))
@@ -130,7 +131,7 @@ pub async fn sweep(state: &AppState, now_ms: i64) {
         Ok(read) => read,
         Err(e) => {
             tracing::warn!(
-                target: "leader.forgetting_unreadable",
+                name: "forgetting_unreadable", target: "enrollment",
                 error = %e,
                 "could not read which ephemeral workers are gone, so none is forgotten this time"
             );
@@ -157,7 +158,7 @@ pub async fn sweep(state: &AppState, now_ms: i64) {
             }
             Ok(false) => {}
             Err(e) => tracing::warn!(
-                target: "leader.worker_not_forgotten",
+                name: "not_forgotten", target: "enrollment",
                 subject = %worker_id,
                 error = %e,
                 "a gone ephemeral worker could not be forgotten, so it is looked for again"
@@ -172,7 +173,7 @@ pub async fn sweep(state: &AppState, now_ms: i64) {
     }
     if !forgotten.is_empty() {
         tracing::info!(
-            target: "leader.workers_forgotten",
+            name: "workers_forgotten", target: "enrollment",
             workers = %forgotten.join(", "),
             forget_after_secs = forget_after.as_secs(),
             "ephemeral workers silent longer than this leader keeps them were forgotten"

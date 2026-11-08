@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use smeltr::io::{Source, SourceRecord};
-use smeltr::plan::topology::{ApiRecords, HttpReceiverConfig, Receiver, SourceMeta};
+use smeltr::plan::topology::{ApiRecords, ConnectionLimits, HttpReceiverConfig, Receiver, SourceMeta};
 
 use crate::harness::docker::{Container, Hook, Scratch, container_logs, share};
 use crate::harness::fuzz::{self, Coverage, Rng};
@@ -79,7 +79,7 @@ fn random_settings(rng: &mut Rng, ipv6: bool) -> Settings {
     }
 }
 
-fn open(settings: &Settings, pki: &Pki) -> Box<dyn Source> {
+fn open(settings: &Settings, pki: &Pki, limits: ConnectionLimits) -> Box<dyn Source> {
     let http = Receiver::Http(HttpReceiverConfig {
         path: settings.path.0.to_string(),
         records: settings.records.clone(),
@@ -91,7 +91,12 @@ fn open(settings: &Settings, pki: &Pki) -> Box<dyn Source> {
         max_request_bytes,
         ..
     } = settings;
-    receiver::build(http, *listen, *tls, tokens, "sender", *max_request_bytes, pki)
+    {
+        let (mut config, secrets) =
+            receiver::configured(http, *listen, *tls, tokens, "sender", *max_request_bytes, pki);
+        config.connections = limits;
+        receiver::opened(config, &secrets)
+    }
 }
 
 /// Where a request is sent, beside the path the receiver takes requests at.
@@ -528,8 +533,8 @@ fn random_request(rng: &mut Rng, settings: &Settings) -> Sent {
         ]),
     };
     // Under Served no sender is asked for a certificate, so what it presents tries nothing.
-    if settings.tls == Tls::Vouched {
-        labels.at(Stage::Sent, format!("presents {presents:?} under Vouched"));
+    if settings.tls.checks_sender() {
+        labels.at(Stage::Sent, format!("presents {presents:?} under {:?}", settings.tls));
     }
     // Most requests present a token the receiver holds, so most reach what follows the token.
     let well_sent = !rng.chance(4);
@@ -634,7 +639,7 @@ fn random_request(rng: &mut Rng, settings: &Settings) -> Sent {
         headers.extend(b"\r\n");
     }
 
-    let (expected, reached) = if settings.tls == Tls::Vouched && presents != Presents::Trusted {
+    let (expected, reached) = if !settings.tls.admits(presents) {
         (Expected::Nothing, Stage::Sent)
     } else {
         let (expected, reached) = match serves {
@@ -732,14 +737,18 @@ fn every_setting_answers_random_requests_and_cuts_their_records() {
     let mut cov = Coverage::new(
         receiver::listen_names(ipv6)
             .map(|ip| format!("listen {ip}"))
-            .chain(["None", "Served", "Vouched"].map(|tls| format!("tls {tls}")))
+            .chain(Tls::ALL.map(|tls| format!("tls {tls:?}")))
             .chain((0..=3).map(|n| format!("tokens {n}")))
             .chain(RECEIVER_LIMITS.iter().map(|(_, name)| name.to_string()))
             .chain(PATHS.iter().map(|(_, sent)| format!("path {sent}")))
             .chain(["records Body", "records Lines"].map(String::from))
             .chain(POINTERS.iter().map(|p| format!("records at {p:?}")))
             .chain(ROUTES.iter().map(|(method, route)| format!("{method} {route}")))
-            .chain(["Nothing", "Trusted", "Stranger"].map(|presents| format!("presents {presents} under Vouched")))
+            .chain(
+                (Tls::ALL.into_iter().filter(|tls| tls.checks_sender())).flat_map(|tls| {
+                    ["Nothing", "Trusted", "Stranger"].map(|presents| format!("presents {presents} under {tls:?}"))
+                }),
+            )
             .chain(AUTHORIZATIONS.iter().map(|s| s.to_string()))
             .chain(ENCODINGS.iter().map(|(e, _)| format!("Content-Encoding {e:?}")))
             .chain(
@@ -759,11 +768,13 @@ fn every_setting_answers_random_requests_and_cuts_their_records() {
                 .into_iter()
                 .chain(GZIPS.iter().map(|s| s.to_string())),
             )
-            .chain(statuses.iter().map(|status| format!("answered {status}"))),
+            .chain(statuses.iter().map(|status| format!("answered {status}")))
+            .chain(receiver::CONNECTION_LIMITS.iter().map(|s| s.to_string())),
     );
     fuzz::run(1..201, |seed| {
         let mut rng = Rng::seeded(seed);
-        let settings = random_settings(&mut rng, ipv6);
+        let mut settings = random_settings(&mut rng, ipv6);
+        settings.tls = receiver::random_check(seed, settings.tls);
         cov.reach(format!("listen {}", settings.listen.ip()));
         cov.reach(format!("tls {:?}", settings.tls));
         cov.reach(format!("tokens {}", settings.tokens.len()));
@@ -777,7 +788,9 @@ fn every_setting_answers_random_requests_and_cuts_their_records() {
             .find(|(below, _)| settings.max_request_bytes < *below)
             .unwrap();
         cov.reach(limit.1);
-        let mut source = open(&settings, &pki);
+        let (limits, limited) = receiver::random_connection_limits(&mut rng);
+        cov.reach(limited);
+        let mut source = open(&settings, &pki, limits);
         let sent: Vec<Sent> = (0..12).map(|_| random_request(&mut rng, &settings)).collect();
         let sending = Arc::new(sent);
         let (connect, tls) = (settings.connect, settings.tls);
@@ -847,6 +860,7 @@ fn every_setting_answers_random_requests_and_cuts_their_records() {
                 show(&expected_records)
             ));
         }
+        receiver::holds_to_limits(settings.connect, &limits)?;
         Ok(())
     });
     cov.assert_complete();
@@ -878,7 +892,7 @@ fn fluent_bit_config(at: SocketAddr, path: &str, token: Option<&str>, tls: Tls, 
     if tls != Tls::None {
         output.push_str("    TLS On\n    TLS.Verify On\n    TLS.CA_File /smeltr/ca.pem\n    TLS.Vhost localhost\n");
     }
-    if tls == Tls::Vouched {
+    if tls.checks_sender() {
         output.push_str("    TLS.Crt_File /smeltr/sender.pem\n    TLS.Key_File /smeltr/sender-key.pem\n");
     }
     format!(
@@ -982,7 +996,7 @@ fn live_fluent_bit_delivers_every_line_once_under_random_configurations() {
             "Fluent Bit under {:?}, listening on {} at {:?} cutting {:?}, told {told:?}",
             settings.tls, settings.listen, settings.path.0, settings.records
         );
-        let mut source = open(&settings, &pki);
+        let mut source = open(&settings, &pki, ConnectionLimits::default());
 
         let scratch = Scratch(std::env::temp_dir().join(format!("smeltr-http-fuzz-{}-{seed}", std::process::id())));
         let dir = &scratch.0;

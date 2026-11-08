@@ -449,7 +449,7 @@
           kind="identity"
           ariaLabel="signed in as {who.displayName}"
         >
-          {#snippet face()}<PersonIcon /><span class="who-face">{who.displayName}</span
+          {#snippet face()}<PersonIcon /><span class="who-face ellipsis">{who.displayName}</span
             >{#if administrator}<span class="dim"><LevelMark level="administrator" /></span
               >{/if}<span class="caret" aria-hidden="true">&#9662;</span>{/snippet}
 
@@ -489,16 +489,6 @@
             </button>
           {/if}
           {#if who.agents}
-            <button
-              type="button"
-              class="pick"
-              onclick={() => {
-                identityPicking = false;
-                location.hash = '#/me/agent';
-              }}
-            >
-              <span>Agent</span>
-            </button>
             <button
               type="button"
               class="pick"
@@ -625,7 +615,10 @@
             levels: route.levels,
             worker: route.worker,
             group: route.group,
-            site: route.site,
+            class: route.class,
+            type: route.type,
+            typeExact: route.typeExact,
+            service: route.service,
             q: route.q,
             before: route.before,
             after: route.after,
@@ -723,7 +716,8 @@
     {:else if route.page === 'review'}
       {#if pages.review}
         {@const ChangeDetailPage = pages.review}
-        <ChangeDetailPage branch={route.branch} />
+        <!-- It reads its change once, so another change's review is another page. -->
+        {#key route.branch}<ChangeDetailPage branch={route.branch} />{/key}
       {/if}
     {:else if route.page === 'history'}
       {#if pages.history}
@@ -855,9 +849,6 @@
   /* The chip's name: held short so a long one leaves the branch chip room. */
   .who-face {
     max-width: 10rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .who-name {

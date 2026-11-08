@@ -183,7 +183,8 @@ committed:
     changes=$(git status --porcelain) && test -z "$changes" \
       || { echo "dist builds a commit: commit or stash what is uncommitted" >&2; exit 1; }
 
-# A checkout of a release tag, as CI makes one, is detached: it counts as `main` when the tag is on it.
+# A checkout of a release tag, as CI makes one, is detached: it counts as `main` when the tag is on it. Main itself
+# must hold everything origin/main does, so a stale checkout cannot release an old commit.
 [private]
 [unix]
 clean-main:
@@ -191,11 +192,15 @@ clean-main:
       && { test "$(git branch --show-current)" = main \
         || { test -n "$(git tag --points-at HEAD --list 'v[0-9]*')" && git merge-base --is-ancestor HEAD origin/main; }; } \
       || { echo "a release builds from main, or a release tag on it, with nothing uncommitted" >&2; exit 1; }
+    test "$(git branch --show-current)" != main || git fetch -q origin main \
+      || { echo "could not fetch origin/main: check your connection before cutting a release" >&2; exit 1; }
+    test "$(git branch --show-current)" != main || git merge-base --is-ancestor origin/main HEAD \
+      || { echo "main is behind origin/main: pull before cutting a release" >&2; exit 1; }
 
 [private]
 [windows]
 clean-main:
-    powershell -NoProfile -Command "$changes = @(git status --porcelain); if ($LASTEXITCODE -ne 0) { exit 1 }; $branch = git branch --show-current; if ($LASTEXITCODE -ne 0 -or $branch -ne 'main' -or $changes.Count -gt 0) { [Console]::Error.WriteLine('a release builds from main with nothing uncommitted'); exit 1 }"
+    powershell -NoProfile -Command "$changes = @(git status --porcelain); if ($LASTEXITCODE -ne 0) { exit 1 }; $branch = git branch --show-current; if ($LASTEXITCODE -ne 0 -or $branch -ne 'main' -or $changes.Count -gt 0) { [Console]::Error.WriteLine('a release builds from main with nothing uncommitted'); exit 1 }; git fetch -q origin main; if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine('could not fetch origin/main: check your connection before cutting a release'); exit 1 }; git merge-base --is-ancestor origin/main HEAD; if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine('main is behind origin/main: pull before cutting a release'); exit 1 }"
 
 # The check before every push; nothing else runs one. `tools/check-scope` picks the checks the files changed since
 # origin/main can break, down to the Rust tests of the modules they touch, and runs them side by side. It can miss a
@@ -243,6 +248,7 @@ fmt-check: need-rust
 # alone picks none, and passes.
 [private]
 [env("SMELTR_NO_GUI", "1")]
+[env("SMELTR_WORKER_LISTEN_ADDRESS", "127.0.0.1")]
 check-tests filter: need-nextest stable fips-dll
     cargo nextest run --workspace -j {{test_threads}} --no-tests=pass -E "not test(/fuzz/) & ({{filter}})"
 
@@ -254,14 +260,23 @@ check-package package: need-nextest stable
 # A release: its fixtures recorded and committed, and that commit tagged `v<release>`. Nothing leaves
 # this machine: `git push --atomic origin main v<release>` starts the release workflow. Semver: a major release
 # raises the upgrade floor or ships a breaking store step, a minor one adds features and additive steps
-# only, a patch fixes and adds no step. A pre-release tag (`v1.2.0-rc1`), made by hand with `git tag` and
-# pushed, is a trial the workflow runs when started by hand on it: a draft pre-release and its own image tag,
-# with nothing recorded, and Windows only when asked.
+# only, a patch fixes and adds no step.
 [doc("Record a release, commit it and tag it.")]
 cut-release release: (has-notes release) (record-release if release =~ '^[0-9]+\.[0-9]+\.[0-9]+$' { release } else { error('a release is named major.minor.patch, like 1.0.0') })
     git add tests/fixtures/releases
     git commit -m "Release {{release}}"
     git tag -a "v{{release}}" -m "Release {{release}}"
+
+# A release candidate: main's latest commit tagged `v<candidate>`, with nothing recorded or committed, and the tag
+# pushed. Its build is started by hand on GitHub, on that tag: a draft pre-release with its own image tag, and
+# Windows only when asked.
+[doc("Tag a release candidate and push the tag.")]
+cut-rc candidate: clean-main
+    {{ if candidate =~ '^[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$' { "" } else { error('a release candidate is named major.minor.patch-rcN, like 1.0.0-rc1') } }}
+    git merge-base --is-ancestor HEAD origin/main
+    git tag -a "v{{candidate}}" -m "Release candidate {{candidate}}"
+    git push origin "v{{candidate}}"
+    @echo Start its build at https://github.com/smeltr-sh/smeltr/actions/workflows/release.yml: choose Run workflow, then the tag v{{candidate}}
 
 # A release is cut only once its notes are written and dated in `website/src/lib/releases.json`.
 [private]
@@ -319,6 +334,7 @@ clippy: stable
 # the GUI, and `check-frontend` builds it, so the binary embeds none.
 [private]
 [env("SMELTR_NO_GUI", "1")]
+[env("SMELTR_WORKER_LISTEN_ADDRESS", "127.0.0.1")]
 check-rust: need-nextest stable fips-dll
     cargo fmt --all --check
     cargo nextest run --workspace -j {{test_threads}} -E "not test(/fuzz/)"
@@ -328,6 +344,7 @@ check-rust: need-nextest stable fips-dll
 # seeds each and take a minute or more, so `check` leaves them here.
 [doc("Every offline fuzzer.")]
 [env("SMELTR_NO_GUI", "1")]
+[env("SMELTR_WORKER_LISTEN_ADDRESS", "127.0.0.1")]
 check-fuzz: need-nextest fips-dll && fuzz-gui fuzz-journey fuzz-pipeline fuzz-demo
     cargo nextest run --workspace -j {{test_threads}} -E "test(/fuzz/)"
 
@@ -397,9 +414,9 @@ uap-refresh:
     curl -fsSL https://raw.githubusercontent.com/ua-parser/uap-core/master/regexes.yaml -o src/ops/useragent/regexes.yaml
 
 # The ECS and OCSF releases the Add schema dialog offers built in (`schema::standard`), as
-# `just schemas-refresh 9.5.0 1.9.0`: ECS's fields.csv at that tag, and OCSF compiled and cut.
+# `just schemas-refresh 9.5.0 1.9.0 1.3.0`: ECS's fields.csv at that tag, and each OCSF release compiled and cut.
 [private]
-schemas-refresh ecs ocsf:
+schemas-refresh ecs +ocsf:
     tools/schema-standards/refresh {{ecs}} {{ocsf}}
 
 # Fails where ECS or OCSF has a release newer than the one built in. Run weekly.
@@ -500,6 +517,7 @@ live-up: need-docker
 [env("FLUENT_BIT_TEST_IMAGE", "fluent/fluent-bit:3.2.10")]
 [env("TELEMETRYGEN_TEST_IMAGE", "ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.135.0")]
 [env("SYSLOG_SENDER_TEST_IMAGE", "debian:bookworm-slim")]
+[env("SOCKET_SENDER_TEST_IMAGE", "python:3.13-slim@sha256:d0a9e379c0c588befb0e427db17ca9731751d281f32c6cb1a90a1277b680bdad")]
 [env("S2S_FORWARDER_TEST_IMAGE", "splunk/universalforwarder:10.6.0.5@sha256:944fd52a8da3cb5709532a8d8e349732fdccaf6e09c165d1877be7c41f1c88e3")]
 [env("SMELTR_LIVE_TESTS", "required")]
 check-live: live-up check-all
@@ -530,6 +548,7 @@ check-live: live-up check-all
     cargo test --test integration sql_live_fuzz::
     cargo test --test integration receiver_tests::an_opentelemetry_
     cargo test --test integration otlp_receiver_fuzz::live_
+    cargo test --test integration otlp_destination_fuzz::live_
     cargo test --test integration receiver_tests::prometheus_
     cargo test --test integration remote_write_tests::prometheus_
     cargo test --test integration prometheus_receiver_fuzz::live_
@@ -540,6 +559,7 @@ check-live: live-up check-all
     cargo test --test integration elastic_receiver_fuzz::live_
     cargo test --test integration syslog_receiver_tests::a_real_
     cargo test --test integration syslog_receiver_fuzz::live_
+    cargo test --test integration socket_receiver_fuzz::live_
     cargo test --test integration okta_live_tests:: -- --ignored
     cargo test --test integration log_analytics_fuzz::live_ -- --ignored
     cargo test --test integration gate_tests::live_ -- --test-threads=4

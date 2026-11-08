@@ -26,6 +26,8 @@ mod chat_api;
 mod cluster;
 mod config_api;
 mod docs_api;
+mod export_api;
+mod import_api;
 // What the crate's fuzzers share, compiled here as `tests/harness` compiles it: the library's is test-only.
 #[cfg(test)]
 #[path = "../../fuzz.rs"]
@@ -182,7 +184,7 @@ async fn get_map_measurements(
         let commit = config_api::Reading::open(&branch, config_file::SHARED_DIR)?.commit;
         let held = state.store.held_sources().unwrap_or_else(|e| {
             tracing::warn!(
-                target: "map.holds_unreadable",
+                name: "holds_unreadable", target: "status",
                 error = %e,
                 "could not read who holds the single-worker sources, so the map names no holder"
             );
@@ -200,7 +202,7 @@ async fn get_map_measurements(
         let live = smeltr::leader::stats::Live {
             snapshot: &snapshot,
             heartbeat_interval: smeltr::startup_config::leader_heartbeat_interval(),
-            band_share: smeltr::leader::throughput::DEFAULT_BAND_PERCENT / 100.0,
+            learning: smeltr::leader::throughput::Learning::default(),
         };
         Ok(Measurements {
             commit: Some(commit),
@@ -273,9 +275,7 @@ async fn get_stats(
                     let live = smeltr::leader::stats::Live {
                         snapshot: &snapshot,
                         heartbeat_interval: smeltr::startup_config::leader_heartbeat_interval(),
-                        band_share: smeltr::leader::throughput::band_percent(&*state.store)
-                            .unwrap_or(smeltr::leader::throughput::DEFAULT_BAND_PERCENT)
-                            / 100.0,
+                        learning: smeltr::leader::throughput::Learning::read(&state.store),
                     };
                     smeltr::leader::stats::build(&group, &system, kind, &id, window, state.registry.series(), live)
                 }
@@ -438,43 +438,59 @@ async fn line_breaker(Json(req): Json<LineBreakerRequest>) -> Envelope {
     line_breaker_verdict(req)
 }
 
+/// A pipeline preview's body: a `PreviewRequest`, or one that runs over a capture the leader holds in place of a
+/// saved sample.
+#[derive(serde::Deserialize)]
+struct PipelinePreviewBody {
+    #[serde(flatten)]
+    req: PreviewRequest,
+    /// A finished capture the caller opened, by its session id.
+    #[serde(default)]
+    capture: Option<String>,
+}
+
 async fn preview(
+    axum::extract::State(state): axum::extract::State<smeltr::leader::AppState>,
+    axum::extract::Extension(actor): axum::extract::Extension<smeltr::leader::store::Actor>,
+    axum::extract::Extension(access): axum::extract::Extension<smeltr::leader::access::Access>,
     axum::extract::Path(area): axum::extract::Path<String>,
     axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
-    Json(req): Json<PreviewRequest>,
+    Json(body): Json<PipelinePreviewBody>,
 ) -> Envelope<Preview> {
+    let PipelinePreviewBody { mut req, capture } = body;
+    let given = match capture {
+        None => (Vec::new(), Vec::new()),
+        Some(session) => match capture_api::held_for_preview(&state.captures, &access, &actor, &session) {
+            Ok(held) => {
+                req.sample = None;
+                held
+            }
+            Err(message) => return Preview::failed("sample", vec![ApiError::new(message)], vec![]),
+        },
+    };
     // Reading the branch spawns git, so it goes off the async executor.
     let branch = q.name().to_string();
-    blocking_answer(move || {
-        preview_on(
-            &smeltr::startup_config::leader_data_dir(),
-            &branch,
-            &area,
-            req,
-            Vec::new(),
-        )
-    })
-    .await
+    blocking_answer(move || preview_on(&smeltr::startup_config::leader_data_dir(), &branch, &area, req, given)).await
 }
 
 /// A preview of what the editor is looking at on `branch`: its sample and any lookup path in it resolve the same way
 /// a save would, against the bundle on that branch. A group's preview runs with `shared/` merged in, as the group
 /// runs once deployed, so a pipeline calling a shared pipeline or reading a shared lookup table previews rather than
-/// naming it unknown. `data_dir` explicit, as for `Reading::open_in`. `records` are run where the request names no
-/// sample: what an import hands over.
+/// naming it unknown. `data_dir` explicit, as for `Reading::open_in`. `given` is run where the request names no
+/// sample: what an import hands over, or a capture.
 fn preview_on(
     data_dir: &std::path::Path,
     branch: &str,
     scope: &str,
     mut req: PreviewRequest,
-    records: Vec<smeltr::io::RecordObject>,
+    given: (Vec<smeltr::heartbeat::CaptureColumn>, Vec<smeltr::io::RecordObject>),
 ) -> Envelope<Preview> {
     let reading = match config_api::Reading::open_in(data_dir, branch, scope) {
         Ok(reading) => reading,
         Err(e) => return Envelope::refused(e),
     };
     let sample = match &req.sample {
-        None => Ok((Vec::new(), records)),
+        None => Ok(given),
         Some(id) => match config_file::read_sample(&mut reading.files(), id) {
             Ok(Some(sample)) => Ok((sample.columns, sample.records)),
             Ok(None) => Err(format!("there is no sample {id:?} on this branch")),
@@ -542,10 +558,12 @@ async fn import_schema(
                 at_micros: None,
                 filter: None,
                 attribution: false,
+                as_sample: false,
+                dictionary: false,
                 after_dot: None,
                 capture_filter: None,
             },
-            records,
+            (Vec::new(), records),
         );
         if !preview.succeeded() {
             return Envelope::refused(Refusal::all(preview.status, preview.errors));
@@ -844,7 +862,7 @@ async fn leader_tls_config(
 
     if materials.authority_created {
         tracing::info!(
-            target: "leader.tls_authority_created",
+            name: "authority_created", target: "certificates",
             path = %tls_dir.join(smeltr::leader::tls::CA_CERT).display(),
             "created this leader's certificate authority: copy this file into every worker's bootstrap config, \
              and trust it in any browser that opens this leader. It is what says a leader really is this one; \
@@ -879,7 +897,7 @@ fn read_leader_ca() -> Option<Vec<u8>> {
 /// Runs this leader's own worker on its own thread, talking to a leader over the same API an external worker uses.
 /// Only the enrollment code is minted directly.
 fn spawn_embedded_worker(
-    store: std::sync::Arc<dyn smeltr::leader::store::Store>,
+    store: std::sync::Arc<smeltr::leader::store::Store>,
     data_dir: &std::path::Path,
     leader_url: String,
     leader_ca_pem: Option<Vec<u8>>,
@@ -921,7 +939,7 @@ fn spawn_embedded_worker(
 /// enrollment code still brings a worker in, and an enrollment code naming nothing is one it would have to make an
 /// exception for.
 fn mint_embedded_enrollment_code(
-    store: &std::sync::Arc<dyn smeltr::leader::store::Store>,
+    store: &std::sync::Arc<smeltr::leader::store::Store>,
     group_id: &str,
     tls_dir: &std::path::Path,
 ) -> String {
@@ -1017,7 +1035,7 @@ fn start_worker(
     });
 
     let describe = if in_leader { "an embedded worker" } else { "worker" };
-    tracing::info!(target: "worker.starting", role = %describe, group = %group_id, "starting a worker");
+    tracing::info!(name: "starting", target: "processes", role = %describe, group = %group_id, "starting a worker");
     smeltr::worker::run_worker(smeltr::worker::WorkerConfig {
         leader_url,
         leader_ca_pem,
@@ -1053,7 +1071,7 @@ const PEOPLE_BODY_LIMIT: usize = 1 << 30;
 async fn setup_leader(
     port: u16,
     auth: gate::Auth,
-    store: std::sync::Arc<dyn smeltr::leader::store::Store>,
+    store: std::sync::Arc<smeltr::leader::store::Store>,
     registry: smeltr::leader::registry::Registry,
 ) -> LeaderSetup {
     use std::sync::Arc;
@@ -1090,11 +1108,14 @@ async fn setup_leader(
         updates: Default::default(),
         alerts: Default::default(),
         directives: Default::default(),
+        log_levels: Default::default(),
     };
     state.deploy_checks.set_runner(Arc::new(test_api::failing_at));
+    smeltr::leader::log_levels::keep_stored(&state).await;
     tokio::spawn(smeltr::leader::remote::poll(state.clone()));
     tokio::spawn(smeltr::leader::updates::poll(state.clone()));
     tokio::spawn(smeltr::leader::alerts::run(state.clone()));
+    tokio::spawn(smeltr::leader::housekeeping::run(state.clone()));
     tokio::spawn(smeltr::leader::remote::push_saves(state.clone()));
     // Without a worker in this process, what the leader's threads did not raise is the leader's too.
     if !smeltr::startup_config::worker_enabled() {
@@ -1163,6 +1184,10 @@ async fn setup_leader(
             get(capture_api::capture_status).delete(capture_api::discard_capture),
         )
         .route("/api/captures/:session/stop", post(capture_api::stop_capture))
+        .route("/api/captures/:session/download", get(capture_api::download_capture))
+        .route("/api/captures/mine", get(capture_api::my_capture))
+        // Here for `State<AppState>`: a preview may run over a capture the leader holds.
+        .route("/api/areas/:area/preview/pipeline", post(preview))
         // Not on `app` below with the rest of the worker-groups routes: both need `State<AppState>` -- the listing
         // for `shared`'s hue, the create for a new group's -- the same reason `get_map` is here. `deploy_change`
         // asks the store whether a remote owns `main`.
@@ -1174,6 +1199,11 @@ async fn setup_leader(
         // Not on `app` below with the rest of the config routes: saving a connector asks the certificate list whether
         // it holds the certificate named.
         .route("/api/areas/:area/sources", put(config_api::put_sources))
+        .route("/api/areas/:area/sources/:id/lower", post(smeltr::leader::marks::lower))
+        .route(
+            "/api/areas/:area/sources/:id/reset-history",
+            post(smeltr::leader::marks::reset_history),
+        )
         .route("/api/areas/:area/destinations", put(config_api::put_destinations))
         // Not on `app` below with the rest of the samples routes: the capture a sample is made from is held in
         // `State<AppState>`.
@@ -1186,6 +1216,15 @@ async fn setup_leader(
         .route(
             "/api/areas/:area/lookups/upload",
             post(upload_lookup).layer(axum::extract::DefaultBodyLimit::max(
+                smeltr::lookup::store::MAX_FILE_BYTES as usize,
+            )),
+        )
+        // Not on `app` below with the rest of the config routes: matching an import's credentials reads the secret
+        // list, and its lookup files go into the store. An export holds its lookup files, so it is streamed to disk
+        // like one.
+        .route(
+            "/api/areas/:area/imports",
+            post(import_api::import).layer(axum::extract::DefaultBodyLimit::max(
                 smeltr::lookup::store::MAX_FILE_BYTES as usize,
             )),
         )
@@ -1370,7 +1409,7 @@ fn resolve_listen_addr(bind: &str, port: u16) -> Result<std::net::SocketAddr, St
 /// The session deadlines this leader starts with: whatever the store holds, or the built-in defaults for a
 /// leader that has never had them set. Admin -> System -> Sessions (or `PUT /api/settings/sessions`) is the only
 /// way to change them.
-fn resolve_lifetimes(store: &dyn smeltr::leader::store::Store) -> sessions::Lifetimes {
+fn resolve_lifetimes(store: &smeltr::leader::store::Store) -> sessions::Lifetimes {
     match sessions::Lifetimes::read(store) {
         Ok(lifetimes) => lifetimes,
         Err(e) => {
@@ -1621,7 +1660,7 @@ async fn sweep_sessions(auth: gate::Auth) {
         tokio::time::sleep(EVERY).await;
         let dropped = auth.sessions.sweep(std::time::Instant::now());
         if dropped > 0 {
-            tracing::debug!(target: "leader.sessions_swept", dropped, "expired sessions were dropped");
+            tracing::debug!(name: "sessions_swept", target: "accounts", dropped, "expired sessions were dropped");
         }
     }
 }
@@ -1645,7 +1684,7 @@ fn load_and_apply_config_file() {
 
     let file: FileConfig = match find_config_file("smeltr.toml") {
         Some(path) => {
-            tracing::info!(target: "startup.config_loaded", path = %path.display(), "settings were read from a config file");
+            tracing::info!(name: "config_loaded", target: "processes", path = %path.display(), "settings were read from a config file");
             parse_config_file(&path)
         }
         None => FileConfig::default(),
@@ -1773,7 +1812,7 @@ fn stop_on_signal() {
 
 /// Never returns. Typed `()` rather than `!` so a thread can be spawned on it.
 fn exit_after_stopping() {
-    tracing::info!(target: "process.stopping", "Smeltr is stopping: a stop was requested");
+    tracing::info!(name: "stopping", target: "processes", "Smeltr is stopping: a stop was requested");
     smeltr::worker::stop_before_exit();
     smeltr::logs::stop();
     service::stopped();
@@ -1838,6 +1877,25 @@ fn start() {
     // Before either role starts, so nothing this process has to say about itself predates somewhere to say it.
     smeltr::logs::start();
 
+    // Before any receiver opens: the soft limit is what bounds the connections they hold. The worker's runtime
+    // process inherits the raised limit from its supervisor.
+    if !runtime_child {
+        match smeltr::io::connections::raise_open_file_limit() {
+            Ok(files) => tracing::info!(
+                name: "open_files", target: "processes",
+                limit = ?files.limit,
+                connections = files.budget,
+                "the worker may hold this many files open, and its receivers this many connections"
+            ),
+            Err(e) => tracing::warn!(
+                name: "open_files_not_raised", target: "processes",
+                error = %e,
+                connections = smeltr::io::connections::open_files().budget,
+                "the worker could not raise its open-file limit to its hard limit, so its receivers hold fewer connections"
+            ),
+        }
+    }
+
     if runtime_child {
         smeltr::worker::child::run_runtime_child();
     }
@@ -1850,7 +1908,7 @@ fn start() {
     // carries that process's buffer alone. This one would not reach such a pipeline at all.
     let (suites, groups) = smeltr::crypto::offered();
     tracing::info!(
-        target: "tls.offered",
+        name: "offered", target: "certificates",
         suites = suites.join(", "),
         groups = groups.join(", "),
         "TLS algorithms offered"
@@ -1880,7 +1938,7 @@ fn start() {
 fn refuse_damaged_repo(
     repo: &std::path::Path,
     damage: &smeltr::leader::git::GitError,
-    store: &dyn smeltr::leader::store::Store,
+    store: &smeltr::leader::store::Store,
 ) -> ! {
     let repair = match smeltr::leader::remote::configured(store) {
         Ok(Some(remote)) => format!(
@@ -1905,7 +1963,7 @@ fn refuse_damaged_repo(
 /// Writes the secrets encryption key on a leader that has sealed nothing yet, so the first secret stored is sealed
 /// under a key that has already been announced. A leader holding values its key cannot open says so as loudly as it
 /// can, and goes on: everything but the secrets still works, and the fix is on the Secrets page.
-fn check_secrets_key(store: &dyn smeltr::leader::store::Store, path: &std::path::Path) {
+fn check_secrets_key(store: &smeltr::leader::store::Store, path: &std::path::Path) {
     use smeltr::leader::store::KeyState;
     let standing = match store.key_standing() {
         Ok(standing) => standing,
@@ -1921,7 +1979,7 @@ fn check_secrets_key(store: &dyn smeltr::leader::store::Store, path: &std::path:
         std::process::exit(1);
     }
     if let Some(problem) = standing.problem() {
-        tracing::error!(target: "secrets.key_unusable", path = %path.display(), %problem, "the secrets encryption key is not usable, so secrets cannot be read or stored until it is");
+        tracing::error!(name: "key_unusable", target: "secrets", path = %path.display(), %problem, "the secrets encryption key is not usable, so secrets cannot be read or stored until it is");
     }
 }
 
@@ -1935,7 +1993,7 @@ fn check_secrets_key(store: &dyn smeltr::leader::store::Store, path: &std::path:
 /// process, and a deployed logs source reads it (`logs`), so on a standalone install an event raised here would
 /// travel to whatever destination the fleet's pipelines deliver to and stay in an index. The console is where a
 /// one-time password belongs, and it is the only place it goes.
-fn admit_an_administrator(store: &dyn smeltr::leader::store::Store) {
+fn admit_an_administrator(store: &smeltr::leader::store::Store) {
     use smeltr::leader::accounts;
 
     let announce = |what: &str, password: accounts::OneTimePassword| {
@@ -1978,7 +2036,7 @@ fn admit_an_administrator(store: &dyn smeltr::leader::store::Store) {
 
 async fn run_leader() {
     tracing::info!(
-        target: "leader.starting",
+        name: "starting", target: "processes",
         version = smeltr::version::VERSION,
         release = smeltr::version::RELEASE,
         data_dir = %smeltr::startup_config::leader_data_dir().display(),
@@ -1986,7 +2044,7 @@ async fn run_leader() {
     );
     if assets::is_placeholder_only() {
         tracing::warn!(
-            target: "leader.gui_missing",
+            name: "gui_missing", target: "api",
             "this binary has no GUI baked in: the API works, but `/` will explain itself rather than render. \
              Build gui-frontend and rebuild."
         );
@@ -2026,7 +2084,7 @@ async fn run_leader() {
     });
     let listener = bind_listener(addr);
     tracing::info!(
-        target: "leader.origin",
+        name: "origin_set", target: "api",
         origin = %origin.value,
         aliases = ?origin.aliases,
         secure_cookies = origin.secure,
@@ -2039,7 +2097,7 @@ async fn run_leader() {
     let data_dir = smeltr::startup_config::leader_data_dir();
     if let Err(e) = std::fs::create_dir_all(&data_dir) {
         tracing::warn!(
-            target: "leader.data_dir_not_created",
+            name: "data_dir_not_created", target: "processes",
             path = %data_dir.display(),
             error = %e,
             "could not create the leader data directory"
@@ -2065,8 +2123,8 @@ async fn run_leader() {
         eprintln!("smeltr: refusing to start -- {e}");
         std::process::exit(1);
     }
-    let store: std::sync::Arc<dyn smeltr::leader::store::Store> = std::sync::Arc::new(
-        smeltr::leader::sqlite_store::SqliteStore::open(&data_dir.join("leader.db"), &secret_key).unwrap_or_else(|e| {
+    let store: std::sync::Arc<smeltr::leader::store::Store> = std::sync::Arc::new(
+        smeltr::leader::store::Store::open(&data_dir.join("leader.db"), &secret_key).unwrap_or_else(|e| {
             eprintln!("smeltr: refusing to start -- {e}");
             std::process::exit(1);
         }),
@@ -2089,12 +2147,12 @@ async fn run_leader() {
     for (oid, removed) in smeltr::lookup::store::remove_damaged(&repo) {
         match removed {
             Ok(()) => tracing::warn!(
-                target: "leader.lookup_file_damaged",
+                name: "lookup_file_damaged", target: "deploy",
                 subject = %oid,
                 "a stored lookup file did not hash to its name and was removed"
             ),
             Err(e) => tracing::warn!(
-                target: "leader.lookup_file_damaged",
+                name: "lookup_file_damaged", target: "deploy",
                 subject = %oid,
                 error = %e,
                 "a stored lookup file did not hash to its name and could not be removed"
@@ -2121,11 +2179,11 @@ async fn run_leader() {
     };
     match seeded {
         Ok(true) => {
-            tracing::info!(target: "leader.group_seeded", subject = %seed_group, "seeded the default worker group")
+            tracing::info!(name: "group_seeded", target: "deploy", subject = %seed_group, "seeded the default worker group")
         }
         Ok(false) => {}
         Err(e) => tracing::warn!(
-            target: "leader.group_not_seeded",
+            name: "group_not_seeded", target: "deploy",
             subject = %seed_group,
             error = %e,
             "the default worker group was not seeded"
@@ -2133,10 +2191,10 @@ async fn run_leader() {
     }
 
     match worker_groups_api::seed_shared_hue(store.as_ref()) {
-        Ok(true) => tracing::info!(target: "leader.shared_hue_seeded", "seeded shared's color"),
+        Ok(true) => tracing::info!(name: "shared_hue_seeded", target: "deploy", "seeded shared's color"),
         Ok(false) => {}
         Err(e) => tracing::warn!(
-            target: "leader.shared_hue_not_seeded",
+            name: "shared_hue_not_seeded", target: "deploy",
             error = %e,
             "shared's color was not seeded"
         ),
@@ -2146,7 +2204,7 @@ async fn run_leader() {
     match config_api::Reading::open(smeltr::leader::git::MAIN_BRANCH, config_file::SHARED_DIR) {
         Ok(reading) => config_api::startup_validate(&reading),
         Err(e) => tracing::warn!(
-            target: "leader.main_unreadable",
+            name: "main_unreadable", target: "deploy",
             subject = smeltr::leader::git::MAIN_BRANCH,
             error = %e.message(),
             "could not read the branch the fleet runs, so nothing was validated at startup"
@@ -2154,7 +2212,6 @@ async fn run_leader() {
     }
 
     let app = Router::new()
-        .route("/api/areas/:area/preview/pipeline", post(preview))
         .route("/api/preview/grok", post(grok_captures))
         .route("/api/preview/onboard", post(onboard_propose))
         .route("/api/preview/line-breaker", post(line_breaker))
@@ -2222,6 +2279,14 @@ async fn run_leader() {
             get(config_api::get_pipeline)
                 .put(config_api::put_pipeline)
                 .delete(config_api::delete_pipeline),
+        )
+        .route(
+            "/api/areas/:area/pipelines/:id/export",
+            get(export_api::export_pipeline),
+        )
+        .route(
+            "/api/areas/:area/pipelines/:id/export/contents",
+            get(export_api::export_contents),
         )
         .route("/api/areas/:area/pipeline-callers", get(pipeline_callers))
         .route("/api/areas/:area/:section/:id/connections", get(get_connections))
@@ -2332,7 +2397,7 @@ async fn run_leader() {
                 // the socket on this one, which is the two having parted and is what every read then says.
                 if let Err(e) = certificates_api::reload_socket(&serving) {
                     tracing::warn!(
-                        target: "leader.certificate_not_reloaded",
+                        name: "not_reloaded", target: "certificates",
                         error = %e,
                         "the certificate on disk changed and this leader is still serving the previous one"
                     );
@@ -2373,7 +2438,7 @@ async fn run_leader() {
 
     match tls {
         Some((resolver, _ca_pem)) => {
-            tracing::info!(target: "leader.listening", %addr, tls = true, "smeltr is listening");
+            tracing::info!(name: "listening", target: "api", %addr, tls = true, "smeltr is listening");
             let config = axum_server::tls_rustls::RustlsConfig::from_config(
                 resolver
                     .server_config()
@@ -2381,16 +2446,16 @@ async fn run_leader() {
             );
             let mut server =
                 axum_server::tls_rustls::from_tcp_rustls(listener, config).expect("wrap smeltr listener with TLS");
-            smeltr::leader::listen::bound(server.http_builder(), smeltr::leader::listen::HEADER_READ);
+            smeltr::leader::listen::bound(server.http_builder(), smeltr::io::receiver::HEADER_READ);
             server
                 .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>())
                 .await
                 .expect("smeltr server error");
         }
         None => {
-            tracing::info!(target: "leader.listening", %addr, tls = false, "smeltr is listening, with TLS disabled by SMELTR_LEADER_TLS");
+            tracing::info!(name: "listening", target: "api", %addr, tls = false, "smeltr is listening, with TLS disabled by SMELTR_LEADER_TLS");
             let mut server = axum_server::from_tcp(listener).expect("hand smeltr listener to the server");
-            smeltr::leader::listen::bound(server.http_builder(), smeltr::leader::listen::HEADER_READ);
+            smeltr::leader::listen::bound(server.http_builder(), smeltr::io::receiver::HEADER_READ);
             // `into_make_service_with_connect_info` rather than the plain one: the login throttle keys on the
             // socket's own peer, and nothing else may stand in for it.
             server
@@ -2418,17 +2483,12 @@ async fn run_leader() {
 /// leader that failed to start for its own reasons. It stays in every branch below, including the ones this
 /// function's own callers never trigger in that test.
 fn bind_listener(addr: std::net::SocketAddr) -> std::net::TcpListener {
-    let domain = if addr.is_ipv6() {
-        socket2::Domain::IPV6
-    } else {
-        socket2::Domain::IPV4
-    };
     let bound = (|| -> std::io::Result<std::net::TcpListener> {
-        let socket = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
-        #[cfg(unix)]
-        socket.set_reuse_address(true)?;
-        socket.bind(&addr.into())?;
-        socket.listen(1024)?;
+        let listen = smeltr::plan::topology::Listen {
+            transport: smeltr::plan::topology::Transport::Tcp,
+            address: addr,
+        };
+        let socket = smeltr::io::receiver::bind(listen)?;
         socket.set_nonblocking(true)?;
         Ok(socket.into())
     })();
@@ -2462,6 +2522,17 @@ mod tests {
         FormatRequest, GrokCapturesRequest, LineBreakerRequest, captures_of, format_code, line_breaker_verdict,
     };
     use smeltr::expr::pretty::Kind;
+
+    /// A leader on every address takes IPv4 on every OS, Windows too. A host without IPv6 has nothing to test.
+    #[test]
+    fn a_leader_on_every_address_takes_ipv4() {
+        if std::net::TcpListener::bind("[::1]:0").is_err() {
+            return;
+        }
+        let listener = super::bind_listener("[::]:0".parse().unwrap());
+        let port = listener.local_addr().unwrap().port();
+        std::net::TcpStream::connect(("127.0.0.1", port)).expect("IPv4 reaches a leader on [::]");
+    }
 
     fn column(name: &str, ty: &str) -> smeltr::heartbeat::CaptureColumn {
         smeltr::heartbeat::CaptureColumn {
@@ -2637,6 +2708,8 @@ mod tests {
                 at_micros: None,
                 filter: None,
                 attribution: false,
+                as_sample: false,
+                dictionary: false,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -2680,6 +2753,8 @@ mod tests {
                 at_micros: None,
                 filter: None,
                 attribution: true,
+                as_sample: false,
+                dictionary: false,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -2719,6 +2794,8 @@ mod tests {
                 at_micros: None,
                 filter: None,
                 attribution: true,
+                as_sample: false,
+                dictionary: false,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -2781,6 +2858,8 @@ mod tests {
                 at_micros: None,
                 filter: None,
                 attribution: false,
+                as_sample: false,
+                dictionary: false,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -2804,6 +2883,8 @@ mod tests {
                 at_micros: None,
                 filter: Some(filter.to_string()),
                 attribution: false,
+                as_sample: false,
+                dictionary: true,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -2824,6 +2905,34 @@ mod tests {
         assert_eq!(previewed.unfiltered, Some(3));
         let sampled = &previewed.dictionary.as_ref().unwrap().sampled.as_ref().unwrap().fields;
         assert!(sampled.iter().any(|(name, _)| name == "y"), "{sampled:?}");
+    }
+
+    /// The dictionary comes only when asked: it is the largest part of an answer.
+    #[test]
+    fn a_preview_returns_the_dictionary_only_when_asked() {
+        let config = r#"{"version":1,"sources":[],"destinations":[],"routes":[],
+            "pipelines":[{"id":"p","name":"p","steps":[{"id":"c","type":"code","body":"x = _raw;"}]}]}"#;
+        let previewed = super::run_preview(
+            super::PreviewRequest {
+                config: config.to_string(),
+                pipeline: None,
+                sample: None,
+                show_internal: false,
+                at_micros: None,
+                filter: None,
+                attribution: false,
+                as_sample: false,
+                dictionary: false,
+                after_dot: None,
+                capture_filter: None,
+            },
+            Default::default(),
+            &[],
+            serde_json::from_str(r#"[{"_raw":"a"}]"#).unwrap(),
+        );
+        assert!(previewed.succeeded(), "{:?}", previewed.errors);
+        assert_eq!(previewed.rows.len(), 1);
+        assert!(previewed.dictionary.is_none());
     }
 
     /// A filter reads the exception tag, as a delivery rule does.
@@ -2861,6 +2970,8 @@ mod tests {
                 at_micros: None,
                 filter: None,
                 attribution: false,
+                as_sample: false,
+                dictionary: false,
                 after_dot: None,
                 capture_filter: None,
             },
@@ -3269,10 +3380,12 @@ mod tests {
                 at_micros: None,
                 filter: None,
                 attribution: false,
+                as_sample: false,
+                dictionary: false,
                 after_dot: None,
                 capture_filter: None,
             },
-            Vec::new(),
+            (Vec::new(), Vec::new()),
         );
 
         assert!(
@@ -3305,10 +3418,12 @@ mod tests {
                 at_micros: None,
                 filter: None,
                 attribution: false,
+                as_sample: false,
+                dictionary: false,
                 after_dot: None,
                 capture_filter: None,
             },
-            Vec::new(),
+            (Vec::new(), Vec::new()),
         );
         assert!(!response.succeeded(), "{} rows", response.rows.len());
         std::fs::remove_dir_all(&data).ok();
@@ -3355,10 +3470,12 @@ mod tests {
                 at_micros: None,
                 filter: None,
                 attribution: false,
+                as_sample: false,
+                dictionary: false,
                 after_dot: None,
                 capture_filter: None,
             },
-            Vec::new(),
+            (Vec::new(), Vec::new()),
         );
 
         assert!(
@@ -3425,10 +3542,12 @@ mod tests {
                     at_micros: None,
                     filter: None,
                     attribution: false,
+                    as_sample: false,
+                    dictionary: false,
                     after_dot: None,
                     capture_filter: None,
                 },
-                Vec::new(),
+                (Vec::new(), Vec::new()),
             );
             assert!(response.succeeded(), "{:?}", response.errors);
             (response.warnings.iter())

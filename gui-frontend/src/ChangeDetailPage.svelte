@@ -4,6 +4,7 @@
   onto main and deletes it. Merging is deploying; there is no separate step.
 -->
 <script lang="ts">
+  import { Busy } from './busy.svelte';
   import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import { reported, unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
@@ -54,7 +55,7 @@
   import { lessMotion } from './glide';
   import ChangeObjects from './ChangeObjects.svelte';
   import { scopeOf, type ObjectChange } from './objectChanges';
-  import { deployBlocker } from './access';
+  import { deployBlocker, NOT_IN_DEMO } from './access';
   import { threads } from './threads';
   import { newSideLines, parseUnifiedDiff } from './unifiedDiff';
 
@@ -89,10 +90,10 @@
   let renameBusy = $state(false);
   let renameError = $state('');
 
-  let bringingCurrent = $state(false);
+  const bringingCurrent = new Busy();
   let mergeConflicts = $state<MergeConflicts | null>(null);
 
-  let deploying = $state(false);
+  const deploying = new Busy();
 
   /** Which part of the change the left column shows. */
   const TABS = ['conversation', 'saves', 'tests', 'schemas'] as const;
@@ -326,7 +327,7 @@
     if (loaded.branch.behind > 0) {
       return `Behind main by ${count(loaded.branch.behind, 'commit')} — bring the branch current first.`;
     }
-    return deployBlocker(loaded.branch.touches);
+    return NOT_IN_DEMO || deployBlocker(loaded.branch.touches);
   });
 
   /** Seeded from the change itself: renaming starts from what is there,
@@ -358,8 +359,7 @@
   }
 
   async function confirmBringCurrent(sides?: MergeSide[]) {
-    bringingCurrent = true;
-    try {
+    await bringingCurrent.run(async () => {
       const res = await bringCurrent(
         branch,
         sides && mergeConflicts ? { conflicts: mergeConflicts, sides } : undefined,
@@ -373,11 +373,7 @@
         // The conflicts shown are no longer the question (main or the branch moved), so Bring current asks again.
         mergeConflicts = null;
       }
-    } catch (e) {
-      reported(e);
-    } finally {
-      bringingCurrent = false;
-    }
+    });
   }
 
   async function confirmDeploy() {
@@ -395,8 +391,7 @@
       action: heldAt ? 'Approve' : 'Approve & deploy',
     });
     if (!ok) return;
-    deploying = true;
-    try {
+    await deploying.run(async () => {
       const res = await deployChange(branch);
       if (res.ok) {
         // Approving merged this branch and deleted it, so nothing may stay
@@ -411,11 +406,7 @@
             : '#/changes/history';
         if (moved) location.reload();
       }
-    } catch (e) {
-      reported(e);
-    } finally {
-      deploying = false;
-    }
+    });
   }
 </script>
 
@@ -438,7 +429,7 @@
         <div class="left">
           <PageHeader title={loaded.change.title}>
             {#snippet beside()}
-              <Locked refusedInDemo>
+              <Locked>
                 <button
                   type="button"
                   class="icon pencil"
@@ -487,7 +478,7 @@
           {#if renaming}
             <div class="card rename-card">
               <div class="row card-head">
-                <h2>
+                <h2 class="uppercase-label">
                   Rename this change<Help label="Rename this change"
                     >When the change deploys, its title and description become its entry in History:
                     the title as the commit subject on
@@ -548,6 +539,7 @@
                 {lines}
                 onposted={loadTimeline}
                 onstatechanged={load}
+                touches={loaded.branch.touches}
               />
             {:else if tab === 'saves'}
               {#if timelineFailed}
@@ -594,7 +586,7 @@
             <ConflictChoices
               {branch}
               conflicts={mergeConflicts}
-              busy={bringingCurrent}
+              busy={bringingCurrent.on}
               onapply={(sides) => confirmBringCurrent(sides)}
               oncancel={() => {
                 mergeConflicts = null;
@@ -604,7 +596,7 @@
 
           {#if loaded.change.state === 'closed'}
             <div class="card">
-              <div class="row card-head"><h2>Closed</h2></div>
+              <div class="row card-head"><h2 class="uppercase-label">Closed</h2></div>
               <div class="card-body">
                 {#if loaded.change.reason}
                   <p class="dim">{loaded.change.reason}</p>
@@ -637,12 +629,11 @@
         schemaFindings={schemasLoading ? undefined : schemaFound}
         onopen={openTab}
         behind={loaded.branch.behind}
-        leftOut={loaded.branch.leftOut?.length ?? 0}
-        {bringingCurrent}
-        bringCurrentDisabled={bringingCurrent ? BUSY : mergeConflicts !== null ? UNCHOSEN : ''}
+        bringingCurrent={bringingCurrent.on}
+        bringCurrentDisabled={bringingCurrent.on ? BUSY : mergeConflicts !== null ? UNCHOSEN : ''}
         onbringcurrent={() => confirmBringCurrent()}
         {approvable}
-        {deploying}
+        deploying={deploying.on}
         {deployDisabledReason}
         ondeploy={confirmDeploy}
         held={heldAt !== null}
@@ -655,14 +646,6 @@
 <style>
   h2 {
     margin: 0;
-    font-size: var(--text-micro);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--dim);
-  }
-  .mono {
-    font-family: var(--mono);
   }
 
   .meta {

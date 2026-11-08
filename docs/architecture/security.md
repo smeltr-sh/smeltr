@@ -159,8 +159,10 @@ than on every object it makes.
 The gate names the area and level each route needs
 ([api.md](api.md), Who may call what), and a route it does not
 name is for administrators alone, so a route added without a decision is
-closed rather than open. Editor covers capture, preview and samples as well
-as saving, since they show production records. Approving or deploying a
+closed rather than open. Viewer covers reading samples, which hold production
+records, running a preview over them, and capturing a group's live records,
+since none of them changes the configuration. A capture's audit row says what
+it read. Editor covers saving, a captured sample included. Approving or deploying a
 change takes deployer in every area its paths touch; a change to `shared` is
 judged as `shared`, so a `shared` deployer changes what every group runs.
 Running a change's own tests judges it the same way. Changing a change, its
@@ -171,8 +173,9 @@ their next request; a person's groups change at their next refresh.
 A person sees only the areas they hold. A change, its diff and a commit in
 the history are shown whole to someone holding viewer in every area they
 touch, and to nobody else, as though absent. The map, the status pages, a
-node's counts and the list of groups show only the groups held. A capture is answered only to an
-editor of the group it runs in. A role names areas by name and outlives the
+node's counts and the list of groups show only the groups held. A capture is answered only to a
+viewer of the group it runs in, and previewed over unsaved only by whoever
+opened it. A role names areas by name and outlives the
 group: a group removed and created again under the same id is given to the
 roles that named it.
 
@@ -195,7 +198,9 @@ do its work is sent to that endpoint.
 An agent works by requests to the leader's own API, sent through the gate with
 the session or key it runs under, so each is judged as the GUI's would be. It reaches only
 the routes its catalog names, which leave out signing in and out and its
-person's conversations. What a request answers is data the agent reads, never
+person's conversations, except reading the one it works in: what its person
+said there and what its calls returned, so it can read back the turns that a summary
+stands in for. What a request answers is data the agent reads, never
 an instruction to it: its permissions bound what an instruction written into
 that data could do. A conversation is its person's alone.
 
@@ -239,20 +244,62 @@ A receiver is where a worker takes the data it did not fetch: every
 worker of the group listens on the receiver's port, and whoever is admitted
 there puts records into the group's pipelines. So a receiver admits a sender
 that presents one of its tokens, each a credential like any other, or, served
-under a certificate with trusted authorities, a sender whose certificate chains to one
-of them, and a receiver that would admit anyone is refused at load. A token
+under a certificate, a sender whose certificate chains to one of its trusted
+authorities or is one it names by fingerprint, whoever issued it (RFC 5425,
+5.1), and, when it names hosts, only those of them issued to one of the named
+hosts (RFC 5425, 5.2). A receiver that would admit anyone is refused at load. A
+sender it refuses by its certificate is refused in the handshake. A token
 crosses the network in every request; without a certificate it crosses in the
 clear, which suits a receiver behind a balancer that ends TLS for it. A
 token is checked before any of the body is read, and the bodies being read
-count against what the receiver may hold, so a sender without one cannot
-make a worker hold anything. A gzip body counts as it inflates, and is held
-to the receiver's request limit. The health path needs no token, and says
-only whether the receiver takes requests; a receiver that names trusted authorities
-admits no connection without a certificate that chains to them,
-the health path's included. Syslog carries no token, so a syslog receiver admits
-by the networks a sender connects from, or by its certificate. Over UDP it has
-no certificate to check, and a datagram's source address can be forged, so a
-UDP receiver's networks admit whoever can send from inside them or claim to.
+count against what the receiver may hold, so a sender without one cannot make
+a worker hold anything. A gzip body counts as it inflates, and is held to the
+receiver's request limit. The health path needs no token, and says only
+whether the receiver takes requests; a receiver that names trusted authorities
+admits no connection without a certificate that chains to them, the health
+path's included. The syslog protocol and a socket receiver's protocols carry
+no token, so these receivers admit a sender by the networks it connects from,
+or by its certificate. Over UDP there is no certificate to check, and a
+datagram's source address can be forged, so a UDP receiver's networks admit
+whoever can send from inside them or claim to.
+
+Every receiver bounds the connections it holds open over TCP, so that
+connections cannot exhaust a worker: a budget the receivers of a worker share,
+an optional cap on each receiver, an optional cap per sender, and an optional
+idle timeout.
+
+```mermaid
+flowchart TD
+  A[new connection] --> B{receiver holds its maximum?}
+  B -- no --> G{worker's budget spent?}
+  B -- yes --> D{some connection of the receiver idle long enough?}
+  D -- yes --> E[the one idle longest is closed, the new one takes its place]
+  D -- no --> F[new connection is closed]
+  E --> G
+  G -- no --> C[accepted]
+  G -- yes --> H{some connection of any receiver idle long enough?}
+  H -- yes --> I[the one idle longest is closed, the new one takes its place]
+  H -- no --> F
+```
+
+The budget is the worker's open-file limit, less what the worker keeps for
+everything else it holds open: its destinations, its files and its link to the
+leader (`io::connections::Budget`). A container runtime may give a process a soft
+open-file limit below its hard one, so a worker raises its soft limit to its
+hard one when it starts. A receiver's own cap, `maxConnections`, is unset
+by default, so one receiver may take the whole budget.
+
+The per-sender cap, which counts by address, applies the same rule to one
+address's connections. A connection is idle only while the receiver waits to
+read from it, so a receiver that has stopped reading because it cannot take
+more closes none for idleness, and an HTTP receiver closes none while it
+answers one of its requests. An HTTP receiver also closes a connection that has
+not sent a request's headers in a fixed time (`io::receiver::HEADER_READ`),
+from connecting or from its last answer, as the leader does, so an idle HTTP/1
+connection is held no longer than that. By default there is no per-sender cap,
+because behind a balancer or NAT every sender comes from one address, and no
+idle timeout, so a sender that writes on every connection often enough can hold
+every place; an administrator who faces one sets the per-sender cap.
 
 ## Scrapers
 
@@ -267,7 +314,7 @@ it, which leaves the network in front of it to decide who that is. A password
 over a port without TLS crosses the network in the clear. The certificate and
 key are read when the worker starts, so a new one takes a restart. The password
 stays with the supervisor, which serves the endpoint; its runtime is started
-without it.
+without it. The endpoint holds its connections to a receiver's default limits.
 
 The leader's scrape is an API route like any other: a scraper comes in as a
 key account, with its key, and reads the warnings its account's roles let it see.

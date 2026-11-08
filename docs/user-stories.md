@@ -157,10 +157,10 @@ would otherwise be silently editing content they only hold deploy over.
 **W5 — Approve and deploy.** Approval merges to main as one commit and
 deletes the branch; main's movement is what reaches workers. There is no
 separate deploy step, and nothing smeltr deploys is unapproved. An author
-may deploy their own change — a single administrator has to be able to
-work alone — and the history records when author and deployer are the
-same person. Deploying over a failing test is likewise recorded, not
-forbidden.
+may review and deploy their own change — a single administrator has to
+be able to work alone — and the history records when author and deployer
+are the same person. Deploying over a failing test is likewise recorded,
+not forbidden.
 
 **W6 — Reject.** Closing a change keeps the branch, so no work is lost.
 A reason is offered and encouraged, so the author has something to act on,
@@ -303,11 +303,11 @@ outside the boundary the enclave exists to enforce.
 person holds one level in each area they may see, and each level includes
 the ones before it:
 
-| level        | what it is                                                       |
-| ------------ | ---------------------------------------------------------------- |
-| **viewer**   | read the area's configuration                                    |
-| **editor**   | change it on a branch, and capture, preview and read its samples |
-| **deployer** | approve and deploy a change to it                                |
+| level        | what it is                                                     |
+| ------------ | -------------------------------------------------------------- |
+| **viewer**   | read the area's configuration and samples, preview and capture |
+| **editor**   | change it on a branch                                          |
+| **deployer** | approve and deploy a change to it                              |
 
 A role is the level it gives in each area, and the provider groups that
 give it. Holding several roles holds the highest level any of them gives.
@@ -327,9 +327,11 @@ provider group, so one person can run the whole system alone. Only
 administrators reach Admin, and at least one local administrator
 remains.
 
-**P5 — Records are editor work.** Capture, preview and samples show
-production records, so they take editor in the area, as changing its
-configuration does.
+**P5 — Records are a viewer's to read.** A viewer reads an area's samples,
+runs a preview over them and captures a group's live records, and runs a
+preview over their own capture without saving it. Saving a capture as a
+sample takes editor, as changing the configuration does. Every capture is
+audited with what it read.
 
 **P6 — A team sees its own areas.** A change, a commit, the map and the
 status pages show a person only the areas they hold; a change reaching an

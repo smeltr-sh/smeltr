@@ -87,18 +87,25 @@ pub fn need(method: &Method, path: &str) -> Need {
     }
 
     match (method.clone(), segments.as_slice()) {
-        // A schema read from or written as JSON Schema: what the schema it is given holds, never config.
-        (Method::POST, ["preview", "schema-read" | "schema-export"])
-        // The standards' releases smeltr carries.
+        // A preview computes from what it is given and reads no area. The standards' releases are carried in smeltr.
+        (
+            Method::POST,
+            [
+                "preview",
+                "grok" | "onboard" | "line-breaker" | "format" | "certificate" | "sql" | "schema-read"
+                | "schema-export",
+            ],
+        )
         | (Method::GET | Method::HEAD, ["preview", "schema-standards"]) => Need::Somewhere(Level::Viewer),
-        // Production records a preview or a capture shows, in no one area.
+        // Production records a capture reads from a group's workers, in no one area.
         (Method::POST, ["captures"])
         | (Method::GET | Method::HEAD | Method::DELETE, ["captures", _])
         | (Method::POST, ["captures", _, "stop"])
-        | (Method::POST, ["preview", _])
+        | (Method::GET | Method::HEAD, ["captures", _, "download"]) => Need::Somewhere(Level::Viewer),
         // Names, versions and where each is used, never a value: what a secret picker offers whoever saves a form.
-        | (Method::GET | Method::HEAD, ["secrets"])
-        | (Method::GET | Method::HEAD, ["certificates"]) => Need::Somewhere(Level::Editor),
+        (Method::GET | Method::HEAD, ["secrets"]) | (Method::GET | Method::HEAD, ["certificates"]) => {
+            Need::Somewhere(Level::Editor)
+        }
 
         // Branches and changes. Which areas a change touches is in the branch, so reviewing and deploying one, and
         // reading and running its own tests, is checked again by its handler.
@@ -120,11 +127,13 @@ pub fn need(method: &Method, path: &str) -> Need {
             Need::Somewhere(Level::Deployer)
         }
 
-        // What the Status and Map pages read, the area picker, and what a source or destination form asks of
-        // the build. The streams are filtered by their handler to the groups the caller views.
+        // What the Status and Map pages read, the warnings as Prometheus scrapes them, the area picker, and what a
+        // source or destination form asks of the build. The streams and the warnings are filtered by their handlers
+        // to the groups the caller views.
         (Method::GET | Method::HEAD, ["cluster"])
         | (Method::GET | Method::HEAD, ["streams"])
         | (Method::GET | Method::HEAD, ["warnings"])
+        | (Method::GET | Method::HEAD, ["metrics"])
         | (Method::GET | Method::HEAD, ["flow"])
         | (Method::GET | Method::HEAD, ["map"])
         | (Method::GET | Method::HEAD, ["map", "measurements"])
@@ -133,9 +142,10 @@ pub fn need(method: &Method, path: &str) -> Need {
 
         // What a person lets their own agent use.
         (Method::GET | Method::HEAD | Method::PUT, ["me", "agent-permissions"]) => Need::Anyone,
+        // The models a person picks from for their agent.
+        (Method::GET | Method::HEAD, ["agent", "models"]) => Need::Anyone,
         // A person's conversations with their agent, which their handlers keep to the person.
         (Method::GET | Method::HEAD | Method::POST, ["agent", "conversations"])
-        | (Method::GET | Method::HEAD, ["agent", "models"])
         | (Method::GET | Method::HEAD | Method::DELETE, ["agent", "conversations", _])
         | (Method::POST, ["agent", "conversations", _, "messages" | "stop" | "context"]) => Need::Anyone,
         // The user docs, which are public.
@@ -157,6 +167,8 @@ fn in_area(method: &Method, within: &[&str]) -> Option<Level> {
             | ["unreadable"]
             | ["pipelines"]
             | ["pipeline-callers"]
+            | ["pipelines", _, "export"]
+            | ["pipelines", _, "export", "contents"]
             | ["tests"]
             | ["stats"]
             | ["lookups", "file" | "mmdb"]
@@ -170,12 +182,15 @@ fn in_area(method: &Method, within: &[&str]) -> Option<Level> {
             Method::PUT,
             ["sources" | "destinations" | "routes" | "lookups" | "grok-patterns" | "schemas" | "manifest"],
         )
-        | (Method::POST, ["undo"] | ["lookups", "upload"] | ["test-runs"]) => Level::Editor,
+        | (Method::POST, ["undo"] | ["lookups", "upload"] | ["test-runs"] | ["imports"]) => Level::Editor,
+        // What an admin says about a source's rows warning: it changes no configuration and touches no worker.
+        (Method::POST, ["sources", _, "lower" | "reset-history"]) => Level::Editor,
 
-        // Production records: samples, and what a preview of them shows.
-        (Method::GET | Method::HEAD | Method::POST, ["samples"])
-        | (Method::GET | Method::HEAD | Method::PUT | Method::DELETE, ["samples", _])
-        | (Method::POST, ["preview", "pipeline" | "routes" | "schema-import"]) => Level::Editor,
+        // Samples, and what a preview of them shows.
+        (Method::GET | Method::HEAD, ["samples"])
+        | (Method::POST, ["preview", "pipeline" | "routes" | "schema-import"]) => Level::Viewer,
+        (Method::GET | Method::HEAD | Method::PUT | Method::DELETE, ["samples", _]) => read,
+        (Method::POST, ["samples"]) => Level::Editor,
         _ => return None,
     })
 }
@@ -282,6 +297,8 @@ mod tests {
             "/api/areas/payments/pipelines",
             "/api/areas/payments/pipelines/p1",
             "/api/areas/payments/pipeline-callers",
+            "/api/areas/payments/pipelines/p1/export",
+            "/api/areas/payments/pipelines/p1/export/contents",
             "/api/areas/payments/sources/s1/connections",
             "/api/areas/payments/tests",
             "/api/areas/payments/tests/t1",
@@ -309,6 +326,7 @@ mod tests {
             (Method::DELETE, "/api/areas/payments/tests/t1"),
             (Method::POST, "/api/areas/payments/undo"),
             (Method::POST, "/api/areas/payments/lookups/upload"),
+            (Method::POST, "/api/areas/payments/imports"),
             (Method::PUT, "/api/areas/payments/files/pipelines/x.json"),
             (Method::DELETE, "/api/areas/payments/files/x.json"),
             (Method::PUT, "/api/areas/payments/schemas"),
@@ -318,35 +336,66 @@ mod tests {
     }
 
     #[test]
-    fn records_need_editor_in_their_area() {
+    fn a_mark_on_a_sources_rows_warning_needs_editor_in_its_area() {
+        for path in [
+            "/api/areas/payments/sources/s1/lower",
+            "/api/areas/payments/sources/s1/reset-history",
+        ] {
+            assert_eq!(need(&Method::POST, path), area("payments", Level::Editor), "{path}");
+        }
+    }
+
+    #[test]
+    fn samples_and_previews_need_viewer_and_changing_samples_editor() {
         for (method, path) in [
             (Method::GET, "/api/areas/payments/samples"),
-            (Method::POST, "/api/areas/payments/samples"),
             (Method::GET, "/api/areas/payments/samples/s1"),
-            (Method::PUT, "/api/areas/payments/samples/s1"),
-            (Method::DELETE, "/api/areas/payments/samples/s1"),
-            (Method::POST, "/api/areas/payments/test-runs"),
             (Method::POST, "/api/areas/payments/preview/pipeline"),
             (Method::POST, "/api/areas/payments/preview/routes"),
             (Method::POST, "/api/areas/payments/preview/schema-import"),
         ] {
+            assert_eq!(need(&method, path), area("payments", Level::Viewer), "{method} {path}");
+        }
+        for (method, path) in [
+            (Method::POST, "/api/areas/payments/samples"),
+            (Method::PUT, "/api/areas/payments/samples/s1"),
+            (Method::DELETE, "/api/areas/payments/samples/s1"),
+            (Method::POST, "/api/areas/payments/test-runs"),
+        ] {
             assert_eq!(need(&method, path), area("payments", Level::Editor), "{method} {path}");
         }
+        for path in [
+            "/api/preview/grok",
+            "/api/preview/onboard",
+            "/api/preview/line-breaker",
+            "/api/preview/format",
+            "/api/preview/certificate",
+            "/api/preview/sql",
+        ] {
+            assert_eq!(need(&Method::POST, path), Need::Somewhere(Level::Viewer), "{path}");
+        }
+        assert_eq!(need(&Method::POST, "/api/preview/unlisted"), Need::Administrator);
+    }
+
+    /// The group a capture runs in is in its body or its session, so its handler judges it.
+    #[test]
+    fn captures_need_viewer_somewhere() {
         for (method, path) in [
             (Method::POST, "/api/captures"),
             (Method::GET, "/api/captures/c1"),
+            (Method::GET, "/api/captures/mine"),
             (Method::POST, "/api/captures/c1/stop"),
+            (Method::GET, "/api/captures/c1/download"),
             (Method::DELETE, "/api/captures/c1"),
-            (Method::POST, "/api/preview/grok"),
-            (Method::POST, "/api/preview/onboard"),
-            (Method::POST, "/api/preview/line-breaker"),
-            (Method::POST, "/api/preview/format"),
-            (Method::POST, "/api/preview/certificate"),
-            (Method::POST, "/api/preview/sql"),
-            (Method::GET, "/api/secrets"),
-            (Method::GET, "/api/certificates"),
         ] {
-            assert_eq!(need(&method, path), Need::Somewhere(Level::Editor), "{method} {path}");
+            assert_eq!(need(&method, path), Need::Somewhere(Level::Viewer), "{method} {path}");
+        }
+    }
+
+    #[test]
+    fn what_a_form_offers_needs_editor_somewhere() {
+        for path in ["/api/secrets", "/api/certificates"] {
+            assert_eq!(get(path), Need::Somewhere(Level::Editor), "{path}");
         }
     }
 
@@ -416,10 +465,14 @@ mod tests {
     }
 
     #[test]
+    fn the_models_are_anyone_s_to_read() {
+        assert_eq!(get("/api/agent/models"), Need::Anyone);
+    }
+
+    #[test]
     fn a_person_s_conversations_are_anyone_s_to_have() {
         assert_eq!(get("/api/agent/conversations"), Need::Anyone);
         assert_eq!(get("/api/agent/conversations/c_1"), Need::Anyone);
-        assert_eq!(get("/api/agent/models"), Need::Anyone);
         for (method, path) in [
             (Method::POST, "/api/agent/conversations"),
             (Method::DELETE, "/api/agent/conversations/c_1"),
@@ -443,6 +496,7 @@ mod tests {
         for path in [
             "/api/cluster",
             "/api/warnings",
+            "/api/metrics",
             "/api/streams",
             "/api/flow",
             "/api/map",

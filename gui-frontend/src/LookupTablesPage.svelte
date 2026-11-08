@@ -33,7 +33,7 @@
   import { provideValidation } from './validation.svelte';
   import InlineError from './InlineError.svelte';
   import JsonEditPage from './JsonEditPage.svelte';
-  import { resourcesTabs } from './nav';
+  import { RESOURCES_TABS } from './nav';
   import { columnStats, parseCsv, serializeCsv, stepsReading } from './lookups';
   import {
     sharedConfig,
@@ -365,7 +365,7 @@
         a record's key.
       {/snippet}
     </PageHeader>
-    <SecondaryTabs tabs={resourcesTabs()} active="#/build/lookups" ariaLabel="Resources" />
+    <SecondaryTabs tabs={RESOURCES_TABS} active="#/build/lookups" ariaLabel="Resources" />
 
     <UnreadableFiles problems={editor.bundleProblems} onchanged={load} />
 

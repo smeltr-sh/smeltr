@@ -18,6 +18,7 @@ pub mod api;
 pub mod app_sign_in;
 pub mod avro;
 pub mod client_credentials;
+pub mod connections;
 pub mod csv;
 pub mod delta;
 pub mod discovery;
@@ -27,6 +28,7 @@ pub mod elastic_nodes;
 mod elastic_receiver;
 pub mod entra;
 pub mod files;
+pub mod framing;
 pub mod hec;
 pub mod http;
 pub mod http_api;
@@ -50,19 +52,21 @@ pub mod pipelined;
 pub mod postgres;
 pub mod prometheus;
 pub mod pubsub;
+pub mod raw;
 pub mod reads;
 pub mod receiver;
 pub mod remote_write;
 pub mod s2s;
 mod s2s_receiver;
+pub mod senders;
 pub mod sftp;
+mod socket_receiver;
 pub mod splunk;
 pub mod sql;
 pub mod sql_source;
 pub mod sqs;
 pub mod storage_queue;
 mod stored;
-mod syslog_receiver;
 pub mod table;
 pub mod trust;
 pub mod values;
@@ -209,6 +213,16 @@ pub fn build_destination(
                 name,
                 metrics,
                 id,
+            )))
+        }
+        DestinationKind::Otlp(c) => {
+            let credentials = http::credential_headers("otlp destination", &c.http.credentials, secrets)?;
+            let config = http::agent_config(c.http.tls.as_ref(), secrets)?;
+            let make =
+                || http_post::transport_as(&c.http, otlp::Encoding::Protobuf.content_type(), &credentials, &config);
+            let protocol = otlp::export::Otlp::new(c).with_unwritten(http::Unwritten::new(metrics.clone(), id, name));
+            Ok(Box::new(http_post::destination_of(
+                protocol, &c.http, make, name, metrics, id,
             )))
         }
         DestinationKind::Prometheus(c) => {
@@ -885,6 +899,13 @@ pub trait Source: Send {
         Ok(())
     }
 
+    /// Its deployment is stopping: take nothing more from outside, and say whether it still holds what it took and
+    /// must hand over before it ends. The reader polls it while it says so. The default holds nothing: a source that
+    /// reads at its own pace reads again after a restart.
+    fn stop_taking(&mut self) -> bool {
+        false
+    }
+
     /// Records the source let go before they were read, since the last call: ones a sender could not be made to wait
     /// for, which arrived while the source had no room. The default is none: a source that can wait never lets go.
     fn take_dropped(&mut self) -> u64 {
@@ -922,6 +943,10 @@ pub trait Source: Send {
     fn take_refused(&mut self) -> Vec<(&'static str, u64)> {
         Vec::new()
     }
+
+    /// Copy what arrives to `tap` before it is framed, while it is watching. Only a receiver has bytes a sender
+    /// sent before they are records, so the default copies nothing.
+    fn tap_raw(&mut self, _tap: std::sync::Arc<dyn raw::RawTap>) {}
 
     /// Whether to fill `SourceRecord::headers` from now on. Copying them costs an allocation per header, so a source
     /// leaves them out until a reader asks. A source whose records have no headers does nothing.
@@ -1312,6 +1337,11 @@ pub trait Destination: Send {
     /// that spawns none ignores it.
     fn lend_senders(&mut self, _lend: Lend) {}
 
+    /// Its deployment is stopping: from now on, finish what it holds as soon as it can, rather than when its own
+    /// interval says. Returns at once; what lands is reported by `poll_completions`. The default does nothing: a
+    /// destination that acknowledges as it delivers has nothing to finish sooner.
+    fn finish(&mut self) {}
+
     /// How many requests this destination has open, for a transport that opens them itself. `None` from one whose
     /// requests are not its own to report -- librdkafka's are inside librdkafka.
     fn concurrency(&mut self) -> Option<usize> {
@@ -1631,6 +1661,11 @@ pub mod fake {
                 undelivered: None,
             }));
             Ok(())
+        }
+
+        /// As a file destination does: what it holds is acknowledged without waiting for `complete`.
+        fn finish(&mut self) {
+            let _ = self.flush();
         }
 
         fn poll_completions(&mut self) -> Result<Vec<BatchCompletion>, IoError> {

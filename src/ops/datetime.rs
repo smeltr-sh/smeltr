@@ -7,9 +7,10 @@
 use std::io::Write as _;
 
 use super::civil::{MICROS_PER_DAY, civil_from_days};
-use super::helpers::{Operand, short_circuit_empty, side};
-use crate::core::column::{Column, DataType};
+use super::helpers::{Operand, map_f64, map_i64, side};
+use crate::core::column::{Column, DataType, StrBuilder, VarType};
 use crate::core::ctx::Ctx;
+use crate::core::error::ExceptionKind;
 
 /// A span as the writer and `toString` render it: its count of microseconds, the unit it is held in, so every span
 /// is written exactly and `parse_duration_text` reads it back.
@@ -43,9 +44,6 @@ pub fn write_iso8601_micros_bare(micros: i64, out: &mut Vec<u8>) {
 
 fn extract(ctx: &mut Ctx, ins: &[&Column], f: impl Fn(i64) -> i64) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::I64, len) {
-        return e;
-    }
     let a = ins[0].datetime().unwrap();
     let mut out = Column::alloc(ctx.pool, &DataType::I64, len);
     {
@@ -108,25 +106,10 @@ pub fn dt_epoch_millis(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 /// null.
 fn from_epoch(ctx: &mut Ctx, ins: &[&Column], per_unit: i64) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::DateTime, len) {
-        return e;
-    }
     let a = ins[0].i64().unwrap();
-    let mut out = Column::alloc(ctx.pool, &DataType::DateTime, len);
-    {
-        let o = out.datetime_mut().unwrap();
-        for i in 0..len {
-            match a.values[i].checked_mul(per_unit) {
-                Some(us) if a.validity.is_valid(i) => o.values[i] = us,
-                _ => {
-                    o.values[i] = 0;
-                    o.validity.set_valid(i, false);
-                }
-            }
-        }
-        o.validity.recount();
-    }
-    out
+    map_i64(ctx, &DataType::DateTime, len, &[Some(a.validity)], |i| {
+        a.values[i].checked_mul(per_unit)
+    })
 }
 
 /// `fromEpochMillis(n)`: Temporal's `Instant.fromEpochMilliseconds`.
@@ -179,75 +162,64 @@ pub fn is_known_unit(unit: &str) -> bool {
 /// `duration(n, unit)`: `n` whole or fractional. An unknown unit, or a span past the `i64` microsecond range, is null.
 pub fn duration_from(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Duration, len) {
-        return e;
-    }
     let units = side::var(ins[1]).unwrap();
-    let mut out = Column::alloc(ctx.pool, &DataType::Duration, len);
-    {
-        let o = out.duration_mut().unwrap();
-        let (ints, floats) = (ins[0].i64().ok(), ins[0].f64().ok());
-        for i in 0..len {
-            let n_valid = ints.as_ref().is_some_and(|c| c.validity.is_valid(i))
-                || floats.as_ref().is_some_and(|c| c.validity.is_valid(i));
-            let scale = units
-                .is_valid(i)
-                .then(|| unit_scale(&String::from_utf8_lossy(units.at(i))))
-                .flatten();
-            let span = match (n_valid, scale) {
-                (true, Some((num, den))) => match (&ints, &floats) {
-                    // Multiply before dividing: `duration(1000, "ns")` is exactly one microsecond, and a span finer
-                    // than the stored microsecond truncates toward zero, as a fractional count of any unit already does.
-                    (Some(c), _) => c.values[i].checked_mul(num).map(|v| v / den),
-                    // `as i64` saturates rather than wrapping, so the range has to be tested before the cast or an
-                    // impossible span would become `i64::MAX` instead of null.
-                    (_, Some(c)) => {
-                        let f = c.values[i] * num as f64 / den as f64;
-                        (f.is_finite() && f.abs() <= i64::MAX as f64).then_some(f as i64)
-                    }
-                    _ => None,
-                },
-                _ => None,
-            };
-            match span {
-                Some(us) => o.values[i] = us,
-                None => {
-                    o.values[i] = 0;
-                    o.validity.set_valid(i, false);
-                }
+    let (ints, floats) = (ins[0].i64().ok(), ins[0].f64().ok());
+    let n = ints
+        .as_ref()
+        .map(|c| c.validity)
+        .or(floats.as_ref().map(|c| c.validity));
+    map_i64(ctx, &DataType::Duration, len, &[n, units.validity()], |i| {
+        let (num, den) = unit_scale(&String::from_utf8_lossy(units.at(i)))?;
+        match (&ints, &floats) {
+            // Multiply before dividing: `duration(1000, "ns")` is exactly one microsecond, and a span finer than the
+            // stored microsecond truncates toward zero, as a fractional count of any unit already does.
+            (Some(c), _) => c.values[i].checked_mul(num).map(|v| v / den),
+            // `as i64` saturates rather than wrapping, so the range has to be tested before the cast or an impossible
+            // span would become `i64::MAX` instead of null.
+            (_, Some(c)) => {
+                let f = c.values[i] * num as f64 / den as f64;
+                (f.is_finite() && f.abs() <= i64::MAX as f64).then_some(f as i64)
             }
+            _ => None,
         }
-        o.validity.recount();
-    }
-    out
+    })
 }
 
 /// `countIn(d, unit)`: the whole span in `unit`, fractional, as Temporal's `Duration.total`. An unknown unit is null.
 pub fn duration_count_in(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::F64, len) {
-        return e;
-    }
     let d = ins[0].duration().unwrap();
     let units = side::var(ins[1]).unwrap();
-    let mut out = Column::alloc(ctx.pool, &DataType::F64, len);
-    {
-        let o = out.f64_mut().unwrap();
-        for i in 0..len {
-            let scale = (d.validity.is_valid(i) && units.is_valid(i))
-                .then(|| unit_scale(&String::from_utf8_lossy(units.at(i))))
-                .flatten();
-            match scale {
-                Some((num, den)) => o.values[i] = d.values[i] as f64 * den as f64 / num as f64,
-                None => {
-                    o.values[i] = 0.0;
-                    o.validity.set_valid(i, false);
-                }
-            }
+    map_f64(ctx, len, &[Some(d.validity), units.validity()], |i| {
+        let (num, den) = unit_scale(&String::from_utf8_lossy(units.at(i)))?;
+        Some(d.values[i] as f64 * den as f64 / num as f64)
+    })
+}
+
+/// `formatTime(t, format)`: `t` as text in `format`, UTC (`timeparse::format_into`). Null, and `CoercionRefused`,
+/// where the format opens a specifier `parseTime` does not read.
+pub fn format_time(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+    let len = ins[0].len();
+    let (Some(t), Some(formats)) = (side::datetime(ins[0]), side::var(ins[1])) else {
+        return Column::empty(DataType::Str, len);
+    };
+    let mut b = StrBuilder::new(ctx.pool, VarType::Str, len);
+    let mut text = Vec::new();
+    for i in 0..len {
+        if !t.is_valid(i) || !formats.is_valid(i) {
+            b.push_null();
+            continue;
         }
-        o.validity.recount();
+        text.clear();
+        let format = String::from_utf8_lossy(formats.at(i));
+        if super::timeparse::format_into(t.at(i), &format, &mut text) {
+            b.push_grow(ctx.pool, &text);
+        } else {
+            b.push_null();
+            ctx.raise(i, ExceptionKind::CoercionRefused { to: DataType::Str });
+        }
     }
-    out
+    b.finish()
 }
 
 #[cfg(test)]

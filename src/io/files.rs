@@ -25,7 +25,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, channel, sync_channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -388,6 +388,8 @@ pub struct FileDestination {
     generation: u64,
     /// What the writer's open files buffer, as it last measured.
     open_bytes: Arc<AtomicUsize>,
+    /// Set by `finish`: the writer commits what it holds from then on, without waiting for its interval.
+    finishing: Arc<AtomicBool>,
 }
 
 impl FileDestination {
@@ -407,6 +409,8 @@ impl FileDestination {
         let (reports, results) = channel();
         let open_bytes = Arc::new(AtomicUsize::new(0));
         let measured = open_bytes.clone();
+        let finishing = Arc::new(AtomicBool::new(false));
+        let told = finishing.clone();
         let subject = subject.to_string();
         let thread = std::thread::Builder::new()
             .name(format!("{name}-file-writer"))
@@ -427,6 +431,7 @@ impl FileDestination {
                     seen: 0,
                     ended: None,
                     open_bytes: measured,
+                    finishing: told,
                 };
                 writer.next_commit += writer.config.commit_interval;
                 writer.run(inbox, reports);
@@ -442,6 +447,7 @@ impl FileDestination {
             failed: None,
             generation: 0,
             open_bytes,
+            finishing,
         }
     }
 
@@ -542,6 +548,11 @@ impl Destination for FileDestination {
         Some(self.open_bytes.load(Ordering::Relaxed))
     }
 
+    /// The writer sees it within `MEASURE_EVERY`. A flag rather than a message, so it never waits on a full queue.
+    fn finish(&mut self) {
+        self.finishing.store(true, Ordering::Relaxed);
+    }
+
     fn poll_completions(&mut self) -> Result<Vec<BatchCompletion>, IoError> {
         // What a barrier saw land is reported before the writer is asked: a failure there would otherwise take it
         // back.
@@ -619,6 +630,8 @@ struct Writer {
     ended: Option<u64>,
     /// Where it reports what its open files buffer.
     open_bytes: Arc<AtomicUsize>,
+    /// See `FileDestination::finishing`.
+    finishing: Arc<AtomicBool>,
     /// Each reset's error names its own file, so a reset is told by time: once, then on the interval until a commit
     /// lands.
     reset_said: crate::logs::Repeat,
@@ -626,13 +639,26 @@ struct Writer {
 
 impl Writer {
     fn run(&mut self, inbox: Receiver<Message>, reports: Sender<Result<Vec<BatchCompletion>, IoError>>) {
+        // A message taken from the inbox ahead of a commit, handled before any other.
+        let mut next = None;
         loop {
-            // Woken at least every `MEASURE_EVERY`, so what lands while no batch comes shows as it lands.
-            let wait = self
-                .next_commit
-                .saturating_duration_since(Instant::now())
-                .min(MEASURE_EVERY);
-            match inbox.recv_timeout(wait) {
+            // Woken at least every `MEASURE_EVERY`, so what lands while no batch comes shows as it lands, and a
+            // `finish` is seen. A finishing writer's commit is always due, so with nothing to commit it waits for a
+            // batch rather than spinning.
+            let finishing = self.finishing.load(Ordering::Relaxed);
+            let wait = match (finishing, self.holds_nothing()) {
+                (true, true) => MEASURE_EVERY,
+                (true, false) => Duration::ZERO,
+                (false, _) => self
+                    .next_commit
+                    .saturating_duration_since(Instant::now())
+                    .min(MEASURE_EVERY),
+            };
+            let message = match next.take() {
+                Some(message) => Ok(message),
+                None => inbox.recv_timeout(wait),
+            };
+            match message {
                 Ok(Message::Job(job)) => {
                     if let Err(e) = self.take(job) {
                         let e = self.fail(e);
@@ -647,9 +673,18 @@ impl Writer {
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
             }
-            let due = self.held >= commit_at(self.config.buffer_bytes) || Instant::now() >= self.next_commit;
+            let full = self.held >= commit_at(self.config.buffer_bytes);
+            let mut due = full || finishing || Instant::now() >= self.next_commit;
+            if due && !full && finishing {
+                // A finishing writer takes what is queued before it commits, so the queue lands as one commit rather
+                // than one per batch.
+                if let Ok(message) = inbox.try_recv() {
+                    next = Some(message);
+                    due = false;
+                }
+            }
             if due {
-                if self.pending.is_empty() && self.open.is_empty() && self.closed.is_empty() {
+                if self.holds_nothing() {
                     // Nothing to commit: the interval runs from now.
                     self.next_commit = Instant::now() + self.config.commit_interval;
                 } else if reports.send(self.commit()).is_err() {
@@ -666,6 +701,10 @@ impl Writer {
         // Stopped with files between a close and their commit: as on a failure, nothing of them is kept.
         self.abort_open();
         self.delete_closed();
+    }
+
+    fn holds_nothing(&self) -> bool {
+        self.pending.is_empty() && self.open.is_empty() && self.closed.is_empty()
     }
 
     /// Writes one batch's rows into their partitions' files. A job of an ended generation is skipped: its batch comes
@@ -699,7 +738,7 @@ impl Writer {
                         .map(|(p, _)| p.clone())
                         .expect("a full map has an oldest file");
                     let file = self.open.remove(&oldest).expect("found just now");
-                    tracing::debug!(target: "files.file_rotated", subject = %self.subject, open = MAX_OPEN_FILES, "the oldest open file was closed to make room for another partition's file");
+                    tracing::debug!(name: "rotated", target: "destinations", subject = %self.subject, open = MAX_OPEN_FILES, "the oldest open file was closed to make room for another partition's file");
                     self.close(file)?;
                 }
                 let file = self.open_file(partition.clone())?;
@@ -843,7 +882,7 @@ impl Writer {
             let error = match self.committer.commit(&self.closed) {
                 Ok(()) => {
                     tracing::info!(
-                        target: "files.committed",
+                        name: "committed", target: "destinations",
                         subject = %self.subject,
                         files = self.closed.len(),
                         rows = self.closed.iter().map(|f| f.record_count).sum::<u64>(),
@@ -862,14 +901,14 @@ impl Writer {
                     match &error {
                         // Another writer committed first: ordinary for a shared table, so no warning.
                         CommitError::Conflict => tracing::debug!(
-                            target: "files.commit_conflict",
+                            name: "commit_conflict", target: "destinations",
                             subject = %self.subject,
                             "another writer committed first; committing again"
                         ),
                         CommitError::Transient(why) | CommitError::Unknown(why) if !warned => {
                             warned = true;
                             tracing::warn!(
-                                target: "files.commit_failed",
+                                name: "commit_failed", target: "destinations",
                                 subject = %self.subject,
                                 error = %why,
                                 stall_after_secs = self.config.stall_after.as_secs(),
@@ -891,7 +930,7 @@ impl Writer {
                     };
                     // Only this line can say the rows may land twice: the stall that follows says the commit failed.
                     tracing::error!(
-                        target: "files.commit_abandoned",
+                        name: "commit_abandoned", target: "destinations",
                         subject = %self.subject,
                         files = self.closed.len(),
                         rows = self.closed.iter().map(|f| f.record_count).sum::<u64>(),
@@ -916,7 +955,7 @@ impl Writer {
     fn fail(&mut self, why: String) -> IoError {
         if self.reset_said.due() {
             tracing::warn!(
-                target: "files.writer_reset",
+                name: "writer_reset", target: "destinations",
                 subject = %self.subject,
                 files_aborted = self.open.len(),
                 files_deleted = self.closed.len(),
@@ -952,7 +991,7 @@ impl Writer {
         }
         if let Some(error) = first {
             tracing::warn!(
-                target: "files.orphans_left",
+                name: "orphans_left", target: "destinations",
                 subject = %self.subject,
                 count = left,
                 error,
@@ -1130,7 +1169,7 @@ impl Drop for Upload {
             && let Err(e) = wait(&self.runtime, self.stall_after, parts.abort())
         {
             // A part left behind is an orphan the store's own lifecycle removes.
-            tracing::debug!(target: "files.upload_not_aborted", subject = %self.subject, object = %self.name, error = %e, "an upload could not be aborted, so the store keeps its parts until its lifecycle removes them");
+            tracing::debug!(name: "upload_not_aborted", target: "destinations", subject = %self.subject, object = %self.name, error = %e, "an upload could not be aborted, so the store keeps its parts until its lifecycle removes them");
         }
     }
 }

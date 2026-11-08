@@ -715,6 +715,8 @@ pub fn is_builtin(name: &str) -> bool {
         || PARSE_FNS.contains(&name)
         || PRELUDE_FUNCTIONS.contains(&name)
         || name == "rest"
+        || name == crate::expr::unpack::UNPACK
+        || name == crate::expr::unpack::PACK
         || ObjectOp::by_name(name).is_some()
         || StdFunc::by_name(name).is_some()
 }

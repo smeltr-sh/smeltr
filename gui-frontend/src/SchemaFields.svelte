@@ -166,7 +166,7 @@
     <tbody>
       {#each shown as f (f.field)}
         <tr>
-          <td class="name" title={f.field}>
+          <td class="name ellipsis" title={f.field}>
             <span class="mono">{f.field}</span>
           </td>
           <td class="mono">{f.type}</td>
@@ -273,12 +273,19 @@
      so that a `ch` is one of the fields' characters. */
   .fields {
     display: block;
-    width: 100%;
+    /* Adds nothing to the width of the schemas table it sits in, so a narrow screen scrolls this table and not the
+       page. */
+    width: 0;
+    min-width: 100%;
+    overflow-x: auto;
   }
 
   .fields thead,
   .fields tbody {
     display: block;
+    /* As wide as the columns, since a row (`content-visibility: auto`) clips what overflows it. */
+    width: max-content;
+    min-width: 100%;
   }
 
   .fields tr {
@@ -318,12 +325,6 @@
     color: var(--dim);
   }
 
-  .name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   /* An example can be a whole JSON document; two lines of it say what it is. */
   .example {
     max-width: 18rem;
@@ -344,9 +345,5 @@
 
   .dim {
     color: var(--dim);
-  }
-
-  .mono {
-    font-family: var(--mono);
   }
 </style>

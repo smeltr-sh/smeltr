@@ -103,7 +103,7 @@ impl Lifetimes {
     /// A stored pair that no longer validates -- written by an older build, or edited by hand -- is reported
     /// rather than silently replaced: a leader running deadlines nobody configured is worse than one that says
     /// what it found.
-    pub fn read(store: &dyn super::store::Store) -> Result<Lifetimes, String> {
+    pub fn read(store: &super::store::Store) -> Result<Lifetimes, String> {
         let seconds = |key: &str| -> Result<Option<Duration>, String> {
             match store.setting(key).map_err(|e| e.to_string())? {
                 None => Ok(None),
@@ -123,7 +123,7 @@ impl Lifetimes {
     /// Both deadlines and the row saying who set them, as one transaction.
     pub fn write(
         &self,
-        store: &dyn super::store::Store,
+        store: &super::store::Store,
         event: Option<&super::store::SecurityEvent>,
     ) -> Result<(), String> {
         store
@@ -364,6 +364,9 @@ impl Sessions {
     /// Drop what has expired. Called on a schedule so a leader nobody visits does not hold a session per sign-in
     /// since it started.
     pub fn sweep(&self, now: Instant) -> usize {
+        let _pass =
+            tracing::trace_span!(target: "accounts", "a background pass", task = "drop expired sign-in sessions")
+                .entered();
         let mut held = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let lifetimes = held.lifetimes;
         let before = held.entries.len();

@@ -2,9 +2,11 @@
 //! sender, or a balancer in front of the group, picks the worker for each connection, so the transport assigns the
 //! work (`Source`'s own rule).
 //!
-//! A sender drops what it sent once it hears success, so a request is answered only once every destination has its
-//! records. Until then the sender holds the only other copy, and it sends again when no answer comes: a worker that
-//! stops with a request held costs a duplicate, never a loss.
+//! A sender drops what it sent once it hears success. A request is answered once it is in the inbox, so the sender
+//! never waits on a destination; a stop hands the inbox over before it ends, and a crash loses it. A receiver set to
+//! answer after delivery answers only once every destination has its records. Until then the sender holds the only
+//! other copy, and it sends again when no answer comes: a worker that stops with a request held costs a duplicate,
+//! never a loss.
 //!
 //! ```text
 //!   sender ── POST ──► server ── records ──► inbox ──► poll_batch ──► pipelines, destinations
@@ -40,18 +42,22 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{Notify, oneshot};
 
 use super::api::Records;
+use super::connections::{self, Connections, Marked};
 use super::elastic_receiver;
 use super::hec;
 use super::line_breaker::LineBreaker;
 use super::otlp;
 use super::prometheus;
+use super::raw::{RawRead, RawTap, Tapped, Tapping, offer_closed};
 use super::s2s_receiver;
-use super::syslog_receiver;
+use super::socket_receiver;
 use super::{CommitMap, IoError, RecordChunkBuilder, Source, SourceRecord};
 use crate::egress::QueuePool;
 use crate::format::json::write_json_string;
 use crate::format::json_scan::{Next, Reader};
-use crate::plan::topology::{ApiRecords, HeldSecrets, Listen, Receiver, ReceiverConfig, Signal, SourceMeta, Transport};
+use crate::plan::topology::{
+    ApiRecords, ConnectionLimits, HeldSecrets, Listen, Receiver, ReceiverConfig, Signal, SourceMeta, Transport,
+};
 
 /// Where a receiver answers whether it takes requests: 200 while it does, 503 while it is busy, blocked or stopping.
 /// What a balancer's health check or a Kubernetes readiness probe asks.
@@ -75,7 +81,7 @@ pub const SOCKETS_ENV: &str = "SMELTR_RECEIVER_SOCKETS";
 pub fn reserve(config: &ReceiverConfig) -> usize {
     match config.receiver {
         Receiver::Otlp(_) | Receiver::Prometheus | Receiver::Elastic => INBOX_BYTES,
-        Receiver::S2s(_) | Receiver::Syslog(_) => config.max_request_bytes + STREAM_STEP,
+        Receiver::S2s(_) | Receiver::Syslog(_) | Receiver::Socket(_) => config.max_request_bytes + STREAM_STEP,
         Receiver::Http(_) | Receiver::Hec(_) => config.max_request_bytes,
     }
 }
@@ -104,6 +110,7 @@ pub fn open(
         | Receiver::Prometheus
         | Receiver::S2s(_)
         | Receiver::Syslog(_)
+        | Receiver::Socket(_)
         | Receiver::Elastic => false,
     };
     let tokens = config
@@ -130,6 +137,7 @@ pub fn open(
             speaks: Speaks::Otlp,
             tokens,
             max_request_bytes: config.max_request_bytes,
+            answer_after_delivery: config.answer_after_delivery,
         });
         let joined = OtlpPort::join(config, signal, server, secrets)?;
         return Ok(Box::new(ReceiverSource {
@@ -140,8 +148,8 @@ pub fn open(
     }
     let shared = shared();
     let runtime = receiver_runtime()?;
-    if let Receiver::Syslog(syslog) = &config.receiver
-        && syslog.transport == Transport::Udp
+    if let Receiver::Syslog(datagrams) | Receiver::Socket(datagrams) = &config.receiver
+        && datagrams.transport == Transport::Udp
     {
         let socket = std::net::UdpSocket::from(bound(config.listens())?);
         // `from_std` registers the socket with the runtime it is called in.
@@ -150,9 +158,16 @@ pub fn open(
             tokio::net::UdpSocket::from_std(socket)
         }
         .map_err(|e| IoError::transient(format!("receiver could not serve {}: {e}", named(config.listens()))))?;
-        let handler = syslog_receiver::Handler::new(syslog, config.max_request_bytes);
+        let handler = socket_receiver::Handler::new(datagrams, config.max_request_bytes);
         let cut = move |datagram: &[u8], peer| handler.datagram(datagram, peer);
-        let task = runtime.spawn(serve_datagrams(socket, shared.clone(), config.max_request_bytes, cut));
+        let allow_from = datagrams.allow_from.clone();
+        let task = runtime.spawn(serve_datagrams(
+            socket,
+            allow_from,
+            shared.clone(),
+            config.max_request_bytes,
+            cut,
+        ));
         return Ok(Box::new(ReceiverSource {
             shared,
             serving: Some(Serving::Task(task)),
@@ -160,7 +175,7 @@ pub fn open(
         }));
     }
     let listener = TcpListener::from(bound(config.listens())?);
-    if let Receiver::S2s(_) | Receiver::Syslog(_) = &config.receiver {
+    if let Receiver::S2s(_) | Receiver::Syslog(_) | Receiver::Socket(_) = &config.receiver {
         let tls = match &config.tls {
             Some(tls) => Some(server_tls(tls, secrets)?),
             None => None,
@@ -176,12 +191,15 @@ pub fn open(
                 let tokens = tokens.into_iter().map(|admits| admits.token).collect();
                 let handler = Arc::new(s2s_receiver::Handler::new(s2s, tokens, config.max_request_bytes));
                 let handle = move |connection| handler.clone().serve(connection);
-                runtime.spawn(serve_streams(listener, tls, shared.clone(), handle))
+                let limits = config.connections;
+                runtime.spawn(serve_streams(listener, Vec::new(), limits, tls, shared.clone(), handle))
             }
-            Receiver::Syslog(syslog) => {
-                let handler = Arc::new(syslog_receiver::Handler::new(syslog, config.max_request_bytes));
+            Receiver::Syslog(socket) | Receiver::Socket(socket) => {
+                let handler = Arc::new(socket_receiver::Handler::new(socket, config.max_request_bytes));
                 let handle = move |connection| handler.clone().serve(connection);
-                runtime.spawn(serve_streams(listener, tls, shared.clone(), handle))
+                let allow_from = socket.allow_from.clone();
+                let limits = config.connections;
+                runtime.spawn(serve_streams(listener, allow_from, limits, tls, shared.clone(), handle))
             }
             _ => unreachable!("only a receiver that streams is served here"),
         };
@@ -194,7 +212,9 @@ pub fn open(
     let speaks = match &config.receiver {
         Receiver::Http(http) => Speaks::Http(http.records.clone()),
         Receiver::Hec(hec) => Speaks::Hec(hec.sourcetypes.clone()),
-        Receiver::S2s(_) | Receiver::Otlp(_) | Receiver::Syslog(_) => unreachable!("served above"),
+        Receiver::S2s(_) | Receiver::Otlp(_) | Receiver::Syslog(_) | Receiver::Socket(_) => {
+            unreachable!("served above")
+        }
         Receiver::Prometheus => Speaks::Prometheus,
         Receiver::Elastic => Speaks::Elastic,
     };
@@ -203,6 +223,7 @@ pub fn open(
         speaks,
         tokens,
         max_request_bytes: config.max_request_bytes,
+        answer_after_delivery: config.answer_after_delivery,
     });
     use axum::routing::{get, post};
     let router = match &config.receiver {
@@ -240,7 +261,9 @@ pub fn open(
             .route("/services/collector/ack/1.0", post(hec_ack))
             .route(hec::HEALTH_PATH, get(health))
             .route("/services/collector/health/1.0", get(health)),
-        Receiver::S2s(_) | Receiver::Otlp(_) | Receiver::Syslog(_) => unreachable!("served above"),
+        Receiver::S2s(_) | Receiver::Otlp(_) | Receiver::Syslog(_) | Receiver::Socket(_) => {
+            unreachable!("served above")
+        }
         Receiver::Prometheus => axum::Router::new()
             .route(prometheus::WRITE_PATH, post(prometheus_write))
             .route(HEALTH_PATH, get(health)),
@@ -262,18 +285,92 @@ pub fn open(
     }
     .with_state(server);
     let server = serve_router(
-        runtime,
         listener,
         http_tls(config, secrets)?,
         router,
         config.listen,
         "receiver",
+        Some(shared.clone()),
+        config.connections,
     )?;
     Ok(Box::new(ReceiverSource {
         shared,
         serving: Some(Serving::Server(server)),
         port: None,
     }))
+}
+
+/// Serves `config`'s address for a capture of it as sent, and nothing else: each connection is read to its end, after
+/// TLS where `config` serves it, and each datagram taken, every read offered to the tap the caller attaches
+/// (`Source::tap_raw`). Nothing is answered and nothing becomes a record: a sender that heard success would drop what
+/// it sent, and this delivers nothing.
+///
+/// Binds the address afresh rather than taking a socket the supervisor handed over, so a port a deployment's receiver
+/// holds is refused rather than split between the two.
+pub fn open_raw(config: &ReceiverConfig, secrets: &HeldSecrets) -> Result<Box<dyn Source>, IoError> {
+    let listen = config.listens();
+    let unserved = |e: std::io::Error| {
+        IoError::transient(format!(
+            "could not listen on {}: {e}. A receiver this worker runs may hold the port",
+            named(listen)
+        ))
+    };
+    let socket = bind_alone(listen).map_err(unserved)?;
+    socket.set_nonblocking(true).map_err(unserved)?;
+    let shared = Arc::new(Shared::default());
+    let runtime = receiver_runtime()?;
+    // `from_std` registers the socket with the runtime it is called in.
+    let _entered = runtime.enter();
+    let allow_from = match &config.receiver {
+        Receiver::Syslog(socket) | Receiver::Socket(socket) => socket.allow_from.clone(),
+        Receiver::Http(_)
+        | Receiver::Hec(_)
+        | Receiver::Otlp(_)
+        | Receiver::Prometheus
+        | Receiver::S2s(_)
+        | Receiver::Elastic => Vec::new(),
+    };
+    let task = match listen.transport {
+        Transport::Udp => {
+            let socket = tokio::net::UdpSocket::from_std(socket.into()).map_err(unserved)?;
+            let nothing = |_: &[u8], _| None;
+            runtime.spawn(serve_datagrams(
+                socket,
+                allow_from,
+                shared.clone(),
+                MAX_DATAGRAM,
+                nothing,
+            ))
+        }
+        Transport::Tcp => {
+            let tls = match &config.tls {
+                Some(tls) => Some(server_tls(tls, secrets)?),
+                None => None,
+            };
+            let listener = tokio::net::TcpListener::from_std(socket.into()).map_err(unserved)?;
+            let limits = config.connections;
+            runtime.spawn(serve_streams(
+                listener,
+                allow_from,
+                limits,
+                tls,
+                shared.clone(),
+                read_to_end,
+            ))
+        }
+    };
+    Ok(Box::new(ReceiverSource {
+        shared,
+        serving: Some(Serving::Task(task)),
+        port: None,
+    }))
+}
+
+/// Reads `connection` to its end and keeps none of it: each read is offered to the receiver's tap as it is read.
+async fn read_to_end(mut connection: Connection) {
+    use tokio::io::AsyncReadExt;
+    let mut scratch = vec![0; STREAM_STEP];
+    while connection.stream.read(&mut scratch).await.is_ok_and(|read| read > 0) {}
 }
 
 /// `listen`'s socket, or why a receiver cannot listen on it.
@@ -305,40 +402,201 @@ pub(crate) fn http_alpn() -> Vec<Vec<u8>> {
     vec![b"h2".to_vec(), b"http/1.1".to_vec()]
 }
 
-/// Serves `router` on `listener` on `runtime`, under TLS when there is some, until the returned handle shuts it down.
-/// `serving` names what serves it, for an operator reading the failure.
+/// Serves `router` on `listener` on the receiver runtime, under TLS when there is some, until the returned handle shuts
+/// it down.
+/// `serving` names what serves it, for an operator reading the failure. Its connections are held to `limits`, as a
+/// receiver that streams holds its own ([`connections`]).
+///
+/// `tap`, where given, is offered every read of every connection, after TLS, and every connection closed unread.
 pub(crate) fn serve_router(
-    runtime: &tokio::runtime::Runtime,
     listener: TcpListener,
     tls: Option<axum_server::tls_rustls::RustlsConfig>,
     router: axum::Router,
     address: SocketAddr,
     serving: &str,
+    tap: Option<Arc<dyn RawTap>>,
+    limits: ConnectionLimits,
 ) -> Result<axum_server::Handle<SocketAddr>, IoError> {
+    let runtime = receiver_runtime()?;
     // `from_tcp` registers the socket with the runtime it is called in.
     let _entered = runtime.enter();
+    let open = Connections::new(limits);
+    let said = Arc::new(Mutex::new(Said::of(&open)));
+    close_idle_http(&open, &said);
     let service = router.into_make_service_with_connect_info::<SocketAddr>();
     let handle = axum_server::Handle::new();
     // A server that stops on its own leaves a receiver that reads nothing: said where it happens, since nothing
     // else watches the task.
     let stopped = move |served: std::io::Result<()>| {
         if let Err(e) = served {
-            tracing::error!(target: "worker.receiver_stopped", listen = %address, error = %e, "a receiver stopped serving its address, so nothing it would take arrives until the deployment restarts");
+            tracing::error!(name: "receiver_stopped", target: "sources", listen = %address, error = %e, "a receiver stopped serving its address, so nothing it would take arrives until the deployment restarts");
         }
     };
     let served = match tls {
-        Some(tls) => axum_server::tls_rustls::from_tcp_rustls(listener, tls).map(|server| {
-            let server = server.handle(handle.clone());
+        Some(tls) => axum_server::from_tcp(listener).map(|server| {
+            let acceptor = Tapping {
+                inner: Admitting {
+                    inner: axum_server::tls_rustls::RustlsAcceptor::new(tls),
+                    open,
+                    said,
+                },
+                tap,
+                tls: true,
+            };
+            let mut server = server.acceptor(acceptor).handle(handle.clone());
+            bound_header_read(server.http_builder());
             runtime.spawn(async move { stopped(server.serve(service).await) })
         }),
         None => axum_server::from_tcp(listener).map(|server| {
-            let server = server.handle(handle.clone());
+            let acceptor = Tapping {
+                inner: Admitting {
+                    inner: axum_server::accept::DefaultAcceptor,
+                    open,
+                    said,
+                },
+                tap,
+                tls: false,
+            };
+            let mut server = server.acceptor(acceptor).handle(handle.clone());
+            bound_header_read(server.http_builder());
             runtime.spawn(async move { stopped(server.serve(service).await) })
         }),
     };
     served
         .map(|_| handle)
         .map_err(|e| IoError::transient(format!("{serving} could not serve {address}: {e}")))
+}
+
+/// How long a client has to send a request's headers: from connecting, and from the end of its previous
+/// request on the same connection, so it bounds an idle keep-alive too.
+pub const HEADER_READ: Duration = Duration::from_secs(30);
+
+/// Bounds how long an HTTP/1 connection waits on its client for a request's headers, from connecting and between
+/// requests, as the leader's are (`leader::listen`). HTTP/2 is not pinged: a ping's answer is a read, so a connection
+/// that answers pings would never idle, and eviction and the idle timeout close an idle one.
+fn bound_header_read(builder: &mut hyper_util::server::conn::auto::Builder<hyper_util::rt::TokioExecutor>) {
+    builder
+        .http1()
+        .timer(hyper_util::rt::TokioTimer::new())
+        .header_read_timeout(HEADER_READ);
+}
+
+/// Closes the connections of `open` that have idled for its idle timeout, if it has one, until the server holding
+/// `open` and every connection it admitted are gone.
+fn close_idle_http(open: &Arc<Mutex<Connections>>, said: &Arc<Mutex<Said>>) {
+    let Some(every) = open.lock().unwrap_or_else(|e| e.into_inner()).idle_check() else {
+        return;
+    };
+    let (open, said) = (Arc::downgrade(open), said.clone());
+    tokio::spawn(async move {
+        let mut check = tokio::time::interval(every);
+        loop {
+            check.tick().await;
+            let Some(open) = open.upgrade() else {
+                return;
+            };
+            said.lock().unwrap_or_else(|e| e.into_inner()).close_idle(&open);
+        }
+    });
+}
+
+/// Why a receiver refused a connection before its handshake. It is the error an HTTP connection fails with, and what a
+/// capture shows when one is watching. Its message is built only when it is read.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Refusal {
+    why: connections::Refused,
+    limits: ConnectionLimits,
+    budget: usize,
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Refusal { why, limits, budget } = *self;
+        match why {
+            connections::Refused::Full => write!(
+                f,
+                "refused: the receiver holds its maxConnections, {}, and none has been idle a minute to close for it",
+                limits.max.unwrap_or(budget)
+            ),
+            connections::Refused::FullFromSender => write!(
+                f,
+                "refused: the receiver holds its maxConnectionsPerSender, {}, from this sender, and none has been \
+                 idle a minute to close for it",
+                limits.per_sender.unwrap_or_default()
+            ),
+            connections::Refused::WorkerFull => write!(
+                f,
+                "refused: the worker's receivers hold the {budget} connections its open-file limit leaves room for, \
+                 and none has been idle a minute to close for it"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for Refusal {}
+
+/// An HTTP server's acceptor, `inner`, that holds its connections to `limits` as `serve_streams` does: it admits each
+/// before its handshake, closing the one the limits say to make room, and closes it unread when there is none.
+#[derive(Clone)]
+struct Admitting<A> {
+    inner: A,
+    open: Arc<Mutex<Connections>>,
+    said: Arc<Mutex<Said>>,
+}
+
+impl<A, S> axum_server::accept::Accept<tokio::net::TcpStream, S> for Admitting<A>
+where
+    A: axum_server::accept::Accept<Marked<tokio::net::TcpStream>, S>,
+{
+    type Stream = A::Stream;
+    type Service = connections::Counting<A::Service>;
+    type Future = futures_util::future::Either<
+        std::future::Ready<std::io::Result<(A::Stream, Self::Service)>>,
+        Counts<A::Future>,
+    >;
+
+    fn accept(&self, stream: tokio::net::TcpStream, service: S) -> Self::Future {
+        let peer = match stream.peer_addr() {
+            Ok(peer) => peer.ip().to_canonical(),
+            Err(e) => return futures_util::future::Either::Left(std::future::ready(Err(e))),
+        };
+        let admitted = self
+            .said
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .admit(&self.open, peer);
+        let place = match admitted {
+            Ok(place) => place,
+            Err(refusal) => {
+                let refused = std::io::Error::other(refusal);
+                return futures_util::future::Either::Left(std::future::ready(Err(refused)));
+            }
+        };
+        futures_util::future::Either::Right(Counts {
+            accepting: Box::pin(self.inner.accept(Marked::new(stream, &place, &self.open), service)),
+            in_flight: place.in_flight,
+        })
+    }
+}
+
+/// An accepted connection whose service counts its requests in flight.
+struct Counts<F> {
+    accepting: std::pin::Pin<Box<F>>,
+    in_flight: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl<F, T, S> Future for Counts<F>
+where
+    F: Future<Output = std::io::Result<(T, S)>>,
+{
+    type Output = std::io::Result<(T, connections::Counting<S>)>;
+
+    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        self.accepting.as_mut().poll(cx).map_ok(|(stream, inner)| {
+            let in_flight = self.in_flight.clone();
+            (stream, connections::Counting { inner, in_flight })
+        })
+    }
 }
 
 /// The runtime every receiver of this process serves on, sized by cores, so a worker's receiver threads stay the same
@@ -396,6 +654,24 @@ impl OtlpReceivers {
     fn of(&self, signal: Signal) -> Option<Arc<Server>> {
         self.0.lock().unwrap().get(&signal).cloned()
     }
+
+    fn servers(&self) -> Vec<Arc<Server>> {
+        self.0.lock().unwrap().values().cloned().collect()
+    }
+}
+
+/// What arrives at an OTLP port is offered to the receiver of each signal it serves: a read is not yet an export of
+/// any one signal.
+impl RawTap for OtlpReceivers {
+    fn watching(&self) -> bool {
+        self.servers().iter().any(|s| s.shared.watching())
+    }
+
+    fn offer(&self, read: RawRead<'_>) {
+        for server in self.servers() {
+            server.shared.offer(read);
+        }
+    }
 }
 
 /// The ports this process serves OTLP on, by address.
@@ -407,7 +683,7 @@ fn otlp_ports() -> &'static Mutex<HashMap<SocketAddr, Weak<OtlpPort>>> {
 impl OtlpPort {
     /// `server`, a receiver of `signal`, on `config`'s address: on the port another signal's receiver serves there,
     /// or on one it starts. A port is served as the receiver that started it says, since the config plane holds the
-    /// receivers of one port to one address and certificate.
+    /// receivers of one port to one address, certificate and connection limits.
     fn join(
         config: &ReceiverConfig,
         signal: Signal,
@@ -441,7 +717,6 @@ impl OtlpPort {
 
         let listener = TcpListener::from(bound(config.listens())?);
         let tls = http_tls(config, secrets)?;
-        let runtime = receiver_runtime()?;
         let receivers = Arc::new(OtlpReceivers::default());
         let mut router = axum::Router::new().route(HEALTH_PATH, get(otlp_health));
         for signal in [Signal::Logs, Signal::Metrics, Signal::Traces] {
@@ -460,12 +735,13 @@ impl OtlpPort {
                 );
         }
         let server = serve_router(
-            runtime,
             listener,
             tls,
             router.with_state(receivers.clone()),
             config.listen,
             "receiver",
+            Some(receivers.clone()),
+            config.connections,
         )?;
         Ok(OtlpPort {
             receivers,
@@ -536,6 +812,16 @@ impl Source for ReceiverSource {
 
     fn take_dropped(&mut self) -> u64 {
         self.shared.dropped.swap(0, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn tap_raw(&mut self, tap: Arc<dyn RawTap>) {
+        // A source is tapped once, by the deployment that opened it.
+        self.shared.raw.get_or_init(|| tap);
+    }
+
+    /// What a sender is already waiting on is delivered, so it hears success rather than sending it again.
+    fn stop_taking(&mut self) -> bool {
+        self.shared.stop_taking()
     }
 
     fn take_full(&mut self) -> u64 {
@@ -706,6 +992,20 @@ struct Shared {
     /// Datagrams let go for want of room since the reader last asked.
     dropped: std::sync::atomic::AtomicU64,
     refused: Mutex<Refused>,
+    /// Where what arrives is copied before it is framed, once the deployment reading this receiver has attached it.
+    raw: OnceLock<Arc<dyn RawTap>>,
+}
+
+impl RawTap for Shared {
+    fn watching(&self) -> bool {
+        self.raw.get().is_some_and(|tap| tap.watching())
+    }
+
+    fn offer(&self, read: RawRead<'_>) {
+        if let Some(tap) = self.raw.get() {
+            tap.offer(read);
+        }
+    }
 }
 
 /// The requests a receiver refused, by reason.
@@ -730,12 +1030,14 @@ struct Inbox {
     /// The `ackId`s a HEC receiver has given.
     acks: hec::Acks,
     blocked: bool,
+    /// Its deployment is stopping: it takes nothing new, and hands over what it holds.
+    stopping: bool,
     closed: bool,
 }
 
 impl Inbox {
     fn open(&self) -> bool {
-        !self.closed && !self.blocked
+        !self.closed && !self.blocked && !self.stopping
     }
 
     fn queue(&mut self, request: Request) {
@@ -772,7 +1074,7 @@ pub(super) enum Cutter {
     /// Records cut already, each filed under its own.
     Each(s2s_receiver::Cuts),
     /// Records cut already, filed under nothing.
-    Messages(syslog_receiver::Messages),
+    Messages(super::framing::Messages),
     Otlp(otlp::Export),
     Samples(prometheus::Samples),
     Documents(elastic_receiver::Documents),
@@ -895,7 +1197,7 @@ impl Shared {
         *count += 1;
         if since.is_none_or(|at| at.elapsed() >= crate::logs::RELOG_EVERY) {
             tracing::warn!(
-                target: "worker.receiver_refused",
+                name: "receiver_refused", target: "sources",
                 subject = %peer.ip().to_canonical(),
                 reason,
                 status = answer.status().as_u16(),
@@ -1073,6 +1375,13 @@ impl Shared {
             // A sender that hung up is not waiting for this.
             let _ = answer.send(());
         }
+    }
+
+    /// Every new request is answered busy from now on. Whether it still holds requests its reader has not taken.
+    fn stop_taking(&self) -> bool {
+        let mut inbox = self.state.lock().unwrap();
+        inbox.stopping = true;
+        !inbox.queued.is_empty()
     }
 
     /// Every held request is answered busy, and every new one too: its records were never delivered, and the sender
@@ -1327,6 +1636,8 @@ struct Server {
     tokens: Vec<Admits>,
     /// The largest body it reads. A request takes each chunk's bytes from the receiver's holdings as it arrives.
     max_request_bytes: usize,
+    /// Whether a request held for its answer waits for its records' commit, or is answered once it is in the inbox.
+    answer_after_delivery: bool,
 }
 
 /// A token a receiver admits.
@@ -2303,8 +2614,10 @@ async fn answer_request(
         Token::Admitted { acknowledges } => acknowledges,
         refused => return answer(Outcome::Refused(refused)),
     };
-    // `httpout` names no channel and asks after no `ackId`: its answer acks it, whatever its token says.
-    let acknowledges = acknowledges && !matches!(body, Incoming::Httpout(_));
+    // `httpout` names no channel and asks after no `ackId`: its answer acks it, whatever its token says, so it is
+    // answered only once delivered.
+    let forwarded = matches!(body, Incoming::Httpout(_));
+    let acknowledges = acknowledges && !forwarded;
     let channel = match (named, acknowledges) {
         (Err(refused), _) => return *refused,
         (Ok(Some(channel)), true) => Some(channel),
@@ -2351,6 +2664,9 @@ async fn answer_request(
     let admitted = server.shared.admit(records, bytes, remote, channel.as_ref(), reading);
     answer(match admitted {
         Admitted::Now => Outcome::Delivered,
+        // In the inbox is as far as the answer waits, unless the source answers after delivery: a stop hands what
+        // the inbox holds over before it ends.
+        Admitted::Later(_) if !server.answer_after_delivery && !forwarded => Outcome::Delivered,
         Admitted::Later(answer) => match answer.await {
             Ok(()) => Outcome::Delivered,
             Err(_) => Outcome::Busy,
@@ -2651,7 +2967,7 @@ fn server_tls(tls: &crate::plan::topology::Tls, secrets: &HeldSecrets) -> Result
         None => None,
         Some(pem) => Some(super::trust::certificates(tls, pem, "what it trusts")?),
     };
-    serving_tls(chain, key, authorities).map_err(|refused| {
+    serving_tls(chain, key, authorities, &tls.senders).map_err(|refused| {
         IoError::transient(match refused {
             (Some(what), e) => named(&format!("{what}: {e}")),
             (None, e) => format!("receiver: {e}"),
@@ -2659,30 +2975,34 @@ fn server_tls(tls: &crate::plan::topology::Tls, secrets: &HeldSecrets) -> Result
     })
 }
 
-/// TLS that presents `chain` signed by `key` and, given `authorities`, requires a client certificate chaining to one
-/// of them. A refusal names the setting that was wrong, `what it trusts` or `its certificate and key`, beside why, and
-/// names none when the TLS library itself refused.
+/// TLS that presents `chain` signed by `key` and, given `authorities` or `senders`, requires a client certificate
+/// they admit (`io::senders`). A refusal names the setting that was wrong, `what it trusts` or `its certificate and
+/// key`, beside why, and names none when the TLS library itself refused.
 pub(crate) fn serving_tls(
     chain: Vec<rustls::pki_types::CertificateDer<'static>>,
     key: rustls::pki_types::PrivateKeyDer<'static>,
     authorities: Option<Vec<rustls::pki_types::CertificateDer<'static>>>,
+    senders: &crate::plan::topology::Senders,
 ) -> Result<rustls::ServerConfig, (Option<&'static str>, String)> {
     let provider = crate::crypto::in_use();
     let builder = rustls::ServerConfig::builder_with_provider(provider.clone())
         .with_safe_default_protocol_versions()
         .map_err(|e| (None, e.to_string()))?;
-    let builder = match authorities {
-        None => builder.with_no_client_auth(),
-        Some(authorities) => {
+    let roots = authorities
+        .map(|authorities| {
             let mut roots = rustls::RootCertStore::empty();
             for root in authorities {
                 roots.add(root).map_err(|e| (Some("what it trusts"), e.to_string()))?;
             }
-            let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider)
-                .build()
-                .map_err(|e| (Some("what it trusts"), e.to_string()))?;
-            builder.with_client_cert_verifier(verifier)
-        }
+            Ok(roots)
+        })
+        .transpose()?;
+    // Names alone admit no one, as no authority can vouch for them; the verifier refuses every sender then.
+    let builder = match roots.is_none() && senders.fingerprints.is_empty() && senders.names.is_empty() {
+        true => builder.with_no_client_auth(),
+        false => builder.with_client_cert_verifier(
+            super::senders::verifier(roots, senders, provider).map_err(|e| (Some("what it trusts"), e))?,
+        ),
     };
     builder
         .with_single_cert(chain, key)
@@ -2697,8 +3017,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> Stream for T {}
 /// A sender's connection to a receiver that streams, as its handler gets it.
 pub(super) struct Connection {
     pub(super) stream: Box<dyn Stream>,
-    /// The sender's address.
-    pub(super) peer: std::net::IpAddr,
     /// What admits the requests read from `stream`. Apart from it, so a handler may split the stream to read and
     /// write at once.
     pub(super) inlet: Inlet,
@@ -2815,23 +3133,32 @@ impl Drop for Held {
 /// The largest datagram UDP carries.
 const MAX_DATAGRAM: usize = u16::MAX as usize;
 
-/// Serves `socket` for a receiver that takes datagrams: `cut` makes a datagram from a sender the records it holds, or
-/// `None` for one it refuses. Nothing slows a sender of datagrams, so one that arrives while the inbox has no room, or
-/// the source is blocked, is dropped and counted. A datagram larger than `max` reaches `cut` as `max + 1` bytes.
+/// Serves `socket` for a receiver that takes datagrams from the senders `allow_from` admits: `cut` makes a datagram
+/// the records it holds, or `None` for one it refuses. Nothing slows a sender of datagrams, so one that arrives while the inbox has no room, or
+/// the source is blocked, is dropped and counted. A datagram larger than `max` and a line end reaches `cut` as
+/// `max + 3` bytes, so `cut` tells it from one of `max` bytes and a CRLF.
 /// Runs until dropped.
-async fn serve_datagrams<C>(socket: tokio::net::UdpSocket, shared: Arc<Shared>, max: usize, cut: C)
-where
+async fn serve_datagrams<C>(
+    socket: tokio::net::UdpSocket,
+    allow_from: Vec<ipnetwork::IpNetwork>,
+    shared: Arc<Shared>,
+    max: usize,
+    cut: C,
+) where
     C: Fn(&[u8], std::net::IpAddr) -> Option<Cutter> + Send + 'static,
 {
-    let mut buffer = vec![0; max.min(MAX_DATAGRAM) + 1];
+    // Windows refuses a datagram larger than the buffer (WSAEMSGSIZE) where Linux cuts it, so the buffer holds any
+    // datagram and it is cut here.
+    let mut buffer = vec![0; MAX_DATAGRAM];
+    let keep = max.min(MAX_DATAGRAM) + 3;
     let mut failing = crate::logs::Relog::default();
     loop {
         let (length, peer) = match socket.recv_from(&mut buffer).await {
-            Ok(received) => received,
+            Ok((length, peer)) => (length.min(keep), peer),
             Err(e) => {
                 if let Some(error) = failing.fail_due(e.to_string()) {
                     tracing::warn!(
-                        target: "worker.receiver_datagram_failed",
+                        name: "receiver_datagram_failed", target: "sources",
                         error,
                         "a receiver could not read a datagram"
                     );
@@ -2840,6 +3167,27 @@ where
             }
         };
         let peer = peer.ip().to_canonical();
+        let admitted = admits(&allow_from, peer);
+        if !admitted {
+            tracing::trace!(
+                name: "refused", target: "sources",
+                subject = %peer,
+                "a datagram is dropped: its address is in none of the receiver's allowFrom networks"
+            );
+        }
+        if shared.watching() {
+            let why = (!admitted).then(|| refused(peer));
+            shared.offer(RawRead {
+                remote: &peer.to_string(),
+                transport: Transport::Udp,
+                tls: false,
+                bytes: if admitted { &buffer[..length] } else { &[] },
+                closed: why.as_deref(),
+            });
+        }
+        if !admitted {
+            continue;
+        }
         let Some(records) = cut(&buffer[..length], peer) else {
             continue;
         };
@@ -2863,11 +3211,15 @@ impl Shared {
     }
 }
 
-/// Serves `listener` for a receiver whose protocol streams over a connection held open: each connection, under `tls`
-/// when given, is a task of its own that `handle` runs. A connection that fails to arrive or to complete its
-/// handshake ends alone. Runs until dropped, which ends every connection it holds.
+/// Serves `listener` for a receiver whose protocol streams over a connection held open: each connection from a
+/// sender `allow_from` admits, under `tls` when given, is a task of its own that `handle` runs. A sender from
+/// elsewhere is closed before its TLS handshake, so it is shown nothing; so is a connection `limits` leave no room
+/// for. `limits` also say which held connection to close ([`connections`]). A connection that fails to arrive or to
+/// complete its handshake ends alone. Runs until dropped, which ends every connection it holds.
 async fn serve_streams<H, F>(
     listener: tokio::net::TcpListener,
+    allow_from: Vec<ipnetwork::IpNetwork>,
+    limits: ConnectionLimits,
     tls: Option<rustls::ServerConfig>,
     shared: Arc<Shared>,
     handle: H,
@@ -2883,19 +3235,27 @@ async fn serve_streams<H, F>(
         )))
     });
     let handle = Arc::new(handle);
-    let mut connections = tokio::task::JoinSet::new();
+    let mut tasks = tokio::task::JoinSet::new();
     let mut accepting = crate::logs::Relog::default();
+    let open = Connections::new(limits);
+    let mut said = Said::of(&open);
+    let idle_check = open.lock().unwrap_or_else(|e| e.into_inner()).idle_check();
+    let mut idle = idle_check.map(tokio::time::interval);
     loop {
         let accepted = tokio::select! {
             accepted = listener.accept() => accepted,
-            Some(_) = connections.join_next() => continue,
+            Some(_) = tasks.join_next() => continue,
+            _ = async { idle.as_mut()?.tick().await; Some(()) }, if idle.is_some() => {
+                said.close_idle(&open);
+                continue;
+            }
         };
         let (tcp, peer) = match accepted {
             Ok(accepted) => accepted,
             Err(e) => {
                 if let Some(error) = accepting.fail_due(e.to_string()) {
                     tracing::warn!(
-                        target: "worker.receiver_accept_failed",
+                        name: "receiver_accept_failed", target: "sources",
                         error,
                         "a receiver could not accept a connection"
                     );
@@ -2905,34 +3265,162 @@ async fn serve_streams<H, F>(
                 continue;
             }
         };
+        // A dual-stack socket sees an IPv4 sender as `::ffff:a.b.c.d`; it is named as the IPv4 address it is.
+        let peer = peer.ip().to_canonical();
+        let remote: Arc<str> = Arc::from(peer.to_string());
+        if !admits(&allow_from, peer) {
+            tracing::trace!(
+                name: "refused", target: "sources",
+                subject = %peer,
+                "a connection is closed: its address is in none of the receiver's allowFrom networks"
+            );
+            offer_closed(&*shared, &remote, tls.is_some(), &refused(peer));
+            continue;
+        }
+        let place = match said.admit(&open, peer) {
+            Ok(place) => place,
+            Err(refusal) => {
+                if shared.watching() {
+                    offer_closed(&*shared, &remote, tls.is_some(), &refusal.to_string());
+                }
+                continue;
+            }
+        };
         let (tls, shared, handle) = (tls.clone(), shared.clone(), handle.clone());
-        connections.spawn(async move {
-            let stream: Box<dyn Stream> = match tls {
-                None => Box::new(tcp),
+        let tcp = Marked::new(tcp, &place, &open);
+        let abort = tasks.spawn(async move {
+            let (inner, tls): (Box<dyn Stream>, bool) = match tls {
+                None => (Box::new(tcp), false),
                 Some(tls) => match tls.accept(tcp, ()).await {
-                    Ok((stream, ())) => Box::new(stream),
+                    Ok((stream, ())) => (Box::new(stream), true),
                     Err(e) => {
-                        tracing::debug!(
-                            target: "worker.receiver_handshake_failed",
+                        tracing::trace!(
+                            name: "receiver_handshake_failed", target: "sources",
                             subject = %peer,
                             error = %e,
                             "a sender's TLS handshake failed"
                         );
+                        offer_closed(&*shared, &remote, true, &format!("TLS handshake failed: {e}"));
                         return;
                     }
                 },
             };
-            // A dual-stack socket sees an IPv4 sender as `::ffff:a.b.c.d`; it is named as the IPv4 address it is.
-            let peer = peer.ip().to_canonical();
-            let remote = Arc::from(peer.to_string());
+            let stream = Box::new(Tapped {
+                inner,
+                tap: Some(shared.clone() as Arc<dyn RawTap>),
+                remote: remote.clone(),
+                tls,
+            });
             handle(Connection {
                 stream,
-                peer,
                 inlet: Inlet { remote, shared },
             })
             .await;
         });
+        open.lock().unwrap_or_else(|e| e.into_inner()).started(place.id, abort);
     }
+}
+
+/// What a receiver says of the connections its limits close or refuse: each kind once, then again every
+/// [`crate::logs::RELOG_EVERY`] while it goes on, so a sender that opens connections by the thousand fills no log.
+struct Said {
+    limits: ConnectionLimits,
+    /// The worker's budget for every receiver's connections.
+    budget: usize,
+    closed: [crate::logs::Repeat; 4],
+    refused: [crate::logs::Repeat; 3],
+}
+
+impl Said {
+    fn of(open: &Arc<Mutex<Connections>>) -> Said {
+        let open = open.lock().unwrap_or_else(|e| e.into_inner());
+        Said {
+            limits: open.limits(),
+            budget: open.budget(),
+            closed: Default::default(),
+            refused: Default::default(),
+        }
+    }
+
+    /// Admits a connection from `peer` to `open`, logging what it closed to make room. Returns the connection's place, or
+    /// why it is refused.
+    fn admit(&mut self, open: &Arc<Mutex<Connections>>, peer: std::net::IpAddr) -> Result<connections::Place, Refusal> {
+        let (closed, place) = Connections::admit(open, peer);
+        for (gone, why) in closed {
+            self.closed(gone, why);
+        }
+        place.map_err(|why| self.refused(peer, why))
+    }
+
+    /// Closes the connections of `open` that have idled for its idle timeout, and logs it.
+    fn close_idle(&mut self, open: &Arc<Mutex<Connections>>) {
+        let closed = open.lock().unwrap_or_else(|e| e.into_inner()).close_idle();
+        for peer in closed {
+            self.closed(peer, connections::Closed::Idle);
+        }
+    }
+
+    fn closed(&mut self, peer: std::net::IpAddr, why: connections::Closed) {
+        let limits = self.limits;
+        let at = match why {
+            connections::Closed::ForNew => 0,
+            connections::Closed::ForNewFromSender => 1,
+            connections::Closed::Idle => 2,
+            connections::Closed::ForNewOnWorker => 3,
+        };
+        if !self.closed[at].due() {
+            return;
+        }
+        let message = match why {
+            connections::Closed::ForNew => format!(
+                "the receiver holds its maxConnections, {}, and closed the connection idle longest for a new one",
+                limits.max.unwrap_or(self.budget)
+            ),
+            connections::Closed::ForNewFromSender => format!(
+                "the receiver holds its maxConnectionsPerSender, {}, from this sender, and closed the sender's \
+                 connection idle longest for a new one",
+                limits.per_sender.unwrap_or_default()
+            ),
+            connections::Closed::Idle => format!(
+                "the receiver closed a connection that sent nothing for its idleTimeoutSecs, {}, while it waited",
+                limits.idle.unwrap_or_default().as_secs()
+            ),
+            connections::Closed::ForNewOnWorker => format!(
+                "the worker's receivers hold the {} connections its open-file limit leaves room for, and closed the \
+                 connection idle longest on any of them for a new one",
+                self.budget
+            ),
+        };
+        tracing::warn!(name: "receiver_connection_closed", target: "sources", subject = %peer, "{message}");
+    }
+
+    /// Logs that a connection from `peer` was refused, and returns why.
+    fn refused(&mut self, peer: std::net::IpAddr, why: connections::Refused) -> Refusal {
+        let at = match why {
+            connections::Refused::Full => 0,
+            connections::Refused::FullFromSender => 1,
+            connections::Refused::WorkerFull => 2,
+        };
+        let refusal = Refusal {
+            why,
+            limits: self.limits,
+            budget: self.budget,
+        };
+        if self.refused[at].due() {
+            tracing::warn!(name: "receiver_connection_refused", target: "sources", subject = %peer, "{refusal}");
+        }
+        refusal
+    }
+}
+
+/// Whether a sender at `peer` may connect, or send a datagram. An empty list admits any.
+/// Why a sender from `peer` was refused unread, naming it so an administrator can add it to allowFrom.
+fn refused(peer: std::net::IpAddr) -> String {
+    format!("refused: {peer} is not in any of the receiver's allowFrom networks")
+}
+
+pub(super) fn admits(allow_from: &[ipnetwork::IpNetwork], peer: std::net::IpAddr) -> bool {
+    allow_from.is_empty() || allow_from.iter().any(|network| network.contains(peer))
 }
 
 /// The sockets this process's supervisor handed it, by what each listens on.
@@ -3026,20 +3514,36 @@ fn socket(listen: Listen) -> std::io::Result<socket2::Socket> {
 /// Binds `listen` with `SO_REUSEADDR` on unix, so a port a stopped process held a moment ago binds again.
 /// `[::]` is every address of the host, so it is bound dual-stack, taking IPv4 senders as well; on a host without
 /// IPv6, it binds `0.0.0.0` instead.
-pub(crate) fn bind(listen: Listen) -> std::io::Result<socket2::Socket> {
+pub fn bind(listen: Listen) -> std::io::Result<socket2::Socket> {
+    bind_reusing(listen, cfg!(unix))
+}
+
+/// Binds `listen` without `SO_REUSEADDR`, so no socket shares it: a UDP port another socket holds is refused rather
+/// than split between the two, as a TCP port that is listened on already is.
+fn bind_alone(listen: Listen) -> std::io::Result<socket2::Socket> {
+    bind_reusing(listen, false)
+}
+
+fn bind_reusing(listen: Listen, reuse: bool) -> std::io::Result<socket2::Socket> {
     let address = listen.address;
     let every_v6 = address.ip() == std::net::Ipv6Addr::UNSPECIFIED;
-    match bind_one(listen.transport, address, every_v6) {
+    match bind_one(listen.transport, address, every_v6, reuse) {
         Err(e) if every_v6 && no_ipv6(&e) => bind_one(
             listen.transport,
             SocketAddr::new(std::net::Ipv4Addr::UNSPECIFIED.into(), address.port()),
             false,
+            reuse,
         ),
         bound => bound,
     }
 }
 
-fn bind_one(transport: Transport, address: SocketAddr, dual_stack: bool) -> std::io::Result<socket2::Socket> {
+fn bind_one(
+    transport: Transport,
+    address: SocketAddr,
+    dual_stack: bool,
+    reuse: bool,
+) -> std::io::Result<socket2::Socket> {
     let protocol = match transport {
         Transport::Tcp => socket2::Protocol::TCP,
         Transport::Udp => socket2::Protocol::UDP,
@@ -3049,8 +3553,9 @@ fn bind_one(transport: Transport, address: SocketAddr, dual_stack: bool) -> std:
         socket_type(transport),
         Some(protocol),
     )?;
-    #[cfg(unix)]
-    socket.set_reuse_address(true)?;
+    if reuse {
+        socket.set_reuse_address(true)?;
+    }
     if dual_stack {
         socket.set_only_v6(false)?;
     }
@@ -3105,7 +3610,7 @@ impl Sockets {
                     self.held.insert(listen, socket);
                 }
                 Err(e) => tracing::warn!(
-                    target: "worker.receiver_not_bound",
+                    name: "receiver_not_bound", target: "sources",
                     subject = %named(listen),
                     error = %e,
                     "the worker could not hold a receiver's address across deploys; the runtime will try it itself"
@@ -3139,6 +3644,16 @@ impl Sockets {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn allow_from_admits_only_its_networks() {
+        let allow: Vec<ipnetwork::IpNetwork> = vec!["10.0.0.0/8".parse().unwrap(), "fd00::/8".parse().unwrap()];
+        assert!(admits(&allow, "10.1.2.3".parse().unwrap()));
+        assert!(admits(&allow, "fd00::1".parse().unwrap()));
+        assert!(!admits(&allow, "192.168.1.1".parse().unwrap()));
+        assert!(!admits(&allow, "::1".parse().unwrap()));
+        assert!(admits(&[], "192.168.1.1".parse().unwrap()));
+    }
 
     impl Queued {
         /// The bytes of a record sent as bytes.
@@ -3208,6 +3723,21 @@ mod tests {
         assert!(!answered(&mut second));
         shared.answer_through(2);
         assert!(answered(&mut second));
+    }
+
+    /// A stopping receiver takes nothing new, hands over what it holds, and answers its senders once that lands.
+    #[test]
+    fn a_stopping_receiver_refuses_new_requests_and_hands_over_the_rest() {
+        let shared = Shared::default();
+        let Admitted::Later(mut held) = admit(&shared, records(2)) else {
+            panic!()
+        };
+        assert!(shared.stop_taking(), "it still holds a request");
+        assert!(matches!(admit(&shared, records(1)), Admitted::Busy));
+        assert_eq!(shared.take(10, 1 << 20, Duration::ZERO).len(), 2);
+        assert!(!shared.stop_taking(), "it has handed everything over");
+        shared.answer_through(1);
+        assert!(answered(&mut held));
     }
 
     /// A request is held whole and its records cut as they are taken, so one taken over several polls is answered
@@ -3593,6 +4123,7 @@ mod tests {
                 })
                 .collect(),
             max_request_bytes: 1024,
+            answer_after_delivery: true,
         }
     }
 
@@ -3678,6 +4209,11 @@ mod tests {
     /// Serves a receiver that streams whose handler admits each read as lines and writes `ok` once they are
     /// delivered.
     fn serve_lines(tls: Option<rustls::ServerConfig>) -> (SocketAddr, Arc<Shared>) {
+        serve_lines_within(tls, ConnectionLimits::default())
+    }
+
+    /// [`serve_lines`], holding connections to `limits`.
+    fn serve_lines_within(tls: Option<rustls::ServerConfig>, limits: ConnectionLimits) -> (SocketAddr, Arc<Shared>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -3685,6 +4221,8 @@ mod tests {
         let shared = Arc::new(Shared::default());
         tokio::spawn(serve_streams(
             tokio::net::TcpListener::from_std(listener).unwrap(),
+            Vec::new(),
+            limits,
             tls,
             shared.clone(),
             |mut c: Connection| async move {
@@ -3705,6 +4243,104 @@ mod tests {
             },
         ));
         (at, shared)
+    }
+
+    /// Whether the receiver closes `sender`'s connection within `within`. It reads and discards any answer the receiver
+    /// sends first.
+    async fn closed(sender: &mut tokio::net::TcpStream, within: Duration) -> bool {
+        use tokio::io::AsyncReadExt;
+        let mut read = [0; 16];
+        let ends = async { while let Ok(1..) = sender.read(&mut read).await {} };
+        tokio::time::timeout(within, ends).await.is_ok()
+    }
+
+    /// At its cap, with no connection idle long enough to give way, a receiver closes the new one and serves the
+    /// ones it holds. Its idle timeout closes a connection that sends nothing while the receiver waits on it, which
+    /// makes room. It never closes a connection whose records wait on delivery: the receiver is not reading from it, so
+    /// the sender is not idle.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_receiver_holds_its_connections_to_its_limits() {
+        use tokio::io::AsyncWriteExt;
+        let limits = ConnectionLimits {
+            max: Some(1),
+            per_sender: None,
+            idle: Some(Duration::from_secs(1)),
+        };
+        let (at, shared) = serve_lines_within(None, limits);
+        let mut held = tokio::net::TcpStream::connect(at).await.unwrap();
+        held.write_all(b"a\n").await.unwrap();
+        assert_eq!(take_all(&shared, 1).await.len(), 1);
+        let mut refused = tokio::net::TcpStream::connect(at).await.unwrap();
+        assert!(
+            closed(&mut refused, Duration::from_secs(5)).await,
+            "a connection past the cap is closed"
+        );
+        assert!(
+            !closed(&mut held, Duration::from_secs(2)).await,
+            "a connection waiting on its delivery is not idle"
+        );
+
+        shared.answer_through(1);
+        assert!(
+            closed(&mut held, Duration::from_secs(5)).await,
+            "a connection idle 1 second is closed"
+        );
+        let mut next = tokio::net::TcpStream::connect(at).await.unwrap();
+        next.write_all(b"b\n").await.unwrap();
+        let taken = take_all(&shared, 1).await;
+        assert_eq!(
+            taken.iter().map(|q| q.bytes().to_vec()).collect::<Vec<_>>(),
+            [b"b".to_vec()]
+        );
+    }
+
+    /// An HTTP server holds its connections to its limits as a receiver that streams does. Its idle timeout closes a
+    /// keep-alive connection that hyper waits on for its next request, and never one whose request it is answering.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_http_server_holds_its_connections_to_its_limits() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let limits = ConnectionLimits {
+            max: Some(1),
+            per_sender: None,
+            idle: Some(Duration::from_secs(1)),
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let at = listener.local_addr().unwrap();
+        let router = axum::Router::new()
+            .route("/", axum::routing::get(|| async { "ok" }))
+            .route(
+                "/slow",
+                axum::routing::get(|| async {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    "ok"
+                }),
+            );
+        let _handle = serve_router(listener, None, router, at, "a test", None, limits).unwrap();
+        let asks = async |sender: &mut tokio::net::TcpStream, path: &str| {
+            let request = format!("GET {path} HTTP/1.1\r\nhost: test\r\n\r\n");
+            sender.write_all(request.as_bytes()).await.unwrap();
+            let mut answer = [0; 512];
+            let n = sender.read(&mut answer).await.unwrap();
+            String::from_utf8_lossy(&answer[..n]).into_owned()
+        };
+        let mut held = tokio::net::TcpStream::connect(at).await.unwrap();
+        assert!(asks(&mut held, "/").await.starts_with("HTTP/1.1 200"));
+        let mut refused = tokio::net::TcpStream::connect(at).await.unwrap();
+        // Well within the idle timeout, so only the cap could close it.
+        assert!(
+            closed(&mut refused, Duration::from_millis(300)).await,
+            "a connection past the cap is closed"
+        );
+        assert!(
+            closed(&mut held, Duration::from_secs(5)).await,
+            "a keep-alive connection idle 1 second is closed"
+        );
+        let mut next = tokio::net::TcpStream::connect(at).await.unwrap();
+        assert!(
+            asks(&mut next, "/slow").await.starts_with("HTTP/1.1 200"),
+            "a connection whose request is answered after its idle timeout is kept"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -3820,6 +4456,7 @@ mod tests {
             authorities: None,
             trust_public: true,
             side: crate::io::trust::Side::Server,
+            senders: Default::default(),
         };
         let tls = server_tls(&serving, &secrets).unwrap();
         assert!(tls.alpn_protocols.is_empty(), "a stream offers no application protocol");

@@ -1081,8 +1081,9 @@ impl FakeModel {
             .collect()
     }
 
-    /// "ok" to the check made when AI agents are turned on. To an agent's turn, one call: a write when the person
-    /// said "write", a read otherwise; then, given its result, the status it came back with.
+    /// "ok" to the check made when AI agents are turned on. To an agent's turn, one call: when the person said
+    /// "read back <path>", a read of that path, its query split from it; otherwise a write when the person said "write", and a
+    /// read when not; then, given its result, the status it came back with.
     fn answer(body: &serde_json::Value) -> serde_json::Value {
         let text = |text: String| {
             serde_json::json!({
@@ -1104,12 +1105,21 @@ impl FakeModel {
         if asked.contains("Summarize the conversation") {
             return text("They read what runs in shared.".to_string());
         }
-        let input = match asked.contains("write") {
-            true => serde_json::json!({
+        let input = match asked.split_once("read back ") {
+            Some((_, path)) => {
+                let (path, query) = path.trim().split_once('?').unwrap_or((path.trim(), ""));
+                let query: serde_json::Map<String, serde_json::Value> = query
+                    .split('&')
+                    .filter_map(|pair| pair.split_once('='))
+                    .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
+                    .collect();
+                serde_json::json!({"method": "GET", "path": path, "query": query})
+            }
+            None if asked.contains("write") => serde_json::json!({
                 "method": "PUT", "path": "/api/areas/shared/pipelines/p1", "query": {"branch": "agent-work"},
                 "body": {"id": "p1", "name": "p1", "steps": []},
             }),
-            false => serde_json::json!({"method": "GET", "path": "/api/areas/shared/pipelines"}),
+            None => serde_json::json!({"method": "GET", "path": "/api/areas/shared/pipelines"}),
         };
         serde_json::json!({
             "content": [{"type": "tool_use", "id": "tu_1", "name": "request", "input": input}],
@@ -1403,6 +1413,96 @@ fn a_persons_agent_calls_the_api_as_them_within_what_they_let_it() {
     assert_eq!(leader.delete_as(&op, &format!("/api/agent/conversations/{id}")), 200);
     let (status, _) = leader.get_as(&op.session, &format!("/api/agent/conversations/{id}"));
     assert_eq!(status, 404);
+}
+
+/// An agent reads back the conversation it works in, as `this`, by a range of turns or a search, and no other.
+#[test]
+fn an_agent_reads_back_only_its_own_conversation() {
+    let leader = start("agent-read-back");
+    let op = operator(&leader);
+    let model = FakeModel::start();
+    agents_on(&leader, &op, &model);
+    let start = |message: &str| {
+        let (status, started) = leader.post_as(
+            &op,
+            "/api/agent/conversations",
+            serde_json::json!({ "message": message }),
+        );
+        assert_eq!(status, 202, "{started}");
+        let id = started["id"].as_str().unwrap().to_string();
+        turn_ended(&leader, &op, &id);
+        id
+    };
+    let say = |id: &str, message: &str| {
+        let (status, _) = leader.post_as(
+            &op,
+            &format!("/api/agent/conversations/{id}/messages"),
+            serde_json::json!({ "message": message }),
+        );
+        assert_eq!(status, 202);
+        turn_ended(&leader, &op, id)
+    };
+    let last_result = |read: &serde_json::Value| {
+        let items = read["items"].as_array().unwrap();
+        let result = items.iter().rev().find(|i| i["kind"] == "result").unwrap();
+        result["output"].as_str().unwrap().to_string()
+    };
+
+    let id = start("What runs in shared?");
+    let (status, _) = leader.post_as(
+        &op,
+        &format!("/api/agent/conversations/{id}/context"),
+        serde_json::json!({ "summarize": true }),
+    );
+    assert_eq!(status, 202);
+    turn_ended(&leader, &op, &id);
+
+    // A search gives a snippet of each item holding every word, with the turn it is in.
+    let (status, found) = leader.get_as(&op.session, &format!("/api/agent/conversations/{id}?q=RUNS%20shared"));
+    assert_eq!(status, 200, "{found}");
+    let items = found["conversation"]["items"].as_array().unwrap();
+    assert!(
+        items.contains(&serde_json::json!({"kind": "message", "turn": 0, "snippet": "What runs in shared?"})),
+        "{found}"
+    );
+    assert!(items.iter().all(|i| i.get("snippet").is_some()), "{found}");
+    // A search for no word would match every item.
+    let (status, _) = leader.get_as(&op.session, &format!("/api/agent/conversations/{id}?q=%20"));
+    assert_eq!(status, 400);
+    // Naming no turns, the GUI reads the conversation whole, as before.
+    let (_, whole) = leader.get_as(&op.session, &format!("/api/agent/conversations/{id}"));
+    assert!(whole["conversation"].get("turns").is_none(), "{whole}");
+    assert!(whole["conversation"]["items"][0].get("turn").is_none(), "{whole}");
+
+    // Past its summary, the agent reads how the conversation started.
+    let read = say(&id, "read back /api/agent/conversations/this?to=1");
+    let output = last_result(&read);
+    let (status, page) = output.split_once('\n').unwrap();
+    assert_eq!(status, "200", "{output}");
+    let page: serde_json::Value = serde_json::from_str(page).unwrap();
+    assert_eq!(
+        page["conversation"]["items"],
+        serde_json::json!([{"kind": "message", "text": "What runs in shared?", "turn": 0}]),
+        "{page}"
+    );
+    assert!(page["conversation"]["turns"].as_u64().unwrap() > 4, "{page}");
+    // `from` alone reads that one turn.
+    let read = say(&id, "read back /api/agent/conversations/this?from=0");
+    let output = last_result(&read);
+    let page: serde_json::Value = serde_json::from_str(output.split_once('\n').unwrap().1).unwrap();
+    assert_eq!(
+        page["conversation"]["items"],
+        serde_json::json!([{"kind": "message", "text": "What runs in shared?", "turn": 0}]),
+        "{page}"
+    );
+    // Naming no turns and no search, the agent is refused: the whole conversation would fill its context.
+    let read = say(&id, "read back /api/agent/conversations/this");
+    assert!(last_result(&read).starts_with("400\n"), "{read}");
+
+    // Any other conversation, even one of the same person's, reads to the agent as not there.
+    let other = start("Nothing much.");
+    let read = say(&other, &format!("read back /api/agent/conversations/{id}"));
+    assert!(last_result(&read).starts_with("404\n"), "{read}");
 }
 
 /// A username is taken once, whatever case it is typed in.
@@ -3182,6 +3282,10 @@ fn with_west_roles_and(label: &str, extra: &[(&str, &str)]) -> (Leader, Operator
             "smeltr-west-edit",
             serde_json::json!({ "groups": ["smeltr-west-edit"], "areas": { "west": "editor" } }),
         ),
+        (
+            "smeltr-west-deploy",
+            serde_json::json!({ "groups": ["smeltr-west-deploy"], "areas": { "west": "deployer" } }),
+        ),
     ];
     for (name, role) in roles {
         let (status, body) = leader.put_as(&op, &format!("/api/roles/{name}"), role);
@@ -3268,6 +3372,72 @@ fn an_editor_saves_in_their_group_and_does_not_deploy() {
     assert_eq!(status, 403, "an editor deployed a commit: {body}");
     let (status, body) = leader.get_as(&editor.session, "/api/accounts");
     assert_eq!(status, 403, "an editor read the roster: {body}");
+}
+
+/// `branch` saved in west and opened for review, as `who`.
+fn open_a_change(leader: &Leader, who: &Operator, branch: &str) {
+    let (status, body) = leader.put_as(who, &format!("/api/areas/west/sources?branch={branch}"), a_source());
+    assert_eq!(status, 200, "{body}");
+    let (status, body) = leader.post_as(
+        who,
+        &format!("/api/branches/{branch}/open"),
+        serde_json::json!({ "title": "A storefront source", "description": "" }),
+    );
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["ok"], true, "{body}");
+}
+
+/// What approving `branch`'s change as `who` answers.
+fn approve(leader: &Leader, who: &Operator, branch: &str) -> (u16, serde_json::Value) {
+    leader.post_as(
+        who,
+        &format!("/api/branches/{branch}/reviews"),
+        serde_json::json!({ "verdict": "approve", "body": "" }),
+    )
+}
+
+/// Approving takes deployer: a viewer approves nobody's change.
+#[test]
+fn a_viewer_approves_no_change() {
+    let (leader, op, provider) = with_west_roles("review-viewer");
+    open_a_change(&leader, &op, "theirs");
+    let viewer = provider_account(&leader, &provider, &["smeltr-west-view"]);
+    let (status, body) = approve(&leader, &viewer, "theirs");
+    assert_eq!(status, 403, "a viewer approved: {body}");
+}
+
+/// An editor opens a change but approves none, their own or anyone else's.
+#[test]
+fn an_editor_approves_no_change_not_even_their_own() {
+    let (leader, op, provider) = with_west_roles("review-editor");
+    open_a_change(&leader, &op, "theirs");
+    let editor = provider_account(&leader, &provider, &["smeltr-west-edit"]);
+    open_a_change(&leader, &editor, "dana");
+    let (status, body) = approve(&leader, &editor, "dana");
+    assert_eq!(status, 403, "an editor approved their own change: {body}");
+    let (status, body) = approve(&leader, &editor, "theirs");
+    assert_eq!(status, 403, "an editor approved somebody else's change: {body}");
+}
+
+/// A deployer approves any change in their group, their own among them: one person may work alone.
+#[test]
+fn a_deployer_approves_any_change_their_own_too() {
+    let (leader, op, provider) = with_west_roles("review-deployer");
+    open_a_change(&leader, &op, "theirs");
+    let deployer = provider_account(&leader, &provider, &["smeltr-west-deploy"]);
+    open_a_change(&leader, &deployer, "dana");
+    for branch in ["dana", "theirs"] {
+        let (status, body) = approve(&leader, &deployer, branch);
+        assert_eq!(status, 200, "{branch}: {body}");
+        assert_eq!(body["ok"], true, "{branch}: {body}");
+        let (_, timeline) = leader.get_as(&deployer.session, &format!("/api/branches/{branch}/timeline"));
+        let approved = timeline["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["kind"] == "approved");
+        assert!(approved, "{branch}: {timeline}");
+    }
 }
 
 /// Refreshes each OIDC session at the provider this often, so the tests below wait seconds rather than minutes.

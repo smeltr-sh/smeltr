@@ -3,6 +3,9 @@
   import Logo from '#lib/components/Logo.svelte';
   import HomeDataFlow from '#lib/components/HomeDataFlow.svelte';
   import { source } from '#lib/release.ts';
+  import { latest } from '#lib/releases.ts';
+  import VideoPlayer from '#lib/components/VideoPlayer.svelte';
+  import { walkthrough } from '#lib/videos.ts';
 </script>
 
 <svelte:head>
@@ -13,6 +16,12 @@
   />
 </svelte:head>
 
+{#if latest}
+  <a class="release-ribbon" href="/releases/{latest.version}">
+    <span><strong>Smeltr {latest.version}</strong> is out.</span>
+    <span class="go">What's in it →</span>
+  </a>
+{/if}
 <div class="marketing">
   <section class="page-hero home-hero" aria-labelledby="smeltr-heading">
     <div class="wordmark">
@@ -45,6 +54,21 @@
     <p class="connection-links">
       <a href="/siem-costs">Cut SIEM costs →</a>
       <a href="/one-schema">Put every source in one schema →</a>
+    </p>
+  </section>
+
+  <section class="video-section" id="walkthrough" aria-labelledby="video-heading">
+    <div class="section-intro centered">
+      <p class="eyebrow">Walkthrough · {walkthrough.minutes} min</p>
+      <h2 id="video-heading">{walkthrough.title}</h2>
+      <p>
+        Find two problems on a demo fleet, fix them on a branch, lock the result as a test, and open
+        the fix for review.
+      </p>
+    </div>
+    <div class="player"><VideoPlayer video={walkthrough} /></div>
+    <p class="connection-links">
+      <a href="/demo/try/" rel="external">Try it yourself in the demo →</a>
     </p>
   </section>
 
@@ -84,6 +108,44 @@
 </div>
 
 <style>
+  .release-ribbon {
+    display: flex;
+    justify-content: center;
+    gap: 1.25rem;
+    padding: 0.6rem 1.5rem;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    color: var(--ink);
+    font-size: 0.9rem;
+    text-decoration: none;
+  }
+  .release-ribbon span:first-child {
+    color: var(--dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .release-ribbon strong {
+    color: var(--ink);
+  }
+  .release-ribbon .go {
+    color: var(--accent);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .release-ribbon:hover .go {
+    text-decoration: underline;
+  }
+  .marketing .video-section {
+    border-top: 1px solid var(--border);
+  }
+  .player {
+    max-width: 60rem;
+    margin: 0 auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    overflow: hidden;
+  }
   .marketing .home-hero {
     text-align: center;
     padding-top: clamp(2rem, 5vw, 4rem);

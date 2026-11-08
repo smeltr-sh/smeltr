@@ -146,15 +146,18 @@ fn build_bare_repo(path: &Path) -> Result<(), GitError> {
     let repo = gix::init_bare(path).map_err(|e| GitError::failed(format!("creating {}: {e}", path.display())))?;
 
     use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit};
-    repo.edit_reference(RefEdit {
-        change: Change::Update {
-            log: LogChange::default(),
-            expected: PreviousValue::Any,
-            new: gix::refs::Target::Symbolic(full_name(&format!("refs/heads/{MAIN_BRANCH}"))?),
-        },
-        name: full_name("HEAD")?,
-        deref: false,
-    })
+    edit_refs(
+        &repo,
+        vec![RefEdit {
+            change: Change::Update {
+                log: LogChange::default(),
+                expected: PreviousValue::Any,
+                new: gix::refs::Target::Symbolic(full_name(&format!("refs/heads/{MAIN_BRANCH}"))?),
+            },
+            name: full_name("HEAD")?,
+            deref: false,
+        }],
+    )
     .map_err(|e| GitError::failed(format!("pointing HEAD at {MAIN_BRANCH}: {e}")))?;
     // Unstamped with commits in it reads as pre-release on the next start, so it is stamped before it is in place.
     super::steps::stamp_new_repo(path).map_err(GitError::failed)
@@ -722,9 +725,19 @@ fn commit_tree_in(
         message: message.into(),
         extra_headers: Vec::new(),
     };
-    repo.write_object(&commit)
+    let id = repo
+        .write_object(&commit)
         .map(|id| id.detach())
-        .map_err(|e| GitError::failed(format!("writing a commit: {e}")))
+        .map_err(|e| GitError::failed(format!("writing a commit: {e}")))?;
+    tracing::trace!(
+        name: "commit_written", target: "git",
+        commit = %id,
+        %tree,
+        parents = parents.len(),
+        author = %author.id,
+        "a commit was written"
+    );
+    Ok(id)
 }
 
 /// Point `reference` at `new`, but only while it still holds `old` -- `None` for "only if it does not exist". The
@@ -756,19 +769,54 @@ fn swap_ref_in(
         Some(old) => PreviousValue::MustExistAndMatch(gix::refs::Target::Object(old)),
         None => PreviousValue::MustNotExist,
     };
-    repo.edit_reference(RefEdit {
-        change: Change::Update {
-            log: LogChange {
-                message: "smeltr".into(),
-                ..Default::default()
+    edit_refs(
+        repo,
+        vec![RefEdit {
+            change: Change::Update {
+                log: LogChange {
+                    message: "smeltr".into(),
+                    ..Default::default()
+                },
+                expected,
+                new: gix::refs::Target::Object(new),
             },
-            expected,
-            new: gix::refs::Target::Object(new),
-        },
-        name: full_name(reference)?,
-        deref: false,
-    })
-    .map_err(|e| GitError::failed(format!("{reference} did not move: {e}")))?;
+            name: full_name(reference)?,
+            deref: false,
+        }],
+    )
+    .map_err(|e| GitError::failed(format!("{reference} did not move: {e}")))
+}
+
+/// Apply `edits` as one transaction. Every ref the leader moves moves here but the one a fetch from the git remote
+/// moves (`remote::fetch` says that one), so each move is said once, at trace, and the advertisement a worker fetches
+/// is made again. Pushes from git clients are refused, so nothing else moves a ref.
+fn edit_refs(repo: &gix::Repository, edits: Vec<gix::refs::transaction::RefEdit>) -> Result<(), String> {
+    use gix::refs::transaction::Change;
+    fn named(target: &gix::refs::Target) -> String {
+        match target {
+            gix::refs::Target::Object(id) => id.to_string(),
+            gix::refs::Target::Symbolic(name) => name.as_bstr().to_string(),
+        }
+    }
+    for edit in repo.edit_references(edits).map_err(|e| e.to_string())? {
+        let reference = edit.name.as_bstr().to_string();
+        match &edit.change {
+            Change::Update { new, expected, .. } => tracing::trace!(
+                name: "ref_moved", target: "git",
+                %reference,
+                from = match expected {
+                    gix::refs::transaction::PreviousValue::MustExistAndMatch(old)
+                    | gix::refs::transaction::PreviousValue::ExistingMustMatch(old) => Some(named(old)),
+                    _ => None,
+                },
+                to = %named(new),
+                "a ref moved"
+            ),
+            Change::Delete { .. } => {
+                tracing::trace!(name: "ref_deleted", target: "git", %reference, "a ref was deleted")
+            }
+        }
+    }
     forget_advertisement();
     Ok(())
 }
@@ -777,19 +825,20 @@ fn swap_ref_in(
 fn delete_ref(repo: &gix::Repository, reference: &str, at: Option<gix::ObjectId>) -> Result<(), GitError> {
     use gix::refs::transaction::{Change, PreviousValue, RefEdit, RefLog};
 
-    repo.edit_reference(RefEdit {
-        change: Change::Delete {
-            expected: at.map_or(PreviousValue::Any, |at| {
-                PreviousValue::MustExistAndMatch(gix::refs::Target::Object(at))
-            }),
-            log: RefLog::AndReference,
-        },
-        name: full_name(reference)?,
-        deref: false,
-    })
-    .map_err(|e| GitError::failed(format!("{reference} was not deleted: {e}")))?;
-    forget_advertisement();
-    Ok(())
+    edit_refs(
+        repo,
+        vec![RefEdit {
+            change: Change::Delete {
+                expected: at.map_or(PreviousValue::Any, |at| {
+                    PreviousValue::MustExistAndMatch(gix::refs::Target::Object(at))
+                }),
+                log: RefLog::AndReference,
+            },
+            name: full_name(reference)?,
+            deref: false,
+        }],
+    )
+    .map_err(|e| GitError::failed(format!("{reference} was not deleted: {e}")))
 }
 
 // -- reading a commit -------------------------------------------------------
@@ -1685,8 +1734,9 @@ fn thread_resolved(markers: &[Marker], root: &str) -> bool {
         .is_some_and(|m| m.kind == MarkerKind::Resolved)
 }
 
-/// Approve `branch`'s change or ask for changes to it, as `author`. Only an open change is reviewed, and not by
-/// whoever opened it. Asking for changes says what to change; an approval may say nothing.
+/// Approve `branch`'s change or ask for changes to it, as `author`. Only an open change is reviewed, by anyone,
+/// whoever opened it among them: one administrator works alone. Asking for changes says what to change; an approval
+/// may say nothing.
 pub fn review_change(
     repo_path: &Path,
     branch: &str,
@@ -1700,18 +1750,10 @@ pub fn review_change(
         return Err(GitError::invalid("asking for changes needs to say what to change"));
     }
     let tip = change_tip(repo_path, branch)?;
-    let change = match read_change(repo_path, branch)? {
-        Some(change) if change.state == ChangeState::Open => change,
+    match read_change(repo_path, branch)? {
+        Some(change) if change.state == ChangeState::Open => {}
         Some(_) => return Err(GitError::conflict(format!("{branch:?} is not open for review"))),
         None => return Err(GitError::conflict(format!("{branch:?} was never opened for review"))),
-    };
-    // An empty id is an identity no account owns -- the leader's own, or one a marker could not name -- and two of
-    // those are not the same person.
-    if !change.author.id.is_empty() && change.author.id == author.id {
-        return Err(GitError::of(
-            ErrorKind::Forbidden,
-            "you opened this change, so somebody else reviews it",
-        ));
     }
     write_marker(
         repo_path,
@@ -2055,9 +2097,8 @@ fn squash_change_from(
     }
 
     let head = main_head(&repo).ok_or_else(|| GitError::failed(format!("{MAIN_BRANCH} has no commit")))?;
-    // The branch is not behind `main`, so what a squash merge would produce is the tree the branch already holds,
-    // less its left-out samples.
-    let tree = deploying_tree(&repo, &head, &tip)?;
+    // The branch is not behind `main`, so what a squash merge would produce is the tree the branch already holds.
+    let tree = tree_of(&repo, &tip)?;
     if tree == tree_of(&repo, &head)? {
         return Err(GitError::conflict(format!(
             "{branch:?} makes no difference to {MAIN_BRANCH} -- there is nothing to deploy"
@@ -2092,75 +2133,6 @@ fn squash_change_from(
     })
 }
 
-/// Of `changed`, the files a branch at `tip` changes, each with whether it was removed: the samples no test beside
-/// them names, by path. A deploy leaves them out. A sample removed is never left out, and a bundle holding a test
-/// that does not read leaves none out, since what that test names cannot be known.
-pub fn left_out_samples<'a>(
-    repo_path: &Path,
-    tip: &str,
-    changed: impl IntoIterator<Item = (&'a str, bool)>,
-) -> std::collections::BTreeSet<String> {
-    let mut named: std::collections::HashMap<&str, Option<std::collections::HashSet<String>>> =
-        std::collections::HashMap::new();
-    let mut left_out = std::collections::BTreeSet::new();
-    for (path, removed) in changed {
-        // The bundle a sample is in: `groups/<id>/`, `shared/`, or the root's empty one.
-        let bundle = path
-            .rsplit_once('/')
-            .and_then(|(dir, _)| dir.strip_suffix(crate::config_file::SAMPLES_DIR))
-            .filter(|bundle| !removed && (bundle.is_empty() || bundle.ends_with('/')));
-        let Some(bundle) = bundle else {
-            continue;
-        };
-        let named = named.entry(bundle).or_insert_with(|| {
-            let (tests, unreadable) =
-                crate::config_file::list_tests(&mut super::tree::TreeFiles::new(repo_path, tip, bundle));
-            unreadable.is_empty().then(|| {
-                tests
-                    .iter()
-                    .filter_map(|test| crate::config_file::sample_path(&test.sample).ok())
-                    .map(|within| format!("{bundle}{within}"))
-                    .collect()
-            })
-        });
-        if named.as_ref().is_some_and(|named| !named.contains(path)) {
-            left_out.insert(path.to_string());
-        }
-    }
-    left_out
-}
-
-/// `tip`'s tree with each of its left-out samples ([`left_out_samples`]) as `base` holds it: what deploying a branch
-/// at `tip` onto `base` puts on `main`.
-fn deploying_tree(repo_path: &Path, base: &str, tip: &str) -> Result<String, GitError> {
-    let git = open(repo_path)?;
-    let changed: Vec<(String, bool)> = tree_changes(&git, resolve(&git, base)?, resolve(&git, tip)?)?
-        .iter()
-        .map(|change| {
-            let removed = matches!(change, gix::object::tree::diff::ChangeDetached::Deletion { .. });
-            (change.location().to_string(), removed)
-        })
-        .collect();
-    let left_out: Vec<String> = left_out_samples(
-        repo_path,
-        tip,
-        changed.iter().map(|(path, removed)| (path.as_str(), *removed)),
-    )
-    .into_iter()
-    .collect();
-    if left_out.is_empty() {
-        return Ok(tree_at(&git, tip)?.to_string());
-    }
-    let edits: Vec<FileEdit> = left_out
-        .iter()
-        .cloned()
-        .zip(read_blobs(repo_path, base, &left_out)?)
-        .map(|(path, content)| FileEdit { path, content })
-        .collect();
-    let (_, tree) = tree_with(&git, tip, &edits)?;
-    Ok(tree.to_string())
-}
-
 /// Move `main` and the fleet to `squash` and delete its branch: the rest of an approval.
 pub fn deploy_squash(data_dir: &Path, squash: &Squash, author: &Actor) -> Result<(), GitError> {
     let (repo, branch) = (repo_path(data_dir), squash.branch.as_str());
@@ -2191,7 +2163,7 @@ pub fn deploy_squash(data_dir: &Path, squash: &Squash, author: &Actor) -> Result
     // already happened by here -- workers take it on their next heartbeat -- so a branch that will not go is
     // reported by it staying on the list rather than by an error that reads as "it did not deploy".
     if let Err(e) = delete_branch(data_dir, branch, Some(&squash.tip)) {
-        tracing::debug!(target: "git.branch_not_deleted", %branch, error = %e.message, "a merged branch was not deleted");
+        tracing::debug!(name: "branch_not_deleted", target: "git", %branch, error = %e.message, "a merged branch was not deleted");
     }
     Ok(())
 }
@@ -2368,12 +2340,10 @@ fn deploy_in(
         Main::Created => edits.push(swap_edit(&main_ref, new, None)?),
         Main::MovesFrom(old) => edits.push(swap_edit(&main_ref, new, Some(old))?),
     }
-    repo.edit_references(edits)
-        .map_err(|e| GitError::failed(format!("the fleet did not move: {e}")))?;
-    forget_advertisement();
+    edit_refs(repo, edits).map_err(|e| GitError::failed(format!("the fleet did not move: {e}")))?;
     let from = running.map(|id| id.to_string());
     tracing::info!(
-        target: "deploy.moved",
+        name: "moved", target: "deploy",
         commit = %new,
         from = from.as_deref(),
         %subject,
@@ -2452,13 +2422,14 @@ fn move_main_under(
     head: Option<gix::ObjectId>,
     held: gix::ObjectId,
 ) -> Result<(), GitError> {
-    git.edit_references([
-        swap_edit(&format!("refs/heads/{MAIN_BRANCH}"), new, head)?,
-        swap_edit(DEPLOYED_REF, held, Some(held))?,
-    ])
-    .map_err(|e| GitError::failed(e.to_string()))?;
-    forget_advertisement();
-    Ok(())
+    edit_refs(
+        git,
+        vec![
+            swap_edit(&format!("refs/heads/{MAIN_BRANCH}"), new, head)?,
+            swap_edit(DEPLOYED_REF, held, Some(held))?,
+        ],
+    )
+    .map_err(|e| GitError::failed(e.to_string()))
 }
 
 /// Whether the last move of the fleet was a rollback, which holds it until a release.
@@ -2570,7 +2541,7 @@ pub struct BranchSummary {
 }
 
 /// One file's difference between two revisions.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct FileChange {
     pub path: String,
     /// `A`, `M` or `D`. Rename detection is off, so a move is an add and a delete -- which is what a bundle's
@@ -2578,6 +2549,38 @@ pub struct FileChange {
     pub status: String,
     pub added: u32,
     pub removed: u32,
+}
+
+/// What two revisions differ in: each file, and the hunks of all of them or of one.
+#[derive(Debug, Default, serde::Serialize)]
+pub struct Diff {
+    pub files: Vec<FileChange>,
+    /// Unified diff, for the whole change or for one path alone.
+    pub diff: String,
+}
+
+/// [`Diff`] between two sets of files, each by its forward-slash path, for the whole of them or for `path` alone.
+/// A file only one side has is added or deleted.
+pub fn diff_of_files(
+    before: &std::collections::BTreeMap<String, Vec<u8>>,
+    after: &std::collections::BTreeMap<String, Vec<u8>>,
+    path: Option<&str>,
+) -> Result<Diff, GitError> {
+    let mut out = Diff::default();
+    let paths: std::collections::BTreeSet<&String> = before.keys().chain(after.keys()).collect();
+    for at in paths.into_iter().filter(|at| path.is_none_or(|p| p == at.as_str())) {
+        let (old, new) = (before.get(at), after.get(at));
+        let status = match (old, new) {
+            (None, _) => "A",
+            (_, None) => "D",
+            (Some(old), Some(new)) if old == new => continue,
+            _ => "M",
+        };
+        let (old, new) = (old.map_or(&[][..], Vec::as_slice), new.map_or(&[][..], Vec::as_slice));
+        out.files.push(file_change(at.clone(), status, old, new));
+        out.diff.push_str(&file_patch(at, old, new)?);
+    }
+    Ok(out)
 }
 
 /// One commit, as a history entry.
@@ -2792,21 +2795,12 @@ fn files_between(repo: &gix::Repository, old: gix::ObjectId, new: gix::ObjectId)
             gix::object::tree::diff::ChangeDetached::Deletion { .. } => "D",
             _ => "M",
         };
-        let before_bytes = side_bytes(repo, &before)?;
-        let after_bytes = side_bytes(repo, &after)?;
-        // A binary file has no lines to count, which is the `-` git writes for both.
-        let (added, removed) = if is_binary(&before_bytes) || is_binary(&after_bytes) {
-            (0, 0)
-        } else {
-            let (diff, _) = line_diff(&before_bytes, &after_bytes);
-            (diff.count_additions(), diff.count_removals())
-        };
-        changes.push(FileChange {
-            path: change.location().to_string(),
-            status: status.to_string(),
-            added,
-            removed,
-        });
+        changes.push(file_change(
+            change.location().to_string(),
+            status,
+            &side_bytes(repo, &before)?,
+            &side_bytes(repo, &after)?,
+        ));
     }
     Ok(changes)
 }
@@ -2850,27 +2844,47 @@ pub fn diff_between(repo_path: &Path, from: &str, to: &str, path: Option<&str>) 
     unified_between(&repo, old, new, path)
 }
 
-/// One file's hunks, under the line naming the file they are in.
-///
-/// What the file's presence, mode and blob ids did is not repeated here: the response carries a `files` list beside
-/// this text, and the path, the status and the counts are already on it. The naming line stays, because it is what
-/// separates one file's hunks from the next's.
+/// [`file_patch`] of one change between two trees.
 fn patch(
     repo: &gix::Repository,
     change: &gix::object::tree::diff::ChangeDetached,
     at: &str,
 ) -> Result<String, GitError> {
     let (before, after) = sides(change);
-    let before_bytes = side_bytes(repo, &before)?;
-    let after_bytes = side_bytes(repo, &after)?;
+    file_patch(at, &side_bytes(repo, &before)?, &side_bytes(repo, &after)?)
+}
 
+/// What one file's change between `before` and `after` adds and removes, as a branch's file list shows it. `status`
+/// is `A`, `M` or `D`.
+pub fn file_change(path: String, status: &str, before: &[u8], after: &[u8]) -> FileChange {
+    // A binary file has no lines to count, which is the `-` git writes for both.
+    let (added, removed) = if is_binary(before) || is_binary(after) {
+        (0, 0)
+    } else {
+        let (diff, _) = line_diff(before, after);
+        (diff.count_additions(), diff.count_removals())
+    };
+    FileChange {
+        path,
+        status: status.to_string(),
+        added,
+        removed,
+    }
+}
+
+/// The hunks of the file at `at` going from `before` to `after`, under the line naming the file they are in.
+///
+/// What the file's presence, mode and blob ids did is not repeated here: the response carries a `files` list beside
+/// this text, and the path, the status and the counts are already on it. The naming line stays, because it is what
+/// separates one file's hunks from the next's.
+pub fn file_patch(at: &str, before: &[u8], after: &[u8]) -> Result<String, GitError> {
     let mut out = format!("diff --git a/{at} b/{at}\n");
-    if is_binary(&before_bytes) || is_binary(&after_bytes) {
+    if is_binary(before) || is_binary(after) {
         out.push_str(&format!("Binary files a/{at} and b/{at} differ\n"));
         return Ok(out);
     }
 
-    let (diff, input) = line_diff(&before_bytes, &after_bytes);
+    let (diff, input) = line_diff(before, after);
     let body = gix::diff::blob::UnifiedDiff::new(
         &diff,
         &input,
@@ -3172,6 +3186,7 @@ fn backend(
             && cached_repo == repo_path
             && made.elapsed() < ADVERTISEMENT_TTL
         {
+            tracing::trace!(name: "served", target: "git", %path_info, method, push = receive, cached = true, "the leader's repository answered a git request");
             return Ok(response.clone());
         }
     }
@@ -3222,6 +3237,16 @@ fn backend(
 
     let out = run(cmd, &["http-backend"], body)?;
     let response = parse_cgi(&out)?;
+    tracing::trace!(
+        name: "served", target: "git",
+        %path_info,
+        method,
+        status = response.status,
+        bytes = response.body.len(),
+        push = receive,
+        cached = false,
+        "the leader's repository answered a git request"
+    );
     if cacheable {
         *ADVERTISEMENT.lock().unwrap_or_else(|e| e.into_inner()) =
             Some((repo_path.to_path_buf(), Instant::now(), response.clone()));
@@ -3386,6 +3411,7 @@ pub fn pack(repo_path: &Path) -> Result<(), GitError> {
     if loose <= LOOSE_LIMIT && packs <= PACK_LIMIT {
         return Ok(());
     }
+    let _pass = tracing::trace_span!(target: "git", "a background pass", task = "pack the git store").entered();
     // Not `gc --auto`: the limits are counted here, the same way a worker counts its packs. A cruft pack is where
     // `gc` keeps what no ref reaches until it expires, rather than loose, and before git 2.40 it has to be asked for.
     let output = Command::new("git")
@@ -3474,20 +3500,22 @@ pub fn record_host_branch(repo_path: &Path, branch: &str, tip: Option<&str>) -> 
     match tip {
         Some(tip) => {
             use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit};
-            repo.edit_reference(RefEdit {
-                change: Change::Update {
-                    log: LogChange {
-                        message: "smeltr".into(),
-                        ..Default::default()
+            edit_refs(
+                &repo,
+                vec![RefEdit {
+                    change: Change::Update {
+                        log: LogChange {
+                            message: "smeltr".into(),
+                            ..Default::default()
+                        },
+                        expected: PreviousValue::Any,
+                        new: gix::refs::Target::Object(resolve(&repo, tip)?),
                     },
-                    expected: PreviousValue::Any,
-                    new: gix::refs::Target::Object(resolve(&repo, tip)?),
-                },
-                name: full_name(&name)?,
-                deref: false,
-            })
-            .map_err(|e| GitError::failed(format!("{name} did not move: {e}")))?;
-            Ok(())
+                    name: full_name(&name)?,
+                    deref: false,
+                }],
+            )
+            .map_err(|e| GitError::failed(format!("{name} did not move: {e}")))
         }
         None => delete_ref(&repo, &name, None),
     }
@@ -3574,6 +3602,13 @@ fn run(mut cmd: Command, args: &[&str], stdin_body: &[u8]) -> Result<Vec<u8>, Gi
         .map_err(|e| GitError::failed(format!("running git {args:?}: {e}")))?;
     let _ = writer.join();
 
+    tracing::trace!(
+        name: "ran", target: "git",
+        args = ?args,
+        code = output.status.code(),
+        out_bytes = output.stdout.len(),
+        "the leader ran git"
+    );
     if !output.status.success() {
         return Err(GitError::failed(format!(
             "git {args:?} failed: {}",
@@ -3635,6 +3670,15 @@ pub(crate) fn commit_a_symlink(repo_path: &Path, branch: &str, path: &str, targe
 
 #[cfg(test)]
 mod tests {
+    /// Every ref moves through `edit_refs`, so every move is said. A second way to move one would move it unsaid.
+    #[test]
+    fn every_ref_moves_through_one_place() {
+        let source = include_str!("git.rs");
+        let code = &source[..source.find("#[cfg(test)]\nmod tests").unwrap_or(source.len())];
+        let call = concat!(".edit_", "reference");
+        assert_eq!(code.matches(call).count(), 1, "only edit_refs calls {call}");
+    }
+
     /// A worker's fetch carries its bearer token on the command line, so an error naming that command line would
     /// put a live credential on the Logs screen and in every store behind it.
     #[test]
@@ -4433,6 +4477,53 @@ mod tests {
         }
     }
 
+    /// Two trees held as files diff as the same two trees committed do, file list and text, whole and by path.
+    #[test]
+    fn files_diff_as_the_commits_holding_them_do() {
+        let data = temp_dir("diff-of-files");
+        let before = [
+            ("sources.json", "[\n  1,\n  2,\n  3\n]"),
+            ("destinations.json", "[]"),
+            ("same.json", "1"),
+        ];
+        let after = [
+            ("sources.json", "[\n  1,\n  9,\n  3,\n  4\n]"),
+            ("routes.json", "[\n  7\n]"),
+            ("same.json", "1"),
+        ];
+        save(&data, MAIN_BRANCH, &before, "main");
+        save(&data, "work", &after, "work");
+        let repo = repo_path(&data);
+        let tip = branch_tip(&repo, "work").unwrap();
+        commit_edits(
+            &repo,
+            "work",
+            &tip,
+            Some(&tip),
+            &[FileEdit {
+                path: "destinations.json".into(),
+                content: None,
+            }],
+            "drop destinations",
+            &Actor::system(),
+        )
+        .unwrap();
+        let held = |files: &[(&str, &str)]| -> std::collections::BTreeMap<String, Vec<u8>> {
+            files
+                .iter()
+                .map(|(p, c)| (p.to_string(), c.as_bytes().to_vec()))
+                .collect()
+        };
+
+        let whole = diff_of_files(&held(&before), &held(&after), None).unwrap();
+        assert_eq!(whole.diff, diff_unified(&repo, "work", None).unwrap());
+        assert_eq!(whole.files, changed_files(&repo, "work").unwrap());
+        for path in ["sources.json", "destinations.json", "routes.json", "same.json"] {
+            let one = diff_of_files(&held(&before), &held(&after), Some(path)).unwrap();
+            assert_eq!(one.diff, diff_unified(&repo, "work", Some(path)).unwrap(), "{path}");
+        }
+    }
+
     #[test]
     fn a_unified_diff_can_be_taken_for_one_path() {
         let data = data_with_branch("unified", "work");
@@ -4750,76 +4841,35 @@ mod tests {
         std::fs::remove_dir_all(&data).ok();
     }
 
-    /// A sample deploys only when a test beside it names it: the rest are left out, and stay on the branch.
+    /// A saved sample deploys whether or not a test names it, and a branch holding only one deploys it.
     #[test]
-    fn a_deploy_leaves_out_samples_no_test_names() {
-        let data = temp_dir("left-out-samples");
+    fn a_saved_sample_deploys_without_a_test() {
+        let data = temp_dir("samples-deploy");
         let repo = repo_path(&data);
         put(&data, MAIN_BRANCH, &west("orders"), "a bundle for west");
         save(
             &data,
             MAIN_BRANCH,
-            &[
-                ("groups/west/samples/old.json", "old"),
-                ("groups/west/samples/gone.json", "gone"),
-            ],
-            "samples from before",
+            &[("groups/west/samples/old.json", "old")],
+            "a sample from before",
         );
 
         create_branch(&data, "work").unwrap();
-        put(&data, "work", &west("billing"), "west runs billing");
-        let test = r#"{"id":"t","name":"t","sample":"locked","lockedAt":0,"rowsIn":1,"expected":[]}"#;
         save(
             &data,
             "work",
             &[
-                ("groups/west/samples/locked.json", "locked"),
-                ("groups/west/tests/t.json", test),
                 ("groups/west/samples/tried.json", "tried"),
                 ("groups/west/samples/old.json", "old, edited"),
                 ("shared/samples/pasted.json", "pasted"),
             ],
-            "samples and a test",
+            "samples, and no test",
         );
-        let removing = [FileEdit {
-            path: "groups/west/samples/gone.json".into(),
-            content: None,
-        }];
-        let tip = branch_tip(&repo, "work").unwrap();
-        commit_edits(
-            &repo,
-            "work",
-            &tip,
-            Some(&tip),
-            &removing,
-            "remove gone",
-            &Actor::system(),
-        )
-        .unwrap();
-
-        assert_eq!(
-            {
-                let changed = changed_files(&repo, "work").unwrap();
-                let tip = branch_tip(&repo, "work").unwrap();
-                let changed = changed.iter().map(|c| (c.path.as_str(), c.status == "D"));
-                left_out_samples(&repo, &tip, changed).into_iter().collect::<Vec<_>>()
-            },
-            [
-                "groups/west/samples/old.json",
-                "groups/west/samples/tried.json",
-                "shared/samples/pasted.json"
-            ],
-            "what the review marks as not deployed"
-        );
-
-        open_change(&repo, "work", "Billing", "", &Actor::system()).unwrap();
+        open_change(&repo, "work", "Samples", "", &Actor::system()).unwrap();
         let deployed = deploy_change(&data, "work", &Actor::system()).unwrap();
         let paths = [
-            "groups/west/samples/locked.json",
-            "groups/west/tests/t.json",
             "groups/west/samples/tried.json",
             "groups/west/samples/old.json",
-            "groups/west/samples/gone.json",
             "shared/samples/pasted.json",
         ]
         .map(String::from);
@@ -4828,54 +4878,10 @@ mod tests {
             .into_iter()
             .map(|b| b.map(|b| String::from_utf8(b).unwrap()))
             .collect();
-        assert_eq!(landed[0].as_deref(), Some("locked"), "a test names it");
-        assert_eq!(landed[1].as_deref(), Some(test));
-        assert_eq!(landed[2], None, "no test names it");
-        assert_eq!(landed[3].as_deref(), Some("old"), "main keeps what it held");
-        assert_eq!(landed[4], None, "a removal deploys");
-        assert_eq!(landed[5], None, "nor in shared/");
-        std::fs::remove_dir_all(&data).ok();
-    }
-
-    /// A branch holding only left-out samples has nothing to deploy.
-    #[test]
-    fn left_out_samples_alone_deploy_nothing() {
-        let data = temp_dir("left-out-only");
-        let repo = repo_path(&data);
-        put(&data, MAIN_BRANCH, &west("orders"), "a bundle for west");
-        create_branch(&data, "work").unwrap();
-        save(
-            &data,
-            "work",
-            &[("groups/west/samples/tried.json", "tried")],
-            "a capture",
+        assert_eq!(
+            landed,
+            [Some("tried".into()), Some("old, edited".into()), Some("pasted".into())]
         );
-        open_change(&repo, "work", "Tried", "", &Actor::system()).unwrap();
-        let err = deploy_change(&data, "work", &Actor::system()).expect_err("nothing reaches main");
-        assert!(err.message.contains("nothing to deploy"), "{}", err.message);
-        std::fs::remove_dir_all(&data).ok();
-    }
-
-    /// A test that does not read could name any sample, so its bundle's samples all deploy.
-    #[test]
-    fn a_test_that_does_not_read_keeps_its_bundles_samples() {
-        let data = temp_dir("left-out-unreadable-test");
-        let repo = repo_path(&data);
-        put(&data, MAIN_BRANCH, &west("orders"), "a bundle for west");
-        create_branch(&data, "work").unwrap();
-        save(
-            &data,
-            "work",
-            &[
-                ("groups/west/samples/tried.json", "tried"),
-                ("groups/west/tests/broken.json", "{"),
-            ],
-            "a capture and a broken test",
-        );
-        open_change(&repo, "work", "Tried", "", &Actor::system()).unwrap();
-        let deployed = deploy_change(&data, "work", &Actor::system()).unwrap();
-        let landed = read_blobs(&repo, &deployed, &["groups/west/samples/tried.json".to_string()]).unwrap();
-        assert_eq!(landed[0].as_deref(), Some(&b"tried"[..]));
         std::fs::remove_dir_all(&data).ok();
     }
 
@@ -5755,15 +5761,13 @@ mod tests {
     }
 
     #[test]
-    fn whoever_opened_a_change_does_not_review_it() {
+    fn whoever_opened_a_change_may_review_it() {
         let data = data_with_branch("review-self", "work");
         let repo = repo_path(&data);
         open_change(&repo, "work", "First", "", &ann()).unwrap();
-        // A rename by somebody else does not make the change theirs, nor stop Ann being its author.
-        retitle_change(&repo, "work", "Second", "", &bob()).unwrap();
-        let err = review_change(&repo, "work", Verdict::Approved, "", &ann()).unwrap_err();
-        assert!(err.to_string().contains("somebody else reviews it"), "{err}");
+        review_change(&repo, "work", Verdict::Approved, "", &ann()).unwrap();
         review_change(&repo, "work", Verdict::Approved, "", &bob()).unwrap();
+        assert_eq!(verdicts(&repo, "work").len(), 2, "each is recorded");
     }
 
     #[test]

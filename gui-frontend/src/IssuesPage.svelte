@@ -8,12 +8,18 @@
   appearing on the next poll, the same as a single warning does today.
 -->
 <script lang="ts">
+  import { Busy } from './busy.svelte';
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
   import Collapsible from './Collapsible.svelte';
   import Chips from './Chips.svelte';
+  import Button, { BUSY } from './Button.svelte';
+  import { ask } from './Confirm.svelte';
+  import { holds } from './access';
   import {
     listWarnings,
+    lowerSourceRows,
+    resetSourceHistory,
     setScope,
     conditionLabel,
     type WarningCondition,
@@ -51,6 +57,30 @@
       });
   }
 
+  /** Whether `w` is a source's rows against its normal that the reader may mark: an editor in its group. */
+  const markable = (w: WarningDto) =>
+    (w.condition === 'sourceRowsBelow' || w.condition === 'sourceRowsAbove') &&
+    w.group !== null &&
+    holds(w.group, 'editor');
+
+  const marking = new Busy();
+
+  async function mark(call: () => Promise<unknown>) {
+    await marking.run(async () => {
+      await call();
+      refresh();
+    });
+  }
+
+  async function resetHistory(w: WarningDto, group: string) {
+    const ok = await ask({
+      title: 'reset history',
+      body: `${w.subjectId} forgets its history and learns its normal again from now. Until it has 3 days of rows, it raises neither Rows below normal nor Rows above normal.`,
+      action: 'Reset history',
+    });
+    if (ok) await mark(() => resetSourceHistory(group, w.subjectId));
+  }
+
   $effect(() => {
     refresh();
     const id = setInterval(refresh, POLL_MS);
@@ -61,7 +91,7 @@
   let warningCount = $derived(warnings.filter((w) => w.severity === 'warning').length);
   let infoCount = $derived(warnings.filter((w) => w.severity === 'info').length);
 
-  /** Failed, then warning, then info: a notice never sits above trouble. */
+  /** Failed, then warning, then info: info never sits above trouble. */
   const RANK: Record<WarningSeverity, number> = { failed: 0, warning: 1, info: 2 };
   const worst = (rows: WarningDto[]) => Math.min(...rows.map((r) => RANK[r.severity]));
   let filtered = $derived(
@@ -161,7 +191,7 @@
             >{/if}
         {/snippet}
         <div class="issues" role="list" aria-label={conditionLabel(group.condition)}>
-          {#each group.rows as warning (`${warning.subjectKind}|${warning.subjectId}|${warning.group ?? ''}|${warning.site ?? ''}`)}
+          {#each group.rows as warning (`${warning.subjectKind}|${warning.subjectId}|${warning.group ?? ''}|${warning.class ?? ''}|${warning.type ?? ''}`)}
             <div class="issue-row" role="listitem">
               <span class="sev"
                 ><StateMark
@@ -200,6 +230,24 @@
                   ? 'since unknown'
                   : ago(warning.sinceMillis / 1000)}</span
               >
+              <span class="issue-actions">
+                {#if markable(warning) && warning.group !== null}
+                  {@const group = warning.group}
+                  {#if warning.severity === 'warning'}
+                    <Button
+                      class="compact"
+                      disabled={marking.on ? BUSY : ''}
+                      onclick={() => mark(() => lowerSourceRows(group, warning.subjectId))}
+                      >Lower to info</Button
+                    >
+                  {/if}
+                  <Button
+                    class="compact"
+                    disabled={marking.on ? BUSY : ''}
+                    onclick={() => resetHistory(warning, group)}>Reset history</Button
+                  >
+                {/if}
+              </span>
             </div>
           {/each}
         </div>
@@ -264,7 +312,7 @@
   }
   .issue-row {
     display: grid;
-    grid-template-columns: 0.9rem minmax(9rem, 14rem) 1fr auto;
+    grid-template-columns: 0.9rem minmax(9rem, 14rem) 1fr auto auto;
     align-items: start;
     gap: 0.75rem;
     font-size: var(--text-note);
@@ -289,6 +337,11 @@
     min-width: 0;
     overflow-wrap: anywhere;
   }
+  .issue-actions {
+    display: flex;
+    gap: 0.4rem;
+    justify-content: flex-end;
+  }
   .issue-since {
     color: var(--dim);
     font-size: var(--text-micro);
@@ -302,8 +355,12 @@
     }
     /* Under the subject, in its column: the narrow first column holds only the severity mark. */
     .issue-message,
-    .issue-since {
+    .issue-since,
+    .issue-actions {
       grid-column: 2;
+    }
+    .issue-actions {
+      justify-content: flex-start;
     }
   }
 </style>

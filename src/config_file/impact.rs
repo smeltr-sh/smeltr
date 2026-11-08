@@ -267,6 +267,8 @@ fn patterns_changed(before: &FileConfig, after: &FileConfig, links: &Links) -> H
 mod tests {
     use super::*;
     use crate::config_file::CURRENT_VERSION;
+    use crate::config_file::KafkaDestinationDto;
+    use crate::config_file::KafkaSourceDto;
     use crate::config_file::dto::{
         AnswerDto, DeliverRuleDto, LookupSourceDto, MatchKindDto, OnExceptionDto, SourceKindDto,
     };
@@ -306,7 +308,8 @@ mod tests {
     fn source(id: &str, topic: &str) -> SourceDto {
         SourceDto {
             id: id.to_string(),
-            kind: SourceKindDto::Kafka {
+            kind: SourceKindDto::Kafka(KafkaSourceDto {
+                unknown: Default::default(),
                 schema_registry: None,
                 read: Default::default(),
                 brokers: "kafka:9092".to_string(),
@@ -318,7 +321,7 @@ mod tests {
                 fetch_bytes: Default::default(),
                 encoding: Default::default(),
                 props: Default::default(),
-            },
+            }),
         }
     }
 
@@ -664,7 +667,8 @@ mod tests {
                 .into(),
                 ..Default::default()
             }),
-            kind: crate::config_file::dto::DestinationKindDto::Kafka {
+            kind: crate::config_file::dto::DestinationKindDto::Kafka(KafkaDestinationDto {
+                unknown: Default::default(),
                 schema_registry: None,
                 brokers: "kafka:9092".to_string(),
                 default_topic: topic.to_string(),
@@ -676,7 +680,7 @@ mod tests {
                 stall_after_secs: Default::default(),
                 buffer_bytes: Default::default(),
                 props: Default::default(),
-            },
+            }),
             accepts: vec![],
         };
         let routes = vec![

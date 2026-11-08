@@ -78,9 +78,11 @@ export function inline(
   text: string,
 ): { kind: 'text' | 'code' | 'strong' | 'link'; text: string; href?: string; code?: boolean }[] {
   return text
-    .split(/(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\))/)
+    .split(/(`` .+? ``|`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\))/)
     .filter((piece) => piece.length > 0)
     .map((piece) => {
+      // Between two backticks and a space on each side, a code span may hold a backtick, as in Markdown.
+      if (piece.startsWith('`` ')) return { kind: 'code', text: piece.slice(3, -3) };
       if (piece.startsWith('`')) return { kind: 'code', text: piece.slice(1, -1) };
       if (piece.startsWith('**')) return { kind: 'strong', text: piece.slice(2, -2) };
       const link = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(piece);

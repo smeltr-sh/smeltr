@@ -78,12 +78,17 @@ pub fn search(query: &str) -> Vec<Hit> {
     hits
 }
 
-/// One page's text, or with `section` that heading's text and everything under it. `None` when there is no such
+/// The page at `path`, `/docs/...`.
+pub fn page(path: &str) -> Option<&'static Page> {
+    pages().iter().find(|p| p.path == path)
+}
+
+/// One page's opening, or with `section` that heading's text and everything under it. `None` when there is no such
 /// page or heading.
 pub fn read(path: &str, section: Option<&str>) -> Option<String> {
-    let page = pages().iter().find(|p| p.path == path)?;
+    let page = page(path)?;
     let sections = match section {
-        None => &page.sections[..],
+        None => &page.sections[..1],
         Some(id) => {
             let start = page.sections.iter().position(|s| s.id == id)?;
             let level = page.sections[start].level;
@@ -148,7 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn a_page_reads_whole_or_by_heading_with_what_is_under_it() {
+    fn a_page_reads_its_opening_or_a_heading_with_what_is_under_it() {
         let page = pages()
             .iter()
             .find(|p| p.sections.windows(2).any(|w| w[0].level == 2 && w[1].level == 3))
@@ -162,8 +167,7 @@ mod tests {
         let section = read(&page.path, Some(&h2.id)).unwrap();
         assert!(section.starts_with(&h2.text) && section.contains(&h3.text));
         assert!(!section.contains(&page.sections[0].text));
-        let whole = read(&page.path, None).unwrap();
-        assert!(whole.starts_with(&page.sections[0].text) && whole.contains(&section));
+        assert_eq!(read(&page.path, None).unwrap(), page.sections[0].text);
         assert_eq!(read(&page.path, Some("no-such-heading")), None);
         assert_eq!(read("/docs/no-such-page", None), None);
     }

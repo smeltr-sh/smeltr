@@ -12,6 +12,7 @@
     { id: 'settings', title: 'Settings' },
     { id: 'fields-it-reads', title: 'Fields it reads' },
     { id: 'how-it-works', title: 'How it works' },
+    { id: 'security-lake', title: 'Amazon Security Lake' },
     { id: 'verify', title: 'Verify' },
     { id: 'troubleshooting', title: 'Troubleshooting' },
     { id: 'see-also', title: 'See also' },
@@ -96,6 +97,85 @@
     was written least recently. A batch is acknowledged once every object holding its records has landed.
     Two objects never share a key, so records written again after a failure make new objects.
   </p>
+
+  <h2 id="security-lake">Amazon Security Lake</h2>
+  <p>
+    Security Lake reads OCSF records as Parquet objects that a custom source writes to its bucket.
+  </p>
+  <ol>
+    <li>
+      <a href="https://docs.aws.amazon.com/security-lake/latest/userguide/custom-sources.html"
+        >Add a custom source</a
+      > in Security Lake for each OCSF class you send. Each gives a location in S3, and a role to assume
+      with its external id.
+    </li>
+    <li>
+      <a href="/docs/schemas#ocsf">Add a schema from the OCSF class</a> at the OCSF release Security
+      Lake reads for custom sources, which the
+      <a href="https://docs.aws.amazon.com/security-lake/latest/userguide/custom-sources.html"
+        >Add a custom source</a
+      >
+      page names, and choose it in the pipeline's <a href="/docs/schemas#produces">Produces bar</a>.
+      <ProductScreenshot
+        source="security-lake-schema"
+        height={1800}
+        crop={{ x: 608, y: 478, width: 1664, height: 851 }}
+        alt="The New schema from an OCSF class dialog: id authentication, OCSF 1.3.0 built in, the Authentication class."
+        caption="For example, the Authentication class, read from OCSF 1.3.0."
+      />
+      <ProductScreenshot
+        source="security-lake-produces"
+        height={1800}
+        crop={{ x: 470, y: 420, width: 1170, height: 640 }}
+        alt="The okta-auth pipeline with authentication in its Produces bar, and the fields the rows still lack."
+        caption="The pipeline produces authentication. Until its steps fill the fields OCSF requires, the editor lists them."
+      />
+    </li>
+    <li>
+      Add an S3 destination for each custom source, with its location's bucket, its role in <code
+        >roleArn</code
+      >
+      and its external id in <code>externalId</code>, format <code>parquet</code> and compression
+      <code>zstd</code>. Set <code>prefix</code> to the rest of its location and the folders the
+      <a href="https://docs.aws.amazon.com/security-lake/latest/userguide/custom-sources.html"
+        >Add a custom source</a
+      >
+      page lists below it, with <code>%Y%m%d</code> for the day.
+    </li>
+    <li>Route each class to its own destination.</li>
+  </ol>
+  <p>
+    For example, Okta sign-ins mapped to OCSF's Authentication class, sent to a custom source named
+    <code>okta-auth</code> in account 123456789012:
+  </p>
+  <pre><code>{@html highlight(json(examples.securityLakeDestination))}</code></pre>
+  <ProductScreenshot
+    source="security-lake-destination"
+    height={3000}
+    crop={{ x: 608, y: 64, width: 1664, height: 2496 }}
+    alt="The Amazon S3 form on the Destinations page: id lake-okta-auth, its bucket and prefix, format parquet, and under Endpoint and delivery region us-east-1, the role ARN, external id acme-okta-auth and compression zstd."
+    caption="The same destination on the Destinations page. The role, its external id and compression sit under Endpoint and delivery."
+  />
+  <p>
+    A file it writes on 3 November 2026 lands at
+    <code>ext/okta-auth/region=us-east-1/accountId=123456789012/eventDay=20261103/</code>, named by
+    a random id with <code>.parquet</code> at the end.
+  </p>
+  <p>
+    <code>accepts</code> names the schema from step 2, so review flags a route whose pipeline does not
+    produce it.
+  </p>
+  <p>
+    <code>%Y%m%d</code> is the day the file is written, in UTC, so a record written after midnight
+    gets the next day's <code>eventDay</code>. Security Lake expects <code>eventDay</code> to be the
+    record's own day. To give each record its own day, set <code>__destination.prefix</code> from
+    its
+    <code>time</code> in a
+    <a href="/docs/steps/code">Code step</a>:
+  </p>
+  <pre><code
+      >{'__destination.prefix = `ext/okta-auth/region=us-east-1/accountId=123456789012/eventDay=${fromEpochMillis(time).formatTime("%Y%m%d")}/`;'}</code
+    ></pre>
 
   <h2 id="verify">Verify</h2>
   <p>

@@ -14,6 +14,7 @@
       id="release-navigation"
       links={[{ href: '/releases', title: 'All releases' }]}
       {groups}
+      open
     />
   </aside>
   <div class="content">{@render children()}</div>

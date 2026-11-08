@@ -583,7 +583,7 @@ fn a_logs_source_loads_with_the_level_it_names() {
         other => panic!("a logs source: {other:?}"),
     }
 
-    // Absent is `info`, which is what a process collects unless `SMELTR_LOG_LEVEL` says otherwise.
+    // Absent is `info`, which is what a process keeps until an operator sets other levels.
     let json = r#"{ "version": 1, "sources": [{ "id": "own-logs", "type": "logs" }] }"#;
     let system = load_str(json).unwrap_or_else(|e| panic!("load failed: {e}"));
     match &system.topology.sources[0].kind {
@@ -2807,7 +2807,7 @@ fn a_minimal_iceberg_destination_loads_with_the_defaults() {
     assert_eq!(c.max_object_bytes, 64 * 1024 * 1024);
     assert_eq!(c.buffer_bytes, 256 * 1024 * 1024);
     assert_eq!(c.stall_after, Duration::from_secs(30));
-    assert_eq!(c.file_interval, Duration::from_secs(60));
+    assert_eq!(c.file_interval, Duration::from_secs(300));
     let dest = &system.topology.destinations[0];
     assert_eq!(dest.kind.payload(), Payload::Record);
     assert!(
@@ -2938,12 +2938,12 @@ fn an_iceberg_destination_with_bad_settings_is_refused() {
         (
             r#","fileIntervalSecs":4"#.to_string(),
             "fileIntervalSecs",
-            "between 5 and 240",
+            "between 5 and 3600",
         ),
         (
-            r#","fileIntervalSecs":241"#.to_string(),
+            r#","fileIntervalSecs":3601"#.to_string(),
             "fileIntervalSecs",
-            "between 5 and 240",
+            "between 5 and 3600",
         ),
         (
             r#","accessKeyId":"AWS_KEY""#.to_string(),
@@ -3155,12 +3155,12 @@ fn an_s3_destination_with_bad_settings_is_refused() {
     assert!(e.contains("names no bucket"), "{e}");
 }
 
-/// An object file stays open for a minute unless `fileIntervalSecs` says otherwise, within its bounds.
+/// An object file stays open for five minutes unless `fileIntervalSecs` says otherwise, within its bounds.
 #[test]
 fn an_object_destinations_file_interval_defaults_and_is_bounded() {
     use std::time::Duration;
     let system = load_str(&s3_config(r#","format":"parquet""#)).expect("must load");
-    assert_eq!(objects(&system).file_interval, Duration::from_secs(60));
+    assert_eq!(objects(&system).file_interval, Duration::from_secs(300));
     let json = s3_config(r#","format":"parquet","fileIntervalSecs":5"#);
     assert!(refusal(&json).is_empty(), "{}", refusal(&json));
     assert_eq!(objects(&load_str(&json).unwrap()).file_interval, Duration::from_secs(5));
@@ -5317,6 +5317,7 @@ fn a_minimal_http_receiver_loads_with_the_defaults() {
     assert_eq!(r.listen, "[::]:8088".parse().unwrap());
     assert_eq!(r.tokens.len(), 1);
     assert_eq!(r.max_request_bytes, 10 * 1024 * 1024);
+    assert!(!r.answer_after_delivery, "a request is answered once received");
     assert_eq!(kind.meta(), SourceMeta::HTTP_RECEIVER.with_encoding(kind.encoding()));
     assert_eq!(kind.single_worker(), None, "every worker of the group listens");
     assert_eq!(
@@ -5333,7 +5334,7 @@ fn an_http_receiver_loads_with_every_field() {
         9000,
         &format!(
             r#"{RECEIVER_TOKEN},"path":"/hooks/ci","records":"array",
-               "recordsAt":"/events","maxRequestBytes":2048"#
+               "recordsAt":"/events","maxRequestBytes":2048,"answerAfterDelivery":true"#
         ),
     );
     assert!(refusal(&json).is_empty(), "{}", refusal(&json));
@@ -5348,6 +5349,7 @@ fn an_http_receiver_loads_with_every_field() {
     assert_eq!(h.records, ApiRecords::Array("/events".into()));
     assert_eq!(r.listen, "[::]:9000".parse().unwrap());
     assert_eq!(r.max_request_bytes, 2048);
+    assert!(r.answer_after_delivery);
 }
 
 /// With neither a token nor authorities to vouch for a sender, anyone who reaches the port could send.
@@ -5467,6 +5469,16 @@ fn otlp_receivers_of_different_signals_share_a_port() {
     assert!(
         e.contains(
             r#"source "b" shares port 4318 with source "a", which serves it; give both the same certificate and trusted authorities"#
+        ),
+        "{e}"
+    );
+    let e = refusal(&sources(&[
+        otlp("a", "", ""),
+        otlp("b", r#","signal":"traces""#, r#","maxConnections":5"#),
+    ]));
+    assert!(
+        e.contains(
+            r#"source "b" shares port 4318 with source "a", which serves it; give both the same maxConnections, maxConnectionsPerSender and idleTimeoutSecs"#
         ),
         "{e}"
     );
@@ -5690,6 +5702,17 @@ fn a_minimal_s2s_receiver_loads() {
         kind.listens().map(|l| (l.transport, l.address)),
         Some((smeltr::plan::topology::Transport::Tcp, r.listen))
     );
+}
+
+/// An S2S receiver answers as its protocol says, so it takes no answerAfterDelivery.
+#[test]
+fn an_s2s_receiver_that_answers_after_delivery_is_refused() {
+    let json = format!(
+        r#"{{"version":1,"sources":[{{"id":"forwarders","type":"s2sReceiver","port":9997{S2S_TOKEN},
+            "answerAfterDelivery":true}}]}}"#
+    );
+    let e = serde_json::from_str::<smeltr::config_file::FileConfig>(&json).unwrap_err();
+    assert!(e.to_string().contains("unknown field `answerAfterDelivery`"), "{e}");
 }
 
 /// Each sourcetype named breaks into events where its line breaker breaks; the file is written back as it was given.
@@ -5948,10 +5971,10 @@ fn a_syslog_receiver_takes_a_line_breaker_over_tcp() {
     let Receiver::Syslog(syslog_config) = &r.receiver else {
         panic!("a syslog receiver")
     };
-    assert_eq!(
-        syslog_config.line_breaker.as_ref().map(|b| b.0.as_str()),
-        Some(r"(\x00)")
-    );
+    let smeltr::io::framing::Framing::Syslog(line_breaker) = &syslog_config.framing else {
+        panic!("syslog framing")
+    };
+    assert_eq!(line_breaker.as_ref().map(|b| b.0.as_str()), Some(r"(\x00)"));
     let file: smeltr::config_file::FileConfig = serde_json::from_str(&json).unwrap();
     let written = &serde_json::to_value(&file).unwrap()["sources"][0];
     assert_eq!(written["lineBreaker"], r"(\x00)", "it writes back as it was given");
@@ -5965,6 +5988,94 @@ fn a_syslog_receiver_takes_a_line_breaker_over_tcp() {
         &syslog(r#","lineBreaker":"\\x00""#),
         "lineBreaker",
         "which has no capture group to mark the break"
+    ));
+}
+
+/// A socket receiver cuts what it receives over TCP by its framing, writes it back as given, and refuses a framing
+/// over UDP, a length prefix that is absent or out of range, and a fixed size over its largest request.
+#[test]
+fn a_socket_receiver_takes_a_framing_over_tcp() {
+    use smeltr::io::framing::{ByteOrder, Counts, Framing, LengthPrefix};
+    use smeltr::plan::topology::{Receiver, SourceKind, Transport};
+
+    let socket = |extra: &str| {
+        format!(
+            r#"{{"version":1,"sources":[{{"id":"raw","type":"socketReceiver","port":9000,
+            "allowFrom":["10.0.0.0/8"]{extra}}}]}}"#
+        )
+    };
+    let framing = |json: &str| {
+        let system = load_str(json).expect("must load");
+        system.compile_topology().expect("must compile");
+        let SourceKind::Receiver(r) = &system.topology.sources[0].kind else {
+            panic!("a receiver")
+        };
+        let Receiver::Socket(socket) = &r.receiver else {
+            panic!("a socket receiver")
+        };
+        (socket.framing.clone(), socket.transport)
+    };
+    assert_eq!(framing(&socket("")), (Framing::Lines, Transport::Tcp));
+    let json = socket(
+        r#","framing":"lengthPrefix","lengthPrefix":{"offset":2,"bytes":4,"order":"little","counts":"message"}"#,
+    );
+    assert!(refusal(&json).is_empty(), "{}", refusal(&json));
+    assert_eq!(
+        framing(&json).0,
+        Framing::LengthPrefix(LengthPrefix {
+            offset: 2,
+            width: 4,
+            order: ByteOrder::Little,
+            counts: Counts::Message,
+        })
+    );
+    assert_eq!(
+        framing(&socket(r#","framing":"fixed","fixedBytes":16"#)).0,
+        Framing::Fixed(16)
+    );
+    assert_eq!(
+        framing(&socket(r#","transport":"udp""#)),
+        (Framing::Lines, Transport::Udp)
+    );
+    let file: smeltr::config_file::FileConfig = serde_json::from_str(&json).unwrap();
+    let written = serde_json::to_value(&file).unwrap()["sources"][0].clone();
+    let given: serde_json::Value = serde_json::from_str::<serde_json::Value>(&json).unwrap()["sources"][0].clone();
+    assert_eq!(written, given, "it writes back as it was given");
+
+    assert!(refused_at(
+        &socket(r#","transport":"udp","framing":"fixed","fixedBytes":16"#),
+        "framing",
+        r#"source "raw" sets a framing, which only TCP reads"#
+    ));
+    assert!(refused_at(
+        &socket(r#","framing":"lengthPrefix""#),
+        "lengthPrefix",
+        "give the length's size in bytes, and its offset if any, in lengthPrefix"
+    ));
+    assert!(refused_at(
+        &socket(r#","framing":"lengthPrefix","lengthPrefix":{"bytes":9}"#),
+        "lengthPrefix",
+        "it must be 1 to 8"
+    ));
+    assert!(refused_at(
+        &socket(r#","lengthPrefix":{"bytes":2}"#),
+        "lengthPrefix",
+        "which only lengthPrefix framing reads"
+    ));
+    assert!(refused_at(
+        &socket(r#","framing":"fixed","fixedBytes":0"#),
+        "fixedBytes",
+        "it must be 1 to"
+    ));
+    assert!(refused_at(
+        &socket(r#","maxRequestBytes":4096,"framing":"fixed","fixedBytes":4097"#),
+        "fixedBytes",
+        "it must be 1 to 4 KiB"
+    ));
+    assert!(refused_at(
+        &socket(r#","framing":"fixed""#),
+        "fixedBytes",
+        "give how many bytes in fixedBytes"
     ));
 }
 
@@ -6077,6 +6188,20 @@ fn syslog_receivers_share_a_port_only_across_transports() {
         "{}",
         refusal(&both_udp)
     );
+}
+
+/// A receiver reads no less than 2048 bytes: RFC 5425 has a syslog receiver take messages of 2048 octets.
+#[test]
+fn a_receiver_below_2048_bytes_is_refused() {
+    let json = |bytes: u64| {
+        format!(
+            r#"{{"version":1,"sources":[
+                {{"id":"a","type":"syslogReceiver","port":514,"allowFrom":["10.0.0.0/8"],"maxRequestBytes":{bytes}}}]}}"#
+        )
+    };
+    assert!(refusal(&json(2048)).is_empty(), "{}", refusal(&json(2048)));
+    let e = refusal(&json(2047));
+    assert!(e.contains("maxRequestBytes is between 2048 and 67108864"), "{e}");
 }
 
 /// One PostgreSQL source reading `auth.events` by `mode`, its password in the leader's store, with `extra` spliced
@@ -6524,4 +6649,144 @@ fn an_http_api_source_with_a_muddled_sign_in_is_refused() {
         let json = http_api_config(at, &sign_in);
         assert!(refusal(&json).is_empty(), "{sign_in}: {}", refusal(&json));
     }
+}
+
+/// A syslog receiver over TLS with `extra` spliced into its object, admitting senders from nowhere by their
+/// networks.
+fn syslog_tls_config(extra: &str) -> String {
+    format!(
+        r#"{{"version":1,"sources":[{{"id":"a","type":"syslogReceiver","port":6514,"certificate":"served"{extra}}}]}}"#
+    )
+}
+
+/// A receiver admits a sender by its certificate's fingerprint, which then needs nothing else to admit it, and of
+/// the senders its authorities vouch for, only those issued to the hosts it names. What is neither is refused at
+/// save, as are names with no authority to vouch for them.
+#[test]
+fn a_receiver_admits_senders_by_fingerprint_and_by_name() {
+    use smeltr::io::senders::Fingerprint;
+    use smeltr::plan::topology::SourceKind;
+
+    let sha256 = format!("sha-256{}", ":AB".repeat(32));
+    let json = syslog_tls_config(&format!(r#","senderFingerprints":[" {} "]"#, sha256.to_lowercase()));
+    assert!(refusal(&json).is_empty(), "{}", refusal(&json));
+    let system = load_str(&json).expect("must load");
+    let SourceKind::Receiver(r) = &system.topology.sources[0].kind else {
+        unreachable!()
+    };
+    let senders = &r.tls.as_ref().expect("serves TLS").senders;
+    assert_eq!(senders.fingerprints, [Fingerprint::parse(&sha256).unwrap()]);
+    assert_eq!(senders.fingerprints[0].to_string(), sha256);
+
+    let authorities = serde_json::to_string(&crate::certs::Authority::new("senders").pem).unwrap();
+    let json = syslog_tls_config(&format!(
+        r#","trustedAuthorities":{authorities},"senderNames":[" *.example.com"]"#
+    ));
+    assert!(refusal(&json).is_empty(), "{}", refusal(&json));
+    let system = load_str(&json).expect("must load");
+    let SourceKind::Receiver(r) = &system.topology.sources[0].kind else {
+        unreachable!()
+    };
+    assert_eq!(r.tls.as_ref().expect("serves TLS").senders.names, ["*.example.com"]);
+
+    let e = refusal(&syslog_tls_config(r#","senderFingerprints":["sha-256:AB:CD"]"#));
+    assert!(
+        e.contains("is not a fingerprint: a sha-256 hash is 32 bytes, and it holds 2"),
+        "{e}"
+    );
+    let e = refusal(&syslog_tls_config(r#","senderFingerprints":["md5:AB"]"#));
+    assert!(e.contains(r#""md5" is not sha-1 or sha-256"#), "{e}");
+    let e = refusal(&syslog_tls_config(&format!(
+        r#","trustedAuthorities":{authorities},"senderNames":["a.*.com"]"#
+    )));
+    assert!(
+        e.contains(r#"admits senders named "a.*.com", which is not a host name"#),
+        "{e}"
+    );
+    let e = refusal(&syslog_tls_config(
+        r#","senderNames":["host.example.com"],"allowFrom":["10.0.0.0/8"]"#,
+    ));
+    assert!(
+        e.contains("trusts no authority, so no certificate can match those names"),
+        "{e}"
+    );
+    let e = refusal(&syslog_tls_config(""));
+    assert!(e.contains("admits anyone"), "{e}");
+}
+
+/// A receiver holds the default maximum of connections unless told otherwise, and an admin may tighten that, cap one
+/// sender, and close idle connections. Over UDP, which holds no connection, the settings are refused.
+#[test]
+fn a_receiver_takes_connection_limits() {
+    use smeltr::plan::topology::{ConnectionLimits, SourceKind};
+
+    let socket = |extra: &str| {
+        format!(
+            r#"{{"version":1,"sources":[{{"id":"raw","type":"socketReceiver","port":9000,
+            "allowFrom":["10.0.0.0/8"]{extra}}}]}}"#
+        )
+    };
+    let limits = |json: &str| {
+        let system = load_str(json).expect("must load");
+        let SourceKind::Receiver(r) = &system.topology.sources[0].kind else {
+            panic!("a receiver")
+        };
+        r.connections
+    };
+    assert_eq!(limits(&socket("")), ConnectionLimits::default());
+    assert_eq!(ConnectionLimits::default().max, None);
+    let json = socket(r#","maxConnections":500,"maxConnectionsPerSender":20,"idleTimeoutSecs":600"#);
+    assert_eq!(refusal(&json), "");
+    assert_eq!(
+        limits(&json),
+        ConnectionLimits {
+            max: Some(500),
+            per_sender: Some(20),
+            idle: Some(std::time::Duration::from_secs(600)),
+        }
+    );
+    let file: smeltr::config_file::FileConfig = serde_json::from_str(&json).unwrap();
+    let written = &serde_json::to_value(&file).unwrap()["sources"][0];
+    assert_eq!(written["maxConnections"], 500);
+    let file: smeltr::config_file::FileConfig = serde_json::from_str(&socket("")).unwrap();
+    assert!(
+        serde_json::to_value(&file).unwrap()["sources"][0]
+            .get("maxConnections")
+            .is_none()
+    );
+
+    assert!(refused_at(
+        &socket(r#","maxConnections":0"#),
+        "maxConnections",
+        "maxConnections is between 1 and"
+    ));
+    assert!(refused_at(
+        &socket(r#","maxConnections":10,"maxConnectionsPerSender":11"#),
+        "maxConnectionsPerSender",
+        "between 1 and its maxConnections, 10"
+    ));
+    assert!(refused_at(
+        &socket(r#","maxConnectionsPerSender":1000001"#),
+        "maxConnectionsPerSender",
+        "between 1 and 1000000"
+    ));
+    assert!(refused_at(
+        &socket(r#","idleTimeoutSecs":0"#),
+        "idleTimeoutSecs",
+        "at least 1"
+    ));
+    assert!(refused_at(
+        &socket(r#","transport":"udp","idleTimeoutSecs":60"#),
+        "idleTimeoutSecs",
+        "only TCP reads"
+    ));
+    let http = http_receiver_config(8088, &format!(r#"{RECEIVER_TOKEN},"maxConnections":5"#));
+    assert_eq!(refusal(&http), "");
+    assert_eq!(limits(&http).max, Some(5));
+    assert_eq!(
+        refusal(&s2s_receiver_config(&format!(
+            r#"{S2S_TOKEN},"maxConnectionsPerSender":4"#
+        ))),
+        ""
+    );
 }

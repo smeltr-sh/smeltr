@@ -55,6 +55,10 @@
     {
       "params": "(array of scalars, array of scalars, ...)",
       "result": "the array's type"
+    },
+    {
+      "params": "(bytes, bytes, ...)",
+      "result": "bytes"
     }
   ],
   "countIn": [
@@ -123,6 +127,12 @@
       "result": "i64"
     }
   ],
+  "formatTime": [
+    {
+      "params": "(datetime, str)",
+      "result": "str"
+    }
+  ],
   "fromEpochMillis": [
     {
       "params": "(i64)",
@@ -165,7 +175,31 @@
       "result": "bool"
     },
     {
+      "params": "(str, str, i64)",
+      "result": "bool"
+    },
+    {
+      "params": "(bytes, i64)",
+      "result": "bool"
+    },
+    {
+      "params": "(bytes, i64, i64)",
+      "result": "bool"
+    },
+    {
+      "params": "(bytes, bytes)",
+      "result": "bool"
+    },
+    {
+      "params": "(bytes, bytes, i64)",
+      "result": "bool"
+    },
+    {
       "params": "(array of scalars, value)",
+      "result": "bool"
+    },
+    {
+      "params": "(array of scalars, value, i64)",
       "result": "bool"
     }
   ],
@@ -175,7 +209,31 @@
       "result": "i64"
     },
     {
+      "params": "(str, str, i64)",
+      "result": "i64"
+    },
+    {
+      "params": "(bytes, i64)",
+      "result": "i64"
+    },
+    {
+      "params": "(bytes, i64, i64)",
+      "result": "i64"
+    },
+    {
+      "params": "(bytes, bytes)",
+      "result": "i64"
+    },
+    {
+      "params": "(bytes, bytes, i64)",
+      "result": "i64"
+    },
+    {
       "params": "(array of scalars, value)",
+      "result": "i64"
+    },
+    {
+      "params": "(array of scalars, value, i64)",
       "result": "i64"
     }
   ],
@@ -230,6 +288,34 @@
   "lastIndexOf": [
     {
       "params": "(str, str)",
+      "result": "i64"
+    },
+    {
+      "params": "(str, str, i64)",
+      "result": "i64"
+    },
+    {
+      "params": "(bytes, i64)",
+      "result": "i64"
+    },
+    {
+      "params": "(bytes, i64, i64)",
+      "result": "i64"
+    },
+    {
+      "params": "(bytes, bytes)",
+      "result": "i64"
+    },
+    {
+      "params": "(bytes, bytes, i64)",
+      "result": "i64"
+    },
+    {
+      "params": "(array of scalars, value)",
+      "result": "i64"
+    },
+    {
+      "params": "(array of scalars, value, i64)",
       "result": "i64"
     }
   ],
@@ -379,6 +465,32 @@
     {
       "params": "(array, value, ...)",
       "result": "the array's type"
+    }
+  ],
+  "readBytes": [
+    {
+      "params": "(bytes, i64, i64)",
+      "result": "bytes"
+    }
+  ],
+  "readFloat": [
+    {
+      "params": "(bytes, i64, str)",
+      "result": "f64"
+    },
+    {
+      "params": "(bytes, i64, str, str)",
+      "result": "f64"
+    }
+  ],
+  "readInt": [
+    {
+      "params": "(bytes, i64, str)",
+      "result": "i64"
+    },
+    {
+      "params": "(bytes, i64, str, str)",
+      "result": "i64"
     }
   ],
   "registeredDomain": [
@@ -553,6 +665,26 @@
     {
       "params": "(str)",
       "result": "str"
+    }
+  ],
+  "writeFloat": [
+    {
+      "params": "(f64, str)",
+      "result": "bytes"
+    },
+    {
+      "params": "(f64, str, str)",
+      "result": "bytes"
+    }
+  ],
+  "writeInt": [
+    {
+      "params": "(i64, str)",
+      "result": "bytes"
+    },
+    {
+      "params": "(i64, str, str)",
+      "result": "bytes"
     }
   ],
   "year": [

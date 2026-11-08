@@ -27,7 +27,7 @@
   import Field from './Field.svelte';
   import ValidatedField from './ValidatedField.svelte';
   import JsonEditPage from './JsonEditPage.svelte';
-  import { resourcesTabs } from './nav';
+  import { RESOURCES_TABS } from './nav';
   import { sharedConfig, putGrokPatterns, type GrokPatternDto } from './api';
   import CrossButton from './CrossButton.svelte';
   import { count } from './time';
@@ -128,7 +128,7 @@
         A named pattern any grok step in this group can use as <code>%{'{'}NAME{'}'}</code>.
       {/snippet}
     </PageHeader>
-    <SecondaryTabs tabs={resourcesTabs()} active="#/build/grok" ariaLabel="Resources" />
+    <SecondaryTabs tabs={RESOURCES_TABS} active="#/build/grok" ariaLabel="Resources" />
 
     <div>
       <UnreadableFiles problems={editor.bundleProblems} onchanged={() => editor.load()} />
@@ -173,7 +173,8 @@
           <tr>
             <th class="name">Name</th>
             <th>Pattern</th>
-            <th class="act"><span class="hidden">Remove</span></th>
+            <!-- Names a column whose head would otherwise be an empty cell. -->
+            <th class="act"><span class="visually-hidden">Remove</span></th>
           </tr>
         </thead>
         <tbody>
@@ -348,19 +349,5 @@
 
   .grow {
     flex: 1;
-  }
-
-  /* Names a column whose head would otherwise be an empty cell. */
-  .hidden {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-
-  .mono {
-    font-family: var(--mono);
   }
 </style>

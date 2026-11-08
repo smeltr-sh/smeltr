@@ -740,7 +740,7 @@ async fn get(client: &reqwest::Client, url: &str, limit: usize) -> Result<Vec<u8
     if !status.is_success() {
         // The body goes to the log only: a failed save answers whoever made it, and the URL may name a host they
         // could not otherwise read.
-        tracing::warn!(target: "leader.oidc_provider", url = %url, status = status.as_u16(), body = %said(&body), "an OIDC provider answered with an error");
+        tracing::warn!(name: "provider", target: "accounts", url = %url, status = status.as_u16(), body = %said(&body), "an OIDC provider answered with an error");
         return Err(format!("{url} answered {}", status.as_u16()));
     }
     Ok(body)

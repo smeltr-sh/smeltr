@@ -147,7 +147,7 @@ pub fn ensure(dir: &Path, sans: Vec<String>, validity: Duration, required: &[Str
             });
         }
     };
-    tracing::warn!(target: "leader.certificate_unserved", why = %why, "the leader could not serve the certificate chosen for it, so it serves a stand-in until that one can be served");
+    tracing::warn!(name: "unserved", target: "certificates", why = %why, "the leader could not serve the certificate chosen for it, so it serves a stand-in until that one can be served");
     // Parted until something is served again: everything that reads what is in force waits for that.
     with_generations(dir, |held| {
         held.disk += 1;
@@ -183,7 +183,7 @@ fn serve_temporary(dir: &Path, sans: &[String], validity: Duration, failed: Stri
         "This leader is serving a temporary certificate, because {problem}. Once the key is restored or regenerated, \
          it serves the certificate \"{OWN_ENTRY}\" again."
     );
-    tracing::warn!(target: "leader.certificate_unserved", why = %why, "the leader is not serving its own certificate");
+    tracing::warn!(name: "unserved", target: "certificates", why = %why, "the leader is not serving its own certificate");
     with_generations(dir, |held| {
         held.disk += 1;
         held.unserved = Some(why);
@@ -215,7 +215,7 @@ pub fn unserved(dir: &Path) -> Option<String> {
 
 /// Reads the certificate list for `dir`, which a served [`Entry`] is a version of. Registered by whatever opened
 /// the list, before [`ensure`].
-pub fn read_list(dir: &Path, list: std::sync::Arc<dyn Store>) {
+pub fn read_list(dir: &Path, list: std::sync::Arc<Store>) {
     LISTS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -225,10 +225,10 @@ pub fn read_list(dir: &Path, list: std::sync::Arc<dyn Store>) {
 
 /// Per directory, the certificate list its entries come from. A process holding several leaders, as a test binary
 /// does, holds one each.
-static LISTS: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, std::sync::Arc<dyn Store>>>> =
+static LISTS: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, std::sync::Arc<Store>>>> =
     std::sync::Mutex::new(None);
 
-fn list_of(dir: &Path) -> Result<std::sync::Arc<dyn Store>, String> {
+fn list_of(dir: &Path) -> Result<std::sync::Arc<Store>, String> {
     LISTS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -399,6 +399,16 @@ fn issue_held(dir: &Path, names: Vec<String>, validity: Duration, unusable: &str
     cap_at(&mut params, &authority)?;
     let (leaf, key) = sign(params, &ca_key_pem, "the certificate")?;
     let (_, root) = signing_root_pem(&ca_pem, leaf.as_bytes())?;
+    let described = crate::log_enabled!(name: "issued", target: "certificates", tracing::Level::TRACE)
+        .then(|| describe(leaf.as_bytes(), "the certificate").ok())
+        .flatten();
+    tracing::trace!(
+        name: "issued", target: "certificates",
+        names = ?described.as_ref().map(|d| &d.names),
+        fingerprint = described.as_ref().map(|d| d.fingerprint.as_str()),
+        validity_days = validity.as_secs() / 86_400,
+        "the leader issued a certificate"
+    );
     Ok((format!("{}\n{root}", leaf.trim_end()), key))
 }
 
@@ -630,6 +640,7 @@ pub fn reload(dir: &Path) {
 /// says nothing at all, leaving the socket on the older state it still serves.
 pub fn socket_took(dir: &Path, generation: u64) {
     with_generations(dir, |held| held.socket = generation);
+    tracing::trace!(name: "listener_loaded", target: "certificates", generation, "the leader's listener loaded its certificate");
 }
 
 /// Says what this leader presents has been replaced, and asks for the socket to catch up.
@@ -639,11 +650,13 @@ pub fn socket_took(dir: &Path, generation: u64) {
 /// built then settles. Asking for the reload here is what makes the two numbers meet again -- without it a
 /// replacement could leave the leader refusing every authority read with nothing scheduled to put it right.
 fn replaced_what_is_served(dir: &Path) {
-    with_generations(dir, |held| {
+    let generation = with_generations(dir, |held| {
         held.disk += 1;
         held.unserved = None;
         held.temporary = None;
+        held.disk
     });
+    tracing::trace!(name: "replaced", target: "certificates", generation, "the leader's certificate was replaced, so its listener reloads");
     reload(dir);
 }
 
@@ -736,7 +749,7 @@ fn recover_rotation(dir: &Path) -> Result<(), String> {
         // and belongs to an authority no bundle holds: the bundle is written last.
         if next_key_path.exists() {
             tracing::warn!(
-                target: "leader.rotation_abandoned",
+                name: "rotation_abandoned", target: "enrollment",
                 "a certificate authority rotation did not get far enough to be resumed, and was dropped"
             );
             remove_file_durably(&next_key_path)?;
@@ -765,7 +778,7 @@ fn recover_rotation(dir: &Path) -> Result<(), String> {
     };
     if !can_still {
         tracing::warn!(
-            target: "leader.rotation_abandoned",
+            name: "rotation_abandoned", target: "enrollment",
             incoming = %state.incoming,
             "what this leader was rotating to is gone, so the rotation was dropped"
         );
@@ -1136,11 +1149,11 @@ pub fn begin_rotation(dir: &Path, validity: Duration, deadline_millis: i64, now_
         // `ca-key.pem` signing for an authority `ca.pem` does not hold, and every path out of that reads the same
         // way. Nothing was promised to anybody yet, so the whole of it goes back.
         if let Err(cleanup) = remove_file_durably(&dir.join(NEXT_CA_KEY)) {
-            tracing::debug!(target: "leader.rotation_not_cleaned", error = %cleanup, "a rotation that did not begin left its key behind");
+            tracing::debug!(name: "rotation_not_cleaned", target: "enrollment", error = %cleanup, "a rotation that did not begin left its key behind");
         }
         return Err(e);
     }
-    tracing::info!(target: "leader.rotation_begun", incoming = %state.incoming, outgoing = %state.outgoing, cuts_over_in_secs = (deadline_millis - now_ms) / 1000, "a rotation of the fleet's certificate authority began");
+    tracing::info!(name: "rotation_begun", target: "enrollment", incoming = %state.incoming, outgoing = %state.outgoing, cuts_over_in_secs = (deadline_millis - now_ms) / 1000, "a rotation of the fleet's certificate authority began");
     Ok(state)
 }
 
@@ -1167,7 +1180,7 @@ fn open(dir: &Path, state: &Rotation, now_ms: i64) -> Result<(), String> {
         .and_then(|kept| publish_bundle(&bundle_path, &kept, state));
     if let Err(e) = published {
         if let Err(cleanup) = remove_rotation(dir) {
-            tracing::debug!(target: "leader.rotation_not_cleaned", error = %cleanup, "a rotation that did not open left its intent behind");
+            tracing::debug!(name: "rotation_not_cleaned", target: "enrollment", error = %cleanup, "a rotation that did not open left its intent behind");
         }
         return Err(e);
     }
@@ -1390,11 +1403,17 @@ pub fn cut_over_if_due(
     }
     let fleet_ready = holders.is_some_and(|holders| holders.iter().all(|held| held.contains(&state.incoming)));
     if !fleet_ready && now_ms < state.deadline_millis {
+        tracing::trace!(
+            name: "cutover_not_due", target: "certificates",
+            incoming = %state.incoming,
+            due_in_secs = (state.deadline_millis - now_ms) / 1000,
+            "a rotation's cutover waits until the fleet holds the incoming authority, or its deadline passes"
+        );
         return Ok(false);
     }
     cut_over(dir, sans, validity)?;
     tracing::info!(
-        target: "leader.authority_cut_over",
+        name: "authority_cut_over", target: "enrollment",
         incoming = %state.incoming,
         outgoing = %state.outgoing,
         installs = ?state.installs,
@@ -1634,7 +1653,7 @@ fn retire_expired(pem: &[u8], serving: &str, now_ms: i64) -> Result<Vec<u8>, Str
     for root in describe_each(pem, CA_CERT)? {
         if root.fingerprint != serving && root.not_after_millis <= now_ms {
             tracing::info!(
-                target: "leader.authority_retired",
+                name: "authority_retired", target: "enrollment",
                 fingerprint = %root.fingerprint,
                 "an expired certificate authority was dropped from what this leader hands its workers"
             );
@@ -1663,7 +1682,7 @@ fn retire(bundle_path: &Path, fingerprint: &str) -> Result<(), String> {
     let kept = without(&bundle, fingerprint)?;
     write_durably(bundle_path, &kept).map_err(|e| format!("{}: {e}", bundle_path.display()))?;
     tracing::info!(
-        target: "leader.authority_retired",
+        name: "authority_retired", target: "enrollment",
         fingerprint = %fingerprint,
         "a certificate authority was dropped from what this leader hands its workers"
     );
@@ -2070,7 +2089,7 @@ fn rename_durably(from: &Path, to: &Path) -> Result<(), String> {
 fn warn_unsynced(path: &Path, synced: std::io::Result<()>) {
     if let Err(e) = synced {
         tracing::warn!(
-            target: "leader.certificate_move_not_durable",
+            name: "move_not_durable", target: "certificates",
             path = %path.display(),
             error = %e,
             "a certificate file was moved or removed and that was not made durable, so a crash before the \
@@ -2181,12 +2200,12 @@ pub(crate) mod tests {
     pub(crate) fn listing(dir: &Path) {
         let key = dir.with_extension("key");
         let _ = std::fs::remove_file(&key);
-        let list = crate::leader::sqlite_store::SqliteStore::open(Path::new(":memory:"), &key).expect("a list");
+        let list = crate::leader::store::Store::open(Path::new(":memory:"), &key).expect("a list");
         read_list(dir, std::sync::Arc::new(list));
     }
 
     /// The certificate list [`listing`] gave `dir`.
-    pub(crate) fn list_in(dir: &Path) -> std::sync::Arc<dyn Store> {
+    pub(crate) fn list_in(dir: &Path) -> std::sync::Arc<Store> {
         list_of(dir).expect("a list")
     }
 

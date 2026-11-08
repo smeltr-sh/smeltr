@@ -64,8 +64,8 @@ use prost::Message;
 
 use super::http::{HttpTransport, Order, Outcome, Protocol, Response, Unwritten};
 use super::prometheus::{
-    BucketSpan, Exemplar, Histogram, HistogramCount, HistogramZeroCount, Label, NAME_LABEL, ResetHint, Sample,
-    TimeSeries,
+    BucketSpan, Exemplar, ExemplarV2, Histogram, HistogramCount, HistogramZeroCount, Label, MetadataV2, MetricMetadata,
+    MetricType, NAME_LABEL, ResetHint, Sample, TimeSeries, TimeSeriesV2,
 };
 use super::{IoError, OwnedRecord};
 use crate::format::json_scan::{Next, Reader};
@@ -88,42 +88,6 @@ struct RequestV2 {
     symbols: Vec<String>,
     #[prost(message, repeated, tag = "5")]
     timeseries: Vec<TimeSeriesV2>,
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-struct TimeSeriesV2 {
-    /// Each label's name and value, in pairs.
-    #[prost(uint32, repeated, tag = "1")]
-    labels_refs: Vec<u32>,
-    #[prost(message, repeated, tag = "2")]
-    samples: Vec<Sample>,
-    #[prost(message, repeated, tag = "3")]
-    histograms: Vec<Histogram>,
-    #[prost(message, repeated, tag = "4")]
-    exemplars: Vec<ExemplarV2>,
-    #[prost(message, optional, tag = "5")]
-    metadata: Option<MetadataV2>,
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-struct ExemplarV2 {
-    #[prost(uint32, repeated, tag = "1")]
-    labels_refs: Vec<u32>,
-    #[prost(double, tag = "2")]
-    value: f64,
-    #[prost(int64, tag = "3")]
-    timestamp: i64,
-}
-
-/// A series' family's metadata. Its type numbers are 1.0's.
-#[derive(Clone, PartialEq, prost::Message)]
-struct MetadataV2 {
-    #[prost(enumeration = "MetricType", tag = "1")]
-    r#type: i32,
-    #[prost(uint32, tag = "3")]
-    help_ref: u32,
-    #[prost(uint32, tag = "4")]
-    unit_ref: u32,
 }
 
 /// The `Content-Type` of remote_write 2.0.
@@ -168,32 +132,6 @@ impl Families {
         self.by_name
             .insert(metadata.metric_family_name.clone(), metadata.clone());
     }
-}
-
-/// One family's metadata, as remote_write 1.0 carries it.
-#[derive(Clone, PartialEq, prost::Message)]
-struct MetricMetadata {
-    #[prost(enumeration = "MetricType", tag = "1")]
-    r#type: i32,
-    #[prost(string, tag = "2")]
-    metric_family_name: String,
-    #[prost(string, tag = "4")]
-    help: String,
-    #[prost(string, tag = "5")]
-    unit: String,
-}
-
-/// A family's type, as remote_write 1.0 numbers it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, prost::Enumeration)]
-enum MetricType {
-    Unknown = 0,
-    Counter = 1,
-    Gauge = 2,
-    Histogram = 3,
-    GaugeHistogram = 4,
-    Summary = 5,
-    Info = 6,
-    Stateset = 7,
 }
 
 /// A series' labels, `__name__` among them, sorted by name, as they are sent.
@@ -998,8 +936,9 @@ fn note_unwritten(unwritten: &Unwritten, response: &Response, items: &[Item], mi
             continue;
         };
         if written < sent {
-            let why = format!("the store wrote {written} of {sent} {kind}(s) of a request");
-            unwritten.note(kind, sent - written, &why);
+            unwritten.note(kind, sent - written, || {
+                format!("the store wrote {written} of {sent} {kind}(s) of a request")
+            });
         }
     }
 }
@@ -1246,7 +1185,7 @@ impl Protocol for RemoteWrite {
     /// Each point's labels' bytes with each one's framing, the point's: a sample's, or a histogram's fixed fields
     /// and each of its buckets and spans at most, and each exemplar's fixed fields and labels. Its metadata's strings'
     /// bytes with their framing and its type's, though a request sends its family's once.
-    fn size(&self, item: &Item) -> usize {
+    fn size(&self, item: &Item, _previous: Option<&Item>) -> usize {
         let label = |name: &str, value: &str| name.len() + value.len() + 6;
         let metadata =
             (item.metadata.as_ref()).map_or(0, |m| m.metric_family_name.len() + m.help.len() + m.unit.len() + 10);
@@ -1324,7 +1263,7 @@ impl Protocol for RemoteWrite {
             400 | 409 | 413 | 422 if self.version == RemoteWriteVersion::V2 && wrote_any(response) => {
                 // Only this line carries the store's refusal: the rows it did not write are dropped, not sent again.
                 tracing::error!(
-                    target: "remote_write.partly_written",
+                    name: "partly_written", target: "destinations",
                     subject = self.unwritten.as_ref().map_or("prometheus", |u| u.subject()),
                     status = response.status,
                     error = %response.describe(),
@@ -1833,7 +1772,7 @@ mod tests {
             "positive":{{"offset":0,"bucketCounts":[1,0,0,0,1,0,0,0,1]}}}}"#
         ))
         .unwrap();
-        assert_eq!(protocol().size(&large) - protocol().size(&small), 9 * 6);
+        assert_eq!(protocol().size(&large, None) - protocol().size(&small, None), 9 * 6);
     }
 
     #[test]
@@ -2111,7 +2050,7 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(
-            protocol().size(&with) - protocol().size(&bare),
+            protocol().size(&with, None) - protocol().size(&bare, None),
             24 + "trace_id".len() + 4 + 6
         );
     }
@@ -2316,9 +2255,12 @@ mod tests {
             r#"{{{T},"name":"x","value":1,"description":"help","unit":"s"}}"#
         ))
         .unwrap();
-        assert_eq!(protocol().size(&with) - protocol().size(&bare), "x".len() + 4 + 1 + 10);
+        assert_eq!(
+            protocol().size(&with, None) - protocol().size(&bare, None),
+            "x".len() + 4 + 1 + 10
+        );
         let alone = admit(r#"{"name":"abc","description":"de"}"#).unwrap();
-        assert_eq!(protocol().size(&alone), 3 + 2 + 10);
+        assert_eq!(protocol().size(&alone, None), 3 + 2 + 10);
     }
 
     #[test]

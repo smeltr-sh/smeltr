@@ -92,6 +92,33 @@ fn completions_go_back_to_the_reader_that_dispatched_them() {
     }
 }
 
+/// A stopping deployment finishes what a destination holds rather than waiting for the destination's own moment: one
+/// that acknowledges only when flushed, as a file destination does at its interval, acknowledges once finishing.
+#[test]
+fn a_finishing_destination_acknowledges_what_it_holds_without_waiting() {
+    let dest = AsyncDestination::new();
+    let mut egress = Egress::start(0, "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut reader = egress.handle();
+    hand(&mut reader, 1, &[OutgoingRecord::new(b"held")]);
+    for _ in 0..200 {
+        if dest.outstanding().len() == 1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(dest.outstanding().len(), 1, "the batch reached the destination");
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(
+        reader.poll_completions().unwrap().is_empty(),
+        "nothing is acknowledged before finishing"
+    );
+
+    egress.finish();
+    reader.flush().unwrap();
+    let done = reader.poll_completions().unwrap();
+    assert_eq!(done.iter().map(|c| c.batch).collect::<Vec<_>>(), vec![1]);
+}
+
 /// A batch that sent nothing here never touches the queue.
 #[test]
 fn a_batch_with_no_rows_for_this_destination_stays_off_the_queue() {
@@ -899,6 +926,7 @@ fn dropping_an_egress_ends_the_capture_at_its_destination() {
         .with_captures(captures.clone());
     assert!(captures.sends_to("es"));
     captures.admit(&[CaptureInvitation {
+        raw: false,
         session: "s1".to_string(),
         group: "g".to_string(),
         source: None,
@@ -950,6 +978,7 @@ fn a_capture_at_a_blocking_destination_sees_its_held_rows_once() {
     .holding_refusals()
     .with_captures(captures.clone());
     captures.admit(&[CaptureInvitation {
+        raw: false,
         session: "s1".to_string(),
         group: "g".to_string(),
         source: None,

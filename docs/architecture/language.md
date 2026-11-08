@@ -65,8 +65,9 @@ struct's field, a push and a write to an `f64` name. `array<i64>` beside
 `array<f64>` is `array<f64>`. `/` yields `f64`; `idiv(a, b)` divides and
 truncates toward zero as `%` does, an `i64` from two `i64`s and an `f64`
 beside an `f64`, and a divisor of zero fails the row. An `i64` result that overflows fails the row: null, with an
-`Overflow` exception. A `datetime` or `duration` operand yields the type
-its operator says.
+`Overflow` exception. An `f64` result fails it too, since smeltr holds no infinite or NaN `f64`: an infinity is an
+`Overflow`, a NaN, as `(-8) ** 0.5` gives, a `NaN`, and a literal too large for a float is a compile error. A
+`datetime` or `duration` operand yields the type its operator says.
 
 `+` takes two texts or two numbers; `str + i64` is a compile error. Text
 from a number is a template literal or `toString()`; a number from text is
@@ -87,6 +88,33 @@ source's `encoding` reads its records, and `encode(text, encoding)` is the
 text's bytes in a charset. A form or an encoding the call cannot use, text
 that is not the form, or a character the charset cannot spell is null with a
 `CoercionRefused` error.
+
+A binary message is read out of `bytes` by byte position: a number with
+`readInt` or `readFloat`, in the byte order the call names or big, and bytes
+with `readBytes`. One is written with `writeInt` and `writeFloat`, which give
+a number's bytes, and `concat`, which joins bytes.
+
+A read past the end of the bytes is null with an `IndexOutOfRange` error, so a
+read never reaches outside the message. An integer above the largest `i64` is
+null with an `Overflow` error, and a float that is NaN or infinite is null
+with a `NaN` error. A number its type cannot hold is null with an `Overflow`
+error when it is written.
+
+`unpack` reads a whole message into an object, from a layout that names each
+field and its type in the order the bytes come. Each field starts where the
+one before it ends. `pack` writes an object back as a message from the same
+layout, so `value.pack(layout).unpack(layout)` gives the value back. A type
+is a string that also carries a number's order, or the length of bytes or
+text: a count, an integer field before it, or a prefix. The
+compiler reads the layout as a literal and expands the call to those reads or
+writes, so a layout it cannot read is a compile error. A field the message is
+too short for is null with its error, and every field after it is null. `pack`
+writes a length from the data it measures, and a value the layout cannot hold
+makes the message null with its error.
+
+```ts
+msg = __source.bytes.unpack({version: "u8", len: "u16", host: "str(len)", port: "u16 little", body: "bytes"})
+```
 
 ## Null
 
@@ -158,10 +186,11 @@ whose rows share one format pays for that search once, not once a row. A
 field declared as an object is its leaves, each declared:
 `source: {ip: str, port: i64};` declares two. A first write binds its
 target to the value's type, so `y = 1` declares `y` as `i64`. `null` and
-`[]` have none: a name first written either takes the type every write after
-it in the block blends to, as a construct's first write does, so `let out =
-[]; for (let x of xs) { out = push(out, x * 2); }` makes `out` an
-`array<i64>`. With no write after it to give one, the first write names the
+`[]` have none: a name first written either takes the type the writes after
+it in the block blend to, so `let out = []; for (let x of xs) { out =
+push(out, x * 2); }` makes `out` an `array<i64>`. A write whose type cannot blend
+with the writes before it is a compile error: `[]` is an array, so `let l =
+[]; l = "s";` is refused. With no write after it to give one, the first write names the
 type: `x: i64 = null`, `xs: array<str> = []`. A
 declaration after it is a compile error, as is one of a path under it or of a
 key an open object may hold: after `x = $.v`, `x: i64;`, `x.a: str;` and,

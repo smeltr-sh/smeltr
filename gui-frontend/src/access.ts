@@ -58,21 +58,22 @@ export function areaOfPath(path: string): string | null {
   return group ? group[1] : null;
 }
 
-/** Whether saving, capturing and previewing are open in `area`. */
+/** Whether saving and capturing are open in `area`. */
 export function canEdit(area: string = currentScope()): boolean {
   return holds(area, 'editor');
 }
 
-/** Whether a capture may be started here: the group's workers are asked for records, and a source's sample
- * is saved where the source is declared. Without a target, whether the scope chip's form may be opened, since
- * its sample is saved there. */
+/** Whether a capture may be started at `at`: it asks `at.group`'s workers for records, which a viewer of
+ * that group may. One with no group, in shared, has its group picked in the form, from any the person
+ * views. Without `at`, whether the capture form may be opened from the scope chip. Saving what it caught
+ * is `canEdit`'s. */
 export function mayCapture(at?: {
   kind: 'source' | 'destination';
   scope: string;
   group: string;
 }): boolean {
-  if (!at) return canEdit();
-  return canEdit(at.group) && (at.kind === 'destination' || canEdit(at.scope));
+  if (at?.group === '') return isAdministrator() || heldAreas().some((a) => a !== SHARED_SCOPE);
+  return holds(at?.group ?? currentScope(), 'viewer');
 }
 
 /** The areas a person who is not an administrator holds, `shared` first. Empty for an
@@ -107,15 +108,19 @@ export const NOT_IN_DEMO = import.meta.env.MODE === 'demo' ? 'Not in the demo' :
 
 /** Why approving and deploying a change touching `paths` is not `access`'s to do -- the person
  * signed in, unless another is named -- or `''` when it is. As the leader judges it: a deployer in
- * every area the change touches, and an administrator for a path in no area. */
-export function deployBlocker(paths: string[], access: AccessDto = mine()): string {
-  if (NOT_IN_DEMO) return NOT_IN_DEMO;
+ * every area the change touches, and an administrator for a path in no area. `doing` names the act the reason is
+ * asked for, as its sentence opens. */
+export function deployBlocker(
+  paths: string[],
+  access: AccessDto = mine(),
+  doing: 'Approving this' | 'Requesting changes' | 'Deploying this' = 'Deploying this',
+): string {
   if (access.administrator) return '';
   const outside = paths.find((p) => areaOfPath(p) === null);
-  if (outside !== undefined) return `Deploying this takes an administrator: it changes ${outside}.`;
+  if (outside !== undefined) return `${doing} takes an administrator: it changes ${outside}.`;
   const short = [...new Set(paths.map((p) => areaOfPath(p)!))]
     .sort()
     .filter((a) => !allows(access, a, 'deployer'));
   if (short.length === 0) return '';
-  return `Deploying this takes a deployer in ${short.join(', ')}.`;
+  return `${doing} takes a deployer in ${short.join(', ')}.`;
 }

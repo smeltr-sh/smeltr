@@ -5,7 +5,8 @@
 //! [`ByAgent`], so the gate judges it as the person's, narrowed to what they let their agent use. The session's
 //! token is held in memory for the turn and never stored.
 //!
-//! A conversation is its person's alone: anyone else's reads as not there. No agent reaches these routes.
+//! A conversation is its person's alone: anyone else's reads as not there. An agent reaches only the conversation
+//! it works in, and only to read it.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,7 +16,7 @@ use std::time::Instant;
 use axum::Json;
 use axum::Router;
 use axum::body::Body;
-use axum::extract::{Extension, Path, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
@@ -44,6 +45,14 @@ const TITLE_CHARS: usize = 80;
 const SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 const NO_CONVERSATION: &str = "there is no such conversation";
+
+/// What the agent calls the conversation it works in, in place of its id.
+const THIS: &str = "this";
+
+/// The bytes of an item a search hit shows around what it found.
+const SNIPPET: usize = 300;
+/// The most hits one search answers with.
+pub const SEARCH_HITS: usize = 20;
 
 /// The turns running now, and the router their calls go through.
 #[derive(Default)]
@@ -166,6 +175,12 @@ pub struct ConversationDto {
     /// Why the last turn failed, when it did.
     error: Option<String>,
     items: Vec<Value>,
+    /// Read by a range or a search, how many turns the conversation holds; each item then says which turn it is of.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    turns: Option<usize>,
+    /// With `q`, how many items hold every word; the answer holds the newest [`SEARCH_HITS`] of them past `skip`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    found: Option<usize>,
     /// What made the last answer, which the next message starts from.
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
@@ -179,8 +194,8 @@ pub struct ConversationDto {
     writing: Option<String>,
 }
 
-/// What every chat route refuses first: an agent, since a conversation is its person's, and anyone while AI agents
-/// are off.
+/// What every chat route but reading one refuses first: an agent, since a conversation is its person's, and anyone
+/// while AI agents are off.
 async fn refused(auth: &Auth, by_agent: &Option<Extension<ByAgent>>) -> Option<Response> {
     if by_agent.is_some() {
         return Some(refuse(
@@ -579,7 +594,9 @@ impl Host for Turned {
         };
         let request = request
             .header(header::CONTENT_TYPE, "application/json")
-            .extension(ByAgent)
+            .extension(ByAgent {
+                conversation: self.conversation.clone(),
+            })
             .body(body);
         let request = match request {
             Ok(request) => request,
@@ -636,8 +653,8 @@ pub async fn list(State(auth): State<Auth>, actor: Extension<Actor>, by_agent: O
 
 /// `GET /api/agent/models`: the models the stored key reaches, and the administrator's, which a new conversation
 /// starts from. Asked of the provider each time, so a model it adds shows without a restart.
-pub async fn models(State(auth): State<Auth>, by_agent: Option<Extension<ByAgent>>) -> Response {
-    if let Some(refused) = refused(&auth, &by_agent).await {
+pub async fn models(State(auth): State<Auth>) -> Response {
+    if let Some(refused) = refused_while_off(&auth).await {
         return refused;
     }
     let store = auth.store.clone();
@@ -652,15 +669,61 @@ pub async fn models(State(auth): State<Auth>, by_agent: Option<Extension<ByAgent
     }
 }
 
-/// `GET /api/agent/conversations/:id`: one conversation, as what was said, asked and answered in order.
+/// `GET /api/agent/conversations/:id?from=&to=&q=`: some of a conversation's turns, as its agent reads them back
+/// once it outgrows the model's context.
+#[derive(Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Reading {
+    /// The first turn read, counted from 0. Without it, the first.
+    #[serde(default)]
+    from: Option<usize>,
+    /// The turn the read stops before. Without it, the read is of `from` alone, or with no `from` goes to the last
+    /// turn.
+    #[serde(default)]
+    to: Option<usize>,
+    /// Instead of whole turns, a snippet of each item whose text holds every word of it, ignoring case.
+    #[serde(default)]
+    q: Option<String>,
+    /// With `q`, how many of the newest hits to pass over, to read the ones before them.
+    #[serde(default)]
+    skip: Option<usize>,
+}
+
+impl Reading {
+    fn named(&self) -> bool {
+        self.from.is_some() || self.to.is_some() || self.q.is_some()
+    }
+}
+
+/// `GET /api/agent/conversations/:id`: one conversation, as what was said, asked and answered in order. Its agent
+/// reads the one conversation it works in, by a range of turns or a search; the GUI reads it whole unless it names
+/// one.
 pub async fn read(
     State(auth): State<Auth>,
     actor: Extension<Actor>,
     by_agent: Option<Extension<ByAgent>>,
     Path(id): Path<String>,
+    Query(reading): Query<Reading>,
 ) -> Response {
-    if let Some(refused) = refused(&auth, &by_agent).await {
+    // The agent names the conversation it works in as `this`, so its prompt is the same in every conversation.
+    let id = match &by_agent {
+        Some(Extension(mark)) if id == THIS => mark.conversation.clone(),
+        Some(_) => return refuse(StatusCode::NOT_FOUND, NO_CONVERSATION),
+        None => id,
+    };
+    if let Some(refused) = refused_while_off(&auth).await {
         return refused;
+    }
+    let named = reading.named();
+    // A long conversation read whole would fill the model's context again.
+    if by_agent.is_some() && !named {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "name the turns with from or to, or search with q",
+        );
+    }
+    if reading.q.as_deref().is_some_and(|q| q.trim().is_empty()) {
+        return refuse(StatusCode::BAD_REQUEST, "q needs a word to search for");
     }
     let conversation = match owned(&auth, &actor, &id).await {
         Ok(c) => c,
@@ -678,6 +741,10 @@ pub async fn read(
     let running = run.as_ref().is_some_and(|r| r.running);
     let parsed: Vec<Turn> = turns.iter().filter_map(|t| serde_json::from_str(t).ok()).collect();
     let last = last_answer(&parsed);
+    let (items, found) = match named {
+        true => read_items(&turns, &reading),
+        false => (turns.iter().flat_map(|t| items(t)).collect(), None),
+    };
     let body = ConversationDto {
         summary: summary(conversation, running),
         ended: run.as_ref().and_then(|r| r.ended).map(Ended::as_str),
@@ -686,12 +753,87 @@ pub async fn read(
             .filter(|r| r.running && !r.writing.is_empty())
             .map(|r| r.writing.clone()),
         error: run.and_then(|r| r.error),
-        items: turns.iter().flat_map(|t| items(t)).collect(),
+        items,
+        turns: named.then_some(turns.len()),
+        found,
         model: last.and_then(|r| r.model.clone()),
         effort: last.and_then(|r| r.effort),
         context: filled(&parsed),
     };
     Envelope::ok(json!({"conversation": body})).into_response()
+}
+
+/// The items of `turns` that `reading` asks for, each saying which turn it is of: whole, or with `q` a snippet of
+/// each that matches, the newest [`SEARCH_HITS`] past `skip`, and how many match.
+fn read_items(turns: &[String], reading: &Reading) -> (Vec<Value>, Option<usize>) {
+    let to = match (reading.from, reading.to) {
+        (_, Some(to)) => to,
+        (Some(from), None) => from.saturating_add(1),
+        (None, None) => turns.len(),
+    }
+    .min(turns.len());
+    let from = reading.from.unwrap_or(0).min(to);
+    let numbered = turns[from..to].iter().enumerate().flat_map(|(n, t)| {
+        items(t).into_iter().map(move |mut item| {
+            item["turn"] = json!(from + n);
+            item
+        })
+    });
+    let words: Vec<String> = reading
+        .q
+        .as_deref()
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_lowercase)
+        .collect();
+    if reading.q.is_none() {
+        return (numbered.collect(), None);
+    }
+    let hits: Vec<Value> = numbered
+        .filter_map(|item| {
+            let text = said_in(&item);
+            let lower = text.to_lowercase();
+            if !words.iter().all(|w| lower.contains(w.as_str())) {
+                return None;
+            }
+            // Lowercasing can change a text's length; then the snippet starts at its start.
+            let at = match lower.len() == text.len() {
+                true => words.first().and_then(|w| lower.find(w.as_str())).unwrap_or(0),
+                false => 0,
+            };
+            Some(json!({"kind": item["kind"], "turn": item["turn"], "snippet": snippet(&text, at)}))
+        })
+        .collect();
+    let end = hits.len().saturating_sub(reading.skip.unwrap_or(0));
+    let page = hits[end.saturating_sub(SEARCH_HITS)..end].to_vec();
+    (page, Some(hits.len()))
+}
+
+/// About [`SNIPPET`] bytes of `text` around byte `at`, marked with `…` where it was cut.
+fn snippet(text: &str, at: usize) -> String {
+    let mut start = at.saturating_sub(SNIPPET / 2);
+    while !text.is_char_boundary(start) {
+        start -= 1;
+    }
+    let mut end = (start + SNIPPET).min(text.len());
+    while !text.is_char_boundary(end) {
+        end += 1;
+    }
+    let before = if start > 0 { "…" } else { "" };
+    let after = if end < text.len() { "…" } else { "" };
+    format!("{before}{}{after}", &text[start..end])
+}
+
+/// The words of an item a search looks in: what was said, answered, asked for and returned.
+fn said_in(item: &Value) -> String {
+    let mut said: Vec<String> = ["text", "output", "summary", "error"]
+        .iter()
+        .filter_map(|field| item[field].as_str().map(str::to_string))
+        .collect();
+    if let Some(input) = item.get("input") {
+        said.push(input.to_string());
+    }
+    said.join("\n")
 }
 
 /// One stored turn as what the GUI shows: the person's messages, the agent's answers, its calls and their results.
@@ -711,6 +853,10 @@ fn items(stored: &str) -> Vec<Value> {
         Ok(Turn::Fresh(fresh)) => vec![json!({"kind": "fresh", "summary": fresh.summary})],
         Ok(Turn::Answered(reply)) => {
             let mut items = Vec::new();
+            // OpenAI's summary is sealed: only where it is can be shown.
+            if reply.compacted() {
+                items.push(json!({"kind": "compacted"}));
+            }
             if !reply.text.is_empty() {
                 items.push(json!({"kind": "answer", "text": reply.text}));
             }
@@ -787,6 +933,7 @@ pub async fn sweep(auth: Auth) {
     let mut every = tokio::time::interval(SWEEP_EVERY);
     loop {
         every.tick().await;
+        let _pass = tracing::trace_span!(target: "api", "a background pass", task = "delete old agent conversations");
         // A slot only read, with no run and nobody holding it, is made again when next asked for. Never waited on:
         // the map is held here.
         let idle = |slot: &Slot| Arc::strong_count(slot) == 1 && slot.try_lock().is_ok_and(|run| run.is_none());
@@ -800,15 +947,51 @@ pub async fn sweep(auth: Auth) {
         match swept {
             Ok(0) => {}
             Ok(n) => tracing::info!(
-                target: "leader.conversations_swept",
+                name: "conversations_swept", target: "store",
                 conversations = n,
                 "conversations nobody added to were deleted"
             ),
             Err(e) => tracing::warn!(
-                target: "leader.conversations_unswept",
+                name: "conversations_unswept", target: "store",
                 error = %e,
                 "could not delete the conversations nobody added to"
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A snippet keeps to whole characters around what was found, and says where it was cut.
+    #[test]
+    fn a_snippet_is_cut_around_what_was_found() {
+        let text = format!("{}needle{}", "é".repeat(SNIPPET), "x".repeat(SNIPPET));
+        let at = text.find("needle").unwrap();
+        let cut = snippet(&text, at);
+        assert!(cut.starts_with('…') && cut.ends_with('…'), "{cut}");
+        assert!(cut.contains("needle"), "{cut}");
+        assert_eq!(snippet("short", 0), "short");
+    }
+
+    /// A search answers with its newest hits and how many there are, and `skip` reads the ones before them.
+    #[test]
+    fn a_search_is_read_a_page_of_hits_at_a_time() {
+        let turns: Vec<String> = (0..SEARCH_HITS + 5)
+            .map(|n| serde_json::to_string(&Turn::Asked(vec![Said::Text(format!("hit {n}"))])).unwrap())
+            .collect();
+        let search = |skip| Reading {
+            q: Some("hit".to_string()),
+            skip,
+            ..Reading::default()
+        };
+        let (newest, found) = read_items(&turns, &search(None));
+        assert_eq!(found, Some(SEARCH_HITS + 5));
+        assert_eq!(newest.len(), SEARCH_HITS);
+        assert_eq!(newest[0]["turn"], 5);
+        let (older, _) = read_items(&turns, &search(Some(SEARCH_HITS)));
+        let older: Vec<&Value> = older.iter().map(|i| &i["turn"]).collect();
+        assert_eq!(older, [0, 1, 2, 3, 4]);
     }
 }

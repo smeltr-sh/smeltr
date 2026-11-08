@@ -52,8 +52,10 @@ search cannot reach past the cut.
 ## The map
 
 The map is the running topology, one band per group, laid out left to right
-as rows travel: sources, then pipelines, then destinations. Lines show what
-connects to what and nothing else. Every reading -- rate, buffer fill, lag
+as rows travel: sources, then pipelines, then destinations. Sources run in
+name order; a pipeline or destination sits level with what it connects to,
+so lines cross as little as they can. Lines show what connects to what and
+nothing else. Every reading -- rate, buffer fill, lag
 -- is on a node's card and in the panel docked beside the map, which holds
 the selected object's details. Selecting an object draws its directed path
 in front of everything else and dims the rest.
@@ -166,17 +168,20 @@ the groups. Its panel says where else it runs, and its pencil opens it in
 ### Stacks
 
 A fleet of hundreds draws a card per kind of thing rather than per thing.
-Sources or destinations of one system that connect to exactly the same
-pipelines are one card, a stack, once there are three of them; two cards read
-fine side by side. Their lines become the stack's, so a stack's path is
+Sources or destinations that sit together in name order, are of one system,
+connect to exactly the same pipelines and whose names start alike are one
+card, a stack, once there are three of them; two cards read fine side by
+side. Anything else between them in name order ends the run. The stack takes
+the longest start its members' names share as its title, so it sits in the
+column where its members would. Their lines become the stack's, so a stack's path is
 drawn like any other card's. A stack reads its members' rates summed, their
 most lag and their fullest buffer. A column's head still counts objects, not
 cards.
 
 ```mermaid
 graph LR
-  k(["23 sources · Kafka"]) --> p["firewall-normalize"]
-  h(["8 sources · Splunk HEC"]) --> p
+  k(["fw-kafka-* · 23 sources"]) --> p["firewall-normalize"]
+  h(["fw-hec-* · 8 sources"]) --> p
   w(["fw-kafka-07 · lag climbing"]) --> p
   p --> e(["es-firewall"])
 ```
@@ -206,7 +211,7 @@ moment under it: the value, the expected range, and any warning that held
 then, whose span the chart marks. A destination's
 overview adds a buffer summary by its busiest current worker; a source's
 adds its backlog. Tabs hold the rest: **Buffers**, per worker and paged;
-**Backlog**, the Kafka lag and whether intake is held; **Steps**, a
+**Backlog**, the Kafka lag over the window and whether intake is held; **Steps**, a
 pipeline's steps in the order they run; and **Routes**. A
 pencil leads into the object's editor, and × closes the panel. **Only
 this path** hides everything off the selection's path, keeping the other

@@ -120,38 +120,17 @@ fn check_literal(prefix: &str) -> Result<(), String> {
         .map_err(|e| format!("it is no key prefix: {e}"))
 }
 
-/// `prefix` with each placeholder filled from `at`, UTC.
+/// `prefix` with each placeholder filled from `at`, UTC. `check_prefix` has refused any other `%`.
 fn expand(prefix: &str, at: SystemTime) -> String {
     if !prefix.contains('%') {
         return prefix.to_string();
     }
-    let secs = at
+    let micros = at
         .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64);
-    let (year, month, day) = crate::ops::civil::civil_from_days(secs.div_euclid(86_400));
-    let of_day = secs.rem_euclid(86_400);
-    let mut out = String::with_capacity(prefix.len() + 8);
-    let mut chars = prefix.chars();
-    while let Some(c) = chars.next() {
-        if c != '%' {
-            out.push(c);
-            continue;
-        }
-        match chars.next() {
-            Some('Y') => out.push_str(&format!("{year:04}")),
-            Some('m') => out.push_str(&format!("{month:02}")),
-            Some('d') => out.push_str(&format!("{day:02}")),
-            Some('H') => out.push_str(&format!("{:02}", of_day / 3600)),
-            Some('M') => out.push_str(&format!("{:02}", of_day % 3600 / 60)),
-            // Refused at load.
-            Some(other) => {
-                out.push('%');
-                out.push(other);
-            }
-            None => out.push('%'),
-        }
-    }
-    out
+        .map_or(0, |d| d.as_micros() as i64);
+    let mut out = Vec::with_capacity(prefix.len() + 8);
+    crate::ops::timeparse::format_into(micros, prefix, &mut out);
+    String::from_utf8(out).expect("a prefix and its placeholders are UTF-8")
 }
 
 /// The prefix `row` goes under: its `__destination.prefix` as it stands, else `template` filled from now.
@@ -401,6 +380,20 @@ fn s3(
     }
     let store = builder.build().map_err(|e| IoError::transient(format!("s3: {e}")))?;
     Ok(Arc::new(store))
+}
+
+/// An S3 URI's scheme, its bucket, and its key without a slash at either end, refused unless its scheme is one of
+/// `schemes`. `table` names what is written there, for the refusal.
+pub(crate) fn s3_uri<'u>(uri: &'u str, schemes: &[&str], table: &str) -> Result<(&'u str, &'u str, String), String> {
+    let (scheme, rest) = uri
+        .split_once("://")
+        .filter(|(scheme, _)| schemes.contains(scheme))
+        .ok_or_else(|| format!("its location {uri:?} is not in S3, the one store {table} is written to"))?;
+    let (bucket, key) = rest.split_once('/').unwrap_or((rest, ""));
+    if bucket.is_empty() {
+        return Err(format!("its location {uri:?} names no bucket"));
+    }
+    Ok((scheme, bucket, key.trim_matches('/').to_string()))
 }
 
 /// The store for the S3 `bucket` a table's files are in, reached as `access` says, each call retried for up to

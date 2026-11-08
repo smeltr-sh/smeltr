@@ -58,6 +58,7 @@ fn rig(test_name: &str) -> Option<(String, Tls, HeldSecrets)> {
         authorities: Some(authorities),
         trust_public: true,
         side: smeltr::io::trust::Side::Client,
+        senders: Default::default(),
     };
     Some((brokers, tls, secrets))
 }
@@ -189,6 +190,7 @@ fn trust_alone_is_refused_by_a_broker_that_demands_a_certificate() {
         authorities: tls.authorities,
         trust_public: true,
         side: smeltr::io::trust::Side::Client,
+        senders: Default::default(),
     };
 
     assert_eq!(

@@ -20,7 +20,7 @@ use smeltr::core::column::{Column, DataType};
 use smeltr::core::variant;
 use smeltr::io::otlp::Encoding;
 use smeltr::io::{Source, SourceRecord};
-use smeltr::plan::topology::{Receiver, Signal, SourceMeta};
+use smeltr::plan::topology::{ConnectionLimits, Receiver, Signal, SourceMeta};
 
 use crate::harness::docker::{Container, Hook, Scratch, container_logs, share};
 use crate::harness::fuzz::{self, Coverage, Rng};
@@ -84,19 +84,23 @@ fn random_settings(rng: &mut Rng, ipv6: bool) -> Settings {
 }
 
 /// The receivers `settings` names, each opened on the port in turn.
-fn open(settings: &Settings, pki: &Pki) -> Vec<(Signal, Box<dyn Source>)> {
+fn open(settings: &Settings, pki: &Pki, limits: ConnectionLimits) -> Vec<(Signal, Box<dyn Source>)> {
     (settings.receivers.iter())
         .map(|taking| {
             let otlp = Receiver::Otlp(taking.signal);
-            let source = receiver::build(
-                otlp,
-                settings.listen,
-                settings.tls,
-                &taking.tokens,
-                "exporter",
-                taking.max_request_bytes,
-                pki,
-            );
+            let source = {
+                let (mut config, secrets) = receiver::configured(
+                    otlp,
+                    settings.listen,
+                    settings.tls,
+                    &taking.tokens,
+                    "exporter",
+                    taking.max_request_bytes,
+                    pki,
+                );
+                config.connections = limits;
+                receiver::opened(config, &secrets)
+            };
             (taking.signal, source)
         })
         .collect()
@@ -247,11 +251,14 @@ fn read_back(signal: Signal, records: &[SourceRecord]) -> Vec<Got> {
 // An export, as the model holds it: what an exporter means to send, before it is written in any encoding.
 
 /// What drawing one request takes from the seed, and the options it reached.
-struct Gen {
-    rng: Rng,
-    labels: Vec<String>,
+pub struct Gen {
+    pub rng: Rng,
+    pub labels: Vec<String>,
     /// Draws only what an OpenTelemetry Collector passes on as it was given.
-    collected: bool,
+    pub collected: bool,
+    /// Draws only doubles that a row and an OTLP request each carry as they are: no NaN or infinity, which a row's
+    /// JSON leaves out, and no -0, which protobuf writes as no value.
+    pub exact: bool,
 }
 
 impl Gen {
@@ -307,8 +314,8 @@ struct Scope {
 
 /// An `Export*ServiceRequest` of one signal.
 #[derive(Clone, Debug)]
-struct Export {
-    signal: Signal,
+pub struct Export {
+    pub signal: Signal,
     resources: Vec<Resourced>,
 }
 
@@ -591,10 +598,11 @@ fn double(g: &mut Gen) -> f64 {
         },
         false => *g.pick(DOUBLES),
     };
-    // The collector writes a -0 it was given as no value, which reads back as 0.
-    match g.collected && d == 0.0 {
-        true => 0.0,
-        false => d,
+    // Protobuf writes a -0 as no value, which reads back as 0, as the collector does.
+    match ((g.collected || g.exact) && d == 0.0, g.exact && !d.is_finite()) {
+        (true, _) => 0.0,
+        (_, true) => 1.5,
+        _ => d,
     }
 }
 
@@ -661,7 +669,7 @@ fn attributes(g: &mut Gen) -> Vec<Kv> {
     kvs(g, 0)
 }
 
-fn random_export(g: &mut Gen, signal: Signal) -> Export {
+pub fn random_export(g: &mut Gen, signal: Signal) -> Export {
     let resources = (0..g.below(4))
         .map(|_| Resourced {
             resource: (!g.chance(4)).then(|| Resource {
@@ -1436,7 +1444,7 @@ fn pb_kvs(g: &mut Gen, m: &mut Msg, tag: u32, kvs: &[Kv]) {
 }
 
 /// `export` as protobuf.
-fn pb_export(g: &mut Gen, export: &Export) -> Vec<u8> {
+pub fn pb_export(g: &mut Gen, export: &Export) -> Vec<u8> {
     let mut request = Msg::default();
     for resourced in &export.resources {
         let mut r = Msg::default();
@@ -2466,10 +2474,7 @@ fn random_request(g: &mut Gen, settings: &Settings) -> Sent {
         _ => *g.pick(&[Presents::Nothing, Presents::Trusted, Presents::Stranger]),
     };
     order.reach(format!("presents {presents:?} under {:?}", settings.tls));
-    order.decide(
-        settings.tls == Tls::Vouched && presents != Presents::Trusted,
-        Expected::Nothing,
-    );
+    order.decide(!settings.tls.admits(presents), Expected::Nothing);
     let mut sent = Sent {
         get: false,
         path: String::new(),
@@ -2893,14 +2898,14 @@ fn every_setting_answers_random_otlp_exports_as_otlp_does() {
     let mut cov = Coverage::new(
         receiver::listen_names(ipv6)
             .map(|ip| format!("listen {ip}"))
-            .chain(["None", "Served", "Vouched"].map(|tls| format!("tls {tls}")))
+            .chain(Tls::ALL.map(|tls| format!("tls {tls:?}")))
             .chain((1..=3).map(|n| format!("{n} receivers on a port")))
             .chain(signals.iter().map(|s| format!("a receiver of {s}")))
             .chain((0..=3).map(|n| format!("a receiver of {n} tokens")))
             .chain(RECEIVER_LIMITS.iter().map(|(_, name)| name.to_string()))
             .chain(["presents Nothing under None".to_string()])
-            .chain(["Served", "Vouched"].iter().flat_map(|tls| {
-                ["Nothing", "Trusted", "Stranger"].map(|presents| format!("presents {presents} under {tls}"))
+            .chain(Tls::ALL[1..].iter().flat_map(|tls| {
+                ["Nothing", "Trusted", "Stranger"].map(|presents| format!("presents {presents} under {tls:?}"))
             }))
             .chain(["GET /health", "GET on an export's path", "a path nothing serves"].map(String::from))
             .chain(["over HTTP/1", "over HTTP/2"].map(String::from))
@@ -2991,15 +2996,18 @@ fn every_setting_answers_random_otlp_exports_as_otlp_does() {
                 .map(String::from),
             )
             .chain([0, 200, 400, 401, 404, 405, 413, 415].map(|status| format!("answered {status}")))
-            .chain([0, 3, 12, 16].map(|code| format!("grpc-status {code}"))),
+            .chain([0, 3, 12, 16].map(|code| format!("grpc-status {code}")))
+            .chain(receiver::CONNECTION_LIMITS.iter().map(|s| s.to_string())),
     );
     fuzz::run(1..151, |seed| {
         let mut g = Gen {
             rng: Rng::seeded(seed),
             labels: Vec::new(),
             collected: false,
+            exact: false,
         };
-        let settings = random_settings(&mut g.rng, ipv6);
+        let mut settings = random_settings(&mut g.rng, ipv6);
+        settings.tls = receiver::random_check(seed, settings.tls);
         cov.reach(format!("listen {}", settings.listen.ip()));
         cov.reach(format!("tls {:?}", settings.tls));
         cov.reach(format!("{} receivers on a port", settings.receivers.len()));
@@ -3011,8 +3019,11 @@ fn every_setting_answers_random_otlp_exports_as_otlp_does() {
                 .unwrap();
             cov.reach(limit.1);
         }
-        let mut sources = open(&settings, &pki);
+        let (limits, limited) = receiver::random_connection_limits(&mut g.rng);
+        cov.reach(limited);
+        let mut sources = open(&settings, &pki, limits);
         let sent: Vec<Sent> = (0..10).map(|_| random_request(&mut g, &settings)).collect();
+        let connect = settings.connect;
         let sending = Arc::new((settings, sent));
         let (senders_pki, requests) = (pki.clone(), sending.clone());
         // One at a time, so the records of each signal arrive in the order they were sent.
@@ -3096,6 +3107,7 @@ fn every_setting_answers_random_otlp_exports_as_otlp_does() {
                 ));
             }
         }
+        receiver::holds_to_limits(connect, &limits)?;
         Ok(())
     });
     cov.assert_complete();
@@ -3121,7 +3133,7 @@ fn collector_config(listening: SocketAddr, at: SocketAddr, tls: Tls, exporters: 
     let tls = match tls {
         Tls::None => "{insecure: true}",
         Tls::Served => "{ca_file: /smeltr/ca.pem, server_name_override: localhost}",
-        Tls::Vouched => {
+        Tls::Vouched | Tls::Pinned | Tls::Named | Tls::Misnamed => {
             "{ca_file: /smeltr/ca.pem, server_name_override: localhost, cert_file: /smeltr/exporter.pem, key_file: \
              /smeltr/exporter-key.pem}"
         }
@@ -3194,6 +3206,7 @@ fn live_collectors_deliver_random_exports_under_random_configurations() {
             rng: Rng::seeded(seed),
             labels: Vec::new(),
             collected: true,
+            exact: false,
         };
         // Without IPv6, the collector reaches the receivers over IPv4 loopback, on the host's network.
         let mut settings = random_settings(&mut g.rng, false);
@@ -3232,7 +3245,7 @@ fn live_collectors_deliver_random_exports_under_random_configurations() {
             "under {:?}, listening on {}, exporting {exporters:?}",
             settings.tls, settings.listen
         );
-        let mut sources = open(&settings, &pki);
+        let mut sources = open(&settings, &pki, ConnectionLimits::default());
 
         let scratch = Scratch(std::env::temp_dir().join(format!("smeltr-otlp-fuzz-{}-{seed}", std::process::id())));
         let dir = &scratch.0;

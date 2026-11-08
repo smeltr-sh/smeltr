@@ -46,6 +46,8 @@ fn receiver(listen: SocketAddr, token: Option<&str>, tls: Option<Tls>, secrets: 
         tokens,
         tls,
         max_request_bytes: 1 << 20,
+        answer_after_delivery: false,
+        connections: Default::default(),
     };
     let registry = Arc::new(smeltr::metrics::Metrics::new());
     let subjects = Arc::new(smeltr::metrics::Subjects::default());
@@ -632,6 +634,7 @@ fn a_forwarder_is_served_over_tls() {
         authorities: None,
         trust_public: false,
         side: smeltr::io::trust::Side::Server,
+        senders: Default::default(),
     };
     let at = free_port();
     let mut source = receiver(at, None, Some(tls), &mut secrets);
@@ -706,6 +709,8 @@ fn hec_receiver(listen: SocketAddr, max: usize) -> Box<dyn Source> {
         ],
         tls: None,
         max_request_bytes: max,
+        answer_after_delivery: false,
+        connections: Default::default(),
     };
     let registry = Arc::new(smeltr::metrics::Metrics::new());
     let subjects = Arc::new(smeltr::metrics::Subjects::default());

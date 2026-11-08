@@ -1,7 +1,8 @@
 <!--
   Adding a schema (`NewObject`): read from a file a standard publishes (ECS, an OCSF class, a CSV of fields, JSON
-  Schema), imported by a pipeline of the bundle run over an uploaded file of any other format, or empty. What it starts
-  from is the draft's `type`; the schema itself is made on Add (`SchemasPage`).
+  Schema), made from an OpenTelemetry signal's records, imported by a pipeline of the bundle run over an uploaded
+  file of any other format, or empty. What it starts from is the draft's `type`; the schema itself is made on Add
+  (`SchemasPage`).
 -->
 <script lang="ts" module>
   import type { CatalogType } from './TypeCatalog.svelte';
@@ -10,18 +11,20 @@
     CsvPreview,
     EcsRequirements,
     OcsfClass,
+    OtlpSignal,
     Requirement,
     SchemaReadFormat,
   } from './api';
   import { FIELD_TYPES } from './api';
   import { REQUIREMENTS } from './schemas';
 
-  export type SchemaStart = 'ecs' | 'ocsf' | 'csv' | 'jsonSchema' | 'import' | 'empty';
+  export type SchemaStart = 'ecs' | 'ocsf' | 'otlp' | 'csv' | 'jsonSchema' | 'import' | 'empty';
 
   /** The format each start that reads a file reads it as. */
   export const READ_FORMATS: Partial<Record<SchemaStart, SchemaReadFormat>> = {
     ecs: 'ecs',
     ocsf: 'ocsf',
+    otlp: 'otlp',
     csv: 'csv',
     jsonSchema: 'json-schema',
   };
@@ -35,6 +38,8 @@
     /** For ECS and OCSF, read the release the leader carries rather than `text`. Until the leader says which it
      * carries, a file is uploaded, and an upload turns this off. */
     builtIn: boolean;
+    /** The release `builtIn` reads, by its version; the newest where empty. */
+    release: string;
     /** The importer, by pipeline id, for `import`. */
     pipeline: string;
     /** The uploaded file, for `import`, cut into records on the leader. */
@@ -52,6 +57,8 @@
     levels: Requirement[];
     /** Whose requirements an ECS schema's fields take: ECS's own, or Elastic Security's in their place. */
     requirements: EcsRequirements;
+    /** The OpenTelemetry signal whose records an OTLP schema holds. */
+    signal: OtlpSignal;
     /** A CSV as the leader read it before its columns were chosen, or why it could not. */
     preview: CsvPreview | null;
     previewError: string;
@@ -77,6 +84,7 @@
   const LABELS: Record<SchemaStart, string> = {
     ecs: 'schema from ECS',
     ocsf: 'schema from an OCSF class',
+    otlp: 'schema from an OpenTelemetry signal',
     csv: 'schema from a CSV of fields',
     jsonSchema: 'schema from JSON Schema',
     import: 'schema imported from a file',
@@ -99,6 +107,14 @@
       help: "One class of the Open Cybersecurity Schema Framework: from the release built in, or from ocsf-schema-compiler's output.",
       // A shield.
       glyph: { d: 'M32 6 L52 14 V30 C52 44 42 54 32 58 C22 54 12 44 12 30 V14 Z' },
+    },
+    {
+      type: 'otlp',
+      label: 'OTLP',
+      category: 'From a standard',
+      help: 'The records of one OpenTelemetry signal (logs, metrics or traces), as the OTLP receiver gives them and the OTLP destination reads them.',
+      // A trace's spans, each starting within the one above.
+      glyph: { d: 'M8 10 H40 V18 H8 Z M16 26 H48 V34 H16 Z M24 42 H56 V50 H24 Z' },
     },
     {
       type: 'csv',
@@ -139,7 +155,12 @@
   import Field from './Field.svelte';
   import { suggestId } from './ids';
   import LineBreakerField from './LineBreakerField.svelte';
-  import { getSchemaStandards, readSchema, type SchemaStandards } from './api';
+  import {
+    getSchemaStandards,
+    readSchema,
+    type SchemaStandards,
+    type StandardRelease,
+  } from './api';
   import Segmented from './Segmented.svelte';
   import { count } from './time';
   import Help from './Help.svelte';
@@ -176,9 +197,23 @@
     return d.builtIn && standards !== null;
   }
 
+  /** A release of ECS or OCSF, with OCSF's classes. */
+  type Release = StandardRelease & { classes?: OcsfClass[] };
+
+  /** The releases of `d`'s standard the leader carries, newest first. */
+  function releasesOf(d: SchemaDraft): Release[] {
+    return (d.type === 'ocsf' ? standards?.ocsf : standards?.ecs) ?? [];
+  }
+
+  /** The release `d` reads where it reads one: the one chosen, else the newest. */
+  function releaseOf(d: SchemaDraft): Release | undefined {
+    const releases = releasesOf(d);
+    return releases.find((r) => r.version === d.release) ?? releases[0];
+  }
+
   /** The OCSF classes `d` may be read from. */
   function classesOf(d: SchemaDraft): OcsfClass[] {
-    return fromRelease(d) ? standards!.ocsf.classes : d.classes;
+    return fromRelease(d) ? (releaseOf(d)?.classes ?? []) : d.classes;
   }
 
   /** `classes` by category, each by caption; a class in no category comes last, under Other. */
@@ -212,23 +247,36 @@
     d.id = d.suggested = suggestId(name, unavailable);
   }
 
-  /** `d` reads the release, or an upload; its class stays where the other offers it. */
-  function setBuiltIn(d: SchemaDraft, on: boolean) {
-    d.builtIn = on;
+  /** `d` holds `signal`'s records, and its id follows, unless it was typed over. */
+  function setSignal(d: SchemaDraft, signal: OtlpSignal) {
+    d.signal = signal;
+    if (d.id !== d.suggested) return;
+    d.id = d.suggested = suggestId(`otlp-${signal}`, unavailable);
+  }
+
+  /** `d` reads the release of version `source`, or, for `upload`, a file; its class stays where the other offers
+   * it. */
+  function setSource(d: SchemaDraft, source: string) {
+    d.builtIn = source !== 'upload';
+    if (d.builtIn) d.release = source;
     const classes = classesOf(d);
     if (d.type === 'ocsf' && !classes.some((c) => c.name === d.class))
       setClass(d, firstClass(classes));
   }
 
   function blank(type: SchemaStart, taken: string[]): SchemaDraft {
-    const first = type === 'ocsf' ? firstClass(standards?.ocsf.classes ?? []) : '';
-    const id = suggestId(type === 'ecs' ? 'ecs' : first || 'schema', taken);
+    const first = type === 'ocsf' ? firstClass(standards?.ocsf[0]?.classes ?? []) : '';
+    const id = suggestId(
+      type === 'ecs' ? 'ecs' : type === 'otlp' ? 'otlp-logs' : first || 'schema',
+      taken,
+    );
     return {
       id,
       suggested: id,
       type,
       text: '',
       builtIn: true,
+      release: '',
       pipeline: '',
       file: '',
       lineBreaker: undefined,
@@ -237,6 +285,7 @@
       depth: 2,
       levels: ['required', 'recommended'],
       requirements: 'ecs',
+      signal: 'logs',
       preview: null,
       previewError: '',
       columns: {},
@@ -395,19 +444,21 @@
   {oncancel}
 >
   {#snippet fields(draft)}
-    {#if (draft.type === 'ecs' || draft.type === 'ocsf') && standards}
-      {@const release = draft.type === 'ecs' ? standards.ecs : standards.ocsf}
+    {@const release = releaseOf(draft)}
+    {#if (draft.type === 'ecs' || draft.type === 'ocsf') && release}
       {@const name = draft.type === 'ecs' ? 'ECS' : 'OCSF'}
       <div class="source">
         <Segmented
           label="Read from"
           options={[
-            { value: 'built-in', label: `${name} ${release.version}, built in` },
+            ...releasesOf(draft).map((r) => ({
+              value: r.version,
+              label: `${name} ${r.version}, built in`,
+            })),
             { value: 'upload', label: 'Upload a file' },
           ]}
           bind:value={
-            () => (draft.builtIn ? 'built-in' : 'upload'),
-            (v) => setBuiltIn(draft, v === 'built-in')
+            () => (draft.builtIn ? release.version : 'upload'), (v) => setSource(draft, v)
           }
         />
       </div>
@@ -594,6 +645,14 @@
           {/each}
         </fieldset>
       {/if}
+    {:else if draft.type === 'otlp'}
+      <Field required label="Signal">
+        <select bind:value={() => draft.signal, (v) => setSignal(draft, v)}>
+          <option value="logs">logs</option>
+          <option value="metrics">metrics</option>
+          <option value="traces">traces</option>
+        </select>
+      </Field>
     {:else if draft.type === 'jsonSchema'}
       <Field required label="JSON Schema">
         <textarea
@@ -635,10 +694,6 @@
     align-items: center;
     color: var(--dim);
     font-size: var(--text-note);
-  }
-
-  .mono {
-    font-family: var(--mono);
   }
 
   .picker {

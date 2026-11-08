@@ -594,7 +594,7 @@
     class:not-run={notRun}
   >
     <div class="card-head if-head">
-      <span class="type-badge">
+      <span class="type-badge uppercase-label">
         <StepGlyph type="if" />
         If
       </span>
@@ -616,7 +616,7 @@
     {@render stepErrorList()}
     <div class="branches">
       <div class="branch">
-        <div class="branch-label">then</div>
+        <div class="branch-label uppercase-label">then</div>
         <StepList
           steps={step.then}
           {errorsByStep}
@@ -638,7 +638,7 @@
         />
       </div>
       <div class="branch">
-        <div class="branch-label">else</div>
+        <div class="branch-label uppercase-label">else</div>
         <StepList
           steps={step.else}
           {errorsByStep}
@@ -679,14 +679,15 @@
         class="expander"
         type="button"
         data-guide={step.type}
+        data-parser={step.type === 'parser' ? step.kind.type : undefined}
         aria-expanded={expanded}
         onclick={() => setExpanded(!expanded)}
       >
-        <span class="type-badge" class:comment-badge={step.type === 'comment'}>
+        <span class="type-badge uppercase-label" class:comment-badge={step.type === 'comment'}>
           <StepGlyph type={step.type} />
           <span class="type-name">{STEP_LABELS[step.type]}</span>
         </span>
-        <span class="summary">{stepSummary(step)}</span>
+        <span class="summary ellipsis">{stepSummary(step)}</span>
         {#if stepErrors.length > 0 || stepWarningMessages.length > 0}
           <StateMark state={stepErrors.length === 0 ? 'warning' : 'error'} size={15} />
         {/if}
@@ -1064,7 +1065,9 @@
                   >
                     {#snippet name()}
                       {#if isGrok}
-                        <span class="derived-name" title="from the pattern">{field.name}</span>
+                        <span class="derived-name ellipsis" title="from the pattern"
+                          >{field.name}</span
+                        >
                       {:else}
                         <Locked>
                           <ValidatedField
@@ -1382,7 +1385,7 @@
                   {@const isKey = h === step.keyColumn}
                   <div class="output-row" class:skipped={!existing}>
                     <span class="output-col-name"
-                      >{h}{#if isKey}<span class="key-tag">key</span>{/if}</span
+                      >{h}{#if isKey}<span class="key-tag uppercase-label">key</span>{/if}</span
                     >
                     {#if existing}
                       <Locked>
@@ -1681,11 +1684,6 @@
     display: inline-flex;
     align-items: center;
     gap: 0.3em;
-    font-size: var(--text-micro);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--dim);
     flex-shrink: 0;
   }
 
@@ -1727,9 +1725,6 @@
     font-family: var(--mono);
     font-size: var(--text-label);
     color: var(--ink);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   /* Each control's box is the 24px target, so the boxes touch and the glyphs keep their spacing without a gap. */
@@ -1931,9 +1926,6 @@
     padding: 0.3rem 0.4rem;
     border: 1px dashed var(--border);
     border-radius: var(--radius);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .definition {
@@ -1986,11 +1978,6 @@
   .key-tag {
     margin-left: 0.35rem;
     font-family: var(--font-body);
-    font-size: var(--text-micro);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--dim);
   }
 
   /* A datetime's format folds out under its row, so the grid keeps its columns. */
@@ -2120,11 +2107,6 @@
   }
 
   .branch-label {
-    font-size: var(--text-micro);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--dim);
     margin-bottom: 0.35rem;
   }
 </style>

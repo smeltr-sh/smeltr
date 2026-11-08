@@ -91,7 +91,7 @@
     onpointerdown={drag}
   ></div>
   <div class="bar">
-    <select aria-label="Conversation" bind:value={open}>
+    <select aria-label="Conversation" bind:value={open} disabled={!conversations.length}>
       <option value="">New conversation</option>
       {#each conversations as c (c.id)}<option value={c.id}>{firstLineText(c.title)}</option>{/each}
     </select>

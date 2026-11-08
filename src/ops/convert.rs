@@ -5,7 +5,7 @@
 use std::io::Write as _;
 
 use super::datetime;
-use super::helpers::{Operand, alloc_with_merged_validity, short_circuit_empty, side};
+use super::helpers::{Labels, Operand, map_f64, map_i64, short_circuit_empty, side};
 use super::timeparse;
 use crate::core::bits;
 use crate::core::column::{Column, DataType, Scalar, StrBuilder, VarLen, VarType};
@@ -49,30 +49,10 @@ pub fn stringify(ctx: &mut Ctx, col: &Column) -> Column {
     }
 }
 
-/// One value as `toString` renders a row of it. Text is its own rendering.
-pub fn scalar_string(ctx: &mut Ctx, value: &Scalar) -> String {
-    match value {
-        Scalar::Str(s) => s.clone(),
-        Scalar::Bytes(b) => BytesForm::Base64.text(b),
-        _ => {
-            let one = Column::filled(ctx.pool, value, 1);
-            let text = to_string(ctx, &[&one]);
-            let rendered = text.var().expect("toString renders every non-text scalar");
-            let s = String::from_utf8_lossy(rendered.get(0)).into_owned();
-            text.reclaim(ctx.pool);
-            one.reclaim(ctx.pool);
-            s
-        }
-    }
-}
-
 /// I64/F64/Bool/Bytes/DateTime/Duration -> Str. Bytes take an optional second argument, the form to write them in.
 /// A `Str` argument never reaches here: `plan::resolve` elides `toString` of a string.
 pub fn to_string(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
-        return e;
-    }
     let a = ins[0];
     let mut b = StrBuilder::new(ctx.pool, VarType::Str, len);
     let mut scratch = Vec::new();
@@ -169,46 +149,23 @@ pub fn parse_int(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     }
     let v = ins[0].var().unwrap();
     let radix = ins.get(1).and_then(|c| side::i64(c));
-    let mut out = alloc_with_merged_validity(ctx, &DataType::I64, len, &[Some(v.validity), None]);
-    {
-        let o = out.i64_mut().unwrap();
-        for i in 0..len {
-            // Every row is written: a pooled buffer is not zeroed.
-            let radix_ok = ins.len() < 2 || radix.as_ref().is_some_and(|r| r.is_valid(i));
-            if !o.validity.is_valid(i) || !radix_ok {
-                o.values[i] = 0;
-                o.validity.set_valid(i, false);
-                continue;
-            }
-            let parsed = std::str::from_utf8(v.get(i)).ok().and_then(|s| {
-                let s = s.trim();
-                match radix.as_ref() {
-                    None => s.parse::<i64>().ok(),
-                    Some(r) => {
-                        let base = r.at(i);
-                        if !(2..=36).contains(&base) {
-                            return None;
-                        }
-                        let digits = if base == 16 {
-                            s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s)
-                        } else {
-                            s
-                        };
-                        i64::from_str_radix(digits, base as u32).ok()
-                    }
-                }
-            });
-            match parsed {
-                Some(n) => o.values[i] = n,
-                None => {
-                    o.values[i] = 0;
-                    o.validity.set_valid(i, false);
-                }
-            }
+    let radix_bits = radix.as_ref().and_then(|r| r.validity());
+    map_i64(ctx, &DataType::I64, len, &[Some(v.validity), radix_bits], |i| {
+        let s = std::str::from_utf8(v.get(i)).ok()?.trim();
+        if ins.len() < 2 {
+            return s.parse::<i64>().ok();
         }
-        o.validity.recount();
-    }
-    out
+        let base = radix.as_ref()?.at(i);
+        if !(2..=36).contains(&base) {
+            return None;
+        }
+        let digits = if base == 16 {
+            s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s)
+        } else {
+            s
+        };
+        i64::from_str_radix(digits, base as u32).ok()
+    })
 }
 
 /// A parse function's call: `kernel`, and a `CoercionRefused` on each row whose arguments are all there and whose
@@ -255,26 +212,9 @@ pub fn parse_float(ctx: &mut Ctx, ins: &[&Column]) -> Column {
         return e;
     }
     let v = ins[0].var().unwrap();
-    let mut out = alloc_with_merged_validity(ctx, &DataType::F64, len, &[Some(v.validity), None]);
-    {
-        let o = out.f64_mut().unwrap();
-        for i in 0..len {
-            if !o.validity.is_valid(i) {
-                o.values[i] = 0.0;
-                continue;
-            }
-            let parsed = std::str::from_utf8(v.get(i)).ok().and_then(parse_f64);
-            match parsed {
-                Some(f) => o.values[i] = f,
-                None => {
-                    o.values[i] = 0.0;
-                    o.validity.set_valid(i, false);
-                }
-            }
-        }
-        o.validity.recount();
-    }
-    out
+    map_f64(ctx, len, &[Some(v.validity)], |i| {
+        std::str::from_utf8(v.get(i)).ok().and_then(parse_f64)
+    })
 }
 
 /// The text a duration reads from: `datetime::parse_duration_text`, under the name this module's arms use.
@@ -285,32 +225,12 @@ pub(crate) fn timeparse_duration(s: &str) -> Option<i64> {
 /// `parseDuration(value)`: the count of microseconds `toString` writes, read back. A miss is null.
 pub fn parse_duration(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Duration, len) {
-        return e;
-    }
     let v = ins[0].var().unwrap();
-    let mut out = alloc_with_merged_validity(ctx, &DataType::Duration, len, &[Some(v.validity), None]);
-    {
-        let o = out.duration_mut().unwrap();
-        for i in 0..len {
-            if !o.validity.is_valid(i) {
-                o.values[i] = 0;
-                continue;
-            }
-            match std::str::from_utf8(v.get(i))
-                .ok()
-                .and_then(datetime::parse_duration_text)
-            {
-                Some(n) => o.values[i] = n,
-                None => {
-                    o.values[i] = 0;
-                    o.validity.set_valid(i, false);
-                }
-            }
-        }
-        o.validity.recount();
-    }
-    out
+    map_i64(ctx, &DataType::Duration, len, &[Some(v.validity)], |i| {
+        std::str::from_utf8(v.get(i))
+            .ok()
+            .and_then(datetime::parse_duration_text)
+    })
 }
 
 /// `parseTime(value, format)` for one format known when the plan compiled: what the convert pass after a parse runs over a declared
@@ -322,25 +242,9 @@ pub fn parse_time_with_format(ctx: &mut Ctx, value: &Column, fmt: &str) -> Colum
     }
     let now = ctx.now_micros;
     let v = value.var().unwrap();
-    let mut out = alloc_with_merged_validity(ctx, &DataType::DateTime, len, &[Some(v.validity)]);
-    {
-        let o = out.datetime_mut().unwrap();
-        for i in 0..len {
-            if !o.validity.is_valid(i) {
-                o.values[i] = 0;
-                continue;
-            }
-            match timeparse::parse_with_format_at(&String::from_utf8_lossy(v.get(i)), fmt, Some(now)) {
-                Some(us) => o.values[i] = us,
-                None => {
-                    o.values[i] = 0;
-                    o.validity.set_valid(i, false);
-                }
-            }
-        }
-        o.validity.recount();
-    }
-    out
+    map_i64(ctx, &DataType::DateTime, len, &[Some(v.validity)], |i| {
+        timeparse::parse_with_format_at(&String::from_utf8_lossy(v.get(i)), fmt, Some(now))
+    })
 }
 
 /// `parseTime(value[, format][, reference])`: a `Str` second argument is the format, a `DateTime` one the reference
@@ -367,41 +271,24 @@ pub fn parse_time(ctx: &mut Ctx, ins: &[&Column]) -> Column {
         .skip(1)
         .find(|c| c.data_type() == DataType::DateTime)
         .and_then(|c| side::datetime(c));
-    let mut out = Column::alloc(ctx.pool, &DataType::DateTime, len);
-    {
-        let o = out.datetime_mut().unwrap();
-        let mut hint = usize::MAX;
-        for i in 0..len {
-            let fmt_ok = !has_fmt_arg || fmt_col.as_ref().is_some_and(|f| f.is_valid(i));
-            let ref_ok = ref_col.as_ref().is_none_or(|r| r.is_valid(i));
-            if !v.validity.is_valid(i) || !fmt_ok || !ref_ok {
-                o.values[i] = 0;
-                o.validity.set_valid(i, false);
-                continue;
-            }
-            let reference = Some(ref_col.as_ref().map_or(now, |r| r.at(i)));
-            let text = String::from_utf8_lossy(v.get(i));
-            let parsed = match &fmt_col {
-                Some(f) => {
-                    let fmt = String::from_utf8_lossy(f.at(i));
-                    timeparse::parse_with_format_at(&text, &fmt, reference)
-                }
-                None => timeparse::parse_auto_hinted_at(&text, hint, reference).map(|(us, idx)| {
-                    hint = idx;
-                    us
-                }),
-            };
-            match parsed {
-                Some(us) => o.values[i] = us,
-                None => {
-                    o.values[i] = 0;
-                    o.validity.set_valid(i, false);
-                }
-            }
+    let mut hint = usize::MAX;
+    let inputs = [
+        Some(v.validity),
+        fmt_col.as_ref().and_then(|f| f.validity()),
+        ref_col.as_ref().and_then(|r| r.validity()),
+    ];
+    map_i64(ctx, &DataType::DateTime, len, &inputs, |i| {
+        let reference = Some(ref_col.as_ref().map_or(now, |r| r.at(i)));
+        let text = String::from_utf8_lossy(v.get(i));
+        match &fmt_col {
+            Some(f) => timeparse::parse_with_format_at(&text, &String::from_utf8_lossy(f.at(i)), reference),
+            None if has_fmt_arg => None,
+            None => timeparse::parse_auto_hinted_at(&text, hint, reference).map(|(us, idx)| {
+                hint = idx;
+                us
+            }),
         }
-        o.validity.recount();
-    }
-    out
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -777,41 +664,15 @@ fn build_scalars(ctx: &mut Ctx, to: &DataType, values: &[Option<Scalar>]) -> Col
     }
 }
 
-/// The charset a row's label names, looked up once per run of the same label. `None` for a label
-/// `format::encoding` does not know.
-struct Charsets<'a> {
-    last: Option<(&'a [u8], Option<Encoding>)>,
-}
-
-impl<'a> Charsets<'a> {
-    fn new() -> Self {
-        Charsets { last: None }
-    }
-
-    fn get(&mut self, label: &'a [u8]) -> Option<Encoding> {
-        match self.last {
-            Some((l, e)) if l == label => e,
-            _ => {
-                let e = std::str::from_utf8(label).ok().and_then(Encoding::for_label);
-                self.last = Some((label, e));
-                e
-            }
-        }
-    }
-}
-
 /// `decode(bytes, label)`: the bytes read as text in the encoding the label names, `"auto"` included, as a source's
 /// `encoding` reads its records. Bytes that do not decode become U+FFFD. Null where the label names no encoding, or
 /// names `"none"`.
 pub fn decode(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
-        return e;
-    }
     let (Some(v), Some(labels)) = (side::var(ins[0]), side::var(ins[1])) else {
         return Column::empty(DataType::Str, len);
     };
-    let mut charsets = Charsets::new();
+    let mut charsets = Labels::new(Encoding::for_label);
     let mut b = StrBuilder::new(ctx.pool, VarType::Str, len);
     for i in 0..len {
         let encoding = (v.is_valid(i) && labels.is_valid(i))
@@ -829,13 +690,10 @@ pub fn decode(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 /// `"auto"`, which detects and so has nothing to write, or where the charset cannot spell a character of the text.
 pub fn encode(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Bytes, len) {
-        return e;
-    }
     let (Some(v), Some(labels)) = (side::var(ins[0]), side::var(ins[1])) else {
         return Column::empty(DataType::Bytes, len);
     };
-    let mut charsets = Charsets::new();
+    let mut charsets = Labels::new(Encoding::for_label);
     let mut b = StrBuilder::new(ctx.pool, VarType::Bytes, len);
     let mut out = Vec::new();
     for i in 0..len {
@@ -881,9 +739,6 @@ fn encode_text(text: &str, charset: Charset, out: &mut Vec<u8>) -> bool {
 /// (`format::bytes_text`), base64 where none is. Null where the text is not that form, or the form is no form.
 pub fn parse_bytes(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Bytes, len) {
-        return e;
-    }
     let v = ins[0].var().unwrap();
     let forms = ins.get(1).and_then(|c| side::var(c));
     let mut b = StrBuilder::new(ctx.pool, VarType::Bytes, len);

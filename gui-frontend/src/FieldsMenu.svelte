@@ -33,6 +33,7 @@
   import FieldDoc from './FieldDoc.svelte';
   import Segmented from './Segmented.svelte';
   import ShowAll from './ShowAll.svelte';
+  import CopyButton from './CopyButton.svelte';
   import { fromRecord } from './recordDiff';
   import {
     askedUnder,
@@ -127,17 +128,6 @@
 
   let exportOpen = $state(false);
   let includeSampled = $state(false);
-  let copied = $state(false);
-
-  async function copyMapping(mapping: unknown) {
-    try {
-      await navigator.clipboard.writeText(JSON.stringify(mapping, null, 2));
-      copied = true;
-      setTimeout(() => (copied = false), 1500);
-    } catch {
-      // No clipboard access: the mapping is on screen to select by hand.
-    }
-  }
 </script>
 
 <ChipPicker kind="columns" bind:open ariaLabel="Choose fields" onopen={() => (all = false)}>
@@ -324,9 +314,10 @@
                     include fields seen in the sample
                   </label>{/if}
                 <div class="actions">
-                  <button type="button" onclick={() => copyMapping(dict.elasticsearch)}>
-                    {copied ? 'Copied' : 'Copy as Elasticsearch mapping'}
-                  </button>
+                  <CopyButton
+                    text={JSON.stringify(dict.elasticsearch, null, 2)}
+                    label="Copy as Elasticsearch mapping"
+                  />
                   <Help label="Elasticsearch mapping">
                     The mapping leaves out a <code>variant</code> field. Give the field a type to include
                     it.
@@ -466,10 +457,6 @@
   mark {
     background: color-mix(in srgb, var(--accent) 25%, transparent);
     color: inherit;
-  }
-
-  .mono {
-    font-family: var(--mono);
   }
 
   .records,

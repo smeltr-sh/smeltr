@@ -92,7 +92,6 @@
     type BreakdownTotals,
   } from './metrics';
   import {
-    BASELINE_WINDOW_MINUTES,
     DEFAULT_WINDOW_MINUTES,
     FLOW_WINDOWS,
     FINEST_BUCKET_MILLIS,
@@ -322,48 +321,33 @@
   );
   const readFrom = (dense: (number | null)[]) => (readSlot >= 0 ? (dense[readSlot] ?? null) : null);
 
-  // -- furthest from normal (Main storyboard): its own fixed, longer window, independent of
-  // the chart's picker -- a baseline needs history the picker's window may not cover.
+  // -- furthest from normal (Main storyboard): each source's last half hour against the normal
+  // its warnings read, whatever window the chart shows. A source is in the selection when a
+  // series the selection holds reads it.
 
-  let baseline: FlowResponseDto | null = $state(null);
-  let baselineFetchedAt = $state(Date.now());
-  const BASELINE_POLL_MS = 30_000; // an hourly-bucketed baseline does not need a 2s refresh
-
-  function fetchBaseline() {
-    getFlow(BASELINE_WINDOW_MINUTES)
-      .then((f) => {
-        baseline = f;
-        baselineFetchedAt = Date.now();
-      })
-      .catch(reported);
-  }
-
-  let ranked = $derived.by(() =>
-    baseline
-      ? furthestFromNormal(
-          baseline.rowsIn.filter((series) => flowMatchesSelection(series)),
-          baseline.rowsOut.filter((series) => flowMatchesSelection(series)),
-          baseline.bucketMillis,
-          baselineFetchedAt,
-        )
-      : [],
-  );
-  const rankedSort = new TableSort<'name' | 'kind' | 'group' | 'now' | 'normal' | 'away'>();
+  let normals = $derived.by(() => {
+    const read = flow;
+    return read === null
+      ? []
+      : read.normals.filter((n) =>
+          read.rowsIn.some(
+            (series) =>
+              series.group === n.group &&
+              series.subjectId === n.subjectId &&
+              flowMatchesSelection(series),
+          ),
+        );
+  });
+  let ranked = $derived(furthestFromNormal(normals));
+  const rankedSort = new TableSort<'name' | 'group' | 'now' | 'normal' | 'away'>();
   let sortedRanked = $derived(
     rankedSort.apply(ranked, {
       name: (r) => r.subjectId,
-      kind: (r) => r.kind,
       group: (r) => r.group,
       now: (r) => r.now,
-      normal: (r) => r.normal,
-      away: (r) => r.awayPercent,
+      normal: (r) => r.low,
+      away: (r) => r.awayPercent ?? Infinity,
     }),
-  );
-  let baselineSourceCount = $derived.by(
-    () => baseline?.rowsIn.filter((series) => flowMatchesSelection(series)).length ?? 0,
-  );
-  let baselineDestCount = $derived.by(
-    () => baseline?.rowsOut.filter((series) => flowMatchesSelection(series)).length ?? 0,
   );
 
   /** Issues the ribbon names; the Issues page lists the rest. */
@@ -424,13 +408,6 @@
     if (!autoRefresh) return;
     fetchFlow();
     const id = setInterval(fetchFlow, POLL_MS);
-    return () => clearInterval(id);
-  });
-
-  $effect(() => {
-    if (!autoRefresh) return;
-    fetchBaseline();
-    const id = setInterval(fetchBaseline, BASELINE_POLL_MS);
     return () => clearInterval(id);
   });
 
@@ -501,6 +478,18 @@
 
   /** Free space leads, because it is what the worker may still write. Total says how much room
    * that is out of. */
+  function formatConnections(resources: WorkerRow['resources']): string {
+    if (resources?.connectionBudget == null) return '--';
+    return `up to ${resources.connectionBudget.toLocaleString('en-US')}`;
+  }
+
+  function connectionsTitle(resources: WorkerRow['resources']): string {
+    const limit = resources?.openFileLimit;
+    return limit == null
+      ? 'The connections this worker’s receivers may hold together'
+      : `The connections this worker’s receivers may hold together, within its open-file limit of ${limit.toLocaleString('en-US')}`;
+  }
+
   function formatDisk(resources: WorkerRow['resources']): string {
     if (resources?.diskFreeBytes == null || resources.diskTotalBytes == null) return '--';
     return `${bytes(resources.diskFreeBytes)} free of ${bytes(resources.diskTotalBytes)}`;
@@ -685,7 +674,6 @@
   function refreshNow() {
     refresh();
     fetchFlow();
-    fetchBaseline();
   }
 
   function chooseWindow(minutes: number) {
@@ -714,7 +702,7 @@
         {#each warnings.slice(0, RIBBON_ISSUES) as w, i (i)}
           <span class="issue-row">
             <StateMark state={severityState(w.severity)} />
-            <span class="issue-teaser">{w.subjectId}: {w.message}</span>
+            <span class="issue-teaser ellipsis">{w.subjectId}: {w.message}</span>
           </span>
         {/each}
         {#if warnings.length > RIBBON_ISSUES}
@@ -970,7 +958,7 @@
                 ? 'never'
                 : `${selectedWorker.stopAfterUnreachableSecs}s`}
             </dd>
-            <dt><WorkerGroupIcon />Group</dt>
+            <dt class="glyphed"><WorkerGroupIcon />Group</dt>
             <dd>{selectedWorker.groupId ?? '--'}</dd>
             <dt>Threads</dt>
             <dd>{runningThreads(selectedWorker.threads)}</dd>
@@ -995,6 +983,10 @@
             <dt>Disk</dt>
             <dd title="Free space on the filesystem holding this worker’s state directory">
               {formatDisk(selectedWorker.resources)}
+            </dd>
+            <dt>Connections</dt>
+            <dd title={connectionsTitle(selectedWorker.resources)}>
+              {formatConnections(selectedWorker.resources)}
             </dd>
             {#if selectedWorker.listens.length > 0}
               <dt>Receivers</dt>
@@ -1144,16 +1136,16 @@
           <h2>
             Furthest from normal — {selectionLabel}
             <Help label="Furthest from normal"
-              ><b>Normally</b> is a source's or destination's average rows per second at this hour of
-              day over the last 30 days, whatever window the chart shows.</Help
+              ><b>Normally</b> is the range of rows per second a source reads at this time of day,
+              learned from the last 7 days. When its last half hour falls outside that range, it
+              raises Rows below normal or Rows above normal. <b>Away by</b> is how far the last half hour
+              is past the nearest end of that range, as a percent of that end.</Help
             >
           </h2>
-          {#if baseline !== null}<p class="note">
-              {count(baselineSourceCount, 'source')}, {count(baselineDestCount, 'destination')}.
-            </p>{/if}
+          {#if flow !== null}<p class="note">{count(normals.length, 'source')}.</p>{/if}
         </div>
       </div>
-      {#if baseline === null}
+      {#if flow === null}
         <p class="empty">Loading…</p>
       {:else if ranked.length === 0}
         <p class="empty">Not enough history yet to say what any of these usually do.</p>
@@ -1164,8 +1156,6 @@
               ><tr
                 ><th aria-sort={rankedSort.aria('name')}
                   ><SortButton sort={rankedSort} key="name">Name</SortButton></th
-                ><th aria-sort={rankedSort.aria('kind')}
-                  ><SortButton sort={rankedSort} key="kind">Kind</SortButton></th
                 ><th aria-sort={rankedSort.aria('group')}
                   ><SortButton sort={rankedSort} key="group"
                     ><WorkerGroupIcon />Worker group</SortButton
@@ -1180,17 +1170,17 @@
               ></thead
             >
             <tbody>
-              {#each sortedRanked as r (JSON.stringify([r.group, r.kind, r.subjectId]))}
+              {#each sortedRanked as r (JSON.stringify([r.group, r.subjectId]))}
+                {@const away = r.awayPercent === null ? Infinity : Math.abs(r.awayPercent)}
                 <tr>
-                  <td class="mono">{r.subjectId}</td><td>{r.kind}</td><td>{r.group}</td>
+                  <td class="mono">{r.subjectId}</td><td>{r.group}</td>
                   <td class="num">{Math.round(r.now)}</td><td class="num dim"
-                    >{Math.round(r.normal)}</td
+                    >{Math.round(r.low)}–{Math.round(r.high)}</td
                   >
-                  <td
-                    class="num away"
-                    class:big={Math.abs(r.awayPercent) >= 50}
-                    class:mid={Math.abs(r.awayPercent) >= 20 && Math.abs(r.awayPercent) < 50}
-                    >{r.awayPercent >= 0 ? '+' : ''}{Math.round(r.awayPercent)}%</td
+                  <td class="num away" class:big={away >= 50} class:mid={away >= 20 && away < 50}
+                    >{r.awayPercent === null
+                      ? '+∞'
+                      : `${r.awayPercent > 0 ? '+' : ''}${Math.round(r.awayPercent)}`}%</td
                   >
                 </tr>
               {/each}
@@ -1293,9 +1283,6 @@
      with an ellipsis rather than pushing "View all issues" off screen. */
   .issue-teaser {
     min-width: 0;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
   }
   .issue-more {
     flex: none;

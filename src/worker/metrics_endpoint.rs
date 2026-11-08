@@ -57,7 +57,7 @@ pub fn open() -> Result<Option<MetricsEndpoint>, String> {
         let ignored = settings.given();
         if !ignored.is_empty() {
             tracing::warn!(
-                target: "worker.metrics_endpoint_ignored",
+                name: "metrics_endpoint_ignored", target: "logs",
                 settings = %ignored.join(", "),
                 "ignoring the metrics endpoint's settings, since worker.metrics_endpoint.enabled is false"
             );
@@ -139,7 +139,6 @@ impl Settings {
 impl MetricsEndpoint {
     /// Serves `scrape`'s answer at [`PATH`] for the life of the process.
     pub fn serve(self, scrape: impl Fn() -> String + Send + Sync + 'static) -> Result<SocketAddr, String> {
-        let runtime = receiver::receiver_runtime().map_err(|e| e.to_string())?;
         let tls = self
             .tls
             .map(|tls| axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(tls)));
@@ -153,12 +152,13 @@ impl MetricsEndpoint {
         let bound = self.listener.local_addr().map_err(|e| e.to_string())?;
         // The handle is dropped and the server kept: it serves until the process ends.
         receiver::serve_router(
-            runtime,
             self.listener,
             tls,
             router,
             self.address,
             "the metrics endpoint",
+            None,
+            crate::plan::topology::ConnectionLimits::default(),
         )
         .map_err(|e| e.to_string())?;
         Ok(bound)
@@ -180,7 +180,7 @@ async fn answer(axum::extract::State(scraped): axum::extract::State<Arc<Scraped>
             .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("basic"))
             .map(|(_, credentials)| crate::leader::auth::hash_secret(credentials.trim()));
         if !sent.is_some_and(|sent| verify_slices_are_equal(sent.as_bytes(), expected.as_bytes()).is_ok()) {
-            tracing::debug!(target: "worker.metrics_scrape_refused", "a metrics scrape sent no usable credential");
+            tracing::debug!(name: "metrics_scrape_refused", target: "logs", "a metrics scrape sent no usable credential");
             let mut refused = StatusCode::UNAUTHORIZED.into_response();
             refused.headers_mut().insert(
                 header::WWW_AUTHENTICATE,
@@ -218,10 +218,11 @@ fn tls(cert: &Path, key: &Path, client_ca: Option<&Path>) -> Result<rustls::Serv
     let authorities = client_ca
         .map(|path| certificates(path, "SMELTR_WORKER_METRICS_ENDPOINT_CLIENT_CA"))
         .transpose()?;
-    let mut tls = receiver::serving_tls(chain, key, authorities).map_err(|(what, e)| match what {
-        Some(what) => format!("the metrics endpoint's TLS settings, {what}: {e}"),
-        None => format!("the metrics endpoint's TLS: {e}"),
-    })?;
+    let mut tls =
+        receiver::serving_tls(chain, key, authorities, &Default::default()).map_err(|(what, e)| match what {
+            Some(what) => format!("the metrics endpoint's TLS settings, {what}: {e}"),
+            None => format!("the metrics endpoint's TLS: {e}"),
+        })?;
     tls.alpn_protocols = receiver::http_alpn();
     Ok(tls)
 }

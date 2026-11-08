@@ -86,7 +86,7 @@ describe('an Iceberg destination', () => {
   it('marks each Advanced section for what it hides, and not at the defaults', () => {
     const d = iceberg();
     expect(catalogStorageModified(d)).toBe(false);
-    expect(tableDeliveryModified({ ...d, compression: 'zstd', fileIntervalSecs: 60 })).toBe(false);
+    expect(tableDeliveryModified({ ...d, compression: 'zstd', fileIntervalSecs: 300 })).toBe(false);
     expect(catalogStorageModified({ ...d, warehouse: 'analytics' })).toBe(true);
     expect(catalogStorageModified({ ...d, region: 'eu-west-1' })).toBe(true);
     expect(catalogStorageModified({ ...d, accessKeyId: 'AWS_ACCESS_KEY_ID' })).toBe(true);

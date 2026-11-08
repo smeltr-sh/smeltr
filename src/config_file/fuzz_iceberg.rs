@@ -216,11 +216,11 @@ const STALL_AFTERS: Pool = &[("1", false), ("30", false), ("120", false), ("0", 
 const FILE_INTERVALS: Pool = &[
     ("5", false),
     ("60", false),
-    ("240", false),
+    ("300", false),
+    ("3600", false),
     ("0", true),
     ("4", true),
-    ("241", true),
-    ("3600", true),
+    ("3601", true),
 ];
 
 /// One generated destination, and what the loader must make of it.
@@ -695,7 +695,7 @@ fn built(case: &Case, system: &super::LoadedSystem) -> Result<(), String> {
         && (ObjectBytes::MIN..=ObjectBytes::MAX).contains(&c.max_object_bytes)
         && (BufferBytes::MIN..=BufferBytes::OBJECT_MAX).contains(&c.buffer_bytes)
         && (1..=120).contains(&c.stall_after.as_secs())
-        && (5..=240).contains(&c.file_interval.as_secs());
+        && (5..=3600).contains(&c.file_interval.as_secs());
     if !in_range {
         return Err(format!("built limits out of range: {c:?}"));
     }
@@ -784,7 +784,7 @@ fn run(seeds: std::ops::Range<u64>, generate: fn(&mut Rng) -> Case, expected: Ve
 }
 
 #[test]
-fn known_iceberg_configs_get_the_verdict_check_iceberg_gives() {
+fn known_iceberg_configs_get_the_verdict_their_check_gives() {
     // Every field the rules refuse at, which is every option but compression, whose every value is one.
     let refusals = (OPTIONS.iter())
         .filter(|o| **o != "compression")

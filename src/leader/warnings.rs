@@ -15,12 +15,14 @@ use std::time::Duration;
 
 use serde::Serialize;
 
+use super::SOURCE_LAG_METRIC;
 use crate::heartbeat::{MetricValueDto, ThreadKind};
 use crate::leader::access::{Access, Level};
 use crate::leader::alerts::{self, Channel};
 use crate::leader::deploy_checks::{FailingTest, Findings};
+use crate::leader::marks::Marks;
 use crate::leader::registry::{FactKey, ThreadHealth};
-use crate::leader::series::{DRIFT_WINDOW, DeclaredField, LoggedSite, RegistryStore, Tier};
+use crate::leader::series::{DRIFT_WINDOW, DeclaredField, LoggedType, RegistryStore, Tier};
 use crate::leader::store::{KeyStanding, Unopenable, WorkerCredentialRecord};
 use crate::leader::throughput;
 
@@ -58,49 +60,84 @@ pub enum SubjectKind {
     Certificate,
 }
 
-/// Which catalog entry raised this warning. The catalog is fixed (design doc, Control plane), so a reader can
-/// switch on it and a new entry is a compile error rather than a blank label.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Condition {
-    WorkerSilent,
-    WorkerNeverHeartbeated,
-    SourceBlocked,
-    SourceRefused,
-    SourceWaiting,
-    SourceUnreachable,
-    DestinationRefusing,
-    DestinationUnreachable,
-    LagClimbing,
-    DestinationMemoryBound,
-    SourceRowsBelow,
-    SourceRowsAbove,
-    GroupNotDeployed,
-    WorkerNotDeployingItsTarget,
-    WorkerOnAnotherBuild,
-    WorkerOnAnotherRelease,
-    WorkerMemoryHigh,
-    AuthorityExpiring,
-    AuthorityAging,
-    EnrollmentCodeNamesOutgoingAuthority,
-    CertificateExpiring,
-    WorkerLoggedWarnings,
-    DeployHeld,
-    RemoteNotFollowed,
-    NewerRelease,
-    DeployDoesNotLoad,
-    DeployFailsTests,
-    DeployBreaksSchemas,
-    DeclaredFieldFailing,
-    DeclaredFieldGone,
-    StreamUnrouted,
-    SecretsKeyUnusable,
-    SecretNeedsValue,
-    AcmeRenewalFailing,
-    LeaderCertificateRunningOut,
-    IssuedCertificateNotRenewed,
+/// The catalog, one row per condition: its wire name, its label and its section.
+macro_rules! conditions {
+    ($($(#[$doc:meta])* $variant:ident => $name:literal, $label:literal, $section:ident;)*) => {
+        /// Which catalog entry raised this warning. The catalog is fixed (design doc, Control plane), so a reader can
+        /// switch on it and a new entry is a compile error rather than a blank label.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
+        pub enum Condition {
+            $($(#[$doc])* #[serde(rename = $name)] $variant,)*
+        }
+
+        impl Condition {
+            /// The whole catalog, so the page's copy of it can be checked against this one. The reader that switches on
+            /// a condition is in another language, where a missing entry is a blank label rather than a compile error.
+            pub const ALL: &'static [Condition] = &[$(Condition::$variant),*];
+
+            /// What a person reads for it: the page's own label (`conditionLabel`), for what is sent where the page is not.
+            pub fn label(self) -> &'static str {
+                match self {
+                    $(Condition::$variant => $label,)*
+                }
+            }
+
+            /// What this is called on the wire.
+            pub fn name(self) -> &'static str {
+                match self {
+                    $(Condition::$variant => $name,)*
+                }
+            }
+
+            /// The section it is listed under.
+            pub fn section(self) -> Section {
+                match self {
+                    $(Condition::$variant => Section::$section,)*
+                }
+            }
+        }
+    };
+}
+
+conditions! {
+    WorkerSilent => "workerSilent", "Worker silent", Workers;
+    WorkerNeverHeartbeated => "workerNeverHeartbeated", "Never heartbeated", Workers;
+    SourceBlocked => "sourceBlocked", "Source blocked", SourcesAndDestinations;
+    SourceRefused => "sourceRefused", "Blocked by destination refusals", SourcesAndDestinations;
+    SourceWaiting => "sourceWaiting", "Waiting on destination", SourcesAndDestinations;
+    SourceUnreachable => "sourceUnreachable", "Source unreachable", SourcesAndDestinations;
+    DestinationRefusing => "destinationRefusing", "Refusing writes", SourcesAndDestinations;
+    DestinationUnreachable => "destinationUnreachable", "Destination unreachable", SourcesAndDestinations;
+    LagClimbing => "lagClimbing", "Lag climbing", SourcesAndDestinations;
+    DestinationMemoryBound => "destinationMemoryBound", "Held back by memory", SourcesAndDestinations;
+    SourceRowsBelow => "sourceRowsBelow", "Rows below normal", SourcesAndDestinations;
+    SourceRowsAbove => "sourceRowsAbove", "Rows above normal", SourcesAndDestinations;
+    GroupNotDeployed => "groupNotDeployed", "Worker group not deployed", Deploys;
+    WorkerNotDeployingItsTarget => "workerNotDeployingItsTarget", "Not deploying its target", Deploys;
+    WorkerOnAnotherBuild => "workerOnAnotherBuild", "On another build", Deploys;
+    WorkerOnAnotherRelease => "workerOnAnotherRelease", "On another release", Deploys;
+    WorkerMemoryHigh => "workerMemoryHigh", "Memory near its limit", Workers;
+    AuthorityExpiring => "authorityExpiring", "Authority expiring", CertificatesAndSecrets;
+    AuthorityAging => "authorityAging", "Authority running out", CertificatesAndSecrets;
+    CertificateExpiring => "certificateExpiring", "Certificate expiring", CertificatesAndSecrets;
+    EnrollmentCodeNamesOutgoingAuthority => "enrollmentCodeNamesOutgoingAuthority", "Enrollment code names the outgoing authority", CertificatesAndSecrets;
+    WorkerLoggedWarnings => "workerLoggedWarnings", "Logged a warning", Workers;
+    DeployHeld => "deployHeld", "Deploy held", Deploys;
+    RemoteNotFollowed => "remoteNotFollowed", "Remote not followed", Deploys;
+    NewerRelease => "newerRelease", "Newer release", Leader;
+    DeployDoesNotLoad => "deployDoesNotLoad", "Deployed config does not load", Deploys;
+    DeployFailsTests => "deployFailsTests", "Test failing", Pipelines;
+    DeployBreaksSchemas => "deployBreaksSchemas", "Rows do not fit a schema", Pipelines;
+    DeclaredFieldFailing => "declaredFieldFailing", "Field not its declared type", Pipelines;
+    DeclaredFieldGone => "declaredFieldGone", "Field no longer arriving", Pipelines;
+    StreamUnrouted => "streamUnrouted", "Stream unrouted", SourcesAndDestinations;
+    SecretsKeyUnusable => "secretsKeyUnusable", "Secrets encryption key unusable", CertificatesAndSecrets;
+    SecretNeedsValue => "secretNeedsValue", "Secret or certificate needs a new value", CertificatesAndSecrets;
+    AcmeRenewalFailing => "acmeRenewalFailing", "ACME renewal failing", CertificatesAndSecrets;
+    LeaderCertificateRunningOut => "leaderCertificateRunningOut", "Leader certificate running out", CertificatesAndSecrets;
+    IssuedCertificateNotRenewed => "issuedCertificateNotRenewed", "Certificate not renewed", CertificatesAndSecrets;
     /// An alert channel did not take the last send (`leader::alerts`).
-    AlertChannelFailing,
+    AlertChannelFailing => "alertChannelFailing", "Alert channel failing", Leader;
 }
 
 /// A heading the catalog's entries are listed under where a person picks among them, such as the issues an alert
@@ -126,177 +163,6 @@ impl Section {
         Section::CertificatesAndSecrets,
         Section::Leader,
     ];
-}
-
-impl Condition {
-    /// The whole catalog, so the page's copy of it can be checked against this one. The reader that switches on
-    /// a condition is in another language, where a missing entry is a blank label rather than a compile error.
-    pub const ALL: &'static [Condition] = &[
-        Condition::WorkerSilent,
-        Condition::WorkerNeverHeartbeated,
-        Condition::SourceBlocked,
-        Condition::SourceRefused,
-        Condition::SourceWaiting,
-        Condition::SourceUnreachable,
-        Condition::DestinationRefusing,
-        Condition::DestinationUnreachable,
-        Condition::LagClimbing,
-        Condition::DestinationMemoryBound,
-        Condition::SourceRowsBelow,
-        Condition::SourceRowsAbove,
-        Condition::GroupNotDeployed,
-        Condition::WorkerNotDeployingItsTarget,
-        Condition::WorkerOnAnotherBuild,
-        Condition::WorkerOnAnotherRelease,
-        Condition::WorkerMemoryHigh,
-        Condition::AuthorityExpiring,
-        Condition::AuthorityAging,
-        Condition::CertificateExpiring,
-        Condition::EnrollmentCodeNamesOutgoingAuthority,
-        Condition::WorkerLoggedWarnings,
-        Condition::DeployHeld,
-        Condition::RemoteNotFollowed,
-        Condition::NewerRelease,
-        Condition::DeployDoesNotLoad,
-        Condition::DeployFailsTests,
-        Condition::DeployBreaksSchemas,
-        Condition::DeclaredFieldFailing,
-        Condition::DeclaredFieldGone,
-        Condition::StreamUnrouted,
-        Condition::SecretsKeyUnusable,
-        Condition::SecretNeedsValue,
-        Condition::AcmeRenewalFailing,
-        Condition::LeaderCertificateRunningOut,
-        Condition::IssuedCertificateNotRenewed,
-        Condition::AlertChannelFailing,
-    ];
-
-    /// What a person reads for it: the page's own label (`conditionLabel`), for what is sent where the page is not.
-    pub fn label(self) -> &'static str {
-        match self {
-            Condition::WorkerSilent => "Worker silent",
-            Condition::WorkerNeverHeartbeated => "Never heartbeated",
-            Condition::SourceBlocked => "Source blocked",
-            Condition::SourceRefused => "Blocked by destination refusals",
-            Condition::SourceWaiting => "Waiting on destination",
-            Condition::SourceUnreachable => "Source unreachable",
-            Condition::DestinationRefusing => "Refusing writes",
-            Condition::DestinationUnreachable => "Destination unreachable",
-            Condition::LagClimbing => "Lag climbing",
-            Condition::DestinationMemoryBound => "Held back by memory",
-            Condition::SourceRowsBelow => "Rows below normal",
-            Condition::SourceRowsAbove => "Rows above normal",
-            Condition::GroupNotDeployed => "Worker group not deployed",
-            Condition::WorkerNotDeployingItsTarget => "Not deploying its target",
-            Condition::WorkerOnAnotherBuild => "On another build",
-            Condition::WorkerMemoryHigh => "Memory near its limit",
-            Condition::AuthorityExpiring => "Authority expiring",
-            Condition::AuthorityAging => "Authority running out",
-            Condition::EnrollmentCodeNamesOutgoingAuthority => "Enrollment code names the outgoing authority",
-            Condition::CertificateExpiring => "Certificate expiring",
-            Condition::WorkerLoggedWarnings => "Logged a warning",
-            Condition::DeployHeld => "Deploy held",
-            Condition::RemoteNotFollowed => "Remote not followed",
-            Condition::DeployDoesNotLoad => "Deployed config does not load",
-            Condition::DeployFailsTests => "Test failing",
-            Condition::DeployBreaksSchemas => "Rows do not fit a schema",
-            Condition::DeclaredFieldFailing => "Field not its declared type",
-            Condition::DeclaredFieldGone => "Field no longer arriving",
-            Condition::StreamUnrouted => "Stream unrouted",
-            Condition::NewerRelease => "Newer release",
-            Condition::WorkerOnAnotherRelease => "On another release",
-            Condition::SecretsKeyUnusable => "Secrets encryption key unusable",
-            Condition::SecretNeedsValue => "Secret or certificate needs a new value",
-            Condition::AcmeRenewalFailing => "ACME renewal failing",
-            Condition::LeaderCertificateRunningOut => "Leader certificate running out",
-            Condition::IssuedCertificateNotRenewed => "Certificate not renewed",
-            Condition::AlertChannelFailing => "Alert channel failing",
-        }
-    }
-
-    /// What this is called on the wire. The match is what makes a new entry a compile error here.
-    pub fn name(self) -> &'static str {
-        match self {
-            Condition::WorkerSilent => "workerSilent",
-            Condition::WorkerNeverHeartbeated => "workerNeverHeartbeated",
-            Condition::SourceBlocked => "sourceBlocked",
-            Condition::SourceRefused => "sourceRefused",
-            Condition::SourceWaiting => "sourceWaiting",
-            Condition::SourceUnreachable => "sourceUnreachable",
-            Condition::DestinationRefusing => "destinationRefusing",
-            Condition::DestinationUnreachable => "destinationUnreachable",
-            Condition::LagClimbing => "lagClimbing",
-            Condition::DestinationMemoryBound => "destinationMemoryBound",
-            Condition::SourceRowsBelow => "sourceRowsBelow",
-            Condition::SourceRowsAbove => "sourceRowsAbove",
-            Condition::GroupNotDeployed => "groupNotDeployed",
-            Condition::WorkerNotDeployingItsTarget => "workerNotDeployingItsTarget",
-            Condition::WorkerOnAnotherBuild => "workerOnAnotherBuild",
-            Condition::WorkerOnAnotherRelease => "workerOnAnotherRelease",
-            Condition::WorkerMemoryHigh => "workerMemoryHigh",
-            Condition::AuthorityExpiring => "authorityExpiring",
-            Condition::AuthorityAging => "authorityAging",
-            Condition::CertificateExpiring => "certificateExpiring",
-            Condition::EnrollmentCodeNamesOutgoingAuthority => "enrollmentCodeNamesOutgoingAuthority",
-            Condition::WorkerLoggedWarnings => "workerLoggedWarnings",
-            Condition::DeployHeld => "deployHeld",
-            Condition::RemoteNotFollowed => "remoteNotFollowed",
-            Condition::NewerRelease => "newerRelease",
-            Condition::DeployDoesNotLoad => "deployDoesNotLoad",
-            Condition::DeployFailsTests => "deployFailsTests",
-            Condition::DeployBreaksSchemas => "deployBreaksSchemas",
-            Condition::DeclaredFieldFailing => "declaredFieldFailing",
-            Condition::DeclaredFieldGone => "declaredFieldGone",
-            Condition::StreamUnrouted => "streamUnrouted",
-            Condition::SecretsKeyUnusable => "secretsKeyUnusable",
-            Condition::SecretNeedsValue => "secretNeedsValue",
-            Condition::AcmeRenewalFailing => "acmeRenewalFailing",
-            Condition::LeaderCertificateRunningOut => "leaderCertificateRunningOut",
-            Condition::IssuedCertificateNotRenewed => "issuedCertificateNotRenewed",
-            Condition::AlertChannelFailing => "alertChannelFailing",
-        }
-    }
-    /// The section it is listed under. The match is what makes a new entry a compile error here.
-    pub fn section(self) -> Section {
-        match self {
-            Condition::WorkerSilent
-            | Condition::WorkerNeverHeartbeated
-            | Condition::WorkerMemoryHigh
-            | Condition::WorkerLoggedWarnings => Section::Workers,
-            Condition::SourceBlocked
-            | Condition::SourceRefused
-            | Condition::SourceWaiting
-            | Condition::SourceUnreachable
-            | Condition::DestinationRefusing
-            | Condition::DestinationUnreachable
-            | Condition::LagClimbing
-            | Condition::DestinationMemoryBound
-            | Condition::SourceRowsBelow
-            | Condition::SourceRowsAbove
-            | Condition::StreamUnrouted => Section::SourcesAndDestinations,
-            Condition::GroupNotDeployed
-            | Condition::WorkerNotDeployingItsTarget
-            | Condition::WorkerOnAnotherBuild
-            | Condition::WorkerOnAnotherRelease
-            | Condition::DeployDoesNotLoad
-            | Condition::DeployHeld
-            | Condition::RemoteNotFollowed => Section::Deploys,
-            Condition::DeployFailsTests
-            | Condition::DeployBreaksSchemas
-            | Condition::DeclaredFieldFailing
-            | Condition::DeclaredFieldGone => Section::Pipelines,
-            Condition::AuthorityExpiring
-            | Condition::AuthorityAging
-            | Condition::CertificateExpiring
-            | Condition::EnrollmentCodeNamesOutgoingAuthority
-            | Condition::LeaderCertificateRunningOut
-            | Condition::IssuedCertificateNotRenewed
-            | Condition::AcmeRenewalFailing
-            | Condition::SecretsKeyUnusable
-            | Condition::SecretNeedsValue => Section::CertificatesAndSecrets,
-            Condition::NewerRelease | Condition::AlertChannelFailing => Section::Leader,
-        }
-    }
 }
 
 /// Where an operator manages what this leader serves and the authority it signs under, as a message names it. One
@@ -345,10 +211,14 @@ pub struct Warning {
     pub since_millis: Option<i64>,
     /// Names the object and the fix. Stands alone -- a reader sees this sentence with no other context.
     pub message: String,
-    /// The log site a [`Condition::WorkerLoggedWarnings`] is about. One worker raises that condition once per site,
-    /// so condition and subject alone do not name one warning; with this they do. `None` on every other condition.
+    /// The class of the log line a [`Condition::WorkerLoggedWarnings`] is about, when the line has one. One worker
+    /// raises that condition once per class and type, so condition and subject alone do not name one warning; with
+    /// these they do. `None` on every other condition.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub site: Option<String>,
+    pub class: Option<String>,
+    /// The type of that log line. `None` on every other condition.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<String>,
     /// The area whose bundle declares the subject: `shared`, or the group. Set only on a pipeline, which the page
     /// links to its editor, and only where the deployed commit says.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -356,6 +226,30 @@ pub struct Warning {
 }
 
 impl Warning {
+    /// A warning with no `area`, `class` or `type`. A condition that has them sets them on what this returns.
+    pub fn new(
+        condition: Condition,
+        subject_kind: SubjectKind,
+        subject_id: String,
+        group: Option<String>,
+        severity: Severity,
+        since_millis: Option<i64>,
+        message: String,
+    ) -> Warning {
+        Warning {
+            condition,
+            subject_kind,
+            subject_id,
+            group,
+            severity,
+            since_millis,
+            message,
+            class: None,
+            r#type: None,
+            area: None,
+        }
+    }
+
     /// Whether `access` may see this warning: viewer in the group it names. One that names no group is about the
     /// leader itself -- its authority, its licence, its remote, a worker not yet placed in a group -- which only an
     /// administrator can act on.
@@ -386,7 +280,8 @@ pub fn as_metrics(warnings: &[Warning]) -> String {
             ("subject_kind", named(w.subject_kind)),
             ("subject", w.subject_id.clone()),
             ("group", w.group.clone().unwrap_or_default()),
-            ("site", w.site.clone().unwrap_or_default()),
+            ("class", w.class.clone().unwrap_or_default()),
+            ("type", w.r#type.clone().unwrap_or_default()),
         ];
         let started = w.since_millis.map(|ms| MetricSample {
             key: MetricKey {
@@ -428,6 +323,29 @@ pub struct LoggedIssue<'a> {
     pub subject: &'a str,
     /// The commit a worker is not deploying, for that one issue.
     pub commit: Option<&'a str>,
+}
+
+/// A fact for each issue in `issues` that no fact in `clocked` already is, keyed by its condition's name: what lets
+/// the one clock (`Registry::observe_facts`) log every issue's start and end, not only those that time themselves.
+pub fn issue_facts(issues: &[Warning], clocked: &HashSet<FactKey>) -> HashSet<FactKey> {
+    let timed: HashSet<(&str, Option<&str>, &str)> = clocked
+        .iter()
+        .map(|k| {
+            let it = k.logged();
+            (it.issue, it.group, it.subject)
+        })
+        .collect();
+    issues
+        .iter()
+        .filter(|w| !timed.contains(&(w.condition.name(), w.group.as_deref(), w.subject_id.as_str())))
+        .map(|w| {
+            let subject = match &w.group {
+                Some(group) => scoped_subject(group, &w.subject_id),
+                None => w.subject_id.clone(),
+            };
+            FactKey::new(w.condition.name(), subject)
+        })
+        .collect()
 }
 
 /// What an issue's log line says of the fact `entry` about `subject`.
@@ -497,10 +415,6 @@ const DESTINATION_LAST_REFUSAL: &str = "smeltr_destination_last_refusal";
 /// accepting writes and 0.0 from the moment a send fails until one next succeeds -- the destination-side mirror of
 /// `SOURCE_CONNECTION_ERROR` (E4), though this one carries no reason text, only whether.
 const DESTINATION_HEALTHY: &str = "smeltr_destination_healthy";
-/// The wire name `Reader::lag` gauges, per source, topic and partition (E6). Only a source kind that overrides
-/// `Source::lag` ever reports it, so a source that cannot is simply absent from this metric rather than reporting
-/// zero.
-const SOURCE_LAG: &str = "smeltr_source_lag";
 /// Messages a queue-backed source has finished, which is what drains its lag.
 const MESSAGES_FINISHED: &str = "smeltr_source_messages_finished_total";
 /// The wire name `egress::note_kept` gauges a destination's refused rows with, kept to send again.
@@ -517,13 +431,14 @@ pub(super) fn stale_after_ms(heartbeat_interval: Duration) -> i64 {
     (heartbeat_interval * STALE_AFTER_INTERVALS).as_millis() as i64
 }
 
-/// Consecutive rising lag samples [`lag_climbing`] requires before it raises, read at [`Tier::TenSeconds`] --
-/// `io::kafka::LAG_SAMPLE_INTERVAL` paces a real source's lag reporting to at most one fresh value every ten
-/// seconds, so one bucket is ordinarily one sample. A restart's lag is one upward step -- the broker kept moving
-/// while the reader was gone, and the very next sample falls as it starts working the backlog off. Four samples is
-/// three of those steps in a row, at least thirty seconds of a backlog that kept getting worse after the jump --
-/// well past where ordinary catch-up would have turned the trend back down.
-const LAG_CLIMB_SAMPLES: usize = 4;
+/// What [`lag_climbing`] reads lag at: each [`throughput::BUCKET`]'s highest reading. Lag rises between a source's
+/// commits and falls when one lands, so single readings swing with that cycle; a bucket's peak holds still unless the
+/// backlog itself grows.
+const LAG_TIER: Tier = throughput::BUCKET;
+
+/// Rising peaks in a row [`lag_climbing`] requires: a whole [`throughput::WINDOW`] of them, the window a source's
+/// rows are judged over, so a climb is judged over the same span as a source reading above or below normal.
+const LAG_CLIMB_PEAKS: usize = (throughput::WINDOW.as_millis() / LAG_TIER.bucket_ms() as u128) as usize;
 
 /// How far behind a climbing partition must be before [`lag_climbing`] raises, in time rather than records: a
 /// thousand records is days of a quiet source and a millisecond of a busy one.
@@ -598,17 +513,15 @@ fn authority_expiring(snapshot: &[ThreadHealth], credentials: &[WorkerCredential
         .filter(|(_, (expires, _))| *expires - now_ms <= notice)
         .map(|(worker_id, (expires, group))| {
             let expired = expires <= now_ms;
-            Warning {
-                area: None,
-                condition: Condition::AuthorityExpiring,
-                subject_kind: SubjectKind::Worker,
-                site: None,
-                subject_id: worker_id.to_string(),
+            Warning::new(
+                Condition::AuthorityExpiring,
+                SubjectKind::Worker,
+                worker_id.to_string(),
                 group,
-                severity: if expired { Severity::Failed } else { Severity::Warning },
+                if expired { Severity::Failed } else { Severity::Warning },
                 // Exactly when the condition began, for once: an expiry is a date, not something first noticed.
-                since_millis: Some(expires - notice),
-                message: if expired {
+                Some(expires - notice),
+                if expired {
                     format!(
                         "worker {worker_id} holds a certificate authority that has expired; it can no longer fetch \
                          configuration from the leader. Copy the leader's current ca.pem to it"
@@ -620,7 +533,7 @@ fn authority_expiring(snapshot: &[ThreadHealth], credentials: &[WorkerCredential
                          leader's current ca.pem to it before then"
                     )
                 },
-            }
+            )
         })
         .collect();
     out.sort_by(|a, b| a.subject_id.cmp(&b.subject_id));
@@ -748,22 +661,20 @@ pub fn certificate_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Ve
                 _ => "destination",
             };
             let id = &certificate.subject_id;
-            Some(Warning {
-                area: None,
-                condition: Condition::CertificateExpiring,
-                subject_kind: certificate.subject_kind,
-                site: None,
-                subject_id: id.clone(),
-                group: Some(certificate.group.clone()),
-                severity: if not_yet_valid || expired {
+            Some(Warning::new(
+                Condition::CertificateExpiring,
+                certificate.subject_kind,
+                id.clone(),
+                Some(certificate.group.clone()),
+                if not_yet_valid || expired {
                     Severity::Failed
                 } else {
                     Severity::Warning
                 },
                 // Clamped to the certificate's own start: one shorter-lived than the notice window would otherwise
                 // read as having warned before it existed.
-                since_millis: Some(certificate.not_after_millis - notice),
-                message: match (certificate.half, not_yet_valid, expired) {
+                Some(certificate.not_after_millis - notice),
+                match (certificate.half, not_yet_valid, expired) {
                     (Half::Presented, true, _) => format!(
                         "{what} {id:?} uses a certificate that is not valid yet, so it fails at the handshake \
                          until it is. Check its start date in {CERTIFICATE_LIST}"
@@ -789,7 +700,7 @@ pub fn certificate_expiring(deployed: &[DeployedCertificate], now_ms: i64) -> Ve
                          verifying then. Add its replacement to the {what}'s authorities"
                     ),
                 },
-            })
+            ))
         })
         .collect();
     // Deterministic: a map's order is not, and a poll that reordered its own answer reads as the fleet changing.
@@ -840,19 +751,17 @@ pub fn authority_aging(
     }
     let expired = remaining <= 0;
     let days = remaining / (24 * 60 * 60 * 1000);
-    vec![Warning {
-        area: None,
-        condition: Condition::AuthorityAging,
-        subject_kind: SubjectKind::Leader,
-        site: None,
-        subject_id: authority.fingerprint.clone(),
-        group: None,
-        severity: if expired { Severity::Failed } else { Severity::Warning },
+    vec![Warning::new(
+        Condition::AuthorityAging,
+        SubjectKind::Leader,
+        authority.fingerprint.clone(),
+        None,
+        if expired { Severity::Failed } else { Severity::Warning },
         // A date, not something first noticed, like the other authority entry.
-        since_millis: Some(authority.not_after_millis - notice),
-        message: match (expired, rotating) {
-            // The remedy an operator can actually carry out. Starting a rotation is refused while one is open, so
-            // naming that would send them to a page that turns them away.
+        Some(authority.not_after_millis - notice),
+        // The remedy an operator can actually carry out. Starting a rotation is refused while one is open, so
+        // naming that would send them to a page that turns them away.
+        match (expired, rotating) {
             (_, Rotating::Stuck(why) | Rotating::Unreadable(why)) => format!(
                 "this leader's certificate authority {} and the rotation meant to replace it cannot finish: {why} \
                  Put that right, or abandon the rotation in {LEADER_CERTIFICATE_TAB} and start another",
@@ -871,7 +780,7 @@ pub fn authority_aging(
                  every worker has to take the new one before this leader signs under it"
             ),
         },
-    }]
+    )]
 }
 
 /// The certificate this leader serves, as its warnings read it.
@@ -953,21 +862,19 @@ pub fn leader_certificate(serving: &Serving, now_ms: i64) -> Vec<Warning> {
             )
         }
     };
-    vec![Warning {
-        area: None,
+    vec![Warning::new(
         condition,
-        subject_kind: SubjectKind::Leader,
-        site: None,
-        subject_id: certificate
+        SubjectKind::Leader,
+        certificate
             .names
             .first()
             .cloned()
             .unwrap_or_else(|| certificate.subject.clone()),
-        group: None,
-        severity: if expired { Severity::Failed } else { Severity::Warning },
-        since_millis: Some(since_millis),
+        None,
+        if expired { Severity::Failed } else { Severity::Warning },
+        Some(since_millis),
         message,
-    }]
+    )]
 }
 
 /// An authority's error as the end of a row: its first line, without a full stop, as no row ends in one, and short
@@ -1004,22 +911,21 @@ pub fn enrollment_code_names_outgoing_authority(
     codes
         .iter()
         .filter(|code| presenting.standing_of(&code.fingerprint) == Standing::UntilCutover)
-        .map(|code| Warning {
-            area: None,
-            condition: Condition::EnrollmentCodeNamesOutgoingAuthority,
-            subject_kind: SubjectKind::EnrollmentCode,
-            site: None,
-            subject_id: code.id.clone(),
-            group: (!code.group_id.is_empty()).then(|| code.group_id.clone()),
-            severity: Severity::Warning,
-            // The rotation's own start, which the Leader certificate tab already shows against the rotation itself.
-            // Repeating it on every enrollment code it dooms would be one date said many times and acted on once.
-            since_millis: None,
-            message:
+        .map(|code| {
+            Warning::new(
+                Condition::EnrollmentCodeNamesOutgoingAuthority,
+                SubjectKind::EnrollmentCode,
+                code.id.clone(),
+                (!code.group_id.is_empty()).then(|| code.group_id.clone()),
+                Severity::Warning,
+                // The rotation's own start, which the Leader certificate tab already shows against the rotation itself.
+                // Repeating it on every enrollment code it dooms would be one date said many times and acted on once.
+                None,
                 "this enrollment code names the certificate authority this leader is rotating away from, so it is \
                  withdrawn when the rotation finishes and brings nobody in after that. Spend it before then, or mint \
                  another once the rotation is over -- minting is refused while one is open."
                     .to_string(),
+            )
         })
         .collect()
 }
@@ -1484,22 +1390,12 @@ fn workers_on_another_build(
                 t.release.as_deref(),
             )
         })
-        .map(|(worker_id, t)| Warning {
-            area: None,
-            condition: Condition::WorkerOnAnotherBuild,
-            subject_kind: SubjectKind::Worker,
-            site: None,
-            subject_id: worker_id.to_string(),
-            group: Some(t.report.group_id.clone()),
-            severity: Severity::Warning,
-            since_millis: None,
-            message: format!(
+        .map(|(worker_id, t)| Warning::new(Condition::WorkerOnAnotherBuild, SubjectKind::Worker, worker_id.to_string(), Some(t.report.group_id.clone()), Severity::Warning, None, format!(
                 "worker {worker_id} is on {}, and this leader on {}. It keeps running what it has and takes nothing \
                  new until both are on one major release, or on one commit",
                 crate::leader::build_name(crate::version::commit_of(&t.smeltr_version), t.release.as_deref()),
                 crate::leader::build_name(leader_commit, leader_release),
-            ),
-        })
+            )))
         .collect();
     out.sort_by(|a, b| a.subject_id.cmp(&b.subject_id));
     out
@@ -1522,16 +1418,16 @@ fn workers_on_another_release(
         .filter_map(|(worker_id, t)| {
             let release = t.release.as_deref().filter(|r| *r != leader_release)?;
             let commit = crate::version::commit_of(&t.smeltr_version);
-            crate::version::compatible(leader_commit, Some(leader_release), commit, Some(release)).then(|| Warning {
-                area: None,
-                condition: Condition::WorkerOnAnotherRelease,
-                subject_kind: SubjectKind::Worker,
-                site: None,
-                subject_id: worker_id.to_string(),
-                group: Some(t.report.group_id.clone()),
-                severity: Severity::Info,
-                since_millis: None,
-                message: format!("worker {worker_id} is on {release}, and this leader on {leader_release}"),
+            crate::version::compatible(leader_commit, Some(leader_release), commit, Some(release)).then(|| {
+                Warning::new(
+                    Condition::WorkerOnAnotherRelease,
+                    SubjectKind::Worker,
+                    worker_id.to_string(),
+                    Some(t.report.group_id.clone()),
+                    Severity::Info,
+                    None,
+                    format!("worker {worker_id} is on {release}, and this leader on {leader_release}"),
+                )
             })
         })
         .collect();
@@ -1556,23 +1452,13 @@ fn workers_memory_high(snapshot: &[ThreadHealth], heartbeat_interval: Duration) 
             let limit = resources.memory_limit_bytes.filter(|l| *l > 0)?;
             let used = resources.memory_used_bytes;
             // Widened, so a limit near u64::MAX cannot overflow the comparison.
-            (u128::from(used) * 100 >= u128::from(limit) * u128::from(MEMORY_HIGH_PERCENT)).then(|| Warning {
-                area: None,
-                condition: Condition::WorkerMemoryHigh,
-                subject_kind: SubjectKind::Worker,
-                site: None,
-                subject_id: worker_id.to_string(),
-                group: Some(t.report.group_id.clone()),
-                severity: Severity::Warning,
-                since_millis: None,
-                message: format!(
+            (u128::from(used) * 100 >= u128::from(limit) * u128::from(MEMORY_HIGH_PERCENT)).then(|| Warning::new(Condition::WorkerMemoryHigh, SubjectKind::Worker, worker_id.to_string(), Some(t.report.group_id.clone()), Severity::Warning, None, format!(
                     "worker {worker_id} is using {}% of its memory ({} of {}); give it more memory or run less on it \
                      before it runs out",
                     u128::from(used) * 100 / u128::from(limit),
                     humanize_bytes(used),
                     humanize_bytes(limit),
-                ),
-            })
+                )))
         })
         .collect();
     out.sort_by(|a, b| a.subject_id.cmp(&b.subject_id));
@@ -1627,19 +1513,19 @@ fn worker_silent(
         .filter(|(worker_id, ago)| {
             !revoked.contains(worker_id) && !stopped.contains(worker_id) && *ago as i64 > stale_after
         })
-        .map(|(worker_id, ago)| Warning {
-            area: None,
-            condition: Condition::WorkerSilent,
-            subject_kind: SubjectKind::Worker,
-            site: None,
-            subject_id: worker_id.to_string(),
-            group: groups.get(worker_id).cloned(),
-            severity: Severity::Failed,
-            since_millis: Some(now_ms - ago as i64),
-            message: format!(
-                "worker {worker_id} has stopped sending heartbeats; check the process is running and can reach the \
+        .map(|(worker_id, ago)| {
+            Warning::new(
+                Condition::WorkerSilent,
+                SubjectKind::Worker,
+                worker_id.to_string(),
+                groups.get(worker_id).cloned(),
+                Severity::Failed,
+                Some(now_ms - ago as i64),
+                format!(
+                    "worker {worker_id} has stopped sending heartbeats; check the process is running and can reach the \
                  leader"
-            ),
+                ),
+            )
         })
         .collect();
     out.sort_by(|a, b| a.subject_id.cmp(&b.subject_id));
@@ -1654,22 +1540,13 @@ fn enrolled_never_heartbeating(snapshot: &[ThreadHealth], credentials: &[WorkerC
     let mut out: Vec<Warning> = credentials
         .iter()
         .filter(|c| !c.revoked && !known.contains(c.worker_id.as_str()))
-        .map(|c| Warning {
-            area: None,
-            condition: Condition::WorkerNeverHeartbeated,
-            subject_kind: SubjectKind::Worker,
-            site: None,
-            subject_id: c.worker_id.clone(),
-            // Never heartbeated, so it has never said which group it belongs to.
-            group: None,
-            severity: Severity::Warning,
-            since_millis: None,
-            message: format!(
+        .map(|c| Warning::new(Condition::WorkerNeverHeartbeated, SubjectKind::Worker, c.worker_id.clone(),
+// Never heartbeated, so it has never said which group it belongs to.
+None, Severity::Warning, None, format!(
                 "worker {} enrolled but has never sent a heartbeat; check it was started with this leader's URL and \
                  credential",
                 c.worker_id
-            ),
-        })
+            )))
         .collect();
     out.sort_by(|a, b| a.subject_id.cmp(&b.subject_id));
     out
@@ -1688,17 +1565,15 @@ fn source_blocked(snapshot: &[ThreadHealth], starts: &HashMap<FactKey, i64>) -> 
                 .copied();
             let reporting = blocked.len();
             let running = workers_running(snapshot, &group, "source", &source_id).len();
-            Warning {
-                area: None,
+            Warning::new(
                 condition,
-                subject_kind: SubjectKind::Source,
-                site: None,
-                subject_id: source_id,
-                group: Some(group),
+                SubjectKind::Source,
+                source_id,
+                Some(group),
                 severity,
                 since_millis,
-                message: format!("{reason}; {}", spread_clause(reporting, running)),
-            }
+                format!("{reason}; {}", spread_clause(reporting, running)),
+            )
         })
         .collect();
     out.sort_by(|a, b| {
@@ -1730,22 +1605,20 @@ fn source_unreachable(snapshot: &[ThreadHealth], starts: &HashMap<FactKey, i64>)
                 .copied();
             let reporting = workers_reporting(snapshot, &group, SOURCE_CONNECTION_ERROR, "source", &source_id).len();
             let running = workers_running(snapshot, &group, "source", &source_id).len();
-            Warning {
-                area: None,
-                condition: Condition::SourceUnreachable,
-                subject_kind: SubjectKind::Source,
-                site: None,
-                subject_id: source_id.clone(),
-                group: Some(group),
-                severity: Severity::Failed,
+            Warning::new(
+                Condition::SourceUnreachable,
+                SubjectKind::Source,
+                source_id.clone(),
+                Some(group),
+                Severity::Failed,
                 since_millis,
-                message: format!(
+                format!(
                     "source {source_id} cannot reach its broker: {reason}; check the broker address is correct, \
                      that it resolves, and that nothing between here and it (a firewall, a security group) is \
                      blocking the connection; {}",
                     spread_clause(reporting, running)
                 ),
-            }
+            )
         })
         .collect();
     out.sort_by(|a, b| {
@@ -1799,21 +1672,19 @@ fn destination_refusing(
                 .copied();
             let reporting = workers_refusing(snapshot, &group, &dest_id, now_ms, stale_after).len();
             let running = workers_running(snapshot, &group, "destination", &dest_id).len();
-            Warning {
-                area: None,
-                condition: Condition::DestinationRefusing,
-                subject_kind: SubjectKind::Destination,
-                site: None,
-                subject_id: dest_id.clone(),
-                group: Some(group),
-                severity: Severity::Failed,
+            Warning::new(
+                Condition::DestinationRefusing,
+                SubjectKind::Destination,
+                dest_id.clone(),
+                Some(group),
+                Severity::Failed,
                 since_millis,
-                message: format!(
+                format!(
                     "destination {dest_id} is refusing records: {cluster_message}; fix the destination's schema or \
                      the pipeline that shapes the record; {}",
                     spread_clause(reporting, running)
                 ),
-            }
+            )
         })
         .collect();
     out.sort_by(|a, b| {
@@ -1902,21 +1773,19 @@ fn destination_unreachable(
                 .copied();
             let reporting = workers_destination_unhealthy(snapshot, &group, &dest_id, stale_after).len();
             let running = workers_running_destination(snapshot, &group, &dest_id, stale_after).len();
-            Warning {
-                area: None,
-                condition: Condition::DestinationUnreachable,
-                subject_kind: SubjectKind::Destination,
-                site: None,
-                subject_id: dest_id.clone(),
-                group: Some(group),
-                severity: Severity::Failed,
+            Warning::new(
+                Condition::DestinationUnreachable,
+                SubjectKind::Destination,
+                dest_id.clone(),
+                Some(group),
+                Severity::Failed,
                 since_millis,
-                message: format!(
+                format!(
                     "destination {dest_id} cannot be reached: its egress connection has failed; check the broker \
                      or cluster is up, reachable from the worker, and that its credentials are still valid; {}",
                     spread_clause(reporting, running)
                 ),
-            }
+            )
         })
         .collect();
     out.sort_by(|a, b| {
@@ -1940,20 +1809,11 @@ fn group_not_deployed(
             let since_millis = starts
                 .get(&FactKey::new(GROUP_NOT_DEPLOYED, worker_id.clone()))
                 .copied();
-            Warning { area: None,
-                condition: Condition::GroupNotDeployed,
-                subject_kind: SubjectKind::Worker,
-                site: None,
-                subject_id: worker_id,
-                group: Some(group_id.clone()),
-                severity: Severity::Warning,
-                since_millis,
-                message: format!(
+            Warning::new(Condition::GroupNotDeployed, SubjectKind::Worker, worker_id, Some(group_id.clone()), Severity::Warning, since_millis, format!(
                     "worker is heartbeating for group {group_id:?}, but what is deployed holds no configuration for it; \
                      configure and deploy a change that adds groups/{group_id}/system.json, or move the worker to \
                      a group that exists"
-                ),
-            }
+                ))
         })
         .collect();
     out.sort_by(|a, b| a.subject_id.cmp(&b.subject_id));
@@ -2027,42 +1887,35 @@ fn destinations_memory_bound(store: Option<&RegistryStore>, now_ms: i64) -> Vec<
             if mean >= MEMORY_BOUND_HEADROOM {
                 return None;
             }
-            Some(Warning {
-                area: None,
-                condition: Condition::DestinationMemoryBound,
-                subject_kind: SubjectKind::Destination,
-                site: None,
-                subject_id: destination.to_string(),
-                group: Some(group.to_string()),
-                severity: Severity::Info,
-                since_millis: read.first().map(|(at, _)| *at),
-                message: format!(
+            Some(Warning::new(Condition::DestinationMemoryBound, SubjectKind::Destination, destination.to_string(), Some(group.to_string()), Severity::Info, read.first().map(|(at, _)| *at), format!(
                     "destination {destination} in worker group {group:?} has run for {} minutes with its buffer as large as \
                      its workers' memory allows; if it should move faster, give its workers more memory",
                     MEMORY_BOUND_FOR.as_secs() / 60
-                ),
-            })
+                )))
         })
         .collect();
     out.sort_by(|a, b| (&a.group, &a.subject_id).cmp(&(&b.group, &b.subject_id)));
     out
 }
 
-/// A delay of at least [`LAG_WARN_BEHIND`] in the largest whole unit that reads naturally.
+/// A span of time in the largest whole unit that reads naturally.
 fn humanize_secs(secs: u64) -> String {
     match secs {
-        ..120 => format!("{secs} s"),
-        120..7_200 => format!("{} min", secs / 60),
-        7_200..172_800 => format!("{} h", secs / 3_600),
+        ..120 => format!("{secs} seconds"),
+        120..7_200 => format!("{} minutes", secs / 60),
+        7_200..172_800 => format!("{} hours", secs / 3_600),
         _ => format!("{} days", secs / 86_400),
     }
 }
 
-/// `metric`, a count each source reports, per ten-second bucket, keyed by (group, source). A store that cannot answer
-/// reads as nothing counted, which leaves a climbing partition to warn rather than go quiet.
-fn per_source(store: &RegistryStore, metric: &str) -> HashMap<(String, String), Vec<(i64, f64)>> {
+/// `metric`, a count each source reports, per ten-second bucket from `since_ms`, keyed by (group, source). A store
+/// that cannot answer reads as nothing counted, which leaves a climbing partition to warn rather than go quiet.
+fn per_source(store: &RegistryStore, metric: &str, since_ms: i64) -> HashMap<(String, String), Vec<(i64, f64)>> {
     let mut out: HashMap<(String, String), Vec<(i64, f64)>> = HashMap::new();
-    for (key, points) in store.series_since(metric, Tier::TenSeconds, 0).unwrap_or_default() {
+    for (key, points) in store
+        .series_since(metric, Tier::TenSeconds, since_ms)
+        .unwrap_or_default()
+    {
         let Some(labels) = subject_labels(&key) else { continue };
         if let (Some(group), Some(source)) = (label(&labels, "group"), label(&labels, "source")) {
             out.entry((group.to_string(), source.to_string()))
@@ -2126,7 +1979,7 @@ pub fn recovering_sources(store: Option<&RegistryStore>, now_ms: i64) -> HashSet
             .collect(),
         Err(e) => {
             tracing::warn!(
-                target: "throughput.recovery_unreadable",
+                name: "recovery_unreadable", target: "status",
                 error = %e,
                 "could not read which sources just recovered, so one may warn on the dip it is recovering from"
             );
@@ -2157,12 +2010,13 @@ pub fn outside_normal_facts(
 }
 
 /// A source reading fewer rows than it normally does at this time of day, or more. A warning either way: it is
-/// reading, and how much is off.
+/// reading, and how much is off. Info instead where an admin lowered it (`marks`).
 pub fn outside_normal_warnings(
     readings: &[throughput::Reading],
     snapshot: &[ThreadHealth],
     recovering: &HashSet<(String, String)>,
     starts: &HashMap<FactKey, i64>,
+    marks: &Marks,
     heartbeat_interval: Duration,
 ) -> Vec<Warning> {
     outside_normal(readings, snapshot, recovering, heartbeat_interval)
@@ -2172,22 +2026,26 @@ pub fn outside_normal_warnings(
                 throughput::Outside::Below => Condition::SourceRowsBelow,
                 throughput::Outside::Above => Condition::SourceRowsAbove,
             };
-            Warning {
-                area: None,
+            let since_millis = starts.get(&outside_key(r, side)).copied();
+            let lowered_by = marks.lowered_by(&r.group, &r.source, since_millis);
+            Warning::new(
                 condition,
-                subject_kind: SubjectKind::Source,
-                site: None,
-                subject_id: r.source.clone(),
-                group: Some(r.group.clone()),
-                severity: Severity::Warning,
-                since_millis: starts.get(&outside_key(r, side)).copied(),
-                message: format!(
-                    "source {}: {}normal, {} rows in {} minutes against {} at this time of day",
+                SubjectKind::Source,
+                r.source.clone(),
+                Some(r.group.clone()),
+                if lowered_by.is_some() {
+                    Severity::Info
+                } else {
+                    Severity::Warning
+                },
+                since_millis,
+                // A band whose top is zero is zero throughout, since no source reads fewer than none.
+                format!(
+                    "source {}: {}normal, {} rows in {} minutes against {} at this time of day{}",
                     r.source,
                     off_by(r, side),
                     throughput::grouped(r.rows),
                     throughput::WINDOW.as_secs() / 60,
-                    // A band whose top is zero is zero throughout, since no source reads fewer than none.
                     if r.band.high <= 0.0 {
                         "none".to_string()
                     } else {
@@ -2197,8 +2055,11 @@ pub fn outside_normal_warnings(
                             throughput::grouped(r.band.high)
                         )
                     },
+                    lowered_by
+                        .map(|by| format!("; lowered to info by {by}"))
+                        .unwrap_or_default(),
                 ),
-            }
+            )
         })
         .collect()
 }
@@ -2285,20 +2146,24 @@ pub fn spans(
         .collect())
 }
 
-/// Every (group, source, topic, partition) whose lag has strictly risen for [`LAG_CLIMB_SAMPLES`] straight samples
-/// (E6) -- a trend, which a single heartbeat cannot show, so this reads the series rather than `snapshot`. `None`
-/// `store` (no durable registry behind this leader; see [`crate::leader::registry::Registry::series`]) answers with
-/// nothing: there is no history yet to judge a trend against.
+/// Every (group, source, topic, partition) whose lag's [`LAG_TIER`] peaks have strictly risen through the
+/// [`throughput::WINDOW`] that just closed (E6) -- a trend, which a single
+/// heartbeat cannot show, so this reads the series rather than `snapshot`. `None` `store` (no durable registry behind
+/// this leader; see [`crate::leader::registry::Registry::series`]) answers with nothing: there is no history yet to
+/// judge a trend against.
 ///
 /// Not a fact-clock entry: unlike `source_blocked`/`destination_refusing`, the series already carries real timestamps,
-/// so `since_millis` is the run's own first bucket rather than something a separate clock has to remember.
-fn lag_climbing(store: Option<&RegistryStore>) -> Vec<Warning> {
+/// so `since_millis` is the window's first bucket rather than something a separate clock has to remember. A longer
+/// climb is still dated from there: the source's chart shows how far back it goes.
+fn lag_climbing(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Warning> {
     let Some(store) = store else { return Vec::new() };
-    let series = match store.series_since(SOURCE_LAG, Tier::TenSeconds, 0) {
+    let open = LAG_TIER.align(now_ms);
+    let since = open - throughput::WINDOW.as_millis() as i64;
+    let series = match store.peaks_since(SOURCE_LAG_METRIC, LAG_TIER, since) {
         Ok(series) => series,
         Err(e) => {
             tracing::warn!(
-                target: "warnings.lag_series_unreadable",
+                name: "lag_series_unreadable", target: "status",
                 error = %e,
                 "could not read the lag series, so no lag warnings are derived this pass"
             );
@@ -2315,8 +2180,8 @@ fn lag_climbing(store: Option<&RegistryStore>) -> Vec<Warning> {
     let (mut unreadable_key, mut incomplete_key) = (None, None);
     // Lag is drained at the rate of what it counts: a queue's messages, which it counts as finished, else records,
     // which are rows read.
-    let read = per_source(store, super::ROWS_IN_METRIC);
-    let finished = per_source(store, MESSAGES_FINISHED);
+    let read = per_source(store, super::ROWS_IN_METRIC, since);
+    let finished = per_source(store, MESSAGES_FINISHED, since);
     // Rows read are counted per source, lag per partition, so a partition's share of the reading is taken as even.
     let mut partitions: HashMap<(String, String), usize> = HashMap::new();
     for labels in series.iter().filter_map(|(key, _)| subject_labels(key)) {
@@ -2324,12 +2189,17 @@ fn lag_climbing(store: Option<&RegistryStore>) -> Vec<Warning> {
             *partitions.entry((group.to_string(), source.to_string())).or_default() += 1;
         }
     }
-    for (subject_key, points) in series {
-        if points.len() < LAG_CLIMB_SAMPLES {
-            continue; // too few samples to judge a trend
+    for (subject_key, mut points) in series {
+        // The open bucket's peak is only the highest so far, which would read as a dip.
+        points.retain(|(bucket, _)| *bucket < open);
+        if points
+            .last()
+            .is_none_or(|(bucket, _)| *bucket != open - LAG_TIER.bucket_ms())
+        {
+            continue; // not reporting now
         }
         let (run_len, since_millis) = trailing_climb(&points);
-        if run_len < LAG_CLIMB_SAMPLES {
+        if run_len < LAG_CLIMB_PEAKS {
             continue; // rose, but not for long enough in a row
         }
         let Some(labels) = subject_labels(&subject_key) else {
@@ -2352,14 +2222,14 @@ fn lag_climbing(store: Option<&RegistryStore>) -> Vec<Warning> {
         let first_lag = points[points.len() - run_len].1 as i64;
         let last_lag = points[points.len() - 1].1 as i64;
         let key = (group.to_string(), source_id.to_string());
-        let span_ms = points[points.len() - 1].0 + Tier::TenSeconds.bucket_ms() - since_millis;
+        let span_ms = points[points.len() - 1].0 + LAG_TIER.bucket_ms() - since_millis;
         let queue = finished.contains_key(&key);
         let drained = (if queue { &finished } else { &read })
             .get(&key)
             .map_or(0.0, |buckets| {
                 buckets
                     .iter()
-                    .filter(|(at, _)| *at >= since_millis)
+                    .filter(|(at, _)| (since_millis..open).contains(at))
                     .map(|(_, n)| n)
                     .sum()
             });
@@ -2373,34 +2243,25 @@ fn lag_climbing(store: Option<&RegistryStore>) -> Vec<Warning> {
         if behind < LAG_WARN_BEHIND.as_secs_f64() {
             continue; // climbing, but by less than a minute of what this source reads
         }
-        out.push(Warning {
-            area: None,
-            condition: Condition::LagClimbing,
-            subject_kind: SubjectKind::Source,
-            site: None,
-            subject_id: source_id.to_string(),
-            group: Some(group.to_string()),
-            severity: Severity::Warning,
-            since_millis: Some(since_millis),
-            message: format!(
+        out.push(Warning::new(Condition::LagClimbing, SubjectKind::Source, source_id.to_string(), Some(group.to_string()), Severity::Warning, Some(since_millis), format!(
                 "source {source_id} {} in worker group {group:?} has lag climbing, {first_lag} to {last_lag} over the last \
-                 {run_len} samples, {}; add reader capacity or reduce what is published to it",
+                 {}, {}; add reader capacity or reduce what is published to it",
                 if queue {
                     format!("queue {topic}")
                 } else {
                     format!("partition {partition} of topic {topic}")
                 },
+                humanize_secs((span_ms / 1000) as u64),
                 if behind.is_finite() {
                     format!("about {} behind", humanize_secs(behind as u64))
                 } else {
                     format!("with nothing {} meanwhile", if queue { "finished" } else { "read" })
                 }
-            ),
-        });
+            )));
     }
     if unreadable > 0 {
         tracing::warn!(
-            target: "warnings.lag_subjects_unreadable",
+            name: "lag_subjects_unreadable", target: "status",
             subjects = unreadable,
             exemplar = unreadable_key.as_deref(),
             "lag series subjects were dropped because their keys could not be parsed"
@@ -2408,7 +2269,7 @@ fn lag_climbing(store: Option<&RegistryStore>) -> Vec<Warning> {
     }
     if incomplete > 0 {
         tracing::warn!(
-            target: "warnings.lag_subjects_incomplete",
+            name: "lag_subjects_incomplete", target: "status",
             subjects = incomplete,
             exemplar = incomplete_key.as_deref(),
             "lag series subjects were dropped for naming no group, source, topic or partition"
@@ -2424,10 +2285,11 @@ fn lag_climbing(store: Option<&RegistryStore>) -> Vec<Warning> {
     out
 }
 
-/// A log site whose warning repeats a catalog warning: its latest detail is told on that warning, and it raises
+/// A log line whose warning repeats a catalog warning: its latest detail is told on that warning, and it raises
 /// no warning of its own, so one fault reads as one warning.
 struct Fold {
-    site: &'static str,
+    /// The line's class and type.
+    line: (&'static str, &'static str),
     condition: Condition,
     /// The field that says what went wrong. A row without it is told by its sentence.
     detail: &'static str,
@@ -2443,37 +2305,42 @@ enum FoldBy {
 
 const FOLDS: &[Fold] = &[
     Fold {
-        site: "egress.destination_stalled",
+        line: ("destinations", "stalled"),
         condition: Condition::DestinationUnreachable,
         detail: "error",
         by: FoldBy::Subject,
     },
     Fold {
-        site: "worker.commit_refused",
+        line: ("deploy", "commit_refused"),
         condition: Condition::WorkerNotDeployingItsTarget,
         detail: "error",
         by: FoldBy::Worker,
     },
 ];
 
-/// Log sites whose warning a catalog warning already gives in full, reason and all, read off the heartbeat. They
-/// raise nothing of their own and tell nothing on it: their `subject` is the positional id, which no catalog
-/// warning is named by.
-const REPEATED: &[&str] = &["runtime.source_blocked", "runtime.rows_rejected"];
+/// Log lines, by class and type, whose warning a catalog warning already gives in full, reason and all, read off
+/// the heartbeat. They raise nothing of their own and tell nothing on it: their `subject` is the positional id,
+/// which no catalog warning is named by.
+const REPEATED: &[(&str, &str)] = &[("pipelines", "source_blocked"), ("pipelines", "rows_rejected")];
 
-/// One worker's latest row at one site, its fields read out of their JSON.
+/// One worker's latest row of one class and type, its fields read out of their JSON.
 struct Logged {
-    row: LoggedSite,
+    row: LoggedType,
     fields: Vec<(String, String)>,
 }
 
 impl Logged {
+    /// Whether this row is the line `class` and `kind` name.
+    fn is(&self, (class, kind): (&str, &str)) -> bool {
+        self.row.class.as_deref() == Some(class) && self.row.r#type == kind
+    }
+
     fn field(&self, key: &str) -> Option<&str> {
         self.fields.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
     }
 }
 
-/// Every worker's latest row at `warn` or `error` per site in the last [`WORKER_LOG_WINDOW_MS`], read once for
+/// Every worker's latest row at `warn` or `error` per class and type in the last [`WORKER_LOG_WINDOW_MS`], read once for
 /// [`worker_logged_warnings`] and [`fold_logged_details`] both. A revoked worker's logs never speak for it, the same
 /// exclusion `worker_silent` and `enrolled_never_heartbeating` apply.
 fn recent_logs(store: Option<&RegistryStore>, credentials: &[WorkerCredentialRecord], now_ms: i64) -> Vec<Logged> {
@@ -2487,11 +2354,11 @@ fn recent_logs(store: Option<&RegistryStore>, credentials: &[WorkerCredentialRec
     let levels = ["warn".to_string(), "error".to_string()];
     // One query, not a page walk: no cap to pick means no cap to pick wrong -- whatever the table holds, past
     // `LOGS_KEPT` or not, this reads the window once and groups as it goes.
-    let rows = match store.latest_log_by_site(&levels, now_ms - WORKER_LOG_WINDOW_MS, now_ms) {
+    let rows = match store.latest_log_by_type(&levels, now_ms - WORKER_LOG_WINDOW_MS, now_ms) {
         Ok(rows) => rows,
         Err(e) => {
             tracing::warn!(
-                target: "warnings.worker_logs_unreadable",
+                name: "logs_unreadable", target: "status",
                 error = %e,
                 "could not read recent logs, so no worker-logged-warnings warnings are derived this pass"
             );
@@ -2513,26 +2380,27 @@ fn recent_logs(store: Option<&RegistryStore>, credentials: &[WorkerCredentialRec
         .collect()
 }
 
-/// A worker that has logged at `warn` or `error` at one site in the last [`WORKER_LOG_WINDOW_MS`] -- not broken,
+/// A worker that has logged at `warn` or `error` one class and type of line in the last [`WORKER_LOG_WINDOW_MS`] --
+/// not broken,
 /// but worth a look, so [`Severity::Warning`] rather than `Failed`, an error as much as a warning: what a log line
 /// says is worth reading, and the faults that stop work have catalog entries of their own. Reads the log store
 /// rather than `snapshot`: a heartbeat carries a thread's current metrics, not whether its runtime has logged
 /// anything.
 ///
-/// One warning per worker and site, carrying that site's latest sentence: several rows at one site are one thing
-/// to read, and two sites are two. A site in [`FOLDS`] or [`REPEATED`] raises none -- its catalog warning says it
-/// already. Not a fact-clock entry, for the reason [`lag_climbing`]'s doc comment gives -- a stored log already
-/// carries its own timestamp, so `since_millis` is the earliest row at that site in the window, and the warning
-/// clears a window after the latest.
+/// One warning per worker, class and type, carrying that line's latest sentence: several rows of one line are one
+/// thing to read, and two lines are two. A line in [`FOLDS`] or [`REPEATED`] raises none -- its catalog warning
+/// says it already. Not a fact-clock entry, for the reason [`lag_climbing`]'s doc comment gives -- a stored log
+/// already carries its own timestamp, so `since_millis` is the earliest row of that line in the window, and the
+/// warning clears a window after the latest.
 fn worker_logged_warnings(logged: &[Logged]) -> Vec<Warning> {
-    // `logged` is per subject as well; a site's warning is its latest row about any subject, since its earliest.
-    let mut by_site: BTreeMap<(&str, &str), (&Logged, i64)> = BTreeMap::new();
+    // `logged` is per subject as well; a line's warning is its latest row about any subject, since its earliest.
+    let mut by_line: BTreeMap<(&str, Option<&str>, &str), (&Logged, i64)> = BTreeMap::new();
     for l in logged
         .iter()
-        .filter(|l| !FOLDS.iter().any(|f| f.site == l.row.site) && !REPEATED.contains(&l.row.site.as_str()))
+        .filter(|l| !FOLDS.iter().any(|f| l.is(f.line)) && !REPEATED.iter().any(|&line| l.is(line)))
     {
-        by_site
-            .entry((l.row.worker_id.as_str(), l.row.site.as_str()))
+        by_line
+            .entry((l.row.worker_id.as_str(), l.row.class.as_deref(), l.row.r#type.as_str()))
             .and_modify(|(latest, first)| {
                 *first = (*first).min(l.row.first_ms);
                 if l.row.at_ms > latest.row.at_ms {
@@ -2541,33 +2409,42 @@ fn worker_logged_warnings(logged: &[Logged]) -> Vec<Warning> {
             })
             .or_insert((l, l.row.first_ms));
     }
-    let mut out: Vec<Warning> = by_site
+    let mut out: Vec<Warning> = by_line
         .into_values()
         .map(|(l, first_ms)| {
             let row = &l.row;
             let what = if row.level == "error" { "an error" } else { "a warning" };
             let fields = crate::logs::render_fields(l.fields.iter().map(|(k, v)| (k.as_str(), v.clone())));
             Warning {
-                area: None,
-                condition: Condition::WorkerLoggedWarnings,
-                subject_kind: SubjectKind::Worker,
-                subject_id: row.worker_id.clone(),
-                site: Some(row.site.clone()),
-                group: row.group_id.clone(),
-                severity: Severity::Warning,
-                since_millis: Some(first_ms),
-                message: format!(
-                    "worker {} logged {what} at {}: {}{fields}",
-                    row.worker_id, row.site, row.message
-                ),
+                class: row.class.clone(),
+                r#type: Some(row.r#type.clone()),
+                ..Warning::new(
+                    Condition::WorkerLoggedWarnings,
+                    SubjectKind::Worker,
+                    row.worker_id.clone(),
+                    row.group_id.clone(),
+                    Severity::Warning,
+                    Some(first_ms),
+                    format!(
+                        "worker {} logged {what} ({}): {}{fields}",
+                        row.worker_id,
+                        row.class
+                            .iter()
+                            .chain([&row.r#type])
+                            .map(String::as_str)
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        row.message
+                    ),
+                )
             }
         })
         .collect();
-    out.sort_by(|a, b| (&a.subject_id, &a.site).cmp(&(&b.subject_id, &b.site)));
+    out.sort_by(|a, b| (&a.subject_id, &a.class, &a.r#type).cmp(&(&b.subject_id, &b.class, &b.r#type)));
     out
 }
 
-/// Tell each catalog warning a [`FOLDS`] site repeats the latest detail any worker logged there about its subject.
+/// Tell each catalog warning a [`FOLDS`] line repeats the latest detail any worker logged there about its subject.
 /// Severity, spread and start time stay the catalog's: the log adds the words, not the judgement.
 fn fold_logged_details(out: &mut [Warning], logged: &[Logged]) {
     for warning in out.iter_mut() {
@@ -2576,7 +2453,7 @@ fn fold_logged_details(out: &mut [Warning], logged: &[Logged]) {
         };
         let latest = logged
             .iter()
-            .filter(|l| l.row.site == fold.site)
+            .filter(|l| l.is(fold.line))
             .filter(|l| match fold.by {
                 FoldBy::Subject => {
                     l.row.group_id == warning.group && l.field("subject") == Some(warning.subject_id.as_str())
@@ -2651,19 +2528,11 @@ fn worker_not_deploying_its_target(
             if since.is_none_or(|start| now_ms - start < NOT_DEPLOYING_AFTER_MS) {
                 return None;
             }
-            Some(Warning {
-                area: None,
-                condition: Condition::WorkerNotDeployingItsTarget,
-                subject_kind: SubjectKind::Worker,
-                site: None,
-                subject_id: worker_id.to_string(),
-                group: Some(group.to_string()),
-                severity: Severity::Failed,
-                since_millis: since,
-                // A worker whose first deployment never ran has nothing to fall back to, so what reassures an
-                // operator about every other failure here -- that the old bundle is still processing -- is the
-                // opposite of true for this one.
-                message: match (failure, running) {
+            Some(Warning::new(Condition::WorkerNotDeployingItsTarget, SubjectKind::Worker, worker_id.to_string(), Some(group.to_string()), Severity::Failed, since,
+// A worker whose first deployment never ran has nothing to fall back to, so what reassures an
+// operator about every other failure here -- that the old bundle is still processing -- is the
+// opposite of true for this one.
+match (failure, running) {
                     (Some(why), Some(running)) if running == desired => {
                         format!(
                             "worker {worker_id} could not restart {desired} with the certificates it holds now: {why}. It keeps \
@@ -2677,8 +2546,7 @@ fn worker_not_deploying_its_target(
                         format!("worker {worker_id} has not deployed {desired}: {why}. It is not processing")
                     }
                     (None, _) => format!("worker {worker_id} has found {desired} and is not running it; read its logs"),
-                },
-            })
+                }))
         })
         .collect();
     out.sort_by(|a, b| a.subject_id.cmp(&b.subject_id));
@@ -2712,7 +2580,7 @@ pub fn derive(
     out.extend(source_unreachable(snapshot, starts));
     out.extend(destination_refusing(snapshot, starts, now_ms, heartbeat_interval));
     out.extend(destination_unreachable(snapshot, starts, heartbeat_interval));
-    out.extend(lag_climbing(series_store));
+    out.extend(lag_climbing(series_store, now_ms));
     out.extend(destinations_memory_bound(series_store, now_ms));
     let logged = recent_logs(series_store, credentials, now_ms);
     out.extend(worker_logged_warnings(&logged));
@@ -2740,16 +2608,14 @@ pub fn derive(
 /// not take what is deployed after it looks, to anyone who did not do the rollback, like a deploy that failed.
 pub fn deploy_held(held: &crate::leader::git::Hold) -> Warning {
     let short = super::git::short;
-    Warning {
-        area: None,
-        condition: Condition::DeployHeld,
-        subject_kind: SubjectKind::Leader,
-        site: None,
-        subject_id: held.commit.clone(),
-        group: None,
-        severity: Severity::Warning,
-        since_millis: Some(held.since * 1000),
-        message: format!(
+    Warning::new(
+        Condition::DeployHeld,
+        SubjectKind::Leader,
+        held.commit.clone(),
+        None,
+        Severity::Warning,
+        Some(held.since * 1000),
+        format!(
             "the fleet is held at {}, deployed there by {}, and does not run the {} commit{} on main since, up to {}. \
              Release it on the History page to deploy main's head",
             short(&held.commit),
@@ -2758,57 +2624,51 @@ pub fn deploy_held(held: &crate::leader::git::Hold) -> Warning {
             if held.behind == 1 { "" } else { "s" },
             short(&held.head),
         ),
-    }
+    )
 }
 
 /// The fleet does not run the head of the remote the leader follows, and why. Raised until a sync succeeds: a remote
 /// commit the fleet does not run is one a person merged on the host and expects to be running.
 pub fn remote_not_followed(failure: &crate::leader::remote::Failure) -> Warning {
-    Warning {
-        area: None,
-        condition: Condition::RemoteNotFollowed,
-        subject_kind: SubjectKind::Leader,
-        site: None,
-        subject_id: failure.commit.clone().unwrap_or_default(),
-        group: None,
-        severity: Severity::Warning,
-        since_millis: Some(failure.since),
-        message: format!("{}. The fleet keeps running what it runs", failure.message),
-    }
+    Warning::new(
+        Condition::RemoteNotFollowed,
+        SubjectKind::Leader,
+        failure.commit.clone().unwrap_or_default(),
+        None,
+        Severity::Warning,
+        Some(failure.since),
+        format!("{}. The fleet keeps running what it runs", failure.message),
+    )
 }
 
 /// An alert channel that did not take the last send, and why. Raised until one is taken: until then, whoever the
 /// channel reaches is not told of what it takes.
 pub fn alert_channel_failing(channel: &str, failing: &crate::leader::alerts::Failing) -> Warning {
-    Warning {
-        area: None,
-        condition: Condition::AlertChannelFailing,
-        subject_kind: SubjectKind::Leader,
-        site: None,
-        subject_id: channel.to_string(),
-        group: None,
-        severity: Severity::Warning,
-        since_millis: Some(failing.since),
-        message: format!(
+    Warning::new(
+        Condition::AlertChannelFailing,
+        SubjectKind::Leader,
+        channel.to_string(),
+        None,
+        Severity::Warning,
+        Some(failing.since),
+        format!(
             "The alert channel {channel} did not take what was sent: {}. Smeltr sends it again every minute",
             failing.message
         ),
-    }
+    )
 }
 
 /// A published release newer than this leader's own (`leader::updates`). Info: running an older release is no fault.
 pub fn newer_release(newer: &crate::leader::updates::Newer, own: &str) -> Warning {
-    Warning {
-        area: None,
-        condition: Condition::NewerRelease,
-        subject_kind: SubjectKind::Leader,
-        site: None,
-        subject_id: "leader".to_string(),
-        group: None,
-        severity: Severity::Info,
-        since_millis: Some(newer.since),
-        message: format!("smeltr {} is out, and this leader runs {own}", newer.release),
-    }
+    Warning::new(
+        Condition::NewerRelease,
+        SubjectKind::Leader,
+        "leader".to_string(),
+        None,
+        Severity::Info,
+        Some(newer.since),
+        format!("smeltr {} is out, and this leader runs {own}", newer.release),
+    )
 }
 
 /// A certificate this leader issued: its name, how it is issued, and its newest chain described.
@@ -2862,24 +2722,22 @@ pub fn issued_certificates_not_renewed(issued: &[IssuedChain], signing: &str, no
         } else {
             format!("expires in {} days", remaining / (24 * 60 * 60 * 1000))
         };
-        out.push(Warning {
-            area: None,
-            condition: Condition::IssuedCertificateNotRenewed,
-            subject_kind: SubjectKind::Certificate,
-            site: None,
-            subject_id: name.clone(),
-            group: None,
-            severity: if remaining <= 0 {
+        out.push(Warning::new(
+            Condition::IssuedCertificateNotRenewed,
+            SubjectKind::Certificate,
+            name.clone(),
+            None,
+            if remaining <= 0 {
                 Severity::Failed
             } else {
                 Severity::Warning
             },
-            since_millis: Some(since),
-            message: format!(
+            Some(since),
+            format!(
                 "{when}, and this leader has not renewed it. The leader's log says why: Status → Logs \
                  (leader.certificate_renewal_failed)"
             ),
-        });
+        ));
     }
     out
 }
@@ -2909,16 +2767,17 @@ pub fn encryption_key_warnings(
     kept: &std::collections::BTreeMap<String, crate::leader::store::Kept>,
     starts: &HashMap<FactKey, i64>,
 ) -> Vec<Warning> {
-    let leader = |condition, subject_id: String, severity, message| Warning {
-        area: None,
-        condition,
-        subject_kind: SubjectKind::Leader,
-        site: None,
-        since_millis: starts.get(&FactKey::new(condition.name(), subject_id.clone())).copied(),
-        subject_id,
-        group: None,
-        severity,
-        message,
+    let leader = |condition: Condition, subject_id: String, severity, message| {
+        let since = starts.get(&FactKey::new(condition.name(), subject_id.clone())).copied();
+        Warning::new(
+            condition,
+            SubjectKind::Leader,
+            subject_id,
+            None,
+            severity,
+            since,
+            message,
+        )
     };
     if let Some(problem) = standing.problem() {
         return vec![leader(
@@ -3020,24 +2879,24 @@ fn deploy_breaks_schemas(checks: &Findings, starts: &HashMap<FactKey, i64>) -> V
     }
     by_pipeline
         .into_iter()
-        .map(|((group, pipeline), each)| Warning {
-            area: None,
-            condition: Condition::DeployBreaksSchemas,
-            subject_kind: SubjectKind::Pipeline,
-            site: None,
-            subject_id: pipeline.to_string(),
-            group: Some(group.to_string()),
-            severity: Severity::Warning,
-            since_millis: starts.get(&breaks_schemas_key(group, pipeline)).copied(),
-            message: format!(
-                "{} at the deployed commit {short}: {}",
-                if each.len() == 1 {
-                    "a schema finding".to_string()
-                } else {
-                    format!("{} schema findings", each.len())
-                },
-                each.join(" "),
-            ),
+        .map(|((group, pipeline), each)| {
+            Warning::new(
+                Condition::DeployBreaksSchemas,
+                SubjectKind::Pipeline,
+                pipeline.to_string(),
+                Some(group.to_string()),
+                Severity::Warning,
+                starts.get(&breaks_schemas_key(group, pipeline)).copied(),
+                format!(
+                    "{} at the deployed commit {short}: {}",
+                    if each.len() == 1 {
+                        "a schema finding".to_string()
+                    } else {
+                        format!("{} schema findings", each.len())
+                    },
+                    each.join(" "),
+                ),
+            )
         })
         .collect()
 }
@@ -3049,21 +2908,11 @@ fn deploy_does_not_load(checks: &Findings, starts: &HashMap<FactKey, i64>) -> Ve
     checks
         .not_loading
         .iter()
-        .map(|n| Warning {
-            area: None,
-            condition: Condition::DeployDoesNotLoad,
-            subject_kind: SubjectKind::Group,
-            site: None,
-            subject_id: n.group.clone(),
-            group: Some(n.group.clone()),
-            severity: Severity::Failed,
-            since_millis: starts.get(&does_not_load_key(&n.group)).copied(),
-            message: format!(
+        .map(|n| Warning::new(Condition::DeployDoesNotLoad, SubjectKind::Group, n.group.clone(), Some(n.group.clone()), Severity::Failed, starts.get(&does_not_load_key(&n.group)).copied(), format!(
                 "worker group {:?} does not load at the deployed commit {short}: {}. Running workers keep their old config, \
                  but a restarted worker stops processing. Deploy a fix, or roll back on the History page",
                 n.group, n.why
-            ),
-        })
+            )))
         .collect()
 }
 
@@ -3078,7 +2927,7 @@ fn declared_fields_drifted(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Wa
         Ok(fields) => fields,
         Err(e) => {
             tracing::warn!(
-                target: "warnings.declared_fields_unreadable",
+                name: "declared_fields_unreadable", target: "status",
                 error = %e,
                 "could not read the declared fields production saw, so no drift warnings are derived this pass"
             );
@@ -3133,20 +2982,11 @@ fn declared_fields_drifted(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Wa
         .map(|((gone, group, pipeline), (named, since))| {
             let many = named.len() > 1;
             let named = named.join(", ");
-            Warning {
-                area: None,
-                condition: if gone {
+            Warning::new(if gone {
                     Condition::DeclaredFieldGone
                 } else {
                     Condition::DeclaredFieldFailing
-                },
-                subject_kind: SubjectKind::Pipeline,
-                site: None,
-                subject_id: pipeline.to_string(),
-                group: Some(group.to_string()),
-                severity: Severity::Warning,
-                since_millis: since,
-                message: if gone {
+                }, SubjectKind::Pipeline, pipeline.to_string(), Some(group.to_string()), Severity::Warning, since, if gone {
                     format!("pipeline {pipeline} in worker group {group:?}: no row has held {named} in the last hour.")
                 } else {
                     format!(
@@ -3155,8 +2995,7 @@ fn declared_fields_drifted(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Wa
                         if many { "have" } else { "has" },
                         if many { "their" } else { "its" },
                     )
-                },
-            }
+                })
         })
         .collect()
 }
@@ -3170,7 +3009,7 @@ fn streams_unrouted(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Warning> 
         Ok(sources) => sources,
         Err(e) => {
             tracing::warn!(
-                target: "warnings.streams_unreadable",
+                name: "streams_unreadable", target: "status",
                 error = %e,
                 "could not read the streams production saw, so no unrouted-stream warnings are derived this pass"
             );
@@ -3179,21 +3018,21 @@ fn streams_unrouted(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Warning> 
     };
     sources
         .into_iter()
-        .map(|s| Warning {
-            area: None,
-            condition: Condition::StreamUnrouted,
-            subject_kind: SubjectKind::Source,
-            site: None,
-            subject_id: s.source.clone(),
-            group: Some(s.group_id.clone()),
-            severity: Severity::Warning,
-            since_millis: s.since_ms,
-            message: format!(
-                "source {} in worker group {:?}: no route took {} in the last hour.",
-                s.source,
-                s.group_id,
-                untaken(&s.keys)
-            ),
+        .map(|s| {
+            Warning::new(
+                Condition::StreamUnrouted,
+                SubjectKind::Source,
+                s.source.clone(),
+                Some(s.group_id.clone()),
+                Severity::Warning,
+                s.since_ms,
+                format!(
+                    "source {} in worker group {:?}: no route took {} in the last hour.",
+                    s.source,
+                    s.group_id,
+                    untaken(&s.keys)
+                ),
+            )
         })
         .collect()
 }
@@ -3237,19 +3076,17 @@ fn deploy_fails_tests(checks: &Findings, starts: &HashMap<FactKey, i64>) -> Vec<
                 None => (SubjectKind::Group, scope.to_string()),
             };
             let each: Vec<String> = tests.iter().map(|t| format!("{:?}: {}", t.name, t.why)).collect();
-            Warning {
-                area: None,
-                condition: Condition::DeployFailsTests,
+            Warning::new(
+                Condition::DeployFailsTests,
                 subject_kind,
-                site: None,
                 subject_id,
-                group: (scope != crate::config_file::SHARED_DIR).then(|| scope.to_string()),
-                severity: Severity::Warning,
-                since_millis: tests
+                (scope != crate::config_file::SHARED_DIR).then(|| scope.to_string()),
+                Severity::Warning,
+                tests
                     .iter()
                     .filter_map(|t| starts.get(&fails_tests_key(&t.scope, &t.id)).copied())
                     .min(),
-                message: format!(
+                format!(
                     "{} at {}: {}. Fix what it tests, or lock it again if the new output is \
                      right",
                     if tests.len() == 1 {
@@ -3260,7 +3097,7 @@ fn deploy_fails_tests(checks: &Findings, starts: &HashMap<FactKey, i64>) -> Vec<
                     tested,
                     each.join("; "),
                 ),
-            }
+            )
         })
         .collect()
 }
@@ -4348,10 +4185,17 @@ mod tests {
     }
 
     fn outside(readings: &[throughput::Reading], snapshot: &[ThreadHealth]) -> Vec<(Condition, String)> {
-        outside_normal_warnings(readings, snapshot, &HashSet::new(), &HashMap::new(), INTERVAL)
-            .into_iter()
-            .map(|w| (w.condition, w.message))
-            .collect()
+        outside_normal_warnings(
+            readings,
+            snapshot,
+            &HashSet::new(),
+            &HashMap::new(),
+            &Marks::default(),
+            INTERVAL,
+        )
+        .into_iter()
+        .map(|w| (w.condition, w.message))
+        .collect()
     }
 
     #[test]
@@ -4401,7 +4245,14 @@ mod tests {
                 ),
             ]
         );
-        let w = &outside_normal_warnings(&readings, &snapshot, &HashSet::new(), &HashMap::new(), INTERVAL)[0];
+        let w = &outside_normal_warnings(
+            &readings,
+            &snapshot,
+            &HashSet::new(),
+            &HashMap::new(),
+            &Marks::default(),
+            INTERVAL,
+        )[0];
         assert_eq!(
             (w.severity, w.subject_kind, w.group.as_deref()),
             (Severity::Warning, SubjectKind::Source, Some("g"))
@@ -4445,7 +4296,17 @@ mod tests {
         assert_eq!(recovering, HashSet::from([("g".to_string(), "s".to_string())]));
         let snapshot = [thread_health_in("g", "w1", "t0", 0, vec![rows_metric("s")])];
         let readings = [reading_of("s", 0.0)];
-        assert!(outside_normal_warnings(&readings, &snapshot, &recovering, &HashMap::new(), INTERVAL).is_empty());
+        assert!(
+            outside_normal_warnings(
+                &readings,
+                &snapshot,
+                &recovering,
+                &HashMap::new(),
+                &Marks::default(),
+                INTERVAL
+            )
+            .is_empty()
+        );
 
         let window = throughput::WINDOW.as_millis() as i64;
         assert!(
@@ -4505,8 +4366,47 @@ mod tests {
         let readings = [reading_of("s", 0.0)];
         let facts = outside_normal_facts(&readings, &snapshot, &HashSet::new(), INTERVAL);
         let starts: HashMap<FactKey, i64> = facts.into_iter().map(|k| (k, NOW - 60_000)).collect();
-        let w = &outside_normal_warnings(&readings, &snapshot, &HashSet::new(), &starts, INTERVAL)[0];
+        let w = &outside_normal_warnings(
+            &readings,
+            &snapshot,
+            &HashSet::new(),
+            &starts,
+            &Marks::default(),
+            INTERVAL,
+        )[0];
         assert_eq!(w.since_millis, Some(NOW - 60_000));
+    }
+
+    #[test]
+    fn a_lowered_rows_warning_is_info_until_it_ends() {
+        let snapshot = [thread_health_in("g", "w1", "t0", 0, vec![rows_metric("s")])];
+        let readings = [reading_of("s", 0.0)];
+        let facts = outside_normal_facts(&readings, &snapshot, &HashSet::new(), INTERVAL);
+        let marks = Marks {
+            lowered: vec![crate::leader::marks::Lowered {
+                group: "g".into(),
+                source: "s".into(),
+                since_millis: NOW - 60_000,
+                by: "John".into(),
+            }],
+            reset: Vec::new(),
+        };
+        let at = |since: i64| -> Warning {
+            let starts: HashMap<FactKey, i64> = facts.iter().map(|k| (k.clone(), since)).collect();
+            outside_normal_warnings(&readings, &snapshot, &HashSet::new(), &starts, &marks, INTERVAL).remove(0)
+        };
+        let lowered = at(NOW - 60_000);
+        assert_eq!(lowered.severity, Severity::Info);
+        assert!(
+            lowered.message.ends_with("lowered to info by John"),
+            "{}",
+            lowered.message
+        );
+        assert_eq!(
+            at(NOW - 30_000).severity,
+            Severity::Warning,
+            "a warning that began since is a new one"
+        );
     }
 
     // -- running_deployments ---------------------------------------------------
@@ -4571,9 +4471,15 @@ mod tests {
         .unwrap()
     }
 
-    /// An in-memory registry with one partition's lag gauge seeded at consecutive ten-second buckets, oldest
-    /// first -- one value per bucket, the shape [`lag_climbing`] reads. Group "g", the ordinary case every test but
-    /// the ones about two groups wants.
+    /// The start of the `i`th of `of` consecutive [`LAG_TIER`] buckets, the last of them the one just closed at
+    /// [`NOW`].
+    fn lag_bucket(i: usize, of: usize) -> i64 {
+        LAG_TIER.align(NOW) - (of - i) as i64 * LAG_TIER.bucket_ms()
+    }
+
+    /// An in-memory registry with one partition's lag gauge seeded at consecutive [`LAG_TIER`] buckets, oldest
+    /// first and the last just closed at [`NOW`] -- one peak per bucket, the shape [`lag_climbing`] reads. Group
+    /// "g", the ordinary case every test but the ones about two groups wants.
     fn store_with_lag(values: &[f64]) -> RegistryStore {
         store_with_lag_in("g", values)
     }
@@ -4583,7 +4489,9 @@ mod tests {
         let store = RegistryStore::open(Path::new(":memory:")).unwrap();
         let key = lag_subject_key(group, "7", "orders", "0");
         for (i, v) in values.iter().enumerate() {
-            store.record_gauge_max(SOURCE_LAG, &key, i as i64 * 10_000, *v).unwrap();
+            store
+                .record_gauge_max(SOURCE_LAG_METRIC, &key, lag_bucket(i, values.len()), *v)
+                .unwrap();
         }
         store
     }
@@ -4778,7 +4686,10 @@ mod tests {
             seq,
             timestamp_ms: at_ms,
             level: level.to_string(),
-            site: "warnings_test".to_string(),
+            class: Some("logs".to_string()),
+            r#type: "warnings_test".to_string(),
+            service: None,
+            site: String::new(),
             message: message.to_string(),
             thread: None,
             boot_id: None,
@@ -4807,7 +4718,8 @@ mod tests {
     fn an_issues_own_log_line_raises_nothing() {
         let store = RegistryStore::open(Path::new(":memory:")).unwrap();
         let mut event = log_event(0, NOW - 60_000, "warn", "an issue began");
-        event.site = "issues.began".to_string();
+        event.class = Some("status".to_string());
+        event.r#type = "began".to_string();
         event.fields = vec![(
             "issue".to_string(),
             crate::heartbeat::FieldValueDto::Str("sourceBlocked".to_string()),
@@ -4838,7 +4750,7 @@ mod tests {
         assert_eq!(w.group.as_deref(), Some("g"));
         assert_eq!(w.severity, Severity::Warning);
         assert_eq!(w.since_millis, Some(NOW - 60_000));
-        assert_eq!(w.site.as_deref(), Some("warnings_test"));
+        assert_eq!(line(w).as_deref(), Some("logs.warnings_test"));
         assert!(w.message.contains("w1"), "{}", w.message);
         assert!(w.message.contains("a source is blocked"), "{}", w.message);
     }
@@ -4924,16 +4836,24 @@ mod tests {
         assert_eq!(warnings[1].subject_id, "w2");
     }
 
-    /// A log line at `site`, carrying `fields` as string values.
-    fn site_event(
+    /// The `class.type` of the log line `w` is about.
+    fn line(w: &Warning) -> Option<String> {
+        w.r#type
+            .as_ref()
+            .map(|kind| format!("{}.{kind}", w.class.as_deref().unwrap_or_default()))
+    }
+
+    /// A log line of `line`, as `class.type`, carrying `fields` as string values.
+    fn line_event(
         seq: u64,
         at_ms: i64,
-        site: &str,
+        line: &str,
         message: &str,
         fields: &[(&str, &str)],
     ) -> crate::heartbeat::LogDto {
         crate::heartbeat::LogDto {
-            site: site.to_string(),
+            class: line.split_once('.').map(|(class, _)| class.to_string()),
+            r#type: line.split_once('.').map_or(line, |(_, kind)| kind).to_string(),
             fields: fields
                 .iter()
                 .map(|(k, v)| (k.to_string(), crate::heartbeat::FieldValueDto::Str(v.to_string())))
@@ -4943,7 +4863,7 @@ mod tests {
     }
 
     #[test]
-    fn each_site_a_worker_logs_at_is_its_own_warning_carrying_its_latest_sentence() {
+    fn each_line_a_worker_logs_is_its_own_warning_carrying_its_latest_sentence() {
         let store = RegistryStore::open(Path::new(":memory:")).unwrap();
         store
             .record_logs(
@@ -4951,12 +4871,12 @@ mod tests {
                 1,
                 Some("g"),
                 &[
-                    site_event(0, NOW - 200_000, "worker.fetch_failed", "first fetch failed", &[]),
-                    site_event(1, NOW - 100_000, "worker.heartbeat_failed", "a heartbeat failed", &[]),
-                    site_event(
+                    line_event(0, NOW - 200_000, "deploy.fetch_failed", "first fetch failed", &[]),
+                    line_event(1, NOW - 100_000, "heartbeats.failed", "a heartbeat failed", &[]),
+                    line_event(
                         2,
                         NOW - 10_000,
-                        "worker.fetch_failed",
+                        "deploy.fetch_failed",
                         "fetch failed again",
                         &[("error", "refused")],
                     ),
@@ -4968,25 +4888,25 @@ mod tests {
         assert_eq!(warnings.len(), 2, "{warnings:?}");
         let fetch = warnings
             .iter()
-            .find(|w| w.site.as_deref() == Some("worker.fetch_failed"))
+            .find(|w| line(w).as_deref() == Some("deploy.fetch_failed"))
             .unwrap();
         assert_eq!(
             fetch.since_millis,
             Some(NOW - 200_000),
-            "since the site's earliest row in the window"
+            "since the line's earliest row in the window"
         );
         assert!(fetch.message.contains("fetch failed again"), "{}", fetch.message);
         assert!(!fetch.message.contains("first fetch failed"), "{}", fetch.message);
         assert!(fetch.message.contains("[error=refused]"), "{}", fetch.message);
         let heartbeat = warnings
             .iter()
-            .find(|w| w.site.as_deref() == Some("worker.heartbeat_failed"))
+            .find(|w| line(w).as_deref() == Some("heartbeats.failed"))
             .unwrap();
         assert_eq!(heartbeat.since_millis, Some(NOW - 100_000));
     }
 
     #[test]
-    fn a_site_clears_a_window_after_its_last_log_while_a_fresher_one_stays() {
+    fn a_line_clears_a_window_after_its_last_log_while_a_fresher_one_stays() {
         let store = RegistryStore::open(Path::new(":memory:")).unwrap();
         store
             .record_logs(
@@ -4994,14 +4914,14 @@ mod tests {
                 1,
                 Some("g"),
                 &[
-                    site_event(0, NOW - WORKER_LOG_WINDOW_MS - 1, "worker.fetch_failed", "old", &[]),
-                    site_event(1, NOW - 1_000, "worker.heartbeat_failed", "fresh", &[]),
+                    line_event(0, NOW - WORKER_LOG_WINDOW_MS - 1, "deploy.fetch_failed", "old", &[]),
+                    line_event(1, NOW - 1_000, "heartbeats.failed", "fresh", &[]),
                 ],
             )
             .unwrap();
         let warnings = log_warnings(&store);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert_eq!(warnings[0].site.as_deref(), Some("worker.heartbeat_failed"));
+        assert_eq!(line(&warnings[0]).as_deref(), Some("heartbeats.failed"));
     }
 
     #[test]
@@ -5013,17 +4933,17 @@ mod tests {
                 1,
                 Some("g"),
                 &[
-                    site_event(
+                    line_event(
                         0,
                         NOW - 60_000,
-                        "egress.destination_stalled",
+                        "destinations.stalled",
                         "a destination is stalled",
                         &[("subject", "search"), ("error", "connection refused")],
                     ),
-                    site_event(
+                    line_event(
                         1,
                         NOW - 30_000,
-                        "egress.destination_stalled",
+                        "destinations.stalled",
                         "a destination is stalled",
                         &[("subject", "search"), ("error", "503 unavailable")],
                     ),
@@ -5086,7 +5006,8 @@ mod tests {
             condition,
             subject_kind,
             subject_id: subject_id.to_string(),
-            site: None,
+            class: None,
+            r#type: None,
             group: Some(group.to_string()),
             severity: Severity::Failed,
             since_millis: Some(NOW - 90_000),
@@ -5140,7 +5061,7 @@ mod tests {
     }
 
     #[test]
-    fn each_folded_site_tells_its_detail_on_the_catalog_warning_it_repeats() {
+    fn each_folded_line_tells_its_detail_on_the_catalog_warning_it_repeats() {
         let store = RegistryStore::open(Path::new(":memory:")).unwrap();
         store
             .record_logs(
@@ -5148,33 +5069,33 @@ mod tests {
                 1,
                 Some("g"),
                 &[
-                    site_event(
+                    line_event(
                         0,
                         NOW - 50_000,
-                        "egress.destination_stalled",
+                        "destinations.stalled",
                         "a destination is stalled",
                         &[("subject", "es-prod"), ("error", "connection refused")],
                     ),
                     // No `error` field: the sentence stands in for it.
-                    site_event(
+                    line_event(
                         1,
                         NOW - 30_000,
-                        "worker.commit_refused",
+                        "deploy.commit_refused",
                         "a commit will not run",
                         &[("subject", "abc123")],
                     ),
-                    // Repeated sites tell nothing, though their subject matches by accident.
-                    site_event(
+                    // Repeated lines tell nothing, though their subject matches by accident.
+                    line_event(
                         2,
                         NOW - 20_000,
-                        "runtime.rows_rejected",
+                        "pipelines.rows_rejected",
                         "a destination refused rows",
                         &[("subject", "es-prod"), ("reason", "mapper_parsing_exception")],
                     ),
-                    site_event(
+                    line_event(
                         3,
                         NOW - 10_000,
-                        "runtime.source_blocked",
+                        "pipelines.source_blocked",
                         "a source is blocked",
                         &[("subject", "orders"), ("why", "es-prod refuses")],
                     ),
@@ -5219,7 +5140,7 @@ mod tests {
         );
         assert!(
             worker_logged_warnings(&logged).is_empty(),
-            "a folded or repeated site raises nothing alone"
+            "a folded or repeated line raises nothing alone"
         );
     }
 
@@ -5232,10 +5153,10 @@ mod tests {
                     worker,
                     1,
                     Some("g"),
-                    &[site_event(
+                    &[line_event(
                         0,
                         at,
-                        "egress.destination_stalled",
+                        "destinations.stalled",
                         "stalled",
                         &[("subject", "search"), ("error", error)],
                     )],
@@ -5252,10 +5173,10 @@ mod tests {
         assert_eq!(out[0].message, "it is wrong. Last reported by worker w1: newer");
     }
 
-    /// One worker stalled on two destinations tells each its own error, and a site it logs about two subjects is
+    /// One worker stalled on two destinations tells each its own error, and a line it logs about two subjects is
     /// still one warning, the latest of them since the earliest.
     #[test]
-    fn one_workers_site_about_two_subjects_folds_onto_each_and_warns_once() {
+    fn one_workers_line_about_two_subjects_folds_onto_each_and_warns_once() {
         let store = RegistryStore::open(Path::new(":memory:")).unwrap();
         store
             .record_logs(
@@ -5263,22 +5184,34 @@ mod tests {
                 1,
                 Some("g"),
                 &[
-                    site_event(
+                    line_event(
                         0,
                         NOW - 50_000,
-                        "egress.destination_stalled",
+                        "destinations.stalled",
                         "stalled",
                         &[("subject", "search"), ("error", "search refused")],
                     ),
-                    site_event(
+                    line_event(
                         1,
                         NOW - 20_000,
-                        "egress.destination_stalled",
+                        "destinations.stalled",
                         "stalled",
                         &[("subject", "archive"), ("error", "archive refused")],
                     ),
-                    site_event(2, NOW - 40_000, "kafka.message_ceiling", "first", &[("subject", "a")]),
-                    site_event(3, NOW - 10_000, "kafka.message_ceiling", "second", &[("subject", "b")]),
+                    line_event(
+                        2,
+                        NOW - 40_000,
+                        "destinations.message_ceiling",
+                        "first",
+                        &[("subject", "a")],
+                    ),
+                    line_event(
+                        3,
+                        NOW - 10_000,
+                        "destinations.message_ceiling",
+                        "second",
+                        &[("subject", "b")],
+                    ),
                 ],
             )
             .unwrap();
@@ -5321,10 +5254,10 @@ mod tests {
                 "w1",
                 1,
                 Some("g"),
-                &[site_event(
+                &[line_event(
                     0,
                     NOW - 20_000,
-                    "egress.destination_stalled",
+                    "destinations.stalled",
                     "stalled",
                     &[("subject", "search"), ("error", "refused")],
                 )],
@@ -6125,15 +6058,15 @@ mod tests {
 
     #[test]
     fn lag_climbing_stays_silent_on_too_few_samples_to_judge() {
-        // Three rises, one short of LAG_CLIMB_SAMPLES.
-        let store = store_with_lag(&[100.0, 200.0, 300.0]);
-        assert!(lag_climbing(Some(&store)).is_empty());
+        // Five rising peaks, one short of LAG_CLIMB_PEAKS.
+        let store = store_with_lag(&[100.0, 200.0, 300.0, 400.0, 500.0]);
+        assert!(lag_climbing(Some(&store), NOW).is_empty());
     }
 
     #[test]
     fn lag_climbing_raises_once_it_climbs_for_enough_straight_samples() {
-        let store = store_with_lag(&[100.0, 200.0, 300.0, 400.0]);
-        let warnings = lag_climbing(Some(&store));
+        let store = store_with_lag(&[100.0, 200.0, 300.0, 400.0, 500.0, 600.0]);
+        let warnings = lag_climbing(Some(&store), NOW);
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].condition, Condition::LagClimbing);
         assert_eq!(warnings[0].subject_kind, SubjectKind::Source);
@@ -6142,49 +6075,51 @@ mod tests {
         assert_eq!(warnings[0].severity, Severity::Warning);
         assert_eq!(
             warnings[0].since_millis,
-            Some(0),
-            "the run started at the very first sample"
+            Some(lag_bucket(0, 6)),
+            "the run started at the very first peak"
         );
     }
 
-    /// Rows source 7 in group "g" read in each of `buckets` ten-second buckets, from 0.
-    fn read_rows(store: &RegistryStore, per_bucket: f64, buckets: i64) {
+    /// Rows source 7 in group "g" read in each of the last `buckets` [`LAG_TIER`] buckets closed at [`NOW`].
+    fn read_rows(store: &RegistryStore, per_bucket: f64, buckets: usize) {
         let key = serde_json::to_string(&[("group", "g"), ("source", "7")]).unwrap();
         for i in 0..buckets {
             store
-                .record_delta(super::super::ROWS_IN_METRIC, &key, i * 10_000, per_bucket)
+                .record_delta(super::super::ROWS_IN_METRIC, &key, lag_bucket(i, buckets), per_bucket)
                 .unwrap();
         }
     }
 
-    /// The false alarm this gate is for: 35 records a second, lag rising 24 to 33, a quarter of a second behind.
+    /// The false alarm this gate is for: 35 records a second, lag rising 24 to 39, about a second behind.
     #[test]
     fn lag_climbing_stays_silent_on_a_climb_worth_under_a_minute_of_reading() {
-        let store = store_with_lag(&[24.0, 27.0, 30.0, 33.0]);
-        read_rows(&store, 350.0, 4);
-        assert!(lag_climbing(Some(&store)).is_empty());
+        let store = store_with_lag(&[24.0, 27.0, 30.0, 33.0, 36.0, 39.0]);
+        read_rows(&store, 10_500.0, 6);
+        assert!(lag_climbing(Some(&store), NOW).is_empty());
     }
 
     #[test]
     fn lag_climbing_raises_once_the_climb_is_over_a_minute_of_reading() {
-        // One record a second read, 400 behind.
-        let store = store_with_lag(&[100.0, 200.0, 300.0, 400.0]);
-        read_rows(&store, 10.0, 4);
-        let warnings = lag_climbing(Some(&store));
+        // One record a second read, 600 behind.
+        let store = store_with_lag(&[100.0, 200.0, 300.0, 400.0, 500.0, 600.0]);
+        read_rows(&store, 300.0, 6);
+        let warnings = lag_climbing(Some(&store), NOW);
         assert_eq!(warnings.len(), 1);
         assert!(
-            warnings[0].message.contains("about 6 min behind"),
+            warnings[0]
+                .message
+                .contains("100 to 600 over the last 30 minutes, about 10 minutes behind;"),
             "{}",
             warnings[0].message
         );
     }
 
-    /// Messages source 7 in group "g" finished in each of `buckets` ten-second buckets, from 0.
-    fn finish_messages(store: &RegistryStore, per_bucket: f64, buckets: i64) {
+    /// Messages source 7 in group "g" finished in each of the last `buckets` [`LAG_TIER`] buckets closed at [`NOW`].
+    fn finish_messages(store: &RegistryStore, per_bucket: f64, buckets: usize) {
         let key = serde_json::to_string(&[("group", "g"), ("source", "7")]).unwrap();
         for i in 0..buckets {
             store
-                .record_delta(MESSAGES_FINISHED, &key, i * 10_000, per_bucket)
+                .record_delta(MESSAGES_FINISHED, &key, lag_bucket(i, buckets), per_bucket)
                 .unwrap();
         }
     }
@@ -6193,27 +6128,27 @@ mod tests {
     /// rows it reads, which would hide its climb.
     #[test]
     fn a_queues_climb_is_judged_by_the_messages_it_finishes() {
-        let store = store_with_lag(&[100.0, 200.0, 300.0, 400.0]);
-        read_rows(&store, 100_000.0, 4);
-        finish_messages(&store, 10.0, 4);
-        let warnings = lag_climbing(Some(&store));
-        assert_eq!(warnings.len(), 1, "one message a second, 400 behind");
+        let store = store_with_lag(&[100.0, 200.0, 300.0, 400.0, 500.0, 600.0]);
+        read_rows(&store, 100_000.0, 6);
+        finish_messages(&store, 300.0, 6);
+        let warnings = lag_climbing(Some(&store), NOW);
+        assert_eq!(warnings.len(), 1, "one message a second, 600 behind");
         let msg = &warnings[0].message;
         assert!(msg.contains("source 7 queue orders"), "{msg}");
-        assert!(msg.contains("about 6 min behind"), "{msg}");
+        assert!(msg.contains("about 10 minutes behind"), "{msg}");
 
-        let store = store_with_lag(&[24.0, 27.0, 30.0, 33.0]);
-        finish_messages(&store, 350.0, 4);
+        let store = store_with_lag(&[24.0, 27.0, 30.0, 33.0, 36.0, 39.0]);
+        finish_messages(&store, 10_500.0, 6);
         assert!(
-            lag_climbing(Some(&store)).is_empty(),
+            lag_climbing(Some(&store), NOW).is_empty(),
             "35 messages a second, a second behind"
         );
 
         // Stuck on its first object: many rows read, no message finished yet.
-        let store = store_with_lag(&[24.0, 27.0, 30.0, 33.0]);
-        read_rows(&store, 100_000.0, 4);
-        finish_messages(&store, 0.0, 4);
-        let warnings = lag_climbing(Some(&store));
+        let store = store_with_lag(&[24.0, 27.0, 30.0, 33.0, 36.0, 39.0]);
+        read_rows(&store, 100_000.0, 6);
+        finish_messages(&store, 0.0, 6);
+        let warnings = lag_climbing(Some(&store), NOW);
         assert_eq!(
             warnings.len(),
             1,
@@ -6228,31 +6163,33 @@ mod tests {
 
     #[test]
     fn lag_climbing_is_absent_once_a_sample_no_longer_rises() {
-        let flat = store_with_lag(&[100.0, 200.0, 300.0, 300.0]);
-        assert!(lag_climbing(Some(&flat)).is_empty(), "holding steady is not climbing");
-
-        let falls = store_with_lag(&[100.0, 200.0, 300.0, 250.0]);
+        let flat = store_with_lag(&[100.0, 200.0, 300.0, 400.0, 500.0, 500.0]);
         assert!(
-            lag_climbing(Some(&falls)).is_empty(),
+            lag_climbing(Some(&flat), NOW).is_empty(),
+            "holding steady is not climbing"
+        );
+
+        let falls = store_with_lag(&[100.0, 200.0, 300.0, 400.0, 500.0, 450.0]);
+        assert!(
+            lag_climbing(Some(&falls), NOW).is_empty(),
             "catching up clears it immediately"
         );
     }
 
     #[test]
-    fn lag_climbings_since_time_is_the_runs_true_start_not_just_the_trailing_window() {
-        // Six straight rises: LAG_CLIMB_SAMPLES only requires four, but the start is the whole run's.
-        let store = store_with_lag(&[10.0, 20.0, 30.0, 40.0, 50.0, 60.0]);
-        let warnings = lag_climbing(Some(&store));
-        assert_eq!(warnings[0].since_millis, Some(0));
+    fn a_longer_climb_is_dated_from_the_windows_start() {
+        // Eight rising peaks: only the window's six are read.
+        let store = store_with_lag(&[10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0]);
+        let warnings = lag_climbing(Some(&store), NOW);
+        assert_eq!(warnings[0].since_millis, Some(lag_bucket(2, 8)));
+        assert!(warnings[0].message.contains("30 to 80"), "{}", warnings[0].message);
     }
 
     #[test]
-    fn lag_climbing_only_counts_the_run_since_the_last_dip() {
-        // Dips at bucket 30_000 (300 -> 250), then rises for four straight samples from there.
+    fn lag_climbing_is_absent_when_the_window_holds_a_dip() {
+        // Dips at the window's second peak (300 -> 250), then rises to its end.
         let store = store_with_lag(&[100.0, 200.0, 300.0, 250.0, 260.0, 270.0, 280.0]);
-        let warnings = lag_climbing(Some(&store));
-        assert_eq!(warnings.len(), 1);
-        assert_eq!(warnings[0].since_millis, Some(30_000), "the dip restarts the run");
+        assert!(lag_climbing(Some(&store), NOW).is_empty());
     }
 
     #[test]
@@ -6260,26 +6197,26 @@ mod tests {
         let store = RegistryStore::open(Path::new(":memory:")).unwrap();
         let climbing = lag_subject_key("g", "7", "orders", "0");
         let steady = lag_subject_key("g", "7", "orders", "1");
-        for (i, v) in [100.0, 200.0, 300.0, 400.0].into_iter().enumerate() {
+        for (i, v) in [100.0, 200.0, 300.0, 400.0, 500.0, 600.0].into_iter().enumerate() {
             store
-                .record_gauge_max(SOURCE_LAG, &climbing, i as i64 * 10_000, v)
+                .record_gauge_max(SOURCE_LAG_METRIC, &climbing, lag_bucket(i, 6), v)
                 .unwrap();
         }
-        for (i, v) in [50.0, 50.0, 50.0, 50.0].into_iter().enumerate() {
+        for (i, v) in [50.0; 6].into_iter().enumerate() {
             store
-                .record_gauge_max(SOURCE_LAG, &steady, i as i64 * 10_000, v)
+                .record_gauge_max(SOURCE_LAG_METRIC, &steady, lag_bucket(i, 6), v)
                 .unwrap();
         }
 
-        let warnings = lag_climbing(Some(&store));
+        let warnings = lag_climbing(Some(&store), NOW);
         assert_eq!(warnings.len(), 1, "only the climbing partition raises");
         assert!(warnings[0].message.contains("partition 0"), "{}", warnings[0].message);
     }
 
     #[test]
     fn lag_climbings_sentence_names_the_source_the_partition_the_group_and_the_fix() {
-        let store = store_with_lag(&[100.0, 200.0, 300.0, 400.0]);
-        let warnings = lag_climbing(Some(&store));
+        let store = store_with_lag(&[100.0, 200.0, 300.0, 400.0, 500.0, 600.0]);
+        let warnings = lag_climbing(Some(&store), NOW);
         let msg = &warnings[0].message;
         assert!(msg.contains("source 7"), "{msg}");
         assert!(msg.contains("partition 0"), "{msg}");
@@ -6292,15 +6229,16 @@ mod tests {
     /// in one was indistinguishable from a climb in the other.
     #[test]
     fn two_groups_reporting_lag_for_the_same_source_id_are_two_series_and_two_warnings() {
-        let g1 = store_with_lag_in("g1", &[100.0, 200.0, 300.0, 400.0]);
+        let g1 = store_with_lag_in("g1", &[100.0, 200.0, 300.0, 400.0, 500.0, 600.0]);
         // Same subject id ("7", "orders", "0"), a different group: independent series, so seed it directly rather
         // than reopening a store `store_with_lag_in` already committed to one group.
         let key = lag_subject_key("g2", "7", "orders", "0");
-        for (i, v) in [50.0, 40.0, 30.0, 20.0].into_iter().enumerate() {
-            g1.record_gauge_max(SOURCE_LAG, &key, i as i64 * 10_000, v).unwrap();
+        for (i, v) in [60.0, 50.0, 40.0, 30.0, 20.0, 10.0].into_iter().enumerate() {
+            g1.record_gauge_max(SOURCE_LAG_METRIC, &key, lag_bucket(i, 6), v)
+                .unwrap();
         }
 
-        let warnings = lag_climbing(Some(&g1));
+        let warnings = lag_climbing(Some(&g1), NOW);
         assert_eq!(
             warnings.len(),
             1,
@@ -6309,9 +6247,40 @@ mod tests {
         assert_eq!(warnings[0].group.as_deref(), Some("g1"));
     }
 
+    /// The demo's lag: it climbs between commits and falls when one lands, every half minute. Every bucket's peak is
+    /// the same, so nothing climbs.
+    #[test]
+    fn lag_climbing_stays_silent_on_lag_that_rises_and_falls_with_each_commit() {
+        let store = RegistryStore::open(Path::new(":memory:")).unwrap();
+        let key = lag_subject_key("g", "7", "orders", "0");
+        let from = lag_bucket(0, 6);
+        for (n, at) in (from..LAG_TIER.align(NOW)).step_by(10_000).enumerate() {
+            let lag = [300.0, 1_400.0, 2_900.0][n % 3];
+            store.record_gauge_max(SOURCE_LAG_METRIC, &key, at, lag).unwrap();
+        }
+        assert!(lag_climbing(Some(&store), NOW).is_empty());
+    }
+
+    #[test]
+    fn lag_climbing_is_absent_once_the_partition_stops_reporting() {
+        let store = store_with_lag(&[100.0, 200.0, 300.0, 400.0, 500.0, 600.0]);
+        let later = NOW + LAG_TIER.bucket_ms();
+        assert!(lag_climbing(Some(&store), later).is_empty());
+    }
+
+    #[test]
+    fn lag_climbing_does_not_read_the_open_bucket_as_a_dip() {
+        let store = store_with_lag(&[100.0, 200.0, 300.0, 400.0, 500.0, 600.0]);
+        let key = lag_subject_key("g", "7", "orders", "0");
+        store
+            .record_gauge_max(SOURCE_LAG_METRIC, &key, LAG_TIER.align(NOW), 10.0)
+            .unwrap();
+        assert_eq!(lag_climbing(Some(&store), NOW).len(), 1);
+    }
+
     #[test]
     fn derive_folds_lag_climbing_into_the_catalog() {
-        let store = store_with_lag(&[100.0, 200.0, 300.0, 400.0]);
+        let store = store_with_lag(&[100.0, 200.0, 300.0, 400.0, 500.0, 600.0]);
         let warnings = derive(&[], &[], &HashMap::new(), NOW, INTERVAL, Some(&store), &deployed());
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].condition, Condition::LagClimbing);
@@ -6380,7 +6349,8 @@ mod tests {
             area: None,
             condition: Condition::SourceBlocked,
             subject_kind: SubjectKind::Source,
-            site: None,
+            class: None,
+            r#type: None,
             subject_id: "7".to_string(),
             group: Some("g".to_string()),
             severity: Severity::Failed,
@@ -6758,6 +6728,40 @@ mod tests {
             said.iter()
                 .all(|w| w.message.ends_with("Enter it again under System, Alerts")),
             "{said:?}"
+        );
+    }
+
+    /// Every issue gets one fact on the clock: one that times itself keeps its own, any other gets one by its name.
+    #[test]
+    fn issue_facts_add_one_for_each_issue_not_on_the_clock() {
+        let issue = |condition, subject: &str, group: Option<&str>| Warning {
+            condition,
+            subject_kind: SubjectKind::Source,
+            subject_id: subject.into(),
+            group: group.map(str::to_owned),
+            severity: Severity::Warning,
+            since_millis: None,
+            message: String::new(),
+            class: None,
+            r#type: None,
+            area: None,
+        };
+        let clocked = HashSet::from([
+            FactKey::new(SOURCE_BLOCKED, scoped_subject("edge", "orders")),
+            FactKey::new("secretsKeyUnusable", KEY_SUBJECT),
+        ]);
+        let issues = [
+            issue(Condition::SourceBlocked, "orders", Some("edge")),
+            issue(Condition::SecretsKeyUnusable, KEY_SUBJECT, None),
+            issue(Condition::LagClimbing, "orders", Some("edge")),
+            issue(Condition::WorkerSilent, "w1", None),
+        ];
+        assert_eq!(
+            issue_facts(&issues, &clocked),
+            HashSet::from([
+                FactKey::new(Condition::LagClimbing.name(), scoped_subject("edge", "orders")),
+                FactKey::new(Condition::WorkerSilent.name(), "w1"),
+            ])
         );
     }
 }

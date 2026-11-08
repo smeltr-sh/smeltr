@@ -21,9 +21,9 @@ pub const SHARED: &str = "shared";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Level {
-    /// Reads the area's configuration.
+    /// Reads the area's configuration and its samples, previews over them, and captures.
     Viewer,
-    /// Saves to it on a branch, and captures, previews and reads its samples, which hold production records.
+    /// Saves to it on a branch.
     Editor,
     /// Approves and deploys a change to it.
     Deployer,
@@ -86,8 +86,11 @@ pub enum Access {
 /// Marks a request the leader's agent sends for the person whose session it carries, so the gate judges it by
 /// that person's [`AgentPermissions`]. A request extension, which only the leader itself can attach: nothing on the wire
 /// becomes one.
-#[derive(Clone, Copy, Debug)]
-pub struct ByAgent;
+#[derive(Clone, Debug)]
+pub struct ByAgent {
+    /// The conversation the agent works in: the one conversation it may read.
+    pub conversation: String,
+}
 
 /// How much of what a person holds their agent may use: at most `default` in every area the person holds, or the
 /// level `areas` names for that area. With `administrator`, the agent of a person holding the [`ADMINISTRATOR`] role

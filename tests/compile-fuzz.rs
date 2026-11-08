@@ -40,7 +40,7 @@ use smeltr::plan::topology::SourceMeta;
 use crate::harness::fuzz::{self, Coverage, Rng};
 use crate::harness::{code, pipeline, raw_batch};
 
-const SEEDS: u64 = 300;
+const SEEDS: u64 = 400;
 
 /// The record's declarations and its parse, step 0 of every program.
 const HEAD: &str = "a: i64; b: i64; f: f64; s: str; u: str; bo: bool; by: bytes; t: datetime; d: duration; \
@@ -198,6 +198,9 @@ fn hint(f: StdFunc, i: usize) -> &'static [&'static str] {
         (ToString | ParseBytes, 1) => &["\"base64\"", "\"hex\"", "\"binary\""],
         (Decode | Encode, 1) => &["\"utf-8\"", "\"latin1\"", "\"utf-16le\"", "\"nope\""],
         (ParseInt, 1) => &["2", "10", "16", "36"],
+        (ReadInt | ReadFloat, 2) => &["\"u8\"", "\"i16\"", "\"u32\"", "\"i64\"", "\"f32\"", "\"f64\"", "\"x\""],
+        (ReadInt | ReadFloat, 3) => &["\"big\"", "\"little\"", "\"x\""],
+        (ReadInt | ReadFloat | ReadBytes, 1) | (ReadBytes, 2) => &["0", "1", "2", "-1"],
         (ParseTime, 1) => &["\"%Y-%m-%d\"", "\"%d/%m/%Y %H:%M\"", "\"%s\""],
         (Duration | CountIn, 1) => &["\"s\"", "\"ms\"", "\"h\"", "\"us\"", "\"d\"", "\"w\"", "\"seconds\""],
         (Repeat | PadStart | PadEnd | Resize, 1) => &["0", "1", "3", "-1"],
@@ -2733,10 +2736,42 @@ fn timed_out(records: &[Value]) -> bool {
     records.iter().any(|r| r.to_string().contains("LoopBudgetExceeded"))
 }
 
+/// How many programs `program` draws for a seed, at most, to find the one its seed wants.
+const DRAWS: u64 = 200;
+
+/// `seed`'s program: the first of its draws that holds the construct, step or parse the seed wants and compiles, else
+/// its first draw. Seed `s` wants the one at `s` in the list of them, so each is in a compiled program once per pass
+/// through the list, whatever a new row does to the generator's random stream.
+fn program(seed: u64) -> Program {
+    let wanted: Vec<String> = expected()
+        .into_iter()
+        .filter(|n| !["row ", "op ", "unary "].iter().any(|p| n.starts_with(p)))
+        .collect();
+    let want = &wanted[(seed % wanted.len() as u64) as usize];
+    let compiles = |p: &Program| {
+        let source = Writer {
+            p,
+            style: Style::default(),
+            temps: 0,
+            trying: false,
+        }
+        .steps();
+        compile(&with_table(source), &SourceMeta::KAFKA).is_ok()
+    };
+    let first = Gen::new(seed).program();
+    if covers(&first).contains(want) && compiles(&first) {
+        return first;
+    }
+    (1..DRAWS)
+        .map(|k| Gen::new(seed.wrapping_add(k << 32)).program())
+        .find(|p| covers(p).contains(want) && compiles(p))
+        .unwrap_or(first)
+}
+
 /// What `seed`'s program covers where it compiles, `None` where it is refused or a run is not repeatable, or why its
 /// runs disagree.
 fn check(seed: u64) -> Result<Option<BTreeSet<String>>, String> {
-    let program = Gen::new(seed).program();
+    let program = program(seed);
     let write = |style: Style| {
         Writer {
             p: &program,
@@ -2874,7 +2909,7 @@ fn generated_pipelines_compile_or_refuse_and_mean_the_same_however_written() {
             "it panics\n  {}",
             show(
                 &Writer {
-                    p: &Gen::new(seed).program(),
+                    p: &program(seed),
                     style: Style::default(),
                     temps: 0,
                     trying: false,

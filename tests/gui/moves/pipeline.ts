@@ -397,7 +397,16 @@ const save: Move = {
   weight: (m) => (dirty(m) ? 3 : 0),
   run: async (j) => {
     const { page, model } = j;
+    const broken = brokenStep(model);
     await page.getByRole('button', { name: 'Save', exact: true }).click();
+    if (broken) {
+      // The leader keeps its saved pipeline, and the editor its unsaved steps.
+      const alert = page.getByRole('alert');
+      await expect(alert).toBeVisible();
+      await alert.locator('..').getByRole('button', { name: 'Dismiss' }).click();
+      await expect.poll(() => savedSteps(j.api)).toEqual(model.saved);
+      return `save, refused for ${broken}, which does not compile`;
+    }
     await expect(page.getByText('Saved.')).toBeVisible();
     model.saved = clone(model.editing);
     await expect.poll(() => savedSteps(j.api)).toEqual(model.saved);
@@ -478,7 +487,7 @@ const pause: Move = {
     const { list, at, step } = rng.pick(placed(model.editing));
     const head = cardOn(page, list, at).locator(':scope > .card-head');
     await head.hover({ position: { x: 4, y: 4 } });
-    const paused = model.paused === step.id;
+    const paused = pausedAt(model) === step.id;
     await head
       .locator(':scope > .controls')
       .getByRole('button', {
@@ -584,9 +593,62 @@ export type Shown =
       paused: boolean;
     };
 
+/** The steps that have run by the time the records reach step `id`, by id, as the editor's `stepsRun` counts them:
+ * those before it in each list that leads to it, and the ifs holding it. Null where no step is `id`. */
+function ranBy(steps: StepModel[], id: string, including: boolean): Set<string> | null {
+  const ran = new Set<string>();
+  for (const s of steps) {
+    if (s.id === id) {
+      if (including) ran.add(s.id);
+      return ran;
+    }
+    ran.add(s.id);
+    if (s.type === 'if') {
+      const inner = ranBy(s.then, id, including) ?? ranBy(s.else, id, including);
+      if (inner) return new Set([...ran, ...inner]);
+      for (const t of flat([...s.then, ...s.else])) ran.add(t.id);
+    }
+  }
+  return null;
+}
+
+/** The first step that does not compile, by id: a Remove that names a field nothing before it makes. The fields it can
+ * name are `_raw` and those a Call before it makes; the model counts none of an Eval's, because `pickFields` never names
+ * one. */
+function brokenStep(model: Model): string | null {
+  for (const s of flat(model.editing)) {
+    if (s.type !== 'remove' || s.disabled) continue;
+    const ran = ranBy(model.editing, s.id, false)!;
+    const calls = flat(model.editing).filter(
+      (c) => c.type === 'call' && !c.disabled && ran.has(c.id),
+    ) as (StepModel & { type: 'call' })[];
+    const made = (f: string) =>
+      f === '_raw' || calls.some((c) => f === c.pipeline || f.startsWith(`${c.pipeline}.`));
+    if (!s.fields.every(made)) return s.id;
+  }
+  return null;
+}
+
+/** The step the records are paused after: the one ◎ chose, unless a step that does not compile runs by then, and
+ * then the last step that runs before it ('' for the records as they arrived). Null for no pause. */
+export function pausedAt(model: Model): string | null {
+  const broken = brokenStep(model);
+  const chosen = model.paused && ranBy(model.editing, model.paused, true);
+  if (model.paused && chosen && !(broken && chosen.has(broken))) return model.paused;
+  if (!broken) return null;
+  const ran = ranBy(model.editing, broken, false)!;
+  const all = flat(model.editing);
+  const before = all.slice(
+    0,
+    all.findIndex((s) => s.id === broken),
+  );
+  return before.filter((s) => ran.has(s.id)).pop()?.id ?? '';
+}
+
 export function expected(model: Model, steps = model.editing): Shown[] {
+  const at = pausedAt(model);
   return steps.map((s): Shown => {
-    const paused = model.paused === s.id;
+    const paused = at === s.id;
     if (s.type === 'if')
       return {
         type: 'if',
@@ -621,9 +683,11 @@ export function expected(model: Model, steps = model.editing): Shown[] {
 
 /** What the Paused chip says, as the model expects it: the step's place in the editor's numbering and its type. */
 export function expectedPause(model: Model): string | null {
-  if (!model.sampled || !model.paused) return null;
+  const step = pausedAt(model);
+  if (!model.sampled || step === null) return null;
+  if (step === '') return '◉ Input records';
   const all = flat(model.editing);
-  const at = all.findIndex((s) => s.id === model.paused);
+  const at = all.findIndex((s) => s.id === step);
   return `◉ After step ${at + 1} · ${LABELS[all[at].type].toUpperCase()}`;
 }
 

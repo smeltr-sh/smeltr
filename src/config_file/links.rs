@@ -138,7 +138,7 @@ impl Links {
     }
 
     /// `from`, and every destination down each one's chain of refusals.
-    fn refusal_chain(&self, from: impl IntoIterator<Item = String>) -> BTreeSet<String> {
+    pub(super) fn refusal_chain(&self, from: impl IntoIterator<Item = String>) -> BTreeSet<String> {
         closure(from, |d| self.refusals.get(d).into_iter().flatten().cloned().collect())
     }
 
@@ -150,7 +150,7 @@ impl Links {
     }
 
     /// `id`, and every pipeline it splices in, however far down.
-    fn with_callees(&self, id: &str) -> BTreeSet<String> {
+    pub(super) fn with_callees(&self, id: &str) -> BTreeSet<String> {
         closure([id.to_string()], |p| {
             self.calls.get(p).into_iter().flatten().cloned().collect()
         })
@@ -250,7 +250,7 @@ impl Links {
 }
 
 /// `start`, and everything `next` reaches from it, however far.
-fn closure(start: impl IntoIterator<Item = String>, next: impl Fn(&str) -> Vec<String>) -> BTreeSet<String> {
+pub(super) fn closure(start: impl IntoIterator<Item = String>, next: impl Fn(&str) -> Vec<String>) -> BTreeSet<String> {
     let mut seen = BTreeSet::new();
     let mut queue: Vec<String> = start.into_iter().collect();
     while let Some(id) = queue.pop() {
@@ -266,7 +266,7 @@ fn destinations(ids: &BTreeSet<String>) -> impl Iterator<Item = Object> + '_ {
 }
 
 /// Every destination a `deliver` answer in `layer` names.
-fn delivered_to(layer: &Option<OnExceptionDto>) -> impl Iterator<Item = String> + '_ {
+pub(super) fn delivered_to(layer: &Option<OnExceptionDto>) -> impl Iterator<Item = String> + '_ {
     (layer.iter())
         .flat_map(|each| each.categories.values().chain(each.kinds.values()))
         .flat_map(|a| match a {
@@ -277,18 +277,20 @@ fn delivered_to(layer: &Option<OnExceptionDto>) -> impl Iterator<Item = String> 
 
 /// Every `NAME` in a `%{NAME}` or `%{NAME:field}` in `text`.
 fn pattern_names(text: &str) -> BTreeSet<String> {
-    (text.match_indices("%{"))
-        .filter_map(|(i, _)| {
-            let rest = &text[i + 2..];
-            let end = rest.find(['}', ':'])?;
-            Some(rest[..end].to_string())
-        })
-        .filter(|name| !name.is_empty())
-        .collect()
+    pattern_name_spans(text).map(|span| text[span].to_string()).collect()
+}
+
+/// Where each `NAME` in a `%{NAME}` or `%{NAME:field}` in `text` sits, as a byte range.
+pub(super) fn pattern_name_spans(text: &str) -> impl Iterator<Item = std::ops::Range<usize>> + '_ {
+    text.match_indices("%{").filter_map(|(i, _)| {
+        let start = i + 2;
+        let end = start + text[start..].find(['}', ':'])?;
+        (end > start).then_some(start..end)
+    })
 }
 
 /// Every step, an `if` step's branches included.
-fn walk(steps: &[StepDto], f: &mut impl FnMut(&StepDto)) {
+pub(super) fn walk(steps: &[StepDto], f: &mut impl FnMut(&StepDto)) {
     for step in steps {
         f(step);
         if let StepDto::If { then, r#else, .. } = step {

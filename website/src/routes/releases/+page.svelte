@@ -13,7 +13,7 @@
     {#each releases as r (r.version)}
       <section class="release">
         <h2><a href={`/releases/${r.version}`}>Smeltr {r.version}</a></h2>
-        <p class="date">{r.date ?? 'Not released yet'}</p>
+        <p class="date">{r.date}</p>
         <p>{r.summary}</p>
         <p><a href={`/releases/${r.version}`}>What's in {r.version} →</a></p>
       </section>

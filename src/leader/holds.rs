@@ -129,7 +129,7 @@ impl Holds {
     ///
     /// Serialised across workers, so two beats never both take one free source. Blocking: it reads and writes the
     /// store under the lock every other call here takes.
-    pub fn beat(&self, store: &dyn Store, mut beat: Beat<'_>, clock: Clock) -> Result<Vec<Hold>, StoreError> {
+    pub fn beat(&self, store: &Store, mut beat: Beat<'_>, clock: Clock) -> Result<Vec<Hold>, StoreError> {
         let mut workers = self.lock();
         if !clock.young() {
             workers.gone.clear();
@@ -157,6 +157,13 @@ impl Holds {
         heard.listed.retain(|_, &mut at| clock.within(at));
         heard.listed.extend(runs.into_iter().map(|key| (key, clock.now)));
         heard.answered = answered.clone();
+        tracing::trace!(
+            name: "holds_settled", target: "heartbeats",
+            %worker,
+            %group,
+            holds = answered.len(),
+            "the leader settled the holds a heartbeat listed"
+        );
         Ok(answered)
     }
 
@@ -212,7 +219,7 @@ impl Holds {
     /// Blocking.
     pub fn forget_unread(
         &self,
-        store: &dyn Store,
+        store: &Store,
         read: &HashSet<(String, SourceKey)>,
         clock: Clock,
     ) -> Result<Vec<HeldSource>, StoreError> {
@@ -220,6 +227,7 @@ impl Holds {
         if clock.up_for <= clock.hold_time.max(FORGET_AFTER_UP) {
             return Ok(Vec::new());
         }
+        let _pass = tracing::trace_span!(target: "heartbeats", "a background pass", task = "forget progress of sources nothing reads").entered();
         let listed = |group: &str, key: &SourceKey| {
             workers.heard.values().any(|w| {
                 w.group == group && clock.within(w.at) && w.listed.get(key).is_some_and(|&at| clock.within(at))
@@ -244,7 +252,7 @@ impl Holds {
 }
 
 /// [`Holds::beat`]'s work against the store. Takes the beat's progress; leaves the rest.
-fn settle(workers: &Workers, store: &dyn Store, beat: &mut Beat<'_>, clock: Clock) -> Result<Vec<Hold>, StoreError> {
+fn settle(workers: &Workers, store: &Store, beat: &mut Beat<'_>, clock: Clock) -> Result<Vec<Hold>, StoreError> {
     let (worker, group) = (beat.worker, beat.group);
     // Before anything is settled, and whether or not this beat lists the source: a worker between two runtimes
     // lists nothing and still carries what the last one delivered, which it counts as recorded once answered.
@@ -271,16 +279,38 @@ fn settle(workers: &Workers, store: &dyn Store, beat: &mut Beat<'_>, clock: Cloc
                 cursor: hold.cursor,
             }),
             Some(hold) if workers.reading(&hold.holder, group, key, clock) => {}
-            hold => free.push((key, hold.and_then(|h| h.cursor))),
+            hold => free.push((
+                key,
+                hold.as_ref().map(|h| h.holder.clone()),
+                hold.and_then(|h| h.cursor),
+            )),
         }
     }
     // After every source this worker keeps, so the count it is compared by is what it already reads.
-    for (key, cursor) in free {
+    for (key, from, cursor) in free {
         let fewer = workers.heard.iter().any(|(other, w)| {
             other != worker && workers.reading(other, group, key, clock) && w.answered.len() < held.len()
         });
         if !fewer {
             store.set_source_holder(group, key, worker)?;
+            match &from {
+                Some(from) if from != worker => tracing::info!(
+                    name: "hold_moved", target: "heartbeats",
+                    source = %key.source,
+                    %group,
+                    %from,
+                    to = %worker,
+                    "a source moved to another worker, which resumes from the saved progress"
+                ),
+                Some(_) => {}
+                None => tracing::info!(
+                    name: "hold_granted", target: "heartbeats",
+                    source = %key.source,
+                    %group,
+                    %worker,
+                    "a worker was given a source to read"
+                ),
+            }
             held.push(Hold {
                 key: key.clone(),
                 cursor,
@@ -296,7 +326,7 @@ fn admitted(worker: &str, key: &SourceKey, mut progress: Progress) -> Progress {
     let (cursor_refused, refused) = progress.admit();
     if cursor_refused {
         tracing::warn!(
-            target: "leader.progress_refused",
+            name: "progress_refused", target: "heartbeats",
             subject = %worker,
             source = %key.source,
             "a cursor longer than {MAX_CURSOR} bytes was refused, so the source resumes from the one before it"
@@ -304,7 +334,7 @@ fn admitted(worker: &str, key: &SourceKey, mut progress: Progress) -> Progress {
     }
     if refused > 0 {
         tracing::warn!(
-            target: "leader.progress_refused",
+            name: "progress_refused", target: "heartbeats",
             subject = %worker,
             source = %key.source,
             refused,
@@ -317,12 +347,12 @@ fn admitted(worker: &str, key: &SourceKey, mut progress: Progress) -> Progress {
 
 /// A store on disk whose holds table is gone, so every read or write of a hold fails.
 #[cfg(test)]
-pub(crate) fn store_without_holds(label: &str) -> super::sqlite_store::SqliteStore {
+pub(crate) fn store_without_holds(label: &str) -> super::store::Store {
     let dir = std::env::temp_dir().join(format!("smeltr-holds-{label}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let db = dir.join("leader.db");
     let _ = std::fs::remove_file(&db);
-    let store = super::sqlite_store::SqliteStore::open(&db, &dir.join("sealing.key")).unwrap();
+    let store = super::store::Store::open(&db, &dir.join("sealing.key")).unwrap();
     rusqlite::Connection::open(&db)
         .unwrap()
         .execute_batch("DROP TABLE source_holds")
@@ -336,13 +366,13 @@ mod tests {
 
     use super::*;
     use crate::heartbeat::LedgerEntry;
-    use crate::leader::sqlite_store::SqliteStore;
+    use crate::leader::store::Store;
 
     const BEAT: Duration = Duration::from_secs(5);
 
-    fn store(label: &str) -> SqliteStore {
+    fn store(label: &str) -> Store {
         let key = std::env::temp_dir().join(format!("smeltr-holds-{}-{label}", std::process::id()));
-        SqliteStore::open(Path::new(":memory:"), &key.join("sealing.key")).unwrap()
+        Store::open(Path::new(":memory:"), &key.join("sealing.key")).unwrap()
     }
 
     fn key(source: &str) -> SourceKey {
@@ -363,7 +393,7 @@ mod tests {
 
     fn beat(
         holds: &Holds,
-        s: &SqliteStore,
+        s: &Store,
         worker: &str,
         group: &str,
         runs: Vec<SourceKey>,

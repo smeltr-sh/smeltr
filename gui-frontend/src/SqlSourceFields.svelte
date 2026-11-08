@@ -473,7 +473,7 @@
       Cheapest first: each one down costs the database and the leader more, so the first that fits
       your data is the one to pick.
     {/snippet}
-    <span class="cheapest">cheapest first</span>
+    <span class="uppercase-label">cheapest first</span>
     <div class="modes" role="radiogroup">
       {#each MODES as m (m.type)}
         {@const on = source.mode.type === m.type}
@@ -487,7 +487,7 @@
             />
             <span class="mode-name">
               {m.name}
-              {#if suggested?.type === m.type}<span class="suggested"
+              {#if suggested?.type === m.type}<span class="suggested uppercase-label"
                   >suggested from the result</span
                 >{/if}
               <span class="meter" title="cost {m.level} of 4" data-level={m.level}>
@@ -868,14 +868,6 @@
     background: color-mix(in srgb, var(--added) 10%, var(--field));
   }
 
-  .cheapest {
-    font-size: var(--text-micro);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--dim);
-  }
-
   .modes {
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -902,14 +894,6 @@
     gap: 0.25rem;
     font-weight: 600;
     font-size: var(--text-label);
-  }
-
-  .suggested {
-    font-size: var(--text-micro);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--dim);
   }
 
   .meter {

@@ -4,6 +4,7 @@
   the person holds, so each area shows what they hold beside it.
 -->
 <script lang="ts">
+  import { Busy } from './busy.svelte';
   import Button, { BUSY } from './Button.svelte';
   import { reported } from './errors.svelte';
   import SectionShell from './SectionShell.svelte';
@@ -30,7 +31,7 @@
   let groups = $state<{ id: string; hue: number | null }[]>([]);
   let sharedHue = $state<number | null>(null);
 
-  let busy = $state(false);
+  const busy = new Busy();
   let message = $state('');
 
   function held(area: string): AccessLevel | null {
@@ -92,19 +93,14 @@
 
   async function save(event: SubmitEvent) {
     event.preventDefault();
-    if (busy) return;
-    busy = true;
+    if (busy.on) return;
     message = '';
-    try {
+    await busy.run(async () => {
       const result = await putAgentPermissions(draft);
       if (refused(result)) return;
       show(result);
       message = 'agent permissions saved';
-    } catch (e) {
-      reported(e);
-    } finally {
-      busy = false;
-    }
+    });
   }
 </script>
 
@@ -154,7 +150,13 @@
                 ></span>{area.id}</span
               >
               <span class="dim">you hold {held(area.id) ?? 'nothing'}</span>
-              <select aria-label="{area.id} level" bind:value={byArea[area.id]}>
+              <!-- The saved permissions leave out an area with no level of its own. Its value is then
+                   undefined, which no option matches, so the select would show nothing; read it as '', the
+                   option "as every area". -->
+              <select
+                aria-label="{area.id} level"
+                bind:value={() => byArea[area.id] ?? '', (v) => (byArea[area.id] = v)}
+              >
                 <option value="">as every area</option>
                 {#each LEVELS as level (level)}<option value={level}>{level}</option>{/each}
               </select>
@@ -164,7 +166,7 @@
       {/if}
       {#if message}<p class="message" role="status">{message}</p>{/if}
       <div class="actions">
-        <Button class="primary" type="submit" disabled={busy ? BUSY : ''}>Save</Button>
+        <Button class="primary" type="submit" disabled={busy.on ? BUSY : ''}>Save</Button>
       </div>
     </form>
   {/if}

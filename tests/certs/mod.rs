@@ -37,7 +37,11 @@ impl Authority {
 
     /// A certificate for `names`, signed by this authority. A server's or a client's: what differs is who checks it.
     pub fn issue(&self, common_name: &str, names: Vec<String>) -> Issued {
-        let key = rcgen::KeyPair::generate().expect("generate a key");
+        self.issue_under(common_name, names, rcgen::KeyPair::generate().expect("generate a key"))
+    }
+
+    /// A certificate for `names` over `key`, for a test that needs a key of its own kind, such as RSA.
+    pub fn issue_under(&self, common_name: &str, names: Vec<String>, key: rcgen::KeyPair) -> Issued {
         let mut params = rcgen::CertificateParams::new(names).expect("certificate parameters");
         params.distinguished_name = named(common_name);
         let certificate = params.signed_by(&key, &self.issuer).expect("sign a certificate");

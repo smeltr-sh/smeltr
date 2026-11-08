@@ -1,24 +1,31 @@
 /** What a source is, by its type: its name, what the map draws it as, and a new one of it. */
-import type { Framing, MapSystem, ObjectStore, SourceDto } from './api';
+import type { Framing, FramingSettings, MapSystem, ObjectStore, SourceDto } from './api';
 import type { CatalogType } from './TypeCatalog.svelte';
 import { SOURCE_KIND, type SourceKind } from './sourceKinds';
 import { SYSTEM_GLYPHS, SYSTEM_LABELS } from './systemGlyphs';
 import { suggestId } from './ids';
 
-/** Absent is `lines`, so choosing it writes nothing. Only `lines` takes `lineBreaker`, so choosing another
- * drops it. */
-export function setFraming(d: { framing?: Framing; lineBreaker?: string }, framing: Framing) {
+/** Absent is `lines`, so choosing it writes nothing. Each framing takes only its own settings, so choosing one drops
+ * the others' and starts its own: a length of 4 bytes, or records of 64 bytes. */
+export function setFraming(d: FramingSettings, framing: Framing) {
   if (framing === 'lines') delete d.framing;
-  else {
-    d.framing = framing;
-    delete d.lineBreaker;
-  }
+  else d.framing = framing;
+  if (framing !== 'lines') delete d.lineBreaker;
+  if (framing === 'lengthPrefix') d.lengthPrefix ??= { bytes: 4 };
+  else delete d.lengthPrefix;
+  if (framing === 'fixed') d.fixedBytes ??= 64;
+  else delete d.fixedBytes;
 }
 
-/** The severities a logs source may name, most severe first. Mirrors `logs::LEVEL_LABELS`. */
-export const LEVELS = ['error', 'warn', 'info', 'debug', 'trace'];
+/** The levels a logs source carries, most severe first: `logs::LEVEL_LABELS` without trace, which a logs source
+ * reads as debug (`io::logs::CARRIED_AT_MOST`). */
+export const LEVELS = ['error', 'warn', 'info', 'debug'];
 /** What a source carries when it names no level. Mirrors `LevelLabel::DEFAULT`. */
 export const DEFAULT_LEVEL = 'info';
+/** The lowest level a logs source reads: what it names, with trace read as debug. */
+export function readLevel(minLevel: string | undefined): string {
+  return minLevel === 'trace' ? 'debug' : (minLevel ?? DEFAULT_LEVEL);
+}
 
 /** A source that reads the objects a queue announces. */
 export type ObjectSource = Extract<SourceDto, { type: 's3Sqs' | 'azureBlobQueue' | 'gcsPubSub' }>;
@@ -84,6 +91,7 @@ export type ReceiverSource = Extract<
       | 's2sReceiver'
       | 'otlpReceiver'
       | 'syslogReceiver'
+      | 'socketReceiver'
       | 'prometheusReceiver'
       | 'elasticReceiver';
   }
@@ -95,6 +103,7 @@ const RECEIVER_LABELS: Record<ReceiverSource['type'], string> = {
   s2sReceiver: 'S2S receiver',
   otlpReceiver: 'OTLP receiver',
   syslogReceiver: 'Syslog receiver',
+  socketReceiver: 'Socket receiver',
   prometheusReceiver: 'Prometheus receiver',
   elasticReceiver: 'Elasticsearch receiver',
 };
@@ -106,6 +115,7 @@ const RECEIVER_PATHS: Record<ReceiverSource['type'], (s: ReceiverSource) => stri
   s2sReceiver: () => '',
   otlpReceiver: (s) => `/v1/${(s.type === 'otlpReceiver' && s.signal) || 'logs'}`,
   syslogReceiver: (s) => (s.type === 'syslogReceiver' && s.transport === 'udp' ? '/udp' : ''),
+  socketReceiver: (s) => (s.type === 'socketReceiver' && s.transport === 'udp' ? '/udp' : ''),
   prometheusReceiver: () => '/api/v1/write',
   elasticReceiver: () => '/_bulk',
 };
@@ -151,7 +161,7 @@ export function reads(s: SourceDto): string {
   if (s.type === 'oktaLogs') return 'System Log';
   if (isSql(s)) return `${s.database}: ${s.mode.type}`;
   if (isReceiver(s)) return `:${s.port}${RECEIVER_PATHS[s.type](s)}`;
-  return `${s.minLevel ?? DEFAULT_LEVEL} and above`;
+  return `${readLevel(s.minLevel)} and above`;
 }
 
 /** Every type a source may be, with the category the add dialog lists it under. */
@@ -175,6 +185,7 @@ export const SOURCE_TYPES: CatalogType<SourceDto['type'], SourceKind>[] = (
     ['s2sReceiver', 'Log analytics'],
     ['otlpReceiver', 'Observability'],
     ['syslogReceiver', 'Observability'],
+    ['socketReceiver', 'Observability'],
     ['prometheusReceiver', 'Observability'],
     ['elasticReceiver', 'Log analytics'],
     ['metrics', 'smeltr'],
@@ -219,6 +230,7 @@ export function blankSource(type: SourceDto['type'], taken: string[]): SourceDto
   if (type === 's2sReceiver') return { id, type, port: 9997 };
   if (type === 'otlpReceiver') return { id, type, port: 4318 };
   if (type === 'syslogReceiver') return { id, type, port: 6514 };
+  if (type === 'socketReceiver') return { id, type, port: 9000 };
   if (type === 'prometheusReceiver') return { id, type, port: 9090 };
   if (type === 'elasticReceiver') return { id, type, port: 9200 };
   if (type === 'metrics') return { id, type, bucketSeconds: 10 };

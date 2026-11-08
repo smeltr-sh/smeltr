@@ -3,7 +3,7 @@
 //!
 //! `push` reads a null array as zero elements, so a guarded `x = push(x, v)` works on the first assignment.
 
-use super::helpers::{Operand, i64_values, short_circuit_empty, side};
+use super::helpers::{Operand, clamped, i64_values, side};
 use crate::core::bits;
 use crate::core::buffer::BufferPool;
 use crate::core::column::{Column, DataType, Fixed, FixedMut, List, Scalar, StrBuilder, Validity, VarLen, VarType};
@@ -11,9 +11,6 @@ use crate::core::ctx::{CompiledPattern, Ctx};
 
 pub fn array_length(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::I64, len) {
-        return e;
-    }
     let l = ins[0].list().unwrap();
     let mut out = Column::alloc(ctx.pool, &DataType::I64, len);
     {
@@ -30,10 +27,7 @@ pub fn array_length(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 /// `split(value, delimiter)` -> `Array(Str)`. An empty delimiter splits into characters, as in JS. Null propagates.
 pub fn str_split(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    let out_ty = DataType::Array(Box::new(DataType::Str));
-    if let Some(e) = short_circuit_empty(ins, &out_ty, len) {
-        return e;
-    }
+    let _out_ty = DataType::Array(Box::new(DataType::Str));
     let v = ins[0].var().unwrap();
     let d = side::var(ins[1]).unwrap();
     let mut rows = ListRows::new(ctx, &v, len);
@@ -305,9 +299,6 @@ pub fn array_insert(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 pub fn array_remove(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     let out_ty = ins[0].data_type();
-    if let Some(e) = short_circuit_empty(ins, &out_ty, len) {
-        return e;
-    }
     let (Ok(list), DataType::Array(elem_ty)) = (ins[0].list(), out_ty.clone()) else {
         return Column::empty(out_ty, len);
     };
@@ -421,9 +412,6 @@ pub fn array_set(ctx: &mut Ctx, array: &Column, index: &Column, value: &Column, 
 pub fn array_resize(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     let out_ty = ins[0].data_type();
-    if let Some(e) = short_circuit_empty(ins, &out_ty, len) {
-        return e;
-    }
     let (Ok(list), DataType::Array(elem_ty)) = (ins[0].list(), out_ty.clone()) else {
         return Column::empty(out_ty, len);
     };
@@ -792,9 +780,6 @@ fn build_var<'a>(pool: &mut BufferPool, var_type: VarType, pieces: &[Piece<'a>],
 pub fn array_slice(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     let out_ty = ins[0].data_type();
-    if let Some(e) = short_circuit_empty(ins, &out_ty, len) {
-        return e;
-    }
     let (Ok(list), DataType::Array(elem_ty)) = (ins[0].list(), out_ty.clone()) else {
         return Column::empty(out_ty, len);
     };
@@ -884,9 +869,6 @@ pub fn array_at(ctx: &mut Ctx, ins: &[&Column]) -> Column {
         DataType::Array(e) => *e,
         other => return Column::empty(other, len),
     };
-    if let Some(e) = short_circuit_empty(ins, &elem_ty, len) {
-        return e;
-    }
     let Ok(list) = ins[0].list() else {
         return Column::empty(elem_ty, len);
     };
@@ -1024,9 +1006,6 @@ fn element_eq(child: &Column, i: usize, value: &Elem<'_>) -> bool {
 pub fn array_sort(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     let out_ty = ins[0].data_type();
-    if let Some(e) = short_circuit_empty(ins, &out_ty, len) {
-        return e;
-    }
     let (Ok(list), DataType::Array(elem_ty)) = (ins[0].list(), out_ty.clone()) else {
         return Column::empty(out_ty, len);
     };
@@ -1091,61 +1070,87 @@ fn elem_cmp(a: &Elem<'_>, b: &Elem<'_>) -> std::cmp::Ordering {
     }
 }
 
-/// `indexOf(array, value)`: the first equal element's position, or `-1`.
-pub fn array_index_of(ctx: &mut Ctx, ins: &[&Column]) -> Column {
-    let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::I64, len) {
-        return e;
+/// The position in `row`'s array of the first element equal to `value`, or the last with `from_end`, or `None`. The
+/// one search behind `indexOf`, `lastIndexOf` and `includes`, so the three agree on what equal means.
+///
+/// `from` is read as JavaScript reads it on an array: a negative one counts from the end. From the start, the element
+/// is at or after it; from the end, at or before it.
+fn element_pos(list: &List<'_>, row: usize, value: &Elem<'_>, from_end: bool, from: Option<i64>) -> Option<usize> {
+    let (s, e) = (list.offsets[row] as usize, list.offsets[row + 1] as usize);
+    let n = e - s;
+    let hit = |i: &usize| element_eq(list.child, s + i, value);
+    if from_end {
+        let last = match from {
+            None => n.checked_sub(1)?,
+            Some(p) if p >= 0 => (p as usize).min(n.checked_sub(1)?),
+            Some(p) => usize::try_from(n as i64 + p).ok()?,
+        };
+        (0..=last).rev().find(hit)
+    } else {
+        let first = from.map_or(0, |p| clamped(p, n));
+        (first..n).find(hit)
     }
+}
+
+/// The search behind all three on an array: the position from [`element_pos`], or `-1`; `includes` reads it as
+/// `>= 0`. A null array, value or `from` is a null answer.
+fn search(ctx: &mut Ctx, ins: &[&Column], from_end: bool, to: DataType) -> Column {
+    let len = ins[0].len();
     let list = ins[0].list().unwrap();
-    let mut out = Column::alloc(ctx.pool, &DataType::I64, len);
+    let from = ins.get(2).map(|c| side::i64(c).unwrap());
+    let mut out = Column::alloc(ctx.pool, &to, len);
     {
-        let o = out.i64_mut().unwrap();
-        for row in 0..len {
-            let Some(value) = needle_at(&list, ins[1], row) else {
-                o.values[row] = -1;
-                o.validity.set_valid(row, false);
-                continue;
+        let found = |row: usize| {
+            let from = match &from {
+                None => None,
+                Some(f) if f.is_valid(row) => Some(f.at(row)),
+                Some(_) => return None,
             };
-            let (s, e) = (list.offsets[row] as usize, list.offsets[row + 1] as usize);
-            o.values[row] = (s..e)
-                .position(|i| element_eq(list.child, i, &value))
-                .map_or(-1, |p| p as i64);
+            let value = needle_at(&list, ins[1], row)?;
+            Some(element_pos(&list, row, &value, from_end, from))
+        };
+        match to {
+            DataType::Bool => {
+                let o = out.bool_mut().unwrap();
+                for row in 0..len {
+                    let pos = found(row);
+                    bits::set_row(o.values, row, pos.flatten().is_some());
+                    o.validity.set_valid(row, pos.is_some());
+                }
+                o.validity.recount();
+            }
+            _ => {
+                let o = out.i64_mut().unwrap();
+                for row in 0..len {
+                    let pos = found(row);
+                    o.values[row] = pos.flatten().map_or(-1, |p| p as i64);
+                    o.validity.set_valid(row, pos.is_some());
+                }
+                o.validity.recount();
+            }
         }
-        o.validity.recount();
     }
     out
 }
 
-/// `includes(array, value)`: whether any element equals `value`.
+/// `indexOf(array, value[, from])`: the first equal element's position, or `-1`.
+pub fn array_index_of(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+    search(ctx, ins, false, DataType::I64)
+}
+
+/// `lastIndexOf(array, value[, from])`: the last equal element's position, or `-1`.
+pub fn array_last_index_of(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+    search(ctx, ins, true, DataType::I64)
+}
+
+/// `includes(array, value[, from])`: whether an element equals `value`.
 pub fn array_includes(ctx: &mut Ctx, ins: &[&Column]) -> Column {
-    let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Bool, len) {
-        return e;
-    }
-    let list = ins[0].list().unwrap();
-    let mut out = Column::alloc(ctx.pool, &DataType::Bool, len);
-    {
-        let o = out.bool_mut().unwrap();
-        for row in 0..len {
-            let value = needle_at(&list, ins[1], row);
-            let hit = value.as_ref().is_some_and(|v| {
-                (list.offsets[row] as usize..list.offsets[row + 1] as usize).any(|i| element_eq(list.child, i, v))
-            });
-            bits::set_row(o.values, row, hit);
-            o.validity.set_valid(row, value.is_some());
-        }
-        o.validity.recount();
-    }
-    out
+    search(ctx, ins, false, DataType::Bool)
 }
 
 /// `join(array, separator)`: every element rendered as `toString` would, a null element as nothing, as JS has it.
 pub fn array_join(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
-    if let Some(e) = short_circuit_empty(ins, &DataType::Str, len) {
-        return e;
-    }
     let list = ins[0].list().unwrap();
     let sep = side::var(ins[1]).unwrap();
     let child = list.child;

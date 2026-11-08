@@ -18,6 +18,7 @@
 mod bundle;
 pub mod bytes;
 mod dto;
+mod export;
 #[cfg(test)]
 mod fuzz_delta;
 #[cfg(test)]
@@ -29,6 +30,7 @@ mod fuzz_iceberg;
 #[cfg(test)]
 mod fuzz_loader;
 mod impact;
+mod import;
 mod links;
 mod load;
 mod merge;
@@ -52,13 +54,22 @@ pub use bundle::{
     unsafe_secret_name,
 };
 pub use dto::{
-    AnswerDto, AssignmentDto, BufferBytes, CompoundTypeDto, CustomPatternDto, DataTypeDto, DeliverRuleDto,
-    DestinationDto, DestinationKindDto, FetchBytes, FieldDto, FileConfig, GrokPatternDto, LeaderSecretDto,
-    LookupOutputDto, LookupSourceDto, LookupTableDto, MatchKindDto, MultiplicityDto, OnExceptionDto, PUBSUB_ENDPOINT,
-    ParserKindDto, PipelineDto, RenamePairDto, Requirement, RouteDto, SchemaDto, SchemaFieldDto, SecretRefDto,
-    SourceDto, SourceKindDto, SqlKind, SqlSourceDto, StartPositionDto, StepDto,
+    AnswerDto, AssignmentDto, AzureBlobDestinationDto, AzureBlobListSourceDto, AzureBlobQueueSourceDto, BufferBytes,
+    CompoundTypeDto, CustomPatternDto, DataTypeDto, DeliverRuleDto, DeltaDestinationDto, DestinationDto,
+    DestinationKindDto, ElasticReceiverSourceDto, ElasticsearchDestinationDto, EventHubsDestinationDto,
+    EventHubsSourceDto, FetchBytes, FieldDto, FileConfig, GcsDestinationDto, GcsListSourceDto, GcsPubSubSourceDto,
+    GrokPatternDto, HecReceiverSourceDto, HttpApiSourceDto, HttpDestinationDto, HttpReceiverSourceDto,
+    IcebergDestinationDto, KafkaDestinationDto, KafkaSourceDto, LeaderSecretDto, LogAnalyticsDestinationDto,
+    LogsSourceDto, LookupOutputDto, LookupSourceDto, LookupTableDto, MatchKindDto, MetricsSourceDto, MultiplicityDto,
+    NoUnknownKeys, OktaLogsSourceDto, OnExceptionDto, OtlpDestinationDto, OtlpReceiverSourceDto, PUBSUB_ENDPOINT,
+    ParserKindDto, PipelineDto, PrometheusDestinationDto, PrometheusReceiverSourceDto, RenamePairDto, Requirement,
+    RouteDto, S2sReceiverSourceDto, S3DestinationDto, S3ListSourceDto, S3SqsSourceDto, SchemaDto, SchemaFieldDto,
+    SecretRefDto, SftpDestinationDto, SftpSourceDto, SocketReceiverSourceDto, SourceDto, SourceKindDto,
+    SplunkHecDestinationDto, SqlKind, SqlSourceDto, StartPositionDto, StepDto, SyslogReceiverSourceDto,
 };
+pub use export::{Export, export};
 pub use impact::{Impact, Reached, Reason, pipeline_answers_differ, pipelines_touched};
+pub use import::{Credential, Keep, Listed, Objects, Part, PartId, Standing, describe};
 pub use links::{Connections, Kind, Links, Object};
 pub use load::{
     BundleAt, DeclaredAt, ItemRef, LoadError, RESERVED_KAFKA_PROPS, TLS_KAFKA_PROPS, ValidationError,
@@ -68,8 +79,8 @@ pub use load::{
 };
 pub use merge::{ObjectConflict, SectionMerge, Side, is_section_file, merge_section, text_merge_keeps_each_side};
 pub use sample::{
-    MAX_SAMPLE_RECORDS, SAMPLES_DIR, SampleDto, SampleSummary, list_samples, read_sample, record_source,
-    refuse_sample_size, sample_bytes, sample_path,
+    MAX_SAMPLE_RECORDS, SAMPLES_DIR, SampleDto, SampleSummary, list_samples, put_path, read_sample, record_source,
+    refuse_sample_size, sample_bytes, sample_columns, sample_path, sample_records,
 };
 pub use test::{
     Difference, RowsIn, TESTS_DIR, TestDto, TestSummary, Verdict, compare, list_tests, read_test, test_bytes, test_path,

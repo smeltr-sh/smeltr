@@ -18,6 +18,7 @@
     lockedBy,
     pipeline,
     mayCapture,
+    held,
     onpick,
     onadd,
     oncapture,
@@ -34,20 +35,27 @@
     /** The pipeline, whose sources a capture is offered from; empty before its first save. */
     pipeline: string;
     mayCapture: (source: Connected) => boolean;
+    /** The capture the leader holds for whoever is signed in, picked as `choice`: listed above the sources. */
+    held?: { choice: string; records: number };
     onpick: (id: string) => void;
-    /** Opens the dialog that makes a new sample. */
-    onadd: () => void;
-    /** Starts a capture at `source`. */
-    oncapture: (source: Connected) => void;
+    /** Opens the dialog that makes a new sample; absent for a viewer, who may not save one. */
+    onadd?: () => void;
+    /** Starts a capture at `source`; absent for whoever may not capture. */
+    oncapture?: (source: Connected) => void;
   } = $props();
 
   type Tab = 'saved' | 'capture';
-  const TABS: Tab[] = ['saved', 'capture'];
+  let tabs = $derived<Tab[]>(oncapture || held ? ['saved', 'capture'] : ['saved']);
   let open = $state(false);
   let tab = $state<Tab>('saved');
   let query = $state('');
 
-  let selectedName = $derived(samples.find((s) => s.id === selected)?.name ?? selected);
+  const HELD_NAME = 'Your capture';
+  let selectedName = $derived(
+    held?.choice === selected
+      ? HELD_NAME
+      : (samples.find((s) => s.id === selected)?.name ?? selected),
+  );
 
   // -- saved ---------------------------------------------------------------
 
@@ -65,7 +73,7 @@
 
   let sources = $state<Connected[]>([]);
   async function loadSources() {
-    if (!pipeline) return;
+    if (!pipeline || !oncapture) return;
     try {
       const res = await getConnections('pipeline', pipeline);
       sources = res.upstream.filter((c) => c.kind === 'source' && mayCapture(c));
@@ -111,20 +119,23 @@
   {/snippet}
   {#snippet children()}
     <div class="menu">
-      <SecondaryTabs tabs={TABS} active={tab} onselect={show} ariaLabel="Sample">
+      <SecondaryTabs {tabs} active={tab} onselect={show} ariaLabel="Sample">
         {#snippet label(t)}
           {t === 'saved' ? 'Saved' : 'Capture'}
-          <span class="dim">{t === 'saved' ? samples.length : sources.length}</span>
+          <span class="dim">{t === 'saved' ? samples.length : sources.length + (held ? 1 : 0)}</span
+          >
         {/snippet}
         {#snippet after()}
-          <button
-            type="button"
-            class="add"
-            onclick={() => {
-              open = false;
-              onadd();
-            }}>Paste or file</button
-          >
+          {#if onadd}
+            <button
+              type="button"
+              class="add"
+              onclick={() => {
+                open = false;
+                onadd();
+              }}>Paste or file</button
+            >
+          {/if}
         {/snippet}
       </SecondaryTabs>
 
@@ -150,7 +161,7 @@
                 onpick(s.id);
               }}
             >
-              <span class="name">
+              <span class="name ellipsis">
                 {#if lockers.length > 0}<span title={`Locked by the test ${lockers.join(', ')}`}
                     ><LockIcon /></span
                   >{/if}
@@ -174,6 +185,21 @@
           autofocus
         />
         <div class="list" role="listbox" aria-label="Sources">
+          {#if held && !query.trim()}
+            <button
+              type="button"
+              class="item"
+              role="option"
+              aria-selected={held.choice === selected}
+              onclick={() => {
+                open = false;
+                onpick(held.choice);
+              }}
+            >
+              <span class="name ellipsis">{HELD_NAME}</span>
+              <span class="dim">{count(held.records, 'record')} · not saved</span>
+            </button>
+          {/if}
           {#each foundSources as c (`${c.area}/${c.id}`)}
             <button
               type="button"
@@ -182,12 +208,15 @@
               aria-selected="false"
               onclick={() => {
                 open = false;
-                oncapture(c);
-              }}><span class="name mono">◉ {c.id}</span></button
+                oncapture?.(c);
+              }}><span class="name mono ellipsis">◉ {c.id}</span></button
             >
           {/each}
         </div>
-        <div class="foot dim">{foundSources.length} of {count(sources.length, 'source')}</div>
+        <!-- The count is of sources, so it says nothing beside a held capture when there are none. -->
+        {#if sources.length || !held}
+          <div class="foot dim">{foundSources.length} of {count(sources.length, 'source')}</div>
+        {/if}
       {/if}
     </div>
   {/snippet}
@@ -245,13 +274,6 @@
   .name {
     flex: 1;
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .mono {
-    font-family: var(--mono);
   }
 
   .foot {

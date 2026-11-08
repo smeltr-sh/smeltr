@@ -17,7 +17,7 @@ use std::rc::Rc;
 
 use crate::core::column::DataType;
 use crate::expr::ast::{Expr, ExprKind, Function, Region, Site, Span, Stmt, Value};
-use crate::expr::parse;
+use crate::expr::{parse, unpack};
 use crate::ops::{BinOp, UnOp};
 use crate::plan::{resolve, tree};
 
@@ -511,6 +511,19 @@ fn check_body(body: &[Stmt], what: &str) -> Result<(), InlineError> {
     Ok(())
 }
 
+/// The function and the arguments of a call named `name` when it calls `unpack` or `pack`, the value first, so
+/// `unpack(b, layout)` and `b.unpack(layout)` give the same. `None` for any other call.
+fn layout_call(name: &str, args: &[Expr], span: Span) -> Option<(&'static str, Vec<Expr>)> {
+    let layout = |n: &str| [unpack::UNPACK, unpack::PACK].into_iter().find(|f| *f == n);
+    if let Some(f) = layout(name) {
+        return (!args.is_empty()).then(|| (f, args.to_vec()));
+    }
+    let (recv, method) = name.rsplit_once('.')?;
+    let f = layout(method).filter(|_| recv != "Object")?;
+    let recv = Expr::new(span, ExprKind::Field(recv.to_string()));
+    Some((f, std::iter::once(recv).chain(args.iter().cloned()).collect()))
+}
+
 /// `e`, leaving a null in its place.
 fn take(e: &mut Expr) -> Expr {
     let null = Expr::new(e.span, ExprKind::Literal(Value::Null));
@@ -681,6 +694,10 @@ impl Inliner {
         let span = e.span;
         match &e.kind {
             ExprKind::Call { name, args } => {
+                if let Some((f, args)) = layout_call(name, args, span) {
+                    *e = self.layout_value(f, &args, span, out)?;
+                    return Ok(());
+                }
                 if let Some((name, args)) = self.callee(name, args, span) {
                     *e = self.call_value(&name, &args, span, out)?;
                     return Ok(());
@@ -841,6 +858,32 @@ impl Inliner {
         let (body, caller) = self.enter(name, &bound, args, span, out)?;
         let value = self.body_value(name, &body, bound.function.ret.as_ref(), span, out);
         self.leave(caller);
+        value
+    }
+
+    /// The value of a call of `unpack` or `pack`, named `f`: the function its layout is, called on its value.
+    fn layout_value(
+        &mut self,
+        f: &'static str,
+        args: &[Expr],
+        span: Span,
+        out: &mut Vec<Stmt>,
+    ) -> Result<Expr, InlineError> {
+        let function = if f == unpack::UNPACK {
+            unpack::function(args, span)
+        } else {
+            unpack::pack_function(args, span)
+        };
+        let function = function.map_err(|message| InlineError { span, message })?;
+        let id = self.tmp(f);
+        let bound = Bound {
+            function: Rc::new(function),
+            id: id.clone(),
+            scopes: None,
+        };
+        self.scopes.push(Scope::from([(id.clone(), bound)]));
+        let value = self.call_value(&id, &args[..1], span, out);
+        self.scopes.pop();
         value
     }
 

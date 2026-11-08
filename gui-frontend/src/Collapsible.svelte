@@ -48,7 +48,7 @@
     {#if fixed}
       <div class="toggle fixed">
         <span class="caret" aria-hidden="true"></span>
-        <span class="summary">{@render summary()}</span>
+        <span class="summary ellipsis">{@render summary()}</span>
       </div>
     {:else}
       <button
@@ -58,7 +58,7 @@
         onclick={() => (open = !open)}
       >
         <span class="caret"><ChevronIcon open={open ?? false} /></span>
-        <span class="summary">{@render summary()}</span>
+        <span class="summary ellipsis">{@render summary()}</span>
       </button>
     {/if}
     {#if actions}
@@ -123,9 +123,6 @@
 
   .summary {
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .actions {

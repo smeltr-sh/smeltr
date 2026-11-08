@@ -6,12 +6,14 @@
 
   The records come from a saved sample, so what a preview ran over has a
   name and is in the branch's history; the sample menu also saves a
-  capture or pasted records as one. The editor opens on the sample named in
+  capture or pasted records as one. Whoever may not save one runs over the
+  capture the leader holds for them instead, which nothing keeps. The editor opens on the sample named in
   the URL, else on the one this pipeline last ran over in this browser.
 -->
 <script lang="ts">
   import Button, { BUSY, SAVE_FIRST } from './Button.svelte';
   import StateMark from './StateMark.svelte';
+  import ExportDialog from './ExportDialog.svelte';
   import InlineError from './InlineError.svelte';
   import { tick, untrack } from 'svelte';
   import PipelineFindings from './PipelineFindings.svelte';
@@ -72,6 +74,11 @@
     listSamples,
     listTests,
     getSample,
+    myCapture,
+    capturedRecords,
+    heldChoice,
+    heldSession,
+    type CaptureStatus,
     proposeOnboard,
     SHARED_SCOPE,
     previewFailure,
@@ -89,6 +96,7 @@
     type LookupTableDto,
     type PipelineDto,
     type Connected,
+    type SampleDto,
     type SampleRecordDto,
     type SampleSummary,
     type TestSummary,
@@ -108,6 +116,8 @@
   import { hold, verdictFor, drop } from './edits';
   import type { ChangeRow } from './diff';
   import AddSampleDialog from './AddSampleDialog.svelte';
+  import CaptureFlow from './CaptureFlow.svelte';
+  import { heldCount } from './capture';
   import RecordsPane, { type PauseRun } from './RecordsPane.svelte';
   import { RECOMPUTE_MS } from './FindBox.svelte';
   import SampleMenu from './SampleMenu.svelte';
@@ -115,7 +125,7 @@
   import { mintPipelineId } from './ids';
   import { announcePipelineNames, newPipelineHash, withPipeline, type Making } from './nav';
   import { ago } from './time';
-  import { editable, mayCapture } from './access';
+  import { NOT_IN_DEMO, editable, mayCapture } from './access';
 
   let {
     id,
@@ -412,6 +422,7 @@
    * pipeline that was not removes it. */
   let existedAtBase = $state(true);
   let undoBusy = $state(false);
+  let exporting = $state(false);
   let undoError = $state('');
   let compares = 0;
 
@@ -676,6 +687,11 @@
   let selectedSample = $state('');
   let sampleRows: SampleRecordDto[] = $state([]);
   let capturing = $state(false);
+  /** The finished capture the leader holds for whoever is signed in, which a preview may run over unsaved. */
+  let held = $state<CaptureStatus | null>(null);
+  myCapture()
+    .then((res) => (held = res.capture?.done ? res.capture : null))
+    .catch(() => {});
   /** The dialog is open on its catalog, for a sample pasted, uploaded or captured. */
   let adding = $state(false);
 
@@ -685,6 +701,8 @@
   // the sample away from under whoever is fixing it. `result` still drives
   // the error itself -- this only decides what the grid below it shows.
   let lastGoodResult = $state<PreviewResult | null>(null);
+  /** The instant `lastGoodResult` ran at, and the steps it ran. */
+  let lastGoodRun: { at: number; steps: Step[] } = { at: 0, steps: [] };
   // The name boxes and the Fields menu offer the produced schemas' fields, each marked where the record holds it.
   const produced = provideProducedSchemas();
   $effect(() => {
@@ -713,35 +731,44 @@
   /** The sample the rows on screen came from. */
   let lastSample = $state('');
 
+  let samplesLoaded = $state(false);
   async function loadSamples() {
     try {
       const res = await listSamples();
       samples = res.samples;
-      // `sample` came in from the URL (a sample row's "Run in a pipeline"
-      // link, or a pipeline opened from the list while it held one). With
-      // none, or a stale one not on this branch, the editor opens on the
-      // last one this pipeline ran over, else on none: which records to run is
-      // the author's to choose.
-      lastUsed = readLastUsed();
-      const opening = sample || lastUsed;
-      if (!selectedSample && opening && samples.some((s) => s.id === opening)) {
-        await chooseSample(opening);
-      }
+      samplesLoaded = true;
     } catch (e) {
       reported(e);
     }
   }
-  // Samples and what a preview shows are production records, an editor's to read: a viewer is
-  // shown the steps alone.
-  if (!readOnly) loadSamples();
+  loadSamples();
+
+  // The pipeline, and the sample in the URL, that the opening choice was last
+  // made for. This component is reused across a route change, so each pipeline
+  // opened chooses afresh and does not keep the previous pipeline's choice.
+  let openedFor = '';
+  $effect(() => {
+    const opened = JSON.stringify([pipelineId, sample]);
+    if (!samplesLoaded || loading || !pipelineId || opened === openedFor) return;
+    openedFor = opened;
+    // `sample` came in from the URL (a sample row's "Run in a pipeline"
+    // link, or a pipeline opened from the list while it held one). With
+    // none, or a stale one not on this branch, the editor opens on the
+    // last one this pipeline ran over, else on none: which records to run is
+    // the author's to choose.
+    untrack(() => {
+      lastUsed = readLastUsed();
+      const opening = [sample, lastUsed].find((id) => id && samples.some((s) => s.id === id));
+      if (opening || selectedSample) void chooseSample(opening ?? '');
+    });
+  });
 
   // The tests of this pipeline, for the samples they lock. A failure only
   // leaves the padlocks off.
   let tests: TestSummary[] = $state([]);
-  if (!readOnly)
-    listTests()
-      .then((res) => (tests = res.tests))
-      .catch(() => {});
+  listTests()
+    .then((res) => (tests = res.tests))
+    .catch(() => {});
   let lockedBy = $derived.by(() => {
     const by = new Map<string, string[]>();
     for (const t of tests)
@@ -759,6 +786,34 @@
     if (making) await proposeFrom(sampleRows);
   }
 
+  /** Once the output is saved as a sample, the editor keeps running over the sample it had: the new one is for
+   * another pipeline. */
+  async function savedOutput() {
+    savingOutput = null;
+    await loadSamples();
+  }
+
+  /** Once the input is saved as a sample, the leader holds the capture no longer: the editor runs over the sample,
+   * which a test may lock. */
+  async function savedInput(id: string) {
+    savingInput = false;
+    held = null;
+    await loadSamples();
+    await chooseSample(id);
+  }
+
+  /** Run over a finished capture where the leader holds it, unsaved. Answers why it cannot. */
+  function useCapture(status: CaptureStatus): string | undefined {
+    held = status;
+    capturing = false;
+    adding = false;
+    captureAt = null;
+    void chooseSample(heldChoice(status.session)).then(() => {
+      if (making) void proposeFrom(sampleRows);
+    });
+    return undefined;
+  }
+
   // The sample a pipeline last ran over, remembered per pipeline in this browser: the editor
   // opens on it, and the sample menu lists it first.
   const sampleKey = (pipeline: string) => `smeltr-workspace-sample:${pipeline}`;
@@ -770,7 +825,8 @@
   async function chooseSample(id: string) {
     const pipeline = untrack(() => pipelineId);
     selectedSample = id;
-    if (id) {
+    const session = heldSession(id);
+    if (id && !session) {
       lastUsed = id;
       store(sampleKey(pipeline), id);
     }
@@ -781,6 +837,10 @@
     records?.clearFind();
     if (!id) return;
     try {
+      if (session) {
+        sampleRows = await capturedRecords(session);
+        return;
+      }
       const res = await getSample(id);
       if (res.sample) sampleRows = res.sample.records;
     } catch (e) {
@@ -835,6 +895,7 @@
       at,
       filter,
       attribution,
+      asSample,
     }: {
       /** Microseconds since the epoch. */
       at?: number;
@@ -842,6 +903,8 @@
       filter?: string;
       /** Which steps touched, dropped and failed each row. */
       attribution?: boolean;
+      /** Return the rows as a sample holds them too (`PreviewRequest.asSample`). */
+      asSample?: boolean;
     } = {},
   ): Promise<PreviewResult> {
     const held = unfinished.hold(stepsSubset);
@@ -865,6 +928,7 @@
       atMicros: at,
       filter,
       attribution,
+      asSample,
     });
     return { ...res, errors: res.errors.map(held.restore) };
   }
@@ -940,12 +1004,14 @@
     running = true;
     requestError = '';
     const sample = selectedSample;
+    const at = Date.now() * 1000;
     try {
-      const res = await fetchPreview(steps, sample, { attribution: true });
+      const ran = $state.snapshot(steps);
+      const res = await fetchPreview(ran, sample, { at, attribution: true });
       // A run of a sample put away while it ran answers for nothing on screen.
       if (sample !== selectedSample) return;
       result = res;
-      if (res.ok) lastGoodResult = res;
+      if (res.ok) [lastGoodResult, lastGoodRun] = [res, { at, steps: ran }];
       lastSample = sample;
     } catch (e) {
       requestError = unreported(e);
@@ -954,11 +1020,28 @@
     }
   }
 
-  // Locking a test needs a saved pipeline to attach it to, a sample to name,
-  // and a run that actually produced the output being locked.
+  // Locking a test needs a saved pipeline to attach it to, a saved sample to
+  // name, and a run that actually produced the output being locked.
   let canLockTest = $derived(
-    loadedId !== '' && selectedSample !== '' && result !== null && result.ok,
+    loadedId !== '' &&
+      selectedSample !== '' &&
+      !heldSession(selectedSample) &&
+      result !== null &&
+      result.ok,
   );
+
+  /** The output rows `rows` names, as a sample holds them. It re-runs the steps the grid ran, at the instant it ran
+   * them, so the rows are the ones on screen. */
+  async function outputOf(rows: Set<number>): Promise<Pick<SampleDto, 'columns' | 'records'>> {
+    const { at, steps: ran } = pause && pauseRun ? pauseRan : lastGoodRun;
+    const res = await fetchPreview(ran, lastSample, { at, asSample: true });
+    if (!res.ok || !res.as_sample) throw new Error(previewFailure(res));
+    const { columns, records, rows: of } = res.as_sample;
+    return { columns, records: records.filter((_, i) => rows.has(of[i])) };
+  }
+  let savingOutput = $state<Set<number> | null>(null);
+  /** The dialog is open to save the held capture, the input run over, as a sample. */
+  let savingInput = $state(false);
 
   function goLockTest() {
     location.hash = `#/build/tests/lock/${encodeURIComponent(loadedId)}/${encodeURIComponent(selectedSample)}`;
@@ -971,8 +1054,8 @@
   $effect(() => {
     const key = signature;
     void selectedSample;
-    // A viewer is shown the steps alone. A run before the scope's bundle loads finds the pipelines it calls missing.
-    if (readOnly || !autoRun || key === '' || !configRead) return;
+    // A run before the scope's bundle loads finds the pipelines it calls missing.
+    if (!autoRun || key === '' || !configRead) return;
     const timer = setTimeout(() => void run(), RECOMPUTE_MS);
     return () => clearTimeout(timer);
   });
@@ -1065,6 +1148,8 @@
   });
 
   let pauseRun = $state<PauseRun | null>(null);
+  /** The instant the pause ran at, and the steps it ran, up to and including its step. */
+  let pauseRan: { at: number; steps: Step[] } = { at: 0, steps: [] };
   let pauseLoading = $state(false);
   let errorsOpen = $state(false);
   /** A failed stage as the error chip names it. */
@@ -1090,6 +1175,7 @@
       // One instant for both sides, so the only difference between them is
       // the step.
       const at = Date.now() * 1000;
+      pauseRan = { at, steps: $state.snapshot(after) };
       const [beforeRes, afterRes] = await Promise.all([
         fetchPreview(before, sample, { at }),
         fetchPreview(after, sample, { at, attribution: true }),
@@ -1171,7 +1257,9 @@
         return;
       }
       if (!steps.length) {
-        if (p.of > 0) proposed = 'No format read these records, so they need a parser of your own.';
+        if (p.of > 0)
+          proposed =
+            'No format read nearly all of these records, so they need a parser of your own.';
         return;
       }
       const parser = steps.find((s) => s.type === 'parser');
@@ -1205,7 +1293,9 @@
   let proposalStep: Step | null = $state(null);
   let proposal = $state<FieldProposal | null>(null);
   let selectedSampleName = $derived(
-    samples.find((s) => s.id === selectedSample)?.name ?? selectedSample,
+    heldSession(selectedSample)
+      ? 'your capture'
+      : (samples.find((s) => s.id === selectedSample)?.name ?? selectedSample),
   );
 
   /** Writes `path` in the last open eval step, or in a new one at the end, and opens that step for its value. */
@@ -1442,7 +1532,15 @@
       >
         Raw JSON
       </button>
+      {#if id !== 'new'}
+        <Button
+          type="button"
+          disabled={isDirty ? SAVE_FIRST : ''}
+          onclick={() => (exporting = true)}>Export</Button
+        >
+      {/if}
     </header>
+    <ExportDialog open={exporting} pipeline={id} oncancel={() => (exporting = false)} />
     <InlineError message={undoError} />
 
     {#if id !== 'new'}<Connections kind="pipeline" {id} />{/if}
@@ -1478,7 +1576,7 @@
 
     <div
       class="columns"
-      style={`grid-template-columns: ${readOnly ? '1fr' : `${stepsWidth === null ? `minmax(${STEPS_MIN}px, 1fr)` : `${stepsWidth}px`} 11px minmax(0, 1fr)`}`}
+      style={`grid-template-columns: ${stepsWidth === null ? `minmax(${STEPS_MIN}px, 1fr)` : `${stepsWidth}px`} 11px minmax(0, 1fr)`}
     >
       <section class="editor">
         {#if proposed}<p class="proposed">{proposed}</p>{/if}
@@ -1539,76 +1637,93 @@
         <InlineError message={requestError} />
       </section>
 
-      {#if !readOnly}
-        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-        <div
-          class="divider"
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize the columns"
-          onpointerdown={drag}
-          ondblclick={snap}
-        >
-          <span class="grip" aria-hidden="true">&#8596;</span>
-        </div>
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <div
+        class="divider"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize the columns"
+        onpointerdown={drag}
+        ondblclick={snap}
+      >
+        <span class="grip" aria-hidden="true">&#8596;</span>
+      </div>
 
-        <RecordsPane
-          bind:this={records}
-          {pipelineId}
-          {steps}
-          {signature}
-          {sampleRows}
-          {selectedSample}
-          {lastSample}
-          {result}
-          {lastGoodResult}
-          {gridRows}
-          {attribution}
-          {stepNumbers}
-          {pause}
-          {pauseRun}
-          declared={{ before: sampleDeclared, after: runDeclared }}
-          canLock={canLockTest}
-          onlock={goLockTest}
-          onjump={(step) => (jumpToStepId = step.id)}
-          onassign={readOnly ? undefined : assignField}
-          preview={(steps, sample, filter) => fetchPreview(steps, sample, { filter })}
-        >
-          {#snippet head()}<InlineError message={proposeError} />{/snippet}
-          {#snippet sampleMenu()}
-            <SampleMenu
-              {samples}
-              selected={selectedSample}
-              {lastUsed}
-              records={selectedSample && lastGoodResult && lastSample === selectedSample
-                ? lastGoodResult.rows.length
-                : null}
-              {lockedBy}
-              pipeline={loadedId}
-              mayCapture={(c) => mayCapture(sourceTarget(c))}
-              onpick={chooseSample}
-              onadd={() => (adding = true)}
-              oncapture={(c) => {
-                captureAt = sourceTarget(c);
-                capturing = true;
-              }}
-            />
-          {/snippet}
-          {#snippet stage()}{@render stageChips()}{/snippet}
-        </RecordsPane>
-      {/if}
+      <RecordsPane
+        bind:this={records}
+        {pipelineId}
+        {steps}
+        {signature}
+        {sampleRows}
+        {selectedSample}
+        {lastSample}
+        {result}
+        {lastGoodResult}
+        {gridRows}
+        {attribution}
+        {stepNumbers}
+        {pause}
+        {pauseRun}
+        declared={{ before: sampleDeclared, after: runDeclared }}
+        canLock={canLockTest}
+        onlock={readOnly ? undefined : goLockTest}
+        onsaveoutput={readOnly ? undefined : (rows) => (savingOutput = rows)}
+        saveinput={!readOnly && held && heldSession(selectedSample) === held.session
+          ? { records: heldCount(held), onsave: () => (savingInput = true) }
+          : undefined}
+        onjump={(step) => (jumpToStepId = step.id)}
+        onassign={readOnly ? undefined : assignField}
+        preview={(steps, sample, filter) => fetchPreview(steps, sample, { filter })}
+      >
+        {#snippet head()}<InlineError message={proposeError} />{/snippet}
+        {#snippet sampleMenu()}
+          <SampleMenu
+            {samples}
+            selected={selectedSample}
+            {lastUsed}
+            records={selectedSample && lastGoodResult && lastSample === selectedSample
+              ? lastGoodResult.rows.length
+              : null}
+            {lockedBy}
+            pipeline={loadedId}
+            mayCapture={(c) => mayCapture(sourceTarget(c))}
+            held={held ? { choice: heldChoice(held.session), records: heldCount(held) } : undefined}
+            onpick={chooseSample}
+            onadd={readOnly ? undefined : () => (adding = true)}
+            oncapture={(c) => {
+              captureAt = sourceTarget(c);
+              capturing = true;
+            }}
+          />
+        {/snippet}
+        {#snippet stage()}{@render stageChips()}{/snippet}
+      </RecordsPane>
     </div>
     {#if !readOnly}
       <AddSampleDialog
-        open={capturing || adding}
-        start={capturing ? 'capture' : undefined}
+        open={capturing || adding || savingOutput !== null || savingInput}
+        start={capturing ? 'capture' : savingOutput ? 'output' : savingInput ? 'input' : undefined}
         target={captureAt ?? captureTarget}
+        onuse={useCapture}
+        output={savingOutput ? () => outputOf(savingOutput!) : undefined}
+        input={savingInput && held ? held : undefined}
         oncancel={() => {
           capturing = false;
           adding = false;
+          savingOutput = null;
+          savingInput = false;
           captureAt = null;
         }}
-        onsaved={captured}
+        onsaved={savingOutput ? savedOutput : savingInput ? savedInput : captured}
+      />
+    {:else if capturing && captureAt}
+      <CaptureFlow
+        target={captureAt}
+        onuse={useCapture}
+        oncancel={() => {
+          capturing = false;
+          captureAt = null;
+        }}
       />
     {/if}
   </SectionShell>

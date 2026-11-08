@@ -7,9 +7,14 @@ use std::net::{SocketAddr, TcpStream, UdpSocket};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use smeltr::io::framing::Framing;
+use smeltr::io::senders::{Fingerprint, Hash};
 use smeltr::io::{CommitMap, Source, SourceRecord, TopicPartition, build_source};
-use smeltr::plan::topology::{HeldSecrets, Receiver, ReceiverConfig, SourceKind, SyslogReceiverConfig, Tls, Transport};
+use smeltr::plan::topology::{
+    HeldSecrets, Receiver, ReceiverConfig, Senders, SocketReceiverConfig, SourceKind, Tls, Transport,
+};
 
+use crate::certs::{Authority, Issued};
 use crate::live;
 
 fn free_port() -> SocketAddr {
@@ -44,15 +49,18 @@ fn open(
     secrets: &HeldSecrets,
 ) -> Box<dyn Source> {
     let config = ReceiverConfig {
-        receiver: Receiver::Syslog(SyslogReceiverConfig {
+        receiver: Receiver::Syslog(SocketReceiverConfig {
             allow_from: allow_from.iter().map(|n| n.parse().unwrap()).collect(),
             transport,
+            framing: Framing::Syslog(None),
             ..Default::default()
         }),
         listen,
         tokens: Vec::new(),
         tls,
         max_request_bytes: max,
+        answer_after_delivery: false,
+        connections: Default::default(),
     };
     let registry = Arc::new(smeltr::metrics::Metrics::new());
     let subjects = Arc::new(smeltr::metrics::Subjects::default());
@@ -156,6 +164,21 @@ fn each_message_is_a_record_however_it_is_framed() {
     );
 }
 
+/// A receiver does not fail on control characters, nor on bytes that are not UTF-8 or are UTF-8 in a form longer
+/// than the shortest (RFC 5424, 6.3.3 and 6.4): an octet-counted message arrives byte for byte, for decoding to judge.
+#[test]
+fn a_message_arrives_byte_for_byte_whatever_it_holds() {
+    let at = free_port();
+    let mut source = receiver(at, &["127.0.0.1"], None, 1 << 16, &HeldSecrets::default());
+    let message: &[u8] =
+        b"<34>1 2026-10-11T22:14:15Z web-1 su - ID47 [x@32473 v=\"a\x00\x07\x1b\"] \xEF\xBB\xBF\xC0\xAF\xFF tail\n";
+    let mut frame = format!("{} ", message.len()).into_bytes();
+    frame.extend_from_slice(message);
+    TcpStream::connect(at).unwrap().write_all(&frame).unwrap();
+    let records = poll_until(&mut source, 1);
+    assert_eq!(records[0].bytes().unwrap(), message);
+}
+
 /// Receivers share one runtime, so stopping one ends only what is its own: its connections close and its port is
 /// soon free to bind again, while another receiver keeps taking messages. The stop is asked of the runtime, which
 /// closes the socket on its own thread, so a connection the receiver ended itself may close first.
@@ -219,63 +242,515 @@ fn a_sender_from_elsewhere_is_closed() {
     nothing_arrives(&mut source);
 }
 
-/// A message larger than the receiver reads closes the connection; what came before it is still delivered.
+/// A message larger than the receiver reads keeps its first bytes, up to the largest, and the rest of it is
+/// discarded (RFC 5424, 6.1); the connection reads on.
 #[test]
-fn a_message_too_large_closes_the_connection() {
+fn a_message_too_large_is_truncated_and_the_connection_reads_on() {
     let at = free_port();
     let mut source = receiver(at, &["127.0.0.1"], None, 1024, &HeldSecrets::default());
     let mut sender = TcpStream::connect(at).unwrap();
-    sender.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    sender.write_all(b"<13>Oct 11 22:14:15 web-1 app: small\n").unwrap();
+    let oversized = format!("<13>{}", "x".repeat(4096));
+    sender
+        .write_all(
+            format!(
+                "<13>Oct 11 22:14:15 web-1 app: small\n{} {oversized}{oversized}\n<13>Oct 11 22:14:16 web-1 app: after\n",
+                oversized.len()
+            )
+            .as_bytes(),
+        )
+        .unwrap();
     assert_eq!(
-        text(&poll_until(&mut source, 1)),
-        ["<13>Oct 11 22:14:15 web-1 app: small"]
+        text(&poll_until(&mut source, 4)),
+        [
+            "<13>Oct 11 22:14:15 web-1 app: small",
+            &oversized[..1024],
+            &oversized[..1024],
+            "<13>Oct 11 22:14:16 web-1 app: after"
+        ]
     );
-    let _ = sender.write_all(format!("4096 {}", "x".repeat(4096)).as_bytes());
-    assert!(closed(&mut sender));
-    nothing_arrives(&mut source);
 }
 
-/// Under a certificate the receiver serves TLS, as RFC 5425 has it.
-#[test]
-fn a_sender_is_served_over_tls() {
+/// A syslog receiver on `at`, admitting senders from `allow_from`, serving TLS with a certificate for `localhost` that
+/// `authority` issued over `key`, and, given `trusted`, requiring each sender's certificate to chain to it.
+fn tls_receiver(
+    at: SocketAddr,
+    allow_from: &[&str],
+    authority: &Authority,
+    key: rcgen::KeyPair,
+    trusted: Option<&Authority>,
+    max: usize,
+) -> Box<dyn Source> {
+    admitting(at, authority, key, trusted, Senders::default(), allow_from, max)
+}
+
+/// [`tls_receiver`], admitting `senders` by their certificates besides those `trusted` vouches for.
+fn admitting(
+    at: SocketAddr,
+    authority: &Authority,
+    key: rcgen::KeyPair,
+    trusted: Option<&Authority>,
+    senders: Senders,
+    allow_from: &[&str],
+    max: usize,
+) -> Box<dyn Source> {
     crate::certs::install_provider();
-    let authority = crate::certs::Authority::new("syslog tests");
-    let served = authority.issue("receiver", vec!["localhost".to_string()]);
+    let served = authority.issue_under("receiver", vec!["localhost".to_string()], key);
     let mut secrets = HeldSecrets::default();
     secrets.take([smeltr::heartbeat::SecretDelivery {
         name: "receiver".into(),
         version: 1,
-        value: served.key.clone(),
-        chain: Some(served.certificate.clone()),
+        value: served.key,
+        chain: Some(served.certificate),
     }]);
     let tls = Tls {
         of: "source \"receiver\"".into(),
         certificate: Some("receiver".into()),
-        authorities: None,
+        authorities: trusted.map(|trusted| trusted.pem.clone()),
         trust_public: false,
         side: smeltr::io::trust::Side::Server,
+        senders,
     };
-    let at = free_port();
-    let mut source = receiver(at, &["127.0.0.1"], Some(tls), 1 << 16, &secrets);
+    receiver(at, allow_from, Some(tls), max, &secrets)
+}
 
+/// How a test's sender speaks TLS: the versions and suites it offers, and the certificate it presents.
+struct Sending<'a> {
+    versions: &'a [&'static rustls::SupportedProtocolVersion],
+    /// The one suite it offers, or every one the process offers.
+    suite: Option<rustls::CipherSuite>,
+    certificate: Option<&'a Issued>,
+}
+
+impl Default for Sending<'_> {
+    fn default() -> Self {
+        Sending {
+            versions: rustls::DEFAULT_VERSIONS,
+            suite: None,
+            certificate: None,
+        }
+    }
+}
+
+type TlsSender = rustls::StreamOwned<rustls::ClientConnection, TcpStream>;
+
+/// How a sender speaks TLS, trusting `authority` for the receiver's certificate. It offers early data wherever it
+/// resumes a session.
+fn client_config(authority: &Authority, sending: Sending) -> Arc<rustls::ClientConfig> {
+    use rustls::pki_types::pem::PemObject;
+
+    let mut provider = (*smeltr::crypto::in_use()).clone();
+    if let Some(suite) = sending.suite {
+        provider.cipher_suites.retain(|offered| offered.suite() == suite);
+    }
     let mut roots = rustls::RootCertStore::empty();
     for root in crate::certs::certificates(&authority.pem) {
         roots.add(root).unwrap();
     }
-    let config = rustls::ClientConfig::builder_with_provider(smeltr::crypto::in_use())
-        .with_safe_default_protocol_versions()
+    let builder = rustls::ClientConfig::builder_with_provider(Arc::new(provider))
+        .with_protocol_versions(sending.versions)
         .unwrap()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    let connection = rustls::ClientConnection::new(Arc::new(config), "localhost".try_into().unwrap()).unwrap();
-    let mut sender = rustls::StreamOwned::new(connection, TcpStream::connect(at).unwrap());
-    let message = "<34>1 2026-10-11T22:14:15Z web-1 su - ID47 - over tls";
-    sender
-        .write_all(format!("{} {message}", message.len()).as_bytes())
-        .unwrap();
+        .with_root_certificates(roots);
+    let mut config = match sending.certificate {
+        None => builder.with_no_client_auth(),
+        Some(issued) => builder
+            .with_client_auth_cert(
+                crate::certs::certificates(&issued.certificate),
+                rustls::pki_types::PrivateKeyDer::from_pem_slice(issued.key.as_bytes()).unwrap(),
+            )
+            .unwrap(),
+    };
+    config.enable_early_data = true;
+    Arc::new(config)
+}
+
+/// A sender connected to `at` as `config` has it, its handshake done.
+fn connect(at: SocketAddr, config: &Arc<rustls::ClientConfig>) -> std::io::Result<TlsSender> {
+    let connection = rustls::ClientConnection::new(config.clone(), "localhost".try_into().unwrap()).unwrap();
+    handshake(at, connection)
+}
+
+/// `connection` over a new TCP connection to `at`, its handshake done.
+fn handshake(at: SocketAddr, mut connection: rustls::ClientConnection) -> std::io::Result<TlsSender> {
+    let mut tcp = TcpStream::connect(at).unwrap();
+    tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    while connection.is_handshaking() {
+        connection.complete_io(&mut tcp)?;
+    }
+    Ok(rustls::StreamOwned::new(connection, tcp))
+}
+
+/// A sender connected to `at` over TLS, trusting `authority` for the receiver's certificate, its handshake done.
+fn tls_sender(at: SocketAddr, authority: &Authority, sending: Sending) -> std::io::Result<TlsSender> {
+    connect(at, &client_config(authority, sending))
+}
+
+/// Whether `result` failed on a TLS alert from the receiver.
+fn alerted<T>(result: &std::io::Result<T>) -> bool {
+    let Err(e) = result else {
+        return false;
+    };
+    matches!(
+        e.get_ref().and_then(|inner| inner.downcast_ref::<rustls::Error>()),
+        Some(rustls::Error::AlertReceived(_))
+    )
+}
+
+/// `message` framed by its octet count (RFC 5425, 4.3).
+fn counted(message: &str) -> String {
+    format!("{} {message}", message.len())
+}
+
+/// Under a certificate the receiver serves TLS, as RFC 5425 has it: TLS 1.3 to a sender offering both, as RFC 9662
+/// has it preferred, and TLS 1.2 with the suite RFC 9662 has every implementation offer,
+/// `TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256`, which needs an RSA key.
+#[test]
+fn a_sender_is_served_tls_1_3_first_and_tls_1_2() {
+    let authority = Authority::new("syslog tests");
+    let rsa = rcgen::KeyPair::generate_rsa_for(&rcgen::PKCS_RSA_SHA256, rcgen::RsaKeySize::_2048).unwrap();
+    let at = free_port();
+    let mut source = tls_receiver(at, &["127.0.0.1"], &authority, rsa, None, 1 << 16);
+
+    let tls13 = Sending {
+        versions: &[&rustls::version::TLS13],
+        ..Default::default()
+    };
+    let tls12 = Sending {
+        versions: &[&rustls::version::TLS12],
+        suite: Some(rustls::CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256),
+        ..Default::default()
+    };
+    for (sending, version) in [
+        (Sending::default(), rustls::ProtocolVersion::TLSv1_3),
+        (tls13, rustls::ProtocolVersion::TLSv1_3),
+        (tls12, rustls::ProtocolVersion::TLSv1_2),
+    ] {
+        let mut sender = tls_sender(at, &authority, sending).expect("the handshake completes");
+        assert_eq!(sender.conn.protocol_version(), Some(version));
+        let message = format!("<34>1 2026-10-11T22:14:15Z web-1 su - ID47 - over {version:?}");
+        sender.write_all(counted(&message).as_bytes()).unwrap();
+        sender.flush().unwrap();
+        assert_eq!(text(&poll_until(&mut source, 1)), [message]);
+    }
+}
+
+/// Under TLS a receiver reads octet-counted frames whatever the TLS records cut them into: many to a record, one
+/// across records, newlines within one; and messages of 2048 octets, which every receiver must take, and of 8192,
+/// which it should (RFC 5425, 4.3.1).
+#[test]
+fn octet_counted_frames_are_read_across_tls_records() {
+    let authority = Authority::new("syslog tests");
+    let at = free_port();
+    let mut source = tls_receiver(
+        at,
+        &["127.0.0.1"],
+        &authority,
+        rcgen::KeyPair::generate().unwrap(),
+        None,
+        1 << 16,
+    );
+    let mut sender = tls_sender(at, &authority, Sending::default()).unwrap();
+
+    let header = "<165>1 2026-10-11T22:14:15.003Z fw01 sshd 4123 AUTH - ";
+    let sized = |octets: usize| format!("{header}{}", "x".repeat(octets - header.len()));
+    let messages = [
+        "<34>1 2026-10-11T22:14:15Z web-1 su - ID47 - first".to_string(),
+        "<34>1 2026-10-11T22:14:15Z web-1 su - ID47 - holds\na newline\r\nand more".to_string(),
+        sized(2048),
+        sized(8192),
+        "<34>1 2026-10-11T22:14:16Z web-1 su - ID47 - last".to_string(),
+    ];
+    let stream: String = messages.iter().map(|m| counted(m)).collect();
+    // The first two frames go in one record; the rest is split mid-length and mid-message.
+    let first_two = counted(&messages[0]).len() + counted(&messages[1]).len();
+    for piece in [
+        &stream[..first_two],
+        &stream[first_two..first_two + 2],
+        &stream[first_two + 2..first_two + 1500],
+        &stream[first_two + 1500..],
+    ] {
+        sender.write_all(piece.as_bytes()).unwrap();
+        sender.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(text(&poll_until(&mut source, messages.len())), messages);
+}
+
+/// With trusted authorities, a receiver admits only a sender whose certificate chains to one of them (RFC 5425,
+/// 4.2.1), and refuses any other with a TLS alert (RFC 5425, 5): one with no certificate, or one under another
+/// authority. Nothing a refused sender sent is read.
+#[test]
+fn a_receiver_with_trusted_authorities_admits_only_their_senders() {
+    let authority = Authority::new("syslog tests");
+    let senders = Authority::new("syslog senders");
+    let strangers = Authority::new("syslog strangers");
+    let at = free_port();
+    let mut source = tls_receiver(
+        at,
+        &["127.0.0.1"],
+        &authority,
+        rcgen::KeyPair::generate().unwrap(),
+        Some(&senders),
+        1 << 16,
+    );
+    let message = counted("<34>1 2026-10-11T22:14:15Z web-1 su - ID47 - refused");
+
+    let stranger = strangers.issue("stranger", vec!["stranger".to_string()]);
+    for certificate in [None, Some(&stranger)] {
+        let sending = Sending {
+            certificate,
+            ..Default::default()
+        };
+        // Under TLS 1.3 the sender's handshake ends before the receiver refuses its certificate, and the alert comes
+        // after it.
+        let refused = tls_sender(at, &authority, sending).and_then(|mut sender| {
+            sender.write_all(message.as_bytes())?;
+            sender.flush()?;
+            sender.read(&mut [0; 1])
+        });
+        assert!(
+            alerted(&refused),
+            "a sender with a certificate ({}) was not refused with an alert: {refused:?}",
+            certificate.is_some()
+        );
+    }
+    nothing_arrives(&mut source);
+
+    let vouched = senders.issue("sender", vec!["sender".to_string()]);
+    let mut sender = tls_sender(
+        at,
+        &authority,
+        Sending {
+            certificate: Some(&vouched),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let message = "<34>1 2026-10-11T22:14:15Z web-1 su - ID47 - vouched for";
+    sender.write_all(counted(message).as_bytes()).unwrap();
     sender.flush().unwrap();
     assert_eq!(text(&poll_until(&mut source, 1)), [message]);
+}
+
+/// A certificate signed by its own key, as a sender with no authority of its own presents.
+fn self_signed(common_name: &str) -> Issued {
+    let certified = rcgen::generate_simple_self_signed(vec![common_name.to_string()]).unwrap();
+    Issued {
+        certificate: certified.cert.pem(),
+        key: certified.signing_key.serialize_pem(),
+    }
+}
+
+/// `issued`'s fingerprint, taken with `hash`.
+fn fingerprint(hash: Hash, issued: &Issued) -> Fingerprint {
+    Fingerprint::of(hash, &crate::certs::certificates(&issued.certificate)[0])
+}
+
+/// Whether a sender presenting `certificate` is refused with an alert: under TLS 1.3 its handshake ends before the
+/// receiver refuses its certificate, and the alert comes after it.
+fn refused(at: SocketAddr, authority: &Authority, certificate: Option<&Issued>) -> bool {
+    let sending = Sending {
+        certificate,
+        ..Default::default()
+    };
+    let message = counted("<34>1 2026-10-11T22:14:15Z web-1 su - ID47 - refused");
+    alerted(&tls_sender(at, authority, sending).and_then(|mut sender| {
+        sender.write_all(message.as_bytes())?;
+        sender.flush()?;
+        sender.read(&mut [0; 1])
+    }))
+}
+
+/// Whether a sender presenting `certificate` is read.
+fn read(at: SocketAddr, authority: &Authority, certificate: &Issued, source: &mut Box<dyn Source>) -> bool {
+    let sending = Sending {
+        certificate: Some(certificate),
+        ..Default::default()
+    };
+    let message = "<34>1 2026-10-11T22:14:15Z web-1 su - ID47 - admitted";
+    let Ok(mut sender) = tls_sender(at, authority, sending) else {
+        return false;
+    };
+    sender.write_all(counted(message).as_bytes()).unwrap();
+    sender.flush().unwrap();
+    text(&poll_until(source, 1)) == [message]
+}
+
+/// A receiver admits a sender named by its certificate's fingerprint, whoever issued it, by either hash RFC 5425
+/// (4.2.1, 5.1) has it take, and refuses one it does not name in the handshake.
+#[test]
+fn a_receiver_admits_a_sender_by_its_certificates_fingerprint() {
+    let authority = Authority::new("syslog tests");
+    let own = self_signed("sender");
+    let issued = Authority::new("syslog senders").issue("sender", vec!["sender".to_string()]);
+    let stranger = self_signed("stranger");
+    let at = free_port();
+    let senders = Senders {
+        fingerprints: vec![fingerprint(Hash::Sha256, &own), fingerprint(Hash::Sha1, &issued)],
+        names: Vec::new(),
+    };
+    let key = rcgen::KeyPair::generate().unwrap();
+    let mut source = admitting(at, &authority, key, None, senders, &["127.0.0.1"], 1 << 16);
+
+    for certificate in [None, Some(&stranger)] {
+        assert!(refused(at, &authority, certificate), "{}", certificate.is_some());
+    }
+    nothing_arrives(&mut source);
+    assert!(read(at, &authority, &own, &mut source));
+    assert!(read(at, &authority, &issued, &mut source));
+}
+
+/// A receiver that names hosts admits, of the senders its authorities vouch for, only one issued to a host it names:
+/// by the certificate's dNSName, or its common name where it has none, a `*` standing for one left-most label (RFC
+/// 5425, 5.2).
+#[test]
+fn a_receiver_naming_hosts_admits_only_senders_issued_to_one() {
+    let authority = Authority::new("syslog tests");
+    let vouching = Authority::new("syslog senders");
+    let at = free_port();
+    let senders = Senders {
+        fingerprints: Vec::new(),
+        names: vec!["*.example.com".into(), "Exact.Example.org".into()],
+    };
+    let key = rcgen::KeyPair::generate().unwrap();
+    let mut source = admitting(at, &authority, key, Some(&vouching), senders, &["127.0.0.1"], 1 << 16);
+
+    let unnamed = [
+        vouching.issue("a.example.com", vec!["example.com".into(), "a.b.example.com".into()]),
+        vouching.issue("x", vec!["a.example.org".into()]),
+        // Named, but not by an authority it trusts.
+        Authority::new("syslog strangers").issue("x", vec!["a.example.com".into()]),
+    ];
+    for certificate in &unnamed {
+        assert!(refused(at, &authority, Some(certificate)));
+    }
+    nothing_arrives(&mut source);
+    for named in [
+        vouching.issue("x", vec!["other.org".into(), "a.example.com".into()]),
+        vouching.issue("x", vec!["exact.example.org".into()]),
+        vouching.issue("b.example.com", Vec::new()),
+    ] {
+        assert!(read(at, &authority, &named, &mut source));
+    }
+}
+
+/// Syslog has no answer, so a receiver sends a sender nothing; and it answers a sender's `close_notify` with its own
+/// (RFC 5425, 4.4), so the sender sees a clean end and not a truncation. What came before it is read.
+#[test]
+fn a_receiver_answers_close_notify_with_its_own() {
+    let authority = Authority::new("syslog tests");
+    let at = free_port();
+    let mut source = tls_receiver(
+        at,
+        &["127.0.0.1"],
+        &authority,
+        rcgen::KeyPair::generate().unwrap(),
+        None,
+        1 << 16,
+    );
+    let mut sender = tls_sender(at, &authority, Sending::default()).unwrap();
+    let message = "<34>1 2026-10-11T22:14:15Z web-1 su - ID47 - before closing";
+    sender.write_all(counted(message).as_bytes()).unwrap();
+    sender.flush().unwrap();
+    assert_eq!(text(&poll_until(&mut source, 1)), [message]);
+
+    sender.sock.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+    let mut byte = [0; 1];
+    let quiet = sender.read(&mut byte);
+    assert!(
+        matches!(&quiet, Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)),
+        "the receiver sent a sender something: {quiet:?}"
+    );
+
+    sender.conn.send_close_notify();
+    sender.flush().unwrap();
+    sender.sock.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let ended = sender.read(&mut byte);
+    assert!(
+        matches!(ended, Ok(0)),
+        "the receiver ended without close_notify: {ended:?}"
+    );
+}
+
+/// A receiver that closes a connection itself, here on a frame it does not read, closes it with `close_notify`
+/// (RFC 5425, 4.4).
+#[test]
+fn a_receiver_closing_a_connection_sends_close_notify() {
+    let authority = Authority::new("syslog tests");
+    let at = free_port();
+    let mut source = tls_receiver(
+        at,
+        &["127.0.0.1"],
+        &authority,
+        rcgen::KeyPair::generate().unwrap(),
+        None,
+        2048,
+    );
+    let mut sender = tls_sender(at, &authority, Sending::default()).unwrap();
+    let _ = sender.write_all(b"12a <13>abcdefgh").and_then(|()| sender.flush());
+    let mut byte = [0; 1];
+    let ended = sender.read(&mut byte);
+    assert!(
+        matches!(ended, Ok(0)),
+        "the receiver ended without close_notify: {ended:?}"
+    );
+    nothing_arrives(&mut source);
+}
+
+/// A receiver takes no early data (RFC 9662, 6): a sender resuming a session may not send messages before its
+/// handshake ends.
+#[test]
+fn a_receiver_takes_no_early_data() {
+    let authority = Authority::new("syslog tests");
+    let at = free_port();
+    let mut source = tls_receiver(
+        at,
+        &["127.0.0.1"],
+        &authority,
+        rcgen::KeyPair::generate().unwrap(),
+        None,
+        1 << 16,
+    );
+    let config = client_config(&authority, Sending::default());
+    let mut first = connect(at, &config).unwrap();
+    let message = "<34>1 2026-10-11T22:14:15Z web-1 su - ID47 - first";
+    first.write_all(counted(message).as_bytes()).unwrap();
+    first.flush().unwrap();
+    assert_eq!(text(&poll_until(&mut source, 1)), [message]);
+    // Takes the tickets the receiver issued after the handshake.
+    first.sock.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+    let _ = first.read(&mut [0; 1]);
+
+    let mut connection = rustls::ClientConnection::new(config.clone(), "localhost".try_into().unwrap()).unwrap();
+    let early = counted("<34>1 2026-10-11T22:14:16Z web-1 su - ID47 - early");
+    let offered = connection
+        .early_data()
+        .map(|mut data| data.write(early.as_bytes()).unwrap());
+    let resumed = handshake(at, connection).unwrap();
+    assert_eq!(resumed.conn.handshake_kind(), Some(rustls::HandshakeKind::Resumed));
+    assert!(
+        !resumed.conn.is_early_data_accepted(),
+        "the receiver accepted {offered:?} bytes of early data"
+    );
+    nothing_arrives(&mut source);
+}
+
+/// A sender from a network the receiver does not admit is closed before its TLS handshake ends, so it is shown
+/// nothing, not even the receiver's certificate.
+#[test]
+fn a_sender_from_elsewhere_is_refused_before_tls() {
+    let authority = Authority::new("syslog tests");
+    let at = free_port();
+    let mut source = tls_receiver(
+        at,
+        &["10.0.0.0/8"],
+        &authority,
+        rcgen::KeyPair::generate().unwrap(),
+        None,
+        1 << 16,
+    );
+    let refused = tls_sender(at, &authority, Sending::default());
+    assert!(refused.is_err(), "a sender from elsewhere completed its handshake");
+    nothing_arrives(&mut source);
 }
 
 /// util-linux `logger`, as a host's own syslog client sends over TCP: RFC 5424 with octet counting, and RFC 3164
@@ -346,6 +821,32 @@ fn each_datagram_is_a_record() {
     assert!(records.iter().all(|r| &*r.topic == "127.0.0.1"), "named by the sender");
 }
 
+/// A receiver reads a datagram of every size RFC 5426 (3.2) asks of it: 480 octets over IPv4 and 1180 over IPv6,
+/// which it must, and 2048 over either, which it should; and the largest a datagram can hold over IPv4.
+#[test]
+fn datagrams_of_every_size_rfc_5426_asks_for_are_read() {
+    let header = "<165>1 2026-10-11T22:14:15.003Z fw01 sshd 4123 AUTH - ";
+    let sized = |octets: usize| format!("{header}{}", "x".repeat(octets - header.len()));
+    let families = [("127.0.0.1", &[480, 2048, 65507][..]), ("::1", &[1180, 2048][..])];
+    // A host without IPv6 loopback checks IPv4 alone.
+    let families = &families[..if crate::harness::receiver::ipv6() { 2 } else { 1 }];
+    for &(loopback, sizes) in families {
+        let at = SocketAddr::new(loopback.parse().unwrap(), free_port_for_both().port());
+        let mut source = udp_receiver(at, &[loopback], 1 << 16);
+        let sender = UdpSocket::bind(SocketAddr::new(loopback.parse().unwrap(), 0)).unwrap();
+        sender.connect(at).unwrap();
+        let messages: Vec<String> = sizes.iter().map(|&octets| sized(octets)).collect();
+        for message in &messages {
+            sender.send(message.as_bytes()).unwrap();
+        }
+        assert_eq!(
+            text(&poll_until(&mut source, messages.len())),
+            messages,
+            "over {loopback}"
+        );
+    }
+}
+
 /// A datagram from a network the receiver does not admit becomes nothing.
 #[test]
 fn a_datagram_from_elsewhere_is_dropped() {
@@ -357,19 +858,19 @@ fn a_datagram_from_elsewhere_is_dropped() {
     nothing_arrives(&mut source);
 }
 
-/// A datagram larger than the receiver reads is dropped alone; the sender's next is still read.
+/// A datagram larger than the receiver reads keeps its first bytes, up to the largest (RFC 5424, 6.1).
 #[test]
-fn a_datagram_too_large_is_dropped() {
+fn a_datagram_too_large_is_truncated() {
     let at = free_port_for_both();
     let mut source = udp_receiver(at, &["127.0.0.1"], 1024);
     let sender = datagram_sender(at);
-    sender.send("x".repeat(4096).as_bytes()).unwrap();
+    let oversized = format!("<13>{}", "x".repeat(4096));
+    sender.send(oversized.as_bytes()).unwrap();
     sender.send(b"<13>Oct 11 22:14:15 web-1 app: small").unwrap();
     assert_eq!(
-        text(&poll_until(&mut source, 1)),
-        ["<13>Oct 11 22:14:15 web-1 app: small"]
+        text(&poll_until(&mut source, 2)),
+        [&oversized[..1024], "<13>Oct 11 22:14:15 web-1 app: small"]
     );
-    nothing_arrives(&mut source);
 }
 
 /// Nothing makes a sender of datagrams wait, so one that arrives while the source is blocked is dropped and counted

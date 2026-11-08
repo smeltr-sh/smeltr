@@ -34,10 +34,13 @@ pub mod envelope;
 pub mod forget;
 pub mod git;
 pub mod holds;
+pub mod housekeeping;
 pub mod listen;
 pub mod lock;
+pub mod log_levels;
 pub mod lookups;
 pub mod map;
+pub mod marks;
 pub mod measurements;
 pub mod model;
 pub mod oidc;
@@ -80,7 +83,7 @@ use store::{Issued, Kept, Spend, Store, StoreError};
 
 #[derive(Clone)]
 pub struct AppState {
-    pub store: Arc<dyn Store>,
+    pub store: Arc<Store>,
     pub registry: Arc<Registry>,
     /// Capture sessions in flight. Empty whenever nobody is debugging.
     pub captures: Arc<capture::Captures>,
@@ -109,6 +112,8 @@ pub struct AppState {
     pub alerts: Arc<alerts::Alerts>,
     /// What operators have asked of workers and the workers have not yet taken.
     pub directives: Arc<directives::Directives>,
+    /// The levels the fleet keeps its lines at, as stored (`log_levels`).
+    pub log_levels: Arc<log_levels::Held>,
 }
 
 /// What each group's bundle quotes, remembered per commit. The answer changes only when the bundle does, so it is
@@ -128,7 +133,7 @@ pub struct Quoted {
 }
 
 /// The newest version of every certificate in the list, by name.
-pub fn certificate_versions(store: &dyn Store) -> Result<std::collections::HashMap<String, i64>, String> {
+pub fn certificate_versions(store: &Store) -> Result<std::collections::HashMap<String, i64>, String> {
     Ok((store.list_secrets().map_err(|e| e.to_string())?.into_iter())
         .filter(|r| r.certificate)
         .filter_map(|r| r.current().map(|v| v.version).map(|v| (r.name, v)))
@@ -214,19 +219,19 @@ fn entitled(data_dir: &std::path::Path, cache: &Entitlements, group_id: &str) ->
     let Some(head) = git::deployed(&repo) else {
         return Quoted::default();
     };
-    if let Some((at, names)) = cache.0.lock().unwrap().get(group_id)
+    if let Some((at, names)) = cache.0.lock().unwrap_or_else(|e| e.into_inner()).get(group_id)
         && at == &head
     {
         return names.clone();
     }
     let names = secrets_at(&repo, &head, group_id).unwrap_or_else(|e| {
-        tracing::debug!(target: "leader.bundle_unentitled", group = %group_id, commit = %head, error = %e, "a group's bundle does not load at the deployed commit, so it is entitled to no secret");
+        tracing::debug!(name: "bundle_unentitled", target: "deploy", group = %group_id, commit = %head, error = %e, "a group's bundle does not load at the deployed commit, so it is entitled to no secret");
         Default::default()
     });
     cache
         .0
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(group_id.to_string(), (head, names.clone()));
     names
 }
@@ -256,7 +261,7 @@ fn secrets_at(repo: &std::path::Path, rev: &str, group_id: &str) -> Result<Quote
 /// The purposes the newest version of the certificate `name` has that `chain` lacks. A connector naming `name` may
 /// present it from any side it is usable from, and a worker refuses a restart onto a version it cannot present and
 /// keeps running the old one, so a new version keeps every purpose the newest has.
-fn purposes_lost(store: &dyn Store, name: &str, chain: &str) -> Result<Vec<&'static str>, StoreError> {
+fn purposes_lost(store: &Store, name: &str, chain: &str) -> Result<Vec<&'static str>, StoreError> {
     use crate::io::trust::{Side, refuse_unless_usable};
     let Some((_, newest)) = newest_chain(store, name)? else {
         return Ok(Vec::new());
@@ -328,6 +333,18 @@ async fn heartbeat(
     // every heartbeat") -- reconciling the fact clock while the timing is exact, rather than waiting for someone to
     // ask for `/api/warnings`, since nothing else has a source of "now" if a fact starts and clears between two reads.
     let now_ms = warnings::now_millis();
+    tracing::trace!(
+        name: "received", target: "heartbeats",
+        worker = %worker_id,
+        group = %req.group_id,
+        threads = req.threads.len(),
+        logs = req.logs.len(),
+        commit = req.commit.as_deref(),
+        stopping = req.stopping,
+        "a worker's heartbeat arrived"
+    );
+    // Kept for the answer's line: the id itself moves into the blocking work below.
+    let answering = worker_id.clone();
     let threads = std::mem::take(&mut req.threads);
     let reported_group = threads.first().map(|t| t.group_id.clone());
     let stopping = req.stopping;
@@ -382,7 +399,7 @@ async fn heartbeat(
         // whose report never landed reads as silent on `/api/health` while still being answered here.
         match recorded {
             Err(e) => tracing::warn!(
-                target: "leader.heartbeat_not_recorded",
+                name: "not_recorded", target: "heartbeats",
                 subject = %worker_id,
                 error = %e,
                 "a heartbeat could not be recorded, so this worker's threads stay as they were until the next one"
@@ -432,34 +449,24 @@ async fn heartbeat(
     // One blocking hop for all: each reads the repository or the store, and none belongs on the async runtime's
     // threads. A certificate is entitled at its newest version, resolved on every beat so that a new version
     // reaches the fleet on the next one.
-    let checks = state.deploy_checks.clone();
     let store = state.store.clone();
-    let (deployed, pointer, entitled, findings) = tokio::task::spawn_blocking(move || {
-        // Read once, so the groups and the commit a worker is cued with are of the same deploy.
-        let pointer = deployed_pointer(&data_dir);
+    let (pointer, entitled) = tokio::task::spawn_blocking(move || {
         (
-            groups_in(&data_dir, pointer.as_deref()),
-            pointer,
+            deployed_pointer(&data_dir),
             at_newest(
                 &entitled(&data_dir, &entitlements, &for_group),
                 // Unreadable, a beat entitles no certificate and the next one tries again.
-                &certificate_versions(&*store).unwrap_or_else(|e| {
+                &certificate_versions(&store).unwrap_or_else(|e| {
                     if let Some(error) = relog(&CERTIFICATES_UNREADABLE, e) {
-                        tracing::warn!(target: "leader.certificates_unreadable", subject = %for_group, error, "the certificate versions could not be read, so this heartbeat is answered with none");
+                        tracing::warn!(name: "unreadable", target: "certificates", subject = %for_group, error, "the certificate versions could not be read, so this heartbeat is answered with none");
                     }
                     Default::default()
                 }),
             ),
-            checks.findings(&data_dir),
         )
     })
     .await
     .unwrap_or_default();
-    // Decided before the cutover below, not after. The bundle this beat can still be handed holds both roots;
-    // the one the cutover leaves behind holds only the incoming root, and a worker that has not taken it yet
-    // cannot verify the leader that would hand it over. So the worker whose beat carries the deadline past gets
-    // the overlap it was promised, and the shortened bundle on the beat after.
-    //
     // The one moment a replaced authority can reach a worker: it asks, over a connection its own token
     // authenticates and its current authority verified.
     let authority = authority_to_hand(&state.data_dir, &req.authority_fingerprints, req.takes_authority);
@@ -469,38 +476,6 @@ async fn heartbeat(
     if stopping && kind == store::WorkerKind::Ephemeral {
         forget::forget(&state, &worker_id).await;
     }
-    // The leader's only periodic tick, so the look for ephemeral workers gone without a word rides it too.
-    forget::sweep(&state, now_ms).await;
-    if state.registry.prune_due(now_ms, PRUNE_PROGRESS_EVERY) {
-        let state = state.clone();
-        tokio::spawn(async move {
-            prune_source_progress(&state).await;
-            pack_repo(&state).await;
-        });
-    }
-
-    // A rotation ends on a fact workers report, and this is where they report it. The leader has no other
-    // periodic tick (design doc, Control plane), so the check rides the beat that carries the evidence.
-    cut_over_if_due(&state, now_ms).await;
-
-    let snapshot = state.registry.snapshot();
-    let mut active_facts = warnings::currently_active_facts(&snapshot, now_ms, heartbeat_interval, &deployed);
-    active_facts.extend(warnings::deploy_facts(&findings, &state.registry));
-    let readings = throughput::readings(&state, now_ms, heartbeat_interval, false).await;
-    let recovering = warnings::recovering_sources(state.registry.series(), now_ms);
-    active_facts.extend(warnings::outside_normal_facts(
-        &readings,
-        &snapshot,
-        &recovering,
-        heartbeat_interval,
-    ));
-    state.registry.observe_facts(&active_facts, now_ms);
-
-    // A finished session that nobody collected would otherwise hold its records until the process restarted. The
-    // heartbeat is the leader's only periodic tick, so the sweep rides it.
-    state
-        .captures
-        .sweep(std::time::Duration::from_secs(capture::MAX_DEADLINE_SECS));
     // The whole of what this worker should run: it lets go of a session still filling that this leaves out
     // (`Captures::invitations_for`). On the blocking pool, because `holder` waits on any beat in progress, which
     // holds the holds lock across its store writes; an async thread parked on that would stall every handler.
@@ -513,7 +488,7 @@ async fn heartbeat(
             .secrets_for_delivery(&entitled, &req.secret_versions)
             .unwrap_or_else(|e| {
                 if let Some(error) = relog(&SECRETS_NOT_DELIVERED, e.to_string()) {
-                    tracing::warn!(target: "leader.secrets_not_delivered", subject = %worker_id, group = %group_id, error, "the secrets a worker is entitled to could not be read, so this heartbeat delivers none");
+                    tracing::warn!(name: "not_delivered", target: "secrets", subject = %worker_id, group = %group_id, error, "the secrets a worker is entitled to could not be read, so this heartbeat delivers none");
                 }
                 Default::default()
             });
@@ -522,6 +497,16 @@ async fn heartbeat(
     .await
     .unwrap_or_default();
 
+    tracing::trace!(
+        name: "answered", target: "heartbeats",
+        worker = %answering,
+        holds = holds.len(),
+        deployed = pointer.as_deref(),
+        directive = directive.as_ref().map(|d| format!("{:?} {}", d.action, d.id)),
+        captures = captures_for.len(),
+        secrets = secrets.len(),
+        "the leader answered a worker's heartbeat"
+    );
     Ok(Json(HeartbeatResponse {
         holds,
         deployed: pointer,
@@ -532,6 +517,8 @@ async fn heartbeat(
             .map(|invitation| crate::heartbeat::Invited::Readable(Box::new(invitation)))
             .collect(),
         secrets,
+        // Whole on every answer, so a worker that missed a change has it on its next beat.
+        log_levels: state.log_levels.get(),
         heartbeat_interval_ms: Some(heartbeat_interval.as_millis() as u64),
     }))
 }
@@ -603,8 +590,8 @@ impl From<Panicked> for Refusal {
 
 /// A `Store` call on the pool.
 async fn run_store<T: Send + 'static>(
-    store: Arc<dyn Store>,
-    f: impl FnOnce(&dyn Store) -> Result<T, StoreError> + Send + 'static,
+    store: Arc<Store>,
+    f: impl FnOnce(&Store) -> Result<T, StoreError> + Send + 'static,
 ) -> Result<T, StoreError> {
     blocking(move || f(store.as_ref())).await
 }
@@ -667,7 +654,7 @@ async fn ledger(
                 Ok(page) => page,
                 Err(e) => {
                     if let Some(error) = relog(&LEDGER_UNREADABLE, e.to_string()) {
-                        tracing::warn!(target: "leader.ledger_unreadable", %group, source = %key.source, place = %key.place, error, "what a source has already read could not be listed in full, so the worker may read some of it again");
+                        tracing::warn!(name: "ledger_unreadable", target: "store", %group, source = %key.source, place = %key.place, error, "what a source has already read could not be listed in full, so the worker may read some of it again");
                     }
                     let _ = pages.blocking_send(Err(std::io::Error::other(e.to_string())));
                     return;
@@ -751,7 +738,7 @@ async fn pack_repo(state: &AppState) {
     let repo = git::repo_path(&state.data_dir);
     if let Err(e) = blocking(move || git::pack(&repo).map_err(|e| e.message)).await {
         tracing::warn!(
-            target: "leader.repo_not_packed",
+            name: "repo_not_packed", target: "git",
             error = %e,
             "the configuration repository could not be packed, so it is tried again later"
         );
@@ -772,7 +759,7 @@ pub async fn prune_source_progress(state: &AppState) {
         Ok(read) => read,
         Err(e) => {
             tracing::warn!(
-                target: "leader.progress_not_pruned",
+                name: "progress_not_pruned", target: "heartbeats",
                 error = %e,
                 "could not read which sources the fleet reads, so no source's progress is forgotten this time"
             );
@@ -788,7 +775,7 @@ pub async fn prune_source_progress(state: &AppState) {
         });
         if let Err(e) = forgotten.await {
             tracing::warn!(
-                target: "leader.streams_not_pruned",
+                name: "streams_not_pruned", target: "heartbeats",
                 error = %e,
                 "the streams of sources no bundle reads could not be forgotten, so they are looked for again"
             );
@@ -807,12 +794,12 @@ pub async fn prune_source_progress(state: &AppState) {
     match forgotten {
         Ok(forgotten) if forgotten.is_empty() => {}
         Ok(forgotten) => tracing::info!(
-            target: "leader.progress_forgotten",
+            name: "progress_forgotten", target: "heartbeats",
             sources = %forgotten.join(", "),
             "the progress of sources no deployed bundle reads was forgotten"
         ),
         Err(e) => tracing::warn!(
-            target: "leader.progress_not_pruned",
+            name: "progress_not_pruned", target: "heartbeats",
             error = %e,
             "the progress of sources no bundle reads could not be forgotten, so it is looked for again"
         ),
@@ -883,7 +870,7 @@ fn read_sources(
         }
     }
     if unread > 0 {
-        tracing::debug!(target: "leader.sources_unread", bundles = unread, "bundles that do not load were left out of what the fleet reads");
+        tracing::trace!(name: "sources_unread", target: "heartbeats", bundles = unread, "bundles that do not load were left out of what the fleet reads");
     }
     Ok(ReadSources {
         single: out,
@@ -952,7 +939,7 @@ async fn git_http(
         }
         Err(error) => {
             // The worker sees only a 500, so this is the one place the cause is said.
-            tracing::error!(target: "leader.git_serve_failed", error = %error, "a worker's fetch could not be served");
+            tracing::error!(name: "serve_failed", target: "git", error = %error, "a worker's fetch could not be served");
             axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
@@ -1049,7 +1036,6 @@ pub struct SystemInfo {
 }
 
 async fn health(State(state): State<AppState>) -> Envelope<HealthResponse> {
-    forget::sweep(&state, warnings::now_millis()).await;
     Envelope::ok(health_snapshot(&state))
 }
 
@@ -1086,9 +1072,6 @@ pub async fn warnings_snapshot(state: &AppState) -> Result<Vec<warnings::Warning
 /// second, independently-cheap fetch rather than reshaping the first.
 pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreError> {
     let now_ms = warnings::now_millis();
-    // What the page polls, and so one of the reads a look for gone ephemeral workers rides: a fleet that has
-    // scaled to nothing sends no heartbeat to carry it.
-    forget::sweep(state, now_ms).await;
     let heartbeat_interval = crate::startup_config::leader_heartbeat_interval();
     let snapshot = state.registry.snapshot();
     let data_dir = state.data_dir.clone();
@@ -1114,22 +1097,24 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
         &recovering,
         heartbeat_interval,
     ));
-    let (key, kept, channels) = run_store(state.store.clone(), |s| {
-        Ok((s.key_standing()?, s.kept_certificates()?, alerts::channels(s)))
+    let (key, kept, channels, marks) = run_store(state.store.clone(), |s| {
+        Ok((
+            s.key_standing()?,
+            s.kept_certificates()?,
+            alerts::channels(s),
+            marks::Marks::read(s),
+        ))
     })
     .await?;
     // Only to name a channel's secret: unreadable channels are the alerts loop's to report, not every warning's.
     let channels = channels.unwrap_or_default();
     active_facts.extend(warnings::encryption_key_facts(&key, &channels));
-    let starts = state.registry.observe_facts(&active_facts, now_ms);
+    // Read, not yet observed: what else is active is known only once the whole catalog is.
+    let starts = state.registry.starts_of(&active_facts, now_ms);
     let key_warnings = warnings::encryption_key_warnings(&key, &channels, &kept, &starts);
     let normal_warnings =
-        warnings::outside_normal_warnings(&readings, &snapshot, &recovering, &starts, heartbeat_interval);
+        warnings::outside_normal_warnings(&readings, &snapshot, &recovering, &starts, &marks, heartbeat_interval);
     let credentials = run_store(state.store.clone(), |s| s.list_worker_credentials()).await?;
-    // The other place a rotation's deadline is looked at. The heartbeat carries the evidence a cutover waits on,
-    // but a leader whose workers have all gone quiet receives none -- and this is what the page polls while
-    // somebody is watching the rotation it promised would end.
-    cut_over_if_due(state, now_ms).await;
     let (signing, rotating) = serving_authority(&state.data_dir);
     let serving = serving_certificate(&state.data_dir);
     let presenting = enrollment_codes::Presenting::read(&tls::dir_of(&state.data_dir));
@@ -1148,7 +1133,7 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     let store = state.store.clone();
     let running = warnings::running_deployments(&snapshot, &credentials, heartbeat_interval);
     let certificates = tokio::task::spawn_blocking(move || {
-        let chain = |name: &str| newest_chain(&*store, name).ok().flatten().map(|(_, chain)| chain);
+        let chain = |name: &str| newest_chain(&store, name).ok().flatten().map(|(_, chain)| chain);
         deployed_certificates(&data_dir, &expiries, running, &chain)
     })
     .await
@@ -1208,6 +1193,22 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
             false => w.group.clone(),
         };
     }
+    // Every warnings read derives them, so the counts are made only when they will be said.
+    if crate::log_enabled!(name: "derived", target: "status", tracing::Level::TRACE) {
+        let mut by_condition = std::collections::BTreeMap::new();
+        for w in &out {
+            *by_condition.entry(w.condition.name()).or_insert(0usize) += 1;
+        }
+        tracing::trace!(
+            name: "derived", target: "status",
+            warnings = out.len(),
+            by_condition = ?by_condition,
+            "the current issues were worked out"
+        );
+    }
+    let issues = warnings::issue_facts(&out, &active_facts);
+    active_facts.extend(issues);
+    state.registry.observe_facts(&active_facts, now_ms);
     Ok(out)
 }
 
@@ -1277,7 +1278,7 @@ fn deployed_certificates(
 
     // Rebuilt rather than pruned in place: a commit no worker is running any more must not linger and grow this
     // cache forever, and the fleet moves on from one every time it redeploys.
-    let mut cached = cache.0.lock().unwrap();
+    let mut cached = cache.0.lock().unwrap_or_else(|e| e.into_inner());
     let mut fresh = std::collections::HashMap::with_capacity(running.len());
     let mut out = Vec::new();
     for (group, commit) in running {
@@ -1470,6 +1471,33 @@ pub struct FlowResponse {
     pub rows_out: Vec<FlowSeries>,
     pub bytes_in: Vec<FlowSeries>,
     pub bytes_out: Vec<FlowSeries>,
+    /// Every source's last [`throughput::WINDOW`] against its normal, whatever the window asked for.
+    pub normals: Vec<FlowNormal>,
+}
+
+/// One source's last [`throughput::WINDOW`] against its normal, as rows per second: what the Status page ranks by
+/// how far each source is from its normal.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlowNormal {
+    pub group: String,
+    pub subject_id: String,
+    pub now: f64,
+    pub low: f64,
+    pub high: f64,
+}
+
+impl From<&throughput::Reading> for FlowNormal {
+    fn from(r: &throughput::Reading) -> FlowNormal {
+        let seconds = throughput::WINDOW.as_secs_f64();
+        FlowNormal {
+            group: r.group.clone(),
+            subject_id: r.source.clone(),
+            now: r.rows / seconds,
+            low: r.band.low / seconds,
+            high: r.band.high / seconds,
+        }
+    }
 }
 
 impl FlowResponse {
@@ -1483,6 +1511,7 @@ impl FlowResponse {
         ] {
             series.retain(|s| access.allows(&s.group, access::Level::Viewer));
         }
+        self.normals.retain(|n| access.allows(&n.group, access::Level::Viewer));
         self
     }
 }
@@ -1497,6 +1526,10 @@ const ROWS_OUT_METRIC: &str = "smeltr_rows_sent_total";
 /// `egress::run`'s count of rows a destination has acknowledged (`egress.rs`) -- a real delivery, past
 /// `Dispatched::InFlight`.
 const ROWS_DELIVERED_METRIC: &str = "smeltr_rows_delivered_total";
+/// The wire name `Reader::lag` gauges, per source, topic and partition (E6). Only a source kind that overrides
+/// `Source::lag` ever reports it, so a source that cannot is simply absent from this metric rather than reporting
+/// zero.
+const SOURCE_LAG_METRIC: &str = "smeltr_source_lag";
 /// `Transform::poll`'s payload bytes read, beside its row count (`runtime.rs`).
 const BYTES_POLLED_METRIC: &str = "smeltr_bytes_polled_total";
 /// `egress::note_delivered`'s bytes acknowledged, beside its row count. The weight of what a destination took, so
@@ -1522,6 +1555,7 @@ pub fn flow_snapshot(state: &AppState, window: Duration) -> Result<FlowResponse,
             rows_out: Vec::new(),
             bytes_in: Vec::new(),
             bytes_out: Vec::new(),
+            normals: Vec::new(),
         });
     };
     let since_ms = warnings::now_millis() - window.as_millis() as i64;
@@ -1531,6 +1565,7 @@ pub fn flow_snapshot(state: &AppState, window: Duration) -> Result<FlowResponse,
         rows_out: flow_series(store, ROWS_OUT_METRIC, "destination", tier, since_ms)?,
         bytes_in: flow_series(store, BYTES_POLLED_METRIC, "source", tier, since_ms)?,
         bytes_out: flow_series(store, BYTES_DELIVERED_METRIC, "destination", tier, since_ms)?,
+        normals: Vec::new(),
     })
 }
 
@@ -1569,7 +1604,7 @@ fn flow_series(
     }
     if unreadable > 0 {
         tracing::warn!(
-            target: "leader.series_subjects_unreadable",
+            name: "series_subjects_unreadable", target: "status",
             subject = %metric,
             subjects = unreadable,
             exemplar = exemplar.as_deref(),
@@ -1593,9 +1628,12 @@ async fn get_flow(
     Query(query): Query<FlowQuery>,
 ) -> Result<Envelope<FlowResponse>, Refusal> {
     let minutes = query.window_minutes.clamp(1, MAX_WINDOW_MINUTES);
-    flow_snapshot(&state, Duration::from_secs((minutes * 60) as u64))
-        .map(|flow| Envelope::ok(flow.visible_to(&access)))
-        .map_err(|e| Refusal::internal(e.to_string()))
+    let mut flow = flow_snapshot(&state, Duration::from_secs((minutes * 60) as u64))
+        .map_err(|e| Refusal::internal(e.to_string()))?;
+    let heartbeat_interval = crate::startup_config::leader_heartbeat_interval();
+    let readings = throughput::readings(&state, warnings::now_millis(), heartbeat_interval, false).await;
+    flow.normals = readings.iter().map(FlowNormal::from).collect();
+    Ok(Envelope::ok(flow.visible_to(&access)))
 }
 
 // -- streams ------------------------------------------------------------------
@@ -1707,15 +1745,18 @@ pub async fn keep_own_logs(state: AppState) {
 #[derive(serde::Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 struct LogsQuery {
-    /// Comma-separated: `?level=warn,error`. Severities do not nest here, so an operator wanting both names both.
+    /// Comma-separated: `?level=warn,error`. Levels do not nest here, so an operator wanting both names both.
     ///
     /// One key rather than a repeated one because `Query` decodes through `serde_urlencoded`, which has no
     /// notion of a repeated key and refuses a sequence outright -- a refused request rather than a wrong answer.
     level: Option<String>,
     worker: Option<String>,
     group: Option<String>,
-    /// Matched anywhere in the dotted call site.
-    site: Option<String>,
+    class: Option<String>,
+    /// Matched anywhere in the type, or the whole type with `typeExact=true`.
+    r#type: Option<String>,
+    type_exact: bool,
+    service: Option<String>,
     /// Matched anywhere in the message.
     q: Option<String>,
     since_millis: Option<i64>,
@@ -1745,7 +1786,9 @@ pub struct LogRow {
     pub group: Option<String>,
     pub thread: Option<String>,
     pub level: String,
-    pub site: String,
+    pub class: Option<String>,
+    pub r#type: String,
+    pub service: Option<String>,
     pub message: String,
     pub fields: serde_json::Value,
 }
@@ -1769,6 +1812,9 @@ pub struct LogsResponse {
     /// The cursor for "newer", present only while a row exists above the page. Absent on the head, which a
     /// page reached with no cursor already is.
     pub next_after: Option<i64>,
+    /// Every class and service a line can name, for a reader to narrow by.
+    pub classes: &'static [&'static str],
+    pub services: Vec<&'static str>,
 }
 
 #[cfg(test)]
@@ -1788,7 +1834,15 @@ mod logs_query_tests {
     #[test]
     fn several_severities_travel_as_one_comma_separated_key() {
         assert_eq!(decode("level=warn,error").level.as_deref(), Some("warn,error"));
-        assert_eq!(decode("level=info&site=worker.").site.as_deref(), Some("worker."));
+        let query = decode("level=info&class=sources&type=poll&service=kafka");
+        assert_eq!(
+            (
+                query.class.as_deref(),
+                query.r#type.as_deref(),
+                query.service.as_deref()
+            ),
+            (Some("sources"), Some("poll"), Some("kafka"))
+        );
         assert!(decode("").level.is_none(), "the bare path asks for everything");
     }
 }
@@ -1821,7 +1875,10 @@ async fn get_logs(
                 levels: &levels,
                 worker_id: query.worker.as_deref(),
                 group_id: query.group.as_deref(),
-                site_contains: query.site.as_deref(),
+                class: query.class.as_deref(),
+                r#type: query.r#type.as_deref(),
+                type_exact: query.type_exact,
+                service: query.service.as_deref(),
                 message_contains: query.q.as_deref(),
                 since_ms: query.since_millis,
                 until_ms: query.until_millis,
@@ -1873,7 +1930,9 @@ async fn get_logs(
                 group: r.group_id,
                 thread: r.thread_name,
                 level: r.level,
-                site: r.site,
+                class: r.class,
+                r#type: r.r#type,
+                service: r.service,
                 message: r.message,
                 // Stored as the delivered list; a row whose JSON will not parse carries an empty list rather
                 // than failing the page it is one row of.
@@ -1884,6 +1943,8 @@ async fn get_logs(
         message_limit: crate::heartbeat::MAX_TEXT_LEN,
         next_before,
         next_after,
+        classes: crate::logs::levels::CLASSES,
+        services: crate::logs::levels::services(),
     }))
 }
 
@@ -1989,7 +2050,7 @@ async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest>) -
                 None => (false, false),
             };
             if usable {
-                tracing::info!(target: "leader.worker_enrolled", subject = %worker_id, "a worker enrolled");
+                tracing::info!(name: "enrolled", target: "enrollment", subject = %worker_id, "a worker enrolled");
                 return Json(EnrollResult {
                     ok: true,
                     error: None,
@@ -2007,7 +2068,7 @@ async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest>) -
                 let taken_back = run_store(state.store, move |s| s.remove_worker_credential(&worker_id, &issued)).await;
                 if let Err(e) = taken_back {
                     tracing::error!(
-                        target: "leader.enrollment_not_taken_back",
+                        name: "not_taken_back", target: "enrollment",
                         error = %e,
                         "this leader replaced its authority while a worker was enrolling and could not take back \
                          the credential it had just issued, so a worker that can never reach it reads as enrolled"
@@ -2030,7 +2091,7 @@ async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest>) -
                 .await;
                 if let Err(e) = given_back {
                     tracing::error!(
-                        target: "leader.enrollment_not_taken_back",
+                        name: "not_taken_back", target: "enrollment",
                         error = %e,
                         "this leader could not read which certificate authority it signs under while a worker was \
                          enrolling and could not give back the enrollment code it had just spent, so a retry the \
@@ -2111,9 +2172,9 @@ fn refused_enrollment(subject: &str, error: String, retry: bool) -> Json<EnrollR
     // A worker told to retry does, on a backoff, and is refused the same way until this leader mends: said once
     // per change and on the interval. A settled refusal is each worker's own, and is said each time.
     if !retry {
-        tracing::warn!(target: "leader.enrollment_refused", %subject, %error, retry, "an enrollment was refused");
+        tracing::warn!(name: "refused", target: "enrollment", %subject, %error, retry, "an enrollment was refused");
     } else if let Some(error) = relog(&ENROLLMENT_RETRIED, error.clone()) {
-        tracing::warn!(target: "leader.enrollment_refused", %subject, error, retry, "an enrollment was refused");
+        tracing::warn!(name: "refused", target: "enrollment", %subject, error, retry, "an enrollment was refused");
     }
     Json(EnrollResult {
         ok: false,
@@ -2224,7 +2285,7 @@ async fn remove_worker(
     let now_ms = warnings::now_millis();
     match run_store(state.store.clone(), move |s| s.remove_worker(&id, now_ms, Some(&event))).await {
         Ok(true) => {
-            tracing::info!(target: "leader.worker_removed", subject = %worker_id, "a worker was removed");
+            tracing::info!(name: "removed", target: "enrollment", subject = %worker_id, "a worker was removed");
             state.registry.forget_worker(&worker_id);
             state.directives.forget(&worker_id);
             forget::free_holds(&state, &worker_id).await;
@@ -2261,7 +2322,7 @@ async fn revoke_worker(
     .await;
     match result {
         Ok(true) => {
-            tracing::info!(target: "leader.worker_revoked", subject = %worker_id, "a worker was revoked");
+            tracing::info!(name: "revoked", target: "enrollment", subject = %worker_id, "a worker was revoked");
             forget::free_holds(&state, &worker_id).await;
             Envelope::done()
         }
@@ -2405,7 +2466,7 @@ async fn list_secrets(State(state): State<AppState>) -> Result<Envelope<SecretLi
     // What the catalog shows; a bundle it cannot read leaves the Running column empty rather than the page.
     let store = state.store.clone();
     let mut deployed = tokio::task::spawn_blocking(move || {
-        deployed_versions(&data_dir, &entitlements, &running, &certificate_versions(&*store)?)
+        deployed_versions(&data_dir, &entitlements, &running, &certificate_versions(&store)?)
     })
     .await
     .ok()
@@ -2613,7 +2674,7 @@ async fn store_value(
     let pinned = tokio::task::spawn_blocking(move || {
         // What the leader serves is kept as what the fleet runs is.
         let served = served_entries(&tls::dir_of(&data_dir))?;
-        kept_versions(&data_dir, &entitlements, &running, &certificate_versions(&*store)?).map(|mut deployed| {
+        kept_versions(&data_dir, &entitlements, &running, &certificate_versions(&store)?).map(|mut deployed| {
             (deployed.remove(&wanted).unwrap_or_default().into_iter())
                 .map(|(_, version)| version)
                 .chain(
@@ -2702,7 +2763,7 @@ impl CertificateRequest {
 }
 
 /// The newest version of the certificate `name` and its chain, `None` where it is no certificate.
-fn newest_chain(store: &dyn Store, name: &str) -> Result<Option<(i64, String)>, StoreError> {
+fn newest_chain(store: &Store, name: &str) -> Result<Option<(i64, String)>, StoreError> {
     let newest = (store.list_secrets()?.into_iter())
         .find(|r| r.name == name && r.certificate)
         .and_then(|r| r.current().map(|v| v.version));
@@ -2714,7 +2775,7 @@ fn newest_chain(store: &dyn Store, name: &str) -> Result<Option<(i64, String)>, 
 
 /// The newest version of the certificate `name`, with its chain and private key, `None` where it has none this leader
 /// can open.
-pub fn newest_certificate(store: &dyn Store, name: &str) -> Result<Option<(i64, String, String)>, StoreError> {
+pub fn newest_certificate(store: &Store, name: &str) -> Result<Option<(i64, String, String)>, StoreError> {
     let Some((version, chain)) = newest_chain(store, name)? else {
         return Ok(None);
     };
@@ -2901,10 +2962,7 @@ async fn sign_under_authority(state: &AppState, issued: &Issued) -> Result<(Stri
 
 /// The signing root and each certificate this leader issued, with its newest chain described: empty where that
 /// cannot be read. `None` where the leader signs nothing, or its authority cannot be read: its own warnings say that.
-fn issued_chains(
-    s: &dyn Store,
-    dir: &std::path::Path,
-) -> Result<Option<(String, Vec<warnings::IssuedChain>)>, StoreError> {
+fn issued_chains(s: &Store, dir: &std::path::Path) -> Result<Option<(String, Vec<warnings::IssuedChain>)>, StoreError> {
     let Some(signing) = dir.exists().then(|| tls::signing_root_fingerprint(dir).ok()).flatten() else {
         return Ok(None);
     };
@@ -3059,7 +3117,7 @@ async fn delete_secret(
     let running = running_deployments(&state).await;
     let store = state.store.clone();
     let users = tokio::task::spawn_blocking(move || {
-        kept_versions(&data_dir, &entitlements, &running, &certificate_versions(&*store)?).map(|mut deployed| {
+        kept_versions(&data_dir, &entitlements, &running, &certificate_versions(&store)?).map(|mut deployed| {
             let mut groups: Vec<String> = deployed
                 .remove(&wanted)
                 .unwrap_or_default()
@@ -3100,7 +3158,7 @@ async fn verify_secret(
 ) -> Result<Envelope<VerifySecretResponse>, Refusal> {
     if !state.verify_limiter.allow(&name, std::time::Instant::now()) {
         tracing::warn!(
-            target: "leader.secret_verify_refused",
+            name: "verify_refused", target: "secrets",
             subject = %name,
             "refused a secret verification: too many attempts"
         );
@@ -3126,10 +3184,10 @@ async fn verify_secret(
     .await?;
     // Two sites, so an outcome is never folded into its opposite or lost among the other's count.
     if matches {
-        tracing::info!(target: "leader.secret_verified", subject = %asked, version, "a secret verification matched");
+        tracing::info!(name: "verified", target: "secrets", subject = %asked, version, "a secret verification matched");
     } else {
         tracing::info!(
-            target: "leader.secret_verify_failed",
+            name: "verify_failed", target: "secrets",
             subject = %asked,
             version,
             "a secret verification did not match"
@@ -3445,7 +3503,7 @@ async fn forget_secret_version(
     let running = running_deployments(&state).await;
     let store = state.store.clone();
     let users = tokio::task::spawn_blocking(move || {
-        kept_versions(&data_dir, &entitlements, &running, &certificate_versions(&*store)?).map(|mut deployed| {
+        kept_versions(&data_dir, &entitlements, &running, &certificate_versions(&store)?).map(|mut deployed| {
             deployed
                 .remove(&wanted)
                 .unwrap_or_default()
@@ -3509,9 +3567,6 @@ impl From<store::WorkerCredentialRecord> for WorkerOut {
 /// What `GET /api/workers` serves: every worker that has ever enrolled, heartbeating or not, less the ephemeral
 /// workers gone long enough to be forgotten. A store error is returned, not an empty list.
 pub async fn worker_credentials_snapshot(state: &AppState) -> Result<Vec<WorkerOut>, StoreError> {
-    // The look for gone workers rides every read of the fleet: one scaled to nothing sends no heartbeat to carry
-    // it, and the roster may be the only page anybody opens.
-    forget::sweep(state, warnings::now_millis()).await;
     let creds = run_store(state.store.clone(), |s| s.list_worker_credentials()).await?;
     Ok(creds
         .into_iter()
@@ -3699,7 +3754,7 @@ async fn expected_workers(state: &AppState) -> Result<std::collections::HashSet<
         Ok(credentials) => Ok(credentials),
         Err(e) => {
             tracing::warn!(
-                target: "leader.rotation_roster_unreadable",
+                name: "rotation_roster_unreadable", target: "enrollment",
                 error = %e,
                 "could not read which workers are enrolled, so this leader cannot tell whether its fleet holds the \
                  authority it is rotating to. The deadline still decides"
@@ -3730,13 +3785,13 @@ async fn expected_workers(state: &AppState) -> Result<std::collections::HashSet<
     })
 }
 
-/// Each worker an open rotation waits for, by id, and whether it holds `incoming` yet. An error where the roster
-/// could not be read, which is not a fleet with nobody in it.
-pub async fn rotation_workers(state: &AppState, incoming: &str) -> Result<Vec<(String, bool)>, String> {
+/// Each worker an open rotation waits for, by id, and whether it has said it holds `incoming` since `since_ms`, as
+/// [`Registry::authorities_held`]. An error where the roster could not be read, which is not a fleet with nobody in it.
+pub async fn rotation_workers(state: &AppState, incoming: &str, since_ms: i64) -> Result<Vec<(String, bool)>, String> {
     let expected = expected_workers(state).await?;
     Ok(state
         .registry
-        .holders(&expected)
+        .holders(&expected, since_ms)
         .into_iter()
         .map(|(worker, held)| (worker, held.iter().any(|root| root == incoming)))
         .collect())
@@ -3756,7 +3811,7 @@ pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
         Ok(None) => return,
         Err(e) => {
             if let Some(error) = relog(&ROTATION_UNREADABLE, e) {
-                tracing::warn!(target: "leader.rotation_unreadable", error, "the fleet's certificate authority rotation could not be read, so it does not cut over");
+                tracing::warn!(name: "rotation_unreadable", target: "enrollment", error, "the fleet's certificate authority rotation could not be read, so it does not cut over");
             }
             return;
         }
@@ -3764,7 +3819,7 @@ pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
     let holders = expected_workers(state)
         .await
         .ok()
-        .map(|expected| state.registry.authorities_held(&expected));
+        .map(|expected| state.registry.authorities_held(&expected, rotation.started_millis));
     let cut_over = match tls::cut_over_if_due(
         &dir,
         crate::startup_config::leader_certificate_names(&state.origin_hosts),
@@ -3775,7 +3830,7 @@ pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
         Ok(cut_over) => cut_over,
         Err(e) => {
             tracing::warn!(
-                target: "leader.authority_not_cut_over",
+                name: "authority_not_cut_over", target: "enrollment",
                 error = %e,
                 "this leader could not sign under the authority it is rotating to, and keeps serving the one it \
                  was signing under"
@@ -3795,7 +3850,7 @@ pub async fn cut_over_if_due(state: &AppState, now_ms: i64) {
         );
         if let Err(e) = run_store(state.store.clone(), move |s| s.record_security_event(&event)).await {
             tracing::warn!(
-                target: "leader.cut_over_unrecorded",
+                name: "cut_over_unrecorded", target: "enrollment",
                 error = %e,
                 "this leader cut over to the authority it was rotating to, and the audit row for it did not land"
             );
@@ -3859,6 +3914,10 @@ pub fn admin_router() -> Router<AppState> {
             get(forget::get_settings).put(forget::put_settings),
         )
         .route(
+            "/api/settings/log-levels",
+            get(log_levels::get_settings).put(log_levels::put_settings),
+        )
+        .route(
             "/api/settings/warnings",
             get(throughput::get_settings).put(throughput::put_settings),
         )
@@ -3911,10 +3970,41 @@ pub fn router(state: AppState) -> Router {
 }
 
 /// `app` answering gzipped to a client that takes it, by tower-http's defaults, and taking a gzipped request on every
-/// route. A route's body limit holds the body as inflated, so a small gzipped body cannot become a large one.
+/// route. A route's body limit holds the body as inflated, so a small gzipped body cannot become a large one. A zip
+/// is already compressed, so it is sent as it is.
 pub fn gzipped(app: Router) -> Router {
-    app.layer(tower_http::compression::CompressionLayer::new())
+    use tower_http::compression::{DefaultPredicate, Predicate, predicate::NotForContentType};
+    let zipped = NotForContentType::const_new("application/zip");
+    app.layer(tower_http::compression::CompressionLayer::new().compress_when(DefaultPredicate::new().and(zipped)))
         .layer(tower_http::decompression::RequestDecompressionLayer::new())
+}
+
+#[cfg(test)]
+mod gzipped_tests {
+    use axum::{body::Body, http::Request, routing::get};
+    use tower_service::Service;
+
+    use super::*;
+
+    async fn encoding(content_type: &'static str) -> Option<String> {
+        let body = "x".repeat(1000);
+        let mut app = gzipped(Router::new().route(
+            "/",
+            get(move || async move { ([("content-type", content_type)], body) }),
+        ));
+        let req = Request::get("/")
+            .header("accept-encoding", "gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.call(req).await.unwrap();
+        (res.headers().get("content-encoding")).map(|v| v.to_str().unwrap().to_string())
+    }
+
+    #[tokio::test]
+    async fn a_zip_is_sent_as_it_is_and_the_rest_gzipped() {
+        assert_eq!(encoding("application/json").await.as_deref(), Some("gzip"));
+        assert_eq!(encoding("application/zip").await, None);
+    }
 }
 
 /// Where a store would write its secrets encryption key. No fixture below stores a secret, so nothing is written --
@@ -4296,9 +4386,10 @@ mod secrets_delivery_tests {
 
     use crate::heartbeat::{HeartbeatRequest, ThreadHeartbeat, ThreadKind};
     use crate::leader::store::Custody;
-    use sqlite_store::SqliteStore;
+    use store::Store;
 
     use super::*;
+    use crate::config_file::ElasticsearchDestinationDto;
 
     fn temp_dir(label: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -4374,7 +4465,7 @@ mod secrets_delivery_tests {
         .unwrap();
         git::deploy_commit(&data_dir, &git::main_head(&repo).unwrap(), &store::Actor::system()).unwrap();
 
-        let store = SqliteStore::open(std::path::Path::new(":memory:"), &data_dir.with_extension("key")).unwrap();
+        let store = Store::open(std::path::Path::new(":memory:"), &data_dir.with_extension("key")).unwrap();
         store
             .create_secret("es-auth", Custody::LeaderStored, "", Some("ApiKey abc"), None)
             .unwrap();
@@ -4400,6 +4491,7 @@ mod secrets_delivery_tests {
             updates: Default::default(),
             alerts: Default::default(),
             directives: Default::default(),
+            log_levels: Default::default(),
             data_dir,
         }
     }
@@ -4471,7 +4563,10 @@ mod secrets_delivery_tests {
             ["w1".to_string()].into(),
             Default::default(),
             Vec::new(),
-            None,
+            capture::Opened {
+                owner: "c1".into(),
+                config: None,
+            },
         );
         assert_eq!(listed(answer(&state, beat("g", vec![])).await), vec!["c1".to_string()]);
         assert_eq!(
@@ -4491,7 +4586,10 @@ mod secrets_delivery_tests {
             ["w1".to_string()].into(),
             Default::default(),
             Vec::new(),
-            None,
+            capture::Opened {
+                owner: "c2".into(),
+                config: None,
+            },
         );
         assert_eq!(listed(answer(&state, beat("g", vec![])).await), vec!["c2".to_string()]);
         state.captures.close("c2");
@@ -4555,7 +4653,9 @@ mod secrets_delivery_tests {
             .expect("the file is there");
         let dtos: Vec<crate::config_file::DestinationDto> = serde_json::from_slice(&bytes).unwrap();
         match &dtos[0].kind {
-            crate::config_file::DestinationKindDto::Elasticsearch { auth, .. } => auth.clone().expect("an auth"),
+            crate::config_file::DestinationKindDto::Elasticsearch(ElasticsearchDestinationDto { auth, .. }) => {
+                auth.clone().expect("an auth")
+            }
             other => panic!("expected elasticsearch, got {other:?}"),
         }
     }
@@ -4829,7 +4929,7 @@ mod warnings_endpoint_tests {
     use std::sync::Arc;
 
     use crate::heartbeat::{MetricSampleDto, MetricValueDto, ThreadHeartbeat, ThreadKind};
-    use sqlite_store::SqliteStore;
+    use store::Store;
 
     use super::*;
 
@@ -4874,7 +4974,7 @@ mod warnings_endpoint_tests {
         let data_dir = temp_dir(label);
         deploy_group(&data_dir, "g");
         AppState {
-            store: Arc::new(SqliteStore::open(std::path::Path::new(":memory:"), &test_secret_key(label)).unwrap()),
+            store: Arc::new(Store::open(std::path::Path::new(":memory:"), &test_secret_key(label)).unwrap()),
             registry: Arc::new(Registry::default()),
             captures: Arc::new(capture::Captures::default()),
             entitlements: Arc::new(Entitlements::default()),
@@ -4887,6 +4987,7 @@ mod warnings_endpoint_tests {
             updates: Default::default(),
             alerts: Default::default(),
             directives: Default::default(),
+            log_levels: Default::default(),
             data_dir,
         }
     }
@@ -4897,7 +4998,7 @@ mod warnings_endpoint_tests {
     async fn an_unreadable_roster_is_an_error_not_an_empty_fleet() {
         let dir = temp_dir("roster-unreadable");
         let db = dir.join("leader.db");
-        let store = SqliteStore::open(&db, &dir.join("sealing.key")).unwrap();
+        let store = Store::open(&db, &dir.join("sealing.key")).unwrap();
         rusqlite::Connection::open(&db)
             .unwrap()
             .execute_batch("DROP TABLE worker_credentials")
@@ -4906,7 +5007,7 @@ mod warnings_endpoint_tests {
             store: Arc::new(store),
             ..state("roster-unreadable")
         };
-        let read = rotation_workers(&state, "incoming").await;
+        let read = rotation_workers(&state, "incoming", 0).await;
         assert!(
             read.as_ref()
                 .is_err_and(|e| e.starts_with("could not read which workers are enrolled: ")),
@@ -4954,10 +5055,9 @@ mod warnings_endpoint_tests {
         assert_eq!(warnings[0].severity, warnings::Severity::Warning);
     }
 
-    /// A fleet scaled to nothing sends no heartbeat, and the Workers page reads the roster and never the warnings.
-    /// So reading the roster is itself a look for gone ephemeral workers.
+    /// A fleet scaled to nothing sends no heartbeat, and its gone ephemeral workers are still forgotten.
     #[tokio::test]
-    async fn reading_the_roster_forgets_a_gone_ephemeral_worker() {
+    async fn housekeeping_forgets_a_gone_ephemeral_worker() {
         let mut state = state("roster-forgets");
         // A leader up long enough to have heard the silence: one just started forgets nobody for it.
         state.registry =
@@ -4981,6 +5081,7 @@ mod warnings_endpoint_tests {
         .await
         .unwrap();
 
+        housekeeping::tick(&state, warnings::now_millis()).await;
         let roster = worker_credentials_snapshot(&state).await.unwrap();
         assert!(
             roster.is_empty(),
@@ -5101,13 +5202,13 @@ mod warnings_endpoint_tests {
 mod logs_endpoint_tests {
     use std::sync::Arc;
 
-    use sqlite_store::SqliteStore;
+    use store::Store;
 
     use super::*;
 
     fn state() -> AppState {
         AppState {
-            store: Arc::new(SqliteStore::open(std::path::Path::new(":memory:"), &test_secret_key("logs")).unwrap()),
+            store: Arc::new(Store::open(std::path::Path::new(":memory:"), &test_secret_key("logs")).unwrap()),
             registry: Arc::new(Registry::open(std::path::Path::new(":memory:")).unwrap()),
             captures: Arc::new(capture::Captures::default()),
             entitlements: Arc::new(Entitlements::default()),
@@ -5120,16 +5221,21 @@ mod logs_endpoint_tests {
             updates: Default::default(),
             alerts: Default::default(),
             directives: Default::default(),
+            log_levels: Default::default(),
             data_dir: std::env::temp_dir(),
         }
     }
 
-    fn said(seq: u64, level: &str, site: &str, message: &str) -> crate::heartbeat::LogDto {
+    /// A line of `class` and `kind`.
+    fn said(seq: u64, level: &str, (class, kind): (&str, &str), message: &str) -> crate::heartbeat::LogDto {
         crate::heartbeat::LogDto {
             seq,
             timestamp_ms: 1_000 + seq as i64,
             level: level.to_string(),
-            site: site.to_string(),
+            class: Some(class.to_string()),
+            r#type: kind.to_string(),
+            service: None,
+            site: String::new(),
             message: message.to_string(),
             thread: Some("main".to_string()),
             boot_id: None,
@@ -5152,14 +5258,18 @@ mod logs_endpoint_tests {
             7,
             Some("west"),
             &[
-                said(0, "info", "worker.started", "worker starting"),
-                said(1, "error", "runtime.rows_rejected", "a destination refused rows"),
+                said(0, "info", ("processes", "started"), "worker starting"),
+                said(1, "error", ("pipelines", "rows_rejected"), "a destination refused rows"),
             ],
         );
 
         let answer = get(&state, LogsQuery::default()).await;
         assert_eq!(answer.rows.len(), 2);
-        assert_eq!(answer.rows[0].site, "runtime.rows_rejected", "newest first");
+        assert_eq!(
+            (answer.rows[0].class.as_deref(), answer.rows[0].r#type.as_str()),
+            (Some("pipelines"), "rows_rejected"),
+            "newest first"
+        );
         assert_eq!(answer.rows[0].group.as_deref(), Some("west"));
         assert_eq!(answer.rows[0].worker_id, "w-1");
         // The fields pass through as delivered rather than reshaped, so what a call site said is what is indexed.
@@ -5177,8 +5287,8 @@ mod logs_endpoint_tests {
             7,
             Some("west"),
             &[
-                said(0, "info", "worker.started", "worker starting"),
-                said(1, "error", "runtime.rows_rejected", "a destination refused rows"),
+                said(0, "info", ("processes", "started"), "worker starting"),
+                said(1, "error", ("pipelines", "rows_rejected"), "a destination refused rows"),
             ],
         );
 
@@ -5192,6 +5302,18 @@ mod logs_endpoint_tests {
         .await;
         assert_eq!(only_errors.rows.len(), 1);
         assert_eq!(only_errors.rows[0].level, "error");
+
+        let by_class = get(
+            &state,
+            LogsQuery {
+                class: Some("processes".to_string()),
+                r#type: Some("art".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(by_class.rows.len(), 1);
+        assert_eq!(by_class.rows[0].r#type, "started");
 
         // Asked for more than a page may carry, and told what it was given rather than refused.
         let huge = get(
@@ -5235,13 +5357,13 @@ mod logs_endpoint_tests {
             7,
             None,
             &[
-                said(0, "info", "a", "row 0"),
-                said(1, "info", "a", "row 1"),
-                said(2, "info", "a", "row 2"),
-                said(3, "info", "a", "row 3"),
-                said(4, "info", "a", "row 4"),
-                said(5, "info", "a", "row 5"),
-                said(6, "info", "a", "row 6"),
+                said(0, "info", ("logs", "a"), "row 0"),
+                said(1, "info", ("logs", "a"), "row 1"),
+                said(2, "info", ("logs", "a"), "row 2"),
+                said(3, "info", ("logs", "a"), "row 3"),
+                said(4, "info", ("logs", "a"), "row 4"),
+                said(5, "info", ("logs", "a"), "row 5"),
+                said(6, "info", ("logs", "a"), "row 6"),
             ],
         );
         let msgs = |r: &LogsResponse| r.rows.iter().map(|row| row.message.clone()).collect::<Vec<_>>();
@@ -5303,9 +5425,9 @@ mod logs_endpoint_tests {
             3,
             None,
             &[
-                said(0, "info", "a", "row 0"),
-                said(1, "info", "a", "row 1"),
-                said(2, "info", "a", "row 2"),
+                said(0, "info", ("logs", "a"), "row 0"),
+                said(1, "info", ("logs", "a"), "row 1"),
+                said(2, "info", ("logs", "a"), "row 2"),
             ],
         );
         let page = get(
@@ -5325,7 +5447,7 @@ mod logs_endpoint_tests {
 mod flow_endpoint_tests {
     use std::sync::Arc;
 
-    use sqlite_store::SqliteStore;
+    use store::Store;
 
     use super::*;
 
@@ -5333,7 +5455,7 @@ mod flow_endpoint_tests {
     /// has nothing to serve without one.
     fn state() -> AppState {
         AppState {
-            store: Arc::new(SqliteStore::open(std::path::Path::new(":memory:"), &test_secret_key("flow")).unwrap()),
+            store: Arc::new(Store::open(std::path::Path::new(":memory:"), &test_secret_key("flow")).unwrap()),
             registry: Arc::new(Registry::open(std::path::Path::new(":memory:")).unwrap()),
             captures: Arc::new(capture::Captures::default()),
             entitlements: Arc::new(Entitlements::default()),
@@ -5346,6 +5468,7 @@ mod flow_endpoint_tests {
             updates: Default::default(),
             alerts: Default::default(),
             directives: Default::default(),
+            log_levels: Default::default(),
             data_dir: std::env::temp_dir(),
         }
     }
@@ -5360,9 +5483,7 @@ mod flow_endpoint_tests {
     #[test]
     fn a_registry_with_no_durable_store_answers_empty_rather_than_failing() {
         let state = AppState {
-            store: Arc::new(
-                SqliteStore::open(std::path::Path::new(":memory:"), &test_secret_key("flow-no-store")).unwrap(),
-            ),
+            store: Arc::new(Store::open(std::path::Path::new(":memory:"), &test_secret_key("flow-no-store")).unwrap()),
             registry: Arc::new(Registry::default()),
             captures: Arc::new(capture::Captures::default()),
             entitlements: Arc::new(Entitlements::default()),
@@ -5375,6 +5496,7 @@ mod flow_endpoint_tests {
             updates: Default::default(),
             alerts: Default::default(),
             directives: Default::default(),
+            log_levels: Default::default(),
             data_dir: std::env::temp_dir(),
         };
         let flow = flow_snapshot(&state, Duration::from_secs(3600)).unwrap();
@@ -5726,8 +5848,7 @@ mod authority_delivery_tests {
             .expect("a rotation past its deadline");
         let state = AppState {
             store: Arc::new(
-                sqlite_store::SqliteStore::open(std::path::Path::new(":memory:"), &test_secret_key("cut-over"))
-                    .unwrap(),
+                store::Store::open(std::path::Path::new(":memory:"), &test_secret_key("cut-over")).unwrap(),
             ),
             registry: Arc::new(Registry::default()),
             captures: Arc::new(capture::Captures::default()),
@@ -5741,6 +5862,7 @@ mod authority_delivery_tests {
             updates: Default::default(),
             alerts: Default::default(),
             directives: Default::default(),
+            log_levels: Default::default(),
             data_dir,
         };
         cut_over_if_due(&state, now_ms).await;

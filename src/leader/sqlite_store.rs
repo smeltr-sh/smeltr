@@ -5,7 +5,7 @@
 //! operation rather than held: operator actions are rare, and a key that is not resident is not in a core dump.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::{Connection, ErrorCode, OptionalExtension};
 
@@ -14,7 +14,7 @@ use super::secrets::{self, EncryptionKey, Sealed};
 use super::store::{
     AccountError, AlertTold, ApiKeyRecord, AuthSource, ConversationRecord, Custody, EnrollmentCodeRecord, HeldSource,
     Issued, Kept, KeyStanding, KeyState, LocalCredentialRecord, NewApiKey, NewEnrollmentCode, NewKeyAccount,
-    NewLocalUser, OidcIdentityRecord, OidcSignIn, PresentedKey, SecretRecord, SecurityEvent, SourceHold, Spend, Store,
+    NewLocalUser, OidcIdentityRecord, OidcSignIn, PresentedKey, SecretRecord, SecurityEvent, SourceHold, Spend,
     StoreError, StoredValue, Unopenable, UsableEnrollmentCode, UserRecord, WorkerCredentialRecord, WorkerKind,
 };
 use crate::heartbeat::{LedgerEntry, SourceKey};
@@ -23,7 +23,8 @@ use crate::io::Progress;
 /// The setting that lists the keys a regeneration replaced, comma-separated.
 const RETIRED_KEY_IDS: &str = "secrets.retired_key_ids";
 
-pub struct SqliteStore {
+/// Blocking. HTTP handlers reach it through `blocking`.
+pub struct Store {
     conn: Mutex<Connection>,
     secret_key: PathBuf,
 }
@@ -426,6 +427,44 @@ pub(crate) const STEPS: &[&str] = &[
          body     TEXT NOT NULL,
          PRIMARY KEY (channel, warning)
      );",
+    // 18 -- the syslog and socket receivers share one module, so its lines name no service, and "syslogReceiver" is
+    // no longer one a log level override can name (`logs::levels`). Breaking, so no older build opens the store
+    // after it: an older build would keep syslogReceiver as a service, and this build refuses to save log levels whose
+    // overrides still name it.
+    "-- An override that names the service syslogReceiver names nothing now: dropped.
+     UPDATE settings SET value = json_set(value, '$.overrides', (
+         SELECT COALESCE(json_group_array(json(o.value)), json('[]'))
+           FROM json_each(settings.value, '$.overrides') AS o
+          WHERE json_extract(o.value, '$.service') IS NOT 'syslogReceiver'
+     ))
+      WHERE key = 'log_levels' AND json_valid(value) AND json_type(value, '$.overrides') = 'array';",
+    // 19 -- a summary the leader had a model write is kept as a fresh start (`model::Turn::Fresh`), not on the answer
+    // it was written for. Breaking: an older build reads the summary on the answer, so this step removes it from
+    // there, and an older build no longer reads it.
+    "-- Each summary kept on an answer, with the person's message before that answer: the summary stands in for the
+     -- turns before that message.
+     CREATE TEMP TABLE summaries AS
+     SELECT conversation_id, at, summary FROM (
+         SELECT *, row_number() OVER (PARTITION BY conversation_id, at ORDER BY answered DESC) AS newest FROM (
+         SELECT a.conversation_id, a.seq AS answered, json_extract(a.turn, '$.Answered.summary') AS summary,
+                (SELECT MAX(m.seq) FROM agent_turns AS m, json_each(m.turn, '$.Asked') AS said
+                  WHERE m.conversation_id = a.conversation_id AND m.seq < a.seq
+                    AND json_type(said.value, '$.Text') = 'text') AS at
+           FROM agent_turns AS a
+          WHERE json_type(a.turn, '$.Answered.summary') = 'text'
+     ) WHERE at IS NOT NULL) WHERE newest = 1;
+     -- Each turn moves one place later for each fresh start inserted before it, through negatives so no two meet.
+     UPDATE agent_turns SET seq = -(seq + (SELECT count(*) FROM summaries AS s
+         WHERE s.conversation_id = agent_turns.conversation_id AND s.at <= agent_turns.seq));
+     UPDATE agent_turns SET seq = -seq;
+     INSERT INTO agent_turns (conversation_id, seq, turn)
+     SELECT s.conversation_id,
+            s.at + (SELECT count(*) FROM summaries AS b WHERE b.conversation_id = s.conversation_id AND b.at <= s.at) - 1,
+            json_object('Fresh', json_object('summary', s.summary, 'tokens', 0))
+       FROM summaries AS s;
+     UPDATE agent_turns SET turn = json_remove(turn, '$.Answered.summary')
+      WHERE json_type(turn, '$.Answered.summary') IS NOT NULL;
+     DROP TABLE summaries;",
 ];
 
 fn conversation_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConversationRecord> {
@@ -544,11 +583,12 @@ fn spoken_age(age: std::time::Duration) -> String {
     }
 }
 
-impl SqliteStore {
+impl Store {
     /// `secret_key` is where the key that seals stored values lives, written the first time one is stored.
     /// A damaged file is refused: nothing else holds what it holds.
-    pub fn open(path: &Path, secret_key: &Path) -> Result<SqliteStore, StoreError> {
+    pub fn open(path: &Path, secret_key: &Path) -> Result<Store, StoreError> {
         let mut conn = Connection::open(path)?;
+        super::steps::say_statements(&conn, super::steps::Store::Leader);
         // First, so the leader never acts on what a damaged file says.
         if let Some(found) = damage(&conn, check_for(&conn))? {
             return Err(StoreError::failed(refusal(path, &found)));
@@ -556,7 +596,7 @@ impl SqliteStore {
         // Before the steps, so it is the file as this start found it, in the format the last build left.
         if let Err(e) = keep_previous(&conn, path) {
             tracing::warn!(
-                target: "leader.store_not_copied",
+                name: "not_copied", target: "store",
                 path = %path.display(),
                 error = %e,
                 "the copy of leader.db kept for a damaged start was not made"
@@ -566,10 +606,17 @@ impl SqliteStore {
         // After WAL is on, so the sidecar files it creates are covered too.
         make_private(path)?;
         super::steps::upgrade_sqlite(&mut conn, "leader.db", STEPS).map_err(StoreError::failed)?;
-        Ok(SqliteStore {
+        Ok(Store {
             conn: Mutex::new(conn),
             secret_key: secret_key.to_path_buf(),
         })
+    }
+
+    /// Locks the connection and returns it, even if a panic poisoned the mutex. A panic that held it poisons the
+    /// mutex but not the file: the open transaction rolls back as it unwinds, so later calls carry on instead of
+    /// failing because an earlier one panicked.
+    fn conn(&self) -> MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// The key, writing one if there is none and nothing is sealed yet. Refused while the key is broken: a value
@@ -584,7 +631,7 @@ impl SqliteStore {
     /// The key ids every sealed value carries, and which value each newest copy is, keyed the way
     /// [`Unopenable`] names it.
     fn sealed_by(&self) -> Result<Vec<(Unopenable, String)>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn();
         let mut newest = conn.prepare(
             "SELECT v.name, v.key_id,
                     EXISTS (SELECT 1 FROM certificate_chains c WHERE c.name = v.name AND c.version = v.version)
@@ -617,7 +664,7 @@ impl SqliteStore {
 
     /// Every key id any stored version carries, older versions included.
     fn every_key_id(&self) -> Result<std::collections::BTreeSet<String>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn();
         let mut stmt = conn.prepare("SELECT DISTINCT key_id FROM secret_versions")?;
         Ok(stmt
             .query_map((), |row| row.get::<_, String>(0))?
@@ -720,7 +767,7 @@ impl SqliteStore {
             }
         };
 
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         // One transaction: a secret that exists with no version would be a leader-stored credential the fleet can
         // never obtain, and nothing would say why.
         let tx = conn.transaction()?;
@@ -764,7 +811,7 @@ impl SqliteStore {
         event: Option<&SecurityEvent>,
     ) -> Result<i64, StoreError> {
         let sealed = self.key_for_sealing()?.seal(name, value.as_bytes());
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         let version = Self::take_version(&tx, name)?
             .ok_or_else(|| StoreError::not_found(format!("no leader-stored secret named {name:?}")))?;
@@ -884,18 +931,22 @@ fn used_by(conn: &Connection, code_id: &str) -> Result<Vec<String>, StoreError> 
         .collect::<Result<Vec<String>, _>>()?)
 }
 
-impl Store for SqliteStore {
-    fn create_enrollment_code(&self, code: &NewEnrollmentCode) -> Result<(), StoreError> {
-        let conn = self.conn.lock().unwrap();
+impl Store {
+    /// `code_hash` is already hashed; the store never sees a raw secret.
+    pub fn create_enrollment_code(&self, code: &NewEnrollmentCode) -> Result<(), StoreError> {
+        let conn = self.conn();
         insert_enrollment_code(&conn, code)
     }
 
-    fn create_enrollment_code_recorded(
+    /// An enrollment code and the row saying who minted it, in one transaction. Like an account mutation and its audit
+    /// row: an enrollment code that exists with nobody recorded as having asked for it is the worse of the two
+    /// failures.
+    pub fn create_enrollment_code_recorded(
         &self,
         code: &NewEnrollmentCode,
         event: &SecurityEvent,
     ) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         insert_enrollment_code(&tx, code)?;
         insert_event(&tx, event)?;
@@ -903,8 +954,10 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    fn list_enrollment_codes(&self, now_ms: i64) -> Result<Vec<EnrollmentCodeRecord>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// Every enrollment code still usable, and every enrollment code that brought a worker in, newest first. The second
+    /// is provenance: which workers arrived on an enrollment code outlives the enrollment code itself.
+    pub fn list_enrollment_codes(&self, now_ms: i64) -> Result<Vec<EnrollmentCodeRecord>, StoreError> {
+        let conn = self.conn();
         // Still usable, or it brought somebody in. The second half is the provenance: which workers arrived on an
         // enrollment code is the question that outlives the enrollment code, and one that expired unused answers
         // nothing.
@@ -944,13 +997,18 @@ impl Store for SqliteStore {
             .collect()
     }
 
-    fn withdraw_enrollment_code(&self, id: &str, now_ms: i64) -> Result<bool, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// `false` if no enrollment code has that id. A spent enrollment code is withdrawn like any other: what it already
+    /// brought in stays enrolled, and what it would have brought in no longer can. The row stays, marked withdrawn:
+    /// which workers it brought in is what an operator acts on next, and deleting it leaves `enrollment_code_uses` rows
+    /// belonging to nothing.
+    pub fn withdraw_enrollment_code(&self, id: &str, now_ms: i64) -> Result<bool, StoreError> {
+        let conn = self.conn();
         Ok(conn.execute(WITHDRAW_CODE, (id, now_ms))? > 0)
     }
 
-    fn withdraw_enrollment_code_recorded(&self, id: &str, event: &SecurityEvent) -> Result<bool, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+    /// [`Store::withdraw_enrollment_code`] and the row saying who withdrew it, in one transaction.
+    pub fn withdraw_enrollment_code_recorded(&self, id: &str, event: &SecurityEvent) -> Result<bool, StoreError> {
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         let withdrawn = tx.execute(WITHDRAW_CODE, (id, event.at))? > 0;
         if withdrawn {
@@ -960,8 +1018,9 @@ impl Store for SqliteStore {
         Ok(withdrawn)
     }
 
-    fn list_usable_enrollment_codes(&self, now_ms: i64) -> Result<Vec<UsableEnrollmentCode>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// Every enrollment code that can still bring a worker in, newest first.
+    pub fn list_usable_enrollment_codes(&self, now_ms: i64) -> Result<Vec<UsableEnrollmentCode>, StoreError> {
+        let conn = self.conn();
         let mut usable = conn.prepare(&format!(
             "SELECT id, group_id, fingerprint FROM enrollment_codes WHERE {USABLE_CODE} {NEWEST_FIRST}"
         ))?;
@@ -977,16 +1036,28 @@ impl Store for SqliteStore {
             .map_err(Into::into)
     }
 
-    fn remove_worker_credential(&self, worker_id: &str, token_hash: &str) -> Result<bool, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// Removes the credential this `token_hash` was issued for, where it is still the one `worker_id` holds.
+    ///
+    /// Removed rather than revoked: the token never reached the worker, so there is no identity to keep a record of,
+    /// and a revoked row would occupy the worker id for good -- [`Store::spend_enrollment_code`] refuses one that has
+    /// ever enrolled. The hash is in the predicate so this can only take back the row it was called about.
+    pub fn remove_worker_credential(&self, worker_id: &str, token_hash: &str) -> Result<bool, StoreError> {
+        let conn = self.conn();
         Ok(conn.execute(
             "DELETE FROM worker_credentials WHERE worker_id = ?1 AND token_hash = ?2",
             (worker_id, token_hash),
         )? > 0)
     }
 
-    fn unspend_enrollment_code(&self, code_id: &str, worker_id: &str, token_hash: &str) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+    /// Gives a spend of `code_id` back, as one transaction: the credential `token_hash` bought, the row in
+    /// `enrollment_code_uses` recording who took it, and the use itself.
+    ///
+    /// For a spend this leader cannot vouch for right now rather than one it will never vouch for -- the worker is told
+    /// to retry the very same enrollment code, and a use left spent while nothing was issued for it would make that
+    /// retry fail on an enrollment code with none left, or collide with the row this spend already wrote on one that
+    /// has.
+    pub fn unspend_enrollment_code(&self, code_id: &str, worker_id: &str, token_hash: &str) -> Result<(), StoreError> {
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute(
             "DELETE FROM worker_credentials WHERE worker_id = ?1 AND token_hash = ?2",
@@ -1004,13 +1075,22 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    fn withdraw_enrollment_codes_not_naming(
+    /// Withdraws every enrollment code that can still bring a worker in and names a root outside `may_have_named`, each
+    /// with the row saying so, in one transaction. Answers with the ids withdrawn.
+    ///
+    /// An enrollment code that already brought its workers in is left alone: it enrolls nobody else whatever it names,
+    /// and withdrawing it would rewrite the provenance an operator reads it for.
+    ///
+    /// `event` is asked for a row per id, because which enrollment codes these are is not known until the transaction
+    /// has read them -- and an enrollment code withdrawn with nobody recorded as having withdrawn it is the hole
+    /// [`Store::withdraw_enrollment_code_recorded`] exists to avoid.
+    pub fn withdraw_enrollment_codes_not_naming(
         &self,
         may_have_named: &[&str],
         now_ms: i64,
         event: &dyn Fn(&str) -> SecurityEvent,
     ) -> Result<Vec<String>, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         // Read inside the transaction the withdrawal happens in, so an enrollment code spent between the two is not
         // withdrawn out from under the worker it just let in.
@@ -1040,7 +1120,22 @@ impl Store for SqliteStore {
         Ok(ids)
     }
 
-    fn spend_enrollment_code(
+    /// Two questions about the authority, and both are asked here so neither can be answered against a state that has
+    /// moved. `presented` is the root the pasted enrollment code names, which must be the one it was minted against:
+    /// that value rides in the clear beside the secret and only the secret is hashed, so a holder can edit one and not
+    /// the other, and an enrollment code edited to name no root leaves its worker trusting every platform root in place
+    /// of the one it was given. `may_have_named` are the roots an enrollment code minted against them can still be
+    /// spent for, which is about this leader having moved rather than the enrollment code having been edited.
+    ///
+    /// Spends one use against `worker_id` and stores its credential, or says why it could not.
+    ///
+    /// One transaction, because "this enrollment code brought in this worker" and "this worker holds this credential"
+    /// are one fact. Spending first and storing after would burn a use on a worker that never got a credential.
+    ///
+    /// A worker this same enrollment code already brought in, holding a credential nothing has used, is retrying an
+    /// enrollment whose answer it never received. It gets `token_hash` in place of that credential, and no second
+    /// use is spent: it is the same worker.
+    pub fn spend_enrollment_code(
         &self,
         code_hash: &str,
         worker_id: &str,
@@ -1049,7 +1144,7 @@ impl Store for SqliteStore {
         presented: &str,
         may_have_named: &[&str],
     ) -> Result<Spend, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
 
         let found = tx
@@ -1149,8 +1244,11 @@ impl Store for SqliteStore {
         })
     }
 
-    fn store_worker_credential(&self, worker_id: &str, token_hash: &str) -> Result<(), StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// Errors if `worker_id` has ever enrolled, revoked or not. An enrollment code must not take over an existing
+    /// worker's identity or resurrect a revoked one.
+    #[cfg(test)]
+    pub fn store_worker_credential(&self, worker_id: &str, token_hash: &str) -> Result<(), StoreError> {
+        let conn = self.conn();
         let inserted = conn.execute(
             "INSERT OR IGNORE INTO worker_credentials (worker_id, token_hash, revoked) VALUES (?1, ?2, 0)",
             (worker_id, token_hash),
@@ -1164,8 +1262,11 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    fn get_worker_credential_by_hash(&self, token_hash: &str) -> Result<Option<WorkerCredentialRecord>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    pub fn get_worker_credential_by_hash(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<WorkerCredentialRecord>, StoreError> {
+        let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
             "SELECT {CREDENTIAL_COLUMNS} FROM worker_credentials WHERE token_hash = ?1"
         ))?;
@@ -1174,8 +1275,10 @@ impl Store for SqliteStore {
             .map_err(StoreError::from)
     }
 
-    fn mark_credential_used(&self, token_hash: &str) -> Result<(), StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// Records that this credential has authenticated a request, which ends the window in which a retried
+    /// enrollment may replace it.
+    pub fn mark_credential_used(&self, token_hash: &str) -> Result<(), StoreError> {
+        let conn = self.conn();
         conn.execute(
             "UPDATE worker_credentials SET used = 1 WHERE token_hash = ?1 AND used = 0",
             (token_hash,),
@@ -1183,8 +1286,11 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    fn forget_worker(&self, worker_id: &str) -> Result<bool, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+    /// Forgets an ephemeral worker that is gone: its credential, and what its enrollment code says it brought in, in
+    /// one transaction. `false` where there was nothing to forget -- no such worker, a permanent one, or one revoked,
+    /// which is kept so it stays out.
+    pub fn forget_worker(&self, worker_id: &str) -> Result<bool, StoreError> {
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         let forgotten = tx.execute(
             "DELETE FROM worker_credentials WHERE worker_id = ?1 AND kind = 'ephemeral' AND revoked = 0",
@@ -1198,8 +1304,15 @@ impl Store for SqliteStore {
         Ok(forgotten)
     }
 
-    fn remove_worker(&self, worker_id: &str, now_ms: i64, event: Option<&SecurityEvent>) -> Result<bool, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+    /// Removes a worker for good: revoked, and left out of [`Store::list_worker_credentials`] from now on. Its row
+    /// stays, so its id is never enrolled again. `false` where no such worker has enrolled, or it is already removed.
+    pub fn remove_worker(
+        &self,
+        worker_id: &str,
+        now_ms: i64,
+        event: Option<&SecurityEvent>,
+    ) -> Result<bool, StoreError> {
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         let updated = tx.execute(
             "UPDATE worker_credentials SET revoked = 1, removed_at = ?2 WHERE worker_id = ?1 AND removed_at IS NULL",
@@ -1212,8 +1325,9 @@ impl Store for SqliteStore {
         Ok(updated)
     }
 
-    fn revoke_worker_credential(&self, worker_id: &str, event: Option<&SecurityEvent>) -> Result<bool, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+    /// `false` if `worker_id` has never enrolled.
+    pub fn revoke_worker_credential(&self, worker_id: &str, event: Option<&SecurityEvent>) -> Result<bool, StoreError> {
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         let updated = tx.execute(
             "UPDATE worker_credentials SET revoked = 1 WHERE worker_id = ?1",
@@ -1226,9 +1340,10 @@ impl Store for SqliteStore {
         Ok(updated)
     }
 
-    fn list_secrets(&self) -> Result<Vec<SecretRecord>, StoreError> {
+    /// Every secret the leader knows, ordered by name.
+    pub fn list_secrets(&self) -> Result<Vec<SecretRecord>, StoreError> {
         let key = self.key_if_any()?;
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
 
         let mut names = conn.prepare(
             "SELECT name, description,
@@ -1278,7 +1393,9 @@ impl Store for SqliteStore {
             .collect())
     }
 
-    fn create_secret(
+    /// Declares `name`. `value` is required for [`Custody::LeaderStored`] and refused for [`Custody::WorkerLocal`],
+    /// whose value is never the leader's to hold. Errors if the name is taken or unusable as a name.
+    pub fn create_secret(
         &self,
         name: &str,
         custody: Custody,
@@ -1289,7 +1406,9 @@ impl Store for SqliteStore {
         self.create(name, custody, description, value, None, event)
     }
 
-    fn create_certificate(
+    /// Declares `name` as a certificate: a leader-stored secret holding `key`, with `chain` beside its first
+    /// version. PEM both.
+    pub fn create_certificate(
         &self,
         name: &str,
         description: &str,
@@ -1307,7 +1426,8 @@ impl Store for SqliteStore {
         )
     }
 
-    fn create_kept_certificate(
+    /// [`Store::create_certificate`] for one this leader keeps up to date as `kept` says.
+    pub fn create_kept_certificate(
         &self,
         name: &str,
         description: &str,
@@ -1329,8 +1449,9 @@ impl Store for SqliteStore {
         )
     }
 
-    fn kept_certificates(&self) -> Result<std::collections::BTreeMap<String, Kept>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// The certificates this leader keeps up to date, each with how.
+    pub fn kept_certificates(&self) -> Result<std::collections::BTreeMap<String, Kept>, StoreError> {
+        let conn = self.conn();
         let mut out = std::collections::BTreeMap::new();
         let mut statement = conn.prepare("SELECT name FROM acme_certificates")?;
         for name in statement.query_map([], |row| row.get::<_, String>(0))? {
@@ -1353,9 +1474,10 @@ impl Store for SqliteStore {
         Ok(out)
     }
 
-    fn set_issued(&self, name: &str, issued: &Issued) -> Result<(), StoreError> {
+    /// Changes how this leader issues `name` from now on. Errors where it does not issue it.
+    pub fn set_issued(&self, name: &str, issued: &Issued) -> Result<(), StoreError> {
         let names = serde_json::to_string(&issued.names).map_err(|e| StoreError::failed(e.to_string()))?;
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let updated = conn.execute(
             "UPDATE issued_certificates SET names = ?2, validity_days = ?3 WHERE name = ?1",
             (name, names, issued.validity_days),
@@ -1366,11 +1488,23 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    fn add_secret_version(&self, name: &str, value: &str, event: Option<&SecurityEvent>) -> Result<i64, StoreError> {
+    /// Seals `value` as a new version of `name` and returns its number -- what a bundle quotes to run it. Errors
+    /// for an unknown name and for worker-local custody.
+    ///
+    /// Adds; it replaces nothing. Which older versions stop being kept is a policy decision the caller makes and
+    /// applies with [`Store::delete_secret_version`], because it depends on what the fleet is running and the
+    /// store cannot see that.
+    pub fn add_secret_version(
+        &self,
+        name: &str,
+        value: &str,
+        event: Option<&SecurityEvent>,
+    ) -> Result<i64, StoreError> {
         self.add_version(name, value, None, event)
     }
 
-    fn add_certificate_version(
+    /// [`Store::add_secret_version`] for a certificate: `key` sealed as the new version, `chain` beside it.
+    pub fn add_certificate_version(
         &self,
         name: &str,
         chain: &str,
@@ -1380,8 +1514,9 @@ impl Store for SqliteStore {
         self.add_version(name, key, Some(chain), event)
     }
 
-    fn certificate_chain(&self, name: &str, version: i64) -> Result<Option<String>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// The chain beside `name`'s `version`, PEM. `None` for a secret that is not a certificate, or a version not held.
+    pub fn certificate_chain(&self, name: &str, version: i64) -> Result<Option<String>, StoreError> {
+        let conn = self.conn();
         Ok(conn
             .query_row(
                 "SELECT chain FROM certificate_chains JOIN secret_versions USING (name, version)
@@ -1392,8 +1527,9 @@ impl Store for SqliteStore {
             .optional()?)
     }
 
-    fn delete_secret(&self, name: &str, event: Option<&SecurityEvent>) -> Result<bool, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+    /// `false` if `name` was not there. Takes every version with it.
+    pub fn delete_secret(&self, name: &str, event: Option<&SecurityEvent>) -> Result<bool, StoreError> {
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM certificate_chains WHERE name = ?1", (name,))?;
         tx.execute("DELETE FROM issued_certificates WHERE name = ?1", (name,))?;
@@ -1407,13 +1543,14 @@ impl Store for SqliteStore {
         Ok(gone)
     }
 
-    fn delete_secret_version(
+    /// Forgets one version. `false` if that version was not held.
+    pub fn delete_secret_version(
         &self,
         name: &str,
         version: i64,
         event: Option<&SecurityEvent>,
     ) -> Result<bool, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute(
             "DELETE FROM certificate_chains WHERE name = ?1 AND version = ?2",
@@ -1430,7 +1567,14 @@ impl Store for SqliteStore {
         Ok(gone)
     }
 
-    fn secrets_for_delivery(
+    /// The values among `entitled` that a worker does not already hold, each with the chain beside it where it is a
+    /// certificate entry's key, for delivery on the heartbeat. `entitled` is the exact `(name, version)` pairs the worker's group's bundle quotes.
+    ///
+    /// The one method here that returns a value, and it cannot be asked for one: it answers "what does this group
+    /// lack", never "what is the value of X". A pair that is worker-local, unknown, no longer held, or sealed under
+    /// a key the leader no longer has is passed over, so it reaches the worker as a credential it does not have --
+    /// the same fact as an unset variable, refusing the deploy and leaving the running one alone.
+    pub fn secrets_for_delivery(
         &self,
         entitled: &[(String, i64)],
         held: &[(String, i64)],
@@ -1438,7 +1582,7 @@ impl Store for SqliteStore {
         let Some(key) = self.key_if_any()? else {
             return Ok(Vec::new());
         };
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut out = Vec::new();
         for (name, version) in entitled {
             if held.iter().any(|(n, v)| n == name && v == version) {
@@ -1469,19 +1613,24 @@ impl Store for SqliteStore {
         Ok(out)
     }
 
-    fn verify_secret(&self, name: &str, version: i64, candidate: &str) -> Result<bool, StoreError> {
+    /// Whether `candidate` is the value stored as `version` -- the only question the leader answers about one, and
+    /// what tells an admin a credential still needs rotating without showing it to them. `false` for an unknown
+    /// name, an unheld version, and a row the leader's key cannot open.
+    pub fn verify_secret(&self, name: &str, version: i64, candidate: &str) -> Result<bool, StoreError> {
         let Some(key) = self.key_if_any()? else {
             return Ok(false);
         };
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let Some(sealed) = Self::sealed(&conn, name, version)? else {
             return Ok(false);
         };
         Ok(key.verify(name, &sealed, candidate))
     }
 
-    fn list_worker_credentials(&self) -> Result<Vec<WorkerCredentialRecord>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// Every worker that has ever enrolled, revoked or not, ordered by `worker_id`, less those forgotten or removed. The only
+    /// record of a worker that enrolled and never heartbeated.
+    pub fn list_worker_credentials(&self) -> Result<Vec<WorkerCredentialRecord>, StoreError> {
+        let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
             "SELECT {CREDENTIAL_COLUMNS} FROM worker_credentials WHERE removed_at IS NULL ORDER BY worker_id"
         ))?;
@@ -1489,7 +1638,8 @@ impl Store for SqliteStore {
         Ok(rows)
     }
 
-    fn key_standing(&self) -> Result<KeyStanding, StoreError> {
+    /// Where the secrets encryption key stands against what is sealed under it.
+    pub fn key_standing(&self) -> Result<KeyStanding, StoreError> {
         let key = self.key_if_any()?;
         // Only the newest copy of each value counts. An older version under a key since replaced is history: a leader
         // that lost its key before regeneration existed, and entered every secret again, is not broken.
@@ -1516,7 +1666,11 @@ impl Store for SqliteStore {
         })
     }
 
-    fn regenerate_key(&self, event: &SecurityEvent) -> Result<KeyStanding, StoreError> {
+    /// Writes a new secrets encryption key in place of one that is missing or does not match, and records the keys
+    /// it replaces so the values they sealed read as values to enter again rather than as a wrong key. A
+    /// mismatched key file is moved aside, not overwritten: it may yet be the right one for something. Refused
+    /// while the key is not broken.
+    pub fn regenerate_key(&self, event: &SecurityEvent) -> Result<KeyStanding, StoreError> {
         let standing = self.key_standing()?;
         if !standing.broken() {
             return Err(StoreError::conflict(
@@ -1529,7 +1683,7 @@ impl Store for SqliteStore {
             std::fs::rename(&self.secret_key, &aside)
                 .map_err(|e| StoreError::failed(format!("{}: {e}", self.secret_key.display())))?;
             tracing::warn!(
-                target: "secrets.key_replaced",
+                name: "key_replaced", target: "secrets",
                 path = %aside.display(),
                 "moved aside a secrets encryption key that did not match the stored secrets"
             );
@@ -1544,8 +1698,10 @@ impl Store for SqliteStore {
         self.key_standing()
     }
 
-    fn group_hues(&self) -> Result<std::collections::HashMap<String, u16>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// Every hue chosen so far, keyed by whatever id it was set for -- a real group's, or `"shared"`'s. What a new
+    /// group's color is picked distinct from.
+    pub fn group_hues(&self) -> Result<std::collections::HashMap<String, u16>, StoreError> {
+        let conn = self.conn();
         let mut stmt = conn.prepare("SELECT group_id, hue FROM group_colors")?;
         let rows = stmt
             .query_map((), |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u16)))?
@@ -1553,8 +1709,11 @@ impl Store for SqliteStore {
         Ok(rows.into_iter().collect())
     }
 
-    fn set_group_hue(&self, group_id: &str, hue: u16, event: Option<&SecurityEvent>) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+    /// Chooses `group_id`'s color, in degrees, replacing whatever was there. Never refused: color rides on no
+    /// group's existence, so setting one for an id that is `"shared"`, or one that never becomes a real group, is
+    /// equally fine.
+    pub fn set_group_hue(&self, group_id: &str, hue: u16, event: Option<&SecurityEvent>) -> Result<(), StoreError> {
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute(
             "INSERT INTO group_colors (group_id, hue) VALUES (?1, ?2)
@@ -1570,8 +1729,9 @@ impl Store for SqliteStore {
 
     // -- single-worker sources -------------------------------------------------
 
-    fn source_hold(&self, group: &str, key: &SourceKey) -> Result<Option<SourceHold>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// Which worker holds `key` in `group`, and the cursor it resumes from. `None` where no worker ever has.
+    pub fn source_hold(&self, group: &str, key: &SourceKey) -> Result<Option<SourceHold>, StoreError> {
+        let conn = self.conn();
         let hold = conn
             .query_row(
                 "SELECT holder, cursor FROM source_holds WHERE grp = ?1 AND source = ?2 AND place = ?3",
@@ -1587,8 +1747,9 @@ impl Store for SqliteStore {
         Ok(hold)
     }
 
-    fn set_source_holder(&self, group: &str, key: &SourceKey, holder: &str) -> Result<(), StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// Gives `key` in `group` to `holder`. Its progress stays, which is what the next holder resumes from.
+    pub fn set_source_holder(&self, group: &str, key: &SourceKey, holder: &str) -> Result<(), StoreError> {
+        let conn = self.conn();
         conn.execute(
             "INSERT INTO source_holds (grp, source, place, holder) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(grp, source, place) DO UPDATE SET holder = excluded.holder",
@@ -1597,8 +1758,10 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    fn apply_source_progress(&self, group: &str, key: &SourceKey, progress: &Progress) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+    /// Records what `key`'s holder has delivered, in one transaction: a cursor replaces the one kept, an added entry
+    /// replaces its item's, and a removed item leaves the ledger. A key nobody holds keeps no cursor.
+    pub fn apply_source_progress(&self, group: &str, key: &SourceKey, progress: &Progress) -> Result<(), StoreError> {
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         if let Some(cursor) = &progress.cursor {
             tx.execute(
@@ -1625,14 +1788,16 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    fn ledger_page(
+    /// Up to `limit` of `key`'s ledger entries in item order, starting after the item `after`. Read a page at a
+    /// time, so a ledger of millions of items never holds the store for long.
+    pub fn ledger_page(
         &self,
         group: &str,
         key: &SourceKey,
         after: Option<&str>,
         limit: usize,
     ) -> Result<Vec<LedgerEntry>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         // `?4 IS NULL` rather than two statements: the first page is the one with nothing before it.
         let mut stmt = conn.prepare(
             "SELECT item, entry FROM source_ledger
@@ -1650,8 +1815,11 @@ impl Store for SqliteStore {
         Ok(rows)
     }
 
-    fn held_sources(&self) -> Result<Vec<HeldSource>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// Every hold, in every group and at every place, with its ledger's size. One read for the whole fleet, so a
+    /// page polling it costs one query however many sources there are. The size is kept as the ledger changes, so
+    /// reading it counts nothing.
+    pub fn held_sources(&self) -> Result<Vec<HeldSource>, StoreError> {
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT grp, source, place, holder, ledger_entries FROM source_holds ORDER BY grp, source, place",
         )?;
@@ -1671,8 +1839,10 @@ impl Store for SqliteStore {
         Ok(rows)
     }
 
-    fn forget_source(&self, group: &str, key: &SourceKey) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+    /// Forgets `key` in `group`: its hold, its cursor and its whole ledger, in one transaction. For a source no bundle
+    /// reads any more; one that comes back starts afresh.
+    pub fn forget_source(&self, group: &str, key: &SourceKey) -> Result<(), StoreError> {
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         // The hold first, so the trigger that counts each removed item finds no hold row left to update.
         tx.execute(
@@ -1689,14 +1859,18 @@ impl Store for SqliteStore {
 
     // -- accounts ----------------------------------------------------------
 
-    fn any_user_exists(&self) -> Result<bool, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// Whether any account exists at all. What bootstrap asks before creating the first administrator; the answer
+    /// is only ever a hint, since [`Store::bootstrap_administrator`] re-checks it inside its own transaction.
+    pub fn any_user_exists(&self) -> Result<bool, StoreError> {
+        let conn = self.conn();
         let n: i64 = conn.query_row("SELECT EXISTS (SELECT 1 FROM users)", [], |row| row.get(0))?;
         Ok(n != 0)
     }
 
-    fn bootstrap_administrator(&self, user: NewLocalUser<'_>) -> Result<bool, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+    /// Create the first administrator. `Ok(false)` when an account already existed, in which case nothing was
+    /// written: the check and the insert are one transaction, so exactly one of two concurrent bootstraps wins.
+    pub fn bootstrap_administrator(&self, user: NewLocalUser<'_>) -> Result<bool, StoreError> {
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         let occupied: i64 = tx.query_row("SELECT EXISTS (SELECT 1 FROM users)", [], |row| row.get(0))?;
         if occupied != 0 {
@@ -1708,13 +1882,17 @@ impl Store for SqliteStore {
         Ok(true)
     }
 
-    fn create_local_user(
+    /// Create an enabled local account alongside the accounts already there, holding the roles `roles` names.
+    ///
+    /// `event` lands in the same transaction: an account that exists with no record of who created it is the one
+    /// case an audit is for, so the two are one write or neither is.
+    pub fn create_local_user(
         &self,
         user: NewLocalUser<'_>,
         roles: &[String],
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         if username_taken(&tx, user.username)? {
             return Ok(Err(AccountError::UsernameTaken));
@@ -1726,18 +1904,23 @@ impl Store for SqliteStore {
         Ok(Ok(()))
     }
 
-    fn given_roles(&self, user_id: &str) -> Result<Vec<String>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// The roles an administrator gave the account `user_id`, by name. Empty for an OIDC account, whose roles its
+    /// provider's groups give.
+    pub fn given_roles(&self, user_id: &str) -> Result<Vec<String>, StoreError> {
+        let conn = self.conn();
         given_roles_in(&conn, user_id)
     }
 
-    fn change_access(
+    /// Replace the roles an administrator gives a local or key account, `event` in the same transaction. Refused
+    /// for an OIDC account, and when taking the administrator role from a local account would leave none who can
+    /// sign in.
+    pub fn change_access(
         &self,
         user_id: &str,
         roles: &[String],
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         let source: Option<String> = tx
             .query_row("SELECT auth_source FROM users WHERE id = ?1", (user_id,), |row| {
@@ -1763,8 +1946,9 @@ impl Store for SqliteStore {
         Ok(Ok(()))
     }
 
-    fn list_users(&self) -> Result<Vec<UserRecord>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// Every account, however it signs in, oldest first.
+    pub fn list_users(&self) -> Result<Vec<UserRecord>, StoreError> {
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, auth_source, display_name, enabled, generation, created_at, updated_at
                FROM users ORDER BY created_at, id",
@@ -1773,8 +1957,8 @@ impl Store for SqliteStore {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
-    fn get_user(&self, id: &str) -> Result<Option<UserRecord>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    pub fn get_user(&self, id: &str) -> Result<Option<UserRecord>, StoreError> {
+        let conn = self.conn();
         Ok(conn
             .query_row(
                 "SELECT id, auth_source, display_name, enabled, generation, created_at, updated_at
@@ -1785,8 +1969,9 @@ impl Store for SqliteStore {
             .optional()?)
     }
 
-    fn local_credential_by_username(&self, username: &str) -> Result<Option<LocalCredentialRecord>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// The account to verify a login against, by canonical username. The one method that returns a verifier.
+    pub fn local_credential_by_username(&self, username: &str) -> Result<Option<LocalCredentialRecord>, StoreError> {
+        let conn = self.conn();
         Ok(conn
             .query_row(
                 // One statement, so the hash and the generation are the same moment of this account. Read apart,
@@ -1808,8 +1993,10 @@ impl Store for SqliteStore {
             .optional()?)
     }
 
-    fn username_of(&self, user_id: &str) -> Result<Option<String>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// What a local account signs in as. Its own method rather than a field of [`UserRecord`], so reading a
+    /// person's login name never reaches the table holding their password.
+    pub fn username_of(&self, user_id: &str) -> Result<Option<String>, StoreError> {
+        let conn = self.conn();
         Ok(conn
             .query_row(
                 "SELECT username FROM local_credentials WHERE user_id = ?1",
@@ -1819,7 +2006,17 @@ impl Store for SqliteStore {
             .optional()?)
     }
 
-    fn set_local_password(
+    /// Replace a local account's password, set its must-change flag, and bump its generation -- one
+    /// transaction, so no session survives a password it no longer matches. Answers the generation the account
+    /// now stands at, which is what a session issued for this password must quote.
+    ///
+    /// `expect` is the generation the caller's authority was decided against. The write lands only while the
+    /// account is still enabled and still there, and `Superseded` says it is not. `None` writes whatever it
+    /// finds, which is what an administrator acting now does.
+    ///
+    /// `event` is written in the same transaction where there is one to write. A rehash at a higher work factor
+    /// is not an event -- nothing about the account changed -- so that caller passes `None`.
+    pub fn set_local_password(
         &self,
         user_id: &str,
         password_hash: &str,
@@ -1827,7 +2024,7 @@ impl Store for SqliteStore {
         expect: Option<i64>,
         event: Option<&SecurityEvent>,
     ) -> Result<Result<i64, AccountError>, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         match local_user_exists(&tx, user_id)? {
             Presence::Absent => return Ok(Err(AccountError::NoSuchUser)),
@@ -1861,8 +2058,13 @@ impl Store for SqliteStore {
         Ok(Ok(now))
     }
 
-    fn revoke_sessions(&self, user_id: &str, event: &SecurityEvent) -> Result<Result<(), AccountError>, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+    /// Bump an account's generation, which refuses every session already issued for it.
+    pub fn revoke_sessions(
+        &self,
+        user_id: &str,
+        event: &SecurityEvent,
+    ) -> Result<Result<(), AccountError>, StoreError> {
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         if !user_exists(&tx, user_id)? {
             return Ok(Err(AccountError::NoSuchUser));
@@ -1873,13 +2075,17 @@ impl Store for SqliteStore {
         Ok(Ok(()))
     }
 
-    fn set_user_enabled(
+    /// Enable or disable an account. Disabling is refused when it would leave no enabled administrator holding a
+    /// password -- checked inside the transaction, so two concurrent disables cannot remove the last one between
+    /// them -- and moves the generation, so no session issued before it survives being re-enabled. It also revokes
+    /// every key the account holds, so enabling it again brings back none of them.
+    pub fn set_user_enabled(
         &self,
         user_id: &str,
         enabled: bool,
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         if !user_exists(&tx, user_id)? {
             return Ok(Err(AccountError::NoSuchUser));
@@ -1909,8 +2115,13 @@ impl Store for SqliteStore {
         Ok(Ok(()))
     }
 
-    fn delete_user(&self, user_id: &str, event: &SecurityEvent) -> Result<Result<(), AccountError>, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+    /// Delete a disabled account for good. Its password, provider identity, roles, keys and conversations go with
+    /// it, so its username and provider identity are free for a new account, which gets a new id and reaches
+    /// nothing this one held. What stays is its id and name in `deleted_accounts`, beside the security events that
+    /// name it. Refused for an enabled account and for [`super::accounts::BOOTSTRAP_USERNAME`], the account
+    /// recovery restores.
+    pub fn delete_user(&self, user_id: &str, event: &SecurityEvent) -> Result<Result<(), AccountError>, StoreError> {
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         let found: Option<(String, String, bool)> = tx
             .query_row(
@@ -1960,8 +2171,9 @@ impl Store for SqliteStore {
         Ok(Ok(()))
     }
 
-    fn set_display_name(&self, user_id: &str, display_name: &str) -> Result<Result<(), AccountError>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// Rename an account. Display names may repeat: the id tells accounts apart.
+    pub fn set_display_name(&self, user_id: &str, display_name: &str) -> Result<Result<(), AccountError>, StoreError> {
+        let conn = self.conn();
         let n = conn.execute(
             "UPDATE users SET display_name = ?2, updated_at = ?3 WHERE id = ?1",
             rusqlite::params![user_id, display_name, super::warnings::now_millis()],
@@ -1972,10 +2184,15 @@ impl Store for SqliteStore {
         }
     }
 
-    fn oidc_sign_in(&self, who: OidcSignIn<'_>, created: &SecurityEvent) -> Result<UserRecord, StoreError> {
+    /// The account the identity `(issuer, subject)` signs in as, creating it on its first sign-in, with `created`
+    /// written in the same transaction. Every sign-in records its groups and time.
+    ///
+    /// The account comes back as stored, disabled or not: whether it may have a session is the caller's to judge,
+    /// as it is for a local login.
+    pub fn oidc_sign_in(&self, who: OidcSignIn<'_>, created: &SecurityEvent) -> Result<UserRecord, StoreError> {
         let groups =
             serde_json::to_string(who.groups).map_err(|e| StoreError::failed(format!("encoding groups: {e}")))?;
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         // The lookup and the insert are one transaction, so two first sign-ins racing for one identity make one
         // account between them.
@@ -2019,8 +2236,9 @@ impl Store for SqliteStore {
         Ok(user)
     }
 
-    fn oidc_identity_of(&self, user_id: &str) -> Result<Option<OidcIdentityRecord>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// The identity an OIDC account signs in as. `None` for a local account or no account.
+    pub fn oidc_identity_of(&self, user_id: &str) -> Result<Option<OidcIdentityRecord>, StoreError> {
+        let conn = self.conn();
         let row: Option<(String, String, String, Option<String>, i64)> = conn
             .query_row(
                 "SELECT issuer, subject, groups, login, last_sign_in FROM oidc_identities WHERE user_id = ?1",
@@ -2042,21 +2260,26 @@ impl Store for SqliteStore {
         }))
     }
 
-    fn oidc_refreshed(&self, user_id: &str, groups: &[String], login: Option<&str>) -> Result<(), StoreError> {
+    /// Record what a token refresh found the provider saying about the OIDC account `user_id`: its groups and login.
+    /// A refresh is not a sign-in, so the time of the last sign-in stays. An account with no OIDC identity is left
+    /// as it is.
+    pub fn oidc_refreshed(&self, user_id: &str, groups: &[String], login: Option<&str>) -> Result<(), StoreError> {
         let groups = serde_json::to_string(groups).map_err(|e| StoreError::failed(format!("encoding groups: {e}")))?;
-        self.conn.lock().unwrap().execute(
+        self.conn().execute(
             "UPDATE oidc_identities SET groups = ?2, login = ?3 WHERE user_id = ?1",
             rusqlite::params![user_id, groups, login],
         )?;
         Ok(())
     }
 
-    fn recover_local_user(
+    /// Re-enable a local account, give it the administrator role and a fresh must-change password, and bump its
+    /// generation: what recovery from the host does, as one transaction.
+    pub fn recover_local_user(
         &self,
         username: &str,
         password_hash: &str,
     ) -> Result<Result<String, AccountError>, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         let user_id: Option<String> = tx
             .query_row(
@@ -2088,13 +2311,14 @@ impl Store for SqliteStore {
         Ok(Ok(user_id))
     }
 
-    fn record_security_event(&self, event: &SecurityEvent) -> Result<(), StoreError> {
-        let conn = self.conn.lock().unwrap();
+    pub fn record_security_event(&self, event: &SecurityEvent) -> Result<(), StoreError> {
+        let conn = self.conn();
         insert_event(&conn, event)
     }
 
-    fn list_security_events(&self, limit: usize) -> Result<Vec<SecurityEvent>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// Newest first, capped at `limit`.
+    pub fn list_security_events(&self, limit: usize) -> Result<Vec<SecurityEvent>, StoreError> {
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, at, actor, action, target, outcome FROM security_events
               ORDER BY at DESC, rowid DESC LIMIT ?1",
@@ -2115,13 +2339,14 @@ impl Store for SqliteStore {
 
     // -- key accounts --------------------------------------------------------
 
-    fn create_key_account(
+    /// Create an enabled key account with no key, holding the roles `roles` names, `event` in the same transaction.
+    pub fn create_key_account(
         &self,
         account: NewKeyAccount<'_>,
         roles: &[String],
         event: &SecurityEvent,
     ) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute(
             "INSERT INTO users (id, auth_source, display_name, enabled, generation, created_at, updated_at)
@@ -2134,8 +2359,10 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    fn api_keys_of(&self, user_id: &str) -> Result<Vec<ApiKeyRecord>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// The keys the account `user_id` holds that are not revoked, expired or not, oldest first. Never a key or its
+    /// hash.
+    pub fn api_keys_of(&self, user_id: &str) -> Result<Vec<ApiKeyRecord>, StoreError> {
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, label, created_at, expires_at, last_used_at FROM api_keys
               WHERE user_id = ?1 AND revoked_at IS NULL
@@ -2153,13 +2380,14 @@ impl Store for SqliteStore {
         Ok(keys.collect::<Result<Vec<_>, _>>()?)
     }
 
-    fn create_api_key(
+    /// Give the enabled key account `id` a new key, `event` in the same transaction.
+    pub fn create_api_key(
         &self,
         id: &str,
         key: NewApiKey<'_>,
         event: &SecurityEvent,
     ) -> Result<Result<(), AccountError>, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         // Read in the transaction, so a disable landing beside it revokes this key too or refuses it.
         let enabled: Option<bool> = tx
@@ -2184,8 +2412,10 @@ impl Store for SqliteStore {
         Ok(Ok(()))
     }
 
-    fn revoke_api_key(&self, id: &str, key_id: &str, at: i64, event: &SecurityEvent) -> Result<bool, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+    /// Revoke the key `key_id` of the key account `id` at `at`, `event` in the same transaction. Its row stays, so
+    /// the key stays out. False when the account holds no such key unrevoked.
+    pub fn revoke_api_key(&self, id: &str, key_id: &str, at: i64, event: &SecurityEvent) -> Result<bool, StoreError> {
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         let n = tx.execute(
             "UPDATE api_keys SET revoked_at = ?3 WHERE id = ?2 AND user_id = ?1 AND revoked_at IS NULL",
@@ -2199,8 +2429,9 @@ impl Store for SqliteStore {
         Ok(true)
     }
 
-    fn api_key_by_hash(&self, token_hash: &str) -> Result<Option<PresentedKey>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// The key whose hash is `token_hash`, revoked, expired or neither. `None` for a key never made.
+    pub fn api_key_by_hash(&self, token_hash: &str) -> Result<Option<PresentedKey>, StoreError> {
+        let conn = self.conn();
         Ok(conn
             .query_row(
                 "SELECT id, user_id, revoked_at IS NOT NULL, expires_at, last_used_at FROM api_keys
@@ -2219,16 +2450,18 @@ impl Store for SqliteStore {
             .optional()?)
     }
 
-    fn mark_api_key_used(&self, key_id: &str, at: i64) -> Result<(), StoreError> {
-        self.conn.lock().unwrap().execute(
+    /// Record that the key `key_id` let a request in at `at`.
+    pub fn mark_api_key_used(&self, key_id: &str, at: i64) -> Result<(), StoreError> {
+        self.conn().execute(
             "UPDATE api_keys SET last_used_at = ?2 WHERE id = ?1",
             rusqlite::params![key_id, at],
         )?;
         Ok(())
     }
 
-    fn agent_permissions_of(&self, user_id: &str) -> Result<AgentPermissions, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// What `user_id` lets their own agent use: the default until they have said.
+    pub fn agent_permissions_of(&self, user_id: &str) -> Result<AgentPermissions, StoreError> {
+        let conn = self.conn();
         let permissions: Option<String> = conn
             .query_row(
                 "SELECT permissions FROM agent_permissions WHERE user_id = ?1",
@@ -2243,7 +2476,8 @@ impl Store for SqliteStore {
         }
     }
 
-    fn put_agent_permissions(
+    /// Replace what `user_id` lets their own agent use, with `event` written in the same transaction.
+    pub fn put_agent_permissions(
         &self,
         user_id: &str,
         permissions: &AgentPermissions,
@@ -2251,7 +2485,7 @@ impl Store for SqliteStore {
     ) -> Result<Result<(), AccountError>, StoreError> {
         let encoded = serde_json::to_string(permissions)
             .map_err(|e| StoreError::failed(format!("encoding agent permissions: {e}")))?;
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         if !user_exists(&tx, user_id)? {
             return Ok(Err(AccountError::NoSuchUser));
@@ -2266,8 +2500,9 @@ impl Store for SqliteStore {
         Ok(Ok(()))
     }
 
-    fn create_conversation(&self, conversation: &ConversationRecord) -> Result<(), StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// Keep a new conversation, with no turns yet.
+    pub fn create_conversation(&self, conversation: &ConversationRecord) -> Result<(), StoreError> {
+        let conn = self.conn();
         conn.execute(
             "INSERT INTO agent_conversations (id, user_id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![
@@ -2281,8 +2516,9 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    fn conversations_of(&self, user_id: &str) -> Result<Vec<ConversationRecord>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// `user_id`'s conversations, the one added to last first.
+    pub fn conversations_of(&self, user_id: &str) -> Result<Vec<ConversationRecord>, StoreError> {
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, user_id, title, created_at, updated_at FROM agent_conversations
              WHERE user_id = ?1 ORDER BY updated_at DESC",
@@ -2291,8 +2527,9 @@ impl Store for SqliteStore {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    fn conversation(&self, id: &str) -> Result<Option<ConversationRecord>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// The conversation `id`, whoever's it is.
+    pub fn conversation(&self, id: &str) -> Result<Option<ConversationRecord>, StoreError> {
+        let conn = self.conn();
         Ok(conn
             .query_row(
                 "SELECT id, user_id, title, created_at, updated_at FROM agent_conversations WHERE id = ?1",
@@ -2302,15 +2539,18 @@ impl Store for SqliteStore {
             .optional()?)
     }
 
-    fn turns_of(&self, conversation_id: &str) -> Result<Vec<String>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// The turns of `conversation_id`, in the order said, as [`Store::append_turn`] was given them.
+    pub fn turns_of(&self, conversation_id: &str) -> Result<Vec<String>, StoreError> {
+        let conn = self.conn();
         let mut stmt = conn.prepare("SELECT turn FROM agent_turns WHERE conversation_id = ?1 ORDER BY seq")?;
         let rows = stmt.query_map((conversation_id,), |row| row.get(0))?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    fn append_turn(&self, conversation_id: &str, turn: &str, at: i64) -> Result<bool, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+    /// Add `turn` after the last of `conversation_id`'s, and mark it touched `at`. False when there is no such
+    /// conversation, deleted while its turn ran.
+    pub fn append_turn(&self, conversation_id: &str, turn: &str, at: i64) -> Result<bool, StoreError> {
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         let n = tx.execute(
             "UPDATE agent_conversations SET updated_at = ?2 WHERE id = ?1",
@@ -2328,8 +2568,9 @@ impl Store for SqliteStore {
         Ok(true)
     }
 
-    fn delete_conversation(&self, id: &str) -> Result<bool, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+    /// Remove a conversation and its turns. False when there was none.
+    pub fn delete_conversation(&self, id: &str) -> Result<bool, StoreError> {
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM agent_turns WHERE conversation_id = ?1", (id,))?;
         let n = tx.execute("DELETE FROM agent_conversations WHERE id = ?1", (id,))?;
@@ -2337,8 +2578,9 @@ impl Store for SqliteStore {
         Ok(n > 0)
     }
 
-    fn delete_conversations_untouched_since(&self, before: i64) -> Result<usize, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+    /// Remove every conversation not added to since `before`, in milliseconds since the epoch. How many went.
+    pub fn delete_conversations_untouched_since(&self, before: i64) -> Result<usize, StoreError> {
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute(
             "DELETE FROM agent_turns WHERE conversation_id IN
@@ -2350,8 +2592,9 @@ impl Store for SqliteStore {
         Ok(n)
     }
 
-    fn list_roles(&self) -> Result<Vec<Role>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+    /// Every role, by name.
+    pub fn list_roles(&self) -> Result<Vec<Role>, StoreError> {
+        let conn = self.conn();
         let mut roles: Vec<Role> = conn
             .prepare("SELECT name FROM roles ORDER BY name")?
             .query_map([], |row| {
@@ -2389,8 +2632,9 @@ impl Store for SqliteStore {
         Ok(roles)
     }
 
-    fn put_role(&self, role: &Role, event: &SecurityEvent) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+    /// Create `role`, or replace the one of that name whole, with `event` written in the same transaction.
+    pub fn put_role(&self, role: &Role, event: &SecurityEvent) -> Result<(), StoreError> {
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         tx.execute(
             "INSERT INTO roles (name) VALUES (?1) ON CONFLICT(name) DO NOTHING",
@@ -2416,8 +2660,10 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    fn delete_role(&self, name: &str, event: &SecurityEvent) -> Result<bool, StoreError> {
-        let mut conn = self.conn.lock().unwrap();
+    /// Remove the role called `name`, and take it off every account it was given to, with `event` written in the same
+    /// transaction. False when there was none.
+    pub fn delete_role(&self, name: &str, event: &SecurityEvent) -> Result<bool, StoreError> {
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         if tx.execute("DELETE FROM roles WHERE name = ?1", (name,))? == 0 {
             return Ok(false);
@@ -2436,15 +2682,19 @@ impl Store for SqliteStore {
         Ok(true)
     }
 
-    fn setting(&self, key: &str) -> Result<Option<String>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+    /// What an operator has configured, or `None` where they have not. Absent means the default applies, which is
+    /// a different thing from a value they chose that happens to equal it.
+    pub fn setting(&self, key: &str) -> Result<Option<String>, StoreError> {
+        let conn = self.conn();
         let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?1")?;
         let mut rows = stmt.query_map([key], |row| row.get::<_, String>(0))?;
         rows.next().transpose().map_err(StoreError::from)
     }
 
-    fn put_settings(&self, entries: &[(&str, String)], event: Option<&SecurityEvent>) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+    /// Write several settings as one transaction. A tab saves together or not at all: half of a pair that
+    /// constrains itself is worse than neither half.
+    pub fn put_settings(&self, entries: &[(&str, String)], event: Option<&SecurityEvent>) -> Result<(), StoreError> {
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         for (key, value) in entries {
             tx.execute(
@@ -2462,11 +2712,15 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    fn sealed_setting(&self, key: &str, value: &str) -> Result<String, StoreError> {
+    /// `value` sealed under the leader's key and bound to the setting `key`, as the text [`Store::put_settings`]
+    /// stores for it. For a setting that is a credential.
+    pub fn sealed_setting(&self, key: &str, value: &str) -> Result<String, StoreError> {
         Ok(self.key_for_sealing()?.seal(key, value.as_bytes()).to_text())
     }
 
-    fn opened_setting(&self, key: &str) -> Result<Option<String>, StoreError> {
+    /// The setting `key`, written by [`Store::sealed_setting`], opened. `None` when unset, or sealed by a key this
+    /// leader does not hold.
+    pub fn opened_setting(&self, key: &str) -> Result<Option<String>, StoreError> {
         let (Some(text), Some(sealing)) = (self.setting(key)?, self.key_if_any()?) else {
             return Ok(None);
         };
@@ -2474,8 +2728,9 @@ impl Store for SqliteStore {
         Ok(opened.and_then(|value| String::from_utf8(value).ok()))
     }
 
-    fn alerts_told(&self) -> Result<Vec<AlertTold>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+    /// Every warning an alert channel has been told of and not yet told has cleared.
+    pub fn alerts_told(&self) -> Result<Vec<AlertTold>, StoreError> {
+        let conn = self.conn();
         let mut stmt =
             conn.prepare("SELECT channel, warning, told_at, body FROM alerts_told ORDER BY channel, warning")?;
         let rows = stmt.query_map([], |row| {
@@ -2489,8 +2744,10 @@ impl Store for SqliteStore {
         rows.collect::<Result<_, _>>().map_err(StoreError::from)
     }
 
-    fn record_alerts_told(&self, told: &[AlertTold], cleared: &[(String, String)]) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+    /// Record, as one transaction, that channels took `told` and were told that each `(channel, warning)` in
+    /// `cleared` has cleared.
+    pub fn record_alerts_told(&self, told: &[AlertTold], cleared: &[(String, String)]) -> Result<(), StoreError> {
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         for t in told {
             tx.execute(
@@ -2509,8 +2766,9 @@ impl Store for SqliteStore {
         Ok(())
     }
 
-    fn forget_alert_channels(&self, keep: &[String]) -> Result<(), StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+    /// Drop what was told to every channel not in `keep`: a channel that is gone has nobody left to tell.
+    pub fn forget_alert_channels(&self, keep: &[String]) -> Result<(), StoreError> {
+        let conn = self.conn();
         let keep = serde_json::to_string(keep).map_err(|e| StoreError::failed(e.to_string()))?;
         conn.execute(
             "DELETE FROM alerts_told WHERE channel NOT IN (SELECT value FROM json_each(?1))",
@@ -2542,9 +2800,9 @@ fn insert_event(conn: &Connection, event: &SecurityEvent) -> Result<(), StoreErr
     let (actor_name, subject_name) = (account_name(conn, &event.actor), account_name(conn, &event.target));
     let (actor_name, subject_name) = (actor_name.as_deref(), subject_name.as_deref());
     if event.outcome == "refused" {
-        tracing::warn!(target: "audit.recorded", actor = %event.actor, actor_name, action = %event.action, subject = %event.target, subject_name, outcome = %event.outcome, "an audited action was recorded");
+        tracing::warn!(name: "recorded", target: "api", actor = %event.actor, actor_name, action = %event.action, subject = %event.target, subject_name, outcome = %event.outcome, "an audited action was recorded");
     } else {
-        tracing::info!(target: "audit.recorded", actor = %event.actor, actor_name, action = %event.action, subject = %event.target, subject_name, outcome = %event.outcome, "an audited action was recorded");
+        tracing::info!(name: "recorded", target: "api", actor = %event.actor, actor_name, action = %event.action, subject = %event.target, subject_name, outcome = %event.outcome, "an audited action was recorded");
     }
     Ok(())
 }
@@ -2724,15 +2982,31 @@ mod tests {
         dir.join("sealing.key")
     }
 
-    fn store_with_key(key: &Path) -> SqliteStore {
-        SqliteStore::open(Path::new(":memory:"), key).unwrap()
+    fn store_with_key(key: &Path) -> Store {
+        Store::open(Path::new(":memory:"), key).unwrap()
     }
 
-    fn store() -> SqliteStore {
+    fn store() -> Store {
         store_with_key(&temp_key())
     }
 
     const NOW: i64 = 1_700_000_000_000;
+
+    #[test]
+    fn a_panic_mid_write_leaves_the_store_working_and_the_write_undone() {
+        let s = store();
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut conn = s.conn();
+            let tx = conn.transaction().unwrap();
+            tx.execute("INSERT INTO settings (key, value) VALUES ('half', 'written')", ())
+                .unwrap();
+            panic!("mid-write");
+        }));
+        assert!(panicked.is_err());
+        assert_eq!(s.setting("half").unwrap(), None);
+        s.put_settings(&[("after", "x".to_string())], None).unwrap();
+        assert_eq!(s.setting("after").unwrap().as_deref(), Some("x"));
+    }
     const AN_HOUR: i64 = 60 * 60 * 1000;
 
     fn a_code(id: &str, hash: &str, max_uses: i64, expires_at: i64) -> NewEnrollmentCode {
@@ -3427,12 +3701,12 @@ mod tests {
 
     // -- the secret catalog ------------------------------------------------
 
-    fn leader_stored(s: &SqliteStore, name: &str, value: &str) {
+    fn leader_stored(s: &Store, name: &str, value: &str) {
         s.create_secret(name, Custody::LeaderStored, "", Some(value), None)
             .unwrap();
     }
 
-    fn record(s: &SqliteStore, name: &str) -> SecretRecord {
+    fn record(s: &Store, name: &str) -> SecretRecord {
         s.list_secrets()
             .unwrap()
             .into_iter()
@@ -3440,7 +3714,7 @@ mod tests {
             .unwrap_or_else(|| panic!("no secret named {name:?}"))
     }
 
-    fn versions(s: &SqliteStore, name: &str) -> Vec<i64> {
+    fn versions(s: &Store, name: &str) -> Vec<i64> {
         record(s, name).versions.iter().map(|v| v.version).collect()
     }
 
@@ -3897,7 +4171,7 @@ mod tests {
         leader_stored(&s, "kafka-east-sasl", "swordfish");
 
         {
-            let conn = s.conn.lock().unwrap();
+            let conn = s.conn();
             conn.execute(
                 "UPDATE secret_versions SET key_id = w.key_id, nonce = w.nonce, ciphertext = w.ciphertext
                    FROM (SELECT key_id, nonce, ciphertext FROM secret_versions WHERE name = 'kafka-west-sasl') AS w
@@ -4423,7 +4697,7 @@ mod tests {
     #[test]
     fn a_credential_cannot_hang_off_a_non_local_account() {
         let s = store();
-        let conn = s.conn.lock().unwrap();
+        let conn = s.conn();
         conn.execute(
             "INSERT INTO users (id, auth_source, display_name, enabled, generation, created_at, updated_at)
              VALUES ('u_oidc', 'oidc', 'Someone', 1, 1, 0, 0)",
@@ -4625,7 +4899,7 @@ mod tests {
     fn an_identity_cannot_hang_off_a_local_account() {
         let s = store();
         s.bootstrap_administrator(new_user("u_1", "admin")).unwrap();
-        let conn = s.conn.lock().unwrap();
+        let conn = s.conn();
         let refused = conn.execute(
             "INSERT INTO oidc_identities (user_id, auth_source, issuer, subject, last_sign_in)
              VALUES ('u_1', 'oidc', 'https://idp', 'sub', 0)",
@@ -4683,8 +4957,8 @@ mod tests {
         });
         let fields: Vec<_> = said
             .iter()
-            .filter(|(_, site, _)| site == "audit.recorded")
-            .map(|(_, _, f)| f)
+            .filter(|(_, class, kind, _)| (class.as_str(), kind.as_str()) == ("api", "recorded"))
+            .map(|(_, _, _, f)| f)
             .collect();
         let named = |f: &Vec<(String, String)>, key: &str| f.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
         assert_eq!(named(fields[0], "actor_name").as_deref(), Some("Dana"));
@@ -4752,8 +5026,8 @@ mod tests {
         });
         let levels: Vec<_> = said
             .iter()
-            .filter(|(_, site, _)| site == "audit.recorded")
-            .map(|(level, _, _)| *level)
+            .filter(|(_, class, kind, _)| (class.as_str(), kind.as_str()) == ("api", "recorded"))
+            .map(|(level, _, _, _)| *level)
             .collect();
         assert_eq!(
             levels,
@@ -4773,11 +5047,11 @@ mod tests {
         let _ = std::fs::remove_file(&db);
         let key = temp_key();
 
-        let first = SqliteStore::open(&db, &key).unwrap();
+        let first = Store::open(&db, &key).unwrap();
         first.bootstrap_administrator(new_user("u_1", "admin")).unwrap();
         drop(first);
 
-        let again = SqliteStore::open(&db, &key).unwrap();
+        let again = Store::open(&db, &key).unwrap();
         assert!(again.any_user_exists().unwrap(), "the account survived reopening");
         let version: i64 = again
             .conn
@@ -4796,11 +5070,11 @@ mod tests {
         let db = dir.join("leader.db");
         let _ = std::fs::remove_file(&db);
         let key = temp_key();
-        let store = SqliteStore::open(&db, &key).unwrap();
+        let store = Store::open(&db, &key).unwrap();
         store.bootstrap_administrator(new_user("u_1", "admin")).unwrap();
         drop(store);
         // A second sound start, whose copy holds the account.
-        drop(SqliteStore::open(&db, &key).unwrap());
+        drop(Store::open(&db, &key).unwrap());
 
         // Garbage over page 2, a table's root: the header still reads, so it is the integrity check that finds it.
         let mut bytes = std::fs::read(&db).unwrap();
@@ -4808,10 +5082,7 @@ mod tests {
         bytes[page..2 * page].fill(0xA5);
         std::fs::write(&db, &bytes).unwrap();
 
-        let refused = SqliteStore::open(&db, &key)
-            .err()
-            .expect("a damaged file opened")
-            .message;
+        let refused = Store::open(&db, &key).err().expect("a damaged file opened").message;
         assert!(refused.contains(&db.display().to_string()), "{refused}");
         assert!(
             refused.contains("damaged") && refused.contains("a backup of your own"),
@@ -4825,7 +5096,7 @@ mod tests {
         for sidecar in ["-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{sidecar}", db.display()));
         }
-        let restored = SqliteStore::open(&db, &key).unwrap();
+        let restored = Store::open(&db, &key).unwrap();
         assert!(restored.get_user("u_1").unwrap().is_some());
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -4864,19 +5135,19 @@ mod tests {
         let db = dir.join("leader.db");
         let _ = std::fs::remove_file(&db);
         let key = temp_key();
-        let store = SqliteStore::open(&db, &key).unwrap();
+        let store = Store::open(&db, &key).unwrap();
         store.bootstrap_administrator(new_user("u_1", "admin")).unwrap();
         drop(store);
 
         flip_an_index_key(&db);
-        drop(SqliteStore::open(&db, &key).expect("an ordinary start takes the quick check"));
+        drop(Store::open(&db, &key).expect("an ordinary start takes the quick check"));
 
         // One step behind: this start would run it.
         let conn = Connection::open(&db).unwrap();
         conn.pragma_update(None, "user_version", (STEPS.len() - 1) as i64)
             .unwrap();
         drop(conn);
-        let refused = SqliteStore::open(&db, &key)
+        let refused = Store::open(&db, &key)
             .err()
             .expect("a start about to upgrade opened")
             .message;
@@ -4895,7 +5166,7 @@ mod tests {
         let db = dir.join("newer.db");
         let _ = std::fs::remove_file(&db);
         let key = temp_key();
-        drop(SqliteStore::open(&db, &key).unwrap());
+        drop(Store::open(&db, &key).unwrap());
 
         let conn = Connection::open(&db).unwrap();
         conn.pragma_update(None, "user_version", (STEPS.len() + 1) as i64)
@@ -4904,7 +5175,7 @@ mod tests {
             .unwrap();
         drop(conn);
 
-        match SqliteStore::open(&db, &key) {
+        match Store::open(&db, &key) {
             Err(e) => assert!(e.message.contains("newer build"), "{}", e.message),
             Ok(_) => panic!("a database from a newer build was opened"),
         }
@@ -5043,6 +5314,98 @@ mod tests {
             })
             .unwrap();
         assert_eq!(roles, r#"["kept","administrator"]"#);
+    }
+
+    /// Step 18 drops an override that names the service syslogReceiver, and keeps every other.
+    #[test]
+    fn the_log_levels_step_drops_an_override_naming_syslog_receiver() {
+        assert!(!super::super::steps::is_additive(STEPS[17]));
+        let mut conn = Connection::open_in_memory().unwrap();
+        super::super::steps::upgrade_sqlite(&mut conn, "leader.db", &STEPS[..17]).unwrap();
+        let levels = r#"{"default":"info","overrides":[{"service":"syslogReceiver","level":"debug"},{"service":"kafka","level":"warn"},{"class":"sources","level":"debug"}]}"#;
+        conn.execute("INSERT INTO settings (key, value) VALUES ('log_levels', ?1)", [levels])
+            .unwrap();
+        super::super::steps::upgrade_sqlite(&mut conn, "leader.db", STEPS).unwrap();
+        let value: String = conn
+            .query_row("SELECT value FROM settings WHERE key = 'log_levels'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let levels: crate::heartbeat::LogLevels = serde_json::from_str(&value).unwrap();
+        let named: Vec<_> = levels.overrides.iter().map(|o| o.names()).collect();
+        assert_eq!(
+            named,
+            [
+                Some(crate::heartbeat::Named::Service("kafka")),
+                Some(crate::heartbeat::Named::Class("sources"))
+            ]
+        );
+        assert_eq!(levels.default.as_deref(), Some("info"));
+    }
+
+    /// A summary an older build kept on an answer stands, after the step, as a fresh start before the person's
+    /// message it was written ahead of, and the turns after it keep their order.
+    #[test]
+    fn the_summary_step_makes_a_summary_on_an_answer_a_fresh_start() {
+        assert!(!super::super::steps::is_additive(STEPS[18]));
+        let mut conn = Connection::open_in_memory().unwrap();
+        super::super::steps::upgrade_sqlite(&mut conn, "leader.db", &STEPS[..18]).unwrap();
+        let answer = |text: &str, summary: Option<&str>| {
+            let mut answer = serde_json::json!({"Answered": {"text": text, "calls": [], "stop": "Done",
+                "usage": {"input": 1, "output": 1}, "native": {"role": "assistant", "content": text}}});
+            if let Some(summary) = summary {
+                answer["Answered"]["summary"] = summary.into();
+            }
+            answer.to_string()
+        };
+        let said = |text: &str| serde_json::json!({"Asked": [{"Text": text}]}).to_string();
+        for (seq, turn) in [
+            said("first"),
+            answer("one", None),
+            said("second"),
+            answer("two", Some("older")),
+            answer("two again", Some("S")),
+            said("third"),
+            answer("three", Some("T")),
+        ]
+        .iter()
+        .enumerate()
+        {
+            conn.execute(
+                "INSERT INTO agent_turns (conversation_id, seq, turn) VALUES ('c', ?1, ?2)",
+                rusqlite::params![seq as i64 + 1, turn],
+            )
+            .unwrap();
+        }
+        super::super::steps::upgrade_sqlite(&mut conn, "leader.db", STEPS).unwrap();
+        let turns: Vec<crate::leader::model::Turn> = conn
+            .prepare("SELECT turn FROM agent_turns WHERE conversation_id = 'c' ORDER BY seq")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|t| serde_json::from_str(&t.unwrap()).unwrap())
+            .collect();
+        let fresh = |summary: &str| {
+            crate::leader::model::Turn::Fresh(crate::leader::model::Fresh {
+                summary: Some(summary.to_string()),
+                tokens: 0,
+            })
+        };
+        assert_eq!(turns.len(), 9);
+        let summaries: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM agent_turns WHERE json_type(turn, '$.Answered.summary') IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(summaries, 0);
+        // The newest summary written ahead of a message is the one kept.
+        assert_eq!(turns[2], fresh("S"));
+        assert_eq!(turns[3], serde_json::from_str(&said("second")).unwrap());
+        assert_eq!(turns[5], serde_json::from_str(&answer("two again", None)).unwrap());
+        assert_eq!(turns[6], fresh("T"));
+        assert_eq!(turns[7], serde_json::from_str(&said("third")).unwrap());
     }
 
     #[test]
@@ -5207,7 +5570,7 @@ mod tests {
         crate::leader::accounts::event_for(&crate::leader::store::Actor::system(), action, "", "ok")
     }
 
-    fn new_key_account(s: &SqliteStore, id: &str, roles: &[String]) {
+    fn new_key_account(s: &Store, id: &str, roles: &[String]) {
         s.create_key_account(
             NewKeyAccount { id, display_name: id },
             roles,
@@ -5403,7 +5766,7 @@ mod tests {
                 .unwrap(),
             Err(AccountError::NoSuchUser)
         );
-        let refused = s.conn.lock().unwrap().execute(
+        let refused = s.conn().execute(
             "INSERT INTO api_keys (id, user_id, auth_source, token_hash, created_at) VALUES ('k', 'u_1', 'key', 'h', 0)",
             [],
         );
@@ -5483,7 +5846,7 @@ mod tests {
         assert!(back.enabled);
 
         let kept: Vec<String> = {
-            let conn = s.conn.lock().unwrap();
+            let conn = s.conn();
             let mut stmt = conn
                 .prepare("SELECT display_name FROM deleted_accounts ORDER BY id")
                 .unwrap();
@@ -5752,7 +6115,7 @@ mod tests {
             entry: entry.to_string(),
         };
 
-        let first = SqliteStore::open(&db, &key).unwrap();
+        let first = Store::open(&db, &key).unwrap();
         assert_eq!(first.source_hold("g", &source).unwrap(), None);
         first.set_source_holder("g", &source, "w1").unwrap();
         first
@@ -5781,7 +6144,7 @@ mod tests {
         first.set_source_holder("g", &source, "w2").unwrap();
         drop(first);
 
-        let again = SqliteStore::open(&db, &key).unwrap();
+        let again = Store::open(&db, &key).unwrap();
         assert_eq!(
             again.source_hold("g", &source).unwrap(),
             Some(SourceHold {
@@ -5930,7 +6293,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("leader.db");
         let _ = std::fs::remove_file(&db);
-        let store = SqliteStore::open(&db, &temp_key()).unwrap();
+        let store = Store::open(&db, &temp_key()).unwrap();
         // A write, so the WAL exists to be checked.
         store
             .create_enrollment_code(&a_code("j1", "deadbeef", 1, i64::MAX))
@@ -5959,10 +6322,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("leader.db");
         let _ = std::fs::remove_file(&db);
-        drop(SqliteStore::open(&db, &temp_key()).unwrap());
+        drop(Store::open(&db, &temp_key()).unwrap());
 
         std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o644)).unwrap();
-        drop(SqliteStore::open(&db, &temp_key()).unwrap());
+        drop(Store::open(&db, &temp_key()).unwrap());
 
         let mode = std::fs::metadata(&db).unwrap().permissions().mode();
         assert_eq!(mode & 0o077, 0, "still mode {:03o} after reopening", mode & 0o777);
@@ -5978,7 +6341,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("leader.db");
         let _ = std::fs::remove_file(&db);
-        drop(SqliteStore::open(&db, &temp_key()).unwrap());
+        drop(Store::open(&db, &temp_key()).unwrap());
 
         std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o400)).unwrap();
         make_private(&db).unwrap();

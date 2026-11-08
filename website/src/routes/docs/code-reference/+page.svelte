@@ -6,7 +6,10 @@
   import {
     EXCEPTIONS as exceptions,
     GROUPS as groups,
-    SIGNATURES as signatures,
+    LITERALS as literals,
+    anchor,
+    title,
+    typedRows,
     TYPES as types,
     topic,
     type Example,
@@ -28,7 +31,7 @@
   const errors: Record<string, Refused[]> = examplesData.errors;
   const entries = groups
     .flatMap((group) =>
-      group.functions.map((fn) => ({ id: fn.name, title: fn.name, summary: fn.summary })),
+      group.functions.map((fn) => ({ id: anchor(fn), title: title(fn), summary: fn.summary })),
     )
     .concat(
       language.parseFunctions.map((fn) => ({
@@ -46,6 +49,7 @@
     { id: 'fields', title: 'Fields' },
     ...recordGroups.map((g) => ({ id: g.id, title: g.title })),
     { id: 'statements', title: 'Statements' },
+    { id: 'values', title: 'Writing values' },
     { id: 'types', title: 'Types' },
     { id: 'nulls', title: 'Null' },
     ...typeGroups.map((g) => ({ id: g.id, title: g.title })),
@@ -75,7 +79,7 @@
   <title>Language reference — smeltr</title>
   <meta
     name="description"
-    content="Every operator and function in Smeltr's language, grouped by type with worked examples: naming a field, comparison and logic, conversion, numbers, sequences, strings, regular expressions, arrays, dates, durations and addresses."
+    content="Every operator and function in Smeltr's language, grouped by type with worked examples: naming a field, objects, comparison and logic, bytes, numbers, strings, regular expressions, arrays, dates and times, durations, addresses and networks, URLs, domains and user agents, and rebuilding a record's text."
   />
 </svelte:head>
 
@@ -199,16 +203,16 @@
       {#if run.group}
         <p class="grouphead">{run.group}</p>
       {/if}
-      {#each run.items as fn (fn.name)}
+      {#each run.items as fn (anchor(fn))}
         <article class="fn">
-          <h3 id={fn.name}>
-            <a class="heading-link" href={`#${fn.name}`}
+          <h3 id={anchor(fn)}>
+            <a class="heading-link" href={`#${anchor(fn)}`}
               ><code>{fn.signature}</code><span aria-hidden="true"> #</span></a
             >
           </h3>
-          {#if signatures[fn.name]}
+          {#if typedRows(fn).length}
             <p class="types">
-              {#each signatures[fn.name] as row, i (i)}
+              {#each typedRows(fn) as row, i (i)}
                 <span><code>{row.params}</code> &rarr; <code>{row.result}</code></span>
               {/each}
             </p>
@@ -320,6 +324,28 @@
         <tbody>
           {#each language.statements as row (row.form)}
             <tr><td><code>{row.form}</code></td><td><Prose text={row.rule} /></td></tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="group">
+    <h2 id="values">Writing values</h2>
+    <div class="tscroll">
+      <table class="kinds">
+        <thead><tr><th>Literal</th><th>Is</th><th>Example</th></tr></thead>
+        <tbody>
+          {#each literals as row (row.form)}
+            <tr>
+              <td><code>{row.form}</code></td>
+              <td><Prose text={row.rule} /></td>
+              <td class="ex">
+                {#each row.examples as ex, i (i)}<div class="exline">
+                    {@render example(ex)}
+                  </div>{/each}
+              </td>
+            </tr>
           {/each}
         </tbody>
       </table>

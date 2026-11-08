@@ -73,6 +73,59 @@ fn isnull_length_and_tostring_work_end_to_end() {
     b.reclaim(&mut env.pool);
 }
 
+/// A keyword cannot be written as a bare field name, but `$["..."]` names any field, a keyword's spelling included.
+#[test]
+fn a_keyword_is_written_only_as_a_quoted_name() {
+    for (word, _) in smeltr::expr::lex::KEYWORDS {
+        let bare = harness::pipeline(vec![code(0, &format!("{word} = \"x\";"))]);
+        assert!(
+            compile(&bare, &SourceMeta::KAFKA).is_err(),
+            "`{word} = \"x\";` compiled, and must be refused"
+        );
+        let quoted = harness::pipeline(vec![
+            code(0, "status = __source.offset;"),
+            code(1, &format!(r#"$["{word}"] = "x"; copy = $["{word}"];"#)),
+        ]);
+        let plan = compile(&quoted, &SourceMeta::KAFKA)
+            .unwrap_or_else(|e| panic!("`$[\"{word}\"] = \"x\";` does not compile: {e:?}"));
+        let mut env = Env::new();
+        let mut b = Batch::new(&plan.slot_layout, 1, 0);
+        seed_offset(&mut env, &mut b, &[200]);
+        let rows = env.run_json(&plan, &mut b);
+        assert_eq!(rows[0][word], "x", "`$[\"{word}\"] = \"x\";` does not write the field");
+        assert_eq!(
+            rows[0]["copy"], "x",
+            "`$[\"{word}\"]` does not read back what was written"
+        );
+        b.reclaim(&mut env.pool);
+    }
+}
+
+/// `true`, `false` and `null` are values before a dot too, never the name of a field.
+#[test]
+fn a_method_is_called_on_true_false_and_null() {
+    let plan = compile_ok(vec![
+        code(0, "status = __source.offset;"),
+        code(
+            1,
+            r#"
+            yes = true.toString();
+            no = false.toString();
+            none = isNull(null.toString());
+            "#,
+        ),
+    ]);
+    let mut env = Env::new();
+    let mut b = Batch::new(&plan.slot_layout, 1, 0);
+    seed_offset(&mut env, &mut b, &[200]);
+
+    let rows = env.run_json(&plan, &mut b);
+    assert_eq!(rows[0]["yes"], "true");
+    assert_eq!(rows[0]["no"], "false");
+    assert_eq!(rows[0]["none"], true);
+    b.reclaim(&mut env.pool);
+}
+
 #[test]
 fn parseint_parsefloat_and_round_work_end_to_end() {
     let plan = compile_ok(vec![code(
@@ -809,6 +862,99 @@ fn includes_agrees_with_index_of() {
         assert_eq!(rows[0]["has"], pos >= 0, "includes({text}, {needle}) against pos {pos}");
         b.reclaim(&mut env.pool);
     }
+}
+
+/// `indexOf`, `lastIndexOf` and `includes` with and without a starting position, on text and arrays, against what
+/// JavaScript gives for the same calls.
+#[test]
+fn a_search_from_a_position_reads_as_javascript_reads_it() {
+    // (value, search, from, indexOf, lastIndexOf, includes), the results from Node.
+    type Case = (&'static str, &'static str, Option<i64>, i64, i64, bool);
+    let cases: &[Case] = &[
+        ("\"abcabc\"", "\"bc\"", None, 1, 4, true),
+        ("\"abcabc\"", "\"bc\"", Some(0), 1, -1, true),
+        ("\"abcabc\"", "\"bc\"", Some(1), 1, 1, true),
+        ("\"abcabc\"", "\"bc\"", Some(2), 4, 1, true),
+        ("\"abcabc\"", "\"bc\"", Some(4), 4, 4, true),
+        ("\"abcabc\"", "\"bc\"", Some(5), -1, 4, false),
+        ("\"abcabc\"", "\"bc\"", Some(6), -1, 4, false),
+        ("\"abcabc\"", "\"bc\"", Some(9), -1, 4, false),
+        ("\"abcabc\"", "\"bc\"", Some(-1), 1, -1, true),
+        ("\"abcabc\"", "\"bc\"", Some(-9), 1, -1, true),
+        ("\"aaa\"", "\"aa\"", None, 0, 1, true),
+        ("\"aaa\"", "\"aa\"", Some(0), 0, 0, true),
+        ("\"aaa\"", "\"aa\"", Some(1), 1, 1, true),
+        ("\"aaa\"", "\"aa\"", Some(2), -1, 1, false),
+        ("\"aaa\"", "\"aa\"", Some(3), -1, 1, false),
+        ("\"aaa\"", "\"aa\"", Some(-1), 0, 0, true),
+        ("\"abc\"", "\"\"", None, 0, 3, true),
+        ("\"abc\"", "\"\"", Some(0), 0, 0, true),
+        ("\"abc\"", "\"\"", Some(2), 2, 2, true),
+        ("\"abc\"", "\"\"", Some(3), 3, 3, true),
+        ("\"abc\"", "\"\"", Some(5), 3, 3, true),
+        ("\"abc\"", "\"\"", Some(-2), 0, 0, true),
+        ("\"na\u{ef}ve na\u{ef}ve\"", "\"\u{ef}v\"", None, 2, 8, true),
+        ("\"na\u{ef}ve na\u{ef}ve\"", "\"\u{ef}v\"", Some(0), 2, -1, true),
+        ("\"na\u{ef}ve na\u{ef}ve\"", "\"\u{ef}v\"", Some(2), 2, 2, true),
+        ("\"na\u{ef}ve na\u{ef}ve\"", "\"\u{ef}v\"", Some(3), 8, 2, true),
+        ("\"na\u{ef}ve na\u{ef}ve\"", "\"\u{ef}v\"", Some(8), 8, 8, true),
+        ("\"na\u{ef}ve na\u{ef}ve\"", "\"\u{ef}v\"", Some(-1), 2, -1, true),
+        ("[1, 2, 3, 2, 1]", "2", None, 1, 3, true),
+        ("[1, 2, 3, 2, 1]", "2", Some(0), 1, -1, true),
+        ("[1, 2, 3, 2, 1]", "2", Some(1), 1, 1, true),
+        ("[1, 2, 3, 2, 1]", "2", Some(2), 3, 1, true),
+        ("[1, 2, 3, 2, 1]", "2", Some(3), 3, 3, true),
+        ("[1, 2, 3, 2, 1]", "2", Some(4), -1, 3, false),
+        ("[1, 2, 3, 2, 1]", "2", Some(5), -1, 3, false),
+        ("[1, 2, 3, 2, 1]", "2", Some(9), -1, 3, false),
+        ("[1, 2, 3, 2, 1]", "2", Some(-1), -1, 3, false),
+        ("[1, 2, 3, 2, 1]", "2", Some(-2), 3, 3, true),
+        ("[1, 2, 3, 2, 1]", "2", Some(-4), 1, 1, true),
+        ("[1, 2, 3, 2, 1]", "2", Some(-5), 1, -1, true),
+        ("[1, 2, 3, 2, 1]", "2", Some(-9), 1, -1, true),
+        ("slice([1, 2], 2)", "1", None, -1, -1, false),
+        ("slice([1, 2], 2)", "1", Some(0), -1, -1, false),
+        ("slice([1, 2], 2)", "1", Some(-1), -1, -1, false),
+    ];
+    for &(value, search, from, first, last, has) in cases {
+        let args = from.map_or(search.to_string(), |p| format!("{search}, {p}"));
+        let plan = compile_ok(vec![code(
+            0,
+            &format!("v = {value}; first = v.indexOf({args}); last = v.lastIndexOf({args}); has = v.includes({args});"),
+        )]);
+        let mut env = Env::new();
+        let mut b = Batch::new(&plan.slot_layout, 1, 0);
+        seed_offset(&mut env, &mut b, &[0]);
+        let rows = env.run_json(&plan, &mut b);
+        let got = (
+            rows[0]["first"].as_i64(),
+            rows[0]["last"].as_i64(),
+            rows[0]["has"].as_bool(),
+        );
+        assert_eq!(
+            got,
+            (Some(first), Some(last), Some(has)),
+            "{value} searched for {search} from {from:?}"
+        );
+        b.reclaim(&mut env.pool);
+    }
+}
+
+/// A null starting position is a null answer, as any null argument is.
+#[test]
+fn a_null_starting_position_is_a_null_answer() {
+    let plan = compile_ok(vec![code(
+        0,
+        "let p = parseInt(\"x\"); a = \"abc\".indexOf(\"b\", p); b = [1, 2].includes(2, p); c = [1, 2].lastIndexOf(2, p);",
+    )]);
+    let mut env = Env::new();
+    let mut b = Batch::new(&plan.slot_layout, 1, 0);
+    seed_offset(&mut env, &mut b, &[0]);
+    let rows = env.run_json(&plan, &mut b);
+    for f in ["a", "b", "c"] {
+        assert!(rows[0].get(f).is_none(), "{f}: {}", rows[0]);
+    }
+    b.reclaim(&mut env.pool);
 }
 
 #[test]

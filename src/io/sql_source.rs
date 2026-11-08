@@ -29,6 +29,7 @@ use super::sql::{Bind, Dialect, Poll, Query, Statement};
 use super::values::{Value, column, spell, stored, unbuilt};
 use super::{CommitMap, IoError, Progress, RecordChunk, Source, SourceRecord};
 use crate::core::column::DataType;
+use crate::core::variant;
 use crate::heartbeat::{LedgerEntry, MAX_CURSOR, MAX_LEDGER_ENTRY, MAX_LEDGER_ITEM};
 
 /// The most rows comparing values reads in one poll. Each is a ledger entry the leader keeps.
@@ -100,6 +101,29 @@ pub enum Verdict {
     Indexed { indexes: Vec<String>, rows: u64 },
     /// The poll reads the whole of `relation`, which the database estimates at `rows` rows.
     FullScan { relation: String, rows: u64 },
+}
+
+impl Verdict {
+    /// `FullScan`, with the largest of `scans` (each a relation and the rows it reads), if that is past
+    /// [`FULL_SCAN_ROWS`]; otherwise `Indexed` through `indexes`, returning about `rows`.
+    pub fn of(scans: impl IntoIterator<Item = (String, u64)>, indexes: Vec<String>, rows: u64) -> Verdict {
+        match scans
+            .into_iter()
+            .filter(|(_, read)| *read > FULL_SCAN_ROWS)
+            .max_by_key(|(_, read)| *read)
+        {
+            Some((relation, rows)) => Verdict::FullScan { relation, rows },
+            None => Verdict::Indexed { indexes, rows },
+        }
+    }
+}
+
+/// The text at `key` in the plan node `node`.
+pub(super) fn text_at<'p>(node: &'p [u8], key: &str) -> Option<&'p str> {
+    match variant::read(variant::member(node, key)?) {
+        variant::Value::Str(s) => Some(s),
+        _ => None,
+    }
 }
 
 /// Whether a database connection is encrypted. `Require` also verifies the server's certificate and name: rustls has
@@ -722,7 +746,7 @@ impl<D: Driver + 'static> SqlSource<D> {
             self.wide = true;
         } else {
             tracing::error!(
-                target: "sql.rows_skipped",
+                name: "rows_skipped", target: "sources",
                 subject = %self.pacer.subject,
                 position = %name,
                 value = ?last,
@@ -763,7 +787,7 @@ impl<D: Driver + 'static> SqlSource<D> {
             .collect::<Result<Vec<_>, _>>()?;
         for c in columns {
             if !self.config.fields.iter().any(|(name, _)| name == c) && self.warned.insert(c.clone()) {
-                tracing::warn!(target: "sql.column_unread", subject = %self.pacer.subject, column = %c, "a result column that no record field reads is left out");
+                tracing::warn!(name: "column_unread", target: "sources", subject = %self.pacer.subject, column = %c, "a result column that no record field reads is left out");
             }
         }
         Ok(found)

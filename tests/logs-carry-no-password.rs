@@ -9,7 +9,6 @@
 //! do not expect their events carried.
 
 use smeltr::leader::accounts;
-use smeltr::leader::sqlite_store::SqliteStore;
 use smeltr::leader::store::Store;
 
 #[test]
@@ -20,7 +19,7 @@ fn bootstrapping_and_recovering_raise_no_event_carrying_the_password() {
     let dir = std::env::temp_dir().join(format!("smeltr-logs-password-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let store = SqliteStore::open(std::path::Path::new(":memory:"), &dir.join("sealing.key")).unwrap();
+    let store = Store::open(std::path::Path::new(":memory:"), &dir.join("sealing.key")).unwrap();
 
     let bootstrapped = accounts::bootstrap_if_empty(&store)
         .unwrap()

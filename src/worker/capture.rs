@@ -162,6 +162,11 @@ impl Session {
     /// starts: the leader hears why rather than an empty sample that looks like a quiet source.
     fn new(invitation: CaptureInvitation, admission: u64) -> Session {
         let (filter, seen, end) = match (&invitation.source, &invitation.destination) {
+            // What it keeps is what arrived, before there is a record for a filter to read or an identity to tell
+            // apart.
+            (Some(source), None) if invitation.raw => {
+                (Some(Arc::new(Filter::none(source.kind.meta(), &source.id))), None, None)
+            }
             (Some(source), None) => {
                 let meta = source.kind.meta();
                 // A source with no fields yet has its filter compiled once its query is described (`describe`).
@@ -174,7 +179,7 @@ impl Session {
                     Ok(filter) => (filter, None),
                     Err(e) => {
                         tracing::warn!(
-                            target: "capture.filter_not_compiled",
+                            name: "filter_not_compiled", target: "captures",
                             subject = %invitation.session,
                             error = %e,
                             "a capture's filter would not compile, so it keeps every record it reads"
@@ -223,6 +228,10 @@ impl Session {
 
     /// Where this session would be shown rows a block keeps: the source it taps, or the destination it captures.
     fn held_at(&self) -> Option<HeldAt> {
+        if self.invitation.raw {
+            // A block holds records, which a capture as sent is never shown.
+            return None;
+        }
         match (self.invitation.tapped(), &self.invitation.destination) {
             (Some(source), _) => Some(HeldAt::Source(source.id.clone())),
             (None, Some(destination)) => Some(HeldAt::Destination(destination.clone())),
@@ -245,7 +254,12 @@ impl Session {
 
     /// Whether this session takes the records a deployment reads from the source named `source`.
     fn reads(&self, source: &str) -> bool {
-        self.invitation.tapped().is_some_and(|s| s.id == source)
+        !self.invitation.raw && self.invitation.tapped().is_some_and(|s| s.id == source)
+    }
+
+    /// Whether this session takes what arrives at the receiver named `source` that a deployment runs, as sent.
+    fn reads_raw(&self, source: &str) -> bool {
+        self.invitation.raw && self.invitation.tapped().is_some_and(|s| s.id == source)
     }
 
     /// Whether this session captures the destination named `destination`.
@@ -364,6 +378,8 @@ pub struct Captures {
     /// changes it. Kept apart so a capture of one kind costs the other kind's threads nothing.
     reading: AtomicUsize,
     at_destinations: AtomicUsize,
+    /// How many of the sessions reading a source read it as sent. What a receiver's tap asks on every read.
+    reading_raw: AtomicUsize,
     /// The names in what this worker's deployment runs. Its sources decide whether a capture is served by tapping
     /// what is already flowing or by opening a consumer of its own, and a capture of a metrics source labels by it.
     deployed: Mutex<Arc<crate::metrics::Subjects>>,
@@ -615,6 +631,25 @@ impl Captures {
         let at_destinations = sessions.values().filter(|s| s.invitation.destination.is_some()).count();
         self.at_destinations.store(at_destinations, Ordering::Relaxed);
         self.reading.store(sessions.len() - at_destinations, Ordering::Relaxed);
+        let raw = sessions.values().filter(|s| s.invitation.raw).count();
+        self.reading_raw.store(raw, Ordering::Relaxed);
+    }
+
+    /// The tap a deployment attaches to the receiver it runs as `source`, for the captures of it as sent.
+    pub fn raw_tap(self: &Arc<Self>, source: &str) -> Arc<dyn crate::io::raw::RawTap> {
+        Arc::new(RawCapture {
+            captures: self.clone(),
+            at: RawAt::Deployed(source.to_string()),
+        })
+    }
+
+    /// Offer `read` to every open session `at` names.
+    fn offer_raw(&self, at: &RawAt, read: crate::io::raw::RawRead<'_>) {
+        let (columns, row) = raw_row(read, at.source());
+        let mut sessions = self.sessions.lock().unwrap();
+        for session in sessions.values_mut().filter(|s| at.takes(s)) {
+            session.offer(&columns, row.clone(), false);
+        }
     }
 
     /// Whether a deployment is reading `source` right now.
@@ -955,6 +990,119 @@ fn source_row(meta: &SourceMeta, record: &SourceRecord, text: &str, source: &cra
     }
 }
 
+/// Where a receiver's reads go as sent: to the sessions of the receiver a deployment runs, by its name, or to the one
+/// admission a cold capture listens for, by its session id and admission, of the receiver named `source`.
+enum RawAt {
+    Deployed(String),
+    Cold {
+        session: String,
+        admission: u64,
+        source: String,
+    },
+}
+
+impl RawAt {
+    fn cold(admitted: &Admitted) -> RawAt {
+        RawAt::Cold {
+            session: admitted.invitation.session.clone(),
+            admission: admitted.admission,
+            source: admitted
+                .invitation
+                .source
+                .as_ref()
+                .map_or_else(String::new, |s| s.id.clone()),
+        }
+    }
+
+    /// The receiver's name, what a row's `__source.name` reads.
+    fn source(&self) -> &str {
+        match self {
+            RawAt::Deployed(source) | RawAt::Cold { source, .. } => source,
+        }
+    }
+
+    /// Whether `session` takes what this tap is offered.
+    fn takes(&self, session: &Session) -> bool {
+        match self {
+            RawAt::Deployed(source) => session.reads_raw(source),
+            RawAt::Cold {
+                session: id, admission, ..
+            } => session.invitation.session == *id && session.admission == *admission,
+        }
+    }
+}
+
+/// A receiver's tap, for the captures that read it as sent.
+struct RawCapture {
+    captures: Arc<Captures>,
+    at: RawAt,
+}
+
+impl crate::io::raw::RawTap for RawCapture {
+    fn watching(&self) -> bool {
+        self.captures.reading_raw.load(Ordering::Relaxed) > 0
+    }
+
+    fn offer(&self, read: crate::io::raw::RawRead<'_>) {
+        self.captures.offer_raw(&self.at, read);
+    }
+}
+
+/// One read as a row a capture as sent keeps: what was read as text, who sent it and how, and the bytes themselves,
+/// which the text cannot always hold. A connection closed unread holds why, under [`EXCEPTION_MESSAGE`], in place of
+/// any text or bytes.
+fn raw_row(read: crate::io::raw::RawRead<'_>, source: &str) -> (Vec<CaptureColumn>, CapturedRow) {
+    use serde_json::Value;
+    let mut fields = vec![
+        ("_raw", DataType::Str),
+        ("__source.name", DataType::Str),
+        ("__source.remote", DataType::Str),
+        ("__source.transport", DataType::Str),
+        ("__source.tls", DataType::Bool),
+        (crate::plan::topology::SOURCE_BYTES, DataType::Bytes),
+    ];
+    let (text, bytes) = match read.closed {
+        Some(_) => (Value::Null, Value::Null),
+        None => {
+            let mut base64 = Vec::new();
+            crate::format::bytes_text::BytesForm::Base64.write(read.bytes, &mut base64);
+            (
+                Value::String(String::from_utf8_lossy(read.bytes).into_owned()),
+                Value::String(String::from_utf8(base64).expect("base64 is ASCII")),
+            )
+        }
+    };
+    let transport = match read.transport {
+        crate::plan::topology::Transport::Tcp => "tcp",
+        crate::plan::topology::Transport::Udp => "udp",
+    };
+    let mut values = vec![
+        text,
+        Value::from(source),
+        Value::from(read.remote),
+        Value::from(transport),
+        Value::Bool(read.tls),
+        bytes,
+    ];
+    if let Some(why) = read.closed {
+        fields.push((EXCEPTION_MESSAGE, DataType::Str));
+        values.push(Value::from(why));
+    }
+    let columns = fields
+        .into_iter()
+        .map(|(name, ty)| CaptureColumn {
+            name: name.to_string(),
+            ty: ty.spell(),
+        })
+        .collect();
+    let row = CapturedRow {
+        values,
+        failed: Vec::new(),
+        worker: None,
+    };
+    (columns, row)
+}
+
 /// A capture at a destination, as a transform thread serves it: its session, the destination by the author's name,
 /// its filter, and how many more rows and bytes it takes.
 #[derive(Debug, Clone)]
@@ -999,7 +1147,7 @@ pub fn written_columns(record: &DataType) -> Vec<CaptureColumn> {
 /// Every `__` field a pipeline's plan holds at its end, as a column with the slot that holds it: its `__source` fields
 /// and any `__destination` field it set. Not `__live`, which is true on every row a destination is sent, and not a name
 /// in `DESTINATION_COLUMNS`, which a destination capture fills with what the row was actually given.
-pub fn internal_columns(plan: &crate::plan::compile::Plan) -> Vec<(CaptureColumn, crate::core::id::SlotId)> {
+fn internal_columns(plan: &crate::plan::compile::Plan) -> Vec<(CaptureColumn, crate::core::id::SlotId)> {
     plan.tree
         .leaves()
         .into_iter()
@@ -1021,21 +1169,72 @@ pub fn tapped_object(doc: &[u8]) -> crate::io::RecordObject {
 }
 
 /// A tapped row's value of an internal field, as `format::json::write_value` wrote it: null where it wrote none.
-pub fn tapped_value(doc: Option<&[u8]>) -> serde_json::Value {
+fn tapped_value(doc: Option<&[u8]>) -> serde_json::Value {
     doc.and_then(|doc| serde_json::from_slice(doc).ok()).unwrap_or_default()
 }
 
-/// One row a pipeline finished, as a capture at a destination shows it: `object`, the row's document, under
-/// `written` (`written_columns`), then `fields`, its values of `internal` (`internal_columns`), then its
-/// `__destination` values in `DESTINATION_COLUMNS` order. Returns the columns and the row under them.
+/// The rows a pipeline finished, read as a capture at a destination shows them, and as a sample of its output holds
+/// them: each under the fields the pipeline writes, then every `__` field its plan holds for the row, which the
+/// document as sent to a destination leaves out.
+pub struct Finished<'a> {
+    plan: &'a crate::plan::compile::Plan,
+    written: Vec<CaptureColumn>,
+    internal: Vec<(CaptureColumn, crate::core::id::SlotId)>,
+}
+
+impl<'a> Finished<'a> {
+    /// The rows `plan` finishes, its exceptions tagged under `tag_field`.
+    pub fn of(plan: &'a crate::plan::compile::Plan, tag_field: &str) -> Finished<'a> {
+        let record = crate::plan::dictionary::record_type(plan, tag_field);
+        Finished {
+            plan,
+            written: written_columns(&record),
+            internal: internal_columns(plan),
+        }
+    }
+
+    /// Row `row` of `batch`, which the plan ran over, whose document as sent to a destination reads as `object`.
+    /// Returns the columns and the row under them.
+    pub fn row(&self, batch: &Batch, row: usize, object: crate::io::RecordObject) -> (Vec<CaptureColumn>, CapturedRow) {
+        let mut doc = Vec::new();
+        let fields = (self.internal.iter())
+            .map(|(_, slot)| {
+                doc.clear();
+                let ty = &self.plan.slot_layout[*slot];
+                let written = crate::format::json::write_value(batch.peek(*slot), ty, row, &mut doc);
+                tapped_value(written.then_some(&doc[..]))
+            })
+            .collect();
+        finished_row(object, &self.written, &self.internal, fields)
+    }
+}
+
+/// `sent`, a row as a capture at a destination shows it, with its `__destination` values in `DESTINATION_COLUMNS`
+/// order after the rest.
+pub fn place(
+    sent: &mut (Vec<CaptureColumn>, CapturedRow),
+    destination: [Option<String>; crate::heartbeat::DESTINATION_COLUMNS.len()],
+) {
+    for (name, value) in crate::heartbeat::DESTINATION_COLUMNS.iter().zip(destination) {
+        sent.0.push(CaptureColumn {
+            name: name.to_string(),
+            ty: "str".to_string(),
+        });
+        sent.1
+            .values
+            .push(value.map_or(serde_json::Value::Null, serde_json::Value::String));
+    }
+}
+
+/// One row a pipeline finished: `object`, the row's document, under `written` (`written_columns`), then `fields`, its
+/// values of `internal` (`internal_columns`). Returns the columns and the row under them.
 ///
 /// A document `written` does not describe is shown by its own keys, each a variant.
-pub fn sent_row(
+fn finished_row(
     mut object: crate::io::RecordObject,
     written: &[CaptureColumn],
     internal: &[(CaptureColumn, crate::core::id::SlotId)],
     fields: Vec<serde_json::Value>,
-    destination: [Option<String>; crate::heartbeat::DESTINATION_COLUMNS.len()],
 ) -> (Vec<CaptureColumn>, CapturedRow) {
     let fits =
         written.iter().any(|c| c.name == UNCLAIMED) || object.keys().all(|k| written.iter().any(|c| &c.name == k));
@@ -1071,13 +1270,6 @@ pub fn sent_row(
     }
     columns.extend(internal.iter().map(|(c, _)| c.clone()));
     values.extend(fields);
-    for (name, value) in crate::heartbeat::DESTINATION_COLUMNS.iter().zip(destination) {
-        columns.push(CaptureColumn {
-            name: name.to_string(),
-            ty: "str".to_string(),
-        });
-        values.push(value.map_or(serde_json::Value::Null, serde_json::Value::String));
-    }
     (
         columns,
         CapturedRow {
@@ -1095,7 +1287,9 @@ fn held_row(record: &crate::io::OwnedRecord, why: &str) -> (Vec<CaptureColumn>, 
     let object = serde_json::from_slice(&record.value)
         .unwrap_or_else(|_| crate::io::raw_object(String::from_utf8_lossy(&record.value)));
     let destination = [record.placement.clone(), record.doc_id.clone(), None];
-    let (mut columns, mut row) = sent_row(object, &[], &[], Vec::new(), destination);
+    let mut sent = finished_row(object, &[], &[], Vec::new());
+    place(&mut sent, destination);
+    let (mut columns, mut row) = sent;
     columns.insert(
         0,
         CaptureColumn {
@@ -1134,18 +1328,19 @@ pub fn cold_source_config(
 ) -> crate::config_file::SourceDto {
     let mut source = source.clone();
     use crate::config_file::SourceKindDto;
-    if let SourceKindDto::Kafka {
+    use crate::config_file::{EventHubsSourceDto, KafkaSourceDto};
+    if let SourceKindDto::Kafka(KafkaSourceDto {
         group_id: group,
         start,
         stop,
         ..
-    }
-    | SourceKindDto::EventHubs {
+    })
+    | SourceKindDto::EventHubs(EventHubsSourceDto {
         consumer_group: group,
         start,
         stop,
         ..
-    } = &mut source.kind
+    }) = &mut source.kind
     {
         *group = capture_group_id(session);
         *start = from.unwrap_or(crate::config_file::StartPositionDto::Latest);
@@ -1169,7 +1364,7 @@ pub fn cold_source_config(
 /// mid-capture can do: from that moment the transform threads are tapping the same flow into the same session, and
 /// one reader is what the sample needs.
 pub fn run_cold_capture(
-    captures: &Captures,
+    captures: &Arc<Captures>,
     admitted: &Admitted,
     registry: &Arc<crate::metrics::Metrics>,
     secrets: &crate::plan::topology::HeldSecrets,
@@ -1193,7 +1388,7 @@ pub fn run_cold_capture(
         Ok(kind) => kind,
         Err(e) => {
             tracing::warn!(
-                target: "capture.source_kind_unknown",
+                name: "source_kind_unknown", target: "captures",
                 subject = %session,
                 error = %e,
                 "a capture named a source this worker cannot build"
@@ -1203,9 +1398,30 @@ pub fn run_cold_capture(
         }
     };
     // Opened here it would take requests and answer them, with nothing delivered: the sender would drop what it
-    // sent. A receiver is captured where it is deployed, from the records its reader takes.
-    if matches!(kind, crate::plan::topology::SourceKind::Receiver(_)) {
-        cold.fail("a receiver is captured only on a worker that runs it; deploy it, then capture again".to_string());
+    // sent. A receiver is captured where it is deployed, from the records its reader takes, or as sent, by a listener
+    // that answers nothing.
+    if let crate::plan::topology::SourceKind::Receiver(config) = &kind {
+        if !invitation.raw {
+            cold.fail(
+                "a receiver is captured only on a worker that runs it; deploy it, then capture again".to_string(),
+            );
+            return;
+        }
+        let mut secrets = secrets.clone();
+        secrets.take(invitation.secrets.clone());
+        let mut source = match crate::io::receiver::open_raw(config, &secrets) {
+            Ok(source) => source,
+            Err(e) => {
+                cold.fail(format!("opening the receiver failed: {e}"));
+                return;
+            }
+        };
+        source.tap_raw(Arc::new(RawCapture {
+            captures: captures.clone(),
+            at: RawAt::cold(admitted),
+        }));
+        let metrics = crate::metrics::MetricsHandle::new(registry.clone(), CAPTURE_LABEL);
+        drive(&cold, source.as_mut(), &kind.meta(), &metrics, None);
         return;
     }
     let meta = kind.meta();
@@ -1233,7 +1449,7 @@ pub fn run_cold_capture(
         Ok(source) => source,
         Err(e) => {
             tracing::warn!(
-                target: "capture.source_not_opened",
+                name: "source_not_opened", target: "captures",
                 subject = %session,
                 error = %e,
                 "a capture could not open its source"
@@ -1270,7 +1486,7 @@ fn drive<S: crate::io::Source + ?Sized>(
             Ok(records) => records,
             Err(e) => {
                 tracing::warn!(
-                    target: "capture.poll_failed",
+                    name: "poll_failed", target: "captures",
                     subject = %session,
                     error = %e,
                     "a capture could not poll its source, so it ends with what it has"
@@ -1446,7 +1662,7 @@ fn run_sql_capture_on<D: crate::io::sql_source::Driver + 'static>(
         }
         Some(Err(why)) => {
             tracing::warn!(
-                target: "capture.plan_failed",
+                name: "plan_failed", target: "captures",
                 subject = %invitation.session,
                 error = %why,
                 "a capture could not ask the database how it would run the poll, so the poll shows no verdict"
@@ -1529,10 +1745,6 @@ pub fn source_kind_of(dto: crate::config_file::SourceDto) -> Result<crate::plan:
         .ok_or_else(|| "the capture's source did not load".to_string())
 }
 
-/// A worker's share of a capture, tracked so `worker::run_worker` can drive cold sources without the transform
-/// threads knowing they exist.
-pub type SharedCaptures = Arc<Captures>;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1544,12 +1756,14 @@ mod tests {
             ..Default::default()
         })
     }
+    use crate::config_file::{KafkaSourceDto, LogsSourceDto, MetricsSourceDto};
     use crate::config_file::{SourceDto, SourceKindDto};
 
     fn kafka_source(id: &str) -> SourceDto {
         SourceDto {
             id: id.to_string(),
-            kind: SourceKindDto::Kafka {
+            kind: SourceKindDto::Kafka(KafkaSourceDto {
+                unknown: Default::default(),
                 schema_registry: None,
                 read: Default::default(),
                 brokers: "b1:9092".to_string(),
@@ -1561,7 +1775,7 @@ mod tests {
                 fetch_bytes: Default::default(),
                 encoding: Default::default(),
                 props: Default::default(),
-            },
+            }),
         }
     }
 
@@ -1575,7 +1789,7 @@ mod tests {
         let server_only = params.self_signed(&key).unwrap().pem();
 
         let mut source = kafka_source("orders");
-        if let SourceKindDto::Kafka { tls, props, .. } = &mut source.kind {
+        if let SourceKindDto::Kafka(KafkaSourceDto { tls, props, .. }) = &mut source.kind {
             tls.certificate = Some("acme".to_string());
             // The operator's, and refused without it: librdkafka defaults to plaintext, where nothing the TLS
             // settings say is used.
@@ -1593,7 +1807,7 @@ mod tests {
             chain: Some(server_only),
         }];
 
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         let admitted = captures.admit(&[inv]).remove(0);
         run_cold_capture(
             &captures,
@@ -1617,6 +1831,7 @@ mod tests {
 
     fn invitation(session: &str, max_matches: usize, max_bytes: usize, deadline_secs: u64) -> CaptureInvitation {
         CaptureInvitation {
+            raw: false,
             session: session.to_string(),
             group: "prod-west".to_string(),
             source: Some(kafka_source("orders")),
@@ -1699,7 +1914,7 @@ mod tests {
 
     #[test]
     fn a_session_stops_at_its_match_count() {
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         let s1 = captures.admit(&[invitation("s1", 2, 1_000_000, 60)]).remove(0);
         let recs = records(0, &["one", "two", "three"]);
         captures.offer(&s1, &recs, &["one", "two", "three"]);
@@ -1712,7 +1927,7 @@ mod tests {
 
     /// What `raws` cost a capture with no bound but its count: its batch's names once, and each row.
     fn captured(raws: &[&str], headers: Option<Vec<(String, Vec<u8>)>>) -> CaptureBatch {
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         let s0 = captures.admit(&[invitation("s0", raws.len(), 1_000_000, 60)]).remove(0);
         let mut recs = records(0, raws);
         recs.iter_mut().for_each(|r| r.headers = headers.clone());
@@ -1728,7 +1943,7 @@ mod tests {
         let one = captured(&["12345"], Some(Vec::new()));
         let ceiling = one.size() + one.rows[0].size() - 1;
 
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         let s1 = captures.admit(&[invitation("s1", 1000, ceiling, 60)]).remove(0);
         captures.offer(&s1, &recs, &["12345", "67890"]);
 
@@ -1741,7 +1956,7 @@ mod tests {
     #[test]
     fn a_batch_s_names_count_against_the_byte_ceiling() {
         let one = captured(&["12345"], Some(Vec::new()));
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         let s1 = captures.admit(&[invitation("s1", 1000, one.size() - 1, 60)]).remove(0);
         captures.offer(&s1, &records(0, &["12345"]), &["12345"]);
 
@@ -1754,7 +1969,7 @@ mod tests {
     #[test]
     fn a_records_headers_count_against_the_byte_ceiling() {
         let bare = captured(&["1"], Some(Vec::new()));
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         let s1 = captures
             .admit(&[invitation("s1", 1000, bare.size() + 100, 60)])
             .remove(0);
@@ -1771,7 +1986,7 @@ mod tests {
     /// record happens to arrive.
     #[test]
     fn a_session_on_a_silent_source_finishes_at_its_deadline() {
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         captures.admit(&[invitation("s1", 100, 1_000_000, 0)]);
         assert!(!captures.watching("orders"), "already past its deadline");
 
@@ -1785,9 +2000,9 @@ mod tests {
     /// `CaptureEnd::Failed`'s reason.
     #[test]
     fn a_capture_whose_source_will_not_open_reports_why() {
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         let mut bad = invitation("s1", 10, 1_000_000, 60);
-        let SourceKindDto::Kafka { topics, .. } = &mut bad.source.as_mut().unwrap().kind else {
+        let SourceKindDto::Kafka(KafkaSourceDto { topics, .. }) = &mut bad.source.as_mut().unwrap().kind else {
             panic!("still a kafka source");
         };
         topics.clear();
@@ -1808,11 +2023,11 @@ mod tests {
     /// capture on the same registry still reads every count.
     #[test]
     fn a_cold_capture_of_a_metrics_source_reports_the_process_counters() {
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         let mut inv = invitation("s1", 1, 1_000_000, 10);
         inv.source = Some(SourceDto {
             id: "self".to_string(),
-            kind: SourceKindDto::Metrics { bucket_seconds: 1 },
+            kind: SourceKindDto::Metrics(MetricsSourceDto { bucket_seconds: 1 }),
         });
         let first = captures.admit(&[inv.clone()]).remove(0);
 
@@ -1856,7 +2071,7 @@ mod tests {
     /// restart it and lose what it has.
     #[test]
     fn admitting_the_same_session_twice_starts_it_once() {
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         let mut admitted = captures.admit(&[invitation("s1", 10, 1_000_000, 60)]);
         assert_eq!(admitted.len(), 1);
         let s1 = admitted.remove(0);
@@ -1872,11 +2087,116 @@ mod tests {
         assert_eq!(rows(&held(&captures, "s1")), 2, "nothing was lost");
     }
 
+    fn syslog_receiver(port: u16) -> SourceDto {
+        serde_json::from_value(
+            serde_json::json!({"id": "sys", "type": "syslogReceiver", "port": port, "allowFrom": ["127.0.0.1"]}),
+        )
+        .unwrap()
+    }
+
+    /// A capture of a receiver as sent keeps what its tap is offered, each read a row, and none of the records a
+    /// transform thread taps; a connection closed unread is a row of its own saying why.
+    #[test]
+    fn a_capture_as_sent_keeps_what_arrives_and_no_records() {
+        use crate::io::raw::RawRead;
+        use crate::plan::topology::Transport;
+
+        let captures = Arc::new(Captures::default());
+        let mut inv = invitation("s1", 10, 1_000_000, 60);
+        inv.source = Some(syslog_receiver(1514));
+        inv.raw = true;
+        captures.admit(&[inv]);
+        assert!(
+            !captures.watching("sys"),
+            "a transform thread would gather records for it"
+        );
+        let tap = captures.raw_tap("sys");
+        assert!(tap.watching());
+
+        tap.offer(RawRead {
+            remote: "192.0.2.7",
+            transport: Transport::Tcp,
+            tls: true,
+            bytes: b"<34>hi\xff",
+            closed: None,
+        });
+        tap.offer(RawRead {
+            remote: "192.0.2.8",
+            transport: Transport::Tcp,
+            tls: true,
+            bytes: &[],
+            closed: Some("TLS handshake failed: no shared cipher"),
+        });
+        captures.raw_tap("other").offer(RawRead {
+            remote: "192.0.2.9",
+            transport: Transport::Udp,
+            tls: false,
+            bytes: b"elsewhere",
+            closed: None,
+        });
+
+        let batches = held(&captures, "s1");
+        assert_eq!(rows(&batches), 2, "another receiver's reads were kept");
+        assert_eq!(
+            column(&batches, "_raw"),
+            [serde_json::json!("<34>hi\u{fffd}"), serde_json::Value::Null]
+        );
+        assert_eq!(column(&batches, "__source.bytes")[0], "PDM0Pmhp/w==");
+        assert_eq!(column(&batches, "__source.remote"), ["192.0.2.7", "192.0.2.8"]);
+        assert_eq!(column(&batches, "__source.transport"), ["tcp", "tcp"]);
+        assert_eq!(column(&batches, "__source.tls"), [true, true]);
+        assert_eq!(
+            column(&batches, EXCEPTION_MESSAGE),
+            [
+                serde_json::Value::Null,
+                serde_json::json!("TLS handshake failed: no shared cipher")
+            ]
+        );
+    }
+
+    /// A capture as sent of a receiver this worker does not run listens on its address itself, and keeps what a
+    /// sender writes there.
+    #[test]
+    fn a_cold_capture_as_sent_listens_on_the_receivers_address() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let captures = Arc::new(Captures::default());
+        let mut inv = invitation("s1", 1, 1_000_000, 20);
+        inv.source = Some(syslog_receiver(port));
+        inv.raw = true;
+        let admitted = captures.admit(&[inv]).remove(0);
+        let driving = captures.clone();
+        let driver = std::thread::spawn(move || {
+            let registry = Arc::new(crate::metrics::Metrics::new());
+            run_cold_capture(&driving, &admitted, &registry, &Default::default());
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let finished = loop {
+            if let Some(report) = captures.finished("w1").pop() {
+                break report.finished;
+            }
+            assert!(Instant::now() < deadline, "nothing arrived");
+            if let Ok(mut sender) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+                use std::io::Write;
+                sender.write_all(b"not syslog at all").unwrap();
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        driver.join().unwrap();
+        assert_eq!(finished, Some(CaptureEnd::Matches));
+        let batches = held(&captures, "s1");
+        assert_eq!(column(&batches, "_raw")[0], "not syslog at all");
+    }
+
     /// A session still filling reports its growth, with no reason -- there isn't one yet -- and stays open
     /// afterward: a progress report is not a finished one.
     #[test]
     fn an_open_session_reports_its_growth_as_progress() {
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         let s1 = captures.admit(&[invitation("s1", 10, 1_000_000, 60)]).remove(0);
         captures.offer(&s1, &records(0, &["one"]), &["one"]);
 
@@ -1892,7 +2212,7 @@ mod tests {
     /// would be a frame spent on records the leader already has.
     #[test]
     fn a_session_with_nothing_new_reports_no_progress() {
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         let s1 = captures.admit(&[invitation("s1", 10, 1_000_000, 60)]).remove(0);
         captures.offer(&s1, &records(0, &["one"]), &["one"]);
 
@@ -1922,7 +2242,7 @@ mod tests {
         let a = writer(r#"{"type":"record","name":"A","fields":[{"name":"id","type":"long"}]}"#);
         let b = writer(r#"{"type":"record","name":"B","fields":[{"name":"n","type":"string"}]}"#);
         let names = |r: &CaptureReport| r.avro.iter().map(|f| f.name.clone()).collect::<Vec<_>>();
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         let s1 = captures.admit(&[invitation("s1", 3, 1_000_000, 60)]).remove(0);
 
         captures.offer(&s1, &read(0, &a), &["one"]);
@@ -1943,7 +2263,7 @@ mod tests {
     /// A payload that did not read is captured with why, in its record's first field.
     #[test]
     fn a_payload_that_did_not_read_is_captured_with_why() {
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         let s1 = captures.admit(&[invitation("s1", 10, 1_000_000, 60)]).remove(0);
         let mut unread = records(0, &["one"]);
         let chunk = Arc::try_unwrap(crate::io::RecordChunk::of_bytes("one")).ok().unwrap();
@@ -1959,7 +2279,7 @@ mod tests {
     /// caught on the way.
     #[test]
     fn a_finished_session_reports_no_further_progress() {
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         let s1 = captures.admit(&[invitation("s1", 1, 1_000_000, 60)]).remove(0);
         captures.offer(&s1, &records(0, &["one"]), &["one"]);
         assert!(!captures.open(&s1), "hit its match count");
@@ -1978,7 +2298,7 @@ mod tests {
             &invitation.session,
             invitation.start,
         );
-        let SourceKindDto::Kafka { group_id, start, .. } = &source.kind else {
+        let SourceKindDto::Kafka(KafkaSourceDto { group_id, start, .. }) = &source.kind else {
             panic!("still a kafka source");
         };
         assert_eq!(group_id, "smeltr-capture-s1");
@@ -1999,7 +2319,7 @@ mod tests {
             &invitation.session,
             invitation.start,
         );
-        let SourceKindDto::Kafka { group_id, start, .. } = &source.kind else {
+        let SourceKindDto::Kafka(KafkaSourceDto { group_id, start, .. }) = &source.kind else {
             panic!("still a kafka source");
         };
         assert_eq!(group_id, "smeltr-capture-s1");
@@ -2010,7 +2330,7 @@ mod tests {
     /// lose the records to a dropped connection, and let the leader's next invitation start the capture over.
     #[test]
     fn a_finished_capture_is_offered_until_the_leader_has_it() {
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         let s1 = captures.admit(&[invitation("s1", 1, 1_000_000, 60)]).remove(0);
         captures.offer(&s1, &records(0, &["one"]), &["one"]);
 
@@ -2028,7 +2348,7 @@ mod tests {
     /// threads read the same partition. A record is one record however many readers saw it.
     #[test]
     fn a_record_already_held_is_not_captured_twice() {
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         let s1 = captures.admit(&[invitation("s1", 10, 1_000_000, 60)]).remove(0);
         let recs = records(7, &["one", "two"]);
 
@@ -2043,7 +2363,7 @@ mod tests {
     /// A captured record keeps everything its source set, whether a pipeline reads it or not.
     #[test]
     fn a_captured_record_keeps_its_source_fields() {
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         captures.admit(&[invitation("s1", 10, 1_000_000, 60)]);
         let mut stamped = crate::io::RecordChunkBuilder::new();
         let headers = Some(vec![("trace".to_string(), b"t1".to_vec())]);
@@ -2073,7 +2393,7 @@ mod tests {
     /// A record polled before the reader knew of the capture has no headers to show, so it is not kept.
     #[test]
     fn a_record_polled_without_its_headers_is_not_captured() {
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         captures.admit(&[invitation("s1", 10, 1_000_000, 60)]);
         let mut recs = records(7, &["before", "after"]);
         recs[0].headers = None;
@@ -2088,7 +2408,7 @@ mod tests {
     /// for one worker means the leader keeps whichever lands first rather than the fuller one.
     #[test]
     fn a_cold_capture_is_retired_once_a_deployment_reads_its_source() {
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         let s1 = captures.admit(&[invitation("s1", 10, 1_000_000, 60)]).remove(0);
         assert!(!captures.is_deployed("orders"), "nothing is running it yet");
 
@@ -2112,7 +2432,7 @@ mod tests {
     /// and the leader's session can expire before one could try.
     #[test]
     fn a_finished_cold_capture_survives_the_deployment_taking_its_source() {
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         let s1 = captures.admit(&[invitation("s1", 1, 1_000_000, 60)]).remove(0);
         captures.fail(&s1, "the source would not open");
         assert!(!captures.open(&s1), "the session is finished");
@@ -2129,7 +2449,7 @@ mod tests {
     /// worker's to serve.
     #[test]
     fn a_cold_capture_on_another_source_survives_a_deployment() {
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         let s1 = captures.admit(&[invitation("s1", 10, 1_000_000, 60)]).remove(0);
 
         captures.set_deployed(&deployed(&["payments"]));
@@ -2153,7 +2473,7 @@ mod tests {
             filter: Some("customer == \"c1\"".to_string()),
             ..invitation("s1", 10, 1_000_000, 60)
         };
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         let s1 = captures.admit(&[run]).remove(0);
         assert!(
             captures.open(&s1),
@@ -2172,7 +2492,7 @@ mod tests {
     /// where it is deployed: the deployment neither retires it nor fills it.
     #[test]
     fn a_capture_with_a_start_reads_its_source_where_it_is_deployed() {
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         let from_earliest = CaptureInvitation {
             start: Some(crate::config_file::StartPositionDto::Earliest),
             ..invitation("s1", 10, 1_000_000, 60)
@@ -2191,7 +2511,7 @@ mod tests {
     /// every batch.
     #[test]
     fn a_worker_running_no_capture_is_watching_nothing() {
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         assert!(!captures.watching("orders"));
 
         captures.admit(&[invitation("s1", 10, 1_000_000, 60)]);
@@ -2204,7 +2524,7 @@ mod tests {
     /// still filling. A finished one stays until its report is sent: the leader still takes its reason.
     #[test]
     fn a_session_the_leader_no_longer_lists_is_let_go() {
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         let s1 = captures.admit(&[invitation("s1", 10, 1_000_000, 60)]).remove(0);
         let mut payments = invitation("s2", 10, 1_000_000, 60);
         payments.source = Some(kafka_source("payments"));
@@ -2243,7 +2563,7 @@ mod tests {
         let mut inv = invitation("s1", 1_000_000, 1_000_000, 30);
         inv.source = Some(SourceDto {
             id: "self".into(),
-            kind: SourceKindDto::Metrics { bucket_seconds: 1 },
+            kind: SourceKindDto::Metrics(MetricsSourceDto { bucket_seconds: 1 }),
         });
         let admitted = captures.admit(&[inv]).remove(0);
 
@@ -2269,7 +2589,7 @@ mod tests {
     /// it does -- a record, a failure -- reaches the new one.
     #[test]
     fn a_driver_of_a_session_let_go_never_drives_a_later_admission_of_it() {
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         let first = captures.admit(&[invitation("s1", 10, 1_000_000, 60)]).remove(0);
         captures.drop_unlisted(&HashSet::new());
         let second = captures.admit(&[invitation("s1", 10, 1_000_000, 60)]).remove(0);
@@ -2300,9 +2620,9 @@ mod tests {
         let mut inv = invitation("s1", 10, 1_000_000, 30);
         inv.source = Some(SourceDto {
             id: "own-logs".into(),
-            kind: SourceKindDto::Logs {
+            kind: SourceKindDto::Logs(LogsSourceDto {
                 min_level: Default::default(),
-            },
+            }),
         });
         let admitted = captures.admit(&[inv]).remove(0);
 
@@ -2427,7 +2747,9 @@ mod tests {
             Some("d1".to_string()),
             Some(route.to_string()),
         ];
-        sent_row(object(v), &columns(written), &[], Vec::new(), destination)
+        let mut sent = finished_row(object(v), &columns(written), &[], Vec::new());
+        place(&mut sent, destination);
+        sent
     }
 
     /// A row a typed source could not read as its type is captured as the source spelled it, and marked failed.
@@ -2508,7 +2830,7 @@ mod tests {
     /// takes; a worker running none answers from its count.
     #[test]
     fn an_open_capture_at_a_destination_is_served_with_its_filter() {
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         assert!(captures.at_destinations().is_empty());
         captures.admit(&[
             CaptureInvitation {
@@ -2530,7 +2852,7 @@ mod tests {
     /// A capture asks for a number of rows and is done when it has them, however many more are offered.
     #[test]
     fn a_destination_capture_stops_at_its_match_count() {
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         captures.send_to("es");
         captures.admit(&[at_destination("s1", "es", 2)]);
         let at = captures.at_destinations().remove(0);
@@ -2550,7 +2872,7 @@ mod tests {
     /// A filter that will not compile against a route ends the capture with why.
     #[test]
     fn a_capture_failed_at_its_destination_says_why() {
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         captures.admit(&[at_destination("s1", "es", 10)]);
         let at = captures.at_destinations().remove(0);
         captures.fail_at(&at, "no field `b`".to_string());
@@ -2582,7 +2904,7 @@ mod tests {
     /// it to wait out its deadline.
     #[test]
     fn a_destination_capture_ends_when_its_destination_stops() {
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         captures.send_to("es");
         captures.admit(&[at_destination("s1", "es", 10)]);
         let at = captures.at_destinations().remove(0);
@@ -2597,7 +2919,7 @@ mod tests {
     /// An invitation naming neither a source nor a destination is answered as such, not left to its deadline.
     #[test]
     fn a_capture_naming_nothing_is_finished_before_it_starts() {
-        let captures = Captures::default();
+        let captures = Arc::new(Captures::default());
         captures.admit(&[CaptureInvitation {
             source: None,
             ..invitation("s1", 10, 1_000_000, 60)

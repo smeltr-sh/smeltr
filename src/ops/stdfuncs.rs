@@ -20,7 +20,8 @@ use crate::core::column::{Column, DataType, StrBuilder, VarType};
 use crate::core::ctx::{CompiledPattern, Ctx};
 use crate::ops::helpers::{Operand, side};
 use crate::ops::{
-    OpKernel, arith, arrayops, convert, datetime, hashops, logic, netops, rebuildops, strops, useragent, webops,
+    OpKernel, arith, arrayops, byteops, convert, datetime, hashops, logic, netops, rebuildops, strops, useragent,
+    webops,
 };
 
 /// What a parameter accepts. `null` fits every pattern; `Variant` fits none. An `I64` fits where an `F64` does, and
@@ -336,11 +337,12 @@ macro_rules! ret {
     };
 }
 
-/// `null_safe` names the functions that answer on null rather than propagating it; `variadic` those whose last
-/// parameter repeats.
+/// `null_safe` names the functions that answer on null rather than propagating it; `reads_unbound` those whose kernel
+/// reads an unbound argument; `variadic` those whose last parameter repeats.
 macro_rules! stdfuncs {
     (
         null_safe: [ $($nfunc:ident),* ];
+        reads_unbound: [ $($ufunc:ident),* ];
         variadic: [ $($vfunc:ident),* ];
         $( $func:ident $name:literal = $kern:expr ; $( [ $($p:ident),* ] => ( $($r:tt)+ ) ),+ ; )*
     ) => {
@@ -375,6 +377,12 @@ macro_rules! stdfuncs {
                 !matches!(self, $(StdFunc::$nfunc)|*)
             }
 
+            /// Whether the kernel runs on an unbound argument. Every other kernel's result is null when one is, and
+            /// `expr::eval` answers that without running it.
+            pub fn reads_unbound(self) -> bool {
+                matches!(self, $(StdFunc::$ufunc)|*)
+            }
+
             /// Whether the last parameter of every row repeats: `push(xs, a, b, c)`, `min(a, b, c)`. One call is one
             /// pass, where a chain of two-argument calls is one pass and one intermediate column each.
             pub fn is_variadic(self) -> bool {
@@ -397,6 +405,8 @@ fn some(k: OpKernel) -> Option<OpKernel> {
 
 stdfuncs! {
     null_safe: [IsNull, Push, Insert];
+    // `communityId` reads an unbound port: only TCP, UDP and SCTP need one.
+    reads_unbound: [IsNull, Push, Insert, CommunityId];
     variadic: [Push, Insert, Concat, Min, Max, InCidr];
 
     IsNull      "isNull"      = some(logic::is_null);          [Any] => (Bool);
@@ -405,6 +415,11 @@ stdfuncs! {
     Decode      "decode"      = some(|c, i| convert::convert_or_refuse(c, i, convert::decode));      [Bytes, Str] => (Str);
     Encode      "encode"      = some(|c, i| convert::convert_or_refuse(c, i, convert::encode));      [Str, Str] => (Bytes);
     ParseBytes  "parseBytes"  = some(|c, i| convert::convert_or_refuse(c, i, convert::parse_bytes)); [Str] => (Bytes), [Str, Str] => (Bytes);
+    ReadInt     "readInt"     = some(byteops::read_int);       [Bytes, I64, Str] => (I64), [Bytes, I64, Str, Str] => (I64);
+    ReadFloat   "readFloat"   = some(byteops::read_float);     [Bytes, I64, Str] => (F64), [Bytes, I64, Str, Str] => (F64);
+    ReadBytes   "readBytes"   = some(byteops::read_bytes);     [Bytes, I64, I64] => (Bytes);
+    WriteInt    "writeInt"    = some(byteops::write_int);      [I64, Str] => (Bytes), [I64, Str, Str] => (Bytes);
+    WriteFloat  "writeFloat"  = some(byteops::write_float);    [F64, Str] => (Bytes), [F64, Str, Str] => (Bytes);
     ParseInt    "parseInt"    = some(|c, i| convert::read_or_refuse(c, i, convert::parse_int));      [Str] => (I64), [Str, I64] => (I64);
     ParseHex    "parseHex"    = some(|c, i| convert::read_or_refuse(c, i, convert::parse_hex));      [Str] => (I64);
     ParseFloat  "parseFloat"  = some(|c, i| convert::read_or_refuse(c, i, convert::parse_float));    [Str] => (F64);
@@ -420,21 +435,22 @@ stdfuncs! {
     Max         "max"         = some(arith::max_num);          [Num, Num] => (numeric_join);
     Clamp       "clamp"       = some(arith::clamp_num);        [Num, Num, Num] => (numeric_join);
     Slice       "slice"       = some(slice_any);               [Str, I64] => (Str), [Str, I64, I64] => (Str), [Array, I64] => (same 0), [Array, I64, I64] => (same 0);
-    IndexOf     "indexOf"     = some(index_of_any);            [Str, Str] => (I64), [Array, Element] => (for_element I64);
+    IndexOf     "indexOf"     = some(index_of_any);            [Str, Str] => (I64), [Str, Str, I64] => (I64), [Bytes, I64] => (I64), [Bytes, I64, I64] => (I64), [Bytes, Bytes] => (I64), [Bytes, Bytes, I64] => (I64), [Array, Element] => (for_element I64), [Array, Element, I64] => (for_element I64);
     ToUpperCase "toUpperCase" = some(strops::str_to_upper);    [Str] => (Str);
     ToLowerCase "toLowerCase" = some(strops::str_to_lower);    [Str] => (Str);
     Trim        "trim"        = some(strops::str_trim);        [Str] => (Str);
     StartsWith  "startsWith"  = some(strops::str_starts_with); [Str, Str] => (Bool);
     EndsWith    "endsWith"    = some(strops::str_ends_with);   [Str, Str] => (Bool);
-    Includes    "includes"    = some(includes_any);            [Str, Str] => (Bool), [Array, Element] => (for_element Bool);
+    Includes    "includes"    = some(includes_any);            [Str, Str] => (Bool), [Str, Str, I64] => (Bool), [Bytes, I64] => (Bool), [Bytes, I64, I64] => (Bool), [Bytes, Bytes] => (Bool), [Bytes, Bytes, I64] => (Bool), [Array, Element] => (for_element Bool), [Array, Element, I64] => (for_element Bool);
     TrimStart   "trimStart"   = some(strops::str_trim_start);  [Str] => (Str);
     TrimEnd     "trimEnd"     = some(strops::str_trim_end);    [Str] => (Str);
     PadStart    "padStart"    = some(strops::str_pad_start);   [Str, I64] => (Str), [Str, I64, Str] => (Str);
     PadEnd      "padEnd"      = some(strops::str_pad_end);     [Str, I64] => (Str), [Str, I64, Str] => (Str);
     Repeat      "repeat"      = some(strops::str_repeat);      [Str, I64] => (Str);
-    LastIndexOf "lastIndexOf" = some(strops::str_last_index_of); [Str, Str] => (I64);
+    LastIndexOf "lastIndexOf" = some(last_index_of_any);       [Str, Str] => (I64), [Str, Str, I64] => (I64), [Bytes, I64] => (I64), [Bytes, I64, I64] => (I64), [Bytes, Bytes] => (I64), [Bytes, Bytes, I64] => (I64), [Array, Element] => (for_element I64), [Array, Element, I64] => (for_element I64);
     At          "at"          = some(at_any);                  [Str, I64] => (Str), [Array, I64] => (element 0);
     ParseTime   "parseTime"   = some(|c, i| convert::read_or_refuse(c, i, convert::parse_time));     [Str] => (DateTime), [Str, Str] => (DateTime), [Str, DateTime] => (DateTime), [Str, Str, DateTime] => (DateTime);
+    FormatTime  "formatTime"  = some(datetime::format_time);   [DateTime, Str] => (Str);
     ParseDuration "parseDuration" = some(|c, i| convert::read_or_refuse(c, i, convert::parse_duration)); [Str] => (Duration);
     Year        "year"        = some(datetime::dt_year);       [DateTime] => (I64);
     Month       "month"       = some(datetime::dt_month);      [DateTime] => (I64);
@@ -456,7 +472,7 @@ stdfuncs! {
     Remove      "remove"      = some(arrayops::array_remove);  [Array, I64] => (same 0);
     Resize      "resize"      = some(arrayops::array_resize);  [Array, I64] => (same 0);
     Join        "join"        = some(arrayops::array_join);    [Array, Str] => (Str);
-    Concat      "concat"      = some(arrayops::array_concat);  [Array, Array] => (same_array);
+    Concat      "concat"      = some(concat_any);              [Array, Array] => (same_array), [Bytes, Bytes] => (Bytes);
     Match       "match"       = None;                          [Str, Pattern] => (array Str);
     Test        "test"        = None;                          [Str, Pattern] => (Bool);
     ReplaceFirst "replaceFirst" = None;                        [Str, Pattern, Str] => (Str);
@@ -507,16 +523,19 @@ impl StdFunc {
             .any(|row| matches!(row.params.get(i), Some(p) if *p != Param::Pattern))
     }
 
-    /// Whether argument `i` may come as a constant column: the kernel reads it as one value. A position outside the
-    /// set is given rows by `expr::eval`. `min`, `max` and `clamp` read every argument the same way; the rest read a
-    /// needle, count, index, unit or format beside the value they work on.
+    /// Whether argument `i` may come as a constant column, which the kernel reads as the same value in every row. Any
+    /// other argument is filled out to a value per row by `expr::eval` first. A function that reads all its arguments
+    /// alike, such as `min`, `max`, `clamp` and `concat`, takes any of them as a constant; most others read a needle,
+    /// count, index, unit or format beside the value they work on. An array argument is never a constant, so what this
+    /// answers at an array's position is never used.
     pub fn takes_constant_at(self, i: usize) -> bool {
         use StdFunc::*;
         match self {
-            Min | Max | Clamp | Idiv | IsNull | CommunityId | Decode | Encode => true,
-            StartsWith | EndsWith | Includes | IndexOf | LastIndexOf | Split | Join | Repeat | At | Insert | Remove
-            | Resize | Duration | CountIn | ParseInt | CidrNetwork | ToString | ParseBytes => i == 1,
-            Slice | PadStart | PadEnd | ParseTime => i == 1 || i == 2,
+            Min | Max | Clamp | Concat | Idiv | IsNull | CommunityId | Decode | Encode | FormatTime | ReadInt
+            | ReadFloat | ReadBytes | WriteInt | WriteFloat => true,
+            StartsWith | EndsWith | Split | Join | Repeat | At | Insert | Remove | Resize | Duration | CountIn
+            | ParseInt | CidrNetwork | ToString | ParseBytes => i == 1,
+            Slice | PadStart | PadEnd | ParseTime | Includes | IndexOf | LastIndexOf => i == 1 || i == 2,
             InCidr => i >= 1,
             Sort => i == 1,
             _ => false,
@@ -608,22 +627,38 @@ pub fn length_any(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     }
 }
 
+/// Dispatches on the first argument's type: an array to `$array`, bytes to `$bytes` where one is named, and anything
+/// else to `$text`.
 macro_rules! text_or_array {
-    ($name:ident, $text:path, $array:path) => {
+    ($name:ident, $text:path, $array:path $(, bytes: $bytes:path)?) => {
         pub fn $name(ctx: &mut Ctx, ins: &[&Column]) -> Column {
-            if matches!(ins[0].data_type(), DataType::Array(_)) {
-                $array(ctx, ins)
-            } else {
-                $text(ctx, ins)
+            match ins[0].data_type() {
+                DataType::Array(_) => $array(ctx, ins),
+                $(DataType::Bytes => $bytes(ctx, ins),)?
+                _ => $text(ctx, ins),
             }
         }
     };
 }
 
+/// `concat` on arrays, or on bytes.
+pub fn concat_any(ctx: &mut Ctx, ins: &[&Column]) -> Column {
+    match ins[0].data_type() {
+        DataType::Bytes => byteops::concat(ctx, ins),
+        _ => arrayops::array_concat(ctx, ins),
+    }
+}
+
 text_or_array!(slice_any, strops::str_slice, arrayops::array_slice);
 text_or_array!(at_any, strops::str_at, arrayops::array_at);
-text_or_array!(includes_any, strops::str_includes, arrayops::array_includes);
-text_or_array!(index_of_any, strops::str_index_of, arrayops::array_index_of);
+text_or_array!(includes_any, strops::str_includes, arrayops::array_includes, bytes: byteops::includes);
+text_or_array!(index_of_any, strops::str_index_of, arrayops::array_index_of, bytes: byteops::index_of);
+text_or_array!(
+    last_index_of_any,
+    strops::str_last_index_of,
+    arrayops::array_last_index_of,
+    bytes: byteops::last_index_of
+);
 
 /// `test(value, /pattern/)` -> `Bool`. Null propagates.
 pub fn regex_test(ctx: &mut Ctx, value: &Column, pattern: &CompiledPattern) -> Column {
@@ -1161,7 +1196,6 @@ mod constants {
                 for i in 0..tys.len() {
                     let takes = row.func.takes_constant_at(i);
                     if matches!(tys[i], DataType::Array(_)) {
-                        assert!(!takes, "{}: an array is never a constant", row.name);
                         continue;
                     }
                     let what = format!("{}{tys:?} at {i}", row.name);
@@ -1181,7 +1215,8 @@ mod constants {
                         );
                     }
                 }
-                if (0..tys.len()).all(|i| row.func.takes_constant_at(i)) {
+                let arrays = tys.iter().any(|t| matches!(t, DataType::Array(_)));
+                if !arrays && (0..tys.len()).all(|i| row.func.takes_constant_at(i)) {
                     let what = format!("{}{tys:?}, every argument constant", row.name);
                     let filled = outcome(k, &tys, &|_| true, false).expect(&what);
                     assert_eq!(outcome(k, &tys, &|_| true, true).as_ref(), Some(&filled), "{what}");

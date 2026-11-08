@@ -58,6 +58,10 @@
 
   let rows: LogRowDto[] = $state([]);
   let messageLimit = $state(0);
+  /** Every class and service a line can name, from the leader, to pick a
+   * filter from: both match a row exactly. */
+  let classes: string[] = $state([]);
+  let services: string[] = $state([]);
   let nextBefore: number | null = $state(null);
   let nextAfter: number | null = $state(null);
   let loading = $state(true);
@@ -116,6 +120,8 @@
       .then((answer) => {
         if (!live) return;
         rows = answer.rows;
+        classes = answer.classes;
+        services = answer.services;
         messageLimit = answer.messageLimit;
         nextBefore = answer.nextBefore;
         nextAfter = answer.nextAfter;
@@ -133,6 +139,12 @@
     };
   });
 
+  /** `known` with `routed` added when the route names one the leader did not
+   * list, so the filter shows what it narrows by rather than looking cleared. */
+  function withRouted(known: string[], routed: string | undefined): string[] {
+    return routed && !known.includes(routed) ? [...known, routed] : known;
+  }
+
   function go(next: Filters) {
     location.hash = toHash(next);
   }
@@ -146,7 +158,11 @@
       levels: filters.levels,
       worker: text('worker'),
       group: text('group'),
-      site: text('site'),
+      class: text('class'),
+      type: text('type'),
+      // Whole only while the box still holds the type that was clicked.
+      ...(filters.typeExact && text('type') === filters.type && { typeExact: true }),
+      service: text('service'),
       q: text('q'),
     };
   }
@@ -218,16 +234,21 @@
         </button>
       {/each}
       <span class="dim">
-        {filters.levels.length === 0 ? 'every severity' : 'these severities'}
-        <Help label="severity">
-          A severity is not a minimum: <code>warn</code> shows warnings only, so pick
+        {filters.levels.length === 0 ? 'every level' : 'these levels'}
+        <Help label="level">
+          A level is not a minimum: <code>warn</code> shows warnings only, so pick
           <code>error</code> too to see both.
         </Help>
       </span>
     </div>
 
     <form class="text" onsubmit={submit}>
-      <select name="worker" value={filters.worker ?? ''} onchange={onSelect}>
+      <select
+        name="worker"
+        value={filters.worker ?? ''}
+        onchange={onSelect}
+        disabled={!workerOptions.length}
+      >
         <option value="">worker</option>
         {#each workerOptions as w (w.workerId)}
           <option value={w.workerId}>{w.workerId}{w.revoked ? ' (revoked)' : ''}</option>
@@ -239,12 +260,19 @@
           <option value={g.id}>{g.name}</option>
         {/each}
       </select>
-      <input
-        name="site"
-        placeholder="site, e.g. worker."
-        value={filters.site ?? ''}
-        oninput={onType}
-      />
+      <select name="class" value={filters.class ?? ''} onchange={onSelect}>
+        <option value="">class</option>
+        {#each withRouted(classes, filters.class) as c (c)}
+          <option value={c}>{c}</option>
+        {/each}
+      </select>
+      <input name="type" placeholder="type" value={filters.type ?? ''} oninput={onType} />
+      <select name="service" value={filters.service ?? ''} onchange={onSelect}>
+        <option value="">service</option>
+        {#each withRouted(services, filters.service) as s (s)}
+          <option value={s}>{s}</option>
+        {/each}
+      </select>
       <input name="q" placeholder="in the message" value={filters.q ?? ''} oninput={onType} />
       <button type="submit">Search</button>
       {#if isFiltered(filters)}
@@ -268,8 +296,10 @@
       <thead>
         <tr>
           <th>when</th>
-          <th>severity</th>
-          <th>site</th>
+          <th>level</th>
+          <th>class</th>
+          <th>type</th>
+          <th>service</th>
           <th>message</th>
           <th>worker</th>
         </tr>
@@ -280,14 +310,42 @@
           <tr class:open={opened[row.id]}>
             <td class="mono when">{clockTime(row.atMillis)}</td>
             <td><span class="chip {row.level} on">{row.level}</span></td>
-            <td class="mono site">
+            <td class="mono">
+              {#if row.class}
+                <button
+                  type="button"
+                  class="link-button"
+                  onclick={() => go({ ...resetCursor(filters), class: row.class ?? undefined })}
+                >
+                  {row.class}
+                </button>
+              {/if}
+            </td>
+            <td class="mono type">
               <button
                 type="button"
                 class="link-button"
-                onclick={() => go({ ...resetCursor(filters), site: row.site })}
+                onclick={() =>
+                  go({
+                    ...resetCursor(filters),
+                    class: row.class ?? undefined,
+                    type: row.type,
+                    typeExact: true,
+                  })}
               >
-                {row.site}
+                {row.type}
               </button>
+            </td>
+            <td class="mono">
+              {#if row.service}
+                <button
+                  type="button"
+                  class="link-button"
+                  onclick={() => go({ ...resetCursor(filters), service: row.service ?? undefined })}
+                >
+                  {row.service}
+                </button>
+              {/if}
             </td>
             <td>
               {row.message}{#if wasTruncated(row.message, messageLimit)}<span
@@ -426,10 +484,10 @@
   .who {
     white-space: nowrap;
   }
-  .site {
-    /* Wide enough that an ordinary dotted site is one piece: `anywhere` broke
-       `worker.enroll_failed` after the `faile`, which is unreadable. A site is
-       cut at `MAX_TEXT_LEN`, so a pathological one still has to wrap somewhere. */
+  .type {
+    /* Wide enough that an ordinary type is one piece: `anywhere` broke
+       `enroll_failed` after the `faile`, which is unreadable. A type is cut at
+       `MAX_TEXT_LEN`, so a pathological one still has to wrap somewhere. */
     max-width: 22rem;
     overflow-wrap: break-word;
   }

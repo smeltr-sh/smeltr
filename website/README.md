@@ -29,6 +29,13 @@ Sources and Destinations fold, and open on their own pages. The language
 reference's page tools search function names and summaries;
 examples stack expressions above results on narrow screens.
 
+Training videos live on YouTube and are listed once, in `src/lib/videos.ts`,
+which the home page and `/learn` read. A video's card shows its poster from
+`static/videos/` and loads YouTube's player, from youtube-nocookie.com, only
+when the visitor presses play, so a visitor who does not watch never contacts
+YouTube. A video with no YouTube id is planned: its card says so and links the
+guide that covers it today.
+
 The site links the repository in one place, `src/lib/release.ts`, which names
 the repository's owner once and builds the source, download, image and license
 links from it:

@@ -630,7 +630,15 @@
               },
               {
                 "value": "escapedLines",
-                "what": "Gives one record per line, unescaped as a `bytes` object destination wrote it."
+                "what": "Gives one record per line, unescaped as a destination with format `bytes` and newlines `escape` wrote it."
+              },
+              {
+                "value": "lengthPrefix",
+                "what": "Reads the object as records, each carrying its own length where `lengthPrefix` says."
+              },
+              {
+                "value": "fixed",
+                "what": "Reads the object as records of `fixedBytes` bytes each."
               }
             ]
           },
@@ -640,6 +648,30 @@
             "absent": "a record per line",
             "examples": ["([\\r\\n]+)\\d{4}-", "</event>(\\s*)"],
             "what": "With `lines` framing, and only then: where a record ends. Its first capture group is the break and is dropped: the bytes before it end a record, line ends and all, and the bytes after it start the next. What follows the group is kept, so the pattern can say how a record starts: `([\\r\\n]+)\\d{4}-` keeps a stack trace with the line that logged it, and `</event>(\\s*)` cuts XML events with no line ends between them. It needs a capture group and must not match the empty string."
+          },
+          {
+            "name": "lengthPrefix",
+            "type": "object",
+            "absent": "none",
+            "examples": [
+              {
+                "bytes": 4
+              },
+              {
+                "offset": 2,
+                "bytes": 2,
+                "order": "little",
+                "counts": "message"
+              }
+            ],
+            "what": "Where each record's length is, for framing `lengthPrefix`, and required there. `bytes` is the length's size, 1 to 8. `offset` is how many bytes of the record come before it, 0 if absent. `order` is `big`, the most significant byte first and the default, or `little`. `counts` is `rest`, the bytes after the length and the default, or `message`, the whole record, the length and what comes before it included (`message` is the value's name)."
+          },
+          {
+            "name": "fixedBytes",
+            "type": "integer",
+            "absent": "none",
+            "examples": [64, 512],
+            "what": "How many bytes every record is, for framing `fixed`, and required there."
           },
           {
             "name": "certificate",
@@ -788,6 +820,8 @@
               "fields",
               "framing",
               "lineBreaker",
+              "lengthPrefix",
+              "fixedBytes",
               "certificate",
               "trustedAuthorities",
               "trustPublic"
@@ -869,7 +903,15 @@
               },
               {
                 "value": "escapedLines",
-                "what": "Gives one record per line, unescaped as a `bytes` object destination wrote it."
+                "what": "Gives one record per line, unescaped as a destination with format `bytes` and newlines `escape` wrote it."
+              },
+              {
+                "value": "lengthPrefix",
+                "what": "Reads the object as records, each carrying its own length where `lengthPrefix` says."
+              },
+              {
+                "value": "fixed",
+                "what": "Reads the object as records of `fixedBytes` bytes each."
               }
             ]
           },
@@ -879,6 +921,30 @@
             "absent": "a record per line",
             "examples": ["([\\r\\n]+)\\d{4}-", "</event>(\\s*)"],
             "what": "With `lines` framing, and only then: where a record ends. Its first capture group is the break and is dropped: the bytes before it end a record, line ends and all, and the bytes after it start the next. What follows the group is kept, so the pattern can say how a record starts: `([\\r\\n]+)\\d{4}-` keeps a stack trace with the line that logged it, and `</event>(\\s*)` cuts XML events with no line ends between them. It needs a capture group and must not match the empty string."
+          },
+          {
+            "name": "lengthPrefix",
+            "type": "object",
+            "absent": "none",
+            "examples": [
+              {
+                "bytes": 4
+              },
+              {
+                "offset": 2,
+                "bytes": 2,
+                "order": "little",
+                "counts": "message"
+              }
+            ],
+            "what": "Where each record's length is, for framing `lengthPrefix`, and required there. `bytes` is the length's size, 1 to 8. `offset` is how many bytes of the record come before it, 0 if absent. `order` is `big`, the most significant byte first and the default, or `little`. `counts` is `rest`, the bytes after the length and the default, or `message`, the whole record, the length and what comes before it included (`message` is the value's name)."
+          },
+          {
+            "name": "fixedBytes",
+            "type": "integer",
+            "absent": "none",
+            "examples": [64, 512],
+            "what": "How many bytes every record is, for framing `fixed`, and required there."
           },
           {
             "name": "certificate",
@@ -1073,6 +1139,8 @@
               "fields",
               "framing",
               "lineBreaker",
+              "lengthPrefix",
+              "fixedBytes",
               "certificate",
               "trustedAuthorities",
               "trustPublic",
@@ -1144,7 +1212,15 @@
               },
               {
                 "value": "escapedLines",
-                "what": "Gives one record per line, unescaped as a `bytes` object destination wrote it."
+                "what": "Gives one record per line, unescaped as a destination with format `bytes` and newlines `escape` wrote it."
+              },
+              {
+                "value": "lengthPrefix",
+                "what": "Reads the object as records, each carrying its own length where `lengthPrefix` says."
+              },
+              {
+                "value": "fixed",
+                "what": "Reads the object as records of `fixedBytes` bytes each."
               }
             ]
           },
@@ -1154,6 +1230,30 @@
             "absent": "a record per line",
             "examples": ["([\\r\\n]+)\\d{4}-", "</event>(\\s*)"],
             "what": "With `lines` framing, and only then: where a record ends. Its first capture group is the break and is dropped: the bytes before it end a record, line ends and all, and the bytes after it start the next. What follows the group is kept, so the pattern can say how a record starts: `([\\r\\n]+)\\d{4}-` keeps a stack trace with the line that logged it, and `</event>(\\s*)` cuts XML events with no line ends between them. It needs a capture group and must not match the empty string."
+          },
+          {
+            "name": "lengthPrefix",
+            "type": "object",
+            "absent": "none",
+            "examples": [
+              {
+                "bytes": 4
+              },
+              {
+                "offset": 2,
+                "bytes": 2,
+                "order": "little",
+                "counts": "message"
+              }
+            ],
+            "what": "Where each record's length is, for framing `lengthPrefix`, and required there. `bytes` is the length's size, 1 to 8. `offset` is how many bytes of the record come before it, 0 if absent. `order` is `big`, the most significant byte first and the default, or `little`. `counts` is `rest`, the bytes after the length and the default, or `message`, the whole record, the length and what comes before it included (`message` is the value's name)."
+          },
+          {
+            "name": "fixedBytes",
+            "type": "integer",
+            "absent": "none",
+            "examples": [64, 512],
+            "what": "How many bytes every record is, for framing `fixed`, and required there."
           },
           {
             "name": "certificate",
@@ -1308,6 +1408,8 @@
               "fields",
               "framing",
               "lineBreaker",
+              "lengthPrefix",
+              "fixedBytes",
               "certificate",
               "trustedAuthorities",
               "trustPublic",
@@ -1424,7 +1526,15 @@
               },
               {
                 "value": "escapedLines",
-                "what": "Gives one record per line, unescaped as a `bytes` object destination wrote it."
+                "what": "Gives one record per line, unescaped as a destination with format `bytes` and newlines `escape` wrote it."
+              },
+              {
+                "value": "lengthPrefix",
+                "what": "Reads the object as records, each carrying its own length where `lengthPrefix` says."
+              },
+              {
+                "value": "fixed",
+                "what": "Reads the object as records of `fixedBytes` bytes each."
               }
             ]
           },
@@ -1434,6 +1544,30 @@
             "absent": "a record per line",
             "examples": ["([\\r\\n]+)\\d{4}-", "</event>(\\s*)"],
             "what": "With `lines` framing, and only then: where a record ends. Its first capture group is the break and is dropped: the bytes before it end a record, line ends and all, and the bytes after it start the next. What follows the group is kept, so the pattern can say how a record starts: `([\\r\\n]+)\\d{4}-` keeps a stack trace with the line that logged it, and `</event>(\\s*)` cuts XML events with no line ends between them. It needs a capture group and must not match the empty string."
+          },
+          {
+            "name": "lengthPrefix",
+            "type": "object",
+            "absent": "none",
+            "examples": [
+              {
+                "bytes": 4
+              },
+              {
+                "offset": 2,
+                "bytes": 2,
+                "order": "little",
+                "counts": "message"
+              }
+            ],
+            "what": "Where each record's length is, for framing `lengthPrefix`, and required there. `bytes` is the length's size, 1 to 8. `offset` is how many bytes of the record come before it, 0 if absent. `order` is `big`, the most significant byte first and the default, or `little`. `counts` is `rest`, the bytes after the length and the default, or `message`, the whole record, the length and what comes before it included (`message` is the value's name)."
+          },
+          {
+            "name": "fixedBytes",
+            "type": "integer",
+            "absent": "none",
+            "examples": [64, 512],
+            "what": "How many bytes every record is, for framing `fixed`, and required there."
           },
           {
             "name": "certificate",
@@ -1604,6 +1738,8 @@
               "fields",
               "framing",
               "lineBreaker",
+              "lengthPrefix",
+              "fixedBytes",
               "certificate",
               "trustedAuthorities",
               "trustPublic",
@@ -1710,7 +1846,15 @@
               },
               {
                 "value": "escapedLines",
-                "what": "Gives one record per line, unescaped as a `bytes` object destination wrote it."
+                "what": "Gives one record per line, unescaped as a destination with format `bytes` and newlines `escape` wrote it."
+              },
+              {
+                "value": "lengthPrefix",
+                "what": "Reads the object as records, each carrying its own length where `lengthPrefix` says."
+              },
+              {
+                "value": "fixed",
+                "what": "Reads the object as records of `fixedBytes` bytes each."
               }
             ]
           },
@@ -1720,6 +1864,30 @@
             "absent": "a record per line",
             "examples": ["([\\r\\n]+)\\d{4}-", "</event>(\\s*)"],
             "what": "With `lines` framing, and only then: where a record ends. Its first capture group is the break and is dropped: the bytes before it end a record, line ends and all, and the bytes after it start the next. What follows the group is kept, so the pattern can say how a record starts: `([\\r\\n]+)\\d{4}-` keeps a stack trace with the line that logged it, and `</event>(\\s*)` cuts XML events with no line ends between them. It needs a capture group and must not match the empty string."
+          },
+          {
+            "name": "lengthPrefix",
+            "type": "object",
+            "absent": "none",
+            "examples": [
+              {
+                "bytes": 4
+              },
+              {
+                "offset": 2,
+                "bytes": 2,
+                "order": "little",
+                "counts": "message"
+              }
+            ],
+            "what": "Where each record's length is, for framing `lengthPrefix`, and required there. `bytes` is the length's size, 1 to 8. `offset` is how many bytes of the record come before it, 0 if absent. `order` is `big`, the most significant byte first and the default, or `little`. `counts` is `rest`, the bytes after the length and the default, or `message`, the whole record, the length and what comes before it included (`message` is the value's name)."
+          },
+          {
+            "name": "fixedBytes",
+            "type": "integer",
+            "absent": "none",
+            "examples": [64, 512],
+            "what": "How many bytes every record is, for framing `fixed`, and required there."
           },
           {
             "name": "afterCommit",
@@ -1849,6 +2017,8 @@
               "fields",
               "framing",
               "lineBreaker",
+              "lengthPrefix",
+              "fixedBytes",
               "afterCommit",
               "movePrefix"
             ]
@@ -1958,7 +2128,15 @@
               },
               {
                 "value": "escapedLines",
-                "what": "Gives one record per line, unescaped as a `bytes` object destination wrote it."
+                "what": "Gives one record per line, unescaped as a destination with format `bytes` and newlines `escape` wrote it."
+              },
+              {
+                "value": "lengthPrefix",
+                "what": "Reads the object as records, each carrying its own length where `lengthPrefix` says."
+              },
+              {
+                "value": "fixed",
+                "what": "Reads the object as records of `fixedBytes` bytes each."
               }
             ]
           },
@@ -1968,6 +2146,30 @@
             "absent": "a record per line",
             "examples": ["([\\r\\n]+)\\d{4}-", "</event>(\\s*)"],
             "what": "With `lines` framing, and only then: where a record ends. Its first capture group is the break and is dropped: the bytes before it end a record, line ends and all, and the bytes after it start the next. What follows the group is kept, so the pattern can say how a record starts: `([\\r\\n]+)\\d{4}-` keeps a stack trace with the line that logged it, and `</event>(\\s*)` cuts XML events with no line ends between them. It needs a capture group and must not match the empty string."
+          },
+          {
+            "name": "lengthPrefix",
+            "type": "object",
+            "absent": "none",
+            "examples": [
+              {
+                "bytes": 4
+              },
+              {
+                "offset": 2,
+                "bytes": 2,
+                "order": "little",
+                "counts": "message"
+              }
+            ],
+            "what": "Where each record's length is, for framing `lengthPrefix`, and required there. `bytes` is the length's size, 1 to 8. `offset` is how many bytes of the record come before it, 0 if absent. `order` is `big`, the most significant byte first and the default, or `little`. `counts` is `rest`, the bytes after the length and the default, or `message`, the whole record, the length and what comes before it included (`message` is the value's name)."
+          },
+          {
+            "name": "fixedBytes",
+            "type": "integer",
+            "absent": "none",
+            "examples": [64, 512],
+            "what": "How many bytes every record is, for framing `fixed`, and required there."
           },
           {
             "name": "certificate",
@@ -2099,6 +2301,8 @@
               "fields",
               "framing",
               "lineBreaker",
+              "lengthPrefix",
+              "fixedBytes",
               "certificate",
               "trustedAuthorities",
               "trustPublic"
@@ -2155,7 +2359,15 @@
               },
               {
                 "value": "escapedLines",
-                "what": "Gives one record per line, unescaped as a `bytes` object destination wrote it."
+                "what": "Gives one record per line, unescaped as a destination with format `bytes` and newlines `escape` wrote it."
+              },
+              {
+                "value": "lengthPrefix",
+                "what": "Reads the object as records, each carrying its own length where `lengthPrefix` says."
+              },
+              {
+                "value": "fixed",
+                "what": "Reads the object as records of `fixedBytes` bytes each."
               }
             ]
           },
@@ -2165,6 +2377,30 @@
             "absent": "a record per line",
             "examples": ["([\\r\\n]+)\\d{4}-", "</event>(\\s*)"],
             "what": "With `lines` framing, and only then: where a record ends. Its first capture group is the break and is dropped: the bytes before it end a record, line ends and all, and the bytes after it start the next. What follows the group is kept, so the pattern can say how a record starts: `([\\r\\n]+)\\d{4}-` keeps a stack trace with the line that logged it, and `</event>(\\s*)` cuts XML events with no line ends between them. It needs a capture group and must not match the empty string."
+          },
+          {
+            "name": "lengthPrefix",
+            "type": "object",
+            "absent": "none",
+            "examples": [
+              {
+                "bytes": 4
+              },
+              {
+                "offset": 2,
+                "bytes": 2,
+                "order": "little",
+                "counts": "message"
+              }
+            ],
+            "what": "Where each record's length is, for framing `lengthPrefix`, and required there. `bytes` is the length's size, 1 to 8. `offset` is how many bytes of the record come before it, 0 if absent. `order` is `big`, the most significant byte first and the default, or `little`. `counts` is `rest`, the bytes after the length and the default, or `message`, the whole record, the length and what comes before it included (`message` is the value's name)."
+          },
+          {
+            "name": "fixedBytes",
+            "type": "integer",
+            "absent": "none",
+            "examples": [64, 512],
+            "what": "How many bytes every record is, for framing `fixed`, and required there."
           },
           {
             "name": "certificate",
@@ -2280,6 +2516,8 @@
               "fields",
               "framing",
               "lineBreaker",
+              "lengthPrefix",
+              "fixedBytes",
               "certificate",
               "trustedAuthorities",
               "trustPublic"
@@ -2304,7 +2542,7 @@
               "https://api.example.com/v1/events?limit=500",
               "https://siem.example.com:8443/api/alerts"
             ],
-            "what": "The whole address it asks, `http://` or `https://`, with any fixed query parameters. It sends a credential only over `https://`, or to this host."
+            "what": "The whole address it asks, `http://` or `https://`, with any fixed query parameters. It sends a credential only over `https://`, or to localhost."
           },
           {
             "name": "method",
@@ -2571,7 +2809,7 @@
             "type": "string",
             "required": true,
             "examples": ["https://acme.okta.com", "https://login.acme.com"],
-            "what": "The org's address, with no path. It sends the token only over `https://`, or to this host."
+            "what": "The org's address, with no path. It sends the token only over `https://`, or to localhost."
           },
           {
             "name": "token",
@@ -3154,6 +3392,24 @@
             "what": "Trusted authorities a sender's certificate must chain to, as PEM. With any, every sender must present a certificate."
           },
           {
+            "name": "senderFingerprints",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [
+              [
+                "sha-256:95:D0:AB:F2:0B:03:56:1B:05:63:45:81:60:EE:0E:13:28:0E:FB:DE:85:59:7E:16:97:99:24:0A:56:B3:FC:6C"
+              ]
+            ],
+            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate. The certificate's dates are not checked, so a sender stays admitted after its certificate expires until its fingerprint is removed."
+          },
+          {
+            "name": "senderNames",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [["*.example.com", "syslog-1.example.org"]],
+            "what": "Of the senders whose certificate chains to `trustedAuthorities`, only those issued to one of these hosts: by the certificate's DNS names, or its common name where it has none. `*.example.com` stands for any one host in example.com. Needs `trustedAuthorities`."
+          },
+          {
             "name": "records",
             "type": "string",
             "default": "body",
@@ -3186,7 +3442,35 @@
             "type": "integer",
             "default": 10485760,
             "examples": [1048576, 67108864],
-            "what": "The largest request body it reads, between 1024 and 67108864. A larger one is refused `413`. A body sent as gzip is held to it as it inflates."
+            "what": "The largest request body it reads, between 2048 and 67108864. A larger one is refused `413`. A body sent as gzip is held to it as it inflates."
+          },
+          {
+            "name": "answerAfterDelivery",
+            "type": "bool",
+            "default": false,
+            "examples": [true],
+            "what": "Off, the default: a request is answered as soon as it is received, so the sender never waits on a destination. If the worker crashes before the records are delivered, they are lost. On: a request is answered only once every destination has its records, so a crash loses nothing. But a destination can hold records for minutes before it delivers them, and many senders give up sooner: they send the request again, the records arrive more than once, and the sender can fall behind."
+          },
+          {
+            "name": "maxConnections",
+            "type": "integer",
+            "absent": "as many as the worker's open-file limit leaves room for, shared with its other receivers",
+            "examples": [1000, 100000],
+            "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed."
+          },
+          {
+            "name": "maxConnectionsPerSender",
+            "type": "integer",
+            "absent": "as many as `maxConnections`",
+            "examples": [10],
+            "what": "The most connections it holds from one address, between 1 and `maxConnections`. Past it, a new connection takes the place of that address's connection idle longest, if that one has been idle a minute; otherwise the new one is closed. Absent, one sender may take them all. Behind a balancer or NAT every sender comes from one address, so this limits them all together: set it only against a sender that takes the room others need."
+          },
+          {
+            "name": "idleTimeoutSecs",
+            "type": "integer",
+            "absent": "none",
+            "examples": [600],
+            "what": "Closes a connection that sends nothing this long while the receiver waits on it. Absent, an idle connection stays open as long as there is room. Some senders lose the first message they write to a connection the receiver closed."
           }
         ],
         "fields": ["__source.name", "__source.type", "__source.remote", "__source.bytes"],
@@ -3196,7 +3480,17 @@
           },
           {
             "section": "Advanced",
-            "settings": ["certificate", "trustedAuthorities", "maxRequestBytes"]
+            "settings": [
+              "certificate",
+              "trustedAuthorities",
+              "senderFingerprints",
+              "senderNames",
+              "maxRequestBytes",
+              "answerAfterDelivery",
+              "maxConnections",
+              "maxConnectionsPerSender",
+              "idleTimeoutSecs"
+            ]
           }
         ]
       },
@@ -3251,6 +3545,24 @@
             "what": "Trusted authorities a sender's certificate must chain to, as PEM. With any, every sender must present a certificate."
           },
           {
+            "name": "senderFingerprints",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [
+              [
+                "sha-256:95:D0:AB:F2:0B:03:56:1B:05:63:45:81:60:EE:0E:13:28:0E:FB:DE:85:59:7E:16:97:99:24:0A:56:B3:FC:6C"
+              ]
+            ],
+            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate. The certificate's dates are not checked, so a sender stays admitted after its certificate expires until its fingerprint is removed."
+          },
+          {
+            "name": "senderNames",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [["*.example.com", "syslog-1.example.org"]],
+            "what": "Of the senders whose certificate chains to `trustedAuthorities`, only those issued to one of these hosts: by the certificate's DNS names, or its common name where it has none. `*.example.com` stands for any one host in example.com. Needs `trustedAuthorities`."
+          },
+          {
             "name": "sourcetypes",
             "type": "map",
             "absent": "a record per line for every sourcetype",
@@ -3268,7 +3580,35 @@
             "type": "integer",
             "default": 10485760,
             "examples": [1048576, 67108864],
-            "what": "The largest request body it reads, between 1024 and 67108864. A larger one is refused `413`. A body sent as gzip is held to it as it inflates."
+            "what": "The largest request body it reads, between 2048 and 67108864. A larger one is refused `413`. A body sent as gzip is held to it as it inflates."
+          },
+          {
+            "name": "answerAfterDelivery",
+            "type": "bool",
+            "default": false,
+            "examples": [true],
+            "what": "Off, the default: a request is answered as soon as it is received, so the sender never waits on a destination. If the worker crashes before the records are delivered, they are lost. On: a request is answered only once every destination has its records, so a crash loses nothing. But a destination can hold records for minutes before it delivers them, and many senders give up sooner: they send the request again, the records arrive more than once, and the sender can fall behind."
+          },
+          {
+            "name": "maxConnections",
+            "type": "integer",
+            "absent": "as many as the worker's open-file limit leaves room for, shared with its other receivers",
+            "examples": [1000, 100000],
+            "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed."
+          },
+          {
+            "name": "maxConnectionsPerSender",
+            "type": "integer",
+            "absent": "as many as `maxConnections`",
+            "examples": [10],
+            "what": "The most connections it holds from one address, between 1 and `maxConnections`. Past it, a new connection takes the place of that address's connection idle longest, if that one has been idle a minute; otherwise the new one is closed. Absent, one sender may take them all. Behind a balancer or NAT every sender comes from one address, so this limits them all together: set it only against a sender that takes the room others need."
+          },
+          {
+            "name": "idleTimeoutSecs",
+            "type": "integer",
+            "absent": "none",
+            "examples": [600],
+            "what": "Closes a connection that sends nothing this long while the receiver waits on it. Absent, an idle connection stays open as long as there is room. Some senders lose the first message they write to a connection the receiver closed."
           }
         ],
         "fields": [
@@ -3289,7 +3629,18 @@
           },
           {
             "section": "Advanced",
-            "settings": ["certificate", "trustedAuthorities", "sourcetypes", "maxRequestBytes"]
+            "settings": [
+              "certificate",
+              "trustedAuthorities",
+              "senderFingerprints",
+              "senderNames",
+              "sourcetypes",
+              "maxRequestBytes",
+              "answerAfterDelivery",
+              "maxConnections",
+              "maxConnectionsPerSender",
+              "idleTimeoutSecs"
+            ]
           }
         ]
       },
@@ -3337,6 +3688,24 @@
             "what": "Trusted authorities a forwarder's certificate must chain to, as PEM. With any, every forwarder must present a certificate."
           },
           {
+            "name": "senderFingerprints",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [
+              [
+                "sha-256:95:D0:AB:F2:0B:03:56:1B:05:63:45:81:60:EE:0E:13:28:0E:FB:DE:85:59:7E:16:97:99:24:0A:56:B3:FC:6C"
+              ]
+            ],
+            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate. The certificate's dates are not checked, so a sender stays admitted after its certificate expires until its fingerprint is removed."
+          },
+          {
+            "name": "senderNames",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [["*.example.com", "syslog-1.example.org"]],
+            "what": "Of the senders whose certificate chains to `trustedAuthorities`, only those issued to one of these hosts: by the certificate's DNS names, or its common name where it has none. `*.example.com` stands for any one host in example.com. Needs `trustedAuthorities`."
+          },
+          {
             "name": "sourcetypes",
             "type": "map",
             "absent": "an event per line for every sourcetype",
@@ -3362,7 +3731,28 @@
             "type": "integer",
             "default": 10485760,
             "examples": [1048576, 67108864],
-            "what": "The largest frame it reads, and the most one record holds, between 1024 and 67108864."
+            "what": "The largest frame it reads, and the most one record holds, between 2048 and 67108864."
+          },
+          {
+            "name": "maxConnections",
+            "type": "integer",
+            "absent": "as many as the worker's open-file limit leaves room for, shared with its other receivers",
+            "examples": [1000, 100000],
+            "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed."
+          },
+          {
+            "name": "maxConnectionsPerSender",
+            "type": "integer",
+            "absent": "as many as `maxConnections`",
+            "examples": [10],
+            "what": "The most connections it holds from one address, between 1 and `maxConnections`. Past it, a new connection takes the place of that address's connection idle longest, if that one has been idle a minute; otherwise the new one is closed. Absent, one sender may take them all. Behind a balancer or NAT every sender comes from one address, so this limits them all together: set it only against a sender that takes the room others need."
+          },
+          {
+            "name": "idleTimeoutSecs",
+            "type": "integer",
+            "absent": "none",
+            "examples": [600],
+            "what": "Closes a connection that sends nothing this long while the receiver waits on it. Absent, an idle connection stays open as long as there is room. Some senders lose the first message they write to a connection the receiver closed."
           }
         ],
         "fields": [
@@ -3383,7 +3773,16 @@
           },
           {
             "section": "Advanced",
-            "settings": ["certificate", "trustedAuthorities", "maxRequestBytes"]
+            "settings": [
+              "certificate",
+              "trustedAuthorities",
+              "senderFingerprints",
+              "senderNames",
+              "maxRequestBytes",
+              "maxConnections",
+              "maxConnectionsPerSender",
+              "idleTimeoutSecs"
+            ]
           }
         ]
       },
@@ -3454,11 +3853,57 @@
             "what": "Trusted authorities a sender's certificate must chain to, as PEM. With any, every sender must present a certificate."
           },
           {
+            "name": "senderFingerprints",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [
+              [
+                "sha-256:95:D0:AB:F2:0B:03:56:1B:05:63:45:81:60:EE:0E:13:28:0E:FB:DE:85:59:7E:16:97:99:24:0A:56:B3:FC:6C"
+              ]
+            ],
+            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate. The certificate's dates are not checked, so a sender stays admitted after its certificate expires until its fingerprint is removed."
+          },
+          {
+            "name": "senderNames",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [["*.example.com", "syslog-1.example.org"]],
+            "what": "Of the senders whose certificate chains to `trustedAuthorities`, only those issued to one of these hosts: by the certificate's DNS names, or its common name where it has none. `*.example.com` stands for any one host in example.com. Needs `trustedAuthorities`."
+          },
+          {
             "name": "maxRequestBytes",
             "type": "integer",
             "default": 10485760,
             "examples": [1048576, 67108864],
-            "what": "The largest request body it reads, between 1024 and 67108864. A larger one is refused `413`. A body sent as gzip is held to it as it inflates."
+            "what": "The largest request body it reads, between 2048 and 67108864. A larger one is refused `413`. A body sent as gzip is held to it as it inflates."
+          },
+          {
+            "name": "answerAfterDelivery",
+            "type": "bool",
+            "default": false,
+            "examples": [true],
+            "what": "Off, the default: a request is answered as soon as it is received, so the sender never waits on a destination. If the worker crashes before the records are delivered, they are lost. On: a request is answered only once every destination has its records, so a crash loses nothing. But a destination can hold records for minutes before it delivers them, and many senders give up sooner: they send the request again, the records arrive more than once, and the sender can fall behind."
+          },
+          {
+            "name": "maxConnections",
+            "type": "integer",
+            "absent": "as many as the worker's open-file limit leaves room for, shared with its other receivers",
+            "examples": [1000, 100000],
+            "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed."
+          },
+          {
+            "name": "maxConnectionsPerSender",
+            "type": "integer",
+            "absent": "as many as `maxConnections`",
+            "examples": [10],
+            "what": "The most connections it holds from one address, between 1 and `maxConnections`. Past it, a new connection takes the place of that address's connection idle longest, if that one has been idle a minute; otherwise the new one is closed. Absent, one sender may take them all. Behind a balancer or NAT every sender comes from one address, so this limits them all together: set it only against a sender that takes the room others need."
+          },
+          {
+            "name": "idleTimeoutSecs",
+            "type": "integer",
+            "absent": "none",
+            "examples": [600],
+            "what": "Closes a connection that sends nothing this long while the receiver waits on it. Absent, an idle connection stays open as long as there is room. Some senders lose the first message they write to a connection the receiver closed."
           }
         ],
         "fields": [
@@ -3476,14 +3921,24 @@
           },
           {
             "section": "Advanced",
-            "settings": ["certificate", "trustedAuthorities", "maxRequestBytes"]
+            "settings": [
+              "certificate",
+              "trustedAuthorities",
+              "senderFingerprints",
+              "senderNames",
+              "maxRequestBytes",
+              "answerAfterDelivery",
+              "maxConnections",
+              "maxConnectionsPerSender",
+              "idleTimeoutSecs"
+            ]
           }
         ]
       },
       {
         "type": "syslogReceiver",
         "name": "Syslog receiver",
-        "summary": "Takes what syslog senders send to its port, over TCP or UDP: rsyslog, syslog-ng, network devices and appliances. Messages are RFC 5424 or RFC 3164. Over TCP each is framed by its octet count or ended by a newline (RFC 6587). With `lineBreaker` set, it ends where the pattern breaks instead of at a newline. With a `certificate`, TCP is served over TLS (RFC 5425). Over UDP each datagram is one message (RFC 5426), served without TLS. Every worker of the group listens, and a sender, or a balancer in front of the workers, picks one. Syslog carries no token, so a receiver admits senders by the networks in `allowFrom`, by a certificate that chains to its `trustedAuthorities`, or both; over UDP by `allowFrom` alone. Syslog has no acknowledgement: delivery is best-effort. What a connection carries when it is cut, and what a worker holds when it stops, is lost. A full or blocked receiver stops reading TCP, so the sender's TCP window fills and the sender buffers or drops by its own rules. It drops a datagram that arrives while it is full or blocked, and counts it in `smeltr_source_dropped_total`. Each message is a record whose `_raw` is the message as sent, its PRI header included; a pipeline parses the header.",
+        "summary": "Takes what syslog senders send to its port, over TCP or UDP: rsyslog, syslog-ng, network devices and appliances. Messages are RFC 5424 or RFC 3164. Over TCP each is framed by its octet count or ended by a newline (RFC 6587). With `lineBreaker` set, it ends where the pattern breaks instead of at a newline. With a `certificate`, TCP is served over TLS (RFC 5425). Over UDP each datagram is one message (RFC 5426), served without TLS. Every worker of the group listens, and a sender, or a balancer in front of the workers, picks one. Syslog carries no token, so a receiver admits senders by the networks in `allowFrom`, by a certificate that chains to its `trustedAuthorities` or is named in `senderFingerprints`, or both; over UDP by `allowFrom` alone. Syslog has no acknowledgement: delivery is best-effort. What a connection carries when it is cut, and what a worker holds when it stops, is lost. A full or blocked receiver stops reading TCP, so the sender's TCP window fills and the sender buffers or drops by its own rules. It drops a datagram that arrives while it is full or blocked, and counts it in `smeltr_source_dropped_total`. Each message is a record whose `_raw` is the message as sent, its PRI header included; a pipeline parses the header.",
         "settings": [
           {
             "name": "port",
@@ -3533,11 +3988,50 @@
             "what": "Trusted authorities a sender's certificate must chain to, as PEM. With any, every sender must present a certificate. A UDP receiver takes none."
           },
           {
+            "name": "senderFingerprints",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [
+              [
+                "sha-256:95:D0:AB:F2:0B:03:56:1B:05:63:45:81:60:EE:0E:13:28:0E:FB:DE:85:59:7E:16:97:99:24:0A:56:B3:FC:6C"
+              ]
+            ],
+            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate. The certificate's dates are not checked, so a sender stays admitted after its certificate expires until its fingerprint is removed. A UDP receiver takes none."
+          },
+          {
+            "name": "senderNames",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [["*.example.com", "syslog-1.example.org"]],
+            "what": "Of the senders whose certificate chains to `trustedAuthorities`, only those issued to one of these hosts: by the certificate's DNS names, or its common name where it has none. `*.example.com` stands for any one host in example.com. Needs `trustedAuthorities`. A UDP receiver takes none."
+          },
+          {
             "name": "maxRequestBytes",
             "type": "integer",
             "default": 10485760,
             "examples": [65536, 1048576],
-            "what": "The largest message it reads, between 1024 and 67108864. A larger one closes the connection; a larger datagram is dropped."
+            "what": "The largest message it keeps, between 2048 and 67108864. A larger one is cut to this size."
+          },
+          {
+            "name": "maxConnections",
+            "type": "integer",
+            "absent": "as many as the worker's open-file limit leaves room for, shared with its other receivers",
+            "examples": [1000, 100000],
+            "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed. TCP only."
+          },
+          {
+            "name": "maxConnectionsPerSender",
+            "type": "integer",
+            "absent": "as many as `maxConnections`",
+            "examples": [10],
+            "what": "The most connections it holds from one address, between 1 and `maxConnections`. Past it, a new connection takes the place of that address's connection idle longest, if that one has been idle a minute; otherwise the new one is closed. Absent, one sender may take them all. Behind a balancer or NAT every sender comes from one address, so this limits them all together: set it only against a sender that takes the room others need. TCP only."
+          },
+          {
+            "name": "idleTimeoutSecs",
+            "type": "integer",
+            "absent": "none",
+            "examples": [600],
+            "what": "Closes a connection that sends nothing this long while the receiver waits on it. Absent, an idle connection stays open as long as there is room. Some senders lose the first message they write to a connection the receiver closed. TCP only."
           },
           {
             "name": "encoding",
@@ -3578,9 +4072,223 @@
             "settings": [
               "certificate",
               "trustedAuthorities",
+              "senderFingerprints",
+              "senderNames",
               "maxRequestBytes",
+              "maxConnections",
+              "maxConnectionsPerSender",
+              "idleTimeoutSecs",
               "encoding",
               "lineBreaker"
+            ]
+          }
+        ]
+      },
+      {
+        "type": "socketReceiver",
+        "name": "Socket receiver",
+        "summary": "Takes what senders send to its port over TCP or UDP, in a protocol of their own: lines, length-prefixed binary messages, or messages of a fixed size. Over TCP `framing` says where each message ends. Delivery is best-effort: what a connection carries when it is cut, and what a worker holds when it stops, is lost.",
+        "settings": [
+          {
+            "name": "port",
+            "type": "integer",
+            "required": true,
+            "examples": [9000, 5000],
+            "what": "The port it listens on. Every worker of the group binds it, so no two receivers of one `transport` share one; a TCP and a UDP receiver may."
+          },
+          {
+            "name": "transport",
+            "type": "string",
+            "default": "tcp",
+            "examples": ["udp"],
+            "what": "What senders send over.",
+            "values": [
+              {
+                "value": "tcp",
+                "what": "Takes connections, under TLS when it names a `certificate`. A full receiver stops reading, which slows the sender."
+              },
+              {
+                "value": "udp",
+                "what": "Takes datagrams, one message each. No TLS, and nothing slows a sender: a datagram that arrives while the receiver is full or blocked is dropped and counted in `smeltr_source_dropped_total`. It needs `allowFrom`."
+              }
+            ]
+          },
+          {
+            "name": "framing",
+            "type": "string",
+            "default": "lines",
+            "examples": ["lengthPrefix"],
+            "what": "Where one message ends and the next starts. TCP only: over UDP a datagram is a message.",
+            "values": [
+              {
+                "value": "lines",
+                "what": "Gives one record per line, or per piece `lineBreaker` cuts."
+              },
+              {
+                "value": "object",
+                "what": "Gives all a sender sends before it hangs up as one record."
+              },
+              {
+                "value": "escapedLines",
+                "what": "Gives one record per line, unescaped as a destination with format `bytes` and newlines `escape` wrote it."
+              },
+              {
+                "value": "lengthPrefix",
+                "what": "Gives one record per message, each carrying its own length where `lengthPrefix` says."
+              },
+              {
+                "value": "fixed",
+                "what": "Gives one record per `fixedBytes` bytes."
+              }
+            ]
+          },
+          {
+            "name": "lineBreaker",
+            "type": "string",
+            "absent": "a message per line",
+            "examples": ["(\\x00)", "()CEF:0\\|"],
+            "what": "Where a message ends, for framing `lines`. The first capture group is required and will be dropped. E.g. `(\\x00)` ends a message at a NUL. TCP only."
+          },
+          {
+            "name": "lengthPrefix",
+            "type": "object",
+            "absent": "none",
+            "examples": [
+              {
+                "bytes": 4
+              },
+              {
+                "offset": 2,
+                "bytes": 2,
+                "order": "little",
+                "counts": "message"
+              }
+            ],
+            "what": "Where each message's length is, for framing `lengthPrefix`, and required there. `bytes` is the length's size, 1 to 8. `offset` is how many bytes of the message come before it, 0 if absent. `order` is `big`, the most significant byte first and the default, or `little`. `counts` is `rest`, the bytes after the length and the default, or `message`, the whole message, the length and what comes before it included."
+          },
+          {
+            "name": "fixedBytes",
+            "type": "integer",
+            "absent": "none",
+            "examples": [64, 512],
+            "what": "How many bytes every message is, for framing `fixed`, and required there."
+          },
+          {
+            "name": "allowFrom",
+            "type": "list of strings",
+            "absent": "every address TLS admits",
+            "examples": [["10.0.0.0/8"], ["10.20.0.0/16", "192.168.1.20", "fd00::/8"]],
+            "what": "The networks a sender may connect from: CIDR blocks such as `10.0.0.0/8`, or single addresses. A connection from anywhere else is closed before any of it is read, and a datagram from anywhere else is dropped. Without it, a TCP receiver needs `trustedAuthorities`, and admits every sender whose certificate chains to one of them. A UDP receiver needs it. A datagram's source address is whatever its sender writes, so over UDP it admits whoever can reach the port and claim an address in these networks."
+          },
+          {
+            "name": "certificate",
+            "type": "certificate",
+            "absent": "plain TCP",
+            "examples": ["meters-tls"],
+            "what": "The certificate it serves TLS with, named from the list on [Admin → Certificates](/docs/certificates). Workers serve its newest version. A UDP receiver takes none."
+          },
+          {
+            "name": "trustedAuthorities",
+            "type": "string",
+            "absent": "none",
+            "examples": [
+              "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
+            ],
+            "what": "Trusted authorities a sender's certificate must chain to, as PEM. With any, every sender must present a certificate. A UDP receiver takes none."
+          },
+          {
+            "name": "senderFingerprints",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [
+              [
+                "sha-256:95:D0:AB:F2:0B:03:56:1B:05:63:45:81:60:EE:0E:13:28:0E:FB:DE:85:59:7E:16:97:99:24:0A:56:B3:FC:6C"
+              ]
+            ],
+            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate. The certificate's dates are not checked, so a sender stays admitted after its certificate expires until its fingerprint is removed. A UDP receiver takes none."
+          },
+          {
+            "name": "senderNames",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [["*.example.com", "collector-1.example.org"]],
+            "what": "Of the senders whose certificate chains to `trustedAuthorities`, only those issued to one of these hosts: by the certificate's DNS names, or its common name where it has none. `*.example.com` stands for any one host in example.com. Needs `trustedAuthorities`. A UDP receiver takes none."
+          },
+          {
+            "name": "maxRequestBytes",
+            "type": "integer",
+            "default": 10485760,
+            "examples": [65536, 1048576],
+            "what": "The largest message it keeps, between 2048 and 67108864. A larger one is cut to this size."
+          },
+          {
+            "name": "maxConnections",
+            "type": "integer",
+            "absent": "as many as the worker's open-file limit leaves room for, shared with its other receivers",
+            "examples": [1000, 100000],
+            "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed. TCP only."
+          },
+          {
+            "name": "maxConnectionsPerSender",
+            "type": "integer",
+            "absent": "as many as `maxConnections`",
+            "examples": [10],
+            "what": "The most connections it holds from one address, between 1 and `maxConnections`. Past it, a new connection takes the place of that address's connection idle longest, if that one has been idle a minute; otherwise the new one is closed. Absent, one sender may take them all. Behind a balancer or NAT every sender comes from one address, so this limits them all together: set it only against a sender that takes the room others need. TCP only."
+          },
+          {
+            "name": "idleTimeoutSecs",
+            "type": "integer",
+            "absent": "none",
+            "examples": [600],
+            "what": "Closes a connection that sends nothing this long while the receiver waits on it. Absent, an idle connection stays open as long as there is room. Some senders lose the first message they write to a connection the receiver closed. TCP only."
+          },
+          {
+            "name": "encoding",
+            "type": "string",
+            "default": "auto",
+            "examples": ["none"],
+            "what": "How a message's bytes become `_raw`'s text: `auto`, `none`, or a WHATWG encoding label other than the replacement ones, such as `utf-8` or `windows-1252`. A binary protocol takes `none`.",
+            "values": [
+              {
+                "value": "auto",
+                "what": "Detects each message's encoding."
+              },
+              {
+                "value": "utf-8",
+                "what": "Decodes every message as UTF-8, as any other label decodes as its own encoding. Bytes that do not decode become U+FFFD."
+              },
+              {
+                "value": "none",
+                "what": "Decodes nothing: the record has no `_raw`, and its payload is `__source.bytes` alone. A pipeline reads it as text with `decode(__source.bytes, encoding)`."
+              }
+            ]
+          }
+        ],
+        "fields": ["__source.name", "__source.type", "__source.remote", "__source.bytes"],
+        "form": [
+          {
+            "settings": [
+              "port",
+              "transport",
+              "framing",
+              "lineBreaker",
+              "lengthPrefix",
+              "fixedBytes",
+              "allowFrom"
+            ]
+          },
+          {
+            "section": "Advanced",
+            "settings": [
+              "certificate",
+              "trustedAuthorities",
+              "senderFingerprints",
+              "senderNames",
+              "maxRequestBytes",
+              "maxConnections",
+              "maxConnectionsPerSender",
+              "idleTimeoutSecs",
+              "encoding"
             ]
           }
         ]
@@ -3631,11 +4339,57 @@
             "what": "Trusted authorities a sender's certificate must chain to, as PEM. With any, every sender must present a certificate."
           },
           {
+            "name": "senderFingerprints",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [
+              [
+                "sha-256:95:D0:AB:F2:0B:03:56:1B:05:63:45:81:60:EE:0E:13:28:0E:FB:DE:85:59:7E:16:97:99:24:0A:56:B3:FC:6C"
+              ]
+            ],
+            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate. The certificate's dates are not checked, so a sender stays admitted after its certificate expires until its fingerprint is removed."
+          },
+          {
+            "name": "senderNames",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [["*.example.com", "syslog-1.example.org"]],
+            "what": "Of the senders whose certificate chains to `trustedAuthorities`, only those issued to one of these hosts: by the certificate's DNS names, or its common name where it has none. `*.example.com` stands for any one host in example.com. Needs `trustedAuthorities`."
+          },
+          {
             "name": "maxRequestBytes",
             "type": "integer",
             "default": 10485760,
             "examples": [1048576, 67108864],
-            "what": "The largest request body it reads, between 1024 and 67108864. A larger one is refused `413`, which a sender may drop."
+            "what": "The largest request body it reads, between 2048 and 67108864. A larger one is refused `413`, which a sender may drop."
+          },
+          {
+            "name": "answerAfterDelivery",
+            "type": "bool",
+            "default": false,
+            "examples": [true],
+            "what": "Off, the default: a request is answered as soon as it is received, so the sender never waits on a destination. If the worker crashes before the records are delivered, they are lost. On: a request is answered only once every destination has its records, so a crash loses nothing. But a destination can hold records for minutes before it delivers them, and many senders give up sooner: they send the request again, the records arrive more than once, and the sender can fall behind."
+          },
+          {
+            "name": "maxConnections",
+            "type": "integer",
+            "absent": "as many as the worker's open-file limit leaves room for, shared with its other receivers",
+            "examples": [1000, 100000],
+            "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed."
+          },
+          {
+            "name": "maxConnectionsPerSender",
+            "type": "integer",
+            "absent": "as many as `maxConnections`",
+            "examples": [10],
+            "what": "The most connections it holds from one address, between 1 and `maxConnections`. Past it, a new connection takes the place of that address's connection idle longest, if that one has been idle a minute; otherwise the new one is closed. Absent, one sender may take them all. Behind a balancer or NAT every sender comes from one address, so this limits them all together: set it only against a sender that takes the room others need."
+          },
+          {
+            "name": "idleTimeoutSecs",
+            "type": "integer",
+            "absent": "none",
+            "examples": [600],
+            "what": "Closes a connection that sends nothing this long while the receiver waits on it. Absent, an idle connection stays open as long as there is room. Some senders lose the first message they write to a connection the receiver closed."
           }
         ],
         "fields": ["__source.name", "__source.type", "__source.remote"],
@@ -3645,7 +4399,17 @@
           },
           {
             "section": "Advanced",
-            "settings": ["certificate", "trustedAuthorities", "maxRequestBytes"]
+            "settings": [
+              "certificate",
+              "trustedAuthorities",
+              "senderFingerprints",
+              "senderNames",
+              "maxRequestBytes",
+              "answerAfterDelivery",
+              "maxConnections",
+              "maxConnectionsPerSender",
+              "idleTimeoutSecs"
+            ]
           }
         ]
       },
@@ -3695,11 +4459,57 @@
             "what": "Trusted authorities a sender's certificate must chain to, as PEM. With any, every sender must present a certificate."
           },
           {
+            "name": "senderFingerprints",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [
+              [
+                "sha-256:95:D0:AB:F2:0B:03:56:1B:05:63:45:81:60:EE:0E:13:28:0E:FB:DE:85:59:7E:16:97:99:24:0A:56:B3:FC:6C"
+              ]
+            ],
+            "what": "Senders it admits by their own certificate, whoever issued it: each the certificate's fingerprint as RFC 5425 writes one, `sha-256:` or `sha-1:` then its hash in hex bytes joined by colons. With any, every sender must present a certificate. The certificate's dates are not checked, so a sender stays admitted after its certificate expires until its fingerprint is removed."
+          },
+          {
+            "name": "senderNames",
+            "type": "list of strings",
+            "absent": "none",
+            "examples": [["*.example.com", "syslog-1.example.org"]],
+            "what": "Of the senders whose certificate chains to `trustedAuthorities`, only those issued to one of these hosts: by the certificate's DNS names, or its common name where it has none. `*.example.com` stands for any one host in example.com. Needs `trustedAuthorities`."
+          },
+          {
             "name": "maxRequestBytes",
             "type": "integer",
             "default": 10485760,
             "examples": [1048576, 67108864],
-            "what": "The largest request body it reads, between 1024 and 67108864. A larger one is refused `413`, so set a sender's bulk size below it."
+            "what": "The largest request body it reads, between 2048 and 67108864. A larger one is refused `413`, so set a sender's bulk size below it."
+          },
+          {
+            "name": "answerAfterDelivery",
+            "type": "bool",
+            "default": false,
+            "examples": [true],
+            "what": "Off, the default: a request is answered as soon as it is received, so the sender never waits on a destination. If the worker crashes before the records are delivered, they are lost. On: a request is answered only once every destination has its records, so a crash loses nothing. But a destination can hold records for minutes before it delivers them, and many senders give up sooner: they send the request again, the records arrive more than once, and the sender can fall behind."
+          },
+          {
+            "name": "maxConnections",
+            "type": "integer",
+            "absent": "as many as the worker's open-file limit leaves room for, shared with its other receivers",
+            "examples": [1000, 100000],
+            "what": "The most connections it holds open on each worker, between 1 and 1000000. When it holds that many, a new connection takes the place of the one idle longest, if that one has been idle a minute. Otherwise the new one is closed."
+          },
+          {
+            "name": "maxConnectionsPerSender",
+            "type": "integer",
+            "absent": "as many as `maxConnections`",
+            "examples": [10],
+            "what": "The most connections it holds from one address, between 1 and `maxConnections`. Past it, a new connection takes the place of that address's connection idle longest, if that one has been idle a minute; otherwise the new one is closed. Absent, one sender may take them all. Behind a balancer or NAT every sender comes from one address, so this limits them all together: set it only against a sender that takes the room others need."
+          },
+          {
+            "name": "idleTimeoutSecs",
+            "type": "integer",
+            "absent": "none",
+            "examples": [600],
+            "what": "Closes a connection that sends nothing this long while the receiver waits on it. Absent, an idle connection stays open as long as there is room. Some senders lose the first message they write to a connection the receiver closed."
           }
         ],
         "fields": [
@@ -3717,7 +4527,17 @@
           },
           {
             "section": "Advanced",
-            "settings": ["certificate", "trustedAuthorities", "maxRequestBytes"]
+            "settings": [
+              "certificate",
+              "trustedAuthorities",
+              "senderFingerprints",
+              "senderNames",
+              "maxRequestBytes",
+              "answerAfterDelivery",
+              "maxConnections",
+              "maxConnectionsPerSender",
+              "idleTimeoutSecs"
+            ]
           }
         ]
       }
@@ -3878,7 +4698,7 @@
         "type": "size",
         "default": "64 MiB",
         "examples": ["128 MiB", "2 GiB", "32 MB"],
-        "what": "The largest file it puts in the bucket, compressed. Set it to what the tools that read the bucket handle best. 64 KiB to 64 GiB."
+        "what": "The largest file it writes, compressed. Set it to what the tools that read the files handle best. 64 KiB to 64 GiB."
       },
       {
         "name": "bufferBytes",
@@ -3897,9 +4717,9 @@
       {
         "name": "fileIntervalSecs",
         "type": "integer",
-        "default": 60,
-        "examples": [30, 240],
-        "what": "The longest records wait, in seconds, before they land in the bucket. A longer wait makes larger files; records are acknowledged only once they land, so a source is held open up to this long, and after a crash reads that much again. 5 to 3600."
+        "default": 300,
+        "examples": [60, 900],
+        "what": "The longest time records wait before they are written, in seconds. A longer wait makes larger files; records are acknowledged only once they are written, so a source is held open up to this long, and after a crash reads that much again. 5 to 3600."
       }
     ],
     "kinds": [
@@ -4706,7 +5526,7 @@
               "https://intake.example.com/v1/logs",
               "https://logs.example.com:8443/ingest?tenant=acme"
             ],
-            "what": "The whole address the destination POSTs each request to, `http://` or `https://`. It sends a credential only over `https://`, or to this host."
+            "what": "The whole address the destination POSTs each request to, `http://` or `https://`. It sends a credential only over `https://`, or to localhost."
           },
           {
             "name": "zoneUrls",
@@ -5052,7 +5872,7 @@
               "https://prometheus.example.com/api/v1/write",
               "https://mimir.example.com/api/v1/push"
             ],
-            "what": "The store's remote_write endpoint, `http://` or `https://`. It sends a credential only over `https://`, or to this host."
+            "what": "The store's remote_write endpoint, `http://` or `https://`. It sends a credential only over `https://`, or to localhost."
           },
           {
             "name": "version",
@@ -5149,6 +5969,154 @@
               "certificate",
               "trustedAuthorities",
               "trustPublic",
+              "maxRequestBytes",
+              "bufferBytes",
+              "stallAfterSecs"
+            ]
+          }
+        ]
+      },
+      {
+        "type": "otlp",
+        "name": "OTLP",
+        "summary": "Sends each record over OTLP/HTTP, as protobuf, to any OTLP endpoint, such as an OpenTelemetry Collector. It sends one `signal`, logs, metrics or traces. It reads each record in the form an OTLP receiver of that signal produces, with its resource's attributes in `resource` and its scope's `name`, `version` and `attributes` in `scope`. A record that cannot be sent as that signal, such as a span with no `traceId`, is refused with the reason.",
+        "settings": [
+          {
+            "name": "url",
+            "type": "string",
+            "required": true,
+            "examples": ["https://otel-collector.example.com:4318"],
+            "what": "The OTLP endpoint, `http://` or `https://`. Each request goes to the signal's path added to this URL: `/v1/logs`, `/v1/metrics` or `/v1/traces`. It sends a credential only over `https://`, or to localhost."
+          },
+          {
+            "name": "signal",
+            "type": "string",
+            "default": "logs",
+            "examples": ["metrics", "traces"],
+            "what": "The kind of data it sends. One destination sends one signal.",
+            "values": [
+              {
+                "value": "logs",
+                "what": "Sends each record as a log record, to `/v1/logs`."
+              },
+              {
+                "value": "metrics",
+                "what": "Sends each record as a metric data point, to `/v1/metrics`. A record's `type` is its metric's: `gauge`, `sum`, `histogram`, `exponentialHistogram` or `summary`."
+              },
+              {
+                "value": "traces",
+                "what": "Sends each record as a span, to `/v1/traces`."
+              }
+            ]
+          },
+          {
+            "name": "headers",
+            "type": "map",
+            "absent": "none",
+            "examples": [
+              {
+                "X-Source": "smeltr"
+              },
+              {
+                "X-Source": "smeltr",
+                "X-Tenant": "acme"
+              }
+            ],
+            "what": "Headers it sends on every request, each name to its value. Smeltr sets `Content-Type`, `Content-Encoding`, `Content-Length`, `Transfer-Encoding`, `Host` and `Cookie` itself."
+          },
+          {
+            "name": "credentials",
+            "type": "map",
+            "absent": "none",
+            "examples": [
+              {
+                "Authorization": "OTLP_TOKEN"
+              }
+            ],
+            "what": "Headers whose values are secret, each name to the [credential](/docs/secrets) holding its whole value, such as `Bearer <token>`."
+          },
+          {
+            "name": "certificate",
+            "type": "certificate",
+            "absent": "none",
+            "examples": ["otlp-client"],
+            "what": "The certificate this worker presents to the destination, named from the list on [Admin → Certificates](/docs/certificates). Needed only when the destination requires a client certificate. Workers use its newest version. Only on an `https://` URL."
+          },
+          {
+            "name": "trustedAuthorities",
+            "type": "string",
+            "absent": "public roots",
+            "examples": [
+              "-----BEGIN CERTIFICATE-----\nMIIBhDCCASmgAwIBAgIUZAaV9QTvnJj88o800He588CBFRcwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMB4XDTI2MTAyNjAxMDMxNFoXDTM2MTAy\nMzAxMDMxNFowFzEVMBMGA1UEAwwMQ29ycCBSb290IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEukst88OovYTRwnmDGBDPJ7t7A3JVqGBfy9kduBaRU+xhndjg\nb+ymdhWsxiSGfC00cCGWSP105sGhXy47N56DsaNTMFEwHQYDVR0OBBYEFHspfsHw\n15y915HXdMYei/PzHUS5MB8GA1UdIwQYMBaAFHspfsHw15y915HXdMYei/PzHUS5\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKGwlZsJQTe61ott\nwyiBkaSP0nCAil4HYOLmNWtCeI4sAiEAhpB2e9BaMRTHOQsjDUx6GeQxmnUU9qON\nSfMq/AxFdOY=\n-----END CERTIFICATE-----"
+            ],
+            "what": "Trusted authorities the destination's certificate may chain to, as PEM, for a certificate from your organization's authority rather than a public one. Only on an `https://` URL."
+          },
+          {
+            "name": "trustPublic",
+            "type": "bool",
+            "absent": "trusted",
+            "examples": [false],
+            "what": "Whether the public roots, Mozilla's and the host's, are trusted beside `trustedAuthorities`. `false` accepts only certificates from `trustedAuthorities`."
+          },
+          {
+            "name": "compression",
+            "type": "string",
+            "default": "none",
+            "examples": ["gzip"],
+            "what": "How it compresses each request body.",
+            "values": [
+              {
+                "value": "none",
+                "what": "Sends it uncompressed."
+              },
+              {
+                "value": "gzip",
+                "what": "Compresses each body and sends it with `Content-Encoding: gzip`."
+              }
+            ]
+          },
+          {
+            "name": "inFlight",
+            "type": "integer",
+            "default": 4,
+            "examples": [8, 1, 16],
+            "what": "How many requests it sends at once to start with. 1 to 64."
+          },
+          {
+            "name": "maxRequestBytes",
+            "type": "size",
+            "default": "1 MiB",
+            "examples": ["4 MiB", "256 KiB", "10 MB"],
+            "what": "The most one request carries, before compression. A record larger than this still goes as a single record. 4 KiB to 100 MiB."
+          },
+          {
+            "name": "bufferBytes",
+            "type": "size",
+            "absent": "64 MiB, or one request if that is larger",
+            "examples": ["256 MiB", "64 MiB", "1 GiB"],
+            "what": "Recommended: auto. The max in-flight bytes each worker holds for this destination. With auto, the worker gives it a share of its available memory, holding up to what the connection can carry. If set too small, it limits throughput. 4 MiB to 1 GiB, and at least one request."
+          },
+          {
+            "name": "stallAfterSecs",
+            "type": "integer",
+            "default": 30,
+            "examples": [60, 120],
+            "what": "Seconds one batch may take to deliver, every retry included, before the destination reports it stalled. 1 to 120."
+          }
+        ],
+        "reads": [],
+        "form": [
+          {
+            "settings": ["url", "signal", "headers", "credentials"]
+          },
+          {
+            "section": "Advanced",
+            "settings": [
+              "certificate",
+              "trustedAuthorities",
+              "trustPublic",
+              "compression",
+              "inFlight",
               "maxRequestBytes",
               "bufferBytes",
               "stallAfterSecs"
@@ -5927,9 +6895,9 @@
           {
             "name": "fileIntervalSecs",
             "type": "integer",
-            "default": 60,
-            "examples": [30, 240],
-            "what": "The longest records wait, in seconds, before they are committed to the table. Each commit is a snapshot the table keeps until it is expired; records are acknowledged only once committed, so a source is held open up to this long. 5 to 240."
+            "default": 300,
+            "examples": [60, 900],
+            "what": "The longest time records wait before they are committed to the table, in seconds. Each commit is a snapshot the table keeps until it is expired; records are acknowledged only once committed, so a source is held open up to this long. 5 to 3600."
           }
         ],
         "reads": [],
@@ -6169,9 +7137,9 @@
           {
             "name": "fileIntervalSecs",
             "type": "integer",
-            "default": 60,
-            "examples": [30, 240],
-            "what": "The longest records wait, in seconds, before they are committed to the table. Each commit is an entry of the table's log; records are acknowledged only once committed, so a source is held open up to this long. 5 to 240."
+            "default": 300,
+            "examples": [60, 900],
+            "what": "The longest time records wait before they are committed to the table, in seconds. Each commit is an entry of the table's log; records are acknowledged only once committed, so a source is held open up to this long. 5 to 3600."
           }
         ],
         "reads": [],

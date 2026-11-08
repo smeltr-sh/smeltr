@@ -25,6 +25,8 @@
   import ValidatedField from './ValidatedField.svelte';
   import Advanced from './Advanced.svelte';
   import StartAt from './StartAt.svelte';
+  import Toggle from './Toggle.svelte';
+  import { isReceiver } from './sources';
   import type { StartPosition } from './kafka';
   import { CaptureSession } from './captureSession.svelte';
   import {
@@ -33,9 +35,11 @@
     filterPlaceholder,
     type CaptureAt,
     type CaptureTarget,
+    heldCount,
   } from './capture';
   import { mintSampleId } from './ids';
-  import { canEdit } from './access';
+  import { NOT_IN_DEMO, canEdit } from './access';
+  import { neverLocked } from './Locked.svelte';
   import {
     getConfig,
     configAt,
@@ -61,6 +65,7 @@
     target,
     editing,
     use,
+    onuse,
     oncancel,
     onback,
     onsaved,
@@ -72,9 +77,12 @@
     /** A source as a form edits it, saved or not, in place of a target picked from the configuration: the
      * only one the form offers. */
     editing?: { source: SourceDto; maxMatches: number };
-    /** What a finished capture is for, in place of saving it as a sample: `take` is handed it and answers why it
-     * could not use it, or nothing once it has, which closes the flow. */
+    /** A form's own purpose for a finished capture, in place of using or saving it: `take` is handed it and answers
+     * why it could not use it, or nothing once it has, which discards it and closes the flow. */
     use?: { title: string; label: string; take: (status: CaptureStatus) => string | undefined };
+    /** What Use these records does here, once the leader keeps the capture for whoever took it: answers why it
+     * could not, or nothing. Without it, the capture is kept for any pipeline's sample menu. */
+    onuse?: (status: CaptureStatus) => string | undefined;
     /** Cancel or Escape. */
     oncancel: () => void;
     /** A step back to what came before, in the form's header. */
@@ -82,6 +90,9 @@
     /** A capture, saved: the new sample's id. Without it, saving closes the flow. */
     onsaved?: (id: string) => void;
   } = $props();
+
+  // Whoever may open it may capture, on a page they may only read too (`mayCapture`).
+  neverLocked();
 
   // Fixed for the life of this flow: the page opens a new one for another target.
   // svelte-ignore state_referenced_locally
@@ -109,12 +120,20 @@
   let deadlineSecs = $state(30);
   /** Where a stream source's capture starts; absent is the latest. */
   let start: StartPosition | undefined = $state();
+  /** A receiver captured as sent, in place of its records. */
+  let raw = $state(false);
 
   // A lost session closes the capture dialog, and the form says why.
   const capture = new CaptureSession((e) => (error = e));
   /** The target the running session was started at, so a change to the form
    * while the dialog is up cannot rename what it saves. */
   let sessionTarget = $state<{ kind: CaptureAt; id: string } | null>(null);
+  /** Where a sample saved from the session goes. A source's sample goes where the source is declared,
+   * so a route preview can find it. No route takes in a destination, so its sample goes to the scope
+   * the scope chip shows. */
+  let savedIn = $derived(sessionTarget?.kind === 'source' && given ? given.scope : currentScope());
+  /** Whether the running session captures as sent, which the dialog warns of. */
+  let sessionRaw = $state(false);
 
   onDestroy(() => capture.destroy());
 
@@ -135,8 +154,7 @@
       if (given) readAt = config.commit ?? null;
       if (config.config) {
         loaded = config.config;
-        // A source's sample is saved in its own scope, so only one its editor may save to is offered.
-        sources = scope !== SHARED_SCOPE || canEdit(SHARED_SCOPE) ? config.config.sources : [];
+        sources = config.config.sources;
         destinations = config.config.destinations;
         const keys = [
           ...sources.map((s) => targetKey('source', s.id)),
@@ -235,6 +253,9 @@
   let at: CaptureAt = $derived(captureDestination ? 'destination' : 'source');
   /** Only a stream has a position to start from. */
   let streams = $derived(captureSource?.type === 'kafka' || captureSource?.type === 'eventHubs');
+  /** Only a receiver has bytes before records. */
+  let receiver = $derived(!!captureSource && isReceiver(captureSource));
+  let asSent = $derived(receiver && raw);
 
   let captureTarget = $derived<CaptureTarget | null>(
     captureDestination
@@ -253,6 +274,7 @@
     sessionTarget = captureDestination
       ? { kind: 'destination', id: captureDestination.id }
       : captureSource && { kind: 'source', id: captureSource.id };
+    sessionRaw = asSent;
     await capture.start(
       captureRequest(captureTarget, {
         group,
@@ -260,6 +282,7 @@
         maxMatches,
         deadlineSecs,
         start: streams ? start : undefined,
+        raw: asSent,
       }),
     );
     busy = false;
@@ -280,8 +303,6 @@
     error = '';
     try {
       const id = mintSampleId();
-      // A source's sample goes where the source is declared, so a route preview can find it; a
-      // destination's, which no route takes in, goes to the scope chip's.
       const source = sessionTarget?.kind === 'source' ? sessionTarget.id : undefined;
       const res = await saveCapture(
         session,
@@ -289,7 +310,7 @@
         sampleName,
         source,
         source && given ? readAt : undefined,
-        source ? given?.scope : undefined,
+        savedIn,
       );
       if (!res.ok) {
         error = errorText(res.errors) || 'could not save';
@@ -311,6 +332,24 @@
     error = use.take(capture.status) ?? '';
     if (error) return;
     await capture.discard();
+    oncancel();
+  }
+
+  /** Keep the finished capture at the leader for whoever took it, and close. */
+  function keep() {
+    if (!capture.status) return;
+    const status = capture.status;
+    if (heldCount(status) === 0) {
+      error = 'Nothing was captured, so there is nothing to run.';
+      return;
+    }
+    // Let go first: `onuse`'s effects may close this flow, which discards what it still follows.
+    const kept = capture.release();
+    error = onuse?.(status) ?? '';
+    if (error) {
+      capture.follow(kept);
+      return;
+    }
     oncancel();
   }
 
@@ -349,7 +388,13 @@
       </Field>
       <Field label="Capture target">
         <!-- A start was chosen for the source it was chosen on. -->
-        <select bind:value={selected} onchange={() => (start = undefined)}>
+        <select
+          bind:value={selected}
+          onchange={() => {
+            start = undefined;
+            raw = false;
+          }}
+        >
           {#if sources.length > 0}
             <optgroup label="Sources">
               {#each sources as s (s.id)}
@@ -366,25 +411,27 @@
           {/if}
         </select>
       </Field>
-      <Field optional label="Keep records where" error={filterError} warning={filterWarning}>
-        {#snippet help()}
-          {#each filterHelp(at) as part, i (i)}{#if part.code}<code>{part.text}</code
-              >{:else}{part.text}{/if}{/each} Leave it empty to keep everything.
-        {/snippet}
-        <ValidatedField
-          bind:value={filter}
-          errors={readsNone ? skipErrors : []}
-          warnings={readsNone ? [] : skipErrors}
-          placeholder={filterPlaceholder(at)}
-          autocomplete="condition"
-          ask={captureSource
-            ? askAt({ source: captureSource.id })
-            : captureDestination
-              ? askAt({ destination: captureDestination.id })
-              : undefined}
-          wrap
-        />
-      </Field>
+      {#if !asSent}
+        <Field optional label="Keep records where" error={filterError} warning={filterWarning}>
+          {#snippet help()}
+            {#each filterHelp(at) as part, i (i)}{#if part.code}<code>{part.text}</code
+                >{:else}{part.text}{/if}{/each} Leave it empty to keep everything.
+          {/snippet}
+          <ValidatedField
+            bind:value={filter}
+            errors={readsNone ? skipErrors : []}
+            warnings={readsNone ? [] : skipErrors}
+            placeholder={filterPlaceholder(at)}
+            autocomplete="condition"
+            ask={captureSource
+              ? askAt({ source: captureSource.id })
+              : captureDestination
+                ? askAt({ destination: captureDestination.id })
+                : undefined}
+            wrap
+          />
+        </Field>
+      {/if}
       <Field label="At most" group>
         <div class="limits">
           <input
@@ -406,14 +453,26 @@
           <span class="dim">seconds</span>
         </div>
       </Field>
-      {#if streams}
-        <Advanced modified={start !== undefined}>
-          <StartAt bind:start label="Start at" fallback="latest">
-            {#snippet help()}
-              Where each partition starts. Every worker in the group reads the source for the
-              capture, whether or not it runs it, and nothing it reads is committed.
-            {/snippet}
-          </StartAt>
+      {#if streams || receiver}
+        <Advanced modified={start !== undefined || asSent}>
+          {#if streams}
+            <StartAt bind:start label="Start at" fallback="latest">
+              {#snippet help()}
+                Where each partition starts. Every worker in the group reads the source for the
+                capture, whether or not it runs it, and nothing it reads is committed.
+              {/snippet}
+            </StartAt>
+          {/if}
+          {#if receiver}
+            <Field label="Capture as sent">
+              {#snippet help()}
+                Use this when the receiver makes no records. Keeps the bytes each sender writes,
+                before any is read as a record. A worker that doesn't run this receiver listens on
+                its port itself, and its senders get no answer.
+              {/snippet}
+              <Toggle bind:checked={raw} ariaLabel="Capture as sent" />
+            </Field>
+          {/if}
         </Advanced>
       {/if}
     {/if}
@@ -435,13 +494,25 @@
 {#if capture.session}
   <CaptureDialog
     status={capture.status}
+    session={capture.session}
+    raw={sessionRaw}
     source={sessionTarget?.kind === 'source' ? sessionTarget.id : undefined}
     destination={sessionTarget?.kind === 'destination' ? sessionTarget.id : undefined}
     {busy}
     {error}
     onstop={stop}
-    onsave={save}
-    use={use && { title: use.title, label: use.label, take }}
+    onsave={!use && canEdit(savedIn) ? save : undefined}
+    use={use
+      ? { title: use.title, label: use.label, take }
+      : {
+          label: 'Use these records',
+          take: keep,
+          off:
+            NOT_IN_DEMO ||
+            (capture.status && heldCount(capture.status) === 0
+              ? 'Nothing has been captured yet.'
+              : ''),
+        }}
     ondiscard={discard}
   />
 {/if}

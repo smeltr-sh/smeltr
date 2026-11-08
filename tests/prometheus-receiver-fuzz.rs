@@ -16,7 +16,7 @@ use prost::Message;
 use smeltr::io::Source;
 use smeltr::io::prometheus::{self, Samples, Version, Written};
 use smeltr::io::receiver::INBOX_BYTES;
-use smeltr::plan::topology::Receiver;
+use smeltr::plan::topology::{ConnectionLimits, Receiver};
 
 use crate::harness::docker::{Container, Hook, share};
 use crate::harness::fuzz::{self, Coverage, Rng};
@@ -859,7 +859,7 @@ fn random_settings(rng: &mut Rng, ipv6: bool) -> Settings {
     }
 }
 
-fn open(settings: &Settings, pki: &Pki) -> Box<dyn Source> {
+fn open(settings: &Settings, pki: &Pki, limits: ConnectionLimits) -> Box<dyn Source> {
     let Settings {
         listen,
         tokens,
@@ -867,15 +867,19 @@ fn open(settings: &Settings, pki: &Pki) -> Box<dyn Source> {
         max_request_bytes,
         ..
     } = settings;
-    receiver::build(
-        Receiver::Prometheus,
-        *listen,
-        *tls,
-        tokens,
-        "sender",
-        *max_request_bytes,
-        pki,
-    )
+    {
+        let (mut config, secrets) = receiver::configured(
+            Receiver::Prometheus,
+            *listen,
+            *tls,
+            tokens,
+            "sender",
+            *max_request_bytes,
+            pki,
+        );
+        config.connections = limits;
+        receiver::opened(config, &secrets)
+    }
 }
 
 /// One request a sender makes, and what the receiver answers it.
@@ -1067,7 +1071,7 @@ fn random_request(rng: &mut Rng, settings: &Settings, cov: &mut Coverage) -> Sen
         records: 0,
         written: None,
     };
-    let expected = if settings.tls == Tls::Vouched && presents != Presents::Trusted {
+    let expected = if !settings.tls.admits(presents) {
         refused(0)
     } else if path == "/health" {
         refused(if method == "POST" { 405 } else { 200 })
@@ -1160,13 +1164,13 @@ fn every_setting_answers_random_requests_within_the_documented_set() {
     let mut cov = Coverage::new(
         receiver::listen_names(ipv6)
             .map(|ip| format!("listen {ip}"))
-            .chain(["None", "Served", "Vouched"].map(|tls| format!("tls {tls}")))
+            .chain(Tls::ALL.map(|tls| format!("tls {tls:?}")))
             .chain((0..=3).map(|n| format!("tokens {n}")))
             .chain(RECEIVER_LIMITS.iter().map(|(_, name)| name.to_string()))
             .chain(ROUTES.iter().map(|(method, path)| format!("{method} {path}")))
             .chain(["presents Nothing under None".to_string()])
-            .chain(["Served", "Vouched"].iter().flat_map(|tls| {
-                ["Nothing", "Trusted", "Stranger"].map(|presents| format!("presents {presents} under {tls}"))
+            .chain(Tls::ALL[1..].iter().flat_map(|tls| {
+                ["Nothing", "Trusted", "Stranger"].map(|presents| format!("presents {presents} under {tls:?}"))
             }))
             .chain(BODIES.iter().chain(AUTHORIZATIONS).map(|s| s.to_string()))
             .chain([
@@ -1175,11 +1179,13 @@ fn every_setting_answers_random_requests_within_the_documented_set() {
             ])
             .chain(CONTENT_TYPES.iter().map(|(t, _)| format!("Content-Type {t:?}")))
             .chain(ENCODINGS.iter().map(|(e, _)| format!("Content-Encoding {e:?}")))
-            .chain(statuses.iter().map(|status| format!("answered {status}"))),
+            .chain(statuses.iter().map(|status| format!("answered {status}")))
+            .chain(receiver::CONNECTION_LIMITS.iter().map(|s| s.to_string())),
     );
     fuzz::run(1..61, |seed| {
         let mut rng = Rng::seeded(seed);
-        let settings = random_settings(&mut rng, ipv6);
+        let mut settings = random_settings(&mut rng, ipv6);
+        settings.tls = receiver::random_check(seed, settings.tls);
         cov.reach(format!("listen {}", settings.listen.ip()));
         cov.reach(format!("tls {:?}", settings.tls));
         cov.reach(format!("tokens {}", settings.tokens.len()));
@@ -1188,7 +1194,9 @@ fn every_setting_answers_random_requests_within_the_documented_set() {
             .find(|(below, _)| settings.max_request_bytes < *below)
             .unwrap();
         cov.reach(limit.1);
-        let mut source = open(&settings, &pki);
+        let (limits, limited) = receiver::random_connection_limits(&mut rng);
+        cov.reach(limited);
+        let mut source = open(&settings, &pki, limits);
         let sent: Vec<Sent> = (0..10).map(|_| random_request(&mut rng, &settings, &mut cov)).collect();
         let expected_records: usize = sent.iter().map(|s| s.expected.records).sum();
         let sending = Arc::new(sent);
@@ -1254,7 +1262,7 @@ fn every_setting_answers_random_requests_within_the_documented_set() {
             }
         }
         match records == expected_records {
-            true => Ok(()),
+            true => receiver::holds_to_limits(settings.connect, &limits),
             false => Err(format!(
                 "{records} records arrived of the {expected_records} of the requests answered 204"
             )),
@@ -1473,7 +1481,7 @@ fn live_prometheus_remote_writes_under_random_configurations() {
             "{per_send} per send, limit {}, listening on {}",
             settings.max_request_bytes, settings.listen
         );
-        let mut source = open(&settings, &pki);
+        let mut source = open(&settings, &pki, ConnectionLimits::default());
         let config = format!(
             r#"global:
   scrape_interval: 1s

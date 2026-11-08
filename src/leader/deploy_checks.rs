@@ -95,7 +95,7 @@ impl DeployChecks {
             return Findings::default();
         };
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.known.commit == commit || state.loading.as_deref() == Some(commit.as_str()) {
                 return state.known.clone();
             }
@@ -103,7 +103,7 @@ impl DeployChecks {
         }
 
         let listed = checked(&repo, &commit);
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         // A reader that started on another commit since owns the next answer; this one's is already old.
         if state.loading.as_deref() != Some(commit.as_str()) {
             return state.known.clone();
@@ -161,7 +161,7 @@ fn run_tests(runner: TestRunner, state: Arc<Mutex<State>>, data_dir: PathBuf) {
         .spawn(move || {
             loop {
                 let Some(commit) = ({
-                    let mut state = worker.lock().unwrap();
+                    let mut state = worker.lock().unwrap_or_else(|e| e.into_inner());
                     let next = state.wanted.take();
                     state.running = next.is_some();
                     next
@@ -174,7 +174,7 @@ fn run_tests(runner: TestRunner, state: Arc<Mutex<State>>, data_dir: PathBuf) {
                 else {
                     continue;
                 };
-                let mut state = worker.lock().unwrap();
+                let mut state = worker.lock().unwrap_or_else(|e| e.into_inner());
                 if state.known.commit == commit {
                     state.known.tests_at = commit;
                     state.known.failing = failing;
@@ -182,9 +182,9 @@ fn run_tests(runner: TestRunner, state: Arc<Mutex<State>>, data_dir: PathBuf) {
             }
         });
     if let Err(e) = spawned {
-        state.lock().unwrap().running = false;
+        state.lock().unwrap_or_else(|e| e.into_inner()).running = false;
         tracing::warn!(
-            target: "leader.deploy_tests_not_run",
+            name: "tests_not_run", target: "deploy",
             error = %e,
             "the deployed commit's tests could not be started, so the failures last found stand"
         );

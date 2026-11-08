@@ -121,9 +121,10 @@ impl From<&crate::plan::topology::DestinationKind> for System {
                 crate::plan::topology::Cloud::Azure(_) => System::AzureBlob,
                 crate::plan::topology::Cloud::Sftp(_) => System::Sftp,
             },
-            DestinationKind::Http(_) | DestinationKind::Prometheus(_) | DestinationKind::LogAnalytics(_) => {
-                System::Http
-            }
+            DestinationKind::Http(_)
+            | DestinationKind::Prometheus(_)
+            | DestinationKind::LogAnalytics(_)
+            | DestinationKind::Otlp(_) => System::Http,
             DestinationKind::Iceberg(_) => System::Iceberg,
             DestinationKind::Delta(_) => System::Delta,
         }
@@ -145,6 +146,10 @@ pub struct MapNode {
     /// The system behind a source or destination; `None` for a pipeline.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system: Option<System>,
+    /// A source's or destination's `type`, as its config names it; `None` for a pipeline. Its card is labeled by it,
+    /// as the Sources and Destinations pages label it. Several types share one `system`, so `system` alone cannot.
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub config_type: Option<String>,
     /// Declared in `shared/` rather than in this group's own subtree -- still one running thing per group that
     /// merges it in, just not authored here.
     pub shared: bool,
@@ -322,10 +327,11 @@ pub fn build(
         );
 
         let file = merged_file(&shared, &group.raw, &group.id);
+        let types = ConfigTypes::of(&file);
         let declared_at = merged_declared_at(&shared, shared_at, &group.raw, &group.at);
 
         match config_file::validate_at(file, &declared_at) {
-            Ok(system) if errors.is_empty() => build_group_graph(&system, &group.id, &shared.file, &mut graph),
+            Ok(system) if errors.is_empty() => build_group_graph(&system, &group.id, &shared.file, &types, &mut graph),
             Ok(_) => group_errors.push(GroupError {
                 group: group.id,
                 errors,
@@ -430,12 +436,40 @@ fn mark_warnings(nodes: &mut [MapNode], warnings: &[warnings::Warning]) {
     }
 }
 
+/// Each source's and destination's `type` in a group's merged config, by id.
+struct ConfigTypes {
+    sources: HashMap<String, String>,
+    destinations: HashMap<String, String>,
+}
+
+impl ConfigTypes {
+    fn of(file: &config_file::FileConfig) -> ConfigTypes {
+        // The tag serde writes is the `type` the config was read with.
+        fn tag(kind: impl Serialize) -> Option<String> {
+            Some(serde_json::to_value(kind).ok()?["type"].as_str()?.to_string())
+        }
+        ConfigTypes {
+            sources: file
+                .sources
+                .iter()
+                .filter_map(|s| Some((s.id.clone(), tag(&s.kind)?)))
+                .collect(),
+            destinations: file
+                .destinations
+                .iter()
+                .filter_map(|d| Some((d.id.clone(), tag(&d.kind)?)))
+                .collect(),
+        }
+    }
+}
+
 /// One group's nodes and edges as its config declares them, appended onto the fleet's. `shared` is the `shared/`
 /// bundle the group merges in, which says which of its nodes are declared there.
 fn build_group_graph(
     system: &config_file::LoadedSystem,
     group: &str,
     shared: &config_file::FileConfig,
+    types: &ConfigTypes,
     graph: &mut Graph,
 ) {
     let topo = &system.topology;
@@ -454,6 +488,7 @@ fn build_group_graph(
             name: s.name.clone(),
             kind: NodeKind::Source,
             system: Some(System::from(&s.kind)),
+            config_type: types.sources.get(&s.name).cloned(),
             shared: shared.sources.iter().any(|shared| shared.id == s.name),
             warning: false,
         });
@@ -465,6 +500,7 @@ fn build_group_graph(
             name: d.name.clone(),
             kind: NodeKind::Destination,
             system: Some(System::from(&d.kind)),
+            config_type: types.destinations.get(&d.name).cloned(),
             shared: shared.destinations.iter().any(|shared| shared.id == d.name),
             warning: false,
         });
@@ -486,6 +522,7 @@ fn build_group_graph(
             name: pipeline.name.clone(),
             kind: NodeKind::Pipeline,
             system: None,
+            config_type: None,
             warning: false,
         });
     }
@@ -602,7 +639,7 @@ fn latest_by_group_pair(store: &RegistryStore, metric: &str, since_ms: i64) -> H
         Ok(series) => series,
         Err(e) => {
             tracing::warn!(
-                target: "map.metric_unreadable",
+                name: "map_metric_unreadable", target: "status",
                 subject = %metric,
                 error = %e,
                 "could not read a metric for the topology map, so it draws no poison edges"
@@ -648,6 +685,8 @@ fn delivered_by(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config_file::KafkaDestinationDto;
+    use crate::config_file::KafkaSourceDto;
     use crate::config_file::{
         CURRENT_VERSION, DeliverRuleDto, DestinationDto, DestinationKindDto, FileConfig, PipelineDto, RawBundle,
         RouteDto, SourceDto, SourceKindDto, StepDto,
@@ -656,7 +695,8 @@ mod tests {
     fn source(id: &str, topic: &str) -> SourceDto {
         SourceDto {
             id: id.to_string(),
-            kind: SourceKindDto::Kafka {
+            kind: SourceKindDto::Kafka(KafkaSourceDto {
+                unknown: Default::default(),
                 schema_registry: None,
                 read: Default::default(),
                 brokers: "kafka:9092".to_string(),
@@ -668,7 +708,7 @@ mod tests {
                 fetch_bytes: Default::default(),
                 encoding: Default::default(),
                 props: Default::default(),
-            },
+            }),
         }
     }
 
@@ -676,7 +716,8 @@ mod tests {
         DestinationDto {
             id: id.to_string(),
             on_exception: None,
-            kind: DestinationKindDto::Kafka {
+            kind: DestinationKindDto::Kafka(KafkaDestinationDto {
+                unknown: Default::default(),
                 schema_registry: None,
                 brokers: "kafka:9092".to_string(),
                 default_topic: "out".to_string(),
@@ -688,7 +729,7 @@ mod tests {
                 stall_after_secs: Default::default(),
                 buffer_bytes: Default::default(),
                 props: Default::default(),
-            },
+            }),
             accepts: vec![],
         }
     }
@@ -819,6 +860,7 @@ mod tests {
             name: "orders-west".to_string(),
             kind: NodeKind::Source,
             system: Some(System::Kafka),
+            config_type: Some("kafka".to_string()),
             shared: false,
             warning: false,
         }));
@@ -828,6 +870,7 @@ mod tests {
             name: "Normalize orders".to_string(),
             kind: NodeKind::Pipeline,
             system: None,
+            config_type: None,
             shared: false,
             warning: false,
         }));
@@ -837,6 +880,7 @@ mod tests {
             name: "es-prod".to_string(),
             kind: NodeKind::Destination,
             system: Some(System::Kafka),
+            config_type: Some("kafka".to_string()),
             shared: false,
             warning: false,
         }));
@@ -1020,7 +1064,8 @@ mod tests {
             area: None,
             condition: warnings::Condition::SourceBlocked,
             subject_kind: SubjectKind::Source,
-            site: None,
+            class: None,
+            r#type: None,
             subject_id: "orders-west".to_string(),
             group: Some("ingest-1".to_string()),
             severity: warnings::Severity::Failed,

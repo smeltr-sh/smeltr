@@ -329,6 +329,37 @@ fn an_untyped_local_takes_its_type_from_its_own_binding() {
     }
 }
 
+/// A name first written `null` or `[]` takes the type the writes after it blend to. A write that cannot blend with
+/// the writes before it is refused: `let x = []; x = 1;`.
+#[test]
+fn a_write_that_cannot_blend_with_the_writes_before_it_is_refused() {
+    for body in [
+        "let l = []; l = [1]; l = \"s\";",
+        "let l = []; l = \"s\"; l = [1];",
+        "let x = null; x = 1; x = \"s\";",
+    ] {
+        let e = err(vec![code(0, body)]);
+        assert!(e.contains("`\"s\"` is str, not"), "{body}: {e}");
+    }
+    let plan = ok(vec![code(
+        0,
+        "let l = []; l = [1]; l = [1.5]; m = l; let x = null; x = 1; x = 2.5; n = x;",
+    )]);
+    assert_eq!(run(&plan, &["{}"])[0]["m"], json!([1.5]));
+    assert_eq!(run(&plan, &["{}"])[0]["n"], json!(2.5));
+    let plan = ok(vec![code(
+        0,
+        "let x = null; if (length(_raw) > 2) { x = 1; } else { x = \"s\"; } n = x;",
+    )]);
+    assert_eq!(
+        run(&plan, &["{}", "{\"k\": 1}"])
+            .iter()
+            .map(|r| r["n"].clone())
+            .collect::<Vec<_>>(),
+        [json!("s"), json!(1)]
+    );
+}
+
 /// Sibling `if`/`else` blocks may each declare the same local name.
 #[test]
 fn sibling_branches_may_each_declare_the_same_local() {
@@ -3891,6 +3922,24 @@ fn a_folded_accumulators_overflow_names_it() {
         .map(|e| e.field.and_then(|f| names.get(&f).cloned()))
         .collect();
     assert_eq!(fields, [Some("total".to_string())]);
+}
+
+/// A float fold that leaves `f64`'s range fails its row as `+` does: null, marked `Overflow`, naming the accumulator.
+#[test]
+fn a_float_folds_overflow_names_it() {
+    let plan = ok(vec![
+        code(0, &json("xs: array<f64>;")),
+        code(1, "total = 0.5; for (let x of xs) { total = total * x; let z = x; }"),
+    ]);
+    assert!(plan.barriers.is_empty());
+    let errors = run_scoped_on(&plan, &[r#"{"xs":[1e308,10.0]}"#], None);
+    let names = plan.slot_names();
+    let got: Vec<_> = errors
+        .entries()
+        .iter()
+        .map(|e| (e.kind.label(), e.field.and_then(|f| names.get(&f).cloned())))
+        .collect();
+    assert_eq!(got, [("Overflow", Some("total".to_string()))]);
 }
 
 /// An operator folding a variant accumulator is refused, as it is in the general loop.

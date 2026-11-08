@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use smeltr::io::{CommitMap, Source, SourceRecord, TopicPartition, build_source};
-use smeltr::plan::topology::{HeldSecrets, Receiver, ReceiverConfig, SecretRef, SourceKind};
+use smeltr::plan::topology::{ConnectionLimits, HeldSecrets, Receiver, ReceiverConfig, SecretRef, SourceKind};
 
 use crate::certs::{self, Authority, Issued};
 use crate::harness::fuzz::Rng;
@@ -22,6 +22,39 @@ pub enum Tls {
     Served,
     /// Under a certificate with authorities: a sender's certificate must chain to them.
     Vouched,
+    /// Under a certificate naming its senders by fingerprint, with no authorities: a sender's certificate must be one
+    /// of them, whoever issued it.
+    Pinned,
+    /// As `Vouched`, and a sender's certificate must also be issued to a host it names.
+    Named,
+    /// As `Named`, naming only hosts no sender here is issued to, so it admits none.
+    Misnamed,
+}
+
+impl Tls {
+    /// Every one, in the order coverage names them.
+    pub const ALL: [Tls; 6] = [
+        Tls::None,
+        Tls::Served,
+        Tls::Vouched,
+        Tls::Pinned,
+        Tls::Named,
+        Tls::Misnamed,
+    ];
+
+    /// Whether a sender must present a certificate the receiver checks, and is refused in the handshake otherwise.
+    pub fn checks_sender(self) -> bool {
+        matches!(self, Tls::Vouched | Tls::Pinned | Tls::Named | Tls::Misnamed)
+    }
+
+    /// Whether the handshake admits a sender presenting `presents`.
+    pub fn admits(self, presents: Presents) -> bool {
+        match self {
+            Tls::None | Tls::Served => true,
+            Tls::Vouched | Tls::Pinned | Tls::Named => presents == Presents::Trusted,
+            Tls::Misnamed => false,
+        }
+    }
 }
 
 /// The certificate a sender over TLS presents.
@@ -65,6 +98,33 @@ impl Pki {
             sender,
             stranger,
             clients,
+        }
+    }
+
+    /// What a receiver under `tls` names its senders by. Pinned, the trusted sender by SHA-1 and the receiver's own
+    /// certificate, which no sender presents, by SHA-256; named, a host in a domain no sender is issued to and the
+    /// trusted sender's host; misnamed, only hosts no sender is issued to.
+    pub fn senders(&self, tls: Tls) -> smeltr::plan::topology::Senders {
+        use smeltr::io::senders::{Fingerprint, Hash};
+
+        let der = |issued: &Issued| certs::certificates(&issued.certificate).remove(0);
+        match tls {
+            Tls::Pinned => smeltr::plan::topology::Senders {
+                fingerprints: vec![
+                    Fingerprint::of(Hash::Sha1, &der(&self.sender)),
+                    Fingerprint::of(Hash::Sha256, &der(&self.server)),
+                ],
+                names: Vec::new(),
+            },
+            Tls::Named => smeltr::plan::topology::Senders {
+                fingerprints: Vec::new(),
+                names: vec!["*.example.com".into(), "sender".into()],
+            },
+            Tls::Misnamed => smeltr::plan::topology::Senders {
+                fingerprints: Vec::new(),
+                names: vec!["*.example.com".into(), "other".into()],
+            },
+            Tls::None | Tls::Served | Tls::Vouched => Default::default(),
         }
     }
 
@@ -151,9 +211,16 @@ pub fn random_tls(rng: &mut Rng) -> Tls {
     *rng.pick(&[Tls::None, Tls::None, Tls::Served, Tls::Vouched])
 }
 
-/// Up to three of what `token` draws, and at least one unless authorities admit a sender alone.
+/// `tls`, except where it is `Vouched`: then one of the ways of checking senders, drawn for `seed`. The offline
+/// fuzzers take it after their settings. It draws from its own stream, so it changes no other draw.
+pub fn random_check(seed: u64, tls: Tls) -> Tls {
+    let check = *Rng::seeded(seed ^ 0x5e4d_e7c6).pick(&[Tls::Vouched, Tls::Pinned, Tls::Named, Tls::Misnamed]);
+    if tls == Tls::Vouched { check } else { tls }
+}
+
+/// Up to three of what `token` draws, and at least one unless a sender's certificate admits it alone.
 pub fn random_tokens<T>(rng: &mut Rng, tls: Tls, mut token: impl FnMut(&mut Rng, usize) -> T) -> Vec<T> {
-    (0..rng.below(3) + usize::from(tls != Tls::Vouched))
+    (0..rng.below(3) + usize::from(!tls.checks_sender()))
         .map(|i| token(rng, i))
         .collect()
 }
@@ -180,6 +247,102 @@ pub fn build(
     max_request_bytes: usize,
     pki: &Pki,
 ) -> Box<dyn Source> {
+    let (config, secrets) = configured(receiver, listen, tls, tokens, sender, max_request_bytes, pki);
+    opened(config, &secrets)
+}
+
+// -- the connection limits ----------------------------------------------------------------------------------------
+
+/// What [`random_connection_limits`] gives, each the coverage label of a limit it tries.
+pub const CONNECTION_LIMITS: &[&str] = &[
+    "the default connection limits",
+    "a small maxConnections",
+    "a small maxConnectionsPerSender",
+    "an idleTimeoutSecs",
+];
+
+/// The idle timeout [`random_connection_limits`] gives.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Connection limits for a fuzzer's receiver, and which of [`CONNECTION_LIMITS`] they try: mostly the default, else a
+/// cap small enough to fill, or a short idle timeout. Each leaves room for a sender that connects once at a time.
+pub fn random_connection_limits(rng: &mut Rng) -> (ConnectionLimits, &'static str) {
+    let small = 3 + rng.below(4);
+    let limits = match rng.below(8) {
+        0 => ConnectionLimits {
+            max: Some(small),
+            ..ConnectionLimits::default()
+        },
+        1 => ConnectionLimits {
+            per_sender: Some(small),
+            ..ConnectionLimits::default()
+        },
+        2 => ConnectionLimits {
+            idle: Some(IDLE_TIMEOUT),
+            ..ConnectionLimits::default()
+        },
+        _ => return (ConnectionLimits::default(), CONNECTION_LIMITS[0]),
+    };
+    let label = match (limits.max, limits.per_sender, limits.idle) {
+        (Some(_), _, _) => CONNECTION_LIMITS[1],
+        (_, Some(_), _) => CONNECTION_LIMITS[2],
+        _ => CONNECTION_LIMITS[3],
+    };
+    (limits, label)
+}
+
+/// Whether the receiver at `connect` holds its connections to `limits`, as [`random_connection_limits`] gives them:
+/// under a small cap, of one more connection than the cap, all sending nothing, it closes some and keeps some; under
+/// an idle timeout, it closes a connection that sends nothing once it has idled that long, and not before.
+pub fn holds_to_limits(connect: SocketAddr, limits: &ConnectionLimits) -> Result<(), String> {
+    let closed = |stream: &mut TcpStream, within: Duration| {
+        stream.set_read_timeout(Some(within)).unwrap();
+        !matches!(stream.read(&mut [0; 1]), Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut))
+    };
+    if let Some(cap) = limits.per_sender.or(limits.max) {
+        // The sender may hold a connection of its own: one the fuzzer opened for a request and the receiver has not
+        // yet seen end. So with one more than the cap, at least one is closed and at least one kept, whichever the
+        // receiver admitted first.
+        let mut opened: Vec<TcpStream> = (0..=cap).map(|_| TcpStream::connect(connect).unwrap()).collect();
+        // Well within any idle timeout, so only the cap could close one.
+        std::thread::sleep(Duration::from_millis(300));
+        let closed_now = opened
+            .iter_mut()
+            .map(|c| closed(c, Duration::from_millis(1)))
+            .filter(|&c| c)
+            .count();
+        if closed_now == 0 {
+            return Err(format!(
+                "all {} connections were kept, one more than a cap of {cap}",
+                cap + 1
+            ));
+        }
+        if closed_now == cap + 1 {
+            return Err(format!("all {} connections were closed, under a cap of {cap}", cap + 1));
+        }
+    }
+    if let Some(idle) = limits.idle {
+        let mut quiet = TcpStream::connect(connect).unwrap();
+        if closed(&mut quiet, idle / 2) {
+            return Err(format!("a connection was closed before it idled {idle:?}"));
+        }
+        if !closed(&mut quiet, idle * 3) {
+            return Err(format!("a connection idle past {idle:?} was kept"));
+        }
+    }
+    Ok(())
+}
+
+/// What [`build`] opens, for a caller that changes it first, and the secrets it is opened with.
+pub fn configured(
+    receiver: Receiver,
+    listen: SocketAddr,
+    tls: Tls,
+    tokens: &[String],
+    sender: &str,
+    max_request_bytes: usize,
+    pki: &Pki,
+) -> (ReceiverConfig, HeldSecrets) {
     let mut secrets = HeldSecrets::default();
     let stored: Vec<_> = (tokens.iter().enumerate())
         .map(|(i, token)| (format!("token{i}"), 1, token.clone()))
@@ -194,9 +357,10 @@ pub fn build(
     let tls = (tls != Tls::None).then(|| smeltr::plan::topology::Tls {
         of: "source \"receiver\"".into(),
         certificate: Some("receiver".into()),
-        authorities: (tls == Tls::Vouched).then(|| pki.authority.pem.clone()),
+        authorities: matches!(tls, Tls::Vouched | Tls::Named | Tls::Misnamed).then(|| pki.authority.pem.clone()),
         trust_public: false,
         side: smeltr::io::trust::Side::Server,
+        senders: pki.senders(tls),
     });
     let config = ReceiverConfig {
         receiver,
@@ -212,10 +376,17 @@ pub fn build(
             .collect(),
         tls,
         max_request_bytes,
+        answer_after_delivery: true,
+        connections: Default::default(),
     };
+    (config, secrets)
+}
+
+/// `config` opened with `secrets`.
+pub fn opened(config: ReceiverConfig, secrets: &HeldSecrets) -> Box<dyn Source> {
     let registry = Arc::new(smeltr::metrics::Metrics::new());
     let subjects = Arc::new(smeltr::metrics::Subjects::default());
-    build_source(&SourceKind::Receiver(config), &registry, &subjects, &secrets, None).expect("opens")
+    build_source(&SourceKind::Receiver(config), &registry, &subjects, secrets, None).expect("opens")
 }
 
 /// Commits every record of `records`, as far as each partition's last.

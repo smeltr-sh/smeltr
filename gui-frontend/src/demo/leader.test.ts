@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  DEMO_REFUSAL,
   DemoLeader,
   callersOf,
   keyOf,
@@ -500,5 +501,318 @@ describe('DemoLeader', () => {
       ok: false,
       errors: [{ message: expect.stringContaining('there is nothing to undo') }],
     });
+  });
+  it("plays a change's review as the leader does, saves and all, and stops short of deploying it", async () => {
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ ok: true, errors: [] })));
+    const r = recording();
+    r.answers['/api/auth/session'] = {
+      status: 200,
+      body: { ok: true, errors: [], displayName: 'Demo User', userId: 'u_demo' },
+    };
+    const leader = demoLeader(r, () => RECORDED);
+    const post = (path: string, body: object) =>
+      leader.answer('POST', at(`/api/branches/mine/${path}`), JSON.stringify(body));
+    const message = (a: { body: unknown }) =>
+      (a.body as { errors: { message: string }[] }).errors[0]?.message;
+
+    await leader.answer('POST', at('/api/branches'), JSON.stringify({ name: 'mine' }));
+    expect(message(await post('open', { title: 'Fix' }))).toBe(
+      '"mine" changes nothing yet -- save something on it first',
+    );
+    const sources = [{ id: 'fw', type: 'kafka', topics: ['other'] }];
+    await leader.answer(
+      'PUT',
+      at('/api/areas/network/sources?branch=mine'),
+      JSON.stringify(sources),
+    );
+    expect(message(await post('open', { title: ' ' }))).toBe(
+      'a change needs a title: it is what the deploy commit is called',
+    );
+    expect((await post('open', { title: 'Fix', description: 'Why' })).body).toMatchObject({
+      ok: true,
+    });
+    expect(message(await post('open', { title: 'Fix' }))).toBe('"mine" is already open for review');
+    const listed = await leader.answer('GET', at('/api/branches'), null);
+    expect((listed.body as { branches: unknown[] }).branches).toMatchObject([
+      {
+        name: 'mine',
+        change: { state: 'open', title: 'Fix', author: 'Demo User', authorId: 'u_demo' },
+      },
+    ]);
+
+    const renamed = await leader.answer(
+      'PATCH',
+      at('/api/branches/mine'),
+      JSON.stringify({ title: 'Fix the feed', description: 'Why' }),
+    );
+    expect(renamed.body).toMatchObject({ ok: true });
+    const anchor = { kind: 'object', area: 'network', section: 'sources', objectId: 'fw' };
+    await post('comments', { body: 'Is this topic right?', anchor });
+    const timeline = async () =>
+      (
+        (await leader.answer('GET', at('/api/branches/mine/timeline'), null)).body as {
+          events: { kind: string; id?: string; anchor?: object; at?: string }[];
+        }
+      ).events;
+    const root = (await timeline()).at(-1)!;
+    expect(root).toMatchObject({ kind: 'comment', anchor, at: expect.any(String) });
+    await post('comments', { body: 'It is.', replyTo: root.id });
+    expect((await timeline()).at(-1)).toMatchObject({ kind: 'comment', replyTo: root.id, anchor });
+    const thread = (resolved: boolean) =>
+      leader.answer(
+        'POST',
+        at(`/api/branches/mine/threads/${root.id}`),
+        JSON.stringify({ resolved }),
+      );
+    expect((await thread(true)).body).toMatchObject({ ok: true });
+    expect(message(await thread(true))).toBe('this thread is already resolved');
+
+    // Whoever opened it may approve it: one administrator works alone.
+    expect((await post('reviews', { verdict: 'approve', body: '' })).body).toMatchObject({
+      ok: true,
+    });
+    expect(message(await post('deploy', {}))).toBe(DEMO_REFUSAL);
+
+    await post('close', { reason: '' });
+    expect(message(await post('close', {}))).toBe('"mine" is not open for review');
+    await post('open', { title: 'Fix the feed' });
+    expect((await timeline()).map((e) => e.kind)).toEqual([
+      'saved',
+      'opened',
+      'renamed',
+      'comment',
+      'comment',
+      'resolved',
+      'approved',
+      'closed',
+      'reopened',
+    ]);
+  });
+
+  it('lets the visitor review a change the fleet was recorded with, from what the recording read of it', async () => {
+    const r = recording();
+    r.answers['/api/auth/session'] = {
+      status: 200,
+      body: { displayName: 'Demo User', userId: 'u_demo' },
+    };
+    const change = {
+      state: 'open',
+      title: 'Theirs',
+      description: '',
+      opened: RECORDED / 1000,
+      updated: RECORDED / 1000,
+      reason: '',
+      author: 'Priya',
+      authorId: 'u_priya',
+    };
+    r.answers['/api/branches'] = {
+      status: 200,
+      body: {
+        branches: [
+          {
+            name: 'theirs',
+            head: COMMIT,
+            base: COMMIT,
+            commits: 1,
+            lastSave: RECORDED / 1000,
+            touches: [],
+            change,
+          },
+        ],
+      },
+    };
+    r.answers['/api/branches/theirs/timeline'] = {
+      status: 200,
+      body: {
+        events: [
+          {
+            kind: 'saved',
+            time: RECORDED / 1000,
+            author: 'Priya',
+            text: 'edit routes',
+            commit: COMMIT,
+          },
+        ],
+      },
+    };
+    const leader = demoLeader(r, () => RECORDED);
+    const approved = await leader.answer(
+      'POST',
+      at('/api/branches/theirs/reviews'),
+      JSON.stringify({ verdict: 'approve', body: 'Looks right' }),
+    );
+    expect(approved.body).toMatchObject({ ok: true });
+    const events = (await leader.answer('GET', at('/api/branches/theirs/timeline'), null)).body as {
+      events: object[];
+    };
+    expect(events.events).toMatchObject([
+      { kind: 'saved', text: 'edit routes' },
+      { kind: 'approved', author: 'Demo User', text: 'Looks right' },
+    ]);
+  });
+
+  it("asks the service for a branch's diff against main, every scope with its samples and tests", async () => {
+    const asked: { url: string; body: { base: object; branch: object; path?: string } }[] = [];
+    vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+      asked.push({ url, body: JSON.parse(String(init.body)) });
+      return new Response(JSON.stringify({ ok: true, errors: [], files: [], diff: '' }));
+    });
+    const leader = demoLeader(recording(), () => RECORDED);
+    const sources = [{ id: 'fw', type: 'kafka', topics: ['other'] }];
+    await leader.answer(
+      'PUT',
+      at('/api/areas/network/sources?branch=mine'),
+      JSON.stringify(sources),
+    );
+    asked.length = 0;
+    await leader.answer(
+      'GET',
+      at('/api/branches/mine/diff?path=groups/network/sources.json'),
+      null,
+    );
+    expect(asked).toMatchObject([
+      {
+        url: 'http://service/diff',
+        body: {
+          base: { network: { config: { sources: [{ topics: ['t'] }] }, samples: [], tests: [] } },
+          branch: { network: { config: { sources } } },
+          path: 'groups/network/sources.json',
+        },
+      },
+    ]);
+
+    // What landed between main and the branch's head: every file, and the text of the one named.
+    asked.length = 0;
+    const head = (
+      (await leader.answer('GET', at('/api/branches'), null)).body as {
+        branches: { head: string }[];
+      }
+    ).branches[0].head;
+    const q = new URLSearchParams({ from: COMMIT, to: head, path: 'groups/network/sources.json' });
+    await leader.answer('GET', at(`/api/main/diff?${q}`), null);
+    expect(asked.map((a) => a.body.path)).toEqual([undefined, 'groups/network/sources.json']);
+  });
+
+  it('diffs one save of several, as a review shows a save on its own', async () => {
+    const asked: { base: object; branch: object }[] = [];
+    vi.stubGlobal('fetch', async (_: string, init: RequestInit) => {
+      asked.push(JSON.parse(String(init.body)));
+      return new Response(JSON.stringify({ ok: true, errors: [], files: [], diff: '' }));
+    });
+    const leader = demoLeader(recording(), () => RECORDED);
+    const put = (topic: string) =>
+      leader.answer(
+        'PUT',
+        at('/api/areas/network/sources?branch=mine'),
+        JSON.stringify([{ id: 'fw', type: 'kafka', topics: [topic] }]),
+      );
+    await put('first');
+    await put('second');
+    await leader.answer(
+      'POST',
+      at('/api/branches/mine/open'),
+      JSON.stringify({ title: 'Two saves' }),
+    );
+    const timeline = (await leader.answer('GET', at('/api/branches/mine/timeline'), null)).body as {
+      events: { kind: string; commit: string; parent: string }[];
+    };
+    const second = timeline.events.filter((e) => e.kind === 'saved')[1];
+    asked.length = 0;
+    const q = new URLSearchParams({ from: second.parent, to: second.commit });
+    const diff = await leader.answer('GET', at(`/api/main/diff?${q}`), null);
+    expect(diff.body).toMatchObject({ ok: true });
+    expect(asked).toMatchObject([
+      {
+        base: { network: { config: { sources: [{ topics: ['first'] }] } } },
+        branch: { network: { config: { sources: [{ topics: ['second'] }] } } },
+      },
+    ]);
+  });
+
+  it('keeps of each earlier save only the scope it changed, and rebuilds the rest', async () => {
+    const asked: { base: Record<string, unknown>; branch: Record<string, unknown> }[] = [];
+    vi.stubGlobal('fetch', async (_: string, init: RequestInit) => {
+      asked.push(JSON.parse(String(init.body)));
+      return new Response(JSON.stringify({ ok: true, errors: [], files: [], diff: '' }));
+    });
+    const kept = new Map<string, string>();
+    const store = {
+      getItem: (k: string) => kept.get(k) ?? null,
+      setItem: (k: string, v: string) => void kept.set(k, v),
+    } as Storage;
+    const r = recording();
+    const leader = new DemoLeader(r, 'http://service', store, () => RECORDED);
+    const put = (topic: string) =>
+      leader.answer(
+        'PUT',
+        at('/api/areas/network/sources?branch=mine'),
+        JSON.stringify([{ id: 'fw', type: 'kafka', topics: [topic] }]),
+      );
+    await put('first');
+    await leader.answer(
+      'PUT',
+      at('/api/areas/shared/sources?branch=mine'),
+      JSON.stringify([{ id: 'all', type: 'kafka', topics: ['all'] }]),
+    );
+    await put('third');
+    const saved = JSON.parse([...kept.values()].at(-1)!) as {
+      branches: { mine: { past: { scope: string; bundle?: unknown }[] } };
+    };
+    expect(saved.branches.mine.past.map((e) => e.scope)).toEqual(['network', 'shared', 'network']);
+    expect(Object.keys(saved.branches.mine.past[1])).not.toContain('bundles');
+
+    await leader.answer('POST', at('/api/branches/mine/open'), JSON.stringify({ title: 'Three' }));
+    const timeline = (await leader.answer('GET', at('/api/branches/mine/timeline'), null)).body as {
+      events: { kind: string; commit: string; parent: string }[];
+    };
+    const second = timeline.events.filter((e) => e.kind === 'saved')[1];
+    asked.length = 0;
+    const q = new URLSearchParams({ from: second.parent, to: second.commit });
+    await leader.answer('GET', at(`/api/main/diff?${q}`), null);
+    // The shared save, between the network save before it and the one after.
+    expect(asked).toMatchObject([
+      {
+        base: { network: { config: { sources: [{ topics: ['first'] }] } } },
+        branch: {
+          shared: { config: { sources: [{ id: 'all' }] } },
+          network: { config: { sources: [{ topics: ['first'] }] } },
+        },
+      },
+    ]);
+    expect(
+      (asked[0].base.shared as { config: { sources?: unknown } }).config.sources,
+    ).toBeUndefined();
+  });
+  it('answers a sample read at a commit the tab holds, as a review reads both ends of a change', async () => {
+    const r = recording();
+    const sample = { id: 's1', name: 'one', records: [{ _raw: 'a' }] };
+    r.answers['/api/areas/network/samples/s1?branch=main'] = config({ sample });
+    const leader = demoLeader(r, () => RECORDED);
+    const read = await leader.answer(
+      'GET',
+      at(`/api/areas/network/samples/s1?branch=mine&at=${COMMIT}`),
+      null,
+    );
+    expect(read.body).toMatchObject({ ok: true, sample, commit: COMMIT });
+
+    // A test is read by the file it is stored in, whose name is its id slugged.
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ ok: true, errors: [] })));
+    const test = { name: 'Proto as text', sample: 's1', lockedAt: 0, rowsIn: 1, expected: [] };
+    await leader.answer(
+      'PUT',
+      at(`/api/areas/network/tests/${encodeURIComponent('Proto as text')}?branch=mine`),
+      JSON.stringify(test),
+    );
+    const head = (
+      (await leader.answer('GET', at('/api/branches'), null)).body as {
+        branches: { head: string }[];
+      }
+    ).branches[0].head;
+    const locked = await leader.answer(
+      'GET',
+      at(`/api/areas/network/tests/proto-as-text?branch=mine&at=${head}`),
+      null,
+    );
+    expect(locked.body).toMatchObject({ ok: true, test: { id: 'Proto as text' } });
   });
 });

@@ -52,7 +52,7 @@ pub const CONCURRENT_HASHES: usize = 2;
 /// Everything the gate and the auth routes share.
 #[derive(Clone)]
 pub struct Auth {
-    pub store: Arc<dyn Store>,
+    pub store: Arc<Store>,
     pub sessions: Arc<Sessions>,
     pub throttle: Arc<LoginThrottle>,
     pub hashes: Arc<tokio::sync::Semaphore>,
@@ -68,7 +68,7 @@ pub struct Auth {
 }
 
 impl Auth {
-    pub fn new(store: Arc<dyn Store>, origin: Origin, lifetimes: smeltr::leader::sessions::Lifetimes) -> Auth {
+    pub fn new(store: Arc<Store>, origin: Origin, lifetimes: smeltr::leader::sessions::Lifetimes) -> Auth {
         let sessions = Sessions::default();
         sessions.set_lifetimes(lifetimes);
         Auth {
@@ -343,7 +343,7 @@ async fn admit(
     let mut response = next.run(req).await;
     let unrecorded = !is_safe(method) && response.status().is_success() && !actor.recorded.is_marked();
     if unrecorded && !policy::changes_nothing(method, path) {
-        tracing::warn!(target: "audit.unrecorded", actor = %actor.id, method = %method, path, "a change recorded nothing, so the gate recorded it");
+        tracing::warn!(name: "unrecorded", target: "api", actor = %actor.id, method = %method, path, "a change recorded nothing, so the gate recorded it");
         let what = format!("{method} {path}");
         accounts::record_async(auth.store.clone(), &actor, "unrecorded", &what, "ok").await;
     }
@@ -382,7 +382,7 @@ async fn key_account_of(auth: &Auth, key: String, by_agent: bool) -> Result<(Act
             && presented.last_used_at.is_none_or(|at| now - at >= LAST_USED_EVERY)
             && let Err(e) = store.mark_api_key_used(&presented.id, now)
         {
-            tracing::warn!(target: "leader.identity_unavailable", error = %e, "a key's last use could not be written");
+            tracing::warn!(name: "identity_unavailable", target: "enrollment", error = %e, "a key's last use could not be written");
         }
         Ok::<_, StoreError>(Some((user, access)))
     })
@@ -429,13 +429,13 @@ pub async fn harden(req: axum::extract::Request, next: axum::middleware::Next) -
 /// body: one can carry a key, an enrollment code or a token, and the log is shipped where those must not go.
 pub async fn traced(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
     let (method, path, started) = (req.method().clone(), req.uri().path().to_string(), Instant::now());
-    tracing::trace!(target: "http.request", method = %method, path, "a request arrived");
+    tracing::trace!(name: "request", target: "api", method = %method, path, "a request arrived");
     let response = next.run(req).await;
     let actor = response.extensions().get::<Actor>().map(|a| a.id.as_str());
     let bytes = http_body::Body::size_hint(response.body()).exact();
     let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     tracing::trace!(
-        target: "http.response",
+        name: "response", target: "api",
         method = %method, path, status = response.status().as_u16(), actor, bytes, ms,
         "a response was sent"
     );
@@ -524,7 +524,7 @@ pub fn admitted(user: &UserRecord) -> bool {
 
 /// What `user` holds now: what the roles it holds give, against the roles as they are. An OIDC account holds the
 /// roles its groups gave as of its last sign-in; a local or key account the roles an administrator gave it.
-pub fn access_of(store: &dyn Store, user: &UserRecord) -> Result<Access, StoreError> {
+pub fn access_of(store: &Store, user: &UserRecord) -> Result<Access, StoreError> {
     let roles = store.list_roles()?;
     let named = match user.auth_source {
         AuthSource::Oidc => {
@@ -846,13 +846,13 @@ mod tests {
         use axum::routing::{get, put};
         use smeltr::leader::access::{ADMINISTRATOR, AgentPermissions, Role};
         use smeltr::leader::accounts;
-        use smeltr::leader::sqlite_store::SqliteStore;
+        use smeltr::leader::store::Store;
         use smeltr::leader::store::{NewApiKey, NewKeyAccount, OidcSignIn};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         const ORIGIN: &str = "http://127.0.0.1:4000";
 
-        fn store() -> Arc<dyn Store> {
+        fn store() -> Arc<Store> {
             let key = std::env::temp_dir().join(format!(
                 "smeltr-gate-access-{}-{}.key",
                 std::process::id(),
@@ -861,11 +861,11 @@ mod tests {
                     .unwrap()
                     .as_nanos()
             ));
-            Arc::new(SqliteStore::open(Path::new(":memory:"), &key).unwrap())
+            Arc::new(Store::open(Path::new(":memory:"), &key).unwrap())
         }
 
         /// An OIDC account whose provider last said it holds `groups`.
-        fn sign_in(store: &dyn Store, subject: &str, groups: &[&str]) -> UserRecord {
+        fn sign_in(store: &Store, subject: &str, groups: &[&str]) -> UserRecord {
             let groups: Vec<String> = groups.iter().map(|g| g.to_string()).collect();
             let new_id = accounts::generate_user_id();
             let created = accounts::event_for(&Actor::system(), "account-create", &new_id, "ok");
@@ -901,7 +901,10 @@ mod tests {
 
         /// As [`serve`], with every request marked as the leader's agent marks the ones it sends for a person.
         async fn serve_by_agent(auth: Auth) -> std::net::SocketAddr {
-            serve_routes(router(auth).layer(axum::Extension(ByAgent))).await
+            serve_routes(router(auth).layer(axum::Extension(ByAgent {
+                conversation: String::new(),
+            })))
+            .await
         }
 
         fn router(auth: Auth) -> Router {
@@ -963,7 +966,7 @@ mod tests {
             answer.split(' ').nth(1).unwrap().parse().unwrap()
         }
 
-        fn auth(store: Arc<dyn Store>) -> Auth {
+        fn auth(store: Arc<Store>) -> Auth {
             let origin = Origin {
                 value: ORIGIN.into(),
                 aliases: Vec::new(),
@@ -1174,7 +1177,7 @@ mod tests {
         }
 
         /// A new key for the key account `id`, expiring at `expires_at`, and the key itself.
-        fn key_of(store: &dyn Store, id: &str, key_id: &str, expires_at: Option<i64>) -> String {
+        fn key_of(store: &Store, id: &str, key_id: &str, expires_at: Option<i64>) -> String {
             let key = smeltr::leader::auth::generate_secret();
             let made = accounts::event_for(&Actor::system(), "key-create", key_id, "ok");
             let hash = hash_secret(&key);

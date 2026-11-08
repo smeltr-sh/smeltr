@@ -24,10 +24,13 @@
     shownRecords,
     workerChips,
   } from './capture';
-  import { captureEndText, type CaptureStatus } from './api';
+  import { captureDownloadUrl, captureEndText, type CaptureStatus } from './api';
+  import { NOT_IN_DEMO } from './access';
 
   let {
     status,
+    session,
+    raw = false,
     source,
     destination,
     lost = false,
@@ -40,6 +43,10 @@
   }: {
     /** `null` until the leader has answered the first poll. */
     status: CaptureStatus | null;
+    /** The capture's id, which its download names. */
+    session?: string;
+    /** It holds what senders wrote as sent, which the dialog warns of before it is kept. */
+    raw?: boolean;
     /** The source's id, for the header and the default name. */
     source?: string;
     /** The destination's id, in place of `source`. */
@@ -49,9 +56,11 @@
     busy: boolean;
     error: string;
     onstop: () => void;
-    onsave: (name: string) => void;
-    /** What the capture is for, in place of saving it: its title, and the action that takes it. */
-    use?: { title: string; label: string; take: () => void };
+    /** Saves it as a sample named `name`; absent for a viewer, who may not save one. */
+    onsave?: (name: string) => void;
+    /** The primary action on a finished capture, and its label. One with a `title` is a form's own purpose for it,
+     * which names the dialog. */
+    use?: { title?: string; label: string; take: () => void; off?: string };
     /** Discard: the session goes. */
     ondiscard: () => void;
   } = $props();
@@ -88,13 +97,10 @@
 <Dialog
   open
   wide
-  title={use
-    ? use.title
-    : done
-      ? 'Save the capture'
-      : destination !== undefined
-        ? `Capturing at ${destination}`
-        : `Capturing from ${source}`}
+  title={use?.title ??
+    (destination !== undefined
+      ? `${done ? 'Captured' : 'Capturing'} at ${destination}`
+      : `${done ? 'Captured' : 'Capturing'} from ${source}`)}
   oncancel={() => {
     // Escape refuses, and while the capture runs there is nothing to refuse yet.
     if (done && !busy) ondiscard();
@@ -102,7 +108,7 @@
   onsubmit={() => {
     if (!done) onstop();
     else if (use) use.take();
-    else onsave(saveName.trim());
+    else onsave?.(saveName.trim());
   }}
 >
   <div class="content">
@@ -111,7 +117,7 @@
     {:else}
       <div class="tiles">
         <div class="tile">
-          <span class="tile-label">Records</span>
+          <span class="uppercase-label">Records</span>
           <span class="tile-value">{held}<span class="tile-of"> of {status.maxMatches}</span></span>
           <div class="meter" aria-hidden="true">
             <div
@@ -121,7 +127,7 @@
           </div>
         </div>
         <div class="tile">
-          <span class="tile-label">{done ? 'Ended' : 'Time left'}</span>
+          <span class="uppercase-label">{done ? 'Ended' : 'Time left'}</span>
           <span class="tile-value">
             {#if status.stopped}stopped{:else if done}finished{:else}{status.secondsLeft}s{/if}
           </span>
@@ -203,10 +209,26 @@
         </p>
       {/if}
 
-      {#if done && !use}
+      {#if done && raw && held > 0}
+        <p class="critical">
+          These are the exact bytes senders wrote, so they may hold passwords or tokens. Check them
+          before you save or share them.
+        </p>
+      {/if}
+      {#if done && onsave}
         <div class="name" class:off={held === 0}>
           <label for="capture-name">Save as</label>
-          <input id="capture-name" bind:value={saveName} disabled={held === 0} />
+          <input
+            id="capture-name"
+            bind:value={saveName}
+            disabled={held === 0}
+            onkeydown={(e) => {
+              // Enter here saves, as Save sample would, though the window's primary may be another.
+              if (e.key !== 'Enter' || e.isComposing || !use) return;
+              e.preventDefault();
+              if (!busy && saveName.trim()) onsave?.(saveName.trim());
+            }}
+          />
         </div>
       {/if}
     {/if}
@@ -217,17 +239,18 @@
   {#snippet actions()}
     {#if done}
       <Button type="button" onclick={ondiscard} disabled={busy ? BUSY : ''}>Discard</Button>
-      {#if use}
+      {#if session && held > 0}
+        {#if NOT_IN_DEMO}<Button type="button" disabled={NOT_IN_DEMO}>Download</Button>{:else}<a
+            class="btn"
+            href={captureDownloadUrl(session)}
+            download>Download</a
+          >{/if}
+      {/if}
+      {#if onsave}
         <Button
-          type="submit"
-          class="primary"
-          disabled={busy ? BUSY : !status ? 'Wait for the capture to start.' : ''}
-          >{use.label}</Button
-        >
-      {:else}
-        <Button
-          type="submit"
-          class="primary"
+          type={use ? 'button' : 'submit'}
+          class={use ? '' : 'primary'}
+          onclick={use ? () => onsave(saveName.trim()) : undefined}
           data-guide="capture-save"
           disabled={busy
             ? BUSY
@@ -241,6 +264,14 @@
         >
           {busy ? 'Saving…' : 'Save sample'}
         </Button>
+      {/if}
+      {#if use}
+        <Button
+          type="submit"
+          class="primary"
+          disabled={busy ? BUSY : !status ? 'Wait for the capture to start.' : (use.off ?? '')}
+          >{use.label}</Button
+        >
       {/if}
     {:else}
       <Button
@@ -265,9 +296,6 @@
     font-size: var(--text-body);
     line-height: 1.5;
   }
-  .mono {
-    font-family: var(--mono);
-  }
 
   .tiles {
     display: flex;
@@ -282,13 +310,6 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-card);
     background: var(--bg);
-  }
-  .tile-label {
-    font-size: var(--text-micro);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--dim);
   }
   .tile-value {
     font-size: 1.4rem;

@@ -11,6 +11,7 @@ use smeltr::core::buffer::BufferPool;
 use smeltr::core::ctx::Ctx;
 use smeltr::core::error::ErrorSink;
 use smeltr::expr::inline::PRELUDE_FUNCTIONS;
+use smeltr::expr::unpack::{PACK, UNPACK};
 use smeltr::ops::objectops::ObjectOp;
 use smeltr::ops::stdfuncs;
 use smeltr::ops::{BinOp, UnOp};
@@ -27,6 +28,8 @@ struct Reference {
     exceptions: Vec<ExceptionRow>,
     #[serde(rename = "recordFields")]
     record_fields: Vec<RecordField>,
+    /// How each kind of value is written, with what each example gives.
+    literals: Vec<LiteralRow>,
     types: Vec<TypeRow>,
     /// The examples How it works shows, by topic.
     topics: Vec<Topic>,
@@ -81,6 +84,14 @@ struct SpecifierRow {
     group: Option<String>,
 }
 
+/// One row of Writing values: a literal's form, what it is, and what each example gives.
+#[derive(serde::Deserialize)]
+struct LiteralRow {
+    form: String,
+    rule: String,
+    examples: Vec<Example>,
+}
+
 /// One line of an operator table: the symbol, what it does under these operand types, and an example or two.
 #[derive(serde::Deserialize)]
 struct OperatorRow {
@@ -127,6 +138,9 @@ struct Function {
     /// The label over the run of functions this one belongs to.
     #[serde(default)]
     group: Option<String>,
+    /// The first argument's type this entry documents the function for; the entry without one documents the rest.
+    #[serde(default)]
+    on: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -339,18 +353,22 @@ fn out_is(body: &str, expr: &str) -> PipelineConfig {
 #[test]
 fn the_reference_documents_every_function_exactly_once() {
     let r = reference();
-    let mut documented: Vec<&str> = functions(&r).map(|f| f.name.as_str()).collect();
+    let mut documented: Vec<&str> = functions(&r)
+        .filter(|f| f.on.is_none())
+        .map(|f| f.name.as_str())
+        .collect();
     documented.sort_unstable();
     let before = documented.len();
     documented.dedup();
     assert_eq!(before, documented.len(), "a function is documented twice");
 
-    // map/filter are expression syntax lowered to array instructions, and the object functions are object
-    // instructions, not StdFunc variants.
+    // map/filter are expression syntax lowered to array instructions, `unpack` and `pack` expand to calls of the
+    // functions they read and write with, and the object functions are object instructions, not StdFunc variants.
     let mut defined: Vec<&str> = stdfuncs::ROWS
         .iter()
         .map(|row| row.name)
         .chain(PRELUDE_FUNCTIONS)
+        .chain([UNPACK, PACK])
         .chain(ObjectOp::NAMED.iter().filter_map(|op| op.name()))
         .collect();
     defined.sort_unstable();
@@ -360,6 +378,42 @@ fn the_reference_documents_every_function_exactly_once() {
         documented, defined,
         "website/src/lib/reference.json and ops::stdfuncs have drifted apart"
     );
+}
+
+/// An entry with `on` documents its function for one type of first argument, as the page shows it: the rows whose
+/// first argument may be a type that starts with that word. The function has its entry without `on` too, and each
+/// type has one entry.
+#[test]
+fn an_entry_for_one_type_documents_rows_of_that_type() {
+    let r = reference();
+    let signatures = engine_signatures();
+    let mut seen = std::collections::BTreeSet::new();
+    for f in functions(&r) {
+        assert!(
+            seen.insert((&f.name, &f.on)),
+            "{} {:?} is documented twice",
+            f.name,
+            f.on
+        );
+        let Some(on) = &f.on else { continue };
+        assert!(
+            functions(&r).any(|g| g.name == f.name && g.on.is_none()),
+            "{} has an entry on {on} but none without `on`",
+            f.name
+        );
+        let rows = signatures[&f.name]
+            .as_array()
+            .unwrap_or_else(|| panic!("{} has no typed rows", f.name));
+        assert!(
+            rows.iter().any(|row| {
+                let params = row["params"].as_str().unwrap();
+                let first = params[1..].split([',', ')']).next().unwrap_or("");
+                first.split('/').any(|t| t.split(' ').next() == Some(on.as_str()))
+            }),
+            "{} on {on} has no typed row whose first argument is {on}",
+            f.name
+        );
+    }
 }
 
 /// Group ids are HTML `id` attributes, the targets of the page's own table of
@@ -463,11 +517,16 @@ fn check_all<'a>(examples: impl Iterator<Item = &'a Example>) {
 #[test]
 fn every_documented_example_produces_its_documented_result() {
     let r = reference();
+    for l in &r.literals {
+        assert!(!l.rule.trim().is_empty(), "{} says nothing", l.form);
+        assert!(!l.examples.is_empty(), "{} has no example", l.form);
+    }
     let examples = functions(&r)
         .flat_map(|f| f.examples.iter())
         .chain(operator_rows(&r).flat_map(|row| row.examples.iter()))
         .chain(specifier_rows(&r).flat_map(|row| row.examples.iter()))
-        .chain(r.topics.iter().flat_map(|t| t.examples.iter()));
+        .chain(r.topics.iter().flat_map(|t| t.examples.iter()))
+        .chain(r.literals.iter().flat_map(|l| l.examples.iter()));
     check_all(examples);
 }
 
@@ -1350,12 +1409,24 @@ struct ConnectorReference {
 }
 
 /// Each variant of `enum_name` in `src/config_file/dto.rs`, by its `type` tag, to the keys it takes, a flattened
-/// struct's keys included. Read from the source so that a setting added to the engine is a setting missing here.
+/// struct's keys included. Read from `dto.rs` and each kind's file under `src/config_file/load/`, so that a setting
+/// added to the engine is a setting missing here.
 fn dto_keys(enum_name: &str) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config_file/dto.rs");
-    let text = std::fs::read_to_string(&path).unwrap();
+    let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config_file");
+    let mut text = std::fs::read_to_string(config.join("dto.rs")).unwrap();
+    for kinds in ["load/source", "load/destination"] {
+        for file in std::fs::read_dir(config.join(kinds)).unwrap() {
+            text.push_str(&std::fs::read_to_string(file.unwrap().path()).unwrap());
+        }
+    }
     let body = |head: &str| -> Vec<&str> {
-        let start = text.find(head).unwrap_or_else(|| panic!("no `{head}` in dto.rs"));
+        // A unit struct, such as `NoUnknownKeys`, has no fields and so no keys.
+        if text.contains(&head.replace(" {", ";")) {
+            return Vec::new();
+        }
+        let start = text
+            .find(head)
+            .unwrap_or_else(|| panic!("no `{head}` in the config DTOs"));
         text[start..].lines().skip(1).take_while(|l| *l != "}").collect()
     };
     let camel = |snake: &str| -> String {
@@ -1392,7 +1463,9 @@ fn dto_keys(enum_name: &str) -> std::collections::BTreeMap<String, std::collecti
                 continue;
             }
             if let Some(c) = field.captures(line).filter(|c| c[1].len() == indent) {
-                if attrs.contains("flatten") {
+                // A field serde skips is not a key in the file.
+                if attrs.contains("serde(skip)") {
+                } else if attrs.contains("flatten") {
                     let lines = body(&format!("pub struct {} {{", &c[3]));
                     let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
                     out.extend(keys(&lines, 4, field, rename, camel, body));
@@ -1806,7 +1879,8 @@ fn the_destination_reference_matches_the_engine() {
     }
 }
 
-/// Every source and destination example on the Sources and Destinations pages is one the leader accepts on its own.
+/// Every source and destination example on the Sources and Destinations pages is one the leader accepts on its own,
+/// beside the schemas, empty, that a destination's `accepts` names.
 #[test]
 fn every_connector_example_loads() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("website/src/lib/connector-examples.json");
@@ -1820,7 +1894,10 @@ fn every_connector_example_loads() {
         } else {
             continue;
         };
-        let file = serde_json::from_value(serde_json::json!({ "version": 1, section: [example] }))
+        let schemas: Vec<_> = (example["accepts"].as_array().into_iter().flatten())
+            .map(|id| serde_json::json!({ "id": id, "fields": [] }))
+            .collect();
+        let file = serde_json::from_value(serde_json::json!({ "version": 1, section: [example], "schemas": schemas }))
             .unwrap_or_else(|e| panic!("{name} does not load: {e}"));
         let errors = smeltr::config_file::validation_errors(file);
         assert!(errors.is_empty(), "{name} is refused: {errors:?}");
@@ -1864,6 +1941,12 @@ fn every_startup_example_is_read() {
     let table: Table =
         serde_json::from_str(&std::fs::read_to_string(root.join("website/src/lib/startup-settings.json")).unwrap())
             .unwrap();
+    // Clear every documented variable, so the defaults are read with nothing set. `just check` sets the worker's
+    // listen address.
+    for s in &table.settings {
+        // SAFETY: nextest runs each test in its own process, and no other thread here reads the environment.
+        unsafe { std::env::remove_var(&s.env) };
+    }
     use smeltr::startup_config as c;
     // A refused value ends the process, naming the variable and the value.
     let readers: std::collections::BTreeMap<&str, fn() -> String> = [
@@ -1981,7 +2064,7 @@ fn the_startup_file_example_starts_a_leader() {
         .any(|line| {
             said.push_str(&line);
             said.push('\n');
-            line.contains("leader.origin")
+            line.contains("api origin_set")
         });
     let _ = leader.kill();
     let _ = leader.wait();
@@ -2001,6 +2084,12 @@ fn the_startup_settings_match_the_engine() {
     let table: Table =
         serde_json::from_str(&std::fs::read_to_string(root.join("website/src/lib/startup-settings.json")).unwrap())
             .unwrap();
+    // Clear every documented variable, so the defaults are read with nothing set. `just check` sets the worker's
+    // listen address.
+    for s in &table.settings {
+        // SAFETY: nextest runs each test in its own process, and no other thread here reads the environment.
+        unsafe { std::env::remove_var(&s.env) };
+    }
     let main = std::fs::read_to_string(root.join("src/bin/smeltr/main.rs")).unwrap();
     let backfill = regex::Regex::new(r#"backfill_env\(\s*"(\w+)",\s*(?:Some\()?file\.([\w.]+)"#).unwrap();
     let engine: std::collections::BTreeSet<(String, String)> = backfill

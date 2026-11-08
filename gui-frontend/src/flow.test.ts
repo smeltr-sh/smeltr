@@ -1,14 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import type { FlowPointDto, FlowSeriesDto } from './api';
+import type { FlowNormalDto, FlowPointDto, FlowSeriesDto } from './api';
 import {
   currentRate,
   denseRates,
   denseSeries,
-  deviationFromUsual,
   furthestFromNormal,
   lastClosedBucket,
   sumSeries,
-  usualAtThisHour,
 } from './flow';
 
 const HOUR = 60 * 60 * 1000;
@@ -93,98 +91,45 @@ describe('currentRate', () => {
   });
 });
 
-describe('usualAtThisHour', () => {
-  const bucketMillis = HOUR;
-
-  it('averages every earlier bucket at the same local hour, excluding the current one', () => {
-    const now = local(9, 2);
-    const points = [
-      pt(local(9, 0), 36_000), // 10 rows/s at 09:00, two days back
-      pt(local(9, 1), 72_000), // 20 rows/s at 09:00, one day back
-      pt(local(14, 1), 999_999), // a different hour -- excluded
-      pt(now, 999_999), // the current bucket itself -- excluded
-    ];
-    expect(usualAtThisHour(points, bucketMillis, now)).toBe(15);
+describe('furthestFromNormal', () => {
+  const normal = (subjectId: string, now: number, group = 'prod-west'): FlowNormalDto => ({
+    group,
+    subjectId,
+    now,
+    low: 20,
+    high: 40,
   });
 
-  it('is null with no history at this hour yet', () => {
-    expect(usualAtThisHour([], bucketMillis, local(9, 2))).toBeNull();
+  it('ranks by how far past its normal a source is, either way, then by how near an edge', () => {
+    const ranked = furthestFromNormal([
+      normal('middle', 30),
+      normal('dropped', 5),
+      normal('near-top', 39),
+      normal('burst', 50),
+    ]);
+    expect(ranked.map((r) => [r.subjectId, r.awayPercent])).toEqual([
+      ['dropped', -75],
+      ['burst', 25],
+      ['near-top', 0],
+      ['middle', 0],
+    ]);
   });
-});
 
-describe('deviationFromUsual', () => {
-  const bucketMillis = HOUR;
-  /** Looked at just after 09:00 closed, so the reading is that day's 09:00 bucket. */
-  const after = (dayOffset: number) => local(10, dayOffset);
-
-  it('compares the bucket that just closed to the same hour on earlier days', () => {
-    const points = [pt(local(9, 0), 36_000), pt(local(9, 1), 72_000)];
-    expect(deviationFromUsual(points, bucketMillis, after(1))).toEqual({
-      now: 20,
-      normal: 10,
-      awayPercent: 100,
+  it('puts a source reading where it normally reads none first, with no percent to give', () => {
+    const none = { ...normal('woke', 3), low: 0, high: 0 };
+    expect(furthestFromNormal([normal('dropped', 5), none])[0]).toEqual({
+      ...none,
+      awayPercent: null,
     });
   });
 
-  it('is null with no baseline to be far from', () => {
-    expect(deviationFromUsual([pt(local(9, 0), 36_000)], bucketMillis, after(0))).toBeNull();
-  });
-
-  it('is null when the baseline itself is 0 -- a percentage away from zero is not a number', () => {
-    const points = [pt(local(9, 0), 0), pt(local(9, 1), 36_000)];
-    expect(deviationFromUsual(points, bucketMillis, after(1))).toBeNull();
-  });
-
-  it('is null where the closed bucket is missing, rather than ranking a subject at 0', () => {
-    const points = [pt(local(9, 0), 36_000), pt(local(9, 1), 36_000)];
-    expect(deviationFromUsual(points, bucketMillis, after(2))).toBeNull();
-  });
-});
-
-describe('furthestFromNormal', () => {
-  const bucketMillis = HOUR;
-
-  it('ranks sources and destinations together by the size of the deviation, not its sign', () => {
-    const closed = local(9, 1);
-    const now = local(10, 1);
-    const rowsIn: FlowSeriesDto[] = [
-      { group: 'prod-west', subjectId: 'a', points: [pt(local(9, 0), 36_000), pt(closed, 36_000)] }, // steady, 0%
-      { group: 'prod-west', subjectId: 'b', points: [pt(local(9, 0), 36_000), pt(closed, 0)] }, // dead, -100%
-    ];
-    const rowsOut: FlowSeriesDto[] = [
-      { group: 'prod-west', subjectId: 'c', points: [pt(local(9, 0), 36_000), pt(closed, 72_000)] }, // spiking, +100%
-    ];
-    const ranked = furthestFromNormal(rowsIn, rowsOut, bucketMillis, now, 5);
-    expect(ranked.map((r) => r.subjectId)).toEqual(['b', 'c', 'a']);
-    expect(ranked.find((r) => r.subjectId === 'c')?.kind).toBe('destination');
-  });
-
-  it('drops a subject with no baseline rather than ranking it arbitrarily', () => {
-    const rowsIn: FlowSeriesDto[] = [
-      { group: 'prod-west', subjectId: 'new', points: [pt(local(9, 0), 100)] },
-    ];
-    expect(furthestFromNormal(rowsIn, [], bucketMillis, local(10, 0), 5)).toEqual([]);
-  });
-
   it('keeps only the top `limit`', () => {
-    const rowsIn: FlowSeriesDto[] = Array.from({ length: 3 }, (_, i) => ({
-      group: 'prod-west',
-      subjectId: `s${i}`,
-      points: [pt(local(9, 0), 36_000), pt(local(9, 1), 36_000 * (i + 2))],
-    }));
-    const ranked = furthestFromNormal(rowsIn, [], bucketMillis, local(10, 1), 2);
-    expect(ranked.map((r) => r.subjectId)).toEqual(['s2', 's1']);
+    const ranked = furthestFromNormal([normal('a', 30), normal('b', 5), normal('c', 60)], 2);
+    expect(ranked.map((r) => r.subjectId)).toEqual(['b', 'c']);
   });
 
   it('ranks one id in two groups as two rows, since an id is unique only within one', () => {
-    const now = local(10, 1);
-    const points = [pt(local(9, 0), 36_000), pt(local(9, 1), 72_000)];
-    const rowsIn: FlowSeriesDto[] = [
-      { group: 'prod-west', subjectId: 'orders', points },
-      { group: 'prod-east', subjectId: 'orders', points },
-    ];
-    const ranked = furthestFromNormal(rowsIn, [], bucketMillis, now, 5);
+    const ranked = furthestFromNormal([normal('orders', 5), normal('orders', 5, 'prod-east')]);
     expect(ranked.map((r) => r.group).sort()).toEqual(['prod-east', 'prod-west']);
-    expect(ranked.every((r) => r.subjectId === 'orders')).toBe(true);
   });
 });

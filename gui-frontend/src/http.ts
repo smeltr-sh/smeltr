@@ -6,8 +6,9 @@
 import type { DestinationDto, TlsDto } from './api';
 
 export type HttpDestination = Extract<DestinationDto, { type: 'http' }>;
-/** A destination that POSTs to a URL with headers: `http`, and `prometheus` with the remote_write body. */
-export type HeaderedDestination = Extract<DestinationDto, { type: 'http' | 'prometheus' }>;
+/** A destination that POSTs to a URL with headers: `http`, `prometheus` with the remote_write body, and `otlp`
+ * with an OTLP export. */
+export type HeaderedDestination = Extract<DestinationDto, { type: 'http' | 'prometheus' | 'otlp' }>;
 
 /** Headers smeltr writes from the batch itself, or that the client owns. */
 const OWNED_HEADERS = new Set([
@@ -94,12 +95,14 @@ export function urlWarning(
   return said.length > 0 ? said.join(' ') : undefined;
 }
 
-/** Whether `tls` sets anything, as `config_file::dto::TlsDto::is_set` reads it. */
+/** Whether `tls` sets anything, as `config_file::dto::TlsDto::is_set` and `ServedTlsDto::is_set` read it. */
 export function tlsSet(tls: TlsDto): boolean {
   return (
     tls.certificate !== undefined ||
     tls.trustedAuthorities !== undefined ||
-    tls.trustPublic !== undefined
+    tls.trustPublic !== undefined ||
+    tls.senderFingerprints !== undefined ||
+    tls.senderNames !== undefined
   );
 }
 

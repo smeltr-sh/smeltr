@@ -31,7 +31,7 @@ pub fn prune(repo: &Path, keep: usize, running: &HashSet<(String, String)>) {
     let pinned = match pinned(repo, running) {
         Ok(pinned) => pinned,
         Err(e) => {
-            tracing::warn!(target: "lookups.not_pruned", error = %e, "which lookup files the fleet needs could not be read, so none is forgotten this time");
+            tracing::warn!(name: "not_pruned", target: "pipelines", error = %e, "which lookup files the fleet needs could not be read, so none is forgotten this time");
             return;
         }
     };
@@ -40,7 +40,7 @@ pub fn prune(repo: &Path, keep: usize, running: &HashSet<(String, String)>) {
         // No store directory is a leader nobody has uploaded a lookup file to.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
         Err(e) => {
-            tracing::warn!(target: "lookups.not_pruned", error = %e, "the stored lookup files could not be listed, so none is forgotten this time");
+            tracing::warn!(name: "not_pruned", target: "pipelines", error = %e, "the stored lookup files could not be listed, so none is forgotten this time");
             return;
         }
     };
@@ -82,7 +82,7 @@ pub fn prune(repo: &Path, keep: usize, running: &HashSet<(String, String)>) {
         }
     }
     if forgotten > 0 {
-        tracing::debug!(target: "lookups.pruned", forgotten, "stored lookup file versions past their retention were forgotten");
+        tracing::debug!(name: "pruned", target: "pipelines", forgotten, "stored lookup file versions past their retention were forgotten");
     }
 }
 

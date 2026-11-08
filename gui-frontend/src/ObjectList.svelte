@@ -227,7 +227,7 @@
   <p class="dim">{empty}</p>
 {:else}
   <div class="list" style:--columns={template}>
-    <div class="head">
+    <div class="head uppercase-label">
       <div>
         <SortButton {sort} key={ID}>id</SortButton>
       </div>
@@ -246,12 +246,12 @@
       {@const id = idOf(item)}
       {#snippet cells()}
         <span class="row-cells">
-          <span class="cell id">
+          <span class="cell id ellipsis">
             {#if i < 0}<span class="shared-dot" title="from shared/"></span>{/if}{id}
           </span>
-          {#if showType && typeOf}<span class="cell type">{label(typeOf(item))}</span>{/if}
+          {#if showType && typeOf}<span class="cell type ellipsis">{label(typeOf(item))}</span>{/if}
           {#each columns as c (c.key)}
-            <span class="cell">{c.text?.(item) ?? c.value(item) ?? ''}</span>
+            <span class="cell ellipsis">{c.text?.(item) ?? c.value(item) ?? ''}</span>
           {/each}
         </span>
       {/snippet}
@@ -337,11 +337,6 @@
   .head {
     padding: 0.4rem calc(0.7rem + 0.5rem + 1.6rem) 0.4rem 1.85rem;
     border-bottom: 1px solid var(--border);
-    font-size: var(--text-micro);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--dim);
   }
 
   .row {
@@ -364,9 +359,6 @@
 
   .cell {
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
     font-family: var(--mono);
     font-size: var(--text-micro);
     color: var(--dim);

@@ -65,6 +65,7 @@ fn driver_with(host: &str, port: u16, user: &str, encrypted: Encrypted, authorit
             authorities: Some(authorities),
             trust_public: false,
             side: Side::Client,
+            senders: Default::default(),
         }),
     };
     PostgresDriver::new(connection, &secrets).expect("a driver")
@@ -832,8 +833,9 @@ fn run_describes_the_query_and_reads_before_any_field_is_declared() {
             "query": query, "mode": mode, "fields": fields, "batch": batch
         }))
         .unwrap();
-        let captures = smeltr::worker::capture::Captures::default();
+        let captures = std::sync::Arc::new(smeltr::worker::capture::Captures::default());
         let admitted = captures.admit(&[smeltr::heartbeat::CaptureInvitation {
+            raw: false,
             session: "s1".to_string(),
             group: "g".to_string(),
             source: Some(source),

@@ -17,6 +17,8 @@ mod adversarial_memory_tests;
 mod api_source_fuzz;
 #[path = "api-source-tests.rs"]
 mod api_source_tests;
+#[path = "bad-sender-fuzz.rs"]
+mod bad_sender_fuzz;
 #[path = "code-tests.rs"]
 mod code_tests;
 #[path = "compile-fuzz.rs"]
@@ -143,6 +145,10 @@ mod objects_tests;
 mod okta_live_tests;
 #[path = "ops.rs"]
 mod ops;
+#[path = "otlp-destination-fuzz.rs"]
+mod otlp_destination_fuzz;
+#[path = "otlp-destination-tests.rs"]
+mod otlp_destination_tests;
 #[path = "otlp-receiver-fuzz.rs"]
 mod otlp_receiver_fuzz;
 #[path = "parquet-tests.rs"]
@@ -155,6 +161,8 @@ mod pipelined_tests;
 mod postgres_live_tests;
 #[path = "prometheus-receiver-fuzz.rs"]
 mod prometheus_receiver_fuzz;
+#[path = "raw-capture-tests.rs"]
+mod raw_capture_tests;
 #[path = "rebuild-fuzz.rs"]
 mod rebuild_fuzz;
 #[path = "receiver-tests.rs"]
@@ -173,6 +181,8 @@ mod s2s_live_tests;
 mod s2s_receiver_fuzz;
 #[path = "s2s-receiver-tests.rs"]
 mod s2s_receiver_tests;
+#[path = "socket-receiver-fuzz.rs"]
+mod socket_receiver_fuzz;
 #[path = "split-threads-tests.rs"]
 mod split_threads_tests;
 #[path = "splunk-fuzz.rs"]
@@ -193,6 +203,10 @@ mod streams_tests;
 mod syslog_receiver_fuzz;
 #[path = "syslog-receiver-tests.rs"]
 mod syslog_receiver_tests;
+#[path = "unpack-fuzz.rs"]
+mod unpack_fuzz;
+#[path = "unpack-tests.rs"]
+mod unpack_tests;
 #[path = "website-reference-tests.rs"]
 mod website_reference_tests;
 #[path = "worker-tests.rs"]

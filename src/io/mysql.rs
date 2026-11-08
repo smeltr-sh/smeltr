@@ -18,8 +18,8 @@ use mysql_async::{ClientIdentity, Column, Conn, Opts, OptsBuilder, Params, SslOp
 use super::IoError;
 use super::sql::{Dialect, Statement, quote};
 use super::sql_source::{
-    CALL_TIMEOUT, CONNECT_TIMEOUT, Connection, Described, Driver, Encrypted, FULL_SCAN_ROWS, Failure, MAX_RESULT_BYTES,
-    Rows, STATEMENT_MARGIN, Shell, Verdict, held, too_large,
+    CALL_TIMEOUT, CONNECT_TIMEOUT, Connection, Described, Driver, Encrypted, Failure, MAX_RESULT_BYTES, Rows,
+    STATEMENT_MARGIN, Shell, Verdict, held, text_at, too_large,
 };
 use super::values::Value;
 use crate::core::column::DataType;
@@ -280,7 +280,7 @@ impl Driver for MySqlDriver {
                     _ => return Err("EXPLAIN returned no plan".to_string().into()),
                 };
                 let rows = limit.map_or(returned(&plan), |limit| returned(&plan).min(limit));
-                Ok(verdict(&scans(&plan), indexes(&plan), rows))
+                Ok(Verdict::of(scans(&plan), indexes(&plan), rows))
             }))
         })
     }
@@ -599,28 +599,12 @@ fn cast_unreadable(sql: &str, columns: &[Column]) -> Option<(String, Vec<String>
     Some((format!("SELECT {}{rest}", list.join(", ")), cast))
 }
 
-/// One read of a whole table in a plan.
-#[derive(Debug, PartialEq)]
-struct Scan {
-    /// The table as the query names it: its alias, when it has one. EXPLAIN gives no other.
-    name: String,
-    rows: u64,
-}
-
 /// A number in a plan. MySQL writes some as text.
 fn number(value: Option<&[u8]>) -> Option<f64> {
     match variant::read(value?) {
         variant::Value::I64(i) => Some(i as f64),
         variant::Value::F64(f) => Some(f),
         variant::Value::Str(s) => s.parse().ok(),
-        _ => None,
-    }
-}
-
-/// The text at `key` in the plan object `node`.
-fn text_at<'p>(node: &'p [u8], key: &str) -> Option<&'p str> {
-    match variant::read(variant::member(node, key)?) {
-        variant::Value::Str(s) => Some(s),
         _ => None,
     }
 }
@@ -663,14 +647,15 @@ fn tables(explained: &[u8]) -> Vec<&[u8]> {
     found
 }
 
-/// Every read of a whole table the database holds, with its estimate of the rows it reads.
-fn scans(explained: &[u8]) -> Vec<Scan> {
+/// Every read of a whole table in the plan: the table's name, or its alias when the query gives it one (EXPLAIN gives
+/// only the alias then), and the database's estimate of the rows it reads.
+fn scans(explained: &[u8]) -> Vec<(String, u64)> {
     tables(explained)
         .into_iter()
         .filter(|t| text_at(t, "access_type") == Some("ALL") && !made(t))
-        .map(|t| Scan {
-            name: text_at(t, "table_name").unwrap_or_default().to_string(),
-            rows: examined(t).map_or(0, |r| r as u64),
+        .map(|t| {
+            let name = text_at(t, "table_name").unwrap_or_default().to_string();
+            (name, examined(t).map_or(0, |r| r as u64))
         })
         .collect()
 }
@@ -727,17 +712,6 @@ fn returned(explained: &[u8]) -> u64 {
             .product()
     }
     variant::member(explained, "query_block").map_or(0, |b| block(b).round() as u64)
-}
-
-/// The largest scan past [`FULL_SCAN_ROWS`], or `Indexed` through `indexes`, returning about `rows`.
-fn verdict(scans: &[Scan], indexes: Vec<String>, rows: u64) -> Verdict {
-    match scans.iter().filter(|s| s.rows > FULL_SCAN_ROWS).max_by_key(|s| s.rows) {
-        Some(scan) => Verdict::FullScan {
-            relation: scan.name.clone(),
-            rows: scan.rows,
-        },
-        None => Verdict::Indexed { indexes, rows },
-    }
 }
 
 #[cfg(test)]
@@ -972,7 +946,7 @@ mod tests {
             "table_name": "plan_big", "access_type": "ALL", "rows_examined_per_scan": 999_504,
             "rows_produced_per_join": 99_950, "filtered": "10.00"}}}));
         assert_eq!(
-            verdict(&scans(&explained), indexes(&explained), returned(&explained)),
+            Verdict::of(scans(&explained), indexes(&explained), returned(&explained)),
             Verdict::FullScan {
                 relation: "plan_big".into(),
                 rows: 999_504
@@ -994,7 +968,7 @@ mod tests {
                     {"query_block": {"select_id": 3, "message": "No tables used"}}]}}}}}}));
         assert!(scans(&explained).is_empty(), "q is the statement's own");
         assert_eq!(
-            verdict(&scans(&explained), indexes(&explained), returned(&explained)),
+            Verdict::of(scans(&explained), indexes(&explained), returned(&explained)),
             Verdict::Indexed {
                 indexes: vec!["a_at".into(), "PRIMARY".into()],
                 rows: 333_135
@@ -1006,7 +980,7 @@ mod tests {
             "rows_examined_per_scan": 1, "rows_produced_per_join": 1}}}}),
         );
         assert_eq!(
-            verdict(&scans(&ordered), indexes(&ordered), returned(&ordered)),
+            Verdict::of(scans(&ordered), indexes(&ordered), returned(&ordered)),
             Verdict::Indexed {
                 indexes: vec!["plan_big_indexed".into()],
                 rows: 1
@@ -1022,7 +996,7 @@ mod tests {
             "filtered": 100, "attached_condition": "plan_big.plain = 5"}}]}}),
         );
         assert_eq!(
-            verdict(&scans(&scan), indexes(&scan), returned(&scan)),
+            Verdict::of(scans(&scan), indexes(&scan), returned(&scan)),
             Verdict::FullScan {
                 relation: "plan_big".into(),
                 rows: 967_853
@@ -1038,7 +1012,7 @@ mod tests {
         );
         assert!(scans(&derived).is_empty());
         assert_eq!(
-            verdict(&scans(&derived), indexes(&derived), returned(&derived)),
+            Verdict::of(scans(&derived), indexes(&derived), returned(&derived)),
             Verdict::Indexed {
                 indexes: vec!["a_at".into(), "PRIMARY".into()],
                 rows: 100
@@ -1048,7 +1022,7 @@ mod tests {
         let small = plan(serde_json::json!({"query_block": {"nested_loop": [{"table": {
             "table_name": "few", "access_type": "ALL", "rows": 40, "filtered": 100}}]}}));
         assert_eq!(
-            verdict(&scans(&small), indexes(&small), returned(&small)),
+            Verdict::of(scans(&small), indexes(&small), returned(&small)),
             Verdict::Indexed {
                 indexes: Vec::new(),
                 rows: 40

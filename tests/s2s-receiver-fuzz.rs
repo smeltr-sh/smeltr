@@ -13,7 +13,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -25,6 +25,7 @@ use smeltr::plan::topology::{HecReceiverConfig, Receiver, S2sReceiverConfig, Sou
 use crate::harness::docker::{Container, Hook, Scratch, share};
 use crate::harness::fuzz::{self, Coverage, Rng};
 use crate::harness::receiver::{self, Pki, Presents, Tls, commit};
+use crate::harness::sender::{self, Speaks};
 
 /// One receiver's settings, as an operator could save them.
 struct Settings {
@@ -1379,7 +1380,7 @@ fn random_connection(rng: &mut Rng, settings: &Settings, n: usize) -> Plan {
         labels: vec![(Stage::Tls, format!("presents {presents:?} under {:?}", settings.tls))],
     };
     let label = |plan: &mut Plan, label: &str| plan.labels.push((plan.reached, label.to_string()));
-    if settings.tls == Tls::Vouched && presents != Presents::Trusted {
+    if !settings.tls.admits(presents) {
         return plan;
     }
 
@@ -1576,53 +1577,6 @@ fn compressed(rng: &mut Rng, v4: &[u8]) -> Vec<u8> {
     [&[0xf9][..], zlib.get_ref()].concat()
 }
 
-/// A forwarder's side of its connection, over TCP or TLS.
-enum Wire {
-    Plain(TcpStream),
-    Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
-}
-
-impl Read for Wire {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        match self {
-            Wire::Plain(tcp) => tcp.read(buf),
-            Wire::Tls(tls) => tls.read(buf),
-        }
-    }
-}
-
-impl Write for Wire {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        match self {
-            Wire::Plain(tcp) => tcp.write(buf),
-            Wire::Tls(tls) => tls.write(buf),
-        }
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        match self {
-            Wire::Plain(tcp) => tcp.flush(),
-            Wire::Tls(tls) => tls.flush(),
-        }
-    }
-}
-
-impl Wire {
-    /// Hangs up its side, as a forwarder done sending does, and reads on.
-    fn close_write(&mut self) {
-        match self {
-            Wire::Plain(tcp) => {
-                let _ = tcp.shutdown(Shutdown::Write);
-            }
-            Wire::Tls(tls) => {
-                tls.conn.send_close_notify();
-                let _ = tls.flush();
-                let _ = tls.sock.shutdown(Shutdown::Write);
-            }
-        }
-    }
-}
-
 /// How many records holding each id's bytes are not yet delivered. An id whose bytes no record will hold counts one
 /// forever.
 type Undelivered = Mutex<HashMap<u64, usize>>;
@@ -1700,14 +1654,11 @@ fn forward(
     let tcp = TcpStream::connect(at).map_err(|e| format!("connecting: {e}"))?;
     tcp.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
     tcp.set_write_timeout(Some(Duration::from_secs(30))).unwrap();
-    let mut wire = match tls {
-        Tls::None => Wire::Plain(tcp),
-        _ => {
-            let connection =
-                rustls::ClientConnection::new(pki.client(plan.presents), "localhost".try_into().unwrap()).unwrap();
-            Wire::Tls(Box::new(rustls::StreamOwned::new(connection, tcp)))
-        }
+    let speaks = match tls {
+        Tls::None => Speaks::Plain,
+        _ => Speaks::Tls(plan.presents),
     };
+    let mut wire = sender::speaking(tcp, speaks, pki);
     let _ = wire.write_all(&plan.opening).and_then(|()| wire.flush());
     if plan.answered {
         let mut size = [0; 4];
@@ -1727,7 +1678,7 @@ fn forward(
     let acks = plan.streamed && plan.ack;
     // Over TCP, acks are read as they come, so one sent before its records were delivered is read while they are not.
     let reader = match &wire {
-        Wire::Plain(tcp) if acks => {
+        sender::Stream::Plain(tcp) if acks => {
             let mut tcp = tcp.try_clone().unwrap();
             let (heard, undelivered) = (heard.clone(), undelivered.clone());
             Some(std::thread::spawn(move || {
@@ -1934,13 +1885,13 @@ impl<'a> Matching<'a> {
 /// Every label a seed may reach, as the generators name them.
 fn every_label(ipv6: bool) -> Vec<String> {
     let mut labels: Vec<String> = receiver::listen_names(ipv6).map(|ip| format!("listen {ip}")).collect();
-    labels.extend(["None", "Served", "Vouched"].map(|tls| format!("tls {tls}")));
+    labels.extend(Tls::ALL.map(|tls| format!("tls {tls:?}")));
     labels.extend((0..=3).map(|n| format!("tokens {n}")));
     labels.extend(RECEIVER_LIMITS.iter().map(|(_, name)| name.to_string()));
     labels.extend(["Xml", "Dated"].map(|b| format!("sourcetype {b} configured")));
     labels.push("presents Nothing under None".into());
-    for tls in ["Served", "Vouched"] {
-        labels.extend(["Nothing", "Trusted", "Stranger"].map(|p| format!("presents {p} under {tls}")));
+    for tls in &Tls::ALL[1..] {
+        labels.extend(["Nothing", "Trusted", "Stranger"].map(|p| format!("presents {p} under {tls:?}")));
     }
     for finish in ["Clean", "Abrupt", "Spoiled"] {
         labels.extend([true, false].map(|ack| format!("{finish} ending with acks {ack}")));
@@ -2033,7 +1984,8 @@ fn every_setting_reads_random_forwarders_as_an_indexer_breaks_them() {
     let mut cov = Coverage::new(every_label(ipv6));
     fuzz::run(1..201, |seed| {
         let mut rng = Rng::seeded(seed);
-        let settings = random_settings(&mut rng, ipv6);
+        let mut settings = random_settings(&mut rng, ipv6);
+        settings.tls = receiver::random_check(seed, settings.tls);
         cov.reach(format!("listen {}", settings.listen.ip()));
         cov.reach(format!("tls {:?}", settings.tls));
         cov.reach(format!("tokens {}", settings.tokens.len()));
@@ -2074,14 +2026,11 @@ fn httpout(at: SocketAddr, tls: Tls, pki: &Pki, token: &str, body: &[u8]) -> (u1
     let tcp = TcpStream::connect(at).unwrap();
     tcp.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
     tcp.set_write_timeout(Some(Duration::from_secs(30))).unwrap();
-    let mut wire = match tls {
-        Tls::None => Wire::Plain(tcp),
-        _ => {
-            let connection =
-                rustls::ClientConnection::new(pki.client(Presents::Trusted), "localhost".try_into().unwrap()).unwrap();
-            Wire::Tls(Box::new(rustls::StreamOwned::new(connection, tcp)))
-        }
+    let speaks = match tls {
+        Tls::None => Speaks::Plain,
+        _ => Speaks::Tls(Presents::Trusted),
     };
+    let mut wire = sender::speaking(tcp, speaks, pki);
     let expect = body.len() > 16 * 1024;
     let mut head = format!(
         "POST /services/collector/s2s HTTP/1.1\r\nHost: receiver\r\nAuthorization: Splunk {token}\r\n\
@@ -2150,6 +2099,7 @@ fn hec_receivers_read_random_httpout_requests_as_an_indexer_breaks_them() {
     fuzz::run(1..101, |seed| {
         let mut rng = Rng::seeded(seed);
         let mut settings = random_settings(&mut rng, ipv6);
+        settings.tls = receiver::random_check(seed, settings.tls);
         // A HEC receiver holds a token, whatever vouches for its senders.
         if settings.tokens.is_empty() {
             settings.tokens.push(format!("tok-{:x}", rng.next_u64()));
@@ -2172,6 +2122,8 @@ fn hec_receivers_read_random_httpout_requests_as_an_indexer_breaks_them() {
             } = stream;
             let body = compressed(&mut rng, &out.0);
             let expected = match () {
+                // Refused in the handshake, so nothing answers.
+                () if !settings.tls.admits(Presents::Trusted) => 0,
                 () if body.len() > max => {
                     cov.reach("a body past the limit");
                     413

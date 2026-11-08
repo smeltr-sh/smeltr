@@ -188,7 +188,7 @@ pub struct OneTimePassword {
 ///
 /// `Ok(None)` means there was already an account, which is the ordinary case on every start after the first.
 /// Blocking, and expensive: it hashes a password. Runs before the leader serves anything.
-pub fn bootstrap_if_empty(store: &dyn Store) -> Result<Option<OneTimePassword>, StoreError> {
+pub fn bootstrap_if_empty(store: &Store) -> Result<Option<OneTimePassword>, StoreError> {
     if store.any_user_exists()? {
         return Ok(None);
     }
@@ -219,7 +219,7 @@ pub fn bootstrap_if_empty(store: &dyn Store) -> Result<Option<OneTimePassword>, 
 /// The escape hatch for an operator locked out of their own leader: a forgotten password, an administrator
 /// disabled by another, a revocation that left nobody. It runs from the host at startup rather than over the
 /// network, so holding the data directory is the whole of its authorization.
-pub fn recover_administrator(store: &dyn Store) -> Result<Result<OneTimePassword, AccountError>, StoreError> {
+pub fn recover_administrator(store: &Store) -> Result<Result<OneTimePassword, AccountError>, StoreError> {
     let password = generate_password();
     let hash = hash_password(&password)?;
     match store.recover_local_user(BOOTSTRAP_USERNAME, &hash)? {
@@ -273,7 +273,7 @@ pub enum Authenticated {
 /// The generation is what makes that cover a reset as well as a disable. Every path that supersedes a password
 /// moves it, so a generation that changed under the hash means the verifier just checked is no longer the account's
 /// -- and the old password must not be admitted on the strength of it.
-pub fn authenticate(store: &dyn Store, username: &str, password: &str) -> Result<Authenticated, StoreError> {
+pub fn authenticate(store: &Store, username: &str, password: &str) -> Result<Authenticated, StoreError> {
     let Some(canonical) = canonical_username(username) else {
         // Not a username at all, so no account can hold it. Still hashed, so the answer takes as long as a real
         // one: refusing early here would say "that name could never exist" in the timing.
@@ -291,14 +291,14 @@ pub fn authenticate(store: &dyn Store, username: &str, password: &str) -> Result
 
 /// Sign-in after its first read: verify `password` against `credential`, then read the account again and decide
 /// whether it may still sign in. The hash runs here, so a disable, revoke or reset racing sign-in lands here too.
-fn judge(store: &dyn Store, credential: LocalCredentialRecord, password: &str) -> Result<Authenticated, StoreError> {
+fn judge(store: &Store, credential: LocalCredentialRecord, password: &str) -> Result<Authenticated, StoreError> {
     // A hash this build cannot read is not a wrong password: reporting it as one would leave an operator locked
     // out with nothing in the log to say why.
     let verified = match verify_password(password, &credential.password_hash) {
         Ok(v) => v,
         Err(e) => {
             tracing::error!(
-                target: "leader.password_hash_unreadable",
+                name: "password_hash_unreadable", target: "accounts",
                 subject = %credential.user_id,
                 error = %e,
                 "a stored password hash could not be read, so its account cannot sign in"
@@ -350,7 +350,7 @@ pub enum PasswordChange {
 /// The write is conditional on the generation the check passed against, so a reset landing while the new
 /// password hashes wins rather than being overwritten by it.
 pub fn change_own_password(
-    store: &dyn Store,
+    store: &Store,
     user_id: &str,
     username: &str,
     current: &str,
@@ -394,7 +394,7 @@ fn written(result: Result<i64, AccountError>) -> Result<PasswordChange, StoreErr
 /// asking was issued by presenting that password. The account must still stand at `generation`, judged in the
 /// transaction that writes, so a reset or a disable landing while this hashed wins.
 pub fn choose_first_password(
-    store: &dyn Store,
+    store: &Store,
     user_id: &str,
     generation: i64,
     new: &str,
@@ -426,11 +426,11 @@ pub fn event_for(actor: &Actor, action: &str, target: &str, outcome: &str) -> Se
 
 /// Write one audit row on its own, for something with no durable mutation to ride along with: a sign-in, a
 /// sign-out, a refused attempt. A mutation records itself in the transaction that makes it.
-pub fn record(store: &dyn Store, actor: &Actor, action: &str, target: &str, outcome: &str) {
+pub fn record(store: &Store, actor: &Actor, action: &str, target: &str, outcome: &str) {
     let event = event_for(actor, action, target, outcome);
     if let Err(e) = store.record_security_event(&event) {
         tracing::error!(
-            target: "leader.security_event_lost",
+            name: "security_event_lost", target: "accounts",
             action, outcome, error = %e,
             "a security event could not be recorded"
         );
@@ -439,7 +439,7 @@ pub fn record(store: &dyn Store, actor: &Actor, action: &str, target: &str, outc
 
 /// [`record`] from async code: on the blocking pool, where the store is read and written, and awaited, so the row
 /// is there before the answer goes out.
-pub async fn record_async(store: std::sync::Arc<dyn Store>, actor: &Actor, action: &str, target: &str, outcome: &str) {
+pub async fn record_async(store: std::sync::Arc<Store>, actor: &Actor, action: &str, target: &str, outcome: &str) {
     let (actor, action, target, outcome) = (
         actor.clone(),
         action.to_string(),
@@ -546,7 +546,7 @@ mod tests {
 
     // -- authenticating ----------------------------------------------------
 
-    fn store_with_admin(password: &str) -> super::super::sqlite_store::SqliteStore {
+    fn store_with_admin(password: &str) -> super::super::store::Store {
         let dir = std::env::temp_dir().join(format!(
             "smeltr-auth-{}-{}",
             std::process::id(),
@@ -555,8 +555,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let store =
-            super::super::sqlite_store::SqliteStore::open(std::path::Path::new(":memory:"), &dir.join("k")).unwrap();
+        let store = super::super::store::Store::open(std::path::Path::new(":memory:"), &dir.join("k")).unwrap();
         let hash = hash_password(password).unwrap();
         store
             .bootstrap_administrator(super::super::store::NewLocalUser {

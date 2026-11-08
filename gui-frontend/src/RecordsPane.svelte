@@ -44,6 +44,7 @@
   import InlineError from './InlineError.svelte';
   import { RECOMMENDED_NAMED } from './schemas';
   import ShowAll from './ShowAll.svelte';
+  import { count } from './time';
   import {
     countStates,
     fieldAt,
@@ -80,6 +81,8 @@
     declared,
     canLock,
     onlock,
+    onsaveoutput,
+    saveinput,
     onjump,
     onassign,
     preview,
@@ -110,7 +113,13 @@
     /** The whole pipeline's types, each side. */
     declared: { before: Declared | null; after: Declared | null };
     canLock: boolean;
-    onlock: () => void;
+    /** Locks the run as a test; absent where the pipeline is read only. */
+    onlock?: () => void;
+    /** Saves the output rows on screen as a sample, by `PreviewRow.row`; absent where no sample may be saved. */
+    onsaveoutput?: (rows: Set<number>) => void;
+    /** The input's record count and its save action, given while the input is a capture not saved yet. The output's
+     * save button then opens a menu of both. */
+    saveinput?: { records: number; onsave: () => void };
     onjump: (step: Step) => void;
     /** Writes a field in an eval step; absent where the pipeline is read only. */
     onassign?: (path: string) => void;
@@ -655,6 +664,18 @@
       };
     return gridSort.apply(rows.map((_, i) => i).filter(matches), by);
   });
+
+  /** The menu of the input's and the output's saves is open. */
+  let savingOpen = $state(false);
+  /** The rows on screen that have output, by `PreviewRow.row`: a dropped row has none. */
+  let outputShown = $derived(
+    new Set(
+      gridOrder
+        .map((i) => gridRows![i])
+        .filter((r) => r.json !== null)
+        .map((r) => r.row),
+    ),
+  );
 </script>
 
 <section
@@ -762,15 +783,47 @@
           >
         {/if}
         <span class="grow"></span>
-        <Button
-          type="button"
-          class="primary"
-          data-guide="lock-test"
-          onclick={onlock}
-          disabled={!canLock ? INCOMPLETE : ''}
-        >
-          Lock this as a test
-        </Button>
+        {#if onsaveoutput && saveinput}
+          <ChipPicker kind="columns" compact bind:open={savingOpen}>
+            {#snippet face()}Save as sample <span aria-hidden="true">▾</span>{/snippet}
+            <!-- Choosing closes the menu (`ChipPicker` leaves that to its caller). -->
+            <div onclick={() => (savingOpen = false)} role="presentation">
+              <button type="button" class="pick" onclick={saveinput.onsave}
+                >Save input as sample <span class="dim"
+                  >Your capture, {count(saveinput.records, 'record')} as captured</span
+                ></button
+              >
+              <Button
+                type="button"
+                class="pick"
+                onclick={() => onsaveoutput(outputShown)}
+                disabled={outputShown.size === 0 ? INCOMPLETE : ''}
+                >Save output as sample <span class="dim"
+                  >The {count(outputShown.size, 'row')} on screen</span
+                ></Button
+              >
+            </div>
+          </ChipPicker>
+        {:else if onsaveoutput}
+          <Button
+            type="button"
+            onclick={() => onsaveoutput(outputShown)}
+            disabled={outputShown.size === 0 ? INCOMPLETE : ''}
+          >
+            Save output as sample
+          </Button>
+        {/if}
+        {#if onlock}
+          <Button
+            type="button"
+            class="primary"
+            data-guide="lock-test"
+            onclick={onlock}
+            disabled={!canLock ? INCOMPLETE : ''}
+          >
+            Lock this as a test
+          </Button>
+        {/if}
       </div>
 
       <div class="results">
@@ -804,12 +857,15 @@
                   >
                   {#each columns as path (path)}
                     {@const name = splitPath(fromRecord(path))}
-                    <th class="cell" title={fromRecord(path)} aria-sort={gridSort.aria(path)}
+                    <th
+                      class="cell ellipsis"
+                      title={fromRecord(path)}
+                      aria-sort={gridSort.aria(path)}
                       ><SortButton sort={gridSort} key={path}
                         ><span class="head-name"
                           ><span class="path-prefix">{name.prefix}</span>{name.leaf}</span
-                        >{#if view.showTypes && columnTypes.get(path)}<span class="head-type"
-                            >{': '}{columnTypes.get(path)}</span
+                        >{#if view.showTypes && columnTypes.get(path)}<span
+                            class="head-type ellipsis">{': '}{columnTypes.get(path)}</span
                           >{/if}</SortButton
                       ></th
                     >
@@ -817,14 +873,15 @@
                   {#each missingColumns as m (m.path)}
                     {@const name = splitPath(fromRecord(m.path))}
                     <th
-                      class="cell missing-head"
+                      class="cell missing-head ellipsis"
                       title="{m.schema} requires {fromRecord(m.path)}; the rows lack it"
                       ><span class="missing-name"
                         ><span class="head-name"
                           ><span aria-hidden="true">⚠&nbsp;</span><span class="path-prefix"
                             >{name.prefix}</span
                           >{name.leaf}</span
-                        >{#if view.showTypes}<span class="head-type">{': '}{m.written_as}</span
+                        >{#if view.showTypes}<span class="head-type ellipsis"
+                            >{': '}{m.written_as}</span
                           >{/if}</span
                       ></th
                     >
@@ -857,7 +914,7 @@
                     >
                     {#each columns as path (path)}
                       {@const field = fieldAt(m.before, m.after, path)}
-                      <td class="cell">
+                      <td class="cell ellipsis">
                         {#if !field}
                           <span class="dim">&mdash;</span>
                         {:else if field.state === 'removed'}
@@ -872,7 +929,7 @@
                       </td>
                     {/each}
                     {#each missingColumns as m (m.path)}
-                      <td class="cell"><span class="missing">missing</span></td>
+                      <td class="cell ellipsis"><span class="missing">missing</span></td>
                     {/each}
                   </tr>
 
@@ -1165,12 +1222,6 @@
     text-align: right;
   }
 
-  .cell {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   /* The rail marks how far the open record reaches, and stays put while the
      grid scrolls sideways under it. A record the step changed takes the
      added color, as a diff does. */
@@ -1231,11 +1282,8 @@
     margin-left: -0.25rem;
     min-width: 0;
     flex-shrink: 10;
-    overflow: hidden;
-    text-overflow: ellipsis;
     font-family: var(--mono);
     opacity: 0.7;
-    white-space: nowrap;
   }
 
   /* The nesting recedes so the eye lands on the field's own name. */

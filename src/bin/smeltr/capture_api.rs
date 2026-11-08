@@ -11,11 +11,10 @@ use axum::response::{IntoResponse, Response};
 use smeltr::config_file;
 use smeltr::leader::access::{Access, Level};
 use smeltr::leader::accounts;
-use smeltr::leader::capture::{CaptureRequest, CaptureStatus, Captures};
+use smeltr::leader::capture::{CaptureRequest, CaptureStatus, Captures, Opened};
 use smeltr::leader::envelope::{Envelope, Refusal};
 use smeltr::leader::store::Actor;
 use smeltr::leader::{AppState, blocking};
-use smeltr::worker::capture::UNCLAIMED;
 
 use crate::config_api;
 use crate::policy::Need;
@@ -40,7 +39,9 @@ pub struct StartedCapture {
 /// The source is validated exactly as saving one is, and a filter that will not compile is refused now rather than
 /// by every worker separately -- the author is here to read the error, and the workers are not.
 ///
-/// The gate let in anyone who edits somewhere; what is captured is the group's records, so it needs editor there.
+/// The gate let in anyone who views somewhere; what is captured is the group's records, so it needs viewer there.
+/// Its audit row says what the workers were asked to read ([`captured`]), so a capture of a source the group does
+/// not run is on the record.
 pub async fn start_capture(
     State(state): State<AppState>,
     Extension(access): Extension<Access>,
@@ -49,38 +50,87 @@ pub async fn start_capture(
 ) -> Response {
     let need = Need::Area {
         area: request.group.clone(),
-        level: Level::Editor,
+        level: Level::Viewer,
     };
     if !need.met_by(&access) {
         return Refusal::from(need).into_response();
     }
-    let (store, group) = (state.store.clone(), request.group.clone());
-    let response = open_capture(state, request).await.into_response();
-    // A capture reads live records out of a group, so who opened one is recorded.
+    // The commit the fleet ran when the capture opened, for a sample saved from it to record and for the audit to
+    // compare against. A leader that cannot read its history still takes the capture, and records none.
+    let (data_dir, request_read) = (state.data_dir.clone(), request.clone());
+    let (config, what) = blocking(move || {
+        let config = smeltr::leader::git::deployed(&smeltr::leader::git::repo_path(&data_dir));
+        let what = captured(&data_dir, &request_read, config.as_deref());
+        Ok::<_, String>((config, what))
+    })
+    .await
+    .unwrap_or_else(|_| (None, captured(&state.data_dir, &request, None)));
+    let store = state.store.clone();
+    let response = open_capture(state, request, actor.id.clone(), config)
+        .await
+        .into_response();
+    // A capture reads live records out of a group, so who opened one, and on what, is recorded.
     if response.status().is_success() {
-        accounts::record_async(store, &actor, "capture-start", &group, "ok").await;
+        accounts::record_async(store, &actor, "capture-start", &what, "ok").await;
     }
     response
 }
 
-async fn open_capture(state: AppState, request: CaptureRequest) -> Envelope<StartedCapture> {
+/// What a capture-start's audit row names: its group, then what its workers were asked to read. A destination, and a
+/// source the group's deployment runs unchanged, are named by id. Any other source is written out whole, its
+/// credentials by name as a bundle names them, so whoever reads the audit sees where it pointed.
+fn captured(data_dir: &std::path::Path, request: &CaptureRequest, deployed: Option<&str>) -> String {
+    let group = &request.group;
+    match (&request.destination, &request.source) {
+        (Some(destination), _) => format!("{group}: destination {destination}"),
+        (None, Some(source)) if deployed.is_some_and(|commit| runs(data_dir, commit, group, source)) => {
+            format!("{group}: source {} as deployed", source.id)
+        }
+        (None, Some(source)) => {
+            let written = serde_json::to_string(source).unwrap_or_else(|e| format!("({e})"));
+            format!("{group}: source {}, not as deployed: {written}", source.id)
+        }
+        (None, None) => group.clone(),
+    }
+}
+
+/// Whether `group`'s bundle at `commit` holds `source` exactly as the request carries it, in the group's own subtree
+/// or in `shared`.
+fn runs(data_dir: &std::path::Path, commit: &str, group: &str, source: &config_file::SourceDto) -> bool {
+    let sent = serde_json::to_value(source).ok();
+    [group, config_file::SHARED_DIR].into_iter().any(|scope| {
+        config_api::Reading::at_commit_in(data_dir, scope, commit).is_ok_and(|reading| {
+            reading
+                .raw()
+                .file
+                .sources
+                .iter()
+                .find(|s| s.id == source.id)
+                .is_some_and(|s| serde_json::to_value(s).ok() == sent)
+        })
+    })
+}
+
+/// `owner` holds the capture in place of any other they held (`Captures::open`).
+async fn open_capture(
+    state: AppState,
+    request: CaptureRequest,
+    owner: String,
+    config: Option<String>,
+) -> Envelope<StartedCapture> {
     if !takes_its_start(&request) {
         return Envelope::refused(Refusal::invalid(
             "only a Kafka or Event Hubs source's capture takes a start",
         ));
     }
-    // What the fleet ran when it opened, for a sample saved from it to record. A capture is no less worth taking for a
-    // leader that cannot read its own history, so a failed read records none.
-    let repo = smeltr::leader::git::repo_path(&state.data_dir);
-    let config = blocking(move || Ok::<_, String>(smeltr::leader::git::deployed(&repo)))
-        .await
-        .ok()
-        .flatten();
+    if let Some(why) = not_as_sent(&request) {
+        return Envelope::refused(Refusal::invalid(why));
+    }
     let source = match (&request.source, &request.destination) {
         (Some(source), None) => source.clone(),
         (None, Some(destination)) => {
             let destination = destination.clone();
-            return start_destination_capture(&state, request, &destination, config);
+            return start_destination_capture(&state, request, owner, &destination, config);
         }
         _ => return Envelope::refused(Refusal::invalid("a capture names one source or one destination")),
     };
@@ -142,23 +192,28 @@ async fn open_capture(state: AppState, request: CaptureRequest) -> Envelope<Star
     // every heartbeat that hands the invitation on, and recorded, because this is the one way a value reaches a
     // worker without a commit on `main` naming it -- the trail the deploy path leaves for free.
     let store = state.store.clone();
-    let granted = match blocking(move || lent(&*store, &one_source)).await {
+    let granted = match blocking(move || lent(&store, &one_source)).await {
         Ok(v) => v,
         Err(e) => return Envelope::refused(Refusal::internal(e)),
     };
     if !granted.is_empty() {
         let named: Vec<String> = granted.iter().map(|d| format!("{} v{}", d.name, d.version)).collect();
         tracing::info!(
-            target: "capture.secrets_granted",
+            name: "secrets_granted", target: "captures",
             subject = %session,
             group = %request.group,
             secrets = %named.join(", "),
             "a capture carries credentials to its workers"
         );
     }
-    let invitation = state
-        .captures
-        .open(session.clone(), request, expected, holding, granted, config);
+    let invitation = state.captures.open(
+        session.clone(),
+        request,
+        expected,
+        holding,
+        granted,
+        Opened { owner, config },
+    );
     Envelope::ok(StartedCapture {
         session: Some(session),
         max_matches: Some(invitation.max_matches),
@@ -173,6 +228,7 @@ async fn open_capture(state: AppState, request: CaptureRequest) -> Envelope<Star
 fn start_destination_capture(
     state: &AppState,
     request: CaptureRequest,
+    owner: String,
     destination: &str,
     config: Option<String>,
 ) -> Envelope<StartedCapture> {
@@ -188,9 +244,14 @@ fn start_destination_capture(
     }
     let (expected, holding) = waits_for(state, &request.group, None, Some(destination));
     let session = format!("{:016x}", rand_session());
-    let invitation = state
-        .captures
-        .open(session.clone(), request, expected, holding, Vec::new(), config);
+    let invitation = state.captures.open(
+        session.clone(),
+        request,
+        expected,
+        holding,
+        Vec::new(),
+        Opened { owner, config },
+    );
     Envelope::ok(StartedCapture {
         session: Some(session),
         max_matches: Some(invitation.max_matches),
@@ -202,7 +263,7 @@ fn start_destination_capture(
 /// What a capture of `one_source` lends its workers: the secrets it names, and the certificates it names at the
 /// list's newest version, as a deployment runs them. Nothing about it need be deployed.
 fn lent(
-    store: &dyn smeltr::leader::store::Store,
+    store: &smeltr::leader::store::Store,
     one_source: &config_file::FileConfig,
 ) -> Result<Vec<smeltr::heartbeat::SecretDelivery>, String> {
     let (wanted, certificates) = leader_stored_refs(one_source);
@@ -279,6 +340,43 @@ pub struct Followed {
     capture: Option<CaptureStatus>,
 }
 
+/// The capture the caller holds (`Captures::open`), if the leader still holds it and they still view its group.
+pub async fn my_capture(
+    State(state): State<AppState>,
+    Extension(access): Extension<Access>,
+    Extension(actor): Extension<Actor>,
+) -> Envelope<Followed> {
+    let capture = state
+        .captures
+        .held_by(&actor.id)
+        .filter(|session| followed(&state.captures, &access, session))
+        .and_then(|session| state.captures.status(&session));
+    Envelope::ok(Followed { capture })
+}
+
+/// A finished capture's records, as a preview runs them in place of a saved sample's, or why it cannot run them. Only
+/// whoever opened the capture previews over it, while they view its group.
+pub fn held_for_preview(
+    captures: &Captures,
+    access: &Access,
+    actor: &Actor,
+    session: &str,
+) -> Result<(Vec<smeltr::heartbeat::CaptureColumn>, Vec<smeltr::io::RecordObject>), String> {
+    let gone = || {
+        "this capture is no longer held: a newer one replaced it, or it went unused too long, or it was dropped to make \
+         room. Capture again"
+            .to_string()
+    };
+    if captures.owner(session).as_deref() != Some(actor.id.as_str()) || !followed(captures, access, session) {
+        return Err(gone());
+    }
+    let status = captures.status(session).ok_or_else(gone)?;
+    if !status.done {
+        return Err("this capture is still running. Stop it to use what it holds".to_string());
+    }
+    Ok(held_records(captures, session, &status))
+}
+
 pub async fn capture_status(
     State(state): State<AppState>,
     Extension(access): Extension<Access>,
@@ -292,13 +390,14 @@ fn status_of(captures: &Captures, access: &Access, session: &str) -> Envelope<Fo
     Followed::found(capture.flatten())
 }
 
-/// Whether `access` may follow `session`: watch, stop, discard or save it. The gate let in anyone who edits
-/// somewhere; a capture holds its group's records, so it needs editor there. A capture in a group the caller does
-/// not edit answers as an unknown id does, so the ids of other areas' captures stay invisible.
+/// Whether `access` may follow `session`: watch, stop, discard, download or save it. The gate let in anyone who views
+/// somewhere; a capture holds its group's records, so it needs viewer there, and saving it needs editor where the
+/// sample is saved. A capture in a group the caller does not view answers as an unknown id does, so the ids of
+/// other areas' captures stay invisible.
 fn followed(captures: &Captures, access: &Access, session: &str) -> bool {
     captures
         .group(session)
-        .is_some_and(|group| access.allows(&group, Level::Editor))
+        .is_some_and(|group| access.allows(&group, Level::Viewer))
 }
 
 impl Followed {
@@ -371,99 +470,6 @@ fn waits_for(
     (expected, holding)
 }
 
-/// A batch's rows as a sample stores them: each column in the record by its path, `__source` and `__destination`
-/// columns included, and the keys of an open record's unclaimed column (`UNCLAIMED`) as they were sent. A null is a
-/// field the row did not have. A failed value is its original text, and the record lists its field under
-/// `io::MISTYPED_FIELDS` (`io::take_mistyped`), so a preview of the sample fails it as the pipeline did.
-fn sample_records(batch: &smeltr::heartbeat::CaptureBatch) -> impl Iterator<Item = smeltr::io::RecordObject> + '_ {
-    batch.rows.iter().map(|row| {
-        let mut record = smeltr::io::RecordObject::new();
-        for (column, value) in batch.columns.iter().zip(&row.values) {
-            if value.is_null() {
-                continue;
-            }
-            match (column.name.as_str(), value) {
-                (UNCLAIMED, serde_json::Value::Object(keys)) => record.extend(keys.clone()),
-                _ => put_path(&mut record, &column.name, value.clone()),
-            }
-        }
-        if !row.failed.is_empty() {
-            let names = row
-                .failed
-                .iter()
-                .map(|&c| batch.columns[c].name.clone().into())
-                .collect();
-            put_path(
-                &mut record,
-                smeltr::io::MISTYPED_FIELDS,
-                serde_json::Value::Array(names),
-            );
-        }
-        record
-    })
-}
-
-/// The one set of columns a sample of `batches` holds: each column of every batch, in the order first seen, with
-/// `UNCLAIMED` in place of each key its rows hold there, a variant, as its record holds it. Batches differ where
-/// workers run different builds, or where a destination is fed by several routes; a name they type differently is a
-/// variant, which holds either.
-fn sample_columns(batches: &[smeltr::heartbeat::CaptureBatch]) -> Vec<smeltr::heartbeat::CaptureColumn> {
-    let unclaimed = |batch: &smeltr::heartbeat::CaptureBatch, at: usize| {
-        let mut keys: Vec<smeltr::heartbeat::CaptureColumn> = Vec::new();
-        for row in &batch.rows {
-            if let Some(serde_json::Value::Object(object)) = row.values.get(at) {
-                for key in object.keys().map(|k| smeltr::plan::tree::spell(k).into_owned()) {
-                    if !keys.iter().any(|c| c.name == key) {
-                        keys.push(smeltr::heartbeat::CaptureColumn {
-                            name: key,
-                            ty: "variant".to_string(),
-                        });
-                    }
-                }
-            }
-        }
-        keys
-    };
-    let each = batches.iter().flat_map(|b| {
-        b.columns
-            .iter()
-            .enumerate()
-            .flat_map(move |(at, c)| match c.name == UNCLAIMED {
-                true => unclaimed(b, at),
-                false => vec![c.clone()],
-            })
-    });
-    let mut columns: Vec<smeltr::heartbeat::CaptureColumn> = Vec::new();
-    for column in each {
-        match columns.iter_mut().find(|c| c.name == column.name) {
-            None => columns.push(column),
-            Some(seen) if seen.ty != column.ty => seen.ty = "variant".to_string(),
-            Some(_) => {}
-        }
-    }
-    columns
-}
-
-/// Set `value` at `path`, a record field's name, in `object`: under each of its keys in turn (`plan::tree::segments`),
-/// as `io::value_at` reads it back.
-fn put_path(object: &mut serde_json::Map<String, serde_json::Value>, path: &str, value: serde_json::Value) {
-    let keys: Vec<_> = smeltr::plan::tree::segments(path).collect();
-    let Some((last, parents)) = keys.split_last() else {
-        return;
-    };
-    let mut at = object;
-    for key in parents {
-        let inner = at
-            .entry(key.as_ref())
-            .or_insert_with(|| serde_json::Value::Object(Default::default()));
-        let serde_json::Value::Object(inner) = inner else {
-            return;
-        };
-        at = inner;
-    }
-    at.insert(last.to_string(), value);
-}
-
 /// The capture `session` as a save would commit it, or why it cannot be saved.
 fn savable(captures: &Captures, access: &Access, session: &str) -> Result<CaptureStatus, Refusal> {
     let status = followed(captures, access, session)
@@ -487,6 +493,53 @@ fn savable(captures: &Captures, access: &Access, session: &str) -> Result<Captur
         ));
     }
     Ok(status)
+}
+
+/// What `status`, the capture `session`, holds, as a sample of it holds it: its columns, and its records with how it
+/// was taken on each, as its `__source` fields are.
+fn held_records(
+    captures: &Captures,
+    session: &str,
+    status: &CaptureStatus,
+) -> (Vec<smeltr::heartbeat::CaptureColumn>, Vec<smeltr::io::RecordObject>) {
+    let mut columns = config_file::sample_columns(&status.batches);
+    let mut records: Vec<smeltr::io::RecordObject> =
+        status.batches.iter().flat_map(config_file::sample_records).collect();
+    for (column, value) in captures.capture_fields(session) {
+        for record in &mut records {
+            config_file::put_path(record, &column.name, value.clone());
+        }
+        columns.push(column);
+    }
+    (columns, records)
+}
+
+/// A finished capture's records as a file to keep or send on: one JSON record a line, each as a sample of it holds
+/// it. The session stays, to be saved or discarded after.
+pub async fn download_capture(
+    State(state): State<AppState>,
+    Extension(access): Extension<Access>,
+    AxPath(session): AxPath<String>,
+) -> Response {
+    let status = match savable(&state.captures, &access, &session) {
+        Ok(status) => status,
+        Err(e) => return Envelope::<()>::refused(e).into_response(),
+    };
+    let (_, records) = held_records(&state.captures, &session, &status);
+    let mut body = Vec::new();
+    for record in &records {
+        serde_json::to_writer(&mut body, record).expect("a record object serializes");
+        body.push(b'\n');
+    }
+    let disposition = format!("attachment; filename=\"capture-{session}.ndjson\"");
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "application/x-ndjson".to_string()),
+            (axum::http::header::CONTENT_DISPOSITION, disposition),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 /// Save a finished capture as a sample, and forget the session.
@@ -515,15 +568,7 @@ pub async fn save_capture(
             ));
         }
     };
-    let mut columns = sample_columns(&status.batches);
-    let mut records: Vec<smeltr::io::RecordObject> = status.batches.iter().flat_map(sample_records).collect();
-    // How it was taken, on every record as its `__source` fields are.
-    for (column, value) in state.captures.capture_fields(&session) {
-        for record in &mut records {
-            put_path(record, &column.name, value.clone());
-        }
-        columns.push(column);
-    }
+    let (columns, records) = held_records(&state.captures, &session, &status);
     let sample = config_file::SampleDto {
         id: request.sample_id(),
         name: request.name,
@@ -604,6 +649,22 @@ fn discard(captures: &Captures, access: &Access, session: &str) -> bool {
     followed(captures, access, session) && captures.close(session).is_some()
 }
 
+/// Why `request` cannot be captured as sent, where it asks to be.
+fn not_as_sent(request: &CaptureRequest) -> Option<&'static str> {
+    if !request.raw {
+        return None;
+    }
+    if !request
+        .source
+        .as_ref()
+        .is_some_and(|s| s.kind.receiver_port().is_some())
+    {
+        return Some("only a receiver is captured as sent");
+    }
+    // What it keeps arrives before there is a record for a filter to read.
+    request.filter.is_some().then_some("a capture as sent takes no filter")
+}
+
 /// Whether whatever `request` captures has a position to start from, where it names a start. Anywhere else a start
 /// would be read by nothing.
 fn takes_its_start(request: &CaptureRequest) -> bool {
@@ -611,7 +672,7 @@ fn takes_its_start(request: &CaptureRequest) -> bool {
         || request.source.as_ref().is_some_and(|s| {
             matches!(
                 s.kind,
-                config_file::SourceKindDto::Kafka { .. } | config_file::SourceKindDto::EventHubs { .. }
+                config_file::SourceKindDto::Kafka(_) | config_file::SourceKindDto::EventHubs(_)
             )
         })
 }
@@ -638,6 +699,38 @@ mod tests {
         assert!(!takes_its_start(&ask(
             serde_json::json!({"group":"g","destination":"es","start":earliest})
         )));
+    }
+
+    /// Only a receiver has bytes before records, and a filter reads a record, so a capture as sent is of a receiver and
+    /// takes no filter.
+    #[test]
+    fn only_a_receiver_is_captured_as_sent_and_without_a_filter() {
+        let ask = |json: serde_json::Value| -> CaptureRequest { serde_json::from_value(json).unwrap() };
+        let syslog = serde_json::json!({"id":"s","type":"syslogReceiver","port":1514,"allowFrom":["10.0.0.0/8"]});
+        let metrics = serde_json::json!({"id":"s","type":"metrics","bucketSeconds":5});
+
+        assert_eq!(
+            not_as_sent(&ask(serde_json::json!({"group":"g","source":syslog,"raw":true}))),
+            None
+        );
+        assert_eq!(
+            not_as_sent(&ask(serde_json::json!({"group":"g","source":metrics}))),
+            None
+        );
+        assert_eq!(
+            not_as_sent(&ask(serde_json::json!({"group":"g","source":metrics,"raw":true}))),
+            Some("only a receiver is captured as sent")
+        );
+        assert_eq!(
+            not_as_sent(&ask(serde_json::json!({"group":"g","destination":"es","raw":true}))),
+            Some("only a receiver is captured as sent")
+        );
+        assert_eq!(
+            not_as_sent(&ask(
+                serde_json::json!({"group":"g","source":syslog,"raw":true,"filter":"true"})
+            )),
+            Some("a capture as sent takes no filter")
+        );
     }
 
     /// The mechanism a leaked allocation address stood in for: many calls in a tight loop must not repeat.
@@ -717,11 +810,10 @@ mod tests {
     /// chain beside key. A name the list does not hold is left out, for the worker to refuse.
     #[test]
     fn a_capture_lends_its_certificate_at_the_newest_version() {
-        use smeltr::leader::sqlite_store::SqliteStore;
         use smeltr::leader::store::Store;
         let key = std::env::temp_dir().join(format!("smeltr-capture-lent-{}.key", std::process::id()));
         let _ = std::fs::remove_file(&key);
-        let store = SqliteStore::open(std::path::Path::new(":memory:"), &key).unwrap();
+        let store = Store::open(std::path::Path::new(":memory:"), &key).unwrap();
         store.create_certificate("cli", "", "chain-1", "key-1", None).unwrap();
         store.add_certificate_version("cli", "chain-2", "key-2", None).unwrap();
         let source = |certificate: &str| config_file::FileConfig {
@@ -754,121 +846,33 @@ mod tests {
         let _ = std::fs::remove_file(&key);
     }
 
-    /// A source batch saves as the sample records a paste would make: its fields by path in the record, its
-    /// `__source` columns under its `__source`, a field the row did not have left out, and a failed value as its
-    /// original text, its field listed under `io::MISTYPED_FIELDS`.
+    /// A capture is previewed over only by whoever opened it, once it is over, and only while they view its group.
     #[test]
-    fn a_source_batch_saves_as_sample_records() {
-        use smeltr::heartbeat::{CaptureBatch, CaptureColumn, CapturedRow};
-        let column = |name: &str, ty: &str| CaptureColumn {
-            name: name.to_string(),
-            ty: ty.to_string(),
+    fn only_its_owner_previews_over_a_finished_capture() {
+        let (captures, own, other) = payments_capture();
+        let person = |id: &str| Actor {
+            id: id.to_string(),
+            ..Actor::system()
         };
-        let batch = CaptureBatch {
-            columns: vec![
-                column("user.name", "str"),
-                column(r#"labels["a.b"]"#, "i64"),
-                column("id", "i64"),
-                column("__source.offset", "i64"),
-            ],
-            rows: vec![CapturedRow {
-                values: vec![
-                    serde_json::json!("ann"),
-                    serde_json::Value::Null,
-                    serde_json::json!("true"),
-                    serde_json::json!(7),
-                ],
-                failed: vec![2],
-                worker: Some("w1".to_string()),
-            }],
-        };
-        let saved: Vec<_> = sample_records(&batch).collect();
+        let gone = held_for_preview(&captures, &own, &person("alice"), "no-such-id").unwrap_err();
         assert_eq!(
-            serde_json::to_value(&saved).unwrap(),
-            serde_json::json!([{"user": {"name": "ann"}, "id": "true", "__source": {"offset": 7},
-                "smeltr": {"mistyped": ["id"]}}])
+            held_for_preview(&captures, &own, &person("bob"), "c1").unwrap_err(),
+            gone
         );
-        let mut one = batch.clone();
-        one.rows[0].values[1] = serde_json::json!(2);
-        let saved = sample_records(&one).next().unwrap();
         assert_eq!(
-            saved["labels"],
-            serde_json::json!({"a.b": 2}),
-            "a quoted key is one key"
+            held_for_preview(&captures, &other, &person("alice"), "c1").unwrap_err(),
+            gone
         );
+        assert!(
+            held_for_preview(&captures, &own, &person("alice"), "c1")
+                .unwrap_err()
+                .contains("still running")
+        );
+        captures.stop("c1");
+        assert!(held_for_preview(&captures, &own, &person("alice"), "c1").is_ok());
     }
 
-    /// A destination batch saves as one object per row: its fields, its `__source` and `__destination` columns, and an
-    /// open record's unclaimed keys back in it, as it was sent.
-    #[test]
-    fn a_destination_batch_saves_its_placement_in_the_record() {
-        use smeltr::heartbeat::{CaptureBatch, CaptureColumn, CapturedRow};
-        let column = |name: &str, ty: &str| CaptureColumn {
-            name: name.to_string(),
-            ty: ty.to_string(),
-        };
-        let batch = CaptureBatch {
-            columns: vec![
-                column("n", "i64"),
-                column(UNCLAIMED, "{...}"),
-                column("__source.topic", "str"),
-                column("__destination.route", "str"),
-            ],
-            rows: vec![CapturedRow {
-                values: vec![
-                    serde_json::json!(2),
-                    serde_json::json!({"extra": "x"}),
-                    serde_json::json!("t"),
-                    serde_json::json!("orders"),
-                ],
-                failed: Vec::new(),
-                worker: None,
-            }],
-        };
-        let saved: Vec<_> = sample_records(&batch).collect();
-        assert_eq!(
-            serde_json::to_value(&saved).unwrap(),
-            serde_json::json!([{"n": 2, "extra": "x", "__source": {"topic": "t"},
-                "__destination": {"route": "orders"}}])
-        );
-        assert_eq!(
-            sample_columns(&[batch])
-                .iter()
-                .map(|c| c.name.as_str())
-                .collect::<Vec<_>>(),
-            ["n", "extra", "__source.topic", "__destination.route"],
-            "each unclaimed key is a column of its own"
-        );
-    }
-
-    /// Batches of several routes save as one set of columns, unless they type one name two ways.
-    #[test]
-    fn a_sample_holds_every_batch_s_columns_once() {
-        use smeltr::heartbeat::{CaptureBatch, CaptureColumn};
-        let batch = |columns: &[(&str, &str)]| {
-            CaptureBatch::new(
-                columns
-                    .iter()
-                    .map(|(name, ty)| CaptureColumn {
-                        name: name.to_string(),
-                        ty: ty.to_string(),
-                    })
-                    .collect(),
-            )
-        };
-        let columns = sample_columns(&[
-            batch(&[("a", "i64"), ("b", "str")]),
-            batch(&[("a", "i64"), ("c", "f64")]),
-        ]);
-        assert_eq!(
-            columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
-            ["a", "b", "c"]
-        );
-        let typed_twice = sample_columns(&[batch(&[("a", "i64")]), batch(&[("a", "str")])]);
-        assert_eq!(typed_twice[0].ty, "variant", "a variant holds either");
-    }
-
-    /// A capture in "payments", and someone who edits only "search".
+    /// A capture in "payments", someone who views "payments", and someone who views only "search".
     fn payments_capture() -> (Captures, Access, Access) {
         use std::collections::BTreeMap;
         let captures = Captures::default();
@@ -883,16 +887,19 @@ mod tests {
             ["w1".to_string()].into(),
             Default::default(),
             Vec::new(),
-            None,
+            Opened {
+                owner: "alice".to_string(),
+                config: None,
+            },
         );
-        let editor = |area: &str| Access::Areas(BTreeMap::from([(area.to_string(), Level::Editor)]));
-        (captures, editor("payments"), editor("search"))
+        let viewer = |area: &str| Access::Areas(BTreeMap::from([(area.to_string(), Level::Viewer)]));
+        (captures, viewer("payments"), viewer("search"))
     }
 
-    /// Following a capture needs editor in its group. Anyone else is answered as for an id that does not exist, so
+    /// Following a capture needs viewer in its group. Anyone else is answered as for an id that does not exist, so
     /// the ids of other areas' captures stay invisible.
     #[test]
-    fn a_capture_in_a_group_the_caller_does_not_edit_answers_as_unknown() {
+    fn a_capture_in_a_group_the_caller_does_not_view_answers_as_unknown() {
         let (captures, own, other) = payments_capture();
         let unknown = status_of(&captures, &own, "no-such-id").to_json();
 
@@ -909,20 +916,87 @@ mod tests {
         );
         assert!(captures.status("c1").is_some(), "not discarded by the refused call");
 
-        let viewer = Access::Areas([("payments".to_string(), Level::Viewer)].into());
-        assert_eq!(status_of(&captures, &viewer, "c1").to_json(), unknown);
-
         assert!(status_of(&captures, &own, "c1").succeeded());
         assert!(
             savable(&captures, &own, "c1")
                 .unwrap_err()
                 .message()
                 .contains("still running"),
-            "its own group's editor reaches the save's own checks"
+            "its own group's viewer reaches the save's own checks"
         );
         assert!(stop(&captures, &own, "c1").body.capture.unwrap().stopped);
         assert!(status_of(&captures, &Access::Administrator, "c1").succeeded());
         assert!(discard(&captures, &own, "c1"));
         assert!(captures.status("c1").is_none());
+    }
+
+    fn metrics_source(bucket: u64) -> config_file::SourceDto {
+        serde_json::from_value(serde_json::json!({"id": "m", "type": "metrics", "bucketSeconds": bucket})).unwrap()
+    }
+
+    fn request_for(source: Option<config_file::SourceDto>, destination: Option<&str>) -> CaptureRequest {
+        CaptureRequest {
+            group: "payments".to_string(),
+            source,
+            destination: destination.map(str::to_string),
+            filter: None,
+            start: None,
+            raw: false,
+            max_matches: None,
+            max_bytes: None,
+            deadline_secs: None,
+        }
+    }
+
+    /// A scratch leader whose `work` branch holds `source` in "payments", and the commit that holds it.
+    fn a_repo_holding(source: &config_file::SourceDto) -> (std::path::PathBuf, String) {
+        use smeltr::leader::git;
+        let data = std::env::temp_dir().join(format!("smeltr-capture-api-{}-{}", std::process::id(), rand_session()));
+        let repo = git::repo_path(&data);
+        git::init_bare_repo(&repo).unwrap();
+        git::ensure_main_commit(&repo).unwrap();
+        let commit = config_api::Writing::open_in(&data, "work", None, "payments")
+            .unwrap()
+            .commit(
+                vec![git::FileEdit {
+                    path: "sources.json".to_string(),
+                    content: Some(serde_json::to_vec(&[source]).unwrap()),
+                }],
+                "seed",
+                &Actor::system(),
+            )
+            .expect("seeded");
+        (data, commit)
+    }
+
+    /// The audit names a capture of the deployed source by its id, and writes out whole one that differs from it, so
+    /// a capture pointed somewhere new is on the record.
+    #[test]
+    fn the_audit_says_what_a_capture_read() {
+        let deployed = metrics_source(10);
+        let (data, commit) = a_repo_holding(&deployed);
+
+        let as_deployed = request_for(Some(deployed), None);
+        assert_eq!(
+            captured(&data, &as_deployed, Some(&commit)),
+            "payments: source m as deployed"
+        );
+
+        let changed = request_for(Some(metrics_source(60)), None);
+        let written = captured(&data, &changed, Some(&commit));
+        assert!(
+            written.starts_with("payments: source m, not as deployed: {"),
+            "{written}"
+        );
+        assert!(written.contains(r#""bucketSeconds":60"#), "{written}");
+        assert_eq!(
+            captured(&data, &request_for(Some(metrics_source(10)), None), None),
+            written.replace("60", "10"),
+            "with nothing deployed, a source is written out whole"
+        );
+
+        let at = request_for(None, Some("search"));
+        assert_eq!(captured(&data, &at, Some(&commit)), "payments: destination search");
+        std::fs::remove_dir_all(&data).ok();
     }
 }

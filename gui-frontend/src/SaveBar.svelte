@@ -63,7 +63,7 @@
     {/if}
     <div class="save-bar-row">
       <span class="grow"></span>
-      <span class="writes-to">Saving to <code>{writesTo}</code></span>
+      <span class="writes-to ellipsis">Saving to <code>{writesTo}</code></span>
       <span class="dirty-flag"><span class="dot"></span>Unsaved</span>
       {#if ondiscard}
         <Button type="button" onclick={ondiscard} disabled={saving ? BUSY : ''}>Discard</Button>
@@ -131,9 +131,6 @@
     color: var(--dim);
     font-size: var(--text-note);
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .writes-to code {

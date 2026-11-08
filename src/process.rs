@@ -234,7 +234,7 @@ impl Drop for Contained {
         let _ = self.kill_tree();
         if matches!(self.reap_within(DROP_REAP), Ok(None)) {
             tracing::warn!(
-                target: "process.not_reaped",
+                name: "not_reaped", target: "processes",
                 pid = self.child.id(),
                 "a killed process tree would not confirm its exit in time and is left unreaped"
             );

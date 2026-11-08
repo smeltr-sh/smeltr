@@ -48,11 +48,11 @@
     {#snippet option(s)}
       {#if s.kind === 'term'}
         <span class="mono">{s.value}</span>
-        <span class="detail">{s.label}{s.detail ? ` · ${s.detail}` : ''}</span>
+        <span class="detail ellipsis">{s.label}{s.detail ? ` · ${s.detail}` : ''}</span>
         <span class="count">{s.count}</span>
       {:else if s.kind === 'node'}
         <span class="mono">{s.label}</span>
-        <span class="detail">{s.detail}</span>
+        <span class="detail ellipsis">{s.detail}</span>
       {:else}
         {s.label}
       {/if}
@@ -74,9 +74,6 @@
   }
 
   .detail {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
     font-size: var(--text-label);
     color: var(--dim);
   }

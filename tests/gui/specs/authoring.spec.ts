@@ -4,7 +4,7 @@
 // test is not about.
 //
 // A fresh browser edits branch `work` in the `shared` scope, which is where `api` arranges things too.
-import { test, expect, goto, type Api, type Leader } from '../fleet';
+import { test, expect, goto, signedIn, signInThroughGui, type Api, type Leader } from '../fleet';
 import type { Page } from '@playwright/test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -14,16 +14,18 @@ import { execFileSync } from 'node:child_process';
 const ON = '?branch=work';
 
 /** Captures three records in the open capture dialog and saves them as the sample `name`. */
-async function captureThree(page: Page, name: string) {
+async function captureThree(page: Page, name: string, enter = false) {
   const dialog = page.getByRole('dialog');
   await dialog.getByRole('spinbutton', { name: 'records' }).fill('3');
   await dialog.getByRole('spinbutton', { name: 'seconds' }).fill('60');
   await dialog.getByRole('button', { name: 'Start' }).click();
-  const capture = page.getByRole('dialog', { name: /Save the capture/ });
+  const capture = page.getByRole('dialog', { name: /^Captured (from|at) / });
   await expect(capture).toBeVisible({ timeout: 90_000 });
   await expect(capture.getByText(/3\s*of 3/)).toBeVisible();
   await capture.getByLabel('Save as').fill(name);
-  await capture.getByRole('button', { name: 'Save sample' }).click();
+  // Enter in the name saves, though the window's primary is Use these records.
+  if (enter) await capture.getByLabel('Save as').press('Enter');
+  else await capture.getByRole('button', { name: 'Save sample' }).click();
   await expect(capture).toBeHidden();
 }
 
@@ -142,11 +144,231 @@ test("A1: a capture from smeltr's own metrics source, read by a worker, is saved
     'source:own-metrics',
   );
   await expect(dialog.getByRole('combobox', { name: /^Worker group/ })).toHaveValue('default');
-  await captureThree(admin, 'worker counters');
+  await captureThree(admin, 'worker counters', true);
 
   const row = admin.getByRole('row', { name: /worker counters/ });
   await expect(row).toContainText('own-metrics');
   await expect(row.getByRole('cell', { name: '3', exact: true })).toBeVisible();
+});
+
+// A1, a viewer captures what a group runs, to look at and download. Saving it as a sample is an editor's, and the
+// audit says what the capture read. The capture window is the one a pipeline editor opens: kept from the map, the
+// capture is there to run a pipeline over.
+test('A1: a viewer captures a deployed source from the map and downloads it', async ({
+  api,
+  leader,
+  fleet,
+  browser,
+}) => {
+  await api.put('/api/areas/shared/sources?branch=arrive', [
+    { id: 'own-metrics', type: 'metrics', bucketSeconds: 1 },
+  ]);
+  await api.put('/api/areas/shared/pipelines/tidy?branch=arrive', {
+    id: 'tidy',
+    name: 'tidy',
+    steps: [],
+  });
+  await api.openChange('arrive', 'Read own metrics');
+  await api.deploy('arrive');
+  await fleet.startWorker(leader, api, 'default', 'w1');
+  await api.put('/api/roles/smeltr-readers', { areas: { default: 'viewer' } });
+  const made = await api.post('/api/accounts', {
+    authSource: 'local',
+    username: 'vera',
+    displayName: 'Vera Viewer',
+    roles: ['smeltr-readers'],
+  });
+  const first = await signedIn(leader, 'vera', made.temporaryPassword);
+  await first.put('/api/auth/password', { username: 'vera', newPassword: 'vera-chosen-password' });
+  await first.ctx.dispose();
+
+  const viewer = await (await browser.newContext({ ignoreHTTPSErrors: true })).newPage();
+  await viewer.goto(leader.url);
+  await signInThroughGui(viewer, 'vera', 'vera-chosen-password');
+  await expect(viewer.getByRole('button', { name: 'Sign in' })).toHaveCount(0);
+  // The map draws the source once the worker reports the rows no route takes.
+  await goto(viewer, leader, '#/map');
+  const capture = viewer.getByRole('button', { name: 'Capture', exact: true });
+  await expect(async () => {
+    await viewer.reload();
+    await viewer.locator('a.node[title="own-metrics"]').click({ timeout: 2_000 });
+    await expect(capture).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 60_000 });
+  await capture.click();
+  const form = viewer.getByRole('dialog');
+  await form.getByRole('spinbutton', { name: 'records' }).fill('3');
+  await form.getByRole('button', { name: 'Start' }).click();
+
+  const captured = viewer.getByRole('dialog', { name: 'Captured from own-metrics' });
+  await expect(captured).toBeVisible({ timeout: 60_000 });
+  await expect(captured.getByRole('link', { name: 'Download' })).toBeVisible();
+  await expect(captured.getByRole('button', { name: 'Save sample' })).toHaveCount(0);
+  await expect(captured.getByLabel('Save as')).toHaveCount(0);
+
+  const { events } = await api.get('/api/security-events');
+  expect(
+    events.map((e: { action: string; target: string }) => `${e.action} ${e.target}`),
+  ).toContain('capture-start default: source own-metrics as deployed');
+  await captured.getByRole('button', { name: 'Use these records' }).click();
+  await expect(captured).toBeHidden();
+
+  await goto(viewer, leader, '#/build/pipelines/tidy');
+  await viewer.getByRole('button', { name: 'Choose a sample' }).click();
+  await viewer.getByRole('tab', { name: /^Capture/ }).click();
+  await expect(viewer.getByRole('option', { name: /Your capture/ })).toContainText('3 records');
+  // The tab counts the held capture, and no count of sources says the list is empty.
+  await expect(viewer.getByRole('tab', { name: /^Capture/ })).toContainText('1');
+  await expect(viewer.getByText('0 of 0 sources')).toHaveCount(0);
+});
+
+// A1, a viewer: they capture a source feeding a pipeline from its editor's sample menu and run the pipeline over it,
+// unsaved; the menu offers it again after a reload.
+test('A1: a viewer runs a pipeline over a capture without saving it', async ({
+  api,
+  leader,
+  fleet,
+  browser,
+}) => {
+  await api.put('/api/areas/shared/sources?branch=arrive', [
+    { id: 'own-metrics', type: 'metrics', bucketSeconds: 1 },
+  ]);
+  await api.put('/api/areas/shared/pipelines/tidy?branch=arrive', {
+    id: 'tidy',
+    name: 'tidy',
+    steps: [],
+  });
+  await api.put('/api/areas/shared/destinations?branch=arrive', [
+    { id: 'es-a', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'a' },
+  ]);
+  await api.put('/api/areas/shared/routes?branch=arrive', [
+    {
+      id: 'r1',
+      source: 'own-metrics',
+      condition: null,
+      pipeline: 'tidy',
+      deliver: [{ to: ['es-a'] }],
+    },
+  ]);
+  await api.openChange('arrive', 'Tidy own metrics');
+  await api.deploy('arrive');
+  await fleet.startWorker(leader, api, 'default', 'w1');
+  await api.put('/api/roles/smeltr-readers', { areas: { default: 'viewer' } });
+  const made = await api.post('/api/accounts', {
+    authSource: 'local',
+    username: 'vera',
+    displayName: 'Vera Viewer',
+    roles: ['smeltr-readers'],
+  });
+  const first = await signedIn(leader, 'vera', made.temporaryPassword);
+  await first.put('/api/auth/password', { username: 'vera', newPassword: 'vera-chosen-password' });
+  await first.ctx.dispose();
+
+  const viewer = await (await browser.newContext({ ignoreHTTPSErrors: true })).newPage();
+  await viewer.addInitScript(() => localStorage.setItem('smeltr-scope', 'shared'));
+  await viewer.goto(leader.url);
+  await signInThroughGui(viewer, 'vera', 'vera-chosen-password');
+  await expect(viewer.getByRole('button', { name: 'Sign in' })).toHaveCount(0);
+  await goto(viewer, leader, '#/build/pipelines/tidy');
+
+  await viewer.getByRole('button', { name: 'Choose a sample' }).click();
+  await viewer.getByRole('tab', { name: /^Capture/ }).click();
+  await viewer.getByRole('option', { name: /own-metrics/ }).click();
+  const form = viewer.getByRole('dialog');
+  await form.getByRole('spinbutton', { name: 'records' }).fill('3');
+  await form.getByRole('button', { name: 'Start' }).click();
+  const use = viewer.getByRole('button', { name: 'Use these records' });
+  await expect(use).toBeEnabled({ timeout: 60_000 });
+  await expect(viewer.getByRole('button', { name: 'Save sample' })).toHaveCount(0);
+  await use.click();
+  await expect(viewer.getByRole('dialog')).toHaveCount(0);
+
+  const chip = viewer.getByRole('button', { name: 'Choose a sample' });
+  await expect(chip).toContainText('Your capture');
+  await expect(chip).toContainText('3 records', { timeout: 30_000 });
+  await expect(viewer.getByRole('button', { name: 'Lock this as a test' })).toHaveCount(0);
+
+  // Nothing was saved, and the leader still holds it for her after a reload.
+  expect((await api.get('/api/areas/shared/samples')).samples).toEqual([]);
+  await viewer.reload();
+  await viewer.getByRole('button', { name: 'Choose a sample' }).click();
+  await viewer.getByRole('tab', { name: /^Capture/ }).click();
+  await expect(viewer.getByRole('option', { name: /Your capture/ })).toContainText('3 records');
+});
+
+// A1, an editor: the capture that could be saved as a sample is run over unsaved instead, and nothing is committed.
+// Saved after, from the menu of the input's and the output's saves, it is the sample run over and a test may lock it.
+test('A1: an editor runs a pipeline over a capture without saving it, then saves it', async ({
+  api,
+  leader,
+  fleet,
+  admin,
+}) => {
+  await api.put('/api/areas/shared/sources?branch=arrive', [
+    { id: 'own-metrics', type: 'metrics', bucketSeconds: 1 },
+  ]);
+  await api.put('/api/areas/shared/pipelines/tidy?branch=arrive', {
+    id: 'tidy',
+    name: 'tidy',
+    steps: [],
+  });
+  await api.put('/api/areas/shared/destinations?branch=arrive', [
+    { id: 'es-a', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'a' },
+  ]);
+  await api.put('/api/areas/shared/routes?branch=arrive', [
+    {
+      id: 'r1',
+      source: 'own-metrics',
+      condition: null,
+      pipeline: 'tidy',
+      deliver: [{ to: ['es-a'] }],
+    },
+  ]);
+  await api.openChange('arrive', 'Tidy own metrics');
+  await api.deploy('arrive');
+  await fleet.startWorker(leader, api, 'default', 'w1');
+  await goto(admin, leader, '#/build/pipelines/tidy');
+
+  await admin.getByRole('button', { name: 'Choose a sample' }).click();
+  await admin.getByRole('tab', { name: /^Capture/ }).click();
+  await admin.getByRole('option', { name: /own-metrics/ }).click();
+  const form = admin.getByRole('dialog');
+  await form.getByRole('spinbutton', { name: 'records' }).fill('3');
+  await form.getByRole('button', { name: 'Start' }).click();
+  const use = admin.getByRole('button', { name: 'Use these records' });
+  await expect(use).toBeEnabled({ timeout: 60_000 });
+  await expect(admin.getByRole('button', { name: 'Save sample' })).toBeEnabled();
+  await use.click();
+  await expect(admin.getByRole('dialog')).toHaveCount(0);
+
+  const chip = admin.getByRole('button', { name: 'Choose a sample' });
+  await expect(chip).toContainText('Your capture');
+  await expect(chip).toContainText('3 records', { timeout: 30_000 });
+  expect((await api.get(`/api/areas/shared/samples${ON}`)).samples).toEqual([]);
+
+  await admin.getByRole('button', { name: 'Save as sample', exact: true }).click();
+  await expect(admin.getByRole('button', { name: /^Save output as sample/ })).toContainText(
+    'The 3 rows on screen',
+  );
+  await admin.getByRole('button', { name: /^Save input as sample/ }).click();
+  const saving = admin.getByRole('dialog');
+  await expect(saving).toContainText('3 records');
+  await saving.getByLabel('Name').fill('own metrics, captured');
+  await saving.getByRole('button', { name: 'Save sample' }).click();
+  await expect(saving).toHaveCount(0);
+
+  await expect(chip).toContainText('own metrics, captured');
+  await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeEnabled({
+    timeout: 15_000,
+  });
+  // The output's save is its own again, with no unsaved input beside it.
+  await expect(admin.getByRole('button', { name: 'Save output as sample' })).toBeVisible();
+  const [sample] = (await api.get(`/api/areas/shared/samples${ON}`)).samples;
+  expect(sample).toMatchObject({
+    name: 'own metrics, captured',
+    source: 'own-metrics',
+    records: 3,
+  });
+  expect((await api.get('/api/captures/mine')).capture).toBeUndefined();
 });
 
 // A1, a source's card: one route to one destination is a line; a second destination turns it top to bottom, a [+]
@@ -450,7 +672,7 @@ for (const [what, proposal, note] of [
   [
     'are in no format it reads',
     { read: 0, of: 3, structured: false },
-    'No format read these records, so they need a parser of your own.',
+    'No format read nearly all of these records, so they need a parser of your own.',
   ],
 ] as const) {
   test(`A1: a capture whose records ${what} says so`, async ({ admin, leader, api, fleet }) => {
@@ -601,6 +823,77 @@ test('A1: a capture of a Kafka source starts where it is asked to', async ({
   await dialog.getByRole('button', { name: 'Start', exact: true }).click();
   expect((await sent).postDataJSON().start).toEqual({ type: 'earliest' });
 });
+
+// A1, a receiver that makes no records of what its senders send: a capture as sent keeps what they wrote, before any
+// framing, from a worker that listens on the receiver's port itself, warns that it may hold secrets, and downloads.
+test('A1: a receiver is captured as sent, warned of, and downloaded', async ({
+  admin,
+  leader,
+  api,
+  fleet,
+}) => {
+  const port = await freePort();
+  await api.put(`/api/areas/shared/sources${ON}`, [
+    { id: 'firewall', type: 'syslogReceiver', port, allowFrom: ['127.0.0.1'] },
+  ]);
+  await fleet.startWorker(leader, api, 'default', 'w1');
+
+  await goto(admin, leader, '#/build');
+  await admin.getByRole('button', { name: 'Add sample' }).click();
+  const dialog = admin.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Capture' }).click();
+  await expect(dialog.getByRole('combobox', { name: /^Capture target/ })).toHaveValue(
+    'source:firewall',
+  );
+  await dialog.getByRole('button', { name: /Advanced/ }).click();
+  await dialog.getByRole('switch', { name: 'Capture as sent' }).check();
+  await expect(dialog.getByLabel(/^Keep records where/)).toBeHidden();
+  await dialog.getByLabel('records').fill('3');
+  await dialog.getByRole('button', { name: 'Start', exact: true }).click();
+
+  // What a sender wrote reaches the capture however little of it frames as syslog.
+  const capture = admin.getByRole('dialog', { name: /^Captured (from|at) / });
+  const sent = 'not syslog at all\0';
+  const deadline = Date.now() + 60_000;
+  while (!(await capture.isVisible())) {
+    expect(Date.now(), 'the capture never filled').toBeLessThan(deadline);
+    await send(port, sent).catch(() => {});
+    await admin.waitForTimeout(250);
+  }
+  await expect(capture.getByText(/3\s*of 3/)).toBeVisible();
+  await expect(capture.getByText(/may hold passwords or tokens/)).toBeVisible();
+
+  const download = capture.getByRole('link', { name: 'Download' });
+  const href = await download.getAttribute('href');
+  const lines = (await (await admin.request.get(new URL(href!, leader.url).toString())).text())
+    .trim()
+    .split('\n')
+    .map((l) => JSON.parse(l));
+  expect(lines).toHaveLength(3);
+  expect(lines[0]._raw).toBe(sent);
+  expect(lines[0].__source.remote).toBe('127.0.0.1');
+  expect(lines[0].__source.transport).toBe('tcp');
+});
+
+/** A TCP port nothing listens on. */
+async function freePort(): Promise<number> {
+  const net = await import('node:net');
+  return new Promise((resolve) => {
+    const server = net.createServer().listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as { port: number };
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+/** Write `text` to `port` on one connection, and close it. */
+async function send(port: number, text: string): Promise<void> {
+  const net = await import('node:net');
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(port, '127.0.0.1', () => socket.end(text, () => resolve()));
+    socket.on('error', reject);
+  });
+}
 
 // A1, at a destination: the same form, wherever it is opened, offers sources and destinations.
 test('A1: a capture from the pipeline page can target a destination', async ({
@@ -1482,6 +1775,75 @@ test('A6: a sample locked as a test passes, and a save that breaks it is allowed
   );
 });
 
+// A6, a pipeline's output as a sample, for another pipeline, such as an enrichment, to run over and lock a test on.
+test('A6: the output rows on screen are saved as a sample that another pipeline runs over', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await jsonPipeline(
+    api,
+    'orders',
+    [
+      { name: 'id', type: 'i64' },
+      { name: 'total', type: 'f64' },
+    ],
+    { id: 'orders-sample', name: 'orders', records: ORDERS },
+  );
+  await api.put(`/api/areas/shared/pipelines/enrich${ON}`, {
+    id: 'enrich',
+    name: 'enrich',
+    steps: [
+      { type: 'code', id: 'code-1', filter: 'true', disabled: false, body: 'enriched = true;' },
+    ],
+  });
+
+  await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
+  await admin.getByRole('combobox', { name: 'Search the output' }).fill('SPRING');
+  await expect(admin.getByText('2 of 3 rows')).toBeVisible();
+  const dialog = admin.getByRole('dialog');
+
+  // Loading the rows saves nothing, so Cancel is live while they load, and their late answer is dropped.
+  let answer = () => {};
+  const held = new Promise<void>((resolve) => (answer = resolve));
+  await admin.route('**/preview/pipeline*', async (route) => {
+    if (route.request().postDataJSON()?.as_sample) await held;
+    await route.continue();
+  });
+  await admin.getByRole('button', { name: 'Save output as sample' }).click();
+  await expect(dialog.getByRole('button', { name: 'Loading…' })).toBeDisabled();
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog).toHaveCount(0);
+  answer();
+  await admin.unrouteAll({ behavior: 'wait' });
+
+  await admin.getByRole('button', { name: 'Save output as sample' }).click();
+  await expect(dialog.getByText('2 records')).toBeVisible();
+  await dialog.getByLabel('Name').fill('orders, parsed');
+  await admin.screenshot({ path: test.info().outputPath('save-output.png'), fullPage: true });
+  await dialog.getByRole('button', { name: 'Save sample' }).click();
+  await expect(dialog).toHaveCount(0);
+
+  const listed = (await api.get(`/api/areas/shared/samples${ON}`)).samples;
+  const made = listed.find((s: { name: string }) => s.name === 'orders, parsed');
+  expect(made.records).toBe(2);
+  expect(made.source).toBeUndefined();
+  const saved = (await api.get(`/api/areas/shared/samples/${made.id}${ON}`)).sample;
+  expect(saved.columns).toContainEqual({ name: 'total', type: 'f64' });
+  expect(saved.records.map((r: { id: number }) => r.id)).toEqual([1, 3]);
+  // The fields say how the pipeline made these records from the sample: the leader writes them in place of a
+  // capture's.
+  const how = saved.records[0].__capture;
+  expect(how).toMatchObject({ pipeline: 'orders', sample: 'orders-sample' });
+
+  // Typed as the first pipeline wrote it, so `total` compares as a number.
+  await goto(admin, leader, `#/build/pipelines/enrich/for/${made.id}`);
+  await expect(admin.getByRole('button', { name: 'Choose a sample' })).toContainText('2 records');
+  await admin.getByRole('combobox', { name: 'Search the output' }).fill('total > 15');
+  await expect(admin.getByText('ƒ expression')).toBeVisible();
+  await expect(admin.getByText('1 of 2 rows')).toBeVisible();
+});
+
 // A8, bad rows go somewhere.
 test('A8: while authoring, a row that fails to parse is shown failing, with why', async ({
   admin,
@@ -2190,7 +2552,7 @@ test('A10: S2S and syslog receivers show as receivers, and a syslog receiver edi
   await admin.getByRole('combobox', { name: /^transport/ }).selectOption('udp');
   await expect(certificate).toBeHidden();
   await expect(lineBreaker).toBeHidden();
-  await expect(admin.getByRole('textbox', { name: /^request size/ })).toBeVisible();
+  await expect(admin.getByRole('textbox', { name: /^message size/ })).toBeVisible();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
 
@@ -2207,6 +2569,104 @@ test('A10: S2S and syslog receivers show as receivers, and a syslog receiver edi
   ]);
   await admin.reload();
   await expect(admin.getByRole('button', { name: /^firewalls\b/ })).toContainText(':6514/udp');
+});
+
+// A10, sources and destinations from a form.
+test('A10: a socket receiver is cut by the framing its form chooses, and over UDP by none', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await api.put(`/api/areas/shared/sources${ON}`, [
+    {
+      id: 'meters',
+      type: 'socketReceiver',
+      port: 9000,
+      allowFrom: ['10.0.0.0/8'],
+      framing: 'lengthPrefix',
+      lengthPrefix: { offset: 2, bytes: 2 },
+    },
+  ]);
+
+  await goto(admin, leader, '#/build/sources');
+  const meters = admin.getByRole('button', { name: /^meters\b/ });
+  await expect(meters).toContainText(':9000');
+  await meters.click();
+  await expect(admin.getByText('Socket receiver', { exact: true })).toBeVisible();
+  const framing = admin.getByRole('combobox', { name: /^framing/ });
+  await expect(framing).toHaveValue('lengthPrefix');
+  await expect(admin.getByRole('combobox', { name: /^length size/ })).toHaveValue('2');
+  await expect(admin.getByRole('spinbutton', { name: /^length offset/ })).toHaveValue('2');
+  await admin.getByRole('combobox', { name: /^byte order/ }).selectOption('little');
+  await admin.getByRole('combobox', { name: /^length counts/ }).selectOption('message');
+  await admin.screenshot({ path: test.info().outputPath('socket-length-prefix.png') });
+  await admin.getByRole('button', { name: 'About framing' }).click();
+  await expect(
+    admin.getByText('one record per message, each carrying its own length.'),
+  ).toBeVisible();
+  await admin.screenshot({ path: test.info().outputPath('socket-framing-help.png') });
+  await admin.keyboard.press('Escape');
+  await admin.getByRole('button', { name: 'About transport' }).click();
+  await expect(admin.getByText(/each datagram is one record, without TLS/)).toBeVisible();
+  await admin.screenshot({ path: test.info().outputPath('socket-transport-help.png') });
+  await admin.keyboard.press('Escape');
+  // Under Advanced, the connections it holds: as many as the worker allows unless tightened, with no cap per sender
+  // and no idle timeout.
+  await admin.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
+  const maxConnections = admin.getByRole('spinbutton', { name: /^max connections(?! per)/ });
+  await expect(maxConnections).toHaveValue('');
+  await expect(maxConnections).toHaveAttribute('placeholder', 'as the worker allows');
+  await maxConnections.fill('500');
+  await admin.getByRole('spinbutton', { name: /^max connections per sender/ }).fill('20');
+  const idle = admin.getByRole('spinbutton', { name: /^idle timeout seconds/ });
+  await idle.fill('600');
+  await idle.scrollIntoViewIfNeeded();
+  await admin.screenshot({ path: test.info().outputPath('socket-connection-limits.png') });
+  for (const field of ['max connections', 'max connections per sender', 'idle timeout seconds']) {
+    await admin.getByRole('button', { name: `About ${field}`, exact: true }).click();
+    await admin.screenshot({
+      path: test.info().outputPath(`socket-${field.replaceAll(' ', '-')}-help.png`),
+    });
+    await admin.keyboard.press('Escape');
+  }
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
+  let saved = await api.get(`/api/areas/shared${ON}`);
+  expect(saved.config.sources).toEqual([
+    {
+      id: 'meters',
+      type: 'socketReceiver',
+      port: 9000,
+      allowFrom: ['10.0.0.0/8'],
+      framing: 'lengthPrefix',
+      lengthPrefix: { offset: 2, bytes: 2, order: 'little', counts: 'message' },
+      maxConnections: 500,
+      maxConnectionsPerSender: 20,
+      idleTimeoutSecs: 600,
+    },
+  ]);
+
+  // A fixed size drops the length prefix, and UDP drops any framing with the certificate and the connection limits.
+  await framing.selectOption('fixed');
+  await expect(admin.getByRole('combobox', { name: /^length size/ })).toBeHidden();
+  await admin.getByRole('spinbutton', { name: /^record size/ }).fill('16');
+  await admin.screenshot({ path: test.info().outputPath('socket-fixed.png') });
+  await admin.getByRole('combobox', { name: /^transport/ }).selectOption('udp');
+  await expect(framing).toBeHidden();
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
+  saved = await api.get(`/api/areas/shared${ON}`);
+  expect(saved.config.sources).toEqual([
+    {
+      id: 'meters',
+      type: 'socketReceiver',
+      port: 9000,
+      allowFrom: ['10.0.0.0/8'],
+      transport: 'udp',
+    },
+  ]);
+  await admin.reload();
+  await expect(admin.getByRole('button', { name: /^meters\b/ })).toContainText(':9000/udp');
 });
 
 // A10, sources and destinations from a form.
@@ -2893,6 +3353,66 @@ test('A10: a Prometheus remote_write destination is added from its form, its Aut
   );
 });
 
+// A10, sources and destinations from a form. An OTLP destination takes the HTTP form's URL, headers and
+// credentials, and sends one signal to that signal's path after the url.
+test('A10: an OTLP destination is added from its form, sending spans gzipped, its Authorization as a credential', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await api.post('/api/secrets', {
+    name: 'otlp-token',
+    custody: 'leader-stored',
+    description: "the collector's bearer token",
+    value: 'Bearer abc',
+  });
+
+  await goto(admin, leader, '#/build/destinations');
+  await expect(admin.getByRole('heading', { name: 'Destinations' })).toBeVisible();
+  await admin.getByRole('button', { name: '+ Add destination' }).click();
+  const dialog = admin.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'OTLP', exact: true }).click();
+  await expect(dialog.getByRole('heading', { name: 'new OTLP destination' })).toBeVisible();
+  await dialog.getByRole('textbox', { name: /^id/ }).fill('otel-out');
+  await dialog
+    .getByRole('textbox', { name: /^url/ })
+    .fill('https://otel-collector.example.com:4318');
+  await expect(dialog.getByRole('combobox', { name: /^format/ })).toHaveCount(0);
+  await dialog.getByRole('combobox', { name: /^signal/ }).selectOption('traces');
+
+  await dialog.getByRole('button', { name: '+ credential' }).click();
+  await dialog.getByRole('textbox', { name: 'header name' }).last().fill('Authorization');
+  await dialog
+    .getByRole('combobox', { name: /source$/ })
+    .last()
+    .selectOption('otlp-token');
+  await dialog.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
+  await dialog.getByRole('combobox', { name: /^compression/ }).selectOption('gzip');
+  await expect(dialog.getByRole('spinbutton', { name: /^starting concurrency/ })).toBeVisible();
+  await dialog.screenshot({ path: test.info().outputPath('otlp-destination-form.png') });
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
+
+  const saved = await api.get(`/api/areas/shared${ON}`);
+  expect(saved.config.destinations).toEqual([
+    {
+      id: 'otel-out',
+      type: 'otlp',
+      url: 'https://otel-collector.example.com:4318',
+      signal: 'traces',
+      compression: 'gzip',
+      credentials: { Authorization: { secret: 'otlp-token', version: 1 } },
+    },
+  ]);
+
+  await admin.reload();
+  await expect(admin.getByRole('button', { name: /^otel-out\b/ })).toContainText(
+    'otel-collector.example.com',
+  );
+});
+
 // A10, sources and destinations from a form. A Log Analytics workspace takes rows through a data collection rule,
 // signed in with Entra as Event Hubs is, less the connection string.
 test('A10: a Log Analytics workspace destination is added from its form, signed in as a service principal', async ({
@@ -3138,6 +3658,28 @@ test('A10: the Sources page names the worker that holds a listing source', async
   await expect(row).toContainText(/held by w1, last heard \d+s ago/, { timeout: 60_000 });
 });
 
+// A10, a logs source's level. Trace would feed its own reading back into it, so the form never offers it, and a
+// source a file sets to trace shows the debug it reads.
+test('A10: a logs source never offers trace, and one set to trace shows debug', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await api.put(`/api/areas/shared/sources${ON}`, [
+    { id: 'own-logs', type: 'logs', minLevel: 'trace' },
+  ]);
+  await goto(admin, leader, '#/build/sources');
+  const row = admin.getByRole('button', { name: /^own-logs\b/ });
+  await expect(row).toContainText('debug and above');
+  await row.click();
+  const level = admin.getByRole('combobox', { name: /^min level/ });
+  await expect(level).toHaveValue('debug');
+  await expect(level.locator('option')).toHaveText(['error', 'warn', 'info', 'debug']);
+  await admin.getByRole('button', { name: 'About min level' }).click();
+  await expect(admin.getByText('never reads trace')).toBeVisible();
+  await admin.screenshot({ path: test.info().outputPath('logs-min-level.png'), fullPage: true });
+});
+
 test('A6: the lock page shows five rows a side, and a button shows the rest', async ({
   admin,
   api,
@@ -3232,7 +3774,7 @@ test('A1: a capture shows eight records, and a button shows the rest', async ({
   await dialog.getByRole('spinbutton', { name: 'seconds' }).fill('60');
   await dialog.getByRole('button', { name: 'Start' }).click();
 
-  const capture = admin.getByRole('dialog', { name: /Save the capture/ });
+  const capture = admin.getByRole('dialog', { name: /^Captured (from|at) / });
   await expect(capture).toBeVisible({ timeout: 90_000 });
   const more = capture.getByRole('button', { name: '4 more records' });
   await expect(more).toBeVisible();

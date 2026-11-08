@@ -12,7 +12,7 @@
 //! durable for the same reason `latest_state` is: a fact that began before a restart must keep its true start.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use crate::heartbeat::{MetricValueDto, ThreadHeartbeat, ThreadKind};
@@ -137,6 +137,19 @@ impl FactKey {
             subject: subject.into(),
         }
     }
+
+    /// The issue this fact is, as its log line names it.
+    pub fn logged(&self) -> super::warnings::LoggedIssue<'_> {
+        super::warnings::logged_issue(&self.entry, &self.subject)
+    }
+}
+
+/// What a worker last said of the authorities it would accept, and when.
+struct Reported {
+    held: Vec<String>,
+    /// Whether the worker accepts authorities from this leader at all.
+    takes: bool,
+    at_ms: i64,
 }
 
 pub struct Registry {
@@ -147,7 +160,7 @@ pub struct Registry {
     /// thread at all, and that is exactly the worker a rotation must not sign away from. In memory only -- a
     /// leader restarted mid-rotation waits for the fleet to say it again, which is one heartbeat interval and is
     /// the more current answer in any case.
-    authorities: Mutex<HashMap<String, (Vec<String>, bool)>>,
+    authorities: Mutex<HashMap<String, Reported>>,
     /// When each currently-true catalog fact was first observed, in epoch milliseconds. See [`Registry::observe_facts`].
     fact_clock: Mutex<HashMap<FactKey, i64>>,
     /// The durable mirror refusing heartbeats, and refusing logs: each said once per change and then on the
@@ -162,6 +175,10 @@ pub struct Registry {
     /// When the next look for progress no deployed source reads is due, in epoch milliseconds
     /// (`leader::prune_source_progress`).
     next_prune_ms: std::sync::atomic::AtomicI64,
+    /// When the housekeeping next looks at every issue, in epoch milliseconds (`leader::catalog`).
+    next_issue_look_ms: std::sync::atomic::AtomicI64,
+    /// The newest time the fact clock was observed at, in epoch milliseconds (`Registry::observe_facts`).
+    observed_ms: std::sync::atomic::AtomicI64,
     /// When this registry began taking heartbeats: when this leader started.
     started: Instant,
     /// Who reads each single-worker source, settled on every beat.
@@ -179,6 +196,8 @@ impl Default for Registry {
             store: None,
             next_sweep_ms: Default::default(),
             next_prune_ms: Default::default(),
+            next_issue_look_ms: Default::default(),
+            observed_ms: Default::default(),
             started: Instant::now(),
             holds: Default::default(),
         }
@@ -186,9 +205,21 @@ impl Default for Registry {
 }
 
 impl Registry {
+    /// Locks every thread's last report and returns it, even if a panic poisoned the mutex. A panic mid-update
+    /// leaves part of one heartbeat applied, and that worker's next heartbeat replaces it.
+    fn threads(&self) -> MutexGuard<'_, HashMap<(String, String), ThreadState>> {
+        self.threads.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Locks the authority each worker last reported and returns it, even if a panic poisoned the mutex, for the
+    /// same reason.
+    fn authorities(&self) -> MutexGuard<'_, HashMap<String, Reported>> {
+        self.authorities.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Opens (or creates) the registry's own database at `path` and rebuilds in-memory state from what is durable
     /// there: every thread's last report, and every fact's true start time -- so a restart no longer resets either.
-    /// `path` is the caller's to choose, the way `sqlite_store::SqliteStore::open` already leaves `leader.db`'s
+    /// `path` is the caller's to choose, the way `store::Store::open` already leaves `leader.db`'s
     /// path to its caller; a sibling of that file (`registry.db`) rather than a table inside it is the point (see
     /// `series` module docs).
     pub fn open(path: &std::path::Path) -> Result<Registry, StoreError> {
@@ -232,7 +263,7 @@ impl Registry {
         }
         if unreadable.0 > 0 {
             tracing::warn!(
-                target: "registry.latest_state_unreadable",
+                name: "latest_state_unreadable", target: "heartbeats",
                 rows = unreadable.0,
                 first = %unreadable.1,
                 "saved worker status rows could not be read, so they are dropped"
@@ -253,6 +284,8 @@ impl Registry {
             store: Some(Arc::new(store)),
             next_sweep_ms: Default::default(),
             next_prune_ms: Default::default(),
+            next_issue_look_ms: Default::default(),
+            observed_ms: Default::default(),
             started: Instant::now(),
             holds: Default::default(),
         })
@@ -311,7 +344,7 @@ impl Registry {
             ),
             None => Ok(()),
         };
-        let mut threads = self.threads.lock().unwrap();
+        let mut threads = self.threads();
         let last_seen = Instant::now();
         if stopping {
             threads.retain(|(w, _), _| w != worker_id);
@@ -347,21 +380,18 @@ impl Registry {
             && let Err(e) = store.forget_worker(worker_id)
         {
             tracing::warn!(
-                target: "registry.worker_not_forgotten",
+                name: "not_forgotten", target: "heartbeats",
                 subject = %worker_id,
                 error = %e,
                 "a forgotten worker's rows could not be dropped from disk, so they come back at the next restart"
             );
         }
-        self.threads
-            .lock()
-            .unwrap()
-            .retain(|(worker, _), _| worker != worker_id);
-        self.authorities.lock().unwrap().remove(worker_id);
+        self.threads().retain(|(worker, _), _| worker != worker_id);
+        self.authorities().remove(worker_id);
     }
 
     /// Whether a look for gone ephemeral workers is due at `now_ms`, and if so, that the next is `every` later.
-    /// Asked on every heartbeat and every read of the fleet; true for one caller per `every`.
+    /// Asked on every housekeeping tick; true for one caller per `every`.
     pub fn sweep_due(&self, now_ms: i64, every: Duration) -> bool {
         due(&self.next_sweep_ms, now_ms, every)
     }
@@ -371,31 +401,39 @@ impl Registry {
         due(&self.next_prune_ms, now_ms, every)
     }
 
+    /// Whether the housekeeping's look at every issue is due at `now_ms`, as [`Registry::sweep_due`].
+    pub fn issue_look_due(&self, now_ms: i64, every: Duration) -> bool {
+        due(&self.next_issue_look_ms, now_ms, every)
+    }
+
     /// Records which authorities a worker would accept, as it just reported them, and whether it takes one from
     /// this leader at all.
     pub fn record_authority(&self, worker_id: &str, fingerprints: Vec<String>, takes_authority: bool) {
-        self.authorities
-            .lock()
-            .unwrap()
-            .insert(worker_id.to_string(), (fingerprints, takes_authority));
+        self.authorities().insert(
+            worker_id.to_string(),
+            Reported {
+                held: fingerprints,
+                takes: takes_authority,
+                at_ms: super::warnings::now_millis(),
+            },
+        );
     }
 
     /// The workers that verify this leader by an authority their operator gave them, and so take none it hands
     /// out. A rotation reaches them through their operator or not at all.
     pub fn not_taking_authority(&self) -> Vec<String> {
         let mut names: Vec<String> = self
-            .authorities
-            .lock()
-            .unwrap()
+            .authorities()
             .iter()
-            .filter(|(_, (_, takes))| !takes)
+            .filter(|(_, reported)| !reported.takes)
             .map(|(worker, _)| worker.clone())
             .collect();
         names.sort();
         names
     }
 
-    /// What each of `expected` would verify this leader by, one entry per worker.
+    /// The roots each of `expected` would use to verify this leader, one entry per worker, as reported at or after
+    /// `since_ms`.
     ///
     /// The question a rotation asks: signing under a root any of these lists lacks strands that worker. A worker
     /// in `expected` that has said nothing holds nothing, which is never ready -- how long to wait for one that is
@@ -407,19 +445,25 @@ impl Registry {
     /// A worker that takes no authority from this leader is left out: it can never hold what this leader hands
     /// out, so waiting on it is waiting for the deadline. [`Self::not_taking_authority`] names it to the operator
     /// instead, whose job the incoming root is.
-    pub fn authorities_held(&self, expected: &HashSet<String>) -> Vec<Vec<String>> {
-        self.holders(expected).into_iter().map(|(_, held)| held).collect()
+    ///
+    /// A rotation passes its start as `since_ms`. A report from before it can list a root the worker has since
+    /// dropped, as when it has just switched away from one, so it counts as nothing held.
+    pub fn authorities_held(&self, expected: &HashSet<String>, since_ms: i64) -> Vec<Vec<String>> {
+        self.holders(expected, since_ms)
+            .into_iter()
+            .map(|(_, held)| held)
+            .collect()
     }
 
     /// [`Self::authorities_held`], each list beside the worker it is for, in id order.
-    pub fn holders(&self, expected: &HashSet<String>) -> Vec<(String, Vec<String>)> {
-        let held = self.authorities.lock().unwrap();
+    pub fn holders(&self, expected: &HashSet<String>, since_ms: i64) -> Vec<(String, Vec<String>)> {
+        let held = self.authorities();
         let mut holders: Vec<(String, Vec<String>)> = expected
             .iter()
             .filter_map(|worker| match held.get(worker) {
-                Some((_, false)) => None,
-                Some((held, true)) => Some((worker.clone(), held.clone())),
-                None => Some((worker.clone(), Vec::new())),
+                Some(reported) if !reported.takes => None,
+                Some(reported) if reported.at_ms >= since_ms => Some((worker.clone(), reported.held.clone())),
+                _ => Some((worker.clone(), Vec::new())),
             })
             .collect();
         holders.sort();
@@ -431,14 +475,14 @@ impl Registry {
     /// Beside the enrolled roster rather than instead of it: a worker heartbeating is evidence the roster cannot
     /// contradict, and one enrolled but never heard from is exactly the worker a rotation must not sign away from.
     pub fn known_workers(&self) -> HashSet<String> {
-        let mut known: HashSet<String> = self.authorities.lock().unwrap().keys().cloned().collect();
-        known.extend(self.threads.lock().unwrap().keys().map(|(worker, _)| worker.clone()));
+        let mut known: HashSet<String> = self.authorities().keys().cloned().collect();
+        known.extend(self.threads().keys().map(|(worker, _)| worker.clone()));
         known
     }
 
     /// Whether `worker_id` has heartbeated within `within` without saying it was stopping.
     pub fn heartbeating(&self, worker_id: &str, within: std::time::Duration) -> bool {
-        self.threads.lock().unwrap().iter().any(|((worker, _), s)| {
+        self.threads().iter().any(|((worker, _), s)| {
             worker == worker_id && s.worker.stopped_at_ms.is_none() && s.last_seen.elapsed() <= within
         })
     }
@@ -449,9 +493,7 @@ impl Registry {
     /// the window is not expected -- it may be gone -- and one that enrolls later is not either; the capture's
     /// deadline is what covers both.
     pub fn workers_in(&self, group: &str, within: std::time::Duration) -> HashSet<String> {
-        self.threads
-            .lock()
-            .unwrap()
+        self.threads()
             .iter()
             .filter(|((_, _), s)| s.report.group_id == group && s.last_seen.elapsed() <= within)
             .map(|((worker_id, _), _)| worker_id.clone())
@@ -460,7 +502,7 @@ impl Registry {
 
     /// Every thread the leader has heard from.
     pub fn snapshot(&self) -> Vec<ThreadHealth> {
-        let map = self.threads.lock().unwrap();
+        let map = self.threads();
         // One clock reading for every row, so the threads of one heartbeat report one age.
         let now = Instant::now();
         map.iter()
@@ -499,7 +541,7 @@ impl Registry {
                     failing.fail(e.to_string());
                     if let Some(error) = failing.due() {
                         tracing::warn!(
-                            target: "registry.logs_not_persisted",
+                            name: "logs_not_persisted", target: "heartbeats",
                             subject = %worker_id,
                             events = events.len(),
                             error,
@@ -510,7 +552,7 @@ impl Registry {
                 }
                 Ok(()) => {
                     if failing.clear() {
-                        tracing::info!(target: "registry.logs_persisted_again", "the fleet's logs are being persisted again");
+                        tracing::info!(name: "logs_persisted_again", target: "heartbeats", "the fleet's logs are being persisted again");
                     }
                 }
             }
@@ -520,8 +562,21 @@ impl Registry {
     /// Every fact the clock holds for one catalog entry: what a caller that cannot yet say whether those facts still
     /// hold passes back to [`Registry::observe_facts`], so their start times are kept rather than forgotten.
     pub fn facts_of(&self, entry: &str) -> Vec<FactKey> {
-        let clock = self.fact_clock.lock().unwrap();
+        let clock = self.fact_clock.lock().unwrap_or_else(|e| e.into_inner());
         clock.keys().filter(|k| k.entry == entry).cloned().collect()
+    }
+
+    /// When each of `keys` began, as [`Registry::observe_facts`] would answer at `now_ms` without changing the
+    /// clock: the start it holds, or `now_ms` for a key it has not seen. What a caller reads while it is still
+    /// working out the rest of what is active, before it observes the whole of it.
+    pub fn starts_of(&self, keys: &HashSet<FactKey>, now_ms: i64) -> HashMap<FactKey, i64> {
+        let clock = self
+            .fact_clock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        keys.iter()
+            .map(|k| (k.clone(), clock.get(k).copied().unwrap_or(now_ms)))
+            .collect()
     }
 
     /// Reconcile the fact clock against `active`, everything a catalog entry currently reads as true. A key seen
@@ -534,7 +589,18 @@ impl Registry {
     /// this runs, and nothing else ticks this clock (design doc, Control plane: "recomputed ... on every
     /// heartbeat").
     pub fn observe_facts(&self, active: &HashSet<FactKey>, now_ms: i64) -> HashMap<FactKey, i64> {
-        let mut clock = self.fact_clock.lock().unwrap();
+        let mut clock = self
+            .fact_clock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Catalogs run side by side; one that lost the race to the lock is older than the clock, and applying it
+        // would clear and begin again whatever the newer one saw.
+        if self.observed_ms.fetch_max(now_ms, std::sync::atomic::Ordering::Relaxed) > now_ms {
+            return active
+                .iter()
+                .map(|k| (k.clone(), clock.get(k).copied().unwrap_or(now_ms)))
+                .collect();
+        }
         let removed: Vec<(FactKey, i64)> = clock
             .iter()
             .filter(|(k, _)| !active.contains(k))
@@ -552,9 +618,9 @@ impl Registry {
         // the Issues page no longer shows it. `issue` marks the line as an issue's own, which the catalog's
         // "worker logged warnings" entry leaves out (`warnings::recent_logs`): it would be the same issue twice.
         for k in &inserted {
-            let it = super::warnings::logged_issue(&k.entry, &k.subject);
+            let it = k.logged();
             tracing::warn!(
-                target: "issues.began",
+                name: "began", target: "status",
                 issue = it.issue,
                 group = it.group,
                 subject = it.subject,
@@ -563,13 +629,14 @@ impl Registry {
             );
         }
         for (k, start) in &removed {
-            let it = super::warnings::logged_issue(&k.entry, &k.subject);
+            let it = k.logged();
             tracing::info!(
-                target: "issues.cleared",
+                name: "cleared", target: "status",
                 issue = it.issue,
                 group = it.group,
                 subject = it.subject,
                 commit = it.commit,
+                began_ms = *start,
                 held_secs = (now_ms - start).max(0) / 1000,
                 "an issue cleared"
             );
@@ -579,7 +646,7 @@ impl Registry {
             let inserted: Vec<(String, String)> = inserted.into_iter().map(|k| (k.entry, k.subject)).collect();
             if let Err(e) = store.sync_fact_clock(&removed, &inserted, now_ms) {
                 tracing::warn!(
-                    target: "registry.fact_clock_not_persisted",
+                    name: "fact_clock_not_persisted", target: "heartbeats",
                     error = %e,
                     "could not persist the fact clock, so first-seen times restart from this moment"
                 );
@@ -673,7 +740,7 @@ fn persist_heartbeat(
             // restart, not a reason to lose the window's counts.
             Err(e) => {
                 tracing::warn!(
-                    target: "registry.heartbeat_not_encoded",
+                    name: "not_encoded", target: "heartbeats",
                     subject = %worker_id,
                     thread_id = %report.thread_id,
                     error = %e,
@@ -709,7 +776,7 @@ fn persist_heartbeat(
             failing.fail(e.to_string());
             if let Some(error) = failing.due() {
                 tracing::warn!(
-                    target: "registry.heartbeat_not_persisted",
+                    name: "not_persisted", target: "heartbeats",
                     subject = %worker_id,
                     threads = threads.len(),
                     points = points.len(),
@@ -723,7 +790,7 @@ fn persist_heartbeat(
         }
         Ok(()) => {
             if failing.clear() {
-                tracing::info!(target: "registry.heartbeats_persisted_again", "heartbeats are being mirrored to disk again");
+                tracing::info!(name: "persisted_again", target: "heartbeats", "heartbeats are being mirrored to disk again");
             }
         }
     }
@@ -810,7 +877,7 @@ mod tests {
         // Only one of them has said what it holds this run.
         r.record_authority("w1", vec!["incoming".to_string()], true);
 
-        let held = r.authorities_held(&r.known_workers());
+        let held = r.authorities_held(&r.known_workers(), 0);
         assert_eq!(
             held.len(),
             2,
@@ -828,7 +895,7 @@ mod tests {
         let r = Registry::default();
         r.record_authority("idle", vec!["incoming".to_string()], true);
         assert_eq!(
-            r.authorities_held(&r.known_workers()),
+            r.authorities_held(&r.known_workers(), 0),
             vec![vec!["incoming".to_string()]]
         );
     }
@@ -841,7 +908,7 @@ mod tests {
         r.record_authority("follows", vec!["incoming".to_string()], true);
         r.record_authority("theirs", vec!["operators-root".to_string()], false);
         let expected = HashSet::from(["follows".to_string(), "theirs".to_string()]);
-        assert_eq!(r.authorities_held(&expected), vec![vec!["incoming".to_string()]]);
+        assert_eq!(r.authorities_held(&expected, 0), vec![vec!["incoming".to_string()]]);
         assert_eq!(r.not_taking_authority(), vec!["theirs".to_string()]);
     }
 
@@ -852,7 +919,7 @@ mod tests {
         let r = Registry::default();
         r.record_authority("spoke", vec!["incoming".to_string()], true);
         let expected = HashSet::from(["spoke".to_string(), "enrolled-and-silent".to_string()]);
-        let held = r.authorities_held(&expected);
+        let held = r.authorities_held(&expected, 0);
         assert_eq!(held.len(), 2);
         assert!(
             held.iter().any(Vec::is_empty),
@@ -874,11 +941,23 @@ mod tests {
         .unwrap();
         r.record_authority("gone", vec!["outgoing".to_string()], true);
         // Expected is the caller's answer, and a revoked worker is not in it.
-        assert!(r.authorities_held(&HashSet::new()).is_empty());
+        assert!(r.authorities_held(&HashSet::new(), 0).is_empty());
     }
 
-    /// Quiet is not gone. However long ago a worker said what it holds, it still holds it: how long a rotation
-    /// waits on a quiet worker is the operator's deadline, and nothing here ages it out first.
+    /// A report from before a rotation began can name a root the worker has since dropped.
+    #[test]
+    fn a_report_from_before_a_rotation_holds_nothing_for_it() {
+        let r = Registry::default();
+        r.record_authority("w1", vec!["incoming".to_string()], true);
+        let later = super::super::warnings::now_millis() + 1;
+        assert_eq!(
+            r.authorities_held(&r.known_workers(), later),
+            vec![Vec::<String>::new()]
+        );
+    }
+
+    /// Quiet is not gone. However long ago in the rotation a worker said what it holds, it still holds it: how long
+    /// a rotation waits on a quiet worker is the operator's deadline, and nothing here ages it out first.
     #[test]
     fn a_worker_that_has_merely_gone_quiet_is_still_waited_for() {
         let r = Registry::default();
@@ -903,7 +982,7 @@ mod tests {
         }
 
         assert_eq!(
-            r.authorities_held(&r.known_workers()),
+            r.authorities_held(&r.known_workers(), 0),
             vec![vec!["outgoing".to_string()]]
         );
     }
@@ -1034,6 +1113,20 @@ mod tests {
     }
 
     #[test]
+    fn an_observation_older_than_the_clock_changes_nothing() {
+        let r = Registry::default();
+        let key = FactKey::new("source_blocked", "7");
+        r.observe_facts(&HashSet::from([key.clone()]), 2_000);
+        // A catalog that read the fleet before the one above, and reached the clock after it.
+        r.observe_facts(&HashSet::new(), 1_000);
+        let starts = r.observe_facts(&HashSet::from([key.clone()]), 3_000);
+        assert_eq!(
+            starts[&key], 2_000,
+            "the stale look neither cleared it nor began it again"
+        );
+    }
+
+    #[test]
     fn an_issue_is_logged_when_it_begins_and_when_it_clears() {
         let r = Registry::default();
         let key = FactKey::new("source_blocked", r#"["prod","syslog"]"#);
@@ -1043,8 +1136,11 @@ mod tests {
             r.observe_facts(&HashSet::from([key.clone()]), 2_000);
         });
         assert_eq!(began.len(), 1, "{began:?}");
-        let (level, site, fields) = &began[0];
-        assert_eq!((*level, site.as_str()), (tracing::Level::WARN, "issues.began"));
+        let (level, class, kind, fields) = &began[0];
+        assert_eq!(
+            (*level, class.as_str(), kind.as_str()),
+            (tracing::Level::WARN, "status", "began")
+        );
         let field = |k: &str| fields.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         assert_eq!(field("issue"), Some("sourceBlocked"));
         assert_eq!(field("group"), Some("prod"));
@@ -1055,8 +1151,11 @@ mod tests {
             r.observe_facts(&HashSet::new(), 61_000);
         });
         assert_eq!(cleared.len(), 1, "{cleared:?}");
-        let (level, site, fields) = &cleared[0];
-        assert_eq!((*level, site.as_str()), (tracing::Level::INFO, "issues.cleared"));
+        let (level, class, kind, fields) = &cleared[0];
+        assert_eq!(
+            (*level, class.as_str(), kind.as_str()),
+            (tracing::Level::INFO, "status", "cleared")
+        );
         let field = |k: &str| fields.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         assert_eq!(field("held_secs"), Some("60"));
         assert_eq!(field("message"), Some("an issue cleared"));

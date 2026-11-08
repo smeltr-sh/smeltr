@@ -284,8 +284,12 @@ impl<'a> Lexer<'a> {
             self.pos += 1;
         }
 
+        // A value is never a name, so `true.toString()` calls a method on the value `true`. Other keywords stay names
+        // before a dot: `return.code` is a field.
+        let value = matches!(&self.text[start..self.pos], "true" | "false" | "null");
         // The chain continues only when an identifier follows the dot.
-        while self.peek() == Some(b'.')
+        while !value
+            && self.peek() == Some(b'.')
             && self
                 .peek_at(1)
                 .is_some_and(|c| c.is_ascii_alphabetic() || c == b'_' || c == b'$')
@@ -370,6 +374,7 @@ impl<'a> Lexer<'a> {
         let text = self.text[start..self.pos].replace('_', "");
         if is_float {
             match text.parse::<f64>() {
+                Ok(v) if !v.is_finite() => Err(self.err(start, format!("`{text}` is too large for a float"))),
                 Ok(v) => Ok(self.emit(Token::Float(v), start, true)),
                 Err(e) => Err(self.err(start, format!("bad float literal: {e}"))),
             }
@@ -378,6 +383,7 @@ impl<'a> Lexer<'a> {
                 Ok(v) => Ok(self.emit(Token::Int(v), start, true)),
                 // An integer too large for i64 becomes a float.
                 Err(_) => match text.parse::<f64>() {
+                    Ok(v) if !v.is_finite() => Err(self.err(start, format!("`{text}` is too large for a float"))),
                     Ok(v) => Ok(self.emit(Token::Float(v), start, true)),
                     Err(e) => Err(self.err(start, format!("bad number: {e}"))),
                 },
@@ -453,6 +459,10 @@ impl<'a> Lexer<'a> {
                     b'n' => lit.push('\n'),
                     b't' => lit.push('\t'),
                     b'r' => lit.push('\r'),
+                    b'0' => lit.push('\0'),
+                    b'u' => lit.push(self.lex_unicode_escape(start)?),
+                    b'\'' => lit.push('\''),
+                    b'"' => lit.push('"'),
                     b'`' => lit.push('`'),
                     b'$' => lit.push('$'),
                     b'\\' => lit.push('\\'),
@@ -512,46 +522,46 @@ impl<'a> Lexer<'a> {
                 b'\\' => out.push('\\'),
                 b'\'' => out.push('\''),
                 b'"' => out.push('"'),
-                b'u' => {
-                    // \uXXXX and \u{...}
-                    let hex_start;
-                    let hex_end;
-                    if self.peek() == Some(b'{') {
-                        self.pos += 1;
-                        hex_start = self.pos;
-                        while self.peek().is_some_and(|c| c != b'}') {
-                            self.pos += 1;
-                        }
-                        hex_end = self.pos;
-                        if self.bump() != Some(b'}') {
-                            return Err(self.err(start, "unterminated \\u{...}"));
-                        }
-                    } else {
-                        // Four hex digits, so the slice below ends on a character boundary whatever follows.
-                        hex_start = self.pos;
-                        while self.pos - hex_start < 4 && self.peek().is_some_and(|c| c.is_ascii_hexdigit()) {
-                            self.pos += 1;
-                        }
-                        hex_end = self.pos;
-                        if hex_end - hex_start < 4 {
-                            return Err(self.err(start, "bad \\u escape: four hex digits are needed"));
-                        }
-                    }
-                    let code = u32::from_str_radix(&self.text[hex_start..hex_end], 16)
-                        .map_err(|e| self.err(start, format!("bad \\u escape: {e}")))?;
-                    match char::from_u32(code) {
-                        Some(ch) => out.push(ch),
-                        None => {
-                            return Err(self.err(start, format!("invalid code point U+{code:04X}")));
-                        }
-                    }
-                }
+                b'u' => out.push(self.lex_unicode_escape(start)?),
                 other => {
                     return Err(self.err(start, format!("unknown escape \\{}", other as char)));
                 }
             }
         }
         Ok(self.emit(Token::Str(out), start, true))
+    }
+
+    /// The character a `\u` escape names, after its `\u`: four hex digits, or any number of them in braces.
+    fn lex_unicode_escape(&mut self, start: usize) -> Result<char, LexError> {
+        let hex_start;
+        let hex_end;
+        if self.peek() == Some(b'{') {
+            self.pos += 1;
+            hex_start = self.pos;
+            while self.peek().is_some_and(|c| c != b'}') {
+                self.pos += 1;
+            }
+            hex_end = self.pos;
+            if self.bump() != Some(b'}') {
+                return Err(self.err(start, "unterminated \\u{...}"));
+            }
+        } else {
+            // Four hex digits, so the slice below ends on a character boundary whatever follows.
+            hex_start = self.pos;
+            while self.pos - hex_start < 4 && self.peek().is_some_and(|c| c.is_ascii_hexdigit()) {
+                self.pos += 1;
+            }
+            hex_end = self.pos;
+            if hex_end - hex_start < 4 {
+                return Err(self.err(start, "bad \\u escape: four hex digits are needed"));
+            }
+        }
+        let code = u32::from_str_radix(&self.text[hex_start..hex_end], 16)
+            .map_err(|e| self.err(start, format!("bad \\u escape: {e}")))?;
+        match char::from_u32(code) {
+            Some(ch) => Ok(ch),
+            None => Err(self.err(start, format!("invalid code point U+{code:04X}"))),
+        }
     }
 
     fn lex_regex(&mut self, start: usize) -> Result<Spanned, LexError> {
@@ -702,6 +712,20 @@ mod tests {
             &parts[0],
             TemplatePart::Hole { src, .. } if src == " \"}\" "
         ));
+    }
+
+    /// A template string takes every escape a string does, beside its own `` \` `` and `\$`.
+    #[test]
+    fn a_template_takes_a_strings_escapes() {
+        let t = toks(r#"`\0 \u00e9 \u{1F44B} \' \" \` \$`"#);
+        assert_eq!(
+            t[0],
+            Token::Template(vec![TemplatePart::Lit("\0 \u{e9} \u{1F44B} ' \" ` $".into())])
+        );
+        assert!(
+            Lexer::tokenize(r"`\u12`").is_err(),
+            "a short \\u escape is refused, as in a string"
+        );
     }
 
     fn toks(s: &str) -> Vec<Token> {
@@ -871,6 +895,15 @@ mod tests {
         assert!(matches!(toks("99999999999999999999")[0], Token::Float(_)));
     }
 
+    /// A literal no `f64` holds is refused, as arithmetic that makes one is.
+    #[test]
+    fn a_number_too_large_for_a_float_is_refused() {
+        for src in ["1e400", &"9".repeat(400)] {
+            let err = Lexer::tokenize(src).unwrap_err();
+            assert!(err.message.contains("too large for a float"), "{src}: {}", err.message);
+        }
+    }
+
     #[test]
     fn strings_and_escapes() {
         assert_eq!(toks(r#""hi""#)[0], Token::Str("hi".into()));
@@ -898,6 +931,21 @@ mod tests {
         assert_eq!(toks("null")[0], Token::Keyword(Keyword::Null));
         assert_eq!(toks("nullable")[0], ident("nullable"));
         assert_eq!(toks("trueish")[0], ident("trueish"));
+    }
+
+    #[test]
+    fn a_value_before_a_dot_is_a_value() {
+        assert_eq!(
+            toks("false.toString"),
+            vec![
+                Token::Keyword(Keyword::False),
+                Token::Punct(Punct::Dot),
+                ident("toString"),
+                Token::Eof
+            ]
+        );
+        assert_eq!(toks("a.true")[0], ident("a.true"));
+        assert_eq!(toks("return.code")[0], ident("return.code"));
     }
 
     #[test]

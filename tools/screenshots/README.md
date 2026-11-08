@@ -51,7 +51,7 @@ graph LR
   that its stream is unrouted, and the network group sends it to kafka-dlq. FGT-SIN names `proto` (`tcp`) where the
   FortiGate pipeline declares the protocol number, so the leader warns that the field is not its declared type. The
   seven feeds after cisco-asa go to s3-archive as they arrived, waiting on their pipelines. Their samples wait on
-  the `work` branch, since a deploy leaves out a sample no test names.
+  the `work` branch, saved and not deployed, for the pipelines a visitor writes.
 - **Pipelines** (`bundle.py`), each normalizing to ECS: grok and a positional CSV table for PAN-OS, with CIDR,
   directory and App-ID lookups; grok and key=value for FortiGate; grok with a custom pattern for nginx; grok and a
   code step for auth.log; JSON with nested structs for CloudTrail, unrolled to a document per event. Each has a

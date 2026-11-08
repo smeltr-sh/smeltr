@@ -8,17 +8,16 @@
 // itself.
 
 import { untrack } from 'svelte';
-import { canEdit, isAdministrator } from './access';
+import { isAdministrator } from './access';
 import { session } from './session';
 import { SHARED_SCOPE, type MapNodeKind } from './api';
 
 /** `me` is what belongs to the person signed in, reached from their name chip rather than a tab of its own. */
 export type Tab = 'status' | 'map' | 'build' | 'changes' | 'admin' | 'me';
 
-/** The tabs of Admin -> System. Logging is named in the design and has no
- * leader-side settings yet, so it is not offered. */
+/** The tabs of Admin -> System. */
 export type SystemSection =
-  'general' | 'sessions' | 'certificates' | 'git' | 'agents' | 'license' | 'alerts';
+  'general' | 'sessions' | 'certificates' | 'git' | 'agents' | 'license' | 'alerts' | 'logging';
 
 export const SYSTEM_SECTIONS: { section: SystemSection; label: string }[] = [
   { section: 'general', label: 'General' },
@@ -28,6 +27,7 @@ export const SYSTEM_SECTIONS: { section: SystemSection; label: string }[] = [
   { section: 'agents', label: 'AI agents' },
   { section: 'license', label: 'License' },
   { section: 'alerts', label: 'Alerts' },
+  { section: 'logging', label: 'Logging' },
 ];
 
 /** The tabs of Admin -> Workers: the fleet's workers, and the enrollment codes that bring them in. */
@@ -55,7 +55,10 @@ export type Route =
       levels: string[];
       worker?: string;
       group?: string;
-      site?: string;
+      class?: string;
+      type?: string;
+      typeExact?: boolean;
+      service?: string;
       q?: string;
       /** The pager's position: rows below this id. Set from a previous read's `nextBefore`. */
       before?: number;
@@ -232,7 +235,6 @@ export function sentFrom(route: Route): string | null {
   if ((route.tab === 'admin' || route.page === 'logs') && !isAdministrator()) {
     return TAB_HOME.status;
   }
-  if (route.page === 'samples' && !canEdit()) return TAB_HOME.build;
   // The agent's screens wait for AI agents to be turned on (Admin -> System -> AI agents).
   if (!session().agents) {
     if (route.page === 'agent-permissions' || route.page === 'agent') return TAB_HOME.status;
@@ -279,11 +281,6 @@ export const RESOURCES_TABS: SectionItem[] = [
   { label: 'Grok patterns', hash: '#/build/grok' },
   { label: 'Schemas', hash: '#/build/schemas' },
 ];
-
-/** The Resources tabs the person signed in may open: samples are an editor's. */
-export function resourcesTabs(): SectionItem[] {
-  return canEdit() ? RESOURCES_TABS : RESOURCES_TABS.filter((t) => t.label !== 'Samples');
-}
 
 /** The Routes page's tabs: the routes, and a sample run through them as they stand, unsaved edits included. */
 export const ROUTES_TABS: SectionItem[] = [
@@ -358,11 +355,9 @@ const SECTION_OF: Record<Route['page'], string | null> = {
 };
 
 /** The section nav a page shows to the person signed in, or null where the tab has one page.
- * Logs are administrators' alone, and Resources opens on its first page they may read. */
+ * Logs are administrators' alone. */
 export function section(route: Route): { items: SectionItem[]; here: string } | null {
-  const items = SECTIONS[route.tab]
-    ?.filter((i) => i.label !== 'Logs' || isAdministrator())
-    .map((i) => (i.label === 'Resources' && !canEdit() ? { ...i, hash: '#/build/lookups' } : i));
+  const items = SECTIONS[route.tab]?.filter((i) => i.label !== 'Logs' || isAdministrator());
   const here = SECTION_OF[route.page];
   return items && here ? { items, here } : null;
 }
@@ -484,7 +479,10 @@ export function parseRoute(hash: string): Route {
         levels: (params.get('level') ?? '').split(',').filter((l) => l.length > 0),
         worker: one('worker'),
         group: one('group'),
-        site: one('site'),
+        class: one('class'),
+        type: one('type'),
+        ...(params.get('typeExact') === 'true' && { typeExact: true }),
+        service: one('service'),
         q: one('q'),
         before: cursor('before'),
         after: cursor('after'),

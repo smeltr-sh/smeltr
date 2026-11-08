@@ -8,7 +8,7 @@ use std::sync::{Arc, Once, mpsc};
 use std::time::{Duration, Instant};
 
 use smeltr::leader::registry::Registry;
-use smeltr::leader::sqlite_store::SqliteStore;
+use smeltr::leader::store::Store;
 use smeltr::leader::{AppState, router};
 
 /// These tests run one at a time.
@@ -99,6 +99,7 @@ fn start_leader_tls_following(follow: bool) -> (String, Vec<u8>, std::path::Path
                 alerts: Default::default(),
                 data_dir,
                 directives: Default::default(),
+                log_levels: Default::default(),
             };
             let tls = axum_server::tls_rustls::RustlsConfig::from_pem(cert_pem, key_pem)
                 .await
@@ -106,6 +107,8 @@ fn start_leader_tls_following(follow: bool) -> (String, Vec<u8>, std::path::Path
             if follow {
                 follow_disk(&smeltr::leader::tls::dir_of(&state.data_dir), tls.clone());
             }
+            // As `main` runs it, so a rotation cuts over without a request to carry it.
+            tokio::spawn(smeltr::leader::housekeeping::run(state.clone()));
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
             tx.send(listener.local_addr().unwrap().port()).unwrap();
@@ -130,11 +133,10 @@ fn serve_again(dir: &std::path::Path, names: &[String]) {
 }
 
 /// The certificate lists of these leaders, by their TLS directory.
-static LISTS: std::sync::Mutex<Vec<(std::path::PathBuf, Arc<SqliteStore>)>> = std::sync::Mutex::new(Vec::new());
+static LISTS: std::sync::Mutex<Vec<(std::path::PathBuf, Arc<Store>)>> = std::sync::Mutex::new(Vec::new());
 
 /// `chain` and `key` as the newest version of the entry `theirs` in the list of the leader serving from `dir`.
 fn listed(dir: &std::path::Path, chain: &[u8], key: &[u8], ca: &[u8]) -> smeltr::leader::tls::Entry {
-    use smeltr::leader::store::Store;
     let list = LISTS
         .lock()
         .unwrap()
@@ -628,7 +630,7 @@ fn a_worker_given_only_an_enrollment_code_pins_the_authority_and_enrolls() {
     let arrived = heartbeating(&base, &ca_pem, Duration::from_secs(60));
     let said = stop(worker);
     assert!(arrived, "the worker never heartbeated:\n{said}");
-    assert!(said.contains("worker.authority_pinned"), "{said}");
+    assert!(said.contains("enrollment authority_pinned"), "{said}");
 
     // Kept, so the unverified fetch happens once in this worker's life rather than at every start.
     let kept = std::fs::read(state_dir.join("pinned-ca.pem")).expect("the authority it pinned");
@@ -668,7 +670,7 @@ fn an_enrollment_code_naming_another_authority_is_refused_rather_than_trusted() 
         said.contains("did not offer the certificate authority this enrollment code names"),
         "{said}"
     );
-    assert!(!said.contains("worker.enrolled"), "it enrolled anyway:\n{said}");
+    assert!(!said.contains("enrollment enrolled"), "it enrolled anyway:\n{said}");
     assert!(
         !state_dir.join("pinned-ca.pem").exists(),
         "it kept an authority it could not match"
@@ -692,7 +694,7 @@ fn a_second_worker_cannot_spend_an_enrollment_code_minted_for_one() {
     let said = gives_up(&base, value, &temp_dir("second-worker"), Duration::from_secs(30));
     assert!(said.contains("already brought in every worker"), "{said}");
     assert!(
-        said.contains("worker.enroll_refused"),
+        said.contains("enrollment was_refused"),
         "it treated a spent enrollment code as something to wait out:\n{said}"
     );
 }
@@ -725,10 +727,15 @@ fn an_enrollment_code_minted_for_several_workers_brings_in_that_many() {
     let value = code["value"].as_str().unwrap();
 
     for label in ["fleet-1", "fleet-2"] {
-        let child = spawn_worker(&base, value, &temp_dir(label));
-        std::thread::sleep(Duration::from_secs(6));
+        let dir = temp_dir(label);
+        let credential = dir.join("credential.token");
+        let child = spawn_worker(&base, value, &dir);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !credential.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(200));
+        }
         let said = stop(child);
-        assert!(said.contains("worker.enrolled"), "{label} never enrolled:\n{said}");
+        assert!(credential.exists(), "{label} never enrolled:\n{said}");
     }
     let said = refused(&base, value, &temp_dir("fleet-3"));
     assert!(said.contains("already brought in every worker"), "{said}");
@@ -812,13 +819,10 @@ fn a_worker_takes_a_rotated_authority_without_being_restarted() {
     stop(child);
 }
 
-/// The beat that carries a rotation past its deadline is still a beat from a worker the leader can reach, and it
-/// must leave holding the root the leader is about to sign under.
-///
-/// Answering the cutover first finds no rotation and sends nothing, so the one worker that was certainly reachable
-/// is the one stranded -- which is the failure the whole overlap exists to prevent, arriving by the other door.
+/// A deadline is kept by the leader's own clock: it cuts over once the deadline passes, whether or not any worker
+/// beats.
 #[test]
-fn the_worker_whose_beat_ends_a_rotation_is_handed_the_authority_first() {
+fn a_rotation_cuts_over_at_its_deadline_without_a_beat() {
     let _alone = alone();
     let (base, ca_pem, data_dir) = start_leader_tls_in();
     let dir = smeltr::leader::tls::dir_of(&data_dir);
@@ -827,11 +831,11 @@ fn the_worker_whose_beat_ends_a_rotation_is_handed_the_authority_first() {
 
     let child = spawn_worker(&base, code["value"].as_str().unwrap(), &state_dir);
     assert!(heartbeating(&base, &ca_pem, Duration::from_secs(20)), "never enrolled");
+    // Enrolled and silent: the fleet never holds the incoming root, so only the deadline can end the rotation.
+    stop(child);
 
-    // A deadline already past, so the very next beat ends the rotation.
     let now_ms = smeltr::leader::warnings::now_millis();
-    let state = smeltr::leader::tls::begin_rotation(&dir, Duration::from_secs(60 * 60), now_ms - 1000, now_ms)
-        .expect("a rotation");
+    smeltr::leader::tls::begin_rotation(&dir, Duration::from_secs(60 * 60), now_ms - 1000, now_ms).expect("a rotation");
 
     let cut_over = {
         let deadline = Instant::now() + Duration::from_secs(20);
@@ -846,34 +850,6 @@ fn the_worker_whose_beat_ends_a_rotation_is_handed_the_authority_first() {
         }
     };
     assert!(cut_over, "a deadline already past did not end the rotation");
-
-    // The worker was there for it, so it holds what this leader now signs under.
-    let kept = state_dir.join("pinned-ca.pem");
-    let holds = {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            if std::fs::read(&kept)
-                .ok()
-                .and_then(|pem| smeltr::leader::tls::describe_each(&pem, "kept").ok())
-                .is_some_and(|roots| roots.iter().any(|r| r.fingerprint == state.incoming))
-            {
-                break true;
-            }
-            if Instant::now() >= deadline {
-                break false;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-    };
-    assert!(
-        holds,
-        "the beat that ended the rotation left without the authority it ended it for"
-    );
-    assert!(
-        heartbeating(&base, &ca_pem, Duration::from_secs(20)),
-        "the worker stopped reaching the leader after the deadline cutover"
-    );
-    stop(child);
 }
 
 /// The authority is public, and a worker holding an enrollment code has no session to prove anything with.
@@ -1035,7 +1011,7 @@ fn an_enrolled_worker_starts_with_an_enrollment_code_it_can_no_longer_read() {
         !said.contains("refusing to start"),
         "an enrolled worker refused over an enrollment code it never needed:\n{said}"
     );
-    assert!(said.contains("worker.started"), "{said}");
+    assert!(said.contains("processes started"), "{said}");
 }
 
 /// Re-pointed from a leader with its own authority to one a public certificate covers. The enrollment code says the
@@ -1065,7 +1041,7 @@ fn an_enrollment_code_naming_the_platforms_roots_puts_aside_a_kept_private_autho
     let said = stop(worker);
 
     assert!(
-        said.contains("worker.authority_replaced"),
+        said.contains("enrollment authority_replaced"),
         "it kept the private authority against an enrollment code naming the platform's roots:\n{said}"
     );
     // Gone, not merely passed over. An enrollment code is spent once, so the next start has none to say this file is
@@ -1203,15 +1179,9 @@ fn a_cutover_withdraws_the_enrollment_codes_that_named_the_authority_it_retired(
         "the page does not say this enrollment code has a window, and how long it is"
     );
 
-    // The page an operator watches a rotation on. It is one of the two places a cutover happens -- this leader has
-    // no workers to beat, so the deadline is what ends it -- and the withdrawal rides the same call.
-    agent
-        .get(format!("{base}/api/warnings"))
-        .call()
-        .expect("the warnings a rotation is watched on");
-
+    // This leader has no workers to wait on, so its housekeeping cuts over on its next tick.
     assert!(
-        smeltr::leader::tls::rotation(&tls_dir).unwrap().is_none(),
+        finished(&tls_dir, Duration::from_secs(30)),
         "the rotation did not finish, so nothing here is about a cutover"
     );
     // What `main` says once its socket has loaded what the cutover wrote, so this leader will mint again.

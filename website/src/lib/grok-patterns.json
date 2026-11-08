@@ -146,6 +146,11 @@
     "example": "<165>1 2003-10-11T22:14:15.003Z mymachine.example.com evntslog - ID47 [exampleSDID@32473 iut=\"3\"] An application event"
   },
   {
+    "name": "CISCOASALINE",
+    "matches": "A Cisco ASA or FTD line: an optional `<priority>`, an optional date, an optional device ID, then `%ASA-severity-id:` or `%FTD-severity-id:` and the message.",
+    "example": "<166>Oct 15 2026 00:31:02 fw-01 : %ASA-6-302013: Built inbound TCP connection 1 for outside:10.0.0.1/443"
+  },
+  {
     "name": "COMMONAPACHELOG",
     "matches": "A web server's common log line: client, identity, user, `[date]`, the quoted request, status and bytes; a field written as `-` is left out.",
     "example": "127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] \"GET /apache_pb.gif HTTP/1.0\" 200 2326"

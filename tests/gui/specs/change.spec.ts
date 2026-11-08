@@ -105,7 +105,8 @@ test('the branch bar opens a change from a form filled from what changed', async
   await expect(title).not.toHaveValue('');
   await expect(admin.getByText('no tests reach this change')).toBeVisible();
   await expect(admin.getByText(/^1 file ·/)).toBeVisible();
-  await expect(admin.getByText('no other administrator')).toBeVisible();
+  // The author could approve it, as the one administrator there is.
+  await expect(admin.locator('.reviewers')).toHaveText('Administrator (you)');
 
   await title.fill('Add the colors table');
   await admin.getByLabel('Description').fill('Colors for the enrichment step.');
@@ -115,8 +116,8 @@ test('the branch bar opens a change from a form filled from what changed', async
   await expect(admin.getByRole('heading', { name: 'Add the colors table' })).toBeVisible();
   await expect(admin.getByText('Colors for the enrichment step.')).toBeVisible();
   await expect(admin.getByText(/open for review — 1 file/)).toBeVisible();
-  // The author is the only administrator, so there is nobody else's verdict to give here.
-  await expect(admin.getByRole('radiogroup', { name: 'Review' })).toHaveCount(0);
+  // A lone administrator reviews their own change.
+  await expect(admin.getByRole('radiogroup', { name: 'Review' })).toBeVisible();
 
   await admin.getByRole('button', { name: 'Rename this change' }).click();
   await admin.getByLabel('change title').fill('Add colors for enrichment');
@@ -177,7 +178,9 @@ test('a change behind main is brought current, and its conflict is the author’
   await expect(admin.getByRole('heading', { name: 'Red is one' })).toBeVisible();
   await expect(admin.getByText('Behind main by 1 commit', { exact: true })).toBeVisible();
   await expect(
-    admin.getByText('Behind main by 1 commit — bring the branch current first.'),
+    admin
+      .getByText('Behind main by 1 commit — bring the branch current first.')
+      .filter({ visible: true }),
   ).toBeVisible();
   await expect(admin.getByRole('button', { name: 'Approve & deploy' })).toBeDisabled();
 
@@ -412,21 +415,6 @@ test('a sample the branch deleted is put back from its card on the change page',
     name: 'keep',
     records: [{ _raw: 'a line' }],
   });
-  // A sample reaches main only with a test that uses it.
-  await api.put('/api/areas/shared/pipelines/p?branch=seed', {
-    id: 'p',
-    name: 'p',
-    steps: [{ type: 'drop', id: 'none', condition: 'false' }],
-  });
-  await api.put('/api/areas/shared/tests/keep?branch=seed', {
-    id: 'keep',
-    name: 'keep',
-    pipeline: 'p',
-    sample: 'keep',
-    lockedAt: 0,
-    rowsIn: 1,
-    expected: [null],
-  });
   await api.openChange('seed', 'Add a sample');
   await api.deploy('seed');
   await api.delete('/api/areas/shared/samples/keep?branch=tidy');
@@ -518,30 +506,26 @@ test('History shows who changed what, who deployed it, and when', async ({
   ).toBeVisible();
 });
 
-test('a review sets apart the samples no test uses, which the deploy leaves out', async ({
+test('a review shows a sample no test uses as any other object, and the deploy keeps it', async ({
   admin,
   api,
   leader,
 }) => {
   const on = '?branch=scratch';
-  await putTables(api, 'scratch', [table('colors')]);
   await api.put(`/api/areas/shared/samples/tried${on}`, {
     id: 'tried',
     name: 'capture 14:20',
     records: [{ _raw: 'a' }],
   });
-  await api.openChange('scratch', 'Colors, and a capture');
+  await api.openChange('scratch', 'A capture');
 
   await goto(admin, leader, '#/changes/review/scratch');
-  const staying = admin.locator('.left-out');
-  await expect(staying.getByRole('heading', { name: 'Left out' })).toBeVisible();
-  await expect(staying.getByText('capture 14:20', { exact: true })).toBeVisible();
-  await expect(staying.getByRole('button', { name: 'Undo changes' })).toHaveCount(0);
-  await expect(admin.getByText('1 sample left out', { exact: true })).toBeVisible();
+  const card = admin.locator('.card').filter({ hasText: 'capture 14:20' });
+  await expect(card.getByText('added', { exact: true })).toBeVisible();
 
   await api.deploy('scratch');
   const main = await api.get('/api/areas/shared/samples?branch=main');
-  expect(main.samples).toEqual([]);
+  expect(main.samples.map((s: { name: string }) => s.name)).toEqual(['capture 14:20']);
 });
 
 test('the dock’s count of tests opens the Tests tab', async ({ admin, api, leader }) => {

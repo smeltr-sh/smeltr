@@ -41,6 +41,7 @@
     type Compression,
     type SchemaRegistry,
     type HttpCompression,
+    type OtlpSignal,
     type Acks,
     type KafkaFacts,
     COMPRESSIONS,
@@ -168,7 +169,7 @@
     {@render formatFields(destination, AVRO_STREAM_FORMATS, 'json', streamFormatHelp)}
     <TlsFields value={destination} farEnd="destination" />
     <div class="section">
-      <div class="section-head">security</div>
+      <div class="section-head uppercase-label">security</div>
       <KafkaSecurity
         value={destination}
         {secrets}
@@ -591,7 +592,7 @@
         help={zoneHelp}
       />
     </Advanced>
-  {:else if destination.type === 'http' || destination.type === 'prometheus'}
+  {:else if destination.type === 'http' || destination.type === 'prometheus' || destination.type === 'otlp'}
     {@const h = destination}
     <UrlField
       required
@@ -602,8 +603,32 @@
       error={tlsRefusal(h.url, h) ?? null}
       placeholder={h.type === 'prometheus'
         ? 'https://prometheus.internal/api/v1/write'
-        : 'https://collector.internal/ingest'}
+        : h.type === 'otlp'
+          ? 'https://otel-collector.internal:4318'
+          : 'https://collector.internal/ingest'}
     />
+    {#if h.type === 'otlp'}
+      <Field field="signal" label="signal">
+        {#snippet help()}
+          The one signal this destination sends. Each record goes as a log record, a metric data
+          point or a span to that signal's path after the url. To send more than one signal, add a
+          destination for each.
+        {/snippet}
+        <select
+          value={h.signal ?? 'logs'}
+          onchange={(e) => {
+            if (h.type !== 'otlp') return;
+            const v = e.currentTarget.value as OtlpSignal;
+            if (v === 'logs') delete h.signal;
+            else h.signal = v;
+          }}
+        >
+          <option value="logs">logs (/v1/logs)</option>
+          <option value="metrics">metrics (/v1/metrics)</option>
+          <option value="traces">traces (/v1/traces)</option>
+        </select>
+      </Field>
+    {/if}
     {#if h.type === 'prometheus'}
       <Field field="version" label="remote_write version">
         {#snippet help()}
@@ -693,7 +718,7 @@
     </PropsEditor>
     <Advanced label="Advanced" modified={httpModified(h)}>
       <TlsFields value={h} farEnd="destination" />
-      {#if h.type === 'http'}
+      {#if h.type === 'http' || h.type === 'otlp'}
         <Field field="compression" label="compression">
           {#snippet help()}
             Each request body is sent gzipped, with <code>Content-Encoding: gzip</code>; the service
@@ -715,7 +740,7 @@
       <RequestDelivery
         value={h}
         sizeDefault={(h.type === 'http' ? LIMITS.httpRequestBytes : LIMITS.maxRequestBytes).default}
-        concurrent={h.type === 'http'}
+        concurrent={h.type !== 'prometheus'}
       >
         {#snippet sizeHelp()}
           A request is sent as soon as it reaches this size. Keep it under the largest body the
@@ -904,8 +929,8 @@
       </Field>
       <Field optional field="maxObjectBytes" label="largest file">
         {#snippet help()}
-          The largest file this destination puts in the bucket, compressed. Set it to what the tools
-          that read the bucket handle best.
+          The largest file this destination writes, compressed. Set it to what the tools that read
+          the files handle best.
         {/snippet}
         <BytesInput
           value={o.maxObjectBytes}
@@ -948,9 +973,10 @@
           : null}
       >
         {#snippet help()}
-          The longest records wait before they land in the bucket. A longer wait makes larger files.
-          Records are acknowledged only once they land, so every source feeding this destination is
-          held open for up to this long, and after a crash reads up to this long of records again.
+          The longest time records wait before they are written. A longer wait makes larger files.
+          Records are acknowledged only once they are written, so every source feeding this
+          destination is held open for up to this long, and after a crash reads up to this long of
+          records again.
         {/snippet}
         <input
           type="number"
@@ -1055,11 +1081,6 @@
   }
 
   .section-head {
-    font-size: var(--text-micro);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--dim);
     margin-bottom: 0.5rem;
   }
 

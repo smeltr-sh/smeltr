@@ -86,7 +86,7 @@ describe('a field where the scope is not yours to change', () => {
     await signInAs({ shared: 'viewer', payments: 'viewer' });
     history.replaceState(null, '', '/#/build/sources');
     field = mount(TlsFields, { target, props: { value: {}, farEnd: 'sender' } });
-    expect(target.querySelectorAll('fieldset')).toHaveLength(2);
+    expect(target.querySelectorAll('fieldset')).toHaveLength(4);
     expect(target.querySelector('select')!.closest('fieldset[disabled]')).not.toBeNull();
     expect(target.querySelector('textarea')!.closest('fieldset[disabled]')).not.toBeNull();
   });

@@ -20,11 +20,8 @@ use super::stats::{self, Live};
 use super::store::HeldSource;
 use super::throughput;
 use super::warnings::{self, SubjectKind};
-use super::{ROWS_DELIVERED_METRIC, ROWS_IN_METRIC, ROWS_UNMATCHED_METRIC, subject_label};
+use super::{ROWS_DELIVERED_METRIC, ROWS_IN_METRIC, ROWS_UNMATCHED_METRIC, SOURCE_LAG_METRIC, subject_label};
 use crate::heartbeat::SourceKey;
-
-/// Kafka lag per partition (`runtime.rs`), labeled with the source, topic and partition.
-const SOURCE_LAG_METRIC: &str = "smeltr_source_lag";
 
 /// How many closed buckets back a rate still counts as current. One poll can land just after a bucket closes, before
 /// any worker has written into the next; two keeps that from reading as a stop.
@@ -343,7 +340,7 @@ fn read(store: &RegistryStore, metric: &str, since_ms: i64) -> Vec<(String, Subj
         .series_since(metric, Tier::TenSeconds, since_ms)
         .unwrap_or_else(|e| {
             tracing::warn!(
-                target: "map.metric_unreadable",
+                name: "map_metric_unreadable", target: "status",
                 subject = %metric,
                 error = %e,
                 "could not read a metric for the map's measurements, so its nodes show no reading"
@@ -421,7 +418,7 @@ mod tests {
         Live {
             snapshot,
             heartbeat_interval: BEAT,
-            band_share: 0.99,
+            learning: crate::leader::throughput::Learning::default(),
         }
     }
 
@@ -670,7 +667,8 @@ mod tests {
             area: None,
             condition,
             subject_kind,
-            site: None,
+            class: None,
+            r#type: None,
             subject_id: id.to_string(),
             group: Some("g".to_string()),
             severity: Severity::Warning,
@@ -715,7 +713,8 @@ mod tests {
             area: None,
             condition: Condition::WorkerSilent,
             subject_kind: SubjectKind::Worker,
-            site: None,
+            class: None,
+            r#type: None,
             subject_id: format!("w-{group}"),
             group: Some(group.to_string()),
             severity: Severity::Warning,
@@ -772,7 +771,8 @@ mod tests {
             area: None,
             condition: Condition::SourceBlocked,
             subject_kind: SubjectKind::Source,
-            site: None,
+            class: None,
+            r#type: None,
             subject_id: "unheld".to_string(),
             group: Some("g".to_string()),
             severity: Severity::Warning,

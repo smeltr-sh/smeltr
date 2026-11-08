@@ -4,7 +4,7 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { test, expect, goto, withKey, type Api } from '../fleet';
-import { FakeModel, MODEL_KEY, request, say } from '../model';
+import { FakeModel, MODEL_KEY, request, say, summary } from '../model';
 import {
   described,
   openAdmin,
@@ -180,6 +180,64 @@ test('the session deadlines are changed under System, and an impossible pair is 
   await expect(admin.getByLabel('Idle timeout')).toHaveValue('17');
 });
 
+test('log levels under System → Logging name a class, a class and a type, or a service, and Logs filters by them', async ({
+  admin,
+  api,
+  leader,
+}) => {
+  await openAdmin(admin, 'System');
+  await admin.getByRole('link', { name: 'Logging', exact: true }).click();
+  const add = admin.getByRole('button', { name: 'Add', exact: true });
+  const named = admin.getByLabel('class or service');
+
+  await named.selectOption('class:sources');
+  await add.click();
+  await named.selectOption('class:store');
+  await admin.getByLabel('type', { exact: true }).fill('Statement-Ran');
+  await expect(add).toBeDisabled();
+  await add.hover({ force: true });
+  await expect(admin.locator('#why-disabled')).toHaveText(
+    'A type is lower-case letters, digits and underscores.',
+  );
+  await admin.getByLabel('type', { exact: true }).fill('statement_ran');
+  await admin.getByLabel('level', { exact: true }).selectOption('warn');
+  await add.click();
+  await named.selectOption('service:kafka');
+  await admin.getByLabel('level', { exact: true }).selectOption('debug');
+  await add.click();
+  await admin.getByRole('button', { name: 'Save log levels' }).click();
+  await expect(admin.getByRole('status')).toHaveText('saved');
+
+  const saved = (await api.get('/api/settings/log-levels')).levels.overrides;
+  expect(saved).toEqual([
+    { class: 'sources', level: 'trace' },
+    { class: 'store', type: 'statement_ran', level: 'warn' },
+    { service: 'kafka', level: 'debug' },
+  ]);
+  await admin.reload();
+  await expect(admin.getByRole('cell', { name: 'class store, type statement_ran' })).toBeVisible();
+  await expect(admin.getByLabel('level for kafka')).toHaveValue('debug');
+
+  await goto(admin, leader, '#/status/logs');
+  await admin.getByRole('combobox').filter({ hasText: 'class' }).first().selectOption('deploy');
+  // Typed, a type is matched in part.
+  await admin.getByPlaceholder('type', { exact: true }).fill('mov');
+  await admin.getByRole('button', { name: 'Search', exact: true }).click();
+  const rows = admin.getByRole('row').filter({ hasText: 'the fleet was deployed to a commit' });
+  await expect(rows.first()).toBeVisible();
+  await expect(
+    admin.getByRole('row').filter({ hasText: 'an audited action was recorded' }),
+  ).toHaveCount(0);
+  expect(admin.url()).toContain('class=deploy');
+  expect(admin.url()).not.toContain('typeExact');
+  // Clicked, it is matched whole, until the box is edited.
+  await rows.first().getByRole('button', { name: 'moved', exact: true }).click();
+  await expect(admin).toHaveURL(/type=moved&typeExact=true/);
+  await expect(rows.first()).toBeVisible();
+  await admin.getByPlaceholder('type', { exact: true }).fill('move');
+  await expect(admin).not.toHaveURL(/typeExact/);
+});
+
 test('the leader certificate is the certificate leader in the list', async ({ admin }) => {
   // S6
   await openAdmin(admin, 'System');
@@ -190,8 +248,10 @@ test('the leader certificate is the certificate leader in the list', async ({ ad
   await expect(admin.getByRole('heading', { name: /Current authority/ })).toBeVisible();
   await expect(admin.getByRole('link', { name: 'Download ca.pem' })).toBeVisible();
   const served = admin.getByRole('region', { name: /^Leader certificate/ });
-  // The page shortens a fingerprint to its two ends, which is what a person compares.
-  await expect(served.getByText(/^[0-9a-f]{16}…[0-9a-f]{8}$/)).toBeVisible();
+  // The page shortens a fingerprint to its two ends, which is what a person compares, as RFC 5425 writes one.
+  await expect(
+    served.getByText(/^sha-256:[0-9A-F]{2}(:[0-9A-F]{2}){3}…[0-9A-F]{2}(:[0-9A-F]{2}){2}\b/),
+  ).toBeVisible();
 
   await served.getByRole('button', { name: 'About Leader certificate' }).click();
   await expect(served).toContainText(
@@ -229,6 +289,7 @@ test('System and Cluster show the build each machine runs', async ({
   const detail = await workerDetail(admin, 'w-build');
   await expect(described(detail, 'Version')).toContainText(shown);
   await expect(described(detail, 'Disk')).toContainText('free of');
+  await expect(described(detail, 'Connections')).toContainText(/^up to [\d,]+$/);
 });
 
 test('a secret is set once, checked without being shown, and never read back', async ({
@@ -632,7 +693,7 @@ test('AI agents turned on under System offer the agent screens', async ({ admin 
 
     await admin.getByRole('button', { name: /^signed in as / }).click();
     await expect(admin.getByRole('button', { name: 'Agent permissions' })).toBeVisible();
-    await expect(admin.getByRole('button', { name: 'Agent', exact: true })).toBeVisible();
+    await expect(admin.getByRole('button', { name: 'Agent', exact: true })).toHaveCount(0);
   } finally {
     await model.stop();
   }
@@ -753,6 +814,35 @@ test('a person sets what their agent may use from their name', async ({ admin, a
     default: 'viewer',
     areas: { shared: 'editor' },
   });
+});
+
+test('a summary the model writes part way through a turn is shown, and the agent carries on from it', async ({
+  admin,
+  api,
+}) => {
+  const model = await FakeModel.start();
+  try {
+    await agentsOn(api, model);
+    model.answer(
+      [request('GET', '/api/areas/shared/pipelines')],
+      [summary('They asked what runs in shared.')],
+      [say('Nothing runs in shared yet.')],
+    );
+    await admin.reload();
+    await openAgent(admin);
+    await admin.getByRole('textbox', { name: 'Message' }).fill('What runs in shared?');
+    await admin.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect(admin.getByText('Nothing runs in shared yet.')).toBeVisible();
+    await expect(admin.getByText(/^Summarized\./)).toBeVisible();
+    // The summary stands in for what was said, and the last answer and its call's result are read after it.
+    const [said, answered, result] = model.asked.at(-1)?.messages ?? [];
+    expect(JSON.stringify(said)).toContain('They asked what runs in shared.');
+    expect(JSON.stringify(said)).not.toContain('What runs in shared?');
+    expect(JSON.stringify(answered)).toContain('tool_use');
+    expect(JSON.stringify(result)).toContain('tool_result');
+  } finally {
+    await model.stop();
+  }
 });
 
 test('a person asks their agent, sees what it asked the leader, and deletes the conversation', async ({

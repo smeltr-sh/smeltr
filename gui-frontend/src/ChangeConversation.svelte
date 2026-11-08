@@ -33,6 +33,7 @@
   import { canSubmit, type ComposerChoice } from './review';
   import ThreadView from './ThreadView.svelte';
   import { anchorLabel, displayList, threads, type Thread } from './threads';
+  import { deployBlocker } from './access';
   import { session } from './session';
   import { ago, shortCommit } from './time';
 
@@ -45,6 +46,7 @@
     lines,
     onposted,
     onstatechanged,
+    touches,
   }: {
     branch: string;
     change: ChangeDto;
@@ -59,6 +61,8 @@
     onposted: () => Promise<void> | void;
     /** The change was closed or reopened: everything on the page may have moved. */
     onstatechanged: () => Promise<void> | void;
+    /** The files the change touches: a verdict takes deployer in all of them, as deploying does. */
+    touches: string[];
   } = $props();
 
   let body = $state('');
@@ -77,11 +81,13 @@
 
   /** Who is writing, when the session names someone. */
   const me = session().displayName || session().username || '';
-  const myId = session().userId;
   const NOTHING_TO_SUBMIT = 'Write a comment first.';
 
-  /** The leader refuses a verdict on a closed change, and from the change's own author. */
-  let reviewable = $derived(!closed && !(myId !== undefined && myId === change.authorId));
+  /** Why the signed-in person gives no verdict: one takes deployer, as deploying does. The leader refuses it, and a
+   * verdict on a closed change. */
+  let approveBlocker = $derived(deployBlocker(touches, undefined, 'Approving this'));
+  let requestBlocker = $derived(deployBlocker(touches, undefined, 'Requesting changes'));
+  let reviewable = $derived(!closed && approveBlocker === '');
   let sending = $derived<ComposerChoice>(reviewable ? choice : 'comment');
 
   async function act(call: () => Promise<BranchMutationResult>, after: () => Promise<void> | void) {
@@ -239,17 +245,24 @@
   <ConversationEntry author={me || undefined}>
     <form class="composer" onsubmit={submit}>
       <textarea rows="4" aria-label="Comment" placeholder="Comment" bind:value={body}></textarea>
-      {#if reviewable}
+      {#if !closed}
         <div class="verdict-pick" role="radiogroup" aria-label="Review">
           <label><input type="radio" value="comment" bind:group={choice} /> Comment</label>
-          <label><input type="radio" value="approve" bind:group={choice} /> Approve</label>
-          <label
-            ><input type="radio" value="request-changes" bind:group={choice} /> Request changes</label
+          <label data-why={approveBlocker || undefined}
+            ><input type="radio" value="approve" bind:group={choice} disabled={!reviewable} /> Approve</label
+          >
+          <label data-why={requestBlocker || undefined}
+            ><input
+              type="radio"
+              value="request-changes"
+              bind:group={choice}
+              disabled={!reviewable}
+            /> Request changes</label
           >
         </div>
       {/if}
       <InlineError message={postError} />
-      <Locked refusedInDemo
+      <Locked
         ><div class="actions">
           {#if closed}
             <Button type="button" disabled={busy ? BUSY : ''} onclick={reopen}>Reopen change</Button
@@ -274,9 +287,6 @@
   .conversation {
     display: grid;
     gap: 0.75rem;
-  }
-  .mono {
-    font-family: var(--mono);
   }
   .note {
     font-size: var(--text-note);
