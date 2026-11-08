@@ -7,6 +7,7 @@ import {
   csvRowChanges,
   emptyConfig,
   fileOf,
+  foldSame,
   isSectionChange,
   jsonDiff,
   objectChanges,
@@ -82,6 +83,52 @@ describe('compareSteps', () => {
       ['removed', 'code', undefined],
       ['changed', 'rename', 3],
     ]);
+  });
+
+  it('shows a changed step part by part, with what changed marked', () => {
+    const assign = (expr: string) => [
+      { target: 'a', expr: '1' },
+      { target: 'b', expr },
+      { target: 'c', expr: '3' },
+    ];
+    const before = { type: 'eval', id: 'e1', assignments: assign('2') };
+    const after = { type: 'eval', id: 'e1', assignments: assign('20') };
+    const [step] = compareSteps([before], [after]);
+    expect(step.parts).toEqual([
+      { kind: 'same', text: 'a = 1' },
+      { kind: 'removed', text: 'b = 2' },
+      { kind: 'added', text: 'b = 20' },
+      { kind: 'same', text: 'c = 3' },
+    ]);
+    expect(foldSame(step.parts ?? [])).toEqual([
+      { kind: 'folded', count: 1 },
+      { kind: 'removed', text: 'b = 2' },
+      { kind: 'added', text: 'b = 20' },
+      { kind: 'folded', count: 1 },
+    ]);
+  });
+
+  it('shows a blank line a code step gained as a line of its own', () => {
+    const before = { type: 'code', id: 'c1', body: 'a = 1\nb = 2' };
+    const after = { type: 'code', id: 'c1', body: 'a = 1\n\nb = 2' };
+    const [step] = compareSteps([before], [after]);
+    expect(step.parts).toEqual([
+      { kind: 'same', text: 'a = 1' },
+      { kind: 'added', text: '' },
+      { kind: 'same', text: 'b = 2' },
+    ]);
+  });
+
+  it('gives a step whose parts all match no parts, so its line still shows', () => {
+    const before = {
+      type: 'eval',
+      id: 'e1',
+      filter: '',
+      assignments: [{ target: 'a', expr: '1' }],
+    };
+    const after = { ...before, filter: 'x' };
+    const [step] = compareSteps([before], [after]);
+    expect([step.status, step.parts]).toEqual(['changed', undefined]);
   });
 
   it('compares an if step by its condition, and its branches step by step', () => {

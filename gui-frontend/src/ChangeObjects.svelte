@@ -36,6 +36,7 @@
     isRecord,
     fileOf,
     isSectionChange,
+    foldSame,
     jsonDiff,
     objectChanges,
     scopeOf,
@@ -60,6 +61,8 @@
   import WarningLine from './WarningLine.svelte';
   import PipelineFindings from './PipelineFindings.svelte';
   import SortButton from './SortButton.svelte';
+  import ShowAll from './ShowAll.svelte';
+  import { SvelteSet } from 'svelte/reactivity';
   import { TableSort } from './sort.svelte';
   import { anchorLabel, elsewhere, threadsOnObject, type Thread } from './threads';
 
@@ -413,6 +416,8 @@
 
   /** The one composer open, by `keyOf` and the step's id where it is on a step. */
   let composing = $state<string | null>(null);
+  /** Changed steps whose unchanged lines are shown, not folded. */
+  const unfolded = new SvelteSet<StepChange>();
 
   function composerKey(c: ObjectChange, step?: string): string {
     return step === undefined ? keyOf(c) : `${keyOf(c)} ${step}`;
@@ -501,7 +506,21 @@
             )}
           {/if}
         </div>
-        {#if step.status !== 'same' && step.summary}
+        {#if step.parts}
+          <div class="json-scroll step-parts">
+            <pre
+              class="json">{#each unfolded.has(step) ? step.parts : foldSame(step.parts) as line, n (n)}{#if line.kind === 'folded'}<div
+                    class="same">  <ShowAll
+                      more={line.count}
+                      label="{count(line.count, 'line')} unchanged"
+                      onshowall={() => unfolded.add(step)}
+                    /></div>{:else}<div class={line.kind}>{line.kind === 'added'
+                      ? '+'
+                      : line.kind === 'removed'
+                        ? '-'
+                        : ' '} {line.text}</div>{/if}{/each}</pre>
+          </div>
+        {:else if step.status !== 'same' && step.summary}
           <div class="step-body mono" class:struck={step.status === 'removed'}>{step.summary}</div>
         {/if}
         {#if step.id !== undefined && step.status !== 'removed'}
@@ -960,6 +979,9 @@
   .rows-scroll,
   .json-scroll {
     overflow-x: auto;
+  }
+  .step-parts {
+    border-top: 1px solid var(--border);
   }
 
   .json {

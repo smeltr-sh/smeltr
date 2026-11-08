@@ -13,6 +13,7 @@
     of,
     more,
     what,
+    label,
     onshowall,
   }: {
     /** The line's form: how many it shows. */
@@ -23,6 +24,8 @@
     more?: number;
     /** What the inline form's items are, singular, where the list does not say. */
     what?: string;
+    /** The inline form's button text, used in place of "N more" where that does not suit the items. */
+    label?: string;
     onshowall: () => void;
   } = $props();
 </script>
@@ -35,7 +38,7 @@
       // Showing the rest is all the click does, inside a row that a click would open or close.
       e.stopPropagation();
       onshowall();
-    }}>{more} more{what ? ` ${more === 1 ? what : `${what}s`}` : ''}</button
+    }}>{label ?? `${more} more${what ? ` ${more === 1 ? what : `${what}s`}` : ''}`}</button
   >
 {:else}
   <div class="show-all">
