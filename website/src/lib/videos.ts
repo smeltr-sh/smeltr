@@ -70,7 +70,13 @@ const allCourses: Course[] = [
         minutes: 2,
         poster: '/videos/agent-course-4-poster.jpg',
       },
-      { title: 'Have the agent fix a problem', slug: 'fix-a-problem' },
+      {
+        title: 'Have Your AI Agent Fix a Pipeline Problem',
+        slug: 'fix-a-problem',
+        youtube: 'yXhaDPrdRc4',
+        minutes: 3,
+        poster: '/videos/agent-course-5-poster.jpg',
+      },
     ],
   },
 ];
