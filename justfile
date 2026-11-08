@@ -260,18 +260,22 @@ check-package package: need-nextest stable
 # A release: its fixtures recorded and committed, and that commit tagged `v<release>`. Nothing leaves
 # this machine: `git push --atomic origin main v<release>` starts the release workflow. Semver: a major release
 # raises the upgrade floor or ships a breaking store step, a minor one adds features and additive steps
-# only, a patch fixes and adds no step. A release candidate (`1.2.0-rc1`) is only a tag on main's latest commit,
-# with nothing recorded or committed. Push it with `git push origin v1.2.0-rc1`; the workflow runs it when started
-# by hand on it, as a draft pre-release with its own image tag, and Windows only when asked.
-[doc("Record a release, commit it and tag it, or tag a release candidate.")]
-cut-release release: clean-main
-    {{ if release =~ '^[0-9]+\.[0-9]+\.[0-9]+$' { '"' + just_executable() + '" record-and-commit ' + release } else if release =~ '^[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$' { "" } else { error('a release is named major.minor.patch, like 1.0.0, and its candidate like 1.0.0-rc1') } }}
-    git tag -a "v{{release}}" -m "Release {{release}}"
-
-[private]
-record-and-commit release: (has-notes release) (record-release release)
+# only, a patch fixes and adds no step.
+[doc("Record a release, commit it and tag it.")]
+cut-release release: (has-notes release) (record-release if release =~ '^[0-9]+\.[0-9]+\.[0-9]+$' { release } else { error('a release is named major.minor.patch, like 1.0.0') })
     git add tests/fixtures/releases
     git commit -m "Release {{release}}"
+    git tag -a "v{{release}}" -m "Release {{release}}"
+
+# A release candidate: main's latest commit tagged `v<candidate>`, with nothing recorded or committed, the tag
+# pushed and the release workflow started on it. It builds a draft pre-release with its own image tag, for Linux
+# only; for Windows too, start the workflow again from the Actions tab with Windows on.
+[doc("Tag a release candidate, push the tag and start its build.")]
+cut-rc candidate: clean-main
+    {{ if candidate =~ '^[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$' { "" } else { error('a release candidate is named major.minor.patch-rcN, like 1.0.0-rc1') } }}
+    git tag -a "v{{candidate}}" -m "Release candidate {{candidate}}"
+    git push origin "v{{candidate}}"
+    gh workflow run release.yml --ref "v{{candidate}}" -f windows=false
 
 # A release is cut only once its notes are written and dated in `website/src/lib/releases.json`.
 [private]
