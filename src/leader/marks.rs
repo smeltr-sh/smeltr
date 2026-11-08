@@ -89,9 +89,7 @@ fn holding_since(state: &AppState, group: &str, source: &str, now_ms: i64) -> Re
     let spans = warnings::spans(store, SubjectKind::Source, group, source, now_ms)?;
     Ok(spans
         .into_iter()
-        .find(|s| {
-            s.ended_millis.is_none() && matches!(s.condition, Condition::SourceRowsBelow | Condition::SourceRowsAbove)
-        })
+        .find(|s| s.ended_millis.is_none() && s.condition == Condition::SourceRowsBelow)
         .map(|s| s.started_millis))
 }
 
