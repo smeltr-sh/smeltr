@@ -292,7 +292,9 @@
       key: `to ${d.name}`,
       label: `to ${d.name}`,
       failing: false,
-      keeps: (row) => table?.leads.get(row.key)?.dests.includes(d.id) ?? false,
+      keeps: (row) =>
+        table?.leads.get(row.key)?.dests.some((i) => result?.destination_names[i] === d.name) ??
+        false,
     };
   }
 </script>
