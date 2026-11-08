@@ -1,14 +1,13 @@
 <!--
-  The records a workspace runs over, chosen from one menu: a saved sample, a capture of a source
-  that feeds the pipeline, or a new one pasted or read from a file, which `AddSampleDialog` makes.
-  Each tab has its own search, since a fleet's sources and samples run to the hundreds.
+  The records a workspace runs over, chosen from one menu: a saved sample, the capture the leader
+  holds unsaved, or a new sample, which Add sample makes. It has a search, since a fleet's samples
+  run to the hundreds.
 -->
 <script lang="ts">
   import ChipPicker from './ChipPicker.svelte';
   import LockIcon from './LockIcon.svelte';
-  import SecondaryTabs from './SecondaryTabs.svelte';
   import { count, dateTime } from './time';
-  import { capturedAt, getConnections, type Connected, type SampleSummary } from './api';
+  import { capturedAt, type SampleSummary } from './api';
 
   let {
     samples,
@@ -16,12 +15,9 @@
     lastUsed,
     records,
     lockedBy,
-    pipeline,
-    mayCapture,
     held,
     onpick,
     onadd,
-    oncapture,
   }: {
     samples: SampleSummary[];
     /** The sample the records on screen came from. */
@@ -32,22 +28,15 @@
     records: number | null;
     /** The names of this pipeline's tests that lock each sample, by sample id. */
     lockedBy: Map<string, string[]>;
-    /** The pipeline, whose sources a capture is offered from; empty before its first save. */
-    pipeline: string;
-    mayCapture: (source: Connected) => boolean;
-    /** The capture the leader holds for whoever is signed in, picked as `choice`: listed above the sources. */
-    held?: { choice: string; records: number };
+    /** The capture the leader holds for the person signed in, listed first among the samples. Picking it passes
+     * `choice` to `onpick`. */
+    held?: { choice: string; records: number; source?: string };
     onpick: (id: string) => void;
-    /** Opens the dialog that makes a new sample; absent for a viewer, who may not save one. */
+    /** Opens Add sample to make a new sample; absent where the person may make none. */
     onadd?: () => void;
-    /** Starts a capture at `source`; absent for whoever may not capture. */
-    oncapture?: (source: Connected) => void;
   } = $props();
 
-  type Tab = 'saved' | 'capture';
-  let tabs = $derived<Tab[]>(oncapture || held ? ['saved', 'capture'] : ['saved']);
   let open = $state(false);
-  let tab = $state<Tab>('saved');
   let query = $state('');
 
   const HELD_NAME = 'Your capture';
@@ -57,7 +46,7 @@
       : (samples.find((s) => s.id === selected)?.name ?? selected),
   );
 
-  // -- saved ---------------------------------------------------------------
+  // -- samples -------------------------------------------------------------
 
   const locked = (s: SampleSummary) => (lockedBy.get(s.id)?.length ?? 0) > 0;
   let saved = $derived(
@@ -68,38 +57,39 @@
         (b.written ?? 0) - (a.written ?? 0),
     ),
   );
-
-  // -- capture -------------------------------------------------------------
-
-  let sources = $state<Connected[]>([]);
-  async function loadSources() {
-    if (!pipeline || !oncapture) return;
-    try {
-      const res = await getConnections('pipeline', pipeline);
-      sources = res.upstream.filter((c) => c.kind === 'source' && mayCapture(c));
-    } catch {
-      // Unreadable connections leave nothing to capture from, which the tab says.
-      sources = [];
-    }
-  }
-
-  let found = $derived.by(() => {
-    const q = query.trim().toLowerCase();
-    if (tab === 'saved')
-      return q
-        ? saved.filter((s) => `${s.name} ${s.source ?? ''}`.toLowerCase().includes(q))
-        : saved;
-    return [];
+  /** A row of the list, saying after its name what it holds and where it is from. */
+  const row = (
+    id: string,
+    name: string,
+    records: number,
+    source: string | undefined,
+    ...notes: (string | false)[]
+  ) => ({
+    id,
+    name,
+    source,
+    said: [count(records, 'record'), source, ...notes].filter(Boolean).join(' · '),
   });
-  let foundSources = $derived.by(() => {
-    const q = query.trim().toLowerCase();
-    return q ? sources.filter((c) => c.id.toLowerCase().includes(q)) : sources;
-  });
+  /** The held capture, then the saved samples. */
+  let listed = $derived([
+    ...(held ? [row(held.choice, HELD_NAME, held.records, held.source, 'not saved')] : []),
+    ...saved.map((s) => {
+      const at = capturedAt(s);
+      return row(
+        s.id,
+        s.name,
+        s.records,
+        s.source,
+        at !== undefined && dateTime(at / 1000),
+        s.id === lastUsed && 'last used',
+      );
+    }),
+  ]);
 
-  function show(next: Tab) {
-    tab = next;
-    query = '';
-  }
+  let q = $derived(query.trim().toLowerCase());
+  let found = $derived(
+    listed.filter((s) => `${s.name} ${s.source ?? ''}`.toLowerCase().includes(q)),
+  );
 </script>
 
 <ChipPicker
@@ -107,10 +97,7 @@
   align="left"
   bind:open
   ariaLabel="Choose a sample"
-  onopen={() => {
-    show('saved');
-    void loadSources();
-  }}
+  onopen={() => (query = '')}
 >
   {#snippet face()}
     <span class="dim">Sample</span>
@@ -119,105 +106,47 @@
   {/snippet}
   {#snippet children()}
     <div class="menu">
-      <SecondaryTabs {tabs} active={tab} onselect={show} ariaLabel="Sample">
-        {#snippet label(t)}
-          {t === 'saved' ? 'Saved' : 'Capture'}
-          <span class="dim">{t === 'saved' ? samples.length : sources.length + (held ? 1 : 0)}</span
-          >
-        {/snippet}
-        {#snippet after()}
-          {#if onadd}
-            <button
-              type="button"
-              class="add"
-              onclick={() => {
-                open = false;
-                onadd();
-              }}>Paste or file</button
-            >
-          {/if}
-        {/snippet}
-      </SecondaryTabs>
-
-      {#if tab === 'saved'}
-        <!-- svelte-ignore a11y_autofocus -->
-        <input
-          type="search"
-          bind:value={query}
-          placeholder="Find a sample"
-          aria-label="Find a sample"
-          autofocus
-        />
-        <div class="list" role="listbox" aria-label="Saved samples">
-          {#each found as s (s.id)}
-            {@const lockers = lockedBy.get(s.id) ?? []}
-            <button
-              type="button"
-              class="item"
-              role="option"
-              aria-selected={s.id === selected}
-              onclick={() => {
-                open = false;
-                onpick(s.id);
-              }}
-            >
-              <span class="name ellipsis">
-                {#if lockers.length > 0}<span title={`Locked by the test ${lockers.join(', ')}`}
-                    ><LockIcon /></span
-                  >{/if}
-                {s.name}
-              </span>
-              <span class="dim"
-                >{count(s.records, 'record')}{capturedAt(s) !== undefined
-                  ? ` · ${dateTime(capturedAt(s)! / 1000)}`
-                  : ''}{s.id === lastUsed ? ' · last used' : ''}</span
-              >
-            </button>
-          {/each}
-        </div>
-      {:else if tab === 'capture'}
-        <!-- svelte-ignore a11y_autofocus -->
-        <input
-          type="search"
-          bind:value={query}
-          placeholder="Find a source"
-          aria-label="Find a source"
-          autofocus
-        />
-        <div class="list" role="listbox" aria-label="Sources">
-          {#if held && !query.trim()}
-            <button
-              type="button"
-              class="item"
-              role="option"
-              aria-selected={held.choice === selected}
-              onclick={() => {
-                open = false;
-                onpick(held.choice);
-              }}
-            >
-              <span class="name ellipsis">{HELD_NAME}</span>
-              <span class="dim">{count(held.records, 'record')} · not saved</span>
-            </button>
-          {/if}
-          {#each foundSources as c (`${c.area}/${c.id}`)}
-            <button
-              type="button"
-              class="item"
-              role="option"
-              aria-selected="false"
-              onclick={() => {
-                open = false;
-                oncapture?.(c);
-              }}><span class="name mono ellipsis">◉ {c.id}</span></button
-            >
-          {/each}
-        </div>
-        <!-- The count is of sources, so it says nothing beside a held capture when there are none. -->
-        {#if sources.length || !held}
-          <div class="foot dim">{foundSources.length} of {count(sources.length, 'source')}</div>
-        {/if}
+      {#if onadd}
+        <button
+          type="button"
+          class="add"
+          onclick={() => {
+            open = false;
+            onadd();
+          }}>Add sample</button
+        >
       {/if}
+      <!-- svelte-ignore a11y_autofocus -->
+      <input
+        type="search"
+        bind:value={query}
+        placeholder="Find a sample"
+        aria-label="Find a sample"
+        autofocus
+      />
+      <div class="list" role="listbox" aria-label="Samples">
+        {#each found as s (s.id)}
+          {@const lockers = lockedBy.get(s.id) ?? []}
+          <button
+            type="button"
+            class="item"
+            role="option"
+            aria-selected={s.id === selected}
+            onclick={() => {
+              open = false;
+              onpick(s.id);
+            }}
+          >
+            <span class="name ellipsis">
+              {#if lockers.length > 0}<span title={`Locked by the test ${lockers.join(', ')}`}
+                  ><LockIcon /></span
+                >{/if}
+              {s.name}
+            </span>
+            <span class="dim">{s.said}</span>
+          </button>
+        {/each}
+      </div>
     </div>
   {/snippet}
 </ChipPicker>
@@ -237,7 +166,7 @@
   }
 
   .add {
-    margin: 0 0 0.25rem auto;
+    align-self: flex-end;
   }
 
   .list {
@@ -274,12 +203,5 @@
   .name {
     flex: 1;
     min-width: 0;
-  }
-
-  .foot {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    font-size: var(--text-label);
   }
 </style>
