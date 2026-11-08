@@ -267,15 +267,16 @@ cut-release release: (has-notes release) (record-release if release =~ '^[0-9]+\
     git commit -m "Release {{release}}"
     git tag -a "v{{release}}" -m "Release {{release}}"
 
-# A release candidate: main's latest commit tagged `v<candidate>`, with nothing recorded or committed, the tag
-# pushed and the release workflow started on it. It builds a draft pre-release with its own image tag, for Linux
-# only; for Windows too, start the workflow again from the Actions tab with Windows on.
-[doc("Tag a release candidate, push the tag and start its build.")]
+# A release candidate: main's latest commit tagged `v<candidate>`, with nothing recorded or committed, and the tag
+# pushed. Its build is started by hand on GitHub, on that tag: a draft pre-release with its own image tag, and
+# Windows only when asked.
+[doc("Tag a release candidate and push the tag.")]
 cut-rc candidate: clean-main
     {{ if candidate =~ '^[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$' { "" } else { error('a release candidate is named major.minor.patch-rcN, like 1.0.0-rc1') } }}
+    git merge-base --is-ancestor HEAD origin/main
     git tag -a "v{{candidate}}" -m "Release candidate {{candidate}}"
     git push origin "v{{candidate}}"
-    gh workflow run release.yml --ref "v{{candidate}}" -f windows=false
+    @echo Start its build at https://github.com/smeltr-sh/smeltr/actions/workflows/release.yml: choose Run workflow, then the tag v{{candidate}}
 
 # A release is cut only once its notes are written and dated in `website/src/lib/releases.json`.
 [private]
