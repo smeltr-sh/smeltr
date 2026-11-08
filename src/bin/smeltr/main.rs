@@ -74,10 +74,10 @@ async fn route_preview(
         .await
 }
 
-/// The route preview of `req.config` on `branch`, over `given` or else its sample read from that branch. A group's routes run with
-/// `shared/` merged in, as the group runs once deployed: shared's routes route the sample too, and a group route may
-/// read a shared source, call a shared pipeline or read a shared lookup table. `data_dir` explicit, as for
-/// `Reading::open_in`.
+/// The route preview of `req.config` on `branch`, over `given` or else its sample read from that branch. A group's
+/// routes run with `shared/` merged in, as the group runs once deployed: shared's routes route the sample too, and a
+/// group route may read a shared source, call a shared pipeline or read a shared lookup table. `data_dir` explicit, as
+/// for `Reading::open_in`.
 fn route_preview_on(
     data_dir: &std::path::Path,
     branch: &str,
