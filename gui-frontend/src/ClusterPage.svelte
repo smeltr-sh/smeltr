@@ -358,7 +358,13 @@
         seen.add(key);
         return true;
       })
-      .map((series) => ({ group: series.group, subjectId: series.subjectId }));
+      .map((series) => {
+        const same = read.rowsIn.filter(
+          (other) => other.group === series.group && other.subjectId === series.subjectId,
+        );
+        const now = bucketMillis ? currentRate(sumSeries(same), bucketMillis, flowFetchedAt) : null;
+        return { group: series.group, subjectId: series.subjectId, now };
+      });
   });
   async function resetNormal(group: string, subjectId: string) {
     const ok = await ask({
@@ -1168,11 +1174,12 @@
               ><b>Normally</b> is the range of rows per second a source reads at this time of day,
               learned from the last 7 days. When its last half hour falls outside that range, it
               raises Rows below normal or Rows above normal. <b>Away by</b> is how far the last half hour
-              is past the nearest end of that range, as a percent of that end.</Help
+              is past the nearest end of that range, as a percent of that end. A source with less than
+              3 days of rows shows "learning, day N of 3" until it has a normal.</Help
             >
           </h2>
           {#if flow !== null}<p class="note">
-              {count(normals.length + learning.length, 'source')}.
+              {count(normals.length + learning.length, 'source')}, furthest first.
             </p>{/if}
         </div>
       </div>
@@ -1224,7 +1231,9 @@
               {#each learning as l (JSON.stringify([l.group, l.subjectId]))}
                 <tr>
                   <td class="mono">{l.subjectId}</td><td>{l.group}</td>
-                  <td class="num dim">–</td><td class="num dim">learning, day 1 of 3</td>
+                  <td class="num">{l.now === null ? '–' : Math.round(l.now)}</td><td class="num dim"
+                    >learning, day 1 of 3</td
+                  >
                   <td class="num dim">–</td>
                   <td class="row-actions"></td>
                 </tr>
