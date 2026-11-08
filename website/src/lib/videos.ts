@@ -42,7 +42,13 @@ const allCourses: Course[] = [
     slug: 'agent',
     demo: false,
     videos: [
-      { title: 'Set Up Your AI Data Engineer in smeltr', slug: 'setup' },
+      {
+        title: 'Set Up Your AI Data Engineer in smeltr',
+        slug: 'setup',
+        youtube: '1n0qupyS_9E',
+        minutes: 3,
+        poster: '/videos/agent-course-1-poster.jpg',
+      },
       {
         title: 'AI Agent Builds a FortiGate to Elasticsearch Pipeline',
         slug: 'build-a-pipeline',
