@@ -3003,8 +3003,8 @@ fn declared_fields_drifted(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Wa
 
 /// Rows a source received that no route took, within the drift window, while its group ran what `deployed_configs`
 /// says it is deployed at: one warning per source of a group, naming the streams they came under. It clears once a
-/// window passes with none, which is how a route that takes them shows, however its condition is written, and once
-/// its group is deployed at anything else.
+/// window passes with none, which is how a route that takes them shows, however its condition is written, and at
+/// once when its group is deployed at anything else.
 fn streams_unrouted(
     store: Option<&RegistryStore>,
     now_ms: i64,

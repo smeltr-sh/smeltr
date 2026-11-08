@@ -1721,7 +1721,7 @@ async fn get_streams(
         };
         let mut stored = store.streams()?;
         stream_conditions(&data_dir, &mut stored.unmatched);
-        // What the `StreamUnrouted` warning names, by the same reading.
+        // `recent` is what the `StreamUnrouted` warning names: the same rows, read by the same rule.
         let deployed = deployed_configs(&data_dir, &configs, &deployed_groups(&data_dir));
         let since = warnings::now_millis() - series::DRIFT_WINDOW.as_millis() as i64;
         let unrouted = store.unrouted_since(since, |group| deployed.get(group).cloned())?;

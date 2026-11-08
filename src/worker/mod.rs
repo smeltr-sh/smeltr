@@ -4314,8 +4314,8 @@ impl Supervisor {
             // Its threads are gone, so nothing is reported about them. What it counted and said before it went is
             // still owed to the leader, and is carried by the beats that follow.
             held.state = child::RuntimeState::default();
-            // Except its streams: the leader judges a beat's streams by the commit the beat names, and this
-            // runtime's commit is no longer the one a later beat names.
+            // Its streams are the exception: the leader judges a beat's streams by the commit the beat names, and a
+            // later beat no longer names this runtime's commit.
             held.gathered.streams = None;
         }
         if let Some(window) = self.owed.lock().unwrap().window.as_mut() {
@@ -7350,8 +7350,9 @@ mod tests {
         );
     }
 
-    /// A runtime that is gone takes its streams with it, from the window still owed and from what waits for the next:
-    /// the leader judges a beat's streams by the commit the beat names, which is no longer that runtime's.
+    /// A runtime that is gone takes its streams with it, both those still owed to the current window and those waiting
+    /// for the next. A later beat names a different commit, and the leader judges streams by the commit the beat names,
+    /// so the old runtime's streams would be judged against the wrong deployment.
     #[test]
     fn a_runtime_s_streams_go_with_it() {
         let supervisor = supervisor_for(temp_dir("streams-forgotten"));

@@ -431,8 +431,8 @@ pub(crate) const STEPS: &[&str] = &[
      ALTER TABLE logs ADD COLUMN type TEXT NOT NULL DEFAULT '';
      ALTER TABLE logs ADD COLUMN service TEXT;",
     // 13 -- what the rows no route took were judged against: the configuration their group was deployed at
-    // (`git::ContentId::key`). A stream is unrouted only by what is deployed now. NULL on every row summed before it,
-    // which no deployment matches, so a warning those rows raised clears with the first rows recorded after it.
+    // (`git::ContentId::key`). A stream is unrouted only by what is deployed now. Rows summed before this step have
+    // NULL, which no deployment matches, so a warning they raised clears with the first rows recorded after the step.
     "ALTER TABLE stream_unmatched ADD COLUMN config TEXT;",
 ];
 
@@ -1624,7 +1624,7 @@ impl RegistryStore {
 /// `deployed` is whether the report comes from a commit that runs what its group is deployed at. A step whose
 /// declarations differ from those held starts its counts over from such a report, and is left out of any other:
 /// during a rollout the workers still on the old configuration neither restart the new counts nor add to them. Rows
-/// no route took count only from such a report, and their run starts over when `config` changes.
+/// no route took count only from such a report, and the run of them starts over when `config` changes.
 fn write_streams(tx: &Connection, streams: &Streams<'_>, now_ms: i64) -> rusqlite::Result<()> {
     let Streams {
         group_id,

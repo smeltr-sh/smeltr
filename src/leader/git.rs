@@ -2294,7 +2294,8 @@ pub struct ContentId {
 }
 
 impl ContentId {
-    /// The same for two commits exactly when this is: a name the leader can store for what a group runs.
+    /// A name for what a group runs that the leader can store. It is the same for two commits exactly when their
+    /// `ContentId`s are equal.
     pub fn key(&self) -> String {
         let mut hasher = twox_hash::XxHash64::with_seed(0);
         for (folder, entries) in [("group", &self.group), ("shared", &self.shared)] {
