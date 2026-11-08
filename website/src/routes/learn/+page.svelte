@@ -1,14 +1,6 @@
 <script lang="ts">
   import VideoPlayer from '#lib/components/VideoPlayer.svelte';
-  import { topicNames, videos, type Topic } from '#lib/videos.ts';
-
-  const filters: [Topic | 'all', string][] = [['all', 'All'], ...Object.entries(topicNames)] as [
-    Topic | 'all',
-    string,
-  ][];
-
-  let shown: Topic | 'all' = $state('all');
-  const visible = $derived(videos.filter((v) => shown === 'all' || v.topic === shown));
+  import { courseLength, courses, released } from '#lib/videos.ts';
 </script>
 
 <svelte:head><title>Learn — smeltr</title></svelte:head>
@@ -18,33 +10,15 @@
     <h1>Learn</h1>
   </section>
 
-  <div class="filters" role="group" aria-label="Topic">
-    {#each filters as [id, label] (id)}
-      <button
-        class="compact"
-        class:primary={shown === id}
-        aria-pressed={shown === id}
-        onclick={() => (shown = id)}>{label}</button
-      >
-    {/each}
-  </div>
-
   <div class="library">
-    {#each visible as video (video.title)}
-      <article class="video">
-        <VideoPlayer {video} href={video.youtube ? `/learn/${video.slug}` : undefined} />
+    {#each courses as course (course.slug)}
+      <article class="course">
+        <VideoPlayer video={released(course)[0] ?? course.videos[0]} href="/learn/{course.slug}" />
         <div class="copy">
-          <p class="eyebrow">
-            {topicNames[video.topic]}{#if video.minutes}&nbsp;· {video.minutes} min{/if}
-          </p>
-          <h2>
-            {#if video.youtube}<a href="/learn/{video.slug}">{video.title}</a
-              >{:else}{video.title}{/if}
-          </h2>
-          {#if video.youtube}
+          <p class="eyebrow">{courseLength(course)}</p>
+          <h2><a href="/learn/{course.slug}">{course.title}</a></h2>
+          {#if course.demo}
             <a href="/demo/try/" rel="external">Try it yourself in the demo →</a>
-          {:else if video.guide}
-            <a href={video.guide}>Read the guide →</a>
           {/if}
         </div>
       </article>
@@ -56,18 +30,12 @@
   .marketing .page-hero {
     padding-bottom: 1.5rem;
   }
-  .filters {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-    margin-bottom: 1.5rem;
-  }
   .library {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 1rem;
   }
-  .video {
+  .course {
     display: flex;
     flex-direction: column;
     border: 1px solid var(--border);
