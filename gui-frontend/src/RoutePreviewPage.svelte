@@ -36,6 +36,8 @@
   let samples = $state<SampleSummary[]>([]);
   let selected = $state('');
   let result = $state<RoutePreviewResult | null>(null);
+  /** The sample `result` ran over. */
+  let ran = $state('');
   let running = $state(false);
   let runError = $state('');
 
@@ -67,12 +69,14 @@
     running = true;
     runError = '';
     try {
-      const res = await routePreview(JSON.stringify(config), selected);
+      const sample = selected;
+      const res = await routePreview(JSON.stringify(config), sample);
       if (!res.ok) {
         runError = errorText(res.errors);
         result = null;
       } else {
         result = res;
+        ran = sample;
       }
     } catch (e) {
       runError = unreported(e);
@@ -393,7 +397,7 @@
     </div>
   {/if}
 
-  <RoutePreview {config} {result} />
+  <RoutePreview {config} {result} sample={ran} />
 </SectionShell>
 
 <style>
