@@ -1621,9 +1621,10 @@ impl RegistryStore {
 /// hold here too: a field or key the table already holds the cap of is counted as dropped rather than added, so
 /// the tables grow with the configuration and never with the traffic.
 ///
-/// `deployed` is whether the report comes from the commit its group is deployed at. A step whose declarations
-/// differ from those held starts its counts over from such a report, and is left out of any other: during a
-/// rollout the workers still on the old commit neither restart the new counts nor add to them.
+/// `deployed` is whether the report comes from a commit that runs what its group is deployed at. A step whose
+/// declarations differ from those held starts its counts over from such a report, and is left out of any other:
+/// during a rollout the workers still on the old configuration neither restart the new counts nor add to them. Rows
+/// no route took count only from such a report, and their run starts over when `config` changes.
 fn write_streams(tx: &Connection, streams: &Streams<'_>, now_ms: i64) -> rusqlite::Result<()> {
     let Streams {
         group_id,
