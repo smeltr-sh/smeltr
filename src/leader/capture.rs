@@ -99,11 +99,11 @@ pub struct CaptureStatus {
     /// the status a caller polls, which counts them in `records`: they are read on their own (`HeldRecords`).
     #[serde(skip)]
     pub batches: Vec<CaptureBatch>,
-    /// How many records `batches` hold.
+    /// How many records the capture holds, across its batches.
     pub records: usize,
-    /// Moves on each time what the capture holds changes, which is when its records are worth reading again. The
-    /// count alone can stay put while they change: a worker's newest report replaces its last whole, and may hold as
-    /// many records but not the same ones.
+    /// Moves each time what the capture holds changes, which is when its records are worth reading again. The count
+    /// alone can stay put while they change: a worker's newest report replaces its last whole, and may hold as many
+    /// records, but not the same ones.
     pub revision: u64,
     /// Why each worker stopped, so a short sample says which bound it hit.
     pub ended: Vec<(String, CaptureEnd)>,

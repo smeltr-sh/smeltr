@@ -3017,7 +3017,7 @@ export interface CaptureStatusDto {
   workers: CaptureWorkerDto[];
   /** How many records it holds. They are read on their own (`captureRecords`). */
   records: number;
-  /** Moves on each time what it holds changes, which is when its records are
+  /** Moves each time what it holds changes, which is when its records are
    * worth reading again. */
   revision: number;
   /** Why each worker stopped, so a short sample says which bound it hit. A failure
