@@ -183,7 +183,8 @@ committed:
     changes=$(git status --porcelain) && test -z "$changes" \
       || { echo "dist builds a commit: commit or stash what is uncommitted" >&2; exit 1; }
 
-# A checkout of a release tag, as CI makes one, is detached: it counts as `main` when the tag is on it.
+# A checkout of a release tag, as CI makes one, is detached: it counts as `main` when the tag is on it. Main itself
+# must hold everything origin/main does, so a stale checkout cannot release an old commit.
 [private]
 [unix]
 clean-main:
@@ -191,11 +192,15 @@ clean-main:
       && { test "$(git branch --show-current)" = main \
         || { test -n "$(git tag --points-at HEAD --list 'v[0-9]*')" && git merge-base --is-ancestor HEAD origin/main; }; } \
       || { echo "a release builds from main, or a release tag on it, with nothing uncommitted" >&2; exit 1; }
+    test "$(git branch --show-current)" != main || git fetch -q origin main \
+      || { echo "could not fetch origin/main: check your connection before cutting a release" >&2; exit 1; }
+    test "$(git branch --show-current)" != main || git merge-base --is-ancestor origin/main HEAD \
+      || { echo "main is behind origin/main: pull before cutting a release" >&2; exit 1; }
 
 [private]
 [windows]
 clean-main:
-    powershell -NoProfile -Command "$changes = @(git status --porcelain); if ($LASTEXITCODE -ne 0) { exit 1 }; $branch = git branch --show-current; if ($LASTEXITCODE -ne 0 -or $branch -ne 'main' -or $changes.Count -gt 0) { [Console]::Error.WriteLine('a release builds from main with nothing uncommitted'); exit 1 }"
+    powershell -NoProfile -Command "$changes = @(git status --porcelain); if ($LASTEXITCODE -ne 0) { exit 1 }; $branch = git branch --show-current; if ($LASTEXITCODE -ne 0 -or $branch -ne 'main' -or $changes.Count -gt 0) { [Console]::Error.WriteLine('a release builds from main with nothing uncommitted'); exit 1 }; git fetch -q origin main; if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine('could not fetch origin/main: check your connection before cutting a release'); exit 1 }; git merge-base --is-ancestor origin/main HEAD; if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine('main is behind origin/main: pull before cutting a release'); exit 1 }"
 
 # The check before every push; nothing else runs one. `tools/check-scope` picks the checks the files changed since
 # origin/main can break, down to the Rust tests of the modules they touch, and runs them side by side. It can miss a
