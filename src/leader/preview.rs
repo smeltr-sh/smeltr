@@ -342,8 +342,9 @@ pub struct ExceptionOut {
 pub struct RoutePreviewRequest {
     /// A whole-bundle `config_file` JSON document: sources, destinations, routes and pipelines.
     pub config: String,
-    /// The saved sample to route, by id.
-    pub sample: String,
+    /// The saved sample to route, by id. None where the caller hands it a held capture instead.
+    #[serde(default)]
+    pub sample: Option<String>,
     /// What `now()` reads, in unix microseconds. A run re-run against the instant it was locked at agrees with the
     /// first, because `now()` and a reference-less `parseTime` put the clock into the output -- two runs over one
     /// sample agree only if they are given one instant. An ordinary preview sends none and reads the clock.

@@ -349,32 +349,39 @@ pub async fn my_capture(
     let capture = state
         .captures
         .held_by(&actor.id)
-        .filter(|session| followed(&state.captures, &access, session))
-        .and_then(|session| state.captures.status(&session));
+        .and_then(|session| followed_status(&state.captures, &access, &session));
     Envelope::ok(Followed { capture })
 }
 
-/// A finished capture's records, as a preview runs them in place of a saved sample's, or why it cannot run them. Only
-/// whoever opened the capture previews over it, while they view its group.
+/// A finished capture as a preview runs it in place of a saved sample: the capture named by its session, standing for
+/// the source it was taken from, or the reason it cannot run. Only the person who opened the capture previews over it,
+/// and only while they view its group.
 pub fn held_for_preview(
     captures: &Captures,
     access: &Access,
     actor: &Actor,
     session: &str,
-) -> Result<(Vec<smeltr::heartbeat::CaptureColumn>, Vec<smeltr::io::RecordObject>), String> {
+) -> Result<config_file::SampleDto, String> {
     let gone = || {
         "this capture is no longer held: a newer one replaced it, or it went unused too long, or it was dropped to make \
          room. Capture again"
             .to_string()
     };
-    if captures.owner(session).as_deref() != Some(actor.id.as_str()) || !followed(captures, access, session) {
+    if captures.owner(session).as_deref() != Some(actor.id.as_str()) {
         return Err(gone());
     }
-    let status = captures.status(session).ok_or_else(gone)?;
+    let status = followed_status(captures, access, session).ok_or_else(gone)?;
     if !status.done {
         return Err("this capture is still running. Stop it to use what it holds".to_string());
     }
-    Ok(held_records(captures, session, &status))
+    let (columns, records) = held_records(captures, session, &status);
+    Ok(config_file::SampleDto {
+        id: session.to_string(),
+        name: session.to_string(),
+        source: status.source,
+        columns,
+        records,
+    })
 }
 
 pub async fn capture_status(
@@ -386,8 +393,32 @@ pub async fn capture_status(
 }
 
 fn status_of(captures: &Captures, access: &Access, session: &str) -> Envelope<Followed> {
-    let capture = followed(captures, access, session).then(|| captures.status(session));
-    Followed::found(capture.flatten())
+    Followed::found(followed_status(captures, access, session))
+}
+
+/// What a capture holds, read apart from its status, which only counts it.
+#[derive(Default, serde::Serialize)]
+pub struct HeldRecords {
+    batches: Vec<smeltr::heartbeat::CaptureBatch>,
+}
+
+/// What `session` holds so far, running or over: one batch per distinct column list, each row naming its worker.
+/// Worth reading again only once its status's `revision` moves.
+pub async fn capture_records(
+    State(state): State<AppState>,
+    Extension(access): Extension<Access>,
+    AxPath(session): AxPath<String>,
+) -> Envelope<HeldRecords> {
+    records_of(&state.captures, &access, &session)
+}
+
+fn records_of(captures: &Captures, access: &Access, session: &str) -> Envelope<HeldRecords> {
+    match followed_status(captures, access, session) {
+        Some(status) => Envelope::ok(HeldRecords {
+            batches: status.batches,
+        }),
+        None => Envelope::refused(Refusal::not_found(NO_CAPTURE)),
+    }
 }
 
 /// Whether `access` may follow `session`: watch, stop, discard, download or save it. The gate let in anyone who views
@@ -398,6 +429,13 @@ fn followed(captures: &Captures, access: &Access, session: &str) -> bool {
     captures
         .group(session)
         .is_some_and(|group| access.allows(&group, Level::Viewer))
+}
+
+/// The status of `session`, if `access` may follow it (see [`followed`]).
+fn followed_status(captures: &Captures, access: &Access, session: &str) -> Option<CaptureStatus> {
+    followed(captures, access, session)
+        .then(|| captures.status(session))
+        .flatten()
 }
 
 impl Followed {
@@ -472,10 +510,7 @@ fn waits_for(
 
 /// The capture `session` as a save would commit it, or why it cannot be saved.
 fn savable(captures: &Captures, access: &Access, session: &str) -> Result<CaptureStatus, Refusal> {
-    let status = followed(captures, access, session)
-        .then(|| captures.status(session))
-        .flatten()
-        .ok_or_else(|| Refusal::not_found("no capture by that id -- it may already have been saved"))?;
+    let status = followed_status(captures, access, session).ok_or_else(|| Refusal::not_found(NO_CAPTURE))?;
     if !status.done {
         let waiting = if status.waiting_on.is_empty() {
             String::new()
@@ -904,6 +939,11 @@ mod tests {
         let unknown = status_of(&captures, &own, "no-such-id").to_json();
 
         assert_eq!(status_of(&captures, &other, "c1").to_json(), unknown);
+        assert_eq!(
+            records_of(&captures, &other, "c1").to_json(),
+            records_of(&captures, &own, "no-such-id").to_json()
+        );
+        assert!(records_of(&captures, &own, "c1").succeeded());
         assert_eq!(stop(&captures, &other, "c1").to_json(), unknown);
         assert!(
             !captures.status("c1").unwrap().stopped,

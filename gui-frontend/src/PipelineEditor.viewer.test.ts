@@ -36,6 +36,14 @@ beforeEach(async () => {
         answer = { ok: true, errors: [], capture: mine };
         return new Response(JSON.stringify(answer), { status: 200 });
       }
+      if (url.pathname === '/api/captures/c1/records') {
+        answer = {
+          ok: true,
+          errors: [],
+          batches: [{ columns: [], rows: [{ values: [] }, { values: [] }] }],
+        };
+        return new Response(JSON.stringify(answer), { status: 200 });
+      }
       if (url.pathname === '/api/captures/c1/download') {
         return new Response('{"_raw":"one"}\n{"_raw":"two"}\n', { status: 200 });
       }
@@ -112,7 +120,8 @@ describe('a viewer in the pipeline editor', () => {
       stopped: false,
       maxMatches: 100,
       workers: [],
-      batches: [{ columns: [], rows: [{ raw: 'one' }, { raw: 'two' }] }],
+      records: 2,
+      revision: 2,
       ended: [],
       secondsLeft: 0,
       waitingOn: [],

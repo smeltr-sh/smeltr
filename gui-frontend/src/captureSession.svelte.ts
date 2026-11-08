@@ -122,7 +122,7 @@ export class CaptureSession {
     const polling = this.session;
     const round = this.#round;
     try {
-      const res = await captureStatus(polling);
+      const res = await captureStatus(polling, this.status);
       // Discarded, replaced or stopped while in flight.
       if (this.session !== polling || round !== this.#round) return;
       if (!res.ok || !res.capture) {
@@ -161,7 +161,7 @@ export class CaptureSession {
     // the capture running again, and poll again.
     this.stopPolling();
     try {
-      const res = await stopCapture(this.session);
+      const res = await stopCapture(this.session, this.status);
       if (!res.ok || !res.capture) {
         this.#report(errorText(res.errors) || 'could not stop the capture');
         void this.poll();

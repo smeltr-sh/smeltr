@@ -800,6 +800,8 @@ export class DemoLeader {
       if (path === '/api/captures/mine') return ok({});
       const capture = path.match(/^\/api\/captures\/([^/]+)$/);
       if (capture) return this.captureStatus(decodeURIComponent(capture[1]));
+      const records = path.match(/^\/api\/captures\/([^/]+)\/records$/);
+      if (records) return this.captureRecords(decodeURIComponent(records[1]));
       const live = this.live(url, branch);
       if (live) return live;
       return this.nearest(url);
@@ -1509,27 +1511,35 @@ export class DemoLeader {
 
   private async captureStatus(session: string): Promise<Answer> {
     const capture = this.state.captures[session];
-    if (!capture)
-      return refused(404, [bareError('no capture by that id -- it may already have been saved')]);
+    if (!capture) return refused(404, [bareError(NO_CAPTURE)]);
     const { batches, done, full } = await this.held(capture);
     const workers = [
       ...new Set(batches.flatMap((b) => b.rows.map((r) => r.worker ?? '')).filter(Boolean)),
     ].sort();
     const end: CaptureEndDto = full ? 'matches' : 'deadline';
     const elapsed = (capture.stoppedAt ?? this.now()) - capture.startedAt;
+    const records = batches.reduce((n, b) => n + b.rows.length, 0);
     const status: CaptureStatusDto = {
       session,
       done,
       stopped: capture.stoppedAt !== null,
       maxMatches: capture.maxMatches,
       workers: workers.map((worker) => ({ worker, state: done ? 'answered' : 'filling' })),
-      batches,
+      records,
+      // The demo's capture only ever grows, so its count marks each change.
+      revision: records,
       ended: done && capture.stoppedAt === null ? workers.map((w) => [w, end]) : [],
       secondsLeft: done ? 0 : Math.max(0, capture.deadlineSecs - Math.floor(elapsed / 1000)),
       waitingOn: [],
       truncated: false,
     };
     return ok({ capture: status });
+  }
+
+  private async captureRecords(session: string): Promise<Answer> {
+    const capture = this.state.captures[session];
+    if (!capture) return refused(404, [bareError(NO_CAPTURE)]);
+    return ok({ batches: (await this.held(capture)).batches });
   }
 
   private async stopCapture(session: string): Promise<Answer> {
@@ -1555,8 +1565,7 @@ export class DemoLeader {
     req: { id: string; name: string; source?: string },
   ): Promise<Answer> {
     const capture = this.state.captures[session];
-    if (!capture)
-      return refused(404, [bareError('no capture by that id -- it may already have been saved')]);
+    if (!capture) return refused(404, [bareError(NO_CAPTURE)]);
     const { done, batches } = await this.held(capture);
     const pool = (await this.pool(capture.pool))?.sample;
     if (!done)

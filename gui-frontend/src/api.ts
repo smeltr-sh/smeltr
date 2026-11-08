@@ -3015,8 +3015,11 @@ export interface CaptureStatusDto {
    * invitation since -- in name order. No worker leaves the list for the
    * capture's life. */
   workers: CaptureWorkerDto[];
-  /** What the capture holds. Its record count is the rows across them. */
-  batches: CaptureBatchDto[];
+  /** How many records it holds. They are read on their own (`captureRecords`). */
+  records: number;
+  /** Moves each time what it holds changes, which is when its records are
+   * worth reading again. */
+  revision: number;
   /** Why each worker stopped, so a short sample says which bound it hit. A failure
    * carries the reason the worker had: the source it could not open, the filter that
    * would not compile. */
@@ -3047,8 +3050,8 @@ export interface AvroField {
   suggested: string;
 }
 
-/** A capture's status with its batches expanded (`expandBatch`). */
-export interface CaptureStatus extends Omit<CaptureStatusDto, 'batches'> {
+/** A capture's status with what it holds, its batches expanded (`expandBatch`). */
+export interface CaptureStatus extends CaptureStatusDto {
   batches: CaptureBatch[];
 }
 
@@ -3068,13 +3071,28 @@ export interface CaptureStatusResult {
   capture?: CaptureStatus;
 }
 
-async function expandStatus(
+/** `res`'s capture with what it holds: `prior`'s batches while its revision
+ * stands, read again once it moves. */
+async function withRecords(
   res: Promise<Omit<CaptureStatusResult, 'capture'> & { capture?: CaptureStatusDto }>,
+  prior?: CaptureStatus | null,
 ): Promise<CaptureStatusResult> {
   const { capture, ...rest } = await res;
-  return capture
-    ? { ...rest, capture: { ...capture, batches: capture.batches.map(expandBatch) } }
-    : rest;
+  if (!capture) return rest;
+  const same = prior?.session === capture.session && prior.revision === capture.revision;
+  const batches = same ? prior.batches : await captureRecords(capture.session);
+  return { ...rest, capture: { ...capture, batches } };
+}
+
+/** What `session` holds so far, running or over. */
+async function captureRecords(session: string): Promise<CaptureBatch[]> {
+  const res: { ok: boolean; errors: ApiError[]; batches?: CaptureBatchDto[] } = await apiJson(
+    `/api/captures/${encodeURIComponent(session)}/records`,
+    undefined,
+    'quiet',
+  );
+  if (!res.ok) throw new Error(errorText(res.errors) || "the capture's records could not be read");
+  return (res.batches ?? []).map(expandBatch);
 }
 
 export interface SaveCaptureResult {
@@ -3132,7 +3150,7 @@ export function startCapture(
 
 /** The capture the leader holds for whoever is signed in, which a preview may run over. */
 export function myCapture(): Promise<CaptureStatusResult> {
-  return expandStatus(apiJson('/api/captures/mine', undefined, 'quiet'));
+  return withRecords(apiJson('/api/captures/mine', undefined, 'quiet'));
 }
 
 /** A finished capture's records, as a sample holds them. */
@@ -3146,15 +3164,27 @@ export async function capturedRecords(session: string): Promise<SampleRecordDto[
     .map((line) => JSON.parse(line) as SampleRecordDto);
 }
 
-export function captureStatus(session: string): Promise<CaptureStatusResult> {
-  return expandStatus(apiJson(`/api/captures/${encodeURIComponent(session)}`, undefined, 'quiet'));
+/** Where `session` stands. Its records are read again only when they changed
+ * since `prior`, the last answer for it. */
+export function captureStatus(
+  session: string,
+  prior?: CaptureStatus | null,
+): Promise<CaptureStatusResult> {
+  return withRecords(
+    apiJson(`/api/captures/${encodeURIComponent(session)}`, undefined, 'quiet'),
+    prior,
+  );
 }
 
 /** End a capture where it stands. What it holds can then be saved or discarded;
  * what arrives after is dropped. */
-export function stopCapture(session: string): Promise<CaptureStatusResult> {
-  return expandStatus(
+export function stopCapture(
+  session: string,
+  prior?: CaptureStatus | null,
+): Promise<CaptureStatusResult> {
+  return withRecords(
     apiJson(`/api/captures/${encodeURIComponent(session)}/stop`, { method: 'POST' }, 'quiet'),
+    prior,
   );
 }
 
