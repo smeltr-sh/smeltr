@@ -166,8 +166,8 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "POST",
         path: "/api/areas/:area/preview/pipeline",
-        what: "Run a draft bundle's pipeline over a saved sample and show the rows; with `dictionary: true`, also the dictionary of what the pipeline writes (large). Nothing is written. Query: branch.",
-        body: "{ config: string (bundle JSON as a string), pipeline?: id, sample?: id, show_internal?: bool, at_micros?: number, dictionary?: bool }",
+        what: "Run a draft bundle's pipeline over a saved sample or a held capture and show the rows; with `dictionary: true`, also the dictionary of what the pipeline writes (large). Nothing is written. Query: branch.",
+        body: "{ config: string (bundle JSON as a string), pipeline?: id, sample?: id, capture?: string (a held capture's session id, in place of sample), show_internal?: bool, at_micros?: number, dictionary?: bool }",
     },
     Route {
         method: "POST",
