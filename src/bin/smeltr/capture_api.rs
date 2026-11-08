@@ -349,8 +349,7 @@ pub async fn my_capture(
     let capture = state
         .captures
         .held_by(&actor.id)
-        .filter(|session| followed(&state.captures, &access, session))
-        .and_then(|session| state.captures.status(&session));
+        .and_then(|session| followed_status(&state.captures, &access, &session));
     Envelope::ok(Followed { capture })
 }
 
@@ -368,10 +367,10 @@ pub fn held_for_preview(
          room. Capture again"
             .to_string()
     };
-    if captures.owner(session).as_deref() != Some(actor.id.as_str()) || !followed(captures, access, session) {
+    if captures.owner(session).as_deref() != Some(actor.id.as_str()) {
         return Err(gone());
     }
-    let status = captures.status(session).ok_or_else(gone)?;
+    let status = followed_status(captures, access, session).ok_or_else(gone)?;
     if !status.done {
         return Err("this capture is still running. Stop it to use what it holds".to_string());
     }
@@ -394,8 +393,7 @@ pub async fn capture_status(
 }
 
 fn status_of(captures: &Captures, access: &Access, session: &str) -> Envelope<Followed> {
-    let capture = followed(captures, access, session).then(|| captures.status(session));
-    Followed::found(capture.flatten())
+    Followed::found(followed_status(captures, access, session))
 }
 
 /// What a capture holds, read apart from its status, which only counts it.
@@ -415,10 +413,7 @@ pub async fn capture_records(
 }
 
 fn records_of(captures: &Captures, access: &Access, session: &str) -> Envelope<HeldRecords> {
-    match followed(captures, access, session)
-        .then(|| captures.status(session))
-        .flatten()
-    {
+    match followed_status(captures, access, session) {
         Some(status) => Envelope::ok(HeldRecords {
             batches: status.batches,
         }),
@@ -434,6 +429,13 @@ fn followed(captures: &Captures, access: &Access, session: &str) -> bool {
     captures
         .group(session)
         .is_some_and(|group| access.allows(&group, Level::Viewer))
+}
+
+/// Where `session` stands, if `access` may follow it ([`followed`]).
+fn followed_status(captures: &Captures, access: &Access, session: &str) -> Option<CaptureStatus> {
+    followed(captures, access, session)
+        .then(|| captures.status(session))
+        .flatten()
 }
 
 impl Followed {
@@ -508,9 +510,7 @@ fn waits_for(
 
 /// The capture `session` as a save would commit it, or why it cannot be saved.
 fn savable(captures: &Captures, access: &Access, session: &str) -> Result<CaptureStatus, Refusal> {
-    let status = followed(captures, access, session)
-        .then(|| captures.status(session))
-        .flatten()
+    let status = followed_status(captures, access, session)
         .ok_or_else(|| Refusal::not_found("no capture by that id -- it may already have been saved"))?;
     if !status.done {
         let waiting = if status.waiting_on.is_empty() {

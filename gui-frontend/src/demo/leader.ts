@@ -1511,8 +1511,7 @@ export class DemoLeader {
 
   private async captureStatus(session: string): Promise<Answer> {
     const capture = this.state.captures[session];
-    if (!capture)
-      return refused(404, [bareError('no capture by that id -- it may already have been saved')]);
+    if (!capture) return refused(404, [bareError(NO_CAPTURE)]);
     const { batches, done, full } = await this.held(capture);
     const workers = [
       ...new Set(batches.flatMap((b) => b.rows.map((r) => r.worker ?? '')).filter(Boolean)),
@@ -1539,8 +1538,7 @@ export class DemoLeader {
 
   private async captureRecords(session: string): Promise<Answer> {
     const capture = this.state.captures[session];
-    if (!capture)
-      return refused(404, [bareError('no capture by that id -- it may already have been saved')]);
+    if (!capture) return refused(404, [bareError(NO_CAPTURE)]);
     return ok({ batches: (await this.held(capture)).batches });
   }
 

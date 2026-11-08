@@ -62,12 +62,10 @@ async fn route_preview(
     Json(body): Json<OverCapture<RoutePreviewRequest>>,
 ) -> Envelope<RoutePreview> {
     let OverCapture { req, capture } = body;
-    let given = match capture {
-        None => None,
-        Some(session) => match capture_api::held_for_preview(&state.captures, &access, &actor, &session) {
-            Ok(held) => Some(held),
-            Err(message) => return Envelope::refused(Refusal::conflict(message)),
-        },
+    let held = |session: String| capture_api::held_for_preview(&state.captures, &access, &actor, &session);
+    let given = match capture.map(held).transpose() {
+        Ok(given) => given,
+        Err(message) => return Envelope::refused(Refusal::conflict(message)),
     };
     let branch = q.name().to_string();
     blocking_answer(move || route_preview_on(&smeltr::startup_config::leader_data_dir(), &branch, &area, req, given))
@@ -89,12 +87,7 @@ fn route_preview_on(
         Ok(reading) => reading,
         Err(e) => return Envelope::refused(e),
     };
-    let sample = match (given, &req.sample) {
-        (Some(held), _) => Ok(Some(held)),
-        (None, Some(id)) => config_file::read_sample(&mut reading.files(), id),
-        (None, None) => return Envelope::refused(Refusal::invalid("name a sample or a held capture to route")),
-    };
-    match sample {
+    match sample_to_run(&reading, given, req.sample.as_deref()) {
         Ok(Some(sample)) => {
             let merged = if scope == config_file::SHARED_DIR {
                 None
@@ -109,11 +102,26 @@ fn route_preview_on(
                 }
             }
         }
-        Ok(None) => Envelope::refused(Refusal::not_found(format!(
-            "there is no sample {:?} on this branch",
-            req.sample.unwrap_or_default()
-        ))),
-        Err(e) => Envelope::refused(Refusal::internal(e.to_string())),
+        Ok(None) => Envelope::refused(Refusal::invalid("name a sample or a held capture to route")),
+        Err(refusal) => Envelope::refused(refusal),
+    }
+}
+
+/// The sample a preview runs: `given`, or else the one `id` names on the branch `reading` reads. `None` where there
+/// is neither.
+fn sample_to_run(
+    reading: &config_api::Reading,
+    given: Option<config_file::SampleDto>,
+    id: Option<&str>,
+) -> Result<Option<config_file::SampleDto>, Refusal> {
+    match (given, id) {
+        (Some(given), _) => Ok(Some(given)),
+        (None, Some(id)) => match config_file::read_sample(&mut reading.files(), id) {
+            Ok(Some(sample)) => Ok(Some(sample)),
+            Ok(None) => Err(Refusal::not_found(format!("there is no sample {id:?} on this branch"))),
+            Err(e) => Err(Refusal::internal(e.to_string())),
+        },
+        (None, None) => Ok(None),
     }
 }
 
@@ -474,16 +482,11 @@ async fn preview(
     axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
     Json(body): Json<OverCapture<PreviewRequest>>,
 ) -> Envelope<Preview> {
-    let OverCapture { mut req, capture } = body;
-    let given = match capture {
-        None => (Vec::new(), Vec::new()),
-        Some(session) => match capture_api::held_for_preview(&state.captures, &access, &actor, &session) {
-            Ok(held) => {
-                req.sample = None;
-                (held.columns, held.records)
-            }
-            Err(message) => return Preview::failed("sample", vec![ApiError::new(message)], vec![]),
-        },
+    let OverCapture { req, capture } = body;
+    let held = |session: String| capture_api::held_for_preview(&state.captures, &access, &actor, &session);
+    let given = match capture.map(held).transpose() {
+        Ok(given) => given,
+        Err(message) => return Preview::failed("sample", vec![ApiError::new(message)], vec![]),
     };
     // Reading the branch spawns git, so it goes off the async executor.
     let branch = q.name().to_string();
@@ -493,27 +496,22 @@ async fn preview(
 /// A preview of what the editor is looking at on `branch`: its sample and any lookup path in it resolve the same way
 /// a save would, against the bundle on that branch. A group's preview runs with `shared/` merged in, as the group
 /// runs once deployed, so a pipeline calling a shared pipeline or reading a shared lookup table previews rather than
-/// naming it unknown. `data_dir` explicit, as for `Reading::open_in`. `given` is run where the request names no
-/// sample: what an import hands over, or a capture.
+/// naming it unknown. `data_dir` explicit, as for `Reading::open_in`. `given` runs in place of the request's sample:
+/// what an import hands over, or a capture.
 fn preview_on(
     data_dir: &std::path::Path,
     branch: &str,
     scope: &str,
     mut req: PreviewRequest,
-    given: (Vec<smeltr::heartbeat::CaptureColumn>, Vec<smeltr::io::RecordObject>),
+    given: Option<config_file::SampleDto>,
 ) -> Envelope<Preview> {
     let reading = match config_api::Reading::open_in(data_dir, branch, scope) {
         Ok(reading) => reading,
         Err(e) => return Envelope::refused(e),
     };
-    let sample = match &req.sample {
-        None => Ok(given),
-        Some(id) => match config_file::read_sample(&mut reading.files(), id) {
-            Ok(Some(sample)) => Ok((sample.columns, sample.records)),
-            Ok(None) => Err(format!("there is no sample {id:?} on this branch")),
-            Err(e) => Err(e.to_string()),
-        },
-    };
+    // An editor with no sample chosen yet previews over none.
+    let sample = sample_to_run(&reading, given, req.sample.as_deref())
+        .map(|sample| sample.map(|s| (s.columns, s.records)).unwrap_or_default());
     match sample {
         Ok((columns, records)) => {
             with_branch_schemas(&mut req, &reading);
@@ -530,7 +528,7 @@ fn preview_on(
             }
             answer
         }
-        Err(message) => Preview::failed("sample", vec![ApiError::new(message)], vec![]),
+        Err(refusal) => Preview::failed("sample", vec![ApiError::new(refusal.message())], vec![]),
     }
 }
 
@@ -580,7 +578,13 @@ async fn import_schema(
                 after_dot: None,
                 capture_filter: None,
             },
-            (Vec::new(), records),
+            Some(config_file::SampleDto {
+                id: req.id.clone(),
+                name: req.title.clone(),
+                source: None,
+                columns: Vec::new(),
+                records,
+            }),
         );
         if !preview.succeeded() {
             return Envelope::refused(Refusal::all(preview.status, preview.errors));
@@ -3403,7 +3407,7 @@ mod tests {
                 after_dot: None,
                 capture_filter: None,
             },
-            (Vec::new(), Vec::new()),
+            None,
         );
 
         assert!(
@@ -3441,7 +3445,7 @@ mod tests {
                 after_dot: None,
                 capture_filter: None,
             },
-            (Vec::new(), Vec::new()),
+            None,
         );
         assert!(!response.succeeded(), "{} rows", response.rows.len());
         std::fs::remove_dir_all(&data).ok();
@@ -3493,7 +3497,7 @@ mod tests {
                 after_dot: None,
                 capture_filter: None,
             },
-            (Vec::new(), Vec::new()),
+            None,
         );
 
         assert!(
@@ -3565,7 +3569,7 @@ mod tests {
                     after_dot: None,
                     capture_filter: None,
                 },
-                (Vec::new(), Vec::new()),
+                None,
             );
             assert!(response.succeeded(), "{:?}", response.errors);
             (response.warnings.iter())
