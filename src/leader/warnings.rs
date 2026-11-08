@@ -2028,16 +2028,16 @@ pub fn outside_normal_warnings(
             };
             let since_millis = starts.get(&outside_key(r, side)).copied();
             let lowered_by = marks.lowered_by(&r.group, &r.source, since_millis);
+            let severity = SOURCE_SPANS
+                .iter()
+                .find(|(_, c, _)| *c == condition)
+                .map_or(Severity::Warning, |(_, _, severity)| *severity);
             Warning::new(
                 condition,
                 SubjectKind::Source,
                 r.source.clone(),
                 Some(r.group.clone()),
-                if side == throughput::Outside::Above || lowered_by.is_some() {
-                    Severity::Info
-                } else {
-                    Severity::Warning
-                },
+                if lowered_by.is_some() { Severity::Info } else { severity },
                 since_millis,
                 // A band whose top is zero is zero throughout, since no source reads fewer than none.
                 format!(
