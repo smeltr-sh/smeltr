@@ -4168,7 +4168,7 @@ export function getFlow(windowMinutes: number): Promise<FlowResponseDto> {
   return readJson(`/api/flow?windowMinutes=${windowMinutes}`);
 }
 
-/** Lowers the Rows below or above normal warning that holds for `group`'s `source` to info until it ends. */
+/** Lowers the Rows below normal warning that holds for `group`'s `source` to info until it ends. */
 export function lowerSourceRows(
   group: string,
   source: string,
