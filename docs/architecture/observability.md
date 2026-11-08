@@ -324,14 +324,10 @@ so it is gone only once none of them carries it. A declared field is reported
 on every tallied batch, present or not, so the leader keeps when each was last
 present and last failed apart from when it was last reported.
 
-A stream is unrouted while rows no route took arrive under it within the same
-drift window, from workers running the deployment their group is at. That
-raises a warning on its source in that group, naming its streams. A worker
-reports only what no route took, so the warning clears once a window passes
-without such rows, however the route that takes them is written, and at once
-when a deploy changes what the group runs. A worker's beat names the deployment
-its streams belong to, and the worker drops the streams a replaced runtime
-held.
+A source warns that a stream is unrouted while rows no route took arrive under
+it within the drift window, from workers running what its group is deployed at
+now. The warning clears once a window passes with none, or at once when a
+deploy changes what the group runs.
 
 ## What the leader keeps
 
