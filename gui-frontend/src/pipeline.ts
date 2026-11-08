@@ -652,7 +652,7 @@ export function stepParts(step: Step): string[] {
     case 'remove':
       return step.fields;
     case 'code':
-      return step.body.split('\n').filter((l) => l.trim());
+      return step.body.split('\n');
     default:
       return [stepSummary(step)];
   }

@@ -108,6 +108,17 @@ describe('compareSteps', () => {
     ]);
   });
 
+  it('shows a blank line a code step gained as a line of its own', () => {
+    const before = { type: 'code', id: 'c1', body: 'a = 1\nb = 2' };
+    const after = { type: 'code', id: 'c1', body: 'a = 1\n\nb = 2' };
+    const [step] = compareSteps([before], [after]);
+    expect(step.parts).toEqual([
+      { kind: 'same', text: 'a = 1' },
+      { kind: 'added', text: '' },
+      { kind: 'same', text: 'b = 2' },
+    ]);
+  });
+
   it('gives a step whose parts all match no parts, so its line still shows', () => {
     const before = {
       type: 'eval',
