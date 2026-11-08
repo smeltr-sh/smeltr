@@ -11,7 +11,7 @@
 -->
 <script lang="ts">
   import Button, { BUSY, LOADING } from './Button.svelte';
-  import RecordsGrid, { type GridRow } from './RecordsGrid.svelte';
+  import RecordsGrid, { type FindChip, type GridRow, type LeadColumn } from './RecordsGrid.svelte';
   import { unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import {
@@ -52,8 +52,7 @@
   let result = $derived(driven ? (given ?? null) : own);
   let running = $state(false);
   let error = $state('');
-  /** The one destination whose documents the grid shows, by id; none shows all. */
-  let openDestination = $state<number | null>(null);
+  let grid = $state<RecordsGrid | undefined>();
 
   async function loadSamples() {
     try {
@@ -73,7 +72,6 @@
     if (!config || !selected) return;
     running = true;
     error = '';
-    openDestination = null;
     try {
       const sample = selected;
       const res = await routePreview(JSON.stringify(config), sample);
@@ -158,10 +156,18 @@
   }
 
   /** What a row says beside its fields: the route, where the document goes and the answer. */
-  type Lead = { route: string; to: string; toNote?: string; answer: string; note?: string };
+  type Lead = {
+    route: string;
+    /** Where the document goes, by destination id. */
+    dests: number[];
+    to: string;
+    toNote?: string;
+    answer: string;
+    note?: string;
+  };
 
   /** One row for each document a record made on each route, and one for a route or record that
-   * made none, saying why. The destination tile that is open keeps only the documents it gets. */
+   * made none, saying why. */
   let table = $derived.by(() => {
     if (!result) return null;
     const leads = new Map<number, Lead>();
@@ -183,7 +189,6 @@
     for (const row of result.rows) {
       const sample = sampleRecords[row.row] ?? {};
       if (row.matched.length === 0) {
-        if (openDestination !== null) continue;
         const answer = nameOf(result.unmatched);
         const to = typeof result.unmatched === 'object' ? result.unmatched.deliver.join(', ') : '';
         add(
@@ -191,6 +196,7 @@
           to ? sample : null,
           {
             route: '',
+            dests: [],
             to,
             toNote: row.refused
               ? row.refused
@@ -210,12 +216,13 @@
         const exceptions = t.exceptions.map((e) => ({ message: `${e.kind}: ${e.message}` }));
         const answer = t.exceptions.length > 0 ? t.answer : '';
         const sent = t.documents.filter((d) => d.destinations.length > 0);
-        if (sent.length === 0 && openDestination === null) {
+        if (sent.length === 0) {
           add(
             row.row,
             null,
             {
               route: routeName(t.route),
+              dests: [],
               to: '',
               toNote:
                 t.answer === 'block'
@@ -227,12 +234,12 @@
           );
         }
         for (const doc of sent) {
-          if (openDestination !== null && !doc.destinations.includes(openDestination)) continue;
           add(
             row.row,
             parsed(doc.document),
             {
               route: routeName(t.route),
+              dests: doc.destinations,
               to: names(doc.destinations),
               toNote: Object.entries(doc.destination ?? {})
                 .map(([name, value]) => `${name} ${value}`)
@@ -243,18 +250,51 @@
           );
         }
       }
-      if (row.refused && row.matched.length > 0 && openDestination === null) {
+      if (row.refused && row.matched.length > 0) {
         // A record held by a block, or refused for memory: why it went no further.
         add(
           row.row,
           null,
-          { route: row.matched.map(routeName).join(', '), to: '', toNote: row.refused, answer: '' },
+          {
+            route: row.matched.map(routeName).join(', '),
+            dests: [],
+            to: '',
+            toNote: row.refused,
+            answer: '',
+          },
           [],
         );
       }
     }
     return { rows, leads };
   });
+
+  const leadOf = (row: GridRow) => table?.leads.get(row.key);
+  const leads: LeadColumn[] = [
+    {
+      name: 'Route',
+      cell: (row) => {
+        const l = leadOf(row);
+        return l?.note ? { text: '', note: l.note } : { text: l?.route ?? '' };
+      },
+    },
+    {
+      name: 'Goes to',
+      cell: (row) => ({ text: leadOf(row)?.to ?? '', note: leadOf(row)?.toNote }),
+    },
+    { name: 'Answer', cell: (row) => ({ text: leadOf(row)?.answer ?? '' }) },
+  ];
+
+  /** The find box's chip for a destination's tile. It keeps the documents that destination gets. */
+  function toDestination(d: { id: number; name: string }): FindChip {
+    return {
+      kind: 'rows',
+      key: `to ${d.name}`,
+      label: `to ${d.name}`,
+      failing: false,
+      keeps: (row) => table?.leads.get(row.key)?.dests.includes(d.id) ?? false,
+    };
+  }
 </script>
 
 <div class="preview" class:empty={driven && !result && !error}>
@@ -292,9 +332,9 @@
         <button
           type="button"
           class="tile"
-          class:open={openDestination === d.id}
-          aria-pressed={openDestination === d.id}
-          onclick={() => (openDestination = openDestination === d.id ? null : d.id)}
+          class:open={grid?.hasChip(toDestination(d))}
+          aria-pressed={grid?.hasChip(toDestination(d)) ?? false}
+          onclick={() => grid?.toggleChip(toDestination(d))}
         >
           <span class="count">{d.documents}</span>
           <span class="name mono">{d.name}</span>
@@ -315,28 +355,9 @@
       {/if}
     </div>
 
-    <RecordsGrid
-      rows={table?.rows ?? null}
-      remember="route-preview"
-      openOn={result}
-      leadWidths={['14rem', '14rem', '6rem']}
-    >
-      {#snippet leadHead()}
-        <th class="cell">Route</th>
-        <th class="cell">Goes to</th>
-        <th class="cell">Answer</th>
-      {/snippet}
-      {#snippet lead(row)}
-        {@const l = table?.leads.get(row.key)}
-        <td class="cell ellipsis"
-          >{#if l?.note}<span class="dim">{l.note}</span>{:else}{l?.route}{/if}</td
-        >
-        <td class="cell ellipsis"
-          >{l?.to}{#if l?.toNote}{l.to ? ' ' : ''}<span class="dim">{l.toNote}</span>{/if}</td
-        >
-        <td class="cell ellipsis">{l?.answer}</td>
-      {/snippet}
-    </RecordsGrid>
+    <!-- The field choice and recent expressions are remembered under the empty id, which no
+         pipeline can take. -->
+    <RecordsGrid bind:this={grid} rows={table?.rows ?? null} remember="" openOn={result} {leads} />
   {/if}
 </div>
 

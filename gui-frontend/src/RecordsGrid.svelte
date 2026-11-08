@@ -35,6 +35,16 @@
         keeps: (row: GridRow) => boolean;
       };
 
+  /** What a lead column's cell says: its text, then a dimmed note. */
+  export type LeadCell = { text: string; note?: string };
+
+  /** A column ahead of the fields, named and filled by the caller. It sorts and sizes like a field. */
+  export type LeadColumn = { name: string; cell: (row: GridRow) => LeadCell };
+
+  function leadText(c: LeadCell): string {
+    return c.note ? (c.text ? `${c.text} ${c.note}` : c.note) : c.text;
+  }
+
   /** The steps that touched a field, in the order they ran, each with its number in the step list. */
   export type Touched = (path: string) => { step: Step; number: number }[];
 </script>
@@ -83,10 +93,7 @@
     touched,
     onjump,
     onassign,
-    shownRows = $bindable(new Set()),
-    leadWidths = [],
-    leadHead,
-    lead,
+    leads = [],
     bar,
     above,
     actions,
@@ -115,20 +122,14 @@
     onjump?: (step: Step) => void;
     /** Writes a field in an eval step; absent where there is none to write it in. */
     onassign?: (path: string) => void;
-    /** Out: the keys of the rows the find box keeps. */
-    shownRows?: Set<number>;
-    /** Each column `lead` draws ahead of the fields, as its CSS width. */
-    leadWidths?: string[];
-    /** The head cell of each lead column. */
-    leadHead?: Snippet;
-    /** A row's cell in each lead column. */
-    lead?: Snippet<[GridRow]>;
+    /** Columns ahead of the fields. */
+    leads?: LeadColumn[];
     /** Ahead of the Fields menu, on the bar over the grid. */
     bar?: Snippet;
     /** Between the find box and the grid. */
     above?: Snippet;
-    /** Beside the count of the rows the find box keeps. */
-    actions?: Snippet;
+    /** Beside the count of the rows the find box keeps. It is given those rows. */
+    actions?: Snippet<[GridRow[]]>;
     /** In place of the grid while there are no rows. */
     empty?: Snippet;
   } = $props();
@@ -255,7 +256,7 @@
     [...missing.values()].filter((m) => isShown(m.path) && !allColumns.includes(m.path)),
   );
   /** How many columns the grid draws: the fields, the fold, the row number and the lead. */
-  let spanned = $derived(columns.length + missingColumns.length + 2 + leadWidths.length);
+  let spanned = $derived(columns.length + missingColumns.length + 2 + leads.length);
 
   const unfoldedPath = (path: string) => !startsHidden(path) || isShown(path);
 
@@ -403,20 +404,36 @@
       return Math.min(w, COLUMN_CH);
     });
   });
+  let leadWidths = $derived.by(() => {
+    const sized = (rows ?? []).slice(0, SIZED_ROWS);
+    return leads.map((lead) => {
+      let w = Math.max(COLUMN_MIN_CH, lead.name.length + 2);
+      for (const row of sized) {
+        if (w >= COLUMN_CH) break;
+        w = Math.max(w, leadText(lead.cell(row)).length);
+      }
+      return Math.min(w, COLUMN_CH);
+    });
+  });
   let missingWidths = $derived(
     missingColumns.map((m) =>
       Math.min(COLUMN_CH, m.path.length + (view.showTypes ? m.written_as.length + 2 : 0) + 4),
     ),
   );
   /** The row number, with room for a failing row's mark. */
-  let indexWidth = $derived(Math.max(0, ...(rows ?? []).map((r) => r.label.length)) + 2);
+  let indexWidth = $derived(Math.max(0, ...(rows ?? []).map((r) => r.label.length)) + 3);
+  /** A column `ch` characters wide, with its padding. One pixel more keeps a glyph slightly wider
+   * than `ch`, such as `→`, from ending in an ellipsis. */
+  const colWidth = (ch: number) => `calc(${ch}ch + 1rem + 1px)`;
   let gridWidth = $derived(
-    `max(100%, calc(${[...columnWidths, ...missingWidths].reduce((a, b) => a + b, 2 + indexWidth)}ch + ${leadWidths.join(' + ') || '0px'} + ${spanned}rem))`,
+    `max(100%, calc(${[...columnWidths, ...missingWidths].reduce((a, b) => a + b, 2 + indexWidth + leadWidths.reduce((a, b) => a + b, 0))}ch + ${spanned}rem + ${spanned}px))`,
   );
 
   // Keyed apart from the field paths: a record may carry a field named `row`, but
   // no field has an empty path.
   const ROW_KEY = '';
+  /** A lead column's sort key. No field path starts with a NUL, so it cannot match a field's. */
+  const leadKey = (lead: LeadColumn) => `\0${lead.name}`;
   const gridSort = new TableSort<string>();
 
   // -- the find box ----------------------------------------------------------
@@ -436,7 +453,10 @@
   }
   const chipFailing = (c: FindChip) => c.kind === 'failing' || (c.kind === 'rows' && c.failing);
 
-  const hasChip = (c: FindChip) => chips.some((x) => chipKey(x) === chipKey(c));
+  /** Whether the find box has `c`, or one keyed as it is. */
+  export function hasChip(c: FindChip): boolean {
+    return chips.some((x) => chipKey(x) === chipKey(c));
+  }
 
   /** Keeps the rows `c` keeps, on top of what the find box already keeps. */
   export function addChip(c: FindChip) {
@@ -449,7 +469,8 @@
     chips = [];
   }
 
-  function toggleChip(c: FindChip) {
+  /** Adds `c` to the find box, or takes it away. */
+  export function toggleChip(c: FindChip) {
     if (hasChip(c)) chips = chips.filter((x) => chipKey(x) !== chipKey(c));
     else chips = [...chips, c];
   }
@@ -538,6 +559,7 @@
     const by: Record<string, (i: number) => number | string | undefined> = {
       [ROW_KEY]: (i) => all[i].key,
     };
+    for (const lead of leads) by[leadKey(lead)] = (i) => leadText(lead.cell(all[i]));
     for (const path of columns)
       by[path] = (i) => {
         const m = rowsMaps[i];
@@ -546,10 +568,6 @@
         return typeof v === 'number' ? v : formatDiffValue(v);
       };
     return gridSort.apply(all.map((_, i) => i).filter(matches), by);
-  });
-
-  $effect(() => {
-    shownRows = new Set(gridOrder.map((i) => rows![i].key));
   });
 </script>
 
@@ -650,7 +668,7 @@
         >
       {/if}
       <span class="grow"></span>
-      {@render actions?.()}
+      {@render actions?.(gridOrder.map((i) => rows![i]))}
     </div>
   {/if}
 
@@ -667,17 +685,13 @@
           <table class="grid" style:width={gridWidth}>
             <colgroup>
               <col style:width="calc(2ch + 1rem)" />
-              <col style:width={`calc(${indexWidth}ch + 1rem)`} />
+              <col style:width={colWidth(indexWidth)} />
               {#each leadWidths as w, k (k)}
-                <col style:width={w} />
+                <col style:width={colWidth(w)} />
               {/each}
               <!-- The last column takes what the pane has to spare. -->
               {#each [...columnWidths, ...missingWidths] as w, k (k)}
-                <col
-                  style:width={k < spanned - 3 - leadWidths.length
-                    ? `calc(${w}ch + 1rem)`
-                    : undefined}
-                />
+                <col style:width={k < spanned - 3 - leads.length ? colWidth(w) : undefined} />
               {/each}
             </colgroup>
             <thead>
@@ -688,7 +702,11 @@
                 <th class="index-cell" aria-sort={gridSort.aria(ROW_KEY)}
                   ><SortButton sort={gridSort} key={ROW_KEY}>#</SortButton></th
                 >
-                {@render leadHead?.()}
+                {#each leads as lead (lead.name)}
+                  <th class="cell ellipsis" aria-sort={gridSort.aria(leadKey(lead))}
+                    ><SortButton sort={gridSort} key={leadKey(lead)}>{lead.name}</SortButton></th
+                  >
+                {/each}
                 {#each columns as path (path)}
                   {@const name = splitPath(fromRecord(path))}
                   <th class="cell ellipsis" title={fromRecord(path)} aria-sort={gridSort.aria(path)}
@@ -743,7 +761,13 @@
                   <td class="index-cell"
                     >{#if failing}<StateMark state="error" />{/if}{row.label}</td
                   >
-                  {@render lead?.(row)}
+                  {#each leads as lead (lead.name)}
+                    {@const c = lead.cell(row)}
+                    <td class="cell ellipsis"
+                      >{c.text}{#if c.note}{c.text ? ' ' : ''}<span class="dim">{c.note}</span
+                        >{/if}</td
+                    >
+                  {/each}
                   {#each columns as path (path)}
                     {@const field = fieldAt(m.before, m.after, path)}
                     <td class="cell ellipsis">
@@ -965,16 +989,15 @@
     font-size: var(--text-note);
   }
 
-  /* Every cell, including those of the lead columns a caller draws. */
-  .grid :global(th),
-  .grid :global(td) {
+  .grid th,
+  .grid td {
     text-align: left;
     font-weight: inherit;
     padding: 0.15rem 0.5rem;
     border-bottom: 1px solid var(--border);
   }
 
-  .grid thead :global(th) {
+  .grid thead th {
     color: var(--dim);
     font-size: var(--text-micro);
     position: sticky;
@@ -987,11 +1010,11 @@
   /* Tinted the same as the record beneath it, so the two read as one open
      group -- but still a hairline apart, or the row that was clicked and
      the record it opened would run together into one shape. */
-  .grid-row.open > :global(td) {
+  .grid-row.open > td {
     background: color-mix(in srgb, var(--ink) 8%, transparent);
   }
 
-  .grid-row.dropped :global(.cell) {
+  .grid-row.dropped .cell {
     opacity: 0.55;
   }
 
@@ -1017,7 +1040,7 @@
   }
 
   /* A row that failed is the one to read, so it is the one that stands out. */
-  .grid-row.failing > :global(td) {
+  .grid-row.failing > td {
     background: color-mix(in srgb, var(--error) 10%, transparent);
   }
 

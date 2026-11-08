@@ -228,14 +228,8 @@
     };
   });
 
-  /** The rows the find box keeps. */
-  let kept = $state(new Set<number>());
   /** The menu of the input's and the output's saves is open. */
   let savingOpen = $state(false);
-  /** The rows on screen that have output, by `PreviewRow.row`: a dropped row has none. */
-  let outputShown = $derived(
-    new Set((rows ?? []).filter((r) => !r.dropped && kept.has(r.key)).map((r) => r.key)),
-  );
 </script>
 
 <section
@@ -250,7 +244,6 @@
 
   <RecordsGrid
     bind:this={grid}
-    bind:shownRows={kept}
     {rows}
     chosen={selectedSample !== ''}
     declared={shownDeclared}
@@ -270,7 +263,9 @@
         <p class="dim">Run the pipeline to see output rows here.</p>
       {/if}
     {/snippet}
-    {#snippet actions()}
+    {#snippet actions(kept)}
+      <!-- The rows on screen that have output, by `PreviewRow.row`: a dropped row has none. -->
+      {@const outputShown = new Set(kept.filter((r) => !r.dropped).map((r) => r.key))}
       {#if onsaveoutput && saveinput}
         <ChipPicker kind="columns" compact bind:open={savingOpen}>
           {#snippet face()}Save as sample <span aria-hidden="true">▾</span>{/snippet}
