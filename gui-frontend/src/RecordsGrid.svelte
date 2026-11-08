@@ -729,7 +729,7 @@
                 {@const open = expanded.has(row.key)}
                 {@const failing = row.exceptions.length > 0}
                 <tr
-                  class="grid-row record-row"
+                  class="grid-row"
                   class:dropped={row.dropped}
                   class:open
                   class:failing
@@ -968,15 +968,16 @@
     font-size: var(--text-note);
   }
 
-  .grid th,
-  .grid td {
+  /* Every cell, the lead's that a caller draws among them included. */
+  .grid :global(th),
+  .grid :global(td) {
     text-align: left;
     font-weight: inherit;
     padding: 0.15rem 0.5rem;
     border-bottom: 1px solid var(--border);
   }
 
-  .grid thead th {
+  .grid thead :global(th) {
     color: var(--dim);
     font-size: var(--text-micro);
     position: sticky;
@@ -986,13 +987,29 @@
     background: var(--bg);
   }
 
-  .grid-row.dropped .cell {
+  /* Tinted the same as the record beneath it, so the two read as one open
+     group -- but still a hairline apart, or the row that was clicked and
+     the record it opened would run together into one shape. */
+  .grid-row.open > :global(td) {
+    background: color-mix(in srgb, var(--ink) 8%, transparent);
+  }
+
+  .grid-row.dropped :global(.cell) {
     opacity: 0.55;
   }
 
   .index-cell {
     color: var(--dim);
     text-align: right;
+  }
+
+  /* The rail marks how far the open record reaches, and stays put while the
+     grid scrolls sideways under it. A record the step changed takes the
+     added color, as a diff does. */
+  .expanded-cell {
+    background: color-mix(in oklch, var(--ink) 6%, transparent);
+    box-shadow: inset 3px 0 0 var(--border);
+    padding: 0.5rem 0.5rem 0.5rem 0.75rem;
   }
 
   /* The record moves with its row as the grid scrolls sideways, and wraps to
@@ -1003,7 +1020,7 @@
   }
 
   /* A row that failed is the one to read, so it is the one that stands out. */
-  .grid-row.failing > td {
+  .grid-row.failing > :global(td) {
     background: color-mix(in srgb, var(--error) 10%, transparent);
   }
 

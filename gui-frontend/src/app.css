@@ -59,18 +59,6 @@ body {
   white-space: nowrap;
 }
 
-/* A table row opened on its record, and the cell beneath it that draws the record. Both are tinted, so they read as
-   one open group; a hairline keeps them apart, so the clicked row and its record do not run together into one shape.
-   The rail along the left marks how far the record reaches. */
-:where(.record-row.open > td) {
-  background: color-mix(in srgb, var(--ink) 8%, transparent);
-}
-
-:where(.expanded-cell) {
-  background: color-mix(in oklch, var(--ink) 6%, transparent);
-  box-shadow: inset 3px 0 0 var(--border);
-}
-
 /* Read by a screen reader, not drawn. */
 :where(.visually-hidden) {
   position: absolute;

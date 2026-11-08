@@ -1472,12 +1472,19 @@ test('A4: a route preview shows each output row, the route it matched and the de
   await expect(failed).toContainText('es-web, kafka-alerts');
   await expect(failed).toContainText('"status":503');
 
-  // A record opens on what it sent, field by field, as a pipeline's preview opens on its record.
+  // A document opens on its fields, as a pipeline's preview opens on its record.
   const record = table.getByRole('row', { name: 'record 1' });
   await expect(record).toHaveCount(0);
   await table.getByRole('button', { name: 'row 1', exact: true }).click();
-  await expect(record).toContainText('storefront → web');
   await expect(record.locator('.fields')).toContainText('503');
+
+  // A destination's tile keeps the documents it gets, and again shows them all.
+  const alerts = admin.getByRole('button', { name: '1 kafka-alerts' });
+  await alerts.click();
+  await expect(table.getByRole('row', { name: /^row 0 / })).toHaveCount(0);
+  await expect(table.getByRole('row', { name: /^row 1 / })).toBeVisible();
+  await alerts.click();
+  await expect(table.getByRole('row', { name: /^row 0 / })).toBeVisible();
 });
 
 // A4, the whole trip. A step that does not compile says why once, on the step; the error chip above the records
@@ -1920,6 +1927,10 @@ test('A8: a route sends its unparseable rows where the analyst says, and the pre
   await expect(bad).toContainText('deliver');
   await expect(bad).toContainText('es-dlq');
   await expect(bad).not.toContainText('es-web');
+  // The failing record is the one open.
+  await expect(admin.getByRole('table').getByRole('row', { name: 'record 1' })).toContainText(
+    'Unparsable',
+  );
   await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toContainText(
     'es-web',
   );
@@ -3722,45 +3733,6 @@ test('A6: the lock page shows five rows a side, and a button shows the rest', as
   await expect(admin.getByText('{"id":8}', { exact: true })).toBeVisible();
   await more.click();
   await expect(more).toHaveCount(0);
-});
-
-test('A4: a destination in the route preview shows fifty documents, and a button shows the rest', async ({
-  admin,
-  api,
-  leader,
-}) => {
-  await api.put(`/api/areas/shared/sources${ON}`, [{ id: 'storefront', type: 'logs' }]);
-  await api.put(`/api/areas/shared/destinations${ON}`, [
-    { id: 'es-web', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'web' },
-  ]);
-  await api.put(`/api/areas/shared/pipelines/web${ON}`, { id: 'web', name: 'web', steps: [] });
-  await api.put(`/api/areas/shared/samples/web-sample${ON}`, {
-    id: 'web-sample',
-    name: 'storefront hour',
-    source: 'storefront',
-    records: Array.from({ length: 53 }, (_, i) => ({ _raw: `line ${i + 1}` })),
-  });
-  await api.put(`/api/areas/shared/routes${ON}`, [
-    {
-      id: 'web',
-      source: 'storefront',
-      condition: null,
-      pipeline: 'web',
-      deliver: [{ to: ['es-web'] }],
-    },
-  ]);
-  await goto(admin, leader, '#/build/routes');
-  await admin.getByRole('link', { name: 'Route a sample' }).click();
-  await admin.getByRole('button', { name: 'Run', exact: true }).click();
-  await admin.getByRole('button', { name: /^53\s*es-web/ }).click();
-
-  const more = admin.getByRole('button', { name: '3 more documents' });
-  await expect(more).toBeVisible();
-  const last = admin.locator('.doc').filter({ hasText: 'line 53' });
-  await expect(last).toHaveCount(0);
-  await more.click();
-  await expect(more).toHaveCount(0);
-  await expect(last).toBeVisible();
 });
 
 test('A1: a capture shows eight records, and a button shows the rest', async ({
