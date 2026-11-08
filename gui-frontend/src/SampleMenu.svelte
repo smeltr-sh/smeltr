@@ -37,7 +37,7 @@
     mayCapture: (source: Connected) => boolean;
     /** The capture the leader holds for the person signed in, listed first among the samples. Picking it passes
      * `choice` to `onpick`. */
-    held?: { choice: string; records: number };
+    held?: { choice: string; records: number; source?: string };
     onpick: (id: string) => void;
     /** Opens the dialog that makes a new sample; absent for a viewer, who may not save one. */
     onadd?: () => void;
@@ -68,6 +68,34 @@
         (b.written ?? 0) - (a.written ?? 0),
     ),
   );
+  /** A row of the list, saying after its name what it holds and where it is from. */
+  const row = (
+    id: string,
+    name: string,
+    records: number,
+    source: string | undefined,
+    ...notes: (string | false)[]
+  ) => ({
+    id,
+    name,
+    source,
+    said: [count(records, 'record'), source, ...notes].filter(Boolean).join(' · '),
+  });
+  /** The held capture, then the saved samples. */
+  let listed = $derived([
+    ...(held ? [row(held.choice, HELD_NAME, held.records, held.source, 'not saved')] : []),
+    ...saved.map((s) => {
+      const at = capturedAt(s);
+      return row(
+        s.id,
+        s.name,
+        s.records,
+        s.source,
+        at !== undefined && dateTime(at / 1000),
+        s.id === lastUsed && 'last used',
+      );
+    }),
+  ]);
 
   // -- capture -------------------------------------------------------------
 
@@ -84,9 +112,8 @@
   }
 
   let q = $derived(query.trim().toLowerCase());
-  let heldFound = $derived(held && HELD_NAME.toLowerCase().includes(q) ? held : undefined);
   let found = $derived(
-    saved.filter((s) => `${s.name} ${s.source ?? ''}`.toLowerCase().includes(q)),
+    listed.filter((s) => `${s.name} ${s.source ?? ''}`.toLowerCase().includes(q)),
   );
   let foundSources = $derived(sources.filter((c) => c.id.toLowerCase().includes(q)));
 
@@ -142,21 +169,6 @@
           autofocus
         />
         <div class="list" role="listbox" aria-label="Samples">
-          {#if heldFound}
-            <button
-              type="button"
-              class="item"
-              role="option"
-              aria-selected={heldFound.choice === selected}
-              onclick={() => {
-                open = false;
-                onpick(heldFound.choice);
-              }}
-            >
-              <span class="name ellipsis">{HELD_NAME}</span>
-              <span class="dim">{count(heldFound.records, 'record')} · not saved</span>
-            </button>
-          {/if}
           {#each found as s (s.id)}
             {@const lockers = lockedBy.get(s.id) ?? []}
             <button
@@ -175,11 +187,7 @@
                   >{/if}
                 {s.name}
               </span>
-              <span class="dim"
-                >{count(s.records, 'record')}{capturedAt(s) !== undefined
-                  ? ` · ${dateTime(capturedAt(s)! / 1000)}`
-                  : ''}{s.id === lastUsed ? ' · last used' : ''}</span
-              >
+              <span class="dim">{s.said}</span>
             </button>
           {/each}
         </div>

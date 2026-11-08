@@ -1687,7 +1687,9 @@
             {lockedBy}
             pipeline={loadedId}
             mayCapture={(c) => mayCapture(sourceTarget(c))}
-            held={held ? { choice: heldChoice(held.session), records: heldCount(held) } : undefined}
+            held={held
+              ? { choice: heldChoice(held.session), records: heldCount(held), source: held.source }
+              : undefined}
             onpick={chooseSample}
             onadd={readOnly ? undefined : () => (adding = true)}
             oncapture={(c) => {

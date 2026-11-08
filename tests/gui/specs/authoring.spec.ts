@@ -217,7 +217,10 @@ test('A1: a viewer captures a deployed source from the map and downloads it', as
   // A capture not yet saved is a sample all the same, and is listed before the saved ones.
   await expect(
     viewer.getByRole('listbox', { name: 'Samples' }).getByRole('option').first(),
-  ).toContainText(/Your capture\s*3 records · not saved/);
+  ).toContainText(/Your capture\s*3 records · own-metrics · not saved/);
+  // Searching by the source it was captured from finds it, as it finds a saved sample.
+  await viewer.getByRole('searchbox', { name: 'Find a sample' }).fill('own-metrics');
+  await expect(viewer.getByRole('option', { name: /Your capture/ })).toBeVisible();
 });
 
 // A1, a viewer: they capture a source feeding a pipeline from its editor's sample menu and run the pipeline over it,
