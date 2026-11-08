@@ -26,7 +26,7 @@ export const walkthrough: Video = {
   poster: '/videos/walkthrough-poster.jpg',
 };
 
-export const courses: Course[] = [
+const allCourses: Course[] = [
   {
     title: 'Getting started',
     slug: 'getting-started',
@@ -64,6 +64,9 @@ export const courses: Course[] = [
 ];
 
 export const released = (course: Course) => course.videos.filter((v) => v.youtube);
+
+/** The courses the site shows: those with a video out. */
+export const courses = allCourses.filter((c) => released(c).length);
 
 /** How many videos the course has and how long the released ones run, as its cards say it. */
 export function courseLength(course: Course): string {

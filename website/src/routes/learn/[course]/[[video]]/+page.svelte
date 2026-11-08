@@ -5,11 +5,12 @@
   let { data } = $props();
   const course = $derived(data.course);
   const video = $derived(data.video);
-  const at = $derived(course.videos.indexOf(video));
-  const next = $derived(course.videos[at + 1]);
+  const at = $derived(course.videos.findIndex((v) => v.slug === video.slug));
+  const next = $derived(course.videos.slice(at + 1).find((v) => v.youtube));
 
   // The list shows titles until the visitor plays a video, then folds to numbers to give the player
-  // room. Once the visitor opens or folds it themselves, it stays as they left it.
+  // room. Once the visitor opens or folds it themselves, it stays as they left it. On a phone the list sits
+  // under the player and never folds.
   let open = $state(true);
   let touched = false;
 </script>
@@ -34,8 +35,13 @@
         </div>
         <div class="under">
           <h2>{at + 1}. {video.title}</h2>
-          {#if next?.youtube}
-            <a href="/learn/{course.slug}/{next.slug}">Next: {at + 2}. {next.title} →</a>
+          {#if next}
+            <a href="/learn/{course.slug}/{next.slug}"
+              >Next: {course.videos.indexOf(next) + 1}. {next.title} →</a
+            >
+          {/if}
+          {#if course.demo}
+            <a href="/demo/try/" rel="external">Try it yourself in the demo →</a>
           {/if}
         </div>
       </div>
@@ -43,29 +49,31 @@
         <button
           class="toggle"
           aria-expanded={open}
-          aria-label={open ? 'Hide titles' : 'Show titles'}
+          aria-controls="course-videos"
+          aria-label="Show titles"
           onclick={() => {
             touched = true;
             open = !open;
           }}><span aria-hidden="true">{open ? '›' : '‹'}</span></button
         >
-        <ol>
+        <ol id="course-videos">
           {#each course.videos as v, i (v.slug)}
             <li>
               {#if v.youtube}
                 <a
                   href="/learn/{course.slug}/{v.slug}"
-                  aria-current={v === video ? 'page' : undefined}
+                  aria-current={v.slug === video.slug ? 'page' : undefined}
                   title={open ? undefined : v.title}
                 >
                   <span class="n">{i + 1}</span>
-                  {#if open}<span class="t">{v.title}</span><span class="m">{v.minutes} min</span
-                    >{/if}
+                  <span class="t">{v.title}</span>
+                  {#if v.minutes}<span class="m">{v.minutes} min</span>{/if}
                 </a>
               {:else}
                 <span class="planned" title={open ? undefined : v.title}>
                   <span class="n">{i + 1}</span>
-                  {#if open}<span class="t">{v.title}</span><span class="m">Coming soon</span>{/if}
+                  <span class="t">{v.title}</span>
+                  <span class="m">Coming soon</span>
                 </span>
               {/if}
             </li>
@@ -97,7 +105,9 @@
   .layout.open {
     grid-template-columns: minmax(0, 1fr) 22rem;
   }
+  /* As wide as the column, but never so tall that it does not fit in the window. */
   .player {
+    max-width: calc((100vh - 15rem) * 16 / 9);
     border: 1px solid var(--border);
     border-radius: var(--radius-card);
     overflow: hidden;
@@ -154,12 +164,23 @@
     color: inherit;
     text-decoration: none;
   }
-  .layout:not(.open) .toggle,
-  .layout:not(.open) li > * {
-    grid-template-columns: 1fr;
-    justify-content: center;
-    text-align: center;
-    padding-inline: 0;
+  @media (min-width: 46rem) {
+    .layout:not(.open) .toggle,
+    .layout:not(.open) li > * {
+      grid-template-columns: 1fr;
+      justify-content: center;
+      text-align: center;
+      padding-inline: 0;
+    }
+    /* Folded, a row shows its number; its title stays for screen readers. */
+    .layout:not(.open) :is(.t, .m) {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
+    }
   }
   [aria-current='page'] {
     background: var(--band-bg);
@@ -181,7 +202,7 @@
     letter-spacing: 0.06em;
     text-transform: uppercase;
   }
-  @media (max-width: 46rem) {
+  @media (max-width: 45.99rem) {
     .layout,
     .layout.open {
       grid-template-columns: 1fr;
