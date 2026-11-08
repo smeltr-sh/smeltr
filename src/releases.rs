@@ -212,8 +212,13 @@ fn record_release() {
     // Every line already kept is still true of this build, so writing them all again at the end only adds new steps.
     let changed = changed_steps();
     assert!(changed.is_empty(), "released steps were changed: {changed:?}");
+    // Forced, a release is still checked to come after the last one, but not against its steps.
+    let steps = match std::env::var("SMELTR_RECORD_FORCE").as_deref() {
+        Ok("force") => Vec::new(),
+        _ => new_steps(),
+    };
     if let Some(previous) = released().last()
-        && let Err(why) = bump_allowed(previous, &release, &new_steps())
+        && let Err(why) = bump_allowed(previous, &release, &steps)
     {
         panic!("{why}");
     }
