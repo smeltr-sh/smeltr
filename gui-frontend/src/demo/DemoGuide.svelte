@@ -19,6 +19,8 @@
   } from './guide';
 
   const OPEN_KEY = 'smeltr-demo-guide-open';
+  /** The video that works through these same tasks in this demo. */
+  const WALKTHROUGH_URL = 'https://smeltr.sh/learn/demo-walkthrough/fixing-a-feed';
   const RING = 'data-guide-ring';
 
   let store: Storage | null = null;
@@ -120,6 +122,7 @@
     <p>
       Cisco ASA logs are arriving with no route to take them, and one FortiGate's firmware now sends
       proto as a name instead of a number.
+      <a href={WALKTHROUGH_URL} target="_blank" rel="noopener">Stuck? Watch the walkthrough</a>
     </p>
     <ol>
       {#each TASKS as task, i (task.id)}
