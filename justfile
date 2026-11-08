@@ -271,8 +271,10 @@ cut-release release: (has-notes release) (record-release if release =~ '^[0-9]+\
 # pushed and the release workflow started on it. It builds a draft pre-release with its own image tag, for Linux
 # only; for Windows too, start the workflow again from the Actions tab with Windows on.
 [doc("Tag a release candidate, push the tag and start its build.")]
-cut-rc candidate: clean-main
+cut-rc candidate: (need "gh" "Install the GitHub CLI from https://cli.github.com and run gh auth login") clean-main
     {{ if candidate =~ '^[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$' { "" } else { error('a release candidate is named major.minor.patch-rcN, like 1.0.0-rc1') } }}
+    gh auth status
+    git merge-base --is-ancestor HEAD origin/main
     git tag -a "v{{candidate}}" -m "Release candidate {{candidate}}"
     git push origin "v{{candidate}}"
     gh workflow run release.yml --ref "v{{candidate}}" -f windows=false
