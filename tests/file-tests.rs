@@ -424,9 +424,7 @@ fn the_interval_fires_with_no_new_batch() {
     let rows = rows(&schema, &["only"]);
     assert!(t.deliver(3, &rows).is_empty());
     // Egress goes idle: nothing is handed over, it only comes back to poll.
-    std::thread::sleep(INTERVAL * 3);
-    let got = t.d.poll_completions().unwrap();
-    assert_eq!(got.iter().map(|c| c.batch).collect::<Vec<_>>(), vec![3]);
+    assert_eq!(t.completed(1), vec![3]);
     assert_eq!(t.commits().len(), 1);
 }
 
