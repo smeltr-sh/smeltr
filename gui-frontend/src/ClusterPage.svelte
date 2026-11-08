@@ -36,6 +36,8 @@
   import Locked from './Locked.svelte';
   import SectionShell from './SectionShell.svelte';
   import { ask } from './Confirm.svelte';
+  import { holds } from './access';
+  import { resetSourceHistory } from './api';
   import PageHeader from './PageHeader.svelte';
   import Help from './Help.svelte';
   import Panel from './Panel.svelte';
@@ -339,6 +341,33 @@
         );
   });
   let ranked = $derived(furthestFromNormal(normals));
+  // MOCKUP: sources the selection reads that have no normal yet, so are still learning one.
+  let learning = $derived.by(() => {
+    const read = flow;
+    if (read === null) return [];
+    const seen = new Set<string>();
+    return read.rowsIn
+      .filter((series) => flowMatchesSelection(series))
+      .filter(
+        (series) =>
+          !read.normals.some((n) => n.group === series.group && n.subjectId === series.subjectId),
+      )
+      .filter((series) => {
+        const key = JSON.stringify([series.group, series.subjectId]);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .map((series) => ({ group: series.group, subjectId: series.subjectId }));
+  });
+  async function resetNormal(group: string, subjectId: string) {
+    const ok = await ask({
+      title: 'reset history',
+      body: `${subjectId} forgets its history and learns its normal again from now. Until it has 3 days of rows, it raises neither Rows below normal nor Rows above normal.`,
+      action: 'Reset history',
+    });
+    if (ok) await resetSourceHistory(group, subjectId);
+  }
   const rankedSort = new TableSort<'name' | 'group' | 'now' | 'normal' | 'away'>();
   let sortedRanked = $derived(
     rankedSort.apply(ranked, {
@@ -1142,12 +1171,14 @@
               is past the nearest end of that range, as a percent of that end.</Help
             >
           </h2>
-          {#if flow !== null}<p class="note">{count(normals.length, 'source')}.</p>{/if}
+          {#if flow !== null}<p class="note">
+              {count(normals.length + learning.length, 'source')}.
+            </p>{/if}
         </div>
       </div>
       {#if flow === null}
         <p class="empty">Loading…</p>
-      {:else if ranked.length === 0}
+      {:else if ranked.length === 0 && learning.length === 0}
         <p class="empty">Not enough history yet to say what any of these usually do.</p>
       {:else}
         <div class="table-wrap">
@@ -1166,7 +1197,7 @@
                   ><SortButton sort={rankedSort} key="normal">Normally</SortButton></th
                 ><th class="num" aria-sort={rankedSort.aria('away')}
                   ><SortButton sort={rankedSort} key="away">Away by</SortButton></th
-                ></tr
+                ><th class="row-actions"><span class="visually-hidden">Actions</span></th></tr
               ></thead
             >
             <tbody>
@@ -1182,6 +1213,20 @@
                       ? '+∞'
                       : `${r.awayPercent > 0 ? '+' : ''}${Math.round(r.awayPercent)}`}%</td
                   >
+                  <td class="row-actions"
+                    >{#if holds(r.group, 'editor')}<Button
+                        class="compact"
+                        onclick={() => resetNormal(r.group, r.subjectId)}>Reset history</Button
+                      >{/if}</td
+                  >
+                </tr>
+              {/each}
+              {#each learning as l (JSON.stringify([l.group, l.subjectId]))}
+                <tr>
+                  <td class="mono">{l.subjectId}</td><td>{l.group}</td>
+                  <td class="num dim">–</td><td class="num dim">learning, day 1 of 3</td>
+                  <td class="num dim">–</td>
+                  <td class="row-actions"></td>
                 </tr>
               {/each}
             </tbody>
@@ -1836,6 +1881,18 @@
   .num {
     text-align: right;
     font-variant-numeric: tabular-nums;
+  }
+  .row-actions {
+    width: 1%;
+    white-space: nowrap;
+    text-align: right;
+  }
+  tr .row-actions :global(button) {
+    visibility: hidden;
+  }
+  tr:hover .row-actions :global(button),
+  tr:focus-within .row-actions :global(button) {
+    visibility: visible;
   }
   .away.mid {
     color: var(--warn);
