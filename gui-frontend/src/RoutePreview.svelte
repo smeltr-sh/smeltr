@@ -80,6 +80,7 @@
     openDestination = null;
     allDocuments = false;
     openDocuments.clear();
+    expanded.clear();
     try {
       const res = await routePreview(JSON.stringify(config), selected);
       if (!res.ok) {
