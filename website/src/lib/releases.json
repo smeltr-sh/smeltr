@@ -1,6 +1,7 @@
 [
   {
     "version": "1.1.0",
+    "date": "2026-11-08",
     "summary": "The second release: more capabilities, and fixes for the bugs found since 1.0.",
     "highlights": [
       {
@@ -30,14 +31,16 @@
         "items": [
           "A new pipeline can propose a parser for Cisco ASA and FTD lines, which the new Grok pattern `CISCOASALINE` reads.",
           "Add schema offers OCSF 1.3.0 beside 1.9.0, since Amazon Security Lake reads 1.3. It also offers a schema for the records of one OpenTelemetry signal, as an OTLP receiver gives them and the OTLP destination sends them.",
-          "A viewer can read samples and run previews. Saving or deleting a sample and running tests still need an editor."
+          "Export a pipeline as a zip, with its tests and samples, and the routes, sources and destinations that run it if you choose, and import it on another leader. Untick any object you do not want to export or import. An import lets you keep or rename each object whose id is already taken there, and matches each secret and certificate it names to one there.",
+          "Save the output rows on screen as a sample. While the editor runs over a capture you have not saved, you can save that input as a sample too.",
+          "A viewer can read samples, run previews, start captures, and run the pipeline editor over a capture without saving it. Saving or deleting a sample and running tests still need an editor."
         ]
       },
       {
         "title": "Smeltr language",
         "items": [
           "`formatTime` writes a datetime as text in a `parseTime` format.",
-          "`readInt`, `readFloat`, `readBytes` and `unpack` read binary messages. `indexOf`, `lastIndexOf` and `includes` find a byte or a run of bytes.",
+          "`readInt`, `readFloat`, `readBytes` and `unpack` read binary messages, and `writeInt`, `writeFloat` and `pack` write them. `indexOf`, `lastIndexOf` and `includes` find a byte or a run of bytes.",
           "`indexOf`, `lastIndexOf` and `includes` take a starting position, as they do in JavaScript, and arrays gain `lastIndexOf`."
         ]
       },
@@ -67,7 +70,18 @@
           "An editor can lower a Rows below or above normal warning to info, or reset a source's history so its normal is learned again from then on.",
           "On a 10-second or 1-minute chart, the expected band comes from how far the source's rate swung at that resolution on past days.",
           "The Map places each pipeline and destination beside what it connects to, so fewer lines cross, and stacks sources or destinations only when their names share a prefix.",
-          "Every disabled button says why it is disabled when you point at it or press it."
+          "Every disabled button says why it is disabled when you point at it or press it.",
+          "The leader's log now names, for each capture, what the workers were asked to read."
+        ]
+      },
+      {
+        "title": "Agent",
+        "items": [
+          "Once a conversation outgrows the model's context, the agent can read back its older turns, by a range of turns or a search.",
+          "For a model that writes no summary itself, the leader asks it for one once a conversation gets long, even in the middle of a turn.",
+          "When the agent runs out of rounds of requests in a turn, it tells you where it stopped.",
+          "The agent can read the capture you have open, the models it can pick from and the warning metrics, and can create a key.",
+          "The Agent page opens from the agent panel, and the menu under a person's name no longer lists it."
         ]
       }
     ],
@@ -75,14 +89,17 @@
       {
         "title": "Build pipelines",
         "items": [
-          "A new pipeline proposes a parser for a capture only when the parser reads 99% of its records."
+          "A new pipeline proposes a parser for a capture only when the parser reads 99% of its records.",
+          "Every saved sample deploys, whether or not a test names it.",
+          "The pipeline editor opens each pipeline on its own sample when you move from one pipeline to another."
         ]
       },
       {
         "title": "Smeltr language",
         "items": [
           "`true`, `false` and `null` before a dot are values: `true.toString()` no longer looks for a field named `true.toString`.",
-          "A variable first set to `null` or `[]` refuses a later write that cannot blend with the writes before it: `let l = []; l = \"s\";` no longer compiles."
+          "A variable first set to `null` or `[]` refuses a later write that cannot blend with the writes before it: `let l = []; l = \"s\";` no longer compiles.",
+          "A float result that is infinite or not a number is null, with an Overflow or NaN exception, as an integer that overflows is. A float literal too large to hold, such as `1e400`, does not compile."
         ]
       },
       {
@@ -107,7 +124,18 @@
           "Lag climbing is judged on the highest lag of each five minutes, over thirty minutes, so it no longer raises and clears with each commit.",
           "On Windows, a leader listening on `[::]` takes IPv4 too.",
           "The leader sets how often its workers report, with `SMELTR_LEADER_HEARTBEAT_INTERVAL_MS`. A worker's own heartbeat interval does nothing now, and a worker that sets it in its file says at start that it can be removed.",
-          "Furthest from normal on the Status page ranks sources against the normal their warnings use."
+          "Furthest from normal on the Status page ranks sources against the normal their warnings use.",
+          "The leader keeps working after an internal error part way through a request, where it used to fail later requests until it restarted.",
+          "The Map names each source and destination card by its type, as the Sources and Destinations pages do, where a syslog receiver read as HTTP.",
+          "A viewer can read the warning metrics for the worker groups it views; before, that needed an administrator."
+        ]
+      },
+      {
+        "title": "Agent",
+        "items": [
+          "Agent permissions keep \"as every area\" after Save; before, the area showed nothing.",
+          "Switching quickly between conversations no longer leaves the one you left on screen.",
+          "The agent panel's conversation list is disabled when there is no conversation to pick."
         ]
       },
       {
