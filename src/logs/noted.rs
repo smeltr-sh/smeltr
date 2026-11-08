@@ -65,22 +65,26 @@ impl fmt::Display for Noted {
     }
 }
 
-/// Logs a failure at warn and keeps its message as a [`Noted`], for a page to show:
+/// Logs a failure at warn, or at the level given, and keeps its message as a [`Noted`], for a page to show:
 ///
 /// ```ignore
 /// let message = noted!(name: "sync_failed", target: "git", "the remote could not be followed", why);
-/// let message = noted!(name: "push_failed", target: "git", "a save was not pushed", why, branch = %branch);
+/// let message = noted!(name: "push_failed", target: "git", "a branch was not pushed", why, branch = %branch);
+/// let message = noted!(level: INFO, name: "check_failed", target: "updates", "the list was not read", why);
 /// ```
 ///
 /// The type, class and sentence are constant per site, as every log line's are; the message goes in the `error` field,
-/// after any fields given.
+/// after any fields given. A line at warn raises an issue in Status; a failure that is no issue is logged at info.
 #[macro_export]
 macro_rules! noted {
-    (name: $name:literal, target: $target:literal, $sentence:literal, $message:expr $(, $($field:tt)+)?) => {{
+    (level: $level:ident, name: $name:literal, target: $target:literal, $sentence:literal, $message:expr $(, $($field:tt)+)?) => {{
         let message: String = $message;
-        tracing::warn!(name: $name, target: $target, $($($field)+,)? error = %message, $sentence);
+        tracing::event!(name: $name, target: $target, tracing::Level::$level, $($($field)+,)? error = %message, $sentence);
         $crate::logs::Noted::logged(message)
     }};
+    (name: $name:literal, target: $target:literal, $sentence:literal, $message:expr $(, $($field:tt)+)?) => {
+        $crate::noted!(level: WARN, name: $name, target: $target, $sentence, $message $(, $($field)+)?)
+    };
 }
 
 #[cfg(test)]
