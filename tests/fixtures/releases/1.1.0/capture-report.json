@@ -1,0 +1,33 @@
+{
+  "batches": [
+    {
+      "columns": [
+        {
+          "name": "_raw",
+          "type": "str"
+        },
+        {
+          "name": "__source.file",
+          "type": "str"
+        }
+      ],
+      "rows": [
+        {
+          "failed": [
+            0
+          ],
+          "values": [
+            "a line",
+            "app/1.log"
+          ],
+          "worker": "w1"
+        }
+      ]
+    }
+  ],
+  "finished": {
+    "failed": "refused"
+  },
+  "session": "s1",
+  "workerId": "w1"
+}
