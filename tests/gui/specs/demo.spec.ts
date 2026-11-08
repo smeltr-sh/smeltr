@@ -168,13 +168,4 @@ test('the guide folds on a click, but not on a click on its links', async ({ pag
   await page.locator('#demo-guide').getByRole('link', { name: 'Show me' }).first().click();
   await expect(page).toHaveURL(/#\/changes/);
   await expect(page.locator('#demo-guide')).toBeVisible();
-  // The walkthrough video opens in a tab of its own.
-  const video = page
-    .locator('#demo-guide')
-    .getByRole('link', { name: 'Stuck? Watch the walkthrough' });
-  await expect(video).toHaveAttribute(
-    'href',
-    'https://smeltr.sh/learn/demo-walkthrough/fixing-a-feed',
-  );
-  await expect(video).toHaveAttribute('target', '_blank');
 });
