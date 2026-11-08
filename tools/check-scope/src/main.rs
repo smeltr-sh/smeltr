@@ -268,7 +268,8 @@ impl Tree {
         }
         plan.breaking = changed
             .iter()
-            .any(|p| self.sources.get(p).is_some_and(|text| text.contains("STEPS: &[")));
+            .filter_map(|p| self.sources.get(p))
+            .any(|text| text.lines().any(|l| l.starts_with("pub") && l.contains("STEPS: &[")));
         plan
     }
 
@@ -532,13 +533,13 @@ fn run(plan: &Plan) -> ExitCode {
         }
     }
     // After the others, so its report is the last thing printed rather than lost among their lines.
-    let breaking = || {
-        Command::new("just")
+    if plan.breaking
+        && !Command::new("just")
             .arg("breaking-steps")
             .env("SMELTR_STABLE_UPDATED", "1")
             .status()
-    };
-    if plan.breaking && !breaking().is_ok_and(|s| s.success()) {
+            .is_ok_and(|s| s.success())
+    {
         failed.push("breaking-steps".into());
     }
     if failed.is_empty() {
@@ -629,6 +630,8 @@ mod tests {
     fn a_file_that_holds_store_steps_reports_the_breaking_ones() {
         assert!(plan(&["src/leader/sqlite_store.rs"]).breaking);
         assert!(!plan(&["src/io/kafka.rs"]).breaking);
+        let indented = tree(&[("src/leader/tls.rs", "    const STEPS: &[&str] = &[];\n")]);
+        assert!(!indented.plan(&["src/leader/tls.rs".to_string()]).breaking);
     }
 
     #[test]

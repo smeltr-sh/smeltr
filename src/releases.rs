@@ -410,8 +410,9 @@ fn describe(step: &NewStep) -> Option<String> {
     };
     let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path)).ok()?;
     let first = format!("// {} -- ", step.number);
-    // Search from the STEPS array on, because a comment of the same form above it must not match.
-    let mut lines = text[text.find("const STEPS")?..].lines().map(str::trim_start);
+    // Search the STEPS array alone, because a comment of the same form outside it must not match.
+    let steps = &text[text.find("const STEPS")?..];
+    let mut lines = steps[..steps.find("\n];")?].lines().map(str::trim_start);
     let head = lines.find_map(|l| l.strip_prefix(first.as_str()))?;
     let rest = lines.map_while(|l| l.strip_prefix("// "));
     Some(std::iter::once(head).chain(rest).collect::<Vec<_>>().join(" "))
