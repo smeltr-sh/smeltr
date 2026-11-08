@@ -4369,6 +4369,12 @@ impl Supervisor {
             // Its threads are gone, so nothing is reported about them. What it counted and said before it went is
             // still owed to the leader, and is carried by the beats that follow.
             held.state = child::RuntimeState::default();
+            // Except its streams: the leader judges a beat's streams by the commit the beat names, and this
+            // runtime's commit is no longer the one a later beat names.
+            held.gathered.streams = None;
+        }
+        if let Some(window) = self.owed.lock().unwrap().window.as_mut() {
+            window.streams = None;
         }
         self.registry.forget_mirrored();
         *self.commit.lock().unwrap() = None;
@@ -7394,6 +7400,51 @@ mod tests {
             matches!(pool.metrics[0].value, crate::heartbeat::MetricValueDto::Counter(7)),
             "what waited was lost: {:?}",
             pool.metrics
+        );
+    }
+
+    /// A runtime that is gone takes its streams with it, from the window still owed and from what waits for the next:
+    /// the leader judges a beat's streams by the commit the beat names, which is no longer that runtime's.
+    #[test]
+    fn a_runtime_s_streams_go_with_it() {
+        let supervisor = supervisor_for(temp_dir("streams-forgotten"));
+        let unmatched = |rows| heartbeat::StreamReport {
+            parsers: Vec::new(),
+            unmatched: vec![heartbeat::UnmatchedStreams {
+                source: "hec".to_string(),
+                rows,
+                keys: Vec::new(),
+                keys_dropped: 0,
+            }],
+        };
+        let said = |inbox: &child::RuntimeInbox, rows| {
+            *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
+                state: child::RuntimeState::default(),
+                gathered: child::Gathered {
+                    streams: Some(unmatched(rows)),
+                    ..Default::default()
+                },
+            });
+            supervisor.absorb(inbox);
+        };
+        let old = child::RuntimeInbox::default();
+        said(&old, 2);
+        assert_eq!(supervisor.next_beat(false).streams, Some(unmatched(2)));
+        said(&old, 3);
+        supervisor.forget_runtime();
+        let owed = supervisor.next_beat(false);
+        assert_eq!(
+            (owed.streams_window, owed.streams),
+            (Some(1), None),
+            "the owed window kept them"
+        );
+        supervisor.window_answered();
+
+        said(&child::RuntimeInbox::default(), 5);
+        assert_eq!(
+            supervisor.next_beat(false).streams,
+            Some(unmatched(5)),
+            "what the old runtime said waiting was carried on"
         );
     }
 
