@@ -14,10 +14,12 @@
 //! model answered is also kept as the provider wrote it, and sent back so in the next request: thinking and
 //! reasoning travel with it, and a provider refuses a conversation that drops them between tool calls.
 //!
-//! What a request carries stays under the model's context. Anthropic and OpenAI summarize the older turns
-//! themselves once a request passes three quarters of the model's context ([`compact_at`]), and their summary comes back in the answer like thinking does;
-//! for an OpenAI-compatible endpoint the leader asks the model for that summary and keeps it on the answer
-//! ([`Reply`]). Either way the conversation itself is kept whole.
+//! What a request carries stays under the model's context. Once a request passes three quarters of the model's
+//! context ([`compact_at`]), a summary stands in for the older turns. Anthropic writes it and pauses, and the answer
+//! hands it back ([`Stop::Compacted`]) to be kept as a fresh start ([`Fresh`]). OpenAI writes its own, which is
+//! sealed and comes back in the answer like reasoning does. For an endpoint that writes none, [`Model::due`] says
+//! when the leader asks the model for one, which is kept the same way. Either way the conversation itself is kept
+//! whole.
 //!
 //! The settings' model is where a conversation starts. Each request may name another model the key reaches
 //! ([`models`]) and an effort, and its [`Reply`] keeps both, so the conversation carries on with them.
@@ -30,6 +32,7 @@
 //! The endpoint is untrusted input like any other far end: the answer is read to a bound, and nothing in it is
 //! followed. The API key is a sealed leader setting and goes nowhere but the endpoint it was issued by.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -253,14 +256,25 @@ pub struct Fresh {
     pub tokens: u64,
 }
 
-/// The turns a request reads, from the newest [`Turn::Fresh`] on, its summary said first. Borrowed where there is
-/// none.
+/// The turns a request reads, from the newest [`Turn::Fresh`] on, its summary said first. A summary keeps the last
+/// answer before it, and what followed, as they were. When no answer came since the fresh start before, it keeps
+/// everything since that fresh start instead, so the model carries on from its own words. Borrowed where there is
+/// no fresh start.
 fn readable(turns: &[Turn]) -> std::borrow::Cow<'_, [Turn]> {
     let Some(at) = turns.iter().rposition(|t| matches!(t, Turn::Fresh(_))) else {
         return std::borrow::Cow::Borrowed(turns);
     };
     let Turn::Fresh(fresh) = &turns[at] else { unreachable!() };
-    let mut after = turns[at + 1..].to_vec();
+    let kept = match turns[..at]
+        .iter()
+        .rposition(|t| matches!(t, Turn::Fresh(_) | Turn::Answered(_)))
+    {
+        _ if fresh.summary.is_none() => at,
+        Some(from) if matches!(turns[from], Turn::Answered(_)) => from,
+        Some(fresh_start) => fresh_start + 1,
+        None => 0,
+    };
+    let mut after: Vec<Turn> = turns[kept..at].iter().chain(&turns[at + 1..]).cloned().collect();
     if let Some(summary) = &fresh.summary {
         let said = Said::Text(format!("Summary of the conversation before this:\n{summary}"));
         match after.first_mut() {
@@ -282,6 +296,8 @@ pub enum Stop {
     Tokens,
     /// It declined to answer.
     Refused,
+    /// It summarized the conversation, and the answer's text is that summary, to carry on from in place of it.
+    Compacted,
     /// What the provider said, when none of the above.
     Other(String),
 }
@@ -328,11 +344,6 @@ pub struct Reply {
     pub usage: Usage,
     /// The answer as the provider wrote it, sent back unchanged in a later [`Turn::Answered`].
     native: Value,
-    /// For an endpoint with no compaction of its own, what the leader had the model write of the conversation
-    /// before the person's latest message: it stood in for those turns in this answer's request, and does in every
-    /// later one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    summary: Option<String>,
     /// The model that answered, the effort it was asked for, and the tokens its context holds: what the person's
     /// next message starts from, and how full the conversation is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -341,6 +352,20 @@ pub struct Reply {
     pub effort: Option<Effort>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<u64>,
+}
+
+impl Reply {
+    /// Whether the provider wrote a sealed summary into this answer, which stands in for the conversation before it
+    /// and cannot be read (OpenAI's).
+    pub fn compacted(&self) -> bool {
+        holds_compaction(&self.native)
+            && !self
+                .native
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|b| b["content"].is_string())
+    }
 }
 
 /// What the model is asked.
@@ -379,6 +404,11 @@ impl std::fmt::Debug for Heard<'_> {
 #[async_trait::async_trait]
 pub trait Model: Send + Sync {
     async fn ask(&self, request: Request<'_>) -> Result<Reply, String>;
+    /// Whether `turns` need a summary from the leader before the next request: the last answer passed
+    /// [`compact_at`] the context, and the endpoint does not summarize the conversation itself.
+    fn due(&self, _turns: &[Turn]) -> bool {
+        false
+    }
 }
 
 /// The client for `endpoint`, which speaks its provider's API. A redirect is never followed: the key rides in a
@@ -391,7 +421,12 @@ pub fn model(endpoint: Endpoint) -> Result<Box<dyn Model>, String> {
         reqwest::redirect::Policy::none(),
     )?;
     let base = endpoint.url.trim_end_matches('/').to_string();
-    Ok(Box::new(Client { client, base, endpoint }))
+    Ok(Box::new(Client {
+        client,
+        base,
+        endpoint,
+        refused: AtomicBool::new(false),
+    }))
 }
 
 struct Client {
@@ -399,6 +434,8 @@ struct Client {
     /// The endpoint's URL, without a trailing slash, for the request path to follow.
     base: String,
     endpoint: Endpoint,
+    /// Whether the model refused to summarize the conversation itself.
+    refused: AtomicBool,
 }
 
 #[async_trait::async_trait]
@@ -407,15 +444,14 @@ impl Model for Client {
         let turns = readable(request.turns);
         let request = Request {
             turns: &turns,
+            compact: request.compact && self.compacts(),
             ..request
         };
-        if let Some((summary, at)) = self.summary(request).await {
-            let reply = self.ask_summarized(request, summary, at).await?;
-            return Ok(self.made(reply, request));
-        }
-        // A model too old for compaction, or a provider's endpoint that does not offer it, is asked again without.
+        // A model too old for compaction, or a provider's endpoint that does not offer it, is asked again without,
+        // and the leader writes its summaries from then on.
         let answer = match self.send(request).await {
             Err(why) if request.compact && refused_compaction(&why) => {
+                self.refused.store(true, Ordering::Relaxed);
                 self.send(Request {
                     compact: false,
                     ..request
@@ -431,42 +467,36 @@ impl Model for Client {
         }?;
         Ok(self.made(reply, request))
     }
+
+    fn due(&self, turns: &[Turn]) -> bool {
+        let since = turns
+            .iter()
+            .rposition(|t| matches!(t, Turn::Fresh(_)))
+            .map_or(turns, |at| &turns[at..]);
+        let last = since.iter().rev().find_map(|t| match t {
+            Turn::Answered(reply) => Some(reply.usage.input + reply.usage.output),
+            Turn::Asked(_) | Turn::Fresh(_) => None,
+        });
+        !self.compacts() && last.is_some_and(|last| last >= compact_at(self.endpoint.context))
+    }
 }
 
-/// The ask for a summary of the conversation, to carry on from in place of it.
-pub const SUMMARIZE: &str = "Summarize the conversation so far for yourself, to carry on from in place of it: what the \
-                         person asked for, what you found and changed, on which branch, what is left open, and the ids, \
-                         names and values you will need. Write the summary only, and call no tool.";
+/// The ask for a summary of the conversation, to carry on from in place of it. The last answer and what followed
+/// it are still read after the summary ([`readable`]).
+pub const SUMMARIZE: &str = "Summarize the conversation so far for yourself, to carry on from in place of it. You \
+    will still read your last answer and what followed it. Write these sections, each under its name as a \
+    heading:\n\
+    1. Request: what the person asked for, and why.\n\
+    2. Rules: what the person told you to do or not to do.\n\
+    3. Messages: every message the person wrote, word for word.\n\
+    4. Work: what you found and changed, on which branch, and the ids, names and values you will need.\n\
+    5. Errors: what failed, and how it was fixed.\n\
+    6. Open: what is left to do.\n\
+    7. Now: what you were doing, and the next step.\n\
+    Write the summary only, and call no tool.";
 
 /// The most a summary may spend.
 pub const SUMMARY_TOKENS: u32 = 8_000;
-
-/// Where the person's latest message is in `turns`, when there is anything before it to summarize.
-fn latest_message(turns: &[Turn]) -> Option<usize> {
-    turns
-        .iter()
-        .rposition(|t| matches!(t, Turn::Asked(said) if said.iter().any(|s| matches!(s, Said::Text(_)))))
-        .filter(|at| *at > 0)
-}
-
-/// The summary that stands in for the turns before the person's message it was written ahead of, and the turns
-/// from that message on.
-fn summarized(turns: &[Turn]) -> (Option<&str>, &[Turn]) {
-    let Some(answered) = turns
-        .iter()
-        .rposition(|t| matches!(t, Turn::Answered(Reply { summary: Some(_), .. })))
-    else {
-        return (None, turns);
-    };
-    let Turn::Answered(Reply {
-        summary: Some(summary), ..
-    }) = &turns[answered]
-    else {
-        unreachable!()
-    };
-    let from = latest_message(&turns[..answered]).unwrap_or(0);
-    (Some(summary.as_str()), &turns[from..])
-}
 
 impl Client {
     /// `reply`, saying what made it.
@@ -479,55 +509,15 @@ impl Client {
         }
     }
 
-    /// For an OpenAI-compatible endpoint, which has no compaction of its own: once the last answer's request and
-    /// what it wrote pass [`compact_at`] the context, a summary of the turns before the person's latest message, for the next
-    /// answer to carry, and where that message is. `None` when none is due or the endpoint wrote none.
-    async fn summary(&self, request: Request<'_>) -> Option<(String, usize)> {
-        let last = request.turns.iter().rev().find_map(|t| match t {
-            Turn::Answered(reply) => Some(reply.usage.input + reply.usage.output),
-            Turn::Asked(_) | Turn::Fresh(_) => None,
-        })?;
-        let due = last >= compact_at(self.endpoint.context);
-        if self.endpoint.provider != Provider::OpenAiCompatible || !request.compact || !due {
-            return None;
-        }
-        let (_, rest) = summarized(request.turns);
-        let at = latest_message(rest)? + request.turns.len() - rest.len();
-        let mut turns = request.turns[..at].to_vec();
-        // The calls the turns end on are answered at the person's message; the summary must see them answered.
-        let mut ask: Vec<Said> = match &request.turns[at] {
-            Turn::Asked(said) => said
-                .iter()
-                .filter(|s| matches!(s, Said::Result { .. }))
-                .cloned()
-                .collect(),
-            Turn::Answered(_) | Turn::Fresh(_) => Vec::new(),
+    /// Whether the endpoint summarizes the conversation itself. Anthropic's compaction starts no lower than
+    /// [`ANTHROPIC_LEAST_COMPACTION`].
+    fn compacts(&self) -> bool {
+        let able = match self.endpoint.provider {
+            Provider::Anthropic => compact_at(self.endpoint.context) >= ANTHROPIC_LEAST_COMPACTION,
+            Provider::OpenAi => true,
+            Provider::OpenAiCompatible => false,
         };
-        ask.push(Said::Text(SUMMARIZE.to_string()));
-        turns.push(Turn::Asked(ask));
-        let asked = Request {
-            turns: &turns,
-            tools: &[],
-            max_tokens: SUMMARY_TOKENS,
-            think: false,
-            compact: false,
-            effort: None,
-            heard: None,
-            ..request
-        };
-        let reply = compatible_reply(self.send(asked).await.ok()?).ok()?;
-        (reply.stop == Stop::Done && !reply.text.trim().is_empty()).then_some((reply.text, at))
-    }
-
-    /// `request` asked with `summary` standing in for the turns before the person's latest message, and the answer
-    /// carrying it for the requests after.
-    async fn ask_summarized(&self, request: Request<'_>, summary: String, at: usize) -> Result<Reply, String> {
-        let url = format!("{}/chat/completions", self.base);
-        let call = self.client.post(&url).bearer_auth(&self.endpoint.api_key);
-        let body = compatible_body_from(&self.endpoint.model, request, Some(&summary), &request.turns[at..]);
-        let mut reply = compatible_reply(self.answered(call, &url, body, request.heard).await?)?;
-        reply.summary = Some(summary);
-        Ok(reply)
+        able && !self.refused.load(Ordering::Relaxed)
     }
 
     /// `request` in the provider's terms, and what it answered.
@@ -1060,10 +1050,13 @@ fn anthropic_body(model: &str, request: Request<'_>, compact_at: u64) -> Value {
     if let Some(effort) = request.effort {
         body["output_config"] = json!({"effort": effort.as_str()});
     }
-    if request.compact && compact_at >= ANTHROPIC_LEAST_COMPACTION {
+    // Paused, the summary comes back alone, for the leader to keep as a fresh start.
+    if request.compact {
         body["context_management"] = json!({"edits": [{
             "type": "compact_20260112",
             "trigger": {"type": "input_tokens", "value": compact_at},
+            "pause_after_compaction": true,
+            "instructions": SUMMARIZE,
         }]});
     }
     body
@@ -1091,10 +1084,12 @@ fn anthropic_reply(answer: Value) -> Result<Reply, String> {
     let content = answer["content"]
         .as_array()
         .ok_or("the endpoint answered with no content")?;
+    // A summary is looked for by its block, not the stop reason: a summary that was refused stops as a refusal.
+    let compacted = content.iter().any(|b| b["type"] == "compaction");
     let text = content
         .iter()
-        .filter(|b| b["type"] == "text")
-        .filter_map(|b| b["text"].as_str())
+        .filter(|b| b["type"] == if compacted { "compaction" } else { "text" })
+        .filter_map(|b| b[if compacted { "content" } else { "text" }].as_str())
         .collect::<Vec<_>>()
         .join("");
     let calls = content
@@ -1107,6 +1102,7 @@ fn anthropic_reply(answer: Value) -> Result<Reply, String> {
         })
         .collect();
     let stop = match answer["stop_reason"].as_str().unwrap_or_default() {
+        _ if compacted => Stop::Compacted,
         "end_turn" | "stop_sequence" => Stop::Done,
         "tool_use" => Stop::Calls,
         "max_tokens" => Stop::Tokens,
@@ -1114,6 +1110,14 @@ fn anthropic_reply(answer: Value) -> Result<Reply, String> {
         other => Stop::Other(other.to_string()),
     };
     let usage = &answer["usage"];
+    // What writing a summary spent is counted apart from the answer's own tokens.
+    let summarized: u64 = usage["iterations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|i| i["type"] == "compaction")
+        .map(|i| tokens(&i["output_tokens"]))
+        .sum();
     Ok(Reply {
         text,
         calls,
@@ -1122,10 +1126,9 @@ fn anthropic_reply(answer: Value) -> Result<Reply, String> {
             input: tokens(&usage["input_tokens"])
                 + tokens(&usage["cache_creation_input_tokens"])
                 + tokens(&usage["cache_read_input_tokens"]),
-            output: tokens(&usage["output_tokens"]),
+            output: tokens(&usage["output_tokens"]) + summarized,
         },
         native: Value::Array(content.clone()),
-        summary: None,
         model: None,
         effort: None,
         context: None,
@@ -1230,7 +1233,6 @@ fn openai_reply(answer: Value) -> Result<Reply, String> {
             output: tokens(&usage["output_tokens"]),
         },
         native: Value::Array(output.clone()),
-        summary: None,
         model: None,
         effort: None,
         context: None,
@@ -1240,38 +1242,25 @@ fn openai_reply(answer: Value) -> Result<Reply, String> {
 // -- OpenAI-compatible ----------------------------------------------------------------------------------------------
 
 fn compatible_body(model: &str, request: Request<'_>) -> Value {
-    let (summary, turns) = summarized(request.turns);
-    compatible_body_from(model, request, summary, turns)
-}
-
-/// `request`'s body with `summary`, when there is one, standing in for everything before `turns`.
-fn compatible_body_from(model: &str, request: Request<'_>, summary: Option<&str>, turns: &[Turn]) -> Value {
     let mut messages = Vec::new();
     if !request.system.is_empty() {
         messages.push(json!({"role": "system", "content": request.system}));
     }
-    for (at, turn) in turns.iter().enumerate() {
+    for turn in request.turns {
         match turn {
             Turn::Asked(said) => {
-                // Results answer the calls of the turn before, so they come first, each its own message. Those of
-                // turns a summary stands in for went with them.
-                if at > 0 || summary.is_none() {
-                    for s in said {
-                        if let Said::Result { call_id, output, .. } = s {
-                            messages.push(json!({"role": "tool", "tool_call_id": call_id, "content": output}));
-                        }
+                // Results answer the calls of the turn before, so they come first, each its own message.
+                for s in said {
+                    if let Said::Result { call_id, output, .. } = s {
+                        messages.push(json!({"role": "tool", "tool_call_id": call_id, "content": output}));
                     }
                 }
-                let summary = summary
-                    .filter(|_| at == 0)
-                    .map(|s| format!("Summary of the conversation before this:\n{s}"));
-                let text: Vec<&str> = summary
-                    .as_deref()
-                    .into_iter()
-                    .chain(said.iter().filter_map(|s| match s {
+                let text: Vec<&str> = said
+                    .iter()
+                    .filter_map(|s| match s {
                         Said::Text(text) => Some(text.as_str()),
                         Said::Result { .. } => None,
-                    }))
+                    })
                     .collect();
                 if !text.is_empty() {
                     messages.push(json!({"role": "user", "content": text.join("\n\n")}));
@@ -1342,7 +1331,6 @@ fn compatible_reply(answer: Value) -> Result<Reply, String> {
             output: tokens(&usage["completion_tokens"]),
         },
         native,
-        summary: None,
         model: None,
         effort: None,
         context: None,
@@ -1489,6 +1477,7 @@ mod tests {
         assert_eq!(body["thinking"], json!({"type": "adaptive"}));
         assert_eq!(body["context_management"]["edits"][0]["type"], "compact_20260112");
         assert_eq!(body["context_management"]["edits"][0]["trigger"]["value"], 150_000);
+        assert_eq!(body["context_management"]["edits"][0]["pause_after_compaction"], true);
         assert_eq!(body["cache_control"], json!({"type": "ephemeral"}));
         assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
         assert_eq!(body["messages"][1]["content"][0], thinking);
@@ -1514,7 +1503,6 @@ mod tests {
             stop: Stop::Done,
             usage: Usage::default(),
             native: json!([summary, {"type": "text", "text": "orders runs in shared."}]),
-            summary: None,
             model: None,
             effort: None,
             context: None,
@@ -1560,50 +1548,80 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_compatible_endpoint_carries_a_summary_once_the_conversation_is_long() {
-        let answer = |text: &str| {
-            json!({
-                "choices": [{"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
-                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+    #[test]
+    fn the_leader_summarizes_only_for_an_endpoint_that_does_not_itself() {
+        let long = |input: u64| {
+            Turn::Answered(Reply {
+                usage: Usage { input, output: 10 },
+                ..compatible_reply(json!({"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}))
+                    .unwrap()
             })
         };
+        let said = Turn::Asked(vec![Said::Text("next".to_string())]);
+        let at = compact_at(DEFAULT_CONTEXT);
+        let turns = [said.clone(), long(at), said.clone()];
+        let due = |provider, context| {
+            let model = model(Endpoint {
+                context,
+                ..endpoint(provider, "http://127.0.0.1:1")
+            })
+            .unwrap();
+            model.due(&turns)
+        };
+        assert!(due(Provider::OpenAiCompatible, DEFAULT_CONTEXT));
+        assert!(!due(Provider::Anthropic, DEFAULT_CONTEXT));
+        assert!(!due(Provider::OpenAi, DEFAULT_CONTEXT));
+        // Anthropic's compaction cannot start below ANTHROPIC_LEAST_COMPACTION.
+        assert!(due(Provider::Anthropic, ANTHROPIC_LEAST_COMPACTION));
+
+        let model = model(endpoint(Provider::OpenAiCompatible, "http://127.0.0.1:1")).unwrap();
+        assert!(!model.due(&[said.clone(), long(at - 11), said.clone()]));
+        let fresh = Turn::Fresh(Fresh {
+            summary: Some("S".to_string()),
+            tokens: 5,
+        });
+        assert!(!model.due(&[said.clone(), long(at), said.clone(), fresh.clone()]));
+        assert!(model.due(&[said.clone(), long(at), fresh, said.clone(), long(at), said]));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn anthropic_pauses_with_its_summary_and_a_model_that_refuses_is_summarized_by_the_leader() {
         let (base, seen) = serve(
-            "/v1/chat/completions",
-            vec![answer("They asked about shared."), answer("Second."), answer("Third.")],
+            "/v1/messages",
+            vec![
+                json!({
+                    "content": [{"type": "compaction", "content": "They asked about shared."}],
+                    "stop_reason": "compaction",
+                    "usage": {"input_tokens": 9, "output_tokens": 0, "iterations": [
+                        {"type": "compaction", "input_tokens": 160_000, "output_tokens": 40},
+                    ]},
+                }),
+                json!({"status_code": 400, "body": {"type": "error", "error": {"message": "context_management: compact_20260112 is not supported on this model"}}}),
+                json!({"content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn", "usage": {}}),
+            ],
         )
         .await;
-        let model = model(endpoint(Provider::OpenAiCompatible, &format!("{base}/v1"))).unwrap();
-        let long = Reply {
+        let model = model(endpoint(Provider::Anthropic, &base)).unwrap();
+        let turns = [Turn::Asked(vec![Said::Text("Hi".to_string())])];
+        let reply = model.ask(short(&turns)).await.unwrap();
+        assert_eq!(reply.stop, Stop::Compacted);
+        assert_eq!(reply.text, "They asked about shared.");
+        assert_eq!(reply.usage.output, 40);
+        let edit = seen.lock().unwrap()[0].1["context_management"]["edits"][0].clone();
+        assert_eq!(edit["pause_after_compaction"], true);
+        assert_eq!(edit["instructions"], SUMMARIZE);
+
+        let long = Turn::Answered(Reply {
             usage: Usage {
                 input: compact_at(DEFAULT_CONTEXT),
-                output: 10,
+                output: 0,
             },
-            ..compatible_reply(answer("First.")).unwrap()
-        };
-        let mut turns = vec![
-            Turn::Asked(vec![Said::Text("first".to_string())]),
-            Turn::Answered(long),
-            Turn::Asked(vec![Said::Text("second".to_string())]),
-        ];
-        let second = model.ask(short(&turns)).await.unwrap();
-        assert_eq!(second.text, "Second.");
-        assert_eq!(second.summary.as_deref(), Some("They asked about shared."));
-        turns.push(Turn::Answered(second));
-        turns.push(Turn::Asked(vec![Said::Text("third".to_string())]));
+            ..reply
+        });
+        let turns = [turns[0].clone(), long, turns[0].clone()];
+        assert!(!model.due(&turns));
         model.ask(short(&turns)).await.unwrap();
-
-        let seen = seen.lock().unwrap();
-        let summarize = &seen[0].1["messages"];
-        assert_eq!(summarize.as_array().unwrap().len(), 4);
-        assert_eq!(summarize[3]["content"], SUMMARIZE);
-        let expected = json!({"role": "user", "content": "Summary of the conversation before this:\nThey asked about shared.\n\nsecond"});
-        assert_eq!(seen[1].1["messages"][1], expected);
-        assert_eq!(seen[1].1["messages"].as_array().unwrap().len(), 2);
-        let third = seen[2].1["messages"].as_array().unwrap();
-        assert_eq!(third.len(), 4);
-        assert_eq!(third[1], expected);
-        assert_eq!(third[3]["content"], "third");
+        assert!(model.due(&turns));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1624,7 +1642,6 @@ mod tests {
             stop: Stop::Done,
             usage: Usage::default(),
             native: json!([summary]),
-            summary: None,
             model: None,
             effort: None,
             context: None,
@@ -1942,7 +1959,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_request_reads_from_the_newest_fresh_start_its_summary_said_first() {
+    async fn a_request_reads_from_the_newest_fresh_start_its_summary_said_first_and_the_last_answer_kept() {
         let done = json!({
             "content": [{"type": "text", "text": "ok"}],
             "stop_reason": "end_turn",
@@ -1985,16 +2002,35 @@ mod tests {
                 .unwrap();
         }
         let seen = seen.lock().unwrap();
+        // A summary keeps the last answer before it.
         assert_eq!(
             seen[0].1["messages"],
-            json!([{"role": "user", "content": [
-                {"type": "text", "text": "Summary of the conversation before this:\nS"},
-                {"type": "text", "text": "Next"},
-            ]}])
+            json!([
+                {"role": "user", "content": [{"type": "text", "text": "Summary of the conversation before this:\nS"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+                {"role": "user", "content": [{"type": "text", "text": "Next"}]},
+            ])
         );
         assert_eq!(
             seen[1].1["messages"],
             json!([{"role": "user", "content": [{"type": "text", "text": "Next"}]}])
+        );
+    }
+
+    #[test]
+    fn a_summary_with_no_answer_since_the_fresh_start_before_keeps_everything_since() {
+        let said = |text: &str| Turn::Asked(vec![Said::Text(text.to_string())]);
+        let fresh = |summary: &str| {
+            Turn::Fresh(Fresh {
+                summary: Some(summary.to_string()),
+                tokens: 1,
+            })
+        };
+        let turns = [said("a"), fresh("S1"), said("x"), fresh("S2")];
+        let summary = Said::Text("Summary of the conversation before this:\nS2".to_string());
+        assert_eq!(
+            readable(&turns).into_owned(),
+            [Turn::Asked(vec![summary, Said::Text("x".to_string())])]
         );
     }
 

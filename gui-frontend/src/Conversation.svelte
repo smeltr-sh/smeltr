@@ -86,7 +86,7 @@
   async function read(id: string) {
     try {
       const got = await getConversation(id);
-      if (refused(got)) return;
+      if (refused(got) || id !== open) return;
       shown = got.conversation;
     } catch (e) {
       reported(e);
@@ -181,7 +181,8 @@
     | { kind: 'message' | 'answer'; text: string }
     | { kind: 'call'; label: string; input: unknown; result?: { output: string; isError: boolean } }
     | { kind: 'unreadable'; error: string }
-    | { kind: 'fresh'; summary: string | null };
+    | { kind: 'fresh'; summary: string | null }
+    | { kind: 'compacted' };
 
   function arrange(items: ConversationItem[]): Shown[] {
     const results = new Map(
@@ -203,6 +204,8 @@
           return [{ kind: 'unreadable', error: i.error }];
         case 'fresh':
           return [{ kind: 'fresh', summary: i.summary }];
+        case 'compacted':
+          return [{ kind: 'compacted' }];
       }
     });
   }
@@ -277,10 +280,15 @@
           {:else}
             <Collapsible variant="row">
               {#snippet summary()}Summarized. Your agent reads this summary in place of what is
-                above.{/snippet}
+                above, except the last answer above.{/snippet}
               <div class="summary"><Markdown text={item.summary} /></div>
             </Collapsible>
           {/if}
+        </ConversationEvent>
+      {:else if item.kind === 'compacted'}
+        <ConversationEvent>
+          Summarized by the provider. Your agent reads the provider's summary, which is not shown,
+          in place of what is above.
         </ConversationEvent>
       {:else if item.kind === 'unreadable'}
         <InlineError message={item.error} />

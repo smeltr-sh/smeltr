@@ -5705,7 +5705,9 @@ export type ConversationItem =
   | { kind: 'result'; callId: string; output: string; isError: boolean }
   | { kind: 'unreadable'; error: string }
   /** Where the agent's reading begins again: from this summary, or from nothing where it was cleared. */
-  | { kind: 'fresh'; summary: string | null };
+  | { kind: 'fresh'; summary: string | null }
+  /** Where the provider summarized what is before, in a summary it does not show. */
+  | { kind: 'compacted' };
 
 export interface ConversationDto extends ConversationSummaryDto {
   /** How the last turn ended: `answered`, `stopped` or `rounds`. */

@@ -31,7 +31,9 @@ export const MODELS = [
 
 /** One block of a model's answer. */
 export type Block =
-  { type: 'text'; text: string } | { type: 'tool_use'; id: string; name: string; input: object };
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; id: string; name: string; input: object }
+  | { type: 'compaction'; content: string };
 
 let calls = 0;
 
@@ -43,6 +45,11 @@ export function request(method: string, path: string, query?: Record<string, str
 /** The agent's answer to the person. */
 export function say(text: string): Block {
   return { type: 'text', text };
+}
+
+/** The model's summary of the conversation, which it pauses after, as Anthropic's compaction does. */
+export function summary(content: string): Block {
+  return { type: 'compaction', content };
 }
 
 export class FakeModel {
@@ -101,7 +108,11 @@ export class FakeModel {
       }
       this.asked.push(body);
       const content = this.script.shift() ?? [{ type: 'text', text: 'ok' }];
-      const stop_reason = content.some((b) => b.type === 'tool_use') ? 'tool_use' : 'end_turn';
+      const stop_reason = content.some((b) => b.type === 'compaction')
+        ? 'compaction'
+        : content.some((b) => b.type === 'tool_use')
+          ? 'tool_use'
+          : 'end_turn';
       if (body.stream) {
         res.end(streamed(content, stop_reason));
         return;
@@ -132,6 +143,17 @@ function streamed(content: Block[], stop_reason: string): string {
       for (const text of [block.text.slice(0, half), block.text.slice(half)]) {
         events.push({ type: 'content_block_delta', index, delta: { type: 'text_delta', text } });
       }
+    } else if (block.type === 'compaction') {
+      events.push({
+        type: 'content_block_start',
+        index,
+        content_block: { type: 'compaction', content: '' },
+      });
+      events.push({
+        type: 'content_block_delta',
+        index,
+        delta: { type: 'compaction_delta', content: block.content },
+      });
     } else {
       events.push({ type: 'content_block_start', index, content_block: { ...block, input: {} } });
       events.push({

@@ -438,6 +438,33 @@ pub(crate) const STEPS: &[&str] = &[
           WHERE json_extract(o.value, '$.service') IS NOT 'syslogReceiver'
      ))
       WHERE key = 'log_levels' AND json_valid(value) AND json_type(value, '$.overrides') = 'array';",
+    // 19 -- a summary the leader had a model write is kept as a fresh start (`model::Turn::Fresh`), not on the answer
+    // it was written for. Breaking: an older build reads the summary on the answer, so this step removes it from
+    // there, and an older build no longer reads it.
+    "-- Each summary kept on an answer, with the person's message before that answer: the summary stands in for the
+     -- turns before that message.
+     CREATE TEMP TABLE summaries AS
+     SELECT conversation_id, at, summary FROM (
+         SELECT *, row_number() OVER (PARTITION BY conversation_id, at ORDER BY answered DESC) AS newest FROM (
+         SELECT a.conversation_id, a.seq AS answered, json_extract(a.turn, '$.Answered.summary') AS summary,
+                (SELECT MAX(m.seq) FROM agent_turns AS m, json_each(m.turn, '$.Asked') AS said
+                  WHERE m.conversation_id = a.conversation_id AND m.seq < a.seq
+                    AND json_type(said.value, '$.Text') = 'text') AS at
+           FROM agent_turns AS a
+          WHERE json_type(a.turn, '$.Answered.summary') = 'text'
+     ) WHERE at IS NOT NULL) WHERE newest = 1;
+     -- Each turn moves one place later for each fresh start inserted before it, through negatives so no two meet.
+     UPDATE agent_turns SET seq = -(seq + (SELECT count(*) FROM summaries AS s
+         WHERE s.conversation_id = agent_turns.conversation_id AND s.at <= agent_turns.seq));
+     UPDATE agent_turns SET seq = -seq;
+     INSERT INTO agent_turns (conversation_id, seq, turn)
+     SELECT s.conversation_id,
+            s.at + (SELECT count(*) FROM summaries AS b WHERE b.conversation_id = s.conversation_id AND b.at <= s.at) - 1,
+            json_object('Fresh', json_object('summary', s.summary, 'tokens', 0))
+       FROM summaries AS s;
+     UPDATE agent_turns SET turn = json_remove(turn, '$.Answered.summary')
+      WHERE json_type(turn, '$.Answered.summary') IS NOT NULL;
+     DROP TABLE summaries;",
 ];
 
 fn conversation_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConversationRecord> {
@@ -5314,6 +5341,71 @@ mod tests {
             ]
         );
         assert_eq!(levels.default.as_deref(), Some("info"));
+    }
+
+    /// A summary an older build kept on an answer stands, after the step, as a fresh start before the person's
+    /// message it was written ahead of, and the turns after it keep their order.
+    #[test]
+    fn the_summary_step_makes_a_summary_on_an_answer_a_fresh_start() {
+        assert!(!super::super::steps::is_additive(STEPS[18]));
+        let mut conn = Connection::open_in_memory().unwrap();
+        super::super::steps::upgrade_sqlite(&mut conn, "leader.db", &STEPS[..18]).unwrap();
+        let answer = |text: &str, summary: Option<&str>| {
+            let mut answer = serde_json::json!({"Answered": {"text": text, "calls": [], "stop": "Done",
+                "usage": {"input": 1, "output": 1}, "native": {"role": "assistant", "content": text}}});
+            if let Some(summary) = summary {
+                answer["Answered"]["summary"] = summary.into();
+            }
+            answer.to_string()
+        };
+        let said = |text: &str| serde_json::json!({"Asked": [{"Text": text}]}).to_string();
+        for (seq, turn) in [
+            said("first"),
+            answer("one", None),
+            said("second"),
+            answer("two", Some("older")),
+            answer("two again", Some("S")),
+            said("third"),
+            answer("three", Some("T")),
+        ]
+        .iter()
+        .enumerate()
+        {
+            conn.execute(
+                "INSERT INTO agent_turns (conversation_id, seq, turn) VALUES ('c', ?1, ?2)",
+                rusqlite::params![seq as i64 + 1, turn],
+            )
+            .unwrap();
+        }
+        super::super::steps::upgrade_sqlite(&mut conn, "leader.db", STEPS).unwrap();
+        let turns: Vec<crate::leader::model::Turn> = conn
+            .prepare("SELECT turn FROM agent_turns WHERE conversation_id = 'c' ORDER BY seq")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|t| serde_json::from_str(&t.unwrap()).unwrap())
+            .collect();
+        let fresh = |summary: &str| {
+            crate::leader::model::Turn::Fresh(crate::leader::model::Fresh {
+                summary: Some(summary.to_string()),
+                tokens: 0,
+            })
+        };
+        assert_eq!(turns.len(), 9);
+        let summaries: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM agent_turns WHERE json_type(turn, '$.Answered.summary') IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(summaries, 0);
+        // The newest summary written ahead of a message is the one kept.
+        assert_eq!(turns[2], fresh("S"));
+        assert_eq!(turns[3], serde_json::from_str(&said("second")).unwrap());
+        assert_eq!(turns[5], serde_json::from_str(&answer("two again", None)).unwrap());
+        assert_eq!(turns[6], fresh("T"));
+        assert_eq!(turns[7], serde_json::from_str(&said("third")).unwrap());
     }
 
     #[test]
