@@ -12,8 +12,8 @@ export type Video = {
 export type Course = {
   title: string;
   slug: string;
-  /** Whether the demo has what the course shows, so the course links to it. */
-  demo: boolean;
+  /** The demo has what the course shows, so the course links to it. */
+  demo?: true;
   videos: Video[];
 };
 
@@ -28,19 +28,22 @@ export const walkthrough: Video = {
 
 const allCourses: Course[] = [
   {
+    title: 'Demo walkthrough',
+    slug: 'demo-walkthrough',
+    demo: true,
+    videos: [walkthrough],
+  },
+  {
     title: 'Getting started',
     slug: 'getting-started',
-    demo: true,
     videos: [
       { title: 'Install smeltr', slug: 'install' },
-      walkthrough,
       { title: 'Review and deploy a change', slug: 'review-and-deploy' },
     ],
   },
   {
     title: 'Data engineering with the smeltr agent',
     slug: 'agent',
-    demo: false,
     videos: [
       {
         title: 'Set Up Your AI Data Engineer in smeltr',
