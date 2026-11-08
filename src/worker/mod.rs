@@ -8488,6 +8488,29 @@ mod tests {
         );
     }
 
+    /// The leader's name for what a group runs changes exactly when a worker would restart: a commit that leaves the
+    /// group alone keeps the name, one that changes the group gives it a new one, and a commit the leader cannot read
+    /// has none.
+    #[test]
+    fn the_leader_names_a_group_s_config_by_its_content() {
+        let data = temp_dir("configs");
+        std::fs::create_dir_all(data.join("repos")).unwrap();
+        let dir = crate::leader::git::repo_path(&data);
+        std::fs::rename(repo("configs-repo"), &dir).unwrap();
+        let before = head_of(&dir);
+        write(&dir, "groups/east/sources.json", r#"[{"id":"s"}]"#);
+        let east = commit(&dir, "east only");
+        write(&dir, "groups/west/sources.json", r#"[{"id":"s"}]"#);
+        let west = commit(&dir, "west");
+
+        let configs = crate::leader::Configs::default();
+        let key = |commit: &str| configs.key(&data, "west", commit);
+        assert!(key(&before).is_some());
+        assert_eq!(key(&before), key(&east), "a change to east renamed west");
+        assert_ne!(key(&east), key(&west), "a change to west kept its name");
+        assert_eq!(key("0000000000000000000000000000000000000000"), None);
+    }
+
     /// Only the leader reads samples and tests (design doc, Config plane). The GUI saves a sample to `shared/` unless
     /// told otherwise, and every group draws on `shared/`.
     #[test]
