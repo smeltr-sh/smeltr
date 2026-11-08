@@ -1,8 +1,8 @@
 <script lang="ts">
   import type { Video } from '#lib/videos.ts';
 
-  // With `href`, the poster links there instead of playing in place.
-  let { video, href }: { video: Video; href?: string } = $props();
+  // With `href`, the poster links there instead of playing in place. `onplay` is called when the visitor presses play.
+  let { video, href, onplay }: { video: Video; href?: string; onplay?: () => void } = $props();
 
   // YouTube's player loads only once the visitor presses play, so a visitor who
   // does not watch never contacts YouTube.
@@ -25,7 +25,14 @@
     allowfullscreen
   ></iframe>
 {:else}
-  <button class="frame poster" aria-label="Play {video.title}" onclick={() => (playing = true)}>
+  <button
+    class="frame poster"
+    aria-label="Play {video.title}"
+    onclick={() => {
+      playing = true;
+      onplay?.();
+    }}
+  >
     <img src={video.poster} alt="" loading="lazy" />
     <span class="play" aria-hidden="true"></span>
   </button>

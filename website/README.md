@@ -30,11 +30,12 @@ reference's page tools search function names and summaries;
 examples stack expressions above results on narrow screens.
 
 Training videos live on YouTube and are listed once, in `src/lib/videos.ts`,
-which the home page and `/learn` read. A video's card shows its poster from
-`static/videos/` and loads YouTube's player, from youtube-nocookie.com, only
-when the visitor presses play, so a visitor who does not watch never contacts
-YouTube. A video with no YouTube id is planned: its card says so and links the
-guide that covers it today.
+as courses that the home page and `/learn` read. `/learn` shows a card per
+course, and a course's page plays one video beside the course's list. A video
+shows its poster from `static/videos/` and loads YouTube's player, from
+youtube-nocookie.com, only when the visitor presses play, so a visitor who does
+not watch never contacts YouTube. A video with no YouTube id is coming soon: its
+course lists it, and it has no page yet.
 
 The site links the repository in one place, `src/lib/release.ts`, which names
 the repository's owner once and builds the source, download, image and license
