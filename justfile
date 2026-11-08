@@ -266,6 +266,7 @@ cut-release release force="": (has-notes release) (record-release if release =~ 
     git add tests/fixtures/releases
     git commit -m "Release {{release}}"
     git tag -a "v{{release}}" -m "Release {{release}}"
+    @echo Nothing is pushed yet. Start the release workflow with: git push --atomic origin main v{{release}}
 
 # A release candidate: main's latest commit tagged `v<candidate>`, with nothing recorded or committed, and the tag
 # pushed. Its build is started by hand on GitHub, on that tag: a draft pre-release with its own image tag, and
