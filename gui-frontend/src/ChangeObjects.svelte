@@ -36,6 +36,7 @@
     isRecord,
     fileOf,
     isSectionChange,
+    foldSame,
     jsonDiff,
     objectChanges,
     scopeOf,
@@ -501,7 +502,16 @@
             )}
           {/if}
         </div>
-        {#if step.status !== 'same' && step.summary}
+        {#if step.parts}
+          <div class="json-scroll step-parts">
+            <pre
+              class="json">{#each foldSame(step.parts) as line, n (n)}{#if line.kind === 'folded'}<div
+                    class="same">  {count(line.count, 'line')} unchanged</div>{:else}<div
+                    class={line.kind}>{line.kind === 'added'
+                      ? '+'
+                      : '-'} {line.text}</div>{/if}{/each}</pre>
+          </div>
+        {:else if step.status !== 'same' && step.summary}
           <div class="step-body mono" class:struck={step.status === 'removed'}>{step.summary}</div>
         {/if}
         {#if step.id !== undefined && step.status !== 'removed'}
@@ -960,6 +970,9 @@
   .rows-scroll,
   .json-scroll {
     overflow-x: auto;
+  }
+  .step-parts {
+    border-top: 1px solid var(--border);
   }
 
   .json {

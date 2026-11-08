@@ -640,6 +640,24 @@ export function stepName(step: Step, number: number): string {
   return `Step ${number} · ${STEP_LABELS[step.type]} · ${stepSummary(step)}`;
 }
 
+/** What a step is made of, shown one line each, as a review compares them: an
+ * eval's assignments, a rename's pairs, a removal's names, a code step's lines,
+ * and any other step as a single line. */
+export function stepParts(step: Step): string[] {
+  switch (step.type) {
+    case 'eval':
+      return step.assignments.map((a) => `${a.target || '…'} = ${a.expr || '…'}`);
+    case 'rename':
+      return step.pairs.map((p) => `${p.from || '…'} → ${p.to || '…'}`);
+    case 'remove':
+      return step.fields;
+    case 'code':
+      return step.body.split('\n').filter((l) => l.trim());
+    default:
+      return [stepSummary(step)];
+  }
+}
+
 export function stepSummary(step: Step): string {
   switch (step.type) {
     case 'if':
@@ -647,17 +665,13 @@ export function stepSummary(step: Step): string {
     case 'comment':
       return step.text || '(empty comment)';
     case 'eval':
-      return step.assignments.length
-        ? step.assignments.map((a) => `${a.target || '…'} = ${a.expr || '…'}`).join(', ')
-        : '(no assignments)';
+      return step.assignments.length ? stepParts(step).join(', ') : '(no assignments)';
     case 'code':
       return `${step.body.split('\n').filter((l) => l.trim()).length} line(s) of code`;
     case 'drop':
       return `drop where ${step.condition || '…'}`;
     case 'rename':
-      return step.pairs.length
-        ? step.pairs.map((p) => `${p.from || '…'} → ${p.to || '…'}`).join(', ')
-        : '(no pairs)';
+      return step.pairs.length ? stepParts(step).join(', ') : '(no pairs)';
     case 'remove':
       return step.fields.length
         ? `${step.fields.length} ${step.fields.length === 1 ? 'name' : 'names'}: ${step.fields.join(', ')}`

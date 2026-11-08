@@ -19,7 +19,7 @@ import {
   type UndoTarget,
 } from './api';
 import { diffObjects, type DiffEntry } from './diff';
-import { stepSummary, stepsFromDto } from './pipeline';
+import { stepParts, stepSummary, stepsFromDto } from './pipeline';
 import { bundleRoutes } from './routeFlow';
 
 export type Noun =
@@ -133,6 +133,8 @@ export interface StepChange {
   position?: number;
   /** It runs in another order against the steps around it. */
   moved?: true;
+  /** A changed step's parts (`stepPartsOf`), before against after, where any of them changed. */
+  parts?: DiffLine[];
   /** An `if` step's branches, compared the same way. */
   then?: StepChange[];
   else?: StepChange[];
@@ -361,6 +363,16 @@ export function stepLine(raw: Record<string, unknown>): string {
   }
 }
 
+/** A step's parts as `stepParts` names them, or its one line where this GUI
+ * cannot model it. */
+function stepPartsOf(raw: Record<string, unknown>): string[] {
+  try {
+    return stepParts(stepsFromDto([raw])[0]);
+  } catch {
+    return [stepLine(raw)];
+  }
+}
+
 function stepType(raw: Record<string, unknown>): string {
   return typeof raw.type === 'string' ? raw.type : 'step';
 }
@@ -447,6 +459,8 @@ export function compareSteps(before: unknown[], after: unknown[]): StepChange[] 
       branches ? compareSteps(asList(old.else), asList(step.else)) : undefined,
     );
     if (moved) entry.moved = true;
+    const parts = lineDiff(stepPartsOf(old), stepPartsOf(step));
+    if (parts.some((p) => p.kind !== 'same')) entry.parts = parts;
     out.push(entry);
   });
   removedUpTo(was.length);
@@ -804,12 +818,27 @@ export interface DiffLine {
  * the two sides are shown whole, one removed and one added. */
 const LINE_DIFF_LIMIT = 4_000_000;
 
+/** `lines` with each run of unchanged ones folded into a count of them. */
+export function foldSame(lines: DiffLine[]): (DiffLine | { kind: 'folded'; count: number })[] {
+  const out: (DiffLine | { kind: 'folded'; count: number })[] = [];
+  for (const line of lines) {
+    const last = out.at(-1);
+    if (line.kind !== 'same') out.push(line);
+    else if (last?.kind === 'folded') last.count++;
+    else out.push({ kind: 'folded', count: 1 });
+  }
+  return out;
+}
+
 /** `before` and `after` as indented JSON, compared line by line. An absent
  * side has no lines. */
 export function jsonDiff(before: unknown, after: unknown): DiffLine[] {
   const lines = (v: unknown) => (v === undefined ? [] : JSON.stringify(v, null, 2).split('\n'));
-  const a = lines(before);
-  const b = lines(after);
+  return lineDiff(lines(before), lines(after));
+}
+
+/** `a` against `b`, line by line. */
+export function lineDiff(a: string[], b: string[]): DiffLine[] {
   if (a.length * b.length > LINE_DIFF_LIMIT) {
     return [
       ...a.map((text) => ({ kind: 'removed' as const, text })),

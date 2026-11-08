@@ -308,6 +308,23 @@ describe('changeText, pipeline steps', () => {
     );
   });
 
+  it('names only the assignments that changed, so a shortened list still shows them', () => {
+    const many = (expr: string) =>
+      Array.from({ length: 30 }, (_, i) => ({
+        target: `.f${i}`,
+        expr: i === 15 ? expr : `${i}`,
+      }));
+    const before = after((c) => {
+      (pipeline(c, 'main').steps[0] as { assignments: unknown[] }).assignments = many('old');
+    });
+    const next = after((c) => {
+      (pipeline(c, 'main').steps[0] as { assignments: unknown[] }).assignments = many('new');
+    });
+    expect(text(next, before).subject).toBe(
+      'Update pipeline Main: eval step assignments from .f15=old to .f15=new',
+    );
+  });
+
   it('speaks for an if only through its own condition', () => {
     const next = after((c) => {
       (pipeline(c, 'main').steps[1] as { condition: string }).condition = '.kind == "y"';
