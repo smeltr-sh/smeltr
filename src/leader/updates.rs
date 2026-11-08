@@ -110,8 +110,9 @@ impl Updates {
     fn failed(&self, why: String, now: i64) {
         self.held().1 = Some(Looked {
             checked_at: now,
+            // At info, not warn: a line at warn raises an issue in Status, and a look that fails is no issue.
             failure: Some(crate::noted!(
-                name: "check_failed", target: "updates",
+                level: INFO, name: "check_failed", target: "updates",
                 "the list of releases could not be read",
                 why
             )),
@@ -353,7 +354,16 @@ mod tests {
         updates.found(v("1.3.0"), 10);
         updates.found(v("1.3.0"), 20);
         assert_eq!(updates.newer().unwrap().since, 10);
-        updates.failed("down".into(), 30);
+        let seen = crate::logs::said(|| updates.failed("down".into(), 30));
+        let levels: Vec<_> = seen
+            .iter()
+            .map(|(level, class, kind, _)| (*level, class.as_str(), kind.as_str()))
+            .collect();
+        assert_eq!(
+            levels,
+            [(tracing::Level::INFO, "updates", "check_failed")],
+            "logged, but raises no issue"
+        );
         assert_eq!(updates.newer().unwrap().release, "1.3.0", "the release is still out");
         let looked = updates.looked().unwrap();
         assert_eq!((looked.checked_at, looked.failure.as_deref()), (30, Some("down")));
