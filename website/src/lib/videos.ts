@@ -45,7 +45,7 @@ const allCourses: Course[] = [
       {
         title: 'Set Up Your AI Data Engineer in smeltr',
         slug: 'setup',
-        youtube: '1n0qupyS_9E',
+        youtube: 'DiXMyUMlLWw',
         minutes: 3,
         poster: '/videos/agent-course-1-poster.jpg',
       },
