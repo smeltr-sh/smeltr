@@ -432,7 +432,7 @@ async fn heartbeat(
                     // so the report counts as the deployed one.
                     deployed: match (&facts.commit, &deployed) {
                         (Some(running), Some(deployed)) => {
-                            running == deployed || (held.is_some() && config(group_id, running) == held)
+                            held.is_some() && (running == deployed || config(group_id, running) == held)
                         }
                         _ => true,
                     },
