@@ -260,12 +260,13 @@ check-package package: need-nextest stable
 # A release: its fixtures recorded and committed, and that commit tagged `v<release>`. Nothing leaves
 # this machine: `git push --atomic origin main v<release>` starts the release workflow. Semver: a major release
 # raises the upgrade floor or ships a breaking store step, a minor one adds features and additive steps
-# only, a patch fixes and adds no step.
+# only, a patch fixes and adds no step. `just cut-release <release> force` does not check the semver rule above.
 [doc("Record a release, commit it and tag it.")]
-cut-release release: (has-notes release) (record-release if release =~ '^[0-9]+\.[0-9]+\.[0-9]+$' { release } else { error('a release is named major.minor.patch, like 1.0.0') })
+cut-release release force="": (has-notes release) (record-release if release =~ '^[0-9]+\.[0-9]+\.[0-9]+$' { release } else { error('a release is named major.minor.patch, like 1.0.0') } if force =~ '^(force)?$' { force } else { error('the only word allowed after the release is force') })
     git add tests/fixtures/releases
     git commit -m "Release {{release}}"
     git tag -a "v{{release}}" -m "Release {{release}}"
+    @echo Nothing is pushed yet. Start the release workflow with: git push --atomic origin main v{{release}}
 
 # A release candidate: main's latest commit tagged `v<candidate>`, with nothing recorded or committed, and the tag
 # pushed. Its build is started by hand on GitHub, on that tag: a draft pre-release with its own image tag, and
@@ -292,7 +293,7 @@ has-notes release: need-node
 # Run from the commit being released, once. Every later build must start on
 # what this one leaves and still read what it sends (`src/releases.rs`).
 [private]
-record-release $SMELTR_RECORD_RELEASE: need-rust need-nextest clean-main
+record-release $SMELTR_RECORD_RELEASE $SMELTR_RECORD_FORCE="": need-rust need-nextest clean-main
     cargo nextest run --lib --run-ignored only -E "test(=releases::record_release)"
 
 # The checks build with the newest stable, so they see its new lints.
