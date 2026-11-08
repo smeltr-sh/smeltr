@@ -276,7 +276,7 @@ cut-rc candidate: clean-main
     git merge-base --is-ancestor HEAD origin/main
     git tag -a "v{{candidate}}" -m "Release candidate {{candidate}}"
     git push origin "v{{candidate}}"
-    @echo Start its build: https://github.com/smeltr-sh/smeltr/actions/workflows/release.yml, Run workflow, on the tag v{{candidate}}
+    @echo Start its build at https://github.com/smeltr-sh/smeltr/actions/workflows/release.yml: choose Run workflow, then the tag v{{candidate}}
 
 # A release is cut only once its notes are written and dated in `website/src/lib/releases.json`.
 [private]
