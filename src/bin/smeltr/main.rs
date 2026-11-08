@@ -107,8 +107,8 @@ fn route_preview_on(
     }
 }
 
-/// The sample a preview runs: `given`, or else the one `id` names on the branch `reading` reads. `None` where there
-/// is neither.
+/// The sample a preview runs: `given` if there is one, else the sample `id` names on the branch `reading` reads, else
+/// `None`.
 fn sample_to_run(
     reading: &config_api::Reading,
     given: Option<config_file::SampleDto>,

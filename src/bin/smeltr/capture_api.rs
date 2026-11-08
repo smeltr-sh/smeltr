@@ -431,7 +431,7 @@ fn followed(captures: &Captures, access: &Access, session: &str) -> bool {
         .is_some_and(|group| access.allows(&group, Level::Viewer))
 }
 
-/// Where `session` stands, if `access` may follow it ([`followed`]).
+/// The status of `session`, if `access` may follow it (see [`followed`]).
 fn followed_status(captures: &Captures, access: &Access, session: &str) -> Option<CaptureStatus> {
     followed(captures, access, session)
         .then(|| captures.status(session))
