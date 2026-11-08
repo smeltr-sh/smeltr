@@ -5,25 +5,26 @@
   front of you would do.
 
   Nothing is delivered and no destination exists. A count here is what the
-  delivery rules chose, and a document is what would have been sent.
+  delivery rules chose, and a document is what would have been sent. The documents are drawn
+  as a pipeline's preview draws its records (`RecordsGrid`): one row for each document a
+  record made on each route, beside the record as the sample holds it.
 -->
 <script lang="ts">
   import Button, { BUSY, LOADING } from './Button.svelte';
-  import ShowAll from './ShowAll.svelte';
+  import RecordsGrid, { type FindChip, type GridRow, type LeadColumn } from './RecordsGrid.svelte';
   import { unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
-  import { count } from './time';
   import {
+    getSample,
     listSamples,
     routePreview,
     errorText,
     type FileConfigDto,
     type RoutePreviewResult,
+    type SampleRecordDto,
     type SampleSummary,
   } from './api';
   import { nameOf } from './exceptions';
-  import SortButton from './SortButton.svelte';
-  import { TableSort } from './sort.svelte';
 
   let {
     /** The whole bundle as the editor has it, unsaved edits included. */
@@ -32,23 +33,26 @@
      * given none, it picks a sample and runs for itself. Two of these on a
      * screen must not be two pickers over two runs of the same thing. */
     result: given,
-  }: { config: FileConfigDto | null; result?: RoutePreviewResult | null } = $props();
+    /** The sample `result` ran over, by id. */
+    sample: givenSample = '',
+  }: {
+    config: FileConfigDto | null;
+    result?: RoutePreviewResult | null;
+    sample?: string;
+  } = $props();
 
   let samples: SampleSummary[] = $state([]);
   // Until the list arrives, no sample is not the same as none naming a source.
   let loaded = $state(false);
   let selected = $state('');
   let own = $state<RoutePreviewResult | null>(null);
+  /** The sample `own` ran over. */
+  let ran = $state('');
   let driven = $derived(given !== undefined);
   let result = $derived(driven ? (given ?? null) : own);
   let running = $state(false);
   let error = $state('');
-  /** The destination whose documents are open, by id. */
-  let openDestination = $state<number | null>(null);
-  /** How many documents an open destination shows before a button shows the rest. */
-  const SHOWN = 50;
-  /** Whether the open destination shows every document, not the first fifty. */
-  let allDocuments = $state(false);
+  let grid = $state<RecordsGrid | undefined>();
 
   async function loadSamples() {
     try {
@@ -68,15 +72,15 @@
     if (!config || !selected) return;
     running = true;
     error = '';
-    openDestination = null;
-    allDocuments = false;
     try {
-      const res = await routePreview(JSON.stringify(config), selected);
+      const sample = selected;
+      const res = await routePreview(JSON.stringify(config), sample);
       if (!res.ok) {
         error = errorText(res.errors);
         own = null;
       } else {
         own = res;
+        ran = sample;
       }
     } catch (e) {
       error = unreported(e);
@@ -86,29 +90,36 @@
     }
   }
 
-  /** Every destination the sample would reach, with how many records and the
-   * documents each would receive. */
+  // The sample's records, the side of each row before its route ran.
+  let sampleRecords = $state<SampleRecordDto[]>([]);
+  let sampleId = $derived(driven ? givenSample : ran);
+  $effect(() => {
+    const id = sampleId;
+    sampleRecords = [];
+    if (!id) return;
+    getSample(id).then(
+      (res) => {
+        if (id === sampleId) sampleRecords = res.sample?.records ?? [];
+      },
+      (e) => (error = unreported(e)),
+    );
+  });
+
+  /** Every destination the sample would reach, with how many documents each would receive. */
   let reached = $derived.by(() => {
     if (!result) return [];
-    const by = new Map<number, string[]>();
-    for (const row of result.rows) {
-      for (const t of row.through) {
-        for (const doc of t.documents) {
-          for (const d of doc.destinations) {
-            const docs = by.get(d) ?? [];
-            docs.push(doc.document);
-            by.set(d, docs);
-          }
-        }
-      }
-    }
+    const by = new Map<number, number>();
+    for (const row of result.rows)
+      for (const t of row.through)
+        for (const doc of t.documents)
+          for (const d of doc.destinations) by.set(d, (by.get(d) ?? 0) + 1);
     return [...by.entries()]
       .map(([id, documents]) => ({
         id,
         name: result?.destination_names[id] ?? `destination ${id}`,
         documents,
       }))
-      .sort((a, b) => b.documents.length - a.documents.length);
+      .sort((a, b) => b.documents - a.documents);
   });
 
   let unrouted = $derived(result ? result.rows.filter((r) => r.matched.length === 0).length : 0);
@@ -131,37 +142,161 @@
     return result?.route_names[i] ?? '';
   }
 
-  // A record's lines are its routes in the order they ran, so the sort orders records and each keeps
-  // its lines beneath it; a column sorts a record by what its lines say together.
-  const rowSort = new TableSort<'record' | 'route' | 'exceptions' | 'answer' | 'to' | 'sent'>();
-  let sortedRows = $derived(
-    rowSort.apply(result?.rows ?? [], {
-      record: (r) => r.row,
-      route: (r) => r.matched.map(routeName).join(', '),
-      exceptions: (r) => r.through.reduce((n, t) => n + t.exceptions.length, 0),
-      answer: (r) =>
-        r.matched.length === 0 && result
-          ? nameOf(result.unmatched)
-          : r.through.find((t) => t.exceptions.length > 0)?.answer,
-      to: (r) =>
-        r.matched.length === 0 && result && typeof result.unmatched === 'object'
-          ? result.unmatched.deliver.join(', ')
-          : [
-              ...new Set(
-                r.through.flatMap((t) =>
-                  t.documents.flatMap((d) =>
-                    d.destinations.map((id) => result?.destination_names[id] ?? String(id)),
-                  ),
-                ),
-              ),
-            ].join(', '),
-      sent: (r) =>
-        r.through
-          .flatMap((t) => t.documents.filter((d) => d.destinations.length > 0))
-          .map((d) => d.document)
-          .join(' '),
-    }),
-  );
+  /** A document as the grid reads it: its fields when it is a JSON object, else its text as
+   * `_raw`, the field a source's raw text arrives in. */
+  function parsed(document: string): Record<string, unknown> {
+    try {
+      const value: unknown = JSON.parse(document);
+      if (value !== null && typeof value === 'object' && !Array.isArray(value))
+        return value as Record<string, unknown>;
+    } catch {
+      // Not JSON: its text.
+    }
+    return { _raw: document };
+  }
+
+  /** What a row says beside its fields: the route, where the document goes and the answer. */
+  type Lead = {
+    route: string;
+    /** Where the document goes, by destination id. */
+    dests: number[];
+    to: string;
+    toNote?: string;
+    answer: string;
+    note?: string;
+  };
+
+  /** One row for each document a record made on each route, and one for a route or record that
+   * made none, saying why. */
+  let table = $derived.by(() => {
+    if (!result) return null;
+    const leads = new Map<number, Lead>();
+    const rows: GridRow[] = [];
+    const add = (record: number, after: unknown, lead: Lead, exceptions: GridRow['exceptions']) => {
+      const key = rows.length;
+      leads.set(key, lead);
+      rows.push({
+        key,
+        label: String(record),
+        before: sampleRecords[record] ?? {},
+        after,
+        dropped: after === null,
+        exceptions,
+      });
+    };
+    const names = (ids: number[]) =>
+      ids.map((d) => result?.destination_names[d] ?? String(d)).join(', ');
+    for (const row of result.rows) {
+      const sample = sampleRecords[row.row] ?? {};
+      if (row.matched.length === 0) {
+        const answer = nameOf(result.unmatched);
+        const to = typeof result.unmatched === 'object' ? result.unmatched.deliver.join(', ') : '';
+        add(
+          row.row,
+          to ? sample : null,
+          {
+            route: '',
+            dests: [],
+            to,
+            toNote: row.refused
+              ? row.refused
+              : to
+                ? 'no pipeline'
+                : result.unmatched === 'drop'
+                  ? 'dropped, and counted'
+                  : 'blocks the source',
+            answer,
+            note: 'no route matched',
+          },
+          [],
+        );
+        continue;
+      }
+      for (const t of row.through) {
+        const exceptions = t.exceptions.map((e) => ({ message: `${e.kind}: ${e.message}` }));
+        const answer = t.exceptions.length > 0 ? t.answer : '';
+        const sent = t.documents.filter((d) => d.destinations.length > 0);
+        if (sent.length === 0) {
+          add(
+            row.row,
+            null,
+            {
+              route: routeName(t.route),
+              dests: [],
+              to: '',
+              toNote:
+                t.answer === 'block'
+                  ? 'blocks the source'
+                  : (EMPTY_ROUTE[t.answer] ?? 'dropped by the pipeline'),
+              answer,
+            },
+            exceptions,
+          );
+        }
+        for (const doc of sent) {
+          add(
+            row.row,
+            parsed(doc.document),
+            {
+              route: routeName(t.route),
+              dests: doc.destinations,
+              to: names(doc.destinations),
+              toNote: Object.entries(doc.destination ?? {})
+                .map(([name, value]) => `${name} ${value}`)
+                .join(' '),
+              answer,
+            },
+            exceptions,
+          );
+        }
+      }
+      if (row.refused && row.matched.length > 0) {
+        // A record held by a block, or refused for memory: why it went no further.
+        add(
+          row.row,
+          null,
+          {
+            route: row.matched.map(routeName).join(', '),
+            dests: [],
+            to: '',
+            toNote: row.refused,
+            answer: '',
+          },
+          [],
+        );
+      }
+    }
+    return { rows, leads };
+  });
+
+  const leadOf = (row: GridRow) => table?.leads.get(row.key);
+  const leads: LeadColumn[] = [
+    {
+      name: 'Route',
+      cell: (row) => {
+        const l = leadOf(row);
+        return l?.note ? { text: '', note: l.note } : { text: l?.route ?? '' };
+      },
+    },
+    {
+      name: 'Goes to',
+      cell: (row) => ({ text: leadOf(row)?.to ?? '', note: leadOf(row)?.toNote }),
+    },
+    { name: 'Answer', cell: (row) => ({ text: leadOf(row)?.answer ?? '' }) },
+  ];
+
+  /** The find box's chip for a destination's tile. It keeps the documents that destination gets. */
+  function toDestination(d: { id: number; name: string }): FindChip {
+    return {
+      kind: 'rows',
+      key: `to ${d.name}`,
+      label: `to ${d.name}`,
+      failing: false,
+      keeps: (row) =>
+        table?.leads.get(row.key)?.dests.some((i) => result?.destination_names[i] === d.name) ??
+        false,
+    };
+  }
 </script>
 
 <div class="preview" class:empty={driven && !result && !error}>
@@ -199,13 +334,11 @@
         <button
           type="button"
           class="tile"
-          class:open={openDestination === d.id}
-          onclick={() => {
-            openDestination = openDestination === d.id ? null : d.id;
-            allDocuments = false;
-          }}
+          class:open={grid?.hasChip(toDestination(d))}
+          aria-pressed={grid?.hasChip(toDestination(d)) ?? false}
+          onclick={() => grid?.toggleChip(toDestination(d))}
         >
-          <span class="count">{d.documents.length}</span>
+          <span class="count">{d.documents}</span>
           <span class="name mono">{d.name}</span>
         </button>
       {/each}
@@ -224,137 +357,9 @@
       {/if}
     </div>
 
-    {#if openDestination !== null}
-      {@const open = reached.find((d) => d.id === openDestination)}
-      {#if open}
-        <div class="documents">
-          <div class="documents-head">
-            <strong class="mono">{open.name}</strong>
-            <span class="dim"
-              >{count(open.documents.length, 'document')}, as they would be sent</span
-            >
-          </div>
-          {#each allDocuments ? open.documents : open.documents.slice(0, SHOWN) as doc}
-            <div class="doc mono ellipsis">{doc}</div>
-          {/each}
-          {#if !allDocuments && open.documents.length > SHOWN}
-            <div class="doc dim ellipsis">
-              <ShowAll
-                more={open.documents.length - SHOWN}
-                what="document"
-                onshowall={() => (allDocuments = true)}
-              />
-            </div>
-          {/if}
-        </div>
-      {/if}
-    {/if}
-
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th aria-sort={rowSort.aria('record')}
-              ><SortButton sort={rowSort} key="record">Record</SortButton></th
-            >
-            <th aria-sort={rowSort.aria('route')}
-              ><SortButton sort={rowSort} key="route">Route</SortButton></th
-            >
-            <th aria-sort={rowSort.aria('exceptions')}
-              ><SortButton sort={rowSort} key="exceptions">Exceptions</SortButton></th
-            >
-            <th aria-sort={rowSort.aria('answer')}
-              ><SortButton sort={rowSort} key="answer">Answer</SortButton></th
-            >
-            <th aria-sort={rowSort.aria('to')}
-              ><SortButton sort={rowSort} key="to">Goes to</SortButton></th
-            >
-            <th aria-sort={rowSort.aria('sent')}
-              ><SortButton sort={rowSort} key="sent">Sent</SortButton></th
-            >
-          </tr>
-        </thead>
-        <tbody>
-          {#each sortedRows as row (row.row)}
-            {#if row.matched.length === 0}
-              <tr>
-                <td class="mono">{row.row}</td>
-                <td><span class="dim">no route matched</span></td>
-                <td></td>
-                <td class="mono">{nameOf(result.unmatched)}</td>
-                <td>
-                  {#if row.refused}
-                    <span class="dim">{row.refused}</span>
-                  {:else if typeof result.unmatched === 'object'}
-                    <!-- Not nothing: the deployment's `unmatched` answers for this row, and an empty
-                         cell beside "no route matched" reads as lost. -->
-                    <span class="mono">{result.unmatched.deliver.join(', ')}</span>
-                    <span class="dim">no pipeline</span>
-                  {:else if result.unmatched === 'drop'}
-                    <span class="dim">dropped, and counted</span>
-                  {:else}
-                    <span class="dim">blocks the source</span>
-                  {/if}
-                </td>
-                <td></td>
-              </tr>
-            {/if}
-            {#each row.through as t, i}
-              <tr>
-                <td class="mono">{i === 0 ? row.row : ''}</td>
-                <td class="mono">{routeName(t.route)}</td>
-                <td>
-                  {#each t.exceptions as e}
-                    <div>
-                      <span class="mono">{e.kind}</span> <span class="dim">{e.message}</span>
-                    </div>
-                  {/each}
-                </td>
-                <td class="mono">{t.exceptions.length > 0 ? t.answer : ''}</td>
-                <td>
-                  {#if t.answer === 'block'}
-                    <span class="dim">blocks the source</span>
-                  {:else if t.documents.length === 0}
-                    <span class="dim">{EMPTY_ROUTE[t.answer] ?? 'dropped by the pipeline'}</span>
-                  {/if}
-                  {#each t.documents as doc}
-                    <div>
-                      <span class="mono"
-                        >{doc.destinations
-                          .map((d) => result?.destination_names[d] ?? d)
-                          .join(', ')}</span
-                      >
-                      {#each Object.entries(doc.destination ?? {}) as [name, value]}<span
-                          class="dim">{name} {value}</span
-                        >{/each}
-                    </div>
-                  {/each}
-                </td>
-                <td class="sent">
-                  {#each t.documents as doc}
-                    <div class="mono">
-                      {#if doc.destinations.length > 0}{doc.document}{:else}<span class="dim"
-                          >nothing</span
-                        >{/if}
-                    </div>
-                  {/each}
-                </td>
-              </tr>
-            {/each}
-            {#if row.refused && row.matched.length > 0}
-              <!-- A record held by a block, or refused for memory: why it went no further. -->
-              <tr>
-                <td class="mono">{row.through.length === 0 ? row.row : ''}</td>
-                <td class="mono"
-                  >{row.through.length === 0 ? row.matched.map(routeName).join(', ') : ''}</td
-                >
-                <td colspan="4"><span class="dim">{row.refused}</span></td>
-              </tr>
-            {/if}
-          {/each}
-        </tbody>
-      </table>
-    </div>
+    <!-- The field choice and recent expressions are remembered under the empty id, which no
+         pipeline can take. -->
+    <RecordsGrid bind:this={grid} rows={table?.rows ?? null} remember="" openOn={result} {leads} />
   {/if}
 </div>
 
@@ -426,58 +431,5 @@
   }
   .tile .name {
     font-size: var(--text-label);
-  }
-  .documents {
-    border: 1px solid var(--border);
-    border-radius: var(--radius-card);
-    margin-bottom: 0.75rem;
-    overflow: hidden;
-  }
-  .documents-head {
-    display: flex;
-    gap: 0.5rem;
-    align-items: baseline;
-    background: var(--bg);
-    padding: 0.35rem 0.6rem;
-    border-bottom: 1px solid var(--border);
-  }
-  .doc {
-    font-size: var(--text-micro);
-    padding: 0.2rem 0.6rem;
-    border-bottom: 1px solid var(--border);
-  }
-  .doc:last-child {
-    border-bottom: none;
-  }
-  .table-wrap {
-    overflow-x: auto;
-  }
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: var(--text-label);
-  }
-  th,
-  td {
-    text-align: left;
-    padding: 0.3rem 0.4rem;
-    border-bottom: 1px solid var(--border);
-    vertical-align: top;
-  }
-  th {
-    color: var(--dim);
-    font-weight: 600;
-    font-size: var(--text-note);
-  }
-  /* A document is one line, cut at the cell's edge. */
-  td.sent div {
-    max-width: 28rem;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  td .dim + .dim,
-  td .mono + .dim {
-    margin-left: 0.5rem;
   }
 </style>
