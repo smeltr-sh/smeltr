@@ -899,7 +899,12 @@
                   {@const m = rowsMaps[i]}
                   {@const open = expanded.has(row.row)}
                   {@const failing = row.exceptions.length > 0}
-                  <tr class="grid-row" class:dropped={row.json === null} class:open class:failing>
+                  <tr
+                    class="grid-row record-row"
+                    class:dropped={row.json === null}
+                    class:open
+                    class:failing
+                  >
                     <td class="fold-cell">
                       <button
                         type="button"
@@ -1206,13 +1211,6 @@
     background: var(--bg);
   }
 
-  /* Tinted the same as the record beneath it, so the two read as one open
-     group -- but still a hairline apart, or the row that was clicked and
-     the record it opened would run together into one shape. */
-  .grid-row.open > td {
-    background: color-mix(in srgb, var(--ink) 8%, transparent);
-  }
-
   .grid-row.dropped .cell {
     opacity: 0.55;
   }
@@ -1220,15 +1218,6 @@
   .index-cell {
     color: var(--dim);
     text-align: right;
-  }
-
-  /* The rail marks how far the open record reaches, and stays put while the
-     grid scrolls sideways under it. A record the step changed takes the
-     added color, as a diff does. */
-  .expanded-cell {
-    background: color-mix(in oklch, var(--ink) 6%, transparent);
-    box-shadow: inset 3px 0 0 var(--border);
-    padding: 0.5rem 0.5rem 0.5rem 0.75rem;
   }
 
   /* The record moves with its row as the grid scrolls sideways, and wraps to

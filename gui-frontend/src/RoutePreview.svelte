@@ -10,6 +10,10 @@
 <script lang="ts">
   import Button, { BUSY, LOADING } from './Button.svelte';
   import ShowAll from './ShowAll.svelte';
+  import ChevronIcon from './ChevronIcon.svelte';
+  import FoldAllButton from './FoldAllButton.svelte';
+  import RecordFields from './RecordFields.svelte';
+  import { SvelteSet } from 'svelte/reactivity';
   import { unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import { count } from './time';
@@ -49,6 +53,11 @@
   const SHOWN = 50;
   /** Whether the open destination shows every document, not the first fifty. */
   let allDocuments = $state(false);
+  /** The open destination's documents shown whole, by their place in its list. */
+  let openDocuments = new SvelteSet<number>();
+  /** The records whose sent documents are shown whole, by row. Any number can be open at once, as in a
+   * pipeline's preview. */
+  let expanded = new SvelteSet<number>();
 
   async function loadSamples() {
     try {
@@ -70,6 +79,7 @@
     error = '';
     openDestination = null;
     allDocuments = false;
+    openDocuments.clear();
     try {
       const res = await routePreview(JSON.stringify(config), selected);
       if (!res.ok) {
@@ -127,6 +137,38 @@
     deliver: 'already sent by an earlier route',
   };
 
+  /** What a record sent, each document with the route it came through and where it went. */
+  function sentBy(row: RoutePreviewResult['rows'][number]) {
+    return row.through.flatMap((t) =>
+      t.documents.filter((d) => d.destinations.length > 0).map((d) => ({ route: t.route, ...d })),
+    );
+  }
+
+  /** A document as it reads: its fields when it is a JSON object, else its text. */
+  function parsed(document: string): Record<string, unknown> | null {
+    try {
+      const value: unknown = JSON.parse(document);
+      return value !== null && typeof value === 'object' && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  let foldable = $derived((result?.rows ?? []).filter((r) => sentBy(r).length > 0));
+  let allOpen = $derived(foldable.length > 0 && foldable.every((r) => expanded.has(r.row)));
+
+  function toggleRow(row: number) {
+    if (expanded.has(row)) expanded.delete(row);
+    else expanded.add(row);
+  }
+
+  function toggleAll() {
+    if (allOpen) expanded.clear();
+    else for (const r of foldable) expanded.add(r.row);
+  }
+
   function routeName(i: number): string {
     return result?.route_names[i] ?? '';
   }
@@ -163,6 +205,15 @@
     }),
   );
 </script>
+
+{#snippet whole(document: string)}
+  {@const fields = parsed(document)}
+  {#if fields}
+    <RecordFields before={fields} after={fields} showTypes={false} />
+  {:else}
+    <div class="mono whole">{document}</div>
+  {/if}
+{/snippet}
 
 <div class="preview" class:empty={driven && !result && !error}>
   {#if !driven}
@@ -203,6 +254,7 @@
           onclick={() => {
             openDestination = openDestination === d.id ? null : d.id;
             allDocuments = false;
+            openDocuments.clear();
           }}
         >
           <span class="count">{d.documents.length}</span>
@@ -234,8 +286,23 @@
               >{count(open.documents.length, 'document')}, as they would be sent</span
             >
           </div>
-          {#each allDocuments ? open.documents : open.documents.slice(0, SHOWN) as doc}
-            <div class="doc mono ellipsis">{doc}</div>
+          {#each allDocuments ? open.documents : open.documents.slice(0, SHOWN) as doc, k}
+            {@const shown = openDocuments.has(k)}
+            <div class="doc">
+              <div class="doc-line">
+                <button
+                  type="button"
+                  class="icon"
+                  aria-expanded={shown}
+                  aria-label={`document ${k + 1}`}
+                  onclick={() => (shown ? openDocuments.delete(k) : openDocuments.add(k))}
+                  ><ChevronIcon open={shown} /></button
+                ><span class="mono ellipsis">{doc}</span>
+              </div>
+              {#if shown}
+                <div class="expanded-cell">{@render whole(doc)}</div>
+              {/if}
+            </div>
           {/each}
           {#if !allDocuments && open.documents.length > SHOWN}
             <div class="doc dim ellipsis">
@@ -254,6 +321,14 @@
       <table>
         <thead>
           <tr>
+            <th class="fold-cell"
+              >{#if foldable.length > 0}<FoldAllButton
+                  icon
+                  {allOpen}
+                  what="records"
+                  onclick={toggleAll}
+                />{/if}</th
+            >
             <th aria-sort={rowSort.aria('record')}
               ><SortButton sort={rowSort} key="record">Record</SortButton></th
             >
@@ -276,8 +351,11 @@
         </thead>
         <tbody>
           {#each sortedRows as row (row.row)}
+            {@const sent = sentBy(row)}
+            {@const open = expanded.has(row.row)}
             {#if row.matched.length === 0}
               <tr>
+                <td></td>
                 <td class="mono">{row.row}</td>
                 <td><span class="dim">no route matched</span></td>
                 <td></td>
@@ -300,7 +378,18 @@
               </tr>
             {/if}
             {#each row.through as t, i}
-              <tr>
+              <tr class="record-row" class:open>
+                <td class="fold-cell">
+                  {#if i === 0 && sent.length > 0}
+                    <button
+                      type="button"
+                      class="icon"
+                      aria-expanded={open}
+                      aria-label={`row ${row.row}`}
+                      onclick={() => toggleRow(row.row)}><ChevronIcon {open} /></button
+                    >
+                  {/if}
+                </td>
                 <td class="mono">{i === 0 ? row.row : ''}</td>
                 <td class="mono">{routeName(t.route)}</td>
                 <td>
@@ -344,11 +433,28 @@
             {#if row.refused && row.matched.length > 0}
               <!-- A record held by a block, or refused for memory: why it went no further. -->
               <tr>
+                <td></td>
                 <td class="mono">{row.through.length === 0 ? row.row : ''}</td>
                 <td class="mono"
                   >{row.through.length === 0 ? row.matched.map(routeName).join(', ') : ''}</td
                 >
                 <td colspan="4"><span class="dim">{row.refused}</span></td>
+              </tr>
+            {/if}
+            {#if open && sent.length > 0}
+              <tr aria-label={`record ${row.row}`}>
+                <td class="expanded-cell" colspan="7">
+                  {#each sent as doc}
+                    <div class="sent-head">
+                      <span class="mono">{routeName(doc.route)}</span><span class="mono dim"
+                        >{doc.destinations
+                          .map((d) => result?.destination_names[d] ?? d)
+                          .join(', ')}</span
+                      >
+                    </div>
+                    {@render whole(doc.document)}
+                  {/each}
+                </td>
               </tr>
             {/if}
           {/each}
@@ -448,6 +554,28 @@
   }
   .doc:last-child {
     border-bottom: none;
+  }
+  .doc-line {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    min-width: 0;
+  }
+  .doc .expanded-cell {
+    margin: 0.2rem 0;
+    padding: 0.3rem 0.6rem;
+    font-size: var(--text-label);
+  }
+  /* A document that is not a JSON object, whole: it wraps anywhere rather than widening the page. */
+  .whole {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .sent-head {
+    margin: 0.4rem 0 0.2rem;
+  }
+  .sent-head:first-child {
+    margin-top: 0;
   }
   .table-wrap {
     overflow-x: auto;
