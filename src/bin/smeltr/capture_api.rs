@@ -390,6 +390,34 @@ fn status_of(captures: &Captures, access: &Access, session: &str) -> Envelope<Fo
     Followed::found(capture.flatten())
 }
 
+/// What a capture holds, read apart from its status, which only counts it.
+#[derive(Default, serde::Serialize)]
+pub struct HeldRecords {
+    batches: Vec<smeltr::heartbeat::CaptureBatch>,
+}
+
+/// What `session` holds so far, running or over: one batch per distinct column list, each row naming its worker.
+/// Worth reading again only once its status's `revision` moves.
+pub async fn capture_records(
+    State(state): State<AppState>,
+    Extension(access): Extension<Access>,
+    AxPath(session): AxPath<String>,
+) -> Envelope<HeldRecords> {
+    records_of(&state.captures, &access, &session)
+}
+
+fn records_of(captures: &Captures, access: &Access, session: &str) -> Envelope<HeldRecords> {
+    match followed(captures, access, session)
+        .then(|| captures.status(session))
+        .flatten()
+    {
+        Some(status) => Envelope::ok(HeldRecords {
+            batches: status.batches,
+        }),
+        None => Envelope::refused(Refusal::not_found(NO_CAPTURE)),
+    }
+}
+
 /// Whether `access` may follow `session`: watch, stop, discard, download or save it. The gate let in anyone who views
 /// somewhere; a capture holds its group's records, so it needs viewer there, and saving it needs editor where the
 /// sample is saved. A capture in a group the caller does not view answers as an unknown id does, so the ids of
@@ -904,6 +932,11 @@ mod tests {
         let unknown = status_of(&captures, &own, "no-such-id").to_json();
 
         assert_eq!(status_of(&captures, &other, "c1").to_json(), unknown);
+        assert_eq!(
+            records_of(&captures, &other, "c1").to_json(),
+            records_of(&captures, &own, "no-such-id").to_json()
+        );
+        assert!(records_of(&captures, &own, "c1").succeeded());
         assert_eq!(stop(&captures, &other, "c1").to_json(), unknown);
         assert!(
             !captures.status("c1").unwrap().stopped,

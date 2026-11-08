@@ -318,7 +318,13 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/captures/:session",
-        what: "A capture's status: workers, batches, end reasons, time left, truncated. No query.",
+        what: "A capture's status: workers, how many records it holds, end reasons, time left, truncated. Poll this while it runs; it holds no records. No query.",
+        body: "",
+    },
+    Route {
+        method: "GET",
+        path: "/api/captures/:session/records",
+        what: "What a capture holds so far, running or over, as batches of rows. Read it once the capture is done, or again when its status's `revision` moves. No query.",
         body: "",
     },
     Route {

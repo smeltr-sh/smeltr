@@ -19,6 +19,8 @@ const { CaptureSession, POLL_RETRY_MS } = await import('./captureSession.svelte'
 function status(over: Partial<CaptureStatus> = {}): CaptureStatus {
   return {
     session: 's1',
+    records: 0,
+    revision: 0,
     done: false,
     stopped: false,
     maxMatches: 10,

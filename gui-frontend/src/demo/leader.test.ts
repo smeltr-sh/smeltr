@@ -188,14 +188,21 @@ describe('DemoLeader', () => {
     const status = async () =>
       (
         (await leader.answer('GET', at(`/api/captures/${session}`), null)).body as {
-          capture: { done: boolean; batches: { rows: unknown[] }[]; ended: [string, unknown][] };
+          capture: { done: boolean; records: number; ended: [string, unknown][] };
         }
       ).capture;
+    const records = async () =>
+      (
+        (await leader.answer('GET', at(`/api/captures/${session}/records`), null)).body as {
+          batches: { rows: unknown[] }[];
+        }
+      ).batches;
     expect((await status()).done).toBe(false);
     now += 60_000;
     const done = await status();
     expect(done.done).toBe(true);
-    expect(done.batches[0].rows).toHaveLength(3);
+    expect(done.records).toBe(3);
+    expect((await records())[0].rows).toHaveLength(3);
     expect(done.ended).toEqual([
       ['w1', 'matches'],
       ['w2', 'matches'],

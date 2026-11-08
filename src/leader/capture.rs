@@ -95,8 +95,16 @@ pub struct CaptureStatus {
     /// Every worker the capture knows of -- expected when it opened, or handed the invitation since -- in name
     /// order. No worker leaves the list for the capture's life.
     pub workers: Vec<CaptureWorker>,
-    /// What every worker sent, folded: one batch per distinct column list, each row naming its worker.
+    /// What every worker sent, folded: one batch per distinct column list, each row naming its worker. Left out of
+    /// the status a caller polls, which counts them in `records`: they are read on their own (`HeldRecords`).
+    #[serde(skip)]
     pub batches: Vec<CaptureBatch>,
+    /// How many records `batches` hold.
+    pub records: usize,
+    /// Moves on each time what the capture holds changes, which is when its records are worth reading again. The
+    /// count alone can stay put while they change: a worker's newest report replaces its last whole, and may hold as
+    /// many records but not the same ones.
+    pub revision: u64,
     /// Why each worker stopped, so a short sample says which bound it hit.
     pub ended: Vec<(String, CaptureEnd)>,
     pub seconds_left: u64,
@@ -177,6 +185,8 @@ struct Session {
     rows: usize,
     bytes: usize,
     truncated: bool,
+    /// Bumped by [`Session::recompute`] whenever `batches` changes (`CaptureStatus::revision`).
+    revision: u64,
     ended: Vec<(String, CaptureEnd)>,
     /// Whether one worker reads this capture's source: a single-worker kind is read by one worker at a time, and Run
     /// asks its database once.
@@ -252,6 +262,9 @@ impl Session {
             }
         }
         self.per_worker = kept;
+        if batches != self.batches {
+            self.revision += 1;
+        }
         self.batches = batches;
         self.rows = rows;
         self.bytes = bytes;
@@ -336,6 +349,8 @@ impl Session {
             max_matches: self.invitation.max_matches,
             workers: self.workers(),
             batches: self.batches.clone(),
+            records: self.rows,
+            revision: self.revision,
             ended: self.ended.clone(),
             seconds_left: self.seconds_left(),
             waiting_on: self.waiting_on(),
@@ -497,6 +512,7 @@ impl Captures {
                 rows: 0,
                 bytes: 0,
                 truncated: false,
+                revision: 0,
                 ended: Vec::new(),
                 one_worker,
                 sql: None,
@@ -813,6 +829,51 @@ mod tests {
     /// How many records a status holds.
     fn count(status: &CaptureStatus) -> usize {
         rows_in(&status.batches)
+    }
+
+    /// A status counts what the capture holds and leaves the records to be read on their own. Its revision moves
+    /// whenever they change, even where the count does not: a worker's newest report replaces its last whole.
+    #[test]
+    fn a_status_counts_its_records_and_its_revision_moves_when_they_change() {
+        let captures = Captures::default();
+        captures.open(
+            "s1".to_string(),
+            CaptureRequest {
+                max_matches: Some(3),
+                ..request(Some(60))
+            },
+            expect(&["w1", "w2"]),
+            Default::default(),
+            Vec::new(),
+            Opened {
+                owner: "s1".to_string(),
+                config: None,
+            },
+        );
+        captures.invitations_for("w1", "prod-west", |_| None);
+        captures.invitations_for("w2", "prod-west", |_| None);
+        let opened = captures.status("s1").unwrap();
+        assert_eq!((opened.records, opened.revision), (0, 0));
+
+        captures.record(progress_report("s1", "w2", &["b1", "b2"]));
+        let first = captures.status("s1").unwrap();
+        assert_eq!(first.records, 2);
+        let polled = serde_json::to_value(&first).unwrap();
+        assert!(polled.get("batches").is_none(), "{polled}");
+        assert_eq!(polled["records"], 2);
+
+        captures.record(progress_report("s1", "w2", &["b1", "b2"]));
+        assert_eq!(
+            captures.status("s1").unwrap().revision,
+            first.revision,
+            "the same records again"
+        );
+
+        captures.record(progress_report("s1", "w2", &["c1", "c2"]));
+        let replaced = captures.status("s1").unwrap();
+        assert_eq!(replaced.records, 2);
+        assert_eq!(held(&replaced), [("w2", "c1"), ("w2", "c2")]);
+        assert!(replaced.revision > first.revision);
     }
 
     /// A sample saved from a capture records how it was taken: what it read, in which group, under which filter, on

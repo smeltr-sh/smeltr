@@ -1185,6 +1185,7 @@ async fn setup_leader(
         )
         .route("/api/captures/:session/stop", post(capture_api::stop_capture))
         .route("/api/captures/:session/download", get(capture_api::download_capture))
+        .route("/api/captures/:session/records", get(capture_api::capture_records))
         .route("/api/captures/mine", get(capture_api::my_capture))
         // Here for `State<AppState>`: a preview may run over a capture the leader holds.
         .route("/api/areas/:area/preview/pipeline", post(preview))
