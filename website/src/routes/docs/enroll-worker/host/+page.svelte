@@ -143,7 +143,9 @@ state_dir = "/var/lib/smeltr-worker"</code
     After enrollment, the state directory contains worker_id, credential.token, the configuration
     clone and trust material. Protect it. After enrollment, the worker uses its saved credential.
     Remove a permanent enrollment code from configuration, restart the worker, and confirm it
-    reconnects. A fresh host or lost state needs a new enrollment.
+    reconnects. A container reads <code>worker.env</code> only when it is created, so a restart keeps
+    the code. Delete the code's line from that file, then remove the container and run it again with the
+    same volume. A fresh host or lost state needs a new enrollment.
   </p>
   <h2 id="verify">Verify and handle failures</h2>
   <p>
