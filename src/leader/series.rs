@@ -3397,11 +3397,7 @@ mod tests {
             vec![(0, 42.0)]
         );
 
-        store
-            .maintain(
-                Tier::FiveMinutes.retention_ms() + Tier::OneMinute.retention_ms() + Tier::TenSeconds.retention_ms() + 1,
-            )
-            .unwrap();
+        store.maintain(Tier::FiveMinutes.retention_ms() + 1).unwrap();
         assert_eq!(
             store
                 .points("smeltr_rows_polled_total", "k", Tier::FiveMinutes)
@@ -3414,11 +3410,7 @@ mod tests {
             vec![(0, 42.0)]
         );
 
-        let far_future = Tier::OneHour.retention_ms()
-            + Tier::FiveMinutes.retention_ms()
-            + Tier::OneMinute.retention_ms()
-            + Tier::TenSeconds.retention_ms()
-            + 1;
+        let far_future = Tier::OneHour.retention_ms() + 1;
         store.maintain(far_future).unwrap();
         assert_eq!(
             store

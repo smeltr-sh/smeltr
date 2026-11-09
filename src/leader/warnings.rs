@@ -2030,7 +2030,7 @@ pub fn outside_normal_warnings(
         .collect()
 }
 
-/// What `judged` read against its band, which is outside it on `side`.
+/// What the reading `judged` found: the source is outside its range, on `side`.
 fn against(judged: &throughput::Judged, side: throughput::Outside) -> String {
     format!(
         "{}normal, {} rows in {} against {} at this time of day",

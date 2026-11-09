@@ -1476,9 +1476,9 @@ pub struct FlowSeries {
 }
 
 /// What `GET /api/flow` serves (design doc E2 "Flow over time"): rows and payload bytes, in per source and out per
-/// destination, over the caller's window, from whichever tier fits it (`series::Tier::for_window`) -- one tier
-/// queried, not several stitched together, so a window that outgrows the finest tier is coarser than the window
-/// itself, and its most recent stretch can be absent until that data has aged into the tier being served from.
+/// destination, over the caller's window, in the buckets of whichever tier fits it (`series::Tier::for_window`). A
+/// window that outgrows the finest tier is coarser than the window itself. Its newest buckets are read from the
+/// finer tiers that still hold them, so the most recent stretch is there too.
 ///
 /// `bytes_out` is not `rows_out` weighed. A row counts as out when a destination's queue takes it; its bytes count
 /// when the destination acknowledges them, a queue later. The two agree while a destination keeps up and part
@@ -1602,7 +1602,7 @@ fn flow_series(
     // Counted over the pass rather than reported per subject: a key this reader cannot parse is a shape it does
     // not know, and every other key of that shape will be unreadable too.
     let (mut unreadable, mut exemplar) = (0usize, None);
-    for (subject_key, points) in store.series_since(metric, tier, since_ms)? {
+    for (subject_key, points) in store.series_at(metric, tier, since_ms)? {
         let (Some(group), Some(subject_id)) = (
             subject_label(&subject_key, GROUP_LABEL),
             subject_label(&subject_key, label_name),
@@ -1617,11 +1617,17 @@ fn flow_series(
             subject_id,
             points: points
                 .into_iter()
-                .map(|(bucket_ms, value)| FlowPoint {
-                    bucket_millis: bucket_ms,
-                    value,
-                })
-                .collect(),
+                .fold(Vec::new(), |mut summed: Vec<FlowPoint>, (bucket_ms, value)| {
+                    // A bucket still in the finer tiers has a point from each of them, and a count adds them.
+                    match summed.last_mut() {
+                        Some(last) if last.bucket_millis == bucket_ms => last.value += value,
+                        _ => summed.push(FlowPoint {
+                            bucket_millis: bucket_ms,
+                            value,
+                        }),
+                    }
+                    summed
+                }),
         });
     }
     if unreadable > 0 {
@@ -5562,6 +5568,28 @@ mod flow_endpoint_tests {
         assert_eq!(flow.rows_out[0].subject_id, "2");
         assert_eq!(flow.rows_out[0].group, "prod-west");
         assert_eq!(flow.rows_out[0].points[0].value, 9.0);
+    }
+
+    /// A 30-day window is served in hours, and its newest hour, still in the finer tiers, is summed into it.
+    #[test]
+    fn a_long_window_holds_its_newest_buckets_too() {
+        let state = state();
+        let store = state.registry.series().unwrap();
+        let now = warnings::now_millis();
+        let key = r#"[["group","g"],["source","s"]]"#;
+        let hour = series::Tier::OneHour.align(now);
+        store.record_delta(ROWS_IN_METRIC, key, hour - 2 * 86_400_000, 4.0).unwrap();
+        store.maintain(now).unwrap();
+        store.record_delta(ROWS_IN_METRIC, key, hour, 2.0).unwrap();
+        store.record_delta(ROWS_IN_METRIC, key, hour + 1, 3.0).unwrap();
+
+        let flow = flow_snapshot(&state, Duration::from_secs(30 * 86_400)).unwrap();
+        let points: Vec<(i64, f64)> = flow.rows_in[0]
+            .points
+            .iter()
+            .map(|p| (p.bucket_millis, p.value))
+            .collect();
+        assert_eq!(points, [(hour - 2 * 86_400_000, 4.0), (hour, 5.0)]);
     }
 
     /// A viewer of one group reads that group's flow and not another's.

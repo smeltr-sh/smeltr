@@ -160,7 +160,7 @@ pub struct Judged {
     pub band: Band,
     /// This reading and the [`WAIT`] - 1 before it were each below their range.
     pub below: bool,
-    /// Each above.
+    /// This reading and the [`WAIT`] - 1 before it were each above their range.
     pub above: bool,
 }
 
@@ -341,7 +341,8 @@ fn time_of_day(ended_ms: i64) -> usize {
 
 /// `width`'s normal as of `as_of`, from the windows learned that ended before it, or None while it has no ratio at
 /// all. Each window's usual window is that of its time of day as of `as_of`, so every window of the history is set
-/// against the same week. Both get one more row, so a time of day that is usually empty divides like any other.
+/// against the same week. Each window and its usual window get one more row, so a time of day that is usually empty
+/// divides like any other.
 fn normal(rows: &Rows, warned: &Warned, as_of: i64, width: Width) -> Option<Normal> {
     let step = BUCKET.bucket_ms();
     let per_day = DAY_MS / step;
@@ -528,7 +529,7 @@ impl Rows {
 
 /// What one source's warnings say about its rows, as spans (started, ended), with no end for a span still open.
 struct Warned {
-    /// While a stop held.
+    /// Each span a stop held, as (started, ended).
     stops: Vec<(i64, Option<i64>)>,
     /// When its rows teach its normal nothing: while a stop or a below-normal warning held, from the first reading
     /// that warning waited for, and all of the time before an admin said to learn it again.
@@ -865,7 +866,8 @@ fn quantile(sorted: &[f64], q: f64) -> f64 {
     sorted[below] + (sorted[above] - sorted[below]) * (at - below as f64)
 }
 
-/// Every source's last window against its normal, off the async runtime ([`Learning::read`]).
+/// Every source's last window against its normal, off the async runtime. The marks are read first
+/// ([`Learning::read`]).
 ///
 /// Without `wait`, a caller holding an earlier answer gets that one at once and the new one is computed behind it:
 /// what a heartbeat asks, which must not wait on a week of history being read.
@@ -1171,7 +1173,7 @@ mod tests {
         let store = store_with(7, |_| Some(100.0));
         let points = expected(&store, END - 7 * DAY_MS);
         let first = points.first().unwrap().from_millis;
-        assert!(first >= END - 6 * DAY_MS && first < END - 4 * DAY_MS, "{first}");
+        assert!((END - 6 * DAY_MS..END - 4 * DAY_MS).contains(&first), "{first}");
         assert_eq!(points.last().unwrap().from_millis, END);
         assert!(points.windows(2).all(|w| w[0].to_millis == w[1].from_millis));
         for p in &points {
