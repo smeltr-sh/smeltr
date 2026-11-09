@@ -115,7 +115,8 @@ key = "/etc/smeltr/secrets/sealing.key"</code
       - ./certs:/certs:ro</code
     ></pre>
   <p>
-    Keep <code>SMELTR_PUBLIC_ORIGIN</code> in <code>.env</code> at the proxy's address, then apply it:
+    Keep <code>SMELTR_PUBLIC_ORIGIN</code> in <code>.env</code> at the proxy's address, then start the
+    proxy and restart the leader:
   </p>
   <pre><code>docker compose up -d</code></pre>
   <p>
@@ -126,15 +127,15 @@ key = "/etc/smeltr/secrets/sealing.key"</code
 
   <h2 id="proxy-workers">Workers behind a proxy</h2>
   <p>
-    Set workers to use the proxy’s externally reachable HTTPS URL. In this setup, enrollment codes
-    tell workers to verify the proxy certificate using the operating system’s trusted certificates.
-    A worker trusts Mozilla’s roots and its host’s own, so a certificate from a public authority
-    needs nothing more.
+    Set workers to use the proxy’s externally reachable HTTPS URL. An enrollment code from a leader
+    behind a proxy tells the worker to verify the proxy's certificate with the operating system's
+    trusted certificates. A worker trusts Mozilla’s roots and its host’s own, so a certificate from
+    a public authority needs nothing more.
   </p>
   <p>
     For a certificate from your organization's authority, give the worker that authority's
     certificate in <code>SMELTR_LEADER_CA</code>. It replaces the authority the enrollment code
-    pinned, and the worker verifies only the leader with it. Remove the worker's container and run
+    names, and the worker uses it only to verify the leader. Remove the worker's container and run
     it again with the same volume, which keeps its identity:
   </p>
   <pre><code
