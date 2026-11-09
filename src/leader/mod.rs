@@ -1477,7 +1477,7 @@ pub struct FlowSeries {
 
 /// What `GET /api/flow` serves (design doc E2 "Flow over time"): rows and payload bytes, in per source and out per
 /// destination, over the caller's window, in the buckets of whichever tier fits it (`series::Tier::for_window`). A
-/// window that outgrows the finest tier is coarser than the window itself. Its newest buckets are read from the
+/// window longer than a tier keeps is served in a coarser tier's buckets. Its newest buckets are also read from the
 /// finer tiers that still hold them, so the most recent stretch is there too.
 ///
 /// `bytes_out` is not `rows_out` weighed. A row counts as out when a destination's queue takes it; its bytes count
@@ -1618,7 +1618,7 @@ fn flow_series(
             points: points
                 .into_iter()
                 .fold(Vec::new(), |mut summed: Vec<FlowPoint>, (bucket_ms, value)| {
-                    // A bucket still in the finer tiers has a point from each of them, and a count adds them.
+                    // A bucket still in the finer tiers has a point from each of them, and its count is their sum.
                     match summed.last_mut() {
                         Some(last) if last.bucket_millis == bucket_ms => last.value += value,
                         _ => summed.push(FlowPoint {

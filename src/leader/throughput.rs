@@ -560,13 +560,17 @@ impl Warned {
             .iter()
             .filter(|s| s.condition == Condition::SourceRowsBelow)
             .map(|s| (s.started_millis - waited, s.ended_millis));
-        let reset = learning.reset_from(group, source).map(|from| (i64::MIN, Some(from)));
+        let reset_from = learning.reset_from(group, source);
+        let reset = reset_from.map(|from| (i64::MIN, Some(from)));
         Warned {
             unlearned: stops.iter().copied().chain(below).chain(reset).collect(),
             stops,
-            below_held: held
-                .iter()
-                .any(|s| s.condition == Condition::SourceRowsBelow && s.ended_millis.is_none()),
+            // A reset ends the warning: the normal it was judged against is forgotten.
+            below_held: held.iter().any(|s| {
+                s.condition == Condition::SourceRowsBelow
+                    && s.ended_millis.is_none()
+                    && reset_from.is_none_or(|from| s.started_millis >= from)
+            }),
         }
     }
 
@@ -1133,6 +1137,13 @@ mod tests {
         let r = reading_at(&store, END, &reset).unwrap();
         assert_eq!(r.outside, Some(Outside::Below));
         assert_eq!(r.shown(), None);
+    }
+
+    #[test]
+    fn a_reset_ends_a_held_below_warning() {
+        let store = store_with(7, |at| Some(if at >= END - DAY_MS { 0.0 } else { 100.0 }));
+        warned(&store, "source_rows_below", END - DAY_MS + 3 * FIVE, None);
+        assert_eq!(reading_at(&store, END, &reset_at(END - HOUR)), None);
     }
 
     #[test]
