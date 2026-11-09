@@ -179,9 +179,12 @@ pub async fn login(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
-    if !origin.is_some_and(|sent| auth.origin.accepts(sent)) {
-        return refuse(StatusCode::FORBIDDEN, "this request came from another origin");
+    match headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
+        None => return refuse(StatusCode::FORBIDDEN, "this request carried no Origin"),
+        Some(sent) if !auth.origin.accepts(sent) => {
+            return refuse(StatusCode::FORBIDDEN, &auth.origin.refusal(sent));
+        }
+        Some(_) => {}
     }
     let content_type = headers
         .get(header::CONTENT_TYPE)

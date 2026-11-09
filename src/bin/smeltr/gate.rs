@@ -108,6 +108,16 @@ impl Origin {
         sent == self.value || self.aliases.iter().any(|alias| alias == sent)
     }
 
+    /// Why an `Origin` header naming `sent` is refused. The reason names the origin this leader is reached at, so an
+    /// administrator who reaches it under another name can tell which one to add.
+    pub fn refusal(&self, sent: &str) -> String {
+        let others = if self.aliases.is_empty() { "" } else { ", among others" };
+        format!(
+            "this request came from {sent}, but this leader is reached at {}{others}",
+            self.value
+        )
+    }
+
     /// The session cookie's name.
     ///
     /// `__Host-` is a promise the browser enforces: no `Domain`, `Path=/`, and `Secure`. A sibling host under the
@@ -594,10 +604,7 @@ pub fn check_browser_protections(
             )));
         }
         Some(sent) if !auth.origin.accepts(sent) => {
-            return Err(Box::new(refuse(
-                StatusCode::FORBIDDEN,
-                "this request came from another origin",
-            )));
+            return Err(Box::new(refuse(StatusCode::FORBIDDEN, &auth.origin.refusal(sent))));
         }
         Some(_) => {}
     }
