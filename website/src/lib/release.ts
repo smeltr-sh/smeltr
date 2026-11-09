@@ -12,5 +12,10 @@ export function latestFile(name: string): string {
   return `https://github.com/${repository}/releases/latest/download/${name}`;
 }
 
+/** A file of the repository as a release's tag holds it. */
+export function taggedFile(path: string, version: string): string {
+  return `https://raw.githubusercontent.com/${repository}/v${version}/${path}`;
+}
+
 /** The license, as the repository carries it. */
 export const license = `https://github.com/${repository}/blob/main/LICENSE`;

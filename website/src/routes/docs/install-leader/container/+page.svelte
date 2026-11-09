@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { image, source } from '#lib/release.ts';
+  import { image, source, taggedFile } from '#lib/release.ts';
   import GuideLayout from '#lib/components/GuideLayout.svelte';
   const sections = [
     { id: 'pull', title: 'Pull and verify the image' },
+    { id: 'compose', title: 'Run with Docker Compose' },
     { id: 'archive', title: 'Load an image archive' },
     { id: 'run', title: 'Run the container' },
   ];
@@ -54,6 +55,34 @@ cosign verify-attestation --type cyclonedx "$image" \
     uses something newer, and keeps running what it has. A leader that starts on a newer build
     upgrades its data without the backup an <a href="/docs/upgrade">upgrade</a> begins with. Name the
     image by its digest, and change the digest only as an upgrade.
+  </p>
+
+  <h2 id="compose">Run with Docker Compose</h2>
+  <p>
+    The release's <code>compose.yaml</code> runs a leader and a worker in one container, as a standalone
+    install. The leader serves HTTPS on port 443, with a certificate it signs itself. Its data, its secrets
+    encryption key and the worker's state all live in one volume, so back up that volume.
+  </p>
+  <pre><code
+      >mkdir smeltr && cd smeltr
+curl -fsSLO {taggedFile('compose.yaml', '<version>')}</code
+    ></pre>
+  <p>
+    Save a file named <code>.env</code> beside it, with the verified image and the address browsers open:
+  </p>
+  <pre><code
+      >SMELTR_IMAGE=&lt;the verified digest, $image above&gt;
+SMELTR_PUBLIC_ORIGIN=https://smeltr.example.com</code
+    ></pre>
+  <p>Start it, and read the first-login credentials from its logs:</p>
+  <pre><code
+      >docker compose up -d
+docker compose logs</code
+    ></pre>
+  <p>
+    Then follow <a href="/docs/first-login">First login</a>. Until the browser trusts the leader's
+    certificate authority, it warns that the connection is not private;
+    <a href="/docs/certificates#model">Certificates</a> says how to set up that trust.
   </p>
 
   <h2 id="archive">Load an image archive</h2>
