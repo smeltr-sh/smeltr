@@ -54,8 +54,7 @@
       caption="The Issues page names the source, what it read and what is normal."
     />
     <p>
-      Smeltr starts warning once a source has three days of history. You set how wide the range is,
-      for every source, under Admin → System.
+      Smeltr starts warning once a source has three days of history.
     </p>
   </section>
   <section aria-labelledby="drift-heading">

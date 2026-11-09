@@ -333,24 +333,25 @@ destination is back, so it is a warning where the other two are failures.
 
 A source reading fewer rows than it normally does warns, and one reading more
 raises info. Its rows are judged at four widths: the last 5 minutes, 30 minutes,
-6 hours and day. At each, the usual window is the same window at the same time
-of day over the last seven days, and the range is the usual window scaled by how
-far that width's past windows strayed from theirs, over the last one week for
-the short widths and four for the long. A width judges a source only where its
-usual window holds ten rows, so a busy source is judged at every width and a
-sparse one at the long ones. A source warns once some width reads below its
-range four times in a row, and the warning holds until a width judges it and
-none has: a source quiet long enough to lose every range still warns. More rows
-are judged at 30 minutes alone. Rows read while a stop or a below-normal warning
-held, or while that warning waited, are not learned, so an outage does not widen
-the normal and a lasting drop keeps being raised until an admin says otherwise.
-More rows are learned: they are the new normal. A source with too little history
-has no normal yet. One held, unreachable or on a silent worker is not judged
-against it: a warning that names the cause is already up. Nor is one for a
-window after such a warning ends, while the window still holds the stop and the
-catch-up after it. The leader keeps when each warning held, for as long as it
-keeps hourly rows, so the end is known across a restart. The Status page ranks
-sources by how far each is from the same normal.
+6 hours and 24 hours. At each, the usual window is the same window at the same
+time of day over the last seven days, and the range is the usual window scaled
+by how far that width's past windows strayed from theirs, over the last week for
+the short widths and the last four weeks for the long. A width judges a source
+only where its usual window holds ten rows, so a busy source is judged at every
+width and a sparse one at the long ones. A source warns once some width reads
+below its range four times in a row, and the warning holds until some width
+judges the source and none reads it below its range: a source quiet long enough
+to lose every range still warns. Rows above normal are judged at 30 minutes
+alone. Rows read while a stop or a below-normal warning held, or in the readings
+it waited for before warning, are not learned, so an outage does not widen the
+normal and a lasting drop keeps being raised until an admin says otherwise. More
+rows are learned: they are the new normal. A source with too little history has
+no normal yet. One held, unreachable or on a silent worker is not judged against
+it: a warning that names the cause is already up. Nor is one for a window after
+such a warning ends, while the window still holds the stop and the catch-up
+after it. The leader keeps when each warning held, for as long as it keeps
+hourly rows, so the end is known across a restart. The Status page ranks sources
+by how far each is from the same normal.
 
 An editor in the source's worker group may say either of two things about
 it. Lower turns the warning that holds into info until it ends, and it stays

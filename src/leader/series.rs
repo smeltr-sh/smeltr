@@ -818,25 +818,6 @@ impl RegistryStore {
         Ok(rows)
     }
 
-    /// The subjects of every one of `entries` that ended at or after `since_ms`.
-    pub fn facts_ended_since(&self, entries: &[&str], since_ms: i64) -> Result<Vec<String>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt =
-            conn.prepare_cached("SELECT entry, subject FROM fact_history WHERE ended_ms >= ?1 ORDER BY subject")?;
-        let rows = stmt
-            .query_map(params![since_ms], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut out: Vec<String> = rows
-            .into_iter()
-            .filter(|(entry, _)| entries.contains(&entry.as_str()))
-            .map(|(_, subject)| subject)
-            .collect();
-        out.dedup();
-        Ok(out)
-    }
-
     /// When each of `entries` held for `subject` and overlapped the time since `since_ms`, oldest first:
     /// (entry, started, ended), with no end for one still active.
     pub fn fact_spans(
@@ -3576,19 +3557,6 @@ mod tests {
             store.fact_spans(&["source_unreachable"], "7", 0).unwrap().is_empty(),
             "another entry"
         );
-        assert_eq!(
-            store.facts_ended_since(&["source_blocked"], 2_000).unwrap(),
-            vec!["7".to_string()]
-        );
-        assert!(
-            store.facts_ended_since(&["source_blocked"], 2_001).unwrap().is_empty(),
-            "ended before"
-        );
-        assert!(
-            store.facts_ended_since(&["source_unreachable"], 0).unwrap().is_empty(),
-            "another entry"
-        );
-
         store.maintain(2_000 + Tier::OneHour.retention_ms() + 1).unwrap();
         assert_eq!(
             store.fact_spans(&["source_blocked"], "7", 0).unwrap(),

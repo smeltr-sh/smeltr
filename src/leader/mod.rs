@@ -1117,13 +1117,7 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     let mut active_facts = warnings::currently_active_facts(&snapshot, now_ms, heartbeat_interval, &deployed);
     active_facts.extend(warnings::deploy_facts(&findings, &state.registry));
     let readings = throughput::readings(state, now_ms, heartbeat_interval, true).await;
-    let recovering = warnings::recovering_sources(state.registry.series(), now_ms);
-    active_facts.extend(warnings::outside_normal_facts(
-        &readings,
-        &snapshot,
-        &recovering,
-        heartbeat_interval,
-    ));
+    active_facts.extend(warnings::outside_normal_facts(&readings, &snapshot, heartbeat_interval));
     let (key, kept, channels, marks) = run_store(state.store.clone(), |s| {
         Ok((
             s.key_standing()?,
@@ -1139,8 +1133,7 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     // Read, not yet observed: what else is active is known only once the whole catalog is.
     let starts = state.registry.starts_of(&active_facts, now_ms);
     let key_warnings = warnings::encryption_key_warnings(&key, &channels, &kept, &starts);
-    let normal_warnings =
-        warnings::outside_normal_warnings(&readings, &snapshot, &recovering, &starts, &marks, heartbeat_interval);
+    let normal_warnings = warnings::outside_normal_warnings(&readings, &snapshot, &starts, &marks, heartbeat_interval);
     let credentials = run_store(state.store.clone(), |s| s.list_worker_credentials()).await?;
     let (signing, rotating) = serving_authority(&state.data_dir);
     let serving = serving_certificate(&state.data_dir);
