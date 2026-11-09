@@ -5578,7 +5578,9 @@ mod flow_endpoint_tests {
         let now = warnings::now_millis();
         let key = r#"[["group","g"],["source","s"]]"#;
         let hour = series::Tier::OneHour.align(now);
-        store.record_delta(ROWS_IN_METRIC, key, hour - 2 * 86_400_000, 4.0).unwrap();
+        store
+            .record_delta(ROWS_IN_METRIC, key, hour - 2 * 86_400_000, 4.0)
+            .unwrap();
         store.maintain(now).unwrap();
         store.record_delta(ROWS_IN_METRIC, key, hour, 2.0).unwrap();
         store.record_delta(ROWS_IN_METRIC, key, hour + 1, 3.0).unwrap();
