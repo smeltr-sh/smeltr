@@ -401,14 +401,19 @@ pub fn leader_url_host(url: &str) -> Option<String> {
     url_authority(url).map(|(host, _)| host)
 }
 
-/// Whether `url` names the leader inside this process: on this leader's own `port`, a loopback host or one of the
-/// `names` its certificate is issued for ([`leader_certificate_names`]).
+/// Whether `url` names the leader inside this process. It does when the host is loopback on this leader's own
+/// `port`, or is one of the `names` its certificate is issued for ([`leader_certificate_names`]), on any port: a
+/// container publishes the port it listens on under another, as `compose.yaml` publishes 8443 as 443.
 ///
 /// An operator who writes out the address of the leader they are already running, by any name it answers to, means
 /// the same thing as one who left it unset, and has to get the same worker.
 pub fn names_this_leader(url: &str, port: u16, names: &[String]) -> bool {
     url_authority(url).is_some_and(|(host, reaching)| {
-        reaching == port && (is_loopback(&host) || names.iter().any(|name| name.eq_ignore_ascii_case(&host)))
+        if is_loopback(&host) {
+            reaching == port
+        } else {
+            names.iter().any(|name| name.eq_ignore_ascii_case(&host))
+        }
     })
 }
 
@@ -949,17 +954,18 @@ mod tests {
         assert!(names_this_leader("http://localhost", 80, &[]));
     }
 
-    /// A name this leader's certificate is issued for, on its port, is this leader under its public name.
+    /// A name this leader's certificate is issued for is this leader under its public name, on whatever port the
+    /// host publishes it.
     #[test]
-    fn a_name_this_leader_s_certificate_serves_on_its_port_is_this_leader() {
+    fn a_name_this_leader_s_certificate_serves_is_this_leader() {
         let names = leader_certificate_names(&["smeltr.example".to_string()]);
         assert!(names_this_leader("https://smeltr.example:8443", 8443, &names));
         assert!(names_this_leader("https://SMELTR.example:8443/", 8443, &names));
-        assert!(!names_this_leader("https://smeltr.example", 8443, &names));
+        assert!(names_this_leader("https://smeltr.example", 8443, &names));
     }
 
-    /// Another port is another process, and a name that is neither loopback nor this leader's own is another machine
-    /// as far as this one can tell. Both are a leader whose certificate this one has no say over.
+    /// Another port on loopback is another process, and a name that is neither loopback nor this leader's own is
+    /// another machine as far as this one can tell. Both are a leader whose certificate this one has no say over.
     #[test]
     fn a_url_naming_anywhere_else_is_another_leader() {
         let names = leader_certificate_names(&["smeltr.example".to_string()]);
