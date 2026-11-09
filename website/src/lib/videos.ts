@@ -37,7 +37,15 @@ const allCourses: Course[] = [
     title: 'Getting started',
     slug: 'getting-started',
     videos: [
-      { title: 'Install smeltr', slug: 'install' },
+      {
+        title: 'Install smeltr',
+        slug: 'install',
+        youtube: '5h2pd3w98IA',
+        minutes: 2,
+        poster: '/videos/getting-started-1-poster.jpg',
+      },
+      { title: 'Enroll a worker', slug: 'enroll-a-worker' },
+      { title: 'Build your first pipeline', slug: 'first-pipeline' },
       { title: 'Review and deploy a change', slug: 'review-and-deploy' },
     ],
   },
