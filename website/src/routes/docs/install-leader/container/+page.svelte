@@ -1,8 +1,12 @@
 <script lang="ts">
-  import { image, source } from '#lib/release.ts';
+  import { image, source, taggedFile } from '#lib/release.ts';
+  import { latest } from '#lib/releases.ts';
   import GuideLayout from '#lib/components/GuideLayout.svelte';
+  // The commands name the newest release, so they run as shown.
+  const version = latest?.version ?? '<version>';
   const sections = [
     { id: 'pull', title: 'Pull and verify the image' },
+    { id: 'compose', title: 'Run with Docker Compose' },
     { id: 'archive', title: 'Load an image archive' },
     { id: 'run', title: 'Run the container' },
   ];
@@ -25,8 +29,8 @@
     can move to a newer image, so pull it, then check and run that exact digest:
   </p>
   <pre><code
-      >docker pull {image}:&lt;version&gt;
-image=$(docker image inspect --format '&#123;&#123;index .RepoDigests 0&#125;&#125;' {image}:&lt;version&gt;)</code
+      >docker pull {image}:{version}
+image=$(docker image inspect --format '&#123;&#123;index .RepoDigests 0&#125;&#125;' {image}:{version})</code
     ></pre>
   <p>Both checks fail unless that workflow, run for a release tag, made the image:</p>
   <pre><code
@@ -38,7 +42,7 @@ cosign verify-attestation --type cyclonedx "$image" \
   --certificate-identity-regexp '^{source}/\.github/workflows/release\.yml@refs/tags/v'</code
     ></pre>
   <p>Name the verified digest the way the commands below expect:</p>
-  <pre><code>docker tag "$image" smeltr:&lt;version&gt;</code></pre>
+  <pre><code>docker tag "$image" smeltr:{version}</code></pre>
 
   <h3 id="latest">Why not <code>latest</code></h3>
   <p>
@@ -56,6 +60,34 @@ cosign verify-attestation --type cyclonedx "$image" \
     image by its digest, and change the digest only as an upgrade.
   </p>
 
+  <h2 id="compose">Run with Docker Compose</h2>
+  <p>
+    The release's <code>compose.yaml</code> runs a leader and a worker in one container, as a standalone
+    install. The leader serves HTTPS on port 443, with a certificate it signs itself. Its data, its secrets
+    encryption key and the worker's state all live in one volume, so back up that volume.
+  </p>
+  <pre><code
+      >mkdir smeltr && cd smeltr
+curl -fsSLO {taggedFile('compose.yaml', version)}</code
+    ></pre>
+  <p>
+    Save a file named <code>.env</code> beside it, with the verified image and the address browsers open:
+  </p>
+  <pre><code
+      >SMELTR_IMAGE=smeltr:{version}
+SMELTR_PUBLIC_ORIGIN=https://smeltr.example.com</code
+    ></pre>
+  <p>Start it, and read the first-login credentials from its logs:</p>
+  <pre><code
+      >docker compose up -d
+docker compose logs</code
+    ></pre>
+  <p>
+    Then follow <a href="/docs/first-login">First login</a>. Until the browser trusts the leader's
+    certificate authority, it warns that the connection is not private;
+    <a href="/docs/certificates#model">Certificates</a> says how to set up that trust.
+  </p>
+
   <h2 id="archive">Load an image archive</h2>
   <p>
     A host that cannot reach ghcr.io loads the image from the archive in the release's extras.
@@ -67,7 +99,7 @@ cosign verify-attestation --type cyclonedx "$image" \
       >sha256sum smeltr-extras.zip
 unzip smeltr-extras.zip smeltr-image.tar.gz
 docker load --input smeltr-image.tar.gz
-docker image inspect smeltr:&lt;version&gt; --format '&#123;&#123;.Id&#125;&#125; user=&#123;&#123;.Config.User&#125;&#125;'</code
+docker image inspect smeltr:{version} --format '&#123;&#123;.Id&#125;&#125; user=&#123;&#123;.Config.User&#125;&#125;'</code
     ></pre>
 
   <h2 id="run">Run the container</h2>
@@ -114,16 +146,15 @@ docker run --name smeltr-leader \
   --mount type=bind,src=/srv/smeltr/smeltr.toml,dst=/etc/smeltr/smeltr.toml,readonly \
   --mount type=bind,src=/srv/smeltr/leader-data,dst=/var/lib/smeltr \
   --mount type=bind,src=/srv/smeltr/leader-secrets,dst=/run/secrets/smeltr \
-  smeltr:&lt;version&gt;</code
+  smeltr:{version}</code
     ></pre>
   <p>
     Read the first-login credentials from the container output, then follow <a
       href="/docs/first-login">First login</a
     >. The bind mounts preserve state when you replace the container. The local
-    <code>smeltr:&lt;version&gt;</code> tag above names the verified image; use the verified digest
-    when deploying on other hosts. Smeltr writes only to those mounts, so the run command makes the
-    root filesystem read-only, drops every Linux capability, and lets no process gain privileges.
-    Use the
+    <code>smeltr:{version}</code> tag above names the verified image; use the verified digest when
+    deploying on other hosts. Smeltr writes only to those mounts, so the run command makes the root
+    filesystem read-only, drops every Linux capability, and lets no process gain privileges. Use the
     <a href="/docs/https#proxy">HTTPS proxy setup</a> before allowing remote browsers or workers to connect.
     A remote worker cannot reach this loopback-only example.
   </p>
