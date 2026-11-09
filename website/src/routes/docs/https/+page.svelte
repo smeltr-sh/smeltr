@@ -132,10 +132,10 @@ key = "/etc/smeltr/secrets/sealing.key"</code
     needs nothing more.
   </p>
   <p>
-    For a certificate from your organization's authority, install that authority where the worker
-    looks. On a host, add it to the operating system's trust store. A container reads the image's
-    trust store instead: mount the authority's certificate and point <code>SSL_CERT_FILE</code> at it.
-    Remove the worker's container and run it again with the same volume, which keeps its identity:
+    For a certificate from your organization's authority, give the worker that authority's
+    certificate in <code>SMELTR_LEADER_CA</code>. It replaces the authority the enrollment code
+    pinned, and the worker verifies only the leader with it. Remove the worker's container and run
+    it again with the same volume, which keeps its identity:
   </p>
   <pre><code
       >docker rm -f smeltr-worker
@@ -144,7 +144,7 @@ docker run -d --name smeltr-worker --restart unless-stopped \
   --env-file worker.env \
   -v smeltr-worker:/var/lib/smeltr \
   -v ./example-corp-ca.pem:/etc/smeltr/example-corp-ca.pem:ro \
-  -e SSL_CERT_FILE=/etc/smeltr/example-corp-ca.pem \
+  -e SMELTR_LEADER_CA=/etc/smeltr/example-corp-ca.pem \
   smeltr:{version}</code
     ></pre>
   <p>
