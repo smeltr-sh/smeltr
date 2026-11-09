@@ -131,7 +131,7 @@ card.
 Color is the warning catalog: a node the catalog names takes the error
 color, or the warning color for a warning. Distance from normal is in the
 catalog too: a source reading outside its expected throughput, learned from
-the same time of day over its last week, warns, and its panel draws that
+the same time of day over its past weeks, warns, and its panel draws that
 range behind its chart, bucket by bucket (`leader::throughput`). The catalog's held-source and
 refusing-destination conditions name what a snapshot most needs spotted: a
 source that should be busy and is not.
