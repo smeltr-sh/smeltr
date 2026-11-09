@@ -52,6 +52,28 @@ The detector is one judge applied at five widths, and Figure 1 says what each wi
 
 <?claude block diagram?>
 
+```text
+judge(statistic, history, quantile, margin, wait, tail):
+    at every bucket t where this width is judged:
+        edge      = quantile(history(t)), moved by margin toward the tail
+        beyond(t) = statistic(t) lies past edge on the tail side
+        if beyond holds at t and at the wait - 1 readings before it:
+            alarm, until a reading is not beyond
+            the readings the alarm covers, and the ones that waited for it, are not learned
+
+for each count width w in {5 min, 30 min, 6 h, 1 day}:
+    judge(statistic = S_w(t) / M_w(t),           # rows in the window over its typical level
+          history   = ratios of the learned windows, 7 days (short) or 28 (long),
+          quantile  = 0.05%, margin = 20%, wait = 4, tail = lower)
+
+the gap:
+    judge(statistic = g(t),                      # empty buckets since the last row
+          history   = lengths of the completed spells of the past 28 days,
+          quantile  = the maximum, margin = 50%, wait = 1, tail = upper)
+
+below normal at t iff some width is alarmed at t
+```
+
 Time is discrete in buckets of Δ = 5 minutes; D = 288 buckets make a day. A source is a count series x_t ≥ 0, t ∈ ℤ. A window of width w buckets ending at t has sum
 
 ```latex
