@@ -701,18 +701,6 @@ pub const CATALOG: &[Route] = &[
         body: "{ idleSeconds: number, absoluteSeconds: number }",
     },
     Route {
-        method: "GET",
-        path: "/api/settings/warnings",
-        what: "The percent of a source's past windows its expected throughput holds, with the default and allowed min and max. No query.",
-        body: "",
-    },
-    Route {
-        method: "PUT",
-        path: "/api/settings/warnings",
-        what: "Set the percent of a source's past windows its expected throughput holds. No query.",
-        body: "{ sourceRowsBandPercent: number }",
-    },
-    Route {
         method: "POST",
         path: "/api/areas/:area/sources/:id/lower",
         what: "Lower the source's Rows below normal warning that holds to info until it ends. The area is the source's worker group. No query.",

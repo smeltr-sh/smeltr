@@ -3620,29 +3620,6 @@ export function putWorkerSettings(
   return apiJson('/api/settings/workers', json('PUT', { ephemeralForgetAfterSeconds }));
 }
 
-/** How much of a source's past throughput at this time of day its normal holds,
- * in percent. The bounds come from the leader, so the form does not restate them. */
-export interface WarningSettingsDto {
-  sourceRowsBandPercent: number;
-  defaultPercent: number;
-  minPercent: number;
-  maxPercent: number;
-}
-
-export type WarningSettingsResult = {
-  ok: boolean;
-  errors: ApiError[];
-  settings: WarningSettingsDto | null;
-};
-
-export function getWarningSettings(): Promise<WarningSettingsResult> {
-  return apiJson('/api/settings/warnings');
-}
-
-export function putWarningSettings(sourceRowsBandPercent: number): Promise<WarningSettingsResult> {
-  return apiJson('/api/settings/warnings', json('PUT', { sourceRowsBandPercent }));
-}
-
 /** The level the lines one override names are kept at. It names a class and a type, a class,
  * or a service (`heartbeat::LevelOverride`). */
 export interface LevelOverrideDto {

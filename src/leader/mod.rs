@@ -1499,11 +1499,11 @@ pub struct FlowResponse {
     pub rows_out: Vec<FlowSeries>,
     pub bytes_in: Vec<FlowSeries>,
     pub bytes_out: Vec<FlowSeries>,
-    /// Every source's last [`throughput::WINDOW`] against its normal, whatever the window asked for.
+    /// Every source's reading against its normal, whatever the window asked for.
     pub normals: Vec<FlowNormal>,
 }
 
-/// One source's last [`throughput::WINDOW`] against its normal, as rows per second: what the Status page ranks by
+/// One source's reading against its normal, as rows per second: what the Status page ranks by
 /// how far each source is from its normal.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1515,16 +1515,17 @@ pub struct FlowNormal {
     pub high: f64,
 }
 
-impl From<&throughput::Reading> for FlowNormal {
-    fn from(r: &throughput::Reading) -> FlowNormal {
-        let seconds = throughput::WINDOW.as_secs_f64();
-        FlowNormal {
+impl FlowNormal {
+    /// `r` at the width a reader is shown (`throughput::Reading::shown`), if one judges it.
+    fn of(r: &throughput::Reading) -> Option<FlowNormal> {
+        let (now, band) = r.shown()?.per_second();
+        Some(FlowNormal {
             group: r.group.clone(),
             subject_id: r.source.clone(),
-            now: r.rows / seconds,
-            low: r.band.low / seconds,
-            high: r.band.high / seconds,
-        }
+            now,
+            low: band.low,
+            high: band.high,
+        })
     }
 }
 
@@ -1660,7 +1661,7 @@ async fn get_flow(
         .map_err(|e| Refusal::internal(e.to_string()))?;
     let heartbeat_interval = crate::startup_config::leader_heartbeat_interval();
     let readings = throughput::readings(&state, warnings::now_millis(), heartbeat_interval, false).await;
-    flow.normals = readings.iter().map(FlowNormal::from).collect();
+    flow.normals = readings.iter().filter_map(FlowNormal::of).collect();
     Ok(Envelope::ok(flow.visible_to(&access)))
 }
 
@@ -3952,10 +3953,6 @@ pub fn admin_router() -> Router<AppState> {
         .route(
             "/api/settings/log-levels",
             get(log_levels::get_settings).put(log_levels::put_settings),
-        )
-        .route(
-            "/api/settings/warnings",
-            get(throughput::get_settings).put(throughput::put_settings),
         )
         .route(
             "/api/settings/updates",

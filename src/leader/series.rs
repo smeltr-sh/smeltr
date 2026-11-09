@@ -18,7 +18,7 @@
 //! **Steps.** [`STEPS`] is the file's ordered list of forward steps, run at open (`steps`).
 //!
 //! **Retention.** [`Tier`] names the four windows E2 asks for: 10s buckets for 60 minutes, 1m for 24 hours, 5m for
-//! 8 days, 1h for 30 days. A bucket is written only at the finest tier ([`write_point`], whether one sample seeds
+//! 29 days, 1h for 30 days. A bucket is written only at the finest tier ([`write_point`], whether one sample seeds
 //! it or a heartbeat carries hundreds); [`RegistryStore::maintain`] is what moves data outward -- a fine bucket
 //! about to age out of its tier's window is summed (counter) or maxed (gauge) into the coarse bucket that covers
 //! it, then deleted, so it is counted exactly once on its way through. The last tier has nowhere to roll to and
@@ -80,10 +80,10 @@ impl Tier {
     /// How long a bucket stays in this tier before [`RegistryStore::maintain`] moves it on.
     fn retention_ms(self) -> i64 {
         match self {
-            Tier::TenSeconds => 60 * 60_000,           // 60 minutes
-            Tier::OneMinute => 24 * 60 * 60_000,       // 24 hours
-            Tier::FiveMinutes => 8 * 24 * 60 * 60_000, // 8 days: `throughput` reads a week back, and an hour past it
-            Tier::OneHour => 30 * 24 * 60 * 60_000,    // 30 days
+            Tier::TenSeconds => 60 * 60_000,            // 60 minutes
+            Tier::OneMinute => 24 * 60 * 60_000,        // 24 hours
+            Tier::FiveMinutes => 29 * 24 * 60 * 60_000, // 29 days: `throughput` reads four weeks back, and a day past it
+            Tier::OneHour => 30 * 24 * 60 * 60_000,     // 30 days
         }
     }
 
@@ -104,8 +104,8 @@ impl Tier {
         ms.div_euclid(self.bucket_ms()) * self.bucket_ms()
     }
 
-    /// The finest tier whose retention covers `window` -- the buckets E2 serves a chosen window in. The four retentions are E2's own boundaries (sixty minutes, a day, a
-    /// week and the day `throughput` reads past it, thirty days), so this is a lookup, not an estimate; past the last one there is still only `OneHour` to
+    /// The finest tier whose retention covers `window` -- the buckets E2 serves a chosen window in. The four retentions are E2's own boundaries (sixty minutes, a day, the
+    /// four weeks and a day `throughput` reads, thirty days), so this is a lookup, not an estimate; past the last one there is still only `OneHour` to
     /// serve from.
     pub fn for_window(window: std::time::Duration) -> Tier {
         let window_ms = window.as_millis() as i64;
@@ -3192,11 +3192,11 @@ mod tests {
             Tier::FiveMinutes
         );
         assert_eq!(
-            Tier::for_window(Duration::from_secs(8 * 24 * 60 * 60)),
+            Tier::for_window(Duration::from_secs(29 * 24 * 60 * 60)),
             Tier::FiveMinutes
         );
         assert_eq!(
-            Tier::for_window(Duration::from_secs(8 * 24 * 60 * 60 + 1)),
+            Tier::for_window(Duration::from_secs(29 * 24 * 60 * 60 + 1)),
             Tier::OneHour
         );
         assert_eq!(Tier::for_window(Duration::from_secs(30 * 24 * 60 * 60)), Tier::OneHour);

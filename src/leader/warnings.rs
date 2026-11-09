@@ -1959,7 +1959,7 @@ fn outside_normal<'a>(
                 .collect();
             !running.is_empty() && running.iter().all(|t| t.last_seen_millis_ago as i64 <= stale_after)
         })
-        .filter_map(|r| r.outside().map(|side| (r, side)))
+        .filter_map(|r| r.outside.map(|side| (r, side)))
         .collect()
 }
 
@@ -2042,21 +2042,13 @@ pub fn outside_normal_warnings(
                 Some(r.group.clone()),
                 severity,
                 since_millis,
-                // A band whose top is zero is zero throughout, since no source reads fewer than none.
                 format!(
-                    "source {}: {}normal, {} rows in {} minutes against {} at this time of day{}",
+                    "source {}: {}{}",
                     r.source,
-                    off_by(r, side),
-                    throughput::grouped(r.rows),
-                    throughput::WINDOW.as_secs() / 60,
-                    if r.band.high <= 0.0 {
-                        "none".to_string()
-                    } else {
-                        format!(
-                            "{} to {}",
-                            throughput::grouped(r.band.low),
-                            throughput::grouped(r.band.high)
-                        )
+                    match r.shown() {
+                        Some(shown) => against(shown, side),
+                        // Held while no width judges it (`throughput`).
+                        None => "below normal, with too few rows now to judge at any width".to_string(),
                     },
                     lowered_by
                         .map(|by| format!("; lowered to info by {by}"))
@@ -2067,18 +2059,38 @@ pub fn outside_normal_warnings(
         .collect()
 }
 
+/// What `judged` read against its band, which is outside it on `side`.
+fn against(judged: &throughput::Judged, side: throughput::Outside) -> String {
+    format!(
+        "{}normal, {} rows in {} against {} at this time of day",
+        off_by(judged, side),
+        throughput::grouped(judged.rows),
+        humanize_secs(judged.window.as_secs()),
+        // A band whose top is zero is zero throughout, since no source reads fewer than none.
+        if judged.band.high <= 0.0 {
+            "none".to_string()
+        } else {
+            format!(
+                "{} to {}",
+                throughput::grouped(judged.band.low),
+                throughput::grouped(judged.band.high)
+            )
+        },
+    )
+}
+
 /// How far past its band's nearest edge a reading is, in percent of that edge, and which way, as the warning opens:
 /// a count in the millions is hard to set against another by eye. Only the way where the edge is zero, which any
 /// reading is infinitely above.
-fn off_by(r: &throughput::Reading, side: throughput::Outside) -> String {
+fn off_by(judged: &throughput::Judged, side: throughput::Outside) -> String {
     let (edge, word) = match side {
-        throughput::Outside::Below => (r.band.low, "below"),
-        throughput::Outside::Above => (r.band.high, "above"),
+        throughput::Outside::Below => (judged.band.low, "below"),
+        throughput::Outside::Above => (judged.band.high, "above"),
     };
     if edge <= 0.0 {
         return format!("{word} ");
     }
-    let percent = ((r.rows - edge) / edge * 100.0).abs();
+    let percent = ((judged.rows - edge) / edge * 100.0).abs();
     // Any reading outside is past the edge, which "0%" would deny.
     let percent = if percent < 1.0 {
         "slightly".to_string()
@@ -4184,14 +4196,36 @@ mod tests {
     }
 
     fn reading_of(source: &str, rows: f64) -> throughput::Reading {
+        reading_in(
+            source,
+            rows,
+            throughput::Band {
+                low: 1000.0,
+                high: 5000.0,
+            },
+        )
+    }
+
+    /// `rows` in the last 30 minutes, and in each of the readings before it, against `band`.
+    fn reading_in(source: &str, rows: f64, band: throughput::Band) -> throughput::Reading {
+        let (below, above) = (rows < band.low, rows > band.high);
         throughput::Reading {
             group: "g".to_string(),
             source: source.to_string(),
-            rows,
             ended_ms: NOW,
-            band: throughput::Band {
-                low: 1000.0,
-                high: 5000.0,
+            judged: vec![throughput::Judged {
+                window: throughput::WINDOW,
+                rows,
+                band,
+                below,
+                above,
+            }],
+            outside: if below {
+                Some(throughput::Outside::Below)
+            } else if above {
+                Some(throughput::Outside::Above)
+            } else {
+                None
             },
         }
     }
@@ -4213,12 +4247,9 @@ mod tests {
     #[test]
     fn a_reading_just_past_its_normal_is_not_zero_percent_past_it() {
         let r = reading_of("high", 5010.0);
-        assert_eq!(off_by(&r, throughput::Outside::Above), "slightly above ");
-        let zero = throughput::Reading {
-            band: throughput::Band { low: 0.0, high: 0.0 },
-            ..r
-        };
-        assert_eq!(off_by(&zero, throughput::Outside::Above), "above ");
+        assert_eq!(off_by(&r.judged[0], throughput::Outside::Above), "slightly above ");
+        let zero = reading_in("high", 5010.0, throughput::Band { low: 0.0, high: 0.0 });
+        assert_eq!(off_by(&zero.judged[0], throughput::Outside::Above), "above ");
         let snapshot = [thread_health_in("g", "w1", "t0", 0, vec![rows_metric("high")])];
         assert_eq!(
             outside(&[zero], &snapshot),
