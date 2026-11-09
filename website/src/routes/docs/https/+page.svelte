@@ -1,8 +1,13 @@
 <script lang="ts">
+  import { latest } from '#lib/releases.ts';
   import GuideLayout from '#lib/components/GuideLayout.svelte';
+  // The command names the newest release, so it runs as shown.
+  const version = latest?.version ?? '<version>';
   const sections = [
     { id: 'direct', title: 'Direct HTTPS' },
     { id: 'proxy', title: 'HTTPS reverse proxy' },
+    { id: 'compose-proxy', title: 'Reverse proxy with Docker Compose' },
+    { id: 'proxy-workers', title: 'Workers behind a proxy' },
   ];
 </script>
 
@@ -75,10 +80,76 @@ key = "/etc/smeltr/secrets/sealing.key"</code
     Kubernetes, expose Smeltr with a ClusterIP Service and keep the workload private behind the
     ingress.
   </p>
+  <h2 id="compose-proxy">Reverse proxy with Docker Compose</h2>
+  <p>
+    A <a href="/docs/install-leader/container#compose">Compose install</a> takes a proxy as a second
+    service in the same project. Put your certificate and its key in a <code>certs</code> folder
+    beside
+    <code>compose.yaml</code>, and save this as <code>Caddyfile</code>:
+  </p>
+  <pre><code
+      >smeltr.example.com &#123;
+  tls /certs/smeltr.example.com.crt /certs/smeltr.example.com.key
+  reverse_proxy smeltr:8443
+&#125;</code
+    ></pre>
+  <p>
+    Save this as <code>compose.override.yaml</code>, which Compose reads with
+    <code>compose.yaml</code>. It adds the proxy on port 443, turns the leader's own TLS off, and
+    stops publishing the leader's port, so other machines reach the leader only through the proxy.
+    <code>!reset</code> needs Docker Compose 2.24 or later.
+  </p>
+  <pre><code
+      >services:
+  smeltr:
+    ports: !reset []
+    environment:
+      SMELTR_LEADER_TLS: "0"
+  proxy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./certs:/certs:ro</code
+    ></pre>
+  <p>
+    Keep <code>SMELTR_PUBLIC_ORIGIN</code> in <code>.env</code> at the proxy's address, then apply it:
+  </p>
+  <pre><code>docker compose up -d</code></pre>
+  <p>
+    The worker inside the leader's container reaches the leader directly and keeps running. Other
+    workers now meet the proxy's certificate; see <a href="#proxy-workers">Workers behind a proxy</a
+    >.
+  </p>
+
+  <h2 id="proxy-workers">Workers behind a proxy</h2>
   <p>
     Set workers to use the proxy’s externally reachable HTTPS URL. In this setup, enrollment codes
     tell workers to verify the proxy certificate using the operating system’s trusted certificates.
-    Install your private CA there if needed. Test both browser login and worker enrollment before
-    opening general access.
+    A worker trusts Mozilla’s roots and its host’s own, so a certificate from a public authority
+    needs nothing more.
+  </p>
+  <p>
+    For a certificate from your organization's authority, install that authority where the worker
+    looks. On a host, add it to the operating system's trust store. A container reads the image's
+    trust store instead: mount the authority's certificate and point <code>SSL_CERT_FILE</code> at it.
+    Remove the worker's container and run it again with the same volume, which keeps its identity:
+  </p>
+  <pre><code
+      >docker rm -f smeltr-worker
+docker run -d --name smeltr-worker --restart unless-stopped \
+  --read-only --cap-drop ALL --security-opt no-new-privileges \
+  --env-file worker.env \
+  -v smeltr-worker:/var/lib/smeltr \
+  -v ./example-corp-ca.pem:/etc/smeltr/example-corp-ca.pem:ro \
+  -e SSL_CERT_FILE=/etc/smeltr/example-corp-ca.pem \
+  smeltr:{version}</code
+    ></pre>
+  <p>
+    A worker that does not trust the proxy's certificate goes silent in Status, and its log says the
+    leader presented a certificate this worker does not trust. Test both browser login and worker
+    enrollment before opening general access.
   </p>
 </GuideLayout>
