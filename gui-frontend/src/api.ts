@@ -4115,12 +4115,12 @@ export type FlowResponseDto = {
    * falls behind, so this is the weight of what landed, not of what `rowsOut`
    * says left. */
   bytesOut: FlowSeriesDto[];
-  /** Every source's last half hour against its normal, whatever the window. */
+  /** Every source's reading against its normal, whatever window the response is for. */
   normals: FlowNormalDto[];
 };
 
-/** One source's last half hour against its normal (`throughput::Reading`), in rows per second:
- * its normal holds `low` to `high`. */
+/** One source's reading against its normal at the width it is shown at (`throughput::Reading::shown`), in rows
+ * per second: its normal holds `low` to `high`. */
 export type FlowNormalDto = {
   group: string;
   subjectId: string;
@@ -4384,7 +4384,8 @@ export type NodeReadingDto = {
   /** A source's rows per second that no route claimed, over the same bucket as `rate`. Absent when
    * that bucket is not current. */
   unmatched?: number;
-  /** A source's normal rows per second at this time of day, learned from the last 7 days.
+  /** A source's normal rows per second at this time of day, at the width it is shown at
+   * (`throughput::Reading::shown`).
    * Absent while it has too little history to have one. */
   expected?: { low: number; high: number };
   /** The warning catalog's warnings naming this node, one per condition. */

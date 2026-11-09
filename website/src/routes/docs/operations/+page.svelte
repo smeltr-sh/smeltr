@@ -30,9 +30,9 @@
     </li>
     <li>
       Trace the affected source, pipeline and destination in the map. Inspect throughput and owned
-      partitions before changing thread limits. A source warns when its rows in the last 30 minutes
-      fall outside its expected range, learned from the same time of day over the last week. Set how
-      wide that range is in Admin → System → General.
+      partitions before changing thread limits. A source warns when its rows over the last 5
+      minutes, 30 minutes, 6 hours or 24 hours stay below the range it normally reads at that time
+      of day, learned from its past weeks.
     </li>
     <li>
       Use Logs to narrow by level, worker, worker group, message and time. Preserve timestamps,

@@ -25,9 +25,9 @@
   <section aria-labelledby="volume-heading">
     <h2 id="volume-heading">Too quiet, or too loud.</h2>
     <p>
-      Smeltr learns how many rows each source reads at each time of day, from its last seven days.
-      In the demo, FortiGate's logs reach Smeltr through two syslog relays. When one goes down, the
-      source falls to half of what it should read:
+      Smeltr learns how many rows each source reads at each time of day, from its past weeks. In the
+      demo, FortiGate's logs reach Smeltr through two syslog relays. When one goes down, the source
+      falls to half of what it should read:
     </p>
     <ProductScreenshot
       source="feed-health-volume"
@@ -53,9 +53,7 @@
       alt="The Issues page: Rows below normal, for the fortigate-firewalls source, which read 564,427 rows in 30 minutes where 686,163 to 840,639 is normal at this time of day."
       caption="The Issues page names the source, what it read and what is normal."
     />
-    <p>
-      Smeltr starts warning once a source has three days of history.
-    </p>
+    <p>Smeltr starts warning once a source has three days of history.</p>
   </section>
   <section aria-labelledby="drift-heading">
     <h2 id="drift-heading">A field stops matching.</h2>

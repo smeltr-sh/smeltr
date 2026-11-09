@@ -105,8 +105,9 @@ test('a source that drops below its normal is ranked and warned of, and an edito
     })
     .toBe(3);
 
-  // About 30 rows a second for a week, then about 5 for the last quarter hour.
-  const dropped = Date.now() - 15 * 60_000;
+  // About 30 rows a second for a week, then about 5 for the last half hour: long enough for the leader's four
+  // readings in a row.
+  const dropped = Date.now() - 30 * 60_000;
   history(leader, 'firewall-syslog', (at) => (at >= dropped ? 5 : 30));
   history(leader, 'nginx-access', () => 120);
   history(leader, 'linux-auth', () => 60);
@@ -121,7 +122,7 @@ test('a source that drops below its normal is ranked and warned of, and an edito
   await ranked.scrollIntoViewIfNeeded();
   await shoot(admin, '1-furthest-from-normal');
   await ranked.getByRole('button', { name: 'About Furthest from normal' }).click();
-  await expect(admin.getByText('learned from the last 7 days')).toBeVisible();
+  await expect(admin.getByText('learned from its past weeks')).toBeVisible();
   await shoot(admin, '1b-furthest-from-normal-help');
   await admin.keyboard.press('Escape');
 

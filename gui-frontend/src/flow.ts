@@ -123,7 +123,7 @@ export function currentRate(
   return point ? bucketRate(point, bucketMillis) : null;
 }
 
-/** A source's last half hour against its normal, as the Status page ranks it. `awayPercent` is how
+/** A source's reading against its normal, as the Status page ranks it. `awayPercent` is how
  * far past its normal's nearest edge it is, in percent of that edge: 0 within its normal, and
  * `null` above a normal of none, which any rate is infinitely past. */
 export type RankedSource = FlowNormalDto & { awayPercent: number | null };

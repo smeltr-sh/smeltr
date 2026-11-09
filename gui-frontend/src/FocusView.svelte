@@ -375,7 +375,7 @@
         {#if expected}
           <dt>
             Expected <Help label="Expected"
-              >What this source normally reads at this time of day, from the last 7 days.</Help
+              >What this source normally reads at this time of day, learned from its past weeks.</Help
             >
           </dt>
           <dd class="mono">{perSecondText(expected.low)}–{perSecondText(expected.high)} rows/s</dd>
