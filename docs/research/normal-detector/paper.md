@@ -159,7 +159,7 @@ The margin δ and the wait k are the two knobs, and everything else is fixed. Th
 | Default | 4 | 0.2 | 20 minutes | 0.16 / 0.31 |
 | Quiet | 4 | 0.3 | 20 minutes | 0.08 / 0.10 |
 
-Stops are caught at all three; partial drops and false alarms move together along them. Default names the setting every number not marked otherwise was measured under, and the tables of Sections 4 and 5 give the quiet setting beside it wherever the two differ. The application runs at the quiet setting for sources and senders alike (Section 8): a stop is caught at the same time, the false alarms halve, and the three to five points of degradations it gives up rank last among the operator's needs. Senders are judged at the quiet setting in every case, because a per-sender false-alarm rate is paid once per sender (Section 4.5).
+Stops are caught at all three; partial drops and false alarms move together along them. Default names the setting every number not marked otherwise was measured under, and the real logs (Section 4.2), the senders (4.5) and the frontier (5.2) give the quiet setting beside it. The application runs at the quiet setting for sources and senders alike (Section 8): a stop is caught at the same time, the false alarms halve, and the three to five points of degradations it gives up rank last among the operator's needs. Senders are judged at the quiet setting in every case, because a per-sender false-alarm rate is paid once per sender (Section 4.5).
 
 ### 2.8 The gap
 
