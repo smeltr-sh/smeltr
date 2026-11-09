@@ -53,23 +53,27 @@ The detector is one judge applied at five widths, and Figure 1 says what each wi
 <?claude block diagram?>
 
 ```text
-judge(statistic, history, quantile, margin, wait, tail):
+judge(statistic, history, quantile, margin, wait, tail, unlearn):
     at every bucket t where this width is judged:
-        edge      = quantile(history(t)), moved by margin toward the tail
+        edge      = quantile(history(t)), in the statistic's units, moved by margin toward the tail
         beyond(t) = statistic(t) lies past edge on the tail side
         if beyond holds at t and at the wait - 1 readings before it:
             alarm, until a reading is not beyond
-            the readings the alarm covers, and the ones that waited for it, are not learned
+            unlearn what the alarm covers
 
 for each count width w in {5 min, 30 min, 6 h, 1 day}:
-    judge(statistic = S_w(t) / M_w(t),           # rows in the window over its typical level
-          history   = ratios of the learned windows, 7 days (short) or 28 (long),
-          quantile  = 0.05%, margin = 20%, wait = 4, tail = lower)
+    judge(statistic = S_w(t),                           # rows in the window
+          history   = (S_w + 1) / (M_w + 1) of the learned windows, 7 days (short) or 28 (long),
+          quantile  = 0.05%, back in rows as (M_w(t) + 1) q - 1,
+          margin = 20%, wait = 4, tail = lower,
+          unlearn   = the buckets of every window alarmed or waited on, from the one set L the four share)
 
 the gap:
-    judge(statistic = g(t),                      # empty buckets since the last row
+    judge(statistic = g(t),                             # empty buckets since the last row
           history   = lengths of the completed spells of the past 28 days,
-          quantile  = the maximum, margin = 50%, wait = 1, tail = upper)
+          quantile  = the maximum,
+          margin = 50%, wait = 1, tail = upper,
+          unlearn   = the spell alarmed on)
 
 below normal at t iff some width is alarmed at t
 ```
