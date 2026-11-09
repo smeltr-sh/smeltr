@@ -1,6 +1,9 @@
 <script lang="ts">
   import { image } from '#lib/release.ts';
+  import { latest } from '#lib/releases.ts';
   import GuideLayout from '#lib/components/GuideLayout.svelte';
+  // The command names the newest release, so it runs as shown.
+  const version = latest?.version ?? '<version>';
   const sections = [
     { id: 'before', title: 'Prepare the worker group and host' },
     { id: 'create', title: 'Create an enrollment code' },
@@ -112,11 +115,22 @@ state_dir = "/var/lib/smeltr-worker"</code
     firewall must let senders reach that port.
   </p>
   <p>
-    For a container worker, set <code>SMELTR_CONFIG_FILE</code> to its mounted configuration path
-    and mount <code>/var/lib/smeltr-worker</code> persistently. The container needs no inbound
-    published port unless its group runs a receiver; then publish the receiver's port, for example
-    <code>-p 8088:8088</code>. It must be able to reach the leader and every configured source and
-    destination.
+    To run the worker in a container, save the lines the leader showed when you minted the code, in
+    a file named <code>worker.env</code>. Start the
+    <a href="/docs/install-leader/container#pull">verified image</a> with that file and a volume for its
+    state:
+  </p>
+  <pre><code
+      >docker run -d --name smeltr-worker --restart unless-stopped \
+  --read-only --cap-drop ALL --security-opt no-new-privileges \
+  --env-file worker.env \
+  -v smeltr-worker:/var/lib/smeltr \
+  smeltr:{version}</code
+    ></pre>
+  <p>
+    The container needs no inbound published port unless its group runs a receiver; then publish the
+    receiver's port, for example <code>-p 8088:8088</code>. The container must be able to reach the
+    leader and every configured source and destination.
   </p>
   <p>
     Leave <code>worker.leader.ca</code> unset for normal enrollment. An enrollment code can verify
