@@ -55,7 +55,8 @@ The detector is one judge applied at five widths, and Figure 1 says what each wi
 ```text
 judge(statistic, history, quantile, margin, wait, tail, unlearn):
     at every bucket t where this width is judged:
-        edge      = quantile(history(t)), in the statistic's units, moved by margin toward the tail
+        edge      = quantile(history(t)), in the statistic's units,
+                    moved by margin toward the tail
         beyond(t) = statistic(t) lies past edge on the tail side
         if beyond holds at t and at the wait - 1 readings before it:
             alarm, until a reading is not beyond
@@ -66,7 +67,8 @@ for each count width w in {5 min, 30 min, 6 h, 1 day}:
           history   = (S_w + 1) / (M_w + 1) of the learned windows, 7 days (short) or 28 (long),
           quantile  = 0.05%, back in rows as (M_w(t) + 1) q - 1,
           margin = 20%, wait = 4, tail = lower,
-          unlearn   = the buckets of every window alarmed or waited on, from the one set L the four share)
+          unlearn   = the buckets of every window alarmed or waited on,
+                      from the one set L the four count widths share)
 
 the gap:
     judge(statistic = g(t),                             # empty buckets since the last row
