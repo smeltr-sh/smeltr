@@ -179,9 +179,8 @@ pub async fn login(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
-    if !origin.is_some_and(|sent| auth.origin.accepts(sent)) {
-        return refuse(StatusCode::FORBIDDEN, "this request came from another origin");
+    if let Err(why) = auth.origin.check(&headers) {
+        return refuse(StatusCode::FORBIDDEN, &why);
     }
     let content_type = headers
         .get(header::CONTENT_TYPE)

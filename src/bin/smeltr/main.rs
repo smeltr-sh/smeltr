@@ -1451,14 +1451,16 @@ fn resolve_lifetimes(store: &smeltr::leader::store::Store) -> sessions::Lifetime
 /// something this process can observe. So a deployment that terminates TLS elsewhere has to say, and one that
 /// would otherwise be told to send cookies over plain HTTP across a network is refused rather than guessed at.
 ///
-/// A leader whose bind reaches loopback is also reached at `localhost` and `127.0.0.1` on its port -- the names
-/// its certificate always carries, for the worker inside the process -- and a browser on its machine is as likely
-/// to be pointed at one as the other. It accepts both as aliases when the origin is derived, since nothing here
-/// says which name to expect, and when it is configured and serves its own TLS, since a browser reaching it
-/// directly is its own page under either name. Every configured origin must be https then, as a browser reaching
-/// it directly has no other scheme to use. A configured origin with TLS off accepts exactly what it lists: its
-/// cookie is Secure when the origins are https, so a plain loopback alias would carry nothing. A bind that does
-/// not reach loopback gets no alias, because no browser reaches it there.
+/// A leader whose bind reaches loopback is also reached at `localhost` and `127.0.0.1`, the names its certificate
+/// always carries for the worker inside the process; a browser on its machine is as likely to be pointed at one
+/// as the other. It is reached there on its bind port, and on the port of each configured origin, which is the
+/// port a container publishes the bind port as. Both names are accepted on those ports as aliases when the origin
+/// is derived, because nothing says which name to expect, and when it is configured and the leader serves its own
+/// TLS, because a browser reaching it directly is on the leader's own page under either name. Every configured
+/// origin must be https then, as a browser reaching it directly has no other scheme to use. A configured origin
+/// with TLS off accepts exactly what it lists: its cookie is Secure when the origins are https, so a plain
+/// loopback alias would carry nothing. A bind that does not reach loopback gets no alias, because no browser
+/// reaches it there.
 ///
 /// Pure, for the same reason as above.
 fn resolve_origin(configured: Option<&str>, bind: &str, port: u16, tls: bool) -> Result<gate::Origin, String> {
@@ -1475,11 +1477,20 @@ fn resolve_origin(configured: Option<&str>, bind: &str, port: u16, tls: bool) ->
         // A bind of `::` is reached at `[::1]` too, which is where the worker inside this process calls it
         // (`reached_at`), so its certificate has to carry that name as well.
         let v6_loopback = (ip.is_ipv6() && ip.is_unspecified()).then(|| format!("[{}]", reached_at(bind)));
+        let ports: Vec<u16> = std::iter::once(port)
+            .chain(
+                std::iter::once(&origin.value)
+                    .chain(&origin.aliases)
+                    .map(|o| origin_port(o, if origin.secure { 443 } else { 80 })),
+            )
+            .collect();
         let loopback = smeltr::startup_config::LOOPBACK_NAMES.into_iter().map(str::to_string);
         for host in loopback.chain(v6_loopback) {
-            let alias = origin_url(scheme, &host, port);
-            if !origin.accepts(&alias) {
-                origin.aliases.push(alias);
+            for &port in &ports {
+                let alias = origin_url(scheme, &host, port);
+                if !origin.accepts(&alias) {
+                    origin.aliases.push(alias);
+                }
             }
         }
     }
@@ -1559,6 +1570,12 @@ fn origin_url(scheme: &str, host: &str, port: u16) -> String {
         ("http", 80) | ("https", 443) => format!("{scheme}://{host}"),
         _ => format!("{scheme}://{host}:{port}"),
     }
+}
+
+/// The port in a canonical `scheme://host[:port]` origin. The origin names it only when it is not the scheme's
+/// `default`.
+fn origin_port(origin: &str, default: u16) -> u16 {
+    port_of(origin.split_once("://").map_or(origin, |(_, authority)| authority)).unwrap_or(default)
 }
 
 /// The bare host in a `scheme://host[:port]` origin, discarding both -- what a certificate's SAN list needs,
@@ -3766,6 +3783,31 @@ mod tests {
             !origin.accepts("https://localhost:4000"),
             "a different scheme is a different origin"
         );
+    }
+
+    /// A container publishes the bind port under another port, so a browser on the host reaches loopback at the
+    /// configured origin's port. A loopback port this leader is not reached at must still be refused: a page from
+    /// another local server there would otherwise be taken for the leader's own.
+    #[test]
+    fn a_configured_tls_origin_accepts_loopback_at_its_own_port() {
+        let origin = resolve_origin(
+            Some("https://smeltr.example.com,https://smeltr.internal:9443"),
+            "0.0.0.0",
+            8443,
+            true,
+        )
+        .unwrap();
+        for accepted in [
+            "https://localhost",
+            "https://127.0.0.1",
+            "https://localhost:8443",
+            "https://127.0.0.1:9443",
+        ] {
+            assert!(origin.accepts(accepted), "{accepted}");
+        }
+        for refused in ["https://localhost:3000", "http://localhost", "https://192.168.1.5"] {
+            assert!(!origin.accepts(refused), "{refused}");
+        }
     }
 
     /// A browser never puts a scheme's default port in the `Origin` it sends -- `http://localhost`, not
