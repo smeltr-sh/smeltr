@@ -1481,7 +1481,7 @@ fn resolve_origin(configured: Option<&str>, bind: &str, port: u16, tls: bool) ->
             .chain(
                 std::iter::once(&origin.value)
                     .chain(&origin.aliases)
-                    .map(|o| origin_port(o)),
+                    .map(|o| origin_port(o, if origin.secure { 443 } else { 80 })),
             )
             .collect();
         let loopback = smeltr::startup_config::LOOPBACK_NAMES.into_iter().map(str::to_string);
@@ -1573,10 +1573,9 @@ fn origin_url(scheme: &str, host: &str, port: u16) -> String {
 }
 
 /// The port in a canonical `scheme://host[:port]` origin. The origin names it only when it is not the scheme's
-/// default.
-fn origin_port(origin: &str) -> u16 {
-    let (scheme, authority) = origin.split_once("://").unwrap_or(("https", origin));
-    port_of(authority).unwrap_or(if scheme == "http" { 80 } else { 443 })
+/// `default`.
+fn origin_port(origin: &str, default: u16) -> u16 {
+    port_of(origin.split_once("://").map_or(origin, |(_, authority)| authority)).unwrap_or(default)
 }
 
 /// The bare host in a `scheme://host[:port]` origin, discarding both -- what a certificate's SAN list needs,

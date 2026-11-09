@@ -108,14 +108,23 @@ impl Origin {
         sent == self.value || self.aliases.iter().any(|alias| alias == sent)
     }
 
-    /// Why an `Origin` header naming `sent` is refused. The reason names the origin this leader is reached at, so an
-    /// administrator who reaches it under another name can tell which one to add.
-    pub fn refusal(&self, sent: &str) -> String {
-        let others = if self.aliases.is_empty() { "" } else { ", among others" };
-        format!(
-            "this request came from {sent}, but this leader is reached at {}{others}",
-            self.value
-        )
+    /// Whether a request's `Origin` header names this leader, and the reason it is refused when it does not. The
+    /// reason names the origin this leader is reached at, so an administrator who reaches it under another name can
+    /// tell which one to add.
+    pub fn check(&self, headers: &axum::http::HeaderMap) -> Result<(), String> {
+        match headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
+            // Refused when absent, as when wrong: a client can omit it, and accepting that would accept every such
+            // client. A browser sends it on every unsafe request, which is the only kind checked.
+            None => Err("this request carried no Origin".to_string()),
+            Some(sent) if !self.accepts(sent) => {
+                let others = if self.aliases.is_empty() { "" } else { ", among others" };
+                Err(format!(
+                    "this request came from {sent}, but this leader is reached at {}{others}",
+                    self.value
+                ))
+            }
+            Some(_) => Ok(()),
+        }
     }
 
     /// The session cookie's name.
@@ -593,21 +602,9 @@ pub fn check_browser_protections(
     headers: &axum::http::HeaderMap,
     csrf: &str,
 ) -> Result<(), Box<Response>> {
-    let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
-    match origin {
-        // Absent rather than wrong: some clients omit it, and accepting that would be accepting every one of
-        // them. A browser sends it on every unsafe request, which is the only kind that reaches here.
-        None => {
-            return Err(Box::new(refuse(
-                StatusCode::FORBIDDEN,
-                "this request carried no Origin",
-            )));
-        }
-        Some(sent) if !auth.origin.accepts(sent) => {
-            return Err(Box::new(refuse(StatusCode::FORBIDDEN, &auth.origin.refusal(sent))));
-        }
-        Some(_) => {}
-    }
+    auth.origin
+        .check(headers)
+        .map_err(|why| Box::new(refuse(StatusCode::FORBIDDEN, &why)))?;
 
     let presented = headers.get(CSRF_HEADER).and_then(|v| v.to_str().ok()).unwrap_or("");
     // An unequal length is refused at once, so timing tells whether the presented value is as long as the token,
