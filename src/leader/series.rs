@@ -17,13 +17,13 @@
 //!
 //! **Steps.** [`STEPS`] is the file's ordered list of forward steps, run at open (`steps`).
 //!
-//! **Retention.** [`Tier`] names the four windows E2 asks for: 10s buckets for 60 minutes, 1m for 24 hours, 5m for
-//! 29 days, 1h for 30 days. A bucket is written only at the finest tier ([`write_point`], whether one sample seeds
-//! it or a heartbeat carries hundreds); [`RegistryStore::maintain`] is what moves data outward -- a fine bucket
-//! about to age out of its tier's window is summed (counter) or maxed (gauge) into the coarse bucket that covers
-//! it, then deleted, so it is counted exactly once on its way through. The last tier has nowhere to roll to and
-//! only expires. A bucket nothing landed in is a bucket with no row: there is nothing to promote and nothing to
-//! delete, so an outage reads as absent rather than as a zero.
+//! **Retention.** [`Tier`] names the four windows E2 asks for: 10s buckets for 60 minutes, 1m for 24 hours, 5m for 29
+//! days and an hour, 1h for 30 days. A bucket is written only at the finest tier ([`write_point`], whether one sample
+//! seeds it or a heartbeat carries hundreds); [`RegistryStore::maintain`] is what moves data outward -- a fine bucket
+//! about to age out of its tier's window is summed (counter) or maxed (gauge) into the coarse bucket that covers it,
+//! then deleted, so it is counted exactly once on its way through. The last tier has nowhere to roll to and only
+//! expires. A bucket nothing landed in is a bucket with no row: there is nothing to promote and nothing to delete, so
+//! an outage reads as absent rather than as a zero.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -80,10 +80,11 @@ impl Tier {
     /// How long a bucket stays in this tier before [`RegistryStore::maintain`] moves it on.
     fn retention_ms(self) -> i64 {
         match self {
-            Tier::TenSeconds => 60 * 60_000,            // 60 minutes
-            Tier::OneMinute => 24 * 60 * 60_000,        // 24 hours
-            Tier::FiveMinutes => 29 * 24 * 60 * 60_000, // 29 days: `throughput` reads four weeks back, and a day past it
-            Tier::OneHour => 30 * 24 * 60 * 60_000,     // 30 days
+            Tier::TenSeconds => 60 * 60_000,     // 60 minutes
+            Tier::OneMinute => 24 * 60 * 60_000, // 24 hours
+            // 29 days and an hour: `throughput` learns as of an hour's start, from four weeks and a day before it.
+            Tier::FiveMinutes => (29 * 24 + 1) * 60 * 60_000,
+            Tier::OneHour => 30 * 24 * 60 * 60_000, // 30 days
         }
     }
 
@@ -105,7 +106,7 @@ impl Tier {
     }
 
     /// The finest tier whose retention covers `window` -- the buckets E2 serves a chosen window in. The four retentions are E2's own boundaries (sixty minutes, a day, the
-    /// four weeks and a day `throughput` reads, thirty days), so this is a lookup, not an estimate; past the last one there is still only `OneHour` to
+    /// four weeks, a day and an hour `throughput` reads, thirty days), so this is a lookup, not an estimate; past the last one there is still only `OneHour` to
     /// serve from.
     pub fn for_window(window: std::time::Duration) -> Tier {
         let window_ms = window.as_millis() as i64;
@@ -3173,11 +3174,11 @@ mod tests {
             Tier::FiveMinutes
         );
         assert_eq!(
-            Tier::for_window(Duration::from_secs(29 * 24 * 60 * 60)),
+            Tier::for_window(Duration::from_secs((29 * 24 + 1) * 60 * 60)),
             Tier::FiveMinutes
         );
         assert_eq!(
-            Tier::for_window(Duration::from_secs(29 * 24 * 60 * 60 + 1)),
+            Tier::for_window(Duration::from_secs((29 * 24 + 1) * 60 * 60 + 1)),
             Tier::OneHour
         );
         assert_eq!(Tier::for_window(Duration::from_secs(30 * 24 * 60 * 60)), Tier::OneHour);
