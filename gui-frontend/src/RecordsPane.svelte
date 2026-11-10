@@ -273,7 +273,7 @@
           <div onclick={() => (savingOpen = false)} role="presentation">
             <button type="button" class="pick" onclick={saveinput.onsave}
               >Save input as sample <span class="dim"
-                >Your capture, {count(saveinput.records, 'record')} as captured</span
+                >Your {count(saveinput.records, 'record')}</span
               ></button
             >
             <Button

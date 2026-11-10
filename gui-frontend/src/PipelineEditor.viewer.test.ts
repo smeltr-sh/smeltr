@@ -134,9 +134,9 @@ describe('a viewer in the pipeline editor', () => {
       [...target.querySelectorAll('button')].find((b) => b.textContent?.includes(name));
     await vi.waitFor(() => expect(button('Sample')).toBeDefined());
     button('Sample')!.click();
-    await vi.waitFor(() => expect(button('Your capture')).toBeDefined());
-    expect(button('Your capture')!.textContent).toContain('2 records');
-    button('Your capture')!.click();
+    await vi.waitFor(() => expect(button('Your records')).toBeDefined());
+    expect(button('Your records')!.textContent).toContain('2 records');
+    button('Your records')!.click();
     await vi.waitFor(() => expect(previews.some((p) => p.capture === 'c1')).toBe(true));
     const used = previews.find((p) => p.capture === 'c1')!;
     expect(used.sample).toBeNull();

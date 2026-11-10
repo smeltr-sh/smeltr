@@ -1,8 +1,8 @@
 <!--
-  Adding a sample: the way it is made, then that way's form. A paste and an uploaded file end as a
-  capture does: Use these records leaves them unsaved at the leader for whoever wrote them
-  (`holdPaste`) and hands them to the page that opened this (`onuse`); Save sample makes them a sample on
-  the branch. A capture is `CaptureFlow`'s, at a source or a destination: a worker already reading a
+  Adding a sample: the way it is made, then that way's form. A paste or an uploaded file ends one of
+  two ways: Use these records keeps them unsaved at the leader for whoever wrote them (`holdPaste`)
+  and hands them to the page that opened this (`onuse`); Save sample makes them a sample on the
+  branch. A capture is `CaptureFlow`'s, at a source or a destination: a worker already reading a
   source taps what is flowing, one that is not opens it and never commits.
 -->
 <script lang="ts" module>
@@ -51,7 +51,8 @@
     start?: SampleWay;
     /** What a capture starts on (`CaptureFlow`). */
     target?: ComponentProps<typeof CaptureFlow>['target'];
-    /** What Use these records does with a capture or a paste, held at the leader. Without it, a paste is only saved. */
+    /** What to do with a capture or a paste the leader keeps for the person after Use these records. Without it, a
+     * paste is only saved. */
     onuse?: ComponentProps<typeof CaptureFlow>['onuse'];
     /** A pipeline's output rows, as a sample holds them: what the dialog saves when it opens at `output`, the
      * `SampleWay` for a pipeline's output. */
@@ -178,14 +179,14 @@
     });
   }
 
-  /** Holds what was pasted or uploaded, unsaved, and hands it to the page. */
+  /** Keeps what was pasted or uploaded, unsaved, and hands it to the page. */
   async function use() {
     if (!onuse || records.length === 0) return;
     error = '';
     await busy.run(async () => {
       const res = await holdPaste(records, source.trim() || undefined);
       if (res.ok && res.capture) error = onuse(res.capture) ?? '';
-      else error = errorText(res.errors) || 'could not hold these records';
+      else error = errorText(res.errors) || 'could not use these records';
     });
   }
   let usable = $derived(onuse && (way === 'paste' || way === 'upload'));

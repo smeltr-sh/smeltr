@@ -1250,7 +1250,7 @@
       steps = stepsFromDto(p.steps ?? []);
       proposed = '';
       if (p.structured) {
-        proposed = 'The captured records arrive as fields, so they need no parser.';
+        proposed = 'These records arrive as fields, so they need no parser.';
         return;
       }
       if (!steps.length) {

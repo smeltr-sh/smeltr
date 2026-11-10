@@ -67,7 +67,7 @@ export class SampleChoices {
 }
 
 /** What `SampleMenu` calls the held capture. */
-export const HELD_NAME = 'Your capture';
+export const HELD_NAME = 'Your records';
 
 /** The records a choice holds: the held capture's, or the saved sample's. */
 export async function recordsOf(choice: string): Promise<SampleRecordDto[]> {

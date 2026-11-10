@@ -115,7 +115,8 @@ pub struct CaptureStatus {
     /// Whether the byte ceiling dropped records a worker sent. A sample saved from it holds only what the ceiling
     /// kept, and the sample file carries no mark of the loss.
     pub truncated: bool,
-    /// Records a person pasted rather than captured: kept as written, with no columns and no `__capture` fields.
+    /// Records a person pasted rather than captured: kept as one column that holds the whole record; a preview or a
+    /// save reads them back as the records written, with no columns of its own and no `__capture` fields.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub pasted: bool,
     /// What Run found out about an SQL source's query: its columns, and what the database plans for a poll.
@@ -201,8 +202,8 @@ struct Session {
 }
 
 /// Records a person pasted, held as a capture is so that every preview runs over them and they save as one does. They
-/// are kept as written, under the one column that holds a whole record, and carry no `__capture` fields: they were
-/// read from nowhere.
+/// are kept as one column that holds the whole record; a preview or a save reads them back as the records written, with
+/// no columns of its own and no `__capture` fields: they were read from nowhere.
 struct Pasted {
     /// The source they stand for, where the person named one.
     source: Option<String>,
@@ -548,7 +549,8 @@ impl Captures {
     }
 
     /// Hold `records` that `owner` pasted, standing for `source` where they name one, as a finished capture of `group`
-    /// under `id`. It replaces any capture they held. Refused past what a sample holds or what one capture may hold.
+    /// under `id`. It replaces any capture they held. Refused when they exceed the limit for a sample or for
+    /// one capture.
     pub fn hold(
         &self,
         id: String,
@@ -572,7 +574,7 @@ impl Captures {
         let bytes = batch.size();
         if bytes > SESSION_BYTES_CEILING {
             return Err(format!(
-                "these records take {bytes} bytes, and the leader holds at most {SESSION_BYTES_CEILING} for one person"
+                "these records are {bytes} bytes, and the leader keeps at most {SESSION_BYTES_CEILING} for one person"
             ));
         }
         let rows = batch.rows.len();

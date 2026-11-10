@@ -336,7 +336,7 @@ fn rand_session() -> u64 {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PasteRequest {
-    /// The area whose previews run over the records, which the caller must view.
+    /// The area whose previews run over the records; the caller must be able to view it.
     pub group: String,
     /// The source the records stand for, where the caller names one.
     #[serde(default)]
@@ -403,8 +403,8 @@ pub fn held_for_preview(
     session: &str,
 ) -> Result<config_file::SampleDto, String> {
     let gone = || {
-        "this capture is no longer held: a newer one replaced it, or it went unused too long, or it was dropped to make \
-         room. Capture again"
+        "these records are no longer kept: newer ones replaced them, or they went unused too long, or they were \
+         dropped to make room. Capture or paste them again"
             .to_string()
     };
     if captures.owner(session).as_deref() != Some(actor.id.as_str()) {
@@ -950,8 +950,8 @@ mod tests {
         assert!(held_for_preview(&captures, &own, &person("alice"), "c1").is_ok());
     }
 
-    /// A paste is held in place of its owner's capture and runs as written: no columns, no `__capture` fields, and
-    /// the source it was given.
+    /// A paste is held in place of its owner's capture and reads back as written: no columns of its own, no
+    /// `__capture` fields, and the source it was given.
     #[test]
     fn a_paste_replaces_its_owner_s_capture_and_runs_as_written() {
         let (captures, own, _) = payments_capture();

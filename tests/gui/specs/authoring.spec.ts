@@ -217,10 +217,10 @@ test('A1: a viewer captures a deployed source from the map and downloads it', as
   // A capture not yet saved is a sample all the same, and is listed before the saved ones.
   await expect(
     viewer.getByRole('listbox', { name: 'Samples' }).getByRole('option').first(),
-  ).toContainText(/Your capture\s*3 records · own-metrics · not saved/);
+  ).toContainText(/Your records\s*3 records · own-metrics · not saved/);
   // Searching by the source it was captured from finds it, as it finds a saved sample.
   await viewer.getByRole('searchbox', { name: 'Find a sample' }).fill('own-metrics');
-  await expect(viewer.getByRole('option', { name: /Your capture/ })).toBeVisible();
+  await expect(viewer.getByRole('option', { name: /Your records/ })).toBeVisible();
 
   // Routes asks for the secrets a form may name, which a viewer may not read; they are left out, unsaid.
   const asked = viewer.waitForResponse((r) => r.url().includes('/api/secrets'));
@@ -231,7 +231,7 @@ test('A1: a viewer captures a deployed source from the map and downloads it', as
   // Route a sample offers it too, first, and routes its records. No route takes own-metrics.
   await goto(viewer, leader, '#/build/routes/sample');
   await expect(viewer.getByRole('button', { name: 'Choose a sample' })).toContainText(
-    'Your capture',
+    'Your records',
   );
   await viewer.getByRole('button', { name: 'Run' }).click();
   await expect(viewer.locator('.tile', { hasText: 'unrouted' })).toContainText('3');
@@ -302,7 +302,7 @@ test('A1: a viewer runs a pipeline over a capture without saving it', async ({
   await expect(viewer.getByRole('dialog')).toHaveCount(0);
 
   const chip = viewer.getByRole('button', { name: 'Choose a sample' });
-  await expect(chip).toContainText('Your capture');
+  await expect(chip).toContainText('Your records');
   await expect(chip).toContainText('3 records', { timeout: 30_000 });
   await expect(viewer.getByRole('button', { name: 'Lock this as a test' })).toHaveCount(0);
 
@@ -310,7 +310,7 @@ test('A1: a viewer runs a pipeline over a capture without saving it', async ({
   expect((await api.get('/api/areas/shared/samples')).samples).toEqual([]);
   await viewer.reload();
   await viewer.getByRole('button', { name: 'Choose a sample' }).click();
-  await expect(viewer.getByRole('option', { name: /Your capture/ })).toContainText('3 records');
+  await expect(viewer.getByRole('option', { name: /Your records/ })).toContainText('3 records');
 });
 
 // A1, an editor: the capture that could be saved as a sample is run over unsaved instead, and nothing is committed.
@@ -362,7 +362,7 @@ test('A1: an editor runs a pipeline over a capture without saving it, then saves
   await expect(admin.getByRole('dialog')).toHaveCount(0);
 
   const chip = admin.getByRole('button', { name: 'Choose a sample' });
-  await expect(chip).toContainText('Your capture');
+  await expect(chip).toContainText('Your records');
   await expect(chip).toContainText('3 records', { timeout: 30_000 });
   expect((await api.get(`/api/areas/shared/samples${ON}`)).samples).toEqual([]);
 
@@ -688,7 +688,7 @@ for (const [what, proposal, note] of [
   [
     'arrive as fields',
     { read: 0, of: 0, structured: true },
-    'The captured records arrive as fields, so they need no parser.',
+    'These records arrive as fields, so they need no parser.',
   ],
   [
     'are in no format it reads',
@@ -1538,13 +1538,13 @@ test('A4: pasted records are held unsaved and route from the source chosen for t
   await dialog.getByLabel(/^Records/).fill('{"status":503}\n');
   await dialog.getByRole('button', { name: 'Use these records' }).click();
   await expect(dialog).toHaveCount(0);
-  await expect(chip).toContainText('Your capture');
+  await expect(chip).toContainText('Your records');
   await expect(chip).toContainText('1 record');
   expect((await api.get(`/api/areas/shared/samples${ON}`)).samples).toHaveLength(1);
 
   await goto(admin, leader, '#/build/routes/sample');
   await expect(admin.getByRole('button', { name: 'Choose a sample' })).toContainText(
-    'Your capture',
+    'Your records',
   );
   await expect(admin.getByRole('button', { name: 'Run' })).toBeDisabled();
   await admin.getByLabel('Source it stands for').selectOption('storefront');
@@ -1554,7 +1554,7 @@ test('A4: pasted records are held unsaved and route from the source chosen for t
 
   await goto(admin, leader, '#/build/pipelines/web');
   await chip.click();
-  await admin.getByRole('option', { name: /^Your capture/ }).click();
+  await admin.getByRole('option', { name: /^Your records/ }).click();
   await admin.getByRole('button', { name: 'Save as sample', exact: true }).click();
   await admin.getByRole('button', { name: /^Save input as sample/ }).click();
   const saving = admin.getByRole('dialog');
