@@ -1,5 +1,5 @@
 <!--
-  Build / <pipeline> / lock a test, or Build / routes / route preview / lock
+  Build / <pipeline> / lock a test, or Build / routes / route a sample / lock
   a test: run once -- the pipeline preview, or (when `pipeline` is absent)
   the route preview -- over a saved sample and fix what it produced as the
   answer. The pipeline (or nothing) and the sample are given, not chosen

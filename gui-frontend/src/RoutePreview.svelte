@@ -16,6 +16,7 @@
   import { unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import RouteDiagram from './RouteDiagram.svelte';
+  import { routeCounts } from './routeCounts';
   import SampleMenu from './SampleMenu.svelte';
   import { editable } from './access';
   import { routable, recordsOf, SampleChoices } from './sampleChoices.svelte';
@@ -44,8 +45,9 @@
   let offered = $derived(routable(choices));
   let selected = $state('');
   let result = $state<RoutePreviewResult | null>(null);
-  /** The sample `result` ran over. */
+  /** The sample `result` ran over, and the bundle it ran. */
   let ran = $state('');
+  let ranOn = $state.raw<FileConfigDto | null>(null);
   let running = $state(false);
   let error = $state('');
   // Arriving on the tab runs the first choice, once the samples and the bundle are read: nothing is delivered and no
@@ -66,7 +68,9 @@
         ? 'Save your route changes first.'
         : !result || ran !== selected
           ? 'Choose a sample and run it without errors first.'
-          : '',
+          : ranOn !== config
+            ? 'Run again: the routes changed since.'
+            : '',
   );
 
   function goLockTest() {
@@ -78,14 +82,15 @@
     running = true;
     error = '';
     try {
-      const sample = selected;
-      const res = await routePreview(JSON.stringify(config), sample);
+      const [sample, bundle] = [selected, config];
+      const res = await routePreview(JSON.stringify(bundle), sample);
       if (!res.ok) {
         error = errorText(res.errors);
         result = null;
       } else {
         result = res;
         ran = sample;
+        ranOn = bundle;
       }
     } catch (e) {
       error = unreported(e);
@@ -109,31 +114,10 @@
     );
   });
 
-  /** Every destination the sample would reach, with how many documents each would receive. */
-  let reached = $derived.by(() => {
-    if (!result) return [];
-    const by = new Map<number, number>();
-    for (const row of result.rows)
-      for (const t of row.through)
-        for (const doc of t.documents)
-          for (const d of doc.destinations) by.set(d, (by.get(d) ?? 0) + 1);
-    return [...by.entries()]
-      .map(([id, documents]) => ({
-        id,
-        name: result?.destination_names[id] ?? `destination ${id}`,
-        documents,
-      }))
-      .sort((a, b) => b.documents - a.documents);
-  });
-
-  let unrouted = $derived(result ? result.rows.filter((r) => r.matched.length === 0).length : 0);
-  let dropped = $derived(
-    result
-      ? result.rows.filter(
-          (r) => r.matched.length > 0 && !r.through.some((t) => t.documents.length > 0),
-        ).length
-      : 0,
-  );
+  let counts = $derived(result && routeCounts(result));
+  let reached = $derived(counts?.reached ?? []);
+  let unrouted = $derived(counts?.unrouted ?? 0);
+  let dropped = $derived(counts?.dropped.length ?? 0);
 
   /** What a route that sent nothing did with the record, by its answer. A source form goes to a
    * destination once per record, so a later route's deliver answer may find it already sent. */
@@ -336,7 +320,9 @@
 
   {#if result}
     {#each result.warnings ?? [] as w (w)}<p class="warn">{w}</p>{/each}
-    {#if result.rows.length > 0}<RouteDiagram {result} sampleName={choices.name(ran)} />{/if}
+    {#if counts && result.rows.length > 0}
+      <RouteDiagram {result} {counts} sampleName={choices.name(ran)} />
+    {/if}
     <div class="tiles">
       {#each reached as d (d.id)}
         <button

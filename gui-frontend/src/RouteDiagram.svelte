@@ -5,13 +5,17 @@
 <script lang="ts">
   import { count } from './time';
   import type { RoutePreviewResult } from './api';
+  import type { RouteCounts } from './routeCounts';
 
   let {
     result,
+    counts,
     sampleName,
   }: {
     /** A run with at least one record. */
     result: RoutePreviewResult;
+    /** `result`'s counts, as the tiles beside it show them. */
+    counts: RouteCounts;
     sampleName: string;
   } = $props();
 
@@ -42,15 +46,15 @@
     warn?: boolean;
   };
 
-  /** Records that matched route `i`, and how many of those the pipeline went
-   * on to drop (matched but produced nothing). */
+  /** Records that matched route `i`, and how many of those were sent nowhere. */
   let routeStats = $derived.by(() => {
+    const nowhere = new Set(counts.dropped);
     const by = new Map<number, { matched: number; dropped: number }>();
     for (const row of result.rows) {
       for (const i of row.matched) {
         const s = by.get(i) ?? { matched: 0, dropped: 0 };
         s.matched++;
-        if (!row.through.some((t) => t.route === i && t.documents.length > 0)) s.dropped++;
+        if (nowhere.has(row)) s.dropped++;
         by.set(i, s);
       }
     }
@@ -73,8 +77,6 @@
     return by;
   });
 
-  let unroutedCount = $derived(result.rows.filter((r) => r.matched.length === 0).length);
-
   let pipelineNodes = $derived(
     [...routeStats.entries()]
       .sort((a, b) => a[0] - b[0])
@@ -90,55 +92,39 @@
   );
 
   let unroutedNode = $derived<(DiagramNode & { route?: number }) | null>(
-    unroutedCount > 0
+    counts.unrouted > 0
       ? {
           key: 'unrouted',
           x: COL2_X,
           y: PAD + pipelineNodes.length * ROW_H,
           label: 'unrouted',
-          sub: count(unroutedCount, 'record'),
+          sub: count(counts.unrouted, 'record'),
           kind: 'no route matched',
           warn: true,
         }
       : null,
   );
 
-  let destTotals = $derived.by(() => {
-    const by = new Map<number, number>();
-    for (const row of result.rows) {
-      for (const t of row.through) {
-        for (const doc of t.documents) {
-          for (const d of doc.destinations) by.set(d, (by.get(d) ?? 0) + 1);
-        }
-      }
-    }
-    return by;
-  });
-
   let destNodes = $derived(
-    [...destTotals.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .map(([dest, n], i) => ({
-        key: `dest-${dest}`,
-        dest,
-        x: COL3_X,
-        y: PAD + i * ROW_H,
-        label: result.destination_names[dest] ?? `destination ${dest}`,
-        sub: `${n} would be sent`,
-        kind: 'destination',
-      })),
+    counts.reached.map((d, i) => ({
+      key: `dest-${d.id}`,
+      dest: d.id,
+      x: COL3_X,
+      y: PAD + i * ROW_H,
+      label: d.name,
+      sub: `${d.documents} would be sent`,
+      kind: 'destination',
+    })),
   );
 
-  let droppedTotal = $derived([...routeStats.values()].reduce((sum, s) => sum + s.dropped, 0));
-
   let droppedNode = $derived<DiagramNode | null>(
-    droppedTotal > 0
+    counts.dropped.length > 0
       ? {
           key: 'dropped',
           x: COL3_X,
           y: PAD + destNodes.length * ROW_H,
           label: 'dropped by the pipeline',
-          sub: count(droppedTotal, 'record'),
+          sub: count(counts.dropped.length, 'record'),
           kind: '',
           warn: true,
         }
@@ -195,7 +181,7 @@
       es.push({
         key: 's-unrouted',
         d: curve(sampleNode, unroutedNode),
-        width: widthFor(unroutedCount),
+        width: widthFor(counts.unrouted),
         error: true,
       });
     }

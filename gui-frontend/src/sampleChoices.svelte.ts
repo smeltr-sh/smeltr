@@ -21,8 +21,6 @@ export class SampleChoices {
   loaded = $state(false);
   /** The finished capture the leader holds for the person signed in. */
   held: CaptureStatus | null = $state(null);
-  /** Settles once the first read has, whether or not it failed. */
-  readonly ready: Promise<void>;
   #heldRead: Promise<unknown>;
 
   /** Reads the samples and the held capture. A failed read of the samples goes to `failed`; a held capture that
@@ -31,7 +29,7 @@ export class SampleChoices {
     this.#heldRead = myCapture()
       .then((res) => (this.held = res.capture?.done ? res.capture : null))
       .catch(() => {});
-    this.ready = this.load().catch(failed);
+    this.load().catch(failed);
   }
 
   /** Reads the samples again, as after one is saved. */
