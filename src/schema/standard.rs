@@ -47,11 +47,19 @@ static OCSF_RELEASES: LazyLock<Vec<OcsfRelease>> = LazyLock::new(|| {
                 .as_str()
                 .expect("the compiled OCSF names its version")
                 .to_string();
+            let profile = |name: &str| OcsfProfile {
+                name: name.to_string(),
+                caption: ocsf["profiles"][name]["caption"].as_str().unwrap_or(name).to_string(),
+            };
             let mut classes: Vec<OcsfClass> = (ocsf["classes"].as_object().into_iter().flatten())
                 .map(|(name, c)| OcsfClass {
                     name: name.clone(),
                     caption: c["caption"].as_str().unwrap_or(name).to_string(),
                     category: c["category_name"].as_str().unwrap_or_default().to_string(),
+                    profiles: (c["profiles"].as_array().into_iter().flatten())
+                        .filter_map(Value::as_str)
+                        .map(profile)
+                        .collect(),
                 })
                 .collect();
             classes.sort_by(|a, b| a.name.cmp(&b.name));
@@ -81,6 +89,16 @@ pub struct OcsfClass {
     pub caption: String,
     /// OCSF's category, such as "Identity & Access Management"; empty for a class in none.
     pub category: String,
+    /// The profiles the class takes, any of which a schema may be read with.
+    pub profiles: Vec<OcsfProfile>,
+}
+
+/// One OCSF profile a class takes.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct OcsfProfile {
+    /// What `ocsf::Cut::profiles` names it by.
+    pub name: String,
+    pub caption: String,
 }
 
 #[cfg(test)]
@@ -122,6 +140,36 @@ mod tests {
             }
         }
         assert!(ocsf("0.1.0").is_none());
+    }
+
+    /// The profiles' attributes are left out unless taken, so `cloud` and `osint`, which their profiles require, are
+    /// not required of every class.
+    #[test]
+    fn a_class_takes_its_profiles_only_when_asked() {
+        for release in ocsf_releases() {
+            let version = &release.version;
+            let ocsf = ocsf(version).unwrap();
+            let class = release.classes.iter().find(|c| c.name == "network_activity").unwrap();
+            let host = class.profiles.iter().find(|p| p.name == "host").unwrap();
+            assert_eq!(host.caption, "Host", "{version}");
+            let read = |profiles: &[&str]| {
+                let cut = crate::schema::ocsf::Cut {
+                    profiles: profiles.iter().map(|p| p.to_string()).collect(),
+                    ..Default::default()
+                };
+                let fields = crate::schema::ocsf::read(&ocsf, &class.name, &cut).unwrap();
+                fields.into_iter().map(|f| f.field).collect::<Vec<_>>()
+            };
+            let bare = read(&[]);
+            for left in ["cloud", "osint", "device", "metadata.profiles"] {
+                assert!(!bare.iter().any(|f| f == left), "{version} {left}");
+            }
+            assert!(bare.iter().any(|f| f == "src_endpoint.ip"), "{version}");
+            let with_host = read(&["host"]);
+            assert!(with_host.iter().any(|f| f == "device"), "{version}");
+            assert!(with_host.iter().any(|f| f == "metadata.profiles"), "{version}");
+            assert!(!with_host.iter().any(|f| f == "cloud"), "{version}");
+        }
     }
 
     /// The refresh writes a file for each release; each must be carried, newest first, since a read that names none takes the first.
