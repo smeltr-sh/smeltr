@@ -8785,8 +8785,8 @@ mod tests {
         assert_eq!(listening[0].address.port(), 18088);
     }
 
-    /// A deployment of a metrics source routed by `routes` to a Kafka destination nobody answers for, three seconds
-    /// after it started: long enough for the source to hand over a batch.
+    /// Starts a deployment of a metrics source, routed by `routes`, with a Kafka destination nobody answers for, and
+    /// returns it three seconds later: long enough for the source to hand over a batch.
     fn started_unanswered(name: &str, routes: &str) -> Deployment {
         let dir = repo(name);
         write(&dir, "groups/west/system.json", r#"{"version":1}"#);
