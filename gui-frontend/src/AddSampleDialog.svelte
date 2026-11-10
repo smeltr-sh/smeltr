@@ -30,6 +30,7 @@
     holdPaste,
     putSample,
     recordsFromText,
+    sourceIdsInScope,
     saveCapture,
     type CaptureStatus,
     type SampleDto,
@@ -102,6 +103,8 @@
   // record per non-empty line.
   let name = $state('');
   let source = $state('');
+  /** The sources the sample may stand for. */
+  let sources = $state<string[]>([]);
   let text = $state('');
   /** The records `output` returned, for the `output` `SampleWay`. */
   let taken = $state<Pick<SampleDto, 'columns' | 'records'> | null>(null);
@@ -119,6 +122,7 @@
       name = '';
       source = '';
       text = '';
+      sources = [];
       taken = null;
       error = '';
       loading = false;
@@ -144,6 +148,14 @@
     // Records pasted are not an upload's, nor the reverse.
     if (next !== way) text = '';
     way = next;
+    if ((next === 'paste' || next === 'upload') && sources.length === 0) {
+      const at = opening;
+      sourceIdsInScope().then(
+        (ids) => at === opening && (sources = ids),
+        // If the list cannot be read, it offers no source, and the records are used or saved standing for none.
+        () => {},
+      );
+    }
   }
 
   async function pickFile(e: Event) {
@@ -163,7 +175,7 @@
       const res = await putSample({
         id,
         name: name.trim(),
-        source: source.trim() || undefined,
+        source: source || undefined,
         columns: taken?.columns,
         records,
       });
@@ -189,7 +201,7 @@
     if (!onuse || NOT_IN_DEMO || records.length === 0) return;
     error = '';
     await busy.run(async () => {
-      const res = await holdPaste(records, source.trim() || undefined);
+      const res = await holdPaste(records, source || undefined);
       if (res.ok && res.capture) error = onuse(res.capture) ?? '';
       else error = errorText(res.errors) || 'could not use these records';
     });
@@ -232,7 +244,10 @@
         label="Source it stands for"
         help="A route selects on a source, so a sample with none runs through a pipeline but not through a route."
       >
-        <input bind:value={source} placeholder="orders-west" class="mono" />
+        <select bind:value={source} class="mono">
+          <option value=""></option>
+          {#each sources as s (s)}<option value={s}>{s}</option>{/each}
+        </select>
       </Field>
       {#if way === 'paste'}
         <Field required label="Records">
@@ -301,6 +316,7 @@
     gap: 0.7rem;
   }
   input,
+  select,
   textarea {
     width: 100%;
     box-sizing: border-box;

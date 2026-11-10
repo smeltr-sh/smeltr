@@ -4,11 +4,10 @@
   `/api/areas/:area/preview/pipeline`, and saved with `PUT /api/areas/:area/pipelines/:id`, which the
   backend validates against the whole bundle.
 
-  The records come from a saved sample, so what a preview ran over has a
-  name and is in the branch's history; the sample menu also saves a
-  capture or pasted records as one. Whoever may not save one runs over the
-  capture the leader holds for them instead, which nothing keeps. The editor opens on the sample named in
-  the URL, else on the one this pipeline last ran over in this browser.
+  The records come from a saved sample, which has a name and is in the branch's history, or from the
+  records the leader holds for the person, captured or pasted and not yet saved; the sample menu can
+  save those as a sample. The editor opens on the sample named in the URL, else on the records the person
+  holds, else on the sample this pipeline last ran over in this browser.
 -->
 <script lang="ts">
   import Button, { BUSY, SAVE_FIRST } from './Button.svelte';
@@ -732,14 +731,14 @@
     openedFor = opened;
     // `sample` came in from the URL (a sample row's "Run in a pipeline"
     // link, or a pipeline opened from the list while it held one). With
-    // none, or a stale one not on this branch, the editor opens on the
-    // last one this pipeline ran over, else on none: which records to run is
+    // no sample named, or one that is not on this branch, the editor opens
+    // on the records the person holds, as Route a sample does, else on the last
+    // sample this pipeline ran over, else on none: which records to run is
     // the author's to choose.
     untrack(() => {
       lastUsed = readLastUsed();
-      const opening = [sample, lastUsed].find(
-        (id) => id && choices.samples.some((s) => s.id === id),
-      );
+      const saved = (id: string) => (choices.samples.some((s) => s.id === id) ? id : '');
+      const opening = saved(sample ?? '') || choices.menuHeld?.choice || saved(lastUsed);
       if (opening || selectedSample) void chooseSample(opening ?? '');
     });
   });
