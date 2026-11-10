@@ -2058,9 +2058,12 @@ const editSample: Move = {
       id = samples.find((s: { name: string }) => s.name === name)?.id;
       if (id) break;
     }
-    const read = async () =>
-      (await api.get(`/api/areas/${scope}/samples/${encodeURIComponent(id!)}?${on}`)).sample
+    const read = async () => {
+      // Read where the GUI edits now: saving the edit on main names a branch.
+      const on = `branch=${encodeURIComponent(world.branch ?? 'main')}`;
+      return (await api.get(`/api/areas/${scope}/samples/${encodeURIComponent(id!)}?${on}`)).sample
         .records as Record<string, unknown>[];
+    };
     // Each record by the number the editor gives it, which it keeps while others go.
     let draft = (await read()).map((record, i) => ({ n: i + 1, record }));
     // The editor reads pasted lines as text wherever a record has `_raw`, whatever other fields it shows.
