@@ -194,7 +194,8 @@
   let canSave = $derived(name.trim() !== '' && kept > 0);
 
   function submit() {
-    if (!busy.on && way && canSave) void save();
+    if (!busy.on && usable) void use();
+    else if (!busy.on && way && canSave) void save();
   }
 </script>
 
@@ -215,7 +216,8 @@
           <input type="file" accept=".json,.ndjson,.jsonl,.txt,.log" onchange={pickFile} />
         </Field>
       {/if}
-      <Field required label="Name">
+      <!-- Only Save sample needs a name: Use these records keeps the records unnamed. -->
+      <Field required={!usable} label="Name">
         <input bind:value={name} placeholder="orders-west, ordinary hour" />
       </Field>
       <Field
@@ -256,17 +258,17 @@
     <Button type="button" onclick={oncancel} disabled={busy.on ? BUSY : ''}>Cancel</Button>
     {#if usable}
       <Button
-        type="button"
+        type="submit"
         class="primary"
-        onclick={use}
         disabled={busy.on ? BUSY : NOT_IN_DEMO || (records.length === 0 ? INCOMPLETE : '')}
         >Use these records</Button
       >
     {/if}
     {#if way}
       <Button
-        type="submit"
+        type={usable ? 'button' : 'submit'}
         class={usable ? '' : 'primary'}
+        onclick={usable ? () => void save() : undefined}
         disabled={busy.on || loading ? BUSY : !canSave ? INCOMPLETE : ''}
       >
         {loading ? 'Loading…' : busy.on ? 'Saving…' : 'Save sample'}
