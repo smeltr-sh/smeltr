@@ -1505,6 +1505,21 @@ test('A4: a route preview shows each output row, the route it matched and the de
   await expect(table.getByRole('row', { name: /^row 1 / })).toBeVisible();
   await alerts.click();
   await expect(table.getByRole('row', { name: /^row 0 / })).toBeVisible();
+
+  // Records that name no source route from the one chosen for them, but lock no test.
+  await api.put(`/api/areas/shared/samples/pasted${ON}`, {
+    id: 'pasted',
+    name: 'pasted errors',
+    records: [{ _raw: '{"status":503}' }],
+  });
+  await admin.reload();
+  await admin.getByRole('button', { name: 'Choose a sample' }).click();
+  await admin.getByRole('option', { name: /^pasted errors/ }).click();
+  await expect(admin.getByRole('button', { name: 'Run' })).toBeDisabled();
+  await admin.getByLabel('Source it stands for').selectOption('storefront');
+  await admin.getByRole('button', { name: 'Run' }).click();
+  await expect(admin.getByRole('button', { name: '1 kafka-alerts' })).toBeVisible();
+  await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeDisabled();
 });
 
 // A4, the whole trip. A step that does not compile says why once, on the step; the error chip above the records

@@ -462,7 +462,7 @@ pub struct SaveCaptureRequest {
     /// What to call the sample.
     pub name: String,
     /// The source these records stand for, so the sample can be route-previewed. A capture at a source names one; a
-    /// capture at a destination holds what pipelines finished, which no route takes in, so it names none.
+    /// capture at a destination names none, and a route preview of it is told which source it stands for.
     #[serde(default)]
     pub source: Option<String>,
 }

@@ -547,7 +547,7 @@
     {/if}
 
     {#if sampling}
-      <RoutePreview config={previewConfig} dirty={isDirty} />
+      <RoutePreview config={previewConfig} dirty={isDirty} sources={sourceIds} />
     {:else}
       {#if !readOnly}
         <div class="toolbar">

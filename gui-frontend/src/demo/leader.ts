@@ -1389,7 +1389,7 @@ export class DemoLeader {
   private async routePreview(
     name: string,
     scope: string,
-    req: { config: string; sample: string; at_micros: number | null },
+    req: { config: string; sample: string; source: string | null; at_micros: number | null },
   ): Promise<Answer> {
     const branch = this.branch(name) ?? this.state.branches.main;
     const sample = this.sampleOn(branch, scope, req.sample);
@@ -1399,7 +1399,7 @@ export class DemoLeader {
       ]);
     return this.ask('/route-preview', {
       ...this.bundleOf(branch, scope, JSON.parse(req.config)),
-      sample,
+      sample: { ...sample, source: sample.source ?? req.source ?? undefined },
       atMicros: req.at_micros,
     });
   }

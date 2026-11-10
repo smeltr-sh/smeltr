@@ -88,7 +88,8 @@ fn route_preview_on(
         Err(e) => return Envelope::refused(e),
     };
     match sample_to_run(&reading, given, req.sample.as_deref()) {
-        Ok(Some(sample)) => {
+        Ok(Some(mut sample)) => {
+            sample.source = sample.source.or(req.source.clone());
             let merged = if scope == config_file::SHARED_DIR {
                 None
             } else {
@@ -3642,6 +3643,7 @@ mod tests {
             super::RoutePreviewRequest {
                 config: serde_json::to_string(&group).unwrap(),
                 sample: Some(sample.id.clone()),
+                source: None,
                 at_micros: None,
             },
             None,
@@ -3669,20 +3671,41 @@ mod tests {
         );
 
         // A held capture routes in place of a saved sample, and a request naming neither is refused.
-        let request = || super::RoutePreviewRequest {
+        let request = |source: Option<&str>| super::RoutePreviewRequest {
             config: serde_json::to_string(&group).unwrap(),
             sample: None,
+            source: source.map(str::to_string),
             at_micros: None,
         };
         let held = config_file::SampleDto {
             id: "c1".to_string(),
             ..sample.clone()
         };
-        let captured = super::route_preview_on(&data, "work", "west", request(), Some(held));
+        let captured = super::route_preview_on(&data, "work", "west", request(None), Some(held.clone()));
         assert_eq!(captured.route_ids, vec!["audit-orders"]);
         assert_eq!(captured.rows[0].through.len(), 1, "the held capture was routed");
-        let neither = super::route_preview_on(&data, "work", "west", request(), None);
+        let neither = super::route_preview_on(&data, "work", "west", request(None), None);
         assert!(!neither.succeeded());
+
+        // Records that name no source, as a capture at a destination holds, route from the source the request names;
+        // records that name one keep it.
+        let sourceless = config_file::SampleDto {
+            source: None,
+            ..held.clone()
+        };
+        let unnamed = super::route_preview_on(&data, "work", "west", request(None), Some(sourceless.clone()));
+        assert!(
+            !unnamed.succeeded(),
+            "with no source anywhere, routing has nothing to select on"
+        );
+        let named = super::route_preview_on(&data, "work", "west", request(Some("orders")), Some(sourceless));
+        assert_eq!(
+            named.rows[0].through.len(),
+            1,
+            "routed from the source the request names"
+        );
+        let kept = super::route_preview_on(&data, "work", "west", request(Some("elsewhere")), Some(held));
+        assert_eq!(kept.rows[0].through.len(), 1, "the sample's own source wins");
         std::fs::remove_dir_all(&data).ok();
     }
 

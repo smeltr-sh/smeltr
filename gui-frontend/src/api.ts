@@ -2736,11 +2736,12 @@ export interface RoutePreviewResult {
  * `config` is the whole bundle as the editor has it, so unsaved route edits
  * are what gets previewed. `atMicros` pins `now()` and a reference-less
  * `parseTime`, the way a locked test re-runs against the instant it locked
- * at; an ordinary preview omits it and reads the wall clock. */
+ * at; an ordinary preview omits it and reads the wall clock. `source` is the
+ * source the records stand for where the sample names none. */
 export function routePreview(
   config: string,
   sample: string,
-  atMicros?: number,
+  { atMicros, source }: { atMicros?: number; source?: string } = {},
 ): Promise<RoutePreviewResult> {
   const capture = heldSession(sample);
   return post(
@@ -2749,6 +2750,7 @@ export function routePreview(
       config,
       sample: capture ? null : sample,
       capture: capture ?? null,
+      source: source ?? null,
       at_micros: atMicros ?? null,
     },
     'quiet',
