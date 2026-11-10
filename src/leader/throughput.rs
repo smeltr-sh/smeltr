@@ -21,22 +21,23 @@
 //! Only windows the source was running for throughout count. A bucket with no point means no worker reported the source
 //! then -- not deployed, or a worker gone -- which says nothing about how much it reads.
 //!
-//! A past window that shares a bucket with a stop about the source (`warnings::spans`) does not count either, nor one
-//! that shares a bucket with what a below-normal warning read: each window of each width that put it below, and of the
-//! readings it waited for ([`Reading::reach_ms`]). An outage at this time of day would otherwise set the range's low
-//! edge there, and a source that dropped would come to call the drop normal. More rows are learned: they are the new
-//! normal until shown otherwise.
+//! A past window does not count either when it shares a bucket with a stop about the source (`warnings::spans`), or
+//! with what a below-normal warning read: each window of each width that put it below, and of the readings it waited
+//! for ([`Reading::reach_ms`]). An outage at this time of day would otherwise set the range's low edge there, and a
+//! source that dropped would come to call the drop normal. More rows are learned: they are the new normal until shown
+//! otherwise.
 //!
-//! A window that holds a stop is not judged either. It reads the stop, which a warning naming the cause has already
-//! raised, and the narrow widths judge again within half an hour of its end; the long ones wait up to a day. This rule
-//! is the leader's own: the detector was measured on sources with no stops.
+//! A window that holds a stop is not judged either. Its reading is the stop, which a warning naming the cause has
+//! already raised. The short widths judge again within half an hour of the stop's end; the long ones wait up to 24
+//! hours. This rule is the leader's own: the detector was measured on sources with no stops.
 //!
 //! A chart draws the range behind its points, and a point finer than a window swings wider than a window does. So each
 //! [`BUCKET`] also records how far each source's rate swung inside it at each of [`SWING_WIDTHS`] (`series::Swing`),
 //! while the ten-second tier still holds what it read. A chart's range at that width is learned from those swings.
 //!
-//! Neither answer is stored. The normal is learned again each hour, since it moves slowly, and each reading once per
-//! [`BUCKET`] against it, since nothing it reads changes in between.
+//! Neither answer is stored. Only where each below-normal warning's windows begin is kept, with the warning. The
+//! normal is learned again each hour, since it moves slowly, and each reading once per [`BUCKET`] against it, since
+//! nothing it reads changes in between.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -155,8 +156,8 @@ pub struct Reading {
     /// Each width that judges the source now, narrowest first.
     pub judged: Vec<Judged>,
     pub outside: Option<Outside>,
-    /// Where the windows of the widths that put it below normal begin, with those of the readings it waited for:
-    /// the first bucket a below-normal warning raised now, or held, keeps its normal from learning.
+    /// Where the window of this reading's widest below-normal width begins, moved back over the readings it waited
+    /// for. A below-normal warning raised now, or held, keeps its source's normal from learning from that bucket on.
     pub reach_ms: Option<i64>,
 }
 
@@ -200,7 +201,7 @@ pub enum Outside {
 }
 
 impl Reading {
-    /// The width a reader is shown: the narrowest that reads the source outside its normal now, else [`WINDOW`], else
+    /// The width a reader is shown: the narrowest that reads the source outside its range now, else [`WINDOW`], else
     /// the narrowest that judges it. None while none judges it.
     pub fn shown(&self) -> Option<&Judged> {
         let side = |j: &&Judged| match self.outside {
@@ -217,8 +218,8 @@ impl Reading {
 }
 
 /// Which side of its normal a source is on, from its widths' readings, and whether a below-normal warning about it
-/// held until now. A held warning ends only on a reading inside the range: one no width can judge neither ends it nor
-/// raises it again with a new start.
+/// held until now. A held warning ends only on a reading inside the range. A reading no width can judge neither ends
+/// it nor raises a new warning.
 fn outside(judged: &[Judged], below_held: bool) -> Option<Outside> {
     let inside = !judged.is_empty() && !judged.iter().any(Judged::under);
     if judged.iter().any(|j| j.below) || (below_held && !inside) {
@@ -305,7 +306,8 @@ impl Readings {
             return normals.clone();
         }
         let normals = Arc::new(normals(store, as_of, learning));
-        // Held only once a source has one, so a fleet whose history was just written is judged at its next reading.
+        // The learned normals are kept for the hour only once some source has one, so a fleet whose history was just
+        // written is learned again, and judged, at its next reading.
         if normals.values().any(|n| !n.is_empty()) {
             *held = Some((as_of, learning.clone(), normals.clone()));
         }
@@ -367,7 +369,8 @@ fn normal(rows: &Rows, warned: &Warned, as_of: i64, width: Width) -> Option<Norm
     let per_day = DAY_MS / step;
     let learned = |ended: i64| rows.window(ended, width).filter(|_| !warned.during(ended, width.ms()));
     // Each learned window by its time of day, with how many buckets before `as_of` it ended. The last readings'
-    // windows are left out: a warning may yet wait on them, and would not learn them.
+    // windows are left out: a warning may yet wait for them, and a source's normal learns nothing from the readings a
+    // warning waited for.
     let mut by_time: Vec<Vec<(i64, f64)>> = vec![Vec::new(); per_day as usize];
     for i in WAIT..=USUAL_DAYS * per_day {
         let ended = as_of - i * step;
@@ -378,7 +381,8 @@ fn normal(rows: &Rows, warned: &Warned, as_of: i64, width: Width) -> Option<Norm
     let across = NEIGHBORHOOD.as_millis() as i64 / step;
     let usual: Vec<Option<f64>> = (0..per_day)
         .map(|at| {
-            // Each window near `at` by the day of the window at `at` it is near, so one day is one day.
+            // Each window near `at`, grouped by the day of `at`'s window it is near, so a window in the half hour after
+            // a midnight counts for that midnight.
             let near: Vec<(i64, f64)> = (-across..=across)
                 .flat_map(|off| {
                     let of = &by_time[(at + off).rem_euclid(per_day) as usize];
@@ -500,7 +504,7 @@ fn compute(store: &RegistryStore, ended_ms: i64, learning: &Learning, normals: &
     out
 }
 
-/// The reading at `normal`'s width of the window ending at `ended_ms`, or None where the width does not judge it, as
+/// The reading of the window ending at `ended_ms`, at `normal`'s width, or None where that width does not judge it, as
 /// where the window holds a stop.
 fn judge(rows: &Rows, warned: &Warned, normal: &Normal, ended_ms: i64) -> Option<Judged> {
     let width = normal.width;
@@ -561,8 +565,8 @@ impl Rows {
 struct Warned {
     /// Each span a stop held, as (started, ended).
     stops: Vec<(i64, Option<i64>)>,
-    /// When its rows teach its normal nothing: while a stop held, from where a below-normal warning's windows
-    /// begin until it ended, and all of the time before an admin said to learn it again.
+    /// When its rows teach its normal nothing: while a stop held; from where a below-normal warning's windows begin
+    /// until it ended; and all the time before an administrator reset its history.
     unlearned: Vec<(i64, Option<i64>)>,
     /// A below-normal warning about it still holds.
     below_held: bool,

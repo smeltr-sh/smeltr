@@ -2032,7 +2032,7 @@ pub fn outside_normal_warnings(
                     match r.shown() {
                         Some(shown) => against(shown, side),
                         // Held while no width judges it (`throughput`).
-                        None => "below normal, and reads too few rows now to be judged again".to_string(),
+                        None => "below normal, and cannot be judged now; Reset history ends it".to_string(),
                     },
                     lowered_by
                         .map(|by| format!("; lowered to info by {by}"))
@@ -2056,8 +2056,9 @@ fn against(judged: &throughput::Judged, side: throughput::Outside) -> String {
 }
 
 /// How far past its range's nearest edge a reading is, in percent of that edge, and which way, as the warning opens:
-/// a count in the millions is hard to set against another by eye. The edge is above zero: no reading is below a low
-/// edge of zero, and a width judges only where its usual window holds rows, which puts the high edge above them.
+/// a count in the millions is hard to set against another by eye. The edge is never zero, so the percent is defined: a
+/// reading is below a low edge only if that edge is above zero, and a width judges only where its usual window holds
+/// rows, so the high edge is above zero too.
 fn off_by(judged: &throughput::Judged, side: throughput::Outside) -> String {
     let (edge, word) = match side {
         throughput::Outside::Below => (judged.band.low, "below"),
@@ -4234,7 +4235,7 @@ mod tests {
             outside(&[held], &snapshot),
             [(
                 Condition::SourceRowsBelow,
-                "source quiet: below normal, and reads too few rows now to be judged again".to_string()
+                "source quiet: below normal, and cannot be judged now; Reset history ends it".to_string()
             )]
         );
     }
