@@ -98,7 +98,7 @@ pub fn need(method: &Method, path: &str) -> Need {
         )
         | (Method::GET | Method::HEAD, ["preview", "schema-standards"]) => Need::Somewhere(Level::Viewer),
         // Production records a capture reads from a group's workers, in no one area.
-        (Method::POST, ["captures"])
+        (Method::POST, ["captures"] | ["captures", "paste"])
         | (Method::GET | Method::HEAD | Method::DELETE, ["captures", _])
         | (Method::POST, ["captures", _, "stop"])
         | (Method::GET | Method::HEAD, ["captures", _, "download" | "records"]) => Need::Somewhere(Level::Viewer),
@@ -384,6 +384,7 @@ mod tests {
             (Method::POST, "/api/captures"),
             (Method::GET, "/api/captures/c1"),
             (Method::GET, "/api/captures/mine"),
+            (Method::POST, "/api/captures/paste"),
             (Method::POST, "/api/captures/c1/stop"),
             (Method::GET, "/api/captures/c1/download"),
             (Method::GET, "/api/captures/c1/records"),

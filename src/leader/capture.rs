@@ -115,6 +115,9 @@ pub struct CaptureStatus {
     /// Whether the byte ceiling dropped records a worker sent. A sample saved from it holds only what the ceiling
     /// kept, and the sample file carries no mark of the loss.
     pub truncated: bool,
+    /// Records a person pasted rather than captured: kept as written, with no columns and no `__capture` fields.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub pasted: bool,
     /// What Run found out about an SQL source's query: its columns, and what the database plans for a poll.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sql: Option<crate::heartbeat::SqlRun>,
@@ -193,9 +196,46 @@ struct Session {
     one_worker: bool,
     sql: Option<crate::heartbeat::SqlRun>,
     avro: Vec<crate::heartbeat::AvroField>,
+    /// Set on records a person pasted rather than captured ([`Captures::hold`]).
+    pasted: Option<Pasted>,
+}
+
+/// Records a person pasted, held as a capture is so that every preview runs over them and they save as one does. They
+/// are kept as written, under the one column that holds a whole record, and carry no `__capture` fields: they were
+/// read from nowhere.
+struct Pasted {
+    /// The source they stand for, where the person named one.
+    source: Option<String>,
 }
 
 impl Session {
+    fn new(invitation: CaptureInvitation, owner: String, config: Option<String>) -> Session {
+        Session {
+            stopped: false,
+            invitation,
+            owner,
+            started: Instant::now(),
+            used: Instant::now(),
+            opened_micros: crate::core::ctx::wall_clock_micros(),
+            config,
+            expected: HashSet::new(),
+            holding: HashSet::new(),
+            invited: HashSet::new(),
+            answered: HashSet::new(),
+            per_worker: HashMap::new(),
+            batches: Vec::new(),
+            rows: 0,
+            bytes: 0,
+            truncated: false,
+            revision: 0,
+            ended: Vec::new(),
+            one_worker: false,
+            sql: None,
+            avro: Vec::new(),
+            pasted: None,
+        }
+    }
+
     /// Refold `batches`, `rows`, `bytes` and `truncated` from `per_worker`, in worker-id order so the same inputs always
     /// fold the same way. Called every time `per_worker` changes -- sessions are small, bounded by their total and
     /// [`SESSION_BYTES_CEILING`] however many workers or reports contribute to them, so refolding from scratch each
@@ -340,10 +380,12 @@ impl Session {
         CaptureStatus {
             session: session.to_string(),
             destination: self.invitation.destination.clone(),
-            source: match &self.invitation.destination {
-                Some(_) => None,
-                None => self.invitation.source.as_ref().map(|s| s.id.clone()),
+            source: match (&self.pasted, &self.invitation.destination) {
+                (Some(pasted), _) => pasted.source.clone(),
+                (None, Some(_)) => None,
+                (None, None) => self.invitation.source.as_ref().map(|s| s.id.clone()),
             },
+            pasted: self.pasted.is_some(),
             done: self.done(),
             stopped: self.stopped,
             max_matches: self.invitation.max_matches,
@@ -496,30 +538,72 @@ impl Captures {
         sessions.insert(
             id,
             Session {
-                stopped: false,
-                invitation: invitation.clone(),
-                owner,
-                started: Instant::now(),
-                used: Instant::now(),
-                opened_micros: crate::core::ctx::wall_clock_micros(),
-                config,
                 expected,
                 holding,
-                invited: HashSet::new(),
-                answered: HashSet::new(),
-                per_worker: HashMap::new(),
-                batches: Vec::new(),
-                rows: 0,
-                bytes: 0,
-                truncated: false,
-                revision: 0,
-                ended: Vec::new(),
                 one_worker,
-                sql: None,
-                avro: Vec::new(),
+                ..Session::new(invitation.clone(), owner, config)
             },
         );
         invitation
+    }
+
+    /// Hold `records` that `owner` pasted, standing for `source` where they name one, as a finished capture of `group`
+    /// under `id`. It replaces any capture they held. Refused past what a sample holds or what one capture may hold.
+    pub fn hold(
+        &self,
+        id: String,
+        owner: String,
+        group: String,
+        source: Option<String>,
+        records: Vec<crate::io::RecordObject>,
+    ) -> Result<(), String> {
+        crate::config_file::refuse_sample_size(records.len())?;
+        let mut batch = CaptureBatch::new(vec![crate::heartbeat::CaptureColumn {
+            name: crate::plan::tree::UNCLAIMED.to_string(),
+            ty: crate::core::column::DataType::Variant.spell(),
+        }]);
+        batch.rows = records
+            .into_iter()
+            .map(|record| CapturedRow {
+                values: vec![serde_json::Value::Object(record)],
+                ..CapturedRow::default()
+            })
+            .collect();
+        let bytes = batch.size();
+        if bytes > SESSION_BYTES_CEILING {
+            return Err(format!(
+                "these records take {bytes} bytes, and the leader holds at most {SESSION_BYTES_CEILING} for one person"
+            ));
+        }
+        let rows = batch.rows.len();
+        let invitation = CaptureInvitation {
+            session: id.clone(),
+            group,
+            source: None,
+            destination: None,
+            filter: None,
+            start: None,
+            raw: false,
+            max_matches: rows,
+            max_bytes: bytes,
+            deadline_secs: 0,
+            secrets: Vec::new(),
+        };
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        drop_to_hold(&mut sessions, &owner);
+        sessions.insert(
+            id,
+            Session {
+                stopped: true,
+                batches: vec![batch],
+                rows,
+                bytes,
+                revision: 1,
+                pasted: Some(Pasted { source }),
+                ..Session::new(invitation, owner, None)
+            },
+        );
+        Ok(())
     }
 
     /// What `worker_id`, reporting `group`, should run: every capture the leader still wants from it, whole on every

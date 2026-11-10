@@ -1522,6 +1522,53 @@ test('A4: a route preview shows each output row, the route it matched and the de
   await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeDisabled();
 });
 
+// A1 and A4: records pasted are held as a capture is, route from the source chosen for them, and save with none.
+test('A4: pasted records are held unsaved and route from the source chosen for them', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await webRoutes(api, ['{"status":200}']);
+  await goto(admin, leader, '#/build/pipelines/web');
+  const chip = admin.getByRole('button', { name: 'Choose a sample' });
+  await chip.click();
+  await admin.getByRole('button', { name: 'Add sample' }).click();
+  const dialog = admin.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Paste' }).click();
+  await dialog.getByLabel(/^Records/).fill('{"status":503}\n');
+  await dialog.getByRole('button', { name: 'Use these records' }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(chip).toContainText('Your capture');
+  await expect(chip).toContainText('1 record');
+  expect((await api.get(`/api/areas/shared/samples${ON}`)).samples).toHaveLength(1);
+
+  await goto(admin, leader, '#/build/routes/sample');
+  await expect(admin.getByRole('button', { name: 'Choose a sample' })).toContainText(
+    'Your capture',
+  );
+  await expect(admin.getByRole('button', { name: 'Run' })).toBeDisabled();
+  await admin.getByLabel('Source it stands for').selectOption('storefront');
+  await admin.getByRole('button', { name: 'Run' }).click();
+  await expect(admin.getByRole('button', { name: '1 kafka-alerts' })).toBeVisible();
+  await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeDisabled();
+
+  await goto(admin, leader, '#/build/pipelines/web');
+  await chip.click();
+  await admin.getByRole('option', { name: /^Your capture/ }).click();
+  await admin.getByRole('button', { name: 'Save as sample', exact: true }).click();
+  await admin.getByRole('button', { name: /^Save input as sample/ }).click();
+  const saving = admin.getByRole('dialog');
+  await saving.getByLabel('Name').fill('pasted errors');
+  await saving.getByRole('button', { name: 'Save sample' }).click();
+  await expect(saving).toHaveCount(0);
+  await expect(chip).toContainText('pasted errors');
+  const saved = (await api.get(`/api/areas/shared/samples${ON}`)).samples;
+  expect(saved.find((s: { name: string }) => s.name === 'pasted errors')).toMatchObject({
+    records: 1,
+  });
+  expect((await api.get('/api/captures/mine')).capture).toBeUndefined();
+});
+
 // A4, the whole trip. A step that does not compile says why once, on the step; the error chip above the records
 // lists it and takes the author there, and the records stand after the last step that compiles.
 test('A4: a compile error is written once, on its step, and the error chip jumps to it', async ({

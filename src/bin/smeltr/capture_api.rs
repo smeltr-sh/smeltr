@@ -333,6 +333,46 @@ fn rand_session() -> u64 {
     hasher.finish()
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PasteRequest {
+    /// The area whose previews run over the records, which the caller must view.
+    pub group: String,
+    /// The source the records stand for, where the caller names one.
+    #[serde(default)]
+    pub source: Option<String>,
+    pub records: Vec<smeltr::io::RecordObject>,
+}
+
+/// Hold records the caller pasted as the capture they hold, in place of any other, until they save or discard it or
+/// it goes unused (`Captures::hold`). Answers it as a capture's status is answered.
+pub async fn hold_paste(
+    State(state): State<AppState>,
+    Extension(access): Extension<Access>,
+    Extension(actor): Extension<Actor>,
+    Json(request): Json<PasteRequest>,
+) -> Response {
+    let need = Need::Area {
+        area: request.group.clone(),
+        level: Level::Viewer,
+    };
+    if !need.met_by(&access) {
+        return Refusal::from(need).into_response();
+    }
+    let session = format!("{:016x}", rand_session());
+    let held = state.captures.hold(
+        session.clone(),
+        actor.id.clone(),
+        request.group,
+        request.source,
+        request.records,
+    );
+    match held {
+        Ok(()) => status_of(&state.captures, &access, &session).into_response(),
+        Err(e) => Envelope::<Followed>::refused(Refusal::invalid(e)).into_response(),
+    }
+}
+
 #[derive(Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Followed {
@@ -537,9 +577,12 @@ fn held_records(
     session: &str,
     status: &CaptureStatus,
 ) -> (Vec<smeltr::heartbeat::CaptureColumn>, Vec<smeltr::io::RecordObject>) {
-    let mut columns = config_file::sample_columns(&status.batches);
     let mut records: Vec<smeltr::io::RecordObject> =
         status.batches.iter().flat_map(config_file::sample_records).collect();
+    if status.pasted {
+        return (Vec::new(), records);
+    }
+    let mut columns = config_file::sample_columns(&status.batches);
     for (column, value) in captures.capture_fields(session) {
         for record in &mut records {
             config_file::put_path(record, &column.name, value.clone());
@@ -596,12 +639,12 @@ pub async fn save_capture(
 
     let source = match (&status.destination, request.source.clone()) {
         (Some(_), _) => None,
-        (None, Some(source)) => Some(source),
-        (None, None) => {
+        (None, None) if !status.pasted => {
             return Envelope::refused(Refusal::invalid(
                 "name the source these records stand for, so the sample can be route-previewed",
             ));
         }
+        (None, source) => source,
     };
     let (columns, records) = held_records(&state.captures, &session, &status);
     let sample = config_file::SampleDto {
@@ -905,6 +948,53 @@ mod tests {
         );
         captures.stop("c1");
         assert!(held_for_preview(&captures, &own, &person("alice"), "c1").is_ok());
+    }
+
+    /// A paste is held in place of its owner's capture and runs as written: no columns, no `__capture` fields, and
+    /// the source it was given.
+    #[test]
+    fn a_paste_replaces_its_owner_s_capture_and_runs_as_written() {
+        let (captures, own, _) = payments_capture();
+        let alice = Actor {
+            id: "alice".to_string(),
+            ..Actor::system()
+        };
+        let record = |raw: &str| serde_json::json!({"_raw": raw}).as_object().unwrap().clone();
+        captures
+            .hold(
+                "p1".into(),
+                "alice".into(),
+                "payments".into(),
+                Some("orders".into()),
+                vec![record("a"), record("b")],
+            )
+            .unwrap();
+        assert_eq!(
+            captures.held_by("alice").as_deref(),
+            Some("p1"),
+            "the paste replaced the capture"
+        );
+        let sample = held_for_preview(&captures, &own, &alice, "p1").unwrap();
+        assert!(sample.columns.is_empty(), "{:?}", sample.columns);
+        assert_eq!(sample.records, vec![record("a"), record("b")]);
+        assert_eq!(sample.source.as_deref(), Some("orders"));
+
+        let too_many = vec![record("x"); config_file::MAX_SAMPLE_RECORDS + 1];
+        assert!(
+            captures
+                .hold("p2".into(), "alice".into(), "payments".into(), None, too_many)
+                .is_err()
+        );
+        assert!(
+            captures
+                .hold("p3".into(), "alice".into(), "payments".into(), None, Vec::new())
+                .is_err()
+        );
+        assert_eq!(
+            captures.held_by("alice").as_deref(),
+            Some("p1"),
+            "a refused paste keeps what was held"
+        );
     }
 
     /// A capture in "payments", someone who views "payments", and someone who views only "search".

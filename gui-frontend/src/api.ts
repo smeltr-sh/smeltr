@@ -3163,6 +3163,15 @@ export function myCapture(): Promise<CaptureStatusResult> {
   return withRecords(apiJson('/api/captures/mine', undefined, 'quiet'));
 }
 
+/** Hold records the person wrote, standing for `source` where they name one, as the capture they hold in place of
+ * any other: every preview runs over them, and they save as a capture does. */
+export function holdPaste(
+  records: SampleRecordDto[],
+  source?: string,
+): Promise<CaptureStatusResult> {
+  return withRecords(post('/api/captures/paste', { group: scope, source, records }, 'quiet'));
+}
+
 /** A finished capture's records, as a sample holds them. */
 export async function capturedRecords(session: string): Promise<SampleRecordDto[]> {
   const res = await fetch(captureDownloadUrl(session));

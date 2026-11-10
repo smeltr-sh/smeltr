@@ -1,7 +1,9 @@
 <!--
-  Adding a sample: the way it is made, then that way's form. A paste and an uploaded file are saved
-  by the primary action. A capture is `CaptureFlow`'s, at a source or a destination: a worker
-  already reading a source taps what is flowing, one that is not opens it and never commits.
+  Adding a sample: the way it is made, then that way's form. A paste and an uploaded file end as a
+  capture does: Use these records leaves them unsaved at the leader for whoever wrote them
+  (`holdPaste`) and hands them to the page that opened this (`onuse`); Save sample makes them a sample on
+  the branch. A capture is `CaptureFlow`'s, at a source or a destination: a worker already reading a
+  source taps what is flowing, one that is not opens it and never commits.
 -->
 <script lang="ts" module>
   export type SampleWay = 'paste' | 'upload' | 'capture' | 'output' | 'input';
@@ -24,6 +26,7 @@
   import { count } from './time';
   import {
     errorText,
+    holdPaste,
     putSample,
     recordsFromText,
     saveCapture,
@@ -31,7 +34,7 @@
     type SampleDto,
   } from './api';
   import { heldCount } from './capture';
-  import { mayCapture } from './access';
+  import { NOT_IN_DEMO, mayCapture } from './access';
 
   let {
     open,
@@ -48,7 +51,7 @@
     start?: SampleWay;
     /** What a capture starts on (`CaptureFlow`). */
     target?: ComponentProps<typeof CaptureFlow>['target'];
-    /** What Use these records does with a capture (`CaptureFlow`). */
+    /** What Use these records does with a capture or a paste, held at the leader. Without it, a paste is only saved. */
     onuse?: ComponentProps<typeof CaptureFlow>['onuse'];
     /** A pipeline's output rows, as a sample holds them: what the dialog saves when it opens at `output`, the
      * `SampleWay` for a pipeline's output. */
@@ -175,6 +178,18 @@
     });
   }
 
+  /** Holds what was pasted or uploaded, unsaved, and hands it to the page. */
+  async function use() {
+    if (!onuse || records.length === 0) return;
+    error = '';
+    await busy.run(async () => {
+      const res = await holdPaste(records, source.trim() || undefined);
+      if (res.ok && res.capture) error = onuse(res.capture) ?? '';
+      else error = errorText(res.errors) || 'could not hold these records';
+    });
+  }
+  let usable = $derived(onuse && (way === 'paste' || way === 'upload'));
+
   let canSave = $derived(name.trim() !== '' && kept > 0);
 
   function submit() {
@@ -216,6 +231,7 @@
         </Field>
       {/if}
       <span class="dim">{count(records.length, 'record')}</span>
+      <InlineError message={error} />
     </div>
   {:else if way === 'output'}
     <div class="form-body">
@@ -237,10 +253,19 @@
   {/if}
   {#snippet actions()}
     <Button type="button" onclick={oncancel} disabled={busy.on ? BUSY : ''}>Cancel</Button>
+    {#if usable}
+      <Button
+        type="button"
+        class="primary"
+        onclick={use}
+        disabled={busy.on ? BUSY : NOT_IN_DEMO || (records.length === 0 ? INCOMPLETE : '')}
+        >Use these records</Button
+      >
+    {/if}
     {#if way}
       <Button
         type="submit"
-        class="primary"
+        class={usable ? '' : 'primary'}
         disabled={busy.on || loading ? BUSY : !canSave ? INCOMPLETE : ''}
       >
         {loading ? 'Loading…' : busy.on ? 'Saving…' : 'Save sample'}
