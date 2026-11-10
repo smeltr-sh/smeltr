@@ -1217,8 +1217,7 @@
     };
   }
 
-  /** Opens Add sample with its capture on the pipeline's own source. A viewer, who may only capture, goes straight
-   * to the capture. */
+  /** Opens Add sample with its capture on the pipeline's own source. */
   async function addSample() {
     // Unreadable connections leave the form on its own first target.
     const upstream = loadedId
