@@ -1574,11 +1574,14 @@ test('A4: pasted records are held unsaved and route from the source chosen for t
   await admin.getByRole('button', { name: /^Save input as sample/ }).click();
   const saving = admin.getByRole('dialog');
   await saving.getByLabel('Name').fill('pasted errors');
+  // Records that name no source are saved standing for the one chosen here.
+  await saving.getByLabel(/^Source it stands for/).selectOption('storefront');
   await saving.getByRole('button', { name: 'Save sample' }).click();
   await expect(saving).toHaveCount(0);
   await expect(chip).toContainText('pasted errors');
   const saved = (await api.get(`/api/areas/shared/samples${ON}`)).samples;
   expect(saved.find((s: { name: string }) => s.name === 'pasted errors')).toMatchObject({
+    source: 'storefront',
     records: 1,
   });
   expect((await api.get('/api/captures/mine')).capture).toBeUndefined();

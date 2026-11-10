@@ -3223,12 +3223,19 @@ export function saveCapture(
   session: string,
   id: string,
   name: string,
-  /** The source the records stand for. None for a capture at a destination. */
-  source?: string,
-  /** As `configJson`'s: the commit the caller read, when it keeps its own. */
-  base?: string | null,
-  /** The scope the sample is saved into, when it is not the chip's: the source's own. */
-  into?: string,
+  {
+    source,
+    base,
+    into,
+  }: {
+    /** The source the records stand for where they name none, such as a capture at a destination or a paste with
+     * none. Records that name one keep their own. */
+    source?: string;
+    /** As `configJson`'s: the commit the caller read, when it keeps its own. */
+    base?: string | null;
+    /** The scope the sample is saved into, when it is not the chip's: the source's own. */
+    into?: string;
+  } = {},
 ): Promise<SaveCaptureResult & { commit?: string }> {
   return configJson(
     inArea('/samples', into),

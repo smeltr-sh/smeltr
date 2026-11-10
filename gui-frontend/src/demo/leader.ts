@@ -1596,7 +1596,7 @@ export class DemoLeader {
     const sample: SampleDto = {
       id: req.id,
       name: req.name,
-      source: req.source,
+      source: capture.source ?? req.source,
       columns: [
         // The recorder's own save stamped the pool with its `__capture` fields; these are this capture's.
         ...(pool.columns ?? []).filter((c) => !c.name.startsWith('__capture.')),

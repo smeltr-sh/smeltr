@@ -501,8 +501,8 @@ pub struct SaveCaptureRequest {
     pub id: Option<String>,
     /// What to call the sample.
     pub name: String,
-    /// The source these records stand for, so the sample can be route-previewed. A capture at a source names one; a
-    /// capture at a destination names none, and a route preview of it is told which source it stands for.
+    /// The source the records stand for where they name none, such as a capture at a destination or a paste with none.
+    /// Records that name one keep their own.
     #[serde(default)]
     pub source: Option<String>,
 }
@@ -637,15 +637,7 @@ pub async fn save_capture(
         Err(e) => return Envelope::refused(e),
     };
 
-    let source = match (&status.destination, request.source.clone()) {
-        (Some(_), _) => None,
-        (None, None) if !status.pasted => {
-            return Envelope::refused(Refusal::invalid(
-                "name the source these records stand for, so the sample can be route-previewed",
-            ));
-        }
-        (None, source) => source,
-    };
+    let source = status.source.clone().or(request.source.clone());
     let (columns, records) = held_records(&state.captures, &session, &status);
     let sample = config_file::SampleDto {
         id: request.sample_id(),

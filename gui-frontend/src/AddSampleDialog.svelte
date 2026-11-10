@@ -148,7 +148,10 @@
     // Records pasted are not an upload's, nor the reverse.
     if (next !== way) text = '';
     way = next;
-    if ((next === 'paste' || next === 'upload') && sources.length === 0) {
+    if (
+      (next === 'paste' || next === 'upload' || (next === 'input' && !input?.source)) &&
+      sources.length === 0
+    ) {
       const at = opening;
       sourceIdsInScope().then(
         (ids) => at === opening && (sources = ids),
@@ -184,13 +187,16 @@
     });
   }
 
-  /** The capture saved as it is held, standing for the source it read, which then holds it no longer. */
+  /** The held records saved as a sample, standing for the source they name or, where they name none, the one chosen;
+   * they are then no longer held. */
   async function saveInput() {
     if (!input) return;
     error = '';
     await busy.run(async () => {
       const id = mintSampleId();
-      const res = await saveCapture(input.session, id, name.trim(), input.source);
+      const res = await saveCapture(input.session, id, name.trim(), {
+        source: source || undefined,
+      });
       if (res.ok) onsaved?.(id);
       else error = errorText(res.errors) || 'could not save';
     });
@@ -216,6 +222,19 @@
   }
 </script>
 
+{#snippet sourceField()}
+  <Field
+    optional
+    label="Source it stands for"
+    help="A route selects on a source, so a sample with none runs through a pipeline but not through a route."
+  >
+    <select bind:value={source} class="mono">
+      <option value=""></option>
+      {#each sources as s (s)}<option value={s}>{s}</option>{/each}
+    </select>
+  </Field>
+{/snippet}
+
 <Dialog
   open={open && way !== 'capture'}
   title={way ? TITLES[way] : 'add sample'}
@@ -239,16 +258,7 @@
           <input bind:value={name} placeholder="orders-west, ordinary hour" />
         </Field>
       {/if}
-      <Field
-        optional
-        label="Source it stands for"
-        help="A route selects on a source, so a sample with none runs through a pipeline but not through a route."
-      >
-        <select bind:value={source} class="mono">
-          <option value=""></option>
-          {#each sources as s (s)}<option value={s}>{s}</option>{/each}
-        </select>
-      </Field>
+      {@render sourceField()}
       {#if way === 'paste'}
         <Field required label="Records">
           {#snippet help()}One record per line; each line becomes <code>_raw</code>.{/snippet}
@@ -270,6 +280,7 @@
       <Field required label="Name">
         <input bind:value={name} placeholder="orders-west, ordinary hour" />
       </Field>
+      {#if !input?.source}{@render sourceField()}{/if}
       <span class="dim">{count(kept, 'record')}</span>
       <InlineError message={error} />
     </div>

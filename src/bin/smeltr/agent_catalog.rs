@@ -367,7 +367,7 @@ pub const CATALOG: &[Route] = &[
         method: "POST",
         path: "/api/areas/:area/samples",
         what: "Save a finished capture as a sample on a branch and forget the session. Query: branch.",
-        body: "{ capture: string (the capture's session id), id?: string, name: string, source?: string (required for a source capture) }",
+        body: "{ capture: string (the capture's session id), id?: string, name: string, source?: string (the source the records stand for where they name none) }",
     },
     Route {
         method: "PUT",
