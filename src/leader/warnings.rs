@@ -2029,10 +2029,21 @@ pub fn outside_normal_warnings(
                 format!(
                     "source {}: {}{}",
                     r.source,
-                    match r.shown() {
-                        Some(shown) => against(shown, side),
+                    match (r.shown(), &r.before) {
+                        (Some(shown), _) => against(shown, side),
                         // Held while no width judges it (`throughput`).
-                        None => "below normal, and cannot be judged now; Reset history ends it".to_string(),
+                        (None, Some(before)) => match way(before) {
+                            Some(way) => format!(
+                                "{way}its normal from before this warning, {}; Reset history ends it",
+                                read(before)
+                            ),
+                            None => format!(
+                                "within its normal from before this warning, {}; held until it can be judged again, \
+                                 or Reset history ends it",
+                                read(before)
+                            ),
+                        },
+                        (None, None) => "below normal, and cannot be judged now; Reset history ends it".to_string(),
                     },
                     lowered_by
                         .map(|by| format!("; lowered to info by {by}"))
@@ -2045,9 +2056,24 @@ pub fn outside_normal_warnings(
 
 /// What the reading `judged` found: the source is outside its range, on `side`.
 fn against(judged: &throughput::Judged, side: throughput::Outside) -> String {
+    format!("{}normal, {}", off_by(judged, side), read(judged))
+}
+
+/// Which way `judged` is outside its range, and how far, or None where it is inside.
+fn way(judged: &throughput::Judged) -> Option<String> {
+    if judged.under() {
+        Some(off_by(judged, throughput::Outside::Below))
+    } else if judged.rows > judged.band.high {
+        Some(off_by(judged, throughput::Outside::Above))
+    } else {
+        None
+    }
+}
+
+/// The rows `judged` read and its range.
+fn read(judged: &throughput::Judged) -> String {
     format!(
-        "{}normal, {} rows in {} against {} to {} at this time of day",
-        off_by(judged, side),
+        "{} rows in {} against {} to {} at this time of day",
         throughput::grouped(judged.rows),
         humanize_secs(judged.window.as_secs()),
         throughput::grouped(judged.band.low),
@@ -4207,6 +4233,7 @@ mod tests {
                 None
             },
             reach_ms: None,
+            before: None,
         }
     }
 
@@ -4237,6 +4264,29 @@ mod tests {
                 Condition::SourceRowsBelow,
                 "source quiet: below normal, and cannot be judged now; Reset history ends it".to_string()
             )]
+        );
+    }
+
+    #[test]
+    fn a_source_held_below_says_how_far_below_its_normal_from_before_the_warning_it_reads() {
+        let before = reading_in("quiet", 30.0, throughput::Band { low: 70.0, high: 130.0 }).judged[0].clone();
+        let held = |before: throughput::Judged| throughput::Reading {
+            judged: Vec::new(),
+            outside: Some(throughput::Outside::Below),
+            before: Some(before),
+            ..reading_of("quiet", 0.0)
+        };
+        let snapshot = [thread_health_in("g", "w1", "t0", 0, vec![rows_metric("quiet")])];
+        assert_eq!(
+            outside(&[held(before.clone())], &snapshot)[0].1,
+            "source quiet: 57% below its normal from before this warning, 30 rows in 30 minutes against 70 to 130 at \
+             this time of day; Reset history ends it"
+        );
+        let back = throughput::Judged { rows: 100.0, ..before };
+        assert_eq!(
+            outside(&[held(back)], &snapshot)[0].1,
+            "source quiet: within its normal from before this warning, 100 rows in 30 minutes against 70 to 130 at \
+             this time of day; held until it can be judged again, or Reset history ends it"
         );
     }
 

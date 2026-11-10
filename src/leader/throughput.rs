@@ -15,8 +15,9 @@
 //!
 //! A source is below normal while some width has read below its range [`WAIT`] times in a row, since one reading at the
 //! range's edge flickers. Once below, it stays below until some width judges it and none reads it below its range: a
-//! source silent long enough to lose every range is still silent. Above normal is judged at [`WINDOW`] alone, and only
-//! informs.
+//! source quiet long enough to lose every range still warns. While none judges it, it is read against the normal it
+//! had before the warning, so the warning still says how far below that normal it reads. Above normal is judged at
+//! [`WINDOW`] alone, and only informs.
 //!
 //! Only windows the source was running for throughout count. A bucket with no point means no worker reported the source
 //! then -- not deployed, or a worker gone -- which says nothing about how much it reads.
@@ -159,6 +160,9 @@ pub struct Reading {
     /// Where the window of this reading's widest below-normal width begins, moved back over the readings it waited
     /// for. A below-normal warning raised now, or held, keeps its source's normal from learning from that bucket on.
     pub reach_ms: Option<i64>,
+    /// While a below-normal warning holds and no width judges the source, its reading against the normal it had
+    /// before the warning: the narrowest width under that normal's range, else the narrowest that judges it.
+    pub before: Option<Judged>,
 }
 
 /// One width's reading: the rows of its window that ended with the reading, and its range.
@@ -238,8 +242,16 @@ fn outside(judged: &[Judged], below_held: bool) -> Option<Outside> {
 pub struct Readings {
     last: Mutex<Option<Answer>>,
     normals: Mutex<Option<(i64, Learning, Arc<Normals>)>>,
+    /// Each held below-normal warning's normal from before it, by its source and where it began keeping that normal
+    /// from learning: learned once, since it never changes.
+    before: Mutex<Befores>,
     computing: Mutex<()>,
 }
+
+type Befores = HashMap<(SourceKey, i64), Arc<Vec<Normal>>>;
+
+/// A source, by its group and id.
+type SourceKey = (String, String);
 
 type Answer = (i64, Learning, Arc<Vec<Reading>>);
 
@@ -273,7 +285,18 @@ impl Readings {
         }
         record_swings(store, ended_ms, heartbeat_interval);
         let normals = self.normals_at(store, ended_ms, learning);
-        let readings = Arc::new(compute(store, ended_ms, learning, &normals));
+        // Only the warnings still held keep theirs.
+        let mut learned = self.before.lock().unwrap_or_else(|e| e.into_inner());
+        let mut kept = Befores::new();
+        let mut before = |key: &SourceKey, from: i64| {
+            let normals = learned
+                .remove(&(key.clone(), from))
+                .unwrap_or_else(|| Arc::new(normals_of(store, key, Tier::OneHour.align(from), learning)));
+            kept.insert((key.clone(), from), normals.clone());
+            normals
+        };
+        let readings = Arc::new(compute(store, ended_ms, learning, &normals, &mut before));
+        *learned = kept;
         *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some((ended_ms, learning.clone(), readings.clone()));
         readings
     }
@@ -444,20 +467,58 @@ fn normals(store: &RegistryStore, as_of: i64, learning: &Learning) -> Normals {
     };
     buckets
         .into_iter()
-        .map(|((group, source), of)| {
-            let rows = Rows::of(&of, oldest, as_of);
-            let warned = Warned::of(store, &group, &source, oldest, learning);
-            let normals = WIDTHS
-                .iter()
-                .filter_map(|&width| normal(&rows, &warned, as_of, width))
-                .collect();
-            ((group, source), normals)
+        .map(|(key, of)| {
+            let normals = learned(store, &key, &of, oldest, as_of, learning);
+            (key, normals)
         })
         .collect()
 }
 
-/// [`Readings::at`] without the cache: each source's reading at `ended_ms` against `normals`.
-fn compute(store: &RegistryStore, ended_ms: i64, learning: &Learning, normals: &Normals) -> Vec<Reading> {
+/// One source's normals as of `as_of`, or none where its rows cannot be read.
+fn normals_of(store: &RegistryStore, key: &SourceKey, as_of: i64, learning: &Learning) -> Vec<Normal> {
+    let oldest = as_of - lookback_ms();
+    match history(store, BUCKET.and_finer(), BUCKET, oldest) {
+        Ok(mut buckets) => buckets
+            .remove(key)
+            .map(|of| learned(store, key, &of, oldest, as_of, learning))
+            .unwrap_or_default(),
+        Err(e) => {
+            tracing::warn!(
+                name: "series_unreadable", target: "status",
+                error = %e, group = key.0, source = key.1,
+                "could not read the source's rows, so a held warning does not say how far below its normal from before the warning it is"
+            );
+            Vec::new()
+        }
+    }
+}
+
+/// The normals of `key`'s rows `of`, read since `oldest`, as of `as_of`.
+fn learned(
+    store: &RegistryStore,
+    key: &SourceKey,
+    of: &BTreeMap<i64, f64>,
+    oldest: i64,
+    as_of: i64,
+    learning: &Learning,
+) -> Vec<Normal> {
+    let rows = Rows::of(of, oldest, as_of);
+    let warned = Warned::of(store, &key.0, &key.1, oldest, learning);
+    WIDTHS
+        .iter()
+        .filter_map(|&width| normal(&rows, &warned, as_of, width))
+        .collect()
+}
+
+/// [`Readings::at`] without the cache: each source's reading at `ended_ms` against `normals`. `before` gives a source's
+/// normals as of where a held below-normal warning began keeping them from learning.
+fn compute(
+    store: &RegistryStore,
+    ended_ms: i64,
+    learning: &Learning,
+    normals: &Normals,
+    before: &mut dyn FnMut(&SourceKey, i64) -> Arc<Vec<Normal>>,
+) -> Vec<Reading> {
     let widest = WIDTHS.iter().map(|w| w.ms()).max().unwrap_or_default();
     let oldest = ended_ms - (WAIT - 1) * BUCKET.bucket_ms() - widest;
     let buckets = match history(store, BUCKET.and_finer(), BUCKET, oldest) {
@@ -482,13 +543,21 @@ fn compute(store: &RegistryStore, ended_ms: i64, learning: &Learning, normals: &
                 .flatten()
                 .filter_map(|normal| judge(&rows, &warned, normal, ended_ms))
                 .collect();
-            let outside = outside(&judged, warned.below_held);
+            let outside = outside(&judged, warned.held_from.is_some());
             let waited = (WAIT - 1) * BUCKET.bucket_ms();
             let reach_ms = judged
                 .iter()
                 .filter(|j| j.below)
                 .map(|j| ended_ms - waited - j.window.as_millis() as i64)
                 .min();
+            let before = warned.held_from.filter(|_| judged.is_empty()).and_then(|from| {
+                let then: Vec<Judged> = before(&key, from)
+                    .iter()
+                    .filter_map(|normal| judge(&rows, &warned, normal, ended_ms))
+                    .collect();
+                let under = then.iter().position(Judged::under).unwrap_or(0);
+                then.into_iter().nth(under)
+            });
             let (group, source) = key;
             (!judged.is_empty() || outside.is_some()).then_some(Reading {
                 group,
@@ -497,6 +566,7 @@ fn compute(store: &RegistryStore, ended_ms: i64, learning: &Learning, normals: &
                 judged,
                 outside,
                 reach_ms,
+                before,
             })
         })
         .collect();
@@ -568,8 +638,8 @@ struct Warned {
     /// When its rows teach its normal nothing: while a stop held; from where a below-normal warning's windows begin
     /// until it ended; and all the time before an administrator reset its history.
     unlearned: Vec<(i64, Option<i64>)>,
-    /// A below-normal warning about it still holds.
-    below_held: bool,
+    /// Where a below-normal warning about it that still holds began keeping its normal from learning.
+    held_from: Option<i64>,
 }
 
 impl Warned {
@@ -592,21 +662,24 @@ impl Warned {
         // A warning that kept no reach began before one was kept. It is taken to have read the narrowest width,
         // reckoned from when it was seen, which is up to a heartbeat after the reading that raised it.
         let unkept = WAIT * BUCKET.bucket_ms() + WIDTHS[0].ms();
-        let below = held
-            .iter()
-            .filter(|s| s.condition == Condition::SourceRowsBelow)
-            .map(|s| (s.reach_millis.unwrap_or(s.started_millis - unkept), s.ended_millis));
+        let below = held.iter().filter(|s| s.condition == Condition::SourceRowsBelow);
+        let from = |s: &warnings::WarningSpan| s.reach_millis.unwrap_or(s.started_millis - unkept);
         let reset_from = learning.reset_from(group, source);
         let reset = reset_from.map(|from| (i64::MIN, Some(from)));
         Warned {
-            unlearned: stops.iter().copied().chain(below).chain(reset).collect(),
-            stops,
             // A reset ends the warning: the normal it was judged against is forgotten.
-            below_held: held.iter().any(|s| {
-                s.condition == Condition::SourceRowsBelow
-                    && s.ended_millis.is_none()
-                    && reset_from.is_none_or(|from| s.started_millis >= from)
-            }),
+            held_from: below
+                .clone()
+                .filter(|s| s.ended_millis.is_none() && reset_from.is_none_or(|from| s.started_millis >= from))
+                .map(from)
+                .min(),
+            unlearned: stops
+                .iter()
+                .copied()
+                .chain(below.map(|s| (from(s), s.ended_millis)))
+                .chain(reset)
+                .collect(),
+            stops,
         }
     }
 
@@ -959,7 +1032,11 @@ mod tests {
     /// The reading at `ended`, against the normal as of its hour.
     fn reading_at(store: &RegistryStore, ended: i64, learning: &Learning) -> Option<Reading> {
         let normals = normals(store, Tier::OneHour.align(ended), learning);
-        compute(store, ended, learning, &normals).into_iter().next()
+        let mut before =
+            |key: &SourceKey, from: i64| Arc::new(normals_of(store, key, Tier::OneHour.align(from), learning));
+        compute(store, ended, learning, &normals, &mut before)
+            .into_iter()
+            .next()
     }
 
     fn reading(store: &RegistryStore) -> Option<Reading> {
@@ -1235,6 +1312,19 @@ mod tests {
         let r = reading_at(&store, END, &reset).unwrap();
         assert_eq!(r.outside, Some(Outside::Below));
         assert_eq!(r.shown(), None);
+    }
+
+    #[test]
+    fn a_held_below_warning_reads_against_the_normal_from_before_it() {
+        let dropped = END - 6 * DAY_MS;
+        let store = store_with(29, |at| Some(if at >= dropped { 30.0 } else { 100.0 }));
+        warned_reaching(&store, "source_rows_below", dropped + 3 * FIVE, None, Some(dropped));
+        let r = reading(&store).unwrap();
+        assert_eq!(r.judged, [], "six days not learned leave too few for any width");
+        assert_eq!(r.outside, Some(Outside::Below));
+        let before = r.before.unwrap();
+        assert_eq!(before.window, WIDTHS[0].window);
+        assert_eq!((before.rows, before.band), (30.0, Band { low: 70.0, high: 130.0 }));
     }
 
     #[test]
