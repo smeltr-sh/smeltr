@@ -1583,7 +1583,9 @@ pub fn flow_snapshot(state: &AppState, window: Duration) -> Result<FlowResponse,
             normals: Vec::new(),
         });
     };
-    let since_ms = warnings::now_millis() - window.as_millis() as i64;
+    // From the start of the point the window begins in, so the chart's first point is read whole, as `stats::build`
+    // does for the source panel.
+    let since_ms = (warnings::now_millis() - window.as_millis() as i64).div_euclid(point_ms) * point_ms;
     Ok(FlowResponse {
         bucket_millis: point_ms,
         rows_in: flow_series(store, ROWS_IN_METRIC, "source", point_ms, since_ms)?,
