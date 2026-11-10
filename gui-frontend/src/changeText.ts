@@ -58,9 +58,8 @@ function elide(text: string): string {
   return `${text.slice(0, keep)}…${text.slice(text.length - keep)}`;
 }
 
-/** A line break in a value -- a PEM certificate, a connector's authorities -- read as one line's worth: the
- * subject this feeds is one line by `parse_marker`'s own rule, and everything after the first would silently
- * become the body instead of the field it was describing. */
+/** A line break in a value -- a PEM certificate, a connector's authorities -- read as one line's worth: each edit
+ * is one line of the body, and a break would split the field it describes from its value. */
 function oneLine(text: string): string {
   return text.replace(/\s*\n\s*/g, ' ');
 }
@@ -353,7 +352,12 @@ function line(edit: Edit, sayScope: boolean): string {
 const VERB: Record<Edit['op'], string> = { add: 'Add', remove: 'Remove', update: 'Update' };
 
 function subjectFor(edits: Edit[], sayScope: boolean): string {
-  if (edits.length === 1) return line(edits[0], sayScope);
+  // What changed in an object goes in the body: values are cut only one at a time, so a subject saying them has no
+  // bound on its length.
+  if (edits.length === 1) {
+    const [edit] = edits;
+    return `${VERB[edit.op]} ${edit.noun} ${edit.name}${sayScope ? ` in ${edit.scope}` : ''}`;
+  }
 
   const nouns = [...new Set(edits.map((edit) => edit.noun))];
   const ops = new Set(edits.map((edit) => edit.op));
@@ -386,6 +390,9 @@ export function changeText(changes: ScopeChange[]): ChangeText {
 
   const sayScope = new Set(edits.map((edit) => edit.scope)).size > 1;
   const subject = subjectFor(edits, sayScope);
-  const body = edits.length === 1 ? '' : edits.map((edit) => line(edit, sayScope)).join('\n');
+  const body =
+    edits.length === 1 && edits[0].op !== 'update'
+      ? ''
+      : edits.map((edit) => line(edit, sayScope)).join('\n');
   return { subject, body };
 }
