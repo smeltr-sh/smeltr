@@ -17,7 +17,7 @@ pub enum Store {
 
 /// Say at trace each statement `conn` runs, with how long it took. The text is the statement as written, with its
 /// parameters as placeholders, so no value it binds is said.
-pub fn say_statements(conn: &Connection, store: Store) {
+pub fn say_statements(conn: &mut Connection, store: Store) -> rusqlite::Result<()> {
     // SQLite takes a plain function, so each store has its own.
     fn leader(event: rusqlite::trace::TraceEvent<'_>) {
         said("leader.db", event);
@@ -45,7 +45,7 @@ pub fn say_statements(conn: &Connection, store: Store) {
         Store::Leader => leader,
         Store::Registry => registry,
     };
-    conn.trace_v2(rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE, Some(said));
+    conn.trace_v2(rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE, Some(said))
 }
 
 /// Bring the SQLite file `conn` up to `steps`, one transaction per step, after checking this build may use it.
