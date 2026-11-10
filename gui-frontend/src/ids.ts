@@ -26,6 +26,14 @@ export function suggestId(kind: string, taken: Iterable<string>): string {
   }
 }
 
+/** `name` itself when `taken` lacks it, else `name-n` at the lowest `n` from 2 that it lacks. A new object's name is
+ * offered this way, so two objects never show the same name until an author makes them. */
+export function freeName(name: string, taken: Iterable<string>): string {
+  const used = new Set(taken);
+  if (!used.has(name)) return name;
+  for (let n = 2; ; n += 1) if (!used.has(`${name}-${n}`)) return `${name}-${n}`;
+}
+
 /** The alphabet minted IDs draw from. Never read aloud or typed, so it is not trimmed for lookalikes. */
 const TOKEN_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789';
 /** Characters of randomness in a minted id. Thirty-six to the eighth is far past the objects one bundle holds, and a
