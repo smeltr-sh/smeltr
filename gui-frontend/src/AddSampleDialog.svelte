@@ -122,12 +122,7 @@
       name = '';
       source = '';
       text = '';
-      const at = opening;
-      sourceIdsInScope().then(
-        (ids) => at === opening && (sources = ids),
-        // If the list cannot be read, it offers no source, and the records are used or saved standing for none.
-        () => {},
-      );
+      sources = [];
       taken = null;
       error = '';
       loading = false;
@@ -153,6 +148,14 @@
     // Records pasted are not an upload's, nor the reverse.
     if (next !== way) text = '';
     way = next;
+    if ((next === 'paste' || next === 'upload') && sources.length === 0) {
+      const at = opening;
+      sourceIdsInScope().then(
+        (ids) => at === opening && (sources = ids),
+        // If the list cannot be read, it offers no source, and the records are used or saved standing for none.
+        () => {},
+      );
+    }
   }
 
   async function pickFile(e: Event) {

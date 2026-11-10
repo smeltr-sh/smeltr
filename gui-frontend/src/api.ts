@@ -1644,7 +1644,11 @@ export async function sharedConfig(): Promise<FileConfigDto | null> {
 
 /** The sources a sample of this scope may stand for: its own, then those of `shared/`. */
 export async function sourceIdsInScope(): Promise<string[]> {
-  const [own, shared] = await Promise.all([getConfig(), sharedConfig()]);
+  // Read as `configAt` reads, so the base commit a save is checked against stays where the page read it.
+  const [own, shared] = await Promise.all([
+    configAt(currentBranch(), currentScope()),
+    sharedConfig(),
+  ]);
   return [...(own.config?.sources ?? []), ...(shared?.sources ?? [])].map((s) => s.id);
 }
 
