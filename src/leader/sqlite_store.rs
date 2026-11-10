@@ -430,13 +430,14 @@ pub(crate) const STEPS: &[&str] = &[
     // 18 -- the syslog and socket receivers share one module, so its lines name no service, and "syslogReceiver" is
     // no longer one a log level override can name (`logs::levels`). Breaking, so no older build opens the store
     // after it: an older build would keep syslogReceiver as a service, and this build refuses to save log levels whose
-    // overrides still name it.
+    // overrides still name it. The subquery is wrapped in json() because json_set keeps a value as JSON only when a
+    // JSON function gives it directly; SQLite 3.54 inserts a bare subquery's result as a quoted string.
     "-- An override that names the service syslogReceiver names nothing now: dropped.
-     UPDATE settings SET value = json_set(value, '$.overrides', (
+     UPDATE settings SET value = json_set(value, '$.overrides', json((
          SELECT COALESCE(json_group_array(json(o.value)), json('[]'))
            FROM json_each(settings.value, '$.overrides') AS o
           WHERE json_extract(o.value, '$.service') IS NOT 'syslogReceiver'
-     ))
+     )))
       WHERE key = 'log_levels' AND json_valid(value) AND json_type(value, '$.overrides') = 'array';",
     // 19 -- a summary the leader had a model write is kept as a fresh start (`model::Turn::Fresh`), not on the answer
     // it was written for. Breaking: an older build reads the summary on the answer, so this step removes it from
@@ -588,7 +589,7 @@ impl Store {
     /// A damaged file is refused: nothing else holds what it holds.
     pub fn open(path: &Path, secret_key: &Path) -> Result<Store, StoreError> {
         let mut conn = Connection::open(path)?;
-        super::steps::say_statements(&conn, super::steps::Store::Leader);
+        super::steps::say_statements(&mut conn, super::steps::Store::Leader)?;
         // First, so the leader never acts on what a damaged file says.
         if let Some(found) = damage(&conn, check_for(&conn))? {
             return Err(StoreError::failed(refusal(path, &found)));
