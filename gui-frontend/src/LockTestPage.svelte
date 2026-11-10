@@ -1,5 +1,5 @@
 <!--
-  Build / <pipeline> / lock a test, or Build / routes / route preview / lock
+  Build / <pipeline> / lock a test, or Build / routes / route a sample / lock
   a test: run once -- the pipeline preview, or (when `pipeline` is absent)
   the route preview -- over a saved sample and fix what it produced as the
   answer. The pipeline (or nothing) and the sample are given, not chosen
@@ -148,7 +148,7 @@
         previewOk = preview.ok;
         previewErrors = preview.errors;
       } else {
-        const preview = await routePreview(config, sample, atMicros);
+        const preview = await routePreview(config, sample, { atMicros });
         // A row that asked for more memory than a preview may hold fails a
         // run the same way (`test_api::run_route_actual`); refused here
         // rather than locked and failing every time it runs.
@@ -219,7 +219,7 @@
     }
     location.hash = pipeline
       ? `#/build/pipelines/${encodeURIComponent(pipeline)}`
-      : '#/build/routes/preview';
+      : '#/build/routes/sample';
   }
 
   function short(text: string, limit = 100): string {

@@ -1,7 +1,9 @@
 <!--
-  Adding a sample: the way it is made, then that way's form. A paste and an uploaded file are saved
-  by the primary action. A capture is `CaptureFlow`'s, at a source or a destination: a worker
-  already reading a source taps what is flowing, one that is not opens it and never commits.
+  Adding a sample: the way it is made, then that way's form. A paste or an uploaded file ends one of
+  two ways: Use these records keeps them unsaved at the leader for whoever wrote them (`holdPaste`)
+  and hands them to the page that opened this (`onuse`); Save sample makes them a sample on the
+  branch. A capture is `CaptureFlow`'s, at a source or a destination: a worker already reading a
+  source taps what is flowing, one that is not opens it and never commits.
 -->
 <script lang="ts" module>
   export type SampleWay = 'paste' | 'upload' | 'capture' | 'output' | 'input';
@@ -21,17 +23,20 @@
   import { STEP_GLYPHS, type Glyph } from './stepGlyphs';
   import { SYSTEM_GLYPHS } from './systemGlyphs';
   import { mintSampleId } from './ids';
+  import { neverLocked } from './Locked.svelte';
   import { count } from './time';
   import {
     errorText,
+    holdPaste,
     putSample,
     recordsFromText,
+    sourceIdsInScope,
     saveCapture,
     type CaptureStatus,
     type SampleDto,
   } from './api';
   import { heldCount } from './capture';
-  import { mayCapture } from './access';
+  import { NOT_IN_DEMO, mayCapture } from './access';
 
   let {
     open,
@@ -48,7 +53,8 @@
     start?: SampleWay;
     /** What a capture starts on (`CaptureFlow`). */
     target?: ComponentProps<typeof CaptureFlow>['target'];
-    /** What Use these records does with a capture (`CaptureFlow`). */
+    /** What to do with a capture or a paste the leader keeps for the person after Use these records. Without it, a
+     * paste is only saved. */
     onuse?: ComponentProps<typeof CaptureFlow>['onuse'];
     /** A pipeline's output rows, as a sample holds them: what the dialog saves when it opens at `output`, the
      * `SampleWay` for a pipeline's output. */
@@ -57,9 +63,13 @@
      * `input`, the `SampleWay` for a pipeline's input that is not saved yet. */
     input?: CaptureStatus;
     oncancel: () => void;
-    /** The new sample's id, once it is saved. */
-    onsaved: (id: string) => void;
+    /** Called with the new sample's id once it is saved. Left out for someone who may not save: the dialog then saves
+     * nothing. */
+    onsaved?: (id: string) => void;
   } = $props();
+
+  // Whoever may open it may use records, even on a page they may only read; only `onsaved` saves.
+  neverLocked();
 
   // A page with a turned corner: records written by hand.
   const PAGE: Glyph = {
@@ -93,6 +103,8 @@
   // record per non-empty line.
   let name = $state('');
   let source = $state('');
+  /** The sources the sample may stand for. */
+  let sources = $state<string[]>([]);
   let text = $state('');
   /** The records `output` returned, for the `output` `SampleWay`. */
   let taken = $state<Pick<SampleDto, 'columns' | 'records'> | null>(null);
@@ -110,6 +122,7 @@
       name = '';
       source = '';
       text = '';
+      sources = [];
       taken = null;
       error = '';
       loading = false;
@@ -135,6 +148,14 @@
     // Records pasted are not an upload's, nor the reverse.
     if (next !== way) text = '';
     way = next;
+    if ((next === 'paste' || next === 'upload') && sources.length === 0) {
+      const at = opening;
+      sourceIdsInScope().then(
+        (ids) => at === opening && (sources = ids),
+        // If the list cannot be read, it offers no source, and the records are used or saved standing for none.
+        () => {},
+      );
+    }
   }
 
   async function pickFile(e: Event) {
@@ -154,12 +175,12 @@
       const res = await putSample({
         id,
         name: name.trim(),
-        source: source.trim() || undefined,
+        source: source || undefined,
         columns: taken?.columns,
         records,
       });
       // A refusal is the dialog's error bar's to say.
-      if (res.ok) onsaved(id);
+      if (res.ok) onsaved?.(id);
     });
   }
 
@@ -170,15 +191,28 @@
     await busy.run(async () => {
       const id = mintSampleId();
       const res = await saveCapture(input.session, id, name.trim(), input.source);
-      if (res.ok) onsaved(id);
+      if (res.ok) onsaved?.(id);
       else error = errorText(res.errors) || 'could not save';
     });
   }
 
+  /** Keeps what was pasted or uploaded, unsaved, and hands it to the page. */
+  async function use() {
+    if (!onuse || NOT_IN_DEMO || records.length === 0) return;
+    error = '';
+    await busy.run(async () => {
+      const res = await holdPaste(records, source || undefined);
+      if (res.ok && res.capture) error = onuse(res.capture) ?? '';
+      else error = errorText(res.errors) || 'could not use these records';
+    });
+  }
+  let usable = $derived(onuse && (way === 'paste' || way === 'upload'));
+
   let canSave = $derived(name.trim() !== '' && kept > 0);
 
   function submit() {
-    if (!busy.on && way && canSave) void save();
+    if (!busy.on && usable) void use();
+    else if (!busy.on && way && canSave) void save();
   }
 </script>
 
@@ -199,15 +233,21 @@
           <input type="file" accept=".json,.ndjson,.jsonl,.txt,.log" onchange={pickFile} />
         </Field>
       {/if}
-      <Field required label="Name">
-        <input bind:value={name} placeholder="orders-west, ordinary hour" />
-      </Field>
+      {#if onsaved}
+        <!-- Only Save sample needs a name: Use these records keeps the records unnamed. -->
+        <Field required={!usable} label="Name">
+          <input bind:value={name} placeholder="orders-west, ordinary hour" />
+        </Field>
+      {/if}
       <Field
         optional
         label="Source it stands for"
         help="A route selects on a source, so a sample with none runs through a pipeline but not through a route."
       >
-        <input bind:value={source} placeholder="orders-west" class="mono" />
+        <select bind:value={source} class="mono">
+          <option value=""></option>
+          {#each sources as s (s)}<option value={s}>{s}</option>{/each}
+        </select>
       </Field>
       {#if way === 'paste'}
         <Field required label="Records">
@@ -216,6 +256,7 @@
         </Field>
       {/if}
       <span class="dim">{count(records.length, 'record')}</span>
+      <InlineError message={error} />
     </div>
   {:else if way === 'output'}
     <div class="form-body">
@@ -237,10 +278,19 @@
   {/if}
   {#snippet actions()}
     <Button type="button" onclick={oncancel} disabled={busy.on ? BUSY : ''}>Cancel</Button>
-    {#if way}
+    {#if usable}
       <Button
         type="submit"
         class="primary"
+        disabled={busy.on ? BUSY : NOT_IN_DEMO || (records.length === 0 ? INCOMPLETE : '')}
+        >Use these records</Button
+      >
+    {/if}
+    {#if way && onsaved}
+      <Button
+        type={usable ? 'button' : 'submit'}
+        class={usable ? '' : 'primary'}
+        onclick={usable ? () => void save() : undefined}
         disabled={busy.on || loading ? BUSY : !canSave ? INCOMPLETE : ''}
       >
         {loading ? 'Loading…' : busy.on ? 'Saving…' : 'Save sample'}
@@ -266,6 +316,7 @@
     gap: 0.7rem;
   }
   input,
+  select,
   textarea {
     width: 100%;
     box-sizing: border-box;

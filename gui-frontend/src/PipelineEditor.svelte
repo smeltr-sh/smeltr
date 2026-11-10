@@ -4,11 +4,10 @@
   `/api/areas/:area/preview/pipeline`, and saved with `PUT /api/areas/:area/pipelines/:id`, which the
   backend validates against the whole bundle.
 
-  The records come from a saved sample, so what a preview ran over has a
-  name and is in the branch's history; the sample menu also saves a
-  capture or pasted records as one. Whoever may not save one runs over the
-  capture the leader holds for them instead, which nothing keeps. The editor opens on the sample named in
-  the URL, else on the one this pipeline last ran over in this browser.
+  The records come from a saved sample, which has a name and is in the branch's history, or from the
+  records the leader holds for the person, captured or pasted and not yet saved; the sample menu can
+  save those as a sample. The editor opens on the sample named in the URL, else on the records the person
+  holds, else on the sample this pipeline last ran over in this browser.
 -->
 <script lang="ts">
   import Button, { BUSY, SAVE_FIRST } from './Button.svelte';
@@ -112,7 +111,6 @@
   import { hold, verdictFor, drop } from './edits';
   import type { ChangeRow } from './diff';
   import AddSampleDialog from './AddSampleDialog.svelte';
-  import CaptureFlow from './CaptureFlow.svelte';
   import { heldCount } from './capture';
   import RecordsPane, { type PauseRun } from './RecordsPane.svelte';
   import { RECOMPUTE_MS } from './FindBox.svelte';
@@ -733,14 +731,14 @@
     openedFor = opened;
     // `sample` came in from the URL (a sample row's "Run in a pipeline"
     // link, or a pipeline opened from the list while it held one). With
-    // none, or a stale one not on this branch, the editor opens on the
-    // last one this pipeline ran over, else on none: which records to run is
+    // no sample named, or one that is not on this branch, the editor opens
+    // on the records the person holds, as Route a sample does, else on the last
+    // sample this pipeline ran over, else on none: which records to run is
     // the author's to choose.
     untrack(() => {
       lastUsed = readLastUsed();
-      const opening = [sample, lastUsed].find(
-        (id) => id && choices.samples.some((s) => s.id === id),
-      );
+      const saved = (id: string) => (choices.samples.some((s) => s.id === id) ? id : '');
+      const opening = saved(sample ?? '') || choices.menuHeld?.choice || saved(lastUsed);
       if (opening || selectedSample) void chooseSample(opening ?? '');
     });
   });
@@ -1218,8 +1216,7 @@
     };
   }
 
-  /** Opens Add sample with its capture on the pipeline's own source. A viewer, who may only capture, goes straight
-   * to the capture. */
+  /** Opens Add sample with its capture on the pipeline's own source. */
   async function addSample() {
     // Unreadable connections leave the form on its own first target.
     const upstream = loadedId
@@ -1233,8 +1230,7 @@
         .filter((c) => c.kind === 'source')
         .map(sourceTarget)
         .find((t) => mayCapture(t)) ?? null;
-    if (readOnly) capturing = true;
-    else adding = true;
+    adding = true;
   }
 
   /** What the proposal read, said over the steps it made. */
@@ -1250,7 +1246,7 @@
       steps = stepsFromDto(p.steps ?? []);
       proposed = '';
       if (p.structured) {
-        proposed = 'The captured records arrive as fields, so they need no parser.';
+        proposed = 'These records arrive as fields, so they need no parser.';
         return;
       }
       if (!steps.length) {
@@ -1289,11 +1285,7 @@
 
   let proposalStep: Step | null = $state(null);
   let proposal = $state<FieldProposal | null>(null);
-  let selectedSampleName = $derived(
-    heldSession(selectedSample)
-      ? 'your capture'
-      : (choices.samples.find((s) => s.id === selectedSample)?.name ?? selectedSample),
-  );
+  let selectedSampleName = $derived(choices.name(selectedSample));
 
   /** Writes `path` in the last open eval step, or in a new one at the end, and opens that step for its value. */
   function assignField(path: string) {
@@ -1684,39 +1676,34 @@
             {lockedBy}
             held={choices.menuHeld}
             onpick={chooseSample}
-            onadd={readOnly && !mayCapture() ? undefined : addSample}
+            onadd={addSample}
           />
         {/snippet}
         {#snippet stage()}{@render stageChips()}{/snippet}
       </RecordsPane>
     </div>
-    {#if !readOnly}
-      <AddSampleDialog
-        open={capturing || adding || savingOutput !== null || savingInput}
-        start={capturing ? 'capture' : savingOutput ? 'output' : savingInput ? 'input' : undefined}
-        target={captureAt ?? captureTarget}
-        onuse={useCapture}
-        output={savingOutput ? () => outputOf(savingOutput!) : undefined}
-        input={savingInput && choices.held ? choices.held : undefined}
-        oncancel={() => {
-          capturing = false;
-          adding = false;
-          savingOutput = null;
-          savingInput = false;
-          captureAt = null;
-        }}
-        onsaved={savingOutput ? savedOutput : savingInput ? savedInput : captured}
-      />
-    {:else if capturing}
-      <CaptureFlow
-        target={captureAt ?? undefined}
-        onuse={useCapture}
-        oncancel={() => {
-          capturing = false;
-          captureAt = null;
-        }}
-      />
-    {/if}
+    <AddSampleDialog
+      open={capturing || adding || savingOutput !== null || savingInput}
+      start={capturing ? 'capture' : savingOutput ? 'output' : savingInput ? 'input' : undefined}
+      target={captureAt ?? captureTarget}
+      onuse={useCapture}
+      output={savingOutput ? () => outputOf(savingOutput!) : undefined}
+      input={savingInput && choices.held ? choices.held : undefined}
+      oncancel={() => {
+        capturing = false;
+        adding = false;
+        savingOutput = null;
+        savingInput = false;
+        captureAt = null;
+      }}
+      onsaved={readOnly
+        ? undefined
+        : savingOutput
+          ? savedOutput
+          : savingInput
+            ? savedInput
+            : captured}
+    />
   </SectionShell>
   <SaveBar
     dirty={isDirty || neverSaved}

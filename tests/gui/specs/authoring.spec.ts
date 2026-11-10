@@ -80,14 +80,16 @@ test('A1: a sample that does not load is listed on the Samples page and can be d
 test('A1: a pasted sample is saved under its name and is there to come back to', async ({
   admin,
   leader,
+  api,
 }) => {
+  await api.put(`/api/areas/shared/sources${ON}`, [{ id: 'orders-west', type: 'logs' }]);
   await goto(admin, leader, '#/build');
   await expect(admin.getByRole('heading', { name: 'Samples' })).toBeVisible();
   await admin.getByRole('button', { name: 'Add sample' }).click();
   const dialog = admin.getByRole('dialog');
   await dialog.getByRole('button', { name: 'Paste' }).click();
   await dialog.getByLabel('Name').fill('orders, an ordinary hour');
-  await dialog.getByLabel(/^Source it stands for/).fill('orders-west');
+  await dialog.getByLabel(/^Source it stands for/).selectOption('orders-west');
   await dialog.getByLabel(/^Records/).fill('{"id":1,"total":20}\n{"id":2,"total":35}\n');
   await expect(dialog.getByText('2 records')).toBeVisible();
   await dialog.getByRole('button', { name: 'Save sample' }).click();
@@ -217,10 +219,10 @@ test('A1: a viewer captures a deployed source from the map and downloads it', as
   // A capture not yet saved is a sample all the same, and is listed before the saved ones.
   await expect(
     viewer.getByRole('listbox', { name: 'Samples' }).getByRole('option').first(),
-  ).toContainText(/Your capture\s*3 records · own-metrics · not saved/);
+  ).toContainText(/Your records\s*3 records · own-metrics · not saved/);
   // Searching by the source it was captured from finds it, as it finds a saved sample.
   await viewer.getByRole('searchbox', { name: 'Find a sample' }).fill('own-metrics');
-  await expect(viewer.getByRole('option', { name: /Your capture/ })).toBeVisible();
+  await expect(viewer.getByRole('option', { name: /Your records/ })).toBeVisible();
 
   // Routes asks for the secrets a form may name, which a viewer may not read; they are left out, unsaid.
   const asked = viewer.waitForResponse((r) => r.url().includes('/api/secrets'));
@@ -231,7 +233,7 @@ test('A1: a viewer captures a deployed source from the map and downloads it', as
   // Route a sample offers it too, first, and routes its records. No route takes own-metrics.
   await goto(viewer, leader, '#/build/routes/sample');
   await expect(viewer.getByRole('button', { name: 'Choose a sample' })).toContainText(
-    'Your capture',
+    'Your records',
   );
   await viewer.getByRole('button', { name: 'Run' }).click();
   await expect(viewer.locator('.tile', { hasText: 'unrouted' })).toContainText('3');
@@ -287,9 +289,10 @@ test('A1: a viewer runs a pipeline over a capture without saving it', async ({
   await goto(viewer, leader, '#/build/pipelines/tidy');
 
   await viewer.getByRole('button', { name: 'Choose a sample' }).click();
-  // A viewer may only capture, so Add sample opens on the capture, at the pipeline's own source.
+  // A viewer uses records and never saves them. A capture starts at the pipeline's own source.
   await viewer.getByRole('button', { name: 'Add sample' }).click();
   const form = viewer.getByRole('dialog');
+  await form.getByRole('button', { name: 'Capture' }).click();
   await expect(form.getByRole('combobox', { name: /^Capture target/ })).toHaveValue(
     'source:own-metrics',
   );
@@ -302,7 +305,7 @@ test('A1: a viewer runs a pipeline over a capture without saving it', async ({
   await expect(viewer.getByRole('dialog')).toHaveCount(0);
 
   const chip = viewer.getByRole('button', { name: 'Choose a sample' });
-  await expect(chip).toContainText('Your capture');
+  await expect(chip).toContainText('Your records');
   await expect(chip).toContainText('3 records', { timeout: 30_000 });
   await expect(viewer.getByRole('button', { name: 'Lock this as a test' })).toHaveCount(0);
 
@@ -310,7 +313,19 @@ test('A1: a viewer runs a pipeline over a capture without saving it', async ({
   expect((await api.get('/api/areas/shared/samples')).samples).toEqual([]);
   await viewer.reload();
   await viewer.getByRole('button', { name: 'Choose a sample' }).click();
-  await expect(viewer.getByRole('option', { name: /Your capture/ })).toContainText('3 records');
+  await expect(viewer.getByRole('option', { name: /Your records/ })).toContainText('3 records');
+
+  // A paste replaces the capture held, with no name and no save.
+  await viewer.getByRole('button', { name: 'Add sample' }).click();
+  await form.getByRole('button', { name: 'Paste' }).click();
+  await expect(form.getByLabel('Name')).toHaveCount(0);
+  await expect(form.getByRole('button', { name: 'Save sample' })).toHaveCount(0);
+  await form.getByLabel(/^Records/).fill('{"id":1}\n');
+  await form.getByRole('button', { name: 'Use these records' }).click();
+  await expect(form).toHaveCount(0);
+  await expect(chip).toContainText('Your records');
+  await expect(chip).toContainText('1 record');
+  expect((await api.get('/api/areas/shared/samples')).samples).toEqual([]);
 });
 
 // A1, an editor: the capture that could be saved as a sample is run over unsaved instead, and nothing is committed.
@@ -362,7 +377,7 @@ test('A1: an editor runs a pipeline over a capture without saving it, then saves
   await expect(admin.getByRole('dialog')).toHaveCount(0);
 
   const chip = admin.getByRole('button', { name: 'Choose a sample' });
-  await expect(chip).toContainText('Your capture');
+  await expect(chip).toContainText('Your records');
   await expect(chip).toContainText('3 records', { timeout: 30_000 });
   expect((await api.get(`/api/areas/shared/samples${ON}`)).samples).toEqual([]);
 
@@ -688,7 +703,7 @@ for (const [what, proposal, note] of [
   [
     'arrive as fields',
     { read: 0, of: 0, structured: true },
-    'The captured records arrive as fields, so they need no parser.',
+    'These records arrive as fields, so they need no parser.',
   ],
   [
     'are in no format it reads',
@@ -1473,15 +1488,15 @@ test('A4: a route preview shows each output row, the route it matched and the de
   await webRoutes(api, ['{"status":200}', '{"status":503}']);
 
   await goto(admin, leader, '#/build/routes/sample');
-  await admin.getByRole('link', { name: 'Where these records would go' }).click();
-  await expect(admin.getByRole('heading', { name: 'Where these records would go' })).toBeVisible();
   await expect(admin.getByRole('button', { name: 'Choose a sample' })).toContainText(
     'storefront hour',
   );
 
-  // The page runs on arrival; each tile counts what one destination would be sent.
+  // The tab runs on arrival; each tile counts what one destination would be sent, and the diagram draws the trip.
   await expect(admin.getByRole('button', { name: '2 es-web' })).toBeVisible();
   await expect(admin.getByRole('button', { name: '1 kafka-alerts' })).toBeVisible();
+  await expect(admin.locator('.diagram')).toContainText('kafka-alerts');
+  await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeEnabled();
 
   const table = admin.getByRole('table');
   const ok = table.getByRole('row', { name: /^row 0 / });
@@ -1505,6 +1520,68 @@ test('A4: a route preview shows each output row, the route it matched and the de
   await expect(table.getByRole('row', { name: /^row 1 / })).toBeVisible();
   await alerts.click();
   await expect(table.getByRole('row', { name: /^row 0 / })).toBeVisible();
+
+  // Records that name no source route from the one chosen for them, but lock no test.
+  await api.put(`/api/areas/shared/samples/pasted${ON}`, {
+    id: 'pasted',
+    name: 'pasted errors',
+    records: [{ _raw: '{"status":503}' }],
+  });
+  await admin.reload();
+  await admin.getByRole('button', { name: 'Choose a sample' }).click();
+  await admin.getByRole('option', { name: /^pasted errors/ }).click();
+  await expect(admin.getByRole('button', { name: 'Run' })).toBeDisabled();
+  await admin.getByLabel('Source it stands for').selectOption('storefront');
+  await admin.getByRole('button', { name: 'Run' }).click();
+  await expect(admin.getByRole('button', { name: '1 kafka-alerts' })).toBeVisible();
+  await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeDisabled();
+});
+
+// A1 and A4: records pasted are held as a capture is, route from the source chosen for them, and save with none.
+test('A4: pasted records are held unsaved and route from the source chosen for them', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await webRoutes(api, ['{"status":200}']);
+  await goto(admin, leader, '#/build/pipelines/web');
+  const chip = admin.getByRole('button', { name: 'Choose a sample' });
+  await chip.click();
+  await admin.getByRole('button', { name: 'Add sample' }).click();
+  const dialog = admin.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Paste' }).click();
+  await dialog.getByLabel(/^Records/).fill('{"status":503}\n');
+  await dialog.getByRole('button', { name: 'Use these records' }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(chip).toContainText('Your records');
+  await expect(chip).toContainText('1 record');
+  expect((await api.get(`/api/areas/shared/samples${ON}`)).samples).toHaveLength(1);
+
+  await goto(admin, leader, '#/build/routes/sample');
+  await expect(admin.getByRole('button', { name: 'Choose a sample' })).toContainText(
+    'Your records',
+  );
+  await expect(admin.getByRole('button', { name: 'Run' })).toBeDisabled();
+  await admin.getByLabel('Source it stands for').selectOption('storefront');
+  await admin.getByRole('button', { name: 'Run' }).click();
+  await expect(admin.getByRole('button', { name: '1 kafka-alerts' })).toBeVisible();
+  await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeDisabled();
+
+  // Opened again, the editor starts on the records held, as Route a sample does.
+  await goto(admin, leader, '#/build/pipelines/web');
+  await expect(chip).toContainText('Your records');
+  await admin.getByRole('button', { name: 'Save as sample', exact: true }).click();
+  await admin.getByRole('button', { name: /^Save input as sample/ }).click();
+  const saving = admin.getByRole('dialog');
+  await saving.getByLabel('Name').fill('pasted errors');
+  await saving.getByRole('button', { name: 'Save sample' }).click();
+  await expect(saving).toHaveCount(0);
+  await expect(chip).toContainText('pasted errors');
+  const saved = (await api.get(`/api/areas/shared/samples${ON}`)).samples;
+  expect(saved.find((s: { name: string }) => s.name === 'pasted errors')).toMatchObject({
+    records: 1,
+  });
+  expect((await api.get('/api/captures/mine')).capture).toBeUndefined();
 });
 
 // A4, the whole trip. A step that does not compile says why once, on the step; the error chip above the records
@@ -1941,7 +2018,6 @@ test('A8: a route sends its unparseable rows where the analyst says, and the pre
   });
 
   await admin.getByRole('link', { name: 'Route a sample' }).click();
-  await admin.getByRole('link', { name: 'Where these records would go' }).click();
   const bad = admin.getByRole('table').getByRole('row', { name: /^row 1 / });
   await expect(bad).toContainText('Unparsable');
   await expect(bad).toContainText('deliver');

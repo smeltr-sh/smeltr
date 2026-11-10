@@ -173,7 +173,7 @@ pub const CATALOG: &[Route] = &[
         method: "POST",
         path: "/api/areas/:area/preview/routes",
         what: "Route a saved sample or a held capture through a draft bundle's routes and pipelines; nothing is written. Query: branch.",
-        body: "{ config: string (bundle JSON as a string), sample?: id, capture?: string (a held capture's session id, in place of sample), at_micros?: number }",
+        body: "{ config: string (bundle JSON as a string), sample?: id, capture?: string (a held capture's session id, in place of sample), source?: string (the source the records stand for, where the sample or capture names none), at_micros?: number }",
     },
     Route {
         method: "POST",
@@ -350,6 +350,12 @@ pub const CATALOG: &[Route] = &[
         path: "/api/captures/mine",
         what: "The capture the caller holds, as `capture`, while the leader still holds it and the caller views its group; otherwise no `capture`. No query.",
         body: "",
+    },
+    Route {
+        method: "POST",
+        path: "/api/captures/paste",
+        what: "Keep records you write as the capture you hold, in place of any other: previews run over it and it saves as a capture does. Returns its status. No query.",
+        body: "{ group, source?: id (the source the records stand for), records: object[] (each shaped as in a sample's `records`) }",
     },
     Route {
         method: "GET",
