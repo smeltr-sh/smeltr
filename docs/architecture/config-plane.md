@@ -74,8 +74,10 @@ and the rest optional (`standard::ELASTIC_SECURITY`, kept by hand). An
 imported OCSF attribute keeps the requirement OCSF gives it. A profile adds
 attributes to the classes and objects that take it, and applies only to a record
 that names it in `metadata.profiles`, so a profile's attributes are read only
-where it is asked for, and a schema read with any profile requires
-`metadata.profiles`. A recommended field is exported to JSON Schema as a field a row may lack. A type is read as smeltr spells
+where it is asked for, and a schema read with any profile requires `metadata`
+and `metadata.profiles`, whatever depth and requirements it is read at. The
+description of a schema read from an OCSF class names the release, class, depth,
+requirements and profiles it was read with. A recommended field is exported to JSON Schema as a field a row may lack. A type is read as smeltr spells
 it, or by the name a database, a spreadsheet or a standard gives it, from one
 map every reader shares (`schema::named`); a CSV's type the map does not know
 is read as the type it is told. Each reader gives the same table, checked as a

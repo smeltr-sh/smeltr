@@ -806,22 +806,30 @@ fn taken(
             "" => key.clone(),
             _ => format!("{prefix}.{key}"),
         };
-        // A record that takes any profile names it there.
+        // A record that takes any profile names it in metadata.profiles, whatever the depth and levels.
+        let listed = !cut.profiles.is_empty() && (path == "metadata" || path == "metadata.profiles");
         let mut a = a.clone();
-        if path == "metadata.profiles" && !cut.profiles.is_empty() {
+        if listed {
             a["requirement"] = json!("required");
         }
         let level = a.get("requirement").and_then(Value::as_str).unwrap_or("optional");
-        if !cut.levels.iter().any(|l| l == level) {
+        if !listed && !cut.levels.iter().any(|l| l == level) {
             continue;
         }
-        if path == "metadata.profiles" && !cut.profiles.is_empty() {
+        if listed && path == "metadata.profiles" {
             cov.reach("ocsf metadata.profiles required with a profile taken");
+            if depth > cut.depth {
+                cov.reach("ocsf metadata.profiles below the depth taken");
+            }
         }
         out.push((path.clone(), a.clone()));
         if a["type"] == "object_t" && depth < cut.depth {
             let inner = &doc["objects"][a["object_type"].as_str().unwrap_or_default()]["attributes"];
             taken(doc, inner, &path, depth + 1, cut, out, cov);
+        } else if a["type"] == "object_t" && listed {
+            let inner = &doc["objects"][a["object_type"].as_str().unwrap_or_default()]["attributes"];
+            let only = json!({ "profiles": inner["profiles"] });
+            taken(doc, &only, &path, depth + 1, cut, out, cov);
         }
     }
 }
@@ -846,6 +854,7 @@ fn an_ocsf_class_reads_as_deep_as_its_cut_and_at_the_levels_taken() {
                     "ocsf an attribute of a profile taken",
                     "ocsf an attribute of a profile left out",
                     "ocsf metadata.profiles required with a profile taken",
+                    "ocsf metadata.profiles below the depth taken",
                 ]
                 .map(String::from),
             ),

@@ -4,7 +4,7 @@
 //! of OCSF's requirements are taken: by default `required` and `recommended`, the list OCSF tells a producer to fill.
 //! A profile adds attributes to the classes and objects that take it, and a record names the profiles it takes in
 //! `metadata.profiles`. Only the attributes of the profiles in `Cut::profiles` are taken, and with any taken,
-//! `metadata.profiles` is required.
+//! `metadata` and `metadata.profiles` are required at any depth and levels.
 
 use serde_json::{Map, Value, json};
 
@@ -42,6 +42,9 @@ fn default_depth() -> usize {
 fn default_levels() -> Vec<String> {
     vec!["required".to_string(), "recommended".to_string()]
 }
+
+/// The fields a record that takes any profile must hold, to name them.
+const LISTED: [&str; 2] = ["metadata", "metadata.profiles"];
 
 /// The deepest `Cut::depth`. OCSF's objects name each other, so a cut has to stop somewhere.
 pub const DEEPEST: usize = 8;
@@ -91,6 +94,25 @@ pub fn read(doc: &Value, class: &str, cut: &Cut) -> Result<Vec<SchemaFieldDto>, 
     Ok(out)
 }
 
+/// How a schema read from `class` of `doc` with `cut` was read, for its description, so it can be read again the same
+/// way: the release, the class, the cut and the profiles, by OCSF's captions.
+pub fn described(doc: &Value, class: &str, cut: &Cut) -> String {
+    let caption = |of: &Value, name: &str| of["caption"].as_str().unwrap_or(name).to_string();
+    let profiles: Vec<String> = (cut.profiles.iter()).map(|p| caption(&doc["profiles"][p], p)).collect();
+    format!(
+        "OCSF {}{}, {} {} deep, {} fields, profiles: {}",
+        doc["version"].as_str().map_or(String::new(), |v| format!("{v} ")),
+        caption(&doc["classes"][class], class),
+        cut.depth,
+        if cut.depth == 1 { "level" } else { "levels" },
+        cut.levels.join(" and "),
+        match profiles.is_empty() {
+            true => "none".to_string(),
+            false => profiles.join(", "),
+        }
+    )
+}
+
 /// The profiles a class or an attribute takes, by name.
 fn profiles(of: &Value) -> Vec<&str> {
     let names = of.get("profiles").and_then(Value::as_array).into_iter().flatten();
@@ -129,11 +151,13 @@ impl Reader<'_> {
                 "" => key.clone(),
                 _ => format!("{prefix}.{key}"),
             };
-            let requirement = match path == "metadata.profiles" && !self.cut.profiles.is_empty() {
+            // A record that takes a profile names it in `metadata.profiles`, whatever the depth and levels taken.
+            let listed = !self.cut.profiles.is_empty() && LISTED.contains(&path.as_str());
+            let requirement = match listed {
                 true => "required",
                 false => a.get("requirement").and_then(Value::as_str).unwrap_or("optional"),
             };
-            if !self.cut.levels.iter().any(|l| l == requirement) {
+            if !listed && !self.cut.levels.iter().any(|l| l == requirement) {
                 continue;
             }
             let ty = a.get("type").and_then(Value::as_str).unwrap_or_default();
@@ -169,13 +193,24 @@ impl Reader<'_> {
                     "the cut makes more than {MOST} fields: take less depth or fewer requirements"
                 ));
             }
-            if ty == "object_t" && depth < self.cut.depth {
+            if ty == "object_t" && (depth < self.cut.depth || listed) {
                 let name = a.get("object_type").and_then(Value::as_str).unwrap_or_default();
                 let inner = (self.objects.and_then(|o| o.get(name)))
                     .and_then(|o| o.get("attributes"))
                     .and_then(Value::as_object)
                     .ok_or_else(|| format!("`{path}` holds the object `{name}`, which the file does not define"))?;
-                self.attributes(inner, &path, depth + 1, out)?;
+                match depth < self.cut.depth {
+                    true => self.attributes(inner, &path, depth + 1, out)?,
+                    // Below the depth taken, only `metadata.profiles`.
+                    false => {
+                        let only: Map<String, Value> = inner
+                            .iter()
+                            .filter(|(k, _)| *k == "profiles")
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
+                        self.attributes(&only, &path, depth + 1, out)?;
+                    }
+                }
             }
         }
         Ok(())
@@ -320,6 +355,51 @@ mod tests {
             paths(&read_with(&["container"])),
             ["metadata", "metadata.profiles", "time"]
         );
+    }
+
+    #[test]
+    fn with_a_profile_metadata_profiles_is_required_at_any_depth_and_levels() {
+        let cut = |depth: usize, levels: &[&str]| Cut {
+            depth,
+            levels: levels.iter().map(|l| l.to_string()).collect(),
+            profiles: vec!["host".into()],
+        };
+        let mut shallow = read(&profiled(), "c", &cut(1, &["required"])).unwrap();
+        shallow.sort_by(|a, b| a.field.cmp(&b.field));
+        assert_eq!(paths(&shallow), ["metadata", "metadata.profiles", "time"]);
+        let mut none_required = read(&profiled(), "c", &cut(2, &["recommended"])).unwrap();
+        none_required.sort_by(|a, b| a.field.cmp(&b.field));
+        assert_eq!(paths(&none_required), ["device", "metadata", "metadata.profiles"]);
+        assert!(
+            (none_required.iter())
+                .filter(|f| f.field.starts_with("metadata"))
+                .all(|f| f.requirement == Requirement::Required)
+        );
+    }
+
+    #[test]
+    fn a_read_is_described_by_its_release_class_cut_and_profiles() {
+        let doc = json!({
+            "version": "1.9.0",
+            "classes": { "c": { "caption": "Network Activity" } },
+            "profiles": { "host": { "caption": "Host" }, "cloud": { "caption": "Cloud" } },
+        });
+        let mut cut = Cut::default();
+        assert_eq!(
+            described(&doc, "c", &cut),
+            "OCSF 1.9.0 Network Activity, 2 levels deep, required and recommended fields, profiles: none"
+        );
+        cut.profiles = vec!["host".into(), "cloud".into()];
+        cut.depth = 3;
+        assert_eq!(
+            described(&doc, "c", &cut),
+            "OCSF 1.9.0 Network Activity, 3 levels deep, required and recommended fields, profiles: Host, Cloud"
+        );
+        cut.depth = 1;
+        cut.levels = vec!["required".into()];
+        assert!(described(&doc, "c", &cut).contains(", 1 level deep, required fields,"));
+        let unversioned = json!({ "classes": { "c": { "caption": "Network Activity" } } });
+        assert!(described(&unversioned, "c", &cut).starts_with("OCSF Network Activity, 1 level deep"));
     }
 
     #[test]

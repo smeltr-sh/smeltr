@@ -675,6 +675,9 @@ test('an OCSF class comes in with only the profiles ticked, and then names them 
   expect(field('cloud'), "the Cloud profile's, which it requires").toBeUndefined();
   expect(field('device'), "the Host profile's").toBeUndefined();
   expect(field('src_endpoint.ip')).toBeDefined();
+  const described =
+    'OCSF 1.9.0 Network Activity, 2 levels deep, required and recommended fields, profiles: none';
+  await expect(admin.getByText(described, { exact: true })).toBeVisible();
 
   // A profile ticked stays ticked on a class that takes it too.
   dialog = await addBuiltIn(admin, leader, 'OCSF', 'host');
@@ -693,6 +696,9 @@ test('an OCSF class comes in with only the profiles ticked, and then names them 
   expect(field('device')?.requirement).toBe('recommended');
   expect(field('metadata.profiles')).toMatchObject({ type: 'array<str>', requirement: 'required' });
   expect(field('cloud')).toBeUndefined();
+  const host =
+    'OCSF 1.3.0 HTTP Activity, 2 levels deep, required and recommended fields, profiles: Host';
+  await expect(admin.getByText(host, { exact: true })).toBeVisible();
 
   // An uploaded file's profiles are offered by their captions.
   const attribute = (requirement: string, profiles?: string[]) => ({
