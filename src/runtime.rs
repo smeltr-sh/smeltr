@@ -76,8 +76,8 @@ fn failed_block_reason(blocked: &Blocked) -> String {
             blocked.rows
         ),
         Cause::Declined { route } => format!(
-            "No delivery rule of route {route} took {} record(s), and Unmatched is answered with block. Nothing is \
-             committed and this source is blocked until the config changes -- add a rule that takes them, drop \
+            "No condition of route {route} took {} record(s), and Unmatched is answered with block. Nothing is \
+             committed and this source is blocked until the config changes -- add a condition that takes them, drop \
              them in the pipeline, or answer Unmatched with drop or deliver",
             blocked.rows
         ),
@@ -91,9 +91,9 @@ const PANICKED: &str = "its pipelines panicked";
 /// block.
 const UNMATCHED_MESSAGE: &str = "matched no route";
 
-/// What a capture says of a record that blocked its source because no delivery rule of its route took it and
+/// What a capture says of a record that blocked its source because no condition of its route took it and
 /// `Unmatched` is answered with block.
-const DECLINED_MESSAGE: &str = "no delivery rule took it";
+const DECLINED_MESSAGE: &str = "no condition took it";
 
 /// The block reason for rows no route matched, `Unmatched` answered with block. Retrying cannot clear it, so it names
 /// the only two fixes.
@@ -146,7 +146,7 @@ pub struct DestinationTarget {
     pub placement: Option<Placement>,
 }
 
-/// The `reason` label on `smeltr_rows_dropped_total`: no route matched the row, or no delivery rule of its route took
+/// The `reason` label on `smeltr_rows_dropped_total`: no route matched the row, or no condition of its route took
 /// it, and `Unmatched` is answered with drop (design doc, Exception taxonomy). A source loses rows three ways and only this label tells them apart.
 pub const DROPPED_UNMATCHED: &str = "unmatched";
 /// A destination refused the row for good, and its answer to `Refused` is drop. One a refused row was delivered to
@@ -2251,7 +2251,7 @@ impl Transform {
 
     /// Count `o` for the batch just handed off.
     fn count_outcomes(&self, source_label: &str, o: Outcomes) {
-        // One count of what met `Unmatched`, by why: no route took the row, or no delivery rule of its route did.
+        // One count of what met `Unmatched`, by why: no route took the row, or no condition of its route did.
         for (cause, n) in [("route", o.unmatched), ("rule", o.no_rule)] {
             self.metrics.incr(
                 "smeltr_rows_unmatched_total",
@@ -2809,13 +2809,13 @@ struct Serialized {
     /// Rows the route answered with drop and let go. Counted by the caller once the batch is handed
     /// off: an attempt that fails is run again, and would count the same rows again.
     dropped: u64,
-    /// Rows no delivery rule took, which met the route's `Unmatched` answer, and of those the ones it dropped. Counted
+    /// Rows no condition took, which met the route's `Unmatched` answer, and of those the ones it dropped. Counted
     /// by the caller, as `dropped` is.
     no_rule: u64,
     no_rule_dropped: u64,
     /// Each row's answer, by its row in the run: the route preview reports what was decided rather than deciding again.
     answers: Vec<Answer>,
-    /// The `ErrorSink` entries the answers were made from: the pipeline's, not what a delivery rule's condition adds.
+    /// The `ErrorSink` entries the answers were made from: the pipeline's, not what a condition adds.
     raised: std::ops::Range<usize>,
     /// What each of `Egress::taps` keeps of this run, in that order: each row under its columns.
     captured: Vec<Vec<(Vec<crate::heartbeat::CaptureColumn>, crate::heartbeat::CapturedRow)>>,
@@ -2852,7 +2852,7 @@ enum Cause {
     /// first marked row's exception, as the end of a clause: "at step parse: <what went wrong>". A record's own reason
     /// is worded as `first`.
     Marked { pipeline: String, first: String },
-    /// No delivery rule of route `route` took them, and its `Unmatched` answer is block.
+    /// No condition of route `route`, its name, took them, and its `Unmatched` answer is block.
     Declined { route: String },
 }
 
@@ -3224,7 +3224,7 @@ fn run_and_serialize(
             let blocked = Blocked {
                 rows: declined.len(),
                 cause: Cause::Declined {
-                    route: route.id.clone(),
+                    route: route.name.clone(),
                 },
                 records,
             };
@@ -3813,7 +3813,7 @@ pub fn preview_routes_at(
                             "pipeline {pipeline} marked it with a kind its route's exceptions block. The first {first}"
                         ),
                         Cause::Declined { .. } => {
-                            "no delivery rule of its route took it, and Unmatched is answered with block".to_string()
+                            "no condition of its route took it, and Unmatched is answered with block".to_string()
                         }
                     });
                     for (_, unrun) in masks {
@@ -4153,7 +4153,7 @@ mod tests {
         assert!(why.contains("record 0 blocks the source"), "{why}");
     }
 
-    /// A record no delivery rule takes shows its route's `Unmatched` answer: drop sends nothing, deliver sends the
+    /// A record no condition takes shows its route's `Unmatched` answer: drop sends nothing, deliver sends the
     /// pipeline's output to the answer's targets, and block holds it and says why.
     #[test]
     fn a_record_no_rule_takes_shows_its_routes_unmatched_answer() {
@@ -4199,7 +4199,7 @@ mod tests {
                 Answer::Deliver(_) => assert_eq!(route.documents[0].destinations, vec![1]),
                 _ => {
                     let why = rows[0].refused.as_deref().expect("a blocked record says why");
-                    assert!(why.contains("no delivery rule"), "{why}");
+                    assert!(why.contains("no condition"), "{why}");
                 }
             }
         }

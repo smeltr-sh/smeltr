@@ -91,7 +91,7 @@ gix-pack = { version = "0.77", default-features = false, features = ["generate"]
 # curl's own vendored source instead, the same shape `rdkafka`'s `curl-static` feature already commits this build to.
 curl = { version = "0.4", default-features = false, features = ["rustls", "static-curl"] }
 # The leader's store. `bundled` vendors SQLite.
-rusqlite = { version = "0.40.2", features = ["bundled", "trace"] }
+rusqlite = { version = "0.41.1", features = ["bundled", "trace"] }
 # The worker's heartbeat client, and the Elasticsearch destination. Blocking:
 # a worker thread has no async runtime.
 # `rustls-no-provider` is the same choice `axum-server` is given below: take the

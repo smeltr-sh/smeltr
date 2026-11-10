@@ -157,6 +157,9 @@ impl LoadedSystem {
             &metas,
         )?;
         let mut compiled = compiled;
+        for (at, route) in compiled.routes.iter_mut().enumerate() {
+            route.name = self.route_name(at);
+        }
         let named: std::collections::HashMap<DestId, Vec<DestId>> = self
             .topology
             .destinations
