@@ -23,12 +23,14 @@
   import { STEP_GLYPHS, type Glyph } from './stepGlyphs';
   import { SYSTEM_GLYPHS } from './systemGlyphs';
   import { mintSampleId } from './ids';
+  import { neverLocked } from './Locked.svelte';
   import { count } from './time';
   import {
     errorText,
     holdPaste,
     putSample,
     recordsFromText,
+    sourceIdsInScope,
     saveCapture,
     type CaptureStatus,
     type SampleDto,
@@ -61,9 +63,13 @@
      * `input`, the `SampleWay` for a pipeline's input that is not saved yet. */
     input?: CaptureStatus;
     oncancel: () => void;
-    /** The new sample's id, once it is saved. */
-    onsaved: (id: string) => void;
+    /** Called with the new sample's id once it is saved. Left out for someone who may not save: the dialog then saves
+     * nothing. */
+    onsaved?: (id: string) => void;
   } = $props();
+
+  // Whoever may open it may use records, even on a page they may only read; only `onsaved` saves.
+  neverLocked();
 
   // A page with a turned corner: records written by hand.
   const PAGE: Glyph = {
@@ -97,6 +103,8 @@
   // record per non-empty line.
   let name = $state('');
   let source = $state('');
+  /** The sources the sample may stand for. */
+  let sources = $state<string[]>([]);
   let text = $state('');
   /** The records `output` returned, for the `output` `SampleWay`. */
   let taken = $state<Pick<SampleDto, 'columns' | 'records'> | null>(null);
@@ -114,6 +122,7 @@
       name = '';
       source = '';
       text = '';
+      sources = [];
       taken = null;
       error = '';
       loading = false;
@@ -139,6 +148,14 @@
     // Records pasted are not an upload's, nor the reverse.
     if (next !== way) text = '';
     way = next;
+    if ((next === 'paste' || next === 'upload') && sources.length === 0) {
+      const at = opening;
+      sourceIdsInScope().then(
+        (ids) => at === opening && (sources = ids),
+        // If the list cannot be read, it offers no source, and the records are used or saved standing for none.
+        () => {},
+      );
+    }
   }
 
   async function pickFile(e: Event) {
@@ -158,12 +175,12 @@
       const res = await putSample({
         id,
         name: name.trim(),
-        source: source.trim() || undefined,
+        source: source || undefined,
         columns: taken?.columns,
         records,
       });
       // A refusal is the dialog's error bar's to say.
-      if (res.ok) onsaved(id);
+      if (res.ok) onsaved?.(id);
     });
   }
 
@@ -174,7 +191,7 @@
     await busy.run(async () => {
       const id = mintSampleId();
       const res = await saveCapture(input.session, id, name.trim(), input.source);
-      if (res.ok) onsaved(id);
+      if (res.ok) onsaved?.(id);
       else error = errorText(res.errors) || 'could not save';
     });
   }
@@ -184,7 +201,7 @@
     if (!onuse || NOT_IN_DEMO || records.length === 0) return;
     error = '';
     await busy.run(async () => {
-      const res = await holdPaste(records, source.trim() || undefined);
+      const res = await holdPaste(records, source || undefined);
       if (res.ok && res.capture) error = onuse(res.capture) ?? '';
       else error = errorText(res.errors) || 'could not use these records';
     });
@@ -216,16 +233,21 @@
           <input type="file" accept=".json,.ndjson,.jsonl,.txt,.log" onchange={pickFile} />
         </Field>
       {/if}
-      <!-- Only Save sample needs a name: Use these records keeps the records unnamed. -->
-      <Field required={!usable} label="Name">
-        <input bind:value={name} placeholder="orders-west, ordinary hour" />
-      </Field>
+      {#if onsaved}
+        <!-- Only Save sample needs a name: Use these records keeps the records unnamed. -->
+        <Field required={!usable} label="Name">
+          <input bind:value={name} placeholder="orders-west, ordinary hour" />
+        </Field>
+      {/if}
       <Field
         optional
         label="Source it stands for"
         help="A route selects on a source, so a sample with none runs through a pipeline but not through a route."
       >
-        <input bind:value={source} placeholder="orders-west" class="mono" />
+        <select bind:value={source} class="mono">
+          <option value=""></option>
+          {#each sources as s (s)}<option value={s}>{s}</option>{/each}
+        </select>
       </Field>
       {#if way === 'paste'}
         <Field required label="Records">
@@ -264,7 +286,7 @@
         >Use these records</Button
       >
     {/if}
-    {#if way}
+    {#if way && onsaved}
       <Button
         type={usable ? 'button' : 'submit'}
         class={usable ? '' : 'primary'}
@@ -294,6 +316,7 @@
     gap: 0.7rem;
   }
   input,
+  select,
   textarea {
     width: 100%;
     box-sizing: border-box;
