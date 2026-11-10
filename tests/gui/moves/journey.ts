@@ -2455,7 +2455,9 @@ async function chooseAccess(j: Journey, within: Locator): Promise<string[]> {
   const offered = [...world.roles.keys()].sort();
   const roles = offered.filter(() => rng.chance(3));
   for (const role of offered)
-    await within.getByRole('checkbox', { name: role }).setChecked(roles.includes(role));
+    await within
+      .getByRole('checkbox', { name: role, exact: true })
+      .setChecked(roles.includes(role));
   return roles;
 }
 
