@@ -105,30 +105,15 @@ describe('what a person may do', () => {
     expect(deployBlocker(['groups/storefront/sources.json', 'shared/routes.json'])).toBe('');
   });
 
-  it('judges another account the way it judges the person signed in', async () => {
-    await signInAs({ administrator: true, areas: {} });
-    const touches = ['groups/storefront/sources.json', 'shared/routes.json'];
-    expect(
-      deployBlocker(touches, { administrator: false, areas: { storefront: 'deployer' } }),
-    ).toBe('Deploying this takes a deployer in shared.');
-    expect(
-      deployBlocker(touches, {
-        administrator: false,
-        areas: { storefront: 'deployer', shared: 'deployer' },
-      }),
-    ).toBe('');
-    expect(deployBlocker(touches, { administrator: true, areas: {} })).toBe('');
-  });
-
   it('says approving takes what deploying does, when asked for an approval', async () => {
     await signInAs({ administrator: false, areas: { storefront: 'editor' } });
-    expect(deployBlocker(['groups/storefront/sources.json'], undefined, 'Approving this')).toBe(
+    expect(deployBlocker(['groups/storefront/sources.json'], 'Approving this')).toBe(
       'Approving this takes a deployer in storefront.',
     );
-    expect(deployBlocker(['README.md'], undefined, 'Approving this')).toBe(
+    expect(deployBlocker(['README.md'], 'Approving this')).toBe(
       'Approving this takes an administrator: it changes README.md.',
     );
-    expect(deployBlocker(['groups/storefront/sources.json'], undefined, 'Requesting changes')).toBe(
+    expect(deployBlocker(['groups/storefront/sources.json'], 'Requesting changes')).toBe(
       'Requesting changes takes a deployer in storefront.',
     );
   });

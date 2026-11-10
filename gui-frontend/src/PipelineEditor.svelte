@@ -123,7 +123,7 @@
   import { RECOMPUTE_MS } from './FindBox.svelte';
   import SampleMenu from './SampleMenu.svelte';
   import PencilIcon from './PencilIcon.svelte';
-  import { mintPipelineId } from './ids';
+  import { freeName, mintPipelineId } from './ids';
   import { announcePipelineNames, newPipelineHash, withPipeline, type Making } from './nav';
   import { ago } from './time';
   import { NOT_IN_DEMO, editable, mayCapture } from './access';
@@ -317,6 +317,8 @@
         sharedGrokPatterns = shared.grokPatterns ?? [];
         sharedSchemas = shared.schemas ?? [];
       }
+      // A new pipeline was named before the other pipelines arrived.
+      if (id === 'new' && pipelineName === newPipelineBase()) pipelineName = newPipelineName();
       configLoaded = true;
     })
     .finally(() => (configRead = true));
@@ -337,13 +339,21 @@
 
   /** By value: each hash makes `making` afresh, and the switch to raw JSON and back must not start the pipeline over. */
   const madeFor = $derived(making?.source);
+  /** What a new pipeline is called until its author names it: free of every other pipeline's name. Untracked, so
+   * the pipelines arriving do not start the new pipeline over. */
+  const newPipelineBase = () => (madeFor ? `${madeFor}-parse` : 'New pipeline');
+  const newPipelineName = () =>
+    freeName(
+      newPipelineBase(),
+      untrack(() => otherPipelines.map((p) => p.name)),
+    );
 
   $effect(() => {
     if (id === 'new') {
       loadedId = '';
       newId = mintPipelineId();
       result = lastGoodResult = null;
-      pipelineName = madeFor ? `${madeFor}-parse` : 'New pipeline';
+      pipelineName = newPipelineName();
       steps = [];
       produces = [];
       loading = false;
