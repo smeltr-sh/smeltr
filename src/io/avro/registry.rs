@@ -103,7 +103,7 @@ impl Registry {
         };
         Ok(Registry {
             url: config.url.trim_end_matches('/').to_string(),
-            agent: crate::io::http::agent_config(tls, secrets)?.new_agent(),
+            agent: crate::io::http::agent(crate::io::http::agent_config(tls, secrets)?),
             authorization,
         })
     }

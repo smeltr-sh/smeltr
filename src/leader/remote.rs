@@ -573,7 +573,7 @@ impl ureq::unversioned::resolver::Resolver for Reachable {
         config: &ureq::config::Config,
         timeout: ureq::unversioned::transport::NextTimeout,
     ) -> Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
-        let addrs = ureq::unversioned::resolver::DefaultResolver::default().resolve(uri, config, timeout)?;
+        let addrs = ureq::unversioned::resolver::Resolver::resolve(&crate::io::http::Naming, uri, config, timeout)?;
         let proxied = config.proxy().is_some_and(|proxy| {
             uri.host() == Some(proxy.host()) && uri.port_u16().is_none_or(|port| port == proxy.port())
         });

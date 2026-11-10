@@ -767,7 +767,7 @@ impl HttpTransport {
         config: &ureq::config::Config,
     ) -> Self {
         HttpTransport {
-            agent: config.new_agent(),
+            agent: agent(config.clone()),
             url: url.trim_end_matches('/').to_string(),
             content_type,
             headers,
@@ -999,6 +999,40 @@ pub fn agent_config(tls: Option<&Tls>, secrets: &HeldSecrets) -> Result<ureq::co
         .build())
 }
 
+/// An agent on `config`, whose resolver names the host when it fails to resolve it. Every agent smeltr talks to a
+/// service through is built here.
+pub fn agent(config: ureq::config::Config) -> ureq::Agent {
+    ureq::Agent::with_parts(config, ureq::unversioned::transport::DefaultConnector::new(), Naming)
+}
+
+/// The platform's resolver, its failure naming the host. The platform's own error does not name the host, and can be
+/// an error number that has nothing to do with names, such as "Device or resource busy".
+#[derive(Debug)]
+pub struct Naming;
+
+impl ureq::unversioned::resolver::Resolver for Naming {
+    fn resolve(
+        &self,
+        uri: &ureq::http::Uri,
+        config: &ureq::config::Config,
+        timeout: ureq::unversioned::transport::NextTimeout,
+    ) -> Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
+        let host = uri.host().unwrap_or_default();
+        ureq::unversioned::resolver::DefaultResolver::default()
+            .resolve(uri, config, timeout)
+            .map_err(|e| match e {
+                ureq::Error::Io(e) => {
+                    ureq::Error::Io(std::io::Error::new(e.kind(), format!("could not resolve {host}: {e}")))
+                }
+                ureq::Error::HostNotFound => ureq::Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("could not resolve {host}: it has no address"),
+                )),
+                e => e,
+            })
+    }
+}
+
 /// `agent_config`'s TLS alone, for a caller that sets the rest of the agent itself.
 pub fn tls_config(tls: Option<&Tls>, secrets: &HeldSecrets) -> Result<ureq::tls::TlsConfig, IoError> {
     let config = ureq::tls::TlsConfig::builder().root_certs(super::trust::ureq_roots(tls)?);
@@ -1023,6 +1057,14 @@ mod tests {
 
     use super::*;
     use crate::io::api::{Answer, Authorize};
+
+    /// A host that does not resolve is named in the error, whatever the platform says of it.
+    #[test]
+    fn a_host_that_does_not_resolve_is_named() {
+        let agent = agent(ureq::Agent::config_builder().proxy(None).build());
+        let e = agent.get("http://es.nowhere.invalid:9200/").call().unwrap_err();
+        assert!(e.to_string().contains("could not resolve es.nowhere.invalid"), "{e}");
+    }
 
     /// A sign-in handing out `token-1`, `token-2`, ... and saying a refused token is worth replacing when `replace`.
     struct Tokens {

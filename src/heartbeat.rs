@@ -1525,7 +1525,7 @@ mod client {
     /// agent built anywhere else waits on a leader that accepts and never answers for as long as the socket stays
     /// open.
     fn agent_with(tls: ureq::tls::TlsConfig, budget: std::time::Duration) -> ureq::Agent {
-        ureq::Agent::new_with_config(
+        crate::io::http::agent(
             ureq::Agent::config_builder()
                 .timeout_global(Some(budget))
                 .tls_config(tls)

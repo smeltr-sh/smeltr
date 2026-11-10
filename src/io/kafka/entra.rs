@@ -56,7 +56,7 @@ pub(super) use crate::io::entra::in_workload;
 /// A token for the client whose `sasl.oauthbearer.config` is `config`: what every Kafka client's context answers
 /// librdkafka with. A client this module does not sign in is refused, as librdkafka would have refused it.
 pub(super) fn token(config: Option<&str>) -> Result<OAuthToken, Box<dyn Error>> {
-    let agent = ureq::Agent::new_with_config(crate::io::http::agent_config(None, &Default::default())?);
+    let agent = crate::io::http::agent(crate::io::http::agent_config(None, &Default::default())?);
     Ok(token_from(config, &|name| std::env::var(name).ok(), agent)?)
 }
 
