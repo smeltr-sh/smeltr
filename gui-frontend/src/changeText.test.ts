@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { changeText, describe as describeValue, type ScopeChange } from './changeText';
-import type { FileConfigDto } from './api';
+import type { DeliverRuleDto, FileConfigDto } from './api';
 
 const base: FileConfigDto = {
   version: 1,
@@ -88,6 +88,25 @@ describe('changeText, one object changed one way', () => {
     });
     expect(text(next).body).toBe(
       'Update route kafka-main → Main: deliver from kafka-out to kafka-out when smeltr.exception == null',
+    );
+  });
+
+  it('says which destinations a delivery gained or lost, and its condition on each clause', () => {
+    const say = (before: DeliverRuleDto[], next: DeliverRuleDto[]) =>
+      text(
+        after((c) => (c.routes[0].deliver = next)),
+        after((c) => (c.routes[0].deliver = before)),
+      ).body.replace('Update route kafka-main → Main: ', '');
+    const out = [{ to: ['kafka-out'] }];
+    expect(say(out, [{ to: ['kafka-out', 'kafka-dlq', 'kafka-dlq'] }])).toBe(
+      'deliver also to kafka-dlq',
+    );
+    expect(say(out, [{ to: [] }])).toBe('stop delivering to kafka-out');
+    expect(
+      say([...out, { to: ['a'], when: '.b' }], [...out, { to: ['kafka-dlq'], when: '.b' }]),
+    ).toBe('deliver also to kafka-dlq when .b, and stop delivering to a when .b');
+    expect(say(out, [{ to: ['kafka-out'], when: '.b' }])).toBe(
+      'deliver from kafka-out to kafka-out when .b',
     );
   });
 

@@ -3917,8 +3917,8 @@ export type SecretDto = {
 export const currentVersion = (s: { versions: SecretVersionDto[] }): SecretVersionDto | undefined =>
   s.versions.at(-1);
 
-export async function listSecrets(): Promise<SecretDto[]> {
-  return (await readJson<{ secrets: SecretDto[] }>('/api/secrets')).secrets;
+export async function listSecrets(weight: Weight = 'bar'): Promise<SecretDto[]> {
+  return (await readJson<{ secrets: SecretDto[] }>('/api/secrets', weight)).secrets;
 }
 
 /** `value` is required for leader-stored custody and refused for
@@ -5392,7 +5392,7 @@ export interface KafkaFacts {
  * property the form lets through is still refused by the save. */
 export async function fieldCatalogs(): Promise<{ secrets: SecretDto[]; kafka: KafkaFacts }> {
   const [secrets, kafka] = await Promise.all([
-    listSecrets().catch((): SecretDto[] => []),
+    listSecrets('quiet').catch((): SecretDto[] => []),
     getSystemInfo()
       .then((info) => ({
         mechanisms: info.saslMechanisms ?? [],
@@ -5880,11 +5880,19 @@ export interface StandardRelease {
   source: string;
 }
 
-/** An OCSF class: its name, which a schema is read by, its caption, and its category; empty for none. */
+/** An OCSF class: its name, which a schema is read by, its caption, its category (empty for none), and the profiles
+ * it takes. */
 export interface OcsfClass {
   name: string;
   caption: string;
   category: string;
+  profiles: OcsfProfile[];
+}
+
+/** An OCSF profile: its name, which a schema is read with, and its caption. */
+export interface OcsfProfile {
+  name: string;
+  caption: string;
 }
 
 /** The releases of ECS and OCSF the leader carries, each newest first, which `readSchema` reads with `builtIn`. */
@@ -5911,8 +5919,9 @@ export function readSchema(req: {
   requirements?: EcsRequirements;
   /** The OCSF class to read. */
   class?: string;
-  /** How much of the OCSF class: how many keys deep, and which requirement levels. */
-  cut?: { depth: number; levels: Requirement[] };
+  /** How much of the OCSF class: how many keys deep, which requirement levels, and the attributes of which of its
+   * profiles. */
+  cut?: { depth: number; levels: Requirement[]; profiles: string[] };
   /** The OpenTelemetry signal whose records an `otlp` schema holds; absent, `logs`. */
   signal?: OtlpSignal;
   /** Which column of a CSV holds what; absent, its header says. */

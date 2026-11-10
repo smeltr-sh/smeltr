@@ -221,6 +221,12 @@ test('A1: a viewer captures a deployed source from the map and downloads it', as
   // Searching by the source it was captured from finds it, as it finds a saved sample.
   await viewer.getByRole('searchbox', { name: 'Find a sample' }).fill('own-metrics');
   await expect(viewer.getByRole('option', { name: /Your capture/ })).toBeVisible();
+
+  // Routes asks for the secrets a form may name, which a viewer may not read; they are left out, unsaid.
+  const asked = viewer.waitForResponse((r) => r.url().includes('/api/secrets'));
+  await goto(viewer, leader, '#/build/routes');
+  expect((await asked).status()).toBe(403);
+  await expect(viewer.getByText('this needs editor in at least one area')).toHaveCount(0);
 });
 
 // A1, a viewer: they capture a source feeding a pipeline from its editor's sample menu and run the pipeline over it,
