@@ -8785,11 +8785,10 @@ mod tests {
         assert_eq!(listening[0].address.port(), 18088);
     }
 
-    /// A destination that never answers holds the stop for the readers' drain and no longer: the pool behind them
-    /// has nothing left to wait for, since what lands after the readers have gone is committed by nobody.
-    #[test]
-    fn a_destination_that_never_answers_holds_the_stop_for_one_drain() {
-        let dir = repo("unreachable-destination");
+    /// A deployment of a metrics source routed by `routes` to a Kafka destination nobody answers for, three seconds
+    /// after it started: long enough for the source to hand over a batch.
+    fn started_unanswered(name: &str, routes: &str) -> Deployment {
+        let dir = repo(name);
         write(&dir, "groups/west/system.json", r#"{"version":1}"#);
         write(
             &dir,
@@ -8806,12 +8805,8 @@ mod tests {
             "groups/west/pipelines/p.json",
             r#"{"id":"p","name":"p","steps":[]}"#,
         );
-        write(
-            &dir,
-            "groups/west/routes.json",
-            r#"[{"id":"r","source":"m","pipeline":"p","deliver":[{"to":["d"]}]}]"#,
-        );
-        let head = commit(&dir, "a destination nobody answers for");
+        write(&dir, "groups/west/routes.json", routes);
+        let head = commit(&dir, name);
         let spec = child::StartSpec {
             state_dir: dir.clone(),
             repo_dir: dir.clone(),
@@ -8825,8 +8820,18 @@ mod tests {
             incarnation: 1,
         };
         let deployment = start_deployment(&spec, &child::Runtime::default()).unwrap();
-        // Long enough for the metrics source to hand over a batch the destination will never acknowledge.
         std::thread::sleep(Duration::from_secs(3));
+        deployment
+    }
+
+    /// A destination that never answers holds the stop for the readers' drain and no longer: the pool behind them
+    /// has nothing left to wait for, since what lands after the readers have gone is committed by nobody.
+    #[test]
+    fn a_destination_that_never_answers_holds_the_stop_for_one_drain() {
+        let deployment = started_unanswered(
+            "unreachable-destination",
+            r#"[{"id":"r","source":"m","pipeline":"p","deliver":[{"to":["d"]}]}]"#,
+        );
 
         let stopping = Instant::now();
         stop_deployment(deployment);
@@ -8841,45 +8846,11 @@ mod tests {
     /// waiting out the drain would only delay the deployment that clears it.
     #[test]
     fn a_held_batch_ends_the_drain() {
-        let dir = repo("held-drain");
-        write(&dir, "groups/west/system.json", r#"{"version":1}"#);
-        write(
-            &dir,
-            "groups/west/sources.json",
-            r#"[{"id":"m","type":"metrics","bucketSeconds":1}]"#,
-        );
-        write(
-            &dir,
-            "groups/west/destinations.json",
-            r#"[{"id":"d","type":"kafka","brokers":"127.0.0.1:1","defaultTopic":"t"}]"#,
-        );
-        write(
-            &dir,
-            "groups/west/pipelines/p.json",
-            r#"{"id":"p","name":"p","steps":[]}"#,
-        );
-        write(
-            &dir,
-            "groups/west/routes.json",
+        let deployment = started_unanswered(
+            "held-drain",
             r#"[{"id":"r","source":"m","pipeline":"p","deliver":[{"when":"false","to":["d"]}],
                  "exceptions":{"kinds":{"Unmatched":"block"}}}]"#,
         );
-        let head = commit(&dir, "every row unmatched, and unmatched blocks");
-        let spec = child::StartSpec {
-            state_dir: dir.clone(),
-            repo_dir: dir.clone(),
-            commit: head,
-            group_id: "west".to_string(),
-            thread_limit: 1,
-            memory: None,
-            heartbeat_interval: Duration::from_secs(1),
-            worker_id: "w1".to_string(),
-            secrets: vec![],
-            incarnation: 1,
-        };
-        let deployment = start_deployment(&spec, &child::Runtime::default()).unwrap();
-        // Long enough for the metrics source to hand over a batch, and for its unmatched rows to hold it.
-        std::thread::sleep(Duration::from_secs(3));
         assert!(
             deployment.readers.iter().any(|r| r.report.lock().unwrap().held.is_some()),
             "no source was blocked"
