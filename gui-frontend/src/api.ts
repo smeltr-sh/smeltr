@@ -5166,8 +5166,8 @@ export interface TemporaryPasswordDto {
 export type AccountRefusal = { status: number; error: string };
 
 /** Every account, however it signs in, oldest first. */
-export async function listAccounts(): Promise<AccountDto[]> {
-  return (await readJson<{ accounts: AccountDto[] }>('/api/accounts')).accounts;
+export async function listAccounts(weight: Weight = 'bar'): Promise<AccountDto[]> {
+  return (await readJson<{ accounts: AccountDto[] }>('/api/accounts', weight)).accounts;
 }
 
 /** `POST`, `PATCH` and the two actions all answer the envelope, whose first error the
