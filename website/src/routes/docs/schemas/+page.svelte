@@ -139,6 +139,12 @@
     </li>
     <li>Choose the <strong>Class</strong>, such as <strong>Authentication</strong>.</li>
     <li>
+      Tick the <strong>Profiles</strong> your records take. A profile, such as Host or Cloud, adds
+      fields to the class, and OCSF applies it only to a record that names it in
+      <code>metadata.profiles</code>. With any profile ticked, the schema requires
+      <code>metadata.profiles</code>. Leave them all unticked if your records name no profile.
+    </li>
+    <li>
       Leave <strong>Depth</strong> at 2 and <strong>Include fields that are</strong> at required and recommended.
       That is the list OCSF asks a producer to fill. Add optional, or a greater depth, only if your pipeline
       fills those fields.
@@ -147,9 +153,9 @@
   <ProductScreenshot
     source="schema-ocsf"
     height={1800}
-    crop={{ x: 608, y: 478, width: 1664, height: 851 }}
-    alt="The New schema from an OCSF class dialog: OCSF built in, the Authentication class, depth 2, and required and recommended checked."
-    caption="An OCSF class, read two levels deep, with the fields OCSF requires or recommends."
+    crop={{ x: 608, y: 341, width: 1664, height: 1118 }}
+    alt="The New schema from an OCSF class dialog: OCSF 1.9.0 built in, the Network Activity class, the Host profile ticked, depth 2, and required and recommended checked."
+    caption="An OCSF class with the Host profile, read two levels deep, with the fields OCSF requires or recommends."
   />
   <p>Add a schema for each class you send.</p>
 
