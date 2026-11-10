@@ -5,8 +5,8 @@
   backend validates against the whole bundle.
 
   The records come from a saved sample, which has a name and is in the branch's history, or from the
-  records the leader holds for the person, captured or pasted and not saved, which the sample menu
-  saves as a sample. The editor opens on the sample named in the URL, else on the records the person
+  records the leader holds for the person, captured or pasted and not yet saved; the sample menu can
+  save those as a sample. The editor opens on the sample named in the URL, else on the records the person
   holds, else on the sample this pipeline last ran over in this browser.
 -->
 <script lang="ts">
@@ -731,8 +731,8 @@
     openedFor = opened;
     // `sample` came in from the URL (a sample row's "Run in a pipeline"
     // link, or a pipeline opened from the list while it held one). With
-    // none, or a stale one not on this branch, the editor opens on the
-    // records the person holds, as Route a sample does, else on the last
+    // no sample named, or one that is not on this branch, the editor opens
+    // on the records the person holds, as Route a sample does, else on the last
     // sample this pipeline ran over, else on none: which records to run is
     // the author's to choose.
     untrack(() => {

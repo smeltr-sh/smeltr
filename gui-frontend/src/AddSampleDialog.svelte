@@ -103,7 +103,7 @@
   // record per non-empty line.
   let name = $state('');
   let source = $state('');
-  /** What `source` may name. */
+  /** The sources the sample may stand for. */
   let sources = $state<string[]>([]);
   let text = $state('');
   /** The records `output` returned, for the `output` `SampleWay`. */
@@ -125,7 +125,7 @@
       const at = opening;
       sourceIdsInScope().then(
         (ids) => at === opening && (sources = ids),
-        // Unread, the list offers no source, and the records are used or saved standing for none.
+        // If the list cannot be read, it offers no source, and the records are used or saved standing for none.
         () => {},
       );
       taken = null;
