@@ -221,6 +221,14 @@ test('A1: a viewer captures a deployed source from the map and downloads it', as
   // Searching by the source it was captured from finds it, as it finds a saved sample.
   await viewer.getByRole('searchbox', { name: 'Find a sample' }).fill('own-metrics');
   await expect(viewer.getByRole('option', { name: /Your capture/ })).toBeVisible();
+
+  // Route a sample offers it too, first, and routes its records. No route takes own-metrics.
+  await goto(viewer, leader, '#/build/routes/sample');
+  await expect(viewer.getByRole('button', { name: 'Choose a sample' })).toContainText(
+    'Your capture',
+  );
+  await viewer.getByRole('button', { name: 'Run' }).click();
+  await expect(viewer.locator('.tile', { hasText: 'unrouted' })).toContainText('3');
 });
 
 // A1, a viewer: they capture a source feeding a pipeline from its editor's sample menu and run the pipeline over it,
@@ -1461,7 +1469,9 @@ test('A4: a route preview shows each output row, the route it matched and the de
   await goto(admin, leader, '#/build/routes/sample');
   await admin.getByRole('link', { name: 'Where these records would go' }).click();
   await expect(admin.getByRole('heading', { name: 'Where these records would go' })).toBeVisible();
-  await expect(admin.getByRole('combobox', { name: 'Sample' })).toHaveValue('web-sample');
+  await expect(admin.getByRole('button', { name: 'Choose a sample' })).toContainText(
+    'storefront hour',
+  );
 
   // The page runs on arrival; each tile counts what one destination would be sent.
   await expect(admin.getByRole('button', { name: '2 es-web' })).toBeVisible();

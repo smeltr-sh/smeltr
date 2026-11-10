@@ -1,5 +1,5 @@
 <!--
-  Route preview: where a saved sample's records would go, through
+  Route preview: where a sample's records would go, through
   `POST /api/areas/:area/preview/routes` (`runtime::preview_routes`). The routes it runs
   are the ones on screen, saved or not, so this answers what the edit in
   front of you would do.
@@ -12,17 +12,17 @@
 <script lang="ts">
   import Button, { BUSY, LOADING } from './Button.svelte';
   import RecordsGrid, { type FindChip, type GridRow, type LeadColumn } from './RecordsGrid.svelte';
+  import { untrack } from 'svelte';
   import { unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
+  import SampleMenu from './SampleMenu.svelte';
+  import { routable, recordsOf, SampleChoices } from './sampleChoices.svelte';
   import {
-    getSample,
-    listSamples,
     routePreview,
     errorText,
     type FileConfigDto,
     type RoutePreviewResult,
     type SampleRecordDto,
-    type SampleSummary,
   } from './api';
   import { nameOf } from './exceptions';
 
@@ -33,7 +33,7 @@
      * given none, it picks a sample and runs for itself. Two of these on a
      * screen must not be two pickers over two runs of the same thing. */
     result: given,
-    /** The sample `result` ran over, by id. */
+    /** The sample `result` ran over, as `SampleMenu` chooses one. */
     sample: givenSample = '',
   }: {
     config: FileConfigDto | null;
@@ -41,10 +41,14 @@
     sample?: string;
   } = $props();
 
-  let samples: SampleSummary[] = $state([]);
-  // Until the list arrives, no sample is not the same as none naming a source.
-  let loaded = $state(false);
+  // A page that hands it a result (driven) shows no picker, so it reads no samples.
+  const choices =
+    untrack(() => given) === undefined ? new SampleChoices((e) => (error = unreported(e))) : null;
+  let offered = $derived(choices && routable(choices));
   let selected = $state('');
+  $effect(() => {
+    if (!selected && offered) selected = offered.first;
+  });
   let own = $state<RoutePreviewResult | null>(null);
   /** The sample `own` ran over. */
   let ran = $state('');
@@ -53,20 +57,6 @@
   let running = $state(false);
   let error = $state('');
   let grid = $state<RecordsGrid | undefined>();
-
-  async function loadSamples() {
-    try {
-      const res = await listSamples();
-      // Only a sample that names a source can be routed: routing selects on
-      // one, so a pasted sample with none matches nothing.
-      samples = res.samples.filter((s) => s.source);
-      loaded = true;
-      if (!selected && samples.length > 0) selected = samples[0].id;
-    } catch (e) {
-      error = unreported(e);
-    }
-  }
-  loadSamples();
 
   async function run() {
     if (!config || !selected) return;
@@ -97,9 +87,9 @@
     const id = sampleId;
     sampleRecords = [];
     if (!id) return;
-    getSample(id).then(
-      (res) => {
-        if (id === sampleId) sampleRecords = res.sample?.records ?? [];
+    recordsOf(id).then(
+      (records) => {
+        if (id === sampleId) sampleRecords = records;
       },
       (e) => (error = unreported(e)),
     );
@@ -300,14 +290,15 @@
 </script>
 
 <div class="preview" class:empty={driven && !result && !error}>
-  {#if !driven}
+  {#if offered}
     <div class="controls">
-      <label for="route-sample"><span class="field-name">Route a sample</span></label>
-      <select id="route-sample" bind:value={selected}>
-        {#each samples as s (s.id)}
-          <option value={s.id}>{s.name} ({s.records})</option>
-        {/each}
-      </select>
+      <SampleMenu
+        samples={offered.samples}
+        {selected}
+        records={own && ran === selected ? own.rows.length : null}
+        held={offered.held}
+        onpick={(choice) => (selected = choice)}
+      />
       <Button
         class="primary"
         onclick={run}
@@ -317,7 +308,7 @@
       </Button>
     </div>
 
-    {#if loaded && samples.length === 0}
+    {#if offered.none}
       <p>
         No sample names a source. Routing selects on a source, so a sample has to say which one its
         records stand for &mdash; set that on the <a class="link" href="#/build">Samples</a> page.
@@ -386,19 +377,6 @@
     align-items: center;
     gap: 0.5rem;
     margin-bottom: 0.75rem;
-  }
-  .controls label {
-    font-size: var(--text-label);
-    color: var(--dim);
-  }
-  /* The label register: the field's name. */
-  .field-name {
-    display: flex;
-    align-items: center;
-    font-weight: 600;
-  }
-  select {
-    flex-grow: 1;
   }
   .tiles {
     display: flex;

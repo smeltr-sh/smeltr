@@ -14,17 +14,18 @@
   import { reported, unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import RoutePreview from './RoutePreview.svelte';
+  import SampleMenu from './SampleMenu.svelte';
+  import { routable, SampleChoices } from './sampleChoices.svelte';
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
   import {
     getConfig,
     currentBranch,
-    listSamples,
     routePreview,
     errorText,
     type FileConfigDto,
     type RoutePreviewResult,
-    type SampleSummary,
+    heldSession,
   } from './api';
   import { count } from './time';
   import { editable } from './access';
@@ -33,7 +34,11 @@
   let loading = $state(true);
   let loadFailed = $state(false);
 
-  let samples = $state<SampleSummary[]>([]);
+  const choices = new SampleChoices((e) => {
+    loadFailed = true;
+    reported(e);
+  });
+  let offered = $derived(routable(choices));
   let selected = $state('');
   let result = $state<RoutePreviewResult | null>(null);
   /** The sample `result` ran over. */
@@ -45,13 +50,10 @@
     loading = true;
     loadFailed = false;
     try {
-      const [cfg, listed] = await Promise.all([getConfig(), listSamples()]);
+      const [cfg] = await Promise.all([getConfig(), choices.ready]);
       if (cfg.config) config = cfg.config;
       else loadFailed = true;
-      // Only a sample that names a source can be routed: routing selects on
-      // one, so a pasted sample with none matches nothing.
-      samples = listed.samples.filter((s) => s.source);
-      if (!selected && samples.length > 0) selected = samples[0].id;
+      if (!selected) selected = offered.first;
     } catch (e) {
       loadFailed = true;
       reported(e);
@@ -86,7 +88,7 @@
     }
   }
 
-  let sampleName = $derived(samples.find((s) => s.id === selected)?.name ?? selected);
+  let sampleName = $derived(choices.name(selected));
 
   // Locking a test needs a run that actually produced this output: the
   // routes as saved on this branch, over a named sample.
@@ -326,12 +328,13 @@
   {:else}
     <div class="controls">
       <span class="saved-context">Saved on <code>{currentBranch()}</code></span>
-      <label for="rp-sample"><span class="field-name">Sample</span></label>
-      <select id="rp-sample" bind:value={selected}>
-        {#each samples as s (s.id)}
-          <option value={s.id}>{s.name} ({count(s.records, 'record')})</option>
-        {/each}
-      </select>
+      <SampleMenu
+        samples={offered.samples}
+        {selected}
+        records={result && ran === selected ? result.rows.length : null}
+        held={offered.held}
+        onpick={(choice) => (selected = choice)}
+      />
       <Button
         class="primary"
         onclick={run}
@@ -341,7 +344,7 @@
       </Button>
     </div>
 
-    {#if samples.length === 0}
+    {#if offered.none}
       <p>
         No sample names a source. Routing selects on a source, so a sample has to say which one its
         records stand for &mdash; set that on the <a class="link" href="#/build">Samples</a> page.
@@ -355,7 +358,11 @@
         <Button
           type="button"
           onclick={goLockTest}
-          disabled={!canLockTest ? 'Choose a sample and run it without errors first.' : ''}
+          disabled={heldSession(selected)
+            ? 'A test locks a saved sample. Save your capture as a sample first: Save input as sample, in the pipeline editor.'
+            : !canLockTest
+              ? 'Choose a sample and run it without errors first.'
+              : ''}
         >
           Lock this as a test
         </Button>
@@ -428,23 +435,6 @@
     display: flex;
     align-items: center;
     margin-bottom: 0.5rem;
-  }
-
-  .controls label {
-    font-size: var(--text-label);
-    color: var(--dim);
-  }
-
-  /* The label register: the field's name. */
-  .field-name {
-    display: flex;
-    align-items: center;
-    font-weight: 600;
-  }
-
-  select {
-    flex-grow: 1;
-    max-width: 24rem;
   }
 
   .diagram-scroll {

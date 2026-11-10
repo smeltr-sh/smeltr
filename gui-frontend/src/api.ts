@@ -2731,7 +2731,9 @@ export interface RoutePreviewResult {
   warnings?: string[];
 }
 
-/** `config` is the whole bundle as the editor has it, so unsaved route edits
+/** Routes `sample`, a saved sample's id or a held capture's choice (`heldChoice`), through `config`.
+ *
+ * `config` is the whole bundle as the editor has it, so unsaved route edits
  * are what gets previewed. `atMicros` pins `now()` and a reference-less
  * `parseTime`, the way a locked test re-runs against the instant it locked
  * at; an ordinary preview omits it and reads the wall clock. */
@@ -2740,9 +2742,15 @@ export function routePreview(
   sample: string,
   atMicros?: number,
 ): Promise<RoutePreviewResult> {
+  const capture = heldSession(sample);
   return post(
     branched(inArea('/preview/routes')),
-    { config, sample, at_micros: atMicros ?? null },
+    {
+      config,
+      sample: capture ? null : sample,
+      capture: capture ?? null,
+      at_micros: atMicros ?? null,
+    },
     'quiet',
   );
 }
