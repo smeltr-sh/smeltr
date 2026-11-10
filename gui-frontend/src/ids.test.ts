@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mintPipelineId, mintRouteId, mintSampleId, suggestId } from './ids';
+import { freeName, mintPipelineId, mintRouteId, mintSampleId, suggestId } from './ids';
 
 describe('suggestId', () => {
   it('names the kind, so two sources of different kinds are told apart before either is opened', () => {
@@ -16,6 +16,14 @@ describe('suggestId', () => {
     // `length + 1` offered `kafka-2` here, which is taken.
     expect(suggestId('kafka', ['kafka-2'])).toBe('kafka-1');
     expect(suggestId('kafka', ['kafka-1', 'kafka-3'])).toBe('kafka-2');
+  });
+});
+
+describe('freeName', () => {
+  it('keeps the name when nothing has it, and numbers past the ones that do', () => {
+    expect(freeName('tutorial-in-parse', ['other'])).toBe('tutorial-in-parse');
+    expect(freeName('tutorial-in-parse', ['tutorial-in-parse'])).toBe('tutorial-in-parse-2');
+    expect(freeName('tutorial-in-parse', ['tutorial-in-parse', 'tutorial-in-parse-2'])).toBe('tutorial-in-parse-3');
   });
 });
 

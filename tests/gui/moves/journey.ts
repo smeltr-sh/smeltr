@@ -560,10 +560,13 @@ async function routeFromMap(
     // A metrics record is a line of JSON.
     () => expect(page.getByText(/records? read as JSON/)).toBeVisible(),
   );
-  await save(j, () => expect(picker.locator('option:checked')).toContainText(pipeline));
-  world.editing.pipelines.push(pipeline);
+  // A new pipeline is offered a name no other pipeline has.
+  let named = pipeline;
+  for (let n = 2; world.editing.pipelines.includes(named); n += 1) named = `${pipeline}-${n}`;
+  await save(j, () => expect(picker.locator('option:checked')).toHaveText(named));
+  world.editing.pipelines.push(named);
   await save(j, () => expect(page).toHaveURL(/#\/map/));
-  world.editing.routes.push({ source, pipeline, to: world.editing.destinations[0] ?? null });
+  world.editing.routes.push({ source, pipeline: named, to: world.editing.destinations[0] ?? null });
   await editingIsSaved(j);
 }
 
