@@ -82,6 +82,15 @@ const pipeline = (config: FileConfigDto, id: string) =>
   config.pipelines.find((p) => p.id === id) as { id: string; name: string; steps: unknown[] };
 
 describe('changeText, one object changed one way', () => {
+  it("names a delivery's condition and its destinations", () => {
+    const next = after((c) => {
+      c.routes[0].deliver = [{ to: ['kafka-out'], when: 'smeltr.exception == null' }];
+    });
+    expect(text(next).subject).toBe(
+      'Update route kafka-main → Main: deliver from kafka-out to kafka-out when smeltr.exception == null',
+    );
+  });
+
   it('names the field and both values', () => {
     const next = after((c) => {
       (c.sources[0] as { brokers: string }).brokers = 'b1:9092,b2:9092,b3:9092';

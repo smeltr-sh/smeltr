@@ -5654,6 +5654,7 @@ mod tests {
         };
         let route = |to: Vec<crate::core::id::DestId>| CompiledRoute {
             id: "r".into(),
+            name: "r".into(),
             source: 0,
             cond: None,
             pipeline: 0,

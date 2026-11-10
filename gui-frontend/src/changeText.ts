@@ -124,10 +124,14 @@ function allHave(items: unknown[], keys: string[]): boolean {
 function describeArray(items: unknown[]): string {
   if (items.length === 0) return 'none';
   if (items.every((item) => typeof item === 'string')) return elide(items.join(', '));
-  // Delivery rules: where rows go is the fact, not how many rules say so.
+  // Delivery: each condition's destinations, and the condition when it has one, which is the change when only it moved.
   if (items.every((item) => isRecord(item) && Array.isArray(item.to))) {
-    const to = [...new Set(items.flatMap((item) => (item as { to: string[] }).to))];
-    return elide(`to ${to.join(', ')}`);
+    const rules = items as { to: string[]; when?: string }[];
+    return elide(
+      rules
+        .map((r) => (r.when ? `${r.to.join(', ')} when ${oneLine(r.when)}` : r.to.join(', ')))
+        .join('; '),
+    );
   }
   const rows = items as Record<string, string>[];
   if (allHave(items, ['target', 'expr'])) {
