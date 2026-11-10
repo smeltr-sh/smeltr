@@ -401,6 +401,11 @@ impl Lane {
         ParkedTake::Batch(u.batch, u.records, u.unprocessable, u.waiting.map(|w| w.since))
     }
 
+    /// The batch held until the config changes, if this lane holds one. Nothing polled after it runs or commits.
+    pub fn held_batch(&self) -> Option<BatchId> {
+        self.parked.lock().unwrap().retry.front().filter(|u| u.held).map(|u| u.batch)
+    }
+
     /// Record that the reader has been told, if the oldest parked batch is still the one waiting on `dest` since
     /// `since`. A batch that went through and was parked again is a new wait, told anew.
     fn note_hold_reported(&self, dest: DestId, since: std::time::Instant) {
