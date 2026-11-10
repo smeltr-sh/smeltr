@@ -3917,8 +3917,8 @@ export type SecretDto = {
 export const currentVersion = (s: { versions: SecretVersionDto[] }): SecretVersionDto | undefined =>
   s.versions.at(-1);
 
-export async function listSecrets(): Promise<SecretDto[]> {
-  return (await readJson<{ secrets: SecretDto[] }>('/api/secrets')).secrets;
+export async function listSecrets(weight: Weight = 'bar'): Promise<SecretDto[]> {
+  return (await readJson<{ secrets: SecretDto[] }>('/api/secrets', weight)).secrets;
 }
 
 /** `value` is required for leader-stored custody and refused for
@@ -5392,7 +5392,7 @@ export interface KafkaFacts {
  * property the form lets through is still refused by the save. */
 export async function fieldCatalogs(): Promise<{ secrets: SecretDto[]; kafka: KafkaFacts }> {
   const [secrets, kafka] = await Promise.all([
-    listSecrets().catch((): SecretDto[] => []),
+    listSecrets('quiet').catch((): SecretDto[] => []),
     getSystemInfo()
       .then((info) => ({
         mechanisms: info.saslMechanisms ?? [],
