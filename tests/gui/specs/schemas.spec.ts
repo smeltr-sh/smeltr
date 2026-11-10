@@ -645,6 +645,72 @@ test('ECS and an OCSF class come in from the releases the leader carries', async
   expect(field('actor'), 'optional in 1.3, recommended in 1.9').toBeUndefined();
 });
 
+test('an OCSF class comes in with only the profiles ticked, and then names them in metadata.profiles', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  let dialog = await addBuiltIn(admin, leader, 'OCSF', 'bare');
+  await dialog.getByRole('combobox', { name: 'Class' }).selectOption({ label: 'Network Activity' });
+  const profiles = dialog.getByRole('group', { name: /^Profiles/ });
+  await expect(profiles.getByRole('checkbox', { name: 'Host', exact: true })).not.toBeChecked();
+  await expect(profiles.getByRole('checkbox', { checked: true })).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  let field = await saved(admin, api, 'bare');
+  expect(field('cloud'), "the Cloud profile's, which it requires").toBeUndefined();
+  expect(field('device'), "the Host profile's").toBeUndefined();
+  expect(field('src_endpoint.ip')).toBeDefined();
+
+  // A profile ticked stays ticked on a class that takes it too.
+  dialog = await addBuiltIn(admin, leader, 'OCSF', 'host');
+  await dialog.getByRole('combobox', { name: 'Class' }).selectOption({ label: 'Network Activity' });
+  await dialog.getByRole('checkbox', { name: 'Host', exact: true }).check();
+  await dialog.getByRole('combobox', { name: 'Class' }).selectOption({ label: 'HTTP Activity' });
+  await expect(dialog.getByRole('checkbox', { name: 'Host', exact: true })).toBeChecked();
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  field = await saved(admin, api, 'host');
+  expect(field('device')?.requirement).toBe('recommended');
+  expect(field('metadata.profiles')).toMatchObject({ type: 'array<str>', requirement: 'required' });
+  expect(field('cloud')).toBeUndefined();
+
+  // An uploaded file's profiles are offered by their captions.
+  const attribute = (requirement: string, profiles?: string[]) => ({
+    type: 'string_t',
+    requirement,
+    ...(profiles ? { profiles } : {}),
+  });
+  const file = {
+    version: '1.9.0',
+    classes: {
+      c: {
+        caption: 'C',
+        profiles: ['host'],
+        attributes: { time: attribute('required'), hostname: attribute('required', ['host']) },
+      },
+    },
+    objects: {},
+    profiles: { host: { caption: 'Host' } },
+  };
+  await goto(admin, leader, '#/build/schemas');
+  await admin.getByRole('button', { name: '+ Add schema' }).click();
+  dialog = admin.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'OCSF', exact: true }).click();
+  await dialog.getByLabel('id', { exact: true }).fill('uploaded');
+  await dialog.getByRole('button', { name: 'Upload a file', exact: true }).click();
+  await dialog.getByLabel(/^File/).setInputFiles({
+    name: 'ocsf.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(file)),
+  });
+  await dialog.getByRole('checkbox', { name: 'Host', exact: true }).check();
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  field = await saved(admin, api, 'uploaded');
+  expect(field('hostname')?.requirement).toBe('required');
+});
+
 test('an OpenTelemetry signal comes in as the records the OTLP receiver gives', async ({
   admin,
   leader,

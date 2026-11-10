@@ -57,11 +57,12 @@ declaration read the same. A bundle declares its schemas as such tables. A
 schema is also read from a file a standard or a spreadsheet gives, each format
 by its own reader: JSON Schema (`schema::json_schema`), ECS's `fields.csv` or
 `ecs_flat.yml` (`schema::ecs`), one class of `ocsf-schema-compiler`'s output,
-cut to as many keys deep and to the requirements asked for (`schema::ocsf`),
+cut to as many keys deep, to the requirements and to the profiles asked for (`schema::ocsf`),
 and a CSV of fields, one row per field, its columns chosen by their place or
 found by the header's names (`schema::csv`). The leader carries one release of
-ECS and one of OCSF, compiled and cut to what `schema::ocsf` reads, so either
-is read without its file (`schema::standard`); another release is uploaded.
+ECS and the releases of OCSF its destinations read, compiled and cut to what
+`schema::ocsf` reads, so each is read without its file (`schema::standard`);
+another release is uploaded.
 A schema is also made from one OpenTelemetry signal's records, the fields an
 OTLP receiver gives and an OTLP destination reads, with the `resource` and
 `scope` a record came under (`schema::otlp`). A field is required where the
@@ -70,7 +71,11 @@ An imported ECS schema's required fields are required and its core fields
 recommended, unless Elastic Security's requirements are asked for: then the
 fields its field reference requires are required, those it uses recommended
 and the rest optional (`standard::ELASTIC_SECURITY`, kept by hand). An
-imported OCSF attribute keeps the requirement OCSF gives it. A recommended field is exported to JSON Schema as a field a row may lack. A type is read as smeltr spells
+imported OCSF attribute keeps the requirement OCSF gives it. A profile adds
+attributes to the classes and objects that take it, and applies only to a record
+that names it in `metadata.profiles`, so a profile's attributes are read only
+where it is asked for, and a schema read with any profile requires
+`metadata.profiles`. A recommended field is exported to JSON Schema as a field a row may lack. A type is read as smeltr spells
 it, or by the name a database, a spreadsheet or a standard gives it, from one
 map every reader shares (`schema::named`); a CSV's type the map does not know
 is read as the type it is told. Each reader gives the same table, checked as a

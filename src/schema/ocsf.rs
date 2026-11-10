@@ -2,6 +2,9 @@
 //! its attributes typed. The class's attributes are fields, and so are those of the objects they hold, as deep as
 //! `Cut::depth` keys; an object below that is `{...}`, which a row fits whatever it holds. `Cut::levels` says which
 //! of OCSF's requirements are taken: by default `required` and `recommended`, the list OCSF tells a producer to fill.
+//! A profile adds attributes to the classes and objects that take it, and a record names the profiles it takes in
+//! `metadata.profiles`. Only the attributes of the profiles in `Cut::profiles` are taken, and with any taken,
+//! `metadata.profiles` is required.
 
 use serde_json::{Map, Value, json};
 
@@ -17,6 +20,9 @@ pub struct Cut {
     /// Which requirements are taken, as OCSF names them: `required`, `recommended`, `optional`.
     #[serde(default = "default_levels")]
     pub levels: Vec<String>,
+    /// The profiles whose attributes are taken, by name. OCSF applies none unless a record says so.
+    #[serde(default)]
+    pub profiles: Vec<String>,
 }
 
 impl Default for Cut {
@@ -24,6 +30,7 @@ impl Default for Cut {
         Cut {
             depth: default_depth(),
             levels: default_levels(),
+            profiles: Vec::new(),
         }
     }
 }
@@ -61,11 +68,17 @@ pub fn read(doc: &Value, class: &str, cut: &Cut) -> Result<Vec<SchemaFieldDto>, 
         .get("classes")
         .and_then(Value::as_object)
         .ok_or("not ocsf-schema-compiler's output: it has no `classes`")?;
-    let attributes = (classes
-        .get(class)
-        .and_then(|c| c.get("attributes"))
-        .and_then(Value::as_object))
-    .ok_or_else(|| format!("the file has no class `{class}`"))?;
+    let (of, attributes) = (classes.get(class))
+        .and_then(|c| Some((c, c.get("attributes")?.as_object()?)))
+        .ok_or_else(|| format!("the file has no class `{class}`"))?;
+    let takes = profiles(of);
+    if let Some(p) = cut.profiles.iter().find(|p| !takes.contains(&p.as_str())) {
+        let takes = match takes.is_empty() {
+            true => "no profiles".to_string(),
+            false => takes.join(", "),
+        };
+        return Err(format!("`{class}` takes no profile `{p}`: it takes {takes}"));
+    }
     let reader = Reader {
         objects: doc.get("objects").and_then(Value::as_object),
         cut,
@@ -76,6 +89,12 @@ pub fn read(doc: &Value, class: &str, cut: &Cut) -> Result<Vec<SchemaFieldDto>, 
         return Err(format!("`{class}` has no attribute of the levels taken"));
     }
     Ok(out)
+}
+
+/// The profiles a class or an attribute takes, by name.
+fn profiles(of: &Value) -> Vec<&str> {
+    let names = of.get("profiles").and_then(Value::as_array).into_iter().flatten();
+    names.filter_map(Value::as_str).collect()
 }
 
 /// The classes `doc` holds, by name, for a picker.
@@ -102,14 +121,21 @@ impl Reader<'_> {
         out: &mut Vec<SchemaFieldDto>,
     ) -> Result<(), String> {
         for (key, a) in attributes {
-            let requirement = a.get("requirement").and_then(Value::as_str).unwrap_or("optional");
-            if !self.cut.levels.iter().any(|l| l == requirement) {
+            let from = profiles(a);
+            if !from.is_empty() && !from.iter().any(|p| self.cut.profiles.iter().any(|c| c == p)) {
                 continue;
             }
             let path = match prefix {
                 "" => key.clone(),
                 _ => format!("{prefix}.{key}"),
             };
+            let requirement = match path == "metadata.profiles" && !self.cut.profiles.is_empty() {
+                true => "required",
+                false => a.get("requirement").and_then(Value::as_str).unwrap_or("optional"),
+            };
+            if !self.cut.levels.iter().any(|l| l == requirement) {
+                continue;
+            }
             let ty = a.get("type").and_then(Value::as_str).unwrap_or_default();
             let element = match ty {
                 // A timestamp is epoch milliseconds.
@@ -192,12 +218,14 @@ mod tests {
         let only_required = Cut {
             depth: 1,
             levels: vec!["required".into()],
+            ..Cut::default()
         };
         let fields = read(&doc(), "authentication", &only_required).unwrap();
         assert!((fields.iter()).all(|f| f.requirement == Requirement::Required && !f.field.contains('.')));
         let everything = Cut {
             depth: 2,
             levels: vec!["required".into(), "recommended".into(), "optional".into()],
+            ..Cut::default()
         };
         let more = read(&doc(), "authentication", &everything).unwrap();
         assert_eq!(field(&more, "action").unwrap().requirement, Requirement::Optional);
@@ -226,6 +254,88 @@ mod tests {
             "`maybe` is no OCSF requirement: required, recommended or optional"
         );
         assert_eq!(classes(&doc()), vec!["authentication".to_string()]);
+    }
+
+    /// A class taking the profile `host`, whose `device` holds an object `container` adds an attribute to.
+    fn profiled() -> Value {
+        let device =
+            json!({ "type": "object_t", "object_type": "device", "requirement": "recommended", "profiles": ["host"] });
+        let metadata = json!({ "type": "object_t", "object_type": "metadata", "requirement": "required" });
+        json!({
+            "classes": { "c": { "profiles": ["host", "container"], "attributes": {
+                "time": { "type": "timestamp_t", "requirement": "required" },
+                "device": device,
+                "metadata": metadata,
+            } } },
+            "objects": {
+                "device": { "attributes": {
+                    "name": { "type": "string_t", "requirement": "required" },
+                    "container": { "type": "string_t", "requirement": "recommended", "profiles": ["container"] },
+                } },
+                "metadata": { "attributes": {
+                    "profiles": { "type": "string_t", "is_array": true, "requirement": "optional" },
+                } },
+            },
+        })
+    }
+
+    fn paths(fields: &[SchemaFieldDto]) -> Vec<&str> {
+        fields.iter().map(|f| f.field.as_str()).collect()
+    }
+
+    #[test]
+    fn a_profile_adds_its_attributes_only_where_it_is_taken_at_any_depth() {
+        let read_with = |profiles: &[&str]| {
+            let cut = Cut {
+                profiles: profiles.iter().map(|p| p.to_string()).collect(),
+                ..Cut::default()
+            };
+            let mut fields = read(&profiled(), "c", &cut).unwrap();
+            fields.sort_by(|a, b| a.field.cmp(&b.field));
+            fields
+        };
+        assert_eq!(paths(&read_with(&[])), ["metadata", "time"]);
+        let host = read_with(&["host"]);
+        assert_eq!(
+            paths(&host),
+            ["device", "device.name", "metadata", "metadata.profiles", "time"]
+        );
+        let listed = field(&host, "metadata.profiles").unwrap();
+        assert_eq!(
+            (listed.ty.as_str(), listed.requirement),
+            ("array<str>", Requirement::Required)
+        );
+        assert_eq!(
+            paths(&read_with(&["host", "container"])),
+            [
+                "device",
+                "device.container",
+                "device.name",
+                "metadata",
+                "metadata.profiles",
+                "time"
+            ]
+        );
+        assert_eq!(
+            paths(&read_with(&["container"])),
+            ["metadata", "metadata.profiles", "time"]
+        );
+    }
+
+    #[test]
+    fn a_profile_the_class_does_not_take_is_refused() {
+        let cut = |p: &str| Cut {
+            profiles: vec![p.to_string()],
+            ..Cut::default()
+        };
+        assert_eq!(
+            read(&profiled(), "c", &cut("cloud")).unwrap_err(),
+            "`c` takes no profile `cloud`: it takes host, container"
+        );
+        assert_eq!(
+            read(&doc(), "authentication", &cut("host")).unwrap_err(),
+            "`authentication` takes no profile `host`: it takes no profiles"
+        );
     }
 
     #[test]
