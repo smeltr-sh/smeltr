@@ -9,7 +9,7 @@
 // sentence; a change touching many is a count over a body that lists them,
 // which is the shape a commit message already has.
 
-import type { FileConfigDto } from './api';
+import type { DeliverRuleDto, FileConfigDto } from './api';
 import { diffObjects } from './diff';
 import {
   SECTIONS,
@@ -184,6 +184,11 @@ function fieldPhrases(
     .filter((entry) => entry.kind !== 'unchanged' && !skip.includes(entry.key))
     .map((entry) => {
       const [was, now] = differing(entry.before, entry.after);
+      const moved =
+        entry.key === 'deliver' &&
+        was !== entry.before &&
+        deliveryMoves(was as DeliverRuleDto[], now as DeliverRuleDto[]);
+      if (moved) return moved;
       return `${entry.key} from ${say(entry.key, was, 'before')} to ${say(entry.key, now, 'after')}`;
     });
 }
@@ -200,6 +205,27 @@ function differing(before: unknown, after: unknown): [unknown, unknown] {
   const onlyBefore = before.filter((item) => !now.has(key(item)));
   const onlyAfter = after.filter((item) => !was.has(key(item)));
   return onlyBefore.length && onlyAfter.length ? [onlyBefore, onlyAfter] : [before, after];
+}
+
+/** For the changed rules of a route's `deliver`, matched by position, the destinations each gained and lost, as the
+ * description phrase. Undefined when the two sides hold different numbers of changed rules, or a matched pair differs
+ * in its condition: the caller then describes the whole field, "deliver from … to …". */
+function deliveryMoves(was: DeliverRuleDto[], now: DeliverRuleDto[]): string | undefined {
+  if (was.length !== now.length || was.some((rule, i) => rule.when !== now[i].when))
+    return undefined;
+  const phrases = was.map((rule, i) => {
+    const when = rule.when ? ` when ${elide(oneLine(rule.when))}` : '';
+    const gained = [...new Set(now[i].to)].filter((to) => !rule.to.includes(to));
+    const lost = [...new Set(rule.to)].filter((to) => !now[i].to.includes(to));
+    // Each clause carries the condition, so it cannot read as bound to the last clause alone.
+    return [
+      gained.length ? `deliver also to ${elide(gained.join(', '))}${when}` : '',
+      lost.length ? `stop delivering to ${elide(lost.join(', '))}${when}` : '',
+    ]
+      .filter(Boolean)
+      .join(', and ');
+  });
+  return phrases.filter(Boolean).join('; ') || undefined;
 }
 
 // -- pipeline steps --------------------------------------------------------
