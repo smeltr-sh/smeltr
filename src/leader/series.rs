@@ -120,8 +120,9 @@ const CHART_POINTS: i64 = 360;
 /// The widest point a chart draws, which keeps thirty days to 120 points.
 const WIDEST_POINT_MS: i64 = 6 * 60 * 60_000;
 
-/// How wide each point of a chart over `window` is: the narrowest tier's bucket, or [`WIDEST_POINT_MS`], that keeps
-/// the chart to [`CHART_POINTS`]. The tier a point that wide is summed from holds the whole window.
+/// How wide each point of a chart over `window` is: the narrowest tier's bucket that keeps the chart to
+/// [`CHART_POINTS`], or [`WIDEST_POINT_MS`] when none does. The tier a point that wide is summed from holds the whole
+/// window.
 pub fn chart_point_ms(window: std::time::Duration) -> i64 {
     let window_ms = window.as_millis() as i64;
     Tier::ALL
@@ -1081,11 +1082,11 @@ impl RegistryStore {
             .collect()
     }
 
-    /// Every subject of `metric` with a bucket at or after `since_ms`, each bucket keyed by the start of the
-    /// `point_ms` wide point it falls in, oldest first. A point is summed from the coarsest tier that fits in it, and
-    /// from the finer tiers that still hold the window's newest buckets: a point may hold several buckets, which a
-    /// counter adds and a gauge takes the highest of, as [`RegistryStore::maintain`] will. A point that began before
-    /// `since_ms` is left out, since only part of it would be read.
+    /// Every subject of `metric` with a point at or after `since_ms`, each point keyed by its start, `point_ms` wide,
+    /// oldest first. A point is summed from the coarsest tier that fits in it, and from the finer tiers that still
+    /// hold the window's newest buckets: a point may hold several buckets, which a counter adds and a gauge takes the
+    /// highest of, as [`RegistryStore::maintain`] rolls them up. A point that began before `since_ms` is left out,
+    /// since only part of it would be read.
     pub fn series_at(
         &self,
         metric: &str,
@@ -1108,6 +1109,7 @@ impl RegistryStore {
         }
         Ok(by_subject
             .into_iter()
+            .filter(|(_, points)| !points.is_empty())
             .map(|(subject_key, mut points)| {
                 points.sort_by_key(|(at, _)| *at);
                 (subject_key, points)

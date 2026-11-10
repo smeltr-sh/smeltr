@@ -1479,9 +1479,9 @@ pub struct FlowSeries {
 }
 
 /// What `GET /api/flow` serves (design doc E2 "Flow over time"): rows and payload bytes, in per source and out per
-/// destination, over the caller's window, in points as wide as its chart draws (`series::chart_point_ms`). A point
-/// is summed from the coarsest tier that fits in it, and its newest buckets are also read from the finer tiers that
-/// still hold them, so the most recent stretch is there too.
+/// destination, over the caller's window, in the points its chart draws (`series::chart_point_ms`). A point is summed
+/// from the coarsest tier that fits in it, and its newest buckets are also read from the finer tiers that still hold
+/// them, so the most recent stretch is there too.
 ///
 /// `bytes_out` is not `rows_out` weighed. A row counts as out when a destination's queue takes it; its bytes count
 /// when the destination acknowledges them, a queue later. The two agree while a destination keeps up and part
@@ -5564,8 +5564,8 @@ mod flow_endpoint_tests {
         assert_eq!(flow.rows_out[0].points[0].value, 9.0);
     }
 
-    /// A 30-day window is served in six-hour points. Each sums the buckets inside it, and the newest, still in the
-    /// finer tiers, is summed from them.
+    /// A 30-day window is served in six-hour points. Each sums the buckets inside it, and the newest point, still in
+    /// the finer tiers, is summed from those.
     #[test]
     fn a_long_window_holds_its_newest_buckets_too() {
         let state = state();

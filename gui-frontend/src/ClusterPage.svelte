@@ -269,7 +269,7 @@
   let windowTo = $derived(bucketMillis ? lastClosedBucket(bucketMillis, flowFetchedAt) : 0);
 
   // rows/s, not rows per bucket: the unit the rate line above the chart is in, and the
-  // only one that holds across the picker -- a bucket is 10s at sixty minutes and six
+  // only one that holds across the picker -- a point is 10s at sixty minutes and six
   // hours at thirty days.
   let fleetInDense = $derived(
     bucketMillis ? denseRates(fleetIn, bucketMillis, windowFrom, windowTo) : [],

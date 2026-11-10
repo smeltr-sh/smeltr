@@ -57,7 +57,7 @@ export function denseSeries(
 
 /** `denseSeries` per second rather than per bucket -- the unit the panel's own headline
  * reads (`currentRate`), so a chart drawn from this and the number above it cannot
- * disagree. It is also the only unit that holds across the window picker: a bucket is 10s
+ * disagree. It is also the only unit that holds across the window picker: a point is 10s
  * at sixty minutes and six hours at thirty days, so raw totals from two windows are not the
  * same measurement. A gap stays a gap; there is no rate where there was no bucket. */
 export function denseRates(

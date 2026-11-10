@@ -752,10 +752,10 @@ pub struct ExpectedPoint {
 }
 
 /// `group`'s `source`'s range, as rows per second, for each point of a chart drawn in points `point_ms` wide
-/// ([`super::series::chart_point_ms`]), from the one `since_ms` is in to the one `now_ms` is in. A point's range is
-/// the one judged at the widest width no wider than it, as of its hour. For a point finer than five minutes, it is
-/// the source's swings at that width ([`record_swings`]). A point where that width does not judge the source has
-/// none. The range reads only past days, so the point still filling has one too.
+/// ([`super::series::chart_point_ms`]), from the point `since_ms` is in to the point `now_ms` is in. A point's range
+/// is the one judged at the widest width no wider than it, as of its hour. For a point finer than five minutes, it is
+/// the source's swings at the point's own width ([`record_swings`]). A point where that width does not judge the
+/// source has none. The range reads only past days, so the point still filling has one too.
 pub fn expected_over(
     store: &RegistryStore,
     group: &str,

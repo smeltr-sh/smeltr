@@ -279,8 +279,8 @@ pub struct Stats {
     pub id: String,
     /// The window asked for, which every total covers.
     pub window_millis: i64,
-    /// How wide each point of the charts is (`series::chart_point_ms`): how coarse the answer is, and how close to
-    /// now its newest point can be.
+    /// How wide each point of the chart over the window these totals were summed for is (`series::chart_point_ms`):
+    /// how coarse the answer is, and how close to now its newest point can be.
     pub bucket_millis: i64,
     /// The leader's clock when it answered, which is the clock the buckets are on. A spread's grid ends at the
     /// bucket before the one holding this instant; the browser's own clock may sit a bucket off.
