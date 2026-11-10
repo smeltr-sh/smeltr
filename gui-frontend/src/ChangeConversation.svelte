@@ -85,8 +85,8 @@
 
   /** Why the signed-in person gives no verdict: one takes deployer, as deploying does. The leader refuses it, and a
    * verdict on a closed change. */
-  let approveBlocker = $derived(deployBlocker(touches, undefined, 'Approving this'));
-  let requestBlocker = $derived(deployBlocker(touches, undefined, 'Requesting changes'));
+  let approveBlocker = $derived(deployBlocker(touches, 'Approving this'));
+  let requestBlocker = $derived(deployBlocker(touches, 'Requesting changes'));
   let reviewable = $derived(!closed && approveBlocker === '');
   let sending = $derived<ComposerChoice>(reviewable ? choice : 'comment');
 

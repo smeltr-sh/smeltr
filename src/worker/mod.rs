@@ -1113,10 +1113,14 @@ fn run_reader_loop(
         if !handing && reader.commits.is_empty() {
             break;
         }
+        // Commits go oldest first, so once the oldest outstanding batch is the held one, nothing more can commit.
+        if lane.held_batch().is_some_and(|held| reader.commits.outstanding().next() == Some(held)) {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(10));
     }
     if !reader.commits.is_empty() {
-        tracing::info!(name: "drain_incomplete", target: "pipelines", subject = %reader.source_id, "the time allowed for finishing in-flight batches passed with some uncommitted, so they are read again by the next deployment");
+        tracing::info!(name: "drain_incomplete", target: "pipelines", subject = %reader.source_id, "a source stopped with some in-flight batches uncommitted, so they are read again by the next deployment");
     }
     reader.report_in_flight();
 }
@@ -8781,11 +8785,10 @@ mod tests {
         assert_eq!(listening[0].address.port(), 18088);
     }
 
-    /// A destination that never answers holds the stop for the readers' drain and no longer: the pool behind them
-    /// has nothing left to wait for, since what lands after the readers have gone is committed by nobody.
-    #[test]
-    fn a_destination_that_never_answers_holds_the_stop_for_one_drain() {
-        let dir = repo("unreachable-destination");
+    /// Starts a deployment of a metrics source, routed by `routes`, with a Kafka destination nobody answers for, and
+    /// returns it three seconds later: long enough for the source to hand over a batch.
+    fn started_unanswered(name: &str, routes: &str) -> Deployment {
+        let dir = repo(name);
         write(&dir, "groups/west/system.json", r#"{"version":1}"#);
         write(
             &dir,
@@ -8802,12 +8805,8 @@ mod tests {
             "groups/west/pipelines/p.json",
             r#"{"id":"p","name":"p","steps":[]}"#,
         );
-        write(
-            &dir,
-            "groups/west/routes.json",
-            r#"[{"id":"r","source":"m","pipeline":"p","deliver":[{"to":["d"]}]}]"#,
-        );
-        let head = commit(&dir, "a destination nobody answers for");
+        write(&dir, "groups/west/routes.json", routes);
+        let head = commit(&dir, name);
         let spec = child::StartSpec {
             state_dir: dir.clone(),
             repo_dir: dir.clone(),
@@ -8821,8 +8820,18 @@ mod tests {
             incarnation: 1,
         };
         let deployment = start_deployment(&spec, &child::Runtime::default()).unwrap();
-        // Long enough for the metrics source to hand over a batch the destination will never acknowledge.
         std::thread::sleep(Duration::from_secs(3));
+        deployment
+    }
+
+    /// A destination that never answers holds the stop for the readers' drain and no longer: the pool behind them
+    /// has nothing left to wait for, since what lands after the readers have gone is committed by nobody.
+    #[test]
+    fn a_destination_that_never_answers_holds_the_stop_for_one_drain() {
+        let deployment = started_unanswered(
+            "unreachable-destination",
+            r#"[{"id":"r","source":"m","pipeline":"p","deliver":[{"to":["d"]}]}]"#,
+        );
 
         let stopping = Instant::now();
         stop_deployment(deployment);
@@ -8831,6 +8840,26 @@ mod tests {
             took < DRAIN_TIMEOUT + Duration::from_secs(5),
             "the stop took {took:?}, more than one drain"
         );
+    }
+
+    /// A held batch ends the readers' drain at once: no batch polled after it can commit under this config, so
+    /// waiting out the drain would only delay the deployment that clears it.
+    #[test]
+    fn a_held_batch_ends_the_drain() {
+        let deployment = started_unanswered(
+            "held-drain",
+            r#"[{"id":"r","source":"m","pipeline":"p","deliver":[{"when":"false","to":["d"]}],
+                 "exceptions":{"kinds":{"Unmatched":"block"}}}]"#,
+        );
+        assert!(
+            deployment.readers.iter().any(|r| r.report.lock().unwrap().held.is_some()),
+            "no source was blocked"
+        );
+
+        let stopping = Instant::now();
+        stop_deployment(deployment);
+        let took = stopping.elapsed();
+        assert!(took < Duration::from_secs(5), "the stop took {took:?}, waiting out the drain");
     }
 
     /// A commit that will not run is refused before anything is torn down, so whatever was running stays. Loading
