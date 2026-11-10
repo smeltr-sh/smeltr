@@ -303,12 +303,12 @@
       {selected}
       records={result && ran === selected ? result.rows.length : null}
       held={choices.menuHeld}
-      onpick={(choice) => (selected = choice)}
+      onpick={(choice) => ((selected = choice), (standsFor = ''))}
     />
     {#if selected && !named}
       <label class="stands-for">
         <span class="field-name">Source it stands for</span>
-        <select bind:value={standsFor}>
+        <select bind:value={standsFor} onchange={() => (result = null)}>
           <option value="" disabled></option>
           {#each sources as s (s)}<option value={s}>{s}</option>{/each}
         </select>
