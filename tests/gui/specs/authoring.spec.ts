@@ -80,14 +80,16 @@ test('A1: a sample that does not load is listed on the Samples page and can be d
 test('A1: a pasted sample is saved under its name and is there to come back to', async ({
   admin,
   leader,
+  api,
 }) => {
+  await api.put(`/api/areas/shared/sources${ON}`, [{ id: 'orders-west', type: 'logs' }]);
   await goto(admin, leader, '#/build');
   await expect(admin.getByRole('heading', { name: 'Samples' })).toBeVisible();
   await admin.getByRole('button', { name: 'Add sample' }).click();
   const dialog = admin.getByRole('dialog');
   await dialog.getByRole('button', { name: 'Paste' }).click();
   await dialog.getByLabel('Name').fill('orders, an ordinary hour');
-  await dialog.getByLabel(/^Source it stands for/).fill('orders-west');
+  await dialog.getByLabel(/^Source it stands for/).selectOption('orders-west');
   await dialog.getByLabel(/^Records/).fill('{"id":1,"total":20}\n{"id":2,"total":35}\n');
   await expect(dialog.getByText('2 records')).toBeVisible();
   await dialog.getByRole('button', { name: 'Save sample' }).click();
@@ -1565,9 +1567,9 @@ test('A4: pasted records are held unsaved and route from the source chosen for t
   await expect(admin.getByRole('button', { name: '1 kafka-alerts' })).toBeVisible();
   await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeDisabled();
 
+  // Opened again, the editor starts on the records held, as Route a sample does.
   await goto(admin, leader, '#/build/pipelines/web');
-  await chip.click();
-  await admin.getByRole('option', { name: /^Your records/ }).click();
+  await expect(chip).toContainText('Your records');
   await admin.getByRole('button', { name: 'Save as sample', exact: true }).click();
   await admin.getByRole('button', { name: /^Save input as sample/ }).click();
   const saving = admin.getByRole('dialog');

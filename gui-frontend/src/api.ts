@@ -1642,6 +1642,12 @@ export async function sharedConfig(): Promise<FileConfigDto | null> {
   return (await configAt(currentBranch(), SHARED_SCOPE)).config;
 }
 
+/** The sources a sample of this scope may stand for: its own, then those of `shared/`. */
+export async function sourceIdsInScope(): Promise<string[]> {
+  const [own, shared] = await Promise.all([getConfig(), sharedConfig()]);
+  return [...(own.config?.sources ?? []), ...(shared?.sources ?? [])].map((s) => s.id);
+}
+
 /** A section of a bundle, by its key in `FileConfigDto`. */
 export type ConfigSection =
   'sources' | 'destinations' | 'routes' | 'lookupTables' | 'grokPatterns' | 'schemas' | 'pipelines';
