@@ -602,7 +602,7 @@ fn a_row_no_rule_takes_meets_its_routes_unmatched_answer() {
 
     let (_, src, taken, leftovers, ticked) = run(Answer::Block);
     let e = ticked.expect_err("block fails the tick so nothing commits").to_string();
-    assert!(e.contains("No delivery rule of route r took 1 record(s)"), "{e}");
+    assert!(e.contains("No condition of route r took 1 record(s)"), "{e}");
     assert!(
         taken.sent().is_empty() && leftovers.sent().is_empty(),
         "nothing of the batch is sent"

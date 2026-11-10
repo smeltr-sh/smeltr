@@ -3246,6 +3246,9 @@ pub struct CompiledRoute {
     /// `RouteConfig::id`, carried through compiling so a caller holding only the compiled form can still name the
     /// route -- the map, and route preview's own report of which route a row matched.
     pub id: String,
+    /// How messages name the route (`LoadedSystem::route_name`). Its id until `LoadedSystem::compile_topology` names
+    /// it: a caller compiling routes without the sources and pipelines they name has nothing else to call it.
+    pub name: String,
     pub source: SourceId,
     pub cond: Option<Ir>,
     pub pipeline: usize,
@@ -3369,6 +3372,7 @@ fn compile_route(r: &RouteConfig, meta: &SourceMeta) -> Result<CompiledRoute, Co
     let compiled_patterns = crate::plan::compile::compile_patterns(&res.patterns)?;
     Ok(CompiledRoute {
         id: r.id.clone(),
+        name: r.id.clone(),
         source: r.source,
         cond,
         // Filled in by `compile_topology`, which has the pipeline a `when` must resolve against.
@@ -4702,6 +4706,7 @@ mod tests {
         // in.
         let mk = |source: SourceId, to: Vec<DestId>| CompiledRoute {
             id: format!("route-{source}"),
+            name: format!("route-{source}"),
             source,
             cond: None,
             pipeline: 0,
