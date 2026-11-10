@@ -181,7 +181,7 @@
 
   /** Keeps what was pasted or uploaded, unsaved, and hands it to the page. */
   async function use() {
-    if (!onuse || records.length === 0) return;
+    if (!onuse || NOT_IN_DEMO || records.length === 0) return;
     error = '';
     await busy.run(async () => {
       const res = await holdPaste(records, source.trim() || undefined);
