@@ -15,9 +15,12 @@
   import { untrack } from 'svelte';
   import { unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
+  import RouteDiagram from './RouteDiagram.svelte';
   import SampleMenu from './SampleMenu.svelte';
+  import { editable } from './access';
   import { routable, recordsOf, SampleChoices } from './sampleChoices.svelte';
   import {
+    heldSession,
     routePreview,
     errorText,
     type FileConfigDto,
@@ -29,34 +32,46 @@
   let {
     /** The whole bundle as the editor has it, unsaved edits included. */
     config,
-    /** A run somebody else made. Given one, this shows it and picks nothing;
-     * given none, it picks a sample and runs for itself. Two of these on a
-     * screen must not be two pickers over two runs of the same thing. */
-    result: given,
-    /** The sample `result` ran over, as `SampleMenu` chooses one. */
-    sample: givenSample = '',
+    /** Whether the routes on screen have edits not yet saved. A test locks the routes as saved, so locking waits until
+     * they are saved. */
+    dirty,
   }: {
     config: FileConfigDto | null;
-    result?: RoutePreviewResult | null;
-    sample?: string;
+    dirty: boolean;
   } = $props();
 
-  // A page that hands it a result (driven) shows no picker, so it reads no samples.
-  const choices =
-    untrack(() => given) === undefined ? new SampleChoices((e) => (error = unreported(e))) : null;
-  let offered = $derived(choices && routable(choices));
+  const choices = new SampleChoices((e) => (error = unreported(e)));
+  let offered = $derived(routable(choices));
   let selected = $state('');
-  $effect(() => {
-    if (!selected && offered) selected = offered.first;
-  });
-  let own = $state<RoutePreviewResult | null>(null);
-  /** The sample `own` ran over. */
+  let result = $state<RoutePreviewResult | null>(null);
+  /** The sample `result` ran over. */
   let ran = $state('');
-  let driven = $derived(given !== undefined);
-  let result = $derived(driven ? (given ?? null) : own);
   let running = $state(false);
   let error = $state('');
+  // Arriving on the tab runs the first choice, once the samples and the bundle are read: nothing is delivered and no
+  // destination is opened, so there is no reason to wait for a click.
+  $effect(() => {
+    if (selected || !offered.first || !config) return;
+    selected = offered.first;
+    untrack(run);
+  });
   let grid = $state<RecordsGrid | undefined>();
+
+  /** Why Lock this as a test is off, or `''` when it is on. A test runs the routes as saved over a saved sample, so it
+   * locks a run of exactly those. */
+  let lockBlocked = $derived(
+    heldSession(selected)
+      ? 'A test locks a saved sample. Save your capture as a sample first: Save input as sample, in the pipeline editor.'
+      : dirty
+        ? 'Save your route changes first.'
+        : !result || ran !== selected
+          ? 'Choose a sample and run it without errors first.'
+          : '',
+  );
+
+  function goLockTest() {
+    location.hash = `#/build/tests/lock-e2e/${encodeURIComponent(ran)}`;
+  }
 
   async function run() {
     if (!config || !selected) return;
@@ -67,14 +82,14 @@
       const res = await routePreview(JSON.stringify(config), sample);
       if (!res.ok) {
         error = errorText(res.errors);
-        own = null;
+        result = null;
       } else {
-        own = res;
+        result = res;
         ran = sample;
       }
     } catch (e) {
       error = unreported(e);
-      own = null;
+      result = null;
     } finally {
       running = false;
     }
@@ -82,14 +97,13 @@
 
   // The sample's records, the side of each row before its route ran.
   let sampleRecords = $state<SampleRecordDto[]>([]);
-  let sampleId = $derived(driven ? givenSample : ran);
   $effect(() => {
-    const id = sampleId;
+    const id = ran;
     sampleRecords = [];
     if (!id) return;
     recordsOf(id).then(
       (records) => {
-        if (id === sampleId) sampleRecords = records;
+        if (id === ran) sampleRecords = records;
       },
       (e) => (error = unreported(e)),
     );
@@ -289,37 +303,40 @@
   }
 </script>
 
-<div class="preview" class:empty={driven && !result && !error}>
-  {#if offered}
-    <div class="controls">
-      <SampleMenu
-        samples={offered.samples}
-        {selected}
-        records={own && ran === selected ? own.rows.length : null}
-        held={offered.held}
-        onpick={(choice) => (selected = choice)}
-      />
-      <Button
-        class="primary"
-        onclick={run}
-        disabled={running ? BUSY : !selected ? 'Choose a sample first.' : !config ? LOADING : ''}
-      >
-        {running ? 'Running…' : 'Run'}
-      </Button>
-    </div>
-
-    {#if offered.none}
-      <p>
-        No sample names a source. Routing selects on a source, so a sample has to say which one its
-        records stand for &mdash; set that on the <a class="link" href="#/build">Samples</a> page.
-      </p>
+<div class="preview">
+  <div class="controls">
+    <SampleMenu
+      samples={offered.samples}
+      {selected}
+      records={result && ran === selected ? result.rows.length : null}
+      held={offered.held}
+      onpick={(choice) => (selected = choice)}
+    />
+    <Button
+      class="primary"
+      onclick={run}
+      disabled={running ? BUSY : !selected ? 'Choose a sample first.' : !config ? LOADING : ''}
+    >
+      {running ? 'Running…' : 'Run'}
+    </Button>
+    {#if editable()}
+      <span class="grow"></span>
+      <Button type="button" onclick={goLockTest} disabled={lockBlocked}>Lock this as a test</Button>
     {/if}
+  </div>
+
+  {#if offered.none}
+    <p>
+      No sample names a source. Routing selects on a source, so a sample has to say which one its
+      records stand for &mdash; set that on the <a class="link" href="#/build">Samples</a> page.
+    </p>
   {/if}
 
   <InlineError message={error} />
 
   {#if result}
     {#each result.warnings ?? [] as w (w)}<p class="warn">{w}</p>{/each}
+    {#if result.rows.length > 0}<RouteDiagram {result} sampleName={choices.name(ran)} />{/if}
     <div class="tiles">
       {#each reached as d (d.id)}
         <button
@@ -366,11 +383,6 @@
     margin-bottom: 1.25rem;
   }
 
-  /* Driven and given nothing yet: a panel with no content is a bar across
-     the page saying nothing. */
-  .preview.empty {
-    display: none;
-  }
   .controls {
     display: flex;
     flex-wrap: wrap;

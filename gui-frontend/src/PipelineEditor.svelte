@@ -1289,11 +1289,7 @@
 
   let proposalStep: Step | null = $state(null);
   let proposal = $state<FieldProposal | null>(null);
-  let selectedSampleName = $derived(
-    heldSession(selectedSample)
-      ? 'your capture'
-      : (choices.samples.find((s) => s.id === selectedSample)?.name ?? selectedSample),
-  );
+  let selectedSampleName = $derived(choices.name(selectedSample));
 
   /** Writes `path` in the last open eval step, or in a new one at the end, and opens that step for its value. */
   function assignField(path: string) {

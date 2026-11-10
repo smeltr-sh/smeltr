@@ -1,7 +1,7 @@
 // The topology map's geometry, search and paint (design doc "The map"): pure functions
 // `MapPage.svelte` wires to a fetch, a search box, a group filter and a click. `layout` lays out
 // one group's nodes at a time -- `MapPage.svelte` calls it once per band -- in three fixed
-// columns -- source, pipeline, destination -- so, unlike `RoutePreviewPage`'s one-sample diagram,
+// columns -- source, pipeline, destination -- so, unlike `RouteDiagram`'s one-sample diagram,
 // a node's column is its kind and there is no per-run layout to discover.
 
 import type {

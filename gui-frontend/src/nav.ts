@@ -114,7 +114,6 @@ export type Route =
       group?: string;
       back?: string;
     }
-  | { tab: 'build'; page: 'route-preview' }
   // `sample`, carried the same way, is what the editor previews against on
   // load instead of defaulting to the first sample in the library.
   // `for` starts a new pipeline on what a route being made takes; `back` is where Save returns,
@@ -337,7 +336,6 @@ const SECTION_OF: Record<Route['page'], string | null> = {
   lookups: 'Resources',
   grok: 'Resources',
   schemas: 'Resources',
-  'route-preview': 'Routes',
   pipeline: 'Pipelines',
   'lock-test': 'Resources',
   file: null,
@@ -374,7 +372,6 @@ const SCOPED_PAGES: ReadonlySet<Route['page']> = new Set([
   'pipelines',
   'pipeline',
   'routes',
-  'route-preview',
   'lookups',
   'grok',
   'schemas',
@@ -517,7 +514,6 @@ export function parseRoute(hash: string): Route {
         return { tab: 'build', page: 'schemas', json: json(2), ...(open ? { open } : {}) };
       }
       if (parts[1] === 'routes') {
-        if (parts[2] === 'preview') return { tab: 'build', page: 'route-preview' };
         const params = new URLSearchParams(search);
         const make = makingFrom(params, 'new');
         const [route, pipeline] = [params.get('route'), params.get('pipeline')];
@@ -676,8 +672,6 @@ function drilledInto(route: Route, names: PipelineNames): Crumb[] {
       return [{ label: grokTab.label }];
     case 'schemas':
       return [{ label: schemasTab.label }];
-    case 'route-preview':
-      return [{ label: 'route preview' }];
     case 'pipeline':
       return [{ label: pipelineCrumb(route.id, names) }];
     case 'lock-test':
@@ -692,7 +686,7 @@ function drilledInto(route: Route, names: PipelineNames): Crumb[] {
           ]
         : [
             { label: 'routes', hash: '#/build/routes' },
-            { label: 'route preview', hash: '#/build/routes/preview' },
+            { label: 'route a sample', hash: '#/build/routes/sample' },
             { label: 'lock a test' },
           ];
     case 'review':
@@ -749,7 +743,7 @@ export function exitOf(route: Route, crumbs: Crumb[]): string | undefined {
   return crumbs.at(-2)?.hash;
 }
 
-const DRILL_INS = new Set<Route['page']>(['pipeline', 'review', 'route-preview', 'lock-test']);
+const DRILL_INS = new Set<Route['page']>(['pipeline', 'review', 'lock-test']);
 
 /** The five section files, by the Build page that edits each. */
 /** Where an unsaved edit `edits.ts` is holding gets edited. Its names are the

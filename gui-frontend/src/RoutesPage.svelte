@@ -52,7 +52,6 @@
     withCategories,
     type ExceptionsDto,
   } from './exceptions';
-  import Help from './Help.svelte';
   import CrossButton from './CrossButton.svelte';
   import {
     sharedConfig,
@@ -548,13 +547,7 @@
     {/if}
 
     {#if sampling}
-      <RoutePreview config={previewConfig} />
-      <div class="preview-link">
-        <a href="#/build/routes/preview">Where these records would go</a>
-        <Help label="Where these records would go">
-          Draws a sample's trip from source to destination through the routes saved on this branch.
-        </Help>
-      </div>
+      <RoutePreview config={previewConfig} dirty={isDirty} />
     {:else}
       {#if !readOnly}
         <div class="toolbar">
@@ -777,11 +770,6 @@
     flex: 1;
     height: 1px;
     background: var(--border);
-  }
-
-  .preview-link {
-    margin: 0.5rem 0 1rem;
-    font-size: var(--text-note);
   }
 
   .toolbar {

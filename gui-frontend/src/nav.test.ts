@@ -42,7 +42,6 @@ describe('parseRoute', () => {
       json: false,
       sampling: true,
     });
-    expect(parseRoute('#/build/routes/preview')).toEqual({ tab: 'build', page: 'route-preview' });
     expect(parseRoute('#/build/lookups/json')).toEqual({
       tab: 'build',
       page: 'lookups',
@@ -427,12 +426,6 @@ describe('trail', () => {
     expect(label('pipeline-x7k2m9q1')).toBe('pipeline');
   });
 
-  it('links every crumb but the last, however deep', () => {
-    const crumbs = trail({ tab: 'build', page: 'route-preview' });
-    expect(crumbs.map((c) => c.label)).toEqual(['Build', 'Routes', 'route preview']);
-    expect(crumbs.map((c) => c.hash)).toEqual(['#/build/routes', '#/build/routes', undefined]);
-  });
-
   it('names the pipeline a locked test belongs to, behind its tab and own section', () => {
     const crumbs = trail(
       {
@@ -457,7 +450,7 @@ describe('trail', () => {
     ]);
   });
 
-  it('routes back through route preview for an end-to-end locked test', () => {
+  it('routes back through Route a sample for an end-to-end locked test', () => {
     const crumbs = trail({
       tab: 'build',
       page: 'lock-test',
@@ -467,14 +460,14 @@ describe('trail', () => {
       'Build',
       'Resources',
       'routes',
-      'route preview',
+      'route a sample',
       'lock a test',
     ]);
     expect(crumbs.map((c) => c.hash)).toEqual([
       '#/build/routes',
       '#/build',
       '#/build/routes',
-      '#/build/routes/preview',
+      '#/build/routes/sample',
       undefined,
     ]);
   });
@@ -548,7 +541,6 @@ describe('section', () => {
   });
 
   it('marks the list a page was opened from', () => {
-    expect(section({ tab: 'build', page: 'route-preview' })?.here).toBe('Routes');
     expect(section({ tab: 'build', page: 'pipeline', id: 'x', json: false })?.here).toBe(
       'Pipelines',
     );
@@ -617,7 +609,6 @@ describe('exitOf', () => {
       '#/build/pipelines',
     );
     expect(exit({ tab: 'changes', page: 'review', branch: 'work' })).toBe('#/changes');
-    expect(exit({ tab: 'build', page: 'route-preview' })).toBe('#/build/routes');
   });
 
   it('goes back to the pipeline a test is being locked from', () => {

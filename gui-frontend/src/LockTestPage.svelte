@@ -219,7 +219,7 @@
     }
     location.hash = pipeline
       ? `#/build/pipelines/${encodeURIComponent(pipeline)}`
-      : '#/build/routes/preview';
+      : '#/build/routes/sample';
   }
 
   function short(text: string, limit = 100): string {

@@ -1467,15 +1467,15 @@ test('A4: a route preview shows each output row, the route it matched and the de
   await webRoutes(api, ['{"status":200}', '{"status":503}']);
 
   await goto(admin, leader, '#/build/routes/sample');
-  await admin.getByRole('link', { name: 'Where these records would go' }).click();
-  await expect(admin.getByRole('heading', { name: 'Where these records would go' })).toBeVisible();
   await expect(admin.getByRole('button', { name: 'Choose a sample' })).toContainText(
     'storefront hour',
   );
 
-  // The page runs on arrival; each tile counts what one destination would be sent.
+  // The tab runs on arrival; each tile counts what one destination would be sent, and the diagram draws the trip.
   await expect(admin.getByRole('button', { name: '2 es-web' })).toBeVisible();
   await expect(admin.getByRole('button', { name: '1 kafka-alerts' })).toBeVisible();
+  await expect(admin.locator('.diagram')).toContainText('kafka-alerts');
+  await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeEnabled();
 
   const table = admin.getByRole('table');
   const ok = table.getByRole('row', { name: /^row 0 / });
@@ -1935,7 +1935,6 @@ test('A8: a route sends its unparseable rows where the analyst says, and the pre
   });
 
   await admin.getByRole('link', { name: 'Route a sample' }).click();
-  await admin.getByRole('link', { name: 'Where these records would go' }).click();
   const bad = admin.getByRole('table').getByRole('row', { name: /^row 1 / });
   await expect(bad).toContainText('Unparsable');
   await expect(bad).toContainText('deliver');
