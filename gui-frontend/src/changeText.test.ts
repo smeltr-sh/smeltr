@@ -82,13 +82,22 @@ const pipeline = (config: FileConfigDto, id: string) =>
   config.pipelines.find((p) => p.id === id) as { id: string; name: string; steps: unknown[] };
 
 describe('changeText, one object changed one way', () => {
+  it("names a delivery's condition and its destinations", () => {
+    const next = after((c) => {
+      c.routes[0].deliver = [{ to: ['kafka-out'], when: 'smeltr.exception == null' }];
+    });
+    expect(text(next).body).toBe(
+      'Update route kafka-main → Main: deliver from kafka-out to kafka-out when smeltr.exception == null',
+    );
+  });
+
   it('names the field and both values', () => {
     const next = after((c) => {
       (c.sources[0] as { brokers: string }).brokers = 'b1:9092,b2:9092,b3:9092';
     });
     expect(text(next)).toEqual({
-      subject: 'Update source kafka-main: brokers from b1:9092,b2:9092 to b1:9092,b2:9092,b3:9092',
-      body: '',
+      subject: 'Update source kafka-main',
+      body: 'Update source kafka-main: brokers from b1:9092,b2:9092 to b1:9092,b2:9092,b3:9092',
     });
   });
 
@@ -111,12 +120,12 @@ describe('changeText, one object changed one way', () => {
     });
     const next = structuredClone(before);
     (next.sources.at(-1) as { trustedAuthorities?: string }).trustedAuthorities = 'cert-v2';
-    expect(text(next, before).subject).toBe(
+    expect(text(next, before).body).toBe(
       'Update source acme: trustedAuthorities from cert-v1 to cert-v2',
     );
   });
 
-  it('never lets a multiline PEM value break the subject onto a second line', () => {
+  it('never lets a multiline PEM value break its line of the body onto a second', () => {
     const before = after((c) => {
       c.sources.push({
         id: 'acme',
@@ -130,15 +139,15 @@ describe('changeText, one object changed one way', () => {
     const next = structuredClone(before);
     (next.sources.at(-1) as { trustedAuthorities?: string }).trustedAuthorities =
       '-----BEGIN CERTIFICATE-----\nMIIBDkCBtAIBADAA\n-----END CERTIFICATE-----';
-    const { subject } = text(next, before);
-    expect(subject.split('\n')).toHaveLength(1);
+    const { body } = text(next, before);
+    expect(body.split('\n')).toHaveLength(1);
   });
 
   it('tells a rename from a change of behavior', () => {
     const next = after((c) => {
       pipeline(c, 'metrics-pipe').name = 'Metrics pass-through v2';
     });
-    expect(text(next).subject).toBe(
+    expect(text(next).body).toBe(
       'Update pipeline Metrics passthrough: name from Metrics passthrough to Metrics pass-through v2',
     );
   });
@@ -157,7 +166,7 @@ describe('changeText, a pipeline is said by its name', () => {
     const next = after((c) => {
       c.routes[0].pipeline = 'metrics-pipe';
     });
-    expect(text(next).subject).toBe(
+    expect(text(next).body).toBe(
       'Update route kafka-main → Metrics passthrough: pipeline from Main to Metrics passthrough',
     );
   });
@@ -177,7 +186,7 @@ describe('changeText, a pipeline is said by its name', () => {
     const next = after((c) => {
       c.routes[0].pipeline = 'pipeline-gone0000';
     });
-    expect(text(next).subject).toBe(
+    expect(text(next).body).toBe(
       'Update route kafka-main → pipeline-gone0000: pipeline from Main to pipeline-gone0000',
     );
   });
@@ -195,7 +204,7 @@ describe('changeText, a pipeline is said by its name', () => {
     });
     const next = structuredClone(before);
     (pipeline(next, 'main').steps[2] as { pipeline: string }).pipeline = 'pipeline-x7k2m9q1';
-    expect(text(next, before).subject).toBe(
+    expect(text(next, before).body).toBe(
       'Update pipeline Main: call step pipeline from Metrics passthrough to Firewall',
     );
   });
@@ -221,9 +230,7 @@ describe('changeText, absent and empty', () => {
     const next = after((c) => {
       delete (c.destinations[1] as { stallAfterSecs?: number }).stallAfterSecs;
     });
-    expect(text(next).subject).toBe(
-      'Update destination kafka-out: stallAfterSecs from 30 to unset',
-    );
+    expect(text(next).body).toBe('Update destination kafka-out: stallAfterSecs from 30 to unset');
   });
 
   it('keeps a field set to nothing distinct from one never set', () => {
@@ -237,9 +244,9 @@ describe('changeText, a union value', () => {
     const next = after((c) => {
       c.destinations[1].exceptions = { kinds: { Refused: 'drop' } };
     });
-    const { subject } = text(next);
-    expect(subject).toBe('Update destination kafka-out: exceptions from unset to 1 entry');
-    expect(subject).not.toContain('{');
+    const { body } = text(next);
+    expect(body).toBe('Update destination kafka-out: exceptions from unset to 1 entry');
+    expect(body).not.toContain('{');
   });
 
   it('keeps the destination a choice names', () => {
@@ -272,14 +279,14 @@ describe('changeText, pipeline steps', () => {
         pairs: [{ from: '.a', to: '.b' }],
       });
     });
-    expect(text(next).subject).toBe('Update pipeline Main: add rename step');
+    expect(text(next).body).toBe('Update pipeline Main: add rename step');
   });
 
   it('finds a step removed from inside an if', () => {
     const next = after((c) => {
       (pipeline(c, 'main').steps[1] as { then: unknown[] }).then = [];
     });
-    expect(text(next).subject).toBe('Update pipeline Main: remove drop step');
+    expect(text(next).body).toBe('Update pipeline Main: remove drop step');
   });
 
   it('finds a step added inside an if that has no id', () => {
@@ -294,7 +301,7 @@ describe('changeText, pipeline steps', () => {
       disabled: false,
       pairs: [{ from: '.a', to: '.b' }],
     });
-    expect(text(next, before).subject).toBe('Update pipeline Main: add rename step');
+    expect(text(next, before).body).toBe('Update pipeline Main: add rename step');
   });
 
   it('carries the value a step assignment moved to', () => {
@@ -303,7 +310,7 @@ describe('changeText, pipeline steps', () => {
         pipeline(c, 'main').steps[0] as { assignments: { target: string; expr: string }[] }
       ).assignments = [{ target: '.level', expr: '500' }];
     });
-    expect(text(next).subject).toBe(
+    expect(text(next).body).toBe(
       'Update pipeline Main: eval step assignments from .level=400 to .level=500',
     );
   });
@@ -320,7 +327,7 @@ describe('changeText, pipeline steps', () => {
     const next = after((c) => {
       (pipeline(c, 'main').steps[0] as { assignments: unknown[] }).assignments = many('new');
     });
-    expect(text(next, before).subject).toBe(
+    expect(text(next, before).body).toBe(
       'Update pipeline Main: eval step assignments from .f15=old to .f15=new',
     );
   });
@@ -329,7 +336,7 @@ describe('changeText, pipeline steps', () => {
     const next = after((c) => {
       (pipeline(c, 'main').steps[1] as { condition: string }).condition = '.kind == "y"';
     });
-    expect(text(next).subject).toBe(
+    expect(text(next).body).toBe(
       'Update pipeline Main: if step condition from .kind == "x" to .kind == "y"',
     );
   });
@@ -462,10 +469,10 @@ describe('changeText, the edges', () => {
     const next = after((c) => {
       (c.sources[0] as { brokers: string }).brokers = long;
     });
-    const { subject } = text(next);
-    expect(subject).toContain('…');
-    expect(subject).toContain('b1:9092');
-    expect(subject).toContain('b7:9092');
+    const { body } = text(next);
+    expect(body).toContain('…');
+    expect(body).toContain('b1:9092');
+    expect(body).toContain('b7:9092');
   });
 
   it('names the group when a change spans more than one', () => {

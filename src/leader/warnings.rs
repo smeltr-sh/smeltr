@@ -945,18 +945,17 @@ fn scoped_subject(group: &str, object_id: &str) -> String {
 }
 
 /// Every source currently blocked, keyed by (group, source id, cause), with the reason its reader gave -- already a
-/// complete sentence naming the fix (`runtime::block_reason`, `runtime::undeliverable`) -- and the workers blocked on
-/// that cause. A source id is unique only within its group plus `shared/`, never globally, so the group is part of the
+/// complete sentence naming the fix (`runtime::block_reason`, `runtime::undeliverable`). A source id is unique only within its group plus `shared/`, never globally, so the group is part of the
 /// key: two groups running a source of the same id are two different facts, and a `shared/` source blocked in one
 /// group is not blocked in another that also runs it. A source that spans workers can be blocked on a different
 /// cause on each, and each cause is its own fact, since each is cleared its own way. When more than one worker
 /// gives the same cause, the lexicographically first `(worker, thread)` gives the reason: an arbitrary but
 /// deterministic tie-break, since the registry gives no other order to prefer.
-fn blocked_sources(snapshot: &[ThreadHealth]) -> HashMap<(String, String, BlockCause), (String, HashSet<String>)> {
+fn blocked_sources(snapshot: &[ThreadHealth]) -> HashMap<(String, String, BlockCause), String> {
     let mut threads: Vec<&ThreadHealth> = snapshot.iter().collect();
     threads.sort_by(|a, b| (&a.worker_id, &a.report.thread_id).cmp(&(&b.worker_id, &b.report.thread_id)));
 
-    let mut out: HashMap<_, (String, HashSet<String>)> = HashMap::new();
+    let mut out = HashMap::new();
     for t in threads {
         for m in &t.report.metrics {
             if m.metric != SOURCE_BLOCKED_REASON {
@@ -973,9 +972,7 @@ fn blocked_sources(snapshot: &[ThreadHealth]) -> HashMap<(String, String, BlockC
                 .and_then(BlockCause::named)
                 .unwrap_or(BlockCause::Held);
             out.entry((t.report.group_id.clone(), source_id.to_string(), cause))
-                .or_insert_with(|| (reason.clone(), HashSet::new()))
-                .1
-                .insert(t.worker_id.clone());
+                .or_insert_with(|| reason.clone());
         }
     }
     out
@@ -1554,17 +1551,16 @@ None, Severity::Warning, None, format!(
 
 /// A source blocked, under the condition its cause names: records held until the config changes, rows a destination
 /// refused, or a destination it waits on. The message is the reader's own reason, unchanged: it already names the fix
-/// (`Reader::blocked_fact`).
+/// (`Reader::blocked_fact`). It says nothing of how many workers show it: records or a destination block a source,
+/// never a host, and only a worker holding the records can block on them.
 fn source_blocked(snapshot: &[ThreadHealth], starts: &HashMap<FactKey, i64>) -> Vec<Warning> {
     let mut out: Vec<Warning> = blocked_sources(snapshot)
         .into_iter()
-        .map(|((group, source_id, cause), (reason, blocked))| {
+        .map(|((group, source_id, cause), reason)| {
             let (condition, severity, entry) = block_condition(cause);
             let since_millis = starts
                 .get(&FactKey::new(entry, scoped_subject(&group, &source_id)))
                 .copied();
-            let reporting = blocked.len();
-            let running = workers_running(snapshot, &group, "source", &source_id).len();
             Warning::new(
                 condition,
                 SubjectKind::Source,
@@ -1572,7 +1568,7 @@ fn source_blocked(snapshot: &[ThreadHealth], starts: &HashMap<FactKey, i64>) -> 
                 Some(group),
                 severity,
                 since_millis,
-                format!("{reason}; {}", spread_clause(reporting, running)),
+                reason,
             )
         })
         .collect();
@@ -5664,7 +5660,7 @@ mod tests {
         );
     }
 
-    /// A source blocked on a different cause on each worker raises each cause, each counting its own workers: one
+    /// A source blocked on a different cause on each worker raises each cause, each in its reader's own words: one
     /// worker waiting does not hide another held.
     #[test]
     fn a_source_blocked_on_two_causes_across_workers_raises_both() {
@@ -5680,16 +5676,8 @@ mod tests {
         let w = derive(&health, &[], &HashMap::new(), NOW, INTERVAL, None, &deployed());
         let got: Vec<_> = w.iter().map(|w| (w.condition, w.message.as_str())).collect();
         assert_eq!(got.len(), 2, "{w:?}");
-        assert!(
-            got.iter()
-                .any(|(c, m)| *c == Condition::SourceBlocked && m.starts_with("held; ")),
-            "{got:?}"
-        );
-        assert!(
-            got.iter()
-                .any(|(c, m)| *c == Condition::SourceWaiting && m.starts_with("waiting; ")),
-            "{got:?}"
-        );
+        assert!(got.contains(&(Condition::SourceBlocked, "held")), "{got:?}");
+        assert!(got.contains(&(Condition::SourceWaiting, "waiting")), "{got:?}");
     }
 
     /// Each cause a reader names is its own condition, so a source waiting on a destination reads apart from one a
