@@ -1,12 +1,12 @@
 import type { RoutePreviewResult, RoutePreviewRow } from './api';
 
-/** What a route preview's run comes to, as the tiles count it and the diagram draws it. */
+/** The totals of a route preview's run, which the tiles show and the diagram draws. */
 export interface RouteCounts {
   /** Every destination the sample would reach, with how many documents each would receive, most first. */
   reached: { id: number; name: string; documents: number }[];
   /** Records no route matched. */
   unrouted: number;
-  /** Records a route matched that were sent nowhere. */
+  /** Records a route matched that were sent nowhere, as the rows, since the diagram counts them per route. */
   dropped: RoutePreviewRow[];
 }
 

@@ -45,8 +45,9 @@
   let offered = $derived(routable(choices));
   let selected = $state('');
   let result = $state<RoutePreviewResult | null>(null);
-  /** The sample `result` ran over, and the bundle it ran. */
+  /** The sample `result` ran over. */
   let ran = $state('');
+  /** The routes `result` ran on. */
   let ranOn = $state.raw<FileConfigDto | null>(null);
   let running = $state(false);
   let error = $state('');
@@ -69,7 +70,7 @@
         : !result || ran !== selected
           ? 'Choose a sample and run it without errors first.'
           : ranOn !== config
-            ? 'Run again: the routes changed since.'
+            ? 'The routes changed since this run. Run it again.'
             : '',
   );
 
