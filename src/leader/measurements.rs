@@ -822,6 +822,7 @@ mod tests {
                 above: false,
             }],
             outside: None,
+            reach_ms: None,
         };
         let answer = build(&[], None, no_holds(), live(&[]), warnings::now_millis()).with_expected(&[reading]);
         assert_eq!(answer.nodes.len(), 1);

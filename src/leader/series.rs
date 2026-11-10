@@ -117,6 +117,17 @@ impl Tier {
     }
 }
 
+/// One span a fact held for its subject ([`RegistryStore::fact_spans`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FactSpan {
+    pub entry: String,
+    pub started_ms: i64,
+    /// None while it still holds.
+    pub ended_ms: Option<i64>,
+    /// Where the windows it read begin, for a fact that keeps one ([`RegistryStore::lower_fact_reach`]).
+    pub reach_ms: Option<i64>,
+}
+
 /// One subject's points, oldest first: bucket start (epoch milliseconds) and value. What
 /// [`RegistryStore::series_since`] groups every subject's rows into.
 pub type SubjectPoints = Vec<(i64, f64)>;
@@ -435,6 +446,11 @@ pub(crate) const STEPS: &[&str] = &[
     // (`git::ContentId::key`). A stream is unrouted only by what is deployed now. Rows summed before this step have
     // NULL, which no deployment matches, so a warning they raised clears with the first rows recorded after the step.
     "ALTER TABLE stream_unmatched ADD COLUMN config TEXT;",
+    // 14 -- where the windows a below-normal warning read begin (`throughput::Reading::reach_ms`): its source's normal
+    // learns no bucket from there on while it holds. NULL for every other fact, and for one that began before this
+    // step.
+    "ALTER TABLE fact_clock ADD COLUMN reach_ms INTEGER;
+     ALTER TABLE fact_history ADD COLUMN reach_ms INTEGER;",
 ];
 
 /// Gives each log a build before lines had types wrote, before step 12 or after a rollback to it, its class and
@@ -791,8 +807,8 @@ impl RegistryStore {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         for (entry, subject) in removed {
             conn.execute(
-                "INSERT OR IGNORE INTO fact_history (entry, subject, started_ms, ended_ms) \
-                 SELECT entry, subject, started_ms, ?3 FROM fact_clock WHERE entry = ?1 AND subject = ?2",
+                "INSERT OR IGNORE INTO fact_history (entry, subject, started_ms, ended_ms, reach_ms) \
+                 SELECT entry, subject, started_ms, ?3, reach_ms FROM fact_clock WHERE entry = ?1 AND subject = ?2",
                 params![entry, subject, now_ms],
             )?;
             conn.execute(
@@ -819,30 +835,43 @@ impl RegistryStore {
         Ok(rows)
     }
 
-    /// When each of `entries` held for `subject` and overlapped the time since `since_ms`, oldest first:
-    /// (entry, started, ended), with no end for one still active.
-    pub fn fact_spans(
-        &self,
-        entries: &[&str],
-        subject: &str,
-        since_ms: i64,
-    ) -> Result<Vec<(String, i64, Option<i64>)>, StoreError> {
+    /// Moves where the active `entry` about `subject` reaches back to `reach_ms`, if that is further back than it
+    /// reaches yet.
+    pub fn lower_fact_reach(&self, entry: &str, subject: &str, reach_ms: i64) -> Result<(), StoreError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.prepare_cached(
+            "UPDATE fact_clock SET reach_ms = ?3 \
+             WHERE entry = ?1 AND subject = ?2 AND (reach_ms IS NULL OR reach_ms > ?3)",
+        )?
+        .execute(params![entry, subject, reach_ms])?;
+        Ok(())
+    }
+
+    /// When each of `entries` held for `subject` and overlapped the time since `since_ms`, oldest first.
+    pub fn fact_spans(&self, entries: &[&str], subject: &str, since_ms: i64) -> Result<Vec<FactSpan>, StoreError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let span = |r: &rusqlite::Row| {
+            Ok(FactSpan {
+                entry: r.get(0)?,
+                started_ms: r.get(1)?,
+                ended_ms: r.get(2)?,
+                reach_ms: r.get(3)?,
+            })
+        };
         let mut out = Vec::new();
         let mut ended = conn.prepare_cached(
-            "SELECT entry, started_ms, ended_ms FROM fact_history WHERE subject = ?1 AND ended_ms >= ?2",
+            "SELECT entry, started_ms, ended_ms, reach_ms FROM fact_history WHERE subject = ?1 AND ended_ms >= ?2",
         )?;
-        for row in ended.query_map(params![subject, since_ms], |r| {
-            Ok((r.get::<_, String>(0)?, r.get(1)?, Some(r.get(2)?)))
-        })? {
+        for row in ended.query_map(params![subject, since_ms], span)? {
             out.push(row?);
         }
-        let mut active = conn.prepare_cached("SELECT entry, started_ms FROM fact_clock WHERE subject = ?1")?;
-        for row in active.query_map(params![subject], |r| Ok((r.get::<_, String>(0)?, r.get(1)?, None)))? {
+        let mut active =
+            conn.prepare_cached("SELECT entry, started_ms, NULL, reach_ms FROM fact_clock WHERE subject = ?1")?;
+        for row in active.query_map(params![subject], span)? {
             out.push(row?);
         }
-        out.retain(|(entry, _, _)| entries.contains(&entry.as_str()));
-        out.sort_by_key(|&(_, started, _)| started);
+        out.retain(|s| entries.contains(&s.entry.as_str()));
+        out.sort_by_key(|s| s.started_ms);
         Ok(out)
     }
 
@@ -1065,6 +1094,16 @@ impl RegistryStore {
             .collect())
     }
 
+    /// [`RegistryStore::series_at`] for a counter: one point per bucket, their sum.
+    pub fn sums_since(
+        &self,
+        metric: &str,
+        tier: Tier,
+        since_ms: i64,
+    ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
+        self.merged_at(metric, tier, since_ms, |sum, value| sum + value)
+    }
+
     /// [`RegistryStore::series_at`] for a gauge: one point per bucket, its highest.
     pub fn peaks_since(
         &self,
@@ -1072,18 +1111,29 @@ impl RegistryStore {
         tier: Tier,
         since_ms: i64,
     ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
+        self.merged_at(metric, tier, since_ms, f64::max)
+    }
+
+    /// [`RegistryStore::series_at`] with each bucket's points merged into one by `merge`.
+    fn merged_at(
+        &self,
+        metric: &str,
+        tier: Tier,
+        since_ms: i64,
+        merge: fn(f64, f64) -> f64,
+    ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
         Ok(self
             .series_at(metric, tier, since_ms)?
             .into_iter()
             .map(|(subject_key, points)| {
-                let mut peaks: SubjectPoints = Vec::new();
+                let mut merged: SubjectPoints = Vec::new();
                 for (at, value) in points {
-                    match peaks.last_mut() {
-                        Some((bucket, peak)) if *bucket == at => *peak = peak.max(value),
-                        _ => peaks.push((at, value)),
+                    match merged.last_mut() {
+                        Some((bucket, held)) if *bucket == at => *held = merge(*held, value),
+                        _ => merged.push((at, value)),
                     }
                 }
-                (subject_key, peaks)
+                (subject_key, merged)
             })
             .collect())
     }
@@ -3532,13 +3582,15 @@ mod tests {
         store.sync_fact_clock(&fact(), &[], 2_000).unwrap();
         store.sync_fact_clock(&[], &fact(), 3_000).unwrap();
 
-        let spans = store.fact_spans(&["source_blocked"], "7", 0).unwrap();
+        let span = |started_ms, ended_ms| FactSpan {
+            entry: "source_blocked".to_string(),
+            started_ms,
+            ended_ms,
+            reach_ms: None,
+        };
         assert_eq!(
-            spans,
-            vec![
-                ("source_blocked".to_string(), 1_000, Some(2_000)),
-                ("source_blocked".to_string(), 3_000, None),
-            ],
+            store.fact_spans(&["source_blocked"], "7", 0).unwrap(),
+            vec![span(1_000, Some(2_000)), span(3_000, None)],
             "the ended span and the active one, oldest first"
         );
         assert_eq!(
@@ -3553,8 +3605,31 @@ mod tests {
         store.maintain(2_000 + Tier::OneHour.retention_ms() + 1).unwrap();
         assert_eq!(
             store.fact_spans(&["source_blocked"], "7", 0).unwrap(),
-            vec![("source_blocked".to_string(), 3_000, None)],
+            vec![span(3_000, None)],
             "past the last tier, an ended span is gone; an active one stays"
+        );
+    }
+
+    #[test]
+    fn a_fact_reaches_back_as_far_as_it_was_ever_lowered_to_and_keeps_that_once_it_ends() {
+        let store = memory_store();
+        let fact = || vec![("source_rows_below".to_string(), "7".to_string())];
+        let reach = |store: &RegistryStore| {
+            let spans = store.fact_spans(&["source_rows_below"], "7", 0).unwrap();
+            spans.iter().map(|s| s.reach_ms).collect::<Vec<_>>()
+        };
+        store.lower_fact_reach("source_rows_below", "7", 500).unwrap();
+        store.sync_fact_clock(&[], &fact(), 1_000).unwrap();
+        assert_eq!(reach(&store), [None], "a fact not yet active has nothing to lower");
+        store.lower_fact_reach("source_rows_below", "7", 800).unwrap();
+        store.lower_fact_reach("source_rows_below", "7", 900).unwrap();
+        assert_eq!(reach(&store), [Some(800)]);
+        store.lower_fact_reach("source_rows_below", "7", 600).unwrap();
+        store.sync_fact_clock(&fact(), &[], 2_000).unwrap();
+        assert_eq!(reach(&store), [Some(600)]);
+        assert!(
+            super::super::steps::is_additive(STEPS[13]),
+            "a build before it still reads and writes facts"
         );
     }
 

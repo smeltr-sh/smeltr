@@ -436,8 +436,8 @@ pub(super) fn stale_after_ms(heartbeat_interval: Duration) -> i64 {
 /// backlog itself grows.
 const LAG_TIER: Tier = throughput::BUCKET;
 
-/// Rising peaks in a row [`lag_climbing`] requires: a whole [`throughput::WINDOW`] of them, the window a source's
-/// rows are judged over, so a climb is judged over the same span as a source reading above or below normal.
+/// Rising peaks in a row [`lag_climbing`] requires: a whole [`throughput::WINDOW`] of them, the width a source
+/// reading above normal is judged over, so a climb is judged over the same span.
 const LAG_CLIMB_PEAKS: usize = (throughput::WINDOW.as_millis() / LAG_TIER.bucket_ms() as u128) as usize;
 
 /// How far behind a climbing partition must be before [`lag_climbing`] raises, in time rather than records: a
@@ -1981,6 +1981,19 @@ pub fn outside_normal_facts(
         .collect()
 }
 
+/// Where the windows of each source below its normal begin, by the fact its warning is kept under
+/// ([`crate::leader::registry::Registry::lower_reaches`]).
+pub fn outside_normal_reaches(
+    readings: &[throughput::Reading],
+    snapshot: &[ThreadHealth],
+    heartbeat_interval: Duration,
+) -> Vec<(FactKey, i64)> {
+    outside_normal(readings, snapshot, heartbeat_interval)
+        .into_iter()
+        .filter_map(|(r, side)| Some((outside_key(r, side), r.reach_ms?)))
+        .collect()
+}
+
 /// A source reading fewer rows than it normally does at this time of day, or more: it is reading, and how much is
 /// off. Fewer is a warning, or info where an admin lowered it (`marks`). More is info.
 pub fn outside_normal_warnings(
@@ -2033,34 +2046,23 @@ pub fn outside_normal_warnings(
 /// What the reading `judged` found: the source is outside its range, on `side`.
 fn against(judged: &throughput::Judged, side: throughput::Outside) -> String {
     format!(
-        "{}normal, {} rows in {} against {} at this time of day",
+        "{}normal, {} rows in {} against {} to {} at this time of day",
         off_by(judged, side),
         throughput::grouped(judged.rows),
         humanize_secs(judged.window.as_secs()),
-        // A band whose top is zero is zero throughout, since no source reads fewer than none.
-        if judged.band.high <= 0.0 {
-            "none".to_string()
-        } else {
-            format!(
-                "{} to {}",
-                throughput::grouped(judged.band.low),
-                throughput::grouped(judged.band.high)
-            )
-        },
+        throughput::grouped(judged.band.low),
+        throughput::grouped(judged.band.high),
     )
 }
 
-/// How far past its band's nearest edge a reading is, in percent of that edge, and which way, as the warning opens:
-/// a count in the millions is hard to set against another by eye. Only the way where the edge is zero, which any
-/// reading is infinitely above.
+/// How far past its range's nearest edge a reading is, in percent of that edge, and which way, as the warning opens:
+/// a count in the millions is hard to set against another by eye. The edge is above zero: no reading is below a low
+/// edge of zero, and a width judges only where its usual window holds rows, which puts the high edge above them.
 fn off_by(judged: &throughput::Judged, side: throughput::Outside) -> String {
     let (edge, word) = match side {
         throughput::Outside::Below => (judged.band.low, "below"),
         throughput::Outside::Above => (judged.band.high, "above"),
     };
-    if edge <= 0.0 {
-        return format!("{word} ");
-    }
     let percent = ((judged.rows - edge) / edge * 100.0).abs();
     // Any reading outside is past the edge, which "0%" would deny.
     let percent = if percent < 1.0 {
@@ -2081,6 +2083,10 @@ pub struct WarningSpan {
     /// `None` while it still holds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ended_millis: Option<i64>,
+    /// Where the windows a below-normal warning read begin (`throughput::Reading::reach_ms`), once a reading has
+    /// said. The chart marks when the warning held, not what it read.
+    #[serde(skip)]
+    pub reach_millis: Option<i64>,
 }
 
 /// The warnings a source's chart marks, by the fact each is kept under.
@@ -2120,13 +2126,14 @@ pub fn spans(
     Ok(store
         .fact_spans(&entries, &scoped_subject(group, id), since_ms)?
         .into_iter()
-        .filter_map(|(entry, started_millis, ended_millis)| {
-            let (_, condition, severity) = table.iter().find(|(e, _, _)| *e == entry)?;
+        .filter_map(|span| {
+            let (_, condition, severity) = table.iter().find(|(e, _, _)| *e == span.entry)?;
             Some(WarningSpan {
                 condition: *condition,
                 severity: *severity,
-                started_millis,
-                ended_millis,
+                started_millis: span.started_ms,
+                ended_millis: span.ended_ms,
+                reach_millis: span.reach_ms,
             })
         })
         .collect())
@@ -4198,6 +4205,7 @@ mod tests {
             } else {
                 None
             },
+            reach_ms: None,
         }
     }
 
@@ -4212,16 +4220,6 @@ mod tests {
     fn a_reading_just_past_its_normal_is_not_zero_percent_past_it() {
         let r = reading_of("high", 5010.0);
         assert_eq!(off_by(&r.judged[0], throughput::Outside::Above), "slightly above ");
-        let zero = reading_in("high", 5010.0, throughput::Band { low: 0.0, high: 0.0 });
-        assert_eq!(off_by(&zero.judged[0], throughput::Outside::Above), "above ");
-        let snapshot = [thread_health_in("g", "w1", "t0", 0, vec![rows_metric("high")])];
-        assert_eq!(
-            outside(&[zero], &snapshot),
-            [(
-                Condition::SourceRowsAbove,
-                "source high: above normal, 5,010 rows in 30 minutes against none at this time of day".to_string()
-            )]
-        );
     }
 
     #[test]
@@ -4345,12 +4343,14 @@ mod tests {
                     severity: Severity::Failed,
                     started_millis: NOW - 30 * 60_000,
                     ended_millis: Some(NOW - 20 * 60_000),
+                    reach_millis: None,
                 },
                 WarningSpan {
                     condition: Condition::SourceRowsBelow,
                     severity: Severity::Warning,
                     started_millis: NOW - 10 * 60_000,
                     ended_millis: None,
+                    reach_millis: None,
                 },
             ]
         );

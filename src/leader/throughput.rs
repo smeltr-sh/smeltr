@@ -3,7 +3,7 @@
 //! A source's normal is learned from the rows it read, which the registry already keeps (`series.rs`), and it is judged
 //! at each of four [`WIDTHS`]: the rows of the last 5 minutes, 30 minutes, 6 hours and 24 hours. At one width, the
 //! usual window of a time of day is the median of the windows that ended within [`NEIGHBORHOOD`] of it on each of the
-//! last [`PROFILE_DAYS`] days. Every window of the width's history is a ratio to the usual window of its time of day,
+//! last [`USUAL_DAYS`] days. Every window of the width's history is a ratio to the usual window of its time of day,
 //! and the range is the usual window scaled by the lowest and the highest ratios, a [`TAIL`] of them cut from each end,
 //! and widened by [`MARGIN`]. Ratios, because a quiet hour and a busy one can be pooled only once each is set against
 //! its own time of day; a quantile, because rows read are bursty and often zero, which a mean and a deviation do not
@@ -21,10 +21,15 @@
 //! Only windows the source was running for throughout count. A bucket with no point means no worker reported the source
 //! then -- not deployed, or a worker gone -- which says nothing about how much it reads.
 //!
-//! A past window that overlaps a stop or a below-normal warning about the source (`warnings::spans`), or the readings
-//! it waited for, does not count either. An outage at this time of day would otherwise set the range's low edge there,
-//! and a source that dropped would come to call the drop normal. More rows are learned: they are the new normal until
-//! shown otherwise.
+//! A past window that shares a bucket with a stop about the source (`warnings::spans`) does not count either, nor one
+//! that shares a bucket with what a below-normal warning read: each window of each width that put it below, and of the
+//! readings it waited for ([`Reading::reach_ms`]). An outage at this time of day would otherwise set the range's low
+//! edge there, and a source that dropped would come to call the drop normal. More rows are learned: they are the new
+//! normal until shown otherwise.
+//!
+//! A window that holds a stop is not judged either. It reads the stop, which a warning naming the cause has already
+//! raised, and the narrow widths judge again within half an hour of its end; the long ones wait up to a day. This rule
+//! is the leader's own: the detector was measured on sources with no stops.
 //!
 //! A chart draws the range behind its points, and a point finer than a window swings wider than a window does. So each
 //! [`BUCKET`] also records how far each source's rate swung inside it at each of [`SWING_WIDTHS`] (`series::Swing`),
@@ -87,7 +92,7 @@ pub const WIDTHS: [Width; 4] = [
 ];
 
 /// How many days back a time of day's usual window is learned from.
-const PROFILE_DAYS: i64 = 7;
+const USUAL_DAYS: i64 = 7;
 
 /// How far either side of the same time of day a past window may end and still count as the same time of day.
 const NEIGHBORHOOD: Duration = Duration::from_secs(30 * 60);
@@ -150,6 +155,9 @@ pub struct Reading {
     /// Each width that judges the source now, narrowest first.
     pub judged: Vec<Judged>,
     pub outside: Option<Outside>,
+    /// Where the windows of the widths that put it below normal begin, with those of the readings it waited for:
+    /// the first bucket a below-normal warning raised now, or held, keeps its normal from learning.
+    pub reach_ms: Option<i64>,
 }
 
 /// One width's reading: the rows of its window that ended with the reading, and its range.
@@ -160,11 +168,17 @@ pub struct Judged {
     pub band: Band,
     /// This reading and the [`WAIT`] - 1 before it were each below their range.
     pub below: bool,
-    /// This reading and the [`WAIT`] - 1 before it were each above their range.
+    /// This reading and the [`WAIT`] - 1 before it were each above their range, at [`WINDOW`], the one width above
+    /// normal is judged at.
     pub above: bool,
 }
 
 impl Judged {
+    /// This reading alone is below its range.
+    pub fn under(&self) -> bool {
+        self.rows < self.band.low
+    }
+
     /// The rows and range as rows per second.
     pub fn per_second(&self) -> (f64, Band) {
         let seconds = self.window.as_secs_f64();
@@ -186,12 +200,12 @@ pub enum Outside {
 }
 
 impl Reading {
-    /// The width a reader is shown: the narrowest that put the source outside its normal, else [`WINDOW`], else the
-    /// narrowest that judges it. None while none judges it.
+    /// The width a reader is shown: the narrowest that reads the source outside its normal now, else [`WINDOW`], else
+    /// the narrowest that judges it. None while none judges it.
     pub fn shown(&self) -> Option<&Judged> {
         let side = |j: &&Judged| match self.outside {
-            Some(Outside::Below) => j.below,
-            Some(Outside::Above) => j.above && j.window == WINDOW,
+            Some(Outside::Below) => j.under(),
+            Some(Outside::Above) => j.above,
             None => false,
         };
         self.judged
@@ -203,11 +217,13 @@ impl Reading {
 }
 
 /// Which side of its normal a source is on, from its widths' readings, and whether a below-normal warning about it
-/// held until now.
+/// held until now. A held warning ends only on a reading inside the range: one no width can judge neither ends it nor
+/// raises it again with a new start.
 fn outside(judged: &[Judged], below_held: bool) -> Option<Outside> {
-    if judged.iter().any(|j| j.below) || (below_held && judged.is_empty()) {
+    let inside = !judged.is_empty() && !judged.iter().any(Judged::under);
+    if judged.iter().any(|j| j.below) || (below_held && !inside) {
         Some(Outside::Below)
-    } else if judged.iter().any(|j| j.above && j.window == WINDOW) {
+    } else if judged.iter().any(|j| j.above) {
         Some(Outside::Above)
     } else {
         None
@@ -278,7 +294,7 @@ impl Readings {
             .map(|(_, _, readings)| readings.clone())
     }
 
-    /// Every source's normal as of the hour `ended_ms` is in, learned again only when that hour or `learning` is new.
+    /// Every source's normal as of the hour `ended_ms` is in, learned again when that hour or `learning` is new.
     fn normals_at(&self, store: &RegistryStore, ended_ms: i64, learning: &Learning) -> Arc<Normals> {
         let as_of = Tier::OneHour.align(ended_ms);
         let mut held = self.normals.lock().unwrap_or_else(|e| e.into_inner());
@@ -289,7 +305,10 @@ impl Readings {
             return normals.clone();
         }
         let normals = Arc::new(normals(store, as_of, learning));
-        *held = Some((as_of, learning.clone(), normals.clone()));
+        // Held only once a source has one, so a fleet whose history was just written is judged at its next reading.
+        if normals.values().any(|n| !n.is_empty()) {
+            *held = Some((as_of, learning.clone(), normals.clone()));
+        }
         normals
     }
 }
@@ -347,19 +366,24 @@ fn normal(rows: &Rows, warned: &Warned, as_of: i64, width: Width) -> Option<Norm
     let step = BUCKET.bucket_ms();
     let per_day = DAY_MS / step;
     let learned = |ended: i64| rows.window(ended, width).filter(|_| !warned.during(ended, width.ms()));
-    // The last readings before `as_of` may yet be waited on by a warning, which would not learn them.
+    // Each learned window by its time of day, with how many buckets before `as_of` it ended. The last readings'
+    // windows are left out: a warning may yet wait on them, and would not learn them.
     let mut by_time: Vec<Vec<(i64, f64)>> = vec![Vec::new(); per_day as usize];
-    for i in WAIT..=PROFILE_DAYS * per_day {
+    for i in WAIT..=USUAL_DAYS * per_day {
         let ended = as_of - i * step;
         if let Some(sum) = learned(ended) {
-            by_time[time_of_day(ended)].push((i / per_day, sum));
+            by_time[time_of_day(ended)].push((i, sum));
         }
     }
-    let reach = NEIGHBORHOOD.as_millis() as i64 / step;
+    let across = NEIGHBORHOOD.as_millis() as i64 / step;
     let usual: Vec<Option<f64>> = (0..per_day)
         .map(|at| {
-            let near: Vec<(i64, f64)> = (-reach..=reach)
-                .flat_map(|off| by_time[(at + off).rem_euclid(per_day) as usize].iter().copied())
+            // Each window near `at` by the day of the window at `at` it is near, so one day is one day.
+            let near: Vec<(i64, f64)> = (-across..=across)
+                .flat_map(|off| {
+                    let of = &by_time[(at + off).rem_euclid(per_day) as usize];
+                    of.iter().map(move |&(i, sum)| ((i + off).div_euclid(per_day), sum))
+                })
                 .collect();
             if near.iter().map(|&(day, _)| day).collect::<HashSet<_>>().len() < MIN_DAYS {
                 return None;
@@ -392,17 +416,17 @@ fn normal(rows: &Rows, warned: &Warned, as_of: i64, width: Width) -> Option<Norm
 type Normals = HashMap<(String, String), Vec<Normal>>;
 
 /// How far back a normal reads: the longest history, and the window that ends where it begins.
-fn reach_ms() -> i64 {
+fn lookback_ms() -> i64 {
     WIDTHS
         .iter()
-        .map(|w| w.history_days.max(PROFILE_DAYS) * DAY_MS + w.ms())
+        .map(|w| w.history_days.max(USUAL_DAYS) * DAY_MS + w.ms())
         .max()
         .unwrap_or_default()
 }
 
 /// Every source's normal as of `as_of`.
 fn normals(store: &RegistryStore, as_of: i64, learning: &Learning) -> Normals {
-    let oldest = as_of - reach_ms();
+    let oldest = as_of - lookback_ms();
     let buckets = match history(store, BUCKET.and_finer(), BUCKET, oldest) {
         Ok(buckets) => buckets,
         Err(e) => {
@@ -455,6 +479,12 @@ fn compute(store: &RegistryStore, ended_ms: i64, learning: &Learning, normals: &
                 .filter_map(|normal| judge(&rows, &warned, normal, ended_ms))
                 .collect();
             let outside = outside(&judged, warned.below_held);
+            let waited = (WAIT - 1) * BUCKET.bucket_ms();
+            let reach_ms = judged
+                .iter()
+                .filter(|j| j.below)
+                .map(|j| ended_ms - waited - j.window.as_millis() as i64)
+                .min();
             let (group, source) = key;
             (!judged.is_empty() || outside.is_some()).then_some(Reading {
                 group,
@@ -462,6 +492,7 @@ fn compute(store: &RegistryStore, ended_ms: i64, learning: &Learning, normals: &
                 ended_ms,
                 judged,
                 outside,
+                reach_ms,
             })
         })
         .collect();
@@ -469,9 +500,8 @@ fn compute(store: &RegistryStore, ended_ms: i64, learning: &Learning, normals: &
     out
 }
 
-/// The reading at `normal`'s width of the window ending at `ended_ms`, or None where the width does not judge it. A
-/// window that holds a stop is not judged: it reads the stop, and the catch-up after it, which a warning that names
-/// the cause has already raised.
+/// The reading at `normal`'s width of the window ending at `ended_ms`, or None where the width does not judge it, as
+/// where the window holds a stop.
 fn judge(rows: &Rows, warned: &Warned, normal: &Normal, ended_ms: i64) -> Option<Judged> {
     let width = normal.width;
     let read = |ended: i64| {
@@ -489,7 +519,7 @@ fn judge(rows: &Rows, warned: &Warned, normal: &Normal, ended_ms: i64) -> Option
         rows: now,
         band,
         below: each(|rows, band| rows < band.low),
-        above: each(|rows, band| rows > band.high),
+        above: width.window == WINDOW && each(|rows, band| rows > band.high),
     })
 }
 
@@ -531,8 +561,8 @@ impl Rows {
 struct Warned {
     /// Each span a stop held, as (started, ended).
     stops: Vec<(i64, Option<i64>)>,
-    /// When its rows teach its normal nothing: while a stop or a below-normal warning held, from the first reading
-    /// that warning waited for, and all of the time before an admin said to learn it again.
+    /// When its rows teach its normal nothing: while a stop held, from where a below-normal warning's windows
+    /// begin until it ended, and all of the time before an admin said to learn it again.
     unlearned: Vec<(i64, Option<i64>)>,
     /// A below-normal warning about it still holds.
     below_held: bool,
@@ -550,16 +580,18 @@ impl Warned {
             );
             Vec::new()
         });
-        let waited = (WAIT - 1) * BUCKET.bucket_ms();
         let stops: Vec<(i64, Option<i64>)> = held
             .iter()
             .filter(|s| !matches!(s.condition, Condition::SourceRowsBelow | Condition::SourceRowsAbove))
             .map(|s| (s.started_millis, s.ended_millis))
             .collect();
+        // A warning that kept no reach began before one was kept. It is taken to have read the narrowest width,
+        // reckoned from when it was seen, which is up to a heartbeat after the reading that raised it.
+        let unkept = WAIT * BUCKET.bucket_ms() + WIDTHS[0].ms();
         let below = held
             .iter()
             .filter(|s| s.condition == Condition::SourceRowsBelow)
-            .map(|s| (s.started_millis - waited, s.ended_millis));
+            .map(|s| (s.reach_millis.unwrap_or(s.started_millis - unkept), s.ended_millis));
         let reset_from = learning.reset_from(group, source);
         let reset = reset_from.map(|from| (i64::MIN, Some(from)));
         Warned {
@@ -637,8 +669,8 @@ pub struct ExpectedPoint {
 
 /// `group`'s `source`'s range, as rows per second, for each bucket from `since_ms` to the one `now_ms` is in, for a
 /// chart whose points are `width_ms` wide. Up to a day back the bucket is five minutes, and further back an hour.
-/// A bucket's range is the one judged at the width nearest it, as of its hour: for five minutes, five minutes; for an
-/// hour, [`WINDOW`]. For a point finer than five minutes, it is the source's swings at that width
+/// A bucket's range is the one judged at the widest width no wider than it, as of its hour: for five minutes, five
+/// minutes; for an hour, [`WINDOW`]. For a point finer than five minutes, it is the source's swings at that width
 /// ([`record_swings`]). A bucket where that width does not judge the source has none. The range reads only past
 /// days, so the bucket still filling has one too.
 pub fn expected_over(
@@ -654,15 +686,16 @@ pub fn expected_over(
     if !hourly && width_ms < BUCKET.bucket_ms() {
         return swung_over(store, group, source, since_ms, now_ms, width_ms, learning);
     }
-    let (point, width) = if hourly {
-        (Tier::OneHour, WIDTHS[1])
-    } else {
-        (BUCKET, WIDTHS[0])
-    };
+    let point = if hourly { Tier::OneHour } else { BUCKET };
+    let width = WIDTHS
+        .into_iter()
+        .rev()
+        .find(|w| w.ms() <= point.bucket_ms())
+        .unwrap_or(WIDTHS[0]);
     let step = point.bucket_ms();
     let first = point.align(since_ms) + step;
     let last = point.align(now_ms) + step;
-    let oldest = Tier::OneHour.align(first) - width.history_days.max(PROFILE_DAYS) * DAY_MS - width.ms();
+    let oldest = Tier::OneHour.align(first) - width.history_days.max(USUAL_DAYS) * DAY_MS - width.ms();
     let Some(of) = history(store, BUCKET.and_finer(), BUCKET, oldest)?.remove(&(group.to_string(), source.to_string()))
     else {
         return Ok(Vec::new());
@@ -703,9 +736,9 @@ fn swung_over(
     learning: &Learning,
 ) -> Result<Vec<ExpectedPoint>, super::store::StoreError> {
     let width = BUCKET.bucket_ms();
-    let reach = NEIGHBORHOOD.as_millis() as i64 / width;
+    let across = NEIGHBORHOOD.as_millis() as i64 / width;
     let first = BUCKET.align(since_ms);
-    let oldest = first - PROFILE_DAYS * DAY_MS - reach * width;
+    let oldest = first - USUAL_DAYS * DAY_MS - across * width;
     let warned = Warned::of(store, group, source, oldest, learning);
     // By the end of the bucket each swung in, as a window is known by its end.
     let swung: BTreeMap<i64, Band> = store
@@ -725,7 +758,7 @@ fn swung_over(
     let mut ended_ms = first + width;
     while ended_ms <= BUCKET.align(now_ms) + width {
         let held = |ended| swung.get(&ended).copied().filter(|_| !warned.during(ended, width));
-        if let Some(band) = swung_band(held, ended_ms, width, reach) {
+        if let Some(band) = swung_band(held, ended_ms, width, across) {
             out.push(ExpectedPoint {
                 from_millis: ended_ms - width,
                 to_millis: ended_ms,
@@ -738,14 +771,14 @@ fn swung_over(
     Ok(out)
 }
 
-/// The range of `held` at `ended_ms` on each past day, `reach` steps of `step_ms` either side, or `None` while fewer
+/// The range of `held` at `ended_ms` on each past day, `across` steps of `step_ms` either side, or `None` while fewer
 /// than [`MIN_DAYS`] days have one. `held` is one past bucket's swing, its low and high rate ([`swing`]), if it is
 /// known. The range cuts a [`TAIL`] from the bottom of the lows and from the top of the highs.
-fn swung_band(held: impl Fn(i64) -> Option<Band>, ended_ms: i64, step_ms: i64, reach: i64) -> Option<Band> {
+fn swung_band(held: impl Fn(i64) -> Option<Band>, ended_ms: i64, step_ms: i64, across: i64) -> Option<Band> {
     let (mut lows, mut highs) = (Vec::new(), Vec::new());
     let mut days = HashSet::new();
-    for day in 1..=PROFILE_DAYS {
-        for step in -reach..=reach {
+    for day in 1..=USUAL_DAYS {
+        for step in -across..=across {
             if let Some(band) = held(ended_ms - day * DAY_MS + step * step_ms) {
                 lows.push(band.low);
                 highs.push(band.high);
@@ -816,7 +849,7 @@ fn record_swings(store: &RegistryStore, ended_ms: i64, heartbeat_interval: Durat
         })
         .collect();
     if let Err(e) = store.record_swings(&swings) {
-        tracing::warn!(name: "swings_not_recorded", target: "status", error = %e, "could not record how far sources' rates swung, so their charts' bands miss these buckets");
+        tracing::warn!(name: "swings_not_recorded", target: "status", error = %e, "could not record how far sources' rates swung, so their charts' ranges miss these buckets");
     }
 }
 
@@ -934,7 +967,7 @@ mod tests {
     }
 
     #[test]
-    fn a_steady_source_is_judged_within_its_band_at_every_width() {
+    fn a_steady_source_is_judged_within_its_range_at_every_width() {
         let r = reading(&store_with(7, |_| Some(100.0))).unwrap();
         assert_eq!(windows(&r), [5, 30, 360, 1440]);
         let five = &r.judged[0];
@@ -996,12 +1029,13 @@ mod tests {
         assert_eq!(r.shown().unwrap().window, WIDTHS[2].window);
     }
 
+    /// Days are counted per time of day: the windows in the half hour after a midnight are that midnight's day.
     #[test]
     fn too_few_days_are_not_judged() {
-        let store = store_with(MIN_DAYS as i64 - 2, |_| Some(100.0));
-        assert_eq!(reading(&store), None);
-        let store = store_with(MIN_DAYS as i64, |_| Some(100.0));
-        assert!(reading(&store).is_some());
+        let days = MIN_DAYS as i64 - 1;
+        let since = |start: i64| move |at: i64| (at >= start).then_some(100.0);
+        assert_eq!(reading(&store_with(days, since(END - days * DAY_MS + 6 * FIVE))), None);
+        assert!(reading(&store_with(days, since(END - days * DAY_MS + 5 * FIVE))).is_some());
     }
 
     #[test]
@@ -1062,8 +1096,16 @@ mod tests {
 
     /// `entry` held for the source from `started` until `ended`, or still.
     fn warned(store: &RegistryStore, entry: &str, started: i64, ended: Option<i64>) {
+        warned_reaching(store, entry, started, ended, None);
+    }
+
+    /// [`warned`], with the windows it read reaching back to `reach`.
+    fn warned_reaching(store: &RegistryStore, entry: &str, started: i64, ended: Option<i64>, reach: Option<i64>) {
         let fact = vec![(entry.to_string(), serde_json::to_string(&("g", "s")).unwrap())];
         store.sync_fact_clock(&[], &fact, started).unwrap();
+        if let Some(reach) = reach {
+            store.lower_fact_reach(entry, &fact[0].1, reach).unwrap();
+        }
         if let Some(ended) = ended {
             store.sync_fact_clock(&fact, &[], ended).unwrap();
         }
@@ -1083,7 +1125,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stop_does_not_teach_the_band() {
+    fn a_stop_does_not_teach_the_range() {
         let (store, outage) = outage_and_stop();
         let r = reading(&store).unwrap();
         assert_eq!(r.judged[0].band.low, 0.0, "learned, the outage sets the low edge");
@@ -1104,15 +1146,67 @@ mod tests {
     }
 
     #[test]
-    fn a_below_warning_does_not_teach_the_band_nor_do_the_readings_it_waited_for() {
+    fn a_stop_reaches_back_to_the_first_bucket_of_the_readings_it_waited_for() {
         let (store, outage) = outage_and_stop();
-        // Raised on the fourth bucket of the outage: the three before it waited.
-        warned(&store, "source_rows_below", outage + 3 * FIVE, Some(outage + 2 * HOUR));
+        warned(&store, "source_unreachable", outage, Some(outage + 2 * HOUR));
+        let r = reading(&store).unwrap();
+        assert_eq!(r.outside, Some(Outside::Below));
+        assert_eq!(r.reach_ms, Some(END - 4 * FIVE));
+    }
+
+    #[test]
+    fn a_reading_reaches_back_by_the_widest_width_below() {
+        let store = store_with(29, |at| Some(if at >= END - 5 * HOUR { 0.0 } else { 1.0 }));
+        let r = reading_at(&store, END - FIVE, &Learning::default()).unwrap();
+        assert_eq!(r.reach_ms, Some(END - FIVE - 3 * FIVE - 6 * HOUR));
+    }
+
+    /// Whether the normal as of END learns the `width` window that ended at `ended`.
+    fn learns(store: &RegistryStore, ended: i64, width: Width) -> bool {
+        let warned = Warned::of(store, "g", "s", END - lookback_ms(), &Learning::default());
+        !warned.during(ended, width.ms())
+    }
+
+    #[test]
+    fn a_below_warning_learns_nothing_the_windows_it_read_hold() {
+        let (store, outage) = outage_and_stop();
+        // Raised by the 6-hour width on the outage's fourth reading, and seen a heartbeat later.
+        let raised = outage + 4 * FIVE;
+        let reach = raised - 3 * FIVE - 6 * HOUR;
+        warned_reaching(
+            &store,
+            "source_rows_below",
+            raised + 1_000,
+            Some(outage + 2 * HOUR),
+            Some(reach),
+        );
+        assert!(learns(&store, reach, WIDTHS[0]), "the five minutes before it");
+        assert!(
+            !learns(&store, reach + FIVE, WIDTHS[0]),
+            "the first five minutes it read"
+        );
+        assert!(!learns(&store, reach + 6 * HOUR, WIDTHS[3]), "a day that holds it");
         assert_eq!(reading(&store).unwrap().judged[0].band.low, 70.0);
     }
 
     #[test]
-    fn an_above_warning_teaches_the_band() {
+    fn a_below_warning_that_kept_no_reach_learns_nothing_from_the_readings_it_waited_for() {
+        let (store, outage) = outage_and_stop();
+        warned(
+            &store,
+            "source_rows_below",
+            outage + 4 * FIVE + 1_000,
+            Some(outage + 2 * HOUR),
+        );
+        assert!(learns(&store, outage - FIVE, WIDTHS[0]));
+        assert!(
+            !learns(&store, outage + FIVE, WIDTHS[0]),
+            "the first reading it waited for"
+        );
+    }
+
+    #[test]
+    fn an_above_warning_teaches_the_range() {
         let burst = END - 3 * DAY_MS - HOUR;
         let store = store_with(7, |at| {
             Some(if (burst..burst + 2 * HOUR).contains(&at) {
@@ -1147,10 +1241,62 @@ mod tests {
     }
 
     #[test]
-    fn a_below_warning_ends_on_a_reading_inside_the_band() {
+    fn a_below_warning_ends_on_a_reading_inside_the_range() {
         let store = store_with(7, |_| Some(100.0));
         warned(&store, "source_rows_below", END - HOUR, None);
         assert_eq!(reading(&store).unwrap().outside, None);
+    }
+
+    #[test]
+    fn a_below_warning_holds_through_a_reading_no_width_could_judge() {
+        // Stopped, with nothing reported for the third bucket back: no width has four readings in a row.
+        let store = store_with(7, |at| match at {
+            _ if at == END - 3 * FIVE => None,
+            _ if at >= END - 4 * FIVE => Some(0.0),
+            _ => Some(100.0),
+        });
+        assert_eq!(reading(&store).unwrap().outside, None, "never raised");
+        warned(&store, "source_rows_below", END - 6 * FIVE, None);
+        let r = reading(&store).unwrap();
+        assert_eq!(windows(&r), [5]);
+        assert_eq!(r.outside, Some(Outside::Below));
+        assert_eq!(r.shown().unwrap().window, WIDTHS[0].window);
+    }
+
+    #[test]
+    fn two_days_either_side_of_the_hour_are_two_days() {
+        // Read only around this time of day on the days before, and in the bucket judged now.
+        let near = |at: i64, days: i64| (1..=days).any(|d| (at - (END - d * DAY_MS)).abs() <= HOUR / 2);
+        let store = store_with(7, move |at| (near(at, 2) || at == END - FIVE).then_some(100.0));
+        assert_eq!(reading(&store), None);
+        let store = store_with(7, move |at| (near(at, 3) || at == END - FIVE).then_some(100.0));
+        assert!(reading(&store).is_some());
+    }
+
+    #[test]
+    fn a_fleet_whose_history_just_arrived_is_judged_at_its_next_reading() {
+        let key = serde_json::to_string(&[("group", "g"), ("source", "s"), ("worker", "w")]).unwrap();
+        let store = store_with(0, |at| (at >= END - HOUR).then_some(100.0));
+        let readings = Readings::default();
+        let none = Learning::default();
+        assert!(
+            readings
+                .at(&store, END + 60_000, Duration::from_secs(1), &none)
+                .is_empty()
+        );
+        let mut at = END - 8 * DAY_MS;
+        while at <= END {
+            if at < END - HOUR || at == END {
+                store.record_delta(ROWS_IN_METRIC, &key, at, 100.0).unwrap();
+            }
+            at += FIVE;
+        }
+        assert_eq!(
+            readings
+                .at(&store, END + FIVE + 60_000, Duration::from_secs(1), &none)
+                .len(),
+            1
+        );
     }
 
     fn expected(store: &RegistryStore, since_ms: i64) -> Vec<ExpectedPoint> {
@@ -1167,7 +1313,7 @@ mod tests {
     }
 
     #[test]
-    fn a_short_chart_has_the_five_minute_band_in_each_five_minutes() {
+    fn a_short_chart_has_the_five_minute_range_in_each_five_minutes() {
         let store = store_with(7, |_| Some(100.0));
         let points = expected(&store, END - HOUR);
         assert_eq!(points.len(), 13, "the hour's twelve buckets and the one still filling");
@@ -1180,11 +1326,11 @@ mod tests {
 
     /// The first days of a week's chart have fewer than [`MIN_DAYS`] days of history before them.
     #[test]
-    fn a_long_chart_has_the_thirty_minute_band_each_hour_and_none_where_history_is_short() {
+    fn a_long_chart_has_the_thirty_minute_range_each_hour_and_none_where_history_is_short() {
         let store = store_with(7, |_| Some(100.0));
         let points = expected(&store, END - 7 * DAY_MS);
         let first = points.first().unwrap().from_millis;
-        assert!((END - 6 * DAY_MS..END - 4 * DAY_MS).contains(&first), "{first}");
+        assert!((END - 6 * DAY_MS - HOUR..END - 4 * DAY_MS).contains(&first), "{first}");
         assert_eq!(points.last().unwrap().from_millis, END);
         assert!(points.windows(2).all(|w| w[0].to_millis == w[1].from_millis));
         for p in &points {
@@ -1198,7 +1344,7 @@ mod tests {
     }
 
     #[test]
-    fn a_chart_band_leaves_out_a_stop() {
+    fn a_chart_range_leaves_out_a_stop() {
         let (store, outage) = outage_and_stop();
         warned(&store, "source_unreachable", outage, Some(outage + 2 * HOUR));
         for p in expected(&store, END - HOUR) {
@@ -1207,7 +1353,7 @@ mod tests {
     }
 
     #[test]
-    fn a_source_never_read_has_no_band() {
+    fn a_source_never_read_has_no_range() {
         let store = store_with(7, |_| Some(100.0));
         let none = expected_over(
             &store,
@@ -1279,7 +1425,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fine_chart_has_the_band_its_points_swung_in() {
+    fn a_fine_chart_has_the_range_its_points_swung_in() {
         let store = store_with(0, |_| None);
         let mut swings = Vec::new();
         let mut at = END - 8 * DAY_MS;

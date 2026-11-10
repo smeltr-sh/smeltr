@@ -654,6 +654,23 @@ impl Registry {
         }
         active.iter().map(|k| (k.clone(), clock[k])).collect()
     }
+
+    /// Moves where each active fact of `reaches` reaches back to, if further back than it reaches yet
+    /// ([`RegistryStore::lower_fact_reach`]). A fact this clock has not observed is left alone.
+    pub fn lower_reaches(&self, reaches: &[(FactKey, i64)]) {
+        let Some(store) = &self.store else {
+            return;
+        };
+        for (k, reach_ms) in reaches {
+            if let Err(e) = store.lower_fact_reach(&k.entry, &k.subject, *reach_ms) {
+                tracing::warn!(
+                    name: "fact_reach_not_persisted", target: "heartbeats",
+                    error = %e,
+                    "could not persist where a warning's windows begin, so its source's normal may learn them"
+                );
+            }
+        }
+    }
 }
 
 /// `last_seen_ms` (epoch milliseconds, from a durable row) as an `Instant`, backdated by how long ago that was.

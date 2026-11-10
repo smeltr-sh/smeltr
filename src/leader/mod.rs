@@ -1134,6 +1134,7 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     let starts = state.registry.starts_of(&active_facts, now_ms);
     let key_warnings = warnings::encryption_key_warnings(&key, &channels, &kept, &starts);
     let normal_warnings = warnings::outside_normal_warnings(&readings, &snapshot, &starts, &marks, heartbeat_interval);
+    let reaches = warnings::outside_normal_reaches(&readings, &snapshot, heartbeat_interval);
     let credentials = run_store(state.store.clone(), |s| s.list_worker_credentials()).await?;
     let (signing, rotating) = serving_authority(&state.data_dir);
     let serving = serving_certificate(&state.data_dir);
@@ -1230,6 +1231,8 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     let issues = warnings::issue_facts(&out, &active_facts);
     active_facts.extend(issues);
     state.registry.observe_facts(&active_facts, now_ms);
+    // After the facts are observed, so a warning this reading raised has its row to keep its reach in.
+    state.registry.lower_reaches(&reaches);
     Ok(out)
 }
 
@@ -1602,7 +1605,7 @@ fn flow_series(
     // Counted over the pass rather than reported per subject: a key this reader cannot parse is a shape it does
     // not know, and every other key of that shape will be unreadable too.
     let (mut unreadable, mut exemplar) = (0usize, None);
-    for (subject_key, points) in store.series_at(metric, tier, since_ms)? {
+    for (subject_key, points) in store.sums_since(metric, tier, since_ms)? {
         let (Some(group), Some(subject_id)) = (
             subject_label(&subject_key, GROUP_LABEL),
             subject_label(&subject_key, label_name),
@@ -1617,17 +1620,8 @@ fn flow_series(
             subject_id,
             points: points
                 .into_iter()
-                .fold(Vec::new(), |mut summed: Vec<FlowPoint>, (bucket_ms, value)| {
-                    // A bucket still in the finer tiers has a point from each of them, and its count is their sum.
-                    match summed.last_mut() {
-                        Some(last) if last.bucket_millis == bucket_ms => last.value += value,
-                        _ => summed.push(FlowPoint {
-                            bucket_millis: bucket_ms,
-                            value,
-                        }),
-                    }
-                    summed
-                }),
+                .map(|(bucket_millis, value)| FlowPoint { bucket_millis, value })
+                .collect(),
         });
     }
     if unreadable > 0 {
