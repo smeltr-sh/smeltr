@@ -492,35 +492,57 @@ The harness is Python 3 with NumPy, in `docs/research/normal-detector/lab/` besi
 
 ```
 python3 fetch_nab.py nab/              # the 14 NAB series, their labeled windows and license
-python3 real_logs.py ../fetch real/    # 5-minute counts and fields from the ten logs (Sections 3 and 4.2)
-python3 extend_lab.py nab/ paper extend_paper.json           # the three settings and the removable parts, real and modeled series (Sections 4.1, 4.3 and 5.4)
-python3 extend_lab.py logs paper extend_paper_logs.json      # the same on the ten logs (Section 4.2)
+python3 real_logs.py ../fetch real/
+    # 5-minute counts and fields from the ten logs (Sections 3 and 4.2)
+python3 extend_lab.py nab/ paper extend_paper.json
+    # the three settings and the removable parts, real and modeled series (Sections 4.1, 4.3 and 5.4)
+python3 extend_lab.py logs paper extend_paper_logs.json
+    # the same on the ten logs (Section 4.2)
 python3 sparse_lab.py sparse_final.json                      # sparse sources (Section 4.4)
-python3 sparse_lab.py sparse_history.json history            # 7 and 28 days behind every width, and a week-wide width (Section 4.4)
-python3 quiet_lab.py nab/ quiet.json                         # the gap at margins 1, 1.5 and 2 (Sections 2.8 and 4.7)
-python3 either_lab.py nab/ either.json                       # count widths and gap scored together (Section 4.8)
-python3 extend_lab.py nab/ hist7 extend_hist7.json           # 7 days of history behind every width (Sections 4.4 and 5.4)
-python3 extend_lab.py nab/ gate extend_gate.json             # the gate at 5, 10, 20 and 40 rows (Section 5.4)
-python3 extend_lab.py senders paper_senders extend_paper_values.json             # each sender of each mix, default setting (Section 4.5)
-python3 extend_lab.py senders paper_senders_quiet extend_paper_values_quiet.json # the same at the quiet setting (Section 4.5)
-python3 values_logs.py real/ values_logs.json                # the sender criterion and each watched value on the logs (Section 4.5)
+python3 sparse_lab.py sparse_history.json history
+    # 7 and 28 days behind every width, and a week-wide width (Section 4.4)
+python3 quiet_lab.py nab/ quiet.json
+    # the gap at margins 1, 1.5 and 2 (Sections 2.8 and 4.7)
+python3 either_lab.py nab/ either.json
+    # count widths and gap scored together (Section 4.8)
+python3 extend_lab.py nab/ hist7 extend_hist7.json
+    # 7 days of history behind every width (Sections 4.4 and 5.4)
+python3 extend_lab.py nab/ gate extend_gate.json
+    # the gate at 5, 10, 20 and 40 rows (Section 5.4)
+python3 extend_lab.py senders paper_senders extend_paper_values.json
+    # each sender of each mix, default setting (Section 4.5)
+python3 extend_lab.py senders paper_senders_quiet extend_paper_values_quiet.json
+    # the same at the quiet setting (Section 4.5)
+python3 values_logs.py real/ values_logs.json
+    # the sender criterion and each watched value on the logs (Section 4.5)
 python3 extend_lab.py nab/ widths extend_widths.json         # each width alone (Section 4.6)
-python3 extend_lab.py nab/ grid2 extend_grid2.json           # margins x waits at the design (Section 5.2)
-python3 heldout.py extend_grid2.json                         # pick on one half, score on the other (Section 5.2)
-python3 baseline_drops.py nab/ baseline_drops.csv            # the baseline on every drop fraction (Sections 1 and 4)
+python3 extend_lab.py nab/ grid2 extend_grid2.json
+    # margins x waits at the design (Section 5.2)
+python3 heldout.py extend_grid2.json
+    # pick on one half, score on the other (Section 5.2)
+python3 baseline_drops.py nab/ baseline_drops.csv
+    # the baseline on every drop fraction (Sections 1 and 4)
 python3 balance.py sweep.csv                                 # the precision model (Section 5.3)
-python3 run_all.py nab/ final.csv && python3 aggregate.py final.csv      # the twelve bands (Section 6.1)
+python3 run_all.py nab/ final.csv && python3 aggregate.py final.csv
+    # the twelve bands (Section 6.1)
 python3 sweep.py nab/ sweep.csv        # 5 margins x 4 waits at one width (Section 6.2)
-python3 patterns.py nab/ patterns.json # minutes from a stop to its alarm; what false alarms and misses look like (Section 6.1)
+python3 patterns.py nab/ patterns.json
+    # minutes from a stop to its alarm; what false alarms and misses look like (Section 6.1)
 python3 rank_lab.py nab/ rank.json     # the rank-based CUSUM, 16 settings (Section 6.3)
 python3 unified_lab.py nab/ unified.json  # widths between 5 and 30 minutes (Section 6.3)
 python3 learn.py nab/ learn.json       # learning alarmed windows (Section 6.4)
-python3 extend_lab.py nab/ long extend_long.json      # a third width with 7 days of history (Section 6.5)
-python3 extend_lab.py nab/ rows extend_rows.json && python3 extend_lab.py nab/ rowsfloor extend_rowsfloor.json  # widths defined in rows (Section 6.6)
-python3 extend_lab.py nab/ groups extend_groups.json  # day groups in the detector as written (Section 6.7)
-python3 share_lab.py share.json && python3 silence_lab.py silence.json  # the share band and the time-of-day gap (Section 6.8)
+python3 extend_lab.py nab/ long extend_long.json
+    # a third width with 7 days of history (Section 6.5)
+python3 extend_lab.py nab/ rows extend_rows.json &&
+    python3 extend_lab.py nab/ rowsfloor extend_rowsfloor.json
+    # widths defined in rows (Section 6.6)
+python3 extend_lab.py nab/ groups extend_groups.json
+    # day groups in the detector as written (Section 6.7)
+python3 share_lab.py share.json && python3 silence_lab.py silence.json
+    # the share band and the time-of-day gap (Section 6.8)
 python3 discover_lab.py discover.json  # which modeled fields behave like senders (Section 4.5)
-python3 build_paper.py lab/ paper_v7_template.md paper.md   # every table and quoted number in this paper, from the files above
+python3 build_paper.py lab/ paper_v7_template.md paper.md
+    # every table and quoted number in this paper, from the files above
 ```
 
 `design_lab.py` is the two-width detector as one class; `extend_lab.py` adds to it, one rule at a time, the long widths, the history per width, the gate, the typical window, the day groups and the rows-defined widths, and the `paper` experiment is the detector as recommended beside the parts removed one at a time; `normal_lab.py` is the early harness: it ports the baseline and holds every candidate band and the scoring; `run_all.py` the modeled series and the NAB loader; `real_logs.py` the log parsers. The tables of Sections 6.1 and 6.5 to 6.8 and the numbers quoted beside them are copied into the template by hand from the outputs of the runs named for them (`aggregate.py` on `final.csv`, `extend_long.json`, `extend_rows.json`, `extend_rowsfloor.json`, `extend_groups.json`, `patterns.json`, `unified.json`, `share.json`, `silence.json`); every other table and quoted number is written by `build_paper.py` from the files above, and the template names the file and field each comes from. A real source exported as a timestamp,count CSV joins the replay as one more series, and with no labeled windows every alarm on it counts as false.
