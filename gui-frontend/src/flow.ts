@@ -28,11 +28,11 @@ export function bucketRate(point: FlowPointDto, bucketMillis: number): number {
   return point.value / (bucketMillis / 1000);
 }
 
-/** The first bucket boundary at or after `fromMillis`: where a dense series starts, and so
- * the instant its slot 0 stands for. Aligned inward, because a bucket that began before the
- * window is not one the window can show part of -- a bucket is whole or it is absent. */
+/** The point boundary at or before `fromMillis`: where a dense series starts, and so the
+ * instant its slot 0 stands for. The leader reads a window from the start of the point it
+ * begins in, so that point is whole. */
 export function firstBucket(bucketMillis: number, fromMillis: number): number {
-  return Math.ceil(fromMillis / bucketMillis) * bucketMillis;
+  return Math.floor(fromMillis / bucketMillis) * bucketMillis;
 }
 
 /** `points` reindexed onto every expected bucket boundary from `fromMillis` to `toMillis`,
