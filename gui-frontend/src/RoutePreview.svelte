@@ -70,7 +70,7 @@
    * locks a run of exactly those. */
   let lockBlocked = $derived(
     heldSession(selected)
-      ? 'A test locks a saved sample. Save your capture as a sample first: Save input as sample, in the pipeline editor.'
+      ? 'A test locks a saved sample. Save your records as a sample first: Save input as sample, in the pipeline editor.'
       : !named
         ? 'A test locks a sample that names its source. Choose one that does.'
         : dirty

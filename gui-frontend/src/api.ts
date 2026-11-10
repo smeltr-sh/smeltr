@@ -1642,6 +1642,16 @@ export async function sharedConfig(): Promise<FileConfigDto | null> {
   return (await configAt(currentBranch(), SHARED_SCOPE)).config;
 }
 
+/** The sources a sample of this scope may stand for: its own, then those of `shared/`. */
+export async function sourceIdsInScope(): Promise<string[]> {
+  // Read as `configAt` reads, so the base commit a save is checked against stays where the page read it.
+  const [own, shared] = await Promise.all([
+    configAt(currentBranch(), currentScope()),
+    sharedConfig(),
+  ]);
+  return [...(own.config?.sources ?? []), ...(shared?.sources ?? [])].map((s) => s.id);
+}
+
 /** A section of a bundle, by its key in `FileConfigDto`. */
 export type ConfigSection =
   'sources' | 'destinations' | 'routes' | 'lookupTables' | 'grokPatterns' | 'schemas' | 'pipelines';
@@ -3161,6 +3171,15 @@ export function startCapture(
 /** The capture the leader holds for whoever is signed in, which a preview may run over. */
 export function myCapture(): Promise<CaptureStatusResult> {
   return withRecords(apiJson('/api/captures/mine', undefined, 'quiet'));
+}
+
+/** Hold records the person wrote, standing for `source` where they name one, as the capture they hold in place of
+ * any other: every preview runs over them, and they save as a capture does. */
+export function holdPaste(
+  records: SampleRecordDto[],
+  source?: string,
+): Promise<CaptureStatusResult> {
+  return withRecords(post('/api/captures/paste', { group: scope, source, records }, 'quiet'));
 }
 
 /** A finished capture's records, as a sample holds them. */

@@ -352,6 +352,12 @@ pub const CATALOG: &[Route] = &[
         body: "",
     },
     Route {
+        method: "POST",
+        path: "/api/captures/paste",
+        what: "Keep records you write as the capture you hold, in place of any other: previews run over it and it saves as a capture does. Returns its status. No query.",
+        body: "{ group, source?: id (the source the records stand for), records: object[] (each shaped as in a sample's `records`) }",
+    },
+    Route {
         method: "GET",
         path: "/api/areas/:area/samples",
         what: "The area's sample summaries (id, name, source, record count). Query: branch.",
