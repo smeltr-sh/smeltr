@@ -776,9 +776,10 @@ async function startRoute(j: Journey, source: string, pipeline: string) {
   return card;
 }
 
-/** Wires the newest route on `card` to the destination `to`, or with `null` opens the form for a new one. A new
- * route starts with no destination. A line card's + beside "destination" lists what is not on the card; on a card
- * of several routes, the new route's socket lists what is on it, and "another destination" the rest. */
+/** Wires the newest route on `card` to the destination `to`, or opens the form for a new one when `to` is null. A new
+ * route starts with no destination. On a card of one route, the + beside "destination" lists the destinations not
+ * on the card. On a card of several routes, the new route's socket lists the destinations on the card, and "another
+ * destination" the rest. */
 async function sendTo(j: Journey, card: Locator, to: string | null) {
   const menu = j.page.locator('.menu');
   const named = (d: string) =>

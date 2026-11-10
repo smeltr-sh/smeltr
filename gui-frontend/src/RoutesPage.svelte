@@ -262,8 +262,8 @@
     expanded.set(source, true);
     routes.push(newRoute(source));
   }
-  /** A route on `source`, its pipeline and destinations chosen by hand: the first of each would read as a choice
-   * nobody made. A minted id, never a counted one: it is what the route's durable history is keyed by
+  /** A route on `source`. Its pipeline and destinations are left to be chosen: the first of each would read as a
+   * choice nobody made. Its id is minted, never counted, because the route's durable history is keyed by it
    * (`mintRouteId`). */
   function newRoute(source: string, condition: string | null = null): RouteDto {
     return { id: mintRouteId(), source, condition, pipeline: '', deliver: [{ to: [] }] };
