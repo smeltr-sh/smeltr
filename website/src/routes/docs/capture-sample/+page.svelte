@@ -28,8 +28,9 @@
     </li>
     <li>
       Open Build → Resources → Samples, choose <strong>+ Add sample</strong>, then
-      <strong>Capture</strong>. The pipeline editor has the same <strong>Capture</strong> button above
-      its list of samples. The sample you capture there becomes the editor's sample.
+      <strong>Capture</strong>. In the pipeline editor, choose <strong>Add sample</strong> in the
+      sample menu, then <strong>Capture</strong>. The sample you capture there becomes the editor's
+      sample.
     </li>
     <li>
       Choose the worker <strong>Group</strong> and <strong>Capture target</strong>.
