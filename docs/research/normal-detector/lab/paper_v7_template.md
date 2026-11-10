@@ -411,7 +411,7 @@ The second route is the band itself at a shorter width, which is the design. The
 
 ### 6.4 Learning
 
-On the ratio band at the 30-minute width at δ = 0.2, k = 4, on modeled step series that double, halve or stop on day 35; what is learned does not depend on the margin. Learning the windows under an above-normal alarm cuts above-normal alarms on real series from 3.4 to 1.3 per source-month, and a steady source that doubles is learned within an hour instead of 9 to 56 hours; on the daily shape a doubling takes 14 to 32 hours either way on two seeds and is not learned in the 500 hours replayed on the third, and nothing below changes. Learning the windows under a below-normal alarm at a reduced weight fails: the band's edge is the rarest of 2,000 windows, so even a small weight on the new level moves it, and a source that halves is learned within 3 hours on the steady shape and 10 on the daily at weight 0.1 or 0.01, where without the weight the alarm stands up to 13 hours, until the readings that never reached k have taught the new level; a stopped source's alarm ends a day sooner at either weight, 96 hours against 121, because with no usable band the alarm can only end on a reading inside the band. An alarm at one width unlearns the buckets of its own readings only, w per reading, so a 5-minute alarm takes one bucket a reading out of learning, and with it the long windows that overlap that bucket.
+On the ratio band at the 30-minute width at δ = 0.2, k = 4, on modeled step series that double, halve or stop on day 35; what is learned does not depend on the margin. Learning the windows under an above-normal alarm cuts above-normal alarms on real series from 3.4 to 1.3 per source-month, and a steady source that doubles is learned within an hour instead of 9 to 56 hours; on the daily shape a doubling takes 14 to 32 hours either way on two seeds and on the third is learned only as the replay ends, after 502 hours, and nothing below changes. Learning the windows under a below-normal alarm at a reduced weight fails: the band's edge is the rarest of 2,000 windows, so even a small weight on the new level moves it, and a source that halves is learned within 3 hours on the steady shape and 10 on the daily at weight 0.1 or 0.01, where without the weight the alarm stands up to 13 hours, until the readings that never reached k have taught the new level; a stopped source's alarm ends a day sooner at either weight, 96 hours against 121, because with no usable band the alarm can only end on a reading inside the band. An alarm at one width unlearns the buckets of its own readings only, w per reading, so a 5-minute alarm takes one bucket a reading out of learning, and with it the long windows that overlap that bucket.
 
 ### 6.5 Which long width, and with how much history
 
@@ -497,13 +497,14 @@ The harness is Python 3 with NumPy, in `docs/research/normal-detector/lab/` besi
 ```
 python3 fetch_nab.py nab/              # the 14 NAB series, their labeled windows and license
 sh fetch_logs.sh ../fetch
-    # nine of the ten raw logs, to unpack under ../fetch/loghub/<log>/ and ../fetch/ita/
+    # nine of the ten raw logs, unpacked under ../fetch/loghub/<log>/ and ../fetch/ita/
 python3 real_logs.py ../fetch real/
     # 5-minute counts and fields from the ten logs (Sections 3 and 4.2)
 python3 facts.py nab/ real/
     # the EC2 burst share and Apache's longest silences (Sections 4.2 and 7)
 python3 extend_lab.py nab/ paper extend_paper.json
-    # the three settings and the removable parts, real and modeled series (Sections 4.1, 4.3 and 5.4)
+    # the three settings and the removable parts, real and modeled series
+    # (Sections 4.1, 4.3 and 5.4)
 python3 extend_lab.py logs paper extend_paper_logs.json
     # the same on the ten logs (Section 4.2)
 python3 sparse_lab.py sparse_final.json                      # sparse sources (Section 4.4)

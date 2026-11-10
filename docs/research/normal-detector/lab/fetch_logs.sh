@@ -12,4 +12,8 @@ get "https://ita.ee.lbl.gov/traces/clarknet_access_log_Aug28.gz" ita/clarknet_ac
 get "https://ita.ee.lbl.gov/traces/clarknet_access_log_Sep4.gz" ita/clarknet_access_log_Sep4.gz
 get "https://ita.ee.lbl.gov/traces/usask_access_log.gz" ita/usask_access_log.gz
 get "https://zenodo.org/records/8196385/files/BGL.zip?download=1" loghub/BGL.zip
+for t in SSH Zookeeper Apache Linux; do
+    [ -d "loghub/$t" ] || { mkdir -p "loghub/$t" && tar xzf "loghub/$t.tar.gz" -C "loghub/$t"; }
+done
+[ -d loghub/BGL ] || { mkdir -p loghub/BGL && unzip -q loghub/BGL.zip -d loghub/BGL; }
 echo done > dl.done
