@@ -16,16 +16,13 @@
     SAVED_EVENT,
     branchDiff,
     configAt,
-    listAccounts,
     openChange,
     runTests,
     type BranchDto,
   } from './api';
   import { tick } from 'svelte';
-  import { deployBlocker } from './access';
   import { changeText, type ScopeChange } from './changeText';
   import { scopeOf } from './objectChanges';
-  import { session } from './session';
   import { count } from './time';
   import { testsTally, type TestsTally } from './review';
 
@@ -49,10 +46,6 @@
   let files = $state<{ count: number; added: number; removed: number } | null>(null);
   let tests = $state<TestsTally | null>(null);
   let testsError = $state('');
-  /** Who reviews: everybody enabled who may approve this change, as the leader judges it
-   * (`deployBlocker`), but the author. Null when the roster cannot be read, as it cannot by somebody
-   * who is not an administrator. */
-  let reviewers = $state<{ id: string; name: string }[] | null>(null);
 
   /** Every scope this branch touched, against `main`. A change that spans
    * two groups is two comparisons, and the text says so. */
@@ -120,28 +113,9 @@
     }
   }
 
-  async function loadReviewers() {
-    // Only an administrator may list accounts. Anybody else makes no request, and the form names who reviews by role.
-    if (!session().administrator) return;
-    try {
-      // Any account that could approve, however it signs in, the author's own among them: a key account approves
-      // through the API.
-      reviewers = (await listAccounts())
-        .filter((u) => u.enabled && deployBlocker(entry.touches, u.access) === '')
-        // The author is marked, so a lone administrator does not read as somebody else reviewing.
-        .map((u) => ({
-          id: u.id,
-          name: u.id === session().userId ? `${u.displayName} (you)` : u.displayName,
-        }));
-    } catch {
-      reviewers = null;
-    }
-  }
-
   $effect(() => {
     void draft();
     void summarize();
-    void loadReviewers();
   });
 
   // A save from the page below moves the branch: count again, but keep what the author wrote.
@@ -205,18 +179,6 @@
         autofocus
       />
     </label>
-    <div class="field">
-      <span>Reviewers</span>
-      <div class="reviewers">
-        {#if reviewers === null}
-          <span class="dim">every administrator and deployer</span>
-        {:else if reviewers.length === 0}
-          <span class="dim">no administrator or deployer</span>
-        {:else}
-          {#each reviewers as r (r.id)}<span class="reviewer">{r.name}</span>{/each}
-        {/if}
-      </div>
-    </div>
     <div class="facts">
       {#if tests}
         {#if tests.total === 0}
@@ -292,20 +254,6 @@
   .field > span {
     font-size: var(--text-label);
     font-weight: 600;
-  }
-
-  .reviewers {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.4rem;
-    font-size: var(--text-note);
-  }
-
-  .reviewer {
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    padding: 0.1rem 0.6rem;
-    background: var(--field);
   }
 
   textarea {
