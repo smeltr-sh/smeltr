@@ -2498,7 +2498,7 @@ Used by:
 - [email-encoding 0.4.2](https://github.com/lettre/email-encoding)
 - [instant-acme 0.8.5](https://github.com/djc/instant-acme)
 - [rustls-platform-verifier 0.7.1](https://github.com/rustls/rustls-platform-verifier)
-- [ureq 3.4.2](https://github.com/algesten/ureq)
+- [ureq 3.5.0](https://github.com/algesten/ureq)
 
 ```
                                  Apache License
@@ -3349,7 +3349,7 @@ Used by:
 
 Used by:
 
-- [crc32fast 1.5.2](https://github.com/srijs/rust-crc32fast)
+- [crc32fast 1.5.3](https://github.com/srijs/rust-crc32fast)
 - [fallible-iterator 0.2.0](https://github.com/sfackler/rust-fallible-iterator)
 - [fallible-iterator 0.3.0](https://github.com/sfackler/rust-fallible-iterator)
 - [fallible-streaming-iterator 0.1.9](https://github.com/sfackler/fallible-streaming-iterator)
@@ -6326,7 +6326,7 @@ limitations under the License.
 
 Used by:
 
-- [memmap2 0.9.11](https://github.com/RazrFalcon/memmap2-rs)
+- [memmap2 0.9.12](https://github.com/RazrFalcon/memmap2-rs)
 
 ```
                               Apache License
@@ -6781,7 +6781,7 @@ Used by:
 - [flate2 1.1.10](https://github.com/rust-lang/flate2-rs)
 - [fnv 1.0.7](https://github.com/servo/rust-fnv)
 - [form_urlencoded 1.2.2](https://github.com/servo/rust-url)
-- [gix-imara-diff 0.3.2](https://github.com/GitoxideLabs/gitoxide)
+- [gix-imara-diff 0.3.3](https://github.com/GitoxideLabs/gitoxide)
 - [group 0.14.0](https://github.com/zkcrypto/group)
 - [hash32 0.3.1](https://github.com/japaric/hash32)
 - [hashbrown 0.14.5](https://github.com/rust-lang/hashbrown)
@@ -6832,7 +6832,7 @@ Used by:
 - [rustls-native-certs 0.8.5](https://github.com/rustls/rustls-native-certs)
 - [rustls 0.23.46](https://github.com/rustls/rustls)
 - [scopeguard 1.2.0](https://github.com/bluss/scopeguard)
-- [smallvec 1.16.3](https://github.com/servo/rust-smallvec)
+- [smallvec 1.16.4](https://github.com/servo/rust-smallvec)
 - [socket2 0.6.5](https://github.com/rust-lang/socket2)
 - [stable_deref_trait 1.2.1](https://github.com/storyyeller/stable_deref_trait)
 - [tempfile 3.27.0](https://github.com/Stebalien/tempfile)
@@ -6844,7 +6844,7 @@ Used by:
 - [unicode-normalization 0.1.26](https://github.com/unicode-rs/unicode-normalization)
 - [unicode-properties 0.1.4](https://github.com/unicode-rs/unicode-properties)
 - [url 2.5.8](https://github.com/servo/rust-url)
-- [uuid 1.28.0](https://github.com/uuid-rs/uuid)
+- [uuid 1.29.0](https://github.com/uuid-rs/uuid)
 - [x509-parser 0.18.1](https://github.com/rusticata/x509-parser.git)
 - [yasna 0.6.0](https://github.com/qnighy/yasna.rs)
 
@@ -7922,10 +7922,10 @@ Used by:
 - [crypto-common 0.1.7](https://github.com/RustCrypto/traits)
 - [crypto-common 0.2.2](https://github.com/RustCrypto/traits)
 - [ctr 0.10.1](https://github.com/RustCrypto/block-modes)
-- [der 0.8.2](https://github.com/RustCrypto/formats)
+- [der 0.8.3](https://github.com/RustCrypto/formats)
 - [digest 0.10.7](https://github.com/RustCrypto/traits)
 - [digest 0.11.3](https://github.com/RustCrypto/traits)
-- [elliptic-curve 0.14.1](https://github.com/RustCrypto/traits)
+- [elliptic-curve 0.14.3](https://github.com/RustCrypto/traits)
 - [ghash 0.6.0](https://github.com/RustCrypto/universal-hashes)
 - [hex-literal 1.1.0](https://github.com/RustCrypto/utils)
 - [hmac 0.13.0](https://github.com/RustCrypto/MACs)
@@ -9719,8 +9719,8 @@ Used by:
 - [asn1-rs-impl 0.2.0](https://github.com/rusticata/asn1-rs.git)
 - [async-trait 0.1.92](https://github.com/dtolnay/async-trait)
 - [aws-lc-sys 0.46.0](https://github.com/aws/aws-lc-rs)
-- [bon-macros 3.10.2](https://github.com/elastio/bon)
-- [bon 3.10.2](https://github.com/elastio/bon)
+- [bon-macros 3.10.3](https://github.com/elastio/bon)
+- [bon 3.10.3](https://github.com/elastio/bon)
 - [delegate 0.13.5](https://github.com/kobzol/rust-delegate)
 - [dunce 1.0.5](https://gitlab.com/kornelski/dunce)
 - [enum_dispatch 0.3.13](https://gitlab.com/antonok/enum_dispatch)
@@ -9732,7 +9732,7 @@ Used by:
 - [gix-command 0.12.1](https://github.com/GitoxideLabs/gitoxide)
 - [gix-commitgraph 0.42.0](https://github.com/GitoxideLabs/gitoxide)
 - [gix-config-value 0.21.1](https://github.com/GitoxideLabs/gitoxide)
-- [gix-config 0.62.1](https://github.com/GitoxideLabs/gitoxide)
+- [gix-config 0.62.2](https://github.com/GitoxideLabs/gitoxide)
 - [gix-credentials 0.42.1](https://github.com/GitoxideLabs/gitoxide)
 - [gix-date 0.18.1](https://github.com/GitoxideLabs/gitoxide)
 - [gix-diff 0.70.0](https://github.com/GitoxideLabs/gitoxide)
@@ -9742,8 +9742,8 @@ Used by:
 - [gix-fs 0.24.1](https://github.com/GitoxideLabs/gitoxide)
 - [gix-glob 0.29.1](https://github.com/GitoxideLabs/gitoxide)
 - [gix-hash 0.28.1](https://github.com/GitoxideLabs/gitoxide)
-- [gix-hashtable 0.18.0](https://github.com/GitoxideLabs/gitoxide)
-- [gix-ignore 0.24.0](https://github.com/GitoxideLabs/gitoxide)
+- [gix-hashtable 0.18.1](https://github.com/GitoxideLabs/gitoxide)
+- [gix-ignore 0.24.1](https://github.com/GitoxideLabs/gitoxide)
 - [gix-index 0.58.0](https://github.com/GitoxideLabs/gitoxide)
 - [gix-lock 26.0.1](https://github.com/GitoxideLabs/gitoxide)
 - [gix-macros 0.2.0](https://github.com/GitoxideLabs/gitoxide)
@@ -9753,7 +9753,7 @@ Used by:
 - [gix-odb 0.87.0](https://github.com/GitoxideLabs/gitoxide)
 - [gix-pack 0.77.0](https://github.com/GitoxideLabs/gitoxide)
 - [gix-packetline 0.24.1](https://github.com/GitoxideLabs/gitoxide)
-- [gix-parallel 0.50.0](https://github.com/GitoxideLabs/gitoxide)
+- [gix-parallel 0.50.1](https://github.com/GitoxideLabs/gitoxide)
 - [gix-path 0.14.1](https://github.com/GitoxideLabs/gitoxide)
 - [gix-pathspec 0.22.1](https://github.com/GitoxideLabs/gitoxide)
 - [gix-prompt 0.19.1](https://github.com/GitoxideLabs/gitoxide)
@@ -9763,7 +9763,7 @@ Used by:
 - [gix-refspec 0.47.1](https://github.com/GitoxideLabs/gitoxide)
 - [gix-revision 0.52.0](https://github.com/GitoxideLabs/gitoxide)
 - [gix-revwalk 0.38.0](https://github.com/GitoxideLabs/gitoxide)
-- [gix-sec 0.16.0](https://github.com/GitoxideLabs/gitoxide)
+- [gix-sec 0.16.1](https://github.com/GitoxideLabs/gitoxide)
 - [gix-shallow 0.15.1](https://github.com/GitoxideLabs/gitoxide)
 - [gix-submodule 0.36.1](https://github.com/GitoxideLabs/gitoxide)
 - [gix-tempfile 26.0.1](https://github.com/GitoxideLabs/gitoxide)
@@ -9771,7 +9771,7 @@ Used by:
 - [gix-transport 0.62.0](https://github.com/GitoxideLabs/gitoxide)
 - [gix-traverse 0.64.0](https://github.com/GitoxideLabs/gitoxide)
 - [gix-url 0.40.1](https://github.com/GitoxideLabs/gitoxide)
-- [gix-utils 0.5.1](https://github.com/GitoxideLabs/gitoxide)
+- [gix-utils 0.5.2](https://github.com/GitoxideLabs/gitoxide)
 - [gix-validate 0.13.1](https://github.com/GitoxideLabs/gitoxide)
 - [gix-worktree 0.59.0](https://github.com/GitoxideLabs/gitoxide)
 - [gix-zlib 0.4.0](https://github.com/GitoxideLabs/gitoxide)
@@ -9789,14 +9789,14 @@ Used by:
 - [num_enum_derive 0.7.6](https://github.com/illicitonion/num_enum)
 - [ouroboros 0.18.5](https://github.com/someguynamedjosh/ouroboros)
 - [ouroboros_macro 0.18.5](https://github.com/someguynamedjosh/ouroboros)
-- [pageant 0.2.4](https://github.com/warp-tech/russh)
+- [pageant 0.2.5](https://github.com/warp-tech/russh)
 - [pastey 0.2.3](https://github.com/as1100k/pastey)
 - [pin-project-lite 0.2.17](https://github.com/taiki-e/pin-project-lite)
 - [portable-atomic 1.15.0](https://github.com/taiki-e/portable-atomic)
 - [prettyplease 0.3.0](https://github.com/dtolnay/prettyplease)
 - [proc-macro2-diagnostics 0.10.1](https://github.com/SergioBenitez/proc-macro2-diagnostics)
 - [proc-macro2 1.0.107](https://github.com/dtolnay/proc-macro2)
-- [psl 2.1.243](https://github.com/addr-rs/psl)
+- [psl 2.1.245](https://github.com/addr-rs/psl)
 - [quote 1.0.47](https://github.com/dtolnay/quote)
 - [rand 0.10.3](https://github.com/rust-random/rand)
 - [rcgen 0.14.10](https://github.com/rustls/rcgen)
@@ -10798,8 +10798,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Used by:
 
-- [webpki-root-certs 1.0.10](https://github.com/rustls/webpki-roots)
-- [webpki-roots 1.0.10](https://github.com/rustls/webpki-roots)
+- [webpki-root-certs 1.0.11](https://github.com/rustls/webpki-roots)
+- [webpki-roots 1.0.11](https://github.com/rustls/webpki-roots)
 
 ```
 # Community Data License Agreement - Permissive - Version 2.0
@@ -10952,13 +10952,14 @@ Used by:
 - [aws-lc-sys 0.46.0](https://github.com/aws/aws-lc-rs)
 
 ```
-ISC License
+ISC License:
 
-Copyright <year> <owner> 
+Copyright (c) 2004-2010 by Internet Systems Consortium, Inc. ("ISC")
+Copyright (c) 1995-2003 by Internet Software Consortium
 
 Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted, provided that the above copyright notice and this permission notice appear in all copies.
 
-THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+THE SOFTWARE IS PROVIDED "AS IS" AND ISC DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL ISC BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ```
 
@@ -12736,7 +12737,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 Used by:
 
 - [tokio-util 0.7.20](https://github.com/tokio-rs/tokio)
-- [tokio 1.53.3](https://github.com/tokio-rs/tokio)
+- [tokio 1.54.1](https://github.com/tokio-rs/tokio)
 
 ```
 MIT License
@@ -14410,24 +14411,24 @@ authorization of the copyright holder.
 
 Used by:
 
-- [icu_collections 2.3.0](https://github.com/unicode-org/icu4x)
-- [icu_locale_core 2.3.0](https://github.com/unicode-org/icu4x)
-- [icu_normalizer 2.3.0](https://github.com/unicode-org/icu4x)
-- [icu_normalizer_data 2.3.0](https://github.com/unicode-org/icu4x)
-- [icu_properties 2.3.0](https://github.com/unicode-org/icu4x)
-- [icu_properties_data 2.3.0](https://github.com/unicode-org/icu4x)
-- [icu_provider 2.3.1](https://github.com/unicode-org/icu4x)
+- [icu_collections 2.4.0](https://github.com/unicode-org/icu4x)
+- [icu_locale_core 2.4.0](https://github.com/unicode-org/icu4x)
+- [icu_normalizer 2.4.0](https://github.com/unicode-org/icu4x)
+- [icu_normalizer_data 2.4.0](https://github.com/unicode-org/icu4x)
+- [icu_properties 2.4.0](https://github.com/unicode-org/icu4x)
+- [icu_properties_data 2.4.0](https://github.com/unicode-org/icu4x)
+- [icu_provider 2.4.0](https://github.com/unicode-org/icu4x)
 - [litemap 0.8.3](https://github.com/unicode-org/icu4x)
 - [potential_utf 0.1.6](https://github.com/unicode-org/icu4x)
-- [tinystr 0.8.4](https://github.com/unicode-org/icu4x)
+- [tinystr 0.8.5](https://github.com/unicode-org/icu4x)
 - [writeable 0.6.4](https://github.com/unicode-org/icu4x)
 - [yoke-derive 0.8.4](https://github.com/unicode-org/icu4x)
-- [yoke 0.8.3](https://github.com/unicode-org/icu4x)
+- [yoke 0.8.4](https://github.com/unicode-org/icu4x)
 - [zerofrom-derive 0.1.8](https://github.com/unicode-org/icu4x)
 - [zerofrom 0.1.8](https://github.com/unicode-org/icu4x)
 - [zerotrie 0.2.5](https://github.com/unicode-org/icu4x)
-- [zerovec-derive 0.11.6](https://github.com/unicode-org/icu4x)
-- [zerovec 0.11.8](https://github.com/unicode-org/icu4x)
+- [zerovec-derive 0.11.7](https://github.com/unicode-org/icu4x)
+- [zerovec 0.11.9](https://github.com/unicode-org/icu4x)
 
 ```
 UNICODE LICENSE V3
