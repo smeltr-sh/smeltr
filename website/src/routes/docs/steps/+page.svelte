@@ -73,8 +73,8 @@
   <h2 id="verify">Verify</h2>
   <p>
     Once the preview is right, choose <strong>Lock this as a test</strong>. A regression test checks
-    that later edits still produce that result, including which records the pipeline drops. After
-    each save, Resources → Samples shows whether every test still gives its locked output.
+    that later edits still produce that result, including which records the pipeline drops. Open
+    Resources → Samples to run every test again and see whether each still gives its locked output.
   </p>
   <ProductScreenshot
     source="build-tests"
