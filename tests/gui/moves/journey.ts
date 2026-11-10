@@ -796,7 +796,12 @@ async function sendTo(j: Journey, card: Locator, to: string | null) {
       .click();
     const another = menu.getByRole('button', { name: /another destination/ });
     await expect(another).toBeVisible();
-    if (to && (await named(to).count())) return named(to).click();
+    if (to && (await named(to).count())) {
+      // Ticking a destination there leaves the menu open, over what comes next.
+      await named(to).click();
+      await j.page.keyboard.press('Escape');
+      return expect(menu).toBeHidden();
+    }
     await another.click();
   }
   await (to ? named(to) : menu.getByRole('button', { name: /New destination/ })).click();
@@ -2168,8 +2173,9 @@ const saveOutputSample: Move = {
     const input = rng.pick(pasted(world));
     const name = `output ${world.made++}`;
     const api = await j.truth();
-    const on = `branch=${encodeURIComponent(world.branch ?? 'main')}`;
     const sampleNamed = async (n: string) => {
+      // Read where the GUI edits now: saving the output on main names a branch.
+      const on = `branch=${encodeURIComponent(world.branch ?? 'main')}`;
       const { samples } = await api.get(`/api/areas/shared/samples?${on}`);
       const id = samples.find((s: { name: string }) => s.name === n).id;
       return (await api.get(`/api/areas/shared/samples/${encodeURIComponent(id)}?${on}`))
