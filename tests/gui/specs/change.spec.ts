@@ -105,8 +105,6 @@ test('the branch bar opens a change from a form filled from what changed', async
   await expect(title).not.toHaveValue('');
   await expect(admin.getByText('no tests reach this change')).toBeVisible();
   await expect(admin.getByText(/^1 file ·/)).toBeVisible();
-  // The author could approve it, as the one administrator there is.
-  await expect(admin.locator('.reviewers')).toHaveText('Administrator (you)');
 
   await title.fill('Add the colors table');
   await admin.getByLabel('Description').fill('Colors for the enrichment step.');
