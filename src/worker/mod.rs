@@ -1113,10 +1113,14 @@ fn run_reader_loop(
         if !handing && reader.commits.is_empty() {
             break;
         }
+        // Commits go oldest first, so once the oldest outstanding batch is the held one, nothing more can commit.
+        if lane.held_batch().is_some_and(|held| reader.commits.outstanding().next() == Some(held)) {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(10));
     }
     if !reader.commits.is_empty() {
-        tracing::info!(name: "drain_incomplete", target: "pipelines", subject = %reader.source_id, "the time allowed for finishing in-flight batches passed with some uncommitted, so they are read again by the next deployment");
+        tracing::info!(name: "drain_incomplete", target: "pipelines", subject = %reader.source_id, "a source stopped with some in-flight batches uncommitted, so they are read again by the next deployment");
     }
     reader.report_in_flight();
 }
@@ -8831,6 +8835,60 @@ mod tests {
             took < DRAIN_TIMEOUT + Duration::from_secs(5),
             "the stop took {took:?}, more than one drain"
         );
+    }
+
+    /// A held batch ends the readers' drain at once: no batch polled after it can commit under this config, so
+    /// waiting out the drain would only delay the deployment that clears it.
+    #[test]
+    fn a_held_batch_ends_the_drain() {
+        let dir = repo("held-drain");
+        write(&dir, "groups/west/system.json", r#"{"version":1}"#);
+        write(
+            &dir,
+            "groups/west/sources.json",
+            r#"[{"id":"m","type":"metrics","bucketSeconds":1}]"#,
+        );
+        write(
+            &dir,
+            "groups/west/destinations.json",
+            r#"[{"id":"d","type":"kafka","brokers":"127.0.0.1:1","defaultTopic":"t"}]"#,
+        );
+        write(
+            &dir,
+            "groups/west/pipelines/p.json",
+            r#"{"id":"p","name":"p","steps":[]}"#,
+        );
+        write(
+            &dir,
+            "groups/west/routes.json",
+            r#"[{"id":"r","source":"m","pipeline":"p","deliver":[{"when":"false","to":["d"]}],
+                 "exceptions":{"kinds":{"Unmatched":"block"}}}]"#,
+        );
+        let head = commit(&dir, "every row unmatched, and unmatched blocks");
+        let spec = child::StartSpec {
+            state_dir: dir.clone(),
+            repo_dir: dir.clone(),
+            commit: head,
+            group_id: "west".to_string(),
+            thread_limit: 1,
+            memory: None,
+            heartbeat_interval: Duration::from_secs(1),
+            worker_id: "w1".to_string(),
+            secrets: vec![],
+            incarnation: 1,
+        };
+        let deployment = start_deployment(&spec, &child::Runtime::default()).unwrap();
+        // Long enough for the metrics source to hand over a batch, and for its unmatched rows to hold it.
+        std::thread::sleep(Duration::from_secs(3));
+        assert!(
+            deployment.readers.iter().any(|r| r.report.lock().unwrap().held.is_some()),
+            "no source was blocked"
+        );
+
+        let stopping = Instant::now();
+        stop_deployment(deployment);
+        let took = stopping.elapsed();
+        assert!(took < Duration::from_secs(5), "the stop took {took:?}, waiting out the drain");
     }
 
     /// A commit that will not run is refused before anything is torn down, so whatever was running stays. Loading
