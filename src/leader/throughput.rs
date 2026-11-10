@@ -751,34 +751,31 @@ pub struct ExpectedPoint {
     pub high: f64,
 }
 
-/// `group`'s `source`'s range, as rows per second, for each bucket from `since_ms` to the one `now_ms` is in, for a
-/// chart whose points are `width_ms` wide. Up to a day back the bucket is five minutes, and further back an hour.
-/// A bucket's range is the one judged at the widest width no wider than it, as of its hour: for five minutes, five
-/// minutes; for an hour, [`WINDOW`]. For a point finer than five minutes, it is the source's swings at that width
-/// ([`record_swings`]). A bucket where that width does not judge the source has none. The range reads only past
-/// days, so the bucket still filling has one too.
+/// `group`'s `source`'s range, as rows per second, for each point of a chart drawn in points `point_ms` wide
+/// ([`super::series::chart_point_ms`]), from the point `since_ms` is in to the point `now_ms` is in. A point's range
+/// is the one judged at the widest width no wider than it, as of its hour. For a point finer than five minutes, it is
+/// the source's swings at the point's own width ([`record_swings`]). A point where that width does not judge the
+/// source has none. The range reads only past days, so the point still filling has one too.
 pub fn expected_over(
     store: &RegistryStore,
     group: &str,
     source: &str,
     since_ms: i64,
     now_ms: i64,
-    width_ms: i64,
+    point_ms: i64,
     learning: &Learning,
 ) -> Result<Vec<ExpectedPoint>, super::store::StoreError> {
-    let hourly = now_ms - since_ms > DAY_MS;
-    if !hourly && width_ms < BUCKET.bucket_ms() {
-        return swung_over(store, group, source, since_ms, now_ms, width_ms, learning);
+    if point_ms < BUCKET.bucket_ms() {
+        return swung_over(store, group, source, since_ms, now_ms, point_ms, learning);
     }
-    let point = if hourly { Tier::OneHour } else { BUCKET };
     let width = WIDTHS
         .into_iter()
         .rev()
-        .find(|w| w.ms() <= point.bucket_ms())
+        .find(|w| w.ms() <= point_ms)
         .unwrap_or(WIDTHS[0]);
-    let step = point.bucket_ms();
-    let first = point.align(since_ms) + step;
-    let last = point.align(now_ms) + step;
+    let step = point_ms;
+    let first = since_ms.div_euclid(step) * step + step;
+    let last = now_ms.div_euclid(step) * step + step;
     let oldest = Tier::OneHour.align(first) - width.history_days.max(USUAL_DAYS) * DAY_MS - width.ms();
     let Some(of) = history(store, BUCKET.and_finer(), BUCKET, oldest)?.remove(&(group.to_string(), source.to_string()))
     else {
@@ -882,7 +879,7 @@ fn swung_band(held: impl Fn(i64) -> Option<Band>, ended_ms: i64, step_ms: i64, a
 }
 
 /// The widths a source's swing is kept at: those a chart finer than [`BUCKET`] draws its points at
-/// (`Tier::for_window`).
+/// ([`super::series::chart_point_ms`]).
 pub const SWING_WIDTHS: [Tier; 2] = [Tier::TenSeconds, Tier::OneMinute];
 
 /// How far back from the window's end a swing is still recorded. The ten-second tier holds an hour; this leaves
@@ -1416,23 +1413,14 @@ mod tests {
         );
     }
 
-    fn expected(store: &RegistryStore, since_ms: i64) -> Vec<ExpectedPoint> {
-        expected_over(
-            store,
-            "g",
-            "s",
-            since_ms,
-            END + 1000,
-            BUCKET.bucket_ms(),
-            &Learning::default(),
-        )
-        .unwrap()
+    fn expected(store: &RegistryStore, since_ms: i64, point_ms: i64) -> Vec<ExpectedPoint> {
+        expected_over(store, "g", "s", since_ms, END + 1000, point_ms, &Learning::default()).unwrap()
     }
 
     #[test]
     fn a_short_chart_has_the_five_minute_range_in_each_five_minutes() {
         let store = store_with(7, |_| Some(100.0));
-        let points = expected(&store, END - HOUR);
+        let points = expected(&store, END - HOUR, FIVE);
         assert_eq!(points.len(), 13, "the hour's twelve buckets and the one still filling");
         assert_eq!(points[0].from_millis, END - HOUR);
         assert_eq!((points[12].from_millis, points[12].to_millis), (END, END + FIVE));
@@ -1443,20 +1431,24 @@ mod tests {
 
     /// The first days of a week's chart have fewer than [`MIN_DAYS`] days of history before them.
     #[test]
-    fn a_long_chart_has_the_thirty_minute_range_each_hour_and_none_where_history_is_short() {
+    fn a_long_chart_has_its_widest_widths_range_each_point_and_none_where_history_is_short() {
         let store = store_with(7, |_| Some(100.0));
-        let points = expected(&store, END - 7 * DAY_MS);
-        let first = points.first().unwrap().from_millis;
-        assert!((END - 6 * DAY_MS - HOUR..END - 4 * DAY_MS).contains(&first), "{first}");
-        assert_eq!(points.last().unwrap().from_millis, END);
-        assert!(points.windows(2).all(|w| w[0].to_millis == w[1].from_millis));
-        for p in &points {
-            assert_eq!(
-                (p.low, p.high),
-                (420.0 / 1800.0, 780.0 / 1800.0),
-                "at {}",
-                p.from_millis
-            );
+        for (point, width) in [(HOUR, 30 * 60), (6 * HOUR, 6 * 60 * 60)] {
+            let points = expected(&store, END - 7 * DAY_MS, point);
+            let first = points.first().unwrap().from_millis;
+            assert!((END - 6 * DAY_MS - HOUR..END - 4 * DAY_MS).contains(&first), "{first}");
+            assert_eq!(points.last().unwrap().from_millis, END);
+            assert!(points.windows(2).all(|w| w[0].to_millis == w[1].from_millis));
+            // A hundred rows in each five minutes.
+            let usual = width as f64 / 300.0 * 100.0;
+            for p in &points {
+                assert_eq!(
+                    (p.low, p.high),
+                    (0.7 * usual / width as f64, 1.3 * usual / width as f64),
+                    "at {}",
+                    p.from_millis
+                );
+            }
         }
     }
 
@@ -1464,7 +1456,7 @@ mod tests {
     fn a_chart_range_leaves_out_a_stop() {
         let (store, outage) = outage_and_stop();
         warned(&store, "source_unreachable", outage, Some(outage + 2 * HOUR));
-        for p in expected(&store, END - HOUR) {
+        for p in expected(&store, END - HOUR, FIVE) {
             assert_eq!(p.low, 70.0 / 300.0, "at {}", p.from_millis);
         }
     }

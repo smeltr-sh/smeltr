@@ -2162,7 +2162,7 @@ fn lag_climbing(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Warning> {
     let Some(store) = store else { return Vec::new() };
     let open = LAG_TIER.align(now_ms);
     let since = open - throughput::WINDOW.as_millis() as i64;
-    let series = match store.peaks_since(SOURCE_LAG_METRIC, LAG_TIER, since) {
+    let series = match store.peaks_since(SOURCE_LAG_METRIC, LAG_TIER.bucket_ms(), since) {
         Ok(series) => series,
         Err(e) => {
             tracing::warn!(

@@ -4102,9 +4102,9 @@ export type FlowSeriesDto = {
   points: FlowPointDto[];
 };
 
-/** `bucketMillis` is the bucket of the finest tier that holds the whole window
- * (`series::Tier::for_window`). Its newest buckets, not yet rolled up into that
- * tier, are summed from the finer tiers. */
+/** `bucketMillis` is how wide each point of the window's chart is
+ * (`series::chart_point_ms`). A point is summed from the coarsest tier that fits
+ * in it, and its newest buckets from the finer tiers that still hold them. */
 export type FlowResponseDto = {
   bucketMillis: number;
   rowsIn: FlowSeriesDto[];
