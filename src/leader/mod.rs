@@ -1543,8 +1543,8 @@ impl FlowResponse {
 const GROUP_LABEL: &str = "group";
 /// `Reader::step`'s count of records read from the source (`runtime.rs`), the "in" of E2.
 pub(crate) const ROWS_IN_METRIC: &str = "smeltr_rows_polled_total";
-/// `Transform::count_outcomes`' count of rows handed to a destination's queue (`runtime.rs`): received, not yet
-/// acknowledged.
+/// `Transform::count_outcomes`' count of rows handed to a destination's queue (`runtime.rs`). The destination page
+/// calls these received: they are not yet acknowledged.
 const ROWS_SENT_METRIC: &str = "smeltr_rows_sent_total";
 /// `egress::run`'s count of rows a destination has acknowledged (`egress.rs`), the "out" of E2 -- a real delivery,
 /// past `Dispatched::InFlight`.
@@ -5608,9 +5608,9 @@ mod flow_endpoint_tests {
         assert_eq!(groups(&flow.bytes_out), vec!["payments"]);
     }
 
-    /// The weight of the same flow, for the panel's hover readout. Rows a destination has taken
-    /// but not yet acknowledged are not out, in rows or in bytes: a destination that is down
-    /// shows as nothing out.
+    /// The weight of the same flow, for the panel's hover readout. Rows a destination has received
+    /// but not yet acknowledged are not out, in rows or in bytes: a destination that is down shows
+    /// nothing out.
     #[test]
     fn bytes_in_and_bytes_out_read_the_polled_and_delivered_metrics() {
         let state = state();
