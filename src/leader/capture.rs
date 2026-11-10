@@ -116,7 +116,7 @@ pub struct CaptureStatus {
     /// kept, and the sample file carries no mark of the loss.
     pub truncated: bool,
     /// Records a person pasted rather than captured: kept as one column that holds the whole record; a preview or a
-    /// save reads them back as the records written, with no columns of its own and no `__capture` fields.
+    /// save reads them back as the records written, with no columns of their own and no `__capture` fields.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub pasted: bool,
     /// What Run found out about an SQL source's query: its columns, and what the database plans for a poll.
