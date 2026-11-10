@@ -62,11 +62,12 @@
      * `input`, the `SampleWay` for a pipeline's input that is not saved yet. */
     input?: CaptureStatus;
     oncancel: () => void;
-    /** The new sample's id, once it is saved. Without it, as for someone who may not save, nothing is saved. */
+    /** Called with the new sample's id once it is saved. Left out for someone who may not save: the dialog then saves
+     * nothing. */
     onsaved?: (id: string) => void;
   } = $props();
 
-  // Whoever may open it may use records, on a page they may only read too; only `onsaved` saves.
+  // Whoever may open it may use records, even on a page they may only read; only `onsaved` saves.
   neverLocked();
 
   // A page with a turned corner: records written by hand.

@@ -313,7 +313,7 @@ test('A1: a viewer runs a pipeline over a capture without saving it', async ({
   await viewer.getByRole('button', { name: 'Choose a sample' }).click();
   await expect(viewer.getByRole('option', { name: /Your records/ })).toContainText('3 records');
 
-  // A paste takes the capture's place, with no name and no save.
+  // A paste replaces the capture held, with no name and no save.
   await viewer.getByRole('button', { name: 'Add sample' }).click();
   await form.getByRole('button', { name: 'Paste' }).click();
   await expect(form.getByLabel('Name')).toHaveCount(0);
