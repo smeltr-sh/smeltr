@@ -993,7 +993,6 @@ pub struct GroupHealth {
     pub readers: usize,
     /// One per destination, set by how many the group delivers to.
     pub egress_threads: usize,
-    pub partitions_owned: usize,
 }
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1020,7 +1019,6 @@ pub fn health_snapshot(state: &AppState) -> HealthResponse {
             transform_threads: 0,
             readers: 0,
             egress_threads: 0,
-            partitions_owned: 0,
         });
         match t.report.kind {
             Some(ThreadKind::Transform) => g.transform_threads += 1,
@@ -1028,7 +1026,6 @@ pub fn health_snapshot(state: &AppState) -> HealthResponse {
             Some(ThreadKind::Egress) => g.egress_threads += 1,
             Some(ThreadKind::Worker) | None => {}
         }
-        g.partitions_owned += t.report.partitions_owned.len();
     }
 
     HealthResponse {
@@ -1487,10 +1484,8 @@ pub struct FlowSeries {
 /// queried, not several stitched together, so a window that outgrows the finest tier is coarser than the window
 /// itself, and its most recent stretch can be absent until that data has aged into the tier being served from.
 ///
-/// `bytes_out` is not `rows_out` weighed. A row counts as out when a destination's queue takes it; its bytes count
-/// when the destination acknowledges them, a queue later. The two agree while a destination keeps up and part
-/// company while it does not -- which is when somebody is watching. Dividing one by the other is not a row size,
-/// and the panel that reads them says which is which.
+/// Out is what destinations acknowledged, in rows and in bytes. A destination that stops acknowledging shows as out
+/// falling while in holds, until its queue fills and holds back the sources feeding it.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FlowResponse {
@@ -1548,11 +1543,11 @@ impl FlowResponse {
 const GROUP_LABEL: &str = "group";
 /// `Reader::step`'s count of records read from the source (`runtime.rs`), the "in" of E2.
 pub(crate) const ROWS_IN_METRIC: &str = "smeltr_rows_polled_total";
-/// `Transform::send`'s count of records the destination accepted (`runtime.rs`), the "out" of E2 -- what actually
-/// left, not what was attempted.
-const ROWS_OUT_METRIC: &str = "smeltr_rows_sent_total";
-/// `egress::run`'s count of rows a destination has acknowledged (`egress.rs`) -- a real delivery, past
-/// `Dispatched::InFlight`.
+/// `Transform::count_outcomes`' count of rows handed to a destination's queue (`runtime.rs`): received, not yet
+/// acknowledged.
+const ROWS_SENT_METRIC: &str = "smeltr_rows_sent_total";
+/// `egress::run`'s count of rows a destination has acknowledged (`egress.rs`), the "out" of E2 -- a real delivery,
+/// past `Dispatched::InFlight`.
 const ROWS_DELIVERED_METRIC: &str = "smeltr_rows_delivered_total";
 /// The wire name `Reader::lag` gauges, per source, topic and partition (E6). Only a source kind that overrides
 /// `Source::lag` ever reports it, so a source that cannot is simply absent from this metric rather than reporting
@@ -1560,9 +1555,7 @@ const ROWS_DELIVERED_METRIC: &str = "smeltr_rows_delivered_total";
 const SOURCE_LAG_METRIC: &str = "smeltr_source_lag";
 /// `Transform::poll`'s payload bytes read, beside its row count (`runtime.rs`).
 const BYTES_POLLED_METRIC: &str = "smeltr_bytes_polled_total";
-/// `egress::note_delivered`'s bytes acknowledged, beside its row count. The weight of what a destination took, so
-/// it answers for `ROWS_DELIVERED_METRIC`'s rows rather than `ROWS_OUT_METRIC`'s: nothing weighs a row at the
-/// moment it is sent.
+/// `egress::note_delivered`'s bytes acknowledged, beside its row count: the weight of what a destination took.
 const BYTES_DELIVERED_METRIC: &str = "smeltr_bytes_delivered_total";
 /// `Transform::place_unmatched`'s count of rows no route on their source matched (`runtime.rs`), counted whether the
 /// deployment delivers them or drops them.
@@ -1590,7 +1583,7 @@ pub fn flow_snapshot(state: &AppState, window: Duration) -> Result<FlowResponse,
     Ok(FlowResponse {
         bucket_millis: tier.bucket_ms(),
         rows_in: flow_series(store, ROWS_IN_METRIC, "source", tier, since_ms)?,
-        rows_out: flow_series(store, ROWS_OUT_METRIC, "destination", tier, since_ms)?,
+        rows_out: flow_series(store, ROWS_DELIVERED_METRIC, "destination", tier, since_ms)?,
         bytes_in: flow_series(store, BYTES_POLLED_METRIC, "source", tier, since_ms)?,
         bytes_out: flow_series(store, BYTES_DELIVERED_METRIC, "destination", tier, since_ms)?,
         normals: Vec::new(),
@@ -5555,7 +5548,7 @@ mod flow_endpoint_tests {
             .unwrap();
         store
             .record_delta(
-                ROWS_OUT_METRIC,
+                ROWS_DELIVERED_METRIC,
                 r#"[["group","prod-west"],["destination","2"]]"#,
                 now,
                 9.0,
@@ -5615,9 +5608,9 @@ mod flow_endpoint_tests {
         assert_eq!(groups(&flow.bytes_out), vec!["payments"]);
     }
 
-    /// The weight of the same flow, for the panel's hover readout. `bytes_out` comes off the
-    /// delivered metric, so a destination that has taken rows but not yet acknowledged them
-    /// reports rows out with no bytes beside them -- a lag, not a missing series.
+    /// The weight of the same flow, for the panel's hover readout. Rows a destination has taken
+    /// but not yet acknowledged are not out, in rows or in bytes: a destination that is down
+    /// shows as nothing out.
     #[test]
     fn bytes_in_and_bytes_out_read_the_polled_and_delivered_metrics() {
         let state = state();
@@ -5633,7 +5626,7 @@ mod flow_endpoint_tests {
             .unwrap();
         store
             .record_delta(
-                ROWS_OUT_METRIC,
+                ROWS_SENT_METRIC,
                 r#"[["group","prod-west"],["destination","2"]]"#,
                 now,
                 9.0,
@@ -5645,8 +5638,7 @@ mod flow_endpoint_tests {
         assert_eq!(flow.bytes_in[0].subject_id, "7");
         assert_eq!(flow.bytes_in[0].group, "prod-west");
         assert_eq!(flow.bytes_in[0].points[0].value, 4096.0);
-        // Rows were sent; nothing has been acknowledged, so there is no weight to report yet.
-        assert_eq!(flow.rows_out.len(), 1);
+        assert!(flow.rows_out.is_empty());
         assert!(flow.bytes_out.is_empty());
 
         store
