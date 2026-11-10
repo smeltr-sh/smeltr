@@ -121,12 +121,12 @@
   }
 
   async function loadReviewers() {
+    // Only an administrator may list accounts. Anybody else makes no request, and the form names who reviews by role.
+    if (!session().administrator) return;
     try {
       // Any account that could approve, however it signs in, the author's own among them: a key account approves
       // through the API.
-      // Only an administrator may list accounts. The call is quiet so that anybody else's refusal shows no error bar,
-      // and the form then names who reviews by role.
-      reviewers = (await listAccounts('quiet'))
+      reviewers = (await listAccounts())
         .filter((u) => u.enabled && deployBlocker(entry.touches, u.access) === '')
         // The author is marked, so a lone administrator does not read as somebody else reviewing.
         .map((u) => ({
