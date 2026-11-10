@@ -19,7 +19,7 @@
   import { routeCounts } from './routeCounts';
   import SampleMenu from './SampleMenu.svelte';
   import { editable } from './access';
-  import { routable, recordsOf, SampleChoices } from './sampleChoices.svelte';
+  import { recordsOf, SampleChoices } from './sampleChoices.svelte';
   import {
     heldSession,
     routePreview,
@@ -36,14 +36,20 @@
     /** Whether the routes on screen have edits not yet saved. A test locks the routes as saved, so locking waits until
      * they are saved. */
     dirty,
+    /** The sources the routes may read, the group's own and `shared/`'s. */
+    sources,
   }: {
     config: FileConfigDto | null;
     dirty: boolean;
+    sources: string[];
   } = $props();
 
   const choices = new SampleChoices((e) => (error = unreported(e)));
-  let offered = $derived(routable(choices));
   let selected = $state('');
+  /** The source the chosen records stand for where they name none, such as a paste with none or a capture at a
+   * destination. */
+  let standsFor = $state('');
+  let named = $derived(choices.sourceOf(selected));
   let result = $state<RoutePreviewResult | null>(null);
   /** The sample `result` ran over. */
   let ran = $state('');
@@ -54,9 +60,9 @@
   // Arriving on the tab runs the first choice, once the samples and the bundle are read: nothing is delivered and no
   // destination is opened, so there is no reason to wait for a click.
   $effect(() => {
-    if (selected || !offered.first || !config) return;
-    selected = offered.first;
-    untrack(run);
+    if (selected || !choices.first || !config) return;
+    selected = choices.first;
+    if (choices.sourceOf(selected)) untrack(run);
   });
   let grid = $state<RecordsGrid | undefined>();
 
@@ -64,14 +70,16 @@
    * locks a run of exactly those. */
   let lockBlocked = $derived(
     heldSession(selected)
-      ? 'A test locks a saved sample. Save your capture as a sample first: Save input as sample, in the pipeline editor.'
-      : dirty
-        ? 'Save your route changes first.'
-        : !result || ran !== selected
-          ? 'Choose a sample and run it without errors first.'
-          : ranOn !== JSON.stringify(config)
-            ? 'The routes changed since this run. Run it again.'
-            : '',
+      ? 'A test locks a saved sample. Save your records as a sample first: Save input as sample, in the pipeline editor.'
+      : !named
+        ? 'A test locks a sample that names its source. Choose one that does.'
+        : dirty
+          ? 'Save your route changes first.'
+          : !result || ran !== selected
+            ? 'Choose a sample and run it without errors first.'
+            : ranOn !== JSON.stringify(config)
+              ? 'The routes changed since this run. Run it again.'
+              : '',
   );
 
   function goLockTest() {
@@ -84,7 +92,7 @@
     error = '';
     try {
       const [sample, sent] = [selected, JSON.stringify(config)];
-      const res = await routePreview(sent, sample);
+      const res = await routePreview(sent, sample, { source: named ?? standsFor });
       if (!res.ok) {
         error = errorText(res.errors);
         result = null;
@@ -291,16 +299,33 @@
 <div class="preview">
   <div class="controls">
     <SampleMenu
-      samples={offered.samples}
+      samples={choices.samples}
       {selected}
       records={result && ran === selected ? result.rows.length : null}
-      held={offered.held}
-      onpick={(choice) => (selected = choice)}
+      held={choices.menuHeld}
+      onpick={(choice) => ((selected = choice), (standsFor = ''))}
     />
+    {#if selected && !named}
+      <label class="stands-for">
+        <span class="field-name">Source it stands for</span>
+        <select bind:value={standsFor} onchange={() => (result = null)}>
+          <option value="" disabled></option>
+          {#each sources as s (s)}<option value={s}>{s}</option>{/each}
+        </select>
+      </label>
+    {/if}
     <Button
       class="primary"
       onclick={run}
-      disabled={running ? BUSY : !selected ? 'Choose a sample first.' : !config ? LOADING : ''}
+      disabled={running
+        ? BUSY
+        : !selected
+          ? 'Choose a sample first.'
+          : !named && !standsFor
+            ? 'Choose the source it stands for first.'
+            : !config
+              ? LOADING
+              : ''}
     >
       {running ? 'Running…' : 'Run'}
     </Button>
@@ -309,13 +334,6 @@
       <Button type="button" onclick={goLockTest} disabled={lockBlocked}>Lock this as a test</Button>
     {/if}
   </div>
-
-  {#if offered.none}
-    <p>
-      No sample names a source. Routing selects on a source, so a sample has to say which one its
-      records stand for &mdash; set that on the <a class="link" href="#/build">Samples</a> page.
-    </p>
-  {/if}
 
   <InlineError message={error} />
 
@@ -376,6 +394,15 @@
     align-items: center;
     gap: 0.5rem;
     margin-bottom: 0.75rem;
+  }
+  .stands-for {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: var(--text-label);
+  }
+  .field-name {
+    font-weight: 600;
   }
   .tiles {
     display: flex;

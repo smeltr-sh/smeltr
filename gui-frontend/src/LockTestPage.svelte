@@ -148,7 +148,7 @@
         previewOk = preview.ok;
         previewErrors = preview.errors;
       } else {
-        const preview = await routePreview(config, sample, atMicros);
+        const preview = await routePreview(config, sample, { atMicros });
         // A row that asked for more memory than a preview may hold fails a
         // run the same way (`test_api::run_route_actual`); refused here
         // rather than locked and failing every time it runs.

@@ -335,8 +335,8 @@ pub struct ExceptionOut {
 // destination.
 //
 // Separate from the pipeline preview above, which answers a different question -- one pipeline's rows in and rows
-// out, with no source identity and no delivery. Routing selects on a source, so this one needs the sample to name
-// the source its records stand for and that one must not have it.
+// out, with no source identity and no delivery. Routing selects on a source, so this one needs the source the
+// records stand for, named by the sample or else by the request, and that one must not have it.
 
 #[derive(serde::Deserialize)]
 pub struct RoutePreviewRequest {
@@ -345,6 +345,10 @@ pub struct RoutePreviewRequest {
     /// The saved sample to route, by id. None where the caller hands it a held capture instead.
     #[serde(default)]
     pub sample: Option<String>,
+    /// The source the records stand for where the sample or capture names none, such as a paste with none or a
+    /// capture at a destination. A sample that names one keeps its own.
+    #[serde(default)]
+    pub source: Option<String>,
     /// What `now()` reads, in unix microseconds. A run re-run against the instant it was locked at agrees with the
     /// first, because `now()` and a reference-less `parseTime` put the clock into the output -- two runs over one
     /// sample agree only if they are given one instant. An ordinary preview sends none and reads the clock.
@@ -566,8 +570,8 @@ pub fn run_route_preview(
 ) -> Envelope<RoutePreview> {
     let Some(source_name) = sample.source.clone() else {
         return Envelope::refused(Refusal::invalid(
-            "this sample does not say which source it stands for, and routing selects on a source -- \
-             name one on the sample to route it",
+            "these records do not say which source they stand for, and routing selects on a source -- \
+             send the source they stand for in `source` to route them",
         ));
     };
 

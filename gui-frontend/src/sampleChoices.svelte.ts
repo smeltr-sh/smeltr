@@ -47,6 +47,18 @@ export class SampleChoices {
       : undefined;
   }
 
+  /** Once the samples and the held capture are read, the choice a screen starts on: the held capture, else the first
+   * sample. */
+  get first(): string {
+    return this.loaded ? (this.menuHeld?.choice ?? this.samples[0]?.id ?? '') : '';
+  }
+
+  /** The source a choice's records stand for, where it names one. */
+  sourceOf(choice: string): string | undefined {
+    if (heldSession(choice)) return this.held?.source;
+    return this.samples.find((s) => s.id === choice)?.source;
+  }
+
   /** The name `SampleMenu` shows for a choice. */
   name(choice: string): string {
     if (heldSession(choice)) return HELD_NAME;
@@ -55,25 +67,11 @@ export class SampleChoices {
 }
 
 /** What `SampleMenu` calls the held capture. */
-export const HELD_NAME = 'Your capture';
+export const HELD_NAME = 'Your records';
 
 /** The records a choice holds: the held capture's, or the saved sample's. */
 export async function recordsOf(choice: string): Promise<SampleRecordDto[]> {
   const session = heldSession(choice);
   if (session) return capturedRecords(session);
   return (await getSample(choice)).sample?.records ?? [];
-}
-
-/** The choices a route preview offers: only those that name a source, since routing selects on one and records
- * from no source match nothing. Once the samples and the held capture are read, `first` is the held capture where it
- * is offered, else the first sample; `none` says nothing is offered. */
-export function routable(choices: SampleChoices) {
-  const samples = choices.samples.filter((s) => s.source);
-  const held = choices.menuHeld?.source ? choices.menuHeld : undefined;
-  return {
-    samples,
-    held,
-    first: choices.loaded ? (held?.choice ?? samples[0]?.id ?? '') : '',
-    none: choices.loaded && !held && samples.length === 0,
-  };
 }
