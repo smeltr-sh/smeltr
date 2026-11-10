@@ -139,10 +139,11 @@
     </li>
     <li>Choose the <strong>Class</strong>, such as <strong>Authentication</strong>.</li>
     <li>
-      Tick the <strong>Profiles</strong> your records take. A profile, such as Host or Cloud, adds
-      fields to the class, and OCSF applies it only to a record that names it in
+      If the class takes profiles, tick the <strong>Profiles</strong> your records name. A profile,
+      such as Host or Cloud, adds fields to the class, and OCSF applies it only to a record that
+      names it in
       <code>metadata.profiles</code>. With any profile ticked, the schema requires
-      <code>metadata.profiles</code>. Leave them all unticked if your records name no profile.
+      <code>metadata.profiles</code>. Leave them all unticked if your records name none.
     </li>
     <li>
       Leave <strong>Depth</strong> at 2 and <strong>Include fields that are</strong> at required and recommended.
