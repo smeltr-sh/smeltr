@@ -1114,7 +1114,10 @@ fn run_reader_loop(
             break;
         }
         // Commits go oldest first, so once the oldest outstanding batch is the held one, nothing more can commit.
-        if lane.held_batch().is_some_and(|held| reader.commits.outstanding().next() == Some(held)) {
+        if lane
+            .held_batch()
+            .is_some_and(|held| reader.commits.outstanding().next() == Some(held))
+        {
             break;
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -8852,14 +8855,20 @@ mod tests {
                  "exceptions":{"kinds":{"Unmatched":"block"}}}]"#,
         );
         assert!(
-            deployment.readers.iter().any(|r| r.report.lock().unwrap().held.is_some()),
+            deployment
+                .readers
+                .iter()
+                .any(|r| r.report.lock().unwrap().held.is_some()),
             "no source was blocked"
         );
 
         let stopping = Instant::now();
         stop_deployment(deployment);
         let took = stopping.elapsed();
-        assert!(took < Duration::from_secs(5), "the stop took {took:?}, waiting out the drain");
+        assert!(
+            took < Duration::from_secs(5),
+            "the stop took {took:?}, waiting out the drain"
+        );
     }
 
     /// A commit that will not run is refused before anything is torn down, so whatever was running stays. Loading
