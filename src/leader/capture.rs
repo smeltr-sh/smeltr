@@ -203,7 +203,7 @@ struct Session {
 
 /// Records a person pasted, held as a capture is so that every preview runs over them and they save as one does. They
 /// are kept as one column that holds the whole record; a preview or a save reads them back as the records written, with
-/// no columns of its own and no `__capture` fields: they were read from nowhere.
+/// no columns of their own and no `__capture` fields: they were read from nowhere.
 struct Pasted {
     /// The source they stand for, where the person named one.
     source: Option<String>,
