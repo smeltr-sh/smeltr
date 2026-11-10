@@ -4102,9 +4102,9 @@ export type FlowSeriesDto = {
   points: FlowPointDto[];
 };
 
-/** `bucketMillis` is whichever tier the window fit into -- the finest tier
- * that covers it, so a longer window is coarser rather than several tiers
- * stitched together. */
+/** `bucketMillis` is the bucket of the finest tier that holds the whole window
+ * (`series::Tier::for_window`). Its newest buckets, not yet rolled up into that
+ * tier, are summed from the finer tiers. */
 export type FlowResponseDto = {
   bucketMillis: number;
   rowsIn: FlowSeriesDto[];

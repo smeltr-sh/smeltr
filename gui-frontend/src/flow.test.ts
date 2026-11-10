@@ -115,14 +115,6 @@ describe('furthestFromNormal', () => {
     ]);
   });
 
-  it('puts a source reading where it normally reads none first, with no percent to give', () => {
-    const none = { ...normal('woke', 3), low: 0, high: 0 };
-    expect(furthestFromNormal([normal('dropped', 5), none])[0]).toEqual({
-      ...none,
-      awayPercent: null,
-    });
-  });
-
   it('keeps only the top `limit`', () => {
     const ranked = furthestFromNormal([normal('a', 30), normal('b', 5), normal('c', 60)], 2);
     expect(ranked.map((r) => r.subjectId)).toEqual(['b', 'c']);

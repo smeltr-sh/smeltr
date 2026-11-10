@@ -94,7 +94,6 @@
   import {
     DEFAULT_WINDOW_MINUTES,
     FLOW_WINDOWS,
-    FINEST_BUCKET_MILLIS,
     currentRate,
     denseRates,
     firstBucket,
@@ -346,7 +345,7 @@
       group: (r) => r.group,
       now: (r) => r.now,
       normal: (r) => r.low,
-      away: (r) => r.awayPercent ?? Infinity,
+      away: (r) => r.awayPercent,
     }),
   );
 
@@ -1102,10 +1101,6 @@
       </div>
       {#if flow === null}
         <p class="empty">Loading…</p>
-      {:else if !hasFlowData && bucketMillis > FINEST_BUCKET_MILLIS}
-        <p class="empty">
-          Nothing has aged into this window's buckets yet — wider windows are served from rollups.
-        </p>
       {:else if !hasFlowData}
         <p class="empty">No rows recorded in this window yet.</p>
       {:else}
@@ -1174,16 +1169,14 @@
             >
             <tbody>
               {#each sortedRanked as r (JSON.stringify([r.group, r.subjectId]))}
-                {@const away = r.awayPercent === null ? Infinity : Math.abs(r.awayPercent)}
+                {@const away = Math.abs(r.awayPercent)}
                 <tr>
                   <td class="mono">{r.subjectId}</td><td>{r.group}</td>
                   <td class="num">{Math.round(r.now)}</td><td class="num dim"
                     >{Math.round(r.low)}–{Math.round(r.high)}</td
                   >
                   <td class="num away" class:big={away >= 50} class:mid={away >= 20 && away < 50}
-                    >{r.awayPercent === null
-                      ? '+∞'
-                      : `${r.awayPercent > 0 ? '+' : ''}${Math.round(r.awayPercent)}`}%</td
+                    >{r.awayPercent > 0 ? '+' : ''}{Math.round(r.awayPercent)}%</td
                   >
                 </tr>
               {/each}

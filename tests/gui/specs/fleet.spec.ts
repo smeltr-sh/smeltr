@@ -306,9 +306,10 @@ test('rows in and out are charted over the window the engineer picks', async ({
   const windows = flow.getByRole('group', { name: 'Chart window' });
   await windows.getByRole('button', { name: '15m' }).click();
   await expect(flow.getByText(new RegExp(`^in ${MOVING.source}`))).toBeVisible();
-  // The last few minutes have not aged into a day's buckets yet.
+  // A day is drawn in minutes, read from the ten-second buckets until they are rolled up: the first minute with rows
+  // shows once it closes.
   await windows.getByRole('button', { name: '24h' }).click();
-  await expect(flow.getByText(/Nothing has aged into this window's buckets yet/)).toBeVisible();
+  await expect(flow.getByText(new RegExp(`^in ${MOVING.source}`))).toBeVisible({ timeout: 70_000 });
   await windows.getByRole('button', { name: '60m' }).click();
   await expect(flow.getByText(new RegExp(`^in ${MOVING.source}`))).toBeVisible();
 

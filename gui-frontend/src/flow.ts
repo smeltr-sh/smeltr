@@ -19,11 +19,6 @@ export const FLOW_WINDOWS: { label: string; minutes: number }[] = [
 
 export const DEFAULT_WINDOW_MINUTES = 60;
 
-/** The finest tier's bucket width (`series::Tier::TenSeconds`). A window wider than that
- * tier holds is served from a rollup, and the last few minutes have not aged into it yet --
- * so an empty answer there means "not rolled up", not "nothing ran". */
-export const FINEST_BUCKET_MILLIS = 10_000;
-
 /** How many rows the ranked table shows (Main storyboard). */
 export const FURTHEST_FROM_NORMAL_LIMIT = 8;
 
@@ -124,15 +119,15 @@ export function currentRate(
 }
 
 /** A source's reading against its normal, as the Status page ranks it. `awayPercent` is how
- * far past its normal's nearest edge it is, in percent of that edge: 0 within its normal, and
- * `null` above a normal of none, which any rate is infinitely past. */
-export type RankedSource = FlowNormalDto & { awayPercent: number | null };
+ * far past its normal's nearest edge it is, in percent of that edge: 0 within its normal. */
+export type RankedSource = FlowNormalDto & { awayPercent: number };
 
-/** How far `n` is past its normal's nearest edge, in percent of that edge (`RankedSource`). */
-export function awayPercent(n: FlowNormalDto): number | null {
+/** How far `n` is past its normal's nearest edge, in percent of that edge (`RankedSource`). The
+ * high edge is above zero: the leader judges a source only where it usually reads rows. */
+export function awayPercent(n: FlowNormalDto): number {
   if (n.now < n.low) return ((n.now - n.low) / n.low) * 100;
   if (n.now <= n.high) return 0;
-  return n.high > 0 ? ((n.now - n.high) / n.high) * 100 : null;
+  return ((n.now - n.high) / n.high) * 100;
 }
 
 /** How far from the middle of its normal `n` is: past 1 outside it, by how far past its edge;
@@ -140,7 +135,6 @@ export function awayPercent(n: FlowNormalDto): number | null {
  * that within their normals the sources nearest an edge come first. */
 function distance(n: FlowNormalDto): number {
   const away = awayPercent(n);
-  if (away === null) return Infinity;
   if (away !== 0) return 1 + Math.abs(away) / 100;
   const half = (n.high - n.low) / 2;
   return half > 0 ? Math.abs(n.now - (n.low + half)) / half : 0;
