@@ -48,7 +48,7 @@
   /** The sample `result` ran over. */
   let ran = $state('');
   /** The routes `result` ran on. */
-  let ranOn = $state.raw<FileConfigDto | null>(null);
+  let ranOn = $state('');
   let running = $state(false);
   let error = $state('');
   // Arriving on the tab runs the first choice, once the samples and the bundle are read: nothing is delivered and no
@@ -69,7 +69,7 @@
         ? 'Save your route changes first.'
         : !result || ran !== selected
           ? 'Choose a sample and run it without errors first.'
-          : ranOn !== config
+          : ranOn !== JSON.stringify(config)
             ? 'The routes changed since this run. Run it again.'
             : '',
   );
@@ -83,15 +83,15 @@
     running = true;
     error = '';
     try {
-      const [sample, bundle] = [selected, config];
-      const res = await routePreview(JSON.stringify(bundle), sample);
+      const [sample, sent] = [selected, JSON.stringify(config)];
+      const res = await routePreview(sent, sample);
       if (!res.ok) {
         error = errorText(res.errors);
         result = null;
       } else {
         result = res;
         ran = sample;
-        ranOn = bundle;
+        ranOn = sent;
       }
     } catch (e) {
       error = unreported(e);
