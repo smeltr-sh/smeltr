@@ -1149,7 +1149,9 @@ const rollBack: Move = {
     expect(history.held).toBeDefined();
     expect(history.commits.find((c) => c.commit === history.deployed)?.subject).toBe(subject);
     // Until a worker has taken the rollback, it still reports the commit a release returns to, and a capture after
-    // the release would take that report for the release's own. One that will not run it says why.
+    // the release would take that report for the release's own. One that will not run it says why. A worker whose
+    // destination is stalled can take its whole graceful stop, then the hard stop, to let go of the old commit; the
+    // wait outlasts both.
     type Row = {
       workerId: string;
       commit: string;
@@ -1168,7 +1170,7 @@ const rollBack: Move = {
             ),
           );
         },
-        { timeout: 60_000 },
+        { timeout: 150_000 },
       )
       .toBe(true);
     world.held = true;
