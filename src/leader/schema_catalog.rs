@@ -94,12 +94,19 @@ pub fn read(req: &ReadRequest) -> Result<ReadSchema, String> {
             };
             crate::schema::ecs::with_requirements(crate::schema::ecs::read(text)?, req.requirements)
         }
-        ReadFormat::Ocsf if req.built_in => {
-            let releases = standard::ocsf_releases().iter().map(|r| r.version.as_str());
-            let ocsf = standard::ocsf(carried("OCSF", &req.release, releases)?).expect("a carried release parses");
-            crate::schema::ocsf::read(&ocsf, &req.class, &req.cut)?
+        ReadFormat::Ocsf => {
+            let doc = match req.built_in {
+                true => {
+                    let releases = standard::ocsf_releases().iter().map(|r| r.version.as_str());
+                    standard::ocsf(carried("OCSF", &req.release, releases)?).expect("a carried release parses")
+                }
+                false => json()?,
+            };
+            let fields = crate::schema::ocsf::read(&doc, &req.class, &req.cut)?;
+            let mut read = declared(&req.id, "", fields)?;
+            read.schema.description = crate::schema::ocsf::described(&doc, &req.class, &req.cut);
+            return Ok(read);
         }
-        ReadFormat::Ocsf => crate::schema::ocsf::read(&json()?, &req.class, &req.cut)?,
         ReadFormat::Otlp => crate::schema::otlp::read(req.signal),
         _ if req.built_in => return Err("only ECS and OCSF are built in".to_string()),
         ReadFormat::Csv if req.preview => {

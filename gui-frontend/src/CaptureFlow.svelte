@@ -5,10 +5,14 @@
   (`leader::capture`); `CaptureDialog` then holds it until it ends.
 
   The target is a source or a destination, picked here from the configuration; a page that opens
-  this at one starts the form on it. Only the target and what the filter reads differ. Either is
-  saved as a sample, which is where it and a paste become the same thing. A source's names its
-  source, so it can be route-previewed; a destination's names none, since what a pipeline finished
-  no route takes in.
+  this at one starts the form on it. Only the target and what the filter reads differ.
+
+  A finished capture is used, saved, downloaded or discarded. Use these records leaves it unsaved at the
+  leader for whoever took it, where any pipeline's sample menu offers it, and hands it to the page that
+  opened this (`onuse`). Save sample makes it a sample on the branch, which is where it and a paste
+  become the same thing. A source's sample names its source, so it can be route-previewed; a
+  destination's names none, since what a pipeline finished no route takes in. A form with a purpose of
+  its own (`use`) offers that in place of both.
 
   Closing this discards whatever session it still holds.
 -->

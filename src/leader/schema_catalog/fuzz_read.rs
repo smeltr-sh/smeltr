@@ -747,6 +747,8 @@ const OCSF_TYPES: [&str; 11] = [
     "object_t",
 ];
 const LEVELS: [&str; 3] = ["required", "recommended", "optional"];
+/// The profiles the fuzzed class takes.
+const PROFILES: [&str; 3] = ["p0", "p1", "p2"];
 
 /// Attributes for a class or an object, `objects` the object names they may hold.
 fn attributes(rng: &mut Rng, objects: &[String], cov: &mut Coverage) -> Value {
@@ -768,6 +770,10 @@ fn attributes(rng: &mut Rng, objects: &[String], cov: &mut Coverage) -> Value {
             a["requirement"] = json!(rng.pick(&LEVELS));
         }
         if rng.chance(3) {
+            let from: Vec<&str> = (0..1 + rng.below(2)).map(|_| *rng.pick(&PROFILES)).collect();
+            a["profiles"] = json!(from);
+        }
+        if rng.chance(3) {
             a["example"] = match rng.chance(2) {
                 true => json!(text(rng)),
                 false => json!(rng.below(100)),
@@ -779,20 +785,51 @@ fn attributes(rng: &mut Rng, objects: &[String], cov: &mut Coverage) -> Value {
 }
 
 /// The fields `cut` takes from `attributes`, by walking the file as the reader should: path, attribute, depth.
-fn taken(doc: &Value, attributes: &Value, prefix: &str, depth: usize, cut: &Cut, out: &mut Vec<(String, Value)>) {
+fn taken(
+    doc: &Value,
+    attributes: &Value,
+    prefix: &str,
+    depth: usize,
+    cut: &Cut,
+    out: &mut Vec<(String, Value)>,
+    cov: &mut Coverage,
+) {
     for (key, a) in attributes.as_object().into_iter().flatten() {
-        let level = a.get("requirement").and_then(Value::as_str).unwrap_or("optional");
-        if !cut.levels.iter().any(|l| l == level) {
-            continue;
+        if let Some(from) = a["profiles"].as_array() {
+            if !from.iter().any(|p| cut.profiles.iter().any(|c| p == c.as_str())) {
+                cov.reach("ocsf an attribute of a profile left out");
+                continue;
+            }
+            cov.reach("ocsf an attribute of a profile taken");
         }
         let path = match prefix {
             "" => key.clone(),
             _ => format!("{prefix}.{key}"),
         };
+        // A record that takes any profile names it in metadata.profiles, whatever the depth and levels.
+        let listed = !cut.profiles.is_empty() && (path == "metadata" || path == "metadata.profiles");
+        let mut a = a.clone();
+        if listed {
+            a["requirement"] = json!("required");
+        }
+        let level = a.get("requirement").and_then(Value::as_str).unwrap_or("optional");
+        if !listed && !cut.levels.iter().any(|l| l == level) {
+            continue;
+        }
+        if listed && path == "metadata.profiles" {
+            cov.reach("ocsf metadata.profiles required with a profile taken");
+            if depth > cut.depth {
+                cov.reach("ocsf metadata.profiles below the depth taken");
+            }
+        }
         out.push((path.clone(), a.clone()));
         if a["type"] == "object_t" && depth < cut.depth {
             let inner = &doc["objects"][a["object_type"].as_str().unwrap_or_default()]["attributes"];
-            taken(doc, inner, &path, depth + 1, cut, out);
+            taken(doc, inner, &path, depth + 1, cut, out, cov);
+        } else if a["type"] == "object_t" && listed {
+            let inner = &doc["objects"][a["object_type"].as_str().unwrap_or_default()]["attributes"];
+            let only = json!({ "profiles": inner["profiles"] });
+            taken(doc, &only, &path, depth + 1, cut, out, cov);
         }
     }
 }
@@ -813,6 +850,11 @@ fn an_ocsf_class_reads_as_deep_as_its_cut_and_at_the_levels_taken() {
                     "ocsf a depth out of range is refused",
                     "ocsf a level OCSF has not is refused",
                     "ocsf an object the file lacks is refused",
+                    "ocsf a profile the class does not take is refused",
+                    "ocsf an attribute of a profile taken",
+                    "ocsf an attribute of a profile left out",
+                    "ocsf metadata.profiles required with a profile taken",
+                    "ocsf metadata.profiles below the depth taken",
                 ]
                 .map(String::from),
             ),
@@ -835,11 +877,23 @@ fn an_ocsf_class_reads_as_deep_as_its_cut_and_at_the_levels_taken() {
         if lacking {
             held.push("missing".into());
         }
-        let class = attributes(&mut rng, &held, &mut cov);
-        let doc = json!({ "classes": { "c": { "attributes": class } }, "objects": objects });
+        let mut class = attributes(&mut rng, &held, &mut cov);
+        // OCSF's metadata, whose profiles a record that takes any profile must name.
+        if rng.chance(3) {
+            let level = *rng.pick(&LEVELS);
+            class["metadata"] = json!({ "type": "object_t", "object_type": "metadata", "requirement": level });
+            let listed = json!({ "type": "string_t", "is_array": true, "requirement": rng.pick(&LEVELS) });
+            objects.insert("metadata".into(), json!({ "attributes": { "profiles": listed } }));
+        }
+        let doc = json!({ "classes": { "c": { "profiles": PROFILES, "attributes": class } }, "objects": objects });
         let mut cut = Cut {
             depth: 1 + rng.below(DEEPEST),
             levels: LEVELS.iter().filter(|_| rng.chance(2)).map(|l| l.to_string()).collect(),
+            profiles: PROFILES
+                .iter()
+                .filter(|_| rng.chance(2))
+                .map(|p| p.to_string())
+                .collect(),
         };
         let mut said = None;
         match rng.below(12) {
@@ -852,6 +906,11 @@ fn an_ocsf_class_reads_as_deep_as_its_cut_and_at_the_levels_taken() {
                 cov.reach("ocsf a level OCSF has not is refused");
                 cut.levels.push("maybe".into());
                 said = Some("`maybe` is no OCSF requirement: required, recommended or optional".into());
+            }
+            2 => {
+                cov.reach("ocsf a profile the class does not take is refused");
+                cut.profiles.push("p9".into());
+                said = Some("`c` takes no profile `p9`: it takes p0, p1, p2".into());
             }
             _ => {}
         }
@@ -877,7 +936,15 @@ fn an_ocsf_class_reads_as_deep_as_its_cut_and_at_the_levels_taken() {
             };
         }
         let mut want = Vec::new();
-        taken(&doc, &doc["classes"]["c"]["attributes"], "", 1, &cut, &mut want);
+        taken(
+            &doc,
+            &doc["classes"]["c"]["attributes"],
+            "",
+            1,
+            &cut,
+            &mut want,
+            &mut cov,
+        );
         let reaches_missing =
             (want.iter()).any(|(p, a)| a["object_type"] == "missing" && p.split('.').count() < cut.depth);
         if reaches_missing {

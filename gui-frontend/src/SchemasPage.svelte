@@ -127,7 +127,10 @@
           ? { builtIn: true, ...(draft.release ? { release: draft.release } : {}) }
           : {}),
         ...(draft.type === 'ocsf'
-          ? { class: draft.class, cut: { depth: draft.depth, levels: draft.levels } }
+          ? {
+              class: draft.class,
+              cut: { depth: draft.depth, levels: draft.levels, profiles: draft.profiles },
+            }
           : {}),
         ...(draft.type === 'ecs' ? { requirements: draft.requirements } : {}),
         ...(draft.type === 'otlp' ? { signal: draft.signal } : {}),

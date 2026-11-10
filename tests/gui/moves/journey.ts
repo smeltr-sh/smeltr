@@ -1858,11 +1858,17 @@ const addBuiltInSchema: Move = {
     const truth = await j.truth();
     const standards = await truth.get('/api/preview/schema-standards');
     // Any release it carries; the newest is the one the dialog starts on.
-    const releases = standards[format] as { version: string; classes?: { name: string }[] }[];
+    const releases = standards[format] as {
+      version: string;
+      classes?: { name: string; profiles: { name: string; caption: string }[] }[];
+    }[];
     const release = rng.pick(releases);
     const newest = release === releases[0];
     // An OCSF class, cut as deep and to the requirements drawn.
-    const klass: string = format === 'ocsf' ? rng.pick(release.classes!).name : '';
+    const chosen = format === 'ocsf' ? rng.pick(release.classes!) : undefined;
+    const klass: string = chosen?.name ?? '';
+    // Some of the profiles it takes.
+    const profiles = (chosen?.profiles ?? []).filter(() => rng.chance(4));
     const depth = 1 + rng.below(3);
     const levels = ['required', 'recommended', 'optional'].filter(
       (l, i) => i === 0 || rng.chance(2),
@@ -1882,6 +1888,9 @@ const addBuiltInSchema: Move = {
       for (const l of ['recommended', 'optional']) {
         await dialog.getByRole('checkbox', { name: l }).setChecked(levels.includes(l));
       }
+      for (const p of profiles) {
+        await dialog.getByRole('checkbox', { name: p.caption, exact: true }).check();
+      }
     }
     await dialog.getByRole('button', { name: 'Add', exact: true }).click();
     await expect(dialog).toBeHidden();
@@ -1895,10 +1904,12 @@ const addBuiltInSchema: Move = {
       format,
       builtIn: true,
       release: release.version,
-      ...(format === 'ocsf' ? { class: klass, cut: { depth, levels } } : {}),
+      ...(format === 'ocsf'
+        ? { class: klass, cut: { depth, levels, profiles: profiles.map((p) => p.name) } }
+        : {}),
     });
     expect(saved.fields, `${id} from ${name}`).toEqual(read.schema.fields);
-    return `add schema ${id} from ${name}${format === 'ocsf' ? `, ${klass} ${depth} deep, ${levels.join(' and ')}` : ''}`;
+    return `add schema ${id} from ${name}${format === 'ocsf' ? `, ${klass} ${depth} deep, ${levels.join(' and ')}${profiles.length ? `, with ${profiles.map((p) => p.name).join(' and ')}` : ''}` : ''}`;
   },
 };
 
