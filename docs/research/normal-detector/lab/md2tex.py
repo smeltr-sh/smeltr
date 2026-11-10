@@ -159,7 +159,9 @@ def inline(text):
         if p.startswith("$"):
             out.append(p)
         elif p.startswith("`"):
-            out.append(r"\texttt{" + esc(p[1:-1]) + "}")
+            # a long name may break after an underscore, a colon or a bracket
+            code = re.sub(r"(\\_|:|\()", lambda m: m.group(1) + r"\allowbreak{}", esc(p[1:-1]))
+            out.append(r"\texttt{" + code + "}")
         elif p.startswith("http"):
             out.append(r"\url{" + p + "}")
         elif p.startswith("["):
@@ -180,6 +182,7 @@ def table(lines):
     n = len(head)
     longest = [max(len(r[i]) for r in rows if i < len(r)) for i in range(n)]
     size, sep = "\\small", ""
+    slash = False
     heads = [inline(c) for c in head]
     if len(body) > 22:
         # a tall table: breaks across pages, small type, the columns sharing the width
@@ -192,11 +195,16 @@ def table(lines):
         out += ["\\bottomrule", "\\end{xltabular}}"]
         return "\n".join(out)
     if n >= 7:
-        # a wide table: small type, a fixed first column and the rest sharing the width, headers wrapping at a slash
+        # a wide table: small type, a fixed first column, and the rest sharing the width by each one's longest word,
+        # the piece that cannot wrap; headers and names wrap at a slash
         size, sep = "\\footnotesize", "\\setlength{\\tabcolsep}{2pt}"
-        spec = ">{\\raggedright\\arraybackslash}p{0.15\\textwidth}" + ">{\\raggedright\\arraybackslash}X" * (n - 1)
+        word = [max(len(w) for r in rows[:1] + body if i < len(r) for w in re.split(r"[\s/_:(]+", r[i].strip("`").replace(" / ", "+"))) for i in range(1, n)]
+        share = [min(max(x + 1, 6), 13) for x in word]  # "0.16 / 0.31" counts as one word, and stays on one line
+        spec = ">{\\raggedright\\arraybackslash}p{0.15\\textwidth}" + "".join(
+            ">{\\hsize=%.3f\\hsize\\raggedright\\arraybackslash}X" % (x * (n - 1) / sum(share)) for x in share)
         env, begin = "tabularx", "\\begin{tabularx}{\\textwidth}{" + spec + "}"
         heads = [h.replace("/", "/\\allowbreak{}") for h in heads]
+        slash = True
     elif sum(longest) > 70:
         spec = "".join(">{\\raggedright\\arraybackslash}X" if longest[i] > 14 else "l" for i in range(n))
         env, begin = "tabularx", "\\begin{tabularx}{\\textwidth}{" + spec + "}"
@@ -204,7 +212,10 @@ def table(lines):
         env, begin = "tabular", "\\begin{tabular}{" + "l" * n + "}"
     out = ["\\begin{table}[H]\\centering" + size + sep, begin, "\\toprule", " & ".join(heads) + " \\\\", "\\midrule"]
     for r in body:
-        out.append(" & ".join(inline(c) for c in r) + " \\\\")
+        cells = [inline(c) for c in r]
+        if slash:  # a name such as weekday/weekend wraps at its slash, as the headers do
+            cells = [c if "$" in c or "\\" in c else c.replace("/", "/\\allowbreak{}") for c in cells]
+        out.append(" & ".join(cells) + " \\\\")
     out += ["\\bottomrule", "\\end{" + env + "}", "\\end{table}"]
     return "\n".join(out)
 

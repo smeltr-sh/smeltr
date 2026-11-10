@@ -230,7 +230,7 @@ def values_table(lab):
     v = lab.load("values_logs.json")["values"]
     L = ["| Log | Field | Value | Rows a bucket | Months | False a month | Stops in 20 min | Stops in 1 h | Stops in 1 day | To a tenth in 1 h | To 30% in 1 day |", "|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in sorted(v, key=lambda r: (r["series"], r["field"], -r["rows_per_bucket"])):
-        L.append(f"| {r['series']} | {r['field']} | {r['value']} | {r['rows_per_bucket']:,.0f} | {r['months']:.1f} | {num(r['false'])} | {pct(r['by20_0.0'])} | {pct(r['by60_0.0'])} | {pct(r['by1440_0.0'])} | {pct(r['by60_0.1'])} | {pct(r['by1440_0.3'])} |")
+        L.append(f"| {r['series']} | {r['field']} | `{r['value']}` | {r['rows_per_bucket']:,.0f} | {r['months']:.1f} | {num(r['false'])} | {pct(r['by20_0.0'])} | {pct(r['by60_0.0'])} | {pct(r['by1440_0.0'])} | {pct(r['by60_0.1'])} | {pct(r['by1440_0.3'])} |")
     return "\n".join(L)
 
 

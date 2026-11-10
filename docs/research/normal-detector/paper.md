@@ -330,25 +330,25 @@ A field-level form of the rule, under which a field is watched only when every o
 
 | Log | Field | Value | Rows a bucket | Months | False a month | Stops in 20 min | Stops in 1 h | Stops in 1 day | To a tenth in 1 h | To 30% in 1 day |
 |---|---|---|---|---|---|---|---|---|---|---|
-| ClarkNet web, 2 weeks 1995 | method | GET | 805 | 0.2 | 4.29 | 100% | 100% | 100% | 100% | 100% |
-| ClarkNet web, 2 weeks 1995 | method | HEAD | 0 | 0.2 | 0.00 | 0% | 0% | 100% | 0% | 100% |
-| ClarkNet web, 2 weeks 1995 | status | 200 | 711 | 0.2 | 4.29 | 100% | 100% | 100% | 100% | 100% |
-| ClarkNet web, 2 weeks 1995 | status | 304 | 62 | 0.2 | 4.29 | 98% | 100% | 100% | 100% | 100% |
-| ClarkNet web, 2 weeks 1995 | status | 404 | 16 | 0.2 | 4.29 | 73% | 100% | 100% | 100% | 100% |
-| ClarkNet web, 2 weeks 1995 | status | 302 | 6 | 0.2 | 4.29 | 14% | 100% | 100% | 96% | 100% |
-| Google cluster jobs, 29 days | event | 0 | 74 | 0.7 | 0.00 | 100% | 100% | 100% | 98% | 100% |
-| Google cluster jobs, 29 days | event | 1 | 74 | 0.7 | 0.00 | 100% | 100% | 100% | 98% | 100% |
-| Google cluster jobs, 29 days | event | 4 | 44 | 0.7 | 0.00 | 100% | 100% | 100% | 100% | 100% |
-| Google cluster jobs, 29 days | event | 5 | 28 | 0.7 | 1.36 | 73% | 100% | 100% | 88% | 98% |
-| OpenSSH, 28 days | kind | Failed password | 0 | 0.7 | 8.74 | 1% | 10% | 100% | 3% | 70% |
-| OpenSSH, 28 days | kind | Received disconnect | 0 | 0.7 | 7.28 | 1% | 6% | 100% | 3% | 97% |
-| OpenSSH, 28 days | kind | pam_unix(sshd:auth): authentication | 0 | 0.7 | 4.37 | 1% | 11% | 100% | 2% | 69% |
-| OpenSSH, 28 days | kind | pam_unix(sshd:auth): check | 0 | 0.7 | 5.81 | 0% | 8% | 100% | 2% | 92% |
-| OpenSSH, 28 days | kind | Invalid user | 0 | 0.7 | 5.80 | 1% | 4% | 100% | 2% | 87% |
-| OpenSSH, 28 days | kind | input_userauth_request: invalid | 0 | 0.7 | 5.80 | 1% | 4% | 100% | 2% | 87% |
-| OpenSSH, 28 days | process | sshd | 0 | 0.7 | 2.91 | 1% | 30% | 100% | 3% | 71% |
-| Saskatchewan web, Jun-Dec 1995 | method | GET | 33 | 6.2 | 2.10 | 83% | 100% | 100% | 86% | 95% |
-| Saskatchewan web, Jun-Dec 1995 | status | 200 | 30 | 6.2 | 2.26 | 82% | 100% | 100% | 88% | 97% |
+| ClarkNet web, 2 weeks 1995 | method | `GET` | 805 | 0.2 | 4.29 | 100% | 100% | 100% | 100% | 100% |
+| ClarkNet web, 2 weeks 1995 | method | `HEAD` | 0 | 0.2 | 0.00 | 0% | 0% | 100% | 0% | 100% |
+| ClarkNet web, 2 weeks 1995 | status | `200` | 711 | 0.2 | 4.29 | 100% | 100% | 100% | 100% | 100% |
+| ClarkNet web, 2 weeks 1995 | status | `304` | 62 | 0.2 | 4.29 | 98% | 100% | 100% | 100% | 100% |
+| ClarkNet web, 2 weeks 1995 | status | `404` | 16 | 0.2 | 4.29 | 73% | 100% | 100% | 100% | 100% |
+| ClarkNet web, 2 weeks 1995 | status | `302` | 6 | 0.2 | 4.29 | 14% | 100% | 100% | 96% | 100% |
+| Google cluster jobs, 29 days | event | `0` | 74 | 0.7 | 0.00 | 100% | 100% | 100% | 98% | 100% |
+| Google cluster jobs, 29 days | event | `1` | 74 | 0.7 | 0.00 | 100% | 100% | 100% | 98% | 100% |
+| Google cluster jobs, 29 days | event | `4` | 44 | 0.7 | 0.00 | 100% | 100% | 100% | 100% | 100% |
+| Google cluster jobs, 29 days | event | `5` | 28 | 0.7 | 1.36 | 73% | 100% | 100% | 88% | 98% |
+| OpenSSH, 28 days | kind | `Failed password` | 0 | 0.7 | 8.74 | 1% | 10% | 100% | 3% | 70% |
+| OpenSSH, 28 days | kind | `Received disconnect` | 0 | 0.7 | 7.28 | 1% | 6% | 100% | 3% | 97% |
+| OpenSSH, 28 days | kind | `pam_unix(sshd:auth): authentication` | 0 | 0.7 | 4.37 | 1% | 11% | 100% | 2% | 69% |
+| OpenSSH, 28 days | kind | `pam_unix(sshd:auth): check` | 0 | 0.7 | 5.81 | 0% | 8% | 100% | 2% | 92% |
+| OpenSSH, 28 days | kind | `Invalid user` | 0 | 0.7 | 5.80 | 1% | 4% | 100% | 2% | 87% |
+| OpenSSH, 28 days | kind | `input_userauth_request: invalid` | 0 | 0.7 | 5.80 | 1% | 4% | 100% | 2% | 87% |
+| OpenSSH, 28 days | process | `sshd` | 0 | 0.7 | 2.91 | 1% | 30% | 100% | 3% | 71% |
+| Saskatchewan web, Jun-Dec 1995 | method | `GET` | 33 | 6.2 | 2.10 | 83% | 100% | 100% | 86% | 95% |
+| Saskatchewan web, Jun-Dec 1995 | status | `200` | 30 | 6.2 | 2.26 | 82% | 100% | 100% | 88% | 97% |
 
 On the values the per-value form watches the detector behaves as it does on a source. A value with rows in every bucket, GET, 200, the Google event types, is caught within the hour on every stop at the log's own false-alarm rate. A value with an empty median bucket, ClarkNet's HEAD and every OpenSSH kind, is judged at the long widths, caught within the day, and on OpenSSH pays 2.91 to 8.74 false alarms a month. The hour test is right about what a sender is, and the unit it applies to has to be the value: a field is almost never a sender, because nearly every field has a rare value. A value the test admits that still has an empty median bucket, as OpenSSH's kinds, is judged at the long widths like a thin source and pays the thin source's false alarms; a value the test refuses is not watched, and its stop goes unseen, which is the rule's cost. The quiet setting of the previous table applies to these values as to every sender.
 
