@@ -23,21 +23,22 @@ export class SampleChoices {
   held: CaptureStatus | null = $state(null);
   /** Settles once the first read has, whether or not it failed. */
   readonly ready: Promise<void>;
+  #heldRead: Promise<unknown>;
 
   /** Reads the samples and the held capture. A failed read of the samples goes to `failed`; a held capture that
    * cannot be read is left off. */
   constructor(failed: (e: unknown) => void) {
-    const held = myCapture()
+    this.#heldRead = myCapture()
       .then((res) => (this.held = res.capture?.done ? res.capture : null))
       .catch(() => {});
-    this.ready = Promise.all([this.load(), held]).then(() => {
-      this.loaded = true;
-    }, failed);
+    this.ready = this.load().catch(failed);
   }
 
   /** Reads the samples again, as after one is saved. */
   async load() {
-    this.samples = (await listSamples()).samples;
+    const [listed] = await Promise.all([listSamples(), this.#heldRead]);
+    this.samples = listed.samples;
+    this.loaded = true;
   }
 
   /** The held capture as `SampleMenu` lists it. */

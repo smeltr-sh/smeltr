@@ -92,7 +92,9 @@
 
   // Locking a test needs a run that actually produced this output: the
   // routes as saved on this branch, over a named sample.
-  let canLockTest = $derived(result !== null && result.ok && selected !== '');
+  let canLockTest = $derived(
+    result !== null && result.ok && selected !== '' && !heldSession(selected),
+  );
 
   function goLockTest() {
     location.hash = `#/build/tests/lock-e2e/${encodeURIComponent(selected)}`;
