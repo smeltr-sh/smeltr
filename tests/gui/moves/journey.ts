@@ -562,8 +562,10 @@ async function routeFromMap(
   );
   await save(j, () => expect(picker.locator('option:checked')).toContainText(pipeline));
   world.editing.pipelines.push(pipeline);
+  const to = world.editing.destinations.length ? j.rng.pick(world.editing.destinations) : null;
+  if (to) await sendTo(j, page.locator(`.flow[data-source="${source}"]`), to);
   await save(j, () => expect(page).toHaveURL(/#\/map/));
-  world.editing.routes.push({ source, pipeline, to: world.editing.destinations[0] ?? null });
+  world.editing.routes.push({ source, pipeline, to });
   await editingIsSaved(j);
 }
 
@@ -774,6 +776,31 @@ async function startRoute(j: Journey, source: string, pipeline: string) {
   return card;
 }
 
+/** Wires the newest route on `card` to the destination `to`, or with `null` opens the form for a new one. A new
+ * route starts with no destination. A line card's + beside "destination" lists what is not on the card; on a card
+ * of several routes, the new route's socket lists what is on it, and "another destination" the rest. */
+async function sendTo(j: Journey, card: Locator, to: string | null) {
+  const menu = j.page.locator('.menu');
+  const named = (d: string) =>
+    menu
+      .getByRole('button')
+      .filter({ has: j.page.locator('.mono', { hasText: new RegExp(`^${d}$`) }) });
+  if (await card.evaluate((el) => el.classList.contains('line'))) {
+    await card.getByRole('button', { name: 'add a destination' }).click();
+  } else {
+    await card
+      .locator('.pipe')
+      .last()
+      .getByRole('button', { name: /drag to a destination/ })
+      .click();
+    const another = menu.getByRole('button', { name: /another destination/ });
+    await expect(another).toBeVisible();
+    if (to && (await named(to).count())) return named(to).click();
+    await another.click();
+  }
+  await (to ? named(to) : menu.getByRole('button', { name: /New destination/ })).click();
+}
+
 const addDestination: Move = {
   name: 'add-destination',
   leadsTo: ['add-route'],
@@ -889,10 +916,10 @@ const addRoute: Move = {
     const { page, rng, world } = j;
     const source = rng.pick(routable(world));
     const pipeline = rng.pick(pipelinesFor(world, source));
-    await startRoute(j, source, pipeline);
+    const card = await startRoute(j, source, pipeline);
+    const to = world.editing.destinations.length ? rng.pick(world.editing.destinations) : null;
+    if (to) await sendTo(j, card, to);
     await save(j, unsaved(page));
-    // A new route delivers to the first destination there is.
-    const to = world.editing.destinations[0] ?? null;
     world.editing.routes.push({ source, pipeline, to });
     await editingIsSaved(j);
     return `add route from ${source} through "${pipeline}" to ${to ?? 'nothing'}`;
@@ -915,30 +942,8 @@ const addRouteToNewDestination: Move = {
     const pipeline = rng.pick(pipelinesFor(world, source));
     const id = `dst-${world.made++}`;
     const card = await startRoute(j, source, pipeline);
-    // The destination is made from the card, and saved on Add: a line card's + beside "destination" wires it to
-    // the one pipeline; on a card of several routes, the new route's socket list does.
-    // The route is seeded with the first destination there is; this one goes to the new one alone.
-    const seeded = world.editing.destinations[0];
-    const line = await card.evaluate((el) => el.classList.contains('line'));
-    if (line) {
-      if (seeded) await card.getByRole('button', { name: `stop sending to ${seeded}` }).click();
-      await card.getByRole('button', { name: 'add a destination' }).click();
-    } else {
-      await card
-        .locator('.pipe')
-        .last()
-        .getByRole('button', { name: /drag to a destination/ })
-        .click();
-      if (seeded) await page.locator('.menu button', { hasText: seeded }).click();
-      await page
-        .locator('.menu')
-        .getByRole('button', { name: /another destination/ })
-        .click();
-    }
-    await page
-      .locator('.menu')
-      .getByRole('button', { name: /New destination/ })
-      .click();
+    // The destination is made from the card, and saved on Add.
+    await sendTo(j, card, null);
     const form = await addElasticsearch(j, id, 'metrics');
     await nameBranch(j);
     await expect(form).toBeHidden();
