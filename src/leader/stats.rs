@@ -331,7 +331,8 @@ pub fn build(
 ) -> Envelope<Stats> {
     let point_ms = chart_point_ms(window);
     let now_ms = super::warnings::now_millis();
-    let since_ms = now_ms - window.as_millis() as i64;
+    // From the start of the point the window begins in, so the chart's first point is read whole.
+    let since_ms = (now_ms - window.as_millis() as i64).div_euclid(point_ms) * point_ms;
     let totals = |metric: &str| match series_store {
         None => Vec::new(),
         Some(store) => totals_by_subject(store, metric, point_ms, since_ms),

@@ -497,8 +497,10 @@ fn series_since_on(
     tier: Tier,
     since_ms: i64,
 ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
+    // A CROSS JOIN makes SQLite read the metric's series by index and then each one's points by primary key, which is
+    // the order wanted. A plain JOIN lets it start from the tier's points of every metric and sort what is left.
     let mut stmt = conn.prepare(
-        "SELECT s.labels_json, p.bucket_ms, p.value FROM series s JOIN series_points p ON p.series_id = s.id \
+        "SELECT s.labels_json, p.bucket_ms, p.value FROM series s CROSS JOIN series_points p ON p.series_id = s.id \
          WHERE p.tier = ?1 AND s.metric = ?2 AND p.bucket_ms >= ?3 ORDER BY s.labels_json, p.bucket_ms",
     )?;
     let rows: Vec<(String, i64, f64)> = stmt
