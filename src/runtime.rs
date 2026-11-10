@@ -403,7 +403,13 @@ impl Lane {
 
     /// The batch held until the config changes, if this lane holds one. Nothing polled after it runs or commits.
     pub fn held_batch(&self) -> Option<BatchId> {
-        self.parked.lock().unwrap().retry.front().filter(|u| u.held).map(|u| u.batch)
+        self.parked
+            .lock()
+            .unwrap()
+            .retry
+            .front()
+            .filter(|u| u.held)
+            .map(|u| u.batch)
     }
 
     /// Record that the reader has been told, if the oldest parked batch is still the one waiting on `dest` since
