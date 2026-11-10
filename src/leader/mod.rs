@@ -1451,7 +1451,7 @@ fn default_window_minutes() -> i64 {
 }
 
 /// The longest window any read serves: the longest tier's retention, past which there is nothing left to serve
-/// from (`series::Tier::for_window`).
+/// from.
 pub const MAX_WINDOW_MINUTES: i64 = 30 * 24 * 60;
 
 /// One bucket of a [`FlowSeries`]. Absent from `points` entirely when the bucket has no row -- never a zero
@@ -1479,9 +1479,9 @@ pub struct FlowSeries {
 }
 
 /// What `GET /api/flow` serves (design doc E2 "Flow over time"): rows and payload bytes, in per source and out per
-/// destination, over the caller's window, in the buckets of whichever tier fits it (`series::Tier::for_window`). A
-/// window longer than a tier keeps is served in a coarser tier's buckets. Its newest buckets are also read from the
-/// finer tiers that still hold them, so the most recent stretch is there too.
+/// destination, over the caller's window, in points as wide as its chart draws (`series::chart_point_ms`). A point
+/// is summed from the coarsest tier that fits in it, and its newest buckets are also read from the finer tiers that
+/// still hold them, so the most recent stretch is there too.
 ///
 /// `bytes_out` is not `rows_out` weighed. A row counts as out when a destination's queue takes it; its bytes count
 /// when the destination acknowledges them, a queue later. The two agree while a destination keeps up and part
@@ -1572,10 +1572,10 @@ const BATCHES_DLQ_METRIC: &str = "smeltr_batches_dlq_total";
 /// freshly-`Registry::default`ed one in a test) answers with empty series rather than an error: there is simply no
 /// history to serve yet.
 pub fn flow_snapshot(state: &AppState, window: Duration) -> Result<FlowResponse, StoreError> {
-    let tier = series::Tier::for_window(window);
+    let point_ms = series::chart_point_ms(window);
     let Some(store) = state.registry.series() else {
         return Ok(FlowResponse {
-            bucket_millis: tier.bucket_ms(),
+            bucket_millis: point_ms,
             rows_in: Vec::new(),
             rows_out: Vec::new(),
             bytes_in: Vec::new(),
@@ -1585,11 +1585,11 @@ pub fn flow_snapshot(state: &AppState, window: Duration) -> Result<FlowResponse,
     };
     let since_ms = warnings::now_millis() - window.as_millis() as i64;
     Ok(FlowResponse {
-        bucket_millis: tier.bucket_ms(),
-        rows_in: flow_series(store, ROWS_IN_METRIC, "source", tier, since_ms)?,
-        rows_out: flow_series(store, ROWS_OUT_METRIC, "destination", tier, since_ms)?,
-        bytes_in: flow_series(store, BYTES_POLLED_METRIC, "source", tier, since_ms)?,
-        bytes_out: flow_series(store, BYTES_DELIVERED_METRIC, "destination", tier, since_ms)?,
+        bucket_millis: point_ms,
+        rows_in: flow_series(store, ROWS_IN_METRIC, "source", point_ms, since_ms)?,
+        rows_out: flow_series(store, ROWS_OUT_METRIC, "destination", point_ms, since_ms)?,
+        bytes_in: flow_series(store, BYTES_POLLED_METRIC, "source", point_ms, since_ms)?,
+        bytes_out: flow_series(store, BYTES_DELIVERED_METRIC, "destination", point_ms, since_ms)?,
         normals: Vec::new(),
     })
 }
@@ -1598,14 +1598,14 @@ fn flow_series(
     store: &series::RegistryStore,
     metric: &str,
     label_name: &str,
-    tier: series::Tier,
+    point_ms: i64,
     since_ms: i64,
 ) -> Result<Vec<FlowSeries>, StoreError> {
     let mut out = Vec::new();
     // Counted over the pass rather than reported per subject: a key this reader cannot parse is a shape it does
     // not know, and every other key of that shape will be unreadable too.
     let (mut unreadable, mut exemplar) = (0usize, None);
-    for (subject_key, points) in store.sums_since(metric, tier, since_ms)? {
+    for (subject_key, points) in store.sums_since(metric, point_ms, since_ms)? {
         let (Some(group), Some(subject_id)) = (
             subject_label(&subject_key, GROUP_LABEL),
             subject_label(&subject_key, label_name),
@@ -5564,20 +5564,24 @@ mod flow_endpoint_tests {
         assert_eq!(flow.rows_out[0].points[0].value, 9.0);
     }
 
-    /// A 30-day window is served in hours, and its newest hour, still in the finer tiers, is summed into it.
+    /// A 30-day window is served in six-hour points. Each sums the buckets inside it, and the newest, still in the
+    /// finer tiers, is summed from them.
     #[test]
     fn a_long_window_holds_its_newest_buckets_too() {
         let state = state();
         let store = state.registry.series().unwrap();
         let now = warnings::now_millis();
         let key = r#"[["group","g"],["source","s"]]"#;
-        let hour = series::Tier::OneHour.align(now);
+        let six_hours = 6 * 3_600_000;
+        let point = now.div_euclid(six_hours) * six_hours;
+        let earlier = point - 2 * 86_400_000;
+        store.record_delta(ROWS_IN_METRIC, key, earlier, 4.0).unwrap();
         store
-            .record_delta(ROWS_IN_METRIC, key, hour - 2 * 86_400_000, 4.0)
+            .record_delta(ROWS_IN_METRIC, key, earlier + six_hours / 2, 1.0)
             .unwrap();
         store.maintain(now).unwrap();
-        store.record_delta(ROWS_IN_METRIC, key, hour, 2.0).unwrap();
-        store.record_delta(ROWS_IN_METRIC, key, hour + 1, 3.0).unwrap();
+        store.record_delta(ROWS_IN_METRIC, key, point, 2.0).unwrap();
+        store.record_delta(ROWS_IN_METRIC, key, point + 1, 3.0).unwrap();
 
         let flow = flow_snapshot(&state, Duration::from_secs(30 * 86_400)).unwrap();
         let points: Vec<(i64, f64)> = flow.rows_in[0]
@@ -5585,7 +5589,7 @@ mod flow_endpoint_tests {
             .iter()
             .map(|p| (p.bucket_millis, p.value))
             .collect();
-        assert_eq!(points, [(hour - 2 * 86_400_000, 4.0), (hour, 5.0)]);
+        assert_eq!(points, [(earlier, 5.0), (point, 5.0)]);
     }
 
     /// A viewer of one group reads that group's flow and not another's.
@@ -5752,17 +5756,13 @@ mod flow_endpoint_tests {
     }
 
     #[test]
-    fn the_bucket_width_reflects_the_tier_the_window_chose() {
+    fn the_bucket_width_is_the_width_of_the_charts_points() {
         let state = state();
         let hour = flow_snapshot(&state, Duration::from_secs(3600)).unwrap();
-        assert_eq!(hour.bucket_millis, 10_000, "sixty minutes fits the finest tier");
+        assert_eq!(hour.bucket_millis, 10_000, "an hour is 360 ten-second points");
 
-        let past_a_day = flow_snapshot(&state, Duration::from_secs(3600 * 25)).unwrap();
-        assert_eq!(
-            past_a_day.bucket_millis,
-            5 * 60_000,
-            "past twenty-four hours needs the five-minute tier"
-        );
+        let day = flow_snapshot(&state, Duration::from_secs(24 * 3600)).unwrap();
+        assert_eq!(day.bucket_millis, 5 * 60_000, "a day is 288 five-minute points");
     }
 
     #[tokio::test]
@@ -5779,8 +5779,8 @@ mod flow_endpoint_tests {
         .unwrap();
         assert_eq!(
             huge.bucket_millis,
-            60 * 60_000,
-            "clamped to thirty days, the coarsest tier"
+            6 * 60 * 60_000,
+            "clamped to thirty days, in six-hour points"
         );
 
         let zero = get_flow(
@@ -5792,7 +5792,7 @@ mod flow_endpoint_tests {
         .unwrap();
         assert_eq!(
             zero.bucket_millis, 10_000,
-            "clamped up to at least one minute, the finest tier"
+            "clamped up to at least one minute, in ten-second points"
         );
     }
 }

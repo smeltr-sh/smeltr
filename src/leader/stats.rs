@@ -26,7 +26,7 @@ use crate::plan::config::{FunctionKind, Step};
 use super::envelope::{Envelope, Refusal};
 use super::map::NodeKind;
 use super::registry::ThreadHealth;
-use super::series::{RegistryStore, Tier};
+use super::series::{RegistryStore, chart_point_ms};
 use super::throughput::{self, ExpectedPoint};
 use super::warnings::{self, SubjectKind, WarningSpan, label, stale_after_ms};
 use super::{
@@ -279,8 +279,8 @@ pub struct Stats {
     pub id: String,
     /// The window asked for, which every total covers.
     pub window_millis: i64,
-    /// The bucket width these totals were summed from (`Tier::for_window`): how coarse the answer is, and how
-    /// close to now its newest bucket can be.
+    /// How wide each point of the charts is (`series::chart_point_ms`): how coarse the answer is, and how close to
+    /// now its newest point can be.
     pub bucket_millis: i64,
     /// The leader's clock when it answered, which is the clock the buckets are on. A spread's grid ends at the
     /// bucket before the one holding this instant; the browser's own clock may sit a bucket off.
@@ -329,16 +329,16 @@ pub fn build(
     series_store: Option<&RegistryStore>,
     live: Live<'_>,
 ) -> Envelope<Stats> {
-    let tier = Tier::for_window(window);
+    let point_ms = chart_point_ms(window);
     let now_ms = super::warnings::now_millis();
     let since_ms = now_ms - window.as_millis() as i64;
     let totals = |metric: &str| match series_store {
         None => Vec::new(),
-        Some(store) => totals_by_subject(store, metric, tier, since_ms),
+        Some(store) => totals_by_subject(store, metric, point_ms, since_ms),
     };
     let shape = Shape {
-        bucket_ms: tier.bucket_ms(),
-        now_bucket_ms: tier.align(now_ms),
+        bucket_ms: point_ms,
+        now_bucket_ms: now_ms.div_euclid(point_ms) * point_ms,
     };
 
     let mut answer = Envelope::ok(Stats {
@@ -346,7 +346,7 @@ pub fn build(
         kind,
         id: id.to_string(),
         window_millis: window.as_millis() as i64,
-        bucket_millis: tier.bucket_ms(),
+        bucket_millis: point_ms,
         now_millis: now_ms,
         source: None,
         pipeline: None,
@@ -381,7 +381,7 @@ pub fn build(
                 routes: route_shares(system, source.id, group, &totals(ROUTE_MATCHED_METRIC)),
                 expected: series_store
                     .map(|store| {
-                        throughput::expected_over(store, group, id, since_ms, now_ms, tier.bucket_ms(), &live.learning)
+                        throughput::expected_over(store, group, id, since_ms, now_ms, point_ms, &live.learning)
                     })
                     .transpose()
                     .unwrap_or_else(|e| {
@@ -808,8 +808,8 @@ fn total(totals: &[SubjectTotal], group: &str, labels: &[(&str, &str)]) -> f64 {
 ///
 /// A bucket may hold several points (`RegistryStore::series_at`): [`buckets`] adds them and [`peaks`] takes their
 /// highest.
-fn totals_by_subject(store: &RegistryStore, metric: &str, tier: Tier, since_ms: i64) -> Vec<SubjectTotal> {
-    match store.series_at(metric, tier, since_ms) {
+fn totals_by_subject(store: &RegistryStore, metric: &str, point_ms: i64, since_ms: i64) -> Vec<SubjectTotal> {
+    match store.series_at(metric, point_ms, since_ms) {
         Ok(read) => read
             .into_iter()
             .filter_map(|(subject_key, points)| {
@@ -836,6 +836,7 @@ fn totals_by_subject(store: &RegistryStore, metric: &str, tier: Tier, since_ms: 
 mod tests {
     use super::*;
     use crate::config_file::load_str;
+    use crate::leader::series::Tier;
 
     /// Two routes out of one source that both match every row, plus `unmatched` as the manifest says it.
     fn system(unmatched: &str) -> LoadedSystem {
@@ -1092,7 +1093,8 @@ mod tests {
         );
     }
 
-    /// A day's chart reads minute buckets, and the last hour is still in ten-second ones until `maintain` moves it.
+    /// A day's chart is drawn in five-minute points, and the last hour is still in ten-second buckets until
+    /// `maintain` moves it.
     #[test]
     fn a_long_window_counts_its_newest_buckets_from_the_finer_tiers() {
         let store = RegistryStore::open(std::path::Path::new(":memory:")).unwrap();
@@ -1121,12 +1123,12 @@ mod tests {
         assert_eq!(source.polled, 720.0);
         let rate = source.rate.unwrap();
         assert!(
-            rate.buckets.iter().all(|b| b.bucket_millis % minute == 0),
-            "on the minute grid"
+            rate.buckets.iter().all(|b| b.bucket_millis % (5 * minute) == 0),
+            "on the five-minute grid"
         );
         assert_eq!(
             rate.buckets.iter().map(|b| b.value).collect::<Vec<_>>(),
-            vec![10.0, 2.0],
+            vec![2.0, 0.4],
             "the old bucket from the minute tier, the two ten-second ones added into theirs"
         );
     }

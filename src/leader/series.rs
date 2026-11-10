@@ -66,8 +66,7 @@ impl Tier {
         }
     }
 
-    /// This tier's bucket width -- also what a caller of [`Tier::for_window`] reports as the resolution it served
-    /// (`leader::FlowResponse::bucket_millis`).
+    /// This tier's bucket width.
     pub const fn bucket_ms(self) -> i64 {
         match self {
             Tier::TenSeconds => 10_000,
@@ -78,7 +77,7 @@ impl Tier {
     }
 
     /// How long a bucket stays in this tier before [`RegistryStore::maintain`] moves it on.
-    fn retention_ms(self) -> i64 {
+    pub fn retention_ms(self) -> i64 {
         match self {
             Tier::TenSeconds => 60 * 60_000,     // 60 minutes
             Tier::OneMinute => 24 * 60 * 60_000, // 24 hours
@@ -105,16 +104,32 @@ impl Tier {
         ms.div_euclid(self.bucket_ms()) * self.bucket_ms()
     }
 
-    /// The finest tier whose retention covers `window` -- the buckets E2 serves a chosen window in. The four retentions are E2's own boundaries (sixty minutes, a day, the
-    /// four weeks, a day and an hour `throughput` reads, thirty days), so this is a lookup, not an estimate; past the last one there is still only `OneHour` to
-    /// serve from.
-    pub fn for_window(window: std::time::Duration) -> Tier {
-        let window_ms = window.as_millis() as i64;
+    /// The coarsest tier whose buckets fit in a point `point_ms` wide: what such a point is summed from.
+    fn within(point_ms: i64) -> Tier {
         Tier::ALL
             .into_iter()
-            .find(|tier| tier.retention_ms() >= window_ms)
-            .unwrap_or(Tier::OneHour)
+            .rev()
+            .find(|tier| tier.bucket_ms() <= point_ms)
+            .unwrap_or(Tier::TenSeconds)
     }
+}
+
+/// The most points a chart draws: a few hundred pixels' worth.
+const CHART_POINTS: i64 = 360;
+
+/// The widest point a chart draws, which keeps thirty days to 120 points.
+const WIDEST_POINT_MS: i64 = 6 * 60 * 60_000;
+
+/// How wide each point of a chart over `window` is: the narrowest tier's bucket, or [`WIDEST_POINT_MS`], that keeps
+/// the chart to [`CHART_POINTS`]. The tier a point that wide is summed from holds the whole window.
+pub fn chart_point_ms(window: std::time::Duration) -> i64 {
+    let window_ms = window.as_millis() as i64;
+    Tier::ALL
+        .map(Tier::bucket_ms)
+        .into_iter()
+        .chain([WIDEST_POINT_MS])
+        .find(|&point| window_ms <= CHART_POINTS * point)
+        .unwrap_or(WIDEST_POINT_MS)
 }
 
 /// One span a fact held for its subject ([`RegistryStore::fact_spans`]).
@@ -1066,24 +1081,30 @@ impl RegistryStore {
             .collect()
     }
 
-    /// Every subject of `metric` with a point at or after `since_ms`, each point keyed by the `tier` bucket it falls
-    /// in, oldest first. The window's newest buckets are still in the finer tiers, so those are read too: a bucket
-    /// may hold several points, which a counter adds and a gauge takes the highest of, as
-    /// [`RegistryStore::maintain`] will.
+    /// Every subject of `metric` with a bucket at or after `since_ms`, each bucket keyed by the start of the
+    /// `point_ms` wide point it falls in, oldest first. A point is summed from the coarsest tier that fits in it, and
+    /// from the finer tiers that still hold the window's newest buckets: a point may hold several buckets, which a
+    /// counter adds and a gauge takes the highest of, as [`RegistryStore::maintain`] will. A point that began before
+    /// `since_ms` is left out, since only part of it would be read.
     pub fn series_at(
         &self,
         metric: &str,
-        tier: Tier,
+        point_ms: i64,
         since_ms: i64,
     ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
         let mut by_subject: BTreeMap<String, SubjectPoints> = BTreeMap::new();
         for (subject_key, points) in self
-            .series_since_at(metric, tier.and_finer(), since_ms)?
+            .series_since_at(metric, Tier::within(point_ms).and_finer(), since_ms)?
             .into_iter()
             .flatten()
         {
             let of = by_subject.entry(subject_key).or_default();
-            of.extend(points.into_iter().map(|(at, value)| (tier.align(at), value)));
+            of.extend(
+                points
+                    .into_iter()
+                    .map(|(at, value)| (at.div_euclid(point_ms) * point_ms, value))
+                    .filter(|(at, _)| *at >= since_ms),
+            );
         }
         Ok(by_subject
             .into_iter()
@@ -1094,36 +1115,36 @@ impl RegistryStore {
             .collect())
     }
 
-    /// [`RegistryStore::series_at`] for a counter: one point per bucket, their sum.
+    /// [`RegistryStore::series_at`] for a counter: one value per point, their sum.
     pub fn sums_since(
         &self,
         metric: &str,
-        tier: Tier,
+        point_ms: i64,
         since_ms: i64,
     ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
-        self.merged_at(metric, tier, since_ms, |sum, value| sum + value)
+        self.merged_at(metric, point_ms, since_ms, |sum, value| sum + value)
     }
 
-    /// [`RegistryStore::series_at`] for a gauge: one point per bucket, its highest.
+    /// [`RegistryStore::series_at`] for a gauge: one value per point, its highest.
     pub fn peaks_since(
         &self,
         metric: &str,
-        tier: Tier,
+        point_ms: i64,
         since_ms: i64,
     ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
-        self.merged_at(metric, tier, since_ms, f64::max)
+        self.merged_at(metric, point_ms, since_ms, f64::max)
     }
 
-    /// [`RegistryStore::series_at`] with each bucket's points merged into one by `merge`.
+    /// [`RegistryStore::series_at`] with each point's values merged into one by `merge`.
     fn merged_at(
         &self,
         metric: &str,
-        tier: Tier,
+        point_ms: i64,
         since_ms: i64,
         merge: fn(f64, f64) -> f64,
     ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
         Ok(self
-            .series_at(metric, tier, since_ms)?
+            .series_at(metric, point_ms, since_ms)?
             .into_iter()
             .map(|(subject_key, points)| {
                 let mut merged: SubjectPoints = Vec::new();
@@ -3210,33 +3231,19 @@ mod tests {
     }
 
     #[test]
-    fn for_window_picks_the_finest_tier_whose_retention_covers_it() {
-        assert_eq!(Tier::for_window(Duration::from_secs(60)), Tier::TenSeconds);
-        assert_eq!(
-            Tier::for_window(Duration::from_secs(60 * 60)),
-            Tier::TenSeconds,
-            "exactly sixty minutes still fits the finest tier"
-        );
-        assert_eq!(Tier::for_window(Duration::from_secs(60 * 60 + 1)), Tier::OneMinute);
-        assert_eq!(Tier::for_window(Duration::from_secs(24 * 60 * 60)), Tier::OneMinute);
-        assert_eq!(
-            Tier::for_window(Duration::from_secs(24 * 60 * 60 + 1)),
-            Tier::FiveMinutes
-        );
-        assert_eq!(
-            Tier::for_window(Duration::from_secs((29 * 24 + 1) * 60 * 60)),
-            Tier::FiveMinutes
-        );
-        assert_eq!(
-            Tier::for_window(Duration::from_secs((29 * 24 + 1) * 60 * 60 + 1)),
-            Tier::OneHour
-        );
-        assert_eq!(Tier::for_window(Duration::from_secs(30 * 24 * 60 * 60)), Tier::OneHour);
-        assert_eq!(
-            Tier::for_window(Duration::from_secs(365 * 24 * 60 * 60)),
-            Tier::OneHour,
-            "past thirty days there is still only the coarsest tier to serve from"
-        );
+    fn a_chart_draws_no_more_than_its_points_and_each_point_from_a_tier_that_holds_its_window() {
+        let minutes = |m: u64| Duration::from_secs(60 * m);
+        let points = [10, 60, 6 * 60, 24 * 60, 7 * 24 * 60, 30 * 24 * 60].map(|m| chart_point_ms(minutes(m)) / 1000);
+        assert_eq!(points, [10, 10, 60, 5 * 60, 60 * 60, 6 * 60 * 60]);
+        for m in [1, 60, 61, 6 * 60 + 1, 30 * 60 + 1, 15 * 24 * 60 + 1, 30 * 24 * 60] {
+            let window = minutes(m);
+            let point = chart_point_ms(window);
+            assert!(window.as_millis() as i64 <= CHART_POINTS * point, "{m} minutes");
+            assert!(
+                Tier::within(point).retention_ms() >= window.as_millis() as i64,
+                "{m} minutes"
+            );
+        }
     }
 
     #[test]
@@ -3394,7 +3401,9 @@ mod tests {
         for (at, lag) in [(old, 3.0), (old + 10_000, 9.0), (new, 5.0), (new + 70_000, 2.0)] {
             store.record_gauge_max("smeltr_source_lag", "k", at, lag).unwrap();
         }
-        let before = store.peaks_since("smeltr_source_lag", Tier::FiveMinutes, old).unwrap();
+        let before = store
+            .peaks_since("smeltr_source_lag", Tier::FiveMinutes.bucket_ms(), old)
+            .unwrap();
         assert_eq!(before, vec![("k".to_string(), vec![(old, 9.0), (new, 5.0)])]);
 
         store.maintain(0).unwrap();
@@ -3405,7 +3414,9 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(
-            store.peaks_since("smeltr_source_lag", Tier::FiveMinutes, old).unwrap(),
+            store
+                .peaks_since("smeltr_source_lag", Tier::FiveMinutes.bucket_ms(), old)
+                .unwrap(),
             before
         );
     }
