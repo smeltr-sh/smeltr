@@ -246,8 +246,6 @@
   /** `d` reads `name`, and its id follows, unless it was typed over. */
   function setClass(d: SchemaDraft, name: string) {
     d.class = name;
-    const takes = profilesOf(d);
-    d.profiles = d.profiles.filter((p) => takes.some((t) => t.name === p));
     if (d.type !== 'ocsf' || !name || d.id !== d.suggested) return;
     d.id = d.suggested = suggestId(name, unavailable);
   }
@@ -463,7 +461,12 @@
   typeLabel={(t) => LABELS[t]}
   {ready}
   onadd={(d) => {
-    if (d.type === 'ocsf') d.class = classOf(d);
+    if (d.type === 'ocsf') {
+      d.class = classOf(d);
+      // A profile ticked on another class, release or file, which this class does not take.
+      const takes = profilesOf(d);
+      d.profiles = d.profiles.filter((p) => takes.some((t) => t.name === p));
+    }
     return onadd(d);
   }}
   {oncancel}

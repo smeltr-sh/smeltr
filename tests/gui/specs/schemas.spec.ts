@@ -668,6 +668,10 @@ test('an OCSF class comes in with only the profiles ticked, and then names them 
   await dialog.getByRole('checkbox', { name: 'Host', exact: true }).check();
   await dialog.getByRole('combobox', { name: 'Class' }).selectOption({ label: 'HTTP Activity' });
   await expect(dialog.getByRole('checkbox', { name: 'Host', exact: true })).toBeChecked();
+  // One 1.3.0 does not have is left out when the release changes.
+  await dialog.getByRole('checkbox', { name: 'AI Operation', exact: true }).check();
+  await dialog.getByRole('button', { name: 'OCSF 1.3.0, built in', exact: true }).click();
+  await expect(dialog.getByRole('checkbox', { name: 'AI Operation', exact: true })).toHaveCount(0);
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
   field = await saved(admin, api, 'host');

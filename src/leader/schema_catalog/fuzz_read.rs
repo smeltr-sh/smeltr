@@ -802,14 +802,22 @@ fn taken(
             }
             cov.reach("ocsf an attribute of a profile taken");
         }
-        let level = a.get("requirement").and_then(Value::as_str).unwrap_or("optional");
-        if !cut.levels.iter().any(|l| l == level) {
-            continue;
-        }
         let path = match prefix {
             "" => key.clone(),
             _ => format!("{prefix}.{key}"),
         };
+        // A record that takes any profile names it there.
+        let mut a = a.clone();
+        if path == "metadata.profiles" && !cut.profiles.is_empty() {
+            a["requirement"] = json!("required");
+        }
+        let level = a.get("requirement").and_then(Value::as_str).unwrap_or("optional");
+        if !cut.levels.iter().any(|l| l == level) {
+            continue;
+        }
+        if path == "metadata.profiles" && !cut.profiles.is_empty() {
+            cov.reach("ocsf metadata.profiles required with a profile taken");
+        }
         out.push((path.clone(), a.clone()));
         if a["type"] == "object_t" && depth < cut.depth {
             let inner = &doc["objects"][a["object_type"].as_str().unwrap_or_default()]["attributes"];
@@ -837,6 +845,7 @@ fn an_ocsf_class_reads_as_deep_as_its_cut_and_at_the_levels_taken() {
                     "ocsf a profile the class does not take is refused",
                     "ocsf an attribute of a profile taken",
                     "ocsf an attribute of a profile left out",
+                    "ocsf metadata.profiles required with a profile taken",
                 ]
                 .map(String::from),
             ),
@@ -859,7 +868,14 @@ fn an_ocsf_class_reads_as_deep_as_its_cut_and_at_the_levels_taken() {
         if lacking {
             held.push("missing".into());
         }
-        let class = attributes(&mut rng, &held, &mut cov);
+        let mut class = attributes(&mut rng, &held, &mut cov);
+        // OCSF's metadata, whose profiles a record that takes any profile must name.
+        if rng.chance(3) {
+            let level = *rng.pick(&LEVELS);
+            class["metadata"] = json!({ "type": "object_t", "object_type": "metadata", "requirement": level });
+            let listed = json!({ "type": "string_t", "is_array": true, "requirement": rng.pick(&LEVELS) });
+            objects.insert("metadata".into(), json!({ "attributes": { "profiles": listed } }));
+        }
         let doc = json!({ "classes": { "c": { "profiles": PROFILES, "attributes": class } }, "objects": objects });
         let mut cut = Cut {
             depth: 1 + rng.below(DEEPEST),
