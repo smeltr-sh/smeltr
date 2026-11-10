@@ -287,9 +287,10 @@ test('A1: a viewer runs a pipeline over a capture without saving it', async ({
   await goto(viewer, leader, '#/build/pipelines/tidy');
 
   await viewer.getByRole('button', { name: 'Choose a sample' }).click();
-  // A viewer may only capture, so Add sample opens on the capture, at the pipeline's own source.
+  // A viewer uses records and never saves them. A capture starts at the pipeline's own source.
   await viewer.getByRole('button', { name: 'Add sample' }).click();
   const form = viewer.getByRole('dialog');
+  await form.getByRole('button', { name: 'Capture' }).click();
   await expect(form.getByRole('combobox', { name: /^Capture target/ })).toHaveValue(
     'source:own-metrics',
   );
@@ -311,6 +312,18 @@ test('A1: a viewer runs a pipeline over a capture without saving it', async ({
   await viewer.reload();
   await viewer.getByRole('button', { name: 'Choose a sample' }).click();
   await expect(viewer.getByRole('option', { name: /Your records/ })).toContainText('3 records');
+
+  // A paste takes the capture's place, with no name and no save.
+  await viewer.getByRole('button', { name: 'Add sample' }).click();
+  await form.getByRole('button', { name: 'Paste' }).click();
+  await expect(form.getByLabel('Name')).toHaveCount(0);
+  await expect(form.getByRole('button', { name: 'Save sample' })).toHaveCount(0);
+  await form.getByLabel(/^Records/).fill('{"id":1}\n');
+  await form.getByRole('button', { name: 'Use these records' }).click();
+  await expect(form).toHaveCount(0);
+  await expect(chip).toContainText('Your records');
+  await expect(chip).toContainText('1 record');
+  expect((await api.get('/api/areas/shared/samples')).samples).toEqual([]);
 });
 
 // A1, an editor: the capture that could be saved as a sample is run over unsaved instead, and nothing is committed.

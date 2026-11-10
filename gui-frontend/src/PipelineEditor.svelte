@@ -112,7 +112,6 @@
   import { hold, verdictFor, drop } from './edits';
   import type { ChangeRow } from './diff';
   import AddSampleDialog from './AddSampleDialog.svelte';
-  import CaptureFlow from './CaptureFlow.svelte';
   import { heldCount } from './capture';
   import RecordsPane, { type PauseRun } from './RecordsPane.svelte';
   import { RECOMPUTE_MS } from './FindBox.svelte';
@@ -1233,8 +1232,7 @@
         .filter((c) => c.kind === 'source')
         .map(sourceTarget)
         .find((t) => mayCapture(t)) ?? null;
-    if (readOnly) capturing = true;
-    else adding = true;
+    adding = true;
   }
 
   /** What the proposal read, said over the steps it made. */
@@ -1680,39 +1678,34 @@
             {lockedBy}
             held={choices.menuHeld}
             onpick={chooseSample}
-            onadd={readOnly && !mayCapture() ? undefined : addSample}
+            onadd={addSample}
           />
         {/snippet}
         {#snippet stage()}{@render stageChips()}{/snippet}
       </RecordsPane>
     </div>
-    {#if !readOnly}
-      <AddSampleDialog
-        open={capturing || adding || savingOutput !== null || savingInput}
-        start={capturing ? 'capture' : savingOutput ? 'output' : savingInput ? 'input' : undefined}
-        target={captureAt ?? captureTarget}
-        onuse={useCapture}
-        output={savingOutput ? () => outputOf(savingOutput!) : undefined}
-        input={savingInput && choices.held ? choices.held : undefined}
-        oncancel={() => {
-          capturing = false;
-          adding = false;
-          savingOutput = null;
-          savingInput = false;
-          captureAt = null;
-        }}
-        onsaved={savingOutput ? savedOutput : savingInput ? savedInput : captured}
-      />
-    {:else if capturing}
-      <CaptureFlow
-        target={captureAt ?? undefined}
-        onuse={useCapture}
-        oncancel={() => {
-          capturing = false;
-          captureAt = null;
-        }}
-      />
-    {/if}
+    <AddSampleDialog
+      open={capturing || adding || savingOutput !== null || savingInput}
+      start={capturing ? 'capture' : savingOutput ? 'output' : savingInput ? 'input' : undefined}
+      target={captureAt ?? captureTarget}
+      onuse={useCapture}
+      output={savingOutput ? () => outputOf(savingOutput!) : undefined}
+      input={savingInput && choices.held ? choices.held : undefined}
+      oncancel={() => {
+        capturing = false;
+        adding = false;
+        savingOutput = null;
+        savingInput = false;
+        captureAt = null;
+      }}
+      onsaved={readOnly
+        ? undefined
+        : savingOutput
+          ? savedOutput
+          : savingInput
+            ? savedInput
+            : captured}
+    />
   </SectionShell>
   <SaveBar
     dirty={isDirty || neverSaved}
