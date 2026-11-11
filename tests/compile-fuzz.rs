@@ -663,11 +663,15 @@ impl Gen {
         }
     }
 
-    /// A read the record's open objects answer only by row: a variant.
+    /// A read the record's open objects answer only by row: a variant. `$.zz` is one only until a step binds `zz`.
     fn variant(&mut self, depth: usize) -> E {
+        let zz_bound = self
+            .bindings
+            .iter()
+            .any(|b| b.name == "zz" || b.name.starts_with("zz."));
         match self.rng.below(4) {
             0 => E::Lit("o.r".into()),
-            1 => E::Lit("$.zz".into()),
+            1 if !zz_bound => E::Lit("$.zz".into()),
             2 => E::Index(
                 Box::new(E::Lit("o".into())),
                 Box::new(self.expr(&DataType::Str, depth + 1)),
