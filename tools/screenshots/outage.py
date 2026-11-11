@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Take one of a stream's two relays down until the leader says its source reads below normal, capture the pages
-that show it, then bring the relay back.
+"""Take a stream's relay down until the leader says its source reads below normal, capture the pages that show it,
+then bring the relay back.
 
     python3 outage.py [topic]      # default syslog.fortigate
 
-The shots are `outage.json`'s. The source is judged on its last 30 minutes against the band its history gives, so the
-warning comes once enough of that window reads half: ten minutes or so. The shots wait for `SHOWN_DOWN` of half, so
-the Map's 24-hour chart shows a drop wide enough to see.
+The shots are `outage.json`'s. The source is judged at its shortest width, 5 minutes, and warns once four readings in a
+row are below the range its history gives: twenty minutes or so. The shots wait for `SHOWN_DOWN` at least, so the
+Map's 24-hour chart shows a drop wide enough to see.
 """
 
 import os
@@ -18,7 +18,6 @@ import bundle
 import stage
 
 topic = sys.argv[1] if len(sys.argv) > 1 else "syslog.fortigate"
-RELAYS = 2
 SHOWN_DOWN = 15 * 60
 source = next(s["id"] for s in bundle.NETWORK_SOURCES + bundle.APPS_SOURCES if topic in s["topics"])
 
@@ -29,8 +28,8 @@ def traffic(**env):
                 dict(os.environ, **env))
 
 
-stage.log(f"taking one of {topic}'s {RELAYS} relays down")
-traffic(SMELTR_DEMO_DOWN=f"{topic}/{RELAYS}")
+stage.log(f"taking {topic}'s relay down")
+traffic(SMELTR_DEMO_DOWN=topic)
 down_at = time.monotonic()
 try:
     # The leader ends a session that reports no activity for a while, and API calls report none, so each poll asks

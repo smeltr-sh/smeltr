@@ -8,6 +8,14 @@
     "steps": [{ "delay": 1000 }, { "blur": true }]
   },
   {
+    "name": "05c-map-source-history",
+    "site": "feed-health-history",
+    "hash": "#/map?group=network&kind=source&id=fortigate-firewalls&panel=history",
+    "themes": ["light", "dark"],
+    "delay": 3000,
+    "steps": [{ "delay": 1000 }, { "blur": true }]
+  },
+  {
     "name": "02b-issues-feed-health",
     "site": "feed-health-issues",
     "hash": "#/status/issues",
