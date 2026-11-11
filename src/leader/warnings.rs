@@ -2029,25 +2029,18 @@ pub fn outside_normal_warnings(
                 format!(
                     "source {}: {}{}",
                     r.source,
-                    match (r.shown(), r.gap.filter(throughput::Gap::below), &r.before) {
-                        (Some(shown), _, _) if side == throughput::Outside::Above || shown.under() => {
+                    match (r.shown(), r.gap.filter(throughput::Gap::below)) {
+                        (Some(shown), _) if side == throughput::Outside::Above || shown.under() => {
                             against(shown, side)
                         }
-                        (_, Some(gap), _) => format!(
+                        (_, Some(gap)) => format!(
                             "no rows for {}, longest normal quiet spell {}",
                             humanize_secs((gap.silence_ms / 1000) as u64),
                             humanize_secs((gap.longest_ms / 1000) as u64)
                         ),
-                        (Some(shown), None, _) => against(shown, side),
+                        (Some(shown), None) => against(shown, side),
                         // Held while no width judges it (`throughput`).
-                        (None, None, Some(before)) => format!(
-                            "{}its normal from before this warning, {}; Reset history ends it",
-                            off_by(before, throughput::Outside::Below),
-                            read(before)
-                        ),
-                        (None, None, None) => {
-                            "below normal, and cannot be judged now; Reset history ends it".to_string()
-                        }
+                        (None, None) => "below normal, and cannot be judged now; Reset history ends it".to_string(),
                     },
                     lowered_by
                         .map(|by| format!("; lowered to info by {by}"))
@@ -4226,7 +4219,6 @@ mod tests {
                 None
             },
             reach_ms: None,
-            before: None,
             gap: None,
         }
     }
@@ -4278,23 +4270,6 @@ mod tests {
         assert_eq!(
             outside(&[silent], &snapshot)[0].1,
             "source sparse: no rows for 15 hours, longest normal quiet spell 2 hours"
-        );
-    }
-
-    #[test]
-    fn a_source_held_below_says_how_far_below_its_normal_from_before_the_warning_it_reads() {
-        let before = reading_in("quiet", 30.0, throughput::Band { low: 70.0, high: 130.0 }).judged[0].clone();
-        let held = throughput::Reading {
-            judged: Vec::new(),
-            outside: Some(throughput::Outside::Below),
-            before: Some(before),
-            ..reading_of("quiet", 0.0)
-        };
-        let snapshot = [thread_health_in("g", "w1", "t0", 0, vec![rows_metric("quiet")])];
-        assert_eq!(
-            outside(&[held], &snapshot)[0].1,
-            "source quiet: 57% below its normal from before this warning, 30 rows in 30 minutes against 70 to 130 at \
-             this time of day; Reset history ends it"
         );
     }
 

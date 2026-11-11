@@ -3,11 +3,11 @@
 //! A source's normal is learned from the rows it read, which the registry already keeps (`series.rs`), and it is judged
 //! at each of four [`WIDTHS`]: the rows of the last 5 minutes, 30 minutes, 6 hours and 24 hours. At one width, the
 //! usual window of a time of day is the median of the windows that ended within [`NEIGHBORHOOD`] of it on each of the
-//! last [`USUAL_DAYS`] days. Every window of the width's history is a ratio to the usual window of its time of day,
-//! and the range is the usual window scaled by the lowest and the highest ratios, a [`TAIL`] of them cut from each end,
-//! and widened by [`MARGIN`]. Ratios, because a quiet hour and a busy one can be pooled only once each is set against
-//! its own time of day; a quantile, because rows read are bursty and often zero, which a mean and a deviation do not
-//! describe.
+//! newest [`USUAL_DAYS`] days learned there. Each window of the width's history, its newest learned windows, is taken
+//! as a ratio to the usual window of its time of day. The range is the usual window scaled by the lowest and the
+//! highest ratios, a [`TAIL`] of them cut from each end, and widened by [`MARGIN`]. Ratios, because a quiet hour and a
+//! busy one can be pooled only once each is set against its own time of day; a quantile, because rows read are bursty
+//! and often zero, which a mean and a deviation do not describe.
 //!
 //! A width judges a source only where its usual window holds at least [`GATE`] rows: a window that is usually near
 //! empty has a low edge of zero, which no reading is below. So a source that reads every few seconds is judged at every
@@ -17,16 +17,16 @@
 //! how long it has gone without a row, against the longest quiet spell it made in the past year ([`Gap`]). A quiet
 //! spell is a run of buckets with no rows, each reported by a worker, between two with rows (`series::Silence`). The
 //! spells are recorded each hour and kept a year, since the buckets are kept only four weeks. The gap judges a source
-//! once it has been watched [`GAP_WATCH_MS`]. Until it has been watched a year, its longest spell is taken to be shorter
-//! than the year's longest, and is lengthened by what the rest of the year would likely add.
+//! once it has been watched [`GAP_WATCH_MS`]. Until it has been watched a year, its longest spell is taken to be
+//! shorter than the year's longest, and is lengthened by what the rest of the year would likely add.
 //!
 //! A source is below normal while some width has read below its range [`WAIT`] times in a row, since one reading at the
 //! range's edge flickers, or once its quiet spell is longer than [`GAP_MARGIN`] times the longest it learned. Either
-//! raises the same warning, and it stays until some width judges the source and none reads it below its range: a source
-//! quiet long enough to lose every range still warns. While none judges it, it is read against the normal it had
-//! before the warning, so the warning still says how far below that normal it reads, and the warning ends once the
-//! source reads inside or above that normal. Where no count width reads it even so, the warning ends at its first row,
-//! which ends the quiet spell the gap judged. Above normal is judged at [`WINDOW`] alone, and only informs.
+//! raises the same warning, and it stays until some width judges the source and none reads it below its range. Days not
+//! learned are passed over, not counted, so a held warning is judged against the days before it until those are no
+//! longer kept, after which no width judges the source and it still warns. Where no count width reads it, the warning
+//! ends at its first row, which ends the quiet spell the gap judged. Above normal is judged at [`WINDOW`] alone, and
+//! only informs.
 //!
 //! Only windows the source was running for throughout count. A bucket with no point means no worker reported the source
 //! then -- not deployed, or a worker gone -- which says nothing about how much it reads.
@@ -106,7 +106,7 @@ pub const WIDTHS: [Width; 4] = [
     },
 ];
 
-/// How many days back a time of day's usual window is learned from.
+/// How many days a time of day's usual window is learned from: the newest with a learned window near it.
 const USUAL_DAYS: i64 = 7;
 
 /// How far either side of the same time of day a past window may end and still count as the same time of day.
@@ -194,9 +194,6 @@ pub struct Reading {
     /// Where the window of this reading's widest below-normal width begins, moved back over the readings it waited
     /// for. A below-normal warning raised now, or held, keeps its source's normal from learning from that bucket on.
     pub reach_ms: Option<i64>,
-    /// While a below-normal warning holds and no width judges the source, its reading against the normal it had
-    /// before the warning: the narrowest width under that normal's range.
-    pub before: Option<Judged>,
     /// The gap's reading, where the gap judges the source.
     pub gap: Option<Gap>,
 }
@@ -204,8 +201,8 @@ pub struct Reading {
 /// The gap's reading: how long the source has gone without a row, against the longest quiet spell it learned.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Gap {
-    /// Since its last row, or since the last bucket no worker reported it in, or since it was last stopped, whichever is
-    /// latest.
+    /// Since its last row, or since the last bucket no worker reported it in, or since it was last stopped, whichever
+    /// is latest.
     pub silence_ms: i64,
     /// The longest quiet spell it learned.
     pub longest_ms: i64,
@@ -300,13 +297,8 @@ fn outside(judged: &[Judged], gap: Option<&Gap>, below_held: bool) -> Option<Out
 pub struct Readings {
     last: Mutex<Option<Answer>>,
     learned: Mutex<Option<(i64, Learning, Arc<Learned>)>>,
-    /// Each held below-normal warning's normal from before it, by its source and where it began keeping that normal
-    /// from learning: learned once, since it never changes.
-    before: Mutex<Befores>,
     computing: Mutex<()>,
 }
-
-type Befores = HashMap<(SourceKey, i64), Arc<Vec<Normal>>>;
 
 /// A source, by its group and id.
 type SourceKey = (String, String);
@@ -343,20 +335,7 @@ impl Readings {
         }
         record_swings(store, ended_ms, heartbeat_interval);
         let learned = self.learned_at(store, ended_ms, learning);
-        // Only the warnings still held keep theirs. Rows are read once a pass, however many warnings need them.
-        let mut befores = self.before.lock().unwrap_or_else(|e| e.into_inner());
-        let mut kept = Befores::new();
-        let mut read: Option<History> = None;
-        let mut before = |key: &SourceKey, from: i64| {
-            let normals = befores.remove(&(key.clone(), from)).unwrap_or_else(|| {
-                let rows = read.get_or_insert_with(|| all_rows(store));
-                Arc::new(normals_of(rows, store, key, Tier::OneHour.align(from), learning))
-            });
-            kept.insert((key.clone(), from), normals.clone());
-            normals
-        };
-        let readings = Arc::new(compute(store, ended_ms, learning, &learned, &mut before));
-        *befores = kept;
+        let readings = Arc::new(compute(store, ended_ms, learning, &learned));
         *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some((ended_ms, learning.clone(), readings.clone()));
         readings
     }
@@ -444,49 +423,66 @@ fn time_of_day(ended_ms: i64) -> usize {
     (ended_ms.rem_euclid(DAY_MS) / BUCKET.bucket_ms()) as usize
 }
 
-/// `width`'s normal as of `as_of`, from the windows learned that ended before it, or None while it has no ratio at
-/// all. Each window's usual window is that of its time of day as of `as_of`, so every window of the history is set
-/// against the same week. Each window and its usual window get one more row, so a time of day that is usually empty
-/// divides like any other.
+/// `width`'s normal as of `as_of`, from the windows learned that ended before it, or None while it has no ratio at all.
+/// Its history is its newest learned windows, as many as fit in [`Width::history_days`] days, and a time of day's usual
+/// window is learned from the newest [`USUAL_DAYS`] days with a learned window near it. Both reach back past what is
+/// not learned, as far as [`lookback_ms`], so a warning that holds for days is still judged against the days before it.
+/// Each window's usual window is that of its time of day as of `as_of`, so every window of the history is set against
+/// the same days. Each window and its usual window get one more row, so a time of day that is usually empty divides
+/// like any other.
 fn normal(rows: &Rows, warned: &Warned, as_of: i64, width: Width) -> Option<Normal> {
     let step = BUCKET.bucket_ms();
     let per_day = DAY_MS / step;
-    let learned = |ended: i64| rows.window(ended, width).filter(|_| !warned.during(ended, width.ms()));
-    // Each learned window by its time of day, with how many buckets before `as_of` it ended. The last readings'
-    // windows are left out: a warning may yet wait for them, and a source's normal learns nothing from the readings a
-    // warning waited for.
+    // Each learned window, newest first, with how many buckets before `as_of` it ended. The last readings' windows are
+    // left out: a warning may yet wait for them, and a source's normal learns nothing from the readings a warning
+    // waited for.
+    let learned: Vec<(i64, f64)> = (WAIT..=lookback_ms() / step)
+        .filter_map(|i| {
+            let ended = as_of - i * step;
+            let sum = rows
+                .window(ended, width)
+                .filter(|_| !warned.during(ended, width.ms()))?;
+            Some((i, sum))
+        })
+        .collect();
     let mut by_time: Vec<Vec<(i64, f64)>> = vec![Vec::new(); per_day as usize];
-    for i in WAIT..=USUAL_DAYS * per_day {
-        let ended = as_of - i * step;
-        if let Some(sum) = learned(ended) {
-            by_time[time_of_day(ended)].push((i, sum));
-        }
+    for &(i, sum) in &learned {
+        by_time[time_of_day(as_of - i * step)].push((i, sum));
     }
     let across = NEIGHBORHOOD.as_millis() as i64 / step;
     let usual: Vec<Option<f64>> = (0..per_day)
         .map(|at| {
-            // Each window near `at`, grouped by the day of `at`'s window it is near, so a window in the half hour after
-            // a midnight counts for that midnight.
+            // Each window near `at`, grouped by the day it is near: a window in the half hour after a midnight counts
+            // for that midnight's day. A time of day has one window a day, newest first, so the newest days near `at`
+            // are among the first of each.
             let near: Vec<(i64, f64)> = (-across..=across)
                 .flat_map(|off| {
                     let of = &by_time[(at + off).rem_euclid(per_day) as usize];
-                    of.iter().map(move |&(i, sum)| ((i + off).div_euclid(per_day), sum))
+                    of.iter()
+                        .take(USUAL_DAYS as usize)
+                        .map(move |&(i, sum)| ((i + off).div_euclid(per_day), sum))
                 })
                 .collect();
-            if near.iter().map(|&(day, _)| day).collect::<HashSet<_>>().len() < MIN_DAYS {
+            let mut days: Vec<i64> = near.iter().map(|&(day, _)| day).collect();
+            days.sort_unstable();
+            days.dedup();
+            if days.len() < MIN_DAYS {
                 return None;
             }
-            let mut sums: Vec<f64> = near.into_iter().map(|(_, sum)| sum).collect();
+            let newest = days[days.len().min(USUAL_DAYS as usize) - 1];
+            let mut sums: Vec<f64> = near
+                .into_iter()
+                .filter(|&(day, _)| day <= newest)
+                .map(|(_, sum)| sum)
+                .collect();
             sums.sort_by(f64::total_cmp);
             Some(quantile(&sums, 0.5))
         })
         .collect();
-    let mut ratios: Vec<f64> = (WAIT..=width.history_days * per_day)
-        .filter_map(|i| {
-            let ended = as_of - i * step;
-            let usual = usual[time_of_day(ended)]?;
-            learned(ended).map(|sum| (sum + 1.0) / (usual + 1.0))
-        })
+    let mut ratios: Vec<f64> = learned
+        .iter()
+        .take((width.history_days * per_day) as usize)
+        .filter_map(|&(i, sum)| Some((sum + 1.0) / (usual[time_of_day(as_of - i * step)]? + 1.0)))
         .collect();
     if ratios.is_empty() {
         return None;
@@ -545,26 +541,6 @@ fn learn(store: &RegistryStore, as_of: i64, learning: &Learning) -> Learned {
     }
 }
 
-/// Every source's rows still kept, or none where they cannot be read.
-fn all_rows(store: &RegistryStore) -> History {
-    history(store, BUCKET.and_finer(), BUCKET, i64::MIN).unwrap_or_else(|e| {
-        tracing::warn!(
-            name: "series_unreadable", target: "status",
-            error = %e,
-            "could not read the sources' rows, so a held warning does not say how far below its normal from before the warning it is"
-        );
-        History::new()
-    })
-}
-
-/// `key`'s normals as of `as_of`, from `rows`.
-fn normals_of(rows: &History, store: &RegistryStore, key: &SourceKey, as_of: i64, learning: &Learning) -> Vec<Normal> {
-    let oldest = as_of - lookback_ms();
-    rows.get(key)
-        .map(|of| learned(store, key, of, oldest, as_of, learning))
-        .unwrap_or_default()
-}
-
 /// The normals of `key`'s rows `of`, read since `oldest`, as of `as_of`.
 fn learned(
     store: &RegistryStore,
@@ -582,15 +558,8 @@ fn learned(
         .collect()
 }
 
-/// [`Readings::at`] without the cache: each source's reading at `ended_ms` against what was `learned`. `before` gives a
-/// source's normals as of where the windows a held below-normal warning read begin.
-fn compute(
-    store: &RegistryStore,
-    ended_ms: i64,
-    learning: &Learning,
-    learned: &Learned,
-    before: &mut dyn FnMut(&SourceKey, i64) -> Arc<Vec<Normal>>,
-) -> Vec<Reading> {
+/// [`Readings::at`] without the cache: each source's reading at `ended_ms` against what was `learned`.
+fn compute(store: &RegistryStore, ended_ms: i64, learning: &Learning, learned: &Learned) -> Vec<Reading> {
     let widest = WIDTHS.iter().map(|w| w.ms()).max().unwrap_or_default();
     let oldest = ended_ms - (WAIT - 1) * BUCKET.bucket_ms() - widest;
     let buckets = match history(store, BUCKET.and_finer(), BUCKET, oldest) {
@@ -617,29 +586,13 @@ fn compute(
                 .filter_map(|normal| judge(&rows, &warned, normal, ended_ms))
                 .collect();
             let gap = learned.gaps.get(&key).and_then(|gap| gap.at(&of, &warned, ended_ms));
-            let then: Option<Vec<Judged>> = warned.held_from.filter(|_| judged.is_empty()).map(|from| {
-                before(&key, from)
-                    .iter()
-                    .filter_map(|normal| judge(&rows, &warned, normal, ended_ms))
-                    .collect()
-            });
-            // Back at the level it read before the warning: some width judges it there, and none reads it below that
-            // range.
-            let back = then
-                .as_ref()
-                .is_some_and(|then| !then.is_empty() && !then.iter().any(Judged::under));
-            // Where no count width reads it, now or against that level, the gap does: the warning ends at the first row
-            // since the quiet spell it read began.
-            let quiet_back = then.as_ref().is_some_and(Vec::is_empty)
+            // Where no count width reads it, the gap does: the warning ends at the first row since the quiet spell it
+            // read began.
+            let quiet_back = judged.is_empty()
                 && gap
                     .zip(warned.held_from)
                     .is_some_and(|(gap, from)| gap.row_ms.is_some_and(|row| row > from));
-            let before = then.and_then(|then| then.into_iter().find(Judged::under));
-            let outside = outside(
-                &judged,
-                gap.as_ref(),
-                warned.held_from.is_some() && !back && !quiet_back,
-            );
+            let outside = outside(&judged, gap.as_ref(), warned.held_from.is_some() && !quiet_back);
             let waited = (WAIT - 1) * BUCKET.bucket_ms();
             // The gap read the quiet spell it warned on.
             let reach_ms = judged
@@ -656,7 +609,6 @@ fn compute(
                 judged,
                 outside,
                 reach_ms,
-                before,
                 gap,
             })
         })
@@ -1077,7 +1029,7 @@ pub fn expected_over(
     let step = point_ms;
     let first = since_ms.div_euclid(step) * step + step;
     let last = now_ms.div_euclid(step) * step + step;
-    let oldest = Tier::OneHour.align(first) - width.history_days.max(USUAL_DAYS) * DAY_MS - width.ms();
+    let oldest = Tier::OneHour.align(first) - lookback_ms();
     let Some(of) = history(store, BUCKET.and_finer(), BUCKET, oldest)?.remove(&(group.to_string(), source.to_string()))
     else {
         return Ok(Vec::new());
@@ -1337,12 +1289,7 @@ mod tests {
     /// The reading at `ended`, against what was learned as of its hour.
     fn reading_at(store: &RegistryStore, ended: i64, learning: &Learning) -> Option<Reading> {
         let learned = learn(store, Tier::OneHour.align(ended), learning);
-        let rows = all_rows(store);
-        let mut before =
-            |key: &SourceKey, from: i64| Arc::new(normals_of(&rows, store, key, Tier::OneHour.align(from), learning));
-        compute(store, ended, learning, &learned, &mut before)
-            .into_iter()
-            .next()
+        compute(store, ended, learning, &learned).into_iter().next()
     }
 
     fn reading(store: &RegistryStore) -> Option<Reading> {
@@ -1622,16 +1569,17 @@ mod tests {
     }
 
     #[test]
-    fn a_held_below_warning_reads_against_the_normal_from_before_it() {
+    fn a_held_below_warning_is_judged_against_the_days_learned_before_it() {
         let dropped = END - 6 * DAY_MS;
         let store = store_with(29, |at| Some(if at >= dropped { 30.0 } else { 100.0 }));
         warned_reaching(&store, "source_rows_below", dropped + 3 * FIVE, None, Some(dropped));
         let r = reading(&store).unwrap();
-        assert_eq!(r.judged, [], "six days not learned leave too few for any width");
         assert_eq!(r.outside, Some(Outside::Below));
-        let before = r.before.unwrap();
-        assert_eq!(before.window, WIDTHS[0].window);
-        assert_eq!((before.rows, before.band), (30.0, Band { low: 70.0, high: 130.0 }));
+        assert_eq!(
+            (r.judged[0].rows, r.judged[0].band),
+            (30.0, Band { low: 70.0, high: 130.0 }),
+            "six days not learned are passed over, so the week before them is still the normal"
+        );
     }
 
     #[test]
@@ -1646,7 +1594,7 @@ mod tests {
             })
         });
         warned_reaching(&store, "source_rows_below", dropped + 3 * FIVE, None, Some(dropped));
-        assert_eq!(reading(&store), None);
+        assert_eq!(reading(&store).unwrap().outside, None);
     }
 
     #[test]
