@@ -1113,10 +1113,12 @@ fn run_reader_loop(
         if !handing && reader.commits.is_empty() {
             break;
         }
-        // Commits go oldest first, so once the oldest outstanding batch is the held one, nothing more can commit.
-        if lane
-            .held_batch()
-            .is_some_and(|held| reader.commits.outstanding().next() == Some(held))
+        // Commits go oldest first, so once the oldest outstanding batch is a held one, nothing more can commit.
+        if reader
+            .commits
+            .outstanding()
+            .next()
+            .is_some_and(|oldest| lane.holds(oldest))
         {
             break;
         }
