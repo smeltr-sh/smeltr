@@ -23,7 +23,9 @@ describe('freeName', () => {
   it('keeps the name when nothing has it, and numbers past the ones that do', () => {
     expect(freeName('tutorial-in-parse', ['other'])).toBe('tutorial-in-parse');
     expect(freeName('tutorial-in-parse', ['tutorial-in-parse'])).toBe('tutorial-in-parse-2');
-    expect(freeName('tutorial-in-parse', ['tutorial-in-parse', 'tutorial-in-parse-2'])).toBe('tutorial-in-parse-3');
+    expect(freeName('tutorial-in-parse', ['tutorial-in-parse', 'tutorial-in-parse-2'])).toBe(
+      'tutorial-in-parse-3',
+    );
   });
 });
 

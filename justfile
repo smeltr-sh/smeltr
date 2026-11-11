@@ -366,11 +366,11 @@ fuzz-gui: build-dev
     cd tests/gui && npx playwright test --project fuzz-coverage
 
 # The journey fuzzer, `tests/gui/specs/journey-fuzz.spec.ts`, over more and
-# longer journeys than `check-gui` gives it: 16 of 52 moves, enough to make
+# longer journeys than `check-gui` gives it: 16 of 104 moves, enough to make
 # every move. `SMELTR_FUZZ_SEED=n` replays one.
 [doc("The admin journey fuzzer, over many seeds.")]
 [env("SMELTR_FUZZ_SEEDS", "16")]
-[env("SMELTR_JOURNEY_MOVES", "52")]
+[env("SMELTR_JOURNEY_MOVES", "104")]
 fuzz-journey: build-dev
     npm --prefix tests/gui install
     cd tests/gui && npx playwright test --project journey-coverage

@@ -34,7 +34,7 @@ use crate::config_file::LoadedSystem;
 use crate::core::buffer::MemoryBudget;
 use crate::core::id::SourceId;
 use crate::egress::Egress;
-use crate::handoff::{Acks, Ready};
+use crate::handoff::{Acks, BlockCause, Ready};
 use crate::heartbeat::{self, HeartbeatClient, HeartbeatRequest, PartitionRef, ThreadHeartbeat, ThreadKind};
 use crate::leader::git::{ContentId, content_id};
 use crate::metrics::{Metrics, MetricsHandle};
@@ -1113,8 +1113,9 @@ fn run_reader_loop(
         if !handing && reader.commits.is_empty() {
             break;
         }
-        // Commits go oldest first, so once the oldest outstanding batch is the held one, nothing more can commit.
-        if lane.held_batch().is_some_and(|held| reader.commits.outstanding().next() == Some(held)) {
+        // A source blocked by a route or a refusal commits nothing more until a new config or the destination takes the
+        // rows, so waiting out the drain would only delay the deployment. What is left is read again.
+        if matches!(reader.block_cause, Some(BlockCause::Held | BlockCause::Refused)) {
             break;
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -8852,14 +8853,20 @@ mod tests {
                  "exceptions":{"kinds":{"Unmatched":"block"}}}]"#,
         );
         assert!(
-            deployment.readers.iter().any(|r| r.report.lock().unwrap().held.is_some()),
+            deployment
+                .readers
+                .iter()
+                .any(|r| r.report.lock().unwrap().held.is_some()),
             "no source was blocked"
         );
 
         let stopping = Instant::now();
         stop_deployment(deployment);
         let took = stopping.elapsed();
-        assert!(took < Duration::from_secs(5), "the stop took {took:?}, waiting out the drain");
+        assert!(
+            took < Duration::from_secs(5),
+            "the stop took {took:?}, waiting out the drain"
+        );
     }
 
     /// A commit that will not run is refused before anything is torn down, so whatever was running stays. Loading

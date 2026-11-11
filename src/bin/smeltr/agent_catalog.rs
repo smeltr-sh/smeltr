@@ -173,7 +173,7 @@ pub const CATALOG: &[Route] = &[
         method: "POST",
         path: "/api/areas/:area/preview/routes",
         what: "Route a saved sample or a held capture through a draft bundle's routes and pipelines; nothing is written. Query: branch.",
-        body: "{ config: string (bundle JSON as a string), sample?: id, capture?: string (a held capture's session id, in place of sample), at_micros?: number }",
+        body: "{ config: string (bundle JSON as a string), sample?: id, capture?: string (a held capture's session id, in place of sample), source?: string (the source the records stand for, where the sample or capture names none), at_micros?: number }",
     },
     Route {
         method: "POST",
@@ -352,6 +352,12 @@ pub const CATALOG: &[Route] = &[
         body: "",
     },
     Route {
+        method: "POST",
+        path: "/api/captures/paste",
+        what: "Keep records you write as the capture you hold, in place of any other: previews run over it and it saves as a capture does. Returns its status. No query.",
+        body: "{ group, source?: id (the source the records stand for), records: object[] (each shaped as in a sample's `records`) }",
+    },
+    Route {
         method: "GET",
         path: "/api/areas/:area/samples",
         what: "The area's sample summaries (id, name, source, record count). Query: branch.",
@@ -361,7 +367,7 @@ pub const CATALOG: &[Route] = &[
         method: "POST",
         path: "/api/areas/:area/samples",
         what: "Save a finished capture as a sample on a branch and forget the session. Query: branch.",
-        body: "{ capture: string (the capture's session id), id?: string, name: string, source?: string (required for a source capture) }",
+        body: "{ capture: string (the capture's session id), id?: string, name: string, source?: string (the source the records stand for where they name none) }",
     },
     Route {
         method: "PUT",
@@ -405,7 +411,7 @@ pub const CATALOG: &[Route] = &[
         method: "PUT",
         path: "/api/areas/:area/tests/:id",
         what: "Lock (create or replace) a test on a branch; the path's id wins. Query: branch.",
-        body: "{ id, name, pipeline?: id (absent = end-to-end by sample source), sample: id, lockedAt: micros, rowsIn: number, expected: (object|null)[] }",
+        body: "{ id, name, pipeline?: id (absent = end-to-end by sample source), sample: id, lockedAt: micros, rowsIn: number, fields: string[] (leaf names as the records grid names them), rows: { row: number, values?: { [field]: value } (absent = no document), sent?: { pipeline, route, destinations: string[] } (end-to-end only) }[] }",
     },
     Route {
         method: "GET",

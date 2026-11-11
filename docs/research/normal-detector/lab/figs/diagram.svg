@@ -1,0 +1,77 @@
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 760 738' role='img' aria-label='One judge at five widths: the recipe down the side, the machinery in the cells' font-size='13'><defs><marker id='rec-arrow' viewBox='0 0 10 10' refX='9' refY='5' marker-width='6' marker-height='6' orient='auto-start-reverse'><path d='M0 0L10 5L0 10z' fill='#9a9a9a'/></marker></defs>
+<text x='24' y='32' font-size='15' font-weight='600' fill='#1d1f22'>One judge, five widths: the recipe down the side, the machinery in the cells</text>
+<text x='358' y='66' text-anchor='middle' font-size='11.5' fill='#5d6168'>four count widths: rows in the last</text>
+<text x='196' y='82' text-anchor='middle' font-weight='600' fill='#1d1f22'>5 min</text>
+<text x='304' y='82' text-anchor='middle' font-weight='600' fill='#1d1f22'>30 min</text>
+<text x='412' y='82' text-anchor='middle' font-weight='600' fill='#1d1f22'>6 h</text>
+<text x='520' y='82' text-anchor='middle' font-weight='600' fill='#1d1f22'>1 day</text>
+<text x='660' y='66' text-anchor='middle' font-size='11.5' fill='#5d6168'>the fifth width: time</text>
+<text x='660' y='82' text-anchor='middle' font-weight='600' fill='#1d1f22'>the gap</text>
+<text x='24' y='125' font-weight='600' fill='#1d1f22'>Statistic</text>
+<rect x='145' y='95' width='426' height='52' rx='6' fill='#1f5a8a' fill-opacity='0.1' stroke='#1f5a8a' stroke-width='1.5'/>
+<text x='358' y='118' text-anchor='middle' font-size='11.5' fill='#1d1f22'>rows in the window,</text>
+<text x='358' y='132' text-anchor='middle' font-size='11.5' fill='#1d1f22'>S_w(t)</text>
+<rect x='577' y='95' width='166' height='52' rx='6' fill='#1f5a8a' fill-opacity='0' stroke='#9a9a9a' stroke-width='1.1'/>
+<text x='660' y='118' text-anchor='middle' font-size='11.5' fill='#5d6168'>empty buckets since</text>
+<text x='660' y='132' text-anchor='middle' font-size='11.5' fill='#5d6168'>the last row, g(t)</text>
+<text x='24' y='183' font-weight='600' fill='#1d1f22'>Typical level</text>
+<rect x='145' y='153' width='426' height='52' rx='6' fill='#1f5a8a' fill-opacity='0.1' stroke='#1f5a8a' stroke-width='1.5'/>
+<text x='358' y='169' text-anchor='middle' font-size='11.5' fill='#1d1f22'>median of the same window at this</text>
+<text x='358' y='183' text-anchor='middle' font-size='11.5' fill='#1d1f22'>time of day over the past 7 days;</text>
+<text x='358' y='197' text-anchor='middle' font-size='11.5' fill='#1d1f22'>the reading is the ratio to it</text>
+<rect x='577' y='153' width='166' height='52' rx='6' fill='#1f5a8a' fill-opacity='0' stroke='#9a9a9a' stroke-width='1.1'/>
+<text x='660' y='176' text-anchor='middle' font-size='11.5' fill='#5d6168'>none: all spells pooled,</text>
+<text x='660' y='190' text-anchor='middle' font-size='11.5' fill='#5d6168'>the trade measured in 6.8</text>
+<text x='24' y='241' font-weight='600' fill='#1d1f22'>History</text>
+<rect x='145' y='211' width='210' height='52' rx='6' fill='#1f5a8a' fill-opacity='0' stroke='#9a9a9a' stroke-width='1.1'/>
+<text x='250' y='241' text-anchor='middle' font-size='11.5' fill='#5d6168'>7 days of windows</text>
+<rect x='361' y='211' width='210' height='52' rx='6' fill='#1f5a8a' fill-opacity='0' stroke='#9a9a9a' stroke-width='1.1'/>
+<text x='466' y='241' text-anchor='middle' font-size='11.5' fill='#5d6168'>28 days of windows</text>
+<rect x='577' y='211' width='166' height='52' rx='6' fill='#1f5a8a' fill-opacity='0' stroke='#9a9a9a' stroke-width='1.1'/>
+<text x='660' y='234' text-anchor='middle' font-size='11.5' fill='#5d6168'>a year of</text>
+<text x='660' y='248' text-anchor='middle' font-size='11.5' fill='#5d6168'>completed spells</text>
+<text x='24' y='299' font-weight='600' fill='#1d1f22'>Quantile</text>
+<rect x='145' y='269' width='210' height='52' rx='6' fill='#1f5a8a' fill-opacity='0' stroke='#9a9a9a' stroke-width='1.1'/>
+<text x='250' y='292' text-anchor='middle' font-size='11.5' fill='#5d6168'>0.05% of the ratios: between</text>
+<text x='250' y='306' text-anchor='middle' font-size='11.5' fill='#5d6168'>the 2nd and 3rd lowest of 2,000</text>
+<rect x='361' y='269' width='210' height='52' rx='6' fill='#1f5a8a' fill-opacity='0' stroke='#9a9a9a' stroke-width='1.1'/>
+<text x='466' y='292' text-anchor='middle' font-size='11.5' fill='#5d6168'>0.05% of the ratios: between</text>
+<text x='466' y='306' text-anchor='middle' font-size='11.5' fill='#5d6168'>the 5th and 6th lowest of 8,000</text>
+<rect x='577' y='269' width='166' height='52' rx='6' fill='#1f5a8a' fill-opacity='0' stroke='#9a9a9a' stroke-width='1.1'/>
+<text x='660' y='292' text-anchor='middle' font-size='11.5' fill='#5d6168'>the maximum; in the first</text>
+<text x='660' y='306' text-anchor='middle' font-size='11.5' fill='#5d6168'>year, plus an allowance</text>
+<text x='24' y='357' font-weight='600' fill='#1d1f22'>Margin</text>
+<rect x='145' y='327' width='426' height='52' rx='6' fill='#1f5a8a' fill-opacity='0.1' stroke='#1f5a8a' stroke-width='1.5'/>
+<text x='358' y='357' text-anchor='middle' font-size='11.5' fill='#1d1f22'>20% below it</text>
+<rect x='577' y='327' width='166' height='52' rx='6' fill='#1f5a8a' fill-opacity='0' stroke='#9a9a9a' stroke-width='1.1'/>
+<text x='660' y='357' text-anchor='middle' font-size='11.5' fill='#5d6168'>50% beyond it</text>
+<text x='24' y='415' font-weight='600' fill='#1d1f22'>Wait</text>
+<rect x='145' y='385' width='426' height='52' rx='6' fill='#1f5a8a' fill-opacity='0.1' stroke='#1f5a8a' stroke-width='1.5'/>
+<text x='358' y='415' text-anchor='middle' font-size='11.5' fill='#1d1f22'>4 readings in a row</text>
+<rect x='577' y='385' width='166' height='52' rx='6' fill='#1f5a8a' fill-opacity='0' stroke='#9a9a9a' stroke-width='1.1'/>
+<text x='660' y='415' text-anchor='middle' font-size='11.5' fill='#5d6168'>1 reading</text>
+<text x='24' y='473' font-weight='600' fill='#1d1f22'>Judged where</text>
+<rect x='145' y='443' width='426' height='52' rx='6' fill='#1f5a8a' fill-opacity='0.1' stroke='#1f5a8a' stroke-width='1.5'/>
+<text x='358' y='473' text-anchor='middle' font-size='11.5' fill='#1d1f22'>the typical window holds 10 rows</text>
+<rect x='577' y='443' width='166' height='52' rx='6' fill='#1f5a8a' fill-opacity='0' stroke='#9a9a9a' stroke-width='1.1'/>
+<text x='660' y='466' text-anchor='middle' font-size='11.5' fill='#5d6168'>28 days watched and</text>
+<text x='660' y='480' text-anchor='middle' font-size='11.5' fill='#5d6168'>a spell completed</text>
+<text x='24' y='531' font-weight='600' fill='#1d1f22'>Not learned</text>
+<rect x='145' y='501' width='426' height='52' rx='6' fill='#1f5a8a' fill-opacity='0.1' stroke='#1f5a8a' stroke-width='1.5'/>
+<text x='358' y='531' text-anchor='middle' font-size='11.5' fill='#1d1f22'>the buckets under a count alarm, one set for the four</text>
+<rect x='577' y='501' width='166' height='52' rx='6' fill='#1f5a8a' fill-opacity='0' stroke='#9a9a9a' stroke-width='1.1'/>
+<text x='660' y='524' text-anchor='middle' font-size='11.5' fill='#5d6168'>the spells under</text>
+<text x='660' y='538' text-anchor='middle' font-size='11.5' fill='#5d6168'>a gap alarm</text>
+<text x='24' y='589' font-weight='600' fill='#1d1f22'>Alarm ends</text>
+<rect x='145' y='559' width='426' height='52' rx='6' fill='#1f5a8a' fill-opacity='0.1' stroke='#1f5a8a' stroke-width='1.5'/>
+<text x='358' y='589' text-anchor='middle' font-size='11.5' fill='#1d1f22'>on a reading inside the band</text>
+<rect x='577' y='559' width='166' height='52' rx='6' fill='#1f5a8a' fill-opacity='0' stroke='#9a9a9a' stroke-width='1.1'/>
+<text x='660' y='589' text-anchor='middle' font-size='11.5' fill='#5d6168'>at the first row</text>
+<text x='24' y='647' font-weight='600' fill='#1d1f22'>Alarm</text>
+<rect x='145' y='617' width='598' height='52' rx='6' fill='#1f5a8a' fill-opacity='0.1' stroke='#1f5a8a' stroke-width='1.5'/>
+<text x='444' y='647' text-anchor='middle' font-size='11.5' fill='#1d1f22'>whichever width fires first</text>
+<path d='M128 98V666' stroke='#9a9a9a' stroke-width='1.25' fill='none' marker-end='url(#rec-arrow)'/>
+<text x='24' y='698' font-size='11.5' fill='#5d6168'>A cell across the four count widths is machinery they share; the gap's column is where it differs.</text>
+<text x='24' y='714' font-size='11.5' fill='#5d6168'>Under exchangeability a count edge is undercut at most (r + 1)/(n + 1) of the time, about 3 in 2,017 at the short widths;</text>
+<text x='24' y='730' font-size='11.5' fill='#5d6168'>the gap's edge about once a year at most (Section 2.8).</text>
+</svg>

@@ -96,6 +96,33 @@ const allCourses: Course[] = [
       },
     ],
   },
+  {
+    title: 'Trusted HTTPS',
+    slug: 'trusted-https',
+    videos: [
+      {
+        title: "Trust your leader's certificate",
+        slug: 'trust-your-leaders-certificate',
+        youtube: 'wX9O5T6-VNk',
+        minutes: 2,
+        poster: '/videos/trusted-https-1-poster.jpg',
+      },
+      {
+        title: 'Order a certificate over ACME',
+        slug: 'order-a-certificate-over-acme',
+        youtube: 'J48N4nNLh0Y',
+        minutes: 3,
+        poster: '/videos/trusted-https-2-poster.jpg',
+      },
+      {
+        title: 'Put a reverse proxy in front',
+        slug: 'put-a-reverse-proxy-in-front',
+        youtube: '6KF244WjVeU',
+        minutes: 2,
+        poster: '/videos/trusted-https-3-poster.jpg',
+      },
+    ],
+  },
 ];
 
 export const released = (course: Course) => course.videos.filter((v) => v.youtube);

@@ -27,7 +27,13 @@
   import ChipPicker from './ChipPicker.svelte';
   import { count } from './time';
   import { type Declared } from './recordDiff';
-  import { sampleSource, type PreviewResult, type PreviewRow, type SampleRecordDto } from './api';
+  import {
+    sampleSource,
+    type LockChoice,
+    type PreviewResult,
+    type PreviewRow,
+    type SampleRecordDto,
+  } from './api';
 
   let {
     pipelineId,
@@ -78,8 +84,9 @@
     /** The whole pipeline's types, each side. */
     declared: { before: Declared | null; after: Declared | null };
     canLock: boolean;
-    /** Locks the run as a test; absent where the pipeline is read only. */
-    onlock?: () => void;
+    /** Locks the fields and rows on screen as a test, by `PreviewRow.row`; absent where the pipeline is read
+     * only. */
+    onlock?: (choice: LockChoice) => void;
     /** Saves the output rows on screen as a sample, by `PreviewRow.row`; absent where no sample may be saved. */
     onsaveoutput?: (rows: Set<number>) => void;
     /** The input's record count and its save action, given while the input is a capture not saved yet. The output's
@@ -263,7 +270,7 @@
         <p class="dim">Run the pipeline to see output rows here.</p>
       {/if}
     {/snippet}
-    {#snippet actions(kept)}
+    {#snippet actions(kept, shown)}
       <!-- The rows on screen that have output, by `PreviewRow.row`: a dropped row has none. -->
       {@const outputShown = new Set(kept.filter((r) => !r.dropped).map((r) => r.key))}
       {#if onsaveoutput && saveinput}
@@ -273,7 +280,7 @@
           <div onclick={() => (savingOpen = false)} role="presentation">
             <button type="button" class="pick" onclick={saveinput.onsave}
               >Save input as sample <span class="dim"
-                >Your capture, {count(saveinput.records, 'record')} as captured</span
+                >Your {count(saveinput.records, 'record')}</span
               ></button
             >
             <Button
@@ -297,12 +304,19 @@
         </Button>
       {/if}
       {#if onlock}
+        <span class="dim"
+          >The {count(shown.length, 'field')} on {count(kept.length, 'row')} on screen</span
+        >
         <Button
           type="button"
           class="primary"
           data-guide="lock-test"
-          onclick={onlock}
-          disabled={!canLock ? INCOMPLETE : ''}
+          onclick={() => onlock({ fields: shown, rows: kept.map((r) => r.key) })}
+          disabled={pause
+            ? 'Resume to lock: a test checks the pipeline’s output.'
+            : !canLock
+              ? INCOMPLETE
+              : ''}
         >
           Lock this as a test
         </Button>

@@ -4,11 +4,10 @@
   `/api/areas/:area/preview/pipeline`, and saved with `PUT /api/areas/:area/pipelines/:id`, which the
   backend validates against the whole bundle.
 
-  The records come from a saved sample, so what a preview ran over has a
-  name and is in the branch's history; the sample menu also saves a
-  capture or pasted records as one. Whoever may not save one runs over the
-  capture the leader holds for them instead, which nothing keeps. The editor opens on the sample named in
-  the URL, else on the one this pipeline last ran over in this browser.
+  The records come from a saved sample, which has a name and is in the branch's history, or from the
+  records the leader holds for the person, captured or pasted and not yet saved; the sample menu can
+  save those as a sample. The editor opens on the sample named in the URL, else on the records the person
+  holds, else on the sample this pipeline last ran over in this browser.
 -->
 <script lang="ts">
   import Button, { BUSY, SAVE_FIRST } from './Button.svelte';
@@ -72,11 +71,7 @@
     currentBranch,
     currentScope,
     MAIN_BRANCH,
-    listSamples,
     listTests,
-    getSample,
-    myCapture,
-    capturedRecords,
     heldChoice,
     heldSession,
     type CaptureStatus,
@@ -99,12 +94,13 @@
     type Connected,
     type SampleDto,
     type SampleRecordDto,
-    type SampleSummary,
     type TestSummary,
     type SaveConflict,
     type PreviewResult,
     type ParserProposal,
     parsersIn,
+    chooseLock,
+    type LockChoice,
   } from './api';
   import ChipPicker from './ChipPicker.svelte';
   import JumpLinks from './JumpLinks.svelte';
@@ -117,11 +113,11 @@
   import { hold, verdictFor, drop } from './edits';
   import type { ChangeRow } from './diff';
   import AddSampleDialog from './AddSampleDialog.svelte';
-  import CaptureFlow from './CaptureFlow.svelte';
   import { heldCount } from './capture';
   import RecordsPane, { type PauseRun } from './RecordsPane.svelte';
   import { RECOMPUTE_MS } from './FindBox.svelte';
   import SampleMenu from './SampleMenu.svelte';
+  import { SampleChoices, recordsOf } from './sampleChoices.svelte';
   import PencilIcon from './PencilIcon.svelte';
   import { freeName, mintPipelineId } from './ids';
   import { announcePipelineNames, newPipelineHash, withPipeline, type Making } from './nav';
@@ -694,15 +690,10 @@
   // The library to choose from, the choice, and that sample's records --
   // held so a row's "before" can show the record it started as without
   // asking the preview endpoint to echo its own input back.
-  let samples: SampleSummary[] = $state([]);
+  const choices = new SampleChoices(reported);
   let selectedSample = $state('');
   let sampleRows: SampleRecordDto[] = $state([]);
   let capturing = $state(false);
-  /** The finished capture the leader holds for whoever is signed in, which a preview may run over unsaved. */
-  let held = $state<CaptureStatus | null>(null);
-  myCapture()
-    .then((res) => (held = res.capture?.done ? res.capture : null))
-    .catch(() => {});
   /** The dialog is open on its catalog, for a sample pasted, uploaded or captured. */
   let adding = $state(false);
 
@@ -742,34 +733,24 @@
   /** The sample the rows on screen came from. */
   let lastSample = $state('');
 
-  let samplesLoaded = $state(false);
-  async function loadSamples() {
-    try {
-      const res = await listSamples();
-      samples = res.samples;
-      samplesLoaded = true;
-    } catch (e) {
-      reported(e);
-    }
-  }
-  loadSamples();
-
   // The pipeline, and the sample in the URL, that the opening choice was last
   // made for. This component is reused across a route change, so each pipeline
   // opened chooses afresh and does not keep the previous pipeline's choice.
   let openedFor = '';
   $effect(() => {
     const opened = JSON.stringify([pipelineId, sample]);
-    if (!samplesLoaded || loading || !pipelineId || opened === openedFor) return;
+    if (!choices.loaded || loading || !pipelineId || opened === openedFor) return;
     openedFor = opened;
     // `sample` came in from the URL (a sample row's "Run in a pipeline"
     // link, or a pipeline opened from the list while it held one). With
-    // none, or a stale one not on this branch, the editor opens on the
-    // last one this pipeline ran over, else on none: which records to run is
+    // no sample named, or one that is not on this branch, the editor opens
+    // on the records the person holds, as Route a sample does, else on the last
+    // sample this pipeline ran over, else on none: which records to run is
     // the author's to choose.
     untrack(() => {
       lastUsed = readLastUsed();
-      const opening = [sample, lastUsed].find((id) => id && samples.some((s) => s.id === id));
+      const saved = (id: string) => (choices.samples.some((s) => s.id === id) ? id : '');
+      const opening = saved(sample ?? '') || choices.menuHeld?.choice || saved(lastUsed);
       if (opening || selectedSample) void chooseSample(opening ?? '');
     });
   });
@@ -792,7 +773,7 @@
     capturing = false;
     adding = false;
     captureAt = null;
-    await loadSamples();
+    await choices.load().catch(reported);
     await chooseSample(id);
     if (making) await proposeFrom(sampleRows);
   }
@@ -801,21 +782,21 @@
    * another pipeline. */
   async function savedOutput() {
     savingOutput = null;
-    await loadSamples();
+    await choices.load().catch(reported);
   }
 
   /** Once the input is saved as a sample, the leader holds the capture no longer: the editor runs over the sample,
    * which a test may lock. */
   async function savedInput(id: string) {
     savingInput = false;
-    held = null;
-    await loadSamples();
+    choices.held = null;
+    await choices.load().catch(reported);
     await chooseSample(id);
   }
 
   /** Run over a finished capture where the leader holds it, unsaved. Answers why it cannot. */
   function useCapture(status: CaptureStatus): string | undefined {
-    held = status;
+    choices.held = status;
     capturing = false;
     adding = false;
     captureAt = null;
@@ -848,12 +829,7 @@
     records?.clearFind();
     if (!id) return;
     try {
-      if (session) {
-        sampleRows = await capturedRecords(session);
-        return;
-      }
-      const res = await getSample(id);
-      if (res.sample) sampleRows = res.sample.records;
+      sampleRows = await recordsOf(id);
     } catch (e) {
       reported(e);
     }
@@ -1054,8 +1030,11 @@
   /** The dialog is open to save the held capture, the input run over, as a sample. */
   let savingInput = $state(false);
 
-  function goLockTest() {
-    location.hash = `#/build/tests/lock/${encodeURIComponent(loadedId)}/${encodeURIComponent(selectedSample)}`;
+  function goLockTest(choice: LockChoice) {
+    chooseLock(
+      choice,
+      `#/build/tests/lock/${encodeURIComponent(loadedId)}/${encodeURIComponent(selectedSample)}`,
+    );
   }
 
   // The output is not an action. It follows the steps and the sample, one
@@ -1252,8 +1231,7 @@
     };
   }
 
-  /** Opens Add sample with its capture on the pipeline's own source. A viewer, who may only capture, goes straight
-   * to the capture. */
+  /** Opens Add sample with its capture on the pipeline's own source. */
   async function addSample() {
     // Unreadable connections leave the form on its own first target.
     const upstream = loadedId
@@ -1267,8 +1245,7 @@
         .filter((c) => c.kind === 'source')
         .map(sourceTarget)
         .find((t) => mayCapture(t)) ?? null;
-    if (readOnly) capturing = true;
-    else adding = true;
+    adding = true;
   }
 
   /** What the proposal read, said over the steps it made. */
@@ -1284,7 +1261,7 @@
       steps = stepsFromDto(p.steps ?? []);
       proposed = '';
       if (p.structured) {
-        proposed = 'The captured records arrive as fields, so they need no parser.';
+        proposed = 'These records arrive as fields, so they need no parser.';
         return;
       }
       if (!steps.length) {
@@ -1323,11 +1300,7 @@
 
   let proposalStep: Step | null = $state(null);
   let proposal = $state<FieldProposal | null>(null);
-  let selectedSampleName = $derived(
-    heldSession(selectedSample)
-      ? 'your capture'
-      : (samples.find((s) => s.id === selectedSample)?.name ?? selectedSample),
-  );
+  let selectedSampleName = $derived(choices.name(selectedSample));
 
   /** Writes `path` in the last open eval step, or in a new one at the end, and opens that step for its value. */
   function assignField(path: string) {
@@ -1699,8 +1672,8 @@
         canLock={canLockTest}
         onlock={readOnly ? undefined : goLockTest}
         onsaveoutput={readOnly ? undefined : (rows) => (savingOutput = rows)}
-        saveinput={!readOnly && held && heldSession(selectedSample) === held.session
-          ? { records: heldCount(held), onsave: () => (savingInput = true) }
+        saveinput={!readOnly && choices.held && heldSession(selectedSample) === choices.held.session
+          ? { records: heldCount(choices.held), onsave: () => (savingInput = true) }
           : undefined}
         onjump={(step) => (jumpToStepId = step.id)}
         onassign={readOnly ? undefined : assignField}
@@ -1709,50 +1682,43 @@
         {#snippet head()}<InlineError message={proposeError} />{/snippet}
         {#snippet sampleMenu()}
           <SampleMenu
-            {samples}
+            samples={choices.samples}
             selected={selectedSample}
             {lastUsed}
             records={selectedSample && lastGoodResult && lastSample === selectedSample
               ? lastGoodResult.rows.length
               : null}
             {lockedBy}
-            held={held
-              ? { choice: heldChoice(held.session), records: heldCount(held), source: held.source }
-              : undefined}
+            held={choices.menuHeld}
             onpick={chooseSample}
-            onadd={readOnly && !mayCapture() ? undefined : addSample}
+            onadd={addSample}
           />
         {/snippet}
         {#snippet stage()}{@render stageChips()}{/snippet}
       </RecordsPane>
     </div>
-    {#if !readOnly}
-      <AddSampleDialog
-        open={capturing || adding || savingOutput !== null || savingInput}
-        start={capturing ? 'capture' : savingOutput ? 'output' : savingInput ? 'input' : undefined}
-        target={captureAt ?? captureTarget}
-        onuse={useCapture}
-        output={savingOutput ? () => outputOf(savingOutput!) : undefined}
-        input={savingInput && held ? held : undefined}
-        oncancel={() => {
-          capturing = false;
-          adding = false;
-          savingOutput = null;
-          savingInput = false;
-          captureAt = null;
-        }}
-        onsaved={savingOutput ? savedOutput : savingInput ? savedInput : captured}
-      />
-    {:else if capturing}
-      <CaptureFlow
-        target={captureAt ?? undefined}
-        onuse={useCapture}
-        oncancel={() => {
-          capturing = false;
-          captureAt = null;
-        }}
-      />
-    {/if}
+    <AddSampleDialog
+      open={capturing || adding || savingOutput !== null || savingInput}
+      start={capturing ? 'capture' : savingOutput ? 'output' : savingInput ? 'input' : undefined}
+      target={captureAt ?? captureTarget}
+      onuse={useCapture}
+      output={savingOutput ? () => outputOf(savingOutput!) : undefined}
+      input={savingInput && choices.held ? choices.held : undefined}
+      oncancel={() => {
+        capturing = false;
+        adding = false;
+        savingOutput = null;
+        savingInput = false;
+        captureAt = null;
+      }}
+      onsaved={readOnly
+        ? undefined
+        : savingOutput
+          ? savedOutput
+          : savingInput
+            ? savedInput
+            : captured}
+    />
   </SectionShell>
   <SaveBar
     dirty={isDirty || neverSaved}

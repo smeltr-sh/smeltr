@@ -14,7 +14,7 @@
   } from './api';
   import { diffObjects, formatDiffValue, type DiffEntry } from './diff';
   import { count } from './time';
-  import { testsCovering } from './objectChanges';
+  import { checksOf, outcomeText, sentText, testsCovering } from './objectChanges';
   import Help from './Help.svelte';
   import { openOnBranch } from './unsavedGuard';
 
@@ -27,7 +27,7 @@
     testsError,
     pipelineName,
   }: {
-    /** The branch the change is on, which a re-lock opens. */
+    /** The branch the change is on, which locking a test again opens. */
     branch: string;
     /** What the change reaches, one entry per scope it reaches anything in. Kept apart from
      * `testResults` because something here with no result covering it is reached and untested. */
@@ -131,10 +131,9 @@
       .join(', '),
   );
 
-  /** What a failing verdict's first difference is, laid out for the card:
-   * a headline sentence, and either the field-level diff (both sides are
-   * documents) or a plain note plus whichever side is present -- a drop,
-   * or a run that produced more or fewer rows than the test locks. */
+  /** What a failing verdict's first difference is, laid out for the card: a headline sentence, and
+   * either the changed fields (both sides made a document) or a plain note plus whichever side is
+   * present -- a drop, or a row that made more or fewer documents than the test locks. */
   type FailInfo = {
     headline: string;
     note: string | null;
@@ -154,38 +153,42 @@
     return `The sample held ${count(v.rowsIn.locked, 'record')} when locked, now ${v.rowsIn.now}.`;
   }
 
+  /** "dst, src on 5 rows": what test `t` checks, per its summary. */
+  function checksText(t: TestResult): string | null {
+    const s = testSummaryByKey.get(scopedKey(t.area, t.id));
+    return s ? checksOf(s) : null;
+  }
+
   function failInfo(v: Verdict): FailInfo | null {
     const d = v.firstDifference;
     if (!d) return null;
-    const headline =
-      v.expectedRows === v.actualRows
-        ? `Row ${d.at + 1} of ${v.expectedRows} differs from what the test locks.`
-        : `Row ${d.at + 1} differs from what the test locks — it locked ${count(v.expectedRows, 'row')}, this run produced ${count(v.actualRows, 'row')}.`;
-
-    const bothPresent =
-      !d.expectedDropped && !d.actualDropped && d.expected !== undefined && d.actual !== undefined;
-    if (bothPresent) {
+    const headline = `Row ${d.row} differs from what the test locks.`;
+    const { expected, actual } = d;
+    if (expected?.values && actual?.values && sentText(expected) === sentText(actual)) {
       return {
         headline,
         note: null,
-        entries: diffObjects(d.expected, d.actual).filter((e) => e.kind !== 'unchanged'),
+        entries: diffObjects(expected.values, actual.values).filter((e) => e.kind !== 'unchanged'),
         expectedLine: null,
         actualLine: null,
       };
     }
-    const note = d.expectedDropped
-      ? 'The test locked this row as dropped; this run kept it.'
-      : d.actualDropped
-        ? 'The test locked a document here; this run dropped it.'
-        : d.expected === undefined
-          ? 'The test locks nothing here; this run produced a document.'
-          : 'The test locks a document here; this run produced nothing.';
+    const note =
+      expected === undefined
+        ? 'The test locks no more documents on this row; this run made another.'
+        : actual === undefined
+          ? 'The test locks another document on this row; this run made none.'
+          : !expected.values && actual.values
+            ? 'The test locked this row as dropped; this run kept it.'
+            : expected.values && !actual.values
+              ? 'The test locked a document here; this run dropped it.'
+              : 'This run sent the document elsewhere.';
     return {
       headline,
       note,
       entries: [],
-      expectedLine: d.expected !== undefined ? formatDiffValue(d.expected) : null,
-      actualLine: d.actual !== undefined ? formatDiffValue(d.actual) : null,
+      expectedLine: expected ? outcomeText(expected) : null,
+      actualLine: actual ? outcomeText(actual) : null,
     };
   }
 </script>
@@ -266,9 +269,11 @@
                 <span class="added">Passing</span>
               {:else}
                 <span class="removed">Failing</span>
-                <button type="button" onclick={() => relock(t)}>Re-lock</button>
+                <button type="button" onclick={() => relock(t)}>Lock again</button>
               {/if}
             </div>
+            {@const checks = checksText(t)}
+            {#if checks}<div class="dim checks-line">Checks {checks}</div>{/if}
             {#if t.verdict && !t.verdict.passed}
               {@const info = failInfo(t.verdict)}
               {@const rowsIn = rowsInText(t.verdict)}
@@ -293,8 +298,9 @@
                       <div class="mono diff-line">
                         <span class="diff-key">{entry.key}:</span>
                         {#if entry.kind === 'changed'}
-                          <span class="removed">{formatDiffValue(entry.before)}</span>
-                          <span class="dim">&rarr;</span>
+                          <span class="dim">expected</span>
+                          <span class="removed">{formatDiffValue(entry.before)},</span>
+                          <span class="dim">got</span>
                           <span class="added">{formatDiffValue(entry.after)}</span>
                         {:else if entry.kind === 'removed'}
                           <span class="removed">{formatDiffValue(entry.before)}</span>
@@ -315,6 +321,10 @@
 </div>
 
 <style>
+  .checks-line {
+    font-size: var(--text-note);
+    padding: 0 0 0.3rem 0;
+  }
   h2 {
     margin: 0;
   }
@@ -405,7 +415,7 @@
   .test-line span:first-child {
     flex-grow: 1;
   }
-  /* The name takes what is left; a verdict and its Re-lock never wrap. */
+  /* The name takes what is left; a verdict and its Lock again never wrap. */
   .test-line > :not(:first-child) {
     flex: none;
   }

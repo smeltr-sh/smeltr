@@ -192,7 +192,8 @@ mod tests {
             pipeline: pipeline.map(Into::into),
             sample: sample.into(),
             rows_in: 1,
-            rows_out: 1,
+            fields: Vec::new(),
+            rows: 1,
             pipelines: Vec::new(),
             routes: routes.iter().map(|r| r.to_string()).collect(),
         }

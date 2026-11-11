@@ -644,7 +644,7 @@
   }
 
   let totalPartitions = $derived(
-    workerRows.reduce((total, worker) => total + worker.partitionsOwned, 0),
+    workerRows.reduce((total, worker) => total + worker.partitionsOwned.length, 0),
   );
 
   // A restart reaches the worker on its next heartbeat; the button says so until it has.
@@ -857,7 +857,7 @@
                   )}
                   <span class:behind={r.on < r.of}>{r.on}/{r.of} on {commitOrNone(deploying)}</span>
                 {/if}
-                <span>{workers.reduce((n, w) => n + w.partitionsOwned, 0)} partitions</span>
+                <span>{workers.reduce((n, w) => n + w.partitionsOwned.length, 0)} partitions</span>
               </button>
             </div>
             {#if isExpanded(group)}
@@ -1062,10 +1062,10 @@
             </details>
           {/if}
           <details class="detail-section fold partitions">
-            <summary><h3>Owned partitions ({selectedWorker.partitionsOwned})</h3></summary>
+            <summary><h3>Owned partitions ({selectedWorker.partitionsOwned.length})</h3></summary>
             <div class="fold-body">
-              {#each selectedWorker.threads.flatMap((t) => t.partitionsOwned) as partition}<span
-                  class="partition-chip">{partition.topic}:{partition.partition}</span
+              {#each selectedWorker.partitionsOwned as partition}<span class="partition-chip"
+                  >{partition.topic}:{partition.partition}</span
                 >{:else}<p class="empty">No partitions owned.</p>{/each}
             </div>
           </details>
@@ -1089,7 +1089,7 @@
           <h2 id="{uid}-flow">
             Rows in and out — {selectionLabel}
             <Help label="Rows in and out"
-              >Above the line, rows per second read from sources; below it, rows sent to
+              >Above the line, rows per second read from sources; below it, rows delivered to
               destinations. A gap in a line is missing history, not zero.</Help
             >
           </h2>

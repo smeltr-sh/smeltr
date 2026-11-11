@@ -565,8 +565,10 @@ async function routeFromMap(
   for (let n = 2; world.editing.pipelines.includes(named); n += 1) named = `${pipeline}-${n}`;
   await save(j, () => expect(picker.locator('option:checked')).toHaveText(named));
   world.editing.pipelines.push(named);
+  const to = world.editing.destinations.length ? j.rng.pick(world.editing.destinations) : null;
+  if (to) await sendTo(j, page.locator(`.flow[data-source="${source}"]`), to);
   await save(j, () => expect(page).toHaveURL(/#\/map/));
-  world.editing.routes.push({ source, pipeline: named, to: world.editing.destinations[0] ?? null });
+  world.editing.routes.push({ source, pipeline: named, to });
   await editingIsSaved(j);
 }
 
@@ -777,6 +779,37 @@ async function startRoute(j: Journey, source: string, pipeline: string) {
   return card;
 }
 
+/** Wires the newest route on `card` to the destination `to`, or opens the form for a new one when `to` is null. A new
+ * route starts with no destination. On a card of one route, the + beside "destination" lists the destinations not
+ * on the card. On a card of several routes, the new route's socket lists the destinations on the card, and "another
+ * destination" the rest. */
+async function sendTo(j: Journey, card: Locator, to: string | null) {
+  const menu = j.page.locator('.menu');
+  const named = (d: string) =>
+    menu
+      .getByRole('button')
+      .filter({ has: j.page.locator('.mono', { hasText: new RegExp(`^${d}$`) }) });
+  if (await card.evaluate((el) => el.classList.contains('line'))) {
+    await card.getByRole('button', { name: 'add a destination' }).click();
+  } else {
+    await card
+      .locator('.pipe')
+      .last()
+      .getByRole('button', { name: /drag to a destination/ })
+      .click();
+    const another = menu.getByRole('button', { name: /another destination/ });
+    await expect(another).toBeVisible();
+    if (to && (await named(to).count())) {
+      // Ticking a destination there leaves the menu open, over what comes next.
+      await named(to).click();
+      await j.page.keyboard.press('Escape');
+      return expect(menu).toBeHidden();
+    }
+    await another.click();
+  }
+  await (to ? named(to) : menu.getByRole('button', { name: /New destination/ })).click();
+}
+
 const addDestination: Move = {
   name: 'add-destination',
   leadsTo: ['add-route'],
@@ -892,10 +925,10 @@ const addRoute: Move = {
     const { page, rng, world } = j;
     const source = rng.pick(routable(world));
     const pipeline = rng.pick(pipelinesFor(world, source));
-    await startRoute(j, source, pipeline);
+    const card = await startRoute(j, source, pipeline);
+    const to = world.editing.destinations.length ? rng.pick(world.editing.destinations) : null;
+    if (to) await sendTo(j, card, to);
     await save(j, unsaved(page));
-    // A new route delivers to the first destination there is.
-    const to = world.editing.destinations[0] ?? null;
     world.editing.routes.push({ source, pipeline, to });
     await editingIsSaved(j);
     return `add route from ${source} through "${pipeline}" to ${to ?? 'nothing'}`;
@@ -918,30 +951,8 @@ const addRouteToNewDestination: Move = {
     const pipeline = rng.pick(pipelinesFor(world, source));
     const id = `dst-${world.made++}`;
     const card = await startRoute(j, source, pipeline);
-    // The destination is made from the card, and saved on Add: a line card's + beside "destination" wires it to
-    // the one pipeline; on a card of several routes, the new route's socket list does.
-    // The route is seeded with the first destination there is; this one goes to the new one alone.
-    const seeded = world.editing.destinations[0];
-    const line = await card.evaluate((el) => el.classList.contains('line'));
-    if (line) {
-      if (seeded) await card.getByRole('button', { name: `stop sending to ${seeded}` }).click();
-      await card.getByRole('button', { name: 'add a destination' }).click();
-    } else {
-      await card
-        .locator('.pipe')
-        .last()
-        .getByRole('button', { name: /drag to a destination/ })
-        .click();
-      if (seeded) await page.locator('.menu button', { hasText: seeded }).click();
-      await page
-        .locator('.menu')
-        .getByRole('button', { name: /another destination/ })
-        .click();
-    }
-    await page
-      .locator('.menu')
-      .getByRole('button', { name: /New destination/ })
-      .click();
+    // The destination is made from the card, and saved on Add.
+    await sendTo(j, card, null);
     const form = await addElasticsearch(j, id, 'metrics');
     await nameBranch(j);
     await expect(form).toBeHidden();
@@ -1149,7 +1160,9 @@ const rollBack: Move = {
     expect(history.held).toBeDefined();
     expect(history.commits.find((c) => c.commit === history.deployed)?.subject).toBe(subject);
     // Until a worker has taken the rollback, it still reports the commit a release returns to, and a capture after
-    // the release would take that report for the release's own. One that will not run it says why.
+    // the release would take that report for the release's own. One that will not run it says why. A worker whose
+    // destination is stalled can take its whole graceful stop, then the hard stop, to let go of the old commit; the
+    // wait outlasts both.
     type Row = {
       workerId: string;
       commit: string;
@@ -1168,7 +1181,7 @@ const rollBack: Move = {
             ),
           );
         },
-        { timeout: 60_000 },
+        { timeout: 150_000 },
       )
       .toBe(true);
     world.held = true;
@@ -2058,9 +2071,12 @@ const editSample: Move = {
       id = samples.find((s: { name: string }) => s.name === name)?.id;
       if (id) break;
     }
-    const read = async () =>
-      (await api.get(`/api/areas/${scope}/samples/${encodeURIComponent(id!)}?${on}`)).sample
+    const read = async () => {
+      // Read where the GUI edits now: saving the edit on main names a branch.
+      const on = `branch=${encodeURIComponent(world.branch ?? 'main')}`;
+      return (await api.get(`/api/areas/${scope}/samples/${encodeURIComponent(id!)}?${on}`)).sample
         .records as Record<string, unknown>[];
+    };
     // Each record by the number the editor gives it, which it keeps while others go.
     let draft = (await read()).map((record, i) => ({ n: i + 1, record }));
     // The editor reads pasted lines as text wherever a record has `_raw`, whatever other fields it shows.
@@ -2176,8 +2192,9 @@ const saveOutputSample: Move = {
     const input = rng.pick(pasted(world));
     const name = `output ${world.made++}`;
     const api = await j.truth();
-    const on = `branch=${encodeURIComponent(world.branch ?? 'main')}`;
     const sampleNamed = async (n: string) => {
+      // Read where the GUI edits now: saving the output on main names a branch.
+      const on = `branch=${encodeURIComponent(world.branch ?? 'main')}`;
       const { samples } = await api.get(`/api/areas/shared/samples?${on}`);
       const id = samples.find((s: { name: string }) => s.name === n).id;
       return (await api.get(`/api/areas/shared/samples/${encodeURIComponent(id)}?${on}`))
@@ -2336,7 +2353,7 @@ const saveInputSample: Move = {
     const use = page.getByRole('button', { name: 'Use these records' });
     await expect(use).toBeEnabled({ timeout: 60_000 });
     await use.click();
-    await expect(chip).toContainText('Your capture');
+    await expect(chip).toContainText('Your records');
     await expect(chip).toContainText(/\d+ records?/, { timeout: 30_000 });
     // A capture ends at its deadline holding fewer than it asked for, when the source was slow.
     const held = Number((await chip.textContent())?.match(/(\d+) records?/)?.[1]);
@@ -2450,7 +2467,9 @@ async function chooseAccess(j: Journey, within: Locator): Promise<string[]> {
   const offered = [...world.roles.keys()].sort();
   const roles = offered.filter(() => rng.chance(3));
   for (const role of offered)
-    await within.getByRole('checkbox', { name: role }).setChecked(roles.includes(role));
+    await within
+      .getByRole('checkbox', { name: role, exact: true })
+      .setChecked(roles.includes(role));
   return roles;
 }
 
