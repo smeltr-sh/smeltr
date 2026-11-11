@@ -68,7 +68,7 @@
   <figcaption>
     {focused
       ? 'Details from the running editor, using sample data. This lookup adds a department and full name to each matching record.'
-      : 'Running editor with sample data. Inspect each step’s effect, then lock the expected output as a regression test.'}
+      : 'Running editor with sample data. Inspect each step’s effect, then lock a test of the fields that matter.'}
   </figcaption>
 </figure>
 

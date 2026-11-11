@@ -41,8 +41,9 @@
     <li>You have checked affected routes and destinations.</li>
     <li>Samples and changes contain no exposed credentials.</li>
     <li>
-      Each affected pipeline and route has tests for the records it should keep, change, or drop.
-      Add missing tests before deployment.
+      Each affected pipeline and route has tests for the records it should keep, change, or drop,
+      and you have read what each new test checks. Locking a test again approves a new answer. Add
+      missing tests before deployment.
     </li>
     <li>The review includes shared configuration and other worker groups.</li>
     <li>Required secret versions and external credentials are available.</li>
