@@ -467,6 +467,25 @@ pub(crate) const STEPS: &[&str] = &[
     // step.
     "ALTER TABLE fact_clock ADD COLUMN reach_ms INTEGER;
      ALTER TABLE fact_history ADD COLUMN reach_ms INTEGER;",
+    // 15 -- each source's quiet spells of the past year, which its gap learns from (`throughput`), and how far its rows
+    // have been read for them (`Watch`).
+    "CREATE TABLE silences (
+         group_id  TEXT NOT NULL,
+         source    TEXT NOT NULL,
+         ended_ms  INTEGER NOT NULL,
+         length_ms INTEGER NOT NULL,
+         PRIMARY KEY (group_id, source, ended_ms)
+     ) WITHOUT ROWID;
+     CREATE INDEX silences_ended ON silences (ended_ms);
+     CREATE TABLE silence_watch (
+         group_id   TEXT NOT NULL,
+         source     TEXT NOT NULL,
+         watched_ms INTEGER NOT NULL,
+         read_ms    INTEGER NOT NULL,
+         row_ms     INTEGER,
+         quiet_ms   INTEGER NOT NULL,
+         PRIMARY KEY (group_id, source)
+     ) WITHOUT ROWID;",
 ];
 
 /// Gives each log a build before lines had types wrote, before step 12 or after a rollback to it, its class and
@@ -488,6 +507,34 @@ pub struct Swing {
     pub bucket_ms: i64,
     pub low: f64,
     pub high: f64,
+}
+
+/// How long a source's quiet spells, and the warnings about it they are learned against, are kept.
+pub const YEAR_MS: i64 = 365 * 24 * 60 * 60_000;
+
+/// A quiet spell one source made: a run of five-minute buckets with no rows, each reported by a worker, between two
+/// with rows. It ended at `ended_ms`, the start of the bucket whose rows ended it, and lasted `length_ms`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Silence {
+    pub group: String,
+    pub source: String,
+    pub ended_ms: i64,
+    pub length_ms: i64,
+}
+
+/// How far one source's rows have been read for its quiet spells ([`Silence`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Watch {
+    /// Its first bucket read.
+    pub watched_ms: i64,
+    /// Every bucket before this one has been read.
+    pub read_ms: i64,
+    /// The end of its last bucket with rows.
+    pub row_ms: Option<i64>,
+    /// Where the quiet spell under way began: the end of its last bucket with rows, or of the last one no worker
+    /// reported it in, whichever is later. A run counts as a quiet spell only if, when it ends, this equals `row_ms`:
+    /// no unreported bucket broke it.
+    pub quiet_ms: i64,
 }
 
 /// [`RegistryStore::series_since`] on a connection the caller holds.
@@ -1214,6 +1261,68 @@ impl RegistryStore {
         Ok(conn.query_row("SELECT MAX(bucket_ms) FROM swings", [], |r| r.get(0))?)
     }
 
+    /// Write each source's `watches` over the one held, and add `silences`. One transaction, so a quiet spell is never
+    /// read twice.
+    pub fn record_silences(
+        &self,
+        watches: &[((String, String), Watch)],
+        silences: &[Silence],
+    ) -> Result<(), StoreError> {
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = conn.transaction()?;
+        {
+            let mut watch = tx.prepare_cached(
+                "INSERT OR REPLACE INTO silence_watch (group_id, source, watched_ms, read_ms, row_ms, quiet_ms) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for ((group, source), w) in watches {
+                watch.execute(params![group, source, w.watched_ms, w.read_ms, w.row_ms, w.quiet_ms])?;
+            }
+            let mut silence = tx.prepare_cached(
+                "INSERT OR REPLACE INTO silences (group_id, source, ended_ms, length_ms) VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for s in silences {
+                silence.execute(params![s.group, s.source, s.ended_ms, s.length_ms])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// How far each source's rows have been read for its quiet spells.
+    pub fn watches(&self) -> Result<BTreeMap<(String, String), Watch>, StoreError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt =
+            conn.prepare_cached("SELECT group_id, source, watched_ms, read_ms, row_ms, quiet_ms FROM silence_watch")?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    (r.get(0)?, r.get(1)?),
+                    Watch {
+                        watched_ms: r.get(2)?,
+                        read_ms: r.get(3)?,
+                        row_ms: r.get(4)?,
+                        quiet_ms: r.get(5)?,
+                    },
+                ))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    }
+
+    /// `group`'s `source`'s quiet spells that began from `since_ms` on, oldest first, as (ended, length).
+    pub fn source_silences(&self, group: &str, source: &str, since_ms: i64) -> Result<Vec<(i64, i64)>, StoreError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare_cached(
+            "SELECT ended_ms, length_ms FROM silences WHERE group_id = ?1 AND source = ?2 AND ended_ms - length_ms >= ?3 \
+             ORDER BY ended_ms",
+        )?;
+        let rows = stmt
+            .query_map(params![group, source, since_ms], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    }
+
     /// Record what one worker said about itself. Best-effort like the series: a heartbeat must not fail because
     /// the leader could not write down what it carried.
     pub fn record_logs(
@@ -1482,8 +1591,24 @@ impl RegistryStore {
             "DELETE FROM series_points WHERE tier = ?1 AND bucket_ms < ?2",
             params![Tier::OneHour.code(), cutoff],
         )?;
-        // A warning past the last tier's reach is past any chart's.
-        tx.execute("DELETE FROM fact_history WHERE ended_ms < ?1", params![cutoff])?;
+        // A warning older than the last tier keeps is older than any chart. One about a source is kept a year: its
+        // source's gap learns a year of quiet spells, less those it warned through (`throughput`).
+        let about_a_source: Vec<String> = super::warnings::SOURCE_SPANS
+            .iter()
+            .map(|(entry, _, _)| format!("'{entry}'"))
+            .collect();
+        tx.execute(
+            &format!(
+                "DELETE FROM fact_history WHERE ended_ms < ?1 AND entry NOT IN ({})",
+                about_a_source.join(", ")
+            ),
+            params![cutoff],
+        )?;
+        let year = now_ms - YEAR_MS;
+        tx.execute("DELETE FROM fact_history WHERE ended_ms < ?1", params![year])?;
+        tx.execute("DELETE FROM silences WHERE ended_ms < ?1", params![year])?;
+        // A source no worker has reported for a year has nothing left to learn from.
+        tx.execute("DELETE FROM silence_watch WHERE read_ms < ?1", params![year])?;
         // What the fleet's streams have not shown for as long as the last tier keeps: a stream that stopped, or
         // a field it stopped carrying, so a cap's room goes to what arrives now. A live step's declared fields are
         // reported on every tallied batch and so never age.
@@ -3592,36 +3717,91 @@ mod tests {
     #[test]
     fn a_fact_that_ends_is_kept_with_its_span_until_the_last_tier_forgets_it() {
         let store = memory_store();
-        let fact = || vec![("source_blocked".to_string(), "7".to_string())];
+        let fact = || vec![("destination_refusing".to_string(), "7".to_string())];
         store.sync_fact_clock(&[], &fact(), 1_000).unwrap();
         store.sync_fact_clock(&fact(), &[], 2_000).unwrap();
         store.sync_fact_clock(&[], &fact(), 3_000).unwrap();
 
         let span = |started_ms, ended_ms| FactSpan {
-            entry: "source_blocked".to_string(),
+            entry: "destination_refusing".to_string(),
             started_ms,
             ended_ms,
             reach_ms: None,
         };
         assert_eq!(
-            store.fact_spans(&["source_blocked"], "7", 0).unwrap(),
+            store.fact_spans(&["destination_refusing"], "7", 0).unwrap(),
             vec![span(1_000, Some(2_000)), span(3_000, None)],
             "the ended span and the active one, oldest first"
         );
         assert_eq!(
-            store.fact_spans(&["source_blocked"], "7", 2_500).unwrap().len(),
+            store.fact_spans(&["destination_refusing"], "7", 2_500).unwrap().len(),
             1,
             "one that ended before"
         );
         assert!(
-            store.fact_spans(&["source_unreachable"], "7", 0).unwrap().is_empty(),
+            store
+                .fact_spans(&["destination_unreachable"], "7", 0)
+                .unwrap()
+                .is_empty(),
             "another entry"
         );
         store.maintain(2_000 + Tier::OneHour.retention_ms() + 1).unwrap();
         assert_eq!(
-            store.fact_spans(&["source_blocked"], "7", 0).unwrap(),
+            store.fact_spans(&["destination_refusing"], "7", 0).unwrap(),
             vec![span(3_000, None)],
             "past the last tier, an ended span is gone; an active one stays"
+        );
+    }
+
+    #[test]
+    fn a_warning_about_a_source_is_kept_a_year() {
+        let store = memory_store();
+        let fact = || vec![("source_blocked".to_string(), "7".to_string())];
+        store.sync_fact_clock(&[], &fact(), 1_000).unwrap();
+        store.sync_fact_clock(&fact(), &[], 2_000).unwrap();
+        store.maintain(2_000 + Tier::OneHour.retention_ms() + 1).unwrap();
+        assert_eq!(store.fact_spans(&["source_blocked"], "7", 0).unwrap().len(), 1);
+        store.maintain(2_000 + YEAR_MS + 1).unwrap();
+        assert!(store.fact_spans(&["source_blocked"], "7", 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_sources_quiet_spells_and_watch_are_kept_a_year() {
+        let store = memory_store();
+        let key = ("g".to_string(), "s".to_string());
+        let watch = Watch {
+            watched_ms: 0,
+            read_ms: 4_000,
+            row_ms: Some(3_000),
+            quiet_ms: 3_500,
+        };
+        let silence = |ended_ms, length_ms| Silence {
+            group: "g".into(),
+            source: "s".into(),
+            ended_ms,
+            length_ms,
+        };
+        store
+            .record_silences(&[(key.clone(), watch)], &[silence(1_000, 500), silence(2_500, 1_000)])
+            .unwrap();
+        assert_eq!(store.watches().unwrap().get(&key), Some(&watch));
+        assert_eq!(store.source_silences("g", "s", 1_500).unwrap(), [(2_500, 1_000)]);
+        assert_eq!(store.source_silences("g", "s", 1_501).unwrap(), []);
+        assert_eq!(
+            store.source_silences("g", "s", 0).unwrap(),
+            [(1_000, 500), (2_500, 1_000)]
+        );
+        store.maintain(2_000 + YEAR_MS).unwrap();
+        assert_eq!(store.source_silences("g", "s", 0).unwrap(), [(2_500, 1_000)]);
+        assert!(store.watches().unwrap().contains_key(&key));
+        store.maintain(4_000 + YEAR_MS + 1).unwrap();
+        assert!(
+            store.watches().unwrap().is_empty(),
+            "a source no worker reported for a year has no watch"
+        );
+        assert!(
+            super::super::steps::is_additive(STEPS[14]),
+            "a build before this one never reads the new store"
         );
     }
 

@@ -11,9 +11,16 @@
 -->
 <script module lang="ts">
   /** The tabs, in the order they show. A kind gets only the ones it has content for. */
-  export type FocusTab = 'overview' | 'buffers' | 'backlog' | 'steps' | 'routes';
+  export type FocusTab = 'overview' | 'buffers' | 'backlog' | 'history' | 'steps' | 'routes';
 
-  export const FOCUS_TABS: FocusTab[] = ['overview', 'buffers', 'backlog', 'steps', 'routes'];
+  export const FOCUS_TABS: FocusTab[] = [
+    'overview',
+    'buffers',
+    'backlog',
+    'history',
+    'steps',
+    'routes',
+  ];
 </script>
 
 <script lang="ts">
@@ -21,13 +28,23 @@
   import { CHART_RANGES, chartRange, type SourceGap } from './map';
   import {
     conditionLabel,
+    errorMessage,
+    errorText,
+    getSourcePast,
     getStats,
+    markSourcePast,
     type DeliverEdge,
     type MapNode,
     type NodeReadingDto,
+    type PastSpan,
     type RouteEdge,
+    type SourcePastResponse,
     type StatsResponse,
   } from './api';
+  import { holds } from './access';
+  import { Busy } from './busy.svelte';
+  import Segmented from './Segmented.svelte';
+  import { dateTime, lasted } from './time';
   import { untrack, type Snippet } from 'svelte';
   import PencilIcon from './PencilIcon.svelte';
   import MapPanel from './MapPanel.svelte';
@@ -157,11 +174,54 @@
     { tab: 'overview', label: 'Overview' },
     ...(node.kind === 'destination' ? [{ tab: 'buffers' as const, label: 'Buffers' }] : []),
     ...(hasLag ? [{ tab: 'backlog' as const, label: 'Backlog' }] : []),
+    ...(node.kind === 'source' ? [{ tab: 'history' as const, label: 'History' }] : []),
     ...(node.kind === 'pipeline' ? [{ tab: 'steps' as const, label: 'Steps' }] : []),
     { tab: 'routes', label: 'Routes' },
   ]);
   /** A tab this kind does not have reads as its overview, so a hand-edited link still lands. */
   let shown = $derived(tabs.some((t) => t.tab === tab) ? tab : 'overview');
+
+  /** What a source did over the past year that its normal learns from, or not: the History tab. */
+  let past = $state<SourcePastResponse | null>(null);
+  let pastError = $state('');
+  const marking = new Busy();
+  /** What an editor in the source's group may say a span was. */
+  const WAS: { value: 'normal' | 'outage'; label: string }[] = [
+    { value: 'normal', label: 'Normal' },
+    { value: 'outage', label: 'Outage' },
+  ];
+
+  function readPast() {
+    const asked = { group: node.group, id: node.authorId };
+    const current = () => asked.group === node.group && asked.id === node.authorId;
+    return getSourcePast(asked.group, asked.id)
+      .then((answer) => {
+        if (!current()) return;
+        past = answer.ok ? answer : null;
+        pastError = answer.ok ? '' : errorText(answer.errors);
+      })
+      .catch((e) => {
+        if (current()) pastError = errorMessage(e);
+      });
+  }
+
+  $effect(() => {
+    if (shown !== 'history') return;
+    untrack(() => {
+      past = null;
+      pastError = '';
+    });
+    readPast();
+  });
+
+  function mark(span: PastSpan, was: 'normal' | 'outage') {
+    // One mark at a time, each read back before the next, so the list never shows an older answer last.
+    if (marking.on) return;
+    void marking.run(async () => {
+      await markSourcePast(node.group, node.authorId, span, was);
+      await readPast();
+    });
+  }
 
   /** The series the overview charts: rows per second, bucket by bucket across the window. */
   let rateSpread = $derived(source?.rate ?? pipeline?.rate ?? destination?.rate);
@@ -595,6 +655,23 @@
         </ul>
       {/if}
     </section>
+  {:else if shown === 'history'}
+    {#if pastError}
+      <p class="problem">{pastError}</p>
+    {:else if !past}
+      <p class="dim">Reading&hellip;</p>
+    {:else}
+      {@render pastSpans(
+        'Warnings',
+        'Rows below normal warnings that ended in the past year. The windows a warning read are not learned unless marked Normal.',
+        past.warnings,
+      )}
+      {@render pastSpans(
+        'Longest quiet spells',
+        "The source's longest quiet spells of the past year. The longest one learned sets how long the source may go without a row before it warns.",
+        past.silences,
+      )}
+    {/if}
   {:else if shown === 'routes'}
     <section>
       <h3>
@@ -640,6 +717,36 @@
     </section>
   {/if}
 </MapPanel>
+
+{#snippet pastSpans(heading: string, help: string, spans: PastSpan[])}
+  <section>
+    <h3>{heading} <Help label={heading}>{help}</Help></h3>
+    {#if spans.length === 0}
+      <p class="dim small">None in the past year.</p>
+    {:else}
+      <ul class="list">
+        {#each spans as span (`${span.fromMillis}-${span.toMillis}`)}
+          {@const when = dateTime(span.fromMillis / 1000)}
+          <li class="row past">
+            <span class="mono small"
+              ><span class="nowrap">{when} &middot;</span>
+              <span class="nowrap">{lasted(span.toMillis - span.fromMillis)}</span></span
+            >
+            {#if holds(node.group, 'editor')}
+              <Segmented
+                label="{heading}: {when}"
+                options={WAS}
+                bind:value={() => (span.learned ? 'normal' : 'outage'), (was) => mark(span, was)}
+              />
+            {:else}
+              <span class="dim small">{span.learned ? 'Normal' : 'Outage'}</span>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </section>
+{/snippet}
 
 {#snippet rangePicker()}
   <ChipPicker kind="row" compact ariaLabel="Chart range" title="Chart range" bind:open={rangeOpen}>
@@ -851,6 +958,14 @@
     align-items: baseline;
     gap: 0.6rem;
     font-size: var(--text-label);
+  }
+
+  /* Aligns the text with the control beside it, which would otherwise sit lower. */
+  .row.past {
+    align-items: center;
+  }
+  .nowrap {
+    white-space: nowrap;
   }
 
   .bar {

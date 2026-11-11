@@ -171,6 +171,7 @@ fn in_area(method: &Method, within: &[&str]) -> Option<Level> {
             | ["pipelines", _, "export", "contents"]
             | ["tests"]
             | ["stats"]
+            | ["sources", _, "past"]
             | ["lookups", "file" | "mmdb"]
             | [_, _, "connections"],
         ) => Level::Viewer,
@@ -184,7 +185,7 @@ fn in_area(method: &Method, within: &[&str]) -> Option<Level> {
         )
         | (Method::POST, ["undo"] | ["lookups", "upload"] | ["test-runs"] | ["imports"]) => Level::Editor,
         // What an admin says about a source's rows warning: it changes no configuration and touches no worker.
-        (Method::POST, ["sources", _, "lower" | "reset-history"]) => Level::Editor,
+        (Method::POST, ["sources", _, "lower" | "reset-history" | "mark"]) => Level::Editor,
 
         // Samples, and what a preview of them shows.
         (Method::GET | Method::HEAD, ["samples"])
@@ -340,6 +341,7 @@ mod tests {
         for path in [
             "/api/areas/payments/sources/s1/lower",
             "/api/areas/payments/sources/s1/reset-history",
+            "/api/areas/payments/sources/s1/mark",
         ] {
             assert_eq!(need(&Method::POST, path), area("payments", Level::Editor), "{path}");
         }

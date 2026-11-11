@@ -55,8 +55,14 @@ function noise(seed: number): number {
   return 2 * (x - Math.floor(x)) - 1;
 }
 
-/** Writes eight days of `source`'s rows read into the leader's registry, five minutes at a time: `perSecond(at)` rows a second, each bucket up to 5% off. */
-function history(leader: Leader, source: string, perSecond: (at: number) => number) {
+/** Writes `days` days of `source`'s rows read into the leader's registry, five minutes at a time: `perSecond(at)` rows a
+ * second, each bucket up to 5% off. The leader then reads the source's quiet spells again from the first of them. */
+function history(
+  leader: Leader,
+  source: string,
+  perSecond: (at: number) => number,
+  days: number = 8,
+) {
   const db = new DatabaseSync(path.join(leader.proc.dir, 'smeltr-leader-data', 'registry.db'));
   db.exec('PRAGMA busy_timeout = 10000');
   const series = db
@@ -70,8 +76,9 @@ function history(leader: Leader, source: string, perSecond: (at: number) => numb
     `INSERT OR REPLACE INTO series_points (series_id, tier, bucket_ms, value) VALUES (?, ?, ?, ?)`,
   );
   db.exec('BEGIN');
+  db.exec('DELETE FROM silence_watch');
   // Two buckets on past now too, so the window the leader judges after the next bucket starts is still written.
-  for (let at = now - 8 * DAY; at < now + 2 * FIVE; at += FIVE) {
+  for (let at = now - days * DAY; at < now + 2 * FIVE; at += FIVE) {
     const rows = perSecond(at) * 300 * (1 + 0.05 * noise(at / FIVE));
     write.run(series!.id, FIVE_MINUTE_TIER, at, Math.round(rows));
   }
@@ -146,4 +153,62 @@ test('a source that drops below its normal is ranked and warned of, and an edito
   await dialog.getByRole('button', { name: 'Reset history' }).click();
   await expect(row).toHaveCount(0, { timeout: 30_000 });
   await shoot(admin, '5-reset');
+});
+
+test('an editor says a quiet spell of a sparse source was an outage, and its normal stops learning it', async ({
+  admin,
+  api,
+  fleet,
+  leader,
+  es,
+}) => {
+  test.setTimeout(600_000);
+  await admin.setViewportSize({ width: 1920, height: 1080 });
+  await deploy(api, es.url, ['audit-log']);
+  await fleet.startWorker(leader, api, 'edge', 'edge-1');
+  await expect
+    .poll(async () => (await api.get('/api/flow?windowMinutes=5')).rowsIn.length, {
+      timeout: 60_000,
+    })
+    .toBe(1);
+
+  // A row every three hours for four weeks, but for one quiet spell of nine hours two weeks ago.
+  const HOURS = 60 * 60_000;
+  const long = Math.floor((Date.now() - 14 * DAY) / (3 * HOURS)) * 3 * HOURS;
+  history(
+    leader,
+    'audit-log',
+    (at) => (at % (3 * HOURS) === 0 && !(at >= long && at < long + 6 * HOURS) ? 1 / 300 : 0),
+    29,
+  );
+  const past = '/api/areas/edge/sources/audit-log/past';
+  // The leader reads the quiet spells at its next reading, once a five-minute bucket.
+  await expect
+    .poll(async () => (await api.get(past)).silences.length, { timeout: 420_000 })
+    .toBeGreaterThan(0);
+  const [longest] = (await api.get(past)).silences;
+  expect(longest.toMillis - longest.fromMillis).toBe(9 * HOURS - FIVE);
+  expect(longest.learned).toBe(true);
+
+  await goto(admin, leader, '#/map');
+  await admin
+    .getByRole('region', { name: 'edge', exact: true })
+    .getByRole('link', { name: /audit-log/ })
+    .click();
+  const panel = admin.getByRole('complementary', { name: 'audit-log', exact: true });
+  await panel.getByRole('link', { name: 'History' }).click();
+  // Eight hours and 55 minutes, in whole hours.
+  const spell = panel.getByRole('listitem').filter({ hasText: '8 hours' });
+  await expect(spell.getByRole('button', { name: 'Normal' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await shoot(admin, '6-history');
+  await spell.getByRole('button', { name: 'Outage' }).click();
+  await expect(spell.getByRole('button', { name: 'Outage' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  expect((await api.get(past)).silences[0].learned).toBe(false);
+  await shoot(admin, '7-outage');
 });
