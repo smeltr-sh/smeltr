@@ -286,7 +286,7 @@ impl Objects {
                 }
                 f.routes.iter_mut().for_each(|r| swap(&mut r.pipeline));
                 self.tests.iter_mut().filter_map(|t| t.pipeline.as_mut()).for_each(swap);
-                self.outcomes_renamed("pipeline", from, to);
+                self.outcomes_renamed(|s| &mut s.pipeline, from, to);
             }
             Part::LookupTable => {
                 f.lookup_tables.iter_mut().for_each(|t| swap(&mut t.id));
@@ -321,7 +321,7 @@ impl Objects {
             Part::Test => self.tests.iter_mut().for_each(|t| swap(&mut t.id)),
             Part::Route => {
                 f.routes.iter_mut().for_each(|r| swap(&mut r.id));
-                self.outcomes_renamed("route", from, to);
+                self.outcomes_renamed(|s| &mut s.route, from, to);
             }
             Part::Source => {
                 f.sources.iter_mut().for_each(|s| swap(&mut s.id));
@@ -342,14 +342,12 @@ impl Objects {
         }
     }
 
-    /// Each end-to-end test's locked outcomes name the route and pipeline that made them: `key` naming `from` is
-    /// made to name `to`.
-    fn outcomes_renamed(&mut self, key: &str, from: &str, to: &str) {
-        let outcomes = self.tests.iter_mut().flat_map(|t| t.expected.iter_mut().flatten());
-        for named in outcomes.filter_map(|o| o.get_mut(key)) {
-            if named.as_str() == Some(from) {
-                *named = serde_json::Value::String(to.to_string());
-            }
+    /// Each end-to-end test's outcomes name the route and pipeline that made them: the one `name` picks naming
+    /// `from` is made to name `to`.
+    fn outcomes_renamed(&mut self, name: fn(&mut super::Sent) -> &mut String, from: &str, to: &str) {
+        let sent = self.tests.iter_mut().flat_map(|t| t.rows.iter_mut().filter_map(|o| o.sent.as_mut()));
+        for named in sent.map(name).filter(|n| *n == from) {
+            *named = to.to_string();
         }
     }
 
@@ -525,12 +523,13 @@ mod tests {
             tests: vec![
                 serde_json::from_value(
                     json!({"id": "t-common", "name": "common", "pipeline": "common", "sample": "s-fw",
-                                              "lockedAt": 0, "rowsIn": 0, "expected": []}),
+                                              "lockedAt": 0, "rowsIn": 0, "fields": [], "rows": []}),
                 )
                 .unwrap(),
                 serde_json::from_value(
                     json!({"id": "t-end", "name": "end", "sample": "s-fw", "lockedAt": 0, "rowsIn": 1,
-                                              "expected": [{"route": "r-fw", "pipeline": "fw-normalize"}]}),
+                                              "fields": [], "rows": [{"row": 0, "values": {},
+                                                  "sent": {"route": "r-fw", "pipeline": "fw-normalize", "destinations": []}}]}),
                 )
                 .unwrap(),
             ],
@@ -608,10 +607,8 @@ mod tests {
         }
         assert!(file.contains("%{FW_ADDR:src}"));
         assert_eq!(objects.file.routes[0].source, "fw-in");
-        assert_eq!(
-            objects.tests[1].expected[0],
-            Some(json!({"route": "r-fw", "pipeline": "fw-2"}))
-        );
+        let sent = objects.tests[1].rows[0].sent.as_ref().unwrap();
+        assert_eq!((sent.route.as_str(), sent.pipeline.as_str()), ("r-fw", "fw-2"));
         assert!(!tests.contains("s-fw") && !samples.contains("s-fw") && samples.contains("\"source\":\"fw-in\""));
     }
 

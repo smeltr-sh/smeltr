@@ -27,8 +27,8 @@ its own, minted again on demand.
 | ---------------------------- | --------------------------------------- |
 | `specs/first-start.spec.ts`  | S9                                      |
 | `specs/admin.spec.ts`        | S1, S2, S3, S6, S7, S8, S10, G5, P8, P9 |
-| `specs/authoring.spec.ts`    | A1, A2, A3, A4, A6, A8, A9, A10, E8     |
-| `specs/change.spec.ts`       | W1 to W11, S4                           |
+| `specs/authoring.spec.ts`    | A1 to A4, A6, A8 to A11, E8             |
+| `specs/change.spec.ts`       | A12, W1 to W11, W13, S4                 |
 | `specs/fleet.spec.ts`        | E1, E2, E4, E5, E7, G1, G2, G3          |
 | `specs/end-to-end.spec.ts`   | W12                                     |
 | `specs/sign-in.spec.ts`      | signing in from any page                |
