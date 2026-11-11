@@ -1024,10 +1024,6 @@ impl ureq::unversioned::resolver::Resolver for Naming {
                 ureq::Error::Io(e) => {
                     ureq::Error::Io(std::io::Error::new(e.kind(), format!("could not resolve {host}: {e}")))
                 }
-                ureq::Error::HostNotFound => ureq::Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("could not resolve {host}: it has no address"),
-                )),
                 e => e,
             })
     }
