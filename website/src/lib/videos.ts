@@ -191,6 +191,33 @@ const allCourses: Course[] = [
       },
     ],
   },
+  {
+    title: 'Install on Kubernetes',
+    slug: 'install-on-kubernetes',
+    videos: [
+      {
+        title: 'Run the leader on Kubernetes',
+        slug: 'run-the-leader-on-kubernetes',
+        youtube: 'xqdWcGobXxw',
+        minutes: 4,
+        poster: '/videos/install-on-kubernetes-1-poster.jpg',
+      },
+      {
+        title: 'Add workers that keep their identity',
+        slug: 'add-workers-that-keep-their-identity',
+        youtube: 'INKxB7IaPQo',
+        minutes: 3,
+        poster: '/videos/install-on-kubernetes-2-poster.jpg',
+      },
+      {
+        title: 'Autoscale workers',
+        slug: 'autoscale-workers',
+        youtube: '724W0fyyIdI',
+        minutes: 3,
+        poster: '/videos/install-on-kubernetes-3-poster.jpg',
+      },
+    ],
+  },
 ];
 
 export const released = (course: Course) => course.videos.filter((v) => v.youtube);
