@@ -19,7 +19,6 @@ import socket
 import subprocess
 import sys
 import time
-import urllib.parse
 
 import api
 import bundle
@@ -338,10 +337,10 @@ def upload_directory(c, branch, scope):
     return {"id": "directory", "type": "csv", "path": res["path"], "delimiter": ",", "headers": res.get("headers", [])}
 
 
-def lock_tests(c, branch, scope, tests, at=None):
-    at = at or int(time.time() * 1e6)
-    for name, pipeline, sample, records in tests:
-        c.lock_test(branch, scope, name, pipeline, sample, records, at)
+def lock_tests(c, branch, scope, tests):
+    at = int(time.time() * 1e6)
+    for name, pipeline, sample, records, fields in tests:
+        c.lock_test(branch, scope, name, pipeline, sample, records, fields, at)
 
 
 def groups():
@@ -402,8 +401,10 @@ def firewalls():
     c.put("routes", bundle.NETWORK_ROUTES, b, "network")
     c.put("manifest", {"exceptions": bundle.NETWORK_EXCEPTIONS}, b, "network")
     lock_tests(c, b, "network", [
-        ("panos-traffic maps sessions to ECS", "panos-traffic", "panos-traffic-sample", 10),
-        ("fortigate-traffic maps and drops NTP", "fortigate-traffic", "fortigate-sample", 10),
+        ("panos-traffic maps sessions to ECS", "panos-traffic", "panos-traffic-sample", 10,
+         ["event.action", "event.outcome", "source.ip", "destination.ip", "network.application", "user.name"]),
+        ("fortigate-traffic maps and drops NTP", "fortigate-traffic", "fortigate-sample", 10,
+         ["event.action", "source.ip", "destination.ip", "network.application", "network.protocol"]),
     ])
     c.open_change(b, "Onboard PAN-OS and FortiGate firewalls",
                   "Both firewall fleets normalized to ECS and indexed in logs-network. Sessions are enriched with the "
@@ -430,9 +431,12 @@ def apps():
     c.put("routes", routes, b, "apps")
     c.put("manifest", {"exceptions": bundle.APPS_EXCEPTIONS}, b, "apps")
     lock_tests(c, b, "apps", [
-        ("nginx-access maps requests, drops health checks", "nginx-access", "nginx-sample", 12),
-        ("linux-auth classifies logins and sudo", "linux-auth", "auth-sample", 10),
-        ("aws-cloudtrail maps management and data events", "aws-cloudtrail", "cloudtrail-sample", 8),
+        ("nginx-access maps requests, drops health checks", "nginx-access", "nginx-sample", 12,
+         ["http.request.method", "url.path", "http.response.status_code", "user_agent.name"]),
+        ("linux-auth classifies logins and sudo", "linux-auth", "auth-sample", 10,
+         ["event.action", "event.outcome", "user.name", "process.name"]),
+        ("aws-cloudtrail maps management and data events", "aws-cloudtrail", "cloudtrail-sample", 8,
+         ["event.provider", "event.action", "event.outcome", "cloud.account.id", "aws.cloudtrail.error_code"]),
     ])
     c.open_change(b, "Onboard storefront, bastion and CloudTrail logs",
                   "nginx access logs to logs-web; sshd and sudo from the bastions and every CloudTrail event to "
@@ -498,14 +502,12 @@ def open_change():
     next(r for r in routes if r["id"] == "panos")["deliver"].insert(1, {"when": "panw.app.risk >= 5",
                                                                       "to": ["kafka-alerts"]})
     c.put("routes", routes, b, "network")
-    # Re-locked at the instant it was first locked: a lock pins `now()`, so a new instant would rewrite every
-    # `event.ingested` in the test and bury the two fields this change adds.
-    name = "panos-traffic maps sessions to ECS"
-    old = c.call("GET", f"/api/areas/network/tests/{urllib.parse.quote(name)}", params={"branch": b})["test"]
-    lock_tests(c, b, "network", [(name, "panos-traffic", "panos-traffic-sample", 10)], at=old["lockedAt"])
+    # A test of its own for what this change adds, beside the one that maps the sessions.
+    lock_tests(c, b, "network", [("panos-traffic scores App-ID risk", "panos-traffic", "panos-traffic-sample", 10,
+                                  ["network.application", "panw.app.risk", "event.risk_score"])])
     c.open_change(b, "PAN-OS: score App-ID risk and alert on the riskiest apps",
                   "Adds event.risk_score from App-ID risk and sends risk-5 applications (BitTorrent, Tor, SMTP) to "
-                  "the alerts topic. The PAN-OS test is re-locked with the two new fields.")
+                  "the alerts topic. A new test checks the risk score.")
 
 
 def threats():
@@ -517,7 +519,9 @@ def threats():
     c.put_pipeline({**bundle.PANOS_THREAT, "produces": ["ecs"]}, b, "network")
     c.put_sample(next(s for s in bundle.waiting()["network"] if s["id"] == "panos-threat-sample"), b, "network")
     c.put("routes", bundle.NETWORK_ROUTES + bundle.SIEM_ROUTES + [bundle.THREAT_ROUTE], b, "network")
-    lock_tests(c, b, "network", [("panos-threats maps threats to ECS", "panos-threats", "panos-threat-sample", 10)])
+    lock_tests(c, b, "network", [("panos-threats maps threats to ECS", "panos-threats", "panos-threat-sample", 10,
+                                  ["event.action", "event.kind", "panw.threat.name", "panw.threat.severity",
+                                   "source.ip"])])
     c.open_change(b, "Send PAN-OS threats to logs-network as ECS",
                   "Threats land beside the traffic, so the SOC finds both with one search.")
 
