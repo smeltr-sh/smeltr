@@ -966,8 +966,8 @@ fn gaps(
         let Some(&first) = of.keys().next() else { continue };
         let watch = match held.get(key) {
             Some(&watch) if watch.read_ms >= oldest => watch,
-            // A source first seen, or back after the oldest bucket held, is watched afresh from its first bucket: what
-            // came before is no longer held, so no quiet spell runs through it.
+            // A source first seen, or back after being gone longer than the buckets are held, is watched afresh from
+            // its first bucket: what came before is no longer held, so no quiet spell runs through it.
             _ => Watch {
                 watched_ms: first,
                 read_ms: first,
@@ -1977,7 +1977,7 @@ mod tests {
         assert_eq!(
             reading(&back),
             None,
-            "a source back after the oldest bucket held is watched afresh"
+            "a source back after being gone longer than the buckets are held is watched afresh"
         );
     }
 
