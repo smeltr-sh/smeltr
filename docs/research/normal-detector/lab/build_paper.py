@@ -271,11 +271,13 @@ def gate_table(lab):
 def quiet_table(lab):
     """The gap at margins 1, 1.5 and 2 on every series it judges, grouped."""
     q = lab.load("quiet.json")
-    groups = [("Thin tweet series (CRM, IBM, KO, UPS, PFE, CVS)", lambda x: x["dataset"] == "nab"), ("Thin daily (modeled)", lambda x: x["dataset"] == "modeled"),
+    tweets = sorted(nm(x["series"]) for x in q if x["dataset"] == "nab" and x["configs"][0]["months"] > 0)
+    groups = [(f"Tweet series ({', '.join(t.split()[-1] for t in tweets)})", lambda x: x["dataset"] == "nab"),
+              ("Thin daily (modeled)", lambda x: x["series"] == "thin daily"), ("Weekday/weekend (modeled)", lambda x: x["series"] == "weekday/weekend"),
               ("12 rows an hour", lambda x: x["series"] == "12 rows an hour"), ("4 rows an hour", lambda x: x["series"] == "4 rows an hour"),
               ("1 row an hour", lambda x: x["series"] == "1 row an hour"), ("1 row a day", lambda x: x["series"] == "1 row a day")]
     groups += [(x["series"], (lambda x, n=x["series"]: x["series"] == n)) for x in sorted(q, key=lambda x: x["series"]) if x["dataset"] == "logs"]
-    L = ["| Source | Spells judged on | Longest normal spell | Margin 1: false a month | Margin 1.5: false a month | stop caught within | median | Margin 2: false a month | median |", "|---|---|---|---|---|---|---|---|---|"]
+    L = ["| Source | Spells judged on | Longest normal spell, with the first year's allowance | Margin 1: false a month | Margin 1.5: false a month | stop caught within | median | Margin 2: false a month | median |", "|---|---|---|---|---|---|---|---|---|"]
     for name, pred in groups:
         xs = [x for x in q if pred(x) and x["configs"][0]["months"] > 0]
         if not xs:
@@ -285,6 +287,36 @@ def quiet_table(lab):
         med = lambda i: ("—" if m(i, "median_0.0") is None else f"{m(i, 'median_0.0') / 1440:.0f} days" if m(i, "median_0.0") >= 48 * 60 else (f"{m(i, 'median_0.0') / 60:.0f} h" if m(i, "median_0.0") >= 90 else f"{m(i, 'median_0.0'):.0f} min"))
         within = f"{pct(m(1, 'by360_0.0'))} in 6 h, {pct(m(1, 'by1440_0.0'))} in 1 day"
         L.append(f"| {name} | {m(1, 'spells'):,.0f} | {lh:.1f} h | {num(m(0, 'false'))} | {num(m(1, 'false'))} | {within} | {med(1)} | {num(m(2, 'false'))} | {med(2)} |")
+    return "\n".join(L)
+
+
+def rare_table(lab):
+    """The gap with 28 days of spells and a ten-spell gate against a year and the allowance (record_lab.py)."""
+    r = lab.load("record.json")
+    L = ["| Source | Years | Time judged, 28 days / a year | False alarms a year, 28 days / a year | Median stop, 28 days / a year |", "|---|---|---|---|---|"]
+    dur = lambda h: "—" if h is None else (f"{h * 60:.0f} min" if h < 2 else f"{h:.0f} h" if h < 48 else f"{h / 24:.0f} days")
+    names = []
+    for x in r:
+        if x["dataset"] in ("rare", "steady") and (x["dataset"], x["series"]) not in names:
+            names.append((x["dataset"], x["series"]))
+    for ds, name in names:
+        xs = [x["result"] for x in r if x["dataset"] == ds and x["series"] == name]
+        cells = []
+        for k in ("judged", "false", "median"):
+            v = []
+            for rule in ("today", "year"):
+                parts = [(x[rule]["first"], x[rule]["after"]) for x in xs]
+                yrs = sum(a["years"] + b["years"] for a, b in parts)
+                if k == "judged":
+                    v.append(pct(sum((a["judged"] or 0) * a["years"] + (b["judged"] or 0) * b["years"] for a, b in parts) / yrs))
+                elif k == "false":
+                    v.append(num(sum(a["false"] + b["false"] for a, b in parts) / yrs))
+                else:
+                    m = [c["median_h"] for a, b in parts for c in (a, b) if c["median_h"] is not None]
+                    v.append(dur(float(np.median(m)) if m else None))
+            cells.append(" / ".join(v))
+        yrs = sum(x["today"]["first"]["years"] + x["today"]["after"]["years"] for x in xs)
+        L.append(f"| {name[0].upper() + name[1:]} | {yrs:.0f} | {cells[0]} | {cells[1]} | {cells[2]} |")
     return "\n".join(L)
 
 
@@ -330,6 +362,28 @@ def facts(lab):
     f["quiet_cost"] = f"{round(100 * (lab.mean(real, DEFAULT, 'by60_0.3') - lab.mean(real, QUIET, 'by60_0.3'))):d}"
     # stops within the day: which real series fall short
     short = [(nm(x["series"]), x["configs"][DEFAULT]["by1440_0.0"], x["configs"][DEFAULT]["months"]) for x in real if x["configs"][DEFAULT]["by1440_0.0"] is not None and x["configs"][DEFAULT]["by1440_0.0"] < 0.99]
+    try:
+        rec = lab.load("record.json")
+        for key, name in (("rare", "every 14 days at random, bursts"), ("regular", "every 10 to 18 days, bursts"), ("day", "1 row a day"), ("hour", "1 row an hour")):
+            xs = [x["result"] for x in rec if x["series"] == name and x["dataset"] in ("rare", "steady")]
+            for rule, tag in (("today", "28"), ("year", "year")):
+                parts = [c for x in xs for c in (x[rule]["first"], x[rule]["after"])]
+                f[f"{key}_false_{tag}"] = num(sum(c["false"] for c in parts) / sum(c["years"] for c in parts), 1)
+                m = [c["median_h"] for c in parts if c["median_h"] is not None]
+                f[f"{key}_stop_{tag}"] = (f"{np.median(m) / 24:.0f} days" if np.median(m) >= 48 else f"{np.median(m):.0f} hours") if m else "—"
+            f[f"{key}_years"] = f"{sum(x['today']['first']['years'] + x['today']['after']['years'] for x in xs):.0f}"
+    except FileNotFoundError:
+        pass
+    try:
+        gh = lab.load("gap_history.json")
+        xs = [x["result"] for x in gh if x["series"] == "once in 15 days, 3 in 10 a burst"]
+        for mode, tag in (("28d", "28"), ("last30", "last30"), ("own30", "own30")):
+            f[f"gh_{tag}"] = str(sum(x[mode]["false"] for x in xs))
+        f["gh_years"] = f"{sum(x['28d']['years'] for x in xs):.0f}"
+        xs = [x["result"]["record"]["after"] for x in lab.load("record.json") if x["series"] == "every 14 days at random, bursts"]
+        f["c1_false"] = num(sum(c["false"] for c in xs) / sum(c["years"] for c in xs), 1)
+    except FileNotFoundError:
+        pass
     f["stops_day_note"] = ("Every stop on every real series is caught within the day except on " + ", ".join(f"{n} ({pct(v)}, judged {m:.1f} months)" for n, v, m in short) + ".") if short else "Every stop on every real series is caught within the day."
     # count widths or gap together
     try:
@@ -473,7 +527,7 @@ def generic(lab, text):
 def main(root, template, out):
     lab = Lab(root)
     tables = {"HEADLINE": headline, "SETTINGS": settings, "SETTINGS_SHORT": settings_short, "REAL": real_table, "MODELED": modeled_table, "LOGS": logs_table, "EITHER": either_table,
-              "SPARSE": sparse_table, "SENDERS": senders_table, "FIELDS": fields_table, "VALUES": values_table, "WIDTHS": widths_table, "GRID": grid_table, "PARTS": parts_table, "GATE": gate_table, "QUIET": quiet_table}
+              "SPARSE": sparse_table, "SENDERS": senders_table, "FIELDS": fields_table, "VALUES": values_table, "WIDTHS": widths_table, "GRID": grid_table, "PARTS": parts_table, "GATE": gate_table, "QUIET": quiet_table, "RARE": rare_table}
     text = open(template).read()
     missing = []
     for key, fn in tables.items():

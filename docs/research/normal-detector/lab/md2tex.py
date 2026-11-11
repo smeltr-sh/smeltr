@@ -6,6 +6,23 @@ src = open(sys.argv[1] if len(sys.argv) > 1 else "paper_v5.md", encoding="utf-8"
 
 # ---- explicit inline-math phrases, longest first (applied before the generic rules) --------------------------------
 PHRASES = [
+    ("P(S_{n+1} > mM) = E[exp(−mM/μ)] = ∏ E[exp(−mE_k/k)] = ∏ k/(k + m)", r"$P(S_{n+1} > mM) = E[\exp(-mM/\mu)] = \prod E[\exp(-mE_k/k)] = \prod k/(k + m)$"),
+    ("μ(E_1 + E_2/2 + … + E_n/n)", r"$\mu(E_1 + E_2/2 + \dots + E_n/n)$"),
+    ("μ(1 + 1/2 + … + 1/n)", r"$\mu(1 + 1/2 + \dots + 1/n)$"),
+    ("μ(ln n + 0.58)", r"$\mu(\ln n + 0.58)$"),
+    ("E[s²] / 2E[s] = μ", r"$E[s^2] / 2E[s] = \mu$"),
+    ("μ̂ = Σs² / 2Σs", r"$\hat{\mu} = \Sigma s^2 / 2\Sigma s$"),
+    ("μ̂ ln(T/w)", r"$\hat{\mu} \ln(T/w)$"),
+    ("μ̂", r"$\hat{\mu}$"),
+    ("λ/(λT + 1)", r"$\lambda/(\lambda T + 1)$"),
+    ("1/(λT + 1)", r"$1/(\lambda T + 1)$"),
+    ("about λT ", r"about $\lambda T$ "),
+    ("1.33/(n√n)", r"$1.33/(n\sqrt{n})$"),
+    ("mean μ", r"mean $\mu$"),
+    ("grows by μ", r"grows by $\mu$"),
+    ("estimates μ.", r"estimates $\mu$."),
+    ("rate of λ per", r"rate of $\lambda$ per"),
+    ("makes λ spells", r"makes $\lambda$ spells"),
     ("P(X_{n+1} < X_{(r)}) = r/(n+1)", r"$P(X_{n+1} < X_{(r)}) = r/(n+1)$"),
     ("P(X_{n+1} < X_{(r)}) ≤ r/(n+1)", r"$P(X_{n+1} < X_{(r)}) \le r/(n+1)$"),
     ("X_{(1)} ≤ … ≤ X_{(n)}", r"$X_{(1)} \le \dots \le X_{(n)}$"),
