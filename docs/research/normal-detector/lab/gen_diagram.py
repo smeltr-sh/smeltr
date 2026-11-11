@@ -17,7 +17,7 @@ rows=[
 ]
 def svg(ink,quiet,edge,accent,jsx):
     o=[]; A=lambda s:o.append(s)
-    H=TOP+len(rows)*RH+50
+    H=TOP+len(rows)*RH+66
     q=lambda s: html.escape(s,quote=True)
     A(f"<svg viewBox='0 0 {W} {H}' role='img' aria-label='One judge at five widths: the recipe down the side, the machinery in the cells' fontSize='13'>")
     A(f"<text x='{X0}' y='32' fontSize='15' fontWeight='600' fill='{ink}'>One judge, five widths: the recipe down the side, the machinery in the cells</text>")
@@ -39,8 +39,9 @@ def svg(ink,quiet,edge,accent,jsx):
                 A(f"<text x='{(x1+x2)//2}' y='{ty:.0f}' textAnchor='middle' fontSize='{fs}' fill='{ink if shared else quiet}'>{q(t)}</text>")
     # recipe arrow down the side
     ax=X0+LAB-14; A(f"<path d='M{ax} {TOP+6}V{TOP+len(rows)*RH-6}' stroke='{edge}' strokeWidth='1.25' fill='none' markerEnd='url(#rec-arrow)'/>")
-    A(f"<text x='{X0}' y='{H-24}' fontSize='11.5' fill='{quiet}'>A cell across the four count widths is machinery they share; the gap's column is where it differs. Under exchangeability a</text>")
-    A(f"<text x='{X0}' y='{H-8}' fontSize='11.5' fill='{quiet}'>count edge is undercut at most (r + 1)/(n + 1) of the time, about 3 in 2,017 at the short widths; the gap's edge about once a year at most (Section 2.8).</text>")
+    A(f"<text x='{X0}' y='{H-40}' fontSize='11.5' fill='{quiet}'>A cell across the four count widths is machinery they share; the gap's column is where it differs.</text>")
+    A(f"<text x='{X0}' y='{H-24}' fontSize='11.5' fill='{quiet}'>Under exchangeability a count edge is undercut at most (r + 1)/(n + 1) of the time, about 3 in 2,017 at the short widths;</text>")
+    A(f"<text x='{X0}' y='{H-8}' fontSize='11.5' fill='{quiet}'>the gap's edge about once a year at most (Section 2.8).</text>")
     A("</svg>")
     s="\n".join(o)
     s=s.replace("<svg ",f"<svg xmlns='http://www.w3.org/2000/svg' ",1) if not jsx else s
