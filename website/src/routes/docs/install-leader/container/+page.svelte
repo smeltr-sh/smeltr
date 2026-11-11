@@ -32,14 +32,17 @@
       >docker pull {image}:{version}
 image=$(docker image inspect --format '&#123;&#123;index .RepoDigests 0&#125;&#125;' {image}:{version})</code
     ></pre>
-  <p>Both checks fail unless that workflow, run for a release tag, made the image:</p>
+  <p>
+    Both checks fail unless that workflow, run for a release tag, made the image. They need cosign 3
+    or later, and the second prints the whole package list, so send it to <code>/dev/null</code>:
+  </p>
   <pre><code
       >cosign verify "$image" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity-regexp '^{source}/\.github/workflows/release\.yml@refs/tags/v'
 cosign verify-attestation --type cyclonedx "$image" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^{source}/\.github/workflows/release\.yml@refs/tags/v'</code
+  --certificate-identity-regexp '^{source}/\.github/workflows/release\.yml@refs/tags/v' > /dev/null</code
     ></pre>
   <p>Name the verified digest the way the commands below expect:</p>
   <pre><code>docker tag "$image" smeltr:{version}</code></pre>
