@@ -90,13 +90,8 @@ fn route_preview_on(
     match sample_to_run(&reading, given, req.sample.as_deref()) {
         Ok(Some(mut sample)) => {
             sample.source = sample.source.or(req.source.clone());
-            let merged = if scope == config_file::SHARED_DIR {
-                None
-            } else {
-                merged_with_shared(&req.config, &reading)
-            };
-            match merged {
-                Some(merged) => run_route_preview(&merged.config, sample, merged.declared_at, req.at_micros),
+            match own_bundle(&req.config).and_then(|own| reading.runnable(own).ok()) {
+                Some(run) => run_route_preview(&run.config, sample, run.declared_at, req.at_micros),
                 None => {
                     let declared_at = single_origin_declared_at(&req.config, &reading.at());
                     run_route_preview(&req.config, sample, declared_at, req.at_micros)
@@ -517,12 +512,8 @@ fn preview_on(
         Ok((columns, records)) => {
             with_branch_schemas(&mut req, &reading);
             let produced = produced_in(&req);
-            let declared_at = if scope == config_file::SHARED_DIR {
-                single_origin_declared_at(&req.config, &reading.at())
-            } else {
-                merge_shared_into(&mut req, &reading)
-                    .unwrap_or_else(|| single_origin_declared_at(&req.config, &reading.at()))
-            };
+            let declared_at = merge_shared_into(&mut req, &reading)
+                .unwrap_or_else(|| single_origin_declared_at(&req.config, &reading.at()));
             let mut answer = run_preview(req, declared_at, &columns, records);
             if let Some((pipeline, produces)) = produced {
                 refused_on_branch(&mut answer, data_dir, &reading, &pipeline, &produces);
@@ -660,45 +651,27 @@ fn with_branch_schemas(req: &mut PreviewRequest, reading: &config_api::Reading) 
     }
 }
 
-/// Rewrites `req.config`, a group's own bundle, into that bundle merged with `shared/` at the commit `reading`
-/// resolved, and answers where each table in the merge resolves. `None` leaves `req` as it was: a config that does
-/// not parse is `run_preview`'s to report.
+/// Rewrites `req.config`, a scope's own bundle, into that bundle as it runs ([`config_api::Reading::runnable`]), and
+/// returns where each table in it resolves. For a config that does not parse, a group with no pipelines of its own,
+/// or a `shared/` that cannot be read, it returns `None` and leaves `req.config` as it was; `run_preview` reports a
+/// config that does not parse.
 fn merge_shared_into(req: &mut PreviewRequest, reading: &config_api::Reading) -> Option<config_file::DeclaredAt> {
-    let merged = merged_with_shared(&req.config, reading)?;
+    let own = own_bundle(&req.config)?;
     // Shared's pipelines come first in the merge, so the default -- the first pipeline -- is pinned to the group's
     // own first before the merge would change which one that is. A group with none previews unmerged, and says so.
     if req.pipeline.is_none() {
-        req.pipeline = Some(merged.group.pipelines.first()?.id.clone());
+        req.pipeline = Some(own.file.pipelines.first()?.id.clone());
     }
-    req.config = merged.config;
-    Some(merged.declared_at)
+    let run = reading.runnable(own).ok()?;
+    req.config = run.config;
+    Some(run.declared_at)
 }
 
-/// A group's own bundle merged with `shared/`, for a preview to run as the group runs once deployed.
-struct MergedWithShared {
-    /// The group's own bundle, as the editor sent it.
-    group: config_file::FileConfig,
-    /// The merge, as `config_file` JSON.
-    config: String,
-    /// Where each table in the merge resolves: a shared table under `shared/`, the group's own under its subtree.
-    declared_at: config_file::DeclaredAt,
-}
-
-/// `config`, a group's own bundle, merged with `shared/` at the commit `reading` resolved -- the merge validation and
-/// `run_on_branch` use. `None` when `config` does not parse or `shared/` cannot be read.
-fn merged_with_shared(config: &str, reading: &config_api::Reading) -> Option<MergedWithShared> {
-    let group = config_file::RawBundle {
+/// `config`, a scope's own bundle as the editor sent it. `None` when it does not parse.
+fn own_bundle(config: &str) -> Option<config_file::RawBundle> {
+    Some(config_file::RawBundle {
         file: serde_json::from_str(config).ok()?,
         unreadable: Vec::new(),
-    };
-    let shared_reading = reading.sibling(config_file::SHARED_DIR).ok()?;
-    let shared = shared_reading.raw();
-    let merged = serde_json::to_string(&smeltr::leader::map::merged_file(&shared, &group, reading.group_id()?)).ok()?;
-    let declared_at = smeltr::leader::map::merged_declared_at(&shared, &shared_reading.at(), &group, &reading.at());
-    Some(MergedWithShared {
-        group: group.file,
-        config: merged,
-        declared_at,
     })
 }
 

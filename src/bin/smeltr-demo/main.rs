@@ -137,6 +137,14 @@ impl Service {
         file.lookup_tables.iter().map(|t| (t.id.clone(), at.clone())).collect()
     }
 
+    /// `bundle` merged with `shared/`, as `config_file` JSON, and where each table in it resolves: what a run takes.
+    fn runnable(&self, bundle: Bundle) -> Result<(String, DeclaredAt), Refusal> {
+        let (file, _) = bundle.merged().map_err(Refusal::invalid)?;
+        let declared_at = self.declared_at(&file);
+        let config = serde_json::to_string(&file).map_err(|e| Refusal::internal(e.to_string()))?;
+        Ok((config, declared_at))
+    }
+
     /// `work` on a core, or a failure once [`REQUEST_TIMEOUT`] passes.
     async fn run<T: Send + 'static>(
         &self,
@@ -238,16 +246,9 @@ async fn route_preview(State(service): State<Service>, Json(body): Json<RoutePre
     }
     let s = service.clone();
     service
-        .run(unavailable, move || {
-            let (file, _) = match body.bundle.merged() {
-                Ok(merged) => merged,
-                Err(e) => return Envelope::refused(Refusal::invalid(e)),
-            };
-            let declared_at = s.declared_at(&file);
-            match serde_json::to_string(&file) {
-                Ok(config) => run_route_preview(&config, body.sample, declared_at, body.at_micros),
-                Err(e) => Envelope::refused(Refusal::internal(e.to_string())),
-            }
+        .run(unavailable, move || match s.runnable(body.bundle) {
+            Ok((config, declared_at)) => run_route_preview(&config, body.sample, declared_at, body.at_micros),
+            Err(e) => Envelope::refused(e),
         })
         .await
 }
@@ -324,14 +325,9 @@ async fn tests(State(service): State<Service>, Json(body): Json<TestsBody>) -> E
                 .group_id
                 .clone()
                 .unwrap_or_else(|| config_file::SHARED_DIR.to_string());
-            let (file, _) = match body.bundle.merged() {
-                Ok(merged) => merged,
-                Err(e) => return Envelope::refused(Refusal::invalid(e)),
-            };
-            let declared_at = s.declared_at(&file);
-            let config = match serde_json::to_string(&file) {
-                Ok(config) => config,
-                Err(e) => return Envelope::refused(Refusal::internal(e.to_string())),
+            let (config, declared_at) = match s.runnable(body.bundle) {
+                Ok(runnable) => runnable,
+                Err(e) => return Envelope::refused(e),
             };
             let results = body
                 .run
@@ -368,14 +364,9 @@ async fn test_lock(State(service): State<Service>, Json(body): Json<TestLockBody
     let s = service.clone();
     service
         .run(unavailable, move || {
-            let (file, _) = match body.bundle.merged() {
-                Ok(merged) => merged,
-                Err(e) => return Envelope::refused(Refusal::invalid(e)),
-            };
-            let declared_at = s.declared_at(&file);
-            let config = match serde_json::to_string(&file) {
-                Ok(config) => config,
-                Err(e) => return Envelope::refused(Refusal::internal(e.to_string())),
+            let (config, declared_at) = match s.runnable(body.bundle) {
+                Ok(runnable) => runnable,
+                Err(e) => return Envelope::refused(e),
             };
             let sample = body.samples.into_iter().find(|s| s.id == body.lock.sample);
             match lock_test(&body.lock, &config, Ok(sample), &declared_at) {

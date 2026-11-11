@@ -253,6 +253,47 @@ impl Reading {
     pub fn raw(&self) -> RawBundle {
         config_file::read_raw_from(&mut self.files())
     }
+
+    /// `own`, the scope's bundle, as it runs. A group's bundle is merged with `shared/` at the commit this reading
+    /// read, as `load_group_from` merges it for a deployment, so a pipeline may use a source or lookup table declared
+    /// only in `shared/`. The `shared/` bundle runs as it is.
+    pub fn runnable(&self, own: RawBundle) -> Result<Runnable, Refusal> {
+        let (file, declared_at, shared) = match self.group_id() {
+            Some(group) => {
+                let shared_reading = self.sibling(config_file::SHARED_DIR)?;
+                let shared = shared_reading.raw();
+                (
+                    smeltr::leader::map::merged_file(&shared, &own, group),
+                    smeltr::leader::map::merged_declared_at(&shared, &shared_reading.at(), &own, &self.at()),
+                    Some(shared),
+                )
+            }
+            None => {
+                let declared_at = (own.file.lookup_tables.iter())
+                    .map(|t| (t.id.clone(), self.at()))
+                    .collect();
+                (own.file, declared_at, None)
+            }
+        };
+        let config = serde_json::to_string(&file).map_err(|e| Refusal::internal(e.to_string()))?;
+        Ok(Runnable {
+            file,
+            config,
+            declared_at,
+            shared,
+        })
+    }
+}
+
+/// A scope's bundle as it runs ([`Reading::runnable`]).
+pub struct Runnable {
+    pub file: FileConfig,
+    /// `file`, as `config_file` JSON.
+    pub config: String,
+    /// Where each lookup table resolves: a shared table under `shared/`, a group's own under its subtree.
+    pub declared_at: config_file::DeclaredAt,
+    /// `shared/`'s own bundle, for a group.
+    pub shared: Option<RawBundle>,
 }
 
 /// A branch open for writing: the commit a save is based on, and what the branch must still be for it to land.

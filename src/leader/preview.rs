@@ -1556,13 +1556,8 @@ pub fn run_pipeline_actual(
         columns,
         records,
     );
-    if !previewed.succeeded() {
-        return Err(previewed
-            .errors
-            .iter()
-            .map(|e| e.message.clone())
-            .collect::<Vec<_>>()
-            .join("; "));
+    if let Some(why) = previewed.why_failed() {
+        return Err(why);
     }
     Ok(previewed
         .body
@@ -1586,13 +1581,8 @@ pub fn run_route_actual(
     sample: config_file::SampleDto,
 ) -> Result<Vec<config_file::Made>, String> {
     let resp = run_route_preview(config, sample, declared_at, Some(locked_at));
-    if !resp.succeeded() {
-        return Err(resp
-            .errors
-            .iter()
-            .map(|e| e.message.clone())
-            .collect::<Vec<_>>()
-            .join("; "));
+    if let Some(why) = resp.why_failed() {
+        return Err(why);
     }
     if let Some(row) = resp.rows.iter().find(|r| r.refused.is_some()) {
         return Err(format!(

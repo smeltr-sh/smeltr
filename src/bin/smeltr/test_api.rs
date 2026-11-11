@@ -158,8 +158,7 @@ pub async fn put_test(
 ) -> Envelope<crate::config_api::Save> {
     let message = format!("lock test {}", lock.name);
     blocking_save(move || {
-        let locked = match config_api::Reading::open(&at.branch, &at.area).and_then(|r| locked_on(&r, &at.area, &lock))
-        {
+        let locked = match config_api::Reading::open(&at.branch, &at.area).and_then(|r| locked_on(&r, &lock)) {
             Ok(locked) => locked,
             Err(e) => return Envelope::refused(e),
         };
@@ -185,18 +184,18 @@ pub async fn preview_lock(
 ) -> Envelope<Locked> {
     blocking_answer(move || {
         config_api::Reading::open(q.name(), &area)
-            .and_then(|reading| locked_on(&reading, &area, &lock))
+            .and_then(|reading| locked_on(&reading, &lock))
             .into()
     })
     .await
 }
 
-/// What locking `lock` holds of a run over the branch `reading` reads, in `scope`.
-fn locked_on(reading: &config_api::Reading, scope: &str, lock: &Lock) -> Result<Locked, Refusal> {
+/// What locking `lock` holds of a run over the branch and scope `reading` reads.
+fn locked_on(reading: &config_api::Reading, lock: &Lock) -> Result<Locked, Refusal> {
     if lock.pipeline.is_none() {
         check_lockable(&mut reading.files(), &lock.sample)?;
     }
-    let runnable = runnable(reading, scope)?;
+    let runnable = reading.runnable(reading.raw())?;
     let sample = config_file::read_sample(&mut reading.files(), &lock.sample).map_err(|e| e.to_string());
     lock_test(lock, &runnable.config, sample, &runnable.declared_at).map_err(Refusal::invalid)
 }
@@ -353,12 +352,12 @@ fn run_in(
     ids: Vec<String>,
     touched_only: bool,
 ) -> Result<(Vec<TestResult>, Impact), Refusal> {
-    let Runnable {
+    let config_api::Runnable {
         file: exec_file,
         config,
         declared_at,
         shared: shared_raw,
-    } = runnable(&reading, scope)?;
+    } = reading.runnable(reading.raw())?;
 
     // What the change reaches, read against `main` -- the tree it would be deployed onto. Merged with `shared/` on
     // both sides for a group scope, the same way `exec_file` is: an edit landing only in `shared/` -- a source, a
@@ -450,53 +449,6 @@ fn run_in(
         results.push(run_one(&test, scope, &config, &mut reading.files(), &declared_at));
     }
     Ok((results, impact))
-}
-
-/// What a scope's tests run against: the bundle, as a run reads it, and where each lookup table was declared.
-struct Runnable {
-    file: config_file::FileConfig,
-    /// `file`, serialized, as a preview takes it.
-    config: String,
-    declared_at: config_file::DeclaredAt,
-    /// `shared/`'s own bundle, for a group's scope.
-    shared: Option<config_file::RawBundle>,
-}
-
-fn runnable(reading: &config_api::Reading, scope: &str) -> Result<Runnable, Refusal> {
-    let raw = reading.raw();
-
-    // The bundle this scope runs: `shared/` merged in for a group, as `load_group_from` does for a real deployment.
-    // A locked test's pipeline may use a source or lookup table declared only in `shared/`, which the group's bare
-    // subtree would report unknown. A lookup table's file resolves against where the table was declared, `shared/` or
-    // the group's own subtree. `sibling` reads the commit `reading` already resolved, so the bundle and `reading`
-    // never straddle a branch that moved between the two reads.
-    let shared_reading = if scope == config_file::SHARED_DIR {
-        None
-    } else {
-        Some(reading.sibling(config_file::SHARED_DIR)?)
-    };
-    let shared_raw = shared_reading.as_ref().map(|r| r.raw());
-    let (exec_file, declared_at) = match (&shared_raw, &shared_reading) {
-        (Some(shared), Some(shared_reading)) => (
-            smeltr::leader::map::merged_file(shared, &raw, scope),
-            smeltr::leader::map::merged_declared_at(shared, &shared_reading.at(), &raw, &reading.at()),
-        ),
-        _ => (
-            raw.file.clone(),
-            raw.file
-                .lookup_tables
-                .iter()
-                .map(|t| (t.id.clone(), reading.at()))
-                .collect(),
-        ),
-    };
-    let config = serde_json::to_string(&exec_file).map_err(|e| Refusal::internal(e.to_string()))?;
-    Ok(Runnable {
-        file: exec_file,
-        config,
-        declared_at,
-        shared: shared_raw,
-    })
 }
 
 /// Every test at `commit`, in `shared/` and in each group, that ran and did not produce what it locked: the leader's
