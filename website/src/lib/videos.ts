@@ -148,7 +148,13 @@ const allCourses: Course[] = [
         minutes: 3,
         poster: '/videos/shape-your-data-3-poster.jpg',
       },
-      { title: 'Hold to a schema', slug: 'hold-to-a-schema' },
+      {
+        title: 'Hold to a schema',
+        slug: 'hold-to-a-schema',
+        youtube: 'gRZAyKU5O1k',
+        minutes: 3,
+        poster: '/videos/shape-your-data-4-poster.jpg',
+      },
     ],
   },
 ];
