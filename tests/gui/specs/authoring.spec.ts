@@ -430,6 +430,9 @@ test('A1: a route card turns at a second destination, takes conditions on its li
   await goto(admin, leader, '#/build/routes');
   await admin.getByRole('button', { name: '+ Add route' }).click();
   const card = admin.locator('.flow[data-source="own-metrics"]');
+  await card.getByRole('combobox', { name: 'pipeline' }).selectOption('p');
+  await card.getByRole('button', { name: 'add a destination' }).click();
+  await admin.locator('.menu').getByRole('button', { name: 'es-a' }).click();
   await expect(card).toHaveClass(/\bline\b/);
   const plus = card.getByRole('button', { name: 'add a condition' });
   // One on the line into the pipeline, one on the line out of it.
