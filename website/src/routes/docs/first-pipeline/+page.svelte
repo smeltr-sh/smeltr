@@ -139,13 +139,12 @@ PY`;
   </p>
   <p>
     Open <strong>Advanced</strong>, set <strong>Start at</strong> to earliest, and choose
-    <strong>Start</strong>. When the three records appear, choose <strong>Stop capture</strong>.
-    Enter <code>tutorial-message</code> under <strong>Save as</strong> and choose
-    <strong>Save sample</strong>.
+    <strong>Start</strong>. When the three records appear, choose <strong>Stop capture</strong>,
+    then <strong>Use these records</strong>.
   </p>
   <p>
-    Smeltr reads the sample and proposes the steps. It reports that 3 of 3 records read as JSON, and
-    adds a Parser step that declares <code>service</code> and <code>message</code>. The parsed
+    Smeltr reads the records and proposes the steps. It reports that 3 of 3 records read as JSON,
+    and adds a Parser step that declares <code>service</code> and <code>message</code>. The parsed
     records show beside the steps.
   </p>
 
@@ -204,8 +203,9 @@ PY`;
 
   <h2 id="check">7. Check where records go</h2>
   <p>
-    Open the <strong>Route a sample</strong> tab. Select <code>tutorial-message</code> and choose
-    <strong>Run</strong>. Smeltr runs the sample through your routes. Nothing is delivered.
+    Open the <strong>Route a sample</strong> tab. <strong>Your records</strong>, the ones you
+    captured, are already chosen. Choose <strong>Run</strong>. Smeltr runs the records through your
+    routes. Nothing is delivered.
   </p>
   <p>
     All three records should reach <code>tutorial-out</code>, with none unrouted or dropped. Choose
@@ -285,9 +285,9 @@ cat delivered.jsonl</code
     </table>
   </div>
   <p>
-    When you're finished, remove the tutorial route, pipeline, sample, source and destination in a
-    new reviewed change. Once the workers are running that change, you can remove the two Kafka
-    topics too.
+    When you're finished, remove the tutorial route, pipeline, source and destination in a new
+    reviewed change. Once the workers are running that change, you can remove the two Kafka topics
+    too.
   </p>
   <h2 id="filtering">Try filtering rows and fields</h2>
   <p>
