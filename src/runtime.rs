@@ -348,9 +348,6 @@ pub struct Lane {
     /// Where a batch's outcome goes: this source's reader, and no other.
     pub reports: Reports,
     parked: Mutex<Parked>,
-    /// Batches a destination refused rows of and is set to block on, by that destination: until it takes them, no
-    /// batch polled after one of these commits.
-    refused: Mutex<HashSet<(BatchId, DestId)>>,
 }
 
 impl Lane {
@@ -372,7 +369,6 @@ impl Lane {
             destinations: Mutex::new(destinations),
             reports,
             parked: Mutex::new(Parked::default()),
-            refused: Mutex::new(HashSet::new()),
         }
     }
 
@@ -403,19 +399,6 @@ impl Lane {
         }
         let u = parked.retry.pop_front().expect("front was just seen");
         ParkedTake::Batch(u.batch, u.records, u.unprocessable, u.waiting.map(|w| w.since))
-    }
-
-    /// Whether `batch` is held: parked until the config changes, or refused by a destination set to block. Nothing
-    /// polled after it commits while it is.
-    pub fn holds(&self, batch: BatchId) -> bool {
-        let parked = self
-            .parked
-            .lock()
-            .unwrap()
-            .retry
-            .front()
-            .is_some_and(|u| u.held && u.batch == batch);
-        parked || self.refused.lock().unwrap().iter().any(|&(b, _)| b == batch)
     }
 
     /// Record that the reader has been told, if the oldest parked batch is still the one waiting on `dest` since
@@ -1280,7 +1263,6 @@ impl Transform {
         if owed.outstanding.is_empty() {
             self.owed.remove(&batch);
         }
-        self.lanes[lane].refused.lock().unwrap().remove(&(batch, dest));
         self.lanes[lane].reports.send(Report::Acked { batch, dest });
     }
 
@@ -1296,7 +1278,6 @@ impl Transform {
         let name = dest_name(&self.destinations, dest);
         let why = block_reason(&name, &first.reason);
         let rows: Vec<(usize, String)> = held.rejections.into_iter().map(|r| (r.doc, r.reason)).collect();
-        self.lanes[lane].refused.lock().unwrap().insert((held.batch, dest));
         report_rejections(
             &self.metrics,
             &self.refusals,
@@ -1393,7 +1374,6 @@ impl Transform {
             // them again, so the unit is never settled and the source stays blocked until a redeploy. Load refuses
             // ignore and tag: no destination is left to carry the row.
             Answer::Block | Answer::Ignore | Answer::Tag => {
-                self.lanes[lane].refused.lock().unwrap().insert((batch, dest));
                 reports.send(Report::Block(
                     BlockCause::Refused,
                     block_reason(&dest_name(&self.destinations, dest), &own[0].reason),

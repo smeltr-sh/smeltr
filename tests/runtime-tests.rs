@@ -2775,8 +2775,6 @@ fn a_reject_policy_decides_what_happens_to_a_refused_record() {
             (Answer::Block, _) => {
                 assert!(src.committed().is_empty(), "{label}");
                 assert!(src.is_blocked(), "{label}: blocked rather than losing the row");
-                let oldest = w.reader.commits.outstanding().next();
-                assert!(oldest.is_some_and(|b| w.lane().holds(b)), "{label}: the lane holds it");
                 assert_eq!(blocked(&w), Some(1.0), "{label}");
                 assert!(dlq.sent().is_empty(), "{label}: blocked, not diverted");
                 continue;
@@ -3721,24 +3719,16 @@ fn a_blocking_destination_blocks_the_source_until_its_refused_row_lands() {
 
     let _ = tick(&mut w);
     let mut saw_blocked = false;
-    let mut held = None;
     for _ in 0..600 {
         let _ = tick(&mut w);
         saw_blocked |= src.is_blocked();
-        if let Some(oldest) = w.reader.commits.outstanding().next()
-            && w.lane().holds(oldest)
-        {
-            held = Some(oldest);
-        }
         if !src.committed().is_empty() {
             break;
         }
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(saw_blocked, "blocked while the row was refused");
-    let held = held.expect("the lane held the refused batch, so a stop need not wait for it");
     assert_eq!(src.committed().len(), 1, "committed once it landed");
-    assert!(!w.lane().holds(held), "no longer held once it landed");
     assert!(!src.is_blocked(), "resumed on its own");
     assert_eq!(dest.sent().len(), 1, "sent again, and taken");
     assert_eq!(
