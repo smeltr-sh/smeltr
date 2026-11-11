@@ -10,6 +10,7 @@
   import { page } from '$app/state';
   import DocsSearchForm from './DocsSearchForm.svelte';
   import NavGroups from './NavGroups.svelte';
+  import { copyButtons } from '#lib/copy-buttons.ts';
   import type { Entry, Group } from '#lib/nav.ts';
   import { stepPages } from '#lib/step-pages.ts';
   import {
@@ -220,7 +221,7 @@
       {groups}
     />
   </aside>
-  <div class="docs-content" data-pagefind-body={searchable ? '' : undefined}>
+  <div class="docs-content" data-pagefind-body={searchable ? '' : undefined} use:copyButtons>
     {@render children()}
   </div>
   {#if sections.length || entries.length}
