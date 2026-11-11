@@ -7,6 +7,7 @@ import {
   countdown,
   dateTime,
   isPipelinePath,
+  lasted,
   pathParts,
   shortCommit,
   shortPath,
@@ -50,6 +51,15 @@ describe('countdown', () => {
 
   it('stops at zero once the moment passes', () => {
     expect(countdown(NOW - 5_000, NOW)).toBe('00:00:00');
+  });
+});
+
+describe('lasted', () => {
+  it('words a span in whole minutes, hours or days, as the leader does', () => {
+    expect(lasted(55 * 60_000)).toBe('55 minutes');
+    expect(lasted(119 * 60_000)).toBe('119 minutes');
+    expect(lasted(9 * 3_600_000 + 55 * 60_000)).toBe('9 hours');
+    expect(lasted(3 * 86_400_000)).toBe('3 days');
   });
 });
 

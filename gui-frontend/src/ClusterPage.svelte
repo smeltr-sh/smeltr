@@ -94,7 +94,6 @@
   import {
     DEFAULT_WINDOW_MINUTES,
     FLOW_WINDOWS,
-    FINEST_BUCKET_MILLIS,
     currentRate,
     denseRates,
     firstBucket,
@@ -270,8 +269,8 @@
   let windowTo = $derived(bucketMillis ? lastClosedBucket(bucketMillis, flowFetchedAt) : 0);
 
   // rows/s, not rows per bucket: the unit the rate line above the chart is in, and the
-  // only one that holds across the picker -- a bucket is 10s at sixty minutes and an hour
-  // at thirty days.
+  // only one that holds across the picker -- a point is 10s at sixty minutes and six
+  // hours at thirty days.
   let fleetInDense = $derived(
     bucketMillis ? denseRates(fleetIn, bucketMillis, windowFrom, windowTo) : [],
   );
@@ -321,7 +320,7 @@
   );
   const readFrom = (dense: (number | null)[]) => (readSlot >= 0 ? (dense[readSlot] ?? null) : null);
 
-  // -- furthest from normal (Main storyboard): each source's last half hour against the normal
+  // -- furthest from normal (Main storyboard): each source's reading against the normal
   // its warnings read, whatever window the chart shows. A source is in the selection when a
   // series the selection holds reads it.
 
@@ -346,7 +345,7 @@
       group: (r) => r.group,
       now: (r) => r.now,
       normal: (r) => r.low,
-      away: (r) => r.awayPercent ?? Infinity,
+      away: (r) => r.awayPercent,
     }),
   );
 
@@ -644,7 +643,7 @@
   }
 
   let totalPartitions = $derived(
-    workerRows.reduce((total, worker) => total + worker.partitionsOwned, 0),
+    workerRows.reduce((total, worker) => total + worker.partitionsOwned.length, 0),
   );
 
   // A restart reaches the worker on its next heartbeat; the button says so until it has.
@@ -857,7 +856,7 @@
                   )}
                   <span class:behind={r.on < r.of}>{r.on}/{r.of} on {commitOrNone(deploying)}</span>
                 {/if}
-                <span>{workers.reduce((n, w) => n + w.partitionsOwned, 0)} partitions</span>
+                <span>{workers.reduce((n, w) => n + w.partitionsOwned.length, 0)} partitions</span>
               </button>
             </div>
             {#if isExpanded(group)}
@@ -1062,10 +1061,10 @@
             </details>
           {/if}
           <details class="detail-section fold partitions">
-            <summary><h3>Owned partitions ({selectedWorker.partitionsOwned})</h3></summary>
+            <summary><h3>Owned partitions ({selectedWorker.partitionsOwned.length})</h3></summary>
             <div class="fold-body">
-              {#each selectedWorker.threads.flatMap((t) => t.partitionsOwned) as partition}<span
-                  class="partition-chip">{partition.topic}:{partition.partition}</span
+              {#each selectedWorker.partitionsOwned as partition}<span class="partition-chip"
+                  >{partition.topic}:{partition.partition}</span
                 >{:else}<p class="empty">No partitions owned.</p>{/each}
             </div>
           </details>
@@ -1089,7 +1088,7 @@
           <h2 id="{uid}-flow">
             Rows in and out — {selectionLabel}
             <Help label="Rows in and out"
-              >Above the line, rows per second read from sources; below it, rows sent to
+              >Above the line, rows per second read from sources; below it, rows delivered to
               destinations. A gap in a line is missing history, not zero.</Help
             >
           </h2>
@@ -1102,10 +1101,6 @@
       </div>
       {#if flow === null}
         <p class="empty">Loading…</p>
-      {:else if !hasFlowData && bucketMillis > FINEST_BUCKET_MILLIS}
-        <p class="empty">
-          Nothing has aged into this window's buckets yet — wider windows are served from rollups.
-        </p>
       {:else if !hasFlowData}
         <p class="empty">No rows recorded in this window yet.</p>
       {:else}
@@ -1137,9 +1132,12 @@
             Furthest from normal — {selectionLabel}
             <Help label="Furthest from normal"
               ><b>Normally</b> is the range of rows per second a source reads at this time of day,
-              learned from the last 7 days. When its last half hour falls outside that range, it
-              raises Rows below normal or Rows above normal. <b>Away by</b> is how far the last half hour
-              is past the nearest end of that range, as a percent of that end.</Help
+              learned from its past weeks. A source is judged over its last 5 minutes, 30 minutes, 6
+              hours and 24 hours: it raises Rows below normal when one of them stays below its
+              range, and Rows above normal when its last 30 minutes stays above. The row shows the
+              narrowest of those that is below its range, else the last 30 minutes, or the narrowest
+              one that can judge the source. <b>Away by</b> is how far Now is past the nearest end of
+              that range, as a percent of that end.</Help
             >
           </h2>
           {#if flow !== null}<p class="note">{count(normals.length, 'source')}.</p>{/if}
@@ -1171,16 +1169,14 @@
             >
             <tbody>
               {#each sortedRanked as r (JSON.stringify([r.group, r.subjectId]))}
-                {@const away = r.awayPercent === null ? Infinity : Math.abs(r.awayPercent)}
+                {@const away = Math.abs(r.awayPercent)}
                 <tr>
                   <td class="mono">{r.subjectId}</td><td>{r.group}</td>
                   <td class="num">{Math.round(r.now)}</td><td class="num dim"
                     >{Math.round(r.low)}–{Math.round(r.high)}</td
                   >
                   <td class="num away" class:big={away >= 50} class:mid={away >= 20 && away < 50}
-                    >{r.awayPercent === null
-                      ? '+∞'
-                      : `${r.awayPercent > 0 ? '+' : ''}${Math.round(r.awayPercent)}`}%</td
+                    >{r.awayPercent > 0 ? '+' : ''}{Math.round(r.awayPercent)}%</td
                   >
                 </tr>
               {/each}

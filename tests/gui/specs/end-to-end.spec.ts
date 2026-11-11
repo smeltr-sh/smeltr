@@ -79,6 +79,8 @@ test('W12: a fresh leader is set up, changed, reviewed and deployed from the GUI
   await page.getByRole('button', { name: '+ Add route' }).click();
   await expect(page.getByRole('combobox', { name: 'from source' })).toHaveValue('own-metrics');
   await page.getByRole('combobox', { name: 'pipeline' }).selectOption({ label: 'pass through' });
+  await page.getByRole('button', { name: 'add a destination' }).click();
+  await page.locator('.menu').getByRole('button', { name: 'search', exact: true }).click();
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await saved();
 

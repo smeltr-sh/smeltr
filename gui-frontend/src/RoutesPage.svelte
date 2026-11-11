@@ -253,37 +253,29 @@
   void load().then(arrive);
   void fieldCatalogs().then((c) => ({ secrets, kafka } = c));
 
-  /** A minted id, never a counted one: it is what the route's durable history is keyed by (`mintRouteId`). A new
-   * route starts on a source no route reads yet, so it opens a card of its own; once every source has one, it starts
-   * with no source. */
+  /** A new route starts on a source no route reads yet, so it opens a card of its own; once every source has one, it
+   * starts with no source. */
   function addRoute() {
     narrowing.widen();
-    const id = mintRouteId();
     const source = sourceIds.find((s) => !routes.some((r) => r.source === s)) ?? '';
     expanded.set(source, true);
-    routes.push({
-      id,
-      source,
-      condition: null,
-      pipeline: pipelineIds[0] ?? '',
-      deliver: destinationIds.length > 0 ? [{ to: [destinationIds[0]] }] : [],
-    });
+    routes.push(newRoute(source));
+  }
+  /** A route on `source`. Its pipeline and destinations are left to be chosen: the first of each would read as a
+   * choice nobody made. Its id is minted, never counted, because the route's durable history is keyed by it
+   * (`mintRouteId`). */
+  function newRoute(source: string, condition: string | null = null): RouteDto {
+    return { id: mintRouteId(), source, condition, pipeline: '', deliver: [{ to: [] }] };
   }
   /** Acts on what the link asked, then takes it off the link, so a reload or Back does not do it twice. */
   function arrive() {
     if (routesEditor.loadFailed || readOnly) return;
     let id: string | undefined;
     if (make) {
-      id = mintRouteId();
+      const route = newRoute(make.source, make.condition ?? null);
+      id = route.id;
       expanded.set(make.source, true);
-      routes.push({
-        id,
-        source: make.source,
-        condition: make.condition ?? null,
-        // Chosen by hand: the first pipeline would read as a choice nobody made.
-        pipeline: '',
-        deliver: destinationIds.length > 0 ? [{ to: [destinationIds[0]] }] : [],
-      });
+      routes.push(route);
     } else if (chose) {
       const r = routes.find((r) => r.id === chose.route);
       if (r) {
@@ -335,15 +327,9 @@
     unwired.set(to, [...new Set([...(unwired.get(to) ?? []), ...brought])]);
     unwired.delete(from);
   }
-  /** A new route on `source`'s card, its pipeline still to choose. */
+  /** A new route on `source`'s card. */
   function addBranch(source: string) {
-    routes.push({
-      id: mintRouteId(),
-      source,
-      condition: null,
-      pipeline: '',
-      deliver: [{ to: [] }],
-    });
+    routes.push(newRoute(source));
   }
   /** `deliver` is optional on the wire; the editor works against an array. */
   /** What `shared/` adds to the choices. A route lives in one subtree and may name an object from either, since

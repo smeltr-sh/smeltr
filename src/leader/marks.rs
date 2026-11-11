@@ -1,5 +1,6 @@
-//! What an admin said about a source's rows read against its normal (`throughput`): lower the warning that holds to
-//! info, or reset the source's history, so its normal is learned again from now.
+//! What an editor said about a source's rows read against its normal (`throughput`): lower the warning that holds to
+//! info, reset the source's history, so its normal is learned again from now, or say a past period of it was normal
+//! or an outage.
 //!
 //! A lowered warning stays on the Issues page for everyone, marked as info, and the views that judge health leave
 //! it out. It is named by when it began, so it stays lowered until it ends, and the next one is a warning again.
@@ -8,14 +9,20 @@
 //! A source whose history was reset learns its normal only from what it read after the reset, so it has none, and
 //! does not warn, until it has [`super::throughput::MIN_DAYS`] days of that.
 //!
-//! Both are kept in one setting, with who said each.
+//! A period said to be normal is learned from though it warned, and one said to be an outage is not learned from though
+//! it did not warn. The count widths and the gap learn from the same periods.
+//!
+//! All are kept in one setting, with who said each.
 
+use axum::Json;
 use axum::extract::{Path, State};
 use serde::{Deserialize, Serialize};
 
 use super::AppState;
 use super::envelope::{Empty, Envelope, Refusal};
+use super::series::YEAR_MS;
 use super::store::{Actor, Store};
+use super::throughput::{self, Learning};
 use super::warnings::{self, Condition, SubjectKind};
 
 /// Where the marks are kept, as JSON.
@@ -29,6 +36,8 @@ pub struct Marks {
     pub lowered: Vec<Lowered>,
     #[serde(default)]
     pub reset: Vec<Reset>,
+    #[serde(default)]
+    pub periods: Vec<Period>,
 }
 
 /// A source's rows warning that began at `since_millis`, lowered to info by `by`.
@@ -49,6 +58,26 @@ pub struct Reset {
     pub source: String,
     pub from_millis: i64,
     pub by: String,
+}
+
+/// A past period of a source an editor said was normal or an outage.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Period {
+    pub group: String,
+    pub source: String,
+    pub from_millis: i64,
+    pub to_millis: i64,
+    pub was: Was,
+    pub by: String,
+}
+
+/// What an editor said a past period of a source was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Was {
+    Normal,
+    Outage,
 }
 
 impl Marks {
@@ -96,7 +125,7 @@ fn holding_since(state: &AppState, group: &str, source: &str, now_ms: i64) -> Re
 /// Held while the marks are read, changed and written, so two marks made at once are both kept.
 static CHANGING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// One source an admin marks, by the route that marks it.
+/// One source an editor marks, by the route that marks it.
 struct Marking {
     group: String,
     source: String,
@@ -200,6 +229,81 @@ pub async fn reset_history(
         .await
 }
 
+/// A past period of a source, and what to mark it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Marked {
+    pub from_millis: i64,
+    pub to_millis: i64,
+    pub was: Was,
+}
+
+/// `POST /api/areas/:area/sources/:id/mark`: says a past period of the source was normal or an outage, in place of
+/// what was said about that same period. Refused for a period that is empty or not over.
+pub async fn mark(
+    State(state): State<AppState>,
+    actor: Option<axum::Extension<Actor>>,
+    Path((group, source)): Path<(String, String)>,
+    Json(marked): Json<Marked>,
+) -> Envelope<Empty> {
+    let marking = Marking {
+        group,
+        source,
+        action: "source-rows-mark",
+    };
+    marking
+        .write(state, actor, move |marks, m, _, actor, now_ms| {
+            if marked.from_millis >= marked.to_millis || marked.to_millis > now_ms {
+                return Err(Refusal::invalid(format!(
+                    "source {} in {}: a period to mark must end after it begins, and must be over",
+                    m.source, m.group
+                )));
+            }
+            // A period past a year is past what any normal learns from.
+            marks
+                .periods
+                .retain(|p| p.to_millis >= now_ms - YEAR_MS && !p.is(&m.group, &m.source, &marked));
+            marks.periods.push(Period {
+                group: m.group.clone(),
+                source: m.source.clone(),
+                from_millis: marked.from_millis,
+                to_millis: marked.to_millis,
+                was: marked.was,
+                by: actor.display_name.clone(),
+            });
+            Ok(())
+        })
+        .await
+}
+
+impl Period {
+    /// Whether this is `group`'s `source`'s period `marked` names.
+    fn is(&self, group: &str, source: &str, marked: &Marked) -> bool {
+        (
+            self.group.as_str(),
+            self.source.as_str(),
+            self.from_millis,
+            self.to_millis,
+        ) == (group, source, marked.from_millis, marked.to_millis)
+    }
+}
+
+/// `GET /api/areas/:area/sources/:id/past`: the source's warnings and quiet spells of the past year, for an editor to
+/// mark ([`throughput::past`]).
+pub async fn past(
+    State(state): State<AppState>,
+    Path((group, source)): Path<(String, String)>,
+) -> Envelope<throughput::Past> {
+    super::blocking_answer(move || {
+        let Some(store) = state.registry.series() else {
+            return Envelope::ok(throughput::Past::default());
+        };
+        let learning = Learning::read(&state.store);
+        throughput::past(store, &group, &source, warnings::now_millis(), &learning).into()
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,7 +317,7 @@ mod tests {
                 since_millis: 5,
                 by: "John".into(),
             }],
-            reset: Vec::new(),
+            ..Marks::default()
         };
         assert_eq!(marks.lowered_by("g", "s", Some(5)), Some("John"));
         assert_eq!(
@@ -231,13 +335,21 @@ mod tests {
         let store = crate::leader::store::Store::open(std::path::Path::new(":memory:"), &dir.join("k")).unwrap();
         assert_eq!(Marks::read(&store), Marks::default());
         let marks = Marks {
-            lowered: Vec::new(),
             reset: vec![Reset {
                 group: "g".into(),
                 source: "s".into(),
                 from_millis: 7,
                 by: "John".into(),
             }],
+            periods: vec![Period {
+                group: "g".into(),
+                source: "s".into(),
+                from_millis: 3,
+                to_millis: 5,
+                was: Was::Outage,
+                by: "John".into(),
+            }],
+            ..Marks::default()
         };
         store
             .put_settings(&[(MARKS_KEY, serde_json::to_string(&marks).unwrap())], None)

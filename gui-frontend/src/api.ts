@@ -3427,7 +3427,6 @@ export type GroupHealth = {
   transformThreads: number;
   readers: number;
   egressThreads: number;
-  partitionsOwned: number;
 };
 
 export type ClusterHealth = {
@@ -3680,29 +3679,6 @@ export function putWorkerSettings(
   ephemeralForgetAfterSeconds: number,
 ): Promise<WorkerSettingsResult> {
   return apiJson('/api/settings/workers', json('PUT', { ephemeralForgetAfterSeconds }));
-}
-
-/** How much of a source's past throughput at this time of day its normal holds,
- * in percent. The bounds come from the leader, so the form does not restate them. */
-export interface WarningSettingsDto {
-  sourceRowsBandPercent: number;
-  defaultPercent: number;
-  minPercent: number;
-  maxPercent: number;
-}
-
-export type WarningSettingsResult = {
-  ok: boolean;
-  errors: ApiError[];
-  settings: WarningSettingsDto | null;
-};
-
-export function getWarningSettings(): Promise<WarningSettingsResult> {
-  return apiJson('/api/settings/warnings');
-}
-
-export function putWarningSettings(sourceRowsBandPercent: number): Promise<WarningSettingsResult> {
-  return apiJson('/api/settings/warnings', json('PUT', { sourceRowsBandPercent }));
 }
 
 /** The level the lines one override names are kept at. It names a class and a type, a class,
@@ -4187,9 +4163,9 @@ export type FlowSeriesDto = {
   points: FlowPointDto[];
 };
 
-/** `bucketMillis` is whichever tier the window fit into -- the finest tier
- * that covers it, so a longer window is coarser rather than several tiers
- * stitched together. */
+/** `bucketMillis` is how wide each point of the window's chart is
+ * (`series::chart_point_ms`). A point is summed from the coarsest tier that fits
+ * in it, and its newest buckets from the finer tiers that still hold them. */
 export type FlowResponseDto = {
   bucketMillis: number;
   rowsIn: FlowSeriesDto[];
@@ -4200,12 +4176,12 @@ export type FlowResponseDto = {
    * falls behind, so this is the weight of what landed, not of what `rowsOut`
    * says left. */
   bytesOut: FlowSeriesDto[];
-  /** Every source's last half hour against its normal, whatever the window. */
+  /** Every source's reading against its normal, whatever window the response is for. */
   normals: FlowNormalDto[];
 };
 
-/** One source's last half hour against its normal (`throughput::Reading`), in rows per second:
- * its normal holds `low` to `high`. */
+/** One source's reading against its normal at the width it is shown at (`throughput::Reading::shown`), in rows
+ * per second: its normal holds `low` to `high`. */
 export type FlowNormalDto = {
   group: string;
   subjectId: string;
@@ -4266,6 +4242,37 @@ export function lowerSourceRows(
   source: string,
 ): Promise<{ ok: boolean; errors: ApiError[] }> {
   return apiJson(inArea(`/sources/${encodeURIComponent(source)}/lower`, group), { method: 'POST' });
+}
+
+/** One span of a source's past year, and whether its normal learns from it (`throughput::PastSpan`). */
+export type PastSpan = { fromMillis: number; toMillis: number; learned: boolean };
+
+/** What a source did over the past year that an editor may say was normal or an outage
+ * (`throughput::Past`): its Rows below normal warnings that ended, newest first, and its longest
+ * quiet spells, longest first. */
+export type SourcePastResponse = {
+  ok: boolean;
+  errors: ApiError[];
+  warnings: PastSpan[];
+  silences: PastSpan[];
+};
+
+export function getSourcePast(group: string, source: string): Promise<SourcePastResponse> {
+  return apiJson(inArea(`/sources/${encodeURIComponent(source)}/past`, group));
+}
+
+/** Says a past span of `group`'s `source` was normal, so its normal learns from it, or an outage,
+ * so it does not. */
+export function markSourcePast(
+  group: string,
+  source: string,
+  span: PastSpan,
+  was: 'normal' | 'outage',
+): Promise<{ ok: boolean; errors: ApiError[] }> {
+  return apiJson(
+    inArea(`/sources/${encodeURIComponent(source)}/mark`, group),
+    json('POST', { fromMillis: span.fromMillis, toMillis: span.toMillis, was }),
+  );
 }
 
 /** Resets `group`'s `source`'s history, so its normal is learned again from now. */
@@ -4469,7 +4476,8 @@ export type NodeReadingDto = {
   /** A source's rows per second that no route claimed, over the same bucket as `rate`. Absent when
    * that bucket is not current. */
   unmatched?: number;
-  /** A source's normal rows per second at this time of day, learned from the last 7 days.
+  /** A source's normal rows per second at this time of day, at the width it is shown at
+   * (`throughput::Reading::shown`).
    * Absent while it has too little history to have one. */
   expected?: { low: number; high: number };
   /** The warning catalog's warnings naming this node, one per condition. */

@@ -993,7 +993,6 @@ pub struct GroupHealth {
     pub readers: usize,
     /// One per destination, set by how many the group delivers to.
     pub egress_threads: usize,
-    pub partitions_owned: usize,
 }
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1020,7 +1019,6 @@ pub fn health_snapshot(state: &AppState) -> HealthResponse {
             transform_threads: 0,
             readers: 0,
             egress_threads: 0,
-            partitions_owned: 0,
         });
         match t.report.kind {
             Some(ThreadKind::Transform) => g.transform_threads += 1,
@@ -1028,7 +1026,6 @@ pub fn health_snapshot(state: &AppState) -> HealthResponse {
             Some(ThreadKind::Egress) => g.egress_threads += 1,
             Some(ThreadKind::Worker) | None => {}
         }
-        g.partitions_owned += t.report.partitions_owned.len();
     }
 
     HealthResponse {
@@ -1117,13 +1114,7 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     let mut active_facts = warnings::currently_active_facts(&snapshot, now_ms, heartbeat_interval, &deployed);
     active_facts.extend(warnings::deploy_facts(&findings, &state.registry));
     let readings = throughput::readings(state, now_ms, heartbeat_interval, true).await;
-    let recovering = warnings::recovering_sources(state.registry.series(), now_ms);
-    active_facts.extend(warnings::outside_normal_facts(
-        &readings,
-        &snapshot,
-        &recovering,
-        heartbeat_interval,
-    ));
+    active_facts.extend(warnings::outside_normal_facts(&readings, &snapshot, heartbeat_interval));
     let (key, kept, channels, marks) = run_store(state.store.clone(), |s| {
         Ok((
             s.key_standing()?,
@@ -1139,8 +1130,7 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     // Read, not yet observed: what else is active is known only once the whole catalog is.
     let starts = state.registry.starts_of(&active_facts, now_ms);
     let key_warnings = warnings::encryption_key_warnings(&key, &channels, &kept, &starts);
-    let normal_warnings =
-        warnings::outside_normal_warnings(&readings, &snapshot, &recovering, &starts, &marks, heartbeat_interval);
+    let normal_warnings = warnings::outside_normal_warnings(&readings, &snapshot, &starts, &marks, heartbeat_interval);
     let credentials = run_store(state.store.clone(), |s| s.list_worker_credentials()).await?;
     let (signing, rotating) = serving_authority(&state.data_dir);
     let serving = serving_certificate(&state.data_dir);
@@ -1455,7 +1445,7 @@ fn default_window_minutes() -> i64 {
 }
 
 /// The longest window any read serves: the longest tier's retention, past which there is nothing left to serve
-/// from (`series::Tier::for_window`).
+/// from.
 pub const MAX_WINDOW_MINUTES: i64 = 30 * 24 * 60;
 
 /// One bucket of a [`FlowSeries`]. Absent from `points` entirely when the bucket has no row -- never a zero
@@ -1483,14 +1473,12 @@ pub struct FlowSeries {
 }
 
 /// What `GET /api/flow` serves (design doc E2 "Flow over time"): rows and payload bytes, in per source and out per
-/// destination, over the caller's window, from whichever tier fits it (`series::Tier::for_window`) -- one tier
-/// queried, not several stitched together, so a window that outgrows the finest tier is coarser than the window
-/// itself, and its most recent stretch can be absent until that data has aged into the tier being served from.
+/// destination, over the caller's window, in the points its chart draws (`series::chart_point_ms`). A point is summed
+/// from the coarsest tier that fits in it, and its newest buckets are also read from the finer tiers that still hold
+/// them, so the most recent stretch is there too.
 ///
-/// `bytes_out` is not `rows_out` weighed. A row counts as out when a destination's queue takes it; its bytes count
-/// when the destination acknowledges them, a queue later. The two agree while a destination keeps up and part
-/// company while it does not -- which is when somebody is watching. Dividing one by the other is not a row size,
-/// and the panel that reads them says which is which.
+/// Out is what destinations acknowledged, in rows and in bytes. A destination that stops acknowledging shows as out
+/// falling while in holds, until its queue fills and holds back the sources feeding it.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FlowResponse {
@@ -1499,11 +1487,11 @@ pub struct FlowResponse {
     pub rows_out: Vec<FlowSeries>,
     pub bytes_in: Vec<FlowSeries>,
     pub bytes_out: Vec<FlowSeries>,
-    /// Every source's last [`throughput::WINDOW`] against its normal, whatever the window asked for.
+    /// Every source's reading against its normal, whatever the window asked for.
     pub normals: Vec<FlowNormal>,
 }
 
-/// One source's last [`throughput::WINDOW`] against its normal, as rows per second: what the Status page ranks by
+/// One source's reading against its normal, as rows per second: what the Status page ranks by
 /// how far each source is from its normal.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1515,16 +1503,17 @@ pub struct FlowNormal {
     pub high: f64,
 }
 
-impl From<&throughput::Reading> for FlowNormal {
-    fn from(r: &throughput::Reading) -> FlowNormal {
-        let seconds = throughput::WINDOW.as_secs_f64();
-        FlowNormal {
+impl FlowNormal {
+    /// `r` at the width a reader is shown (`throughput::Reading::shown`), if one judges it.
+    fn of(r: &throughput::Reading) -> Option<FlowNormal> {
+        let (now, band) = r.shown()?.per_second();
+        Some(FlowNormal {
             group: r.group.clone(),
             subject_id: r.source.clone(),
-            now: r.rows / seconds,
-            low: r.band.low / seconds,
-            high: r.band.high / seconds,
-        }
+            now,
+            low: band.low,
+            high: band.high,
+        })
     }
 }
 
@@ -1548,11 +1537,11 @@ impl FlowResponse {
 const GROUP_LABEL: &str = "group";
 /// `Reader::step`'s count of records read from the source (`runtime.rs`), the "in" of E2.
 pub(crate) const ROWS_IN_METRIC: &str = "smeltr_rows_polled_total";
-/// `Transform::send`'s count of records the destination accepted (`runtime.rs`), the "out" of E2 -- what actually
-/// left, not what was attempted.
-const ROWS_OUT_METRIC: &str = "smeltr_rows_sent_total";
-/// `egress::run`'s count of rows a destination has acknowledged (`egress.rs`) -- a real delivery, past
-/// `Dispatched::InFlight`.
+/// `Transform::count_outcomes`' count of rows handed to a destination's queue (`runtime.rs`). The destination page
+/// calls these received: they are not yet acknowledged.
+const ROWS_SENT_METRIC: &str = "smeltr_rows_sent_total";
+/// `egress::run`'s count of rows a destination has acknowledged (`egress.rs`), the "out" of E2 -- a real delivery,
+/// past `Dispatched::InFlight`.
 const ROWS_DELIVERED_METRIC: &str = "smeltr_rows_delivered_total";
 /// The wire name `Reader::lag` gauges, per source, topic and partition (E6). Only a source kind that overrides
 /// `Source::lag` ever reports it, so a source that cannot is simply absent from this metric rather than reporting
@@ -1560,9 +1549,7 @@ const ROWS_DELIVERED_METRIC: &str = "smeltr_rows_delivered_total";
 const SOURCE_LAG_METRIC: &str = "smeltr_source_lag";
 /// `Transform::poll`'s payload bytes read, beside its row count (`runtime.rs`).
 const BYTES_POLLED_METRIC: &str = "smeltr_bytes_polled_total";
-/// `egress::note_delivered`'s bytes acknowledged, beside its row count. The weight of what a destination took, so
-/// it answers for `ROWS_DELIVERED_METRIC`'s rows rather than `ROWS_OUT_METRIC`'s: nothing weighs a row at the
-/// moment it is sent.
+/// `egress::note_delivered`'s bytes acknowledged, beside its row count: the weight of what a destination took.
 const BYTES_DELIVERED_METRIC: &str = "smeltr_bytes_delivered_total";
 /// `Transform::place_unmatched`'s count of rows no route on their source matched (`runtime.rs`), counted whether the
 /// deployment delivers them or drops them.
@@ -1575,10 +1562,10 @@ const BATCHES_DLQ_METRIC: &str = "smeltr_batches_dlq_total";
 /// freshly-`Registry::default`ed one in a test) answers with empty series rather than an error: there is simply no
 /// history to serve yet.
 pub fn flow_snapshot(state: &AppState, window: Duration) -> Result<FlowResponse, StoreError> {
-    let tier = series::Tier::for_window(window);
+    let point_ms = series::chart_point_ms(window);
     let Some(store) = state.registry.series() else {
         return Ok(FlowResponse {
-            bucket_millis: tier.bucket_ms(),
+            bucket_millis: point_ms,
             rows_in: Vec::new(),
             rows_out: Vec::new(),
             bytes_in: Vec::new(),
@@ -1586,13 +1573,15 @@ pub fn flow_snapshot(state: &AppState, window: Duration) -> Result<FlowResponse,
             normals: Vec::new(),
         });
     };
-    let since_ms = warnings::now_millis() - window.as_millis() as i64;
+    // From the start of the point the window begins in, so the chart's first point is read whole, as `stats::build`
+    // does for the source panel.
+    let since_ms = (warnings::now_millis() - window.as_millis() as i64).div_euclid(point_ms) * point_ms;
     Ok(FlowResponse {
-        bucket_millis: tier.bucket_ms(),
-        rows_in: flow_series(store, ROWS_IN_METRIC, "source", tier, since_ms)?,
-        rows_out: flow_series(store, ROWS_OUT_METRIC, "destination", tier, since_ms)?,
-        bytes_in: flow_series(store, BYTES_POLLED_METRIC, "source", tier, since_ms)?,
-        bytes_out: flow_series(store, BYTES_DELIVERED_METRIC, "destination", tier, since_ms)?,
+        bucket_millis: point_ms,
+        rows_in: flow_series(store, ROWS_IN_METRIC, "source", point_ms, since_ms)?,
+        rows_out: flow_series(store, ROWS_DELIVERED_METRIC, "destination", point_ms, since_ms)?,
+        bytes_in: flow_series(store, BYTES_POLLED_METRIC, "source", point_ms, since_ms)?,
+        bytes_out: flow_series(store, BYTES_DELIVERED_METRIC, "destination", point_ms, since_ms)?,
         normals: Vec::new(),
     })
 }
@@ -1601,14 +1590,14 @@ fn flow_series(
     store: &series::RegistryStore,
     metric: &str,
     label_name: &str,
-    tier: series::Tier,
+    point_ms: i64,
     since_ms: i64,
 ) -> Result<Vec<FlowSeries>, StoreError> {
     let mut out = Vec::new();
     // Counted over the pass rather than reported per subject: a key this reader cannot parse is a shape it does
     // not know, and every other key of that shape will be unreadable too.
     let (mut unreadable, mut exemplar) = (0usize, None);
-    for (subject_key, points) in store.series_since(metric, tier, since_ms)? {
+    for (subject_key, points) in store.sums_since(metric, point_ms, since_ms)? {
         let (Some(group), Some(subject_id)) = (
             subject_label(&subject_key, GROUP_LABEL),
             subject_label(&subject_key, label_name),
@@ -1623,10 +1612,7 @@ fn flow_series(
             subject_id,
             points: points
                 .into_iter()
-                .map(|(bucket_ms, value)| FlowPoint {
-                    bucket_millis: bucket_ms,
-                    value,
-                })
+                .map(|(bucket_millis, value)| FlowPoint { bucket_millis, value })
                 .collect(),
         });
     }
@@ -1660,7 +1646,7 @@ async fn get_flow(
         .map_err(|e| Refusal::internal(e.to_string()))?;
     let heartbeat_interval = crate::startup_config::leader_heartbeat_interval();
     let readings = throughput::readings(&state, warnings::now_millis(), heartbeat_interval, false).await;
-    flow.normals = readings.iter().map(FlowNormal::from).collect();
+    flow.normals = readings.iter().filter_map(FlowNormal::of).collect();
     Ok(Envelope::ok(flow.visible_to(&access)))
 }
 
@@ -3954,10 +3940,6 @@ pub fn admin_router() -> Router<AppState> {
             get(log_levels::get_settings).put(log_levels::put_settings),
         )
         .route(
-            "/api/settings/warnings",
-            get(throughput::get_settings).put(throughput::put_settings),
-        )
-        .route(
             "/api/settings/updates",
             get(updates::get_settings).put(updates::put_settings),
         )
@@ -5555,7 +5537,7 @@ mod flow_endpoint_tests {
             .unwrap();
         store
             .record_delta(
-                ROWS_OUT_METRIC,
+                ROWS_DELIVERED_METRIC,
                 r#"[["group","prod-west"],["destination","2"]]"#,
                 now,
                 9.0,
@@ -5572,6 +5554,34 @@ mod flow_endpoint_tests {
         assert_eq!(flow.rows_out[0].subject_id, "2");
         assert_eq!(flow.rows_out[0].group, "prod-west");
         assert_eq!(flow.rows_out[0].points[0].value, 9.0);
+    }
+
+    /// A 30-day window is served in six-hour points. Each sums the buckets inside it, and the newest point, still in
+    /// the finer tiers, is summed from those.
+    #[test]
+    fn a_long_window_holds_its_newest_buckets_too() {
+        let state = state();
+        let store = state.registry.series().unwrap();
+        let now = warnings::now_millis();
+        let key = r#"[["group","g"],["source","s"]]"#;
+        let six_hours = 6 * 3_600_000;
+        let point = now.div_euclid(six_hours) * six_hours;
+        let earlier = point - 2 * 86_400_000;
+        store.record_delta(ROWS_IN_METRIC, key, earlier, 4.0).unwrap();
+        store
+            .record_delta(ROWS_IN_METRIC, key, earlier + six_hours / 2, 1.0)
+            .unwrap();
+        store.maintain(now).unwrap();
+        store.record_delta(ROWS_IN_METRIC, key, point, 2.0).unwrap();
+        store.record_delta(ROWS_IN_METRIC, key, point + 1, 3.0).unwrap();
+
+        let flow = flow_snapshot(&state, Duration::from_secs(30 * 86_400)).unwrap();
+        let points: Vec<(i64, f64)> = flow.rows_in[0]
+            .points
+            .iter()
+            .map(|p| (p.bucket_millis, p.value))
+            .collect();
+        assert_eq!(points, [(earlier, 5.0), (point, 5.0)]);
     }
 
     /// A viewer of one group reads that group's flow and not another's.
@@ -5615,9 +5625,9 @@ mod flow_endpoint_tests {
         assert_eq!(groups(&flow.bytes_out), vec!["payments"]);
     }
 
-    /// The weight of the same flow, for the panel's hover readout. `bytes_out` comes off the
-    /// delivered metric, so a destination that has taken rows but not yet acknowledged them
-    /// reports rows out with no bytes beside them -- a lag, not a missing series.
+    /// The weight of the same flow, for the panel's hover readout. Rows a destination has received
+    /// but not yet acknowledged are not out, in rows or in bytes: a destination that is down shows
+    /// nothing out.
     #[test]
     fn bytes_in_and_bytes_out_read_the_polled_and_delivered_metrics() {
         let state = state();
@@ -5633,7 +5643,7 @@ mod flow_endpoint_tests {
             .unwrap();
         store
             .record_delta(
-                ROWS_OUT_METRIC,
+                ROWS_SENT_METRIC,
                 r#"[["group","prod-west"],["destination","2"]]"#,
                 now,
                 9.0,
@@ -5645,8 +5655,7 @@ mod flow_endpoint_tests {
         assert_eq!(flow.bytes_in[0].subject_id, "7");
         assert_eq!(flow.bytes_in[0].group, "prod-west");
         assert_eq!(flow.bytes_in[0].points[0].value, 4096.0);
-        // Rows were sent; nothing has been acknowledged, so there is no weight to report yet.
-        assert_eq!(flow.rows_out.len(), 1);
+        assert!(flow.rows_out.is_empty());
         assert!(flow.bytes_out.is_empty());
 
         store
@@ -5738,17 +5747,13 @@ mod flow_endpoint_tests {
     }
 
     #[test]
-    fn the_bucket_width_reflects_the_tier_the_window_chose() {
+    fn the_bucket_width_is_the_width_of_the_charts_points() {
         let state = state();
         let hour = flow_snapshot(&state, Duration::from_secs(3600)).unwrap();
-        assert_eq!(hour.bucket_millis, 10_000, "sixty minutes fits the finest tier");
+        assert_eq!(hour.bucket_millis, 10_000, "an hour is 360 ten-second points");
 
-        let past_a_day = flow_snapshot(&state, Duration::from_secs(3600 * 25)).unwrap();
-        assert_eq!(
-            past_a_day.bucket_millis,
-            5 * 60_000,
-            "past twenty-four hours needs the five-minute tier"
-        );
+        let day = flow_snapshot(&state, Duration::from_secs(24 * 3600)).unwrap();
+        assert_eq!(day.bucket_millis, 5 * 60_000, "a day is 288 five-minute points");
     }
 
     #[tokio::test]
@@ -5765,8 +5770,8 @@ mod flow_endpoint_tests {
         .unwrap();
         assert_eq!(
             huge.bucket_millis,
-            60 * 60_000,
-            "clamped to thirty days, the coarsest tier"
+            6 * 60 * 60_000,
+            "clamped to thirty days, in six-hour points"
         );
 
         let zero = get_flow(
@@ -5778,7 +5783,7 @@ mod flow_endpoint_tests {
         .unwrap();
         assert_eq!(
             zero.bucket_millis, 10_000,
-            "clamped up to at least one minute, the finest tier"
+            "clamped up to at least one minute, in ten-second points"
         );
     }
 }

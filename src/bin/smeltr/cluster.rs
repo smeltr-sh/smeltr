@@ -139,7 +139,6 @@ mod tests {
             transform_threads: 0,
             readers: 1,
             egress_threads: 0,
-            partitions_owned: 0,
         }
     }
 

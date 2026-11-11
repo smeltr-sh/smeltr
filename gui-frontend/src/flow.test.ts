@@ -24,8 +24,8 @@ describe('denseSeries', () => {
     expect(denseSeries([], 10_000, 0, 20_000)).toEqual([null, null, null]);
   });
 
-  it('aligns the requested range inward to whole buckets', () => {
-    expect(denseSeries([pt(10_000, 4)], 10_000, 4_000, 16_000)).toEqual([4]);
+  it('starts at the point the range begins in, which the leader reads whole', () => {
+    expect(denseSeries([pt(0, 3), pt(10_000, 4)], 10_000, 4_000, 16_000)).toEqual([3, 4]);
   });
 });
 
@@ -113,14 +113,6 @@ describe('furthestFromNormal', () => {
       ['near-top', 0],
       ['middle', 0],
     ]);
-  });
-
-  it('puts a source reading where it normally reads none first, with no percent to give', () => {
-    const none = { ...normal('woke', 3), low: 0, high: 0 };
-    expect(furthestFromNormal([normal('dropped', 5), none])[0]).toEqual({
-      ...none,
-      awayPercent: null,
-    });
   });
 
   it('keeps only the top `limit`', () => {
