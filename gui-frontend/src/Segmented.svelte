@@ -35,6 +35,7 @@
 <style>
   .seg {
     display: inline-flex;
+    flex-shrink: 0;
     border: 1px solid var(--border);
     border-radius: 999px;
     overflow: hidden;

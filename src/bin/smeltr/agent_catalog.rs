@@ -707,18 +707,6 @@ pub const CATALOG: &[Route] = &[
         body: "{ idleSeconds: number, absoluteSeconds: number }",
     },
     Route {
-        method: "GET",
-        path: "/api/settings/warnings",
-        what: "The percent of a source's past windows its expected throughput holds, with the default and allowed min and max. No query.",
-        body: "",
-    },
-    Route {
-        method: "PUT",
-        path: "/api/settings/warnings",
-        what: "Set the percent of a source's past windows its expected throughput holds. No query.",
-        body: "{ sourceRowsBandPercent: number }",
-    },
-    Route {
         method: "POST",
         path: "/api/areas/:area/sources/:id/lower",
         what: "Lower the source's Rows below normal warning that holds to info until it ends. The area is the source's worker group. No query.",
@@ -729,6 +717,18 @@ pub const CATALOG: &[Route] = &[
         path: "/api/areas/:area/sources/:id/reset-history",
         what: "Reset the source's history, so its normal is learned again from now: it has none, and does not warn on rows, for the first 3 days. The area is the source's worker group. No query.",
         body: "",
+    },
+    Route {
+        method: "GET",
+        path: "/api/areas/:area/sources/:id/past",
+        what: "The source's Rows below normal warnings that ended in the past year, newest first, and its longest quiet spells of the year, longest first; each with whether its normal learns from it. The area is the source's worker group. No query.",
+        body: "",
+    },
+    Route {
+        method: "POST",
+        path: "/api/areas/:area/sources/:id/mark",
+        what: "Say a past period of the source was normal, so its normal learns from it though it warned, or an outage, so its normal does not though it did not warn. Replaces what was said about that same period. The area is the source's worker group. No query.",
+        body: "{ fromMillis: number, toMillis: number, was: 'normal' | 'outage' }",
     },
     Route {
         method: "GET",

@@ -60,11 +60,12 @@ impl Measurements {
             .into_iter()
             .map(|n| ((n.group.clone(), n.kind, n.id.clone()), n))
             .collect();
-        let seconds = throughput::WINDOW.as_secs_f64();
         for r in readings {
+            let Some(shown) = r.shown() else { continue };
+            let (_, band) = shown.per_second();
             node(&mut nodes, &r.group, NodeKind::Source, &r.source).expected = Some(Expected {
-                low: r.band.low / seconds,
-                high: r.band.high / seconds,
+                low: band.low,
+                high: band.high,
             });
         }
         self.nodes = nodes.into_values().collect();
@@ -809,12 +810,19 @@ mod tests {
         let reading = throughput::Reading {
             group: "g".to_string(),
             source: "s".to_string(),
-            rows: 0.0,
             ended_ms: 0,
-            band: throughput::Band {
-                low: 1800.0,
-                high: 3600.0,
-            },
+            judged: vec![throughput::Judged {
+                window: throughput::WINDOW,
+                rows: 0.0,
+                band: throughput::Band {
+                    low: 1800.0,
+                    high: 3600.0,
+                },
+                below: false,
+                above: false,
+            }],
+            outside: None,
+            gap: None,
         };
         let answer = build(&[], None, no_holds(), live(&[]), warnings::now_millis()).with_expected(&[reading]);
         assert_eq!(answer.nodes.len(), 1);
