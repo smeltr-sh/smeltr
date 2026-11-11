@@ -410,8 +410,14 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "PUT",
         path: "/api/areas/:area/tests/:id",
-        what: "Lock (create or replace) a test on a branch; the path's id wins. Query: branch.",
-        body: "{ id, name, pipeline?: id (absent = end-to-end by sample source), sample: id, lockedAt: micros, rowsIn: number, fields: string[] (leaf names as the records grid names them), rows: { row: number, values?: { [field]: value } (absent = no document), sent?: { pipeline, route, destinations: string[] } (end-to-end only) }[] }",
+        what: "Lock (create or replace) a test on a branch: the leader runs it and stores what the run makes of the fields and rows named. Query: branch.",
+        body: "{ name, pipeline?: id (absent = end-to-end by sample source), sample: id, lockedAt: micros, fields?: string[] (leaf names as the records grid names them; absent = every field the run made), rows?: number[] (absent = every row) }",
+    },
+    Route {
+        method: "POST",
+        path: "/api/areas/:area/preview/test-lock",
+        what: "What locking a test would store, written nowhere: { rowsIn, fields, rows: { row, values? (absent = no document), sent? (end-to-end only) }[] }. Query: branch.",
+        body: "the PUT tests/:id body",
     },
     Route {
         method: "GET",

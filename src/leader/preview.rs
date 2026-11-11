@@ -1469,38 +1469,64 @@ pub fn run_test(
         verdict: None,
         error: None,
     };
-    let sample = match sample {
-        Ok(Some(sample)) => sample,
-        Ok(None) => {
-            result.error = Some(format!(
-                "this test runs over the sample {:?}, which is not on this branch",
-                test.sample
-            ));
-            return result;
-        }
-        Err(e) => {
-            result.error = Some(e);
-            return result;
-        }
-    };
+    match run_made(
+        test.pipeline.as_deref(),
+        &test.sample,
+        test.locked_at,
+        config,
+        sample,
+        declared_at,
+    ) {
+        Ok((rows_in, made)) => result.verdict = Some(config_file::compare(test, rows_in, &made)),
+        Err(message) => result.error = Some(message),
+    }
+    result
+}
 
+/// What locking `lock` holds: the same run [`run_test`] compares, so a test passes the moment it is locked. `sample`
+/// is as [`run_test`] takes it.
+pub fn lock_test(
+    lock: &config_file::Lock,
+    config: &str,
+    sample: Result<Option<config_file::SampleDto>, String>,
+    declared_at: &config_file::DeclaredAt,
+) -> Result<config_file::Locked, String> {
+    let (rows_in, made) = run_made(
+        lock.pipeline.as_deref(),
+        &lock.sample,
+        lock.locked_at,
+        config,
+        sample,
+        declared_at,
+    )?;
+    Ok(lock.locked(rows_in, &made))
+}
+
+/// How many records the sample `sample_id` holds, and every document a test's run over it makes at `locked_at`:
+/// `pipeline`'s preview, or with none the route preview.
+fn run_made(
+    pipeline: Option<&str>,
+    sample_id: &str,
+    locked_at: i64,
+    config: &str,
+    sample: Result<Option<config_file::SampleDto>, String>,
+    declared_at: &config_file::DeclaredAt,
+) -> Result<(usize, Vec<config_file::Made>), String> {
+    let sample =
+        sample?.ok_or_else(|| format!("this test runs over the sample {sample_id:?}, which is not on this branch"))?;
     let rows_in = sample.records.len();
-    let actual = match &test.pipeline {
+    let made = match pipeline {
         Some(pipeline) => run_pipeline_actual(
             pipeline,
             config,
-            test.locked_at,
+            locked_at,
             declared_at.clone(),
             &sample.columns,
             sample.records,
         ),
-        None => run_route_actual(config, test.locked_at, declared_at.clone(), sample),
-    };
-    match actual {
-        Ok(actual) => result.verdict = Some(config_file::compare(test, rows_in, &actual)),
-        Err(message) => result.error = Some(message),
-    }
-    result
+        None => run_route_actual(config, locked_at, declared_at.clone(), sample),
+    }?;
+    Ok((rows_in, made))
 }
 
 /// A pipeline test's run: the pipeline preview over the sample's records, pinned to the instant the test locked.

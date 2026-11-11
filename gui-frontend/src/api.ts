@@ -52,7 +52,6 @@ import { editedBy, suggestBranchName } from './branchNames';
 import { store, stored, storedJson } from './stored';
 import { csrf, recheck, session, signedOut, type AccessDto, type AccessLevel } from './session';
 import { bareError, errors, Reported, type Call, type Weight } from './errors.svelte';
-import { leafMap } from './recordDiff';
 
 export function errorText(errors: ApiError[]): string {
   return errors.map((e) => e.message).join('; ');
@@ -2492,8 +2491,8 @@ export type TestSummary = {
 /** Where an end-to-end test's document went, by names -- never the runtime ids those name. */
 export type Sent = { pipeline: string; route: string; destinations: string[] };
 
-/** One document a run made on a checked row, cut down to the test's fields (`cutDown`), or the row making
- * none. Mirrors `config_file::Outcome`. */
+/** One document a run made on a checked row, cut down to the test's fields; or none, for a row that
+ * made none. Mirrors `config_file::Outcome`. */
 export type Outcome = {
   /** The row as the records grid numbers it: a pipeline test's output row, or an end-to-end test's
    * record. */
@@ -2524,24 +2523,24 @@ export type TestDto = {
   rows: Outcome[];
 };
 
-/** `document`, made on `row`, cut down to `fields`: what a test holds of it, the way the leader cuts a run's
- * (`Made::cut`). A field is read as the grid reads a cell (`leafMap`). */
-export function cutDown(
-  row: number,
-  document: unknown | null,
-  fields: string[],
-  sent?: Sent,
-): Outcome {
-  const out: Outcome = { row };
-  if (document !== null) {
-    const leaves = leafMap(document);
-    out.values = Object.fromEntries(
-      fields.filter((f) => leaves.has(f)).map((f) => [f, leaves.get(f)]),
-    );
-  }
-  if (sent && document !== null) out.sent = sent;
-  return out;
-}
+/** What locking a test asks for: a `TestDto` without what the run made. The leader makes that itself from
+ * the same run a test run compares, so a test passes the moment it is locked. Mirrors `config_file::Lock`. */
+export type Lock = {
+  name: string;
+  /** Absent routes the sample by its source, as `TestDto.pipeline`. */
+  pipeline?: string;
+  sample: string;
+  lockedAt: number;
+  /** Absent checks every field the run made. */
+  fields?: string[];
+  /** Absent checks every row the run made. */
+  rows?: number[];
+};
+
+/** What a lock holds of a run: a `TestDto`'s `rowsIn`, `fields` and `rows`. Mirrors `config_file::Locked`. */
+export type Locked = { rowsIn: number; fields: string[]; rows: Outcome[] };
+
+export type LockedResult = Partial<Locked> & { ok: boolean; errors: ApiError[] };
 
 /** What Lock this as a test locks: the fields and rows on screen when it was pressed. */
 export type LockChoice = { fields: string[]; rows: number[] };
@@ -2680,9 +2679,14 @@ export function testAt(
   return apiJson(`${inArea(`/tests/${encodeURIComponent(id)}`, inScope)}?${q}`);
 }
 
-/** Lock a test, or replace one under the same id. */
-export function putTest(test: TestDto): Promise<MutationResult> {
-  return configJson(inArea(`/tests/${encodeURIComponent(test.id)}`), json('PUT', test));
+/** What locking `lock` would hold on this branch, written nowhere. */
+export function previewLock(lock: Lock): Promise<LockedResult> {
+  return post(branched(inArea('/preview/test-lock')), lock, 'quiet');
+}
+
+/** Lock test `id`, or replace the one under that id, holding what a run of it makes now on this branch. */
+export function putTest(id: string, lock: Lock): Promise<MutationResult> {
+  return configJson(inArea(`/tests/${encodeURIComponent(id)}`), json('PUT', lock));
 }
 
 export function deleteTest(id: string): Promise<MutationResult> {

@@ -47,14 +47,12 @@ test('a pipeline is exported with the pipeline it calls, and its routes when ask
     records: [{ _raw: '10.0.0.1 allow' }],
   });
   await api.put(`${SHARED}/tests/firewall-lines${ON}`, {
-    id: 'firewall-lines',
     name: 'firewall lines',
     pipeline: 'firewall',
     sample: 'lines',
     lockedAt: 0,
-    rowsIn: 1,
     fields: [],
-    rows: [{ row: 0 }],
+    rows: [0],
   });
 
   await goto(admin, leader, '#/build/pipelines');

@@ -131,6 +131,79 @@ fn leaves_of(value: &Value, path: &mut String, into: &mut Map<String, Value>) {
     }
 }
 
+/// What locking a test asks for: a [`TestDto`] without what the run made. The leader makes that itself
+/// ([`Lock::locked`]) from the same run a test run compares, so a test passes the moment it is locked.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Lock {
+    pub name: String,
+    /// `None` routes the sample by its source, as [`TestDto::pipeline`].
+    #[serde(default)]
+    pub pipeline: Option<String>,
+    pub sample: String,
+    pub locked_at: i64,
+    /// The fields to check. `None` checks every field the run made.
+    #[serde(default)]
+    pub fields: Option<Vec<String>>,
+    /// The rows to check, as the records grid numbers them. `None` checks every row the run made.
+    #[serde(default)]
+    pub rows: Option<Vec<usize>>,
+}
+
+/// What a lock holds of a run: [`TestDto::rows_in`], [`TestDto::fields`] and [`TestDto::rows`].
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Locked {
+    pub rows_in: usize,
+    pub fields: Vec<String>,
+    pub rows: Vec<Outcome>,
+}
+
+impl Lock {
+    /// What `made`, a run over a sample of `rows_in` records, holds of these fields and rows.
+    pub fn locked(&self, rows_in: usize, made: &[Made]) -> Locked {
+        let fields = self.fields.clone().unwrap_or_else(|| {
+            let mut leaves = Map::new();
+            for document in made.iter().filter_map(|m| m.document.as_ref()) {
+                leaves_of(document, &mut String::new(), &mut leaves);
+            }
+            leaves.into_iter().map(|(field, _)| field).collect()
+        });
+        let rows = self
+            .rows
+            .clone()
+            .unwrap_or_else(|| made.iter().map(|m| m.row).collect());
+        let mut checked: Vec<usize> = Vec::new();
+        for row in rows {
+            if !checked.contains(&row) {
+                checked.push(row);
+            }
+        }
+        Locked {
+            rows_in,
+            rows: checked
+                .into_iter()
+                .flat_map(|row| made_on(row, &fields, made))
+                .collect(),
+            fields,
+        }
+    }
+
+    /// The test `id` holding `locked`.
+    pub fn test(self, id: String, locked: Locked) -> TestDto {
+        TestDto {
+            id,
+            name: self.name,
+            pipeline: self.pipeline,
+            sample: self.sample,
+            locked_at: self.locked_at,
+            rows_in: locked.rows_in,
+            fields: locked.fields,
+            rows: locked.rows,
+        }
+    }
+}
+
 /// What a library listing shows: everything but the outcomes.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -248,29 +321,12 @@ pub struct RowsIn {
 /// check is never read.
 pub fn compare(test: &TestDto, rows_in: usize, made: &[Made]) -> Verdict {
     let first = test.rows_checked().into_iter().find_map(|row| {
-        let want = test.rows.iter().filter(|o| o.row == row);
-        let mut got: Vec<Outcome> = made
-            .iter()
-            .filter(|m| m.row == row)
-            .map(|m| m.cut(&test.fields))
-            .collect();
-        if got.is_empty() {
-            // A row the run never reached made nothing, as a dropped row did, so locking it again keeps it checked.
-            got.push(
-                Made {
-                    row,
-                    document: None,
-                    sent: None,
-                }
-                .cut(&test.fields),
-            );
-        }
-        let mut want = want.cloned();
-        let mut got = got.into_iter();
+        let mut want = test.rows.iter().filter(|o| o.row == row).cloned();
+        let mut got = made_on(row, &test.fields, made).into_iter();
         loop {
             match (want.next(), got.next()) {
                 (None, None) => return None,
-                (w, g) if w == g => continue,
+                (Some(w), Some(g)) if w.matches(&g) => continue,
                 (expected, actual) => {
                     return Some(Difference { row, expected, actual });
                 }
@@ -286,6 +342,60 @@ pub fn compare(test: &TestDto, rows_in: usize, made: &[Made]) -> Verdict {
         first_difference: first,
         rows_in,
     }
+}
+
+/// What a test checks of `row`: each document the run made on it, in order, cut down to `fields`. A row the run never
+/// reached made nothing, as a dropped row did, so locking it again keeps it checked.
+fn made_on(row: usize, fields: &[String], made: &[Made]) -> Vec<Outcome> {
+    let got: Vec<Outcome> = made.iter().filter(|m| m.row == row).map(|m| m.cut(fields)).collect();
+    if got.is_empty() {
+        return vec![
+            Made {
+                row,
+                document: None,
+                sent: None,
+            }
+            .cut(fields),
+        ];
+    }
+    got
+}
+
+impl Outcome {
+    /// Whether a run's `other` makes what this locked: the same row, sent the same way, holding the same fields with
+    /// [`same`] values.
+    fn matches(&self, other: &Outcome) -> bool {
+        self.row == other.row
+            && self.sent == other.sent
+            && match (&self.values, &other.values) {
+                (Some(a), Some(b)) => same_members(a, b),
+                (a, b) => a == b,
+            }
+    }
+}
+
+/// How far apart two floats may be, relative to the larger, and still be one value. A float's last bits depend on the
+/// order its arithmetic ran in, which a test does not check.
+const FLOAT_TOLERANCE: f64 = 1e-9;
+
+/// Whether `a` and `b` are one value to a test: two integers must be equal, so ids that differ in the last digit are
+/// two values; any other two numbers are one value within [`FLOAT_TOLERANCE`]; arrays and objects compare member by
+/// member.
+fn same(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) if x.is_f64() || y.is_f64() => match (x.as_f64(), y.as_f64()) {
+            (Some(x), Some(y)) => x == y || (x - y).abs() <= FLOAT_TOLERANCE * x.abs().max(y.abs()),
+            _ => false,
+        },
+        (Value::Array(x), Value::Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(x, y)| same(x, y)),
+        (Value::Object(x), Value::Object(y)) => same_members(x, y),
+        _ => a == b,
+    }
+}
+
+/// Whether `a` and `b` hold the same keys with [`same`] values.
+fn same_members(a: &Map<String, Value>, b: &Map<String, Value>) -> bool {
+    a.len() == b.len() && a.iter().all(|(k, v)| b.get(k).is_some_and(|w| same(v, w)))
 }
 
 /// The file `id` is stored in, relative to the bundle.
@@ -430,6 +540,67 @@ mod tests {
             )
             .passed
         );
+    }
+
+    /// A float's last bits depend on the order its arithmetic ran in, and a float with no fraction is the integer it
+    /// equals; an integer is exact, however long.
+    #[test]
+    fn floats_match_within_a_tolerance_and_integers_exactly() {
+        let test = locked(
+            "numbers",
+            &["f", "whole", "id", "list"],
+            &[row(
+                0,
+                json!({"f": 0.3, "whole": 10.0, "id": 9_007_199_254_740_993_u64, "list": [0.1, {"g": 2.5}]}),
+            )],
+        );
+        let near = [row(
+            0,
+            json!({"f": 0.1 + 0.2, "whole": 10, "id": 9_007_199_254_740_993_u64, "list": [0.1 + 1e-17, {"g": 2.5}]}),
+        )];
+        assert!(compare(&test, test.rows_in, &near).passed);
+        for far in [
+            json!({"f": 0.300_001, "whole": 10.0, "id": 9_007_199_254_740_993_u64, "list": [0.1, {"g": 2.5}]}),
+            json!({"f": 0.3, "whole": 10.0, "id": 9_007_199_254_740_992_u64, "list": [0.1, {"g": 2.5}]}),
+            json!({"f": 0.3, "whole": 10.0, "id": 9_007_199_254_740_993_u64, "list": [0.1, {"g": 2.6}]}),
+            json!({"f": "0.3", "whole": 10.0, "id": 9_007_199_254_740_993_u64, "list": [0.1, {"g": 2.5}]}),
+        ] {
+            assert!(!compare(&test, test.rows_in, &[row(0, far.clone())]).passed, "{far}");
+        }
+    }
+
+    /// A lock holds what the run made of the fields and rows it names, each row once, and passes against that run.
+    #[test]
+    fn a_lock_holds_its_fields_and_rows_and_passes_its_own_run() {
+        let made = [
+            row(0, json!({"a": 1.5, "b": {"c": 2}})),
+            dropped(1),
+            row(2, json!({"a": 3.0})),
+        ];
+        let lock = |fields: Option<&[&str]>, rows: Option<Vec<usize>>| Lock {
+            name: "n".to_string(),
+            pipeline: Some("p".to_string()),
+            sample: "s".to_string(),
+            locked_at: 7,
+            fields: fields.map(|f| f.iter().map(|f| f.to_string()).collect()),
+            rows,
+        };
+
+        let chosen = lock(Some(&["a"]), Some(vec![2, 1, 2, 5])).locked(3, &made);
+        assert_eq!(chosen.fields, ["a"]);
+        assert_eq!(chosen.rows.iter().map(|o| o.row).collect::<Vec<_>>(), [2, 1, 5]);
+        assert_eq!(
+            chosen.rows[0].values,
+            Some(json!({"a": 3.0}).as_object().unwrap().clone())
+        );
+        assert!(chosen.rows[1].values.is_none() && chosen.rows[2].values.is_none());
+
+        let everything = lock(None, None);
+        let test = everything.clone().test("t".to_string(), everything.locked(3, &made));
+        assert_eq!(test.fields, ["a", "b.c"]);
+        assert_eq!(test.rows_checked(), [0, 1, 2]);
+        assert_eq!((test.rows_in, test.locked_at), (3, 7));
+        assert!(compare(&test, 3, &made).passed);
     }
 
     #[test]

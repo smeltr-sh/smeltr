@@ -14,11 +14,11 @@ use std::path::Path;
 use axum::Json;
 use axum::extract::{Extension, Path as AxPath, Query};
 
-use smeltr::config_file::{self, Impact, TestDto, TestSummary, Verdict};
+use smeltr::config_file::{self, Impact, Lock, Locked, TestDto, TestSummary, Verdict};
 use smeltr::leader::access::{Access, Level};
 use smeltr::leader::deploy_checks::FailingTest;
 use smeltr::leader::envelope::{ApiError, Envelope, Refusal};
-use smeltr::leader::preview::{TestResult, run_test};
+use smeltr::leader::preview::{TestResult, lock_test, run_test};
 use smeltr::leader::store::Actor;
 use smeltr::leader::{blocking, blocking_answer};
 use smeltr::startup_config::leader_data_dir;
@@ -147,26 +147,23 @@ pub async fn get_test(AxPath((area, id)): AxPath<(String, String)>, Query(q): Qu
 
 // -- locking ------------------------------------------------------------
 
-/// Lock a test, or replace one under the same id. What it expects is committed, which is what makes "change the
-/// config or change the test" a decision a reviewer sees rather than a silent edit.
+/// Lock a test, or replace one under the same id, holding what a run of it makes now on the branch. What it expects is
+/// committed, which is what makes "change the config or change the test" a decision a reviewer sees rather than a
+/// silent edit.
 pub async fn put_test(
     Extension(actor): Extension<Actor>,
     AxPath((_, id)): AxPath<(String, String)>,
     at: Addressed,
-    Json(mut test): Json<TestDto>,
+    Json(lock): Json<Lock>,
 ) -> Envelope<crate::config_api::Save> {
-    test.id = id;
-    let message = format!("lock test {}", test.name);
+    let message = format!("lock test {}", lock.name);
     blocking_save(move || {
-        if test.pipeline.is_none() {
-            let reading = match config_api::Reading::open(&at.branch, &at.area) {
-                Ok(reading) => reading,
-                Err(e) => return Envelope::refused(e),
-            };
-            if let Err(e) = check_lockable(&mut reading.files(), &test) {
-                return Envelope::refused(e);
-            }
-        }
+        let locked = match config_api::Reading::open(&at.branch, &at.area).and_then(|r| locked_on(&r, &at.area, &lock))
+        {
+            Ok(locked) => locked,
+            Err(e) => return Envelope::refused(e),
+        };
+        let test = lock.test(id, locked);
         at.open().map_or_else(Save::refused, |writing| {
             config_api::write_test_file(
                 writing,
@@ -180,19 +177,41 @@ pub async fn put_test(
     .await
 }
 
+/// What locking `lock` on the branch would hold, written nowhere: what the lock page shows before it locks.
+pub async fn preview_lock(
+    AxPath(area): AxPath<String>,
+    Query(q): Query<BranchQuery>,
+    Json(lock): Json<Lock>,
+) -> Envelope<Locked> {
+    blocking_answer(move || {
+        config_api::Reading::open(q.name(), &area)
+            .and_then(|reading| locked_on(&reading, &area, &lock))
+            .into()
+    })
+    .await
+}
+
+/// What locking `lock` holds of a run over the branch `reading` reads, in `scope`.
+fn locked_on(reading: &config_api::Reading, scope: &str, lock: &Lock) -> Result<Locked, Refusal> {
+    if lock.pipeline.is_none() {
+        check_lockable(&mut reading.files(), &lock.sample)?;
+    }
+    let runnable = runnable(reading, scope)?;
+    let sample = config_file::read_sample(&mut reading.files(), &lock.sample).map_err(|e| e.to_string());
+    lock_test(lock, &runnable.config, sample, &runnable.declared_at).map_err(Refusal::invalid)
+}
+
 /// A test naming no pipeline routes its sample by its source, which `SampleDto.source` may not name. Refused here
 /// rather than stored and failed on every later run: whether it is lockable is knowable now, from the sample alone.
-fn check_lockable(files: &mut dyn config_file::FileSet, test: &TestDto) -> Result<(), Refusal> {
-    match config_file::read_sample(files, &test.sample) {
-        Ok(Some(sample)) if sample.source.is_some() => Ok(()),
+fn check_lockable(files: &mut dyn config_file::FileSet, sample: &str) -> Result<(), Refusal> {
+    match config_file::read_sample(files, sample) {
+        Ok(Some(found)) if found.source.is_some() => Ok(()),
         Ok(Some(_)) => Err(Refusal::invalid(format!(
-            "this test names no pipeline and its sample {:?} names no source, so it cannot be routed -- \
-             give the test a pipeline, or give the sample a source",
-            test.sample
+            "this test names no pipeline and its sample {sample:?} names no source, so it cannot be routed -- \
+             give the test a pipeline, or give the sample a source"
         ))),
         Ok(None) => Err(Refusal::invalid(format!(
-            "this test runs over the sample {:?}, which is not on this branch",
-            test.sample
+            "this test runs over the sample {sample:?}, which is not on this branch"
         ))),
         Err(e) => Err(Refusal::internal(e.to_string())),
     }
@@ -334,36 +353,12 @@ fn run_in(
     ids: Vec<String>,
     touched_only: bool,
 ) -> Result<(Vec<TestResult>, Impact), Refusal> {
-    let raw = reading.raw();
-
-    // The bundle this scope actually runs: `shared/` merged in for a group, the same merge `load_group_from` does
-    // for a real deployment. A locked test's pipeline may call a source or read a lookup table declared only in
-    // `shared/`, so running it against the group's bare subtree alone would report that source or table unknown
-    // rather than running the test -- and a lookup table's own file must resolve against where it was actually
-    // declared, `shared/` or the group's own subtree, or a shared table's file reads as missing under the group's
-    // prefix. `sibling` reads the commit `reading` already resolved rather than looking up the branch tip again, so
-    // this and `reading` never straddle a branch that moved between the two reads.
-    let shared_reading = if scope == config_file::SHARED_DIR {
-        None
-    } else {
-        Some(reading.sibling(config_file::SHARED_DIR)?)
-    };
-    let shared_raw = shared_reading.as_ref().map(|r| r.raw());
-    let (exec_file, declared_at) = match (&shared_raw, &shared_reading) {
-        (Some(shared), Some(shared_reading)) => (
-            smeltr::leader::map::merged_file(shared, &raw, scope),
-            smeltr::leader::map::merged_declared_at(shared, &shared_reading.at(), &raw, &reading.at()),
-        ),
-        _ => (
-            raw.file.clone(),
-            raw.file
-                .lookup_tables
-                .iter()
-                .map(|t| (t.id.clone(), reading.at()))
-                .collect(),
-        ),
-    };
-    let config = serde_json::to_string(&exec_file).map_err(|e| Refusal::internal(e.to_string()))?;
+    let Runnable {
+        file: exec_file,
+        config,
+        declared_at,
+        shared: shared_raw,
+    } = runnable(&reading, scope)?;
 
     // What the change reaches, read against `main` -- the tree it would be deployed onto. Merged with `shared/` on
     // both sides for a group scope, the same way `exec_file` is: an edit landing only in `shared/` -- a source, a
@@ -455,6 +450,53 @@ fn run_in(
         results.push(run_one(&test, scope, &config, &mut reading.files(), &declared_at));
     }
     Ok((results, impact))
+}
+
+/// What a scope's tests run against: the bundle, as a run reads it, and where each lookup table was declared.
+struct Runnable {
+    file: config_file::FileConfig,
+    /// `file`, serialized, as a preview takes it.
+    config: String,
+    declared_at: config_file::DeclaredAt,
+    /// `shared/`'s own bundle, for a group's scope.
+    shared: Option<config_file::RawBundle>,
+}
+
+fn runnable(reading: &config_api::Reading, scope: &str) -> Result<Runnable, Refusal> {
+    let raw = reading.raw();
+
+    // The bundle this scope runs: `shared/` merged in for a group, as `load_group_from` does for a real deployment.
+    // A locked test's pipeline may use a source or lookup table declared only in `shared/`, which the group's bare
+    // subtree would report unknown. A lookup table's file resolves against where the table was declared, `shared/` or
+    // the group's own subtree. `sibling` reads the commit `reading` already resolved, so the bundle and `reading`
+    // never straddle a branch that moved between the two reads.
+    let shared_reading = if scope == config_file::SHARED_DIR {
+        None
+    } else {
+        Some(reading.sibling(config_file::SHARED_DIR)?)
+    };
+    let shared_raw = shared_reading.as_ref().map(|r| r.raw());
+    let (exec_file, declared_at) = match (&shared_raw, &shared_reading) {
+        (Some(shared), Some(shared_reading)) => (
+            smeltr::leader::map::merged_file(shared, &raw, scope),
+            smeltr::leader::map::merged_declared_at(shared, &shared_reading.at(), &raw, &reading.at()),
+        ),
+        _ => (
+            raw.file.clone(),
+            raw.file
+                .lookup_tables
+                .iter()
+                .map(|t| (t.id.clone(), reading.at()))
+                .collect(),
+        ),
+    };
+    let config = serde_json::to_string(&exec_file).map_err(|e| Refusal::internal(e.to_string()))?;
+    Ok(Runnable {
+        file: exec_file,
+        config,
+        declared_at,
+        shared: shared_raw,
+    })
 }
 
 /// Every test at `commit`, in `shared/` and in each group, that ran and did not produce what it locked: the leader's
@@ -812,17 +854,7 @@ mod tests {
         let sample = one_record_sample("no-source", None);
         write_sample(&dir, &sample);
 
-        let test = TestDto {
-            id: "cant-lock".to_string(),
-            name: "can't lock".to_string(),
-            pipeline: None,
-            sample: sample.id.clone(),
-            locked_at: 0,
-            rows_in: 1,
-            fields: vec![],
-            rows: vec![],
-        };
-        let err = check_lockable(&mut DirFileSet { root: &dir }, &test).expect_err("the sample names no source");
+        let err = check_lockable(&mut DirFileSet { root: &dir }, &sample.id).expect_err("the sample names no source");
         assert!(err.message().contains("names no source"), "{err}");
     }
 

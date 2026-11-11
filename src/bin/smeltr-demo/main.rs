@@ -28,7 +28,7 @@ use smeltr::leader::git;
 use smeltr::leader::preview::{
     AfterDotRequest, CaptureFilterRequest, FormatRequest, Formatted, GrokCaptures, GrokCapturesRequest,
     LineBreakerRequest, Preview, PreviewRequest, RoutePreview, TestResult, captures_of, format_code,
-    line_breaker_verdict, run_preview, run_route_preview, run_test,
+    line_breaker_verdict, lock_test, run_preview, run_route_preview, run_test,
 };
 use smeltr::leader::schema_catalog as catalog;
 use tokio::sync::Semaphore;
@@ -346,6 +346,42 @@ async fn tests(State(service): State<Service>, Json(body): Json<TestsBody>) -> E
                 tests: body.tests.iter().map(TestDto::summary).collect(),
                 results,
             })
+        })
+        .await
+}
+
+#[derive(serde::Deserialize)]
+struct TestLockBody {
+    #[serde(flatten)]
+    bundle: Bundle,
+    /// Every sample the scope holds, one of which the test runs over.
+    #[serde(default)]
+    samples: Vec<SampleDto>,
+    lock: config_file::Lock,
+}
+
+/// What locking `lock` holds of the bundle, as the leader locks it (`smeltr::leader::preview::lock_test`).
+async fn test_lock(State(service): State<Service>, Json(body): Json<TestLockBody>) -> Envelope<config_file::Locked> {
+    if let Err(e) = refuse_oversized(body.bundle.files(), &body.samples) {
+        return Envelope::refused(e);
+    }
+    let s = service.clone();
+    service
+        .run(unavailable, move || {
+            let (file, _) = match body.bundle.merged() {
+                Ok(merged) => merged,
+                Err(e) => return Envelope::refused(Refusal::invalid(e)),
+            };
+            let declared_at = s.declared_at(&file);
+            let config = match serde_json::to_string(&file) {
+                Ok(config) => config,
+                Err(e) => return Envelope::refused(Refusal::internal(e.to_string())),
+            };
+            let sample = body.samples.into_iter().find(|s| s.id == body.lock.sample);
+            match lock_test(&body.lock, &config, Ok(sample), &declared_at) {
+                Ok(locked) => Envelope::ok(locked),
+                Err(message) => Envelope::refused(Refusal::invalid(message)),
+            }
         })
         .await
 }
@@ -693,6 +729,7 @@ fn app(service: Service) -> Router {
         .route("/map", post(map))
         .route("/connections", post(connections))
         .route("/tests", post(tests))
+        .route("/test-lock", post(test_lock))
         .route("/onboard/propose", post(onboard_propose))
         .route("/schemas/read", post(schemas_read))
         .route("/schemas/export", post(schemas_export))

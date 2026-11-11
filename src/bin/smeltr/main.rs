@@ -2296,6 +2296,7 @@ async fn run_leader() {
                 .delete(test_api::delete_test),
         )
         .route("/api/areas/:area/test-runs", post(test_api::run_tests))
+        .route("/api/areas/:area/preview/test-lock", post(test_api::preview_lock))
         .route("/api/branches/:name/tests", get(test_api::list_change_tests))
         .route("/api/branches/:name/test-runs", post(test_api::run_change_tests))
         .route("/api/areas/:area", get(config_api::get_config))
