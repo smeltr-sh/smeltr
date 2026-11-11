@@ -1,1 +1,1 @@
-{"status":200,"body":{"ok":true,"errors":[],"group":"network","kind":"source","id":"cisco-asa","windowMillis":2592000000,"bucketMillis":3600000,"nowMillis":1794375519668,"source":{"polled":232310,"unmatched":232396,"unmatchedPolicy":{"deliver":["kafka-dlq"]},"routes":[]}}}
+{"status":200,"body":{"ok":true,"errors":[],"group":"network","kind":"source","id":"cisco-asa","windowMillis":2592000000,"bucketMillis":21600000,"nowMillis":1794420680349,"source":{"polled":51218,"unmatched":51218,"unmatchedPolicy":{"deliver":["kafka-dlq"]},"routes":[]}}}
