@@ -12,6 +12,7 @@ import {
   scopedKey,
   type ConfigSection,
   type FileConfigDto,
+  type Outcome,
   type SampleDto,
   type TestDto,
   type TestResult,
@@ -19,6 +20,7 @@ import {
   type UndoTarget,
 } from './api';
 import { diffObjects, type DiffEntry } from './diff';
+import { count } from './time';
 import { stepParts, stepSummary, stepsFromDto } from './pipeline';
 import { bundleRoutes } from './routeFlow';
 
@@ -625,12 +627,29 @@ function recordCells(record: SampleDto['records'][number], sourced: boolean): st
     : [recordLine(record)];
 }
 
-function expectedCells(doc: unknown): string[] {
-  return [doc === null ? 'dropped' : JSON.stringify(doc)];
+/** "via route → destinations": where an end-to-end outcome went; empty for a pipeline test's. */
+export function sentText(o: Outcome): string {
+  return o.sent ? `via ${o.sent.route} → ${o.sent.destinations.join(', ')}` : '';
+}
+
+/** `act "deny", severity "critical"`: one checked row's outcome as a line, `dropped` when it made no
+ * document, and where an end-to-end one went. */
+export function outcomeText(o: Outcome): string {
+  const values = o.values
+    ? Object.entries(o.values)
+        .map(([field, value]) => `${field} ${JSON.stringify(value)}`)
+        .join(', ')
+    : 'dropped';
+  return [values, sentText(o)].filter((part) => part !== '').join(' ');
+}
+
+/** "dst, src on 5 rows": what a test checks. */
+export function checksOf(t: { fields: string[]; rows: number }): string {
+  return `${t.fields.join(', ')} on ${count(t.rows, 'row')}`;
 }
 
 /** A changed sample or test file as a card: its fields, and its records or
- * expected output as rows. Git, not the two reads, says how the file
+ * checked rows as rows. Git, not the two reads, says how the file
  * changed, so one that stopped or started reading still has its card. */
 export function fileChange(scope: string, file: FileSides): ObjectChange {
   const status: Status =
@@ -664,13 +683,13 @@ export function fileChange(scope: string, file: FileSides): ObjectChange {
         sample: t.sample,
         rowsIn: t.rowsIn,
         lockedAt: t.lockedAt,
+        checks: t.fields.join(', '),
       });
     change.fields = diffObjects(fieldsOf(file.before), fieldsOf(file.after));
-    change.headers = ['expected output'];
-    change.rows = compareRows(
-      (file.before?.expected ?? []).map(expectedCells),
-      (file.after?.expected ?? []).map(expectedCells),
-    );
+    change.headers = ['checks'];
+    const lines = (t: TestDto | undefined) =>
+      (t?.rows ?? []).map((o) => [`row ${o.row}: ${outcomeText(o)}`]);
+    change.rows = compareRows(lines(file.before), lines(file.after));
   }
   change.fields = change.fields.filter((f) => f.kind !== 'unchanged');
   if (file.before !== undefined) change.before = file.before;

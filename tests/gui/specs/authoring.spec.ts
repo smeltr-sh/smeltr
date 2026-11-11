@@ -80,14 +80,16 @@ test('A1: a sample that does not load is listed on the Samples page and can be d
 test('A1: a pasted sample is saved under its name and is there to come back to', async ({
   admin,
   leader,
+  api,
 }) => {
+  await api.put(`/api/areas/shared/sources${ON}`, [{ id: 'orders-west', type: 'logs' }]);
   await goto(admin, leader, '#/build');
   await expect(admin.getByRole('heading', { name: 'Samples' })).toBeVisible();
   await admin.getByRole('button', { name: 'Add sample' }).click();
   const dialog = admin.getByRole('dialog');
   await dialog.getByRole('button', { name: 'Paste' }).click();
   await dialog.getByLabel('Name').fill('orders, an ordinary hour');
-  await dialog.getByLabel(/^Source it stands for/).fill('orders-west');
+  await dialog.getByLabel(/^Source it stands for/).selectOption('orders-west');
   await dialog.getByLabel(/^Records/).fill('{"id":1,"total":20}\n{"id":2,"total":35}\n');
   await expect(dialog.getByText('2 records')).toBeVisible();
   await dialog.getByRole('button', { name: 'Save sample' }).click();
@@ -217,10 +219,24 @@ test('A1: a viewer captures a deployed source from the map and downloads it', as
   // A capture not yet saved is a sample all the same, and is listed before the saved ones.
   await expect(
     viewer.getByRole('listbox', { name: 'Samples' }).getByRole('option').first(),
-  ).toContainText(/Your capture\s*3 records · own-metrics · not saved/);
+  ).toContainText(/Your records\s*3 records · own-metrics · not saved/);
   // Searching by the source it was captured from finds it, as it finds a saved sample.
   await viewer.getByRole('searchbox', { name: 'Find a sample' }).fill('own-metrics');
-  await expect(viewer.getByRole('option', { name: /Your capture/ })).toBeVisible();
+  await expect(viewer.getByRole('option', { name: /Your records/ })).toBeVisible();
+
+  // Routes asks for the secrets a form may name, which a viewer may not read; they are left out, unsaid.
+  const asked = viewer.waitForResponse((r) => r.url().includes('/api/secrets'));
+  await goto(viewer, leader, '#/build/routes');
+  expect((await asked).status()).toBe(403);
+  await expect(viewer.getByText('this needs editor in at least one area')).toHaveCount(0);
+
+  // Route a sample offers it too, first, and routes its records. No route takes own-metrics.
+  await goto(viewer, leader, '#/build/routes/sample');
+  await expect(viewer.getByRole('button', { name: 'Choose a sample' })).toContainText(
+    'Your records',
+  );
+  await viewer.getByRole('button', { name: 'Run' }).click();
+  await expect(viewer.locator('.tile', { hasText: 'unrouted' })).toContainText('3');
 });
 
 // A1, a viewer: they capture a source feeding a pipeline from its editor's sample menu and run the pipeline over it,
@@ -273,9 +289,10 @@ test('A1: a viewer runs a pipeline over a capture without saving it', async ({
   await goto(viewer, leader, '#/build/pipelines/tidy');
 
   await viewer.getByRole('button', { name: 'Choose a sample' }).click();
-  // A viewer may only capture, so Add sample opens on the capture, at the pipeline's own source.
+  // A viewer uses records and never saves them. A capture starts at the pipeline's own source.
   await viewer.getByRole('button', { name: 'Add sample' }).click();
   const form = viewer.getByRole('dialog');
+  await form.getByRole('button', { name: 'Capture' }).click();
   await expect(form.getByRole('combobox', { name: /^Capture target/ })).toHaveValue(
     'source:own-metrics',
   );
@@ -288,7 +305,7 @@ test('A1: a viewer runs a pipeline over a capture without saving it', async ({
   await expect(viewer.getByRole('dialog')).toHaveCount(0);
 
   const chip = viewer.getByRole('button', { name: 'Choose a sample' });
-  await expect(chip).toContainText('Your capture');
+  await expect(chip).toContainText('Your records');
   await expect(chip).toContainText('3 records', { timeout: 30_000 });
   await expect(viewer.getByRole('button', { name: 'Lock this as a test' })).toHaveCount(0);
 
@@ -296,7 +313,19 @@ test('A1: a viewer runs a pipeline over a capture without saving it', async ({
   expect((await api.get('/api/areas/shared/samples')).samples).toEqual([]);
   await viewer.reload();
   await viewer.getByRole('button', { name: 'Choose a sample' }).click();
-  await expect(viewer.getByRole('option', { name: /Your capture/ })).toContainText('3 records');
+  await expect(viewer.getByRole('option', { name: /Your records/ })).toContainText('3 records');
+
+  // A paste replaces the capture held, with no name and no save.
+  await viewer.getByRole('button', { name: 'Add sample' }).click();
+  await form.getByRole('button', { name: 'Paste' }).click();
+  await expect(form.getByLabel('Name')).toHaveCount(0);
+  await expect(form.getByRole('button', { name: 'Save sample' })).toHaveCount(0);
+  await form.getByLabel(/^Records/).fill('{"id":1}\n');
+  await form.getByRole('button', { name: 'Use these records' }).click();
+  await expect(form).toHaveCount(0);
+  await expect(chip).toContainText('Your records');
+  await expect(chip).toContainText('1 record');
+  expect((await api.get('/api/areas/shared/samples')).samples).toEqual([]);
 });
 
 // A1, an editor: the capture that could be saved as a sample is run over unsaved instead, and nothing is committed.
@@ -348,7 +377,7 @@ test('A1: an editor runs a pipeline over a capture without saving it, then saves
   await expect(admin.getByRole('dialog')).toHaveCount(0);
 
   const chip = admin.getByRole('button', { name: 'Choose a sample' });
-  await expect(chip).toContainText('Your capture');
+  await expect(chip).toContainText('Your records');
   await expect(chip).toContainText('3 records', { timeout: 30_000 });
   expect((await api.get(`/api/areas/shared/samples${ON}`)).samples).toEqual([]);
 
@@ -674,7 +703,7 @@ for (const [what, proposal, note] of [
   [
     'arrive as fields',
     { read: 0, of: 0, structured: true },
-    'The captured records arrive as fields, so they need no parser.',
+    'These records arrive as fields, so they need no parser.',
   ],
   [
     'are in no format it reads',
@@ -995,7 +1024,8 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
     sample: 'busy-hour',
     lockedAt: 0,
     rowsIn: 3,
-    expected: [null, null, null],
+    fields: [],
+    rows: [{ row: 0 }, { row: 1 }, { row: 2 }],
   });
 
   await goto(admin, leader, '#/build');
@@ -1007,7 +1037,7 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
   // Where each record was read from is a column per field, typed as the capture recorded it.
   await expect(records.getByRole('cell', { name: /^__source\.offset/ })).toContainText('i64');
   await expect(records.getByRole('row', { name: /coupon.*SPRING.*orders 0 100/ })).toBeVisible();
-  await expect(admin.getByText('Re-lock after saving: orders parse')).toBeVisible();
+  await expect(admin.getByText('Lock again after saving: orders parse')).toBeVisible();
 
   // An expression filters the records as saved.
   const find = records.getByRole('combobox', { name: 'Search records' });
@@ -1262,7 +1292,8 @@ test('A2: a sample is picked from the Sample menu, its output searched by keywor
     sample: 'orders-sample',
     lockedAt: 0,
     rowsIn: 3,
-    expected: [null, null, null],
+    fields: [],
+    rows: [{ row: 0 }, { row: 1 }, { row: 2 }],
   });
 
   await goto(admin, leader, '#/build/pipelines/orders');
@@ -1459,13 +1490,15 @@ test('A4: a route preview shows each output row, the route it matched and the de
   await webRoutes(api, ['{"status":200}', '{"status":503}']);
 
   await goto(admin, leader, '#/build/routes/sample');
-  await admin.getByRole('link', { name: 'Where these records would go' }).click();
-  await expect(admin.getByRole('heading', { name: 'Where these records would go' })).toBeVisible();
-  await expect(admin.getByRole('combobox', { name: 'Sample' })).toHaveValue('web-sample');
+  await expect(admin.getByRole('button', { name: 'Choose a sample' })).toContainText(
+    'storefront hour',
+  );
 
-  // The page runs on arrival; each tile counts what one destination would be sent.
+  // The tab runs on arrival; each tile counts what one destination would be sent, and the diagram draws the trip.
   await expect(admin.getByRole('button', { name: '2 es-web' })).toBeVisible();
   await expect(admin.getByRole('button', { name: '1 kafka-alerts' })).toBeVisible();
+  await expect(admin.locator('.diagram')).toContainText('kafka-alerts');
+  await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeEnabled();
 
   const table = admin.getByRole('table');
   const ok = table.getByRole('row', { name: /^row 0 / });
@@ -1489,6 +1522,71 @@ test('A4: a route preview shows each output row, the route it matched and the de
   await expect(table.getByRole('row', { name: /^row 1 / })).toBeVisible();
   await alerts.click();
   await expect(table.getByRole('row', { name: /^row 0 / })).toBeVisible();
+
+  // Records that name no source route from the one chosen for them, but lock no test.
+  await api.put(`/api/areas/shared/samples/pasted${ON}`, {
+    id: 'pasted',
+    name: 'pasted errors',
+    records: [{ _raw: '{"status":503}' }],
+  });
+  await admin.reload();
+  await admin.getByRole('button', { name: 'Choose a sample' }).click();
+  await admin.getByRole('option', { name: /^pasted errors/ }).click();
+  await expect(admin.getByRole('button', { name: 'Run' })).toBeDisabled();
+  await admin.getByLabel('Source it stands for').selectOption('storefront');
+  await admin.getByRole('button', { name: 'Run' }).click();
+  await expect(admin.getByRole('button', { name: '1 kafka-alerts' })).toBeVisible();
+  await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeDisabled();
+});
+
+// A1 and A4: records pasted are held as a capture is, route from the source chosen for them, and save with none.
+test('A4: pasted records are held unsaved and route from the source chosen for them', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await webRoutes(api, ['{"status":200}']);
+  await goto(admin, leader, '#/build/pipelines/web');
+  const chip = admin.getByRole('button', { name: 'Choose a sample' });
+  await chip.click();
+  await admin.getByRole('button', { name: 'Add sample' }).click();
+  const dialog = admin.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Paste' }).click();
+  await dialog.getByLabel(/^Records/).fill('{"status":503}\n');
+  await dialog.getByRole('button', { name: 'Use these records' }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(chip).toContainText('Your records');
+  await expect(chip).toContainText('1 record');
+  expect((await api.get(`/api/areas/shared/samples${ON}`)).samples).toHaveLength(1);
+
+  await goto(admin, leader, '#/build/routes/sample');
+  await expect(admin.getByRole('button', { name: 'Choose a sample' })).toContainText(
+    'Your records',
+  );
+  await expect(admin.getByRole('button', { name: 'Run' })).toBeDisabled();
+  await admin.getByLabel('Source it stands for').selectOption('storefront');
+  await admin.getByRole('button', { name: 'Run' }).click();
+  await expect(admin.getByRole('button', { name: '1 kafka-alerts' })).toBeVisible();
+  await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeDisabled();
+
+  // Opened again, the editor starts on the records held, as Route a sample does.
+  await goto(admin, leader, '#/build/pipelines/web');
+  await expect(chip).toContainText('Your records');
+  await admin.getByRole('button', { name: 'Save as sample', exact: true }).click();
+  await admin.getByRole('button', { name: /^Save input as sample/ }).click();
+  const saving = admin.getByRole('dialog');
+  await saving.getByLabel('Name').fill('pasted errors');
+  // Records that name no source are saved standing for the one chosen here.
+  await saving.getByLabel(/^Source it stands for/).selectOption('storefront');
+  await saving.getByRole('button', { name: 'Save sample' }).click();
+  await expect(saving).toHaveCount(0);
+  await expect(chip).toContainText('pasted errors');
+  const saved = (await api.get(`/api/areas/shared/samples${ON}`)).samples;
+  expect(saved.find((s: { name: string }) => s.name === 'pasted errors')).toMatchObject({
+    source: 'storefront',
+    records: 1,
+  });
+  expect((await api.get('/api/captures/mine')).capture).toBeUndefined();
 });
 
 // A4, the whole trip. A step that does not compile says why once, on the step; the error chip above the records
@@ -1575,10 +1673,17 @@ test('◎ pauses the records after a step', async ({ admin, leader, api }) => {
   await expect(paused).toHaveText(/◉ After step 1 · PARSER/);
   await expect(dropped).not.toHaveClass(/dropped/);
   await expect(admin.locator('#step-no-coupon')).toHaveClass(/not-run/);
+  // A test checks the whole pipeline's output, so a pause locks none.
+  const lock = admin.getByRole('button', { name: 'Lock this as a test' });
+  await expect(lock).toBeDisabled();
+  await expect(lock).toHaveAccessibleDescription(
+    'Resume to lock: a test checks the pipeline’s output.',
+  );
 
   await paused.getByRole('button', { name: 'Show the whole pipeline' }).click();
   await expect(paused).toBeHidden();
   await expect(dropped).toHaveClass(/dropped/);
+  await expect(lock).toBeEnabled();
 });
 
 // A3, which step did it. Once typing settles, a field carries the sign of the step that last touched it, held it
@@ -1770,12 +1875,12 @@ test('A6: a sample locked as a test passes, and a save that breaks it is allowed
   await lock.click();
 
   await expect(admin.getByRole('heading', { name: 'Lock this as a test' })).toBeVisible();
-  await expect(admin.getByText('3 rows, 0 dropped')).toBeVisible();
+  await expect(admin.getByText('4 fields on 3 rows')).toBeVisible();
   await admin.getByRole('textbox', { name: 'Name' }).fill('orders keep every order');
   await admin.getByRole('button', { name: 'Lock the test' }).click();
 
   const testRow = admin.getByRole('row', { name: /orders keep every order/ });
-  await expect(testRow).toContainText('3 in / 3 out');
+  await expect(testRow).toContainText('_raw, coupon, id, total on 3 rows');
   await expect(testRow).toContainText('Passing', { timeout: 15_000 });
 
   // Break it: a step that drops the second order.
@@ -1791,6 +1896,80 @@ test('A6: a sample locked as a test passes, and a save that breaks it is allowed
     'Failing',
     { timeout: 15_000 },
   );
+});
+
+// A11, a test checks the fields and rows on screen, and nothing else.
+test('A11: a test locks the fields and rows on screen, and a change to anything else leaves it passing', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await jsonPipeline(
+    api,
+    'orders',
+    [
+      { name: 'id', type: 'i64' },
+      { name: 'coupon', type: 'str' },
+    ],
+    { id: 'orders-sample', name: 'orders', records: ORDERS },
+  );
+  const code = (body: string) =>
+    api.put(`/api/areas/shared/pipelines/orders${ON}`, {
+      id: 'orders',
+      name: 'orders',
+      steps: [
+        {
+          type: 'parser',
+          id: 'body',
+          input: '_raw',
+          kind: { type: 'json' },
+          declared: [
+            { name: 'id', type: 'i64' },
+            { name: 'coupon', type: 'str' },
+          ],
+        },
+        { type: 'code', id: 'code-1', filter: 'true', disabled: false, body },
+      ],
+    });
+
+  await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
+  await admin.getByRole('button', { name: 'Choose fields' }).click();
+  for (const field of ['_raw', 'coupon', 'total']) {
+    await admin.getByRole('searchbox', { name: 'Find a field' }).fill(field);
+    await admin.getByRole('group', { name: 'Fields' }).getByRole('checkbox').uncheck();
+  }
+  await admin.keyboard.press('Escape');
+  await admin.getByRole('combobox', { name: 'Search the output' }).fill('coupon == "SPRING"');
+  await expect(admin.getByText('2 of 3 rows')).toBeVisible();
+  await expect(admin.getByText('The 1 field on 2 rows on screen')).toBeVisible();
+  await admin.getByRole('button', { name: 'Lock this as a test' }).click();
+
+  await expect(admin.getByText('1 field on 2 rows', { exact: true })).toBeVisible();
+  await admin.getByRole('textbox', { name: 'Name' }).fill('spring orders keep their id');
+  await admin.getByRole('button', { name: 'Lock the test' }).click();
+  const testRow = admin.getByRole('row', { name: /spring orders keep their id/ });
+  await expect(testRow).toContainText('id on 2 rows');
+  await expect(testRow).toContainText('Passing', { timeout: 15_000 });
+  const locked = (
+    await api.get(
+      `/api/areas/shared/tests/${encodeURIComponent('spring orders keep their id')}${ON}`,
+    )
+  ).test;
+  expect([locked.fields, locked.rows]).toEqual([
+    ['id'],
+    [
+      { row: 0, values: { id: 1 } },
+      { row: 2, values: { id: 3 } },
+    ],
+  ]);
+
+  // A field it does not check, and a row it does not check, change: it still passes.
+  await code('coupon = "FALL"; if (id == 2) { id = 20; }');
+  await admin.reload();
+  await expect(testRow).toContainText('Passing', { timeout: 15_000 });
+  await code('id = id + 1;');
+  await admin.reload();
+  await expect(testRow).toContainText('Failing', { timeout: 15_000 });
 });
 
 // A6, a pipeline's output as a sample, for another pipeline, such as an enrichment, to run over and lock a test on.
@@ -1925,7 +2104,6 @@ test('A8: a route sends its unparseable rows where the analyst says, and the pre
   });
 
   await admin.getByRole('link', { name: 'Route a sample' }).click();
-  await admin.getByRole('link', { name: 'Where these records would go' }).click();
   const bad = admin.getByRole('table').getByRole('row', { name: /^row 1 / });
   await expect(bad).toContainText('Unparsable');
   await expect(bad).toContainText('deliver');
@@ -3737,6 +3915,7 @@ test('A6: the lock page shows five rows a side, and a button shows the rest', as
   await expect(admin.getByText('{"id":8}', { exact: true })).toBeVisible();
   await more.click();
   await expect(more).toHaveCount(0);
+  await expect(admin.getByRole('row', { name: '7 {"id":8} 8', exact: true })).toBeVisible();
 });
 
 test('A1: a capture shows eight records, and a button shows the rest', async ({

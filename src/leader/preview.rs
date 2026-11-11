@@ -335,8 +335,8 @@ pub struct ExceptionOut {
 // destination.
 //
 // Separate from the pipeline preview above, which answers a different question -- one pipeline's rows in and rows
-// out, with no source identity and no delivery. Routing selects on a source, so this one needs the sample to name
-// the source its records stand for and that one must not have it.
+// out, with no source identity and no delivery. Routing selects on a source, so this one needs the source the
+// records stand for, named by the sample or else by the request, and that one must not have it.
 
 #[derive(serde::Deserialize)]
 pub struct RoutePreviewRequest {
@@ -345,6 +345,10 @@ pub struct RoutePreviewRequest {
     /// The saved sample to route, by id. None where the caller hands it a held capture instead.
     #[serde(default)]
     pub sample: Option<String>,
+    /// The source the records stand for where the sample or capture names none, such as a paste with none or a
+    /// capture at a destination. A sample that names one keeps its own.
+    #[serde(default)]
+    pub source: Option<String>,
     /// What `now()` reads, in unix microseconds. A run re-run against the instant it was locked at agrees with the
     /// first, because `now()` and a reference-less `parseTime` put the clock into the output -- two runs over one
     /// sample agree only if they are given one instant. An ordinary preview sends none and reads the clock.
@@ -566,8 +570,8 @@ pub fn run_route_preview(
 ) -> Envelope<RoutePreview> {
     let Some(source_name) = sample.source.clone() else {
         return Envelope::refused(Refusal::invalid(
-            "this sample does not say which source it stands for, and routing selects on a source -- \
-             name one on the sample to route it",
+            "these records do not say which source they stand for, and routing selects on a source -- \
+             send the source they stand for in `source` to route them",
         ));
     };
 
@@ -1507,7 +1511,7 @@ pub fn run_pipeline_actual(
     declared_at: config_file::DeclaredAt,
     columns: &[crate::heartbeat::CaptureColumn],
     records: Vec<crate::io::RecordObject>,
-) -> Result<Vec<Option<serde_json::Value>>, String> {
+) -> Result<Vec<config_file::Made>, String> {
     let previewed = run_preview(
         PreviewRequest {
             config: config.to_string(),
@@ -1534,18 +1538,27 @@ pub fn run_pipeline_actual(
             .collect::<Vec<_>>()
             .join("; "));
     }
-    Ok(previewed.body.rows.into_iter().map(|r| r.json).collect())
+    Ok(previewed
+        .body
+        .rows
+        .into_iter()
+        .map(|r| config_file::Made {
+            row: r.row as usize,
+            document: r.json,
+            sent: None,
+        })
+        .collect())
 }
 
-/// An end-to-end test's run: the route preview over the sample, flattened -- per record, per matched route, per
-/// document -- into one list position-aligned with `TestDto.expected`, each document packed with where it went
-/// (`config_file::TestDto::end_to_end_document`) the same way locking packs it.
+/// An end-to-end test's run: the route preview over the sample, flattened per record, per route that carried it, per
+/// document, each document with where it went. A record that made no document is one entry making none, so a test
+/// can check that too.
 pub fn run_route_actual(
     config: &str,
     locked_at: i64,
     declared_at: config_file::DeclaredAt,
     sample: config_file::SampleDto,
-) -> Result<Vec<Option<serde_json::Value>>, String> {
+) -> Result<Vec<config_file::Made>, String> {
     let resp = run_route_preview(config, sample, declared_at, Some(locked_at));
     if !resp.succeeded() {
         return Err(resp
@@ -1565,36 +1578,37 @@ pub fn run_route_actual(
         ));
     }
 
-    let mut actual = Vec::new();
+    let mut made = Vec::new();
     for row in &resp.rows {
+        let before = made.len();
         for through in &row.through {
-            let route = resp
-                .route_ids
-                .get(through.route)
-                .map(String::as_str)
-                .unwrap_or_default();
-            let pipeline = resp
-                .route_pipeline_ids
-                .get(through.route)
-                .map(String::as_str)
-                .unwrap_or_default();
+            let name = |names: &[String]| names.get(through.route).cloned().unwrap_or_default();
             for doc in &through.documents {
                 let destinations: Vec<String> = doc
                     .destinations
                     .iter()
                     .map(|d| resp.destination_names.get(d).cloned().unwrap_or_else(|| d.to_string()))
                     .collect();
-                let document = serde_json::from_str(&doc.document).expect("route preview produced valid JSON");
-                actual.push(Some(config_file::TestDto::end_to_end_document(
-                    document,
-                    pipeline,
-                    route,
-                    destinations,
-                )));
+                made.push(config_file::Made {
+                    row: row.row,
+                    document: Some(serde_json::from_str(&doc.document).expect("route preview produced valid JSON")),
+                    sent: Some(config_file::Sent {
+                        pipeline: name(&resp.route_pipeline_ids),
+                        route: name(&resp.route_ids),
+                        destinations,
+                    }),
+                });
             }
         }
+        if made.len() == before {
+            made.push(config_file::Made {
+                row: row.row,
+                document: None,
+                sent: None,
+            });
+        }
     }
-    Ok(actual)
+    Ok(made)
 }
 
 #[cfg(test)]

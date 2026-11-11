@@ -329,7 +329,7 @@
     </Field>
 
     {#if tests.length > 0}
-      <p class="critical">Re-lock after saving: {tests.join(', ')}</p>
+      <p class="critical">Lock again after saving: {tests.join(', ')}</p>
     {/if}
 
     <div class="actions">

@@ -172,7 +172,8 @@ interface TestDto {
   sample: string;
   lockedAt: number;
   rowsIn: number;
-  expected: unknown[];
+  fields: string[];
+  rows: unknown[];
 }
 
 interface Capture {
@@ -1389,7 +1390,7 @@ export class DemoLeader {
   private async routePreview(
     name: string,
     scope: string,
-    req: { config: string; sample: string; at_micros: number | null },
+    req: { config: string; sample: string; source: string | null; at_micros: number | null },
   ): Promise<Answer> {
     const branch = this.branch(name) ?? this.state.branches.main;
     const sample = this.sampleOn(branch, scope, req.sample);
@@ -1399,7 +1400,7 @@ export class DemoLeader {
       ]);
     return this.ask('/route-preview', {
       ...this.bundleOf(branch, scope, JSON.parse(req.config)),
-      sample,
+      sample: { ...sample, source: sample.source ?? req.source ?? undefined },
       atMicros: req.at_micros,
     });
   }
@@ -1596,7 +1597,7 @@ export class DemoLeader {
     const sample: SampleDto = {
       id: req.id,
       name: req.name,
-      source: req.source,
+      source: capture.source ?? req.source,
       columns: [
         // The recorder's own save stamped the pool with its `__capture` fields; these are this capture's.
         ...(pool.columns ?? []).filter((c) => !c.name.startsWith('__capture.')),

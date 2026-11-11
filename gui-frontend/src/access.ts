@@ -106,15 +106,14 @@ export const READ_ONLY = "Your roles don't let you change this.";
  * outside the demo. */
 export const NOT_IN_DEMO = import.meta.env.MODE === 'demo' ? 'Not in the demo' : '';
 
-/** Why approving and deploying a change touching `paths` is not `access`'s to do -- the person
- * signed in, unless another is named -- or `''` when it is. As the leader judges it: a deployer in
- * every area the change touches, and an administrator for a path in no area. `doing` names the act the reason is
- * asked for, as its sentence opens. */
+/** Why approving and deploying a change touching `paths` is not the signed-in person's to do, or `''` when it is.
+ * As the leader judges it: a deployer in every area the change touches, and an administrator for a path in no area.
+ * `doing` names the act the reason is asked for, as its sentence opens. */
 export function deployBlocker(
   paths: string[],
-  access: AccessDto = mine(),
   doing: 'Approving this' | 'Requesting changes' | 'Deploying this' = 'Deploying this',
 ): string {
+  const access = mine();
   if (access.administrator) return '';
   const outside = paths.find((p) => areaOfPath(p) === null);
   if (outside !== undefined) return `${doing} takes an administrator: it changes ${outside}.`;

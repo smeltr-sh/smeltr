@@ -560,10 +560,13 @@ async function routeFromMap(
     // A metrics record is a line of JSON.
     () => expect(page.getByText(/records? read as JSON/)).toBeVisible(),
   );
-  await save(j, () => expect(picker.locator('option:checked')).toContainText(pipeline));
-  world.editing.pipelines.push(pipeline);
+  // A new pipeline is offered a name no other pipeline has.
+  let named = pipeline;
+  for (let n = 2; world.editing.pipelines.includes(named); n += 1) named = `${pipeline}-${n}`;
+  await save(j, () => expect(picker.locator('option:checked')).toHaveText(named));
+  world.editing.pipelines.push(named);
   await save(j, () => expect(page).toHaveURL(/#\/map/));
-  world.editing.routes.push({ source, pipeline, to: world.editing.destinations[0] ?? null });
+  world.editing.routes.push({ source, pipeline: named, to: world.editing.destinations[0] ?? null });
   await editingIsSaved(j);
 }
 
@@ -1146,7 +1149,9 @@ const rollBack: Move = {
     expect(history.held).toBeDefined();
     expect(history.commits.find((c) => c.commit === history.deployed)?.subject).toBe(subject);
     // Until a worker has taken the rollback, it still reports the commit a release returns to, and a capture after
-    // the release would take that report for the release's own. One that will not run it says why.
+    // the release would take that report for the release's own. One that will not run it says why. A worker whose
+    // destination is stalled can take its whole graceful stop, then the hard stop, to let go of the old commit; the
+    // wait outlasts both.
     type Row = {
       workerId: string;
       commit: string;
@@ -1165,7 +1170,7 @@ const rollBack: Move = {
             ),
           );
         },
-        { timeout: 60_000 },
+        { timeout: 150_000 },
       )
       .toBe(true);
     world.held = true;
@@ -1858,11 +1863,17 @@ const addBuiltInSchema: Move = {
     const truth = await j.truth();
     const standards = await truth.get('/api/preview/schema-standards');
     // Any release it carries; the newest is the one the dialog starts on.
-    const releases = standards[format] as { version: string; classes?: { name: string }[] }[];
+    const releases = standards[format] as {
+      version: string;
+      classes?: { name: string; profiles: { name: string; caption: string }[] }[];
+    }[];
     const release = rng.pick(releases);
     const newest = release === releases[0];
     // An OCSF class, cut as deep and to the requirements drawn.
-    const klass: string = format === 'ocsf' ? rng.pick(release.classes!).name : '';
+    const chosen = format === 'ocsf' ? rng.pick(release.classes!) : undefined;
+    const klass: string = chosen?.name ?? '';
+    // Some of the profiles it takes.
+    const profiles = (chosen?.profiles ?? []).filter(() => rng.chance(4));
     const depth = 1 + rng.below(3);
     const levels = ['required', 'recommended', 'optional'].filter(
       (l, i) => i === 0 || rng.chance(2),
@@ -1882,6 +1893,9 @@ const addBuiltInSchema: Move = {
       for (const l of ['recommended', 'optional']) {
         await dialog.getByRole('checkbox', { name: l }).setChecked(levels.includes(l));
       }
+      for (const p of profiles) {
+        await dialog.getByRole('checkbox', { name: p.caption, exact: true }).check();
+      }
     }
     await dialog.getByRole('button', { name: 'Add', exact: true }).click();
     await expect(dialog).toBeHidden();
@@ -1895,10 +1909,12 @@ const addBuiltInSchema: Move = {
       format,
       builtIn: true,
       release: release.version,
-      ...(format === 'ocsf' ? { class: klass, cut: { depth, levels } } : {}),
+      ...(format === 'ocsf'
+        ? { class: klass, cut: { depth, levels, profiles: profiles.map((p) => p.name) } }
+        : {}),
     });
     expect(saved.fields, `${id} from ${name}`).toEqual(read.schema.fields);
-    return `add schema ${id} from ${name}${format === 'ocsf' ? `, ${klass} ${depth} deep, ${levels.join(' and ')}` : ''}`;
+    return `add schema ${id} from ${name}${format === 'ocsf' ? `, ${klass} ${depth} deep, ${levels.join(' and ')}${profiles.length ? `, with ${profiles.map((p) => p.name).join(' and ')}` : ''}` : ''}`;
   },
 };
 
@@ -2044,9 +2060,12 @@ const editSample: Move = {
       id = samples.find((s: { name: string }) => s.name === name)?.id;
       if (id) break;
     }
-    const read = async () =>
-      (await api.get(`/api/areas/${scope}/samples/${encodeURIComponent(id!)}?${on}`)).sample
+    const read = async () => {
+      // Read where the GUI edits now: saving the edit on main names a branch.
+      const on = `branch=${encodeURIComponent(world.branch ?? 'main')}`;
+      return (await api.get(`/api/areas/${scope}/samples/${encodeURIComponent(id!)}?${on}`)).sample
         .records as Record<string, unknown>[];
+    };
     // Each record by the number the editor gives it, which it keeps while others go.
     let draft = (await read()).map((record, i) => ({ n: i + 1, record }));
     // The editor reads pasted lines as text wherever a record has `_raw`, whatever other fields it shows.
@@ -2322,7 +2341,7 @@ const saveInputSample: Move = {
     const use = page.getByRole('button', { name: 'Use these records' });
     await expect(use).toBeEnabled({ timeout: 60_000 });
     await use.click();
-    await expect(chip).toContainText('Your capture');
+    await expect(chip).toContainText('Your records');
     await expect(chip).toContainText(/\d+ records?/, { timeout: 30_000 });
     // A capture ends at its deadline holding fewer than it asked for, when the source was slow.
     const held = Number((await chip.textContent())?.match(/(\d+) records?/)?.[1]);
@@ -2436,7 +2455,9 @@ async function chooseAccess(j: Journey, within: Locator): Promise<string[]> {
   const offered = [...world.roles.keys()].sort();
   const roles = offered.filter(() => rng.chance(3));
   for (const role of offered)
-    await within.getByRole('checkbox', { name: role }).setChecked(roles.includes(role));
+    await within
+      .getByRole('checkbox', { name: role, exact: true })
+      .setChecked(roles.includes(role));
   return roles;
 }
 

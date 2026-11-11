@@ -128,8 +128,8 @@
     bar?: Snippet;
     /** Between the find box and the grid. */
     above?: Snippet;
-    /** Beside the count of the rows the find box keeps. It is given those rows. */
-    actions?: Snippet<[GridRow[]]>;
+    /** Beside the count of the rows the find box keeps. It is given those rows, and the fields shown. */
+    actions?: Snippet<[GridRow[], string[]]>;
     /** In place of the grid while there are no rows. */
     empty?: Snippet;
   } = $props();
@@ -469,6 +469,12 @@
     chips = [];
   }
 
+  /** The rows the find box keeps and the fields shown: what `actions` is given, for a caller acting from
+   * outside the grid. */
+  export function onScreen(): { rows: GridRow[]; fields: string[] } {
+    return { rows: rows ? gridOrder.map((i) => rows![i]) : [], fields: columns };
+  }
+
   /** Adds `c` to the find box, or takes it away. */
   export function toggleChip(c: FindChip) {
     if (hasChip(c)) chips = chips.filter((x) => chipKey(x) !== chipKey(c));
@@ -668,7 +674,10 @@
         >
       {/if}
       <span class="grow"></span>
-      {@render actions?.(gridOrder.map((i) => rows![i]))}
+      {@render actions?.(
+        gridOrder.map((i) => rows![i]),
+        columns,
+      )}
     </div>
   {/if}
 

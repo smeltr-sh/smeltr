@@ -116,8 +116,12 @@ class Client:
         pv = self.preview(branch, scope, pipeline, sample, at_micros)
         if not pv["ok"]:
             raise ApiError(f"preview of {pipeline} failed: {pv['errors']}")
+        # Every field on every row, as the grid shows them before any is hidden.
+        leaves = [leaves_of(r["json"]) if r["json"] is not None else None for r in pv["rows"]]
+        fields = sorted({f for row in leaves if row for f in row})
+        rows = [{"row": r["row"]} | ({} if l is None else {"values": l}) for r, l in zip(pv["rows"], leaves)]
         test = {"id": name, "name": name, "pipeline": pipeline, "sample": sample, "lockedAt": at_micros,
-                "rowsIn": records, "expected": [r["json"] for r in pv["rows"]]}
+                "rowsIn": records, "fields": fields, "rows": rows}
         return self.cfg("PUT", f"/tests/{urllib.parse.quote(name)}", branch, scope, test)
 
     # -- changes ------------------------------------------------------------------------------------
@@ -136,3 +140,21 @@ class Client:
         if isinstance(res, dict) and res.get("ok") is False:
             raise ApiError(json.dumps(res)[:1500])
         return res
+
+
+def push_key(path, key):
+    """`key` appended to the name `path`, as `plan::tree::push_key` spells it."""
+    if key == "" or any(c in key for c in '.[]"\\'):
+        return f"{path}[{json.dumps(key, ensure_ascii=False)}]"
+    return f"{path}.{key}" if path else key
+
+
+def leaves_of(value, path="", into=None):
+    """Every leaf of `value` by its name, as the records grid names its columns."""
+    into = {} if into is None else into
+    if isinstance(value, dict) and value:
+        for k, v in value.items():
+            leaves_of(v, push_key(path, k), into)
+    elif path:
+        into[path] = value
+    return into

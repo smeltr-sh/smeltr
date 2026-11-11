@@ -790,28 +790,30 @@
   {
     "name": "15-route-preview",
     "site": "route-preview",
-    "hash": "#/build/routes/preview",
+    "hash": "#/build/routes/sample",
     "scope": "apps",
     "branch": "work",
     "themes": ["light", "dark"],
     "delay": 2000,
     "steps": [
       { "delay": 2000 },
-      { "select": ["#rp-sample", "nginx-sample"] },
+      { "click": "button[aria-label='Choose a sample']" },
+      { "text": "Storefront access log" },
       { "text": "Run" },
       { "delay": 3000 }
     ]
   },
   {
     "name": "15b-route-preview-network",
-    "hash": "#/build/routes/preview",
+    "hash": "#/build/routes/sample",
     "scope": "network",
     "branch": "work",
     "themes": ["light", "dark"],
     "delay": 2000,
     "steps": [
       { "delay": 2000 },
-      { "select": ["#rp-sample", "fortigate-sample"] },
+      { "click": "button[aria-label='Choose a sample']" },
+      { "text": "FortiGate forward traffic" },
       { "text": "Run" },
       { "delay": 3000 }
     ]

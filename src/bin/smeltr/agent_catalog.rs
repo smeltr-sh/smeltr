@@ -76,13 +76,13 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "POST",
         path: "/api/preview/schema-read",
-        what: "A file read as a schema, its table of fields: a JSON Schema document, ECS's fields.csv or ecs_flat.yml, one class of ocsf-schema-compiler's output (cut to depth keys deep and to the requirement levels named; by default 2, required and recommended), or a CSV of fields under a header row. Format otlp takes no file. It describes the records of one OpenTelemetry signal (`signal`: logs, metrics or traces) as the OTLP receiver gives them, with the resource and scope the OTLP destination reads. With builtIn, ECS or OCSF is read from a release smeltr carries (GET /api/preview/schema-standards), the one `release` names by its version or else the newest, and text is not read. A CSV's columns are found by header name (field, type, and optionally required, description, example, elasticsearch) unless `columns` gives each by index; a type is smeltr's spelling, a common name for one (string, int, timestamp, ...), or as `types` says. With `preview`, a CSV is not read: the answer's `preview` holds its header, its first rows and the first row of each type value they lack (`first` counts the first rows), guessed columns, and each type value (`value`, `readsAs`, null where unknown, and `fields`, how many rows hold it). No query.",
-        body: "{ id?: string, format: \"json-schema\" | \"ecs\" | \"ocsf\" | \"csv\" | \"otlp\", text?: string, builtIn?: boolean, release?: string, class?: string, cut?: { depth?: number, levels?: (\"required\" | \"recommended\" | \"optional\")[] }, signal?: \"logs\" | \"metrics\" | \"traces\", columns?: { field?: number, type?: number, required?: number, description?: number, example?: number, elasticsearch?: number }, types?: { [value: string]: string }, preview?: boolean }",
+        what: "A file read as a schema, its table of fields: a JSON Schema document, ECS's fields.csv or ecs_flat.yml, one class of ocsf-schema-compiler's output (cut to depth keys deep, to the requirement levels named and to the attributes of the profiles named, which the class must take; by default 2, required and recommended, and no profile; with a profile named, metadata and metadata.profiles are required, whatever depth and requirements are asked for; the schema's description names the release, class, depth, requirements and profiles it was read with), or a CSV of fields under a header row. Format otlp takes no file. It describes the records of one OpenTelemetry signal (`signal`: logs, metrics or traces) as the OTLP receiver gives them, with the resource and scope the OTLP destination reads. With builtIn, ECS or OCSF is read from a release smeltr carries (GET /api/preview/schema-standards), the one `release` names by its version or else the newest, and text is not read. A CSV's columns are found by header name (field, type, and optionally required, description, example, elasticsearch) unless `columns` gives each by index; a type is smeltr's spelling, a common name for one (string, int, timestamp, ...), or as `types` says. With `preview`, a CSV is not read: the answer's `preview` holds its header, its first rows and the first row of each type value they lack (`first` counts the first rows), guessed columns, and each type value (`value`, `readsAs`, null where unknown, and `fields`, how many rows hold it). No query.",
+        body: "{ id?: string, format: \"json-schema\" | \"ecs\" | \"ocsf\" | \"csv\" | \"otlp\", text?: string, builtIn?: boolean, release?: string, class?: string, cut?: { depth?: number, levels?: (\"required\" | \"recommended\" | \"optional\")[], profiles?: string[] }, signal?: \"logs\" | \"metrics\" | \"traces\", columns?: { field?: number, type?: number, required?: number, description?: number, example?: number, elasticsearch?: number }, types?: { [value: string]: string }, preview?: boolean }",
     },
     Route {
         method: "GET",
         path: "/api/preview/schema-standards",
-        what: "The releases of ECS and OCSF smeltr carries, a list for each, newest first, each release with its version and where it is published, and an OCSF release with its classes, each its name, caption and category. A schema-read with builtIn reads one of them rather than a file. No query.",
+        what: "The releases of ECS and OCSF smeltr carries, a list for each, newest first, each release with its version and where it is published, and an OCSF release with its classes, each its name, caption, category and the profiles it takes, each a name and a caption. A schema-read with builtIn reads one of them rather than a file. No query.",
         body: "",
     },
     Route {
@@ -173,7 +173,7 @@ pub const CATALOG: &[Route] = &[
         method: "POST",
         path: "/api/areas/:area/preview/routes",
         what: "Route a saved sample or a held capture through a draft bundle's routes and pipelines; nothing is written. Query: branch.",
-        body: "{ config: string (bundle JSON as a string), sample?: id, capture?: string (a held capture's session id, in place of sample), at_micros?: number }",
+        body: "{ config: string (bundle JSON as a string), sample?: id, capture?: string (a held capture's session id, in place of sample), source?: string (the source the records stand for, where the sample or capture names none), at_micros?: number }",
     },
     Route {
         method: "POST",
@@ -352,6 +352,12 @@ pub const CATALOG: &[Route] = &[
         body: "",
     },
     Route {
+        method: "POST",
+        path: "/api/captures/paste",
+        what: "Keep records you write as the capture you hold, in place of any other: previews run over it and it saves as a capture does. Returns its status. No query.",
+        body: "{ group, source?: id (the source the records stand for), records: object[] (each shaped as in a sample's `records`) }",
+    },
+    Route {
         method: "GET",
         path: "/api/areas/:area/samples",
         what: "The area's sample summaries (id, name, source, record count). Query: branch.",
@@ -361,7 +367,7 @@ pub const CATALOG: &[Route] = &[
         method: "POST",
         path: "/api/areas/:area/samples",
         what: "Save a finished capture as a sample on a branch and forget the session. Query: branch.",
-        body: "{ capture: string (the capture's session id), id?: string, name: string, source?: string (required for a source capture) }",
+        body: "{ capture: string (the capture's session id), id?: string, name: string, source?: string (the source the records stand for where they name none) }",
     },
     Route {
         method: "PUT",
@@ -405,7 +411,7 @@ pub const CATALOG: &[Route] = &[
         method: "PUT",
         path: "/api/areas/:area/tests/:id",
         what: "Lock (create or replace) a test on a branch; the path's id wins. Query: branch.",
-        body: "{ id, name, pipeline?: id (absent = end-to-end by sample source), sample: id, lockedAt: micros, rowsIn: number, expected: (object|null)[] }",
+        body: "{ id, name, pipeline?: id (absent = end-to-end by sample source), sample: id, lockedAt: micros, rowsIn: number, fields: string[] (leaf names as the records grid names them), rows: { row: number, values?: { [field]: value } (absent = no document), sent?: { pipeline, route, destinations: string[] } (end-to-end only) }[] }",
     },
     Route {
         method: "GET",

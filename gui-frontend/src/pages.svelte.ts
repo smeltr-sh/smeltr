@@ -16,7 +16,6 @@ const LOAD = {
   grok: () => import('./GrokPatternsPage.svelte'),
   schemas: () => import('./SchemasPage.svelte'),
   routes: () => import('./RoutesPage.svelte'),
-  'route-preview': () => import('./RoutePreviewPage.svelte'),
   pipeline: () => import('./PipelineEditor.svelte'),
   'lock-test': () => import('./LockTestPage.svelte'),
   file: () => import('./FilePage.svelte'),

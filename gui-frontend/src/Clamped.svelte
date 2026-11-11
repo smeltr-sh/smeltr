@@ -91,6 +91,11 @@
 
   .more {
     flex-shrink: 0;
+    /* No width of its own: a link that widened its table column would let the value fit, and so take itself away. */
+    width: 0;
+    min-width: 100%;
+    text-align: left;
+    overflow-wrap: anywhere;
     border: none;
     background: none;
     padding: 0;

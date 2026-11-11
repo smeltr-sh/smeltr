@@ -1,5 +1,5 @@
 <!--
-  Route preview: where a saved sample's records would go, through
+  Route preview: where a sample's records would go, through
   `POST /api/areas/:area/preview/routes` (`runtime::preview_routes`). The routes it runs
   are the ones on screen, saved or not, so this answers what the edit in
   front of you would do.
@@ -12,79 +12,104 @@
 <script lang="ts">
   import Button, { BUSY, LOADING } from './Button.svelte';
   import RecordsGrid, { type FindChip, type GridRow, type LeadColumn } from './RecordsGrid.svelte';
+  import { untrack } from 'svelte';
   import { unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
+  import RouteDiagram from './RouteDiagram.svelte';
+  import { routeCounts } from './routeCounts';
+  import SampleMenu from './SampleMenu.svelte';
+  import { editable } from './access';
+  import { recordsOf, SampleChoices } from './sampleChoices.svelte';
   import {
-    getSample,
-    listSamples,
+    heldSession,
+    chooseLock,
     routePreview,
     errorText,
     type FileConfigDto,
     type RoutePreviewResult,
     type SampleRecordDto,
-    type SampleSummary,
   } from './api';
   import { nameOf } from './exceptions';
 
   let {
     /** The whole bundle as the editor has it, unsaved edits included. */
     config,
-    /** A run somebody else made. Given one, this shows it and picks nothing;
-     * given none, it picks a sample and runs for itself. Two of these on a
-     * screen must not be two pickers over two runs of the same thing. */
-    result: given,
-    /** The sample `result` ran over, by id. */
-    sample: givenSample = '',
+    /** Whether the routes on screen have edits not yet saved. A test locks the routes as saved, so locking waits until
+     * they are saved. */
+    dirty,
+    /** The sources the routes may read, the group's own and `shared/`'s. */
+    sources,
   }: {
     config: FileConfigDto | null;
-    result?: RoutePreviewResult | null;
-    sample?: string;
+    dirty: boolean;
+    sources: string[];
   } = $props();
 
-  let samples: SampleSummary[] = $state([]);
-  // Until the list arrives, no sample is not the same as none naming a source.
-  let loaded = $state(false);
+  const choices = new SampleChoices((e) => (error = unreported(e)));
   let selected = $state('');
-  let own = $state<RoutePreviewResult | null>(null);
-  /** The sample `own` ran over. */
+  /** The source the chosen records stand for where they name none, such as a paste with none or a capture at a
+   * destination. */
+  let standsFor = $state('');
+  let named = $derived(choices.sourceOf(selected));
+  let result = $state<RoutePreviewResult | null>(null);
+  /** The sample `result` ran over. */
   let ran = $state('');
-  let driven = $derived(given !== undefined);
-  let result = $derived(driven ? (given ?? null) : own);
+  /** The routes `result` ran on. */
+  let ranOn = $state('');
   let running = $state(false);
   let error = $state('');
+  // Arriving on the tab runs the first choice, once the samples and the bundle are read: nothing is delivered and no
+  // destination is opened, so there is no reason to wait for a click.
+  $effect(() => {
+    if (selected || !choices.first || !config) return;
+    selected = choices.first;
+    if (choices.sourceOf(selected)) untrack(run);
+  });
   let grid = $state<RecordsGrid | undefined>();
 
-  async function loadSamples() {
-    try {
-      const res = await listSamples();
-      // Only a sample that names a source can be routed: routing selects on
-      // one, so a pasted sample with none matches nothing.
-      samples = res.samples.filter((s) => s.source);
-      loaded = true;
-      if (!selected && samples.length > 0) selected = samples[0].id;
-    } catch (e) {
-      error = unreported(e);
-    }
+  /** Why Lock this as a test is off, or `''` when it is on. A test runs the routes as saved over a saved sample, so it
+   * locks a run of exactly those. */
+  let lockBlocked = $derived(
+    heldSession(selected)
+      ? 'A test locks a saved sample. Save your records as a sample first: Save input as sample, in the pipeline editor.'
+      : !named
+        ? 'A test locks a sample that names its source. Choose one that does.'
+        : dirty
+          ? 'Save your route changes first.'
+          : !result || ran !== selected
+            ? 'Choose a sample and run it without errors first.'
+            : ranOn !== JSON.stringify(config)
+              ? 'The routes changed since this run. Run it again.'
+              : '',
+  );
+
+  /** Locks the fields and records on screen: a record's rows share its number. */
+  function goLockTest() {
+    const { rows, fields } = grid?.onScreen() ?? { rows: [], fields: [] };
+    chooseLock(
+      { fields, rows: rows.map((r) => records.get(r.key) ?? -1).filter((r) => r >= 0) },
+      `#/build/tests/lock-e2e/${encodeURIComponent(ran)}`,
+    );
   }
-  loadSamples();
 
   async function run() {
     if (!config || !selected) return;
     running = true;
     error = '';
     try {
-      const sample = selected;
-      const res = await routePreview(JSON.stringify(config), sample);
+      const [sample, sent] = [selected, JSON.stringify(config)];
+      const res = await routePreview(sent, sample, { source: named ?? standsFor });
       if (!res.ok) {
         error = errorText(res.errors);
-        own = null;
+        result = null;
       } else {
-        own = res;
+        result = res;
         ran = sample;
+        ranOn = sent;
       }
     } catch (e) {
       error = unreported(e);
-      own = null;
+      result = null;
     } finally {
       running = false;
     }
@@ -92,44 +117,22 @@
 
   // The sample's records, the side of each row before its route ran.
   let sampleRecords = $state<SampleRecordDto[]>([]);
-  let sampleId = $derived(driven ? givenSample : ran);
   $effect(() => {
-    const id = sampleId;
+    const id = ran;
     sampleRecords = [];
     if (!id) return;
-    getSample(id).then(
-      (res) => {
-        if (id === sampleId) sampleRecords = res.sample?.records ?? [];
+    recordsOf(id).then(
+      (records) => {
+        if (id === ran) sampleRecords = records;
       },
       (e) => (error = unreported(e)),
     );
   });
 
-  /** Every destination the sample would reach, with how many documents each would receive. */
-  let reached = $derived.by(() => {
-    if (!result) return [];
-    const by = new Map<number, number>();
-    for (const row of result.rows)
-      for (const t of row.through)
-        for (const doc of t.documents)
-          for (const d of doc.destinations) by.set(d, (by.get(d) ?? 0) + 1);
-    return [...by.entries()]
-      .map(([id, documents]) => ({
-        id,
-        name: result?.destination_names[id] ?? `destination ${id}`,
-        documents,
-      }))
-      .sort((a, b) => b.documents - a.documents);
-  });
-
-  let unrouted = $derived(result ? result.rows.filter((r) => r.matched.length === 0).length : 0);
-  let dropped = $derived(
-    result
-      ? result.rows.filter(
-          (r) => r.matched.length > 0 && !r.through.some((t) => t.documents.length > 0),
-        ).length
-      : 0,
-  );
+  let counts = $derived(result && routeCounts(result));
+  let reached = $derived(counts?.reached ?? []);
+  let unrouted = $derived(counts?.unrouted ?? 0);
+  let dropped = $derived(counts?.dropped.length ?? 0);
 
   /** What a route that sent nothing did with the record, by its answer. A source form goes to a
    * destination once per record, so a later route's deliver answer may find it already sent. */
@@ -171,10 +174,12 @@
   let table = $derived.by(() => {
     if (!result) return null;
     const leads = new Map<number, Lead>();
+    const records = new Map<number, number>();
     const rows: GridRow[] = [];
     const add = (record: number, after: unknown, lead: Lead, exceptions: GridRow['exceptions']) => {
       const key = rows.length;
       leads.set(key, lead);
+      records.set(key, record);
       rows.push({
         key,
         label: String(record),
@@ -266,8 +271,9 @@
         );
       }
     }
-    return { rows, leads };
+    return { rows, leads, records };
   });
+  let records = $derived(table?.records ?? new Map<number, number>());
 
   const leadOf = (row: GridRow) => table?.leads.get(row.key);
   const leads: LeadColumn[] = [
@@ -299,36 +305,52 @@
   }
 </script>
 
-<div class="preview" class:empty={driven && !result && !error}>
-  {#if !driven}
-    <div class="controls">
-      <label for="route-sample"><span class="field-name">Route a sample</span></label>
-      <select id="route-sample" bind:value={selected}>
-        {#each samples as s (s.id)}
-          <option value={s.id}>{s.name} ({s.records})</option>
-        {/each}
-      </select>
-      <Button
-        class="primary"
-        onclick={run}
-        disabled={running ? BUSY : !selected ? 'Choose a sample first.' : !config ? LOADING : ''}
-      >
-        {running ? 'Running…' : 'Run'}
-      </Button>
-    </div>
-
-    {#if loaded && samples.length === 0}
-      <p>
-        No sample names a source. Routing selects on a source, so a sample has to say which one its
-        records stand for &mdash; set that on the <a class="link" href="#/build">Samples</a> page.
-      </p>
+<div class="preview">
+  <div class="controls">
+    <SampleMenu
+      samples={choices.samples}
+      {selected}
+      records={result && ran === selected ? result.rows.length : null}
+      held={choices.menuHeld}
+      onpick={(choice) => ((selected = choice), (standsFor = ''))}
+    />
+    {#if selected && !named}
+      <label class="stands-for">
+        <span class="field-name">Source it stands for</span>
+        <select bind:value={standsFor} onchange={() => (result = null)}>
+          <option value="" disabled></option>
+          {#each sources as s (s)}<option value={s}>{s}</option>{/each}
+        </select>
+      </label>
     {/if}
-  {/if}
+    <Button
+      class="primary"
+      onclick={run}
+      disabled={running
+        ? BUSY
+        : !selected
+          ? 'Choose a sample first.'
+          : !named && !standsFor
+            ? 'Choose the source it stands for first.'
+            : !config
+              ? LOADING
+              : ''}
+    >
+      {running ? 'Running…' : 'Run'}
+    </Button>
+    {#if editable()}
+      <span class="grow"></span>
+      <Button type="button" onclick={goLockTest} disabled={lockBlocked}>Lock this as a test</Button>
+    {/if}
+  </div>
 
   <InlineError message={error} />
 
   {#if result}
     {#each result.warnings ?? [] as w (w)}<p class="warn">{w}</p>{/each}
+    {#if counts && result.rows.length > 0}
+      <RouteDiagram {result} {counts} sampleName={choices.name(ran)} />
+    {/if}
     <div class="tiles">
       {#each reached as d (d.id)}
         <button
@@ -375,11 +397,6 @@
     margin-bottom: 1.25rem;
   }
 
-  /* Driven and given nothing yet: a panel with no content is a bar across
-     the page saying nothing. */
-  .preview.empty {
-    display: none;
-  }
   .controls {
     display: flex;
     flex-wrap: wrap;
@@ -387,18 +404,14 @@
     gap: 0.5rem;
     margin-bottom: 0.75rem;
   }
-  .controls label {
-    font-size: var(--text-label);
-    color: var(--dim);
-  }
-  /* The label register: the field's name. */
-  .field-name {
+  .stands-for {
     display: flex;
     align-items: center;
-    font-weight: 600;
+    gap: 0.5rem;
+    font-size: var(--text-label);
   }
-  select {
-    flex-grow: 1;
+  .field-name {
+    font-weight: 600;
   }
   .tiles {
     display: flex;

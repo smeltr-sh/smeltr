@@ -229,9 +229,10 @@ const capture = (group, what, branch) =>
         await new Promise((r) => setTimeout(r, 1000));
         const { capture } = await fetch(`/api/captures/${started.session}`).then((r) => r.json());
         if (!capture.done) continue;
-        if (capture.batches.every((b) => !b.rows.length)) {
+        const { batches } = await fetch(`/api/captures/${started.session}/records`).then((r) => r.json());
+        if (batches.every((b) => !b.rows.length)) {
           await send('DELETE', `/api/captures/${started.session}`);
-          return { batches: capture.batches };
+          return { batches };
         }
         const id = `pool-${what.source?.id ?? what.destination}-${Date.now()}`;
         const samples = `/api/areas/${group}/samples`;
@@ -244,7 +245,7 @@ const capture = (group, what, branch) =>
         if (!saved.ok) throw new Error(JSON.stringify(saved.errors));
         const { sample } = await fetch(`${samples}/${id}?branch=${branch}`).then((r) => r.json());
         return {
-          batches: capture.batches,
+          batches,
           sample: { columns: sample.columns, records: sample.records },
         };
       }

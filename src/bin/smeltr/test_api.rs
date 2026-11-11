@@ -486,19 +486,15 @@ pub fn failing_at(data_dir: &Path, commit: &str) -> Vec<FailingTest> {
     out
 }
 
-/// What a failed verdict comes to, in a few words: that the counts differ, or where the output first does.
+/// What a failed verdict comes to, in a few words: that the sample changed, or the row where the run first differs.
 fn failure_text(verdict: &Verdict) -> String {
-    if verdict.actual_rows != verdict.expected_rows {
-        let documents = |n: usize| format!("{n} document{}", if n == 1 { "" } else { "s" });
-        return format!(
-            "it produced {} where it locked {}",
-            documents(verdict.actual_rows),
-            documents(verdict.expected_rows)
-        );
-    }
-    match &verdict.first_difference {
-        Some(d) => format!("document {} differs from what it locked", d.at + 1),
-        None => "its output differs from what it locked".to_string(),
+    match (&verdict.first_difference, &verdict.rows_in) {
+        (Some(d), _) => format!("row {} differs from what it locked", d.row),
+        (None, Some(rows_in)) => format!(
+            "its sample held {} records when locked, now {}",
+            rows_in.locked, rows_in.now
+        ),
+        (None, None) => "its output differs from what it locked".to_string(),
     }
 }
 
@@ -602,7 +598,8 @@ mod tests {
                 pipeline: Some("orders".to_string()),
                 sample: "s1".to_string(),
                 rows_in: 1,
-                rows_out: 1,
+                fields: vec!["a".to_string()],
+                rows: 1,
                 pipelines: vec!["orders".to_string()],
                 routes: vec![],
             },
@@ -616,7 +613,8 @@ mod tests {
                 "pipeline": "orders",
                 "sample": "s1",
                 "rowsIn": 1,
-                "rowsOut": 1,
+                "fields": ["a"],
+                "rows": 1,
                 "pipelines": ["orders"],
             })
         );
@@ -691,9 +689,10 @@ mod tests {
         let at = config_file::BundleAt::Dir(dir.clone());
         let declared_at = crate::single_origin_declared_at(ROUTED_CONFIG, &at);
 
-        let expected = run_route_actual(ROUTED_CONFIG, 0, declared_at.clone(), sample.clone())
+        let made = run_route_actual(ROUTED_CONFIG, 0, declared_at.clone(), sample.clone())
             .expect("the route preview runs cleanly");
-        assert_eq!(expected.len(), 1, "one record through one route producing one document");
+        assert_eq!(made.len(), 1, "one record through one route producing one document");
+        let fields = vec!["seen".to_string()];
 
         let mut test = TestDto {
             id: "routes-it".to_string(),
@@ -702,7 +701,8 @@ mod tests {
             sample: sample.id.clone(),
             locked_at: 0,
             rows_in: 1,
-            expected,
+            rows: made.iter().map(|m| m.cut(&fields)).collect(),
+            fields,
         };
 
         let passing = run_one(
@@ -735,12 +735,10 @@ mod tests {
         assert_eq!(verdict.rows_in, Some(config_file::RowsIn { locked: 2, now: 1 }));
 
         // What was locked no longer describes what a run produces.
-        test.expected[0] = Some(TestDto::end_to_end_document(
-            serde_json::json!({"seen": false}),
-            "audit",
-            "r1",
-            vec!["es-prod".to_string()],
-        ));
+        test.rows[0].values = Some(serde_json::Map::from_iter([(
+            "seen".to_string(),
+            serde_json::json!(false),
+        )]));
         let failing = run_one(
             &test,
             "west",
@@ -750,20 +748,20 @@ mod tests {
         );
         let verdict = failing.verdict.expect("it still runs, it just no longer matches");
         assert!(!verdict.passed);
-        assert_eq!(verdict.first_difference.unwrap().at, 0);
+        assert_eq!(verdict.first_difference.unwrap().row, 0);
     }
 
-    /// The shape every test on disk holds today: `pipeline` a bare string, with none of the new fields. It still
-    /// deserializes, and running it still passes.
+    /// A pipeline test checks the fields it names on its rows: what it locked passes, and a locked value the run no
+    /// longer makes fails on that row.
     #[test]
-    fn a_narrow_test_file_written_before_the_split_still_loads_and_passes() {
-        let dir = temp_dir("narrow");
+    fn a_pipeline_test_checks_the_fields_it_names() {
+        let dir = temp_dir("pipeline");
         let sample = one_record_sample("orders-sample", None);
         write_sample(&dir, &sample);
         let at = config_file::BundleAt::Dir(dir.clone());
         let declared_at = crate::single_origin_declared_at(PIPELINE_CONFIG, &at);
 
-        let expected = run_pipeline_actual(
+        let made = run_pipeline_actual(
             "audit",
             PIPELINE_CONFIG,
             0,
@@ -772,24 +770,38 @@ mod tests {
             sample.records.clone(),
         )
         .expect("the pipeline preview runs cleanly");
-        let old = format!(
-            r#"{{"id":"keeps-it","name":"keeps it","pipeline":"audit","sample":"{}","lockedAt":0,"rowsIn":1,"expected":{}}}"#,
-            sample.id,
-            serde_json::to_string(&expected).unwrap(),
-        );
+        let fields = vec!["seen".to_string()];
+        let mut test = TestDto {
+            id: "marks-it".to_string(),
+            name: "marks it".to_string(),
+            pipeline: Some("audit".to_string()),
+            sample: sample.id.clone(),
+            locked_at: 0,
+            rows_in: 1,
+            rows: made.iter().map(|m| m.cut(&fields)).collect(),
+            fields,
+        };
+        assert_eq!(test.rows[0].values.as_ref().unwrap()["seen"], serde_json::json!(true));
+        let run = |test: &TestDto| {
+            run_one(
+                test,
+                "shared",
+                PIPELINE_CONFIG,
+                &mut DirFileSet { root: &dir },
+                &declared_at,
+            )
+            .verdict
+            .expect("the pipeline preview runs cleanly")
+        };
+        assert!(run(&test).passed);
 
-        let test: TestDto = serde_json::from_str(&old).expect("the old shape still deserializes");
-        assert_eq!(test.pipeline.as_deref(), Some("audit"));
-
-        let result = run_one(
-            &test,
-            "shared",
-            PIPELINE_CONFIG,
-            &mut DirFileSet { root: &dir },
-            &declared_at,
-        );
-        let verdict = result.verdict.expect("the pipeline preview runs cleanly");
-        assert!(verdict.passed, "{:?}", verdict.first_difference);
+        test.rows[0].values = Some(serde_json::Map::from_iter([(
+            "seen".to_string(),
+            serde_json::json!(false),
+        )]));
+        let verdict = run(&test);
+        assert!(!verdict.passed);
+        assert_eq!(verdict.first_difference.unwrap().row, 0);
     }
 
     /// `SampleDto.source` is `Option`, so a test naming no pipeline and a sample naming no source cannot be routed
@@ -807,7 +819,8 @@ mod tests {
             sample: sample.id.clone(),
             locked_at: 0,
             rows_in: 1,
-            expected: vec![],
+            fields: vec![],
+            rows: vec![],
         };
         let err = check_lockable(&mut DirFileSet { root: &dir }, &test).expect_err("the sample names no source");
         assert!(err.message().contains("names no source"), "{err}");
@@ -838,7 +851,8 @@ mod tests {
             sample: sample.id.clone(),
             locked_at: 0,
             rows_in: 1,
-            expected: vec![],
+            fields: vec![],
+            rows: vec![],
         };
         let manifest = config_file::manifest_bytes(&config_file::FileConfig {
             version: config_file::CURRENT_VERSION,
@@ -1068,7 +1082,8 @@ mod tests {
             sample: sample.id.clone(),
             locked_at: 0,
             rows_in: 1,
-            expected: vec![],
+            fields: vec![],
+            rows: vec![],
         };
         let fixture_files = vec![
             git::FileEdit {
@@ -1116,8 +1131,13 @@ mod tests {
             sample: sample.id.clone(),
             locked_at: 0,
             rows_in: 1,
-            // The pipeline keeps the one record, so locking none is a lock it no longer matches.
-            expected: vec![],
+            fields: vec![],
+            // The pipeline keeps the one record, so locking it dropped is a lock it no longer matches.
+            rows: vec![config_file::Outcome {
+                row: 0,
+                values: None,
+                sent: None,
+            }],
         };
         let mut files = vec![git::FileEdit {
             path: format!("groups/west/{}", config_file::sample_path(&sample.id).unwrap()),
@@ -1139,7 +1159,7 @@ mod tests {
                 id: "fails".to_string(),
                 name: "fails".to_string(),
                 pipeline: Some("audit".to_string()),
-                why: "it produced 1 document where it locked 0 documents".to_string(),
+                why: "row 0 differs from what it locked".to_string(),
             }]
         );
     }
@@ -1235,7 +1255,8 @@ mod tests {
             sample: sample.id.clone(),
             locked_at: 0,
             rows_in: 1,
-            expected: vec![],
+            fields: vec![],
+            rows: vec![],
         };
         let file_edit = |path: String, content: Vec<u8>| git::FileEdit {
             path: format!("groups/west/{path}"),
@@ -1313,7 +1334,8 @@ mod tests {
             sample: sample.id.clone(),
             locked_at: 0,
             rows_in: 1,
-            expected: vec![],
+            fields: vec![],
+            rows: vec![],
         };
         let files = vec![
             git::FileEdit {

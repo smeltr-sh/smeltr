@@ -9,7 +9,7 @@
 // sentence; a change touching many is a count over a body that lists them,
 // which is the shape a commit message already has.
 
-import type { FileConfigDto } from './api';
+import type { DeliverRuleDto, FileConfigDto } from './api';
 import { diffObjects } from './diff';
 import {
   SECTIONS,
@@ -58,9 +58,8 @@ function elide(text: string): string {
   return `${text.slice(0, keep)}…${text.slice(text.length - keep)}`;
 }
 
-/** A line break in a value -- a PEM certificate, a connector's authorities -- read as one line's worth: the
- * subject this feeds is one line by `parse_marker`'s own rule, and everything after the first would silently
- * become the body instead of the field it was describing. */
+/** A line break in a value -- a PEM certificate, a connector's authorities -- read as one line's worth: each edit
+ * is one line of the body, and a break would split the field it describes from its value. */
 function oneLine(text: string): string {
   return text.replace(/\s*\n\s*/g, ' ');
 }
@@ -124,10 +123,14 @@ function allHave(items: unknown[], keys: string[]): boolean {
 function describeArray(items: unknown[]): string {
   if (items.length === 0) return 'none';
   if (items.every((item) => typeof item === 'string')) return elide(items.join(', '));
-  // Delivery rules: where rows go is the fact, not how many rules say so.
+  // Delivery: each condition's destinations, and the condition when it has one, which is the change when only it moved.
   if (items.every((item) => isRecord(item) && Array.isArray(item.to))) {
-    const to = [...new Set(items.flatMap((item) => (item as { to: string[] }).to))];
-    return elide(`to ${to.join(', ')}`);
+    const rules = items as { to: string[]; when?: string }[];
+    return elide(
+      rules
+        .map((r) => (r.when ? `${r.to.join(', ')} when ${oneLine(r.when)}` : r.to.join(', ')))
+        .join('; '),
+    );
   }
   const rows = items as Record<string, string>[];
   if (allHave(items, ['target', 'expr'])) {
@@ -181,6 +184,11 @@ function fieldPhrases(
     .filter((entry) => entry.kind !== 'unchanged' && !skip.includes(entry.key))
     .map((entry) => {
       const [was, now] = differing(entry.before, entry.after);
+      const moved =
+        entry.key === 'deliver' &&
+        was !== entry.before &&
+        deliveryMoves(was as DeliverRuleDto[], now as DeliverRuleDto[]);
+      if (moved) return moved;
       return `${entry.key} from ${say(entry.key, was, 'before')} to ${say(entry.key, now, 'after')}`;
     });
 }
@@ -197,6 +205,27 @@ function differing(before: unknown, after: unknown): [unknown, unknown] {
   const onlyBefore = before.filter((item) => !now.has(key(item)));
   const onlyAfter = after.filter((item) => !was.has(key(item)));
   return onlyBefore.length && onlyAfter.length ? [onlyBefore, onlyAfter] : [before, after];
+}
+
+/** For the changed rules of a route's `deliver`, matched by position, the destinations each gained and lost, as the
+ * description phrase. Undefined when the two sides hold different numbers of changed rules, or a matched pair differs
+ * in its condition: the caller then describes the whole field, "deliver from … to …". */
+function deliveryMoves(was: DeliverRuleDto[], now: DeliverRuleDto[]): string | undefined {
+  if (was.length !== now.length || was.some((rule, i) => rule.when !== now[i].when))
+    return undefined;
+  const phrases = was.map((rule, i) => {
+    const when = rule.when ? ` when ${elide(oneLine(rule.when))}` : '';
+    const gained = [...new Set(now[i].to)].filter((to) => !rule.to.includes(to));
+    const lost = [...new Set(rule.to)].filter((to) => !now[i].to.includes(to));
+    // Each clause carries the condition, so it cannot read as bound to the last clause alone.
+    return [
+      gained.length ? `deliver also to ${elide(gained.join(', '))}${when}` : '',
+      lost.length ? `stop delivering to ${elide(lost.join(', '))}${when}` : '',
+    ]
+      .filter(Boolean)
+      .join(', and ');
+  });
+  return phrases.filter(Boolean).join('; ') || undefined;
 }
 
 // -- pipeline steps --------------------------------------------------------
@@ -349,7 +378,12 @@ function line(edit: Edit, sayScope: boolean): string {
 const VERB: Record<Edit['op'], string> = { add: 'Add', remove: 'Remove', update: 'Update' };
 
 function subjectFor(edits: Edit[], sayScope: boolean): string {
-  if (edits.length === 1) return line(edits[0], sayScope);
+  // What changed in an object goes in the body: values are cut only one at a time, so a subject saying them has no
+  // bound on its length.
+  if (edits.length === 1) {
+    const [edit] = edits;
+    return `${VERB[edit.op]} ${edit.noun} ${edit.name}${sayScope ? ` in ${edit.scope}` : ''}`;
+  }
 
   const nouns = [...new Set(edits.map((edit) => edit.noun))];
   const ops = new Set(edits.map((edit) => edit.op));
@@ -382,6 +416,9 @@ export function changeText(changes: ScopeChange[]): ChangeText {
 
   const sayScope = new Set(edits.map((edit) => edit.scope)).size > 1;
   const subject = subjectFor(edits, sayScope);
-  const body = edits.length === 1 ? '' : edits.map((edit) => line(edit, sayScope)).join('\n');
+  const body =
+    edits.length === 1 && edits[0].op !== 'update'
+      ? ''
+      : edits.map((edit) => line(edit, sayScope)).join('\n');
   return { subject, body };
 }

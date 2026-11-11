@@ -83,7 +83,8 @@ pub use sample::{
     refuse_sample_size, sample_bytes, sample_columns, sample_path, sample_records,
 };
 pub use test::{
-    Difference, RowsIn, TESTS_DIR, TestDto, TestSummary, Verdict, compare, list_tests, read_test, test_bytes, test_path,
+    Difference, Made, Outcome, RowsIn, Sent, TESTS_DIR, TestDto, TestSummary, Verdict, compare, list_tests, read_test,
+    test_bytes, test_path,
 };
 
 /// The `"version"` this build writes and reads. A change to the format bumps it and adds a converter from the
@@ -157,6 +158,9 @@ impl LoadedSystem {
             &metas,
         )?;
         let mut compiled = compiled;
+        for (at, route) in compiled.routes.iter_mut().enumerate() {
+            route.name = self.route_name(at);
+        }
         let named: std::collections::HashMap<DestId, Vec<DestId>> = self
             .topology
             .destinations

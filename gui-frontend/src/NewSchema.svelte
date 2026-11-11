@@ -11,6 +11,7 @@
     CsvPreview,
     EcsRequirements,
     OcsfClass,
+    OcsfProfile,
     OtlpSignal,
     Requirement,
     SchemaReadFormat,
@@ -55,6 +56,8 @@
     depth: number;
     /** Which OCSF requirement levels are read. */
     levels: Requirement[];
+    /** The OCSF profiles whose attributes are read, by name. */
+    profiles: string[];
     /** Whose requirements an ECS schema's fields take: ECS's own, or Elastic Security's in their place. */
     requirements: EcsRequirements;
     /** The OpenTelemetry signal whose records an OTLP schema holds. */
@@ -247,6 +250,17 @@
     d.id = d.suggested = suggestId(name, unavailable);
   }
 
+  /** The profiles the class `d` reads takes. */
+  function profilesOf(d: SchemaDraft): OcsfProfile[] {
+    return classesOf(d).find((c) => c.name === classOf(d))?.profiles ?? [];
+  }
+
+  function profile(d: SchemaDraft, name: string, on: boolean) {
+    d.profiles = profilesOf(d)
+      .map((p) => p.name)
+      .filter((p) => (p === name ? on : d.profiles.includes(p)));
+  }
+
   /** `d` holds `signal`'s records, and its id follows, unless it was typed over. */
   function setSignal(d: SchemaDraft, signal: OtlpSignal) {
     d.signal = signal;
@@ -284,6 +298,7 @@
       class: first,
       depth: 2,
       levels: ['required', 'recommended'],
+      profiles: [],
       requirements: 'ecs',
       signal: 'logs',
       preview: null,
@@ -355,12 +370,20 @@
     if (draft.type === 'ocsf') {
       // The classes to pick from. A file that is not JSON lists none, and the leader says why on Add.
       try {
-        const listed: Record<string, { caption?: string; category_name?: string }> =
-          JSON.parse(draft.text).classes ?? {};
+        const doc = JSON.parse(draft.text);
+        const listed: Record<
+          string,
+          { caption?: string; category_name?: string; profiles?: string[] }
+        > = doc.classes ?? {};
+        const profiles: Record<string, { caption?: string }> = doc.profiles ?? {};
         draft.classes = Object.entries(listed).map(([name, c]) => ({
           name,
           caption: c.caption || name,
           category: c.category_name ?? '',
+          profiles: (c.profiles ?? []).map((p) => ({
+            name: p,
+            caption: profiles[p]?.caption || p,
+          })),
         }));
       } catch {
         draft.classes = [];
@@ -438,7 +461,12 @@
   typeLabel={(t) => LABELS[t]}
   {ready}
   onadd={(d) => {
-    if (d.type === 'ocsf') d.class = classOf(d);
+    if (d.type === 'ocsf') {
+      d.class = classOf(d);
+      // A profile ticked on another class, release or file, which this class does not take.
+      const takes = profilesOf(d);
+      d.profiles = d.profiles.filter((p) => takes.some((t) => t.name === p));
+    }
     return onadd(d);
   }}
   {oncancel}
@@ -624,6 +652,27 @@
             {/each}
           </select>
         </Field>
+        {@const takes = profilesOf(draft)}
+        {#if takes.length > 0}
+          <fieldset class="levels profiles">
+            <legend
+              >Profiles <Help label="Profiles"
+                >A profile adds fields to the class. OCSF applies one only to a record that names it
+                in metadata.profiles, so with any ticked the schema requires metadata.profiles.</Help
+              ></legend
+            >
+            {#each takes as p (p.name)}
+              <label
+                ><input
+                  type="checkbox"
+                  checked={draft.profiles.includes(p.name)}
+                  onchange={(e) => profile(draft, p.name, e.currentTarget.checked)}
+                />
+                {p.caption}</label
+              >
+            {/each}
+          </fieldset>
+        {/if}
         <Field
           required
           label="Depth"
@@ -783,6 +832,12 @@
     border: 0;
     padding: 0;
     margin: 0;
+  }
+
+  .profiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+    gap: 0.35rem 2rem;
   }
 
   .levels legend {

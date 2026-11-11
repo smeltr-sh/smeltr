@@ -282,7 +282,7 @@
     saving = true;
     runError = '';
     try {
-      const res = await saveCapture(run.session, mintSampleId(), source.id, source.id, readAt);
+      const res = await saveCapture(run.session, mintSampleId(), source.id, { base: readAt });
       if (!res.ok) runError = errorText(res.errors) || 'Could not save the rows.';
       else {
         // Without a read commit the save was checked against nothing, so it says nothing of what else moved.

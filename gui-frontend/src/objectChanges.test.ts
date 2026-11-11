@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { FileConfigDto, TestResult, TestSummary } from './api';
+import type { FileConfigDto, Outcome, TestResult, TestSummary } from './api';
 import {
   canonicalJson,
+  checksOf,
+  outcomeText,
   compareRows,
   compareSteps,
   csvRowChanges,
@@ -290,14 +292,15 @@ describe('sample and test cards', () => {
     source: 'kafka',
     records: raws.map((raw) => ({ _raw: raw })),
   });
-  const test = (expected: unknown[]) => ({
+  const test = (rows: Outcome[], fields = ['a']) => ({
     id: 'orders-out',
     name: 'Orders out',
     pipeline: 'p',
     sample: 'orders',
     lockedAt: 1,
     rowsIn: 2,
-    expected,
+    fields,
+    rows,
   });
 
   it('reads a sample or test from its path within a bundle, and nothing else', () => {
@@ -341,7 +344,7 @@ describe('sample and test cards', () => {
     ]);
   });
 
-  it('shows a re-locked test by what it now expects, a dropped row as dropped', () => {
+  it('shows a test locked again by what it now checks, a dropped row as dropped', () => {
     const [card] = objectChanges([
       {
         scope: 'north',
@@ -352,18 +355,32 @@ describe('sample and test cards', () => {
             kind: 'tests',
             id: 'orders-out',
             status: 'M',
-            before: test([{ a: 1 }, null]),
-            after: test([{ a: 2 }, null]),
+            before: test([{ row: 0, values: { a: 1 } }, { row: 1 }]),
+            after: test([{ row: 0, values: { a: 2 } }, { row: 1 }]),
           },
         ],
       },
     ]);
     expect([card.noun, card.label, card.fields]).toEqual(['test', 'Orders out', []]);
     expect(card.rows).toEqual([
-      { status: 'added', cells: ['{"a":2}'] },
-      { status: 'same', cells: ['dropped'] },
-      { status: 'removed', cells: ['{"a":1}'] },
+      { status: 'added', cells: ['row 0: a 2'] },
+      { status: 'same', cells: ['row 1: dropped'] },
+      { status: 'removed', cells: ['row 0: a 1'] },
     ]);
+  });
+
+  it('lays out a checked row by its fields, and an end-to-end one by where it went', () => {
+    expect(outcomeText({ row: 2, values: { act: 'deny', severity: 'critical' } })).toBe(
+      'act "deny", severity "critical"',
+    );
+    expect(
+      outcomeText({
+        row: 0,
+        values: { act: 'deny' },
+        sent: { pipeline: 'p', route: 'r', destinations: ['siem', 'lake'] },
+      }),
+    ).toBe('act "deny" via r → siem, lake');
+    expect(checksOf({ fields: ['dst', 'src'], rows: 5 })).toBe('dst, src on 5 rows');
   });
 
   it('keeps the card of a file that does not read, named by its id, as git says it changed', () => {
@@ -596,7 +613,8 @@ describe('testsCovering', () => {
           area: 'net',
           sample: 's',
           rowsIn: 1,
-          rowsOut: 1,
+          fields: ['a'],
+          rows: 1,
           pipelines: ['p'],
         },
       ],
