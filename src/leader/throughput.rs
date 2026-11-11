@@ -829,8 +829,8 @@ struct GapNormal {
     /// The longest quiet spell it learned, and the longest it may make ([`Gap::edge_ms`]). None while the gap does not
     /// judge it: it has been watched less than [`GAP_WATCH_MS`], or it learned no quiet spell.
     judged: Option<(i64, i64)>,
-    /// [`Self::ended_below`] of the rows read on to `watch` when this was learned. A reading reads only the rows after
-    /// `watch`, so a row before it that no reading followed is kept here.
+    /// What [`Self::ended_below`] gave for the rows up to `watch`, when this was learned. A later reading reads only the
+    /// rows after `watch`, so this keeps the newest row before it that ended such a spell.
     ended_below_ms: Option<i64>,
 }
 
@@ -880,9 +880,9 @@ impl GapNormal {
             })
     }
 
-    /// The end of the bucket of the newest row in `of` from `watch` until `until` that ended a quiet spell longer than
-    /// [`Gap::edge_ms`], which the gap read as below normal, each spell counted as [`Gap::silence_ms`] counts it. None
-    /// while the gap does not judge the source.
+    /// The end of the bucket of the newest row that ended a quiet spell longer than [`Gap::edge_ms`], which the gap read
+    /// as below normal. It reads `of`'s rows from `watch` until `until`, and counts each spell as [`Gap::silence_ms`]
+    /// counts it. None while the gap does not judge the source.
     fn ended_below(&self, watch: Watch, of: &BTreeMap<i64, f64>, warned: &Warned, until: i64) -> Option<i64> {
         let (_, edge_ms) = self.judged?;
         let step = BUCKET.bucket_ms();
@@ -2063,7 +2063,7 @@ mod tests {
         assert_eq!(
             reading_at(&missed, END + FIVE, &Learning::default()).unwrap().outside,
             None,
-            "a reading in the next hour ends it, though no reading followed the row in its own"
+            "the warning ends at a reading in the next hour, though no reading in the row's hour came after the row"
         );
     }
 
