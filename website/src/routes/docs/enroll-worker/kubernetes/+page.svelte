@@ -146,9 +146,11 @@ spec:
     reports the worker silent.
   </p>
   <p>
-    After the worker appears Online, remove the <code>SMELTR_WORKER_ENROLLMENT_CODE</code> environment
-    entry from the StatefulSet, apply the change, and confirm the restarted pod reconnects using its persisted
-    credential. Then delete the enrollment code Secret. The worker needs it only to enroll.
+    The worker needs its enrollment code only to enroll. From then on it reconnects with the
+    credential in its volume, so a restarted pod comes back as the same worker. A code with uses
+    left is a live secret: anyone who can read it can enroll a worker, and an enrolled worker can
+    receive every credential the leader stores. Restrict who can read the Secret, and if it is
+    exposed, withdraw the code in the Enrollment codes table.
   </p>
 
   <h2 id="autoscale">Autoscale workers</h2>
