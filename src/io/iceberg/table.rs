@@ -183,7 +183,7 @@ fn catalog(
             }))
         }
     };
-    let agent = crate::io::http::agent_config(config.tls.as_ref(), secrets)?.new_agent();
+    let agent = crate::io::http::agent(crate::io::http::agent_config(config.tls.as_ref(), secrets)?);
     Ok(Catalog::new(
         config.catalog.clone(),
         config.warehouse.clone(),
