@@ -173,7 +173,7 @@ describe('pipeline identity in the mounted editor', () => {
     const first = structuredClone(writes[0]);
     await open('new');
     await save();
-    expect(writes[1].name).toBe(first.name);
+    expect(writes[1].name).toBe(`${first.name}-2`);
     expect(writes[1].id).not.toBe(first.id);
     expect(pipelines.size).toBe(2);
     expect(pipelines.get(first.id)).toEqual(first);

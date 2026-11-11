@@ -30,7 +30,7 @@ use super::series::{RegistryStore, chart_point_ms};
 use super::throughput::{self, ExpectedPoint};
 use super::warnings::{self, SubjectKind, WarningSpan, label, stale_after_ms};
 use super::{
-    BYTES_DELIVERED_METRIC, BYTES_POLLED_METRIC, ROWS_DELIVERED_METRIC, ROWS_IN_METRIC, ROWS_OUT_METRIC,
+    BYTES_DELIVERED_METRIC, BYTES_POLLED_METRIC, ROWS_DELIVERED_METRIC, ROWS_IN_METRIC, ROWS_SENT_METRIC,
     ROWS_UNMATCHED_METRIC, SOURCE_LAG_METRIC,
 };
 
@@ -556,7 +556,7 @@ fn destination_stats(
         rate: shape.rate(&buckets(&delivered, group, &at)),
         bytes_rate: shape.rate(&buckets(&totals(BYTES_DELIVERED_METRIC), group, &at)),
         round_trip: shape.levels(&scaled(peaks(&totals(DESTINATION_RTT_METRIC), group, &at), 1e3)),
-        received: total(&totals(ROWS_OUT_METRIC), group, &at),
+        received: total(&totals(ROWS_SENT_METRIC), group, &at),
         delivered: total(&delivered, group, &at),
         send_failed: total(&totals(ROWS_SEND_FAILED_METRIC), group, &at),
         rejected: total(&rejected, group, &at),
@@ -920,7 +920,7 @@ mod tests {
             r#"[["function","tag-late"],["group","g"],["pipeline","normalize"]]"#,
             350e-6,
         );
-        put(ROWS_OUT_METRIC, r#"[["destination","es-prod"],["group","g"]]"#, 900.0);
+        put(ROWS_SENT_METRIC, r#"[["destination","es-prod"],["group","g"]]"#, 900.0);
         put(
             ROWS_DELIVERED_METRIC,
             r#"[["destination","es-prod"],["group","g"]]"#,

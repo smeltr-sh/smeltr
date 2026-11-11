@@ -430,6 +430,9 @@ test('A1: a route card turns at a second destination, takes conditions on its li
   await goto(admin, leader, '#/build/routes');
   await admin.getByRole('button', { name: '+ Add route' }).click();
   const card = admin.locator('.flow[data-source="own-metrics"]');
+  await card.getByRole('combobox', { name: 'pipeline' }).selectOption('p');
+  await card.getByRole('button', { name: 'add a destination' }).click();
+  await admin.locator('.menu').getByRole('button', { name: 'es-a' }).click();
   await expect(card).toHaveClass(/\bline\b/);
   const plus = card.getByRole('button', { name: 'add a condition' });
   // One on the line into the pipeline, one on the line out of it.
@@ -1035,7 +1038,9 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
     .click();
   const records = admin.getByRole('group', { name: 'Records' });
   // Where each record was read from is a column per field, typed as the capture recorded it.
-  await expect(records.getByRole('cell', { name: /^__source\.offset/ })).toContainText('i64');
+  await expect(records.getByRole('columnheader', { name: /^__source\.offset/ })).toContainText(
+    'i64',
+  );
   await expect(records.getByRole('row', { name: /coupon.*SPRING.*orders 0 100/ })).toBeVisible();
   await expect(admin.getByText('Lock again after saving: orders parse')).toBeVisible();
 
@@ -1140,8 +1145,10 @@ test('A1: a SQL sample is edited a column at a time, and a value fixed to its ty
     .getByRole('button', { name: 'Edit' })
     .click();
   const records = admin.getByRole('group', { name: 'Records' });
-  await expect(records.getByRole('cell', { name: /^amount/ })).toContainText('f64');
-  await expect(records.getByRole('cell', { name: /^__source\.database/ })).toContainText('str');
+  await expect(records.getByRole('columnheader', { name: /^amount/ })).toContainText('f64');
+  await expect(records.getByRole('columnheader', { name: /^__source\.database/ })).toContainText(
+    'str',
+  );
   await records.getByRole('cell', { name: 'n/a' }).click();
   const amount = records.getByRole('textbox', { name: 'amount, record 1' });
   await expect(amount).toHaveAttribute('aria-invalid', 'true');
