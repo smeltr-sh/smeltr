@@ -4183,6 +4183,37 @@ export function lowerSourceRows(
   return apiJson(inArea(`/sources/${encodeURIComponent(source)}/lower`, group), { method: 'POST' });
 }
 
+/** One span of a source's past year, and whether its normal learns from it (`throughput::PastSpan`). */
+export type PastSpan = { fromMillis: number; toMillis: number; learned: boolean };
+
+/** What a source did over the past year that an editor may say was normal or an outage
+ * (`throughput::Past`): its Rows below normal warnings that ended, newest first, and its longest
+ * quiet spells, longest first. */
+export type SourcePastResponse = {
+  ok: boolean;
+  errors: ApiError[];
+  warnings: PastSpan[];
+  silences: PastSpan[];
+};
+
+export function getSourcePast(group: string, source: string): Promise<SourcePastResponse> {
+  return apiJson(inArea(`/sources/${encodeURIComponent(source)}/past`, group));
+}
+
+/** Says a past span of `group`'s `source` was normal, so its normal learns from it, or an outage,
+ * so it does not. */
+export function markSourcePast(
+  group: string,
+  source: string,
+  span: PastSpan,
+  was: 'normal' | 'outage',
+): Promise<{ ok: boolean; errors: ApiError[] }> {
+  return apiJson(
+    inArea(`/sources/${encodeURIComponent(source)}/mark`, group),
+    json('POST', { fromMillis: span.fromMillis, toMillis: span.toMillis, was }),
+  );
+}
+
 /** Resets `group`'s `source`'s history, so its normal is learned again from now. */
 export function resetSourceHistory(
   group: string,

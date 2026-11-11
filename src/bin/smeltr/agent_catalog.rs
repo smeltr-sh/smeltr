@@ -714,6 +714,18 @@ pub const CATALOG: &[Route] = &[
     },
     Route {
         method: "GET",
+        path: "/api/areas/:area/sources/:id/past",
+        what: "The source's Rows below normal warnings that ended in the past year, newest first, and its longest quiet spells of the year, longest first; each with whether its normal learns from it. The area is the source's worker group. No query.",
+        body: "",
+    },
+    Route {
+        method: "POST",
+        path: "/api/areas/:area/sources/:id/mark",
+        what: "Say a past period of the source was normal, so its normal learns from it though it warned, or an outage, so its normal does not though it did not warn. Replaces what was said about that same period. The area is the source's worker group. No query.",
+        body: "{ fromMillis: number, toMillis: number, was: 'normal' | 'outage' }",
+    },
+    Route {
+        method: "GET",
         path: "/api/settings/updates",
         what: "Whether this leader looks for a newer smeltr release once a day. No query.",
         body: "",

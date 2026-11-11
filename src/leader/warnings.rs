@@ -2029,15 +2029,25 @@ pub fn outside_normal_warnings(
                 format!(
                     "source {}: {}{}",
                     r.source,
-                    match (r.shown(), &r.before) {
-                        (Some(shown), _) => against(shown, side),
+                    match (r.shown(), r.gap.filter(throughput::Gap::below), &r.before) {
+                        (Some(shown), _, _) if side == throughput::Outside::Above || shown.under() => {
+                            against(shown, side)
+                        }
+                        (_, Some(gap), _) => format!(
+                            "no rows for {}, longest normal quiet spell {}",
+                            humanize_secs((gap.silence_ms / 1000) as u64),
+                            humanize_secs((gap.longest_ms / 1000) as u64)
+                        ),
+                        (Some(shown), None, _) => against(shown, side),
                         // Held while no width judges it (`throughput`).
-                        (None, Some(before)) => format!(
+                        (None, None, Some(before)) => format!(
                             "{}its normal from before this warning, {}; Reset history ends it",
                             off_by(before, throughput::Outside::Below),
                             read(before)
                         ),
-                        (None, None) => "below normal, and cannot be judged now; Reset history ends it".to_string(),
+                        (None, None, None) => {
+                            "below normal, and cannot be judged now; Reset history ends it".to_string()
+                        }
                     },
                     lowered_by
                         .map(|by| format!("; lowered to info by {by}"))
@@ -2100,7 +2110,7 @@ pub struct WarningSpan {
 }
 
 /// The warnings a source's chart marks, by the fact each is kept under.
-const SOURCE_SPANS: &[(&str, Condition, Severity)] = &[
+pub(crate) const SOURCE_SPANS: &[(&str, Condition, Severity)] = &[
     (SOURCE_BLOCKED, Condition::SourceBlocked, Severity::Failed),
     (SOURCE_REFUSED, Condition::SourceRefused, Severity::Failed),
     (SOURCE_WAITING, Condition::SourceWaiting, Severity::Warning),
@@ -4217,6 +4227,7 @@ mod tests {
             },
             reach_ms: None,
             before: None,
+            gap: None,
         }
     }
 
@@ -4247,6 +4258,25 @@ mod tests {
                 Condition::SourceRowsBelow,
                 "source quiet: below normal, and cannot be judged now; Reset history ends it".to_string()
             )]
+        );
+    }
+
+    #[test]
+    fn a_source_quiet_too_long_says_for_how_long_against_its_longest_normal_quiet_spell() {
+        let silent = throughput::Reading {
+            judged: Vec::new(),
+            outside: Some(throughput::Outside::Below),
+            gap: Some(throughput::Gap {
+                silence_ms: 15 * 3_600_000,
+                longest_ms: 175 * 60_000,
+                edge_ms: 10 * 3_600_000,
+            }),
+            ..reading_of("sparse", 0.0)
+        };
+        let snapshot = [thread_health_in("g", "w1", "t0", 0, vec![rows_metric("sparse")])];
+        assert_eq!(
+            outside(&[silent], &snapshot)[0].1,
+            "source sparse: no rows for 15 hours, longest normal quiet spell 2 hours"
         );
     }
 
@@ -4414,7 +4444,7 @@ mod tests {
                 since_millis: NOW - 60_000,
                 by: "John".into(),
             }],
-            reset: Vec::new(),
+            ..Marks::default()
         };
         let at = |since: i64| -> Warning {
             let starts: HashMap<FactKey, i64> = facts.iter().map(|k| (k.clone(), since)).collect();

@@ -94,6 +94,17 @@ export function fromLocalInput(text: string): number | undefined {
   return Number.isNaN(millis) ? undefined : millis;
 }
 
+/** How long a span of `millis` lasted, cut to whole minutes under two hours, whole hours under two
+ * days and whole days past that, such as `55 minutes` or `9 hours`: the leader words a span so
+ * (`warnings::humanize_secs`). */
+export function lasted(millis: number): string {
+  const minutes = Math.floor(millis / 60_000);
+  if (minutes < 120) return count(minutes, 'minute');
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return count(hours, 'hour');
+  return count(Math.floor(hours / 24), 'day');
+}
+
 /** `n` of something, pluralized by adding an s unless `plural` says otherwise. */
 export function count(n: number, what: string, plural = `${what}s`): string {
   return `${n} ${n === 1 ? what : plural}`;
