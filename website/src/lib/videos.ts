@@ -1,4 +1,4 @@
-/** Learn lists videos by these, easiest first. */
+/** Each video has one level. Learn lists videos easiest level first. */
 export const levels = ['Beginner', 'Intermediate', 'Advanced'] as const;
 
 /** Who a video is for. A security analyst uses the data downstream and looks at pipelines to see how a record

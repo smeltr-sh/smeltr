@@ -23,9 +23,9 @@
     // A stable sort, so a course's videos keep their order within a level.
     .toSorted((a, b) => levels.indexOf(a.video.level) - levels.indexOf(b.video.level));
   type Entry = (typeof videos)[number];
-  type Pick = { group: Group; value: string };
+  type Choice = { group: Group; value: string };
 
-  let picked = $state<Pick[]>([]);
+  let picked = $state<Choice[]>([]);
   let query = $state('');
 
   const isPicked = (group: Group, value: string) =>
@@ -35,8 +35,9 @@
       ? picked.filter((p) => p.group !== group || p.value !== value)
       : [...picked, { group, value }]);
 
-  // Within a group a video needs one of the picked tags; across groups it needs them all.
-  function matches(entry: Entry, tags: Pick[]) {
+  // Within a group a video needs any one of the picked tags; across groups it needs a match in every group that has a
+  // pick.
+  function matches(entry: Entry, tags: Choice[]) {
     const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
     const text = [entry.video.title, entry.course.title, ...entry.video.topics]
       .join(' ')
@@ -52,7 +53,8 @@
   const filtering = $derived(picked.length > 0 || query.trim() !== '');
   const found = $derived(videos.filter((entry) => matches(entry, picked)));
 
-  // What picking the tag would show: the other picks in its own group do not narrow it.
+  // How many videos match this tag together with the search and the picks in the other groups. Picks in the tag's own
+  // group are left out, since they widen the results.
   const count = (group: Group, value: string) =>
     videos.filter(
       (entry) =>
