@@ -212,6 +212,8 @@ pub struct Gap {
     /// The longest quiet spell it may make before it is below normal: [`GAP_MARGIN`] times the longest it learned,
     /// lengthened while it has been watched less than a year.
     pub edge_ms: i64,
+    /// The end of its last bucket with rows.
+    pub row_ms: Option<i64>,
 }
 
 impl Gap {
@@ -388,9 +390,9 @@ impl Readings {
             return learned.clone();
         }
         let learned = Arc::new(learn(store, as_of, learning));
-        // What was learned is kept for the hour only once some source has a normal, so a fleet whose history was just
-        // written is learned again, and judged, at its next reading.
-        if learned.widths.values().any(|n| !n.is_empty()) {
+        // What was learned is kept for the hour only once some source has a normal or a gap that judges it, so a fleet
+        // whose history was just written is learned again, and judged, at its next reading.
+        if learned.widths.values().any(|n| !n.is_empty()) || learned.gaps.values().any(|g| g.judged.is_some()) {
             *held = Some((as_of, learning.clone(), learned.clone()));
         }
         learned
@@ -626,9 +628,12 @@ fn compute(
             let back = then
                 .as_ref()
                 .is_some_and(|then| !then.is_empty() && !then.iter().any(Judged::under));
-            // Where no count width reads it, now or against that level, the gap does: the warning ends once its quiet
-            // spell is one it may make, at its first row.
-            let quiet_back = then.as_ref().is_some_and(Vec::is_empty) && gap.is_some_and(|gap| !gap.below());
+            // Where no count width reads it, now or against that level, the gap does: the warning ends at the first row
+            // since the quiet spell it read began.
+            let quiet_back = then.as_ref().is_some_and(Vec::is_empty)
+                && gap
+                    .zip(warned.held_from)
+                    .is_some_and(|(gap, from)| gap.row_ms.is_some_and(|row| row > from));
             let before = then.and_then(|then| then.into_iter().find(Judged::under));
             let outside = outside(
                 &judged,
@@ -911,6 +916,7 @@ impl GapNormal {
                     silence_ms: ended_ms - from,
                     longest_ms,
                     edge_ms,
+                    row_ms: watch.row_ms,
                 }
             })
     }
@@ -959,14 +965,10 @@ fn gaps(
     for (key, of) in buckets {
         let Some(&first) = of.keys().next() else { continue };
         let watch = match held.get(key) {
-            // Buckets before `oldest` are no longer held, so they count as unreported: no quiet spell runs through them.
-            Some(&watch) if watch.read_ms < oldest => Watch {
-                read_ms: oldest,
-                quiet_ms: oldest,
-                ..watch
-            },
-            Some(&watch) => watch,
-            None => Watch {
+            Some(&watch) if watch.read_ms >= oldest => watch,
+            // A source first seen, or back after the oldest bucket held, is watched afresh from its first bucket: what
+            // came before is no longer held, so no quiet spell runs through it.
+            _ => Watch {
                 watched_ms: first,
                 read_ms: first,
                 row_ms: None,
@@ -1964,6 +1966,19 @@ mod tests {
             None,
             "the gap does not judge a source reset less than four weeks ago"
         );
+        let back = sparse(26, silent);
+        let watch = Watch {
+            watched_ms: 0,
+            read_ms: HOUR,
+            row_ms: Some(0),
+            quiet_ms: 0,
+        };
+        back.record_silences(&[(("g".into(), "s".into()), watch)], &[]).unwrap();
+        assert_eq!(
+            reading(&back),
+            None,
+            "a source back after the oldest bucket held is watched afresh"
+        );
     }
 
     #[test]
@@ -2027,6 +2042,25 @@ mod tests {
         let r = reading_at(&store, END + FIVE, &Learning::default()).unwrap();
         assert_eq!(r.gap.unwrap().silence_ms, 0);
         assert_eq!(r.outside, None);
+
+        // Neither a bucket nobody reported nor a stop's end is a row: the warning holds through each.
+        let held = |store: &RegistryStore| {
+            warned_reaching(
+                store,
+                "source_rows_below",
+                END - HOUR,
+                None,
+                Some(silent - 3 * HOUR + FIVE),
+            );
+            reading_at(store, END, &Learning::default()).unwrap().outside
+        };
+        let skipped = store_with(35, |at| {
+            (at != END - FIVE).then_some(if at % (3 * HOUR) == 0 && at < silent { 1.0 } else { 0.0 })
+        });
+        assert_eq!(held(&skipped), Some(Outside::Below));
+        let stopped = sparse(35, silent);
+        warned(&stopped, "source_unreachable", END - 2 * HOUR, Some(END - HOUR));
+        assert_eq!(held(&stopped), Some(Outside::Below));
     }
 
     #[test]

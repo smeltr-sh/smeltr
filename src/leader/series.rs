@@ -1310,11 +1310,11 @@ impl RegistryStore {
         Ok(rows)
     }
 
-    /// `group`'s `source`'s quiet spells that ended from `since_ms` on, oldest first, as (ended, length).
+    /// `group`'s `source`'s quiet spells that began from `since_ms` on, oldest first, as (ended, length).
     pub fn source_silences(&self, group: &str, source: &str, since_ms: i64) -> Result<Vec<(i64, i64)>, StoreError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare_cached(
-            "SELECT ended_ms, length_ms FROM silences WHERE group_id = ?1 AND source = ?2 AND ended_ms >= ?3 \
+            "SELECT ended_ms, length_ms FROM silences WHERE group_id = ?1 AND source = ?2 AND ended_ms - length_ms >= ?3 \
              ORDER BY ended_ms",
         )?;
         let rows = stmt
@@ -3785,7 +3785,8 @@ mod tests {
             .record_silences(&[(key.clone(), watch)], &[silence(1_000, 500), silence(2_500, 1_000)])
             .unwrap();
         assert_eq!(store.watches().unwrap().get(&key), Some(&watch));
-        assert_eq!(store.source_silences("g", "s", 2_000).unwrap(), [(2_500, 1_000)]);
+        assert_eq!(store.source_silences("g", "s", 1_500).unwrap(), [(2_500, 1_000)]);
+        assert_eq!(store.source_silences("g", "s", 1_501).unwrap(), []);
         assert_eq!(
             store.source_silences("g", "s", 0).unwrap(),
             [(1_000, 500), (2_500, 1_000)]

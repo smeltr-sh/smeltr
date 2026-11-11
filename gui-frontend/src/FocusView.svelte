@@ -28,6 +28,8 @@
   import { CHART_RANGES, chartRange, type SourceGap } from './map';
   import {
     conditionLabel,
+    errorMessage,
+    errorText,
     getSourcePast,
     getStats,
     markSourcePast,
@@ -181,6 +183,7 @@
 
   /** What a source did over the past year that its normal learns from, or not: the History tab. */
   let past = $state<SourcePastResponse | null>(null);
+  let pastError = $state('');
   const marking = new Busy();
   /** What an editor in the source's group may say a span was. */
   const WAS: { value: 'normal' | 'outage'; label: string }[] = [
@@ -190,23 +193,33 @@
 
   function readPast() {
     const asked = { group: node.group, id: node.authorId };
-    getSourcePast(asked.group, asked.id)
+    const current = () => asked.group === node.group && asked.id === node.authorId;
+    return getSourcePast(asked.group, asked.id)
       .then((answer) => {
-        if (asked.group === node.group && asked.id === node.authorId) past = answer;
+        if (!current()) return;
+        past = answer.ok ? answer : null;
+        pastError = answer.ok ? '' : errorText(answer.errors);
       })
-      .catch(() => {});
+      .catch((e) => {
+        if (current()) pastError = errorMessage(e);
+      });
   }
 
   $effect(() => {
     if (shown !== 'history') return;
-    untrack(() => (past = null));
+    untrack(() => {
+      past = null;
+      pastError = '';
+    });
     readPast();
   });
 
   function mark(span: PastSpan, was: 'normal' | 'outage') {
+    // One mark at a time, each read back before the next, so the list never shows an older answer last.
+    if (marking.on) return;
     void marking.run(async () => {
       await markSourcePast(node.group, node.authorId, span, was);
-      readPast();
+      await readPast();
     });
   }
 
@@ -643,7 +656,9 @@
       {/if}
     </section>
   {:else if shown === 'history'}
-    {#if !past?.ok}
+    {#if pastError}
+      <p class="problem">{pastError}</p>
+    {:else if !past}
       <p class="dim">Reading&hellip;</p>
     {:else}
       {@render pastSpans(

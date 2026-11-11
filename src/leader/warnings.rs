@@ -4270,6 +4270,7 @@ mod tests {
                 silence_ms: 15 * 3_600_000,
                 longest_ms: 175 * 60_000,
                 edge_ms: 10 * 3_600_000,
+                row_ms: None,
             }),
             ..reading_of("sparse", 0.0)
         };
