@@ -149,6 +149,24 @@ kbd {
   padding: 0;
   background: none;
 }
+/* The Copy button `copyButtons` puts over each block's top corner. */
+.copy-bar {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  justify-content: flex-end;
+  align-items: flex-start;
+  height: 0;
+  padding-right: 0.5rem;
+  top: 1.75rem;
+}
+.copy-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
 
 /* One table, in the docs and on every page that holds one in an article. */
 article .table-scroll {
