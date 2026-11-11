@@ -6,6 +6,7 @@
 import type {
   DirectiveAction,
   Listening,
+  PartitionRef,
   ResourceReport,
   ThreadHealth,
   WorkerCredentialDto,
@@ -63,7 +64,9 @@ export type WorkerRow = {
   kind: WorkerKind | null;
   /** Ordered by thread id so the list does not reshuffle between polls. */
   threads: ThreadHealth[];
-  partitionsOwned: number;
+  /** What its threads own, while it is online. A worker that is not online owns nothing now,
+   * whatever it last reported. */
+  partitionsOwned: PartitionRef[];
   /** The group this worker's threads report, or `null` with no threads.
    * Every thread in a process takes its group from that process's
    * bootstrap config. */
@@ -131,12 +134,13 @@ export function rollupWorkers(
         .filter((t) => t.workerId === w.workerId)
         .sort((a, b) => a.threadId.localeCompare(b.threadId));
       const latest = freshest(own);
+      const status = computeWorkerStatus(w, threads, silentAfterMs);
       return {
         workerId: w.workerId,
-        status: computeWorkerStatus(w, threads, silentAfterMs),
+        status,
         kind: w.kind ?? null,
         threads: own,
-        partitionsOwned: own.reduce((n, t) => n + t.partitionsOwned.length, 0),
+        partitionsOwned: status === 'online' ? own.flatMap((t) => t.partitionsOwned) : [],
         groupId: latest?.groupId ?? null,
         lastSeenMillisAgo: latest?.lastSeenMillisAgo ?? null,
         stopAfterUnreachableSecs: latest?.stopAfterUnreachableSecs ?? null,

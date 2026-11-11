@@ -3427,7 +3427,6 @@ export type GroupHealth = {
   transformThreads: number;
   readers: number;
   egressThreads: number;
-  partitionsOwned: number;
 };
 
 export type ClusterHealth = {
