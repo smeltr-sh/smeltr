@@ -18,6 +18,7 @@
   import SortButton from './SortButton.svelte';
   import { TableSort } from './sort.svelte';
   import { RESOURCES_TABS } from './nav';
+  import { checksOf } from './objectChanges';
   import { dateTime } from './time';
   import { editable } from './access';
   import { nameOf, pipelineNamesAt, type PipelineNames } from './pipelineNames';
@@ -76,13 +77,13 @@
     return samples.find((s) => s.id === t.sample)?.name ?? t.sample;
   }
 
-  const testSort = new TableSort<'name' | 'pipelines' | 'sample' | 'rows'>();
+  const testSort = new TableSort<'name' | 'pipelines' | 'sample' | 'checks'>();
   let sortedTests = $derived(
     testSort.apply(tests, {
       name: (t) => t.name,
       pipelines: (t) => t.pipelines.map((id) => nameOf(pipelineNames, id)).join(', '),
       sample: sampleNameOf,
-      rows: (t) => t.rowsIn,
+      checks: checksOf,
     }),
   );
 
@@ -302,8 +303,8 @@
               <th aria-sort={testSort.aria('sample')}
                 ><SortButton sort={testSort} key="sample">Sample</SortButton></th
               >
-              <th aria-sort={testSort.aria('rows')}
-                ><SortButton sort={testSort} key="rows">Rows locked</SortButton></th
+              <th aria-sort={testSort.aria('checks')}
+                ><SortButton sort={testSort} key="checks">Checks</SortButton></th
               >
               <th></th>
               <th></th>
@@ -317,7 +318,7 @@
                   >{t.pipelines.map((id) => nameOf(pipelineNames, id)).join(', ') || '—'}</td
                 >
                 <td class="mono dim">{sampleNameOf(t)}</td>
-                <td class="mono">{t.rowsIn} in / {t.rowsOut} out</td>
+                <td class="mono">{checksOf(t)}</td>
                 <td>
                   {#if !results[t.id]}
                     <span class="dim">running…</span>

@@ -53,7 +53,8 @@ test('a pipeline is exported with the pipeline it calls, and its routes when ask
     sample: 'lines',
     lockedAt: 0,
     rowsIn: 1,
-    expected: [null],
+    fields: [],
+    rows: [{ row: 0 }],
   });
 
   await goto(admin, leader, '#/build/pipelines');

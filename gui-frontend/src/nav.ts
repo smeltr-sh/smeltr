@@ -675,7 +675,7 @@ function drilledInto(route: Route, names: PipelineNames): Crumb[] {
     case 'pipeline':
       return [{ label: pipelineCrumb(route.id, names) }];
     case 'lock-test':
-      if ('relock' in route) return [{ label: 're-lock a test' }];
+      if ('relock' in route) return [{ label: 'lock a test again' }];
       return route.pipeline
         ? [
             {

@@ -1,13 +1,14 @@
 <!--
   Build / <pipeline> / lock a test, or Build / routes / route a sample / lock
   a test: run once -- the pipeline preview, or (when `pipeline` is absent)
-  the route preview -- over a saved sample and fix what it produced as the
-  answer. The pipeline (or nothing) and the sample are given, not chosen
-  here (`gui-design.md`).
+  the route preview -- over a saved sample and fix what it made of the
+  fields and rows that were on screen (`lockChoice`) as the answer. The
+  pipeline (or nothing) and the sample are given, not chosen here
+  (`gui-design.md`).
 
-  A re-lock is given a failing test instead, and reads all of that from it.
-  `now()` stays pinned to the instant the test was first locked, so the
-  review diff holds only what really changed.
+  Locking again is given a failing test instead, and reads all of that from
+  it, its fields and rows too. `now()` stays pinned to the instant the test
+  was first locked, so the review diff holds only what really changed.
 -->
 <script lang="ts">
   import { Busy } from './busy.svelte';
@@ -27,17 +28,22 @@
     getTest,
     previewPipeline,
     routePreview,
-    endToEndDocument,
+    cutDown,
+    lockChoice,
     putTest,
     errorText,
     recordLine,
     type ApiError,
-    type EndToEndExpected,
+    type LockChoice,
+    type Outcome,
     type RoutePreviewResult,
+    type Sent,
     type SaveConflict,
     type TestDto,
   } from './api';
   import { count } from './time';
+  import { formatDiffValue } from './diff';
+  import { leafMap } from './recordDiff';
   import { announcePipelineNames } from './nav';
   import { editable } from './access';
   import { nameOf, pipelineNamesAt } from './pipelineNames';
@@ -69,7 +75,10 @@
   // `now()` read and what it produced. Locking replays exactly this,
   // rather than running the preview a second time.
   let atMicros = $state(0);
-  let expected = $state<unknown[]>([]);
+  /** Every document the run made, rows it made none on included, as the grid numbers its rows. */
+  let made = $state<Made[]>([]);
+  /** The fields and rows to lock: the locked test's own when locking again, else what was on screen. */
+  let choice = $state<LockChoice | null>(relock ? null : lockChoice());
   let previewOk = $state(true);
   let previewErrors = $state<ApiError[]>([]);
 
@@ -78,30 +87,53 @@
   let conflict = $state<SaveConflict | null>(null);
 
   const SHOWN = 5;
-  /** Whoever asked to see every sample record, or every expected row, not the first few. */
+  /** Whoever asked to see every sample record, or every checked row, not the first few. */
   let allRecords = $state(false);
-  let allExpected = $state(false);
+  let allChecked = $state(false);
 
-  /** A route preview flattened into what `expected` holds for an end-to-end test: per record, per matched
-   * route, per document, packed with where it went (`endToEndDocument`) -- the same shape locking and a
-   * run both produce, so comparing the two is comparing like with like. */
-  function flattenRouted(result: RoutePreviewResult): EndToEndExpected[] {
-    const out: EndToEndExpected[] = [];
+  /** One document a run made, whole: what `cutDown` cuts to a test's fields. */
+  type Made = { row: number; document: unknown | null; sent?: Sent };
+
+  /** A route preview as what an end-to-end test checks: per record, per route that carried it, per document,
+   * with where it went, and a record that made none as one entry making none -- the leader's own
+   * `run_route_actual`, so comparing the two is comparing like with like. */
+  function routedMade(result: RoutePreviewResult): Made[] {
+    const out: Made[] = [];
     for (const row of result.rows) {
+      const before = out.length;
       for (const t of row.through) {
         const route = result.route_ids[t.route] ?? '';
-        const routedPipeline = result.route_pipeline_ids[t.route] ?? '';
+        const pipeline = result.route_pipeline_ids[t.route] ?? '';
         for (const doc of t.documents) {
           const destinations = doc.destinations.map(
             (d) => result.destination_names[d] ?? String(d),
           );
-          const document = JSON.parse(doc.document);
-          out.push(endToEndDocument(document, routedPipeline, route, destinations));
+          out.push({
+            row: row.row,
+            document: JSON.parse(doc.document),
+            sent: { pipeline, route, destinations },
+          });
         }
       }
+      if (out.length === before) out.push({ row: row.row, document: null });
     }
     return out;
   }
+
+  /** With nothing chosen -- the page reached by its address alone -- every field the run made, and every row. */
+  let fields = $derived(
+    choice?.fields ?? [
+      ...new Set(made.flatMap((m) => (m.document === null ? [] : [...leafMap(m.document).keys()]))),
+    ],
+  );
+  let rowsChecked = $derived(choice?.rows ?? [...new Set(made.map((m) => m.row))]);
+  // A checked row the run never reached made nothing, as a dropped row did, and stays checked as that.
+  let outcomes = $derived(
+    rowsChecked.flatMap((row) => {
+      const here = made.filter((m) => m.row === row);
+      return here.length ? here.map((m) => cutDown(m.row, m.document, fields, m.sent)) : [{ row }];
+    }),
+  );
 
   async function load() {
     loading = true;
@@ -121,6 +153,10 @@
         sample = testRes.test.sample;
         name = testRes.test.name;
         lockedAt = testRes.test.lockedAt;
+        choice = {
+          fields: testRes.test.fields,
+          rows: [...new Set(testRes.test.rows.map((o) => o.row))],
+        };
       }
       const [configRes, sampleRes] = await Promise.all([getConfig(), getSample(sample)]);
       if (!configRes.config)
@@ -144,7 +180,7 @@
       const config = JSON.stringify({ ...configRes.config, schemas: [] });
       if (pipeline) {
         const preview = await previewPipeline({ config, pipeline, sample, atMicros });
-        expected = preview.rows.map((r) => r.json);
+        made = preview.rows.map((r) => ({ row: r.row, document: r.json }));
         previewOk = preview.ok;
         previewErrors = preview.errors;
       } else {
@@ -159,7 +195,7 @@
             ? [bareError(`record ${refused.row}: ${refused.refused}`)]
             : []
           : preview.errors;
-        expected = previewOk ? flattenRouted(preview) : [];
+        made = previewOk ? routedMade(preview) : [];
       }
     } catch (e) {
       // The previews are quiet calls, which this puts in the bar too: this page has nowhere else to say it.
@@ -177,7 +213,6 @@
     if (said.length === 0) loadError = otherwise;
   }
 
-  let droppedCount = $derived(pipeline ? expected.filter((v) => v === null).length : 0);
   let canLock = $derived(!loading && previewOk && name.trim() !== '' && !saving.on);
 
   function buildTest(): TestDto {
@@ -187,7 +222,8 @@
       sample,
       lockedAt: atMicros,
       rowsIn: sampleRecords.length,
-      expected,
+      fields,
+      rows: outcomes,
     };
     return pipeline ? { ...base, pipeline } : base;
   }
@@ -226,14 +262,14 @@
     return text.length > limit ? `${text.slice(0, limit)}…` : text;
   }
 
-  /** `expected`'s entries, for an end-to-end test: `flattenRouted`'s own shape, read back for display. */
-  function routed(v: unknown): EndToEndExpected {
-    return v as EndToEndExpected;
+  /** What a checked row shows for `field`: its value, or that the document lacks it. */
+  function cell(o: Outcome, field: string): string {
+    return o.values && field in o.values ? formatDiffValue(o.values[field]) : 'absent';
   }
 </script>
 
 <SectionShell>
-  <PageHeader title="Lock this as a test">
+  <PageHeader title={relock ? 'Lock this test again' : 'Lock this as a test'}>
     {#snippet help()}
       Whatever the expected output shows now, right or wrong, becomes the answer.
     {/snippet}
@@ -306,39 +342,48 @@
 
       <div class="card accent">
         <div class="row">
-          <h2 class="uppercase-label">Expected output, locked</h2>
+          <h2 class="uppercase-label">Checks, locked</h2>
           <span class="mono dim">
-            {#if pipeline}
-              {count(expected.length, 'row')}, {droppedCount} dropped
-            {:else}
-              {count(expected.length, 'document')} kept
-            {/if}
+            {count(fields.length, 'field')} on {count(rowsChecked.length, 'row')}
           </span>
         </div>
-        <div class="rows">
-          {#if pipeline}
-            {#each allExpected ? expected : expected.slice(0, SHOWN) as doc}
-              <div class="mono line ellipsis" class:dim={doc === null}>
-                {doc === null ? 'dropped' : short(JSON.stringify(doc))}
-              </div>
-            {/each}
-          {:else}
-            {#each allExpected ? expected : expected.slice(0, SHOWN) as entry}
-              {@const e = routed(entry)}
-              <div class="e2e-entry">
-                <div class="mono line ellipsis">{short(JSON.stringify(e.document))}</div>
-                <div class="mono dim e2e-meta">
-                  via {e.route} &rarr; {e.destinations.join(', ')}
-                </div>
-              </div>
-            {/each}
-          {/if}
-          {#if !allExpected && expected.length > SHOWN}
+        <div class="rows checks">
+          <table>
+            <thead>
+              <tr>
+                <th class="dim">row</th>
+                {#each fields as f (f)}<th class="mono">{f}</th>{/each}
+              </tr>
+            </thead>
+            <tbody>
+              {#each allChecked ? outcomes : outcomes.slice(0, SHOWN) as o}
+                <tr>
+                  <td class="dim mono">{o.row}</td>
+                  {#if !o.values}
+                    <td class="dim" colspan={Math.max(fields.length, 1)}>dropped</td>
+                  {:else}
+                    {#each fields as f (f)}
+                      <td class="mono" class:dim={!(f in o.values)}>{short(cell(o, f), 40)}</td>
+                    {/each}
+                  {/if}
+                </tr>
+                {#if o.sent}
+                  <tr class="sent">
+                    <td></td>
+                    <td class="mono dim" colspan={Math.max(fields.length, 1)}>
+                      via {o.sent.route} &rarr; {o.sent.destinations.join(', ')}
+                    </td>
+                  </tr>
+                {/if}
+              {/each}
+            </tbody>
+          </table>
+          {#if !allChecked && outcomes.length > SHOWN}
             <div class="dim line ellipsis">
               <ShowAll
-                more={expected.length - SHOWN}
-                what={pipeline ? 'row' : 'document'}
-                onshowall={() => (allExpected = true)}
+                more={outcomes.length - SHOWN}
+                what="row"
+                onshowall={() => (allChecked = true)}
               />
             </div>
           {/if}
@@ -437,15 +482,22 @@
     padding: 0.15rem 0;
   }
 
-  .e2e-entry {
-    padding: 0.2rem 0;
+  .checks {
+    overflow-x: auto;
   }
-  .e2e-entry .line {
-    padding: 0;
+  .checks table {
+    border-collapse: collapse;
+    font-size: var(--text-note);
   }
-  .e2e-meta {
-    font-size: var(--text-micro);
-    padding: 0.1rem 0 0.2rem;
+  .checks th,
+  .checks td {
+    text-align: left;
+    padding: 0.2rem 1.2rem 0.2rem 0;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  .checks tr:has(+ .sent) td {
+    border-bottom: none;
   }
 
   .explain-row {

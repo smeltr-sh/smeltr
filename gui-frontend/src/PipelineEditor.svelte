@@ -99,6 +99,8 @@
     type PreviewResult,
     type ParserProposal,
     parsersIn,
+    chooseLock,
+    type LockChoice,
   } from './api';
   import ChipPicker from './ChipPicker.svelte';
   import JumpLinks from './JumpLinks.svelte';
@@ -1028,8 +1030,11 @@
   /** The dialog is open to save the held capture, the input run over, as a sample. */
   let savingInput = $state(false);
 
-  function goLockTest() {
-    location.hash = `#/build/tests/lock/${encodeURIComponent(loadedId)}/${encodeURIComponent(selectedSample)}`;
+  function goLockTest(choice: LockChoice) {
+    chooseLock(
+      choice,
+      `#/build/tests/lock/${encodeURIComponent(loadedId)}/${encodeURIComponent(selectedSample)}`,
+    );
   }
 
   // The output is not an action. It follows the steps and the sample, one

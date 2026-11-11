@@ -961,14 +961,14 @@ mod tests {
             serde_json::json!({"shared": bundle("from = \"a\";"), "atMicros": at}),
         )
         .await;
-        let expected: Vec<_> = locked["rows"]
+        let rows: Vec<_> = locked["rows"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|r| r["json"].clone())
+            .map(|r| serde_json::json!({"row": r["row"], "values": {"from": r["json"]["from"]}}))
             .collect();
         let test = serde_json::json!({"id": "t", "name": "t", "pipeline": "p", "sample": "s", "lockedAt": at,
-            "rowsIn": 1, "expected": expected});
+            "rowsIn": 1, "fields": ["from"], "rows": rows});
         let run = |body: &str| {
             let request = serde_json::json!({"shared": bundle(body), "tests": [test.clone()],
                 "samples": [sample(serde_json::json!([{"_raw": "ann"}]))], "run": ["t"]});

@@ -49,9 +49,10 @@ export interface MutationResult {
 }
 
 import { editedBy, suggestBranchName } from './branchNames';
-import { store, stored } from './stored';
+import { store, stored, storedJson } from './stored';
 import { csrf, recheck, session, signedOut, type AccessDto, type AccessLevel } from './session';
 import { bareError, errors, Reported, type Call, type Weight } from './errors.svelte';
+import { leafMap } from './recordDiff';
 
 export function errorText(errors: ApiError[]): string {
   return errors.map((e) => e.message).join('; ');
@@ -2476,79 +2477,104 @@ export type TestSummary = {
   area: string;
   sample: string;
   rowsIn: number;
-  /** Documents kept; fewer than `rowsIn` means rows were dropped, or (for an end-to-end test) matched no
-   * route. */
-  rowsOut: number;
-  /** Every pipeline this test exercises: what `pipeline` names, for a pipeline test; each matched route's
-   * pipeline, read off the locked outcomes, for an end-to-end test. A record can match more than one
-   * route, so this can name more than one pipeline even where `pipeline` names none. */
+  /** The fields it checks. */
+  fields: string[];
+  /** How many rows it checks. */
+  rows: number;
+  /** Every pipeline this test exercises: what `pipeline` names, for a pipeline test; each route's pipeline,
+   * read off the outcomes, for an end-to-end test. A record can match more than one route, so this can name
+   * more than one pipeline even where `pipeline` names none. */
   pipelines: string[];
-  /** Every route the locked outcomes carry a document through. Absent for a pipeline test, which has
-   * none. */
+  /** Every route the outcomes carry a document through. Absent for a pipeline test, which has none. */
   routes?: string[];
+};
+
+/** Where an end-to-end test's document went, by names -- never the runtime ids those name. */
+export type Sent = { pipeline: string; route: string; destinations: string[] };
+
+/** One document a run made on a checked row, cut down to the test's fields (`cutDown`), or the row making
+ * none. Mirrors `config_file::Outcome`. */
+export type Outcome = {
+  /** The row as the records grid numbers it: a pipeline test's output row, or an end-to-end test's
+   * record. */
+  row: number;
+  /** The test's fields the document holds, by name; a field it lacks is absent. Absent when the row made
+   * no document. */
+  values?: Record<string, unknown>;
+  /** End-to-end only: where the document went. */
+  sent?: Sent;
 };
 
 export type TestDto = {
   /** Stable across renames; the filename is its slug. */
   id: string;
   name: string;
-  /** The pipeline whose output is locked. Absent routes the sample by its source instead -- the route
+  /** The pipeline whose output is checked. Absent routes the sample by its source instead -- the route
    * preview, which needs `SampleDto.source`. */
   pipeline?: string;
   sample: string;
   /** The instant the test was first locked, in unix microseconds: what `now()`
-   * reads on every run, and on every re-lock. */
+   * reads on every run, and on every lock again. */
   lockedAt: number;
   /** Records the sample held when this was locked. */
   rowsIn: number;
-  /** A pipeline test: each document the pipeline produced, in order; `null` is a dropped row. An
-   * end-to-end test: each document a route kept, packed with where it went (`endToEndDocument`) -- never
-   * `null`, since a route that drops a record contributes no entry rather than one recording nothing. */
-  expected: (unknown | null)[];
+  /** The fields checked, named as the records grid names its columns. */
+  fields: string[];
+  /** What the run made of each checked row, in the order it made them. */
+  rows: Outcome[];
 };
 
-/** One document an end-to-end test kept, packed with where it went -- what one entry of an end-to-end
- * `TestDto.expected` holds, mirroring `TestDto::end_to_end_document`. `destinations` are names, resolved
- * through `RoutePreviewResult.destination_names` at lock and at run, never the runtime ids those name. */
-export type EndToEndExpected = {
-  document: unknown;
-  pipeline: string;
-  route: string;
-  destinations: string[];
-};
-
-export function endToEndDocument(
-  document: unknown,
-  pipeline: string,
-  route: string,
-  destinations: string[],
-): EndToEndExpected {
-  return { document, pipeline, route, destinations };
+/** `document`, made on `row`, cut down to `fields`: what a test holds of it, the way the leader cuts a run's
+ * (`Made::cut`). A field is read as the grid reads a cell (`leafMap`). */
+export function cutDown(
+  row: number,
+  document: unknown | null,
+  fields: string[],
+  sent?: Sent,
+): Outcome {
+  const out: Outcome = { row };
+  if (document !== null) {
+    const leaves = leafMap(document);
+    out.values = Object.fromEntries(
+      fields.filter((f) => leaves.has(f)).map((f) => [f, leaves.get(f)]),
+    );
+  }
+  if (sent && document !== null) out.sent = sent;
+  return out;
 }
 
-/** Where a run first stopped matching what a test locks. Either side is
- * absent past its own end. */
+/** What Lock this as a test locks: the fields and rows on screen when it was pressed. */
+export type LockChoice = { fields: string[]; rows: number[] };
+
+const LOCK_CHOICE_KEY = 'smeltr-lock-choice';
+
+/** Hands `choice` to the lock page at `hash` and opens it. The choice is kept in this tab, so a reload of that page
+ * still has it, and only for that page, so another lock page opened later by its address locks everything. A field
+ * under `__` is never delivered, so no test checks one. */
+export function chooseLock(choice: LockChoice, hash: string): void {
+  const fields = choice.fields.filter((f) => !isInternal(f));
+  const rows = [...new Set(choice.rows)];
+  store(LOCK_CHOICE_KEY, JSON.stringify({ fields, rows, hash }), 'session');
+  location.hash = hash;
+}
+
+/** What `chooseLock` handed this page, or null when it handed nothing here. */
+export function lockChoice(): LockChoice | null {
+  const kept = storedJson<(LockChoice & { hash: string }) | null>(LOCK_CHOICE_KEY, null, 'session');
+  return kept && kept.hash === location.hash ? { fields: kept.fields, rows: kept.rows } : null;
+}
+
+/** Where a run first stopped matching what a test locks, on one checked row: what the test expects there and
+ * what the run made, one document at a time. Either side is absent past its own end. */
 export type Difference = {
-  /** Position in the output, counting from zero. */
-  at: number;
-  /** What the test locked here. Absent when the run produced more
-   * documents than the test expects. */
-  expected?: unknown;
-  /** What the run produced here. Absent when the run produced fewer. */
-  actual?: unknown;
-  expectedDropped: boolean;
-  actualDropped: boolean;
+  row: number;
+  expected?: Outcome;
+  actual?: Outcome;
 };
 
-/** What a run made of a test: the first difference and the two counts,
- * not a per-row tally -- an unroll that changes row counts would else
- * report one record's change as every later row changing. */
+/** What a run made of a test: whether it passed, and where it first did not. */
 export type Verdict = {
   passed: boolean;
-  /** Documents the test locks, dropped rows included. */
-  expectedRows: number;
-  /** Documents the run produced, dropped rows included. */
-  actualRows: number;
   firstDifference?: Difference;
   /** Present when the sample no longer holds the records it held at lock: a
    * changed input, which fails the test whatever the output says. */
