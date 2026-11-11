@@ -22,6 +22,7 @@
   import { recordsOf, SampleChoices } from './sampleChoices.svelte';
   import {
     heldSession,
+    chooseLock,
     routePreview,
     errorText,
     type FileConfigDto,
@@ -82,8 +83,13 @@
               : '',
   );
 
+  /** Locks the fields and records on screen: a record's rows share its number. */
   function goLockTest() {
-    location.hash = `#/build/tests/lock-e2e/${encodeURIComponent(ran)}`;
+    const { rows, fields } = grid?.onScreen() ?? { rows: [], fields: [] };
+    chooseLock(
+      { fields, rows: rows.map((r) => records.get(r.key) ?? -1).filter((r) => r >= 0) },
+      `#/build/tests/lock-e2e/${encodeURIComponent(ran)}`,
+    );
   }
 
   async function run() {
@@ -168,10 +174,12 @@
   let table = $derived.by(() => {
     if (!result) return null;
     const leads = new Map<number, Lead>();
+    const records = new Map<number, number>();
     const rows: GridRow[] = [];
     const add = (record: number, after: unknown, lead: Lead, exceptions: GridRow['exceptions']) => {
       const key = rows.length;
       leads.set(key, lead);
+      records.set(key, record);
       rows.push({
         key,
         label: String(record),
@@ -263,8 +271,9 @@
         );
       }
     }
-    return { rows, leads };
+    return { rows, leads, records };
   });
+  let records = $derived(table?.records ?? new Map<number, number>());
 
   const leadOf = (row: GridRow) => table?.leads.get(row.key);
   const leads: LeadColumn[] = [

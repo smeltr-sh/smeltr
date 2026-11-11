@@ -464,7 +464,8 @@ test('a deployed commit that fails its own tests is deployed, and flagged on the
     sample: 'orders-sample',
     lockedAt: 0,
     rowsIn: 1,
-    expected: [{ id: 2 }],
+    fields: ['id'],
+    rows: [{ row: 0, values: { id: 2 } }],
   });
   await api.openChange('broken-orders', 'Lock a test that fails');
   await api.deploy('broken-orders');
@@ -476,6 +477,53 @@ test('a deployed commit that fails its own tests is deployed, and flagged on the
     .filter({ has: admin.getByText('orders', { exact: true }) });
   await expect(failing).toContainText('a test fails at the deployed commit', { timeout: 30_000 });
   await expect(failing).toContainText('"orders keep their id"');
+});
+
+test('a review shows what each test checks, and a failing one says which row and field broke', async ({
+  admin,
+  api,
+  leader,
+}) => {
+  // A12, W13
+  const on = '?branch=checked';
+  await api.put(`/api/areas/shared/pipelines/orders${on}`, {
+    id: 'orders',
+    name: 'orders',
+    steps: [
+      {
+        type: 'parser',
+        id: 'body',
+        input: '_raw',
+        kind: { type: 'json' },
+        declared: [{ name: 'id', type: 'i64' }],
+      },
+    ],
+  });
+  await api.put(`/api/areas/shared/samples/orders-sample${on}`, {
+    id: 'orders-sample',
+    name: 'orders',
+    records: [{ _raw: '{"id":1}' }],
+  });
+  await api.put(`/api/areas/shared/tests/orders-keep-id${on}`, {
+    id: 'orders-keep-id',
+    name: 'orders keep their id',
+    pipeline: 'orders',
+    sample: 'orders-sample',
+    lockedAt: 0,
+    rowsIn: 1,
+    fields: ['id'],
+    rows: [{ row: 0, values: { id: 2 } }],
+  });
+  await api.openChange('checked', 'Check the order id');
+
+  await goto(admin, leader, '#/changes/review/checked');
+  const card = admin.locator('.card').filter({ hasText: 'orders keep their id' }).first();
+  await expect(card.getByText('row 0: id 2')).toBeVisible();
+  await admin.getByRole('tab', { name: /^Tests/ }).click();
+  await expect(admin.getByText('Checks id on 1 row')).toBeVisible({ timeout: 30_000 });
+  await expect(admin.getByText('Row 0 differs from what the test locks.')).toBeVisible();
+  const line = admin.locator('.diff-line').filter({ hasText: 'id:' });
+  await expect(line).toHaveText(/id:\s*expected\s*2,\s*got\s*1/);
 });
 
 test('History shows who changed what, who deployed it, and when', async ({
@@ -545,7 +593,8 @@ test('the dock’s count of tests opens the Tests tab', async ({ admin, api, lea
     sample: 's',
     lockedAt: 0,
     rowsIn: 1,
-    expected: [null],
+    fields: [],
+    rows: [{ row: 0 }],
   });
   await api.openChange('tested', 'A tested pipeline');
 

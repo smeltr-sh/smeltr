@@ -229,7 +229,7 @@ describe('parseRoute', () => {
 
   it('names a re-lock in the trail', () => {
     expect(trail({ tab: 'build', page: 'lock-test', relock: 't' }).at(-1)!.label).toBe(
-      're-lock a test',
+      'lock a test again',
     );
   });
 

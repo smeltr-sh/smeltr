@@ -411,7 +411,7 @@ pub const CATALOG: &[Route] = &[
         method: "PUT",
         path: "/api/areas/:area/tests/:id",
         what: "Lock (create or replace) a test on a branch; the path's id wins. Query: branch.",
-        body: "{ id, name, pipeline?: id (absent = end-to-end by sample source), sample: id, lockedAt: micros, rowsIn: number, expected: (object|null)[] }",
+        body: "{ id, name, pipeline?: id (absent = end-to-end by sample source), sample: id, lockedAt: micros, rowsIn: number, fields: string[] (leaf names as the records grid names them), rows: { row: number, values?: { [field]: value } (absent = no document), sent?: { pipeline, route, destinations: string[] } (end-to-end only) }[] }",
     },
     Route {
         method: "GET",

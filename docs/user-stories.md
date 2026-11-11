@@ -93,10 +93,12 @@ matched, and which destinations each row would reach.
 **A5 — Blast radius.** Before changing anything: what feeds this object,
 what it feeds, and whose work shares it.
 
-**A6 — Samples become tests.** A sample is promoted to a test that locks
-input and expected output. Saving a config that breaks a test is always
-allowed — authoring stays interruptible. Opening it for review is allowed
-too, with a warning; the failing tests travel with the change.
+**A6 — Samples become tests.** A test checks one thing the analyst cares
+about in what a sample produces, and is named for it. One sample carries
+as many tests as there are things worth checking, and adding one leaves
+the others alone. Saving a config that breaks a test is always allowed —
+authoring stays interruptible. Opening it for review is allowed too, with
+a warning; the failing tests travel with the change.
 
 **A7 — Is it even reachable.** Before building on a new source or
 destination, an analyst wants to know it is reachable and its credentials
@@ -117,6 +119,15 @@ geolocation database, matched exactly, by network or by pattern.
 or a destination by filling in its form, and what the form saves is what
 the leader accepts. For a source one worker reads at a time, the analyst
 sees which worker holds it, and how long since that worker was last heard.
+
+**A11 — Check only what matters.** The analyst points at what a test
+checks: some fields, on every record or on chosen ones, or that a record
+is dropped. A change to anything else does not fail it — a test that
+checks everything fails on every unrelated edit, and gets locked again
+without being read.
+
+**A12 — A failing test says what broke.** The failure names the test, the
+record and the field, what was expected and what came out.
 
 ## Change and deploy
 
@@ -201,6 +212,11 @@ just installed a leader does the whole job from the GUI and nowhere else:
 signs in and chooses their own password, adds a source, a destination, a
 pipeline and a route between them, saving each, opens the change, comments
 on it, approves and deploys it, and sees rows arrive at the destination.
+
+**W13 — See what a test checks.** For every test a change adds, removes or
+touches, the reviewer sees what it checks. When a change locks a test
+again, the reviewer sees what it expects now against what it expected
+before: approving a test locked again is approving a new answer.
 
 ## System administrator
 

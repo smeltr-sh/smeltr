@@ -70,7 +70,7 @@ describe('testsTally', () => {
           id: 'x',
           name: 'x',
           area: 's',
-          verdict: { passed, expectedRows: 1, actualRows: 1 },
+          verdict: { passed },
         };
 
   it('counts a test that could not run as neither passed nor failed', () => {
