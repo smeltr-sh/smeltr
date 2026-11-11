@@ -471,12 +471,13 @@ pub(crate) const STEPS: &[&str] = &[
      ) WITHOUT ROWID;
      CREATE INDEX silences_ended ON silences (ended_ms);
      CREATE TABLE silence_watch (
-         group_id   TEXT NOT NULL,
-         source     TEXT NOT NULL,
-         watched_ms INTEGER NOT NULL,
-         read_ms    INTEGER NOT NULL,
-         row_ms     INTEGER,
-         quiet_ms   INTEGER NOT NULL,
+         group_id     TEXT NOT NULL,
+         source       TEXT NOT NULL,
+         watched_ms   INTEGER NOT NULL,
+         read_ms      INTEGER NOT NULL,
+         row_ms       INTEGER,
+         row_quiet_ms INTEGER,
+         quiet_ms     INTEGER NOT NULL,
          PRIMARY KEY (group_id, source)
      ) WITHOUT ROWID;",
 ];
@@ -524,6 +525,8 @@ pub struct Watch {
     pub read_ms: i64,
     /// The end of its last bucket with rows.
     pub row_ms: Option<i64>,
+    /// Where the quiet spell its last row ended began: what `quiet_ms` was before that row.
+    pub row_quiet_ms: Option<i64>,
     /// Where the quiet spell under way began: the end of its last bucket with rows, or of the last one no worker
     /// reported it in, whichever is later. A run counts as a quiet spell only if, when it ends, this equals `row_ms`:
     /// no unreported bucket broke it.
@@ -1251,11 +1254,21 @@ impl RegistryStore {
         let tx = conn.transaction()?;
         {
             let mut watch = tx.prepare_cached(
-                "INSERT OR REPLACE INTO silence_watch (group_id, source, watched_ms, read_ms, row_ms, quiet_ms) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT OR REPLACE INTO silence_watch \
+                 (group_id, source, watched_ms, read_ms, row_ms, row_quiet_ms, quiet_ms) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             )?;
             for ((group, source), w) in watches {
-                watch.execute(params![group, source, w.watched_ms, w.read_ms, w.row_ms, w.quiet_ms])?;
+                let at = params![
+                    group,
+                    source,
+                    w.watched_ms,
+                    w.read_ms,
+                    w.row_ms,
+                    w.row_quiet_ms,
+                    w.quiet_ms
+                ];
+                watch.execute(at)?;
             }
             let mut silence = tx.prepare_cached(
                 "INSERT OR REPLACE INTO silences (group_id, source, ended_ms, length_ms) VALUES (?1, ?2, ?3, ?4)",
@@ -1271,8 +1284,9 @@ impl RegistryStore {
     /// How far each source's rows have been read for its quiet spells.
     pub fn watches(&self) -> Result<BTreeMap<(String, String), Watch>, StoreError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt =
-            conn.prepare_cached("SELECT group_id, source, watched_ms, read_ms, row_ms, quiet_ms FROM silence_watch")?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT group_id, source, watched_ms, read_ms, row_ms, row_quiet_ms, quiet_ms FROM silence_watch",
+        )?;
         let rows = stmt
             .query_map([], |r| {
                 Ok((
@@ -1281,7 +1295,8 @@ impl RegistryStore {
                         watched_ms: r.get(2)?,
                         read_ms: r.get(3)?,
                         row_ms: r.get(4)?,
-                        quiet_ms: r.get(5)?,
+                        row_quiet_ms: r.get(5)?,
+                        quiet_ms: r.get(6)?,
                     },
                 ))
             })?
@@ -3751,6 +3766,7 @@ mod tests {
             watched_ms: 0,
             read_ms: 4_000,
             row_ms: Some(3_000),
+            row_quiet_ms: Some(1_000),
             quiet_ms: 3_500,
         };
         let silence = |ended_ms, length_ms| Silence {

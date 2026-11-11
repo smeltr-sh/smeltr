@@ -663,7 +663,7 @@
     {:else}
       {@render pastSpans(
         'Warnings',
-        'Rows below normal warnings that ended in the past year. The windows a warning read are not learned unless marked Normal.',
+        'Rows below normal warnings of the past year. The windows a warning read are not learned unless marked Normal; marking the one that holds Normal teaches the level the source reads now.',
         past.warnings,
       )}
       {@render pastSpans(

@@ -343,8 +343,9 @@ judged by the gap: how long it has gone without a row, against half again the
 longest quiet spell it made in the past year. A source warns once some width
 reads below its range four times in a row, or once it outlasts the gap, and the
 warning holds until some width judges the source and none reads it below its
-range, or, where only the gap judges it, until its next row. Rows above normal
-are judged at 30 minutes alone.
+range, or, where only the gap judges it, until the first row after it began that
+ends a quiet spell the gap read below. Rows above normal are judged at 30
+minutes alone.
 
 What a below-normal warning read, and the time a stop held, are not learned, so
 an outage does not widen the normal. Days not learned are passed over, not
@@ -363,10 +364,13 @@ An editor in the source's worker group may say any of three things about it.
 Lower turns the warning that holds into info until it ends, and it stays on the
 Issues page for everyone. Reset history forgets what the source read before now,
 so it has no normal until it has enough history again. Normal or Outage says a
-past period was normal, so it is learned though it warned, or an outage, so it
-is not learned though it did not warn. The source's History tab on the Map lists
-its warnings and longest quiet spells of the past year, and each can be marked
-Normal or Outage. The leader keeps each of the three, with who said it.
+period was normal, so it is learned though it warned, or an outage, so it is not
+learned though it did not warn. The source's History tab on the Map lists its
+warnings, the one that holds among them, and its longest quiet spells of the
+past year, and each can be marked Normal or Outage. A warning marked Normal is
+learned whole, so marking the one that holds teaches the level the source reads
+now, and the warning ends once the normal is learned again, within the hour. The
+leader keeps each of the three, with who said it.
 
 ## Upgrades
 
