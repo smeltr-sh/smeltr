@@ -580,13 +580,16 @@ fn compute(store: &RegistryStore, ended_ms: i64, learning: &Learning, learned: &
                 .flatten()
                 .filter_map(|normal| judge(&rows, &warned, normal, ended_ms))
                 .collect();
-            let gap = learned.gaps.get(&key).and_then(|gap| gap.at(&of, &warned, ended_ms));
+            let normal = learned.gaps.get(&key);
+            let gap = normal.and_then(|normal| normal.at(&of, &warned, ended_ms));
             // Where no count width judges it, the gap does: a warning ends at the first row after it began that ends a
             // quiet spell the gap read below.
             let quiet_back = judged.is_empty()
-                && gap
-                    .zip(warned.held_since)
-                    .is_some_and(|(gap, since)| ended_below(&of, &warned, oldest, ended_ms, since, gap.edge_ms));
+                && gap.is_some()
+                && normal.zip(warned.held_since).is_some_and(|(normal, since)| {
+                    let ended = normal.ended_below(normal.watch, &of, &warned, ended_ms);
+                    ended.max(normal.ended_below_ms).is_some_and(|ended| ended > since)
+                });
             let outside = outside(&judged, gap.as_ref(), warned.held_since.is_some() && !quiet_back);
             let (group, source) = key;
             (!judged.is_empty() || gap.is_some() || outside.is_some()).then_some(Reading {
@@ -826,6 +829,9 @@ struct GapNormal {
     /// The longest quiet spell it learned, and the longest it may make ([`Gap::edge_ms`]). None while the gap does not
     /// judge it: it has been watched less than [`GAP_WATCH_MS`], or it learned no quiet spell.
     judged: Option<(i64, i64)>,
+    /// [`Self::ended_below`] of the rows read on to `watch` when this was learned. A reading reads only the rows after
+    /// `watch`, so a row before it that no reading followed is kept here.
+    ended_below_ms: Option<i64>,
 }
 
 impl GapNormal {
@@ -853,6 +859,7 @@ impl GapNormal {
                 let more = m * (YEAR_MS as f64 / watched as f64).ln().max(0.0);
                 (longest as i64, (GAP_MARGIN * (longest + more)) as i64)
             }),
+            ended_below_ms: None,
         }
     }
 
@@ -871,6 +878,35 @@ impl GapNormal {
                     edge_ms,
                 }
             })
+    }
+
+    /// The end of the bucket of the newest row in `of` from `watch` until `until` that ended a quiet spell longer than
+    /// [`Gap::edge_ms`], which the gap read as below normal, each spell counted as [`Gap::silence_ms`] counts it. None
+    /// while the gap does not judge the source.
+    fn ended_below(&self, watch: Watch, of: &BTreeMap<i64, f64>, warned: &Warned, until: i64) -> Option<i64> {
+        let (_, edge_ms) = self.judged?;
+        let step = BUCKET.bucket_ms();
+        let stopped = warned
+            .stops
+            .iter()
+            .filter_map(|&(_, ended)| ended)
+            .chain(self.stopped_ms);
+        let mut quiet = watch.quiet_ms;
+        (watch.read_ms..until)
+            .step_by(step as usize)
+            .filter_map(|at| match of.get(&at) {
+                Some(&rows) if rows > 0.0 => {
+                    let from = stopped.clone().filter(|&ended| ended <= at).fold(quiet, i64::max);
+                    quiet = at + step;
+                    (at - from > edge_ms).then_some(at + step)
+                }
+                Some(_) => None,
+                None => {
+                    quiet = at + step;
+                    None
+                }
+            })
+            .last()
     }
 }
 
@@ -896,26 +932,6 @@ fn watched(mut watch: Watch, of: &BTreeMap<i64, f64>, until: i64, ended: &mut Ve
     watch
 }
 
-/// Whether a row after `since_ms` ended a quiet spell longer than `edge_ms`, which the gap read as below normal. It
-/// reads `of`'s buckets from `oldest` until `until`, and counts each spell as [`Gap::silence_ms`] counts it.
-fn ended_below(of: &BTreeMap<i64, f64>, warned: &Warned, oldest: i64, until: i64, since_ms: i64, edge_ms: i64) -> bool {
-    let step = BUCKET.bucket_ms();
-    let stopped = warned.stops.iter().filter_map(|&(_, ended)| ended);
-    let mut quiet = oldest;
-    (oldest..until).step_by(step as usize).any(|at| match of.get(&at) {
-        Some(&rows) if rows > 0.0 => {
-            let from = stopped.clone().filter(|&ended| ended <= at).fold(quiet, i64::max);
-            quiet = at + step;
-            at + step > since_ms && at - from > edge_ms
-        }
-        Some(_) => false,
-        None => {
-            quiet = at + step;
-            false
-        }
-    })
-}
-
 /// Each source's gap as of `as_of`, once the quiet spells its `buckets` from `oldest` hold up to then are recorded. A
 /// source is watched from its first bucket.
 fn gaps(
@@ -933,6 +949,7 @@ fn gaps(
         }
     };
     let mut watches = Vec::new();
+    let mut began = Vec::new();
     let mut silences = Vec::new();
     for (key, of) in buckets {
         let Some(&first) = of.keys().next() else { continue };
@@ -948,6 +965,7 @@ fn gaps(
             },
         };
         let mut ended = Vec::new();
+        began.push(watch);
         let watch = watched(watch, of, as_of, &mut ended);
         silences.extend(ended.into_iter().map(|(ended_ms, length_ms)| Silence {
             group: key.0.clone(),
@@ -963,11 +981,13 @@ fn gaps(
     let year = as_of - YEAR_MS;
     watches
         .into_iter()
-        .map(|(key, watch)| {
+        .zip(began)
+        .map(|((key, watch), began)| {
             let silences = store.source_silences(&key.0, &key.1, year)?;
             let warned = Warned::of(store, &key.0, &key.1, year, learning);
             let gap = GapNormal::of(watch, &silences, &warned, as_of, learning.reset_from(&key.0, &key.1));
-            Ok((key, gap))
+            let ended_below_ms = gap.ended_below(began, &buckets[&key], &warned, as_of);
+            Ok((key, GapNormal { ended_below_ms, ..gap }))
         })
         .collect::<Result<_, super::store::StoreError>>()
         .unwrap_or_else(|e| {
@@ -2005,6 +2025,46 @@ mod tests {
         let stopped = sparse(35, silent);
         warned(&stopped, "source_unreachable", END - 2 * HOUR, Some(END - HOUR));
         assert_eq!(held(&stopped), Some(Outside::Below));
+    }
+
+    #[test]
+    fn a_warning_the_gap_raised_ends_at_the_first_row_after_days_quiet() {
+        // A row every three days until twelve days ago, and a warning the gap holds.
+        let quiet = || {
+            let store = store_with(35, |at| {
+                Some(if at % (3 * DAY_MS) == 0 && at < END - 12 * DAY_MS {
+                    1.0
+                } else {
+                    0.0
+                })
+            });
+            warned(&store, "source_rows_below", END - HOUR, None);
+            let gap = reading_at(&store, END - FIVE, &Learning::default())
+                .unwrap()
+                .gap
+                .unwrap();
+            assert!(
+                gap.below() && gap.edge_ms > DAY_MS,
+                "the source may be quiet longer than a day"
+            );
+            store
+        };
+        let key = serde_json::to_string(&[("group", "g"), ("source", "s"), ("worker", "w")]).unwrap();
+        let read = quiet();
+        read.record_delta(ROWS_IN_METRIC, &key, END, 1.0).unwrap();
+        assert_eq!(
+            reading_at(&read, END + FIVE, &Learning::default()).unwrap().outside,
+            None,
+            "the reading after the row ends it"
+        );
+        let missed = quiet();
+        missed.record_delta(ROWS_IN_METRIC, &key, END - FIVE, 1.0).unwrap();
+        missed.record_delta(ROWS_IN_METRIC, &key, END, 1.0).unwrap();
+        assert_eq!(
+            reading_at(&missed, END + FIVE, &Learning::default()).unwrap().outside,
+            None,
+            "a reading in the next hour ends it, though no reading followed the row in its own"
+        );
     }
 
     #[test]
