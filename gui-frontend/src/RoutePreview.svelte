@@ -86,8 +86,10 @@
   /** Locks the fields and records on screen: a record's rows share its number. */
   function goLockTest() {
     const { rows, fields } = grid?.onScreen() ?? { rows: [], fields: [] };
-    chooseLock({ fields, rows: rows.map((r) => records.get(r.key) ?? -1).filter((r) => r >= 0) });
-    location.hash = `#/build/tests/lock-e2e/${encodeURIComponent(ran)}`;
+    chooseLock(
+      { fields, rows: rows.map((r) => records.get(r.key) ?? -1).filter((r) => r >= 0) },
+      `#/build/tests/lock-e2e/${encodeURIComponent(ran)}`,
+    );
   }
 
   async function run() {

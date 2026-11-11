@@ -1031,8 +1031,10 @@
   let savingInput = $state(false);
 
   function goLockTest(choice: LockChoice) {
-    chooseLock(choice);
-    location.hash = `#/build/tests/lock/${encodeURIComponent(loadedId)}/${encodeURIComponent(selectedSample)}`;
+    chooseLock(
+      choice,
+      `#/build/tests/lock/${encodeURIComponent(loadedId)}/${encodeURIComponent(selectedSample)}`,
+    );
   }
 
   // The output is not an action. It follows the steps and the sample, one

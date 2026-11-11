@@ -2548,17 +2548,20 @@ export type LockChoice = { fields: string[]; rows: number[] };
 
 const LOCK_CHOICE_KEY = 'smeltr-lock-choice';
 
-/** Hands `choice` to the lock page, in this tab, so a reload of that page still has it. A field under `__`
- * is never delivered, so no test checks one. */
-export function chooseLock(choice: LockChoice): void {
+/** Hands `choice` to the lock page at `hash` and opens it. The choice is kept in this tab, so a reload of that page
+ * still has it, and only for that page, so another lock page opened later by its address locks everything. A field
+ * under `__` is never delivered, so no test checks one. */
+export function chooseLock(choice: LockChoice, hash: string): void {
   const fields = choice.fields.filter((f) => !isInternal(f));
   const rows = [...new Set(choice.rows)];
-  store(LOCK_CHOICE_KEY, JSON.stringify({ fields, rows }), 'session');
+  store(LOCK_CHOICE_KEY, JSON.stringify({ fields, rows, hash }), 'session');
+  location.hash = hash;
 }
 
-/** What `chooseLock` handed over, or null when nothing was. */
+/** What `chooseLock` handed this page, or null when it handed nothing here. */
 export function lockChoice(): LockChoice | null {
-  return storedJson<LockChoice | null>(LOCK_CHOICE_KEY, null, 'session');
+  const kept = storedJson<(LockChoice & { hash: string }) | null>(LOCK_CHOICE_KEY, null, 'session');
+  return kept && kept.hash === location.hash ? { fields: kept.fields, rows: kept.rows } : null;
 }
 
 /** Where a run first stopped matching what a test locks, on one checked row: what the test expects there and

@@ -172,7 +172,8 @@ interface TestDto {
   sample: string;
   lockedAt: number;
   rowsIn: number;
-  expected: unknown[];
+  fields: string[];
+  rows: unknown[];
 }
 
 interface Capture {
