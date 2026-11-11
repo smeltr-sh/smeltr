@@ -1,8 +1,9 @@
 <!--
   Build / <pipeline> / lock a test, or Build / routes / route a sample / lock
-  a test: run once -- the pipeline preview, or (when `pipeline` is absent)
-  the route preview -- over a saved sample and fix what it made of the
-  fields and rows that were on screen (`lockChoice`) as the answer. The
+  a test: the leader runs it once -- the pipeline preview, or (when
+  `pipeline` is absent) the route preview -- over a saved sample, and what
+  it made of the fields and rows that were on screen (`lockChoice`) becomes
+  the answer, held exactly as the leader made it. The
   pipeline (or nothing) and the sample are given, not chosen here
   (`gui-design.md`).
 
@@ -21,29 +22,24 @@
   import PageHeader from './PageHeader.svelte';
   import SaveConflictPanel from './SaveConflict.svelte';
   import {
-    getConfig,
     currentBranch,
     currentScope,
     getSample,
     getTest,
-    previewPipeline,
-    routePreview,
-    cutDown,
+    previewLock,
     lockChoice,
     putTest,
     errorText,
     recordLine,
     type ApiError,
+    type Lock,
     type LockChoice,
+    type Locked,
     type Outcome,
-    type RoutePreviewResult,
-    type Sent,
     type SaveConflict,
-    type TestDto,
   } from './api';
   import { count } from './time';
   import { formatDiffValue } from './diff';
-  import { leafMap } from './recordDiff';
   import { announcePipelineNames } from './nav';
   import { editable } from './access';
   import { nameOf, pipelineNamesAt } from './pipelineNames';
@@ -64,19 +60,17 @@
   let loadFailed = $state(false);
   /** Why it failed, where the error bar does not say: a test or a sample that is not there. */
   let loadError = $state('');
-  let loadWarning = $state('');
 
   let sampleName = $state('');
   let pipelineName = $state('');
   let sampleSource = $state('');
   let sampleRecords = $state<string[]>([]);
 
-  // Captured once, at the moment this screen ran its one preview: what
-  // `now()` read and what it produced. Locking replays exactly this,
-  // rather than running the preview a second time.
+  /** What `now()` reads: the instant this screen first ran, or, when locking again, the instant the locked
+   * test was locked. */
   let atMicros = $state(0);
-  /** Every document the run made, rows it made none on included, as the grid numbers its rows. */
-  let made = $state<Made[]>([]);
+  /** What the leader's run holds of the fields and rows to lock: what this screen shows, and what locking stores. */
+  let locked = $state<Locked>({ rowsIn: 0, fields: [], rows: [] });
   /** The fields and rows to lock: the locked test's own when locking again, else what was on screen. */
   let choice = $state<LockChoice | null>(relock ? null : lockChoice());
   let previewOk = $state(true);
@@ -91,55 +85,27 @@
   let allRecords = $state(false);
   let allChecked = $state(false);
 
-  /** One document a run made, whole: what `cutDown` cuts to a test's fields. */
-  type Made = { row: number; document: unknown | null; sent?: Sent };
+  let fields = $derived(locked.fields);
+  let outcomes = $derived(locked.rows);
+  let rowsChecked = $derived([...new Set(outcomes.map((o) => o.row))]);
 
-  /** A route preview as what an end-to-end test checks: per record, per route that carried it, per document,
-   * with where it went, and a record that made none as one entry making none -- the leader's own
-   * `run_route_actual`, so comparing the two is comparing like with like. */
-  function routedMade(result: RoutePreviewResult): Made[] {
-    const out: Made[] = [];
-    for (const row of result.rows) {
-      const before = out.length;
-      for (const t of row.through) {
-        const route = result.route_ids[t.route] ?? '';
-        const pipeline = result.route_pipeline_ids[t.route] ?? '';
-        for (const doc of t.documents) {
-          const destinations = doc.destinations.map(
-            (d) => result.destination_names[d] ?? String(d),
-          );
-          out.push({
-            row: row.row,
-            document: JSON.parse(doc.document),
-            sent: { pipeline, route, destinations },
-          });
-        }
-      }
-      if (out.length === before) out.push({ row: row.row, document: null });
-    }
-    return out;
+  /** What locking asks the leader for. With nothing chosen -- the page reached by its address alone -- every
+   * field and row the run made; once the leader has answered, exactly the ones it showed. */
+  function lockOf(shown: boolean): Lock {
+    const base = {
+      name: name.trim(),
+      sample,
+      lockedAt: atMicros,
+      fields: shown ? fields : choice?.fields,
+      rows: shown ? rowsChecked : choice?.rows,
+    };
+    return pipeline ? { ...base, pipeline } : base;
   }
-
-  /** With nothing chosen -- the page reached by its address alone -- every field the run made, and every row. */
-  let fields = $derived(
-    choice?.fields ?? [
-      ...new Set(made.flatMap((m) => (m.document === null ? [] : [...leafMap(m.document).keys()]))),
-    ],
-  );
-  let rowsChecked = $derived(choice?.rows ?? [...new Set(made.map((m) => m.row))]);
-  // A checked row the run never reached made nothing, as a dropped row did, and stays checked as that.
-  let outcomes = $derived(
-    rowsChecked.flatMap((row) => {
-      const here = made.filter((m) => m.row === row);
-      return here.length ? here.map((m) => cutDown(m.row, m.document, fields, m.sent)) : [{ row }];
-    }),
-  );
 
   async function load() {
     loading = true;
     loadFailed = false;
     loadError = '';
-    loadWarning = '';
     try {
       let lockedAt: number | null = null;
       if (relock) {
@@ -158,14 +124,11 @@
           rows: [...new Set(testRes.test.rows.map((o) => o.row))],
         };
       }
-      const [configRes, sampleRes] = await Promise.all([getConfig(), getSample(sample)]);
-      if (!configRes.config)
-        return failed(configRes.errors, 'the config on this branch could not be read');
+      const sampleRes = await getSample(sample);
       pipelineName = pipeline
         ? nameOf(await pipelineNamesAt(currentBranch(), currentScope()), pipeline)
         : '';
       if (pipeline) announcePipelineNames({ [pipeline]: pipelineName });
-      if (!configRes.ok) loadWarning = errorText(configRes.errors);
       if (!sampleRes.sample)
         return failed(
           sampleRes.errors,
@@ -176,29 +139,14 @@
       sampleRecords = sampleRes.sample.records.map((r) => recordLine(r));
 
       atMicros = lockedAt ?? Date.now() * 1000;
-      // Without its schemas: the leader holds the rows to the branch's, and a standard's runs to megabytes.
-      const config = JSON.stringify({ ...configRes.config, schemas: [] });
-      if (pipeline) {
-        const preview = await previewPipeline({ config, pipeline, sample, atMicros });
-        made = preview.rows.map((r) => ({ row: r.row, document: r.json }));
-        previewOk = preview.ok;
-        previewErrors = preview.errors;
-      } else {
-        const preview = await routePreview(config, sample, { atMicros });
-        // A row that asked for more memory than a preview may hold fails a
-        // run the same way (`test_api::run_route_actual`); refused here
-        // rather than locked and failing every time it runs.
-        const refused = preview.rows.find((r) => r.refused);
-        previewOk = preview.ok && !refused;
-        previewErrors = preview.ok
-          ? refused
-            ? [bareError(`record ${refused.row}: ${refused.refused}`)]
-            : []
-          : preview.errors;
-        made = previewOk ? routedMade(preview) : [];
-      }
+      const res = await previewLock(lockOf(false));
+      previewOk = res.ok;
+      previewErrors = res.errors;
+      if (res.ok)
+        locked = { rowsIn: res.rowsIn ?? 0, fields: res.fields ?? [], rows: res.rows ?? [] };
     } catch (e) {
-      // The previews are quiet calls, which this puts in the bar too: this page has nowhere else to say it.
+      // The preview is a quiet call, so a failure of it is not shown elsewhere; this puts it in the bar, since
+      // the page has nowhere else to show it.
       loadFailed = true;
       reported(e);
     } finally {
@@ -215,24 +163,11 @@
 
   let canLock = $derived(!loading && previewOk && name.trim() !== '' && !saving.on);
 
-  function buildTest(): TestDto {
-    const base = {
-      id: relock ?? name.trim(),
-      name: name.trim(),
-      sample,
-      lockedAt: atMicros,
-      rowsIn: sampleRecords.length,
-      fields,
-      rows: outcomes,
-    };
-    return pipeline ? { ...base, pipeline } : base;
-  }
-
   async function lockTest() {
     if (!canLock) return;
     conflict = null;
     await saving.run(async () => {
-      const res = await putTest(buildTest());
+      const res = await putTest(relock ?? name.trim(), lockOf(true));
       if (res.ok) {
         if (relock) history.back();
         else location.hash = '#/build';
@@ -245,7 +180,7 @@
 
   /** Retried onto whatever branch the conflict panel just switched to. */
   async function retry(): Promise<boolean> {
-    return (await putTest(buildTest())).ok;
+    return (await putTest(relock ?? name.trim(), lockOf(true))).ok;
   }
 
   function cancel() {
@@ -282,8 +217,6 @@
     <!-- A re-lock has no trail back, so its way out cannot hang on a read that failed. -->
     {#if relock}<button onclick={cancel}>Cancel</button>{/if}
   {:else}
-    {#if loadWarning}<p class="warn">{loadWarning}</p>{/if}
-
     <div class="card fields">
       <div class="grow">
         <Field required label="Name">
@@ -417,10 +350,6 @@
   h2 {
     margin: 0;
   }
-  .warn {
-    color: var(--warn);
-  }
-
   .card {
     border: 1px solid var(--border);
     border-radius: var(--radius-card);

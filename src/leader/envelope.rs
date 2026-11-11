@@ -47,6 +47,12 @@ impl<T> Envelope<T> {
         self.status.is_success()
     }
 
+    /// Why the route did not do what it was asked, its errors' messages joined; `None` when it did.
+    pub fn why_failed(&self) -> Option<String> {
+        let messages = || self.errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>();
+        (!self.succeeded()).then(|| messages().join("; "))
+    }
+
     /// The answer as its JSON object, as a response carries it.
     pub fn to_json(&self) -> serde_json::Value
     where

@@ -8,7 +8,15 @@
 // and sample it is about. Everything else is what the staged fleet answered when `just demo-fixtures` recorded it,
 // moved to the visitor's now.
 
-import type { ApiError, CaptureBatchDto, CaptureEndDto, CaptureStatusDto, SampleDto } from '../api';
+import type {
+  ApiError,
+  CaptureBatchDto,
+  CaptureEndDto,
+  CaptureStatusDto,
+  Lock,
+  LockedResult,
+  SampleDto,
+} from '../api';
 import { CHANGED_EVENT } from './guide';
 import { bareError } from '../errors.svelte';
 
@@ -831,12 +839,26 @@ export class DemoLeader {
     const test = within?.match(/^\/tests\/([^/]+)$/);
     if (test && method === 'PUT') {
       const id = decodeURIComponent(test[1]);
-      const locked = { ...(json() as TestDto), id };
+      const lock = json() as Lock;
+      const answer = await this.lockTest(name, scope, lock);
+      const held = answer.body as LockedResult;
+      if (!held.ok) return answer;
+      const { name: testName, pipeline, sample, lockedAt } = lock;
+      const locked: TestDto = {
+        id,
+        name: testName,
+        ...(pipeline ? { pipeline } : {}),
+        sample,
+        lockedAt,
+        rowsIn: held.rowsIn ?? 0,
+        fields: held.fields ?? [],
+        rows: held.rows ?? [],
+      };
       return this.write(
         name,
         scope,
         `tests/${id}.json`,
-        `lock test ${locked.name}`,
+        `lock test ${testName}`,
         (_, { tests }) => {
           tests[id] = locked;
         },
@@ -909,6 +931,7 @@ export class DemoLeader {
     if (method === 'POST') {
       if (within === '/preview/pipeline') return this.preview(name, scope, json());
       if (within === '/preview/routes') return this.routePreview(name, scope, json());
+      if (within === '/preview/test-lock') return this.lockTest(name, scope, json());
       if (within === '/samples') {
         const { capture, ...save } = json() as {
           capture: string;
@@ -980,6 +1003,16 @@ export class DemoLeader {
       results.push(...(a.results ?? []));
     }
     return run ? ok({ results }) : ok({ tests });
+  }
+
+  /** What locking `lock` on branch `name` holds, as the leader runs it (`test_api::preview_lock`). */
+  private async lockTest(name: string, scope: string, lock: Lock): Promise<Answer> {
+    const branch = this.branch(name) ?? this.state.branches.main;
+    return this.ask('/test-lock', {
+      ...this.bundleOf(branch, scope),
+      samples: Object.values(branch.samples[scope] ?? {}),
+      lock,
+    });
   }
 
   /** `name` started at `main`, as the leader starts a branch on purpose (`git::create_branch`). */
