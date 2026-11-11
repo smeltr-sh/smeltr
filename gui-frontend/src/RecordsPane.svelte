@@ -312,7 +312,11 @@
           class="primary"
           data-guide="lock-test"
           onclick={() => onlock({ fields: shown, rows: kept.map((r) => r.key) })}
-          disabled={!canLock ? INCOMPLETE : ''}
+          disabled={pause
+            ? 'Resume to lock: a test checks the pipeline’s output.'
+            : !canLock
+              ? INCOMPLETE
+              : ''}
         >
           Lock this as a test
         </Button>

@@ -1673,10 +1673,17 @@ test('◎ pauses the records after a step', async ({ admin, leader, api }) => {
   await expect(paused).toHaveText(/◉ After step 1 · PARSER/);
   await expect(dropped).not.toHaveClass(/dropped/);
   await expect(admin.locator('#step-no-coupon')).toHaveClass(/not-run/);
+  // A test checks the whole pipeline's output, so a pause locks none.
+  const lock = admin.getByRole('button', { name: 'Lock this as a test' });
+  await expect(lock).toBeDisabled();
+  await expect(lock).toHaveAccessibleDescription(
+    'Resume to lock: a test checks the pipeline’s output.',
+  );
 
   await paused.getByRole('button', { name: 'Show the whole pipeline' }).click();
   await expect(paused).toBeHidden();
   await expect(dropped).toHaveClass(/dropped/);
+  await expect(lock).toBeEnabled();
 });
 
 // A3, which step did it. Once typing settles, a field carries the sign of the step that last touched it, held it
