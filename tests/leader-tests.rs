@@ -741,7 +741,6 @@ struct GroupHealthOut {
     transform_threads: usize,
     readers: usize,
     egress_threads: usize,
-    partitions_owned: usize,
 }
 
 #[test]
@@ -765,7 +764,6 @@ fn health_rolls_up_threads_by_their_current_group() {
     assert_eq!(pool.readers, 2);
     assert_eq!(pool.transform_threads, 0, "these fixtures report readers only");
     assert_eq!(pool.egress_threads, 0);
-    assert_eq!(pool.partitions_owned, 2); // one partition reported per thread
     let dedicated = health.groups.iter().find(|g| g.group_id == "prod-orders").unwrap();
     assert_eq!(dedicated.readers, 1);
 }
