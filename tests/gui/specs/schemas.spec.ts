@@ -896,7 +896,7 @@ test('a CSV of fields comes in by its header, example and Elasticsearch type amo
   const dialog = await addFrom(admin, leader, 'CSV of fields', 'web', csv);
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
-  await expect(admin.getByRole('cell', { name: 'Example', exact: true })).toBeVisible();
+  await expect(admin.getByRole('columnheader', { name: 'Example', exact: true })).toBeVisible();
   const field = await saved(admin, api, 'web');
   expect(field('client_ip')).toEqual({
     field: 'client_ip',

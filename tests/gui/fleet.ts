@@ -400,9 +400,13 @@ export function watchRequests(page: Page) {
     const url = new URL(r.url());
     return url.pathname.startsWith('/api/') ? `${r.method()} ${url.pathname}${url.search}` : null;
   };
-  // A page shown anew asks for its data anew.
+  // A page shown anew asks for its data anew. What the page before it still had open is dropped, never answered,
+  // and Playwright reports no failure for it.
   page.on('framenavigated', (f) => {
-    if (f === page.mainFrame()) s.answered.clear();
+    if (f !== page.mainFrame()) return;
+    s.answered.clear();
+    s.open.clear();
+    s.quietSince = Date.now();
   });
   page.on('request', (r) => {
     const k = key(r);
