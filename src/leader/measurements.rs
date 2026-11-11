@@ -822,7 +822,6 @@ mod tests {
                 above: false,
             }],
             outside: None,
-            reach_ms: None,
             gap: None,
         };
         let answer = build(&[], None, no_holds(), live(&[]), warnings::now_millis()).with_expected(&[reading]);

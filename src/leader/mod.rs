@@ -1134,7 +1134,6 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     let starts = state.registry.starts_of(&active_facts, now_ms);
     let key_warnings = warnings::encryption_key_warnings(&key, &channels, &kept, &starts);
     let normal_warnings = warnings::outside_normal_warnings(&readings, &snapshot, &starts, &marks, heartbeat_interval);
-    let reaches = warnings::outside_normal_reaches(&readings, &snapshot, heartbeat_interval);
     let credentials = run_store(state.store.clone(), |s| s.list_worker_credentials()).await?;
     let (signing, rotating) = serving_authority(&state.data_dir);
     let serving = serving_certificate(&state.data_dir);
@@ -1231,8 +1230,6 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     let issues = warnings::issue_facts(&out, &active_facts);
     active_facts.extend(issues);
     state.registry.observe_facts(&active_facts, now_ms);
-    // After the facts are observed, so a warning this reading raised has its row to keep its reach in.
-    state.registry.lower_reaches(&reaches);
     Ok(out)
 }
 

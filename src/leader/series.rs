@@ -140,8 +140,6 @@ pub struct FactSpan {
     pub started_ms: i64,
     /// None while it still holds.
     pub ended_ms: Option<i64>,
-    /// Where the windows it read begin, for a fact that keeps one ([`RegistryStore::lower_fact_reach`]).
-    pub reach_ms: Option<i64>,
 }
 
 /// One subject's points, oldest first: bucket start (epoch milliseconds) and value. What
@@ -462,12 +460,7 @@ pub(crate) const STEPS: &[&str] = &[
     // (`git::ContentId::key`). A stream is unrouted only by what is deployed now. Rows summed before this step have
     // NULL, which no deployment matches, so a warning they raised clears with the first rows recorded after the step.
     "ALTER TABLE stream_unmatched ADD COLUMN config TEXT;",
-    // 14 -- where the windows a below-normal warning read begin (`throughput::Reading::reach_ms`): its source's normal
-    // learns no bucket from there on while it holds. NULL for every other fact, and for one that began before this
-    // step.
-    "ALTER TABLE fact_clock ADD COLUMN reach_ms INTEGER;
-     ALTER TABLE fact_history ADD COLUMN reach_ms INTEGER;",
-    // 15 -- each source's quiet spells of the past year, which its gap learns from (`throughput`), and how far its rows
+    // 14 -- each source's quiet spells of the past year, which its gap learns from (`throughput`), and how far its rows
     // have been read for them (`Watch`).
     "CREATE TABLE silences (
          group_id  TEXT NOT NULL,
@@ -872,8 +865,8 @@ impl RegistryStore {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         for (entry, subject) in removed {
             conn.execute(
-                "INSERT OR IGNORE INTO fact_history (entry, subject, started_ms, ended_ms, reach_ms) \
-                 SELECT entry, subject, started_ms, ?3, reach_ms FROM fact_clock WHERE entry = ?1 AND subject = ?2",
+                "INSERT OR IGNORE INTO fact_history (entry, subject, started_ms, ended_ms) \
+                 SELECT entry, subject, started_ms, ?3 FROM fact_clock WHERE entry = ?1 AND subject = ?2",
                 params![entry, subject, now_ms],
             )?;
             conn.execute(
@@ -900,18 +893,6 @@ impl RegistryStore {
         Ok(rows)
     }
 
-    /// Moves where the active `entry` about `subject` reaches back to `reach_ms`, if that is further back than it
-    /// reaches yet.
-    pub fn lower_fact_reach(&self, entry: &str, subject: &str, reach_ms: i64) -> Result<(), StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.prepare_cached(
-            "UPDATE fact_clock SET reach_ms = ?3 \
-             WHERE entry = ?1 AND subject = ?2 AND (reach_ms IS NULL OR reach_ms > ?3)",
-        )?
-        .execute(params![entry, subject, reach_ms])?;
-        Ok(())
-    }
-
     /// When each of `entries` held for `subject` and overlapped the time since `since_ms`, oldest first.
     pub fn fact_spans(&self, entries: &[&str], subject: &str, since_ms: i64) -> Result<Vec<FactSpan>, StoreError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
@@ -920,18 +901,16 @@ impl RegistryStore {
                 entry: r.get(0)?,
                 started_ms: r.get(1)?,
                 ended_ms: r.get(2)?,
-                reach_ms: r.get(3)?,
             })
         };
         let mut out = Vec::new();
         let mut ended = conn.prepare_cached(
-            "SELECT entry, started_ms, ended_ms, reach_ms FROM fact_history WHERE subject = ?1 AND ended_ms >= ?2",
+            "SELECT entry, started_ms, ended_ms FROM fact_history WHERE subject = ?1 AND ended_ms >= ?2",
         )?;
         for row in ended.query_map(params![subject, since_ms], span)? {
             out.push(row?);
         }
-        let mut active =
-            conn.prepare_cached("SELECT entry, started_ms, NULL, reach_ms FROM fact_clock WHERE subject = ?1")?;
+        let mut active = conn.prepare_cached("SELECT entry, started_ms, NULL FROM fact_clock WHERE subject = ?1")?;
         for row in active.query_map(params![subject], span)? {
             out.push(row?);
         }
@@ -3726,7 +3705,6 @@ mod tests {
             entry: "destination_refusing".to_string(),
             started_ms,
             ended_ms,
-            reach_ms: None,
         };
         assert_eq!(
             store.fact_spans(&["destination_refusing"], "7", 0).unwrap(),
@@ -3800,31 +3778,8 @@ mod tests {
             "a source no worker reported for a year has no watch"
         );
         assert!(
-            super::super::steps::is_additive(STEPS[14]),
-            "a build before this one never reads the new store"
-        );
-    }
-
-    #[test]
-    fn a_fact_reaches_back_as_far_as_it_was_ever_lowered_to_and_keeps_that_once_it_ends() {
-        let store = memory_store();
-        let fact = || vec![("source_rows_below".to_string(), "7".to_string())];
-        let reach = |store: &RegistryStore| {
-            let spans = store.fact_spans(&["source_rows_below"], "7", 0).unwrap();
-            spans.iter().map(|s| s.reach_ms).collect::<Vec<_>>()
-        };
-        store.lower_fact_reach("source_rows_below", "7", 500).unwrap();
-        store.sync_fact_clock(&[], &fact(), 1_000).unwrap();
-        assert_eq!(reach(&store), [None], "a fact not yet active has nothing to lower");
-        store.lower_fact_reach("source_rows_below", "7", 800).unwrap();
-        store.lower_fact_reach("source_rows_below", "7", 900).unwrap();
-        assert_eq!(reach(&store), [Some(800)]);
-        store.lower_fact_reach("source_rows_below", "7", 600).unwrap();
-        store.sync_fact_clock(&fact(), &[], 2_000).unwrap();
-        assert_eq!(reach(&store), [Some(600)]);
-        assert!(
             super::super::steps::is_additive(STEPS[13]),
-            "a build before it still reads and writes facts"
+            "a build before this one never reads the new store"
         );
     }
 

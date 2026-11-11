@@ -1981,19 +1981,6 @@ pub fn outside_normal_facts(
         .collect()
 }
 
-/// Where the windows of each source below its normal begin, by the fact its warning is kept under
-/// ([`crate::leader::registry::Registry::lower_reaches`]).
-pub fn outside_normal_reaches(
-    readings: &[throughput::Reading],
-    snapshot: &[ThreadHealth],
-    heartbeat_interval: Duration,
-) -> Vec<(FactKey, i64)> {
-    outside_normal(readings, snapshot, heartbeat_interval)
-        .into_iter()
-        .filter_map(|(r, side)| Some((outside_key(r, side), r.reach_ms?)))
-        .collect()
-}
-
 /// A source reading fewer rows than it normally does at this time of day, or more: it is reading, and how much is
 /// off. Fewer is a warning, or info where an admin lowered it (`marks`). More is info.
 pub fn outside_normal_warnings(
@@ -2096,10 +2083,6 @@ pub struct WarningSpan {
     /// `None` while it still holds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ended_millis: Option<i64>,
-    /// Where the windows a below-normal warning read begin (`throughput::Reading::reach_ms`), once a reading has
-    /// said. The chart marks when the warning held, not what it read.
-    #[serde(skip)]
-    pub reach_millis: Option<i64>,
 }
 
 /// The warnings a source's chart marks, by the fact each is kept under.
@@ -2146,7 +2129,6 @@ pub fn spans(
                 severity: *severity,
                 started_millis: span.started_ms,
                 ended_millis: span.ended_ms,
-                reach_millis: span.reach_ms,
             })
         })
         .collect())
@@ -4218,7 +4200,6 @@ mod tests {
             } else {
                 None
             },
-            reach_ms: None,
             gap: None,
         }
     }
@@ -4377,14 +4358,12 @@ mod tests {
                     severity: Severity::Failed,
                     started_millis: NOW - 30 * 60_000,
                     ended_millis: Some(NOW - 20 * 60_000),
-                    reach_millis: None,
                 },
                 WarningSpan {
                     condition: Condition::SourceRowsBelow,
                     severity: Severity::Warning,
                     started_millis: NOW - 10 * 60_000,
                     ended_millis: None,
-                    reach_millis: None,
                 },
             ]
         );

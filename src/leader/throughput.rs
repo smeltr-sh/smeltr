@@ -31,12 +31,12 @@
 //! Only windows the source was running for throughout count. A bucket with no point means no worker reported the source
 //! then -- not deployed, or a worker gone -- which says nothing about how much it reads.
 //!
-//! A past window or quiet spell does not count when it shares a bucket with a stop about the source
-//! (`warnings::spans`), or with what a below-normal warning read: every window that put a width below its range, those
-//! of the readings it waited for, and the quiet spell the gap read ([`Reading::reach_ms`]). An outage at this time of
-//! day would otherwise set the range's low edge there, and a source that dropped would come to call the drop normal. An
-//! editor may say a past period was normal, and it is learned though it warned, or an outage, and it is not learned
-//! though it did not warn (`marks::Period`).
+//! A past window does not count when it shares a bucket with a stop about the source (`warnings::spans`), or with a
+//! window of its width that ended while a below-normal warning held or waited to be raised. A quiet spell does not
+//! count when it shares a bucket with a stop or with such a warning. An outage at this time of day would otherwise set
+//! the range's low edge there, and a source that dropped would come to call the drop normal. An editor may say a past
+//! period was normal, and it is learned though it warned, or an outage, and it is not learned though it did not warn
+//! (`marks::Period`).
 //!
 //! Rows above normal are learned: more rows are the new normal until shown otherwise.
 //!
@@ -49,9 +49,9 @@
 //! [`BUCKET`] also records how far each source's rate swung inside it at each of [`SWING_WIDTHS`] (`series::Swing`),
 //! while the ten-second tier still holds what it read. A chart's range at that width is learned from those swings.
 //!
-//! Neither the normal nor a reading is stored. Only where each below-normal warning's windows begin is kept, with the
-//! warning, and each source's quiet spells. The normal is learned again each hour, since it moves slowly, and each
-//! reading once per [`BUCKET`] against it, since nothing it reads changes in between.
+//! Neither the normal nor a reading is stored. Only each source's quiet spells are, since they outlive its buckets. The
+//! normal is learned again each hour, since it moves slowly, and each reading once per [`BUCKET`] against it, since
+//! nothing it reads changes in between.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -191,9 +191,6 @@ pub struct Reading {
     /// Each width that judges the source now, narrowest first.
     pub judged: Vec<Judged>,
     pub outside: Option<Outside>,
-    /// Where the window of this reading's widest below-normal width begins, moved back over the readings it waited
-    /// for. A below-normal warning raised now, or held, keeps its source's normal from learning from that bucket on.
-    pub reach_ms: Option<i64>,
     /// The gap's reading, where the gap judges the source.
     pub gap: Option<Gap>,
 }
@@ -586,21 +583,12 @@ fn compute(store: &RegistryStore, ended_ms: i64, learning: &Learning, learned: &
                 .filter_map(|normal| judge(&rows, &warned, normal, ended_ms))
                 .collect();
             let gap = learned.gaps.get(&key).and_then(|gap| gap.at(&of, &warned, ended_ms));
-            // Where no count width reads it, the gap does: the warning ends at the first row since the quiet spell it
-            // read began.
+            // Where no count width reads it, the gap does: the warning ends at its first row.
             let quiet_back = judged.is_empty()
                 && gap
-                    .zip(warned.held_from)
-                    .is_some_and(|(gap, from)| gap.row_ms.is_some_and(|row| row > from));
-            let outside = outside(&judged, gap.as_ref(), warned.held_from.is_some() && !quiet_back);
-            let waited = (WAIT - 1) * BUCKET.bucket_ms();
-            // The gap read the quiet spell it warned on.
-            let reach_ms = judged
-                .iter()
-                .filter(|j| j.below)
-                .map(|j| ended_ms - waited - j.window.as_millis() as i64)
-                .chain(gap.filter(Gap::below).map(|gap| ended_ms - gap.silence_ms))
-                .min();
+                    .zip(warned.held_since)
+                    .is_some_and(|(gap, since)| gap.row_ms.is_some_and(|row| row > since));
+            let outside = outside(&judged, gap.as_ref(), warned.held_since.is_some() && !quiet_back);
             let (group, source) = key;
             (!judged.is_empty() || gap.is_some() || outside.is_some()).then_some(Reading {
                 group,
@@ -608,7 +596,6 @@ fn compute(store: &RegistryStore, ended_ms: i64, learning: &Learning, learned: &
                 ended_ms,
                 judged,
                 outside,
-                reach_ms,
                 gap,
             })
         })
@@ -678,12 +665,14 @@ impl Rows {
 struct Warned {
     /// Each span a stop held, as (started, ended).
     stops: Vec<(i64, Option<i64>)>,
-    /// When its rows teach its normal nothing: while a stop about it held; from where its below-normal warning's
-    /// windows begin until the warning ended, unless an editor said that period was normal; in any period an editor
-    /// said was an outage; and before an editor reset its history.
+    /// When its rows teach its normal nothing: while a stop about it held, unless an editor said that period was
+    /// normal; in any period an editor said was an outage; and before an editor reset its history.
     unlearned: Vec<(i64, Option<i64>)>,
-    /// Where a below-normal warning about it that still holds began keeping its normal from learning.
-    held_from: Option<i64>,
+    /// Each below-normal warning about it, from the first reading it waited for ([`waited_from`]), less the periods an
+    /// editor said were normal.
+    below: Vec<(i64, Option<i64>)>,
+    /// When a below-normal warning about it that still holds began.
+    held_since: Option<i64>,
 }
 
 impl Warned {
@@ -706,19 +695,17 @@ impl Warned {
         let below = held.iter().filter(|s| s.condition == Condition::SourceRowsBelow);
         let reset_from = learning.reset_from(group, source);
         let reset = reset_from.map(|from| (i64::MIN, Some(from)));
-        let warned: Vec<(i64, Option<i64>)> = stops
-            .iter()
-            .copied()
-            .chain(below.clone().map(|s| (unlearned_from(s), s.ended_millis)))
-            .collect();
+        let normal = learning.marked(group, source, marks::Was::Normal);
         let outage = learning.marked(group, source, marks::Was::Outage);
         Warned {
             // A reset ends the warning: the normal it was judged against is forgotten.
-            held_from: below
+            held_since: below
+                .clone()
                 .filter(|s| s.ended_millis.is_none() && reset_from.is_none_or(|from| s.started_millis >= from))
-                .map(unlearned_from)
+                .map(|s| s.started_millis)
                 .min(),
-            unlearned: less(warned, &learning.marked(group, source, marks::Was::Normal))
+            below: less(below.map(|s| (waited_from(s), s.ended_millis)).collect(), &normal),
+            unlearned: less(stops.clone(), &normal)
                 .into_iter()
                 .chain(outage.into_iter().map(|(from, to)| (from, Some(to))))
                 .chain(reset)
@@ -727,9 +714,17 @@ impl Warned {
         }
     }
 
-    /// Whether the `width_ms` ending at `ended_ms` teaches the normal nothing.
+    /// Whether the `width_ms` ending at `ended_ms` teaches the normal nothing: it overlaps a span not learned, or it
+    /// shares a bucket with a window of its width that ended while a below-normal warning waited or held.
     fn during(&self, ended_ms: i64, width_ms: i64) -> bool {
         Warned::overlaps(&self.unlearned, ended_ms, width_ms)
+            || Warned::overlaps(&self.below, ended_ms + width_ms, 2 * width_ms)
+    }
+
+    /// Whether the period of `length_ms` ending at `ended_ms`, a quiet spell or a warning, overlaps a span not
+    /// learned or a below-normal warning.
+    fn span_during(&self, ended_ms: i64, length_ms: i64) -> bool {
+        Warned::overlaps(&self.unlearned, ended_ms, length_ms) || Warned::overlaps(&self.below, ended_ms, length_ms)
     }
 
     /// Whether the `width_ms` ending at `ended_ms` overlaps one of `spans`.
@@ -740,12 +735,11 @@ impl Warned {
     }
 }
 
-/// Where the windows a below-normal warning read begin: what its source's normal learns nothing from, until it ends.
-/// A warning that kept no reach began before one was kept. It is taken to have read the narrowest width, reckoned
-/// from when it was seen, which is up to a heartbeat after the reading that raised it.
-fn unlearned_from(warning: &warnings::WarningSpan) -> i64 {
-    let unkept = WAIT * BUCKET.bucket_ms() + WIDTHS[0].ms();
-    warning.reach_millis.unwrap_or(warning.started_millis - unkept)
+/// The earliest the first reading a below-normal warning waited for can have ended: [`WAIT`] buckets before the
+/// warning was seen. That reading ended [`WAIT`] - 1 buckets before the one that raised the warning, and the warning
+/// was seen up to a heartbeat, taken as one bucket, after that.
+fn waited_from(warning: &warnings::WarningSpan) -> i64 {
+    warning.started_millis - WAIT * BUCKET.bucket_ms()
 }
 
 /// How many of a source's longest quiet spells [`past`] lists.
@@ -755,7 +749,7 @@ const LONGEST_LISTED: usize = 10;
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Past {
-    /// Its below-normal warnings that ended, newest first: each from where the windows it read begin.
+    /// Its below-normal warnings that ended, newest first: each from the first reading it waited for.
     pub warnings: Vec<PastSpan>,
     /// Its longest quiet spells, longest first.
     pub silences: Vec<PastSpan>,
@@ -783,7 +777,7 @@ pub fn past(
     let span = |from_millis: i64, to_millis: i64| PastSpan {
         from_millis,
         to_millis,
-        learned: !warned.during(to_millis, to_millis - from_millis),
+        learned: !warned.span_during(to_millis, to_millis - from_millis),
     };
     let mut silences = store.source_silences(group, source, year)?;
     silences.sort_by_key(|&(ended, length)| (std::cmp::Reverse(length), std::cmp::Reverse(ended)));
@@ -792,7 +786,7 @@ pub fn past(
             .iter()
             .rev()
             .filter(|s| s.condition == Condition::SourceRowsBelow)
-            .filter_map(|s| Some(span(unlearned_from(s), s.ended_millis?)))
+            .filter_map(|s| Some(span(waited_from(s), s.ended_millis?)))
             .collect(),
         silences: silences
             .into_iter()
@@ -832,7 +826,7 @@ impl GapNormal {
     fn of(watch: Watch, silences: &[(i64, i64)], warned: &Warned, as_of: i64, reset_from: Option<i64>) -> GapNormal {
         let learned: Vec<f64> = silences
             .iter()
-            .filter(|&&(ended, length)| !warned.during(ended, length))
+            .filter(|&&(ended, length)| !warned.span_during(ended, length))
             .map(|&(_, length)| length as f64)
             .collect();
         let watched = as_of - reset_from.map_or(watch.watched_ms, |from| from.max(watch.watched_ms));
@@ -1431,16 +1425,8 @@ mod tests {
 
     /// `entry` held for the source from `started` until `ended`, or still.
     fn warned(store: &RegistryStore, entry: &str, started: i64, ended: Option<i64>) {
-        warned_reaching(store, entry, started, ended, None);
-    }
-
-    /// [`warned`], with the windows it read reaching back to `reach`.
-    fn warned_reaching(store: &RegistryStore, entry: &str, started: i64, ended: Option<i64>, reach: Option<i64>) {
         let fact = vec![(entry.to_string(), serde_json::to_string(&("g", "s")).unwrap())];
         store.sync_fact_clock(&[], &fact, started).unwrap();
-        if let Some(reach) = reach {
-            store.lower_fact_reach(entry, &fact[0].1, reach).unwrap();
-        }
         if let Some(ended) = ended {
             store.sync_fact_clock(&fact, &[], ended).unwrap();
         }
@@ -1480,22 +1466,6 @@ mod tests {
         assert_eq!(r.outside, None, "and the three before it held the stop");
     }
 
-    #[test]
-    fn a_stop_reaches_back_to_the_first_bucket_of_the_readings_it_waited_for() {
-        let (store, outage) = outage_and_stop();
-        warned(&store, "source_unreachable", outage, Some(outage + 2 * HOUR));
-        let r = reading(&store).unwrap();
-        assert_eq!(r.outside, Some(Outside::Below));
-        assert_eq!(r.reach_ms, Some(END - 4 * FIVE));
-    }
-
-    #[test]
-    fn a_reading_reaches_back_by_the_widest_width_below() {
-        let store = store_with(29, |at| Some(if at >= END - 5 * HOUR { 0.0 } else { 1.0 }));
-        let r = reading_at(&store, END - FIVE, &Learning::default()).unwrap();
-        assert_eq!(r.reach_ms, Some(END - FIVE - 3 * FIVE - 6 * HOUR));
-    }
-
     /// Whether the normal as of END learns the `width` window that ended at `ended`.
     fn learns(store: &RegistryStore, ended: i64, width: Width) -> bool {
         let warned = Warned::of(store, "g", "s", END - lookback_ms(), &Learning::default());
@@ -1503,41 +1473,25 @@ mod tests {
     }
 
     #[test]
-    fn a_below_warning_learns_nothing_the_windows_it_read_hold() {
+    fn a_width_learns_no_window_that_shares_a_bucket_with_one_a_below_warning_read() {
         let (store, outage) = outage_and_stop();
-        // Raised by the 6-hour width on the outage's fourth reading, and seen a heartbeat later.
-        let raised = outage + 4 * FIVE;
-        let reach = raised - 3 * FIVE - 6 * HOUR;
-        warned_reaching(
-            &store,
-            "source_rows_below",
-            raised + 1_000,
-            Some(outage + 2 * HOUR),
-            Some(reach),
-        );
-        assert!(learns(&store, reach, WIDTHS[0]), "the five minutes before it");
-        assert!(
-            !learns(&store, reach + FIVE, WIDTHS[0]),
-            "the first five minutes it read"
-        );
-        assert!(!learns(&store, reach + 6 * HOUR, WIDTHS[3]), "a day that holds it");
+        // Raised on the outage's fourth reading, and seen a heartbeat later.
+        let ended = outage + 2 * HOUR;
+        warned(&store, "source_rows_below", outage + 5 * FIVE, Some(ended));
+        for width in WIDTHS {
+            let w = width.ms();
+            assert!(learns(&store, outage + FIVE - w, width), "{width:?}: the window before");
+            assert!(
+                !learns(&store, outage + 2 * FIVE - w, width),
+                "{width:?}: the first that shares a bucket with the first reading it waited for"
+            );
+            assert!(
+                !learns(&store, ended + w - FIVE, width),
+                "{width:?}: the last that shares a bucket with the warning"
+            );
+            assert!(learns(&store, ended + w, width), "{width:?}: the window after");
+        }
         assert_eq!(reading(&store).unwrap().judged[0].band.low, 70.0);
-    }
-
-    #[test]
-    fn a_below_warning_that_kept_no_reach_learns_nothing_from_the_readings_it_waited_for() {
-        let (store, outage) = outage_and_stop();
-        warned(
-            &store,
-            "source_rows_below",
-            outage + 4 * FIVE + 1_000,
-            Some(outage + 2 * HOUR),
-        );
-        assert!(learns(&store, outage - FIVE, WIDTHS[0]));
-        assert!(
-            !learns(&store, outage + FIVE, WIDTHS[0]),
-            "the first reading it waited for"
-        );
     }
 
     #[test]
@@ -1572,7 +1526,7 @@ mod tests {
     fn a_held_below_warning_is_judged_against_the_days_learned_before_it() {
         let dropped = END - 6 * DAY_MS;
         let store = store_with(29, |at| Some(if at >= dropped { 30.0 } else { 100.0 }));
-        warned_reaching(&store, "source_rows_below", dropped + 3 * FIVE, None, Some(dropped));
+        warned(&store, "source_rows_below", dropped + 4 * FIVE, None);
         let r = reading(&store).unwrap();
         assert_eq!(r.outside, Some(Outside::Below));
         assert_eq!(
@@ -1593,7 +1547,7 @@ mod tests {
                 100.0
             })
         });
-        warned_reaching(&store, "source_rows_below", dropped + 3 * FIVE, None, Some(dropped));
+        warned(&store, "source_rows_below", dropped + 4 * FIVE, None);
         assert_eq!(reading(&store).unwrap().outside, None);
     }
 
@@ -1894,11 +1848,6 @@ mod tests {
         let r = reading(&sparse(35, END - 12 * HOUR)).unwrap();
         assert_eq!(r.gap.unwrap().silence_ms, 15 * HOUR - FIVE);
         assert_eq!(r.outside, Some(Outside::Below));
-        assert_eq!(
-            r.reach_ms,
-            Some(END - 15 * HOUR + FIVE),
-            "the warning reaches back to where the quiet spell the gap read began"
-        );
     }
 
     #[test]
@@ -1958,7 +1907,7 @@ mod tests {
         };
         assert_eq!(longest(&store, &Learning::default()), 107 * FIVE);
         let (began, ended) = (long - 3 * HOUR + FIVE, long + 6 * HOUR + FIVE);
-        warned_reaching(&store, "source_rows_below", long + 3 * HOUR, Some(ended), Some(began));
+        warned(&store, "source_rows_below", long + 3 * HOUR, Some(ended));
         assert_eq!(longest(&store, &Learning::default()), 35 * FIVE);
         let normal = Learning {
             periods: vec![marks::Period {
@@ -1978,13 +1927,7 @@ mod tests {
     fn a_warning_the_gap_raised_ends_at_the_first_row() {
         let silent = END - 12 * HOUR;
         let store = sparse(35, silent);
-        warned_reaching(
-            &store,
-            "source_rows_below",
-            END - HOUR,
-            None,
-            Some(silent - 3 * HOUR + FIVE),
-        );
+        warned(&store, "source_rows_below", END - HOUR, None);
         let key = serde_json::to_string(&[("group", "g"), ("source", "s"), ("worker", "w")]).unwrap();
         store.record_delta(ROWS_IN_METRIC, &key, END, 1.0).unwrap();
         let r = reading_at(&store, END + FIVE, &Learning::default()).unwrap();
@@ -1993,13 +1936,7 @@ mod tests {
 
         // Neither a bucket nobody reported nor a stop's end is a row: the warning holds through each.
         let held = |store: &RegistryStore| {
-            warned_reaching(
-                store,
-                "source_rows_below",
-                END - HOUR,
-                None,
-                Some(silent - 3 * HOUR + FIVE),
-            );
+            warned(store, "source_rows_below", END - HOUR, None);
             reading_at(store, END, &Learning::default()).unwrap().outside
         };
         let skipped = store_with(35, |at| {
@@ -2044,19 +1981,13 @@ mod tests {
     fn past_lists_the_warnings_that_ended_and_the_longest_quiet_spells_with_what_is_learned() {
         let store = sparse(35, END - 12 * HOUR);
         reading(&store);
-        warned_reaching(
-            &store,
-            "source_rows_below",
-            END - 9 * DAY_MS,
-            Some(END - 8 * DAY_MS),
-            Some(END - 10 * DAY_MS),
-        );
+        warned(&store, "source_rows_below", END - 9 * DAY_MS, Some(END - 8 * DAY_MS));
         warned(&store, "source_rows_below", END - HOUR, None);
         let past = past(&store, "g", "s", END, &Learning::default()).unwrap();
         assert_eq!(
             past.warnings,
             [PastSpan {
-                from_millis: END - 10 * DAY_MS,
+                from_millis: END - 9 * DAY_MS - 4 * FIVE,
                 to_millis: END - 8 * DAY_MS,
                 learned: false,
             }],
@@ -2075,7 +2006,7 @@ mod tests {
             !past
                 .silences
                 .iter()
-                .any(|s| (END - 10 * DAY_MS..END - 8 * DAY_MS).contains(&s.to_millis) && s.learned),
+                .any(|s| (END - 9 * DAY_MS..END - 8 * DAY_MS).contains(&s.to_millis) && s.learned),
             "a quiet spell under the warning is not learned"
         );
     }
