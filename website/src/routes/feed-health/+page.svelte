@@ -25,38 +25,52 @@
   <section aria-labelledby="volume-heading">
     <h2 id="volume-heading">Too quiet, or too loud.</h2>
     <p>
-      Smeltr learns how many rows each source reads at each time of day, from its last seven days.
-      In the demo, FortiGate's logs reach Smeltr through two syslog relays. When one goes down, the
-      source falls to half of what it should read:
+      Smeltr learns how many rows each source reads at each time of day, from its past weeks. In the
+      demo, FortiGate's logs reach Smeltr through a syslog relay. When the relay goes down, the
+      source stops:
     </p>
     <ProductScreenshot
       source="feed-health-volume"
       height={1800}
       crop={{ x: 2150, y: 470, width: 690, height: 950 }}
-      alt="The Map's panel for the fortigate-firewalls source: Rows below normal, input 171 rows a second, expected 378 to 465. Its 24-hour chart follows the expected band through the day, then falls to half."
-      caption="Over the last 24 hours the source reads within its band, until it falls to half."
+      alt="The Map's panel for the fortigate-firewalls source: Rows below normal, input 0 rows a second, expected 228 to 746. Its 24-hour chart runs inside the expected band through the day, then twice drops to nothing."
+      caption="Over the last 24 hours the source reads within its band, until the relay stops, twice."
     />
     <p>
-      Within ten minutes, Smeltr raises an issue. It shows on the Issues page and the Map, and goes
-      to every alert channel that takes it.
+      Within twenty minutes, Smeltr raises an issue. It shows on the Issues page and the Map, and
+      goes to every alert channel that takes it.
     </p>
     <ProductScreenshot
       source="feed-health-issues"
       height={1800}
-      crop={{ x: 472, y: 758, width: 2360, height: 176 }}
+      crop={{ x: 472, y: 756, width: 2360, height: 178 }}
       phone={{
         source: 'feed-health-issues-phone',
         height: 2200,
         width: 1440,
-        crop: { x: 472, y: 922, width: 920, height: 299 },
+        crop: { x: 472, y: 916, width: 920, height: 382 },
       }}
-      alt="The Issues page: Rows below normal, for the fortigate-firewalls source, which read 564,427 rows in 30 minutes where 686,163 to 840,639 is normal at this time of day."
+      alt="The Issues page: Rows below normal, for the fortigate-firewalls source, which read 0 rows in 5 minutes where 71,695 to 226,858 is normal at this time of day."
       caption="The Issues page names the source, what it read and what is normal."
     />
     <p>
-      Smeltr starts warning once a source has three days of history. You set how wide the range is,
-      for every source, under Admin → System.
+      Smeltr starts warning once a source has three days of history. A source too sparse for its
+      rows to be counted, such as an audit log that writes a few rows a day, is watched for four
+      weeks instead, then warns once it goes half again as long without a row as its longest quiet
+      spell of the past year.
     </p>
+    <p>
+      Each source's History tab lists its warnings and longest quiet spells of the past year. A
+      warning, and a quiet spell during one, is not learned unless an editor marks it Normal. Any
+      other quiet spell is learned unless an editor marks it Outage:
+    </p>
+    <ProductScreenshot
+      source="feed-health-history"
+      height={1800}
+      crop={{ x: 2150, y: 470, width: 690, height: 1000 }}
+      alt="The Map's panel for the fortigate-firewalls source, History tab. Warnings: Nov 11, 18:00, for 20 minutes, and Nov 11, 17:15, for 44 minutes. Longest quiet spells: Nov 11, 17:20, for 15 minutes, inside the older warning. Each row has a Normal and Outage switch, set to Outage."
+      caption="A warning lasts until no width reads the source below normal, so it outlasts the quiet spell inside it. None of the three is learned."
+    />
   </section>
   <section aria-labelledby="drift-heading">
     <h2 id="drift-heading">A field stops matching.</h2>
@@ -69,12 +83,12 @@
     <ProductScreenshot
       source="feed-health-issues"
       height={1800}
-      crop={{ x: 472, y: 558, width: 2360, height: 176 }}
+      crop={{ x: 472, y: 464, width: 2360, height: 176 }}
       phone={{
         source: 'feed-health-issues-phone',
         height: 2200,
         width: 1440,
-        crop: { x: 472, y: 572, width: 920, height: 318 },
+        crop: { x: 472, y: 464, width: 920, height: 336 },
       }}
       alt="The Issues page: Field not its declared type, for the fortigate-traffic pipeline, whose field proto has failed to read as its declared type in the last hour."
       caption="The Issues page names the pipeline, the field and the step."
