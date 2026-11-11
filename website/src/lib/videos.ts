@@ -123,6 +123,22 @@ const allCourses: Course[] = [
       },
     ],
   },
+  {
+    title: 'Shape your data',
+    slug: 'shape-your-data',
+    videos: [
+      {
+        title: 'Parse raw text',
+        slug: 'parse-raw-text',
+        youtube: 'jFOLnXjTI00',
+        minutes: 3,
+        poster: '/videos/shape-your-data-1-poster.jpg',
+      },
+      { title: 'Transform with steps and code', slug: 'transform-with-steps-and-code' },
+      { title: 'Enrich with lookups', slug: 'enrich-with-lookups' },
+      { title: 'Hold to a schema', slug: 'hold-to-a-schema' },
+    ],
+  },
 ];
 
 export const released = (course: Course) => course.videos.filter((v) => v.youtube);
