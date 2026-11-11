@@ -173,15 +173,9 @@ impl Lock {
             .rows
             .clone()
             .unwrap_or_else(|| made.iter().map(|m| m.row).collect());
-        let mut checked: Vec<usize> = Vec::new();
-        for row in rows {
-            if !checked.contains(&row) {
-                checked.push(row);
-            }
-        }
         Locked {
             rows_in,
-            rows: checked
+            rows: first_seen(rows)
                 .into_iter()
                 .flat_map(|row| made_on(row, &fields, made))
                 .collect(),
@@ -202,6 +196,17 @@ impl Lock {
             rows: locked.rows,
         }
     }
+}
+
+/// Each of `items` once, in the order first seen.
+fn first_seen<T: PartialEq>(items: impl IntoIterator<Item = T>) -> Vec<T> {
+    let mut seen = Vec::new();
+    for item in items {
+        if !seen.contains(&item) {
+            seen.push(item);
+        }
+    }
+    seen
 }
 
 /// What a library listing shows: everything but the outcomes.
@@ -231,13 +236,7 @@ pub struct TestSummary {
 impl TestDto {
     /// The rows it checks, each once, in order.
     pub fn rows_checked(&self) -> Vec<usize> {
-        let mut rows: Vec<usize> = Vec::new();
-        for o in &self.rows {
-            if !rows.contains(&o.row) {
-                rows.push(o.row);
-            }
-        }
-        rows
+        first_seen(self.rows.iter().map(|o| o.row))
     }
 
     /// Every pipeline this test exercises, in the order first seen.
@@ -256,13 +255,7 @@ impl TestDto {
 
     /// The distinct names `pick` reads off where the outcomes went, in the order first seen.
     fn sent_names(&self, pick: impl Fn(&Sent) -> &String) -> Vec<String> {
-        let mut seen: Vec<String> = Vec::new();
-        for name in self.rows.iter().filter_map(|o| o.sent.as_ref()).map(pick) {
-            if !seen.contains(name) {
-                seen.push(name.clone());
-            }
-        }
-        seen
+        first_seen(self.rows.iter().filter_map(|o| o.sent.as_ref()).map(pick).cloned())
     }
 
     pub fn summary(&self) -> TestSummary {
