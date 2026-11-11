@@ -126,9 +126,22 @@ describe('rollupWorkers', () => {
     ];
     const [row] = rollupWorkers([w1], threads, SILENT_AFTER_MS);
 
-    expect(row.partitionsOwned).toBe(5);
+    expect(row.partitionsOwned).toHaveLength(5);
     expect(row.lastSeenMillisAgo).toBe(300);
     expect(row.groupId).toBe('ingest-1');
+  });
+
+  it('a silent worker owns no partitions, whatever it last reported', () => {
+    const threads = [
+      thread('w1', 't0', { lastSeen: 20_000, partitions: 1 }),
+      thread('w2', 't0', { lastSeen: 300, partitions: 2 }),
+    ];
+    const rows = rollupWorkers([w1, { workerId: 'w2', revoked: false }], threads, SILENT_AFTER_MS);
+
+    expect(rows.map((r) => [r.status, r.partitionsOwned.length])).toEqual([
+      ['silent', 0],
+      ['online', 2],
+    ]);
   });
 
   it('a worker with no threads still gets a row', () => {
