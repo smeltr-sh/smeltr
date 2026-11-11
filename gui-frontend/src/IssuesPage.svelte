@@ -306,9 +306,13 @@
     color: var(--dim);
   }
 
-  /* The list names a condition's rows; Collapsible's body spaces them. */
+  /* A row stacks its parts while the list is narrower than 48rem. The list's own width decides whether a row fits on
+     one line, not the window's: beside the sidebar, a window wider than a phone can still leave the list narrow. */
   .issues {
-    display: contents;
+    container: issues / inline-size;
+    display: flex;
+    flex-direction: column;
+    gap: inherit;
   }
   .issue-row {
     display: grid;
@@ -349,7 +353,7 @@
     white-space: nowrap;
   }
 
-  @media (max-width: 40rem) {
+  @container issues (max-width: 48rem) {
     .issue-row {
       grid-template-columns: 0.9rem 1fr;
     }
