@@ -244,11 +244,27 @@ pub struct RowsIn {
 /// document the run made, rows it made none on included -- the shape a preview already answers in.
 ///
 /// Row by checked row, in the test's order: a row's documents are compared in the order they were made, each cut
-/// down to the test's fields. A row the test does not check is never read.
+/// down to the test's fields; a row the run never reached made nothing, like a dropped one. A row the test does not
+/// check is never read.
 pub fn compare(test: &TestDto, rows_in: usize, made: &[Made]) -> Verdict {
     let first = test.rows_checked().into_iter().find_map(|row| {
         let want = test.rows.iter().filter(|o| o.row == row);
-        let got: Vec<Outcome> = made.iter().filter(|m| m.row == row).map(|m| m.cut(&test.fields)).collect();
+        let mut got: Vec<Outcome> = made
+            .iter()
+            .filter(|m| m.row == row)
+            .map(|m| m.cut(&test.fields))
+            .collect();
+        if got.is_empty() {
+            // A row the run never reached made nothing, as a dropped row did, so locking it again keeps it checked.
+            got.push(
+                Made {
+                    row,
+                    document: None,
+                    sent: None,
+                }
+                .cut(&test.fields),
+            );
+        }
         let mut want = want.cloned();
         let mut got = got.into_iter();
         loop {
@@ -391,6 +407,31 @@ mod tests {
         }
     }
 
+    /// An Unroll that makes fewer rows leaves a checked row unreached: it fails there, and locked again it checks
+    /// that the row makes nothing rather than checking one row fewer.
+    #[test]
+    fn a_checked_row_the_run_never_reaches_fails_and_locks_again_as_making_nothing() {
+        let test = locked("ids", &["id"], &[row(0, json!({"id": 1})), row(1, json!({"id": 2}))]);
+        let shrunk = [row(0, json!({"id": 1}))];
+        let verdict = compare(&test, test.rows_in, &shrunk);
+        assert_eq!(verdict.first_difference.as_ref().map(|d| d.row), Some(1));
+        assert!(verdict.first_difference.unwrap().actual.unwrap().values.is_none());
+
+        let again = TestDto {
+            rows: vec![shrunk[0].cut(&test.fields), dropped(1).cut(&test.fields)],
+            ..test
+        };
+        assert!(compare(&again, again.rows_in, &shrunk).passed);
+        assert!(
+            !compare(
+                &again,
+                again.rows_in,
+                &[row(0, json!({"id": 1})), row(1, json!({"id": 2}))]
+            )
+            .passed
+        );
+    }
+
     #[test]
     fn a_test_round_trips_through_its_file() {
         let dir = temp_bundle("roundtrip");
@@ -406,7 +447,10 @@ mod tests {
         assert_eq!(read.pipeline.as_deref(), Some("orders-normalize"));
         assert_eq!(read.locked_at, test.locked_at);
         assert_eq!(read.rows, test.rows);
-        assert_eq!(read.rows[0].values, Some(Map::from_iter([("total".into(), json!(48.2))])));
+        assert_eq!(
+            read.rows[0].values,
+            Some(Map::from_iter([("total".into(), json!(48.2))]))
+        );
         assert_eq!(read.rows[1].values, None, "a dropped row holds no values");
     }
 
@@ -417,10 +461,16 @@ mod tests {
             0,
             json!({"user": {"name": "ana", "id": 7}, "labels": {"app.kubernetes.io/name": "web"}, "tags": [1, 2], "x": {}}),
         );
-        let fields: Vec<String> = ["user.name", r#"labels["app.kubernetes.io/name"]"#, "tags", "x", "absent"]
-            .iter()
-            .map(|f| f.to_string())
-            .collect();
+        let fields: Vec<String> = [
+            "user.name",
+            r#"labels["app.kubernetes.io/name"]"#,
+            "tags",
+            "x",
+            "absent",
+        ]
+        .iter()
+        .map(|f| f.to_string())
+        .collect();
         let values = made.cut(&fields).values.unwrap();
         assert_eq!(
             values,
@@ -446,7 +496,11 @@ mod tests {
     /// A change to a field the test does not check, or to a row it does not check, never fails it.
     #[test]
     fn a_change_outside_what_the_test_checks_passes() {
-        let test = locked("severity", &["severity"], &[row(1, json!({"severity": "high", "port": 22}))]);
+        let test = locked(
+            "severity",
+            &["severity"],
+            &[row(1, json!({"severity": "high", "port": 22}))],
+        );
         let made = [
             row(0, json!({"severity": "CHANGED"})),
             row(1, json!({"severity": "high", "port": 2222, "new": true})),
@@ -487,11 +541,13 @@ mod tests {
 
     /// A row the run no longer reaches -- an unroll that made fewer rows -- has nothing on the run's side.
     #[test]
-    fn a_row_the_run_does_not_reach_is_reported_as_missing() {
+    fn a_row_the_run_does_not_reach_is_reported_as_making_nothing() {
         let test = locked("last", &["a"], &[row(4, json!({"a": 1}))]);
-        let d = compare(&test, 3, &[row(0, json!({"a": 1}))]).first_difference.expect("it differs");
+        let d = compare(&test, 3, &[row(0, json!({"a": 1}))])
+            .first_difference
+            .expect("it differs");
         assert_eq!(d.row, 4);
-        assert!(d.expected.is_some() && d.actual.is_none());
+        assert!(d.expected.is_some() && d.actual.is_some_and(|a| a.values.is_none()));
     }
 
     /// An end-to-end row holds a document per route that carried its record; one route more is a difference.
@@ -503,7 +559,10 @@ mod tests {
             ..locked("routed", &["a"], &one)
         };
         assert!(compare(&test, 3, &one).passed);
-        let two = [sent(0, json!({"a": 1}), "p1", "r1"), sent(0, json!({"a": 1}), "p2", "r2")];
+        let two = [
+            sent(0, json!({"a": 1}), "p1", "r1"),
+            sent(0, json!({"a": 1}), "p2", "r2"),
+        ];
         let d = compare(&test, 3, &two).first_difference.expect("it differs");
         assert!(d.expected.is_none(), "the test locks nothing past the first route");
         assert_eq!(d.actual.unwrap().sent.unwrap().route, "r2");
@@ -518,7 +577,11 @@ mod tests {
         assert!(!verdict.passed);
         assert_eq!(verdict.first_difference, None);
         assert_eq!(verdict.rows_in, Some(RowsIn { locked: 3, now: 4 }));
-        assert_eq!(compare(&test, 3, &made).rows_in, None, "an unchanged count is not reported");
+        assert_eq!(
+            compare(&test, 3, &made).rows_in,
+            None,
+            "an unchanged count is not reported"
+        );
     }
 
     /// A record matching two routes covers both pipelines -- and both routes, in the order they were locked.

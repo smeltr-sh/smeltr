@@ -490,7 +490,10 @@ pub fn failing_at(data_dir: &Path, commit: &str) -> Vec<FailingTest> {
 fn failure_text(verdict: &Verdict) -> String {
     match (&verdict.first_difference, &verdict.rows_in) {
         (Some(d), _) => format!("row {} differs from what it locked", d.row),
-        (None, Some(rows_in)) => format!("its sample held {} records when locked, now {}", rows_in.locked, rows_in.now),
+        (None, Some(rows_in)) => format!(
+            "its sample held {} records when locked, now {}",
+            rows_in.locked, rows_in.now
+        ),
         (None, None) => "its output differs from what it locked".to_string(),
     }
 }
@@ -732,7 +735,10 @@ mod tests {
         assert_eq!(verdict.rows_in, Some(config_file::RowsIn { locked: 2, now: 1 }));
 
         // What was locked no longer describes what a run produces.
-        test.rows[0].values = Some(serde_json::Map::from_iter([("seen".to_string(), serde_json::json!(false))]));
+        test.rows[0].values = Some(serde_json::Map::from_iter([(
+            "seen".to_string(),
+            serde_json::json!(false),
+        )]));
         let failing = run_one(
             &test,
             "west",
@@ -777,13 +783,22 @@ mod tests {
         };
         assert_eq!(test.rows[0].values.as_ref().unwrap()["seen"], serde_json::json!(true));
         let run = |test: &TestDto| {
-            run_one(test, "shared", PIPELINE_CONFIG, &mut DirFileSet { root: &dir }, &declared_at)
-                .verdict
-                .expect("the pipeline preview runs cleanly")
+            run_one(
+                test,
+                "shared",
+                PIPELINE_CONFIG,
+                &mut DirFileSet { root: &dir },
+                &declared_at,
+            )
+            .verdict
+            .expect("the pipeline preview runs cleanly")
         };
         assert!(run(&test).passed);
 
-        test.rows[0].values = Some(serde_json::Map::from_iter([("seen".to_string(), serde_json::json!(false))]));
+        test.rows[0].values = Some(serde_json::Map::from_iter([(
+            "seen".to_string(),
+            serde_json::json!(false),
+        )]));
         let verdict = run(&test);
         assert!(!verdict.passed);
         assert_eq!(verdict.first_difference.unwrap().row, 0);

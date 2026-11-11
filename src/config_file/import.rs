@@ -345,7 +345,10 @@ impl Objects {
     /// Each end-to-end test's outcomes name the route and pipeline that made them: the one `name` picks naming
     /// `from` is made to name `to`.
     fn outcomes_renamed(&mut self, name: fn(&mut super::Sent) -> &mut String, from: &str, to: &str) {
-        let sent = self.tests.iter_mut().flat_map(|t| t.rows.iter_mut().filter_map(|o| o.sent.as_mut()));
+        let sent = self
+            .tests
+            .iter_mut()
+            .flat_map(|t| t.rows.iter_mut().filter_map(|o| o.sent.as_mut()));
         for named in sent.map(name).filter(|n| *n == from) {
             *named = to.to_string();
         }

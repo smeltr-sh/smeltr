@@ -127,10 +127,12 @@
     ],
   );
   let rowsChecked = $derived(choice?.rows ?? [...new Set(made.map((m) => m.row))]);
+  // A checked row the run never reached made nothing, as a dropped row did, and stays checked as that.
   let outcomes = $derived(
-    made
-      .filter((m) => rowsChecked.includes(m.row))
-      .map((m) => cutDown(m.row, m.document, fields, m.sent)),
+    rowsChecked.flatMap((row) => {
+      const here = made.filter((m) => m.row === row);
+      return here.length ? here.map((m) => cutDown(m.row, m.document, fields, m.sent)) : [{ row }];
+    }),
   );
 
   async function load() {
