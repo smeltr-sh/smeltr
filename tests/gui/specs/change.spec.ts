@@ -454,18 +454,21 @@ test('a deployed commit that fails its own tests is deployed, and flagged on the
   await api.put(`/api/areas/shared/samples/orders-sample${on}`, {
     id: 'orders-sample',
     name: 'orders',
-    records: [{ _raw: '{"id":1}' }],
+    records: [{ _raw: '{"id":2}' }],
   });
-  // Locks an output the pipeline does not make, so the test fails at every commit that carries it.
+  // Locked over a sample whose order is 2, which then becomes 1, so the test fails at every commit with the changed sample.
   await api.put(`/api/areas/shared/tests/orders-keep-id${on}`, {
-    id: 'orders-keep-id',
     name: 'orders keep their id',
     pipeline: 'orders',
     sample: 'orders-sample',
     lockedAt: 0,
-    rowsIn: 1,
     fields: ['id'],
-    rows: [{ row: 0, values: { id: 2 } }],
+    rows: [0],
+  });
+  await api.put(`/api/areas/shared/samples/orders-sample${on}`, {
+    id: 'orders-sample',
+    name: 'orders',
+    records: [{ _raw: '{"id":1}' }],
   });
   await api.openChange('broken-orders', 'Lock a test that fails');
   await api.deploy('broken-orders');
@@ -502,17 +505,21 @@ test('a review shows what each test checks, and a failing one says which row and
   await api.put(`/api/areas/shared/samples/orders-sample${on}`, {
     id: 'orders-sample',
     name: 'orders',
-    records: [{ _raw: '{"id":1}' }],
+    records: [{ _raw: '{"id":2}' }],
   });
+  // Locked over a sample whose order is 2, which then becomes 1, so the test fails.
   await api.put(`/api/areas/shared/tests/orders-keep-id${on}`, {
-    id: 'orders-keep-id',
     name: 'orders keep their id',
     pipeline: 'orders',
     sample: 'orders-sample',
     lockedAt: 0,
-    rowsIn: 1,
     fields: ['id'],
-    rows: [{ row: 0, values: { id: 2 } }],
+    rows: [0],
+  });
+  await api.put(`/api/areas/shared/samples/orders-sample${on}`, {
+    id: 'orders-sample',
+    name: 'orders',
+    records: [{ _raw: '{"id":1}' }],
   });
   await api.openChange('checked', 'Check the order id');
 
@@ -587,14 +594,12 @@ test('the dock’s count of tests opens the Tests tab', async ({ admin, api, lea
     records: [{ _raw: 'a' }],
   });
   await api.put(`/api/areas/shared/tests/t${on}`, {
-    id: 't',
     name: 't',
     pipeline: 'p',
     sample: 's',
     lockedAt: 0,
-    rowsIn: 1,
     fields: [],
-    rows: [{ row: 0 }],
+    rows: [0],
   });
   await api.openChange('tested', 'A tested pipeline');
 

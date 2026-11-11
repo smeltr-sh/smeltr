@@ -1020,15 +1020,18 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
     ],
     records: ORDERS.map((raw, i) => ({ _raw: raw, __source: read(i, 100 + i, raw) })),
   });
+  await api.put(`/api/areas/shared/pipelines/orders${ON}`, {
+    id: 'orders',
+    name: 'orders',
+    steps: [{ type: 'parser', id: 'body', input: '_raw', kind: { type: 'json' }, declared: [] }],
+  });
   await api.put(`/api/areas/shared/tests/orders-parse${ON}`, {
-    id: 'orders-parse',
     name: 'orders parse',
     pipeline: 'orders',
     sample: 'busy-hour',
     lockedAt: 0,
-    rowsIn: 3,
     fields: [],
-    rows: [{ row: 0 }, { row: 1 }, { row: 2 }],
+    rows: [0, 1, 2],
   });
 
   await goto(admin, leader, '#/build');
@@ -1293,14 +1296,12 @@ test('A2: a sample is picked from the Sample menu, its output searched by keywor
     records: [{ _raw: '{}' }],
   });
   await api.put(`/api/areas/shared/tests/orders-parse${ON}`, {
-    id: 'orders-parse',
     name: 'orders parse',
     pipeline: 'orders',
     sample: 'orders-sample',
     lockedAt: 0,
-    rowsIn: 3,
     fields: [],
-    rows: [{ row: 0 }, { row: 1 }, { row: 2 }],
+    rows: [0, 1, 2],
   });
 
   await goto(admin, leader, '#/build/pipelines/orders');
@@ -1977,6 +1978,61 @@ test('A11: a test locks the fields and rows on screen, and a change to anything 
   await code('id = id + 1;');
   await admin.reload();
   await expect(testRow).toContainText('Failing', { timeout: 15_000 });
+});
+
+// A11, what a test locks is what the leader made: a float with no fraction stays a float, and a long integer keeps
+// every digit, so the test passes the moment it is locked.
+test('A11: a test locking a whole float and a long integer passes at once', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await jsonPipeline(api, 'orders', [{ name: 'id', type: 'i64' }], {
+    id: 'orders-sample',
+    name: 'orders',
+    records: ORDERS,
+  });
+  await api.put(`/api/areas/shared/pipelines/orders${ON}`, {
+    id: 'orders',
+    name: 'orders',
+    steps: [
+      {
+        type: 'parser',
+        id: 'body',
+        input: '_raw',
+        kind: { type: 'json' },
+        declared: [{ name: 'id', type: 'i64' }],
+      },
+      {
+        type: 'code',
+        id: 'code-1',
+        filter: 'true',
+        disabled: false,
+        body: 'whole = 10.0; big = 9007199254740993;',
+      },
+    ],
+  });
+
+  await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
+  const lock = admin.getByRole('button', { name: 'Lock this as a test' });
+  await expect(lock).toBeEnabled({ timeout: 15_000 });
+  await lock.click();
+  await admin.getByRole('textbox', { name: 'Name' }).fill('orders keep their numbers');
+  await expect(admin.getByRole('columnheader', { name: 'whole' })).toBeVisible();
+  await admin.screenshot({ path: test.info().outputPath('lock-numbers.png') });
+  await admin.getByRole('button', { name: 'Lock the test' }).click();
+
+  const testRow = admin.getByRole('row', { name: /orders keep their numbers/ });
+  await expect(testRow).toContainText('big');
+  await expect(testRow).toContainText('Passing', { timeout: 15_000 });
+  // Read as text: JSON.parse would round the long integer and turn 10.0 into 10.
+  const stored = await (
+    await api.ctx.fetch(
+      `/api/areas/shared/tests/${encodeURIComponent('orders keep their numbers')}${ON}`,
+    )
+  ).text();
+  expect(stored).toContain('"big":9007199254740993');
+  expect(stored).toContain('"whole":10.0');
 });
 
 // A6, a pipeline's output as a sample, for another pipeline, such as an enrichment, to run over and lock a test on.
