@@ -157,6 +157,40 @@ const allCourses: Course[] = [
       },
     ],
   },
+  {
+    title: 'Work as a team',
+    slug: 'work-as-a-team',
+    videos: [
+      {
+        title: 'Give a teammate access',
+        slug: 'give-a-teammate-access',
+        youtube: 'gwTY2LbT-pI',
+        minutes: 2,
+        poster: '/videos/work-as-a-team-1-poster.jpg',
+      },
+      {
+        title: "Review a teammate's change",
+        slug: 'review-a-teammates-change',
+        youtube: '5WFBNojgMaw',
+        minutes: 4,
+        poster: '/videos/work-as-a-team-2-poster.jpg',
+      },
+      {
+        title: 'Follow a GitHub repository',
+        slug: 'follow-a-github-repository',
+        youtube: 'h1WlIMw--cE',
+        minutes: 3,
+        poster: '/videos/work-as-a-team-3-poster.jpg',
+      },
+      {
+        title: 'Approve from smeltr',
+        slug: 'approve-from-smeltr',
+        youtube: 'K5VT47ZBGNk',
+        minutes: 2,
+        poster: '/videos/work-as-a-team-4-poster.jpg',
+      },
+    ],
+  },
 ];
 
 export const released = (course: Course) => course.videos.filter((v) => v.youtube);
