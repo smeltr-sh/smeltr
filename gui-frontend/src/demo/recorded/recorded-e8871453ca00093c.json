@@ -1,1 +1,1 @@
-{"status":200,"body":{"ok":true,"errors":[],"group":"network","kind":"pipeline","id":"as-sent","windowMillis":2592000000,"bucketMillis":3600000,"nowMillis":1794375416169,"pipeline":{"rowsIn":2497878,"rowsOut":2497878,"microsPerRow":0,"steps":[]}}}
+{"status":200,"body":{"ok":true,"errors":[],"group":"network","kind":"pipeline","id":"as-sent","windowMillis":2592000000,"bucketMillis":3600000,"nowMillis":1794377796063,"pipeline":{"rowsIn":407913,"rowsOut":407913,"microsPerRow":0,"steps":[]}}}
