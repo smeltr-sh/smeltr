@@ -96,7 +96,7 @@ impl Nodes {
             url: url.trim_end_matches('/').to_string(),
             sniff: sniff.clone(),
             auth,
-            agent: config.new_agent(),
+            agent: crate::io::http::agent(config.clone()),
             subject,
             state: Mutex::default(),
         })

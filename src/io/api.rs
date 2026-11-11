@@ -309,7 +309,7 @@ pub struct UreqFetch {
 impl UreqFetch {
     pub fn new(config: &ureq::config::Config, headers: Vec<(String, String)>) -> Self {
         UreqFetch {
-            agent: config.new_agent(),
+            agent: crate::io::http::agent(config.clone()),
             headers,
             post: false,
             body: None,
