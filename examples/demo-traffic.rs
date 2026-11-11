@@ -226,7 +226,12 @@ fn history(registry: &std::path::Path) {
             };
             let mut at = played.first;
             while at > now - HISTORY_MS {
-                let width = Tier::for_window(Duration::from_millis((now - at) as u64)).bucket_ms();
+                // The tier a bucket this old is kept in, so the history is written as the leader would keep it.
+                let width = Tier::ALL
+                    .into_iter()
+                    .find(|tier| tier.retention_ms() >= now - at)
+                    .unwrap_or(Tier::OneHour)
+                    .bucket_ms();
                 at -= width;
                 let delta = (played.between(at, at + width) * shape(at)).round();
                 if delta > 0.0 {

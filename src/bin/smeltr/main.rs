@@ -1229,6 +1229,8 @@ async fn setup_leader(
             "/api/areas/:area/sources/:id/reset-history",
             post(smeltr::leader::marks::reset_history),
         )
+        .route("/api/areas/:area/sources/:id/mark", post(smeltr::leader::marks::mark))
+        .route("/api/areas/:area/sources/:id/past", get(smeltr::leader::marks::past))
         .route("/api/areas/:area/destinations", put(config_api::put_destinations))
         // Not on `app` below with the rest of the samples routes: the capture a sample is made from is held in
         // `State<AppState>`.

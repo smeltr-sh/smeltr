@@ -332,23 +332,45 @@ destination not taking records. The last releases on its own once the
 destination is back, so it is a warning where the other two are failures.
 
 A source reading fewer rows than it normally does warns, and one reading more
-raises info. Its normal is the last seven days at the same time of day, and
-holds the share of those windows the operator sets. A window that overlaps any
-warning about the source, or its rows being above normal, is not learned, so an
-outage does not widen the normal, and a lasting change of level keeps being
-raised until an admin says otherwise. A source with too little history has no
-normal yet. One held, unreachable or on a silent worker is not judged against
-it: a warning that names the cause is already up. Nor is one for a window after
-such a warning ends, while the window still holds the stop and the catch-up
-after it. The leader keeps when each warning held, for as long as it keeps
-hourly rows, so the end is known across a restart. The Status page ranks
+raises info. Its rows are judged at four widths: the last 5 minutes, 30 minutes,
+6 hours and 24 hours. At each, the usual window is the same window at the same
+time of day on the last seven days learned, and the range is the usual window
+scaled by how far that width's learned windows strayed from theirs, a week of
+them for the short widths and four weeks for the long. A width judges a source
+only where its usual window holds ten rows, so a busy source is judged at every
+width and a sparse one at the long ones. A source too sparse for any width is
+judged by the gap: how long it has gone without a row, against half again the
+longest quiet spell it made in the past year. A source warns once some width
+reads below its range four times in a row, or once it outlasts the gap, and the
+warning holds until some width judges the source and none reads it below its
+range, or, where only the gap judges it, until the first row after it began that
+ends a quiet spell the gap read below. Rows above normal are judged at 30
+minutes alone.
+
+What a below-normal warning read, and the time a stop held, are not learned, so
+an outage does not widen the normal. Days not learned are passed over, not
+counted, so a lasting drop is still judged against the days before it, and keeps
+warning until the source reads inside its range again or an editor says
+otherwise. More rows are learned: they are the new normal. A source with too
+little history has no normal yet. A source that is held, unreachable or on a
+silent worker is not judged: a warning that names the cause is already up. Nor
+is it judged for a window after such a warning ends, while the window still
+holds the stop and the catch-up after it. The leader keeps when each warning
+about a source held for a year, so the end is known across a restart and the gap
+learns a year of quiet spells less those that warned. The Status page ranks
 sources by how far each is from the same normal.
 
-An editor in the source's worker group may say either of two things about
-it. Lower turns the warning that holds into info until it ends, and it stays
-on the Issues page for everyone. Reset history forgets what the source read
-before now, so it has no normal until it has enough history again. The leader
-keeps both, with who said each.
+An editor in the source's worker group may say any of three things about it.
+Lower turns the warning that holds into info until it ends, and it stays on the
+Issues page for everyone. Reset history forgets what the source read before now,
+so it has no normal until it has enough history again. Normal or Outage says a
+period was normal, so it is learned though it warned, or an outage, so it is not
+learned though it did not warn. The source's History tab on the Map lists its
+warnings, the one that holds among them, and its longest quiet spells of the
+past year, and each can be marked Normal or Outage. A warning marked Normal is
+learned whole, so marking the one that holds teaches the level the source reads
+now, and the warning ends once the normal is learned again, within the hour. The
+leader keeps each of the three, with who said it.
 
 ## Upgrades
 

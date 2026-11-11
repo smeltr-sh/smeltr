@@ -15,7 +15,6 @@
   import Version from './Version.svelte';
   import Panel from './Panel.svelte';
   import Field from './Field.svelte';
-  import Advanced from './Advanced.svelte';
   import UnitInput from './UnitInput.svelte';
   import Toggle from './Toggle.svelte';
   import { ago } from './time';
@@ -31,14 +30,11 @@
     getSessionSettings,
     putSessionSettings,
     getSystemInfo,
-    getWarningSettings,
-    putWarningSettings,
     getUpdateSettings,
     putUpdateSettings,
     refused,
     type SessionSettingsDto,
     type SystemInfoDto,
-    type WarningSettingsDto,
     type UpdateSettingsDto,
   } from './api';
 
@@ -97,39 +93,6 @@
       if (!result.ok || !result.settings) return;
       adoptUpdates(result.settings);
       updatesMessage = 'saved';
-    });
-  }
-
-  let warnings = $state<WarningSettingsDto | null>(null);
-  let bandShown = $state(99);
-  let warningsMessage = $state('');
-  const warningsBusy = new Busy();
-
-  const bandDirty = $derived(warnings !== null && bandShown !== warnings.sourceRowsBandPercent);
-
-  function adoptWarnings(next: WarningSettingsDto) {
-    warnings = next;
-    bandShown = next.sourceRowsBandPercent;
-  }
-
-  $effect(() => {
-    if (section !== 'general') return;
-    getWarningSettings()
-      .then((next) => {
-        if (next.settings) adoptWarnings(next.settings);
-      })
-      .catch(reported);
-  });
-
-  async function saveWarnings(event: SubmitEvent) {
-    event.preventDefault();
-    if (warningsBusy.on || warnings === null) return;
-    warningsMessage = '';
-    await warningsBusy.run(async () => {
-      const result = await putWarningSettings(bandShown);
-      if (!result.ok || !result.settings) return;
-      adoptWarnings(result.settings);
-      warningsMessage = 'saved';
     });
   }
 
@@ -278,37 +241,6 @@
           ondiscard={() => updates && adoptUpdates(updates)}
         />
       </Panel>
-      {#if warnings}
-        <Panel title="Warnings" onsubmit={saveWarnings}>
-          <Advanced
-            label="Expected throughput"
-            modified={warnings.sourceRowsBandPercent !== warnings.defaultPercent}
-          >
-            <Field required label="Range">
-              {#snippet help()}
-                The expected range of a source's throughput based on this time of day.
-              {/snippet}
-              <UnitInput
-                bind:value={bandShown}
-                unit="%"
-                min={warnings.minPercent}
-                max={warnings.maxPercent}
-                step="any"
-                required
-              />
-            </Field>
-          </Advanced>
-          {#if warningsMessage}
-            <p class="message" role="status">{warningsMessage}</p>
-          {/if}
-          <InlineSaveBar
-            dirty={bandDirty}
-            label="Save warnings"
-            disabled={warningsBusy.on ? BUSY : ''}
-            ondiscard={() => warnings && adoptWarnings(warnings)}
-          />
-        </Panel>
-      {/if}
     {:else if section === 'certificates'}
       <CertificatesSettings />
     {:else if section === 'git'}

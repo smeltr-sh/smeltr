@@ -436,8 +436,8 @@ pub(super) fn stale_after_ms(heartbeat_interval: Duration) -> i64 {
 /// backlog itself grows.
 const LAG_TIER: Tier = throughput::BUCKET;
 
-/// Rising peaks in a row [`lag_climbing`] requires: a whole [`throughput::WINDOW`] of them, the window a source's
-/// rows are judged over, so a climb is judged over the same span as a source reading above or below normal.
+/// Rising peaks in a row [`lag_climbing`] requires: a whole [`throughput::WINDOW`] of them, the width a source
+/// reading above normal is judged over, so a climb is judged over the same span.
 const LAG_CLIMB_PEAKS: usize = (throughput::WINDOW.as_millis() / LAG_TIER.bucket_ms() as u128) as usize;
 
 /// How far behind a climbing partition must be before [`lag_climbing`] raises, in time rather than records: a
@@ -1929,14 +1929,12 @@ fn per_source(store: &RegistryStore, metric: &str, since_ms: i64) -> HashMap<(St
 fn outside_normal<'a>(
     readings: &'a [throughput::Reading],
     snapshot: &[ThreadHealth],
-    recovering: &HashSet<(String, String)>,
     heartbeat_interval: Duration,
 ) -> Vec<(&'a throughput::Reading, throughput::Outside)> {
     let blocked: HashSet<(String, String)> = blocked_sources(snapshot)
         .into_keys()
         .map(|(group, id, _)| (group, id))
         .chain(unreachable_sources(snapshot).into_keys())
-        .chain(recovering.iter().cloned())
         .collect();
     let stale_after = stale_after_ms(heartbeat_interval);
     readings
@@ -1955,33 +1953,8 @@ fn outside_normal<'a>(
                 .collect();
             !running.is_empty() && running.iter().all(|t| t.last_seen_millis_ago as i64 <= stale_after)
         })
-        .filter_map(|r| r.outside().map(|side| (r, side)))
+        .filter_map(|r| r.outside.map(|side| (r, side)))
         .collect()
-}
-
-/// What stops a source reading, so that the window after one ends still holds the dip it made and the catch-up after.
-const STOPS_READING: &[&str] = &[SOURCE_BLOCKED, SOURCE_REFUSED, SOURCE_WAITING, SOURCE_UNREACHABLE];
-
-/// Every (group, source) one of [`STOPS_READING`] ended for within the last [`throughput::WINDOW`]: its window is
-/// still the stop's, not its normal's. None when the store cannot say.
-pub fn recovering_sources(store: Option<&RegistryStore>, now_ms: i64) -> HashSet<(String, String)> {
-    let Some(store) = store else {
-        return HashSet::new();
-    };
-    match store.facts_ended_since(STOPS_READING, now_ms - throughput::WINDOW.as_millis() as i64) {
-        Ok(subjects) => subjects
-            .iter()
-            .filter_map(|subject| serde_json::from_str::<(String, String)>(subject).ok())
-            .collect(),
-        Err(e) => {
-            tracing::warn!(
-                name: "recovery_unreadable", target: "status",
-                error = %e,
-                "could not read which sources just recovered, so one may warn on the dip it is recovering from"
-            );
-            HashSet::new()
-        }
-    }
 }
 
 fn outside_key(reading: &throughput::Reading, side: throughput::Outside) -> FactKey {
@@ -1996,10 +1969,9 @@ fn outside_key(reading: &throughput::Reading, side: throughput::Outside) -> Fact
 pub fn outside_normal_facts(
     readings: &[throughput::Reading],
     snapshot: &[ThreadHealth],
-    recovering: &HashSet<(String, String)>,
     heartbeat_interval: Duration,
 ) -> Vec<FactKey> {
-    outside_normal(readings, snapshot, recovering, heartbeat_interval)
+    outside_normal(readings, snapshot, heartbeat_interval)
         .into_iter()
         .map(|(r, side)| outside_key(r, side))
         .collect()
@@ -2010,12 +1982,11 @@ pub fn outside_normal_facts(
 pub fn outside_normal_warnings(
     readings: &[throughput::Reading],
     snapshot: &[ThreadHealth],
-    recovering: &HashSet<(String, String)>,
     starts: &HashMap<FactKey, i64>,
     marks: &Marks,
     heartbeat_interval: Duration,
 ) -> Vec<Warning> {
-    outside_normal(readings, snapshot, recovering, heartbeat_interval)
+    outside_normal(readings, snapshot, heartbeat_interval)
         .into_iter()
         .map(|(r, side)| {
             let condition = match side {
@@ -2038,21 +2009,21 @@ pub fn outside_normal_warnings(
                 Some(r.group.clone()),
                 severity,
                 since_millis,
-                // A band whose top is zero is zero throughout, since no source reads fewer than none.
                 format!(
-                    "source {}: {}normal, {} rows in {} minutes against {} at this time of day{}",
+                    "source {}: {}{}",
                     r.source,
-                    off_by(r, side),
-                    throughput::grouped(r.rows),
-                    throughput::WINDOW.as_secs() / 60,
-                    if r.band.high <= 0.0 {
-                        "none".to_string()
-                    } else {
-                        format!(
-                            "{} to {}",
-                            throughput::grouped(r.band.low),
-                            throughput::grouped(r.band.high)
-                        )
+                    match (r.shown(), r.gap.filter(throughput::Gap::below)) {
+                        (Some(shown), _) if side == throughput::Outside::Above || shown.under() => {
+                            against(shown, side)
+                        }
+                        (_, Some(gap)) => format!(
+                            "no rows for {}, longest normal quiet spell {}",
+                            humanize_secs((gap.silence_ms / 1000) as u64),
+                            humanize_secs((gap.longest_ms / 1000) as u64)
+                        ),
+                        (Some(shown), None) => against(shown, side),
+                        // Held while no width judges it (`throughput`).
+                        (None, None) => "below normal, and cannot be judged now; Reset history ends it".to_string(),
                     },
                     lowered_by
                         .map(|by| format!("; lowered to info by {by}"))
@@ -2063,18 +2034,32 @@ pub fn outside_normal_warnings(
         .collect()
 }
 
-/// How far past its band's nearest edge a reading is, in percent of that edge, and which way, as the warning opens:
-/// a count in the millions is hard to set against another by eye. Only the way where the edge is zero, which any
-/// reading is infinitely above.
-fn off_by(r: &throughput::Reading, side: throughput::Outside) -> String {
+/// What the reading `judged` found: the source is outside its range, on `side`.
+fn against(judged: &throughput::Judged, side: throughput::Outside) -> String {
+    format!("{}normal, {}", off_by(judged, side), read(judged))
+}
+
+/// The rows `judged` read and its range.
+fn read(judged: &throughput::Judged) -> String {
+    format!(
+        "{} rows in {} against {} to {} at this time of day",
+        throughput::grouped(judged.rows),
+        humanize_secs(judged.window.as_secs()),
+        throughput::grouped(judged.band.low),
+        throughput::grouped(judged.band.high),
+    )
+}
+
+/// How far past its range's nearest edge a reading is, in percent of that edge, and which way, as the warning opens:
+/// a count in the millions is hard to set against another by eye. The edge is never zero, so the percent is defined: a
+/// reading is below a low edge only if that edge is above zero, and a width judges only where its usual window holds
+/// rows, so the high edge is above zero too.
+fn off_by(judged: &throughput::Judged, side: throughput::Outside) -> String {
     let (edge, word) = match side {
-        throughput::Outside::Below => (r.band.low, "below"),
-        throughput::Outside::Above => (r.band.high, "above"),
+        throughput::Outside::Below => (judged.band.low, "below"),
+        throughput::Outside::Above => (judged.band.high, "above"),
     };
-    if edge <= 0.0 {
-        return format!("{word} ");
-    }
-    let percent = ((r.rows - edge) / edge * 100.0).abs();
+    let percent = ((judged.rows - edge) / edge * 100.0).abs();
     // Any reading outside is past the edge, which "0%" would deny.
     let percent = if percent < 1.0 {
         "slightly".to_string()
@@ -2097,7 +2082,7 @@ pub struct WarningSpan {
 }
 
 /// The warnings a source's chart marks, by the fact each is kept under.
-const SOURCE_SPANS: &[(&str, Condition, Severity)] = &[
+pub(crate) const SOURCE_SPANS: &[(&str, Condition, Severity)] = &[
     (SOURCE_BLOCKED, Condition::SourceBlocked, Severity::Failed),
     (SOURCE_REFUSED, Condition::SourceRefused, Severity::Failed),
     (SOURCE_WAITING, Condition::SourceWaiting, Severity::Warning),
@@ -2133,13 +2118,13 @@ pub fn spans(
     Ok(store
         .fact_spans(&entries, &scoped_subject(group, id), since_ms)?
         .into_iter()
-        .filter_map(|(entry, started_millis, ended_millis)| {
-            let (_, condition, severity) = table.iter().find(|(e, _, _)| *e == entry)?;
+        .filter_map(|span| {
+            let (_, condition, severity) = table.iter().find(|(e, _, _)| *e == span.entry)?;
             Some(WarningSpan {
                 condition: *condition,
                 severity: *severity,
-                started_millis,
-                ended_millis,
+                started_millis: span.started_ms,
+                ended_millis: span.ended_ms,
             })
         })
         .collect())
@@ -2158,7 +2143,7 @@ fn lag_climbing(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Warning> {
     let Some(store) = store else { return Vec::new() };
     let open = LAG_TIER.align(now_ms);
     let since = open - throughput::WINDOW.as_millis() as i64;
-    let series = match store.peaks_since(SOURCE_LAG_METRIC, LAG_TIER, since) {
+    let series = match store.peaks_since(SOURCE_LAG_METRIC, LAG_TIER.bucket_ms(), since) {
         Ok(series) => series,
         Err(e) => {
             tracing::warn!(
@@ -4180,48 +4165,87 @@ mod tests {
     }
 
     fn reading_of(source: &str, rows: f64) -> throughput::Reading {
-        throughput::Reading {
-            group: "g".to_string(),
-            source: source.to_string(),
+        reading_in(
+            source,
             rows,
-            ended_ms: NOW,
-            band: throughput::Band {
+            throughput::Band {
                 low: 1000.0,
                 high: 5000.0,
             },
+        )
+    }
+
+    /// `rows` in the last 30 minutes, and in each of the readings before it, against `band`.
+    fn reading_in(source: &str, rows: f64, band: throughput::Band) -> throughput::Reading {
+        let (below, above) = (rows < band.low, rows > band.high);
+        throughput::Reading {
+            group: "g".to_string(),
+            source: source.to_string(),
+            ended_ms: NOW,
+            judged: vec![throughput::Judged {
+                window: throughput::WINDOW,
+                rows,
+                band,
+                below,
+                above,
+            }],
+            outside: if below {
+                Some(throughput::Outside::Below)
+            } else if above {
+                Some(throughput::Outside::Above)
+            } else {
+                None
+            },
+            gap: None,
         }
     }
 
     fn outside(readings: &[throughput::Reading], snapshot: &[ThreadHealth]) -> Vec<(Condition, String)> {
-        outside_normal_warnings(
-            readings,
-            snapshot,
-            &HashSet::new(),
-            &HashMap::new(),
-            &Marks::default(),
-            INTERVAL,
-        )
-        .into_iter()
-        .map(|w| (w.condition, w.message))
-        .collect()
+        outside_normal_warnings(readings, snapshot, &HashMap::new(), &Marks::default(), INTERVAL)
+            .into_iter()
+            .map(|w| (w.condition, w.message))
+            .collect()
     }
 
     #[test]
     fn a_reading_just_past_its_normal_is_not_zero_percent_past_it() {
         let r = reading_of("high", 5010.0);
-        assert_eq!(off_by(&r, throughput::Outside::Above), "slightly above ");
-        let zero = throughput::Reading {
-            band: throughput::Band { low: 0.0, high: 0.0 },
-            ..r
+        assert_eq!(off_by(&r.judged[0], throughput::Outside::Above), "slightly above ");
+    }
+
+    #[test]
+    fn a_source_held_below_with_no_width_to_judge_it_says_so() {
+        let held = throughput::Reading {
+            judged: Vec::new(),
+            outside: Some(throughput::Outside::Below),
+            ..reading_of("quiet", 0.0)
         };
-        assert_eq!(off_by(&zero, throughput::Outside::Above), "above ");
-        let snapshot = [thread_health_in("g", "w1", "t0", 0, vec![rows_metric("high")])];
+        let snapshot = [thread_health_in("g", "w1", "t0", 0, vec![rows_metric("quiet")])];
         assert_eq!(
-            outside(&[zero], &snapshot),
+            outside(&[held], &snapshot),
             [(
-                Condition::SourceRowsAbove,
-                "source high: above normal, 5,010 rows in 30 minutes against none at this time of day".to_string()
+                Condition::SourceRowsBelow,
+                "source quiet: below normal, and cannot be judged now; Reset history ends it".to_string()
             )]
+        );
+    }
+
+    #[test]
+    fn a_source_quiet_too_long_says_for_how_long_against_its_longest_normal_quiet_spell() {
+        let silent = throughput::Reading {
+            judged: Vec::new(),
+            outside: Some(throughput::Outside::Below),
+            gap: Some(throughput::Gap {
+                silence_ms: 15 * 3_600_000,
+                longest_ms: 175 * 60_000,
+                edge_ms: 10 * 3_600_000,
+            }),
+            ..reading_of("sparse", 0.0)
+        };
+        let snapshot = [thread_health_in("g", "w1", "t0", 0, vec![rows_metric("sparse")])];
+        assert_eq!(
+            outside(&[silent], &snapshot)[0].1,
+            "source sparse: no rows for 15 hours, longest normal quiet spell 2 hours"
         );
     }
 
@@ -4253,14 +4277,7 @@ mod tests {
                 ),
             ]
         );
-        let raised = outside_normal_warnings(
-            &readings,
-            &snapshot,
-            &HashSet::new(),
-            &HashMap::new(),
-            &Marks::default(),
-            INTERVAL,
-        );
+        let raised = outside_normal_warnings(&readings, &snapshot, &HashMap::new(), &Marks::default(), INTERVAL);
         let seen: Vec<_> = raised
             .iter()
             .map(|w| (w.condition, w.severity, w.subject_kind, w.group.as_deref()))
@@ -4307,36 +4324,6 @@ mod tests {
                 &[thread_health_in("g", "w1", "t0", 0, vec![rows_metric("other")])]
             )
             .is_empty()
-        );
-    }
-
-    #[test]
-    fn a_source_whose_stop_ended_within_the_window_does_not_warn_on_its_dip() {
-        let store = RegistryStore::open(Path::new(":memory:")).unwrap();
-        let held = || vec![(SOURCE_BLOCKED.to_string(), scoped_subject("g", "s"))];
-        store.sync_fact_clock(&[], &held(), NOW - 20 * 60_000).unwrap();
-        store.sync_fact_clock(&held(), &[], NOW - 10 * 60_000).unwrap();
-
-        let recovering = recovering_sources(Some(&store), NOW);
-        assert_eq!(recovering, HashSet::from([("g".to_string(), "s".to_string())]));
-        let snapshot = [thread_health_in("g", "w1", "t0", 0, vec![rows_metric("s")])];
-        let readings = [reading_of("s", 0.0)];
-        assert!(
-            outside_normal_warnings(
-                &readings,
-                &snapshot,
-                &recovering,
-                &HashMap::new(),
-                &Marks::default(),
-                INTERVAL
-            )
-            .is_empty()
-        );
-
-        let window = throughput::WINDOW.as_millis() as i64;
-        assert!(
-            recovering_sources(Some(&store), NOW - 10 * 60_000 + window + 1).is_empty(),
-            "a window after the stop ended, its dip has left the window"
         );
     }
 
@@ -4389,16 +4376,9 @@ mod tests {
     fn a_source_outside_its_normal_is_dated_from_when_it_left_it() {
         let snapshot = [thread_health_in("g", "w1", "t0", 0, vec![rows_metric("s")])];
         let readings = [reading_of("s", 0.0)];
-        let facts = outside_normal_facts(&readings, &snapshot, &HashSet::new(), INTERVAL);
+        let facts = outside_normal_facts(&readings, &snapshot, INTERVAL);
         let starts: HashMap<FactKey, i64> = facts.into_iter().map(|k| (k, NOW - 60_000)).collect();
-        let w = &outside_normal_warnings(
-            &readings,
-            &snapshot,
-            &HashSet::new(),
-            &starts,
-            &Marks::default(),
-            INTERVAL,
-        )[0];
+        let w = &outside_normal_warnings(&readings, &snapshot, &starts, &Marks::default(), INTERVAL)[0];
         assert_eq!(w.since_millis, Some(NOW - 60_000));
     }
 
@@ -4406,7 +4386,7 @@ mod tests {
     fn a_lowered_rows_warning_is_info_until_it_ends() {
         let snapshot = [thread_health_in("g", "w1", "t0", 0, vec![rows_metric("s")])];
         let readings = [reading_of("s", 0.0)];
-        let facts = outside_normal_facts(&readings, &snapshot, &HashSet::new(), INTERVAL);
+        let facts = outside_normal_facts(&readings, &snapshot, INTERVAL);
         let marks = Marks {
             lowered: vec![crate::leader::marks::Lowered {
                 group: "g".into(),
@@ -4414,11 +4394,11 @@ mod tests {
                 since_millis: NOW - 60_000,
                 by: "John".into(),
             }],
-            reset: Vec::new(),
+            ..Marks::default()
         };
         let at = |since: i64| -> Warning {
             let starts: HashMap<FactKey, i64> = facts.iter().map(|k| (k.clone(), since)).collect();
-            outside_normal_warnings(&readings, &snapshot, &HashSet::new(), &starts, &marks, INTERVAL).remove(0)
+            outside_normal_warnings(&readings, &snapshot, &starts, &marks, INTERVAL).remove(0)
         };
         let lowered = at(NOW - 60_000);
         assert_eq!(lowered.severity, Severity::Info);

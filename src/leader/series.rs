@@ -17,13 +17,13 @@
 //!
 //! **Steps.** [`STEPS`] is the file's ordered list of forward steps, run at open (`steps`).
 //!
-//! **Retention.** [`Tier`] names the four windows E2 asks for: 10s buckets for 60 minutes, 1m for 24 hours, 5m for
-//! 8 days, 1h for 30 days. A bucket is written only at the finest tier ([`write_point`], whether one sample seeds
-//! it or a heartbeat carries hundreds); [`RegistryStore::maintain`] is what moves data outward -- a fine bucket
-//! about to age out of its tier's window is summed (counter) or maxed (gauge) into the coarse bucket that covers
-//! it, then deleted, so it is counted exactly once on its way through. The last tier has nowhere to roll to and
-//! only expires. A bucket nothing landed in is a bucket with no row: there is nothing to promote and nothing to
-//! delete, so an outage reads as absent rather than as a zero.
+//! **Retention.** [`Tier`] names the four windows E2 asks for: 10s buckets for 60 minutes, 1m for 24 hours, 5m for 29
+//! days and an hour, 1h for 30 days. A bucket is written only at the finest tier ([`write_point`], whether one sample
+//! seeds it or a heartbeat carries hundreds); [`RegistryStore::maintain`] is what moves data outward -- a fine bucket
+//! about to age out of its tier's window is summed (counter) or maxed (gauge) into the coarse bucket that covers it,
+//! then deleted, so it is counted exactly once on its way through. The last tier has nowhere to roll to and only
+//! expires. A bucket nothing landed in is a bucket with no row: there is nothing to promote and nothing to delete, so
+//! an outage reads as absent rather than as a zero.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -66,8 +66,7 @@ impl Tier {
         }
     }
 
-    /// This tier's bucket width -- also what a caller of [`Tier::for_window`] reports as the resolution it served
-    /// (`leader::FlowResponse::bucket_millis`).
+    /// This tier's bucket width.
     pub const fn bucket_ms(self) -> i64 {
         match self {
             Tier::TenSeconds => 10_000,
@@ -78,12 +77,13 @@ impl Tier {
     }
 
     /// How long a bucket stays in this tier before [`RegistryStore::maintain`] moves it on.
-    fn retention_ms(self) -> i64 {
+    pub fn retention_ms(self) -> i64 {
         match self {
-            Tier::TenSeconds => 60 * 60_000,           // 60 minutes
-            Tier::OneMinute => 24 * 60 * 60_000,       // 24 hours
-            Tier::FiveMinutes => 8 * 24 * 60 * 60_000, // 8 days: `throughput` reads a week back, and an hour past it
-            Tier::OneHour => 30 * 24 * 60 * 60_000,    // 30 days
+            Tier::TenSeconds => 60 * 60_000,     // 60 minutes
+            Tier::OneMinute => 24 * 60 * 60_000, // 24 hours
+            // 29 days and an hour: `throughput` learns as of an hour's start, from four weeks and a day before it.
+            Tier::FiveMinutes => (29 * 24 + 1) * 60 * 60_000,
+            Tier::OneHour => 30 * 24 * 60 * 60_000, // 30 days
         }
     }
 
@@ -104,16 +104,42 @@ impl Tier {
         ms.div_euclid(self.bucket_ms()) * self.bucket_ms()
     }
 
-    /// The finest tier whose retention covers `window` -- the buckets E2 serves a chosen window in. The four retentions are E2's own boundaries (sixty minutes, a day, a
-    /// week and the day `throughput` reads past it, thirty days), so this is a lookup, not an estimate; past the last one there is still only `OneHour` to
-    /// serve from.
-    pub fn for_window(window: std::time::Duration) -> Tier {
-        let window_ms = window.as_millis() as i64;
+    /// The coarsest tier whose buckets fit in a point `point_ms` wide: what such a point is summed from.
+    fn within(point_ms: i64) -> Tier {
         Tier::ALL
             .into_iter()
-            .find(|tier| tier.retention_ms() >= window_ms)
-            .unwrap_or(Tier::OneHour)
+            .rev()
+            .find(|tier| tier.bucket_ms() <= point_ms)
+            .unwrap_or(Tier::TenSeconds)
     }
+}
+
+/// The most points a chart draws: a few hundred pixels' worth.
+const CHART_POINTS: i64 = 360;
+
+/// The widest point a chart draws, which keeps thirty days to 120 points.
+const WIDEST_POINT_MS: i64 = 6 * 60 * 60_000;
+
+/// How wide each point of a chart over `window` is: the narrowest tier's bucket that keeps the chart to
+/// [`CHART_POINTS`], or [`WIDEST_POINT_MS`] when none does. The tier a point that wide is summed from holds the whole
+/// window.
+pub fn chart_point_ms(window: std::time::Duration) -> i64 {
+    let window_ms = window.as_millis() as i64;
+    Tier::ALL
+        .map(Tier::bucket_ms)
+        .into_iter()
+        .chain([WIDEST_POINT_MS])
+        .find(|&point| window_ms <= CHART_POINTS * point)
+        .unwrap_or(WIDEST_POINT_MS)
+}
+
+/// One span a fact held for its subject ([`RegistryStore::fact_spans`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FactSpan {
+    pub entry: String,
+    pub started_ms: i64,
+    /// None while it still holds.
+    pub ended_ms: Option<i64>,
 }
 
 /// One subject's points, oldest first: bucket start (epoch milliseconds) and value. What
@@ -434,6 +460,25 @@ pub(crate) const STEPS: &[&str] = &[
     // (`git::ContentId::key`). A stream is unrouted only by what is deployed now. Rows summed before this step have
     // NULL, which no deployment matches, so a warning they raised clears with the first rows recorded after the step.
     "ALTER TABLE stream_unmatched ADD COLUMN config TEXT;",
+    // 14 -- each source's quiet spells of the past year, which its gap learns from (`throughput`), and how far its rows
+    // have been read for them (`Watch`).
+    "CREATE TABLE silences (
+         group_id  TEXT NOT NULL,
+         source    TEXT NOT NULL,
+         ended_ms  INTEGER NOT NULL,
+         length_ms INTEGER NOT NULL,
+         PRIMARY KEY (group_id, source, ended_ms)
+     ) WITHOUT ROWID;
+     CREATE INDEX silences_ended ON silences (ended_ms);
+     CREATE TABLE silence_watch (
+         group_id   TEXT NOT NULL,
+         source     TEXT NOT NULL,
+         watched_ms INTEGER NOT NULL,
+         read_ms    INTEGER NOT NULL,
+         row_ms     INTEGER,
+         quiet_ms   INTEGER NOT NULL,
+         PRIMARY KEY (group_id, source)
+     ) WITHOUT ROWID;",
 ];
 
 /// Gives each log a build before lines had types wrote, before step 12 or after a rollback to it, its class and
@@ -457,6 +502,34 @@ pub struct Swing {
     pub high: f64,
 }
 
+/// How long a source's quiet spells, and the warnings about it they are learned against, are kept.
+pub const YEAR_MS: i64 = 365 * 24 * 60 * 60_000;
+
+/// A quiet spell one source made: a run of five-minute buckets with no rows, each reported by a worker, between two
+/// with rows. It ended at `ended_ms`, the start of the bucket whose rows ended it, and lasted `length_ms`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Silence {
+    pub group: String,
+    pub source: String,
+    pub ended_ms: i64,
+    pub length_ms: i64,
+}
+
+/// How far one source's rows have been read for its quiet spells ([`Silence`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Watch {
+    /// Its first bucket read.
+    pub watched_ms: i64,
+    /// Every bucket before this one has been read.
+    pub read_ms: i64,
+    /// The end of its last bucket with rows.
+    pub row_ms: Option<i64>,
+    /// Where the quiet spell under way began: the end of its last bucket with rows, or of the last one no worker
+    /// reported it in, whichever is later. A run counts as a quiet spell only if, when it ends, this equals `row_ms`:
+    /// no unreported bucket broke it.
+    pub quiet_ms: i64,
+}
+
 /// [`RegistryStore::series_since`] on a connection the caller holds.
 fn series_since_on(
     conn: &Connection,
@@ -464,8 +537,10 @@ fn series_since_on(
     tier: Tier,
     since_ms: i64,
 ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
+    // A CROSS JOIN makes SQLite read the metric's series by index and then each one's points by primary key, which is
+    // the order wanted. A plain JOIN lets it start from the tier's points of every metric and sort what is left.
     let mut stmt = conn.prepare(
-        "SELECT s.labels_json, p.bucket_ms, p.value FROM series s JOIN series_points p ON p.series_id = s.id \
+        "SELECT s.labels_json, p.bucket_ms, p.value FROM series s CROSS JOIN series_points p ON p.series_id = s.id \
          WHERE p.tier = ?1 AND s.metric = ?2 AND p.bucket_ms >= ?3 ORDER BY s.labels_json, p.bucket_ms",
     )?;
     let rows: Vec<(String, i64, f64)> = stmt
@@ -818,49 +893,29 @@ impl RegistryStore {
         Ok(rows)
     }
 
-    /// The subjects of every one of `entries` that ended at or after `since_ms`.
-    pub fn facts_ended_since(&self, entries: &[&str], since_ms: i64) -> Result<Vec<String>, StoreError> {
+    /// When each of `entries` held for `subject` and overlapped the time since `since_ms`, oldest first.
+    pub fn fact_spans(&self, entries: &[&str], subject: &str, since_ms: i64) -> Result<Vec<FactSpan>, StoreError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt =
-            conn.prepare_cached("SELECT entry, subject FROM fact_history WHERE ended_ms >= ?1 ORDER BY subject")?;
-        let rows = stmt
-            .query_map(params![since_ms], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut out: Vec<String> = rows
-            .into_iter()
-            .filter(|(entry, _)| entries.contains(&entry.as_str()))
-            .map(|(_, subject)| subject)
-            .collect();
-        out.dedup();
-        Ok(out)
-    }
-
-    /// When each of `entries` held for `subject` and overlapped the time since `since_ms`, oldest first:
-    /// (entry, started, ended), with no end for one still active.
-    pub fn fact_spans(
-        &self,
-        entries: &[&str],
-        subject: &str,
-        since_ms: i64,
-    ) -> Result<Vec<(String, i64, Option<i64>)>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let span = |r: &rusqlite::Row| {
+            Ok(FactSpan {
+                entry: r.get(0)?,
+                started_ms: r.get(1)?,
+                ended_ms: r.get(2)?,
+            })
+        };
         let mut out = Vec::new();
         let mut ended = conn.prepare_cached(
             "SELECT entry, started_ms, ended_ms FROM fact_history WHERE subject = ?1 AND ended_ms >= ?2",
         )?;
-        for row in ended.query_map(params![subject, since_ms], |r| {
-            Ok((r.get::<_, String>(0)?, r.get(1)?, Some(r.get(2)?)))
-        })? {
+        for row in ended.query_map(params![subject, since_ms], span)? {
             out.push(row?);
         }
-        let mut active = conn.prepare_cached("SELECT entry, started_ms FROM fact_clock WHERE subject = ?1")?;
-        for row in active.query_map(params![subject], |r| Ok((r.get::<_, String>(0)?, r.get(1)?, None)))? {
+        let mut active = conn.prepare_cached("SELECT entry, started_ms, NULL FROM fact_clock WHERE subject = ?1")?;
+        for row in active.query_map(params![subject], span)? {
             out.push(row?);
         }
-        out.retain(|(entry, _, _)| entries.contains(&entry.as_str()));
-        out.sort_by_key(|&(_, started, _)| started);
+        out.retain(|s| entries.contains(&s.entry.as_str()));
+        out.sort_by_key(|s| s.started_ms);
         Ok(out)
     }
 
@@ -1055,27 +1110,34 @@ impl RegistryStore {
             .collect()
     }
 
-    /// Every subject of `metric` with a point at or after `since_ms`, each point keyed by the `tier` bucket it falls
-    /// in, oldest first. The window's newest buckets are still in the finer tiers, so those are read too: a bucket
-    /// may hold several points, which a counter adds and a gauge takes the highest of, as
-    /// [`RegistryStore::maintain`] will.
+    /// Every subject of `metric` with a point at or after `since_ms`, each point keyed by its start, `point_ms` wide,
+    /// oldest first. A point is summed from the coarsest tier that fits in it, and from the finer tiers that still
+    /// hold the window's newest buckets: a point may hold several buckets, which a counter adds and a gauge takes the
+    /// highest of, as [`RegistryStore::maintain`] rolls them up. A point that began before `since_ms` is left out,
+    /// since only part of it would be read.
     pub fn series_at(
         &self,
         metric: &str,
-        tier: Tier,
+        point_ms: i64,
         since_ms: i64,
     ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
         let mut by_subject: BTreeMap<String, SubjectPoints> = BTreeMap::new();
         for (subject_key, points) in self
-            .series_since_at(metric, tier.and_finer(), since_ms)?
+            .series_since_at(metric, Tier::within(point_ms).and_finer(), since_ms)?
             .into_iter()
             .flatten()
         {
             let of = by_subject.entry(subject_key).or_default();
-            of.extend(points.into_iter().map(|(at, value)| (tier.align(at), value)));
+            of.extend(
+                points
+                    .into_iter()
+                    .map(|(at, value)| (at.div_euclid(point_ms) * point_ms, value))
+                    .filter(|(at, _)| *at >= since_ms),
+            );
         }
         Ok(by_subject
             .into_iter()
+            .filter(|(_, points)| !points.is_empty())
             .map(|(subject_key, mut points)| {
                 points.sort_by_key(|(at, _)| *at);
                 (subject_key, points)
@@ -1083,25 +1145,46 @@ impl RegistryStore {
             .collect())
     }
 
-    /// [`RegistryStore::series_at`] for a gauge: one point per bucket, its highest.
+    /// [`RegistryStore::series_at`] for a counter: one value per point, their sum.
+    pub fn sums_since(
+        &self,
+        metric: &str,
+        point_ms: i64,
+        since_ms: i64,
+    ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
+        self.merged_at(metric, point_ms, since_ms, |sum, value| sum + value)
+    }
+
+    /// [`RegistryStore::series_at`] for a gauge: one value per point, its highest.
     pub fn peaks_since(
         &self,
         metric: &str,
-        tier: Tier,
+        point_ms: i64,
         since_ms: i64,
     ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
+        self.merged_at(metric, point_ms, since_ms, f64::max)
+    }
+
+    /// [`RegistryStore::series_at`] with each point's values merged into one by `merge`.
+    fn merged_at(
+        &self,
+        metric: &str,
+        point_ms: i64,
+        since_ms: i64,
+        merge: fn(f64, f64) -> f64,
+    ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
         Ok(self
-            .series_at(metric, tier, since_ms)?
+            .series_at(metric, point_ms, since_ms)?
             .into_iter()
             .map(|(subject_key, points)| {
-                let mut peaks: SubjectPoints = Vec::new();
+                let mut merged: SubjectPoints = Vec::new();
                 for (at, value) in points {
-                    match peaks.last_mut() {
-                        Some((bucket, peak)) if *bucket == at => *peak = peak.max(value),
-                        _ => peaks.push((at, value)),
+                    match merged.last_mut() {
+                        Some((bucket, held)) if *bucket == at => *held = merge(*held, value),
+                        _ => merged.push((at, value)),
                     }
                 }
-                (subject_key, peaks)
+                (subject_key, merged)
             })
             .collect())
     }
@@ -1155,6 +1238,68 @@ impl RegistryStore {
     pub fn last_swing_ms(&self) -> Result<Option<i64>, StoreError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         Ok(conn.query_row("SELECT MAX(bucket_ms) FROM swings", [], |r| r.get(0))?)
+    }
+
+    /// Write each source's `watches` over the one held, and add `silences`. One transaction, so a quiet spell is never
+    /// read twice.
+    pub fn record_silences(
+        &self,
+        watches: &[((String, String), Watch)],
+        silences: &[Silence],
+    ) -> Result<(), StoreError> {
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = conn.transaction()?;
+        {
+            let mut watch = tx.prepare_cached(
+                "INSERT OR REPLACE INTO silence_watch (group_id, source, watched_ms, read_ms, row_ms, quiet_ms) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for ((group, source), w) in watches {
+                watch.execute(params![group, source, w.watched_ms, w.read_ms, w.row_ms, w.quiet_ms])?;
+            }
+            let mut silence = tx.prepare_cached(
+                "INSERT OR REPLACE INTO silences (group_id, source, ended_ms, length_ms) VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for s in silences {
+                silence.execute(params![s.group, s.source, s.ended_ms, s.length_ms])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// How far each source's rows have been read for its quiet spells.
+    pub fn watches(&self) -> Result<BTreeMap<(String, String), Watch>, StoreError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt =
+            conn.prepare_cached("SELECT group_id, source, watched_ms, read_ms, row_ms, quiet_ms FROM silence_watch")?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    (r.get(0)?, r.get(1)?),
+                    Watch {
+                        watched_ms: r.get(2)?,
+                        read_ms: r.get(3)?,
+                        row_ms: r.get(4)?,
+                        quiet_ms: r.get(5)?,
+                    },
+                ))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    }
+
+    /// `group`'s `source`'s quiet spells that began from `since_ms` on, oldest first, as (ended, length).
+    pub fn source_silences(&self, group: &str, source: &str, since_ms: i64) -> Result<Vec<(i64, i64)>, StoreError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare_cached(
+            "SELECT ended_ms, length_ms FROM silences WHERE group_id = ?1 AND source = ?2 AND ended_ms - length_ms >= ?3 \
+             ORDER BY ended_ms",
+        )?;
+        let rows = stmt
+            .query_map(params![group, source, since_ms], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
     }
 
     /// Record what one worker said about itself. Best-effort like the series: a heartbeat must not fail because
@@ -1425,8 +1570,24 @@ impl RegistryStore {
             "DELETE FROM series_points WHERE tier = ?1 AND bucket_ms < ?2",
             params![Tier::OneHour.code(), cutoff],
         )?;
-        // A warning past the last tier's reach is past any chart's.
-        tx.execute("DELETE FROM fact_history WHERE ended_ms < ?1", params![cutoff])?;
+        // A warning older than the last tier keeps is older than any chart. One about a source is kept a year: its
+        // source's gap learns a year of quiet spells, less those it warned through (`throughput`).
+        let about_a_source: Vec<String> = super::warnings::SOURCE_SPANS
+            .iter()
+            .map(|(entry, _, _)| format!("'{entry}'"))
+            .collect();
+        tx.execute(
+            &format!(
+                "DELETE FROM fact_history WHERE ended_ms < ?1 AND entry NOT IN ({})",
+                about_a_source.join(", ")
+            ),
+            params![cutoff],
+        )?;
+        let year = now_ms - YEAR_MS;
+        tx.execute("DELETE FROM fact_history WHERE ended_ms < ?1", params![year])?;
+        tx.execute("DELETE FROM silences WHERE ended_ms < ?1", params![year])?;
+        // A source no worker has reported for a year has nothing left to learn from.
+        tx.execute("DELETE FROM silence_watch WHERE read_ms < ?1", params![year])?;
         // What the fleet's streams have not shown for as long as the last tier keeps: a stream that stopped, or
         // a field it stopped carrying, so a cap's room goes to what arrives now. A live step's declared fields are
         // reported on every tallied batch and so never age.
@@ -3178,33 +3339,19 @@ mod tests {
     }
 
     #[test]
-    fn for_window_picks_the_finest_tier_whose_retention_covers_it() {
-        assert_eq!(Tier::for_window(Duration::from_secs(60)), Tier::TenSeconds);
-        assert_eq!(
-            Tier::for_window(Duration::from_secs(60 * 60)),
-            Tier::TenSeconds,
-            "exactly sixty minutes still fits the finest tier"
-        );
-        assert_eq!(Tier::for_window(Duration::from_secs(60 * 60 + 1)), Tier::OneMinute);
-        assert_eq!(Tier::for_window(Duration::from_secs(24 * 60 * 60)), Tier::OneMinute);
-        assert_eq!(
-            Tier::for_window(Duration::from_secs(24 * 60 * 60 + 1)),
-            Tier::FiveMinutes
-        );
-        assert_eq!(
-            Tier::for_window(Duration::from_secs(8 * 24 * 60 * 60)),
-            Tier::FiveMinutes
-        );
-        assert_eq!(
-            Tier::for_window(Duration::from_secs(8 * 24 * 60 * 60 + 1)),
-            Tier::OneHour
-        );
-        assert_eq!(Tier::for_window(Duration::from_secs(30 * 24 * 60 * 60)), Tier::OneHour);
-        assert_eq!(
-            Tier::for_window(Duration::from_secs(365 * 24 * 60 * 60)),
-            Tier::OneHour,
-            "past thirty days there is still only the coarsest tier to serve from"
-        );
+    fn a_chart_draws_no_more_than_its_points_and_each_point_from_a_tier_that_holds_its_window() {
+        let minutes = |m: u64| Duration::from_secs(60 * m);
+        let points = [10, 60, 6 * 60, 24 * 60, 7 * 24 * 60, 30 * 24 * 60].map(|m| chart_point_ms(minutes(m)) / 1000);
+        assert_eq!(points, [10, 10, 60, 5 * 60, 60 * 60, 6 * 60 * 60]);
+        for m in [1, 60, 61, 6 * 60 + 1, 30 * 60 + 1, 15 * 24 * 60 + 1, 30 * 24 * 60] {
+            let window = minutes(m);
+            let point = chart_point_ms(window);
+            assert!(window.as_millis() as i64 <= CHART_POINTS * point, "{m} minutes");
+            assert!(
+                Tier::within(point).retention_ms() >= window.as_millis() as i64,
+                "{m} minutes"
+            );
+        }
     }
 
     #[test]
@@ -3362,7 +3509,9 @@ mod tests {
         for (at, lag) in [(old, 3.0), (old + 10_000, 9.0), (new, 5.0), (new + 70_000, 2.0)] {
             store.record_gauge_max("smeltr_source_lag", "k", at, lag).unwrap();
         }
-        let before = store.peaks_since("smeltr_source_lag", Tier::FiveMinutes, old).unwrap();
+        let before = store
+            .peaks_since("smeltr_source_lag", Tier::FiveMinutes.bucket_ms(), old)
+            .unwrap();
         assert_eq!(before, vec![("k".to_string(), vec![(old, 9.0), (new, 5.0)])]);
 
         store.maintain(0).unwrap();
@@ -3373,7 +3522,9 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(
-            store.peaks_since("smeltr_source_lag", Tier::FiveMinutes, old).unwrap(),
+            store
+                .peaks_since("smeltr_source_lag", Tier::FiveMinutes.bucket_ms(), old)
+                .unwrap(),
             before
         );
     }
@@ -3416,11 +3567,7 @@ mod tests {
             vec![(0, 42.0)]
         );
 
-        store
-            .maintain(
-                Tier::FiveMinutes.retention_ms() + Tier::OneMinute.retention_ms() + Tier::TenSeconds.retention_ms() + 1,
-            )
-            .unwrap();
+        store.maintain(Tier::FiveMinutes.retention_ms() + 1).unwrap();
         assert_eq!(
             store
                 .points("smeltr_rows_polled_total", "k", Tier::FiveMinutes)
@@ -3433,11 +3580,7 @@ mod tests {
             vec![(0, 42.0)]
         );
 
-        let far_future = Tier::OneHour.retention_ms()
-            + Tier::FiveMinutes.retention_ms()
-            + Tier::OneMinute.retention_ms()
-            + Tier::TenSeconds.retention_ms()
-            + 1;
+        let far_future = Tier::OneHour.retention_ms() + 1;
         store.maintain(far_future).unwrap();
         assert_eq!(
             store
@@ -3553,47 +3696,90 @@ mod tests {
     #[test]
     fn a_fact_that_ends_is_kept_with_its_span_until_the_last_tier_forgets_it() {
         let store = memory_store();
-        let fact = || vec![("source_blocked".to_string(), "7".to_string())];
+        let fact = || vec![("destination_refusing".to_string(), "7".to_string())];
         store.sync_fact_clock(&[], &fact(), 1_000).unwrap();
         store.sync_fact_clock(&fact(), &[], 2_000).unwrap();
         store.sync_fact_clock(&[], &fact(), 3_000).unwrap();
 
-        let spans = store.fact_spans(&["source_blocked"], "7", 0).unwrap();
+        let span = |started_ms, ended_ms| FactSpan {
+            entry: "destination_refusing".to_string(),
+            started_ms,
+            ended_ms,
+        };
         assert_eq!(
-            spans,
-            vec![
-                ("source_blocked".to_string(), 1_000, Some(2_000)),
-                ("source_blocked".to_string(), 3_000, None),
-            ],
+            store.fact_spans(&["destination_refusing"], "7", 0).unwrap(),
+            vec![span(1_000, Some(2_000)), span(3_000, None)],
             "the ended span and the active one, oldest first"
         );
         assert_eq!(
-            store.fact_spans(&["source_blocked"], "7", 2_500).unwrap().len(),
+            store.fact_spans(&["destination_refusing"], "7", 2_500).unwrap().len(),
             1,
             "one that ended before"
         );
         assert!(
-            store.fact_spans(&["source_unreachable"], "7", 0).unwrap().is_empty(),
+            store
+                .fact_spans(&["destination_unreachable"], "7", 0)
+                .unwrap()
+                .is_empty(),
             "another entry"
         );
-        assert_eq!(
-            store.facts_ended_since(&["source_blocked"], 2_000).unwrap(),
-            vec!["7".to_string()]
-        );
-        assert!(
-            store.facts_ended_since(&["source_blocked"], 2_001).unwrap().is_empty(),
-            "ended before"
-        );
-        assert!(
-            store.facts_ended_since(&["source_unreachable"], 0).unwrap().is_empty(),
-            "another entry"
-        );
-
         store.maintain(2_000 + Tier::OneHour.retention_ms() + 1).unwrap();
         assert_eq!(
-            store.fact_spans(&["source_blocked"], "7", 0).unwrap(),
-            vec![("source_blocked".to_string(), 3_000, None)],
+            store.fact_spans(&["destination_refusing"], "7", 0).unwrap(),
+            vec![span(3_000, None)],
             "past the last tier, an ended span is gone; an active one stays"
+        );
+    }
+
+    #[test]
+    fn a_warning_about_a_source_is_kept_a_year() {
+        let store = memory_store();
+        let fact = || vec![("source_blocked".to_string(), "7".to_string())];
+        store.sync_fact_clock(&[], &fact(), 1_000).unwrap();
+        store.sync_fact_clock(&fact(), &[], 2_000).unwrap();
+        store.maintain(2_000 + Tier::OneHour.retention_ms() + 1).unwrap();
+        assert_eq!(store.fact_spans(&["source_blocked"], "7", 0).unwrap().len(), 1);
+        store.maintain(2_000 + YEAR_MS + 1).unwrap();
+        assert!(store.fact_spans(&["source_blocked"], "7", 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_sources_quiet_spells_and_watch_are_kept_a_year() {
+        let store = memory_store();
+        let key = ("g".to_string(), "s".to_string());
+        let watch = Watch {
+            watched_ms: 0,
+            read_ms: 4_000,
+            row_ms: Some(3_000),
+            quiet_ms: 3_500,
+        };
+        let silence = |ended_ms, length_ms| Silence {
+            group: "g".into(),
+            source: "s".into(),
+            ended_ms,
+            length_ms,
+        };
+        store
+            .record_silences(&[(key.clone(), watch)], &[silence(1_000, 500), silence(2_500, 1_000)])
+            .unwrap();
+        assert_eq!(store.watches().unwrap().get(&key), Some(&watch));
+        assert_eq!(store.source_silences("g", "s", 1_500).unwrap(), [(2_500, 1_000)]);
+        assert_eq!(store.source_silences("g", "s", 1_501).unwrap(), []);
+        assert_eq!(
+            store.source_silences("g", "s", 0).unwrap(),
+            [(1_000, 500), (2_500, 1_000)]
+        );
+        store.maintain(2_000 + YEAR_MS).unwrap();
+        assert_eq!(store.source_silences("g", "s", 0).unwrap(), [(2_500, 1_000)]);
+        assert!(store.watches().unwrap().contains_key(&key));
+        store.maintain(4_000 + YEAR_MS + 1).unwrap();
+        assert!(
+            store.watches().unwrap().is_empty(),
+            "a source no worker reported for a year has no watch"
+        );
+        assert!(
+            super::super::steps::is_additive(STEPS[13]),
+            "a build before this one never reads the new store"
         );
     }
 
