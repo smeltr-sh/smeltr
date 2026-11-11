@@ -205,7 +205,8 @@ catalog's volume entry both wait on it.
 - **A row a destination refused and keeps names no route** in a capture at it: egress knows the row, not the route that sent it.
 - **A captured record shows only its start,** so for syslog the text a filter matched is not visible.
 - **A capture as sent of an OTLP receiver shows what arrives at its port for every signal,** since a read is not yet an export of any one.
-- **Route preview names a route by its position** (`RoutePreviewPage.svelte`). Routes have ids and no order.
+- **Two routes from one source to one pipeline are told apart only by their order** (`LoadedSystem::route_name`):
+  Route preview and every message call them `(1)` and `(2)`, so deleting the first renames the second.
 - **History clips its last column at a 1440 px window.**
 - **A worker's id is `hostname-pid-nanos`** (`worker::generate_worker_id`). No setting names a worker.
 - **A leader started without a worker still seeds a worker group,** which a fleet that names its own groups carries empty until someone deletes it.
