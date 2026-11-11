@@ -74,8 +74,8 @@
   <ProductScreenshot
     source="route-preview"
     height={1800}
-    crop={{ x: 720, y: 403, width: 1870, height: 660 }}
-    alt="Route preview for 12 storefront access records: all enter nginx-access, ten would go to es-web, and two are dropped by the pipeline."
-    caption="This preview accounts for all 12 sample records: Smeltr would send 10, and the pipeline drops 2. Preview does not deliver data."
+    crop={{ x: 500, y: 580, width: 2310, height: 315 }}
+    alt="Route a sample for 12 storefront access records: the route nginx-access → nginx-access matches all 12, and es-web would receive them."
+    caption="The route matches all 12 sample records, and Smeltr would send all 12 to es-web. A preview does not deliver data."
   />
 </GuideLayout>

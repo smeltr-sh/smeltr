@@ -307,15 +307,11 @@
     error = '';
     try {
       const id = mintSampleId();
-      const source = sessionTarget?.kind === 'source' ? sessionTarget.id : undefined;
-      const res = await saveCapture(
-        session,
-        id,
-        sampleName,
-        source,
-        source && given ? readAt : undefined,
-        savedIn,
-      );
+      const fromSource = sessionTarget?.kind === 'source';
+      const res = await saveCapture(session, id, sampleName, {
+        base: fromSource && given ? readAt : undefined,
+        into: savedIn,
+      });
       if (!res.ok) {
         error = errorText(res.errors) || 'could not save';
         return;

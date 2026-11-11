@@ -1642,6 +1642,16 @@ export async function sharedConfig(): Promise<FileConfigDto | null> {
   return (await configAt(currentBranch(), SHARED_SCOPE)).config;
 }
 
+/** The sources a sample of this scope may stand for: its own, then those of `shared/`. */
+export async function sourceIdsInScope(): Promise<string[]> {
+  // Read as `configAt` reads, so the base commit a save is checked against stays where the page read it.
+  const [own, shared] = await Promise.all([
+    configAt(currentBranch(), currentScope()),
+    sharedConfig(),
+  ]);
+  return [...(own.config?.sources ?? []), ...(shared?.sources ?? [])].map((s) => s.id);
+}
+
 /** A section of a bundle, by its key in `FileConfigDto`. */
 export type ConfigSection =
   'sources' | 'destinations' | 'routes' | 'lookupTables' | 'grokPatterns' | 'schemas' | 'pipelines';
@@ -2731,18 +2741,28 @@ export interface RoutePreviewResult {
   warnings?: string[];
 }
 
-/** `config` is the whole bundle as the editor has it, so unsaved route edits
+/** Routes `sample`, a saved sample's id or a held capture's choice (`heldChoice`), through `config`.
+ *
+ * `config` is the whole bundle as the editor has it, so unsaved route edits
  * are what gets previewed. `atMicros` pins `now()` and a reference-less
  * `parseTime`, the way a locked test re-runs against the instant it locked
- * at; an ordinary preview omits it and reads the wall clock. */
+ * at; an ordinary preview omits it and reads the wall clock. `source` is the
+ * source the records stand for where the sample names none. */
 export function routePreview(
   config: string,
   sample: string,
-  atMicros?: number,
+  { atMicros, source }: { atMicros?: number; source?: string } = {},
 ): Promise<RoutePreviewResult> {
+  const capture = heldSession(sample);
   return post(
     branched(inArea('/preview/routes')),
-    { config, sample, at_micros: atMicros ?? null },
+    {
+      config,
+      sample: capture ? null : sample,
+      capture: capture ?? null,
+      source: source ?? null,
+      at_micros: atMicros ?? null,
+    },
     'quiet',
   );
 }
@@ -3153,6 +3173,15 @@ export function myCapture(): Promise<CaptureStatusResult> {
   return withRecords(apiJson('/api/captures/mine', undefined, 'quiet'));
 }
 
+/** Hold records the person wrote, standing for `source` where they name one, as the capture they hold in place of
+ * any other: every preview runs over them, and they save as a capture does. */
+export function holdPaste(
+  records: SampleRecordDto[],
+  source?: string,
+): Promise<CaptureStatusResult> {
+  return withRecords(post('/api/captures/paste', { group: scope, source, records }, 'quiet'));
+}
+
 /** A finished capture's records, as a sample holds them. */
 export async function capturedRecords(session: string): Promise<SampleRecordDto[]> {
   const res = await fetch(captureDownloadUrl(session));
@@ -3194,12 +3223,19 @@ export function saveCapture(
   session: string,
   id: string,
   name: string,
-  /** The source the records stand for. None for a capture at a destination. */
-  source?: string,
-  /** As `configJson`'s: the commit the caller read, when it keeps its own. */
-  base?: string | null,
-  /** The scope the sample is saved into, when it is not the chip's: the source's own. */
-  into?: string,
+  {
+    source,
+    base,
+    into,
+  }: {
+    /** The source the records stand for where they name none, such as a capture at a destination or a paste with
+     * none. Records that name one keep their own. */
+    source?: string;
+    /** As `configJson`'s: the commit the caller read, when it keeps its own. */
+    base?: string | null;
+    /** The scope the sample is saved into, when it is not the chip's: the source's own. */
+    into?: string;
+  } = {},
 ): Promise<SaveCaptureResult & { commit?: string }> {
   return configJson(
     inArea('/samples', into),

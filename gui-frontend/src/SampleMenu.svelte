@@ -8,13 +8,14 @@
   import LockIcon from './LockIcon.svelte';
   import { count, dateTime } from './time';
   import { capturedAt, type SampleSummary } from './api';
+  import { HELD_NAME } from './sampleChoices.svelte';
 
   let {
     samples,
     selected,
-    lastUsed,
+    lastUsed = '',
     records,
-    lockedBy,
+    lockedBy = new Map(),
     held,
     onpick,
     onadd,
@@ -23,11 +24,11 @@
     /** The sample the records on screen came from. */
     selected: string;
     /** The sample this pipeline last ran over, which the list puts first. */
-    lastUsed: string;
+    lastUsed?: string;
     /** How many records it holds, once run. */
     records: number | null;
     /** The names of this pipeline's tests that lock each sample, by sample id. */
-    lockedBy: Map<string, string[]>;
+    lockedBy?: Map<string, string[]>;
     /** The capture the leader holds for the person signed in, listed first among the samples. Picking it passes
      * `choice` to `onpick`. */
     held?: { choice: string; records: number; source?: string };
@@ -39,7 +40,6 @@
   let open = $state(false);
   let query = $state('');
 
-  const HELD_NAME = 'Your capture';
   let selectedName = $derived(
     held?.choice === selected
       ? HELD_NAME

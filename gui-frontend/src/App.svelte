@@ -678,11 +678,6 @@
           back={route.back}
         />
       {/if}
-    {:else if route.page === 'route-preview'}
-      {#if pages['route-preview']}
-        {@const RoutePreviewPage = pages['route-preview']}
-        <RoutePreviewPage />
-      {/if}
     {:else if route.page === 'pipeline'}
       {#if pages.pipeline}
         {@const PipelineEditor = pages.pipeline}

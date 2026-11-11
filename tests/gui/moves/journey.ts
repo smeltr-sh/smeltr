@@ -2341,7 +2341,7 @@ const saveInputSample: Move = {
     const use = page.getByRole('button', { name: 'Use these records' });
     await expect(use).toBeEnabled({ timeout: 60_000 });
     await use.click();
-    await expect(chip).toContainText('Your capture');
+    await expect(chip).toContainText('Your records');
     await expect(chip).toContainText(/\d+ records?/, { timeout: 30_000 });
     // A capture ends at its deadline holding fewer than it asked for, when the source was slow.
     const held = Number((await chip.textContent())?.match(/(\d+) records?/)?.[1]);
