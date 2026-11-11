@@ -46,9 +46,6 @@ data:
 
     [worker.storage]
     state_dir = "/var/lib/smeltr-worker"
-
-    [worker.runtime]
-    thread_limit = 2
 ---
 apiVersion: v1
 kind: Secret
@@ -97,6 +94,11 @@ spec:
                 secretKeyRef:
                   name: smeltr-worker-default-enrollment-code
                   key: enrollment-code
+            - name: SMELTR_WORKER_THREAD_LIMIT
+              valueFrom:
+                resourceFieldRef:
+                  containerName: smeltr
+                  resource: requests.cpu
           resources:
             requests:
               cpu: "2"
@@ -131,9 +133,10 @@ spec:
     <a href="#receiver">Expose a receiver</a>.
   </p>
   <p>
-    <code>thread_limit</code> matches the CPU request, since a pod with no CPU limit otherwise runs
-    a transform thread for every core on its node. Size the memory limit for what the worker group
-    runs: see <a href="/docs/enroll-worker/sizing">Size a worker</a>.
+    <code>SMELTR_WORKER_THREAD_LIMIT</code> takes the CPU request, rounded up to whole cores, since
+    a pod with no CPU limit otherwise runs a transform thread for every core on its node. Size the
+    memory limit for what the worker group runs: see
+    <a href="/docs/enroll-worker/sizing">Size a worker</a>.
   </p>
   <p>
     <code>terminationGracePeriodSeconds</code> gives a stopping worker time to stop cleanly. It gives
@@ -181,9 +184,6 @@ data:
 
     [worker.storage]
     state_dir = "/var/lib/smeltr-worker"
-
-    [worker.runtime]
-    thread_limit = 2
 ---
 apiVersion: v1
 kind: Secret
@@ -231,6 +231,11 @@ spec:
                 secretKeyRef:
                   name: smeltr-worker-ingest-enrollment-code
                   key: enrollment-code
+            - name: SMELTR_WORKER_THREAD_LIMIT
+              valueFrom:
+                resourceFieldRef:
+                  containerName: smeltr
+                  resource: requests.cpu
           resources:
             requests:
               cpu: "2"
