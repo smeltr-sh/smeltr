@@ -2312,7 +2312,14 @@ const capture: Move = {
       j,
       page.getByRole('dialog', { name: new RegExp(destination) }),
       name,
-      (saving) => expect(saving).toContainText('__destination.route'),
+      async (saving) => {
+        // A `__` field starts hidden, as in a pipeline's preview, and the Fields menu lists it.
+        await saving.getByRole('button', { name: 'Choose fields' }).click();
+        await expect(saving.getByRole('group', { name: 'Fields' })).toContainText(
+          '__destination.route',
+        );
+        await saving.getByRole('button', { name: 'Choose fields' }).click();
+      },
       (saving) => expect(saving).toBeHidden(),
     );
     await editingIsSaved(j);

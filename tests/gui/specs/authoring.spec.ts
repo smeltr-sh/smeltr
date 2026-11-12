@@ -3981,7 +3981,7 @@ test('A6: the lock page shows five rows a side, and a button shows the rest', as
   await expect(admin.getByRole('row', { name: '7 {"id":8} 8', exact: true })).toBeVisible();
 });
 
-test('A1: a capture shows eight records, and a button shows the rest', async ({
+test('A1: a capture shows every record it holds, each opening on its fields', async ({
   admin,
   api,
   leader,
@@ -4001,10 +4001,8 @@ test('A1: a capture shows eight records, and a button shows the rest', async ({
 
   const capture = admin.getByRole('dialog', { name: /^Captured (from|at) / });
   await expect(capture).toBeVisible({ timeout: 90_000 });
-  const more = capture.getByRole('button', { name: '4 more records' });
-  await expect(more).toBeVisible();
-  await expect(capture.locator('tbody tr')).toHaveCount(8);
-  await more.click();
-  await expect(more).toHaveCount(0);
-  await expect(capture.locator('tbody tr')).toHaveCount(12);
+  const rows = capture.getByRole('button', { name: /^row \d+$/ });
+  await expect(rows).toHaveCount(12);
+  await rows.last().click();
+  await expect(rows.last()).toHaveAttribute('aria-expanded', 'true');
 });

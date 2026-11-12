@@ -3,9 +3,8 @@ import type { CaptureBatch, CaptureStatus, SourceDto } from './api';
 import {
   captureRequest,
   cellText,
-  filledColumns,
+  rowRecords,
   filterHelp,
-  firstRows,
   heldCount,
   progressText,
   settled,
@@ -93,28 +92,39 @@ describe('heldCount', () => {
   });
 });
 
-describe('firstRows', () => {
-  it('takes rows in order across batches, up to the cap', () => {
-    expect(raws(firstRows(status().batches, 2))).toEqual([['1', '2']]);
-    expect(raws(firstRows(status().batches, 3))).toEqual([['1', '2'], ['3']]);
-    expect(raws(firstRows(status().batches, 8))).toEqual([['1', '2'], ['3']]);
-  });
-});
-
-describe('filledColumns', () => {
-  it('leaves out a column null on every row', () => {
+describe('rowRecords', () => {
+  it('builds each row into its record, with why it failed apart from it', () => {
     const batch: CaptureBatch = {
       columns: [
-        { name: 'a', type: 'string' },
-        { name: '__destination.placement', type: 'string' },
-        { name: '__destination.id', type: 'string' },
+        { name: '__exception.message', type: 'str' },
+        { name: '_raw', type: 'str' },
+        { name: 'event.dataset', type: 'str' },
+        { name: 'labels["app.kubernetes.io/name"]', type: 'str' },
+        { name: '...', type: 'variant' },
+        { name: 'code', type: 'i64' },
+        { name: 'gone', type: 'str' },
       ],
       rows: [
-        { values: ['x', null, null], failed: [] },
-        { values: ['y', null, 'id-1'], failed: [] },
+        {
+          worker: 'w-a',
+          values: ['elasticsearch refused it', 'x', 'smeltr', 'api', { extra: 1 }, 'abc', null],
+          failed: [5],
+        },
       ],
     };
-    expect(filledColumns(batch)).toEqual([0, 2]);
+    expect(rowRecords([batch])).toEqual([
+      {
+        record: {
+          _raw: 'x',
+          event: { dataset: 'smeltr' },
+          labels: { 'app.kubernetes.io/name': 'api' },
+          extra: 1,
+          code: 'abc',
+        },
+        exceptions: ['elasticsearch refused it', 'code could not be read as i64'],
+        worker: 'w-a',
+      },
+    ]);
   });
 });
 

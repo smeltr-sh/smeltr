@@ -3,6 +3,7 @@
 // dialog.
 
 import { count } from './time';
+import { keySpans } from './names';
 import type {
   CaptureBatch,
   CaptureStatus,
@@ -46,23 +47,53 @@ export function shownRecords(status: CaptureStatus, only: string | null): Captur
   return batches.filter((b) => b.rows.length > 0);
 }
 
-/** The first `max` rows across the batches, in order. */
-export function firstRows(batches: CaptureBatch[], max: number): CaptureBatch[] {
-  const out: CaptureBatch[] = [];
-  let left = max;
-  for (const b of batches) {
-    if (left <= 0) break;
-    out.push({ ...b, rows: b.rows.slice(0, left) });
-    left -= b.rows.length;
-  }
-  return out;
+/** The column a record a block holds says why it blocked in (`worker::capture::EXCEPTION_MESSAGE`). It is not a
+ * field of the record. */
+export const EXCEPTION_MESSAGE = '__exception.message';
+/** The column an open record's unclaimed fields travel in, as one object (`plan::tree::UNCLAIMED`). */
+const UNCLAIMED = '...';
+
+/** One captured row as the record a sample holds it as (`config_file::sample_records`), with what failed on it: why a
+ * block holds it, and each value that did not read as its column's type. */
+export interface CapturedRecord {
+  record: Record<string, unknown>;
+  exceptions: string[];
+  worker?: string;
 }
 
-/** The indexes of a batch's columns that hold a value on some row. */
-export function filledColumns(batch: CaptureBatch): number[] {
-  return batch.columns
-    .map((_, i) => i)
-    .filter((i) => batch.rows.some((r) => r.values[i] !== null && r.values[i] !== undefined));
+/** `value` put at `name`, a field's name, in `record`. */
+function putPath(record: Record<string, unknown>, name: string, value: unknown): void {
+  const keys = keySpans(name).map((k) => k.key);
+  let at = record;
+  keys.slice(0, -1).forEach((key) => {
+    const next = at[key];
+    if (next === null || typeof next !== 'object' || Array.isArray(next)) at[key] = {};
+    at = at[key] as Record<string, unknown>;
+  });
+  at[keys[keys.length - 1]] = value;
+}
+
+/** Each row of `batches` as its record. */
+export function rowRecords(batches: CaptureBatch[]): CapturedRecord[] {
+  return batches.flatMap((batch) =>
+    batch.rows.map((row) => {
+      const record: Record<string, unknown> = {};
+      const exceptions: string[] = [];
+      batch.columns.forEach(({ name }, i) => {
+        const value = row.values[i];
+        if (value === null || value === undefined) return;
+        if (name === EXCEPTION_MESSAGE) exceptions.push(String(value));
+        else if (name === UNCLAIMED && typeof value === 'object' && !Array.isArray(value))
+          Object.assign(record, value);
+        else putPath(record, name, value);
+      });
+      for (const i of row.failed)
+        exceptions.push(`${batch.columns[i].name} could not be read as ${batch.columns[i].type}`);
+      return row.worker === undefined
+        ? { record, exceptions }
+        : { record, exceptions, worker: row.worker };
+    }),
+  );
 }
 
 /** A captured value as one cell shows it: a string as it is, anything else as JSON. */

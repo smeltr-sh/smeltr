@@ -7,25 +7,17 @@
   -- keep this, or not -- with the name as the field that answers it.
   STYLE_GUIDE.md "Dialogs".
 
-  Both ends show what they hold the same way: a table per batch, a column per
-  field.
+  Both ends show what they hold the same way: the records in the grid a pipeline's preview
+  draws them in.
 -->
 <script lang="ts">
   import Button, { BUSY, INCOMPLETE } from './Button.svelte';
-  import ShowAll from './ShowAll.svelte';
+  import RecordsGrid, { type GridRow, type LeadColumn } from './RecordsGrid.svelte';
   import InlineError from './InlineError.svelte';
   import Dialog from './Dialog.svelte';
   import Figure from './Figure.svelte';
   import Figures from './Figures.svelte';
-  import {
-    cellText,
-    filledColumns,
-    firstRows,
-    heldCount,
-    progressText,
-    shownRecords,
-    workerChips,
-  } from './capture';
+  import { heldCount, progressText, rowRecords, shownRecords, workerChips } from './capture';
   import { captureDownloadUrl, captureEndText, type CaptureStatus } from './api';
   import { NOT_IN_DEMO } from './access';
 
@@ -80,11 +72,21 @@
   let chips = $derived(status ? workerChips(status) : []);
   let shown = $derived(status ? shownRecords(status, only) : []);
   let held = $derived(status ? heldCount(status) : 0);
-  /** How many rows the tables show in all; a button shows the rest. */
-  const ROWS = 8;
-  let shownRows = $derived(shown.reduce((n, b) => n + b.rows.length, 0));
-  /** Whoever asked to see every row captured, not the first few. */
-  let allRows = $state(false);
+  /** Each shown record as a row of the grid, the same on both sides: a capture changes nothing. */
+  let records = $derived(rowRecords(shown));
+  let rows = $derived<GridRow[]>(
+    records.map((r, i) => ({
+      key: i,
+      label: String(i),
+      before: r.record,
+      after: r.record,
+      dropped: false,
+      exceptions: r.exceptions.map((message) => ({ message })),
+    })),
+  );
+  const leads: LeadColumn[] = [
+    { name: 'Worker', cell: (row) => ({ text: records[row.key]?.worker ?? '' }) },
+  ];
 
   function pick(worker: string) {
     only = only === worker ? null : worker;
@@ -175,38 +177,8 @@
         </p>
       {/if}
 
-      {#each firstRows(shown, allRows ? Infinity : ROWS) as batch, b (b)}
-        {@const cols = filledColumns(batch)}
-        <div class="table">
-          <table class="rows">
-            <thead>
-              <tr>
-                <th class="who">worker</th>
-                {#each cols as c (c)}
-                  <th title={batch.columns[c].type}>{batch.columns[c].name}</th>
-                {/each}
-              </tr>
-            </thead>
-            <tbody>
-              {#each batch.rows as r, i (i)}
-                <tr>
-                  <td class="who">{r.worker ?? ''}</td>
-                  {#each cols as c (c)}
-                    {@const value = r.values[c]}
-                    <td class:failed={r.failed.includes(c)}
-                      >{value === null || value === undefined ? '' : cellText(value)}</td
-                    >
-                  {/each}
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        </div>
-      {/each}
-      {#if !allRows && shownRows > ROWS}
-        <p class="note">
-          <ShowAll more={shownRows - ROWS} what="record" onshowall={() => (allRows = true)} />
-        </p>
+      {#if held > 0}
+        <RecordsGrid {rows} remember="capture" openOn={done} {leads} />
       {/if}
 
       {#if done && raw && held > 0}
@@ -370,37 +342,6 @@
     color: var(--error);
   }
 
-  /* A batch can be wider than the dialog; it scrolls on its own. */
-  .table {
-    overflow-x: auto;
-  }
-  .rows {
-    border-collapse: collapse;
-    font-family: var(--mono);
-    font-size: var(--text-micro);
-  }
-  .rows th {
-    padding: 0.15rem 0.75rem 0.15rem 0;
-    text-align: left;
-    font-weight: 600;
-    color: var(--dim);
-    white-space: nowrap;
-  }
-  .rows td {
-    max-width: 20rem;
-    padding: 0.15rem 0.75rem 0.15rem 0;
-    vertical-align: top;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    border-top: 1px solid var(--border);
-  }
-  .rows .who {
-    color: var(--dim);
-  }
-  .rows .failed {
-    color: var(--error);
-  }
   .name {
     display: flex;
     align-items: center;
