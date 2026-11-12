@@ -56,13 +56,40 @@ pub struct Lowered {
     pub by: String,
 }
 
-/// One source's sender fields as an editor changed them, as its group's workers are sent them.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// One source's sender fields as an editor changed them: `edits` as its group's workers are sent them, and which fields
+/// stay watched once new ones are not watched.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceFields {
+    /// Absent from the body of [`put_sender_fields`], which names it in its path.
+    #[serde(default)]
     pub group: String,
     #[serde(flatten)]
     pub edits: SenderFields,
+    /// Once an editor stops watching new fields, the fields that stay watched. Any other field is new, except one an
+    /// editor added; a new field is counted but not watched until an editor checks it. `None` while new fields are
+    /// watched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locked: Option<Vec<String>>,
+}
+
+impl SourceFields {
+    /// Whether `field` is watched: an editor did not uncheck it, and it is not new.
+    pub fn watches(&self, field: &str) -> bool {
+        !self.unchecked(field) && !self.is_new(field)
+    }
+
+    /// Whether `field` came after an editor stopped watching new fields, and nobody checked or added it since.
+    pub fn is_new(&self, field: &str) -> bool {
+        let named = |fields: &[String]| fields.iter().any(|f| f == field);
+        self.locked
+            .as_deref()
+            .is_some_and(|kept| !named(kept) && !named(&self.edits.added) && !self.unchecked(field))
+    }
+
+    fn unchecked(&self, field: &str) -> bool {
+        self.edits.unchecked.iter().any(|f| f == field)
+    }
 }
 
 /// A source whose normal `by` said to learn again from `from_millis` on.
@@ -279,18 +306,20 @@ fn lowered(marks: &mut Marks, m: &Marking, since: Option<i64>, actor: &Actor, _:
     Ok(())
 }
 
-/// The most fields an editor may add to one source, and stop watching.
+/// The most fields an editor may add to one source, and stop watching or keep watched.
 const ADDED_FIELDS: usize = 32;
-const UNCHECKED_FIELDS: usize = 256;
+const LISTED_FIELDS: usize = 256;
 
-/// `PUT /api/areas/:area/sources/:id/senders/fields`: the source's sender fields an editor unchecked and added,
-/// whole. Its workers count them from their next heartbeat. Refused for an added field that is no name.
+/// `PUT /api/areas/:area/sources/:id/senders/fields`: the source's sender fields an editor unchecked, added and,
+/// once new fields are not watched, kept watched, whole. Its workers count them from their next heartbeat. Refused
+/// for an added field that is not a field name.
 pub async fn put_sender_fields(
     State(state): State<AppState>,
     actor: Option<axum::Extension<Actor>>,
     Path((group, source)): Path<(String, String)>,
-    Json(edits): Json<SenderFields>,
+    Json(fields): Json<SourceFields>,
 ) -> Envelope<Empty> {
+    let SourceFields { edits, locked, .. } = fields;
     let marking = Marking {
         group,
         source,
@@ -305,9 +334,15 @@ pub async fn put_sender_fields(
                     m.source, m.group
                 )));
             }
-            if edits.unchecked.len() > UNCHECKED_FIELDS {
+            if edits.unchecked.len() > LISTED_FIELDS {
                 return Err(Refusal::invalid(format!(
-                    "source {} in {}: at most {UNCHECKED_FIELDS} fields can be left unwatched",
+                    "source {} in {}: at most {LISTED_FIELDS} fields can be left unwatched",
+                    m.source, m.group
+                )));
+            }
+            if locked.as_ref().is_some_and(|kept| kept.len() > LISTED_FIELDS) {
+                return Err(Refusal::invalid(format!(
+                    "source {} in {}: at most {LISTED_FIELDS} fields can be kept watched",
                     m.source, m.group
                 )));
             }
@@ -316,6 +351,7 @@ pub async fn put_sender_fields(
                 .added
                 .iter()
                 .chain(&edits.unchecked)
+                .chain(locked.iter().flatten())
                 .any(|name| name.len() > longest)
             {
                 return Err(Refusal::invalid(format!(
@@ -334,13 +370,14 @@ pub async fn put_sender_fields(
             marks
                 .fields
                 .retain(|f| (&f.group, &f.edits.source) != (&m.group, &m.source));
-            if !edits.unchecked.is_empty() || !edits.added.is_empty() {
+            if !edits.unchecked.is_empty() || !edits.added.is_empty() || locked.is_some() {
                 marks.fields.push(SourceFields {
                     group: m.group.clone(),
                     edits: SenderFields {
                         source: m.source.clone(),
                         ..edits
                     },
+                    locked,
                 });
             }
             Ok(())
@@ -496,12 +533,33 @@ mod tests {
                 unchecked: vec!["action".into()],
                 added: Vec::new(),
             },
+            locked: None,
         };
         let marks = Marks {
             fields: vec![edited("g", "s"), edited("other", "t")],
             ..Marks::default()
         };
         assert_eq!(marks.sender_fields("g"), [edited("g", "s").edits]);
+    }
+
+    /// Once an editor stops watching new fields, a field they neither kept nor added is new, and not watched; one
+    /// they unchecked stays unchecked.
+    #[test]
+    fn a_field_that_comes_after_new_ones_stop_being_watched_is_new() {
+        let fields = SourceFields {
+            group: "g".into(),
+            edits: SenderFields {
+                source: "s".into(),
+                unchecked: vec!["action".into()],
+                added: vec!["policyid".into()],
+            },
+            locked: Some(vec!["devname".into()]),
+        };
+        assert!(fields.watches("devname") && fields.watches("policyid"));
+        assert!(!fields.watches("action") && !fields.is_new("action"));
+        assert!(!fields.watches("user") && fields.is_new("user"));
+        let open = SourceFields { locked: None, ..fields };
+        assert!(open.watches("user") && !open.is_new("user"));
     }
 
     #[test]

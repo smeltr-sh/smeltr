@@ -307,12 +307,12 @@ Senders are counted on every batch, since a sender that goes quiet is what they
 are for: each value of each string field a route delivers at the end of the
 pipeline, and the record's stream key, by the records that held it. A record
 counts once for each field, on the first route that delivers it, so a record two
-routes take is one row of its sender. A field is reported as counted though no
-record held it, since its senders are judged only where it was. A field that
-passes its cap of values on a worker is counted no more there, and every report
-after says so; a value too long to name is not counted. Which fields an editor
-stopped watching or added (Control plane) reaches each worker whole on every
-heartbeat answer.
+routes take is one row of its sender. A field is reported as counted in a window
+even when no record held it, because a sender is judged only where its field was
+counted. A field that passes its cap of values on a worker is counted no more
+there, and every report after says so; a value too long to name is not counted.
+Which fields an editor stopped watching or added (Control plane) reaches each
+worker whole on every heartbeat answer.
 
 What one report carries is bounded by the code: a cap on field names per Parser
 and on keys per source, with the rows past either counted rather than named; a

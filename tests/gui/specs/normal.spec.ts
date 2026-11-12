@@ -87,8 +87,9 @@ function history(
   db.close();
 }
 
-/** Writes `days` days of what each of `values` of `source`'s `field` sent, as `history` writes a source's rows: the
- * series the leader keeps each sender's rows in, at the five-minute tier it keeps them at (`leader::senders`). */
+/** Writes `days` days of what each of `values` of `source`'s `field` sent, as `history` writes a source's rows. It
+ * writes two series at the five-minute tier (`leader::senders`): each sender's rows, and the field's own, which says
+ * the field was counted. */
 function sent(
   leader: Leader,
   source: string,
@@ -99,27 +100,35 @@ function sent(
   const db = new DatabaseSync(path.join(leader.proc.dir, 'smeltr-leader-data', 'registry.db'));
   db.exec('PRAGMA busy_timeout = 10000');
   const series = db.prepare(
-    `INSERT INTO series (metric, labels_json, kind) VALUES ('smeltr_sender_rows_total', ?, 'counter')
+    `INSERT INTO series (metric, labels_json, kind) VALUES (?, ?, 'counter')
      ON CONFLICT DO UPDATE SET kind = kind RETURNING id`,
   );
   const write = db.prepare(
     `INSERT OR REPLACE INTO series_points (series_id, tier, bucket_ms, value) VALUES (?, ?, ?, ?)`,
   );
   const now = Math.floor(Date.now() / FIVE) * FIVE;
+  const counted = new Map<number, number>();
+  const labels = (value?: string) => [
+    ['field', field],
+    ['group', 'edge'],
+    ['source', source],
+    ...(value === undefined ? [] : [['value', value]]),
+  ];
   db.exec('BEGIN');
   for (const [value, perSecond] of Object.entries(values)) {
-    const labels = [
-      ['field', field],
-      ['group', 'edge'],
-      ['source', source],
-      ['value', value],
-    ];
-    const { id } = series.get(JSON.stringify(labels)) as { id: number };
+    const { id } = series.get('smeltr_sender_rows_total', JSON.stringify(labels(value))) as {
+      id: number;
+    };
     for (let at = now - days * DAY; at < now + 2 * FIVE; at += FIVE) {
       const rows = Math.round(perSecond(at) * 300 * (1 + 0.05 * noise(at / FIVE + value.length)));
       if (rows > 0) write.run(id, FIVE_MINUTE_TIER, at, rows);
+      counted.set(at, (counted.get(at) ?? 0) + rows);
     }
   }
+  const { id } = series.get('smeltr_sender_field_rows_total', JSON.stringify(labels())) as {
+    id: number;
+  };
+  for (const [at, rows] of counted) write.run(id, FIVE_MINUTE_TIER, at, rows);
   db.exec('COMMIT');
   db.close();
 }
@@ -348,4 +357,31 @@ test('senders that stop while their source stays within its normal are warned of
   ).toEqual(['action', 'policyid']);
   await field('policyid').getByRole('button', { name: 'Remove' }).click();
   await expect(field('policyid')).toHaveCount(0);
+
+  // An editor stops watching new fields: those watched now stay watched, and one that comes later is new, and
+  // watched only once checked.
+  const read = () => api.get('/api/areas/edge/sources/fortigate-firewalls/senders');
+  const watchNew = panel.getByRole('checkbox', { name: 'Watch new fields' });
+  await watchNew.uncheck();
+  await expect.poll(async () => (await read()).watchesNew).toBe(false);
+  const kept = (await read()).fields
+    .filter((f: { checked: boolean }) => f.checked)
+    .map((f: { field: string }) => f.field);
+  expect(kept).toContain('devname');
+  expect(kept).not.toContain('action');
+  // Stop watching new fields, keeping the fields listed in `locked`; `_raw` is not listed, so it is new.
+  await api.put('/api/areas/edge/sources/fortigate-firewalls/senders/fields', {
+    unchecked: ['action'],
+    added: [],
+    locked: kept.filter((f: string) => f !== '_raw'),
+  });
+  await admin.reload();
+  await expect(field('_raw')).toContainText('New');
+  await expect(field('_raw').getByRole('checkbox')).not.toBeChecked();
+  await shoot(admin, '13-senders-new-field');
+  await field('_raw').getByRole('checkbox').check();
+  await expect(field('_raw').getByRole('checkbox')).toBeChecked();
+  await expect(field('_raw')).not.toContainText('New');
+  await watchNew.check();
+  await expect.poll(async () => (await read()).watchesNew).toBe(true);
 });

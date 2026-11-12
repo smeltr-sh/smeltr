@@ -402,8 +402,10 @@ and ends once all of them are.
 An editor in the source's worker group lowers one sender's warning to info, and
 a warning all of whose senders were lowered is info. An editor also stops
 watching a field, or adds one the pick cannot offer, such as a number or a
-nested path. The source's Senders tab on the Map lists its fields, what the pick
-read of each, and each watched sender's last day against its range.
+nested path. New fields are watched until an editor says not; from then on a
+field that comes later is counted but watched only once an editor checks it. The
+source's Senders tab on the Map lists its fields, what the pick read of each,
+and each watched sender's last day against its range.
 
 ## Upgrades
 

@@ -739,8 +739,8 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "PUT",
         path: "/api/areas/:area/sources/:id/senders/fields",
-        what: "Set which of the source's fields are not watched for senders, and which fields are added, replacing both lists. Its workers count them from their next heartbeat. The area is the source's worker group. No query.",
-        body: "{ unchecked: string[], added: string[] }",
+        what: "Set which of the source's fields are not watched for senders, which fields are added, and, to stop watching new fields, which fields stay watched (null to watch new fields), replacing all three. Its workers count them from their next heartbeat. The area is the source's worker group. No query.",
+        body: "{ unchecked: string[], added: string[], locked: string[] | null }",
     },
     Route {
         method: "POST",

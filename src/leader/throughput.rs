@@ -167,11 +167,11 @@ impl Learning {
         }
     }
 
-    /// Whether an editor stopped watching `field` of `group`'s `source`.
+    /// Whether `field` of `group`'s `source` is not watched, as an editor left it (`marks::SourceFields::watches`).
     pub fn unchecked(&self, group: &str, source: &str, field: &str) -> bool {
         self.fields
             .iter()
-            .any(|f| f.group == group && f.edits.source == source && f.edits.unchecked.iter().any(|u| u == field))
+            .any(|f| f.group == group && f.edits.source == source && !f.watches(field))
     }
 
     /// The periods of `group`'s `source` an editor said `was`, as (from, to).

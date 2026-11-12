@@ -9,8 +9,8 @@
 //! [`LONGEST_EMPTY`] buckets without a row on each of [`PICK_DAYS`] days in a row, and stays watched until a further
 //! [`PICK_DAYS`] pass without such a run. A bucket counts only where its field was counted ([`FIELD_ROWS`]), so a
 //! field a pipeline change takes out leaves its senders unjudged rather than all below. A field with one value names
-//! no sender. An editor may stop watching a field, or add one the pick cannot offer: a number or a nested
-//! path (`marks::SourceFields`).
+//! no sender. An editor may stop watching a field, add one the pick cannot offer (a number or a nested path), or stop
+//! watching fields that come later (`marks::SourceFields`).
 //!
 //! A watched sender is judged as a source is (`throughput`), from its own rows, except by the gap, and not while its
 //! source warns or is stopped.
@@ -38,8 +38,8 @@ pub const ROWS: &str = "smeltr_sender_rows_total";
 /// A sender field a worker counts no more, for holding too many values: one point for each window it says so.
 pub const OVER: &str = "smeltr_sender_fields_over_total";
 
-/// The rows that held any value of a sender field, in each window a worker counted the field, though none did. A
-/// bucket with no point is one no worker's pipeline delivered the field in.
+/// The rows that held any value of a sender field in each window a worker counted the field; zero when no record held
+/// one. A bucket with no point is one where no worker's pipeline delivered the field.
 pub const FIELD_ROWS: &str = "smeltr_sender_field_rows_total";
 
 /// The most [`TIER`] buckets in a row a watched sender may go without a row on each of the days it is picked on.
@@ -258,11 +258,23 @@ pub fn history(
 }
 
 /// One source's sender fields, as the Senders tab shows them.
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceSenders {
     /// Those with a sender below normal first, then by what the pick read of each.
     pub fields: Vec<FieldNow>,
+    /// A field that comes later is watched, until an editor says not (`marks::SourceFields::locked`).
+    pub watches_new: bool,
+}
+
+impl Default for SourceSenders {
+    /// No fields, and new ones watched, as for a source nobody edited.
+    fn default() -> Self {
+        SourceSenders {
+            fields: Vec::new(),
+            watches_new: true,
+        }
+    }
 }
 
 /// One field of a source, and its senders.
@@ -270,10 +282,12 @@ pub struct SourceSenders {
 #[serde(rename_all = "camelCase")]
 pub struct FieldNow {
     pub field: String,
-    /// An editor did not stop watching it.
+    /// It is watched (`marks::SourceFields::watches`).
     pub checked: bool,
     /// An editor added it.
     pub added: bool,
+    /// It came after an editor stopped watching new fields, and is not watched until one checks it.
+    pub new: bool,
     /// What the pick read of it today, or `None` before it has read any of it.
     pub pick: Option<FieldPick>,
     /// Its senders watched, those below normal first.
@@ -341,12 +355,13 @@ impl Now<'_> {
         marks: &Marks,
     ) -> Result<SourceSenders, StoreError> {
         let (group, source) = (self.group, self.source);
-        let edits = marks
+        let edited = marks
             .fields
             .iter()
             .find(|f| f.group == group && f.edits.source == source)
-            .map(|f| f.edits.clone())
+            .cloned()
             .unwrap_or_default();
+        let edits = &edited.edits;
         let picks = learned
             .and_then(|l| l.pick.fields.get(&(group.to_string(), source.to_string())))
             .cloned()
@@ -357,6 +372,7 @@ impl Now<'_> {
         let mut names: BTreeSet<&String> = picks.keys().collect();
         names.extend(&edits.added);
         names.extend(&edits.unchecked);
+        names.extend(edited.locked.iter().flatten());
         let mut fields = Vec::new();
         for field in names {
             let mut senders = Vec::new();
@@ -388,8 +404,9 @@ impl Now<'_> {
             senders.sort_by(|a, b| (!a.below, &a.value).cmp(&(!b.below, &b.value)));
             fields.push(FieldNow {
                 field: field.clone(),
-                checked: !edits.unchecked.contains(field),
+                checked: edited.watches(field),
                 added: edits.added.contains(field),
+                new: edited.is_new(field),
                 pick: picks.get(field).cloned(),
                 senders,
             });
@@ -405,7 +422,10 @@ impl Now<'_> {
             (std::cmp::Reverse(below), !f.checked, state)
         };
         fields.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| a.field.cmp(&b.field)));
-        Ok(SourceSenders { fields })
+        Ok(SourceSenders {
+            fields,
+            watches_new: edited.locked.is_none(),
+        })
     }
 
     /// Who lowered `sender`'s warning that holds, if anyone did.

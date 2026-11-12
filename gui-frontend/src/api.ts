@@ -4312,11 +4312,17 @@ export type FieldNowDto = {
   field: string;
   checked: boolean;
   added: boolean;
+  new: boolean;
   pick: FieldPickDto | null;
   senders: SenderNowDto[];
 };
 
-export type SourceSendersResponse = { ok: boolean; errors: ApiError[]; fields: FieldNowDto[] };
+export type SourceSendersResponse = {
+  ok: boolean;
+  errors: ApiError[];
+  fields: FieldNowDto[];
+  watchesNew: boolean;
+};
 
 export function getSourceSenders(group: string, source: string): Promise<SourceSendersResponse> {
   return apiJson(inArea(`/sources/${encodeURIComponent(source)}/senders`, group));
@@ -4334,12 +4340,12 @@ export function lowerSender(
   );
 }
 
-/** Sets which of `group`'s `source`'s fields an editor stopped watching and which they added,
- * whole. */
+/** Sets which of `group`'s `source`'s fields an editor stopped watching, which they added and, once
+ * new fields are not watched, which stay watched (`locked`, null while new fields are watched), whole. */
 export function putSenderFields(
   group: string,
   source: string,
-  edits: { unchecked: string[]; added: string[] },
+  edits: { unchecked: string[]; added: string[]; locked: string[] | null },
 ): Promise<{ ok: boolean; errors: ApiError[] }> {
   return apiJson(
     inArea(`/sources/${encodeURIComponent(source)}/senders/fields`, group),

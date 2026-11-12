@@ -2,7 +2,7 @@
   A source's senders (`docs/architecture/control-plane.md`): each field of its
   records that may name who sends them, what the pick read of it, and folded under it the senders it
   watches, each against its own normal over the last day. An editor stops watching a field, adds one
-  the pick cannot offer, and lowers a sender's warning to info.
+  the pick cannot offer, stops watching fields that come later, and lowers a sender's warning to info.
 -->
 <script lang="ts">
   import Button, { BUSY } from './Button.svelte';
@@ -36,6 +36,7 @@
     'Fields whose values name who sends this source its rows. Each value that sent steadily for a week is watched, and warns when it sends below its normal.';
 
   let fields = $state<FieldNowDto[] | null>(null);
+  let watchesNew = $state(true);
   let problem = $state('');
   /** Folded open or closed by hand; a field with a sender below normal starts open. */
   let folded = $state<Record<string, boolean>>({});
@@ -52,6 +53,7 @@
       .then((answer) => {
         if (!current()) return;
         fields = answer.ok ? answer.fields : null;
+        watchesNew = answer.ok ? answer.watchesNew : true;
         problem = answer.ok ? '' : errorText(answer.errors);
       })
       .catch((e) => {
@@ -68,14 +70,27 @@
     read();
   });
 
-  /** Saves the source's edits as `change` leaves them, whole, then reads the fields back. */
-  function edit(change: (edits: { unchecked: string[]; added: string[] }) => void) {
+  type Edited = Pick<FieldNowDto, 'field' | 'checked' | 'added' | 'new'>;
+
+  /** Saves the source's fields as `change` leaves them, whole, then reads them back. Once new fields
+   * are not watched, every field watched but not added stays watched. */
+  function edit(change: (fields: Edited[], lock: { watchesNew: boolean }) => Edited[] | void) {
     if (busy.on || !fields) return;
+    const lock = { watchesNew };
+    let edited: Edited[] = fields.map(({ field, checked, added, new: arrived }) => ({
+      field,
+      checked,
+      added,
+      new: arrived,
+    }));
+    edited = change(edited, lock) ?? edited;
     const edits = {
-      unchecked: fields.filter((f) => !f.checked).map((f) => f.field),
-      added: fields.filter((f) => f.added).map((f) => f.field),
+      unchecked: edited.filter((f) => !f.checked && !f.new).map((f) => f.field),
+      added: edited.filter((f) => f.added).map((f) => f.field),
+      locked: lock.watchesNew
+        ? null
+        : edited.filter((f) => f.checked && !f.added).map((f) => f.field),
     };
-    change(edits);
     void busy.run(async () => {
       const answer = await putSenderFields(group, source, edits);
       problem = answer.ok ? '' : errorText(answer.errors);
@@ -84,27 +99,33 @@
   }
 
   function watch(field: string, on: boolean) {
-    edit((e) => {
-      e.unchecked = on ? e.unchecked.filter((f) => f !== field) : [...e.unchecked, field];
+    edit((all) => {
+      for (const f of all.filter((f) => f.field === field)) {
+        f.checked = on;
+        f.new = false;
+      }
     });
   }
 
   function remove(field: string) {
-    edit((e) => {
-      e.added = e.added.filter((f) => f !== field);
-      e.unchecked = e.unchecked.filter((f) => f !== field);
-    });
+    edit((all) => all.filter((f) => f.field !== field));
   }
 
   function add(event: SubmitEvent) {
     event.preventDefault();
     const field = adding.trim();
     if (!field) return;
-    edit((e) => {
-      e.added = e.added.includes(field) ? e.added : [...e.added, field];
-      e.unchecked = e.unchecked.filter((f) => f !== field);
-    });
+    edit((all) => [
+      ...all.filter((f) => f.field !== field),
+      { field, checked: true, added: true, new: false },
+    ]);
     adding = '';
+  }
+
+  function watchNew(on: boolean) {
+    edit((_, lock) => {
+      lock.watchesNew = on;
+    });
   }
 
   function lower(field: string, sender: SenderNowDto) {
@@ -126,6 +147,7 @@
 
   /** What the pick read of a field, as its row says it. */
   function picked(f: FieldNowDto): string {
+    if (f.new) return 'New';
     if (!f.checked) return 'Not watched';
     switch (f.pick?.state) {
       case 'watched':
@@ -148,7 +170,19 @@
 </script>
 
 <section>
-  <h3>Fields <Help label="Fields">{HELP}</Help></h3>
+  <div class="head">
+    <h3>Fields <Help label="Fields">{HELP}</Help></h3>
+    {#if fields}
+      <label class="small"
+        ><input
+          type="checkbox"
+          checked={watchesNew}
+          disabled={!editor || busy.on}
+          onchange={(e) => watchNew(e.currentTarget.checked)}
+        /> Watch new fields</label
+      >
+    {/if}
+  </div>
   {#if problem}<p class="problem">{problem}</p>{/if}
   {#if !fields}
     {#if !problem}<p class="dim">Reading&hellip;</p>{/if}
@@ -269,11 +303,26 @@
     padding: 0.85rem 0;
   }
 
+  .head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.3rem 0.6rem;
+    margin: 0 0 0.5rem;
+  }
+
+  .head label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
   h3 {
     display: flex;
     align-items: center;
     gap: 0.3rem;
-    margin: 0 0 0.5rem;
+    margin: 0;
     font-size: var(--text-body);
     font-weight: 600;
   }
