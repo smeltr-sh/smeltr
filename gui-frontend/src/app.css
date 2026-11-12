@@ -59,6 +59,33 @@ body {
   white-space: nowrap;
 }
 
+/* A table of readings: heads as uppercase labels, rows ruled apart, a `.num` column to the right. */
+:where(table.readings) {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-label);
+}
+
+:where(table.readings th, table.readings td) {
+  text-align: left;
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+:where(table.readings th) {
+  color: var(--dim);
+  font-size: var(--text-micro);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+:where(table.readings .num) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Read by a screen reader, not drawn. */
 :where(.visually-hidden) {
   position: absolute;

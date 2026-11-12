@@ -118,6 +118,15 @@ describe('statsHash', () => {
     );
   });
 
+  it('marks a panel widened over the map, and a narrow one not at all', () => {
+    expect(statsHash('west', 'source', 's', 'history', '24h', true)).toBe(
+      '#/map?group=west&kind=source&id=s&panel=history&range=24h&wide=1',
+    );
+    expect(statsHash('west', 'source', 's', 'history', '24h', false)).toBe(
+      '#/map?group=west&kind=source&id=s&panel=history&range=24h',
+    );
+  });
+
   it('names a chart range only when given one', () => {
     expect(statsHash('west', 'source', 's', undefined, '7d')).toBe(
       '#/map?group=west&kind=source&id=s&range=7d',

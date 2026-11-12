@@ -44,10 +44,12 @@ export function statsHash(
   id: string,
   panel?: string,
   range?: string,
+  wide = false,
 ): string {
   const q = new URLSearchParams({ group, kind, id });
   if (panel && panel !== 'overview') q.set('panel', panel);
   if (range) q.set('range', range);
+  if (wide) q.set('wide', '1');
   return `#/map?${q}`;
 }
 

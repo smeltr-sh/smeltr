@@ -37,8 +37,10 @@
     type MapNode,
     type NodeReadingDto,
     type PastSpan,
+    type PipelineStatsDto,
     type RouteEdge,
     type SourcePastResponse,
+    type SpreadDto,
     type StatsResponse,
   } from './api';
   import { holds } from './access';
@@ -53,7 +55,10 @@
   import Sparkline from './Sparkline.svelte';
   import ChipPicker from './ChipPicker.svelte';
   import ClockIcon from './ClockIcon.svelte';
-  import { bytes } from './bytes';
+  import { byteUnit, bytes } from './bytes';
+  import WidenIcon from './WidenIcon.svelte';
+  import Figure from './Figure.svelte';
+  import Figures from './Figures.svelte';
   import {
     QUEUE_ALARM,
     expectedSlots,
@@ -90,6 +95,8 @@
     editHash,
     onedit,
     onclose,
+    wide = false,
+    wideHash,
     controls,
     gap,
     onroute,
@@ -118,6 +125,10 @@
      * switches scope here first. */
     onedit?: () => void;
     onclose: () => void;
+    /** Whether the panel fills the map's width, which gives every tab its wide layout. */
+    wide?: boolean;
+    /** The link that widens the panel, or narrows it when it is wide. */
+    wideHash: string;
     /** The map's own controls for the selection. */
     controls?: Snippet;
     /** What arrives at a source that no route takes (`map.ts`, gaps). */
@@ -130,8 +141,9 @@
   let chart = $derived(chartRange(range));
   let rangeOpen = $state(false);
 
-  /** Workers on one page of the Buffers tab: a fleet's worth would bury the busiest. */
-  const WORKERS_PER_PAGE = 8;
+  /** Workers on one page of the Buffers tab: a fleet's worth would bury the busiest. A wide panel
+   * has room for more of them. */
+  let workersPerPage = $derived(wide ? 24 : 8);
 
   let answer = $state<StatsResponse | null>(null);
   let loadError = $state('');
@@ -185,6 +197,26 @@
   let past = $state<SourcePastResponse | null>(null);
   let pastError = $state('');
   const marking = new Busy();
+  /** What a label leaves out, behind its `?`: one text wherever the label appears. */
+  const HELP = {
+    throughput:
+      "This object's rate in this worker group, from the newest closed bucket. Lines on the map show connections, not volume.",
+    expected: 'What this source normally reads at this time of day, learned from its past weeks.',
+    refused: 'Rows the destination examined and rejected for good; no retry changes that.',
+    sendFailed:
+      'Rows that could not even be buffered for sending. They are retried and may still arrive.',
+    buffers:
+      "Bytes each worker holds for this destination against its own budget, from its latest heartbeat. The busiest current worker sets the overview's figure, so one full worker is never averaged away. A figure can pass 100%; only the bar stops there.",
+    lag: "Records waiting in Kafka for this source, outside smeltr's own buffers. Lag alone is not backpressure: intake is held only when a worker reports it.",
+    steps:
+      "In the order they run. The bar is each step's share of the time; the counts are the rows it dropped or errored.",
+    routes:
+      "A route's condition picks rows from its source; each delivery's condition picks which of them go to that destination. Conditions can overlap, so a source's matches can add up past what it read.",
+  };
+  const WARNINGS_HELP =
+    'Rows below normal warnings of the past year. The windows a warning read are not learned unless marked Normal; marking the one that holds Normal teaches the level the source reads now.';
+  const SPELLS_HELP =
+    "The source's longest quiet spells of the past year. The longest one learned sets how long the source may go without a row before it warns.";
   /** What an editor in the source's group may say a span was. */
   const WAS: { value: 'normal' | 'outage'; label: string }[] = [
     { value: 'normal', label: 'Normal' },
@@ -204,6 +236,24 @@
         if (current()) pastError = errorMessage(e);
       });
   }
+
+  /** In the wide History tab, the strip covers the past year and ends at the leader's now. */
+  const YEAR_MILLIS = 365 * 86_400_000;
+  let yearEnd = $derived(nowMillis ?? Date.now());
+  function acrossYear(at: number): number {
+    return Math.min(100, Math.max(0, (100 * (at - (yearEnd - YEAR_MILLIS))) / YEAR_MILLIS));
+  }
+  /** Where each month of the past year starts on the strip; the newest is left off when it would
+   * crowd the strip's end. */
+  let months = $derived.by(() => {
+    const end = new Date(yearEnd);
+    return Array.from(
+      { length: 12 },
+      (_, i) => new Date(end.getFullYear(), end.getMonth() - 11 + i, 1),
+    )
+      .map((d) => ({ at: d.getTime(), label: d.toLocaleString('en-US', { month: 'short' }) }))
+      .filter((m) => acrossYear(m.at) > 0 && acrossYear(m.at) < 96);
+  });
 
   $effect(() => {
     if (shown !== 'history') return;
@@ -282,6 +332,36 @@
   let chartBand = $derived(
     source?.expected ? expectedSlots(source.expected, rateTimes) : undefined,
   );
+
+  function slotsOf(spread: SpreadDto | undefined): (number | null)[] {
+    return spread && answer
+      ? spreadSlots(spread, answer.bucketMillis, answer.windowMillis, answer.nowMillis)
+      : [];
+  }
+  /** Bytes per second in the unit the busiest bucket reads best in. */
+  function bytesChart(spread: SpreadDto | undefined): { label: string; points: (number | null)[] } {
+    const points = slotsOf(spread);
+    const { unit, size } = byteUnit(Math.max(0, ...points.map((p) => p ?? 0)));
+    return { label: `${unit}/s`, points: points.map((p) => (p === null ? null : p / size)) };
+  }
+  type Chart = {
+    title: string;
+    label: string;
+    points: (number | null)[];
+    band?: ReturnType<typeof expectedSlots>;
+  };
+  /** Every series the leader sends for this object, side by side in the wide overview; one that
+   * read nothing over the window is left out. */
+  let charts = $derived<Chart[]>(
+    [
+      { title: 'Rows per second', label: 'rows/s', points: ratePoints, band: chartBand },
+      { title: 'Bytes per second', ...bytesChart(source?.bytesRate ?? destination?.bytesRate) },
+      { title: 'Kafka lag', label: 'records', points: lagPoints },
+      { title: 'Read time per row', label: 'µs', points: slotsOf(source?.pollPerRow) },
+      { title: 'Time per row', label: 'µs', points: slotsOf(pipeline?.perRow) },
+      { title: 'Round trip', label: 'ms', points: slotsOf(destination?.roundTrip) },
+    ].filter((c) => c.points.some((p) => p !== null)),
+  );
   let failures = $derived(reading?.warnings.filter((w) => w.severity === 'failed') ?? []);
   let lesser = $derived(reading?.warnings.filter((w) => w.severity !== 'failed') ?? []);
   let queue = $derived(reading?.queue);
@@ -299,8 +379,12 @@
     node.kind === 'source' ? 'Downstream' : node.kind === 'destination' ? 'Upstream' : 'Connected',
   );
 
-  let page = $state(0);
-  let workers = $derived(workerPage(destination?.queues ?? [], page, WORKERS_PER_PAGE));
+  /** The first worker the Buffers tab shows, rather than a page number, so widening or narrowing
+   * the panel keeps it on screen. */
+  let first = $state(0);
+  let workers = $derived(
+    workerPage(destination?.queues ?? [], Math.floor(first / workersPerPage), workersPerPage),
+  );
 
   /** Invariant across the step list, so it is summed once rather than once per row. */
   let spent = $derived(pipeline ? totalMicros(pipeline.steps) : 0);
@@ -327,6 +411,9 @@
 
 <MapPanel kind={node.kind} group={node.group} title={node.name} mono {onclose}>
   {#snippet actions()}
+    <a class="btn icon" href={wideHash} title={wide ? 'Narrow' : 'Widen'}
+      ><WidenIcon open={wide} /></a
+    >
     <a class="btn icon" href={editHash} onclick={onedit} title="Edit {node.name}"><PencilIcon /></a>
   {/snippet}
   <div class="sub dim">
@@ -417,15 +504,70 @@
         <li>{e.message}</li>
       {/each}
     </ul>
+  {:else if wide && shown === 'overview'}
+    <Figures>
+      <Figure label={scope} help={HELP.throughput} tone={outsideNormal ? 'warn' : undefined}
+        >{rate(overviewRate)}</Figure
+      >
+      {#if expected}
+        <Figure label="Expected" help={HELP.expected}
+          >{perSecondText(expected.low)}–{perSecondText(expected.high)} rows/s</Figure
+        >
+      {/if}
+      {#if ageSeconds !== null}<Figure label="Last seen">{ageSeconds} s ago</Figure>{/if}
+      {#if source && hasLag}{@render lagFigures()}{/if}
+      {#if pipeline}{@render rowFigures(pipeline)}{/if}
+      {#if destination}
+        {#if queue?.busiest !== undefined}
+          <Figure
+            label="Busiest buffer"
+            note="{queue.workers} {queue.workers === 1 ? 'worker' : 'workers'}"
+            tone={queue.busiest >= QUEUE_ALARM ? 'alarm' : undefined}
+            >{percent(queue.busiest)}</Figure
+          >
+        {/if}
+        <Figure label="Delivered" note="of {rows(destination.received)} received"
+          >{rows(destination.delivered)}</Figure
+        >
+        <Figure label="Refused" help={HELP.refused}>{rows(destination.rejected)}</Figure>
+        <Figure label="Sends that failed" help={HELP.sendFailed}
+          >{rows(destination.sendFailed)}</Figure
+        >
+        <Figure label="Stalls">{rows(destination.stalls)}</Figure>
+        {#if destination.roundTripMs !== null}
+          <Figure label="Round trip">{millis(destination.roundTripMs)}</Figure>
+        {/if}
+      {/if}
+    </Figures>
+    <section>
+      <h3 class="with-range"><span>Over the last {chart.label}</span>{@render rangePicker()}</h3>
+      <div class="charts">
+        {#each charts as c (c.title)}
+          <div>
+            <h4>{c.title}</h4>
+            {@render overWindow(c.label, c.points, c.band)}
+          </div>
+        {/each}
+      </div>
+    </section>
+    {#if destination && destination.rejectedBySource.length > 0}
+      <section>
+        <h3>Refused, by source</h3>
+        <dl class="facts">
+          {#each destination.rejectedBySource as r (r.source)}
+            <dt class="mono">{r.source}</dt>
+            <dd class="mono">{rows(r.rejected)}</dd>
+          {/each}
+        </dl>
+      </section>
+    {/if}
+    {@render connectedChips()}
   {:else if shown === 'overview'}
     <section>
       <h3 class="with-range">
         <span>
           Throughput
-          <Help label="Throughput">
-            This object's rate in this worker group, from the newest closed bucket. Lines on the map
-            show connections, not volume.</Help
-          >
+          <Help label="Throughput">{HELP.throughput}</Help>
         </span>
         {@render rangePicker()}
       </h3>
@@ -434,9 +576,7 @@
         <dd class="mono" class:warn={outsideNormal}>{rate(overviewRate)}</dd>
         {#if expected}
           <dt>
-            Expected <Help label="Expected"
-              >What this source normally reads at this time of day, learned from its past weeks.</Help
-            >
+            Expected <Help label="Expected">{HELP.expected}</Help>
           </dt>
           <dd class="mono">{perSecondText(expected.low)}–{perSecondText(expected.high)} rows/s</dd>
         {/if}
@@ -473,9 +613,7 @@
           <dt>Delivered</dt>
           <dd class="mono">{rows(destination.delivered)}</dd>
           <dt>
-            Refused <Help label="Refused"
-              >Rows the destination examined and rejected for good; no retry changes that.</Help
-            >
+            Refused <Help label="Refused">{HELP.refused}</Help>
           </dt>
           <dd class="mono">{rows(destination.rejected)}</dd>
           {#each destination.rejectedBySource as r (r.source)}
@@ -483,10 +621,7 @@
             <dd class="mono dim">{rows(r.rejected)}</dd>
           {/each}
           <dt>
-            Sends that failed <Help label="Sends that failed"
-              >Rows that could not even be buffered for sending. They are retried and may still
-              arrive.</Help
-            >
+            Sends that failed <Help label="Sends that failed">{HELP.sendFailed}</Help>
           </dt>
           <dd class="mono">{rows(destination.sendFailed)}</dd>
           <dt>Stalls</dt>
@@ -526,32 +661,52 @@
       </section>
     {/if}
 
-    {#if connected.length > 0}
-      <section>
-        <h3>{connectedHeading}</h3>
-        <!-- By kind, since a source and the pipeline it feeds often share a name. -->
-        {#each ['source', 'pipeline', 'destination'] as kind (kind)}
-          {@const of = connected.filter((c) => c.node.kind === kind)}
-          {#if of.length > 0}
-            <div class="chips">
-              <span class="chip-kind uppercase-label">{kind}s</span>
-              {#each of as c (c.hash)}
-                <a class="chip mono" href={c.hash}>{c.node.name}</a>
-              {/each}
-            </div>
-          {/if}
-        {/each}
-      </section>
-    {/if}
+    {@render connectedChips()}
+  {:else if wide && shown === 'buffers' && destination}
+    <section>
+      <h3>
+        Worker buffers
+        <Help label="Worker buffers">{HELP.buffers}</Help>
+      </h3>
+      {#if workers.total === 0}
+        <p class="dim small">
+          No worker has reported this buffer. A missing reading is not an empty one.
+        </p>
+      {:else}
+        <table class="readings">
+          <thead>
+            <tr><th>Worker</th><th colspan="2">Fill</th><th class="num">Held</th><th></th></tr>
+          </thead>
+          <tbody>
+            {#each workers.rows as q (q.worker)}
+              {@const share = queueShare(q)}
+              {@const near = !q.stale && share >= QUEUE_ALARM}
+              <tr>
+                <td class="mono">{q.worker}</td>
+                <td class="bar-col"
+                  ><span class="bar" class:stale={q.stale} aria-hidden="true"
+                    ><span
+                      class="fill"
+                      class:alarm={near}
+                      style="width: {Math.min(100, share * 100)}%"
+                    ></span></span
+                  ></td
+                >
+                <td class="num mono" class:alarm={near}>{percent(share)}</td>
+                <td class="num mono dim">{bytes(q.bytes)} / {bytes(q.budget)}</td>
+                <td class="dim">{q.stale ? 'stale' : near ? 'near capacity' : ''}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+        {@render workerPager()}
+      {/if}
+    </section>
   {:else if shown === 'buffers' && destination}
     <section>
       <h3>
         Worker buffers
-        <Help label="Worker buffers">
-          Bytes each worker holds for this destination against its own budget, from its latest
-          heartbeat. The busiest current worker sets the overview's figure, so one full worker is
-          never averaged away. A figure can pass 100%; only the bar stops there.</Help
-        >
+        <Help label="Worker buffers">{HELP.buffers}</Help>
       </h3>
       {#if workers.total === 0}
         <p class="dim small">
@@ -578,36 +733,33 @@
             </li>
           {/each}
         </ul>
-        {#if workers.pages > 1}
-          <div class="pager">
-            <Button
-              type="button"
-              class="icon"
-              disabled={workers.page === 0 ? FIRST_PAGE : ''}
-              onclick={() => (page = workers.page - 1)}
-              aria-label="Previous workers">&lsaquo;</Button
-            >
-            <span class="small">{workers.start}&ndash;{workers.end} of {workers.total}</span>
-            <Button
-              type="button"
-              class="icon"
-              disabled={workers.page === workers.pages - 1 ? LAST_PAGE : ''}
-              onclick={() => (page = workers.page + 1)}
-              aria-label="Next workers">&rsaquo;</Button
-            >
-          </div>
-        {/if}
+        {@render workerPager()}
       {/if}
+    </section>
+  {:else if wide && shown === 'backlog' && source}
+    <Figures>
+      {@render lagFigures()}
+      <Figure label="Read over the window">{rows(source.polled)}</Figure>
+    </Figures>
+    <section>
+      <h3 class="with-range"><span>Over the last {chart.label}</span>{@render rangePicker()}</h3>
+      <div class="charts stacked">
+        <div>
+          <h4>Kafka lag</h4>
+          {@render overWindow('records', lagPoints)}
+        </div>
+        <div>
+          <h4>Rows per second</h4>
+          {@render overWindow('rows/s', ratePoints, chartBand)}
+        </div>
+      </div>
     </section>
   {:else if shown === 'backlog' && source}
     <section>
       <h3 class="with-range">
         <span>
           Kafka lag
-          <Help label="Kafka lag">
-            Records waiting in Kafka for this source, outside smeltr's own buffers. Lag alone is not
-            backpressure: intake is held only when a worker reports it.</Help
-          >
+          <Help label="Kafka lag">{HELP.lag}</Help>
         </span>
         {@render rangePicker()}
       </h3>
@@ -623,14 +775,60 @@
       </dl>
       {@render overWindow('records', lagPoints)}
     </section>
+  {:else if wide && shown === 'steps' && pipeline}
+    <Figures>{@render rowFigures(pipeline)}</Figures>
+    <section>
+      <h3>
+        Steps
+        <Help label="Steps">{HELP.steps}</Help>
+      </h3>
+      {#if pipeline.steps.length === 0}
+        <p class="dim small">No steps: every row passes through unchanged.</p>
+      {:else}
+        <table class="readings">
+          <thead>
+            <tr
+              ><th class="num">#</th><th>Step</th><th class="num">Time</th><th colspan="2"
+                >Share of the time</th
+              ><th class="num">Dropped</th><th class="num">Exceptions</th></tr
+            >
+          </thead>
+          <tbody>
+            {#each pipeline.steps as step, i (step.step)}
+              {@const share = shareOfTime(step.micros, spent)}
+              <tr>
+                <td class="num dim">{i + 1}</td>
+                <td>{step.step}</td>
+                <td class="num mono">{micros(step.micros)}</td>
+                <td class="bar-col"
+                  ><span class="bar" aria-hidden="true"
+                    ><span class="fill" style="width: {(share ?? 0) * 100}%"></span></span
+                  ></td
+                >
+                <td class="num mono">{share === null ? '' : percent(share)}</td>
+                <td class="num mono" class:dim={step.dropped === 0}>{rows(step.dropped)}</td>
+                <td class="num mono" class:dim={step.errored === 0} class:alarm={step.errored > 0}
+                  >{rows(step.errored)}</td
+                >
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
+    </section>
+    {#if pipeline.perRow}
+      <section>
+        <h3 class="with-range">
+          <span>Time per row, over the last {chart.label}</span>{@render rangePicker()}
+        </h3>
+        {@render overWindow('µs', slotsOf(pipeline.perRow))}
+      </section>
+    {/if}
   {:else if shown === 'steps' && pipeline}
     <section>
       <h3>
         Steps
-        <Help label="Steps">
-          In the order they run. The bar is each step's share of the time; the counts are the rows
-          it dropped or errored.</Help
-        >
+        <Help label="Steps">{HELP.steps}</Help>
       </h3>
       {#if pipeline.steps.length === 0}
         <p class="dim small">No steps: every row passes through unchanged.</p>
@@ -655,32 +853,99 @@
         </ul>
       {/if}
     </section>
+  {:else if wide && shown === 'history'}
+    {#if pastError}
+      <p class="problem">{pastError}</p>
+    {:else if !past}
+      <p class="dim">Reading&hellip;</p>
+    {:else}
+      <section>
+        <h3>Past year</h3>
+        <svg class="year" viewBox="0 0 100 14" preserveAspectRatio="none" aria-hidden="true">
+          {#each past.silences as span (`s${span.fromMillis}`)}
+            {@render onYear(span, 'spell', 8, 5)}
+          {/each}
+          {#each past.warnings as span (`w${span.fromMillis}`)}
+            {@render onYear(span, 'warned', 1, 6)}
+          {/each}
+        </svg>
+        <div class="months mono dim" aria-hidden="true">
+          {#each months as m (m.at)}<span style="left: {acrossYear(m.at)}%">{m.label}</span>{/each}
+        </div>
+        <div class="legend dim small" aria-hidden="true">
+          <span><i class="key warned"></i> Warnings</span>
+          <span><i class="key spell"></i> Longest quiet spells</span>
+        </div>
+      </section>
+      <div class="columns">
+        {@render pastSpans('Warnings', WARNINGS_HELP, past.warnings)}
+        {@render pastSpans('Longest quiet spells', SPELLS_HELP, past.silences)}
+      </div>
+    {/if}
   {:else if shown === 'history'}
     {#if pastError}
       <p class="problem">{pastError}</p>
     {:else if !past}
       <p class="dim">Reading&hellip;</p>
     {:else}
-      {@render pastSpans(
-        'Warnings',
-        'Rows below normal warnings of the past year. The windows a warning read are not learned unless marked Normal; marking the one that holds Normal teaches the level the source reads now.',
-        past.warnings,
-      )}
-      {@render pastSpans(
-        'Longest quiet spells',
-        "The source's longest quiet spells of the past year. The longest one learned sets how long the source may go without a row before it warns.",
-        past.silences,
-      )}
+      {@render pastSpans('Warnings', WARNINGS_HELP, past.warnings)}
+      {@render pastSpans('Longest quiet spells', SPELLS_HELP, past.silences)}
     {/if}
+  {:else if wide && shown === 'routes'}
+    <section>
+      <h3>
+        Routes
+        <Help label="Routes">{HELP.routes}</Help>
+      </h3>
+      {#if routes.length === 0}
+        <p class="dim small">
+          {node.kind === 'destination' ? 'Reached only by a fallback.' : 'On no route.'}
+        </p>
+      {:else}
+        <table class="readings">
+          <thead>
+            <tr
+              ><th>Route</th><th>Source</th><th>Condition</th><th>Pipeline</th><th>Delivers to</th
+              >{#if source}<th class="num">Matched</th><th class="num">Share</th>{/if}</tr
+            >
+          </thead>
+          <tbody>
+            {#each routes as r (r.route)}
+              {@const matched = routeShares.get(r.route)}
+              <tr>
+                <td class="mono">{r.route}</td>
+                <td class="mono">{r.source}</td>
+                <td class="mono condition-cell">{r.condition ? `if ${r.condition}` : ''}</td>
+                <td class="mono">{pipelineName(r.pipeline)}</td>
+                <td class="mono">
+                  {#each delivers.filter((d) => d.route === r.route) as d, i (i)}
+                    <div>
+                      {d.destination}{#if d.when}<span class="dim"> when {d.when}</span>{/if}
+                    </div>
+                  {/each}
+                </td>
+                {#if source}
+                  <td class="num mono">{matched === undefined ? '' : rows(matched)}</td>
+                  <td class="num mono"
+                    >{matched === undefined
+                      ? ''
+                      : percent(source.polled > 0 ? matched / source.polled : null)}</td
+                  >
+                {/if}
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
+      {#if source}
+        <p class="dim small">{rows(source.unmatched)} of {rows(source.polled)} met Unmatched.</p>
+      {/if}
+    </section>
   {:else if shown === 'routes'}
     <section>
       <h3>
         Routes
-        <Help label="Routes">
-          A route's condition picks rows from its source; each delivery's condition picks which of
-          them go to that destination. Conditions can overlap, so a source's matches can add up past
-          what it read.</Help
-        >
+        <Help label="Routes">{HELP.routes}</Help>
       </h3>
       {#if routes.length === 0}
         <p class="dim small">
@@ -717,6 +982,78 @@
     </section>
   {/if}
 </MapPanel>
+
+{#snippet connectedChips()}
+  {#if connected.length > 0}
+    <section>
+      <h3>{connectedHeading}</h3>
+      <!-- By kind, since a source and the pipeline it feeds often share a name. -->
+      {#each ['source', 'pipeline', 'destination'] as kind (kind)}
+        {@const of = connected.filter((c) => c.node.kind === kind)}
+        {#if of.length > 0}
+          <div class="chips">
+            <span class="chip-kind uppercase-label">{kind}s</span>
+            {#each of as c (c.hash)}
+              <a class="chip mono" href={c.hash}>{c.node.name}</a>
+            {/each}
+          </div>
+        {/if}
+      {/each}
+    </section>
+  {/if}
+{/snippet}
+
+{#snippet lagFigures()}
+  <Figure
+    label="Kafka lag"
+    help={HELP.lag}
+    note={lagTrend()}
+    tone={lagClimbing ? 'warn' : undefined}
+    >{reading?.lag === undefined ? '—' : rows(reading.lag)}</Figure
+  >
+  <Figure label="Intake" tone={held ? 'alarm' : undefined}>{intake()}</Figure>
+{/snippet}
+
+{#snippet rowFigures(pipeline: PipelineStatsDto)}
+  <Figure label="Rows in">{rows(pipeline.rowsIn)}</Figure>
+  <Figure label="Rows out">{rows(pipeline.rowsOut)}</Figure>
+  {#if pipeline.microsPerRow !== undefined}
+    <Figure label="Per row">{micros(pipeline.microsPerRow)}</Figure>
+  {/if}
+{/snippet}
+
+{#snippet workerPager()}
+  {#if workers.pages > 1}
+    <div class="pager">
+      <Button
+        type="button"
+        class="icon"
+        disabled={workers.page === 0 ? FIRST_PAGE : ''}
+        onclick={() => (first = (workers.page - 1) * workersPerPage)}
+        aria-label="Previous workers">&lsaquo;</Button
+      >
+      <span class="small">{workers.start}&ndash;{workers.end} of {workers.total}</span>
+      <Button
+        type="button"
+        class="icon"
+        disabled={workers.page === workers.pages - 1 ? LAST_PAGE : ''}
+        onclick={() => (first = (workers.page + 1) * workersPerPage)}
+        aria-label="Next workers">&rsaquo;</Button
+      >
+    </div>
+  {/if}
+{/snippet}
+
+{#snippet onYear(span: PastSpan, kind: string, y: number, height: number)}
+  {@const x = acrossYear(span.fromMillis)}
+  <rect
+    class={kind}
+    x={Math.min(x, 99.6)}
+    {y}
+    width={Math.max(0.4, acrossYear(span.toMillis) - x)}
+    {height}
+  />
+{/snippet}
 
 {#snippet pastSpans(heading: string, help: string, spans: PastSpan[])}
   <section>
@@ -858,6 +1195,94 @@
 
   .warn {
     color: var(--warn);
+  }
+
+  /* The wide panel's charts, two to a row unless stacked to share one time axis. */
+  .charts {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem 1.5rem;
+  }
+
+  .charts.stacked {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .charts h4 {
+    margin: 0 0 0.4rem;
+    font-size: var(--text-label);
+    font-weight: 600;
+  }
+
+  .charts :global(.sparkline svg) {
+    height: 140px;
+  }
+
+  /* Two lists side by side in the wide panel, under one rule. */
+  .columns {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 2rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .columns > section {
+    border-top: 0;
+  }
+
+  .readings .bar-col {
+    width: 40%;
+  }
+
+  .readings .bar {
+    margin-top: 0;
+  }
+
+  .condition-cell {
+    font-size: var(--text-label);
+  }
+
+  /* The past year on one strip: warnings above, quiet spells below. */
+  .year {
+    display: block;
+    width: 100%;
+    height: 3.5rem;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+
+  .warned {
+    fill: var(--warn);
+    background: var(--warn);
+  }
+
+  .spell {
+    fill: var(--ink);
+    background: var(--ink);
+  }
+
+  .months {
+    position: relative;
+    height: 1.2rem;
+    font-size: var(--text-micro);
+  }
+
+  .months span {
+    position: absolute;
+    top: 0.2rem;
+  }
+
+  .legend {
+    display: flex;
+    gap: 1.2rem;
+  }
+
+  .key {
+    display: inline-block;
+    width: 0.7rem;
+    height: 0.7rem;
+    vertical-align: -0.05rem;
   }
 
   .with-range {

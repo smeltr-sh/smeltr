@@ -83,6 +83,8 @@ export type Route =
         stack?: boolean;
         /** How far back its charts reach (`chartRanges`); absent is the default. */
         range?: string;
+        /** Whether the panel fills the map's width, the map set aside while it is read. */
+        wide?: boolean;
       };
       // What the search starts with, for a link that picks out several nodes at once.
       q?: string;
@@ -450,6 +452,7 @@ export function parseRoute(hash: string): Route {
                 panel: params.get('panel') ?? undefined,
                 ...(params.get('stack') === '1' ? { stack: true } : {}),
                 ...(params.get('range') ? { range: params.get('range')! } : {}),
+                ...(params.get('wide') === '1' ? { wide: true } : {}),
               }
             : undefined,
       };

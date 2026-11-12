@@ -58,7 +58,8 @@ the reader's own choice. `src/CrossIcon.svelte` is remove or close -- take this 
 of the list it is in, or close or clear what is on screen -- and `src/CrossButton.svelte` is the control that
 offers it. Only remove reddens on hover: it is the one Save makes stick. `src/DisableIcon.svelte` is disable -- keep a step in its pipeline but
 out of play. `src/ChevronIcon.svelte` is fold -- it points right while what it folds is
-closed and down while it is open; a button that is only the chevron is an `icon` control. Renaming is not its own sign: it is the editor a worker group happens to
+closed and down while it is open; a button that is only the chevron is an `icon` control. `src/WidenIcon.svelte` is
+widen -- spread the map's panel across the page, and narrow it back. Renaming is not its own sign: it is the editor a worker group happens to
 have, having nothing else to change in place.
 
 A state has a sign, `src/StateMark.svelte`: a dot for info, a check for ok,

@@ -211,4 +211,17 @@ test('an editor says a quiet spell of a sparse source was an outage, and its nor
   );
   expect((await api.get(past)).silences[0].learned).toBe(false);
   await shoot(admin, '7-outage');
+
+  // Widened, the panel takes the map's place on the same tab; Escape gives the map back.
+  const band = admin.getByRole('region', { name: 'edge', exact: true });
+  await panel.getByRole('link', { name: 'Widen' }).click();
+  await expect(band).toBeHidden();
+  await expect(spell.getByRole('button', { name: 'Outage' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await shoot(admin, '8-history-wide');
+  await admin.keyboard.press('Escape');
+  await expect(band).toBeVisible();
+  await expect(panel.getByRole('link', { name: 'Widen' })).toBeVisible();
 });
