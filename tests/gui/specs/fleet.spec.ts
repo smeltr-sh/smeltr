@@ -541,7 +541,11 @@ test('rows that do not come out are put down to a route or a step', async ({
 
   await east.getByRole('link', { name: /trim/ }).click();
   await focus(admin, 'trim').getByRole('link', { name: 'Steps' }).click();
-  await expect(focus(admin, 'trim').getByText(/[1-9][\d,]* dropped/)).toBeVisible({
+  const dropped = focus(admin, 'trim')
+    .getByRole('row')
+    .filter({ hasText: 'no-polled' })
+    .locator('[data-label="Dropped"]');
+  await expect(dropped).toHaveText(/[1-9]/, {
     timeout: 40_000,
   });
 });

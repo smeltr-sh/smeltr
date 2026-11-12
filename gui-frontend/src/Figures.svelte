@@ -12,7 +12,7 @@
 <style>
   .figures {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
     gap: 0.6rem;
   }
 </style>

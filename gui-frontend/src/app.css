@@ -86,6 +86,51 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* In a narrow container each row wraps onto lines of its own: a `.whole` cell takes a line to itself, a cell names
+   what it holds by its `data-label`, and an empty one is left out. */
+@container (max-width: 32rem) {
+  :where(table.readings, table.readings tbody) {
+    display: block;
+  }
+
+  :where(table.readings thead) {
+    display: none;
+  }
+
+  :where(table.readings tr) {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.25rem 0.75rem;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  :where(table.readings td) {
+    padding: 0;
+    border: 0;
+  }
+
+  :where(table.readings td:empty) {
+    display: none;
+  }
+
+  :where(table.readings td[data-label]) {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 0.3rem;
+  }
+
+  :where(table.readings td[data-label])::before {
+    content: attr(data-label);
+    color: var(--dim);
+  }
+
+  :where(table.readings .whole) {
+    flex-basis: 100%;
+  }
+}
+
 /* Read by a screen reader, not drawn. */
 :where(.visually-hidden) {
   position: absolute;

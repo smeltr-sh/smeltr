@@ -125,7 +125,8 @@
      * switches scope here first. */
     onedit?: () => void;
     onclose: () => void;
-    /** Whether the panel fills the map's width, which gives every tab its wide layout. */
+    /** Whether the panel fills the map's width. Each tab lays itself out for the width it gets;
+     * this sets how many workers the Buffers tab lists to a page. */
     wide?: boolean;
     /** The link that widens the panel, or narrows it when it is wide. */
     wideHash: string;
@@ -504,7 +505,7 @@
         <li>{e.message}</li>
       {/each}
     </ul>
-  {:else if wide && shown === 'overview'}
+  {:else if shown === 'overview'}
     <Figures>
       <Figure label={scope} help={HELP.throughput} tone={outsideNormal ? 'warn' : undefined}
         >{rate(overviewRate)}</Figure
@@ -562,107 +563,7 @@
       </section>
     {/if}
     {@render connectedChips()}
-  {:else if shown === 'overview'}
-    <section>
-      <h3 class="with-range">
-        <span>
-          Throughput
-          <Help label="Throughput">{HELP.throughput}</Help>
-        </span>
-        {@render rangePicker()}
-      </h3>
-      <dl class="facts">
-        <dt>{scope}</dt>
-        <dd class="mono" class:warn={outsideNormal}>{rate(overviewRate)}</dd>
-        {#if expected}
-          <dt>
-            Expected <Help label="Expected">{HELP.expected}</Help>
-          </dt>
-          <dd class="mono">{perSecondText(expected.low)}–{perSecondText(expected.high)} rows/s</dd>
-        {/if}
-        {#if ageSeconds !== null}
-          <dt>Last seen</dt>
-          <dd class:dim={!stale}>{ageSeconds} s ago</dd>
-        {/if}
-      </dl>
-      {@render overWindow('rows/s', ratePoints, chartBand)}
-    </section>
-
-    {#if destination}
-      <section>
-        <h3>Buffers</h3>
-        {#if queue?.busiest !== undefined}
-          <div class="summary" class:alarm={queue.busiest >= QUEUE_ALARM}>
-            <strong class="mono">{percent(queue.busiest)}</strong>
-            <span class="dim">busiest worker</span>
-          </div>
-          <p class="dim small">
-            {queue.fresh} fresh{queue.stale > 0 ? ` · ${queue.stale} stale` : ''} &middot; {queue.workers}
-            {queue.workers === 1 ? 'worker' : 'workers'} in the group
-          </p>
-        {:else}
-          <p class="dim small">No current worker has reported this buffer.</p>
-        {/if}
-        <a class="link small" href={tabHash('buffers')}>Every worker &rarr;</a>
-      </section>
-      <section>
-        <h3>Over the window</h3>
-        <dl class="facts">
-          <dt>Received</dt>
-          <dd class="mono">{rows(destination.received)}</dd>
-          <dt>Delivered</dt>
-          <dd class="mono">{rows(destination.delivered)}</dd>
-          <dt>
-            Refused <Help label="Refused">{HELP.refused}</Help>
-          </dt>
-          <dd class="mono">{rows(destination.rejected)}</dd>
-          {#each destination.rejectedBySource as r (r.source)}
-            <dt class="indent dim">from {r.source}</dt>
-            <dd class="mono dim">{rows(r.rejected)}</dd>
-          {/each}
-          <dt>
-            Sends that failed <Help label="Sends that failed">{HELP.sendFailed}</Help>
-          </dt>
-          <dd class="mono">{rows(destination.sendFailed)}</dd>
-          <dt>Stalls</dt>
-          <dd class="mono">{rows(destination.stalls)}</dd>
-          {#if destination.roundTripMs !== null}
-            <dt>Round trip</dt>
-            <dd class="mono">{millis(destination.roundTripMs)}</dd>
-          {/if}
-        </dl>
-      </section>
-    {:else if source && hasLag}
-      <section>
-        <h3>Backlog</h3>
-        <dl class="facts">
-          <dt>Kafka lag</dt>
-          <dd class="mono">{reading?.lag === undefined ? '—' : `${rows(reading.lag)} records`}</dd>
-          <dt>Trend</dt>
-          <dd class:warn={lagClimbing}>{lagTrend()}</dd>
-          <dt>Intake</dt>
-          <dd class:alarm={held}>{intake()}</dd>
-        </dl>
-        <a class="link small" href={tabHash('backlog')}>Backlog &rarr;</a>
-      </section>
-    {:else if pipeline}
-      <section>
-        <h3>Over the window</h3>
-        <dl class="facts">
-          <dt>Rows in</dt>
-          <dd class="mono">{rows(pipeline.rowsIn)}</dd>
-          <dt>Rows out</dt>
-          <dd class="mono">{rows(pipeline.rowsOut)}</dd>
-          {#if pipeline.microsPerRow !== undefined}
-            <dt>Per row</dt>
-            <dd class="mono">{micros(pipeline.microsPerRow)}</dd>
-          {/if}
-        </dl>
-      </section>
-    {/if}
-
-    {@render connectedChips()}
-  {:else if wide && shown === 'buffers' && destination}
+  {:else if shown === 'buffers' && destination}
     <section>
       <h3>
         Worker buffers
@@ -683,7 +584,7 @@
               {@const near = !q.stale && share >= QUEUE_ALARM}
               <tr>
                 <td class="mono">{q.worker}</td>
-                <td class="bar-col"
+                <td class="bar-col whole"
                   ><span class="bar" class:stale={q.stale} aria-hidden="true"
                     ><span
                       class="fill"
@@ -694,7 +595,9 @@
                 >
                 <td class="num mono" class:alarm={near}>{percent(share)}</td>
                 <td class="num mono dim">{bytes(q.bytes)} / {bytes(q.budget)}</td>
-                <td class="dim">{q.stale ? 'stale' : near ? 'near capacity' : ''}</td>
+                <td class="dim"
+                  >{#if q.stale}stale{:else if near}near capacity{/if}</td
+                >
               </tr>
             {/each}
           </tbody>
@@ -702,41 +605,7 @@
         {@render workerPager()}
       {/if}
     </section>
-  {:else if shown === 'buffers' && destination}
-    <section>
-      <h3>
-        Worker buffers
-        <Help label="Worker buffers">{HELP.buffers}</Help>
-      </h3>
-      {#if workers.total === 0}
-        <p class="dim small">
-          No worker has reported this buffer. A missing reading is not an empty one.
-        </p>
-      {:else}
-        <ul class="list">
-          {#each workers.rows as q (q.worker)}
-            {@const share = queueShare(q)}
-            {@const near = !q.stale && share >= QUEUE_ALARM}
-            <li>
-              <div class="row">
-                <span class="mono">{q.worker}</span>
-                <strong class="mono" class:alarm={near}>{percent(share)}</strong>
-              </div>
-              <div class="row dim small">
-                <span>{bytes(q.bytes)} / {bytes(q.budget)}</span>
-                <span>{q.stale ? 'stale' : near ? 'near capacity' : ''}</span>
-              </div>
-              <span class="bar" class:stale={q.stale} aria-hidden="true">
-                <span class="fill" class:alarm={near} style="width: {Math.min(100, share * 100)}%"
-                ></span>
-              </span>
-            </li>
-          {/each}
-        </ul>
-        {@render workerPager()}
-      {/if}
-    </section>
-  {:else if wide && shown === 'backlog' && source}
+  {:else if shown === 'backlog' && source}
     <Figures>
       {@render lagFigures()}
       <Figure label="Read over the window">{rows(source.polled)}</Figure>
@@ -754,28 +623,7 @@
         </div>
       </div>
     </section>
-  {:else if shown === 'backlog' && source}
-    <section>
-      <h3 class="with-range">
-        <span>
-          Kafka lag
-          <Help label="Kafka lag">{HELP.lag}</Help>
-        </span>
-        {@render rangePicker()}
-      </h3>
-      <div class="summary">
-        <strong class="mono">{reading?.lag === undefined ? '—' : rows(reading.lag)}</strong>
-        <span class="dim">records</span>
-      </div>
-      <dl class="facts">
-        <dt>Intake</dt>
-        <dd class:alarm={held}>{intake()}</dd>
-        <dt>Read over the window</dt>
-        <dd class="mono">{rows(source.polled)}</dd>
-      </dl>
-      {@render overWindow('records', lagPoints)}
-    </section>
-  {:else if wide && shown === 'steps' && pipeline}
+  {:else if shown === 'steps' && pipeline}
     <Figures>{@render rowFigures(pipeline)}</Figures>
     <section>
       <h3>
@@ -800,15 +648,22 @@
                 <td class="num dim">{i + 1}</td>
                 <td>{step.step}</td>
                 <td class="num mono">{micros(step.micros)}</td>
-                <td class="bar-col"
+                <td class="bar-col whole"
                   ><span class="bar" aria-hidden="true"
                     ><span class="fill" style="width: {(share ?? 0) * 100}%"></span></span
                   ></td
                 >
-                <td class="num mono">{share === null ? '' : percent(share)}</td>
-                <td class="num mono" class:dim={step.dropped === 0}>{rows(step.dropped)}</td>
-                <td class="num mono" class:dim={step.errored === 0} class:alarm={step.errored > 0}
-                  >{rows(step.errored)}</td
+                <td class="num mono"
+                  >{#if share !== null}{percent(share)}{/if}</td
+                >
+                <td class="num mono" class:dim={step.dropped === 0} data-label="Dropped"
+                  >{rows(step.dropped)}</td
+                >
+                <td
+                  class="num mono"
+                  class:dim={step.errored === 0}
+                  class:alarm={step.errored > 0}
+                  data-label="Exceptions">{rows(step.errored)}</td
                 >
               </tr>
             {/each}
@@ -824,36 +679,7 @@
         {@render overWindow('µs', slotsOf(pipeline.perRow))}
       </section>
     {/if}
-  {:else if shown === 'steps' && pipeline}
-    <section>
-      <h3>
-        Steps
-        <Help label="Steps">{HELP.steps}</Help>
-      </h3>
-      {#if pipeline.steps.length === 0}
-        <p class="dim small">No steps: every row passes through unchanged.</p>
-      {:else}
-        <ul class="list">
-          {#each pipeline.steps as step (step.step)}
-            {@const share = shareOfTime(step.micros, spent)}
-            <li>
-              <div class="row">
-                <span>{step.step}</span>
-                <span class="mono dim small">
-                  {micros(step.micros)}{share === null ? '' : ` · ${percent(share)}`}
-                  {#if step.dropped > 0}&middot; {rows(step.dropped)} dropped{/if}
-                  {#if step.errored > 0}&middot; {rows(step.errored)} errored{/if}
-                </span>
-              </div>
-              <span class="bar" aria-hidden="true">
-                <span class="fill" style="width: {(share ?? 0) * 100}%"></span>
-              </span>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    </section>
-  {:else if wide && shown === 'history'}
+  {:else if shown === 'history'}
     {#if pastError}
       <p class="problem">{pastError}</p>
     {:else if !past}
@@ -882,16 +708,7 @@
         {@render pastSpans('Longest quiet spells', SPELLS_HELP, past.silences)}
       </div>
     {/if}
-  {:else if shown === 'history'}
-    {#if pastError}
-      <p class="problem">{pastError}</p>
-    {:else if !past}
-      <p class="dim">Reading&hellip;</p>
-    {:else}
-      {@render pastSpans('Warnings', WARNINGS_HELP, past.warnings)}
-      {@render pastSpans('Longest quiet spells', SPELLS_HELP, past.silences)}
-    {/if}
-  {:else if wide && shown === 'routes'}
+  {:else if shown === 'routes'}
     <section>
       <h3>
         Routes
@@ -914,10 +731,12 @@
               {@const matched = routeShares.get(r.route)}
               <tr>
                 <td class="mono">{r.route}</td>
-                <td class="mono">{r.source}</td>
-                <td class="mono condition-cell">{r.condition ? `if ${r.condition}` : ''}</td>
-                <td class="mono">{pipelineName(r.pipeline)}</td>
-                <td class="mono">
+                <td class="mono" data-label="Source">{r.source}</td>
+                <td class="mono condition-cell whole"
+                  >{#if r.condition}if {r.condition}{/if}</td
+                >
+                <td class="mono" data-label="Pipeline">{pipelineName(r.pipeline)}</td>
+                <td class="mono" data-label="Delivers to">
                   {#each delivers.filter((d) => d.route === r.route) as d, i (i)}
                     <div>
                       {d.destination}{#if d.when}<span class="dim"> when {d.when}</span>{/if}
@@ -925,56 +744,19 @@
                   {/each}
                 </td>
                 {#if source}
-                  <td class="num mono">{matched === undefined ? '' : rows(matched)}</td>
+                  <td class="num mono" data-label="Matched"
+                    >{#if matched !== undefined}{rows(matched)}{/if}</td
+                  >
                   <td class="num mono"
-                    >{matched === undefined
-                      ? ''
-                      : percent(source.polled > 0 ? matched / source.polled : null)}</td
+                    >{#if matched !== undefined}{percent(
+                        source.polled > 0 ? matched / source.polled : null,
+                      )}{/if}</td
                   >
                 {/if}
               </tr>
             {/each}
           </tbody>
         </table>
-      {/if}
-      {#if source}
-        <p class="dim small">{rows(source.unmatched)} of {rows(source.polled)} met Unmatched.</p>
-      {/if}
-    </section>
-  {:else if shown === 'routes'}
-    <section>
-      <h3>
-        Routes
-        <Help label="Routes">{HELP.routes}</Help>
-      </h3>
-      {#if routes.length === 0}
-        <p class="dim small">
-          {node.kind === 'destination' ? 'Reached only by a fallback.' : 'On no route.'}
-        </p>
-      {:else}
-        <ul class="list">
-          {#each routes as r (r.route)}
-            {@const matched = routeShares.get(r.route)}
-            <li>
-              <div class="row">
-                <span class="mono">{r.route}</span>
-                {#if matched !== undefined && source}
-                  <span class="mono dim small"
-                    >{rows(matched)} &middot; {percent(
-                      source.polled > 0 ? matched / source.polled : null,
-                    )}</span
-                  >
-                {/if}
-              </div>
-              <div class="small mono dim">{r.source} &rarr; {pipelineName(r.pipeline)}</div>
-              {#if r.condition}<div class="condition mono small">if {r.condition}</div>{/if}
-              {#each delivers.filter((d) => d.route === r.route) as d, i (i)}
-                <div class="small mono dim">&rarr; {d.destination}</div>
-                {#if d.when}<div class="condition mono small">when {d.when}</div>{/if}
-              {/each}
-            </li>
-          {/each}
-        </ul>
       {/if}
       {#if source}
         <p class="dim small">{rows(source.unmatched)} of {rows(source.polled)} met Unmatched.</p>
@@ -1197,10 +979,10 @@
     color: var(--warn);
   }
 
-  /* The wide panel's charts, two to a row unless stacked to share one time axis. */
+  /* Charts side by side where the panel has room, unless stacked to share one time axis. */
   .charts {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 30rem), 1fr));
     gap: 1rem 1.5rem;
   }
 
@@ -1214,14 +996,16 @@
     font-weight: 600;
   }
 
-  .charts :global(.sparkline svg) {
-    height: 140px;
+  @container panel (min-width: 40rem) {
+    .charts :global(.sparkline svg) {
+      height: 140px;
+    }
   }
 
-  /* Two lists side by side in the wide panel, under one rule. */
+  /* Two lists side by side where the panel has room, under one rule. */
   .columns {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
     gap: 0 2rem;
     border-top: 1px solid var(--border);
   }
@@ -1230,13 +1014,17 @@
     border-top: 0;
   }
 
-  .readings .bar-col {
-    width: 40%;
-  }
+  /* The table layout, used while the panel is wide enough; in a narrower panel its rows wrap instead
+     (app.css, `table.readings`). */
+  @container panel (width > 32rem) {
+    .readings .bar-col {
+      width: 40%;
+    }
 
-  /* The bar's percentage, kept beside its bar. */
-  .readings .bar-col + td {
-    width: 1%;
+    /* The cell holding a bar's percentage is only as wide as the number, so it sits beside the bar. */
+    .readings .bar-col + td {
+      width: 1%;
+    }
   }
 
   .readings .bar {
@@ -1311,10 +1099,6 @@
     gap: 0.25rem;
   }
 
-  .facts .indent {
-    padding-left: 0.8rem;
-  }
-
   .facts dd {
     margin: 0;
     text-align: right;
@@ -1325,21 +1109,6 @@
     justify-content: space-between;
     margin-top: 0.2rem;
     font-size: var(--text-micro);
-  }
-
-  .summary {
-    display: flex;
-    align-items: baseline;
-    gap: 0.5rem;
-    margin-bottom: 0.3rem;
-  }
-
-  .summary strong {
-    font-size: var(--text-section);
-  }
-
-  .summary.alarm strong {
-    color: var(--error);
   }
 
   .chips {
@@ -1419,14 +1188,6 @@
 
   .fill.alarm {
     background: var(--error);
-  }
-
-  .condition {
-    margin: 0.15rem 0 0.25rem;
-    padding: 0.2rem 0.4rem;
-    border-radius: var(--radius);
-    background: var(--panel);
-    overflow-wrap: anywhere;
   }
 
   .pager {
