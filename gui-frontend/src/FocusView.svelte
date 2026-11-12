@@ -1234,6 +1234,11 @@
     width: 40%;
   }
 
+  /* The bar's percentage, kept beside its bar. */
+  .readings .bar-col + td {
+    width: 1%;
+  }
+
   .readings .bar {
     margin-top: 0;
   }
