@@ -48,3 +48,23 @@ describe('rows still being written', () => {
     expect(held.restore(error(0)).assignmentIndex).toBe(1);
   });
 });
+
+describe('Call steps still being written', () => {
+  const callOf = (pipeline: string): Step => ({
+    type: 'call',
+    id: 'c',
+    filter: '',
+    disabled: false,
+    pipeline,
+  });
+
+  it('leaves out a Call step that names no pipeline yet, inside an If too', () => {
+    const iff: Step = { type: 'if', id: 'i', condition: 'true', then: [callOf('')], else: [] };
+    const { steps } = new UnfinishedRows().hold([callOf(''), iff]);
+    expect(steps).toEqual([{ ...iff, then: [] }]);
+  });
+
+  it('sends a Call step once it names a pipeline', () => {
+    expect(new UnfinishedRows().hold([callOf('pipeline-a')]).steps).toEqual([callOf('pipeline-a')]);
+  });
+});

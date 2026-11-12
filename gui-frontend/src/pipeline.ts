@@ -5,6 +5,7 @@
 // loader accepts, tag for tag.
 
 import type { OnboardProposal } from './api';
+import type { PipelineNames } from './pipelineNames';
 
 /** A field's declared type. `object` is a `Struct` and `arrayOfObjects` is
  * `Array(Struct)`, each with fields of named types: the one level of nesting
@@ -636,14 +637,17 @@ export function shownInto(into: string): string | null {
 
 /** A step as the records name it: its number in the step list, its type and
  * what it does. */
-export function stepName(step: Step, number: number): string {
-  return `Step ${number} · ${STEP_LABELS[step.type]} · ${stepSummary(step)}`;
+export function stepName(step: Step, number: number, pipelineNames: PipelineNames): string {
+  return `Step ${number} · ${STEP_LABELS[step.type]} · ${stepSummary(step, pipelineNames)}`;
 }
+
+/** A step with its number in the step list, and its `stepName`. */
+export type NumberedStep = { step: Step; number: number; name: string };
 
 /** What a step is made of, shown one line each, as a review compares them: an
  * eval's assignments, a rename's pairs, a removal's names, a code step's lines,
  * and any other step as a single line. */
-export function stepParts(step: Step): string[] {
+export function stepParts(step: Step, pipelineNames: PipelineNames): string[] {
   switch (step.type) {
     case 'eval':
       return step.assignments.map((a) => `${a.target || '…'} = ${a.expr || '…'}`);
@@ -654,24 +658,27 @@ export function stepParts(step: Step): string[] {
     case 'code':
       return step.body.split('\n');
     default:
-      return [stepSummary(step)];
+      return [stepSummary(step, pipelineNames)];
   }
 }
 
-export function stepSummary(step: Step): string {
+/** What `step` does, in one line, a Call step naming the pipeline it runs by `pipelineNames`. */
+export function stepSummary(step: Step, pipelineNames: PipelineNames): string {
   switch (step.type) {
     case 'if':
       return `if ${step.condition || '…'}`;
     case 'comment':
       return step.text || '(empty comment)';
     case 'eval':
-      return step.assignments.length ? stepParts(step).join(', ') : '(no assignments)';
+      return step.assignments.length
+        ? stepParts(step, pipelineNames).join(', ')
+        : '(no assignments)';
     case 'code':
       return `${step.body.split('\n').filter((l) => l.trim()).length} line(s) of code`;
     case 'drop':
       return `drop where ${step.condition || '…'}`;
     case 'rename':
-      return step.pairs.length ? stepParts(step).join(', ') : '(no pairs)';
+      return step.pairs.length ? stepParts(step, pipelineNames).join(', ') : '(no pairs)';
     case 'remove':
       return step.fields.length
         ? `${step.fields.length} ${step.fields.length === 1 ? 'name' : 'names'}: ${step.fields.join(', ')}`
@@ -683,7 +690,7 @@ export function stepSummary(step: Step): string {
     case 'unroll':
       return `${step.field || '(no field)'}${step.keepParentFields ? ' (keeps parent fields)' : ''}`;
     case 'call':
-      return step.pipeline || '(no pipeline chosen)';
+      return pipelineNames[step.pipeline] || step.pipeline || '(no pipeline chosen)';
   }
 }
 
@@ -696,19 +703,24 @@ export interface StepDiffRow {
 
 /** Every top-level step that differs between `base` and `compare`, matched
  * by id. */
-export function diffSteps(base: Step[], compare: Step[]): StepDiffRow[] {
+export function diffSteps(
+  base: Step[],
+  compare: Step[],
+  pipelineNames: PipelineNames,
+): StepDiffRow[] {
   const byId = (steps: Step[]) => new Map(steps.map((s) => [s.id, s]));
   const baseById = byId(base);
   const compareById = byId(compare);
   const rows: StepDiffRow[] = [];
   for (const [id, step] of compareById) {
     const was = baseById.get(id);
-    if (!was) rows.push({ kind: 'added', summary: stepSummary(step) });
+    if (!was) rows.push({ kind: 'added', summary: stepSummary(step, pipelineNames) });
     else if (JSON.stringify(stepToDto(step)) !== JSON.stringify(stepToDto(was)))
-      rows.push({ kind: 'changed', summary: stepSummary(step) });
+      rows.push({ kind: 'changed', summary: stepSummary(step, pipelineNames) });
   }
   for (const [id, step] of baseById) {
-    if (!compareById.has(id)) rows.push({ kind: 'removed', summary: stepSummary(step) });
+    if (!compareById.has(id))
+      rows.push({ kind: 'removed', summary: stepSummary(step, pipelineNames) });
   }
   return rows;
 }

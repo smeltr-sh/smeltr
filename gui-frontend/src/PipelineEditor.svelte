@@ -41,6 +41,8 @@
     parseInputFor,
     stepSummary,
     diffSteps,
+    stepName,
+    type NumberedStep,
     type Step,
     type StepDiffRow,
     declareProposed,
@@ -235,7 +237,7 @@
       produces = draft.produces ?? [];
       return;
     }
-    const rows = diffSteps(steps, draft.steps);
+    const rows = diffSteps(steps, draft.steps, pipelineNames);
     if (draft.pipelineName !== pipelineName) {
       rows.unshift({
         kind: 'changed',
@@ -622,7 +624,7 @@
           () =>
             orderedStepErrors(steps, saveErrorsByStep).flatMap(({ step, messages }) =>
               messages.map((message) => ({
-                where: stepSummary(step),
+                where: stepSummary(step, pipelineNames),
                 message,
                 go: () => (jumpToStepId = step.id),
               })),
@@ -1396,9 +1398,14 @@
   // exceptions: the grid's own run carries it, by row.
   let attribution = $derived(gridRows ? new Map(gridRows.map((r) => [r.row, r])) : null);
 
-  /** Each step by id, with its number in the step list. */
+  /** Each step by id, with its number in the step list and its name. */
   let stepNumbers = $derived(
-    new Map(flatSteps(steps).map((step, i) => [step.id, { step, number: i + 1 }])),
+    new Map(
+      flatSteps(steps).map((step, i): [string, NumberedStep] => [
+        step.id,
+        { step, number: i + 1, name: stepName(step, i + 1, pipelineNames) },
+      ]),
+    ),
   );
 
   /** How many of the records shown each step dropped and failed. */

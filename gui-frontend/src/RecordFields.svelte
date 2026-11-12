@@ -23,7 +23,7 @@
   import ChevronIcon from './ChevronIcon.svelte';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { formatDiffValue } from './diff';
-  import { stepName, type Step } from './pipeline';
+  import type { NumberedStep, Step } from './pipeline';
   import StepGlyph from './StepGlyph.svelte';
   import Clamped from './Clamped.svelte';
   import { float } from './float';
@@ -65,7 +65,7 @@
     showTypes?: boolean;
     /** The steps that touched a field on this record, in the order they ran,
      * each with its number in the step list. Without it no step is shown. */
-    touched?: (path: string) => { step: Step; number: number }[];
+    touched?: (path: string) => NumberedStep[];
     onjump?: (step: Step) => void;
   } = $props();
 
@@ -113,7 +113,7 @@
   const nameWidth = (l: RecordLine) =>
     l.kind === 'more' ? 0 : l.depth * INDENT_CH + LEAD_CH + l.label.length;
 
-  type Touched = { step: Step; number: number };
+  type Touched = NumberedStep;
   const stepOf = (path: string) => touched?.(path).at(-1) ?? null;
   const same = (a: Touched | null, b: Touched | null) => a?.step.id === b?.step.id;
   let marks = $derived(runMarks(lines, stepOf, same));
@@ -191,7 +191,7 @@
         <button
           type="button"
           class="by-glyph"
-          aria-label={stepName(mark.step.step, mark.step.number)}
+          aria-label={mark.step.name}
           onclick={() => onjump?.(mark.step!.step)}><StepGlyph type={mark.step.step.type} /></button
         >
         {#if byOpen === field}
@@ -202,16 +202,14 @@
           >
             {#each by as t (t.step.id)}
               <button type="button" onclick={() => onjump?.(t.step)}
-                ><StepGlyph type={t.step.type} /> {stepName(t.step, t.number)}</button
+                ><StepGlyph type={t.step.type} /> {t.name}</button
               >
             {/each}
           </span>
         {/if}
       </span>
     {:else if mark.sign && mark.step}
-      <span title={stepName(mark.step.step, mark.step.number)}
-        ><StepGlyph type={mark.step.step.type} /></span
-      >
+      <span title={mark.step.name}><StepGlyph type={mark.step.step.type} /></span>
     {:else if mark.sign}{GLYPH[mark.state]}{/if}
   </span>
 {/snippet}

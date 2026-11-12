@@ -6,7 +6,7 @@
   their records here; what only one of them has comes in through its snippets.
 -->
 <script module lang="ts">
-  import type { Step } from './pipeline';
+  import type { NumberedStep, Step } from './pipeline';
 
   /** One row: a record on either side of what was done to it. */
   export type GridRow = {
@@ -46,7 +46,7 @@
   }
 
   /** The steps that touched a field, in the order they ran, each with its number in the step list. */
-  export type Touched = (path: string) => { step: Step; number: number }[];
+  export type Touched = (path: string) => NumberedStep[];
 </script>
 
 <script lang="ts">
