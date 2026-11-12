@@ -1151,6 +1151,45 @@ impl RegistryStore {
         Ok(out)
     }
 
+    /// Each subject of `metric` with a point above zero at `tier` at or after `since_ms`, and the first such point's
+    /// bucket.
+    pub fn firsts_since(&self, metric: &str, tier: Tier, since_ms: i64) -> Result<Vec<(String, i64)>, StoreError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare_cached(
+            "SELECT s.labels_json, (SELECT MIN(p.bucket_ms) FROM series_points p \
+             WHERE p.series_id = s.id AND p.tier = ?2 AND p.bucket_ms >= ?3 AND p.value > 0) \
+             FROM series s WHERE s.metric = ?1",
+        )?;
+        let firsts = stmt
+            .query_map(params![metric, tier.code(), since_ms], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?))
+            })?
+            .filter_map(|row| {
+                row.map(|(subject, first)| first.map(|first| (subject, first)))
+                    .transpose()
+            })
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(firsts)
+    }
+
+    /// Drops every point of `metric` at `tier` from before `before_ms`, but those of the `kept` subjects.
+    pub fn drop_points_before(
+        &self,
+        metric: &str,
+        tier: Tier,
+        before_ms: i64,
+        kept: &[String],
+    ) -> Result<(), StoreError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let kept = serde_json::json!(kept).to_string();
+        conn.execute(
+            "DELETE FROM series_points WHERE series_id IN (SELECT id FROM series \
+             WHERE metric = ?1 AND labels_json NOT IN (SELECT value FROM json_each(?4))) AND tier = ?2 AND bucket_ms < ?3",
+            params![metric, tier.code(), before_ms, kept],
+        )?;
+        Ok(())
+    }
+
     /// Every subject of `metric` with a point at or after `since_ms`, each point keyed by its start, `point_ms` wide,
     /// oldest first. A point is summed from the coarsest tier that fits in it, and from the finer tiers that still
     /// hold the window's newest buckets: a point may hold several buckets, which a counter adds and a gauge takes the
@@ -1565,15 +1604,18 @@ impl RegistryStore {
         let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let tx = conn.transaction()?;
 
+        // A sender's series are read at their own tier only: past it they are gone.
+        let of_senders: Vec<String> = super::senders::METRICS.iter().map(|m| format!("'{m}'")).collect();
         for tier in [Tier::TenSeconds, Tier::OneMinute, Tier::FiveMinutes] {
             let next = tier.next().expect("every promoting tier has a next");
             let cutoff = now_ms - tier.retention_ms();
             let aged: Vec<(i64, i64, String, f64)> = {
-                let mut stmt = tx.prepare(
+                let mut stmt = tx.prepare(&format!(
                     "SELECT p.series_id, p.bucket_ms, s.kind, p.value \
                      FROM series_points p JOIN series s ON s.id = p.series_id \
-                     WHERE p.tier = ?1 AND p.bucket_ms < ?2",
-                )?;
+                     WHERE p.tier = ?1 AND p.bucket_ms < ?2 AND s.metric NOT IN ({})",
+                    of_senders.join(", ")
+                ))?;
                 stmt.query_map(params![tier.code(), cutoff], |r| {
                     Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
                 })?

@@ -388,7 +388,10 @@ Each day the leader picks which values to watch: a value is watched once it went
 no more than an hour without a row, counting only the time its field was
 counted, on each of seven days in a row, and it stays watched for a week after.
 A field that held one value names no sender, and neither does one that passed
-its cap of values on a worker.
+its cap of values on a worker. The pick reads the last two weeks, so a value it
+does not watch keeps only those, and a watched sender keeps the four weeks its
+normal is learned from. Sender rows never roll up into hourly buckets, since
+nothing reads them there.
 
 A watched sender is judged at the four widths, below normal only and never by
 the gap. It is judged only where its field was counted, so a field that a
@@ -402,10 +405,11 @@ and ends once all of them are.
 An editor in the source's worker group lowers one sender's warning to info, and
 a warning all of whose senders were lowered is info. An editor also stops
 watching a field, or adds one the pick cannot offer, such as a number or a
-nested path. New fields are watched until an editor says not; from then on a
-field that comes later is counted but watched only once an editor checks it. The
-source's Senders tab on the Map lists its fields, what the pick read of each,
-and each watched sender's last day against its range.
+nested path. New fields are watched until an editor turns off Watch new fields;
+while it is off, a field that comes later is counted but watched only once an
+editor checks it. The source's Senders tab on the Map lists its fields, what the
+pick read of each, and each watched sender's last day against its range. A field
+first counted since the day's pick is listed the same day, as learning.
 
 ## Upgrades
 

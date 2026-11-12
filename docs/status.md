@@ -128,7 +128,7 @@ document's systems.
 | A newer release (Control plane, Upgrades) | built (`leader::updates`, through smeltr.sh's `website/worker`), an info entry and Admin -> System -> General |
 | Metrics history (Control plane, E2) | built |
 | Streams: what each Parser produces and what arrives unmatched, summed on the leader (Observability) | built, `GET /api/streams`, which the map, the pipeline editor's declared fields and the drift warnings (`leader::warnings`) read. Retention in `leader::series` |
-| Streams: senders, each value of each string field delivered and of the stream key, counted on every batch (Observability) | built (`streams::SenderTally`), kept as a five-minute series per value (`leader::senders`) |
+| Streams: senders, each value of each string field delivered and of the stream key, counted on every batch (Observability) | built (`streams::SenderTally`), kept as a five-minute series per value, two weeks for a value not watched (`leader::senders`) |
 | Lag (Control plane, E6) | built |
 | The map (Control plane) | built (`leader::map`), stacks included |
 | The GUI from a phone to a 4K display; four text registers (Control plane) | built |

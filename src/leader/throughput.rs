@@ -593,26 +593,37 @@ fn learn(store: &RegistryStore, as_of: i64, learning: &Learning, pick: Option<Ar
     let day = senders::day_of(as_of);
     let pick = match pick {
         Some(pick) if pick.day_ms == day => pick,
-        _ => Arc::new(senders::pick(store, day).unwrap_or_else(|e| {
-            tracing::warn!(name: "senders_pick_unreadable", target: "status", error = %e, "could not read the senders' rows, so no sender is watched today");
-            Pick { day_ms: day, ..Pick::default() }
-        })),
+        _ => Arc::new(match senders::pick(store, day) {
+            Ok(pick) => {
+                if let Err(e) = senders::trim(store, &pick) {
+                    tracing::warn!(name: "senders_untrimmed", target: "status", error = %e, "could not drop the old rows of the values not watched, so they are kept until they age out");
+                }
+                pick
+            }
+            Err(e) => {
+                tracing::warn!(name: "senders_pick_unreadable", target: "status", error = %e, "could not read the senders' rows, so no sender is watched today");
+                Pick {
+                    day_ms: day,
+                    ..Pick::default()
+                }
+            }
+        }),
     };
     let watched = pick.watched(|group, source, field| learning.unchecked(group, source, field));
     let sender_rows = senders::history(store, &watched, oldest).unwrap_or_else(|e| {
         tracing::warn!(name: "senders_learn_unreadable", target: "status", error = %e, "could not read the senders' rows, so no sender's normal is learned this hour");
         HashMap::new()
     });
+    let warned = Warned::of_senders(store, sender_rows.keys(), oldest, learning);
     Learned {
         gaps: gaps(store, &buckets, oldest, as_of, learning),
         senders: sender_rows
             .into_iter()
             .map(|(key, of)| {
                 let rows = Rows::of(&of, oldest, as_of);
-                let warned = Warned::of_sender(store, &key, oldest, learning);
                 let normals = WIDTHS
                     .iter()
-                    .filter_map(|&width| normal(&rows, &warned, as_of, width))
+                    .filter_map(|&width| normal(&rows, &warned[&key], as_of, width))
                     .collect();
                 (key, normals)
             })
@@ -695,7 +706,7 @@ fn compute(store: &RegistryStore, ended_ms: i64, learning: &Learning, learned: &
             })
         })
         .collect();
-    // A sender is not judged while its source warns (`Warned::of_sender`), nor on the reading its source crosses.
+    // A sender is not judged while its source warns (`Warned::of_senders`), nor on the reading its source crosses.
     let below: HashSet<(String, String)> = out
         .iter()
         .filter(|r| r.outside == Some(Outside::Below))
@@ -725,14 +736,15 @@ fn sender_readings(
         tracing::warn!(name: "senders_judge_unreadable", target: "status", error = %e, "could not read the senders' rows, so no sender is judged this pass");
         HashMap::new()
     });
+    let warned = Warned::of_senders(store, buckets.keys(), oldest, learning);
     buckets
         .into_iter()
         .filter_map(|(key, of)| {
             let rows = Rows::of(&of, oldest, ended_ms);
-            let warned = Warned::of_sender(store, &key, oldest, learning);
+            let warned = &warned[&key];
             let judged: Vec<Judged> = learned.senders[&key]
                 .iter()
-                .filter_map(|normal| judge(&rows, &warned, normal, ended_ms))
+                .filter_map(|normal| judge(&rows, warned, normal, ended_ms))
                 .collect();
             let outside = outside(&judged, None, warned.held_since.is_some()).filter(|o| *o == Outside::Below);
             let (group, source, sender) = key;
@@ -806,17 +818,30 @@ impl Rows {
     }
 }
 
-/// What one source's warnings say about its rows, as spans (started, ended), with no end for a span still open.
+/// Logs that `group`'s `source`'s warnings could not be read, and reads none.
+fn unreadable(e: super::store::StoreError, group: &str, source: &str) -> Vec<warnings::WarningSpan> {
+    tracing::warn!(
+        name: "warned_unreadable", target: "status",
+        error = %e, group, source,
+        "could not read when this source warned, so its normal is learned from every window this pass"
+    );
+    Vec::new()
+}
+
+/// Spans as (started, ended), with no end for a span still open.
+type Spans = Vec<(i64, Option<i64>)>;
+
+/// What one source's warnings say about its rows, as [`Spans`].
 struct Warned {
-    /// Each span a stop held, as (started, ended).
-    stops: Vec<(i64, Option<i64>)>,
+    /// Each span its source was blocked, refused, waiting or unreachable.
+    stops: Spans,
     /// When its rows teach its normal nothing: while a stop about it held, unless an editor said that period was
     /// normal; in any period an editor said was an outage; and before an editor reset its history.
-    unlearned: Vec<(i64, Option<i64>)>,
+    unlearned: Spans,
     /// Each below-normal warning about it, from the first reading it waited for ([`waited_from`]), less the periods an
     /// editor said were normal. One that began in such a period is learned whole, so marking one that still holds
     /// teaches the level it reads.
-    below: Vec<(i64, Option<i64>)>,
+    below: Spans,
     /// When a below-normal warning about it that still holds began.
     held_since: Option<i64>,
 }
@@ -825,50 +850,55 @@ impl Warned {
     /// `group`'s `source`'s spans since `since_ms`. Warnings the store cannot read are logged and left out: the
     /// normal is then learned from those windows too.
     fn of(store: &RegistryStore, group: &str, source: &str, since_ms: i64, learning: &Learning) -> Warned {
-        Warned::read(store, group, source, None, since_ms, learning)
+        let held = Warned::held(store, group, source, since_ms);
+        let stops = held
+            .iter()
+            .filter(|s| !matches!(s.condition, Condition::SourceRowsBelow | Condition::SourceRowsAbove))
+            .map(|s| (s.started_millis, s.ended_millis))
+            .collect();
+        let below = held
+            .into_iter()
+            .filter(|s| s.condition == Condition::SourceRowsBelow)
+            .collect();
+        Warned::new(group, source, stops, below, learning)
     }
 
-    /// [`Warned::of`] for a sender. Its source's below-normal warnings are stops to it, as its source's stops are:
-    /// what a sender reads while its source reads too little says nothing of the sender.
-    fn of_sender(store: &RegistryStore, key: &SenderKey, since_ms: i64, learning: &Learning) -> Warned {
-        Warned::read(store, &key.0, &key.1, Some(&key.2), since_ms, learning)
-    }
-
-    fn read(
+    /// [`Warned::of`] for each of `senders`, each source's warnings read once. A source's below-normal warnings count
+    /// as stops for its senders, as the source's own stops do. What a sender reads while its source reads too little
+    /// says nothing of the sender.
+    fn of_senders<'a>(
         store: &RegistryStore,
-        group: &str,
-        source: &str,
-        sender: Option<&Sender>,
+        senders: impl IntoIterator<Item = &'a SenderKey>,
         since_ms: i64,
         learning: &Learning,
-    ) -> Warned {
-        let unreadable = |e: super::store::StoreError| {
-            tracing::warn!(
-                name: "warned_unreadable", target: "status",
-                error = %e, group, source,
-                "could not read when this source warned, so its normal is learned from every window this pass"
-            );
-            Vec::new()
-        };
-        let held = warnings::spans(store, SubjectKind::Source, group, source, since_ms).unwrap_or_else(unreadable);
-        let (stops, below): (Vec<(i64, Option<i64>)>, Vec<warnings::WarningSpan>) = match sender {
-            None => (
-                held.iter()
-                    .filter(|s| !matches!(s.condition, Condition::SourceRowsBelow | Condition::SourceRowsAbove))
-                    .map(|s| (s.started_millis, s.ended_millis))
-                    .collect(),
-                held.into_iter()
-                    .filter(|s| s.condition == Condition::SourceRowsBelow)
-                    .collect(),
-            ),
-            Some(sender) => (
-                held.iter()
-                    .filter(|s| s.condition != Condition::SourceRowsAbove)
-                    .map(|s| (s.started_millis, s.ended_millis))
-                    .collect(),
-                warnings::sender_spans(store, group, source, sender, since_ms).unwrap_or_else(unreadable),
-            ),
-        };
+    ) -> HashMap<SenderKey, Warned> {
+        let mut stops: HashMap<(&str, &str), Spans> = HashMap::new();
+        senders
+            .into_iter()
+            .map(|key| {
+                let (group, source, sender) = key;
+                let stops = stops.entry((group, source)).or_insert_with(|| {
+                    Warned::held(store, group, source, since_ms)
+                        .iter()
+                        .filter(|s| s.condition != Condition::SourceRowsAbove)
+                        .map(|s| (s.started_millis, s.ended_millis))
+                        .collect()
+                });
+                let below = warnings::sender_spans(store, group, source, sender, since_ms)
+                    .unwrap_or_else(|e| unreadable(e, group, source));
+                (key.clone(), Warned::new(group, source, stops.clone(), below, learning))
+            })
+            .collect()
+    }
+
+    /// `group`'s `source`'s warnings since `since_ms`.
+    fn held(store: &RegistryStore, group: &str, source: &str, since_ms: i64) -> Vec<warnings::WarningSpan> {
+        warnings::spans(store, SubjectKind::Source, group, source, since_ms)
+            .unwrap_or_else(|e| unreadable(e, group, source))
+    }
+
+    /// `group`'s `source`'s spans from its `stops` and its `below`-normal warnings.
+    fn new(group: &str, source: &str, stops: Spans, below: Vec<warnings::WarningSpan>, learning: &Learning) -> Warned {
         let below = below.iter();
         let reset_from = learning.reset_from(group, source);
         let reset = reset_from.map(|from| (i64::MIN, Some(from)));
