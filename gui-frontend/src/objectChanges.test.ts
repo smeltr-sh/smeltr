@@ -22,6 +22,8 @@ import {
   type ObjectChange,
 } from './objectChanges';
 
+const NO_NAMES = { before: {}, after: {} };
+
 const parse = {
   type: 'parser',
   id: 'p1',
@@ -65,20 +67,20 @@ function config(over: Partial<FileConfigDto>): FileConfigDto {
 
 describe('stepLine', () => {
   it('names a lookup by its table, input and outputs', () => {
-    expect(stepLine(lookup)).toBe('app-risk  panos.app → risk');
+    expect(stepLine(lookup, {})).toBe('app-risk  panos.app → risk');
   });
   it('gives a code step its expression on one line', () => {
-    expect(stepLine(code)).toBe('if risk >= 5 { event.risk = "high" }');
+    expect(stepLine(code, {})).toBe('if risk >= 5 { event.risk = "high" }');
   });
   it('falls back to the editor summary', () => {
-    expect(stepLine(rename)).toBe('a → b');
+    expect(stepLine(rename, {})).toBe('a → b');
   });
 });
 
 describe('compareSteps', () => {
   it('lists every step in order, a removed one where it stood', () => {
     const changed = { ...rename, pairs: [{ from: 'a', to: 'c' }] };
-    const steps = compareSteps([parse, code, rename], [parse, lookup, changed]);
+    const steps = compareSteps([parse, code, rename], [parse, lookup, changed], NO_NAMES);
     expect(steps.map((s) => [s.status, s.type, s.position])).toEqual([
       ['same', 'parser', 1],
       ['added', 'lookup', 2],
@@ -95,7 +97,7 @@ describe('compareSteps', () => {
     ];
     const before = { type: 'eval', id: 'e1', assignments: assign('2') };
     const after = { type: 'eval', id: 'e1', assignments: assign('20') };
-    const [step] = compareSteps([before], [after]);
+    const [step] = compareSteps([before], [after], NO_NAMES);
     expect(step.parts).toEqual([
       { kind: 'same', text: 'a = 1' },
       { kind: 'removed', text: 'b = 2' },
@@ -113,7 +115,7 @@ describe('compareSteps', () => {
   it('shows a blank line a code step gained as a line of its own', () => {
     const before = { type: 'code', id: 'c1', body: 'a = 1\nb = 2' };
     const after = { type: 'code', id: 'c1', body: 'a = 1\n\nb = 2' };
-    const [step] = compareSteps([before], [after]);
+    const [step] = compareSteps([before], [after], NO_NAMES);
     expect(step.parts).toEqual([
       { kind: 'same', text: 'a = 1' },
       { kind: 'added', text: '' },
@@ -129,21 +131,32 @@ describe('compareSteps', () => {
       assignments: [{ target: 'a', expr: '1' }],
     };
     const after = { ...before, filter: 'x' };
-    const [step] = compareSteps([before], [after]);
+    const [step] = compareSteps([before], [after], NO_NAMES);
     expect([step.status, step.parts]).toEqual(['changed', undefined]);
   });
 
   it('compares an if step by its condition, and its branches step by step', () => {
     const before = { type: 'if', id: 'i1', condition: 'x', then: [code], else: [] };
     const after = { type: 'if', id: 'i1', condition: 'x', then: [code, lookup], else: [] };
-    const [step] = compareSteps([before], [after]);
+    const [step] = compareSteps([before], [after], NO_NAMES);
     expect(step.status).toBe('same');
     expect(step.then?.map((s) => s.status)).toEqual(['same', 'added']);
     expect(step.else).toEqual([]);
   });
 
+  it('names the pipeline a Call step runs, at each end', () => {
+    const call = (pipeline: string) => ({ type: 'call', id: 'c', pipeline });
+    const [removed] = compareSteps([call('p1')], [], { before: { p1: 'stamp-ecs' }, after: {} });
+    expect(removed.summary).toBe('stamp-ecs');
+    const [changed] = compareSteps([call('p1')], [call('p2')], {
+      before: { p1: 'stamp-ecs' },
+      after: { p2: 'stamp-geo' },
+    });
+    expect(changed.summary).toBe('stamp-geo');
+  });
+
   it('marks a step that runs in another order as moved', () => {
-    const steps = compareSteps([parse, code, rename], [parse, rename, code]);
+    const steps = compareSteps([parse, code, rename], [parse, rename, code], NO_NAMES);
     expect(steps.map((s) => [s.status, s.type, s.moved])).toEqual([
       ['same', 'parser', undefined],
       ['same', 'rename', undefined],

@@ -45,7 +45,7 @@ export class UnfinishedRows {
   hold(steps: Step[]): { steps: Step[]; restore: <E extends PreviewError>(e: E) => E } {
     const kept = new Map<string, number[]>();
     const strip = (list: Step[]): Step[] =>
-      list.flatMap((s) => {
+      list.flatMap((s): Step[] => {
         if (s.type === 'if') return [{ ...s, then: strip(s.then), else: strip(s.else) }];
         if (s.type === 'call') return s.pipeline.trim() === '' ? [] : [s];
         if (s.type !== 'eval') return [s];
