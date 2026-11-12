@@ -102,22 +102,24 @@ impl SenderTally {
     }
 
     /// Count `value` for `record` under `field`, unless the record has counted for it.
-    pub fn count(&mut self, field: &str, record: usize, value: &[u8]) {
+    #[cfg(test)]
+    fn count(&mut self, field: &str, record: usize, value: &[u8]) {
         self.field(field).count(record, value);
     }
 
-    /// Count each record's value under `field`, in order, where it has one.
-    pub fn count_each<'v>(&mut self, field: &str, values: impl Iterator<Item = Option<std::borrow::Cow<'v, str>>>) {
+    /// Count each record's value under `field`, where it has one. The field is counted though none has: the leader
+    /// judges a sender only where its field was counted (`leader::senders::FIELD_ROWS`).
+    pub fn count_rows<V: AsRef<str>>(&mut self, field: &str, values: impl Iterator<Item = (usize, Option<V>)>) {
         let counting = self.field(field);
-        for (record, value) in values.enumerate() {
+        for (record, value) in values {
             if let Some(value) = value {
-                counting.count(record, value.as_bytes());
+                counting.count(record, value.as_ref().as_bytes());
             }
         }
     }
 
-    /// Count `column`'s value on each of `rows`, for the record `record` gives each, under `field`. A null counts
-    /// nothing: the record does not hold the field.
+    /// Count `column`'s value on each of `rows`, for the record `record` gives each, under `field`, as
+    /// [`Self::count_rows`] does. A null counts nothing: the record does not hold the field.
     pub fn count_column(&mut self, field: &str, column: &Column, rows: &[usize], record: impl Fn(usize) -> usize) {
         let counting = self.field(field);
         if let Some(Scalar::Str(value)) = column.constant_value() {

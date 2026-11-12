@@ -2034,14 +2034,14 @@ fn write_streams(tx: &Connection, streams: &Streams<'_>, now_ms: i64) -> rusqlit
             counter: true,
             value: rows,
         };
-        if counts.too_many {
-            write_point_at(
-                tx,
-                &point(super::senders::OVER, None, 1.0),
-                super::senders::TIER,
-                now_ms,
-            )?;
-        }
+        let (metric, rows) = match counts.too_many {
+            true => (super::senders::OVER, 1.0),
+            false => (
+                super::senders::FIELD_ROWS,
+                counts.values.iter().map(|v| v.rows).sum::<u64>() as f64,
+            ),
+        };
+        write_point_at(tx, &point(metric, None, rows), super::senders::TIER, now_ms)?;
         for v in &counts.values {
             let rows = point(super::senders::ROWS, Some(&v.value), v.rows as f64);
             write_point_at(tx, &rows, super::senders::TIER, now_ms)?;

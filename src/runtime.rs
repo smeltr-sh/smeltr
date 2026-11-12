@@ -1487,7 +1487,7 @@ impl Transform {
         {
             out.outcomes
                 .senders
-                .count_each(field, records.iter().map(|r| lane.meta.stream_key(r)));
+                .count_rows(field, records.iter().map(|r| lane.meta.stream_key(r)).enumerate());
         }
         let mut diverted = 0usize;
         let mut refusal = None;
@@ -3432,13 +3432,10 @@ fn run_and_serialize(
         for field in fields {
             match field.slot {
                 Some(slot) => tally.count_column(&field.name, batch.peek(slot), &delivered, record),
-                None => {
-                    for &row in &delivered {
-                        if let Some(value) = plain.text(&field.name, row) {
-                            tally.count(&field.name, record(row), value.as_bytes());
-                        }
-                    }
-                }
+                None => tally.count_rows(
+                    &field.name,
+                    delivered.iter().map(|&row| (record(row), plain.text(&field.name, row))),
+                ),
             }
         }
     }

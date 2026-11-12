@@ -385,17 +385,19 @@ flowchart LR
 ```
 
 Each day the leader picks which values to watch: a value is watched once it went
-no more than an hour without a row, in the buckets where its source was read, on
-each of seven days in a row, and it stays watched for a week after. A field that
-held one value names no sender, and neither does one that passed its cap of
-values on a worker.
+no more than an hour without a row, counting only the time its field was
+counted, on each of seven days in a row, and it stays watched for a week after.
+A field that held one value names no sender, and neither does one that passed
+its cap of values on a worker.
 
 A watched sender is judged at the four widths, below normal only and never by
-the gap. It is not judged while its source warns, is held or is stopped, nor on
-the reading its source crosses: the source's own warning says more. Senders of
-one source that cross on one reading raise one warning that names them, and a
-sender that crosses later raises another. The warning says which of its senders
-are back, and ends once all of them are.
+the gap. It is judged only where its field was counted, so a field that a
+pipeline change takes out leaves its senders unjudged rather than all below. It
+is not judged while its source warns, is held or is stopped, nor on the reading
+its source crosses: the source's own warning says more. Senders of one source
+that cross on one reading raise one warning that names them, and a sender that
+crosses later raises another. The warning says which of its senders are back,
+and ends once all of them are.
 
 An editor in the source's worker group lowers one sender's warning to info, and
 a warning all of whose senders were lowered is info. An editor also stops

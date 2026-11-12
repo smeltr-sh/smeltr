@@ -593,13 +593,13 @@ fn learn(store: &RegistryStore, as_of: i64, learning: &Learning, pick: Option<Ar
     let day = senders::day_of(as_of);
     let pick = match pick {
         Some(pick) if pick.day_ms == day => pick,
-        _ => Arc::new(senders::pick(store, &buckets, day).unwrap_or_else(|e| {
+        _ => Arc::new(senders::pick(store, day).unwrap_or_else(|e| {
             tracing::warn!(name: "senders_pick_unreadable", target: "status", error = %e, "could not read the senders' rows, so no sender is watched today");
             Pick { day_ms: day, ..Pick::default() }
         })),
     };
     let watched = pick.watched(|group, source, field| learning.unchecked(group, source, field));
-    let sender_rows = senders::history(store, &watched, &buckets, oldest).unwrap_or_else(|e| {
+    let sender_rows = senders::history(store, &watched, oldest).unwrap_or_else(|e| {
         tracing::warn!(name: "senders_learn_unreadable", target: "status", error = %e, "could not read the senders' rows, so no sender's normal is learned this hour");
         HashMap::new()
     });
@@ -701,7 +701,7 @@ fn compute(store: &RegistryStore, ended_ms: i64, learning: &Learning, learned: &
         .filter(|r| r.outside == Some(Outside::Below))
         .map(|r| (r.group.clone(), r.source.clone()))
         .collect();
-    let senders = sender_readings(store, ended_ms, oldest, learning, learned, &buckets);
+    let senders = sender_readings(store, ended_ms, oldest, learning, learned);
     out.extend(
         senders
             .into_iter()
@@ -711,19 +711,17 @@ fn compute(store: &RegistryStore, ended_ms: i64, learning: &Learning, learned: &
     out
 }
 
-/// Each watched sender's reading at `ended_ms`, from its rows since `oldest` where its source was reported in
-/// `sources`. Only below normal is judged: a sender above it reads more of its source's rows, which its source is
-/// judged by.
+/// Each watched sender's reading at `ended_ms`, from its rows since `oldest` where its field was counted. Only below
+/// normal is judged: a sender above it reads more of its source's rows, which its source is judged by.
 fn sender_readings(
     store: &RegistryStore,
     ended_ms: i64,
     oldest: i64,
     learning: &Learning,
     learned: &Learned,
-    sources: &History,
 ) -> Vec<Reading> {
     let watched: Vec<SenderKey> = learned.senders.keys().cloned().collect();
-    let buckets = senders::history(store, &watched, sources, oldest).unwrap_or_else(|e| {
+    let buckets = senders::history(store, &watched, oldest).unwrap_or_else(|e| {
         tracing::warn!(name: "senders_judge_unreadable", target: "status", error = %e, "could not read the senders' rows, so no sender is judged this pass");
         HashMap::new()
     });
@@ -1173,12 +1171,7 @@ fn gaps(
 }
 
 /// Each source's rows by bucket: (group, source) to bucket start to rows.
-type History = senders::Sources;
-
-/// Each source's rows in each [`BUCKET`] from `since_ms`.
-pub fn rows_by_bucket(store: &RegistryStore, since_ms: i64) -> Result<History, super::store::StoreError> {
-    history(store, BUCKET.and_finer(), BUCKET, since_ms)
-}
+type History = HashMap<(String, String), BTreeMap<i64, f64>>;
 
 /// Rows read per source at `tiers`, read together and summed into `into`'s buckets.
 fn history(
@@ -1584,7 +1577,7 @@ mod tests {
             .collect()
     }
 
-    /// A sender that stops sending reads nothing where its source was read, and is below on its fourth reading,
+    /// A sender that stops sending reads nothing where its field was counted, and is below on its fourth reading,
     /// though its source is not; one that keeps sending is within its range.
     #[test]
     fn a_sender_that_stops_is_below_though_its_source_is_not() {
@@ -1605,6 +1598,39 @@ mod tests {
         send(&store, 7, "fw-01", |at| (!stopped(at)).then_some(10));
         send(&store, 7, "fw-07", |at| (!stopped(at)).then_some(90));
         assert_eq!(sender_readings_at_end(&store), BTreeMap::new());
+    }
+
+    /// A field the pipeline stops delivering, as after a change renames it, leaves its senders unjudged; a field still
+    /// delivered whose every sender stops has them all below.
+    #[test]
+    fn a_field_no_longer_counted_judges_none_of_its_senders() {
+        use crate::heartbeat::{SenderCounts, StreamReport};
+        let stopped = |at: i64| at >= END - 4 * FIVE;
+        let store = store_with(7, |_| Some(100.0));
+        send(&store, 7, "fw-01", |at| (!stopped(at)).then_some(10));
+        send(&store, 7, "fw-07", |at| (!stopped(at)).then_some(90));
+        assert!(
+            !sender_readings_at_end(&store)
+                .values()
+                .any(|o| *o == Some(Outside::Below)),
+            "no worker counted the field"
+        );
+
+        let counted = StreamReport {
+            senders: vec![SenderCounts {
+                source: "s".into(),
+                field: "devname".into(),
+                values: Vec::new(),
+                too_many: false,
+            }],
+            ..Default::default()
+        };
+        for at in (END - 4 * FIVE..END).step_by(FIVE as usize) {
+            store.record_streams("g", &counted, true, None, at).unwrap();
+        }
+        let read = sender_readings_at_end(&store);
+        assert_eq!(read["fw-01"], Some(Outside::Below));
+        assert_eq!(read["fw-07"], Some(Outside::Below));
     }
 
     #[test]

@@ -7,8 +7,9 @@
 //!
 //! Each day, the pick reads which values are senders: a value is watched once it went no longer than
 //! [`LONGEST_EMPTY`] buckets without a row on each of [`PICK_DAYS`] days in a row, and stays watched until a further
-//! [`PICK_DAYS`] pass without such a run. A bucket counts only where the source was reported. A field with one value
-//! names no sender. An editor may stop watching a field, or add one the pick cannot offer: a number or a nested
+//! [`PICK_DAYS`] pass without such a run. A bucket counts only where its field was counted ([`FIELD_ROWS`]), so a
+//! field a pipeline change takes out leaves its senders unjudged rather than all below. A field with one value names
+//! no sender. An editor may stop watching a field, or add one the pick cannot offer: a number or a nested
 //! path (`marks::SourceFields`).
 //!
 //! A watched sender is judged as a source is (`throughput`), from its own rows, except by the gap, and not while its
@@ -36,6 +37,10 @@ pub const ROWS: &str = "smeltr_sender_rows_total";
 
 /// A sender field a worker counts no more, for holding too many values: one point for each window it says so.
 pub const OVER: &str = "smeltr_sender_fields_over_total";
+
+/// The rows that held any value of a sender field, in each window a worker counted the field, though none did. A
+/// bucket with no point is one no worker's pipeline delivered the field in.
+pub const FIELD_ROWS: &str = "smeltr_sender_field_rows_total";
 
 /// The most [`TIER`] buckets in a row a watched sender may go without a row on each of the days it is picked on.
 const LONGEST_EMPTY: usize = 12;
@@ -123,21 +128,28 @@ pub fn day_of(ms: i64) -> i64 {
 /// Rows by the start of the bucket they were read in.
 type Rows = BTreeMap<i64, f64>;
 
-/// Each source's rows by bucket, by (group, source): whether a bucket was reported at all.
-pub type Sources = HashMap<(String, String), Rows>;
+/// A field, by its group, source and name.
+type FieldKey = (String, String, String);
 
-/// Every source's sender fields as of `day_ms`, from the 2 x [`PICK_DAYS`] days before it. `sources` holds each
-/// source's rows over those days.
-pub fn pick(store: &RegistryStore, sources: &Sources, day_ms: i64) -> Result<Pick, StoreError> {
+/// Every source's sender fields as of `day_ms`, from the 2 x [`PICK_DAYS`] days before it.
+pub fn pick(store: &RegistryStore, day_ms: i64) -> Result<Pick, StoreError> {
     let since = day_ms - 2 * PICK_DAYS * DAY_MS;
-    let over: BTreeSet<(String, String, String)> = store
+    let counted: HashMap<FieldKey, Rows> = store
+        .series_since(FIELD_ROWS, TIER, since)?
+        .into_iter()
+        .filter_map(|(subject, points)| {
+            let (group, source, field, _) = named(&subject)?;
+            Some(((group, source, field), points.into_iter().collect()))
+        })
+        .collect();
+    let over: BTreeSet<FieldKey> = store
         .series_since(OVER, TIER, day_ms - PICK_DAYS * DAY_MS)?
         .into_iter()
         .filter_map(|(subject, _)| named(&subject))
         .map(|(group, source, field, _)| (group, source, field))
         .collect();
     // Each field's values, each with its rows by bucket.
-    let mut values: BTreeMap<(String, String, String), Vec<(String, Rows)>> = BTreeMap::new();
+    let mut values: BTreeMap<FieldKey, Vec<(String, Rows)>> = BTreeMap::new();
     for (subject, points) in store.series_since(ROWS, TIER, since)? {
         let Some((group, source, field, Some(value))) = named(&subject) else {
             continue;
@@ -152,8 +164,9 @@ pub fn pick(store: &RegistryStore, sources: &Sources, day_ms: i64) -> Result<Pic
         day_ms,
         fields: BTreeMap::new(),
     };
-    for ((group, source, field), of) in values {
-        let reported = sources.get(&(group.clone(), source.clone()));
+    for (key, of) in values {
+        let counted = counted.get(&key);
+        let (group, source, field) = key;
         let pick = if over.contains(&(group.clone(), source.clone(), field.clone())) {
             FieldPick::TooMany
         } else if of.iter().filter(|(_, rows)| rows.values().any(|&n| n > 0.0)).count() <= 1 {
@@ -162,7 +175,7 @@ pub fn pick(store: &RegistryStore, sources: &Sources, day_ms: i64) -> Result<Pic
             let first = of.iter().filter_map(|(_, rows)| rows.keys().next()).min().copied();
             let watched: Vec<String> = of
                 .iter()
-                .filter(|(_, rows)| reported.is_some_and(|reported| steady(rows, reported, day_ms)))
+                .filter(|(_, rows)| counted.is_some_and(|counted| steady(rows, counted, day_ms)))
                 .map(|(value, _)| value.clone())
                 .collect();
             let until = first.map(|first| day_of(first) + (PICK_DAYS + 1) * DAY_MS);
@@ -178,16 +191,16 @@ pub fn pick(store: &RegistryStore, sources: &Sources, day_ms: i64) -> Result<Pic
 
 /// Whether a value with `rows` by bucket is steady: it passed on [`PICK_DAYS`] days in a row, the last of them within
 /// the [`PICK_DAYS`] days before `day_ms`. A day passes when the value went no more than [`LONGEST_EMPTY`] buckets
-/// without a row, counting only the buckets where its source was `reported`; a day its source was not reported at all
+/// without a row, counting only the buckets where its field was `counted`; a day its field was not counted at all
 /// does not pass.
-fn steady(rows: &BTreeMap<i64, f64>, reported: &BTreeMap<i64, f64>, day_ms: i64) -> bool {
+fn steady(rows: &BTreeMap<i64, f64>, counted: &BTreeMap<i64, f64>, day_ms: i64) -> bool {
     let step = TIER.bucket_ms();
     let passed = |day: i64| {
         let start = day_ms - (day + 1) * DAY_MS;
         let (mut run, mut longest, mut seen) = (0, 0, false);
         for at in (start..start + DAY_MS).step_by(step as usize) {
-            if !reported.contains_key(&at) {
-                run = 0;
+            // A bucket the field was not counted in neither ends a run nor adds to one.
+            if !counted.contains_key(&at) {
                 continue;
             }
             seen = true;
@@ -205,30 +218,37 @@ fn steady(rows: &BTreeMap<i64, f64>, reported: &BTreeMap<i64, f64>, day_ms: i64)
     (0..PICK_DAYS as usize).any(|end| days[end..end + PICK_DAYS as usize].iter().all(|&p| p))
 }
 
-/// Each of `watched`'s rows by bucket from `since_ms`, with a bucket its source was `reported` in and it has no
-/// point for read as no rows. A bucket its source was not reported in has no point.
+/// Each of `watched`'s rows by bucket from `since_ms`, with a bucket its field was counted in and it has no point for
+/// read as no rows. A bucket its field was not counted in has no point.
 pub fn history(
     store: &RegistryStore,
     watched: &[SenderKey],
-    sources: &Sources,
     since_ms: i64,
 ) -> Result<HashMap<SenderKey, BTreeMap<i64, f64>>, StoreError> {
+    let read = |metric, subjects: &[String]| -> Result<HashMap<String, Rows>, StoreError> {
+        Ok(store
+            .subjects_since(metric, subjects, TIER, since_ms)?
+            .into_iter()
+            .map(|(subject, points)| (subject, points.into_iter().collect()))
+            .collect())
+    };
     let subjects: Vec<String> = watched
         .iter()
         .map(|(group, source, s)| subject(group, source, &s.field, Some(&s.value)))
         .collect();
-    let mut held: HashMap<String, BTreeMap<i64, f64>> = store
-        .subjects_since(ROWS, &subjects, TIER, since_ms)?
-        .into_iter()
-        .map(|(subject, points)| (subject, points.into_iter().collect()))
+    let fields: BTreeSet<String> = watched
+        .iter()
+        .map(|(group, source, s)| subject(group, source, &s.field, None))
         .collect();
+    let mut held = read(ROWS, &subjects)?;
+    let counted = read(FIELD_ROWS, &fields.into_iter().collect::<Vec<_>>())?;
     Ok(watched
         .iter()
         .zip(subjects)
-        .filter_map(|(key, subject)| {
-            let reported = sources.get(&(key.0.clone(), key.1.clone()))?;
-            let own = held.remove(&subject).unwrap_or_default();
-            let rows = reported
+        .filter_map(|(key, own)| {
+            let counted = counted.get(&subject(&key.0, &key.1, &key.2.field, None))?;
+            let own = held.remove(&own).unwrap_or_default();
+            let rows = counted
                 .range(since_ms..)
                 .map(|(&at, _)| (at, own.get(&at).copied().unwrap_or(0.0)))
                 .collect();
@@ -265,8 +285,8 @@ pub struct FieldNow {
 #[serde(rename_all = "camelCase")]
 pub struct SenderNow {
     pub value: String,
-    /// Rows per second in each bucket of the last day, by when it began. A bucket its source was not reported in
-    /// has none.
+    /// Rows per second in each bucket of the last day, by when it began. A bucket its field was not counted in has
+    /// none.
     pub points: Vec<(i64, f64)>,
     pub expected: Vec<ExpectedPoint>,
     /// Rows per second now, and its range, at the width it is shown at (`throughput::Reading::shown`). `None` while
@@ -333,12 +353,7 @@ impl Now<'_> {
             .unwrap_or_default();
         let watched = learned.map(|l| l.watched(group, source)).unwrap_or_default();
         let since = TIER.align(self.now_ms) - DAY_MS;
-        let rows = history(
-            self.store,
-            &watched,
-            &throughput::rows_by_bucket(self.store, since)?,
-            since,
-        )?;
+        let rows = history(self.store, &watched, since)?;
         let mut names: BTreeSet<&String> = picks.keys().collect();
         names.extend(&edits.added);
         names.extend(&edits.unchecked);
@@ -411,8 +426,8 @@ mod tests {
 
     const STEP: i64 = 5 * 60 * 1000;
 
-    /// A source reported in every bucket of the `days` before `day_ms`.
-    fn reported(day_ms: i64, days: i64) -> BTreeMap<i64, f64> {
+    /// A field counted in every bucket of the `days` before `day_ms`.
+    fn counted(day_ms: i64, days: i64) -> BTreeMap<i64, f64> {
         (day_ms - days * DAY_MS..day_ms)
             .step_by(STEP as usize)
             .map(|at| (at, 1.0))
@@ -430,39 +445,55 @@ mod tests {
     #[test]
     fn a_value_with_a_row_every_hour_for_a_week_is_steady_and_one_with_a_quiet_afternoon_is_not() {
         let day = 100 * DAY_MS;
-        let source = reported(day, 14);
+        let field = counted(day, 14);
         assert!(
-            steady(&rows_every(day, 7, 12), &source, day),
+            steady(&rows_every(day, 7, 12), &field, day),
             "never more than 11 buckets empty"
         );
-        assert!(!steady(&rows_every(day, 7, 14), &source, day), "13 buckets empty");
-        assert!(!steady(&rows_every(day, 6, 12), &source, day), "six days are too few");
+        assert!(!steady(&rows_every(day, 7, 14), &field, day), "13 buckets empty");
+        assert!(!steady(&rows_every(day, 6, 12), &field, day), "six days are too few");
     }
 
     #[test]
     fn a_value_stays_steady_for_a_week_after_its_last_steady_week() {
         let day = 100 * DAY_MS;
-        let source = reported(day, 14);
+        let field = counted(day, 14);
         let week_ago: BTreeMap<i64, f64> = rows_every(day - 6 * DAY_MS, 7, 1);
         assert!(
-            steady(&week_ago, &source, day),
+            steady(&week_ago, &field, day),
             "its seven steady days ended six days ago"
         );
         let longer_ago: BTreeMap<i64, f64> = rows_every(day - 8 * DAY_MS, 6, 1);
-        assert!(!steady(&longer_ago, &source, day));
+        assert!(!steady(&longer_ago, &field, day));
     }
 
     #[test]
-    fn a_bucket_the_source_was_not_reported_in_is_not_an_empty_one() {
+    fn a_bucket_the_field_was_not_counted_in_is_not_an_empty_one() {
         let day = 100 * DAY_MS;
-        let mut source = reported(day, 14);
-        // Two hours unreported on every day: the value has no rows then, yet passes.
+        let mut field = counted(day, 14);
+        // Two hours uncounted on every day: the value has no rows then, yet passes.
         let rows: BTreeMap<i64, f64> = rows_every(day, 7, 1)
             .into_iter()
             .filter(|(at, _)| at.rem_euclid(DAY_MS) >= 2 * 60 * 60 * 1000)
             .collect();
-        source.retain(|at, _| at.rem_euclid(DAY_MS) >= 2 * 60 * 60 * 1000);
-        assert!(steady(&rows, &source, day));
+        field.retain(|at, _| at.rem_euclid(DAY_MS) >= 2 * 60 * 60 * 1000);
+        assert!(steady(&rows, &field, day));
+    }
+
+    /// A field counted only once an hour judges its values by the buckets it was counted in: a value absent from
+    /// thirteen of them in a row is not steady, though hours pass between them uncounted.
+    #[test]
+    fn a_run_without_rows_spans_the_buckets_the_field_was_not_counted_in() {
+        let day = 100 * DAY_MS;
+        let hourly = rows_every(day, 14, 12);
+        assert!(
+            steady(&rows_every(day, 7, 12), &hourly, day),
+            "a row every counted hour"
+        );
+        assert!(
+            !steady(&rows_every(day, 7, 12 * 14), &hourly, day),
+            "thirteen counted hours empty"
+        );
     }
 
     /// Each field is picked by what its values sent over the days before: the steady ones watched, too new to
@@ -500,8 +531,7 @@ mod tests {
         for at in (day - 2 * DAY_MS..day).step_by((12 * STEP) as usize) {
             count(at, "host", &["a", "b"], false);
         }
-        let sources: Sources = [(("g".to_string(), "s".to_string()), reported(day, 14))].into();
-        let picked = pick(&store, &sources, day).unwrap();
+        let picked = pick(&store, day).unwrap();
         let fields = &picked.fields[&("g".to_string(), "s".to_string())];
         let FieldPick::Watched { values } = &fields["devname"] else {
             panic!("{fields:?}")
@@ -519,37 +549,40 @@ mod tests {
         );
     }
 
+    /// A field a worker counted though no record held it reads as no rows for its senders; where no worker counted it,
+    /// as after a pipeline change took it out, they read nothing.
     #[test]
-    fn a_watched_sender_reads_no_rows_where_its_source_was_reported_and_nothing_where_it_was_not() {
+    fn a_watched_sender_reads_no_rows_where_its_field_was_counted_and_nothing_where_it_was_not() {
+        use crate::heartbeat::{SenderCounts, SenderRows, StreamReport};
         let store = RegistryStore::open(std::path::Path::new(":memory:")).unwrap();
         let at = 100 * DAY_MS;
+        let count = |at: i64, values: Vec<SenderRows>| {
+            let counts = SenderCounts {
+                source: "s".into(),
+                field: "devname".into(),
+                values,
+                too_many: false,
+            };
+            let report = StreamReport {
+                senders: vec![counts],
+                ..Default::default()
+            };
+            store.record_streams("g", &report, true, None, at + 1000).unwrap();
+        };
+        count(at - STEP, Vec::new());
+        count(
+            at,
+            vec![SenderRows {
+                value: "fw-01".into(),
+                rows: 3,
+            }],
+        );
         let fw = Sender {
             field: "devname".into(),
             value: "fw-01".into(),
         };
-        store
-            .record_streams(
-                "g",
-                &crate::heartbeat::StreamReport {
-                    senders: vec![crate::heartbeat::SenderCounts {
-                        source: "s".into(),
-                        field: "devname".into(),
-                        values: vec![crate::heartbeat::SenderRows {
-                            value: "fw-01".into(),
-                            rows: 3,
-                        }],
-                        too_many: false,
-                    }],
-                    ..Default::default()
-                },
-                true,
-                None,
-                at + 1000,
-            )
-            .unwrap();
-        let sources: Sources = [(("g".to_string(), "s".to_string()), [(at - STEP, 5.0), (at, 9.0)].into())].into();
         let key = ("g".to_string(), "s".to_string(), fw);
-        let read = history(&store, std::slice::from_ref(&key), &sources, at - 2 * STEP).unwrap();
+        let read = history(&store, std::slice::from_ref(&key), at - 2 * STEP).unwrap();
         assert_eq!(read[&key], [(at - STEP, 0.0), (at, 3.0)].into());
     }
 }
