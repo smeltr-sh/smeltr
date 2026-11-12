@@ -339,6 +339,42 @@ const allCourses: Course[] = [
       },
     ],
   },
+  {
+    title: 'Handle exceptions',
+    slug: 'handle-exceptions',
+    videos: [
+      {
+        title: 'Where bad records go',
+        slug: 'where-bad-records-go',
+        level: 'Intermediate',
+        roles: ['Security analyst', 'Data analyst'],
+        topics: ['Exceptions', 'Parsing'],
+        youtube: 'UsoSUz6zyXE',
+        minutes: 2,
+        poster: '/videos/handle-exceptions-1-poster.jpg',
+      },
+      {
+        title: 'When a source blocks',
+        slug: 'when-a-source-blocks',
+        level: 'Intermediate',
+        roles: ['Data analyst', 'Data engineer', 'Administrator'],
+        topics: ['Exceptions', 'Status'],
+        youtube: '-EQPcOsrfDg',
+        minutes: 3,
+        poster: '/videos/handle-exceptions-2-poster.jpg',
+      },
+      {
+        title: 'Route exceptions to a topic',
+        slug: 'route-exceptions-to-a-topic',
+        level: 'Intermediate',
+        roles: ['Data analyst', 'Data engineer'],
+        topics: ['Deploy', 'Exceptions'],
+        youtube: 'eKbDQS7Wvrw',
+        minutes: 2,
+        poster: '/videos/handle-exceptions-3-poster.jpg',
+      },
+    ],
+  },
 ];
 
 export const released = (course: Course) => course.videos.filter((v) => v.youtube);
