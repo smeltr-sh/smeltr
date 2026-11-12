@@ -4626,9 +4626,9 @@ fn liveness(plan: &mut Plan) {
 
     // An unroll copies each slot it keeps to every row it makes, so it releases one nothing reads after it: a local the
     // rest of the step leaves alone is not copied.
-    for i in 0..n {
-        let out = plan.instrs[i].out;
-        if let Op::Unroll { clear, live, .. } = &mut plan.instrs[i].op {
+    for (i, instr) in plan.instrs.iter_mut().enumerate().take(n) {
+        let out = instr.out;
+        if let Op::Unroll { clear, live, .. } = &mut instr.op {
             let live = *live;
             for (s, &lr) in last_read.iter().enumerate().take(out) {
                 if (lr <= i || lr == usize::MAX) && s != live && !clear.contains(&s) {

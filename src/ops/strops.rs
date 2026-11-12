@@ -56,12 +56,12 @@ pub fn str_length(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     {
         let o = out.i64_mut().unwrap();
         if v.ascii || ins[0].data_type() == DataType::Bytes {
-            for i in 0..len {
-                o.values[i] = v.row_len(i) as i64;
+            for (i, value) in o.values.iter_mut().enumerate().take(len) {
+                *value = v.row_len(i) as i64;
             }
         } else {
-            for i in 0..len {
-                o.values[i] = String::from_utf8_lossy(v.get(i)).chars().count() as i64;
+            for (i, value) in o.values.iter_mut().enumerate().take(len) {
+                *value = String::from_utf8_lossy(v.get(i)).chars().count() as i64;
             }
         }
         o.validity.bits_mut().copy_from_slice(v.validity.bits());
