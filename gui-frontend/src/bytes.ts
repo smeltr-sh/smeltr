@@ -16,6 +16,14 @@ export function bytes(n: number): string {
   return `${value.toFixed(unit > 0 && value < 10 ? 1 : 0)} ${UNITS[unit]}`;
 }
 
+/** The binary unit, as its name and its size in bytes, that reads a series of byte counts best,
+ * judged by the series' largest count. */
+export function byteUnit(largest: number): { unit: string; size: number } {
+  let unit = 0;
+  while (largest >= 1024 ** (unit + 1) && unit < UNITS.length - 1) unit += 1;
+  return { unit: UNITS[unit], size: 1024 ** unit };
+}
+
 /** What a bundle holds for a byte figure: a number of bytes, or a size as typed (`"4 GiB"`, `"250 MB"`).
  * The loader accepts either and writes back the exact binary form (`exactBytes`). */
 export type ByteCount = number | string;

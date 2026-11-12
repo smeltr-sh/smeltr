@@ -289,6 +289,19 @@ describe('parseRoute', () => {
     });
   });
 
+  it('reads a panel widened over the map, and nothing else as wide', () => {
+    expect(parseRoute('#/map?group=west&kind=source&id=s&panel=history&wide=1')).toEqual({
+      tab: 'map',
+      page: 'graph',
+      stats: { group: 'west', kind: 'source', id: 's', panel: 'history', wide: true },
+    });
+    expect(parseRoute('#/map?group=west&kind=source&id=s&wide=0')).toEqual({
+      tab: 'map',
+      page: 'graph',
+      stats: { group: 'west', kind: 'source', id: 's' },
+    });
+  });
+
   it('opens no stats for a map hash missing a piece or naming an unknown kind', () => {
     for (const hash of [
       '#/map',

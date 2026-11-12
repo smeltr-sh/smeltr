@@ -118,6 +118,7 @@
       panel?: string;
       stack?: boolean;
       range?: string;
+      wide?: boolean;
     };
     /** What the search starts with: a link that picks out several nodes at once. */
     q?: string;
@@ -663,6 +664,9 @@
   });
 
   let panelTab = $derived<FocusTab>(FOCUS_TABS.find((t) => t === stats?.panel) ?? 'overview');
+  /** Whether the selected object's panel fills the map's width. The panel of a stack, the one card
+   * the map draws for several like objects, stays beside the map. */
+  let wide = $derived(!!stats?.wide && selected !== undefined);
 
   /** The charts' range the last panel showed, so the next one opens on it too. Kept in this
    * browser between visits; a link that names a range still wins, and one that names none, from
@@ -683,8 +687,10 @@
     store(RANGE_KEY, shown);
   });
 
-  function hashOf(n: MapNode, panel?: FocusTab, range: string = lastRange): string {
-    return statsHash(n.group, n.kind, n.authorId, panel, range);
+  /** The link to an object's panel, as wide as the open one is, so moving on from a widened panel
+   * keeps it wide. */
+  function hashOf(n: MapNode, panel?: FocusTab, range: string = lastRange, widened = wide): string {
+    return statsHash(n.group, n.kind, n.authorId, panel, range, widened);
   }
 
   /** What selecting a card opens: its object's panel or its stack's. */
@@ -788,13 +794,14 @@
     if (stats && !(e.target as Element).closest('.node')) location.hash = '#/map';
   }
 
-  /** Escape clears the selection, unless a field or the search box is taking the key. */
+  /** Escape narrows a widened panel, then clears the selection, unless a field or the search box
+   * is taking the key. */
   function onWindowKey(e: KeyboardEvent) {
     if (e.key !== 'Escape' || !stats || e.defaultPrevented) return;
     // An open help popover takes this Escape for itself.
     if (document.querySelector(':popover-open')) return;
     if ((e.target as Element).closest('input, textarea, select, [contenteditable]')) return;
-    location.hash = '#/map';
+    location.hash = wide && selected ? hashOf(selected, panelTab, lastRange, false) : '#/map';
   }
 
   function keyOf(p: Positioned): string {
@@ -935,7 +942,7 @@
 
     {#snippet selectionControls()}
       <span class="selection-controls">
-        {#if path}
+        {#if path && !wide}
           <button type="button" aria-pressed={onlyPath} onclick={() => (onlyPath = !onlyPath)}>
             Show this path
           </button>
@@ -946,7 +953,7 @@
       </span>
     {/snippet}
 
-    <div class="workspace">
+    <div class="workspace" class:wide>
       <div class="canvas">
         {#if bands.length === 0}
           <p class="dim empty">
@@ -1121,9 +1128,11 @@
               routes={selectedRoutes}
               delivers={selectedDelivers}
               {pipelineName}
-              tabHash={(t) => hashOf(selected!, t)}
+              tabHash={(t) => hashOf(selected!, t, lastRange, wide)}
+              {wide}
+              wideHash={hashOf(selected, panelTab, lastRange, !wide)}
               range={stats?.range ?? lastRange}
-              rangeHash={(r) => hashOf(selected!, panelTab, r)}
+              rangeHash={(r) => hashOf(selected!, panelTab, r, wide)}
               editHash={hashFor(selected)}
               onedit={selected.shared ? () => setScope(SHARED_SCOPE) : undefined}
               onclose={() => (location.hash = '#/map')}
@@ -1288,6 +1297,20 @@
     grid-template-columns: minmax(0, 1fr) 21.25rem;
     gap: 1.4rem;
     align-items: start;
+  }
+
+  /* A widened panel takes the map's place until it is narrowed again. */
+  .workspace.wide {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workspace.wide .canvas {
+    display: none;
+  }
+
+  .workspace.wide .side {
+    position: static;
+    max-height: none;
   }
 
   .side {

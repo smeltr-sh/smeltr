@@ -26,7 +26,18 @@ describe('bytes', () => {
   });
 });
 
-import { byteCount, exactBytes, parseBytes } from './bytes';
+import { byteCount, byteUnit, exactBytes, parseBytes } from './bytes';
+
+describe('byteUnit', () => {
+  it('takes the largest unit the largest count reaches, so the axis reads in whole units', () => {
+    expect(byteUnit(0)).toEqual({ unit: 'B', size: 1 });
+    expect(byteUnit(1023)).toEqual({ unit: 'B', size: 1 });
+    expect(byteUnit(1024)).toEqual({ unit: 'KiB', size: 1024 });
+    expect(byteUnit(282_064)).toEqual({ unit: 'KiB', size: 1024 });
+    expect(byteUnit(1_174_562)).toEqual({ unit: 'MiB', size: 1024 ** 2 });
+    expect(byteUnit(1024 ** 6)).toEqual({ unit: 'TiB', size: 1024 ** 4 });
+  });
+});
 
 describe('parseBytes', () => {
   it('reads either unit family, or bare bytes', () => {

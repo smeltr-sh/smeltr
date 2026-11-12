@@ -15,6 +15,8 @@
   import ShowAll from './ShowAll.svelte';
   import InlineError from './InlineError.svelte';
   import Dialog from './Dialog.svelte';
+  import Figure from './Figure.svelte';
+  import Figures from './Figures.svelte';
   import {
     cellText,
     filledColumns,
@@ -115,24 +117,22 @@
     {#if !status}
       {#if !lost}<p class="dim">Waiting for the first worker to pick this up&hellip;</p>{/if}
     {:else}
-      <div class="tiles">
-        <div class="tile">
-          <span class="uppercase-label">Records</span>
-          <span class="tile-value">{held}<span class="tile-of"> of {status.maxMatches}</span></span>
-          <div class="meter" aria-hidden="true">
-            <div
-              class="meter-fill"
-              style:width="{Math.min(100, (100 * held) / status.maxMatches)}%"
-            ></div>
-          </div>
-        </div>
-        <div class="tile">
-          <span class="uppercase-label">{done ? 'Ended' : 'Time left'}</span>
-          <span class="tile-value">
-            {#if status.stopped}stopped{:else if done}finished{:else}{status.secondsLeft}s{/if}
-          </span>
-        </div>
-      </div>
+      <Figures>
+        <Figure label="Records">
+          {held}<span class="of"> of {status.maxMatches}</span>
+          {#snippet after()}
+            <div class="meter" aria-hidden="true">
+              <div
+                class="meter-fill"
+                style:width="{Math.min(100, (100 * held) / status.maxMatches)}%"
+              ></div>
+            </div>
+          {/snippet}
+        </Figure>
+        <Figure label={done ? 'Ended' : 'Time left'}>
+          {#if status.stopped}stopped{:else if done}finished{:else}{status.secondsLeft}s{/if}
+        </Figure>
+      </Figures>
 
       <p class="dim">{progressText(status)}</p>
 
@@ -297,26 +297,7 @@
     line-height: 1.5;
   }
 
-  .tiles {
-    display: flex;
-    gap: 0.6rem;
-  }
-  .tile {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-    padding: 0.6rem 0.75rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-card);
-    background: var(--bg);
-  }
-  .tile-value {
-    font-size: 1.4rem;
-    font-weight: 600;
-    line-height: 1.1;
-  }
-  .tile-of {
+  .of {
     font-size: var(--text-label);
     font-weight: 400;
     color: var(--dim);

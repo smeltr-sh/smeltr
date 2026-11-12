@@ -50,7 +50,9 @@
 </aside>
 
 <style>
+  /* A container, so what it holds lays itself out for the panel's width, beside the map or across it. */
   .focus {
+    container: panel / inline-size;
     padding: 0.9rem 1rem 1rem;
     border: 1px solid var(--border);
     border-radius: var(--radius-card);
