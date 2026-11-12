@@ -778,3 +778,21 @@ describe('a parser writes into the object it names', () => {
     expect(stepSummary(parser())).toBe('_raw as JSON');
   });
 });
+
+describe('a Call step summary', () => {
+  const call = (pipeline: string): Step => ({
+    type: 'call',
+    id: 'c',
+    filter: '',
+    disabled: false,
+    pipeline,
+  });
+
+  it('names the pipeline it calls, and shows the id of one nothing names', () => {
+    expect(stepSummary(call('pipeline-hyijt4wh'), { 'pipeline-hyijt4wh': 'stamp-ecs' })).toBe(
+      'stamp-ecs',
+    );
+    expect(stepSummary(call('pipeline-hyijt4wh'))).toBe('pipeline-hyijt4wh');
+    expect(stepSummary(call(''), {})).toBe('(no pipeline chosen)');
+  });
+});

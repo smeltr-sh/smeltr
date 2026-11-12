@@ -622,7 +622,7 @@
           () =>
             orderedStepErrors(steps, saveErrorsByStep).flatMap(({ step, messages }) =>
               messages.map((message) => ({
-                where: stepSummary(step),
+                where: stepSummary(step, pipelineNames),
                 message,
                 go: () => (jumpToStepId = step.id),
               })),

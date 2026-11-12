@@ -1,10 +1,11 @@
 /**
- * The eval rows an author is still writing, held out of the live preview.
+ * The eval rows and Call steps an author is still writing, held out of the live preview.
  *
  * A row is unfinished while it is wholly blank, or while one of its two boxes
- * is blank and the author has not yet left that box. Neither is a mistake yet,
- * so neither may fail the preview; a box left blank is, and its row goes back
- * in to show why. A save sends every row.
+ * is blank and the author has not yet left that box. A Call step is unfinished
+ * until it names a pipeline. None is a mistake yet, so none may fail the
+ * preview; a box left blank is, and its row goes back in to show why. A save
+ * sends every row and step.
  */
 
 import { getContext, setContext } from 'svelte';
@@ -39,18 +40,19 @@ export class UnfinishedRows {
     return held('target') || held('expr');
   }
 
-  /** `steps` without their unfinished rows, and `restore`, which renumbers a
-   * preview error's row from the rows sent to the rows on screen. */
+  /** `steps` without their unfinished rows and Call steps, and `restore`, which
+   * renumbers a preview error's row from the rows sent to the rows on screen. */
   hold(steps: Step[]): { steps: Step[]; restore: <E extends PreviewError>(e: E) => E } {
     const kept = new Map<string, number[]>();
     const strip = (list: Step[]): Step[] =>
-      list.map((s) => {
-        if (s.type === 'if') return { ...s, then: strip(s.then), else: strip(s.else) };
-        if (s.type !== 'eval') return s;
+      list.flatMap((s) => {
+        if (s.type === 'if') return [{ ...s, then: strip(s.then), else: strip(s.else) }];
+        if (s.type === 'call') return s.pipeline.trim() === '' ? [] : [s];
+        if (s.type !== 'eval') return [s];
         const rows = s.assignments.flatMap((row, i) => (this.#unfinished(row) ? [] : [i]));
-        if (rows.length === s.assignments.length) return s;
+        if (rows.length === s.assignments.length) return [s];
         kept.set(s.id, rows);
-        return { ...s, assignments: rows.map((i) => s.assignments[i]) };
+        return [{ ...s, assignments: rows.map((i) => s.assignments[i]) }];
       });
     return {
       steps: strip(steps),

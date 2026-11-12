@@ -658,7 +658,8 @@ export function stepParts(step: Step): string[] {
   }
 }
 
-export function stepSummary(step: Step): string {
+/** What `step` does, in one line. `pipelineNames` names the pipeline a Call step runs; without it the id shows. */
+export function stepSummary(step: Step, pipelineNames: Record<string, string> = {}): string {
   switch (step.type) {
     case 'if':
       return `if ${step.condition || '…'}`;
@@ -683,7 +684,7 @@ export function stepSummary(step: Step): string {
     case 'unroll':
       return `${step.field || '(no field)'}${step.keepParentFields ? ' (keeps parent fields)' : ''}`;
     case 'call':
-      return step.pipeline || '(no pipeline chosen)';
+      return pipelineNames[step.pipeline] || step.pipeline || '(no pipeline chosen)';
   }
 }
 
