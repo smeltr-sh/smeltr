@@ -96,19 +96,23 @@ impl Write for Sending {
 #[derive(Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Contents {
-    pipelines: Vec<String>,
+    pipelines: Vec<Named>,
     lookup_tables: Vec<TableContents>,
     grok_patterns: Vec<String>,
     schemas: Vec<String>,
     tests: Vec<TestContents>,
-    routes: Vec<String>,
-    /// What a reader calls each pipeline and route in place of its id, which nobody chose.
-    pipeline_names: BTreeMap<String, String>,
-    route_names: BTreeMap<String, String>,
+    routes: Vec<Named>,
     sources: Vec<String>,
     destinations: Vec<String>,
     /// Each secret and certificate an exported source or destination names, and which of them name it.
     credentials: Vec<Credential>,
+}
+
+/// A pipeline or route: its id, and its name, which a reader sees in place of an id nobody chose.
+#[derive(Debug, PartialEq, serde::Serialize)]
+struct Named {
+    id: String,
+    name: String,
 }
 
 /// A test and the sample it runs over. The export holds a sample while it holds a test that reads it.
@@ -142,7 +146,7 @@ fn contents_in(data_dir: &Path, area: &str, id: &str, q: &ExportQuery) -> Result
     let ids = |items: Vec<&String>| items.into_iter().cloned().collect();
     let file = &export.file;
     Ok(Contents {
-        pipelines: ids(file.pipelines.iter().map(|p| &p.id).collect()),
+        pipelines: named(file.pipelines.iter().map(|p| &p.id), &file.pipeline_names()),
         lookup_tables: (file.lookup_tables.iter())
             .map(|t| {
                 let path = table_file(&t.source).map(str::to_string);
@@ -161,9 +165,7 @@ fn contents_in(data_dir: &Path, area: &str, id: &str, q: &ExportQuery) -> Result
                 sample: t.sample.clone(),
             })
             .collect(),
-        routes: ids(file.routes.iter().map(|r| &r.id).collect()),
-        pipeline_names: file.pipeline_names(),
-        route_names: file.route_names(),
+        routes: named(file.routes.iter().map(|r| &r.id), &file.route_names()),
         sources: ids(file.sources.iter().map(|s| &s.id).collect()),
         destinations: ids(file.destinations.iter().map(|d| &d.id).collect()),
         credentials: Objects {
@@ -174,6 +176,15 @@ fn contents_in(data_dir: &Path, area: &str, id: &str, q: &ExportQuery) -> Result
         }
         .credentials(),
     })
+}
+
+/// Each of `ids`, in its order, with its name in `names`.
+fn named<'a>(ids: impl Iterator<Item = &'a String>, names: &BTreeMap<String, String>) -> Vec<Named> {
+    ids.map(|id| Named {
+        id: id.clone(),
+        name: names.get(id).cloned().unwrap_or_else(|| id.clone()),
+    })
+    .collect()
 }
 
 /// The file a lookup table reads, relative to its bundle. An inline table reads none.
@@ -439,7 +450,13 @@ mod tests {
     fn the_contents_name_what_the_export_holds() {
         let data = seeded("contents");
         let contents = contents_in(&data, "west", "audit", &query()).unwrap();
-        assert_eq!(contents.pipelines, ["audit"]);
+        assert_eq!(
+            contents.pipelines,
+            [Named {
+                id: "audit".into(),
+                name: "audit".into()
+            }]
+        );
         let table = &contents.lookup_tables[0];
         assert_eq!(
             (table.id.as_str(), table.file.as_deref(), table.bytes),
@@ -452,10 +469,6 @@ mod tests {
             .collect();
         assert_eq!(tests, [("t1", "s1")]);
         assert!(contents.routes.is_empty() && contents.credentials.is_empty());
-        assert_eq!(
-            contents.pipeline_names,
-            BTreeMap::from([("audit".into(), "audit".into())])
-        );
         let _ = std::fs::remove_dir_all(&data);
     }
 }

@@ -157,7 +157,7 @@ test('an export is imported, a taken id renamed and a secret matched to one here
   const importButton = dialog.getByRole('button', { name: 'Import' });
   await expect(importButton).toBeDisabled();
 
-  const common = dialog.getByRole('region', { name: 'Pipeline common' });
+  const common = dialog.getByRole('region', { name: 'Pipeline Common (common)' });
   // Only the name differs, from the one here to the imported one.
   await expect(common.getByRole('list', { name: /^What differs/ })).toHaveText(
     /^\s*name:\s*Ours\s*→\s*Common\s*$/,
@@ -201,7 +201,7 @@ test('only the ticked part of an export is imported, and leaving out what the re
     mimeType: 'application/zip',
     buffer: await zip.body(),
   });
-  const common = dialog.getByRole('region', { name: 'Pipeline common' });
+  const common = dialog.getByRole('region', { name: 'Pipeline Common (common)' });
   await expect(common).toBeVisible();
   // Left out, the taken common needs no answer: the firewall calls the one here.
   await dialog.getByRole('checkbox', { name: 'Import Pipeline Common' }).uncheck();

@@ -9,12 +9,22 @@
   import Dialog from './Dialog.svelte';
   import Field from './Field.svelte';
   import Toggle from './Toggle.svelte';
-  import { exportContents, exportUrl, type ExportContents, type ImportPart } from './api';
+  import {
+    exportContents,
+    exportUrl,
+    type ExportContents,
+    type ImportPart,
+    type Named,
+  } from './api';
   import { bytes } from './bytes';
   import { reported } from './errors.svelte';
 
-  let { open, pipeline, oncancel }: { open: boolean; pipeline: string; oncancel: () => void } =
-    $props();
+  let {
+    open,
+    pipeline,
+    name,
+    oncancel,
+  }: { open: boolean; pipeline: string; name: string; oncancel: () => void } = $props();
 
   let routes = $state(false);
   let contents = $state<Partial<ExportContents> | null>(null);
@@ -53,13 +63,11 @@
 
   type Row = { part: ImportPart; id: string; shown: string };
   const key = (r: { part: ImportPart; id: string }) => `${r.part}\u0000${r.id}`;
-  /** Rows of `part`, each shown by its name in `names` when it has one: a pipeline's or route's id is a key nobody
-   * chose. */
-  const plain = (
-    part: ImportPart,
-    ids: string[] | undefined,
-    names: Record<string, string> = {},
-  ): Row[] => (ids ?? []).map((id) => ({ part, id, shown: names[id] ?? id }));
+  const plain = (part: ImportPart, ids: string[] | undefined): Row[] =>
+    (ids ?? []).map((id) => ({ part, id, shown: id }));
+  /** A pipeline or route is shown by its name: its id is a key nobody chose. */
+  const named = (part: ImportPart, items: Named[] | undefined): Row[] =>
+    (items ?? []).map(({ id, name }) => ({ part, id, shown: name }));
 
   /** Each object that can be ticked, in the order an import lists them. A lookup table is shown with its file's name as
    * uploaded, without the content hash prefix the leader stores it under, and the file's size. */
@@ -67,7 +75,7 @@
     contents === null
       ? []
       : [
-          ...plain('pipeline', contents.pipelines, contents.pipelineNames),
+          ...named('pipeline', contents.pipelines),
           ...(contents.lookupTables ?? []).map((t) => ({
             part: 'lookupTable' as const,
             id: t.id,
@@ -82,7 +90,7 @@
             'test',
             (contents.tests ?? []).map((t) => t.id),
           ),
-          ...plain('route', contents.routes, contents.routeNames),
+          ...named('route', contents.routes),
           ...plain('source', contents.sources),
           ...plain('destination', contents.destinations),
         ],
@@ -105,7 +113,7 @@
   );
 </script>
 
-<Dialog {open} title="export {contents?.pipelineNames?.[pipeline] ?? ''}" wide {oncancel}>
+<Dialog {open} title="export {name}" wide {oncancel}>
   <div class="body">
     <Field label="Include routes, sources and destinations">
       {#snippet help()}Secrets and certificates go by name only. Importing matches each name to one
