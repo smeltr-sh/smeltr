@@ -1926,6 +1926,9 @@ export interface ExportContents {
   /** Each test with the sample it runs over: a sample is exported while a test that reads it is. */
   tests: { id: string; sample: string }[];
   routes: string[];
+  /** What a reader calls each pipeline and route in place of its id, which nobody chose. */
+  pipelineNames: Record<string, string>;
+  routeNames: Record<string, string>;
   sources: string[];
   destinations: string[];
   /** Each secret and certificate an exported source or destination names, and which of them name it. */
@@ -1980,6 +1983,8 @@ export type ImportPart =
 export interface ImportListed {
   part: ImportPart;
   id: string;
+  /** What a reader calls a pipeline or route in place of its id, which nobody chose. */
+  name?: string;
   standing: 'new' | 'same' | 'taken';
   imported?: string;
   here?: string;

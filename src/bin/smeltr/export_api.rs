@@ -48,9 +48,10 @@ impl ExportQuery {
 pub async fn export_pipeline(AxPath((area, id)): AxPath<(String, String)>, Query(q): Query<ExportQuery>) -> Response {
     let files = blocking(move || {
         let left_out = q.left_out()?;
-        exported(&leader_data_dir(), &area, &id, &q, &left_out).map(|(_, files)| (id, files))
+        exported(&leader_data_dir(), &area, &id, &q, &left_out)
+            .map(|(export, files)| (export.file.pipeline_name(&id).to_string(), files))
     });
-    let (id, files) = match files.await {
+    let (name, files) = match files.await {
         Ok(found) => found,
         Err(e) => return Envelope::<()>::refused(e).into_response(),
     };
@@ -67,7 +68,7 @@ pub async fn export_pipeline(AxPath((area, id)): AxPath<(String, String)>, Query
     // A fused stream: it answers 'ended' again when asked after its end, because the compression layer asks once more.
     let body = futures_util::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|chunk| (chunk, rx)) });
     let body = futures_util::StreamExt::fuse(body);
-    let disposition = format!("attachment; filename=\"{}.zip\"", slugify(&id));
+    let disposition = format!("attachment; filename=\"{}.zip\"", slugify(&name));
     let headers = [
         (header::CONTENT_TYPE, "application/zip".to_string()),
         (header::CONTENT_DISPOSITION, disposition),
@@ -101,6 +102,9 @@ pub struct Contents {
     schemas: Vec<String>,
     tests: Vec<TestContents>,
     routes: Vec<String>,
+    /// What a reader calls each pipeline and route in place of its id, which nobody chose.
+    pipeline_names: BTreeMap<String, String>,
+    route_names: BTreeMap<String, String>,
     sources: Vec<String>,
     destinations: Vec<String>,
     /// Each secret and certificate an exported source or destination names, and which of them name it.
@@ -158,6 +162,8 @@ fn contents_in(data_dir: &Path, area: &str, id: &str, q: &ExportQuery) -> Result
             })
             .collect(),
         routes: ids(file.routes.iter().map(|r| &r.id).collect()),
+        pipeline_names: file.pipeline_names(),
+        route_names: file.route_names(),
         sources: ids(file.sources.iter().map(|s| &s.id).collect()),
         destinations: ids(file.destinations.iter().map(|d| &d.id).collect()),
         credentials: Objects {
@@ -446,6 +452,10 @@ mod tests {
             .collect();
         assert_eq!(tests, [("t1", "s1")]);
         assert!(contents.routes.is_empty() && contents.credentials.is_empty());
+        assert_eq!(
+            contents.pipeline_names,
+            BTreeMap::from([("audit".into(), "audit".into())])
+        );
         let _ = std::fs::remove_dir_all(&data);
     }
 }

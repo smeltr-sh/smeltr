@@ -60,15 +60,16 @@ test('a pipeline is exported with the pipeline it calls, and its routes when ask
     .getByRole('row', { name: /Firewall/ })
     .getByRole('button', { name: 'Export' })
     .click();
-  const dialog = admin.getByRole('dialog', { name: /export firewall/ });
-  const row = (kind: string, id: string) =>
-    dialog.getByRole('row', { name: new RegExp(`^${kind} ${id}\\b`) });
-  await expect(row('Pipeline', 'firewall')).toBeVisible();
-  await expect(row('Pipeline', 'common')).toBeVisible();
+  const dialog = admin.getByRole('dialog', { name: /export Firewall/ });
+  // A pipeline and a route show by name: their ids are keys nobody chose.
+  const row = (kind: string, name: string) =>
+    dialog.getByRole('row', { name: new RegExp(`^${kind} ${name}\\b`) });
+  await expect(row('Pipeline', 'Firewall')).toBeVisible();
+  await expect(row('Pipeline', 'Common')).toBeVisible();
   await expect(row('Grok pattern', 'FW_LINE')).toBeVisible();
   await expect(row('Test', 'firewall-lines')).toBeVisible();
   await expect(row('Sample', 'lines')).toContainText('With its tests');
-  await expect(row('Route', 'fw-out')).toBeHidden();
+  await expect(row('Route', 'fw → Firewall')).toBeHidden();
 
   // A sample leaves with its last test.
   await dialog.getByRole('checkbox', { name: 'Export Test firewall-lines' }).uncheck();
@@ -81,15 +82,15 @@ test('a pipeline is exported with the pipeline it calls, and its routes when ask
   await dialog.getByRole('checkbox', { name: 'Export Test firewall-lines' }).check();
 
   // Without the pipeline itself, the export is only what it reads.
-  await dialog.getByRole('checkbox', { name: 'Export Pipeline firewall' }).uncheck();
+  await dialog.getByRole('checkbox', { name: 'Export Pipeline Firewall' }).uncheck();
   const readsOnly = await dialog.getByRole('link', { name: 'Download' }).getAttribute('href');
   const reads = await (await admin.request.get(new URL(readsOnly!, leader.url).toString())).body();
   expect(reads.includes('pipelines/firewall.json')).toBe(false);
   expect(reads.includes('pipelines/common.json')).toBe(true);
-  await dialog.getByRole('checkbox', { name: 'Export Pipeline firewall' }).check();
+  await dialog.getByRole('checkbox', { name: 'Export Pipeline Firewall' }).check();
 
   await dialog.getByRole('switch', { name: 'Include routes, sources and destinations' }).check();
-  await expect(row('Route', 'fw-out')).toBeVisible();
+  await expect(row('Route', 'fw → Firewall')).toBeVisible();
   await expect(row('Source', 'fw')).toBeVisible();
   await expect(row('Destination', 'out')).toBeVisible();
 
@@ -148,11 +149,11 @@ test('an export is imported, a taken id renamed and a secret matched to one here
     mimeType: 'application/zip',
     buffer: await zip.body(),
   });
-  const row = (kind: string, id: string) =>
-    dialog.getByRole('row', { name: new RegExp(`^${kind} ${id} `) });
-  await expect(row('Pipeline', 'firewall')).toContainText('New');
-  await expect(row('Pipeline', 'common')).toContainText('Taken');
-  await expect(row('Route', 'fw-out')).toContainText('New');
+  const row = (kind: string, name: string) =>
+    dialog.getByRole('row', { name: new RegExp(`^${kind} ${name} `) });
+  await expect(row('Pipeline', 'Firewall')).toContainText('New');
+  await expect(row('Pipeline', 'Common')).toContainText('Taken');
+  await expect(row('Route', 'fw → Firewall')).toContainText('New');
   const importButton = dialog.getByRole('button', { name: 'Import' });
   await expect(importButton).toBeDisabled();
 
@@ -203,7 +204,7 @@ test('only the ticked part of an export is imported, and leaving out what the re
   const common = dialog.getByRole('region', { name: 'Pipeline common' });
   await expect(common).toBeVisible();
   // Left out, the taken common needs no answer: the firewall calls the one here.
-  await dialog.getByRole('checkbox', { name: 'Import Pipeline common' }).uncheck();
+  await dialog.getByRole('checkbox', { name: 'Import Pipeline Common' }).uncheck();
   await expect(common).toBeHidden();
   await dialog.getByRole('button', { name: 'Import' }).click();
   await expect(dialog).toBeHidden();
@@ -221,7 +222,7 @@ test('only the ticked part of an export is imported, and leaving out what the re
     mimeType: 'application/zip',
     buffer: await zip.body(),
   });
-  await dialog.getByRole('checkbox', { name: 'Import Pipeline common' }).uncheck();
+  await dialog.getByRole('checkbox', { name: 'Import Pipeline Common' }).uncheck();
   await dialog.getByRole('button', { name: 'Import' }).click();
   await expect(
     admin

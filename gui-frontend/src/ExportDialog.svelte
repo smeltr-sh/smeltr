@@ -53,8 +53,13 @@
 
   type Row = { part: ImportPart; id: string; shown: string };
   const key = (r: { part: ImportPart; id: string }) => `${r.part}\u0000${r.id}`;
-  const plain = (part: ImportPart, ids: string[] | undefined): Row[] =>
-    (ids ?? []).map((id) => ({ part, id, shown: id }));
+  /** Rows of `part`, each shown by its name in `names` when it has one: a pipeline's or route's id is a key nobody
+   * chose. */
+  const plain = (
+    part: ImportPart,
+    ids: string[] | undefined,
+    names: Record<string, string> = {},
+  ): Row[] => (ids ?? []).map((id) => ({ part, id, shown: names[id] ?? id }));
 
   /** Each object that can be ticked, in the order an import lists them. A lookup table is shown with its file's name as
    * uploaded, without the content hash prefix the leader stores it under, and the file's size. */
@@ -62,7 +67,7 @@
     contents === null
       ? []
       : [
-          ...plain('pipeline', contents.pipelines),
+          ...plain('pipeline', contents.pipelines, contents.pipelineNames),
           ...(contents.lookupTables ?? []).map((t) => ({
             part: 'lookupTable' as const,
             id: t.id,
@@ -77,7 +82,7 @@
             'test',
             (contents.tests ?? []).map((t) => t.id),
           ),
-          ...plain('route', contents.routes),
+          ...plain('route', contents.routes, contents.routeNames),
           ...plain('source', contents.sources),
           ...plain('destination', contents.destinations),
         ],
@@ -100,7 +105,7 @@
   );
 </script>
 
-<Dialog {open} title="export {pipeline}" wide {oncancel}>
+<Dialog {open} title="export {contents?.pipelineNames?.[pipeline] ?? ''}" wide {oncancel}>
   <div class="body">
     <Field label="Include routes, sources and destinations">
       {#snippet help()}Secrets and certificates go by name only. Importing matches each name to one
@@ -112,7 +117,7 @@
     {:else}
       <table>
         <thead>
-          <tr><th>Kind</th><th>Id</th><th>Export</th></tr>
+          <tr><th>Kind</th><th>Name</th><th>Export</th></tr>
         </thead>
         <tbody>
           {#each rows as r (key(r))}
@@ -122,7 +127,7 @@
               <td>
                 <input
                   type="checkbox"
-                  aria-label="Export {PARTS[r.part]} {r.id}"
+                  aria-label="Export {PARTS[r.part]} {r.shown}"
                   checked={!leftOut[key(r)]}
                   onchange={(e) => (leftOut[key(r)] = !e.currentTarget.checked)}
                 />

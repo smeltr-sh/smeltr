@@ -197,20 +197,20 @@
     {#if listed.length > 0}
       <table>
         <thead>
-          <tr><th>Kind</th><th>Id</th><th></th><th>Import</th></tr>
+          <tr><th>Kind</th><th>Name</th><th></th><th>Import</th></tr>
         </thead>
         <tbody>
           {#each listed as l (key(l))}
             <tr>
               <td>{PARTS[l.part]}</td>
-              <td class="mono">{l.id}</td>
+              <td class="mono">{l.name ?? l.id}</td>
               <td class:dim={l.standing === 'same'} class:taken={l.standing === 'taken'}
                 >{STANDINGS[l.standing]}</td
               >
               <td>
                 <input
                   type="checkbox"
-                  aria-label="Import {PARTS[l.part]} {l.id}"
+                  aria-label="Import {PARTS[l.part]} {l.name ?? l.id}"
                   checked={!leftOut[key(l)]}
                   disabled={busy.on}
                   onchange={(e) => (leftOut[key(l)] = !e.currentTarget.checked)}
