@@ -368,7 +368,10 @@ pub async fn hold_paste(
         request.records,
     );
     match held {
-        Ok(()) => status_of(&state.captures, &access, &session).into_response(),
+        Ok(()) => {
+            accounts::record_async(state.store.clone(), &actor, "capture-paste", &session, "ok").await;
+            status_of(&state.captures, &access, &session).into_response()
+        }
         Err(e) => Envelope::<Followed>::refused(Refusal::invalid(e)).into_response(),
     }
 }
