@@ -172,6 +172,7 @@ fn in_area(method: &Method, within: &[&str]) -> Option<Level> {
             | ["tests"]
             | ["stats"]
             | ["sources", _, "past"]
+            | ["sources", _, "senders"]
             | ["lookups", "file" | "mmdb"]
             | [_, _, "connections"],
         ) => Level::Viewer,
@@ -185,7 +186,9 @@ fn in_area(method: &Method, within: &[&str]) -> Option<Level> {
         )
         | (Method::POST, ["undo"] | ["lookups", "upload"] | ["test-runs"] | ["imports"]) => Level::Editor,
         // What an admin says about a source's rows warning: it changes no configuration and touches no worker.
-        (Method::POST, ["sources", _, "lower" | "reset-history" | "mark"]) => Level::Editor,
+        (Method::POST, ["sources", _, "lower" | "reset-history" | "mark"])
+        | (Method::POST, ["sources", _, "senders", "lower"])
+        | (Method::PUT, ["sources", _, "senders", "fields"]) => Level::Editor,
 
         // Samples, and what a preview of them shows.
         (Method::GET | Method::HEAD, ["samples"])
@@ -342,9 +345,18 @@ mod tests {
             "/api/areas/payments/sources/s1/lower",
             "/api/areas/payments/sources/s1/reset-history",
             "/api/areas/payments/sources/s1/mark",
+            "/api/areas/payments/sources/s1/senders/lower",
         ] {
             assert_eq!(need(&Method::POST, path), area("payments", Level::Editor), "{path}");
         }
+        assert_eq!(
+            need(&Method::PUT, "/api/areas/payments/sources/s1/senders/fields"),
+            area("payments", Level::Editor)
+        );
+        assert_eq!(
+            need(&Method::GET, "/api/areas/payments/sources/s1/senders"),
+            area("payments", Level::Viewer)
+        );
     }
 
     #[test]

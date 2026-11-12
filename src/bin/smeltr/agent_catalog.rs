@@ -731,6 +731,24 @@ pub const CATALOG: &[Route] = &[
         body: "",
     },
     Route {
+        method: "GET",
+        path: "/api/areas/:area/sources/:id/senders",
+        what: "The source's sender fields: each field with whether it is watched, what was learned of it, and its senders, each with its rows per second over the last day, its expected range and whether it is below normal. The area is the source's worker group. No query.",
+        body: "",
+    },
+    Route {
+        method: "PUT",
+        path: "/api/areas/:area/sources/:id/senders/fields",
+        what: "Set which of the source's fields are not watched for senders, and which fields are added, replacing both lists. Its workers count them from their next heartbeat. The area is the source's worker group. No query.",
+        body: "{ unchecked: string[], added: string[] }",
+    },
+    Route {
+        method: "POST",
+        path: "/api/areas/:area/sources/:id/senders/lower",
+        what: "Lower one sender's Senders below normal warning that holds to info until it ends. The area is the source's worker group. No query.",
+        body: "{ field: string, value: string }",
+    },
+    Route {
         method: "POST",
         path: "/api/areas/:area/sources/:id/mark",
         what: "Say a past period of the source was normal, so its normal learns from it though it warned, or an outage, so its normal does not though it did not warn. Replaces what was said about that same period. The area is the source's worker group. No query.",

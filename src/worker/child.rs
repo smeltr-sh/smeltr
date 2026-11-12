@@ -151,6 +151,11 @@ pub enum ToRuntime {
     /// The levels this runtime keeps its lines at, as the leader last sent them. Sent when they change, and to a
     /// runtime as it starts.
     LogLevels { levels: crate::heartbeat::LogLevels },
+    /// What an editor changed of each source's sender fields, as the leader last sent it. Sent when it changes, and
+    /// to a runtime as it starts.
+    SenderFields {
+        fields: Vec<crate::heartbeat::SenderFields>,
+    },
     /// Drain and exit. The supervisor kills the process tree if this is not answered in time.
     Stop,
 }
@@ -163,6 +168,7 @@ pub struct Runtime {
     pub secrets: crate::plan::topology::HeldSecrets,
     pub registry: Arc<crate::metrics::Metrics>,
     pub held: Arc<super::held::Held>,
+    pub sender_fields: crate::streams::SenderEdits,
 }
 
 /// Everything a runtime needs to become one. No path to a working tree: a commit is read out of the object store.
@@ -414,7 +420,8 @@ impl Frame for ToRuntime {
             | ToRuntime::Mirror { .. }
             | ToRuntime::Holds { .. }
             | ToRuntime::Backlogged { .. }
-            | ToRuntime::LogLevels { .. } => MAX_FRAME,
+            | ToRuntime::LogLevels { .. }
+            | ToRuntime::SenderFields { .. } => MAX_FRAME,
         }
     }
 }
@@ -720,6 +727,7 @@ fn obey(frame: ToRuntime, runtime: &Runtime) -> bool {
         secrets,
         registry,
         held,
+        sender_fields,
     } = runtime;
     match frame {
         ToRuntime::Stop => {
@@ -740,6 +748,7 @@ fn obey(frame: ToRuntime, runtime: &Runtime) -> bool {
         ToRuntime::Holds { seq, holds } => held.apply(seq, holds),
         ToRuntime::Backlogged { full } => held.set_upstream_backlogged(full),
         ToRuntime::LogLevels { levels } => levels.apply(),
+        ToRuntime::SenderFields { fields } => sender_fields.set(fields),
         ToRuntime::Start(_) => {}
     }
     true
@@ -1044,6 +1053,12 @@ impl RuntimeHandle {
     pub fn log_levels(&mut self, levels: crate::heartbeat::LogLevels) -> std::io::Result<()> {
         self.control
             .send_within(ToRuntime::LogLevels { levels }, CONTROL_FRAME_BUDGET)
+    }
+
+    /// Tell this runtime what an editor changed of each source's sender fields.
+    pub fn sender_fields(&mut self, fields: Vec<crate::heartbeat::SenderFields>) -> std::io::Result<()> {
+        self.control
+            .send_within(ToRuntime::SenderFields { fields }, CONTROL_FRAME_BUDGET)
     }
 
     /// Hand this runtime what the supervisor recorded and said, to mirror.

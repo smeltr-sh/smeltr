@@ -626,14 +626,14 @@ fn series_id(conn: &Connection, metric: &str, subject_key: &str, counter: bool) 
 /// whichever the point's kind names. The one place a sample's tier, bucket and kind are decided, so a heartbeat's
 /// hundreds and a single seeded point cannot drift apart.
 fn write_point(conn: &Connection, point: &SeriesPoint<'_>, now_ms: i64) -> rusqlite::Result<()> {
+    write_point_at(conn, point, Tier::TenSeconds, now_ms)
+}
+
+/// [`write_point`] into `tier`'s bucket covering `now_ms`: for a series kept no finer than that tier.
+fn write_point_at(conn: &Connection, point: &SeriesPoint<'_>, tier: Tier, now_ms: i64) -> rusqlite::Result<()> {
     let id = series_id(conn, point.metric, &point.subject_key, point.counter)?;
     conn.prepare_cached(if point.counter { UPSERT_COUNTER } else { UPSERT_GAUGE })?
-        .execute(params![
-            id,
-            Tier::TenSeconds.code(),
-            Tier::TenSeconds.align(now_ms),
-            point.value
-        ])?;
+        .execute(params![id, tier.code(), tier.align(now_ms), point.value])?;
     Ok(())
 }
 
@@ -919,6 +919,19 @@ impl RegistryStore {
         Ok(out)
     }
 
+    /// The subject of each fact of `entry` that began at `started_ms` and has ended.
+    pub fn facts_started(&self, entry: &str, started_ms: i64) -> Result<Vec<String>, StoreError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        // A fact ends after it began, so the index on its end reads only the facts that ended since.
+        let mut stmt = conn.prepare_cached(
+            "SELECT subject FROM fact_history WHERE ended_ms >= ?2 AND entry = ?1 AND started_ms = ?2",
+        )?;
+        let subjects = stmt
+            .query_map(params![entry, started_ms], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        Ok(subjects)
+    }
+
     // -- series -----------------------------------------------------------------
 
     /// Add a counter's delta into the fine bucket covering `bucket_ms`. Deltas already: the heartbeat's cursor
@@ -1108,6 +1121,34 @@ impl RegistryStore {
             .iter()
             .map(|tier| series_since_on(&conn, metric, *tier, since_ms))
             .collect()
+    }
+
+    /// Each of `subjects` of `metric` at `tier`, with its points at or after `since_ms`, oldest first. A subject with
+    /// none is left out.
+    pub fn subjects_since(
+        &self,
+        metric: &str,
+        subjects: &[String],
+        tier: Tier,
+        since_ms: i64,
+    ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare_cached(
+            "SELECT p.bucket_ms, p.value FROM series s CROSS JOIN series_points p ON p.series_id = s.id \
+             WHERE s.metric = ?1 AND s.labels_json = ?2 AND p.tier = ?3 AND p.bucket_ms >= ?4 ORDER BY p.bucket_ms",
+        )?;
+        let mut out = Vec::new();
+        for subject in subjects {
+            let points = stmt
+                .query_map(params![metric, subject, tier.code(), since_ms], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })?
+                .collect::<rusqlite::Result<SubjectPoints>>()?;
+            if !points.is_empty() {
+                out.push((subject.clone(), points));
+            }
+        }
+        Ok(out)
     }
 
     /// Every subject of `metric` with a point at or after `since_ms`, each point keyed by its start, `point_ms` wide,
@@ -1985,6 +2026,27 @@ fn write_streams(tx: &Connection, streams: &Streams<'_>, now_ms: i64) -> rusqlit
             ],
         )?;
     }
+    // Into the tier senders are judged at, since a sender's series is read only there (`super::senders`).
+    for counts in &report.senders {
+        let point = |metric, value: Option<&str>, rows: f64| SeriesPoint {
+            metric,
+            subject_key: super::senders::subject(group_id, &counts.source, &counts.field, value),
+            counter: true,
+            value: rows,
+        };
+        if counts.too_many {
+            write_point_at(
+                tx,
+                &point(super::senders::OVER, None, 1.0),
+                super::senders::TIER,
+                now_ms,
+            )?;
+        }
+        for v in &counts.values {
+            let rows = point(super::senders::ROWS, Some(&v.value), v.rows as f64);
+            write_point_at(tx, &rows, super::senders::TIER, now_ms)?;
+        }
+    }
     Ok(())
 }
 
@@ -2225,6 +2287,7 @@ mod tests {
     fn stream_report(fields: &[&str], keys: &[&str]) -> crate::heartbeat::StreamReport {
         use crate::heartbeat::*;
         StreamReport {
+            senders: Vec::new(),
             parsers: vec![ParserShape {
                 source: "orders".into(),
                 route: "to-es".into(),

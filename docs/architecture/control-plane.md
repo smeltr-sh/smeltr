@@ -372,6 +372,37 @@ learned whole, so marking the one that holds teaches the level the source reads
 now, and the warning ends once the normal is learned again, within the hour. The
 leader keeps each of the three, with who said it.
 
+A source's senders are judged as the source is. A sender is one value of one
+field of the source's records, such as a firewall's name, or of its stream key
+(Observability, Streams), and its rows are kept in five-minute buckets.
+
+```mermaid
+flowchart LR
+  W[workers: rows by value of each field] --> S[a five-minute series per value]
+  S -- once a day --> P{sent steadily on seven days in a row}
+  P -- yes --> J[judged at the four widths against its own normal]
+  J -- below four readings in a row --> X[Senders below normal]
+```
+
+Each day the leader picks which values to watch: a value is watched once it went
+no more than an hour without a row, in the buckets where its source was read, on
+each of seven days in a row, and it stays watched for a week after. A field that
+held one value names no sender, and neither does one that passed its cap of
+values on a worker.
+
+A watched sender is judged at the four widths, below normal only and never by
+the gap. It is not judged while its source warns, is held or is stopped, nor on
+the reading its source crosses: the source's own warning says more. Senders of
+one source that cross on one reading raise one warning that names them, and a
+sender that crosses later raises another. The warning says which of its senders
+are back, and ends once all of them are.
+
+An editor in the source's worker group lowers one sender's warning to info, and
+a warning all of whose senders were lowered is info. An editor also stops
+watching a field, or adds one the pick cannot offer, such as a number or a
+nested path. The source's Senders tab on the Map lists its fields, what the pick
+read of each, and each watched sender's last day against its range.
+
 ## Upgrades
 
 A released smeltr starts on whatever an earlier supported release left, and

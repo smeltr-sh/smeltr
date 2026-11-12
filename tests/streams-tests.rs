@@ -7,13 +7,14 @@ use std::time::Duration;
 use smeltr::core::buffer::MemoryBudget;
 use smeltr::core::id::FunctionId;
 use smeltr::handoff::{Handed, Handoff, Ready, reports};
+use smeltr::heartbeat::SenderFields;
 use smeltr::io::SourceRecord;
 use smeltr::io::fake::AsyncDestination;
 use smeltr::metrics::{Metrics, MetricsHandle};
 use smeltr::plan::config::{Answer, FunctionConfig, FunctionKind, OnException, PipelineConfig, Step};
 use smeltr::plan::topology::{DeliverRule, RouteConfig, compile_topology};
 use smeltr::runtime::{DestinationTarget, Lane, Transform};
-use smeltr::streams::Streams;
+use smeltr::streams::{SenderEdits, Streams};
 
 fn code(id: FunctionId, body: &str) -> Step {
     Step::Function(FunctionConfig::new(id, FunctionKind::Code { body: body.into() }))
@@ -27,21 +28,36 @@ fn transform(streams: &Arc<Streams>) -> (Transform, Arc<Lane>, AsyncDestination)
 
 /// `transform`, with every exception answered with `answer`.
 fn transform_answering(streams: &Arc<Streams>, answer: Answer) -> (Transform, Arc<Lane>, AsyncDestination) {
-    let routes = vec![RouteConfig {
-        id: "even".to_string(),
+    let even = route("even", Some("__source.offset % 2 == 0"));
+    transform_with(streams, answer, vec![even], "Object.assign($, json(_raw));")
+}
+
+/// A route of `orders` through the one pipeline to the one destination, taking the records `cond` holds for.
+fn route(id: &str, cond: Option<&str>) -> RouteConfig {
+    RouteConfig {
+        id: id.to_string(),
         source: 0,
-        cond: Some("__source.offset % 2 == 0".to_string()),
+        cond: cond.map(str::to_string),
         pipeline: 0,
         deliver: vec![DeliverRule {
             when: None,
             to: vec![0],
         }],
         on_exception: Default::default(),
-    }];
+    }
+}
+
+/// One transform thread draining `orders`, whose `routes` run the pipeline `normalize`, one step `parse` of `body`.
+fn transform_with(
+    streams: &Arc<Streams>,
+    answer: Answer,
+    routes: Vec<RouteConfig>,
+    body: &str,
+) -> (Transform, Arc<Lane>, AsyncDestination) {
     let pipelines = vec![PipelineConfig {
         id: 0,
         name: "normalize".into(),
-        body: vec![code(0, "Object.assign($, json(_raw));")],
+        body: vec![code(0, body)],
         step_ids: vec!["parse".to_string()],
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
@@ -107,6 +123,7 @@ fn the_first_batch_of_an_interval_is_tallied_and_the_next_is_not() {
         1,
         vec!["normalize".to_string()],
         Duration::from_secs(3600),
+        Default::default(),
     ));
     let (mut transform, lane, _dest) = transform(&streams);
     push(
@@ -161,6 +178,7 @@ fn rows_no_route_takes_are_keyed_on_every_batch() {
         1,
         vec!["normalize".to_string()],
         Duration::from_secs(3600),
+        Default::default(),
     ));
     let (mut transform, lane, _dest) = transform(&streams);
     push(&lane, 1, vec![record(0, b"{}"), record(1, b"{}")]);
@@ -186,6 +204,7 @@ fn a_blocked_batch_keys_its_unmatched_rows_once() {
         1,
         vec!["normalize".to_string()],
         Duration::from_secs(3600),
+        Default::default(),
     ));
     let (mut transform, lane, _dest) = transform_answering(&streams, Answer::Block);
     push(&lane, 1, vec![record(0, b"{}"), record(1, b"{}")]);
@@ -208,6 +227,7 @@ fn a_batch_the_route_takes_nothing_of_does_not_spend_the_interval() {
         1,
         vec!["normalize".to_string()],
         Duration::from_secs(3600),
+        Default::default(),
     ));
     let (mut transform, lane, _dest) = transform(&streams);
     push(&lane, 1, vec![record(1, b"{}"), record(3, b"{}")]);
@@ -222,4 +242,92 @@ fn a_batch_the_route_takes_nothing_of_does_not_spend_the_interval() {
     assert_eq!(shape.rows, 1, "the second batch's one row");
     assert!(shape.fields.iter().any(|f| f.name == "later"));
     assert_eq!(report.unmatched.len(), 1, "the first batch's rows were keyed");
+}
+
+/// Each record counts once for each sender field, however many routes deliver it: each string field the pipeline
+/// declares, by its value, and the record's stream key, which for a Kafka record is its topic.
+#[test]
+fn each_record_counts_once_for_each_sender_field() {
+    let streams = Arc::new(Streams::new(
+        2,
+        vec!["normalize".to_string()],
+        Duration::from_secs(3600),
+        Default::default(),
+    ));
+    let routes = vec![route("even", Some("__source.offset % 2 == 0")), route("all", None)];
+    let (mut transform, lane, _dest) = transform_with(
+        &streams,
+        Answer::Drop,
+        routes,
+        "host: str; Object.assign($, json(_raw));",
+    );
+    push(
+        &lane,
+        1,
+        vec![
+            record(0, br#"{"host": "fw-01", "action": "deny"}"#),
+            record(1, br#"{"host": "fw-01"}"#),
+            record(2, br#"{"host": "fw-07"}"#),
+            record(3, br#"{}"#),
+        ],
+    );
+    transform.step(Duration::from_millis(5)).unwrap();
+
+    let report = streams.drain().expect("senders were counted");
+    let counted = |field: &str| {
+        let counts = report.senders.iter().find(|s| s.field == field).expect(field);
+        assert_eq!(counts.source, "orders");
+        let mut rows: Vec<(&str, u64)> = counts.values.iter().map(|v| (v.value.as_str(), v.rows)).collect();
+        rows.sort();
+        rows
+    };
+    assert_eq!(
+        counted("host"),
+        [("fw-01", 2), ("fw-07", 1)],
+        "once a record, on two routes"
+    );
+    assert_eq!(counted("__source.topic"), [("orders", 4)]);
+    assert!(
+        report.senders.iter().all(|s| s.field != "action"),
+        "an undeclared field names no sender: {report:?}"
+    );
+}
+
+/// An editor's edits reach the count: a field unchecked is counted no more, and a field added is read by its name,
+/// though the pipeline does not declare it.
+#[test]
+fn an_editors_sender_fields_are_counted_as_edited() {
+    let edits = SenderEdits::default();
+    edits.set(vec![SenderFields {
+        source: "orders".to_string(),
+        unchecked: vec!["host".to_string()],
+        added: vec!["action".to_string()],
+    }]);
+    let streams = Arc::new(Streams::new(
+        1,
+        vec!["normalize".to_string()],
+        Duration::from_secs(3600),
+        edits,
+    ));
+    let (mut transform, lane, _dest) = transform_with(
+        &streams,
+        Answer::Drop,
+        vec![route("all", None)],
+        "host: str; Object.assign($, json(_raw));",
+    );
+    push(
+        &lane,
+        1,
+        vec![
+            record(0, br#"{"host": "fw-01", "action": "deny"}"#),
+            record(1, br#"{"host": "fw-07", "action": "allow"}"#),
+        ],
+    );
+    transform.step(Duration::from_millis(5)).unwrap();
+
+    let report = streams.drain().expect("senders were counted");
+    let fields: Vec<&str> = report.senders.iter().map(|s| s.field.as_str()).collect();
+    assert!(!fields.contains(&"host"), "unchecked: {fields:?}");
+    let action = report.senders.iter().find(|s| s.field == "action").expect("added");
+    assert_eq!(action.values.len(), 2, "{action:?}");
 }

@@ -639,6 +639,7 @@ struct Outcomes {
     over_budget: u64,
     /// By reason.
     dropped: HashMap<&'static str, u64>,
+    senders: crate::streams::SenderTally,
 }
 
 impl Outcomes {
@@ -1051,6 +1052,9 @@ impl Transform {
                 }
                 if dests.is_empty() {
                     reports.send(Report::Acked { batch, dest: TRANSFORM });
+                }
+                if let (Some(streams), Some(name)) = (&self.streams, &lane.source_name) {
+                    streams.saw_senders(name, std::mem::take(&mut out.outcomes.senders));
                 }
                 self.count_outcomes(&source_label, out.outcomes);
                 self.metrics.incr_seconds(
@@ -1477,6 +1481,14 @@ impl Transform {
                 now_micros: None,
             })
             .collect();
+        // Every record counts its stream key once, whichever routes take it.
+        if let (Some(streams), Some(name), Some(field)) = (&self.streams, &lane.source_name, lane.meta.stream_field())
+            && streams.counts_stream(name, field)
+        {
+            out.outcomes
+                .senders
+                .count_each(field, records.iter().map(|r| lane.meta.stream_key(r)));
+        }
         let mut diverted = 0usize;
         let mut refusal = None;
         while let Some(mut attempt) = pending.pop() {
@@ -1688,6 +1700,10 @@ impl Transform {
                 _ => None,
             };
             let mut tally = observed.map(|_| crate::core::tally::FieldTally::new());
+            let counted = match (&self.streams, &lane.source_name) {
+                (Some(streams), Some(name)) if took_rows => streams.sender_fields(name, plan),
+                _ => Vec::new(),
+            };
             let docs = buffer::catch_over_budget(|| {
                 run_and_serialize(
                     plan,
@@ -1698,6 +1714,11 @@ impl Transform {
                         source: lane.source_name.as_deref(),
                         now_micros,
                         tally: tally.as_mut(),
+                        senders: (!counted.is_empty()).then_some(Senders {
+                            tally: &mut out.outcomes.senders,
+                            fields: &counted,
+                            first: attempt.start,
+                        }),
                     },
                     mask,
                     pool,
@@ -2890,6 +2911,16 @@ struct Ingest<'a> {
     /// Where each Parser tallies the fields it produces, for the one batch an interval describes to the leader
     /// (`streams::Streams::due`). `None` for every other batch.
     tally: Option<&'a mut crate::core::tally::FieldTally>,
+    /// Where the rows the route delivers count their senders, and in which fields. `None` where nobody counts.
+    senders: Option<Senders<'a>>,
+}
+
+/// One route's sender count: the batch's tally, the fields to count, and where the attempt's records begin in the
+/// batch, since a record is counted once by its place there.
+struct Senders<'a> {
+    tally: &'a mut crate::streams::SenderTally,
+    fields: &'a [crate::streams::Counted],
+    first: usize,
 }
 
 /// A batch's records as text, decoded once per attempt and rebuilt as a column for routing and for each route.
@@ -3081,6 +3112,7 @@ fn run_and_serialize(
         source,
         now_micros,
         tally,
+        senders,
     } = ingest;
     let route = egress.route;
     let id_fields = egress.id_fields;
@@ -3286,6 +3318,8 @@ fn run_and_serialize(
     let mut cut: Vec<(usize, usize)> = Vec::new();
     // Each row of `out`'s row in the batch, while a capture is copying them.
     let mut batch_row: Vec<usize> = Vec::new();
+    // Each row delivered, while senders are counted.
+    let mut delivered: Vec<usize> = Vec::new();
     for row in 0..rows {
         if !is_live(row) || answers[row] == Answer::Drop {
             continue;
@@ -3331,6 +3365,9 @@ fn run_and_serialize(
             });
             if !egress.taps.is_empty() {
                 batch_row.push(row);
+            }
+            if senders.is_some() {
+                delivered.push(row);
             }
             continue;
         }
@@ -3385,6 +3422,24 @@ fn run_and_serialize(
         });
         if !egress.taps.is_empty() {
             batch_row.push(row);
+        }
+        if senders.is_some() {
+            delivered.push(row);
+        }
+    }
+    if let Some(Senders { tally, fields, first }) = senders {
+        let record = |row: usize| first + origin[row] as usize;
+        for field in fields {
+            match field.slot {
+                Some(slot) => tally.count_column(&field.name, batch.peek(slot), &delivered, record),
+                None => {
+                    for &row in &delivered {
+                        if let Some(value) = plain.text(&field.name, row) {
+                            tally.count(&field.name, record(row), value.as_bytes());
+                        }
+                    }
+                }
+            }
         }
     }
     if let Some(schema) = egress.columns.and_then(|c| c.schema)
@@ -3749,6 +3804,7 @@ pub fn preview_routes_at(
                             source: Some(source_name),
                             now_micros,
                             tally: None,
+                            senders: None,
                         },
                         mask,
                         &mut pool,

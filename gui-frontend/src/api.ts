@@ -2830,6 +2830,7 @@ export type WarningCondition =
   | 'destinationMemoryBound'
   | 'sourceRowsBelow'
   | 'sourceRowsAbove'
+  | 'sendersBelow'
   | 'groupNotDeployed'
   | 'workerNotDeployingItsTarget'
   | 'workerOnAnotherBuild'
@@ -2893,6 +2894,9 @@ export interface WarningDto {
   /** The area whose bundle declares a pipeline subject: `shared` or its group. Absent on every
    * other subject, and where the deployed commit does not say. */
   area?: string;
+  /** When the senders a `sendersBelow` names went below normal: one source raises it once for each
+   * reading senders crossed on. Absent on every other condition. */
+  crossedMillis?: number;
 }
 
 /** What a reader scans before the sentence. */
@@ -2922,6 +2926,8 @@ export function conditionLabel(condition: WarningCondition): string {
       return 'Rows below normal';
     case 'sourceRowsAbove':
       return 'Rows above normal';
+    case 'sendersBelow':
+      return 'Senders below normal';
     case 'groupNotDeployed':
       return 'Worker group not deployed';
     case 'workerNotDeployingItsTarget':
@@ -4276,6 +4282,68 @@ export function markSourcePast(
   return apiJson(
     inArea(`/sources/${encodeURIComponent(source)}/mark`, group),
     json('POST', { fromMillis: span.fromMillis, toMillis: span.toMillis, was }),
+  );
+}
+
+/** What the pick read of one field of a source today (`senders::FieldPick`). */
+export type FieldPickDto =
+  | { state: 'watched'; values: string[] }
+  | { state: 'learning'; untilMillis: number }
+  | { state: 'oneValue' }
+  | { state: 'tooMany' };
+
+/** One sender of a source, and what it reads (`senders::SenderNow`). `points` are rows per second
+ * in each five-minute bucket of the last day, by when it began; `now`, `low` and `high` are null
+ * while no width judges it. */
+export type SenderNowDto = {
+  value: string;
+  points: [number, number][];
+  expected: ExpectedPointDto[];
+  now: number | null;
+  low: number | null;
+  high: number | null;
+  below: boolean;
+  loweredBy: string | null;
+};
+
+/** One field of a source and its watched senders, those below normal first (`senders::FieldNow`).
+ * `pick` is null before the pick has read any of the field. */
+export type FieldNowDto = {
+  field: string;
+  checked: boolean;
+  added: boolean;
+  pick: FieldPickDto | null;
+  senders: SenderNowDto[];
+};
+
+export type SourceSendersResponse = { ok: boolean; errors: ApiError[]; fields: FieldNowDto[] };
+
+export function getSourceSenders(group: string, source: string): Promise<SourceSendersResponse> {
+  return apiJson(inArea(`/sources/${encodeURIComponent(source)}/senders`, group));
+}
+
+/** Lowers the warning that holds for one sender of `group`'s `source` to info until it ends. */
+export function lowerSender(
+  group: string,
+  source: string,
+  sender: { field: string; value: string },
+): Promise<{ ok: boolean; errors: ApiError[] }> {
+  return apiJson(
+    inArea(`/sources/${encodeURIComponent(source)}/senders/lower`, group),
+    json('POST', sender),
+  );
+}
+
+/** Sets which of `group`'s `source`'s fields an editor stopped watching and which they added,
+ * whole. */
+export function putSenderFields(
+  group: string,
+  source: string,
+  edits: { unchecked: string[]; added: string[] },
+): Promise<{ ok: boolean; errors: ApiError[] }> {
+  return apiJson(
+    inArea(`/sources/${encodeURIComponent(source)}/senders/fields`, group),
+    json('PUT', { source, ...edits }),
   );
 }
 

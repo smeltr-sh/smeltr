@@ -1320,6 +1320,7 @@ fn deploy(
         secrets,
         registry,
         held,
+        sender_fields,
     } = runtime;
     let registry = registry.clone();
     let refusals = Arc::new(crate::runtime::RefusalRing::default());
@@ -1329,6 +1330,7 @@ fn deploy(
         topology.routes.len(),
         system.pipeline_ids.clone(),
         heartbeat_interval,
+        sender_fields.clone(),
     ));
     let memory = process_memory_budget();
     // A memory refusal is an unwind by design; the default hook would print a panic dump for each one.
@@ -2276,6 +2278,7 @@ pub fn run_worker(mut config: WorkerConfig) {
         last_contact: Mutex::new(None),
         heartbeat_failing: Default::default(),
         log_levels: Default::default(),
+        sender_fields: Default::default(),
         deployed_cue: Mutex::new(None),
         target: Mutex::new(None),
         arrived: Condvar::new(),
@@ -2510,8 +2513,10 @@ struct Supervisor {
     last_contact: Mutex<Option<Instant>>,
     /// The heartbeat failing, and since when: said once per change and on the interval, not on every beat.
     heartbeat_failing: Mutex<(crate::logs::Relog, Option<Instant>)>,
-    /// The levels the leader last sent, and whether the running runtime has them.
-    log_levels: Mutex<(heartbeat::LogLevels, bool)>,
+    /// The levels the leader last sent.
+    log_levels: Relayed<heartbeat::LogLevels>,
+    /// What an editor changed of each source's sender fields, as the leader last sent it.
+    sender_fields: Relayed<Vec<heartbeat::SenderFields>>,
     /// The commit the leader's last answer said it deploys. `None` when the last beat went unanswered or the leader
     /// did not say, and then discovery fetches to find out.
     deployed_cue: Mutex<Option<String>>,
@@ -2576,6 +2581,64 @@ struct Supervisor {
 /// with each try, so a ledger that will never read costs one fetch every few minutes rather than one a turn.
 const HOLD_RETRY_MIN: Duration = Duration::from_secs(5);
 const HOLD_RETRY_MAX: Duration = Duration::from_secs(300);
+
+/// What the leader last sent of a setting the runtime keeps too, whole on every answer, and whether the running
+/// runtime has it.
+#[derive(Default)]
+struct Relayed<T>(Mutex<(T, bool)>);
+
+impl<T: Clone + PartialEq> Relayed<T> {
+    fn held(&self) -> std::sync::MutexGuard<'_, (T, bool)> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Keep `value`, for the runtime to be told. Returns whether it differs from what was kept.
+    fn follow(&self, value: &T) -> bool {
+        let mut held = self.held();
+        if held.0 == *value {
+            return false;
+        }
+        *held = (value.clone(), false);
+        true
+    }
+
+    /// A runtime has started, which holds nothing yet.
+    fn restarted(&self) {
+        self.held().1 = false;
+    }
+
+    /// Hand the running runtime what was kept, with `send`, when it does not have it. Returns whether the control pipe
+    /// has stopped taking frames, which ends the runtime; `what` names what it would not take.
+    fn route(
+        &self,
+        running: Option<&mut child::RuntimeHandle>,
+        send: fn(&mut child::RuntimeHandle, T) -> std::io::Result<()>,
+        what: &str,
+    ) -> bool {
+        let Some(handle) = running else { return false };
+        let value = {
+            let held = self.held();
+            if held.1 {
+                return false;
+            }
+            held.0.clone()
+        };
+        match send(handle, value) {
+            Ok(()) => {
+                self.held().1 = true;
+                false
+            }
+            Err(e) => {
+                tracing::warn!(
+                    name: "setting_not_forwarded", target: "processes",
+                    error = %e,
+                    "could not pass {what} to the runtime, so the runtime is being ended"
+                );
+                true
+            }
+        }
+    }
+}
 
 /// The leader's holds for this worker, set by the heartbeat and handed to the runtime by the deployer. Each grant
 /// goes with its ledger, fetched on a thread of its own: a ledger can take far longer than a beat or a deployer
@@ -3089,6 +3152,7 @@ impl Supervisor {
                     self.follow_captures(resp.captures);
                     self.follow_holds(resp.holds);
                     self.follow_log_levels(resp.log_levels);
+                    self.follow_sender_fields(resp.sender_fields);
                     if let Some(ms) = resp.heartbeat_interval_ms {
                         self.heartbeat_interval_ms.store(ms, Ordering::Relaxed);
                     }
@@ -3779,7 +3843,8 @@ impl Supervisor {
                 || self.mirror_to(running.as_mut())
                 || self.route_holds(running.as_mut())
                 || self.route_backlog(running.as_mut())
-                || self.route_log_levels(running.as_mut());
+                || self.route_log_levels(running.as_mut())
+                || self.route_sender_fields(running.as_mut());
 
             // A control pipe that has stopped taking frames: every capture forwarded to it from here on fails
             // the same way. `send_within`'s caller owes the tree a kill, and this is where that is paid -- the
@@ -4098,10 +4163,8 @@ impl Supervisor {
                     // It holds nothing yet. Its first turn tells it what the leader holds here, each ledger
                     // fetched afresh: the last runtime's reports have moved them since.
                     self.holds.lock().unwrap().restarted();
-                    self.log_levels
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .1 = false;
+                    self.log_levels.restarted();
+                    self.sender_fields.restarted();
                     running = Some(handle);
                     content = Some(arriving.clone());
                     last_good = Some((commit.clone(), arriving));
@@ -4630,50 +4693,31 @@ impl Supervisor {
 
     /// Keep this process's lines at the levels the leader sent, and have the runtime keep its at them too.
     fn follow_log_levels(&self, levels: heartbeat::LogLevels) {
-        let mut held = self
-            .log_levels
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if held.0 == levels {
-            return;
+        if self.log_levels.follow(&levels) {
+            levels.apply();
+            self.arrived.notify_all();
         }
-        levels.apply();
-        *held = (levels, false);
-        drop(held);
-        self.arrived.notify_all();
     }
 
-    /// Hand the running runtime the levels the leader last sent, when it does not have them. Whether the control
-    /// pipe has stopped taking frames.
-    fn route_log_levels(&self, running: Option<&mut child::RuntimeHandle>) -> bool {
-        let Some(handle) = running else { return false };
-        let levels = {
-            let held = self
-                .log_levels
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if held.1 {
-                return false;
-            }
-            held.0.clone()
-        };
-        match handle.log_levels(levels) {
-            Ok(()) => {
-                self.log_levels
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .1 = true;
-                false
-            }
-            Err(e) => {
-                tracing::warn!(
-                    name: "levels_not_forwarded", target: "logs",
-                    error = %e,
-                    "could not pass the log levels to the runtime, so it is being ended"
-                );
-                true
-            }
+    /// Have the runtime count the sender fields the leader sent.
+    fn follow_sender_fields(&self, fields: Vec<heartbeat::SenderFields>) {
+        if self.sender_fields.follow(&fields) {
+            self.arrived.notify_all();
         }
+    }
+
+    /// Hand the running runtime the levels the leader last sent, when it does not have them. Returns whether the
+    /// control pipe has stopped taking frames.
+    fn route_log_levels(&self, running: Option<&mut child::RuntimeHandle>) -> bool {
+        self.log_levels
+            .route(running, child::RuntimeHandle::log_levels, "the log levels")
+    }
+
+    /// Hand the running runtime the sender fields the leader last sent, when it does not have them. Returns whether the
+    /// control pipe has stopped taking frames.
+    fn route_sender_fields(&self, running: Option<&mut child::RuntimeHandle>) -> bool {
+        self.sender_fields
+            .route(running, child::RuntimeHandle::sender_fields, "the sender fields")
     }
 
     /// Tell the running runtime whether the progress waiting here for the leader is past its bound, when that has
@@ -6038,6 +6082,7 @@ mod tests {
                 0,
                 Vec::new(),
                 std::time::Duration::from_secs(1),
+                Default::default(),
             )),
             subjects: Arc::new(crate::metrics::Subjects {
                 sources: vec!["orders-west".to_string()],
@@ -6366,6 +6411,7 @@ mod tests {
             last_contact: Mutex::new(None),
             heartbeat_failing: Default::default(),
             log_levels: Default::default(),
+            sender_fields: Default::default(),
             deployed_cue: Mutex::new(None),
             target: Mutex::new(None),
             arrived: Condvar::new(),
@@ -7242,6 +7288,7 @@ mod tests {
     fn an_unanswered_window_goes_again_as_it_was() {
         let supervisor = supervisor_for(temp_dir("window-owed"));
         let unmatched = |rows| heartbeat::StreamReport {
+            senders: Vec::new(),
             parsers: Vec::new(),
             unmatched: vec![heartbeat::UnmatchedStreams {
                 source: "hec".to_string(),
@@ -7361,6 +7408,7 @@ mod tests {
     fn a_runtime_s_streams_go_with_it() {
         let supervisor = supervisor_for(temp_dir("streams-forgotten"));
         let unmatched = |rows| heartbeat::StreamReport {
+            senders: Vec::new(),
             parsers: Vec::new(),
             unmatched: vec![heartbeat::UnmatchedStreams {
                 source: "hec".to_string(),
@@ -8108,7 +8156,7 @@ mod tests {
             frames(2)[1],
             r#"{"kind":"log_levels","levels":{"overrides":[{"service":"kafka","level":"trace"}]}}"#
         );
-        supervisor.log_levels.lock().unwrap().1 = false;
+        supervisor.log_levels.restarted();
         assert!(!supervisor.route_log_levels(Some(&mut handle)));
         assert_eq!(frames(3).len(), 3, "a runtime that restarted is told again");
     }
