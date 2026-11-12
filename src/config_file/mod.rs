@@ -37,14 +37,14 @@ mod merge;
 mod sample;
 mod test;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use crate::core::column::DataType;
 use crate::core::error::ExceptionKind;
 use crate::core::id::{DestId, FunctionId};
 use crate::plan::config::{Answer, CompileError, PipelineConfig};
-use crate::plan::topology::{CompiledTopology, DestinationKind, Records, RouteConfig, TopologyConfig};
+use crate::plan::topology::{CompiledTopology, DestinationKind, Records, TopologyConfig};
 
 pub use bundle::{
     BundleError, DirFileSet, FileSet, GROK_PATTERNS_FILE, GROUPS_DIR, LOOKUP_TABLES_FILE, LOOKUPS_DIR, PIPELINES_DIR,
@@ -246,9 +246,7 @@ impl LoadedSystem {
         (0..self.topology.routes.len()).map(|at| self.route_name(at)).collect()
     }
 
-    /// Route `at` as every screen and message names it: its source, then its pipeline, and `(n)` when another route
-    /// runs from that source to that pipeline too, `n` counting those routes in the order they run. A route's id is
-    /// minted, so it is never the name. The GUI names routes the same way (`routeName` in `routeFlow.ts`).
+    /// Route `at` by [`route_name`].
     pub fn route_name(&self, at: usize) -> String {
         let routes = &self.topology.routes;
         let r = &routes[at];
@@ -259,14 +257,8 @@ impl LoadedSystem {
             Some(p) if !p.name.is_empty() => &p.name,
             _ => self.pipeline_ids.get(r.pipeline).map_or("", String::as_str),
         };
-        let twin = |o: &&RouteConfig| o.source == r.source && o.pipeline == r.pipeline;
-        match routes.iter().filter(twin).count() {
-            1 => format!("{source} \u{2192} {pipeline}"),
-            _ => format!(
-                "{source} \u{2192} {pipeline} ({})",
-                routes[..at].iter().filter(twin).count() + 1
-            ),
-        }
+        let ends: Vec<_> = routes.iter().map(|o| (o.source, o.pipeline)).collect();
+        route_name(&ends, at, source, pipeline)
     }
 
     /// The author's id for `id`, a destination the loaded system has.
@@ -610,6 +602,51 @@ impl LoadedSystem {
     }
 }
 
+/// Route `at` as every screen and message names it: its `source`, then its `pipeline`, and `(n)` when another route
+/// runs from that source to that pipeline too, `n` counting those routes in the order they run. `ends` holds each
+/// route's source and pipeline, in that order. A route's id is minted, so it is never the name. The GUI names routes
+/// the same way (`routeName` in `routeFlow.ts`).
+pub fn route_name<E: PartialEq>(ends: &[E], at: usize, source: &str, pipeline: &str) -> String {
+    let twin = |o: &&E| **o == ends[at];
+    match ends.iter().filter(twin).count() {
+        1 => format!("{source} \u{2192} {pipeline}"),
+        _ => format!(
+            "{source} \u{2192} {pipeline} ({})",
+            ends[..at].iter().filter(twin).count() + 1
+        ),
+    }
+}
+
+impl FileConfig {
+    /// What a reader calls pipeline `id`: its name, or its id when it has none.
+    pub fn pipeline_name<'a>(&'a self, id: &'a str) -> &'a str {
+        match self.pipelines.iter().find(|p| p.id == id) {
+            Some(p) if !p.name.is_empty() => &p.name,
+            _ => id,
+        }
+    }
+
+    /// Each pipeline's name by its id.
+    pub fn pipeline_names(&self) -> BTreeMap<String, String> {
+        (self.pipelines.iter())
+            .map(|p| (p.id.clone(), self.pipeline_name(&p.id).to_string()))
+            .collect()
+    }
+
+    /// Each route's [`route_name`] by its id.
+    pub fn route_names(&self) -> BTreeMap<String, String> {
+        let ends: Vec<_> = self.routes.iter().map(|r| (&r.source, &r.pipeline)).collect();
+        (self.routes.iter().enumerate())
+            .map(|(at, r)| {
+                (
+                    r.id.clone(),
+                    route_name(&ends, at, &r.source, self.pipeline_name(&r.pipeline)),
+                )
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod test_fixtures {
     /// One of everything: both source kinds, two destinations, a two-pipeline topology with a conditional route and a
@@ -623,6 +660,30 @@ pub(crate) mod test_fixtures {
 mod tests {
     use super::test_fixtures::example_json;
     use super::*;
+
+    #[test]
+    fn a_file_names_its_pipelines_and_routes_as_a_reader_sees_them() {
+        let file: FileConfig = serde_json::from_value(serde_json::json!({"version": 1,
+            "pipelines": [{"id": "pipeline-0w383wed", "name": "checkout-parse"}, {"id": "bare", "name": ""}],
+            "routes": [{"id": "route-a", "source": "in", "pipeline": "pipeline-0w383wed"},
+                       {"id": "route-b", "source": "in", "pipeline": "pipeline-0w383wed"},
+                       {"id": "route-c", "source": "in", "pipeline": "bare"}]}))
+        .unwrap();
+        let pipelines = file.pipeline_names();
+        assert_eq!(
+            (pipelines["pipeline-0w383wed"].as_str(), pipelines["bare"].as_str()),
+            ("checkout-parse", "bare")
+        );
+        let routes = file.route_names();
+        assert_eq!(
+            [&routes["route-a"], &routes["route-b"], &routes["route-c"]],
+            [
+                "in \u{2192} checkout-parse (1)",
+                "in \u{2192} checkout-parse (2)",
+                "in \u{2192} bare"
+            ]
+        );
+    }
 
     #[test]
     fn an_unsupported_version_is_rejected() {

@@ -69,6 +69,9 @@
     return diffObjects(parsed(l.here), parsed(l.imported)).filter((e) => e.kind !== 'unchanged');
   }
 
+  /** A taken object by its name and the id that is taken, or by its id when that is its name. */
+  const takenLabel = (l: ImportListed) =>
+    l.name && l.name !== l.id ? `${PARTS[l.part]} ${l.name} (${l.id})` : `${PARTS[l.part]} ${l.id}`;
   const key = (l: ImportListed) => `${l.part}\u0000${l.id}`;
   const credKey = (c: ImportCredential) => `${c.certificate}\u0000${c.name}`;
   let kept = $derived(listed.filter((l) => !leftOut[key(l)]));
@@ -197,20 +200,20 @@
     {#if listed.length > 0}
       <table>
         <thead>
-          <tr><th>Kind</th><th>Id</th><th></th><th>Import</th></tr>
+          <tr><th>Kind</th><th>Name</th><th></th><th>Import</th></tr>
         </thead>
         <tbody>
           {#each listed as l (key(l))}
             <tr>
               <td>{PARTS[l.part]}</td>
-              <td class="mono">{l.id}</td>
+              <td class="mono">{l.name ?? l.id}</td>
               <td class:dim={l.standing === 'same'} class:taken={l.standing === 'taken'}
                 >{STANDINGS[l.standing]}</td
               >
               <td>
                 <input
                   type="checkbox"
-                  aria-label="Import {PARTS[l.part]} {l.id}"
+                  aria-label="Import {PARTS[l.part]} {l.name ?? l.id}"
                   checked={!leftOut[key(l)]}
                   disabled={busy.on}
                   onchange={(e) => (leftOut[key(l)] = !e.currentTarget.checked)}
@@ -224,8 +227,8 @@
     {#if taken.length > 0}
       <h3>Taken ids</h3>
       {#each taken as l, i (key(l))}
-        <section class="taken-id" aria-label="{PARTS[l.part]} {l.id}">
-          <h4>{PARTS[l.part]} {l.id}</h4>
+        <section class="taken-id" aria-label={takenLabel(l)}>
+          <h4>{takenLabel(l)}</h4>
           {#if l.inShared}
             <p class="dim">
               Shared holds this one, so an import into a group can only choose Here, or Both, rename

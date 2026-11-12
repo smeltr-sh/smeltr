@@ -1917,15 +1917,21 @@ export interface ExportTable {
   bytes?: number;
 }
 
+/** A pipeline or route: its id, and its name, which a reader sees in place of an id nobody chose. */
+export interface Named {
+  id: string;
+  name: string;
+}
+
 /** What an export holds, by kind and id. */
 export interface ExportContents {
-  pipelines: string[];
+  pipelines: Named[];
   lookupTables: ExportTable[];
   grokPatterns: string[];
   schemas: string[];
   /** Each test with the sample it runs over: a sample is exported while a test that reads it is. */
   tests: { id: string; sample: string }[];
-  routes: string[];
+  routes: Named[];
   sources: string[];
   destinations: string[];
   /** Each secret and certificate an exported source or destination names, and which of them name it. */
@@ -1980,6 +1986,8 @@ export type ImportPart =
 export interface ImportListed {
   part: ImportPart;
   id: string;
+  /** What a reader calls a pipeline or route in place of its id, which nobody chose. */
+  name?: string;
   standing: 'new' | 'same' | 'taken';
   imported?: string;
   here?: string;

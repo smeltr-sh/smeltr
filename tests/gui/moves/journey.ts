@@ -865,12 +865,12 @@ const exportPipeline: Move = {
       .getByRole('row', { name: new RegExp(`^${name}\\b`) })
       .getByRole('button', { name: 'Export' })
       .click();
-    const dialog = page.getByRole('dialog', { name: `export ${id}` });
+    const dialog = page.getByRole('dialog', { name: `export ${name}` });
     if (routes)
       await dialog
         .getByRole('switch', { name: 'Include routes, sources and destinations' })
         .check();
-    await expect(dialog.getByRole('row', { name: new RegExp(`^Pipeline ${id} `) })).toBeVisible();
+    await expect(dialog.getByRole('row', { name: new RegExp(`^Pipeline ${name} `) })).toBeVisible();
     const href = await dialog.getByRole('link', { name: 'Download' }).getAttribute('href');
     const zip = await (await page.request.get(new URL(href!, leader.url).toString())).body();
     expect(zip.subarray(0, 2).toString()).toBe('PK');
@@ -906,7 +906,7 @@ const importPipeline: Move = {
       buffer: await zip.body(),
     });
     // Exported from this branch, every object is the one already here, so the import writes nothing.
-    await expect(dialog.getByRole('row', { name: new RegExp(`^Pipeline ${id} `) })).toContainText(
+    await expect(dialog.getByRole('row', { name: new RegExp(`^Pipeline ${name} `) })).toContainText(
       'Same as here',
     );
     await dialog.getByRole('button', { name: 'Import' }).click();

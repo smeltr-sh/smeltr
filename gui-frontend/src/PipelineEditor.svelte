@@ -1551,7 +1551,12 @@
         >
       {/if}
     </header>
-    <ExportDialog open={exporting} pipeline={id} oncancel={() => (exporting = false)} />
+    <ExportDialog
+      open={exporting}
+      pipeline={id}
+      name={savedPipelineName}
+      oncancel={() => (exporting = false)}
+    />
     <InlineError message={undoError} />
 
     {#if id !== 'new'}<Connections kind="pipeline" {id} />{/if}
