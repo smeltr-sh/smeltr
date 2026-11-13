@@ -13,7 +13,6 @@ import {
   bringCurrent,
   MAIN_BRANCH,
   setBranch,
-  expandBatch,
   captureStatus,
 } from './api';
 
@@ -63,66 +62,6 @@ describe('recordsFromText', () => {
       { _raw: '2024-01-01 first line' },
       { _raw: '2024-01-02 second line' },
     ]);
-  });
-});
-
-describe('expandBatch', () => {
-  it('puts a constant column back on every row', () => {
-    const batch = expandBatch({
-      columns: [
-        { name: '_raw', type: 'string' },
-        { name: '__source.type', type: 'string', value: 'kafka' },
-        { name: '__source.offset', type: 'int' },
-      ],
-      rows: [
-        { values: ['a', 1], worker: 'w-a' },
-        { values: ['b', 2], worker: 'w-b' },
-      ],
-    });
-    expect(batch.columns).toEqual([
-      { name: '_raw', type: 'string' },
-      { name: '__source.type', type: 'string' },
-      { name: '__source.offset', type: 'int' },
-    ]);
-    expect(batch.rows).toEqual([
-      { values: ['a', 'kafka', 1], failed: [], worker: 'w-a' },
-      { values: ['b', 'kafka', 2], failed: [], worker: 'w-b' },
-    ]);
-  });
-
-  it('keeps a constant null, which is a value', () => {
-    const batch = expandBatch({
-      columns: [
-        { name: 'a', type: 'string' },
-        { name: '__destination.placement', type: 'string', value: null },
-      ],
-      rows: [{ values: ['x'] }],
-    });
-    expect(batch.rows).toEqual([{ values: ['x', null], failed: [] }]);
-  });
-
-  it('moves a failed index past the constants before it', () => {
-    const batch = expandBatch({
-      columns: [
-        { name: 'route', type: 'string', value: 'r1' },
-        { name: 'n', type: 'int' },
-        { name: 'host', type: 'string', value: 'h' },
-        { name: 'm', type: 'int' },
-      ],
-      rows: [{ values: ['x1', 'y2'], failed: [0, 1] }],
-    });
-    expect(batch.rows[0]).toEqual({ values: ['r1', 'x1', 'h', 'y2'], failed: [1, 3] });
-  });
-
-  it('leaves a batch with no constants as it came', () => {
-    const batch = expandBatch({
-      columns: [
-        { name: 'a', type: 'string' },
-        { name: 'b', type: 'int' },
-      ],
-      rows: [{ values: ['x', 'oops'], failed: [1], worker: 'w-a' }],
-    });
-    expect(batch.rows).toEqual([{ values: ['x', 'oops'], failed: [1], worker: 'w-a' }]);
   });
 });
 
@@ -196,9 +135,9 @@ describe('polling a capture', () => {
     revision = 1;
     vi.stubGlobal('fetch', (url: string) => {
       calls.push(url);
-      const rows = [{ values: ['a'], worker: 'w1' }];
+      const records = [{ worker: 'w1', record: { _raw: 'a' } }];
       const body = url.endsWith('/records')
-        ? { ok: true, errors: [], batches: [{ columns: [{ name: '_raw', type: 'str' }], rows }] }
+        ? { ok: true, errors: [], columns: [{ name: '_raw', type: 'str' }], records }
         : { ok: true, errors: [], capture: { session: 'c1', records: 1, revision } };
       return Promise.resolve(new Response(JSON.stringify(body)));
     });
@@ -207,9 +146,9 @@ describe('polling a capture', () => {
 
   it('reads the records again only when the revision moves', async () => {
     const first = (await captureStatus('c1')).capture!;
-    expect(first.batches[0].rows).toHaveLength(1);
+    expect(first.records).toEqual([{ worker: 'w1', record: { _raw: 'a' } }]);
     const same = (await captureStatus('c1', first)).capture!;
-    expect(same.batches).toBe(first.batches);
+    expect(same.records).toBe(first.records);
     revision = 2;
     await captureStatus('c1', same);
     expect(calls).toEqual([

@@ -16,6 +16,7 @@ import type {
   Lock,
   LockedResult,
   SampleDto,
+  SampleRecordDto,
 } from '../api';
 import { CHANGED_EVENT } from './guide';
 import { bareError } from '../errors.svelte';
@@ -1573,7 +1574,42 @@ export class DemoLeader {
   private async captureRecords(session: string): Promise<Answer> {
     const capture = this.state.captures[session];
     if (!capture) return refused(404, [bareError(NO_CAPTURE)]);
-    return ok({ batches: (await this.held(capture)).batches });
+    const { batches } = await this.held(capture);
+    const pool = (await this.pool(capture.pool))?.sample;
+    const workers = batches.flatMap((b) => b.rows.map((r) => r.worker));
+    const fields = this.takenFields(capture);
+    const records = capture.kept.slice(0, workers.length).map((i, n) => ({
+      ...(workers[n] === undefined ? {} : { worker: workers[n] }),
+      record: stamped(pool?.records[i] ?? {}, fields),
+    }));
+    return ok({ columns: this.takenColumns(capture, pool?.columns ?? []), records });
+  }
+
+  /** How `capture` was taken, by `__capture` field: each one's type and value (`Captures::capture_fields`). */
+  private taken(capture: Capture): Record<string, [string, string]> {
+    return {
+      timestamp: ['datetime', new Date(capture.startedAt).toISOString()],
+      ...(capture.source ? { source: ['str', capture.source] } : {}),
+      ...(capture.destination ? { destination: ['str', capture.destination] } : {}),
+      group: ['str', capture.group],
+      ...(capture.filter ? { filter: ['str', capture.filter] } : {}),
+      config: ['str', this.state.branches.main.commit],
+    };
+  }
+
+  private takenFields(capture: Capture): Record<string, string> {
+    return Object.fromEntries(Object.entries(this.taken(capture)).map(([k, [, v]]) => [k, v]));
+  }
+
+  /** A pool's columns with `capture`'s `__capture` fields in place of the ones the recorder's own save stamped. */
+  private takenColumns(capture: Capture, columns: { name: string; type: string }[]) {
+    return [
+      ...columns.filter((c) => !c.name.startsWith('__capture.')),
+      ...Object.entries(this.taken(capture)).map(([k, [type]]) => ({
+        name: `__capture.${k}`,
+        type,
+      })),
+    ];
   }
 
   private async stopCapture(session: string): Promise<Answer> {
@@ -1614,28 +1650,13 @@ export class DemoLeader {
       ]);
     }
     const arrived = batches.reduce((n, b) => n + b.rows.length, 0);
-    // How it was taken, on every record as its `__source` fields are (`Captures::capture_fields`).
-    const taken: Record<string, [string, string]> = {
-      timestamp: ['datetime', new Date(capture.startedAt).toISOString()],
-      ...(capture.source ? { source: ['str', capture.source] } : {}),
-      ...(capture.destination ? { destination: ['str', capture.destination] } : {}),
-      group: ['str', capture.group],
-      ...(capture.filter ? { filter: ['str', capture.filter] } : {}),
-      config: ['str', this.state.branches.main.commit],
-    };
-    const fields = Object.fromEntries(Object.entries(taken).map(([k, [, v]]) => [k, v]));
-    const records = capture.kept
-      .slice(0, arrived)
-      .map((i) => ({ ...pool.records[i], __capture: fields }));
+    const fields = this.takenFields(capture);
+    const records = capture.kept.slice(0, arrived).map((i) => stamped(pool.records[i], fields));
     const sample: SampleDto = {
       id: req.id,
       name: req.name,
       source: capture.source ?? req.source,
-      columns: [
-        // The recorder's own save stamped the pool with its `__capture` fields; these are this capture's.
-        ...(pool.columns ?? []).filter((c) => !c.name.startsWith('__capture.')),
-        ...Object.entries(taken).map(([k, [type]]) => ({ name: `__capture.${k}`, type })),
-      ],
+      columns: this.takenColumns(capture, pool.columns ?? []),
       records,
     };
     const saved = await this.write(
@@ -1654,6 +1675,16 @@ export class DemoLeader {
     }
     return saved;
   }
+}
+
+/** `record` with how a capture took it as its `__capture` fields, keeping the fields it lists as mistyped
+ * (`io::MISTYPED_FIELDS`). */
+function stamped(record: SampleRecordDto, fields: Record<string, string>): SampleRecordDto {
+  const own = record.__capture as { mistyped?: unknown } | undefined;
+  return {
+    ...record,
+    __capture: own?.mistyped === undefined ? fields : { ...fields, mistyped: own.mistyped },
+  };
 }
 
 const NOT_RECORDED: Answer = refused(404, [bareError('not found')]);

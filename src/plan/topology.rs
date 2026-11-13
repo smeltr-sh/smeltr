@@ -4123,16 +4123,16 @@ mod tests {
             .declaring(vec![("name".into(), DataType::Str), ("blob".into(), DataType::Bytes)])
             .unwrap();
         let marked = object(serde_json::json!({"name": "{\"a\":1}", "blob": "true",
-            "smeltr": {"mistyped": ["name", "blob"]}}));
+            "__capture": {"mistyped": ["name", "blob"]}}));
         let records = listed.read_stored(&[(&marked, &fields)]).unwrap();
         assert_eq!(
             records[0].chunk.failed(),
             &[(0, 0, r#"{"a":1}"#.to_string()), (0, 1, "true".to_string())]
         );
-        let tagged = object(serde_json::json!({"name": "a", "smeltr": {"mistyped": "a message"}}));
+        let tagged = object(serde_json::json!({"name": "a", "__capture": {"mistyped": "a message"}}));
         let err = listed.read_stored(&[(&tagged, &fields)]).unwrap_err();
         assert!(
-            err.contains("`smeltr"),
+            err.contains("`__capture`"),
             "a string there is not a list of failed fields: {err}"
         );
 

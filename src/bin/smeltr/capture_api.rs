@@ -439,14 +439,22 @@ fn status_of(captures: &Captures, access: &Access, session: &str) -> Envelope<Fo
     Followed::found(followed_status(captures, access, session))
 }
 
-/// What a capture holds, read apart from its status, which only counts it.
+/// What a capture holds, read apart from its status, which only counts it: its records as a sample of it holds them
+/// (`held_records`), each with the worker that sent it.
 #[derive(Default, serde::Serialize)]
 pub struct HeldRecords {
-    batches: Vec<smeltr::heartbeat::CaptureBatch>,
+    columns: Vec<smeltr::heartbeat::CaptureColumn>,
+    records: Vec<HeldRecord>,
 }
 
-/// What `session` holds so far, running or over: one batch per distinct column list, each row naming its worker.
-/// Worth reading again only once its status's `revision` moves.
+#[derive(serde::Serialize)]
+struct HeldRecord {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    worker: Option<String>,
+    record: smeltr::io::RecordObject,
+}
+
+/// What `session` holds so far, running or over. Worth reading again only once its status's `revision` moves.
 pub async fn capture_records(
     State(state): State<AppState>,
     Extension(access): Extension<Access>,
@@ -457,9 +465,18 @@ pub async fn capture_records(
 
 fn records_of(captures: &Captures, access: &Access, session: &str) -> Envelope<HeldRecords> {
     match followed_status(captures, access, session) {
-        Some(status) => Envelope::ok(HeldRecords {
-            batches: status.batches,
-        }),
+        Some(status) => {
+            let (columns, records) = held_records(captures, session, &status);
+            let workers = status
+                .batches
+                .iter()
+                .flat_map(|b| b.rows.iter().map(|r| r.worker.clone()));
+            let records = workers
+                .zip(records)
+                .map(|(worker, record)| HeldRecord { worker, record })
+                .collect();
+            Envelope::ok(HeldRecords { columns, records })
+        }
         None => Envelope::refused(Refusal::not_found(NO_CAPTURE)),
     }
 }
@@ -574,7 +591,7 @@ fn savable(captures: &Captures, access: &Access, session: &str) -> Result<Captur
 }
 
 /// What `status`, the capture `session`, holds, as a sample of it holds it: its columns, and its records with how it
-/// was taken on each, as its `__source` fields are.
+/// was taken on each, as its `__source` fields are. One record for each row of its batches, in their order.
 fn held_records(
     captures: &Captures,
     session: &str,
@@ -973,6 +990,11 @@ mod tests {
         assert!(sample.columns.is_empty(), "{:?}", sample.columns);
         assert_eq!(sample.records, vec![record("a"), record("b")]);
         assert_eq!(sample.source.as_deref(), Some("orders"));
+        // The records the GUI reads are those a sample holds; a paste was sent by no worker.
+        assert_eq!(
+            serde_json::to_value(records_of(&captures, &own, "p1").body).unwrap(),
+            serde_json::json!({"columns": [], "records": [{"record": {"_raw": "a"}}, {"record": {"_raw": "b"}}]})
+        );
 
         let too_many = vec![record("x"); config_file::MAX_SAMPLE_RECORDS + 1];
         assert!(

@@ -2571,7 +2571,7 @@ mod tests {
                 record(serde_json::json!({"id": 1, "user": {"name": "ann"}, "__source": {"offset": 7}})),
                 record(
                     serde_json::json!({"id": "1", "user": {"name": "bo"}, "__source": {"offset": 8},
-                    "smeltr": {"mistyped": ["id", "user.name"]}}),
+                    "__capture": {"mistyped": ["id", "user.name"]}}),
                 ),
             ],
         )
