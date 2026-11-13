@@ -3906,6 +3906,42 @@ fn an_overwritten_variant_accumulator_stays_a_variant() {
     assert!(e.contains("`t` is a variant"), "{e}");
 }
 
+/// A write that fails keeps the type its name has: the loop around it reports nothing more.
+#[test]
+fn a_failed_write_in_a_loop_keeps_its_names_type() {
+    let errors = compile_err(vec![
+        code(0, &json("rs: array<{n: i64, ...}>;")),
+        code(1, "total = 0; for (let r of rs) { total = total + (r.extra.n ?? 0); }"),
+    ]);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].to_string().contains("is a variant"), "{errors:?}");
+}
+
+/// A `for` over a variant is refused as any other use of one is, naming it.
+#[test]
+fn a_for_over_a_variant_names_it() {
+    let errors = compile_err(vec![
+        code(0, &json("")),
+        code(1, "for (let r of Records) { let x = r; }"),
+    ]);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].to_string().contains("`Records` is a variant"), "{errors:?}");
+}
+
+/// `filter` over a variant reports the variant, not `for...of`'s refusal of what is not an array.
+#[test]
+fn a_filter_over_a_variant_reports_the_variant() {
+    let errors = compile_err(vec![
+        code(0, &json("")),
+        code(1, "failed = Records.filter(r => r.errorCode != null);"),
+    ]);
+    assert!(
+        errors.iter().any(|e| e.to_string().contains("is a variant")),
+        "{errors:?}"
+    );
+    assert!(!errors.iter().any(|e| e.to_string().contains("for...of")), "{errors:?}");
+}
+
 /// What a folded accumulator notes names the accumulator, as the general loop's write does.
 #[test]
 fn a_folded_accumulators_overflow_names_it() {
