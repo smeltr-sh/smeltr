@@ -687,7 +687,7 @@
           <StepGlyph type={step.type} />
           <span class="type-name">{STEP_LABELS[step.type]}</span>
         </span>
-        <span class="summary ellipsis">{stepSummary(step)}</span>
+        <span class="summary ellipsis">{stepSummary(step, pipelineNames)}</span>
         {#if stepErrors.length > 0 || stepWarningMessages.length > 0}
           <StateMark state={stepErrors.length === 0 ? 'warning' : 'error'} size={15} />
         {/if}

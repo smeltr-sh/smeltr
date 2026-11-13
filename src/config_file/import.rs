@@ -65,6 +65,9 @@ pub enum Standing {
 pub struct Listed {
     pub part: Part,
     pub id: String,
+    /// What a reader calls a pipeline or route in place of its id, which nobody chose.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub standing: Standing,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub imported: Option<String>,
@@ -169,6 +172,7 @@ impl Objects {
         let (here_shown, here) = (here.values(), here.compared());
         let shown = self.values();
         let pretty = |v: &serde_json::Value| serde_json::to_string_pretty(v).expect("a JSON value prints");
+        let (pipelines, routes) = (self.file.pipeline_names(), self.file.route_names());
         let mut listed: Vec<Listed> = (self.compared().into_iter())
             .map(|((part, id), imported)| {
                 let key = (part, id.clone());
@@ -181,6 +185,11 @@ impl Objects {
                 Listed {
                     here: taken.then(|| pretty(&here_shown[&key])),
                     imported: taken.then(|| pretty(&shown[&key])),
+                    name: match part {
+                        Part::Pipeline => pipelines.get(&id).cloned(),
+                        Part::Route => routes.get(&id).cloned(),
+                        _ => None,
+                    },
                     part,
                     id,
                     standing,
@@ -573,6 +582,22 @@ mod tests {
         assert!(sites.here.as_deref().unwrap().contains("lookups/other-sites.csv"));
         // The exported pipeline leads its kind.
         assert_eq!(listed[0].id, "fw-normalize");
+    }
+
+    #[test]
+    fn a_pipeline_and_a_route_are_listed_by_name() {
+        let listed = imported().list(&here());
+        let name = |part, id| {
+            listed
+                .iter()
+                .find(|l| l.part == part && l.id == id)
+                .unwrap()
+                .name
+                .clone()
+        };
+        assert_eq!(name(Part::Pipeline, "fw-normalize").as_deref(), Some("fw"));
+        assert_eq!(name(Part::Route, "r-fw").as_deref(), Some("fw \u{2192} fw"));
+        assert_eq!(name(Part::LookupTable, "sites"), None);
     }
 
     #[test]

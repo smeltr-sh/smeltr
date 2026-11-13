@@ -47,7 +47,8 @@
   let bundleProblems = $state<string[]>([]);
   let deletingId = $state('');
   /** The pipeline the export dialog is open for. */
-  let exporting = $state('');
+  /** The pipeline being exported, or null. */
+  let exporting = $state<{ id: string; name: string } | null>(null);
   let importing = $state(false);
 
   // One sort for both bands: each band sorts within itself, so the shared rows stay under their own heading.
@@ -182,8 +183,10 @@
               <td><a href={pipelineHash(p.id)}>{p.name}</a></td>
               <td class="dim">{p.steps.length}</td>
               <td class="row-actions">
-                <Button type="button" class="compact" onclick={() => (exporting = p.id)}
-                  >Export</Button
+                <Button
+                  type="button"
+                  class="compact"
+                  onclick={() => (exporting = { id: p.id, name: p.name || p.id })}>Export</Button
                 >
                 {#if !readOnly}
                   <Button
@@ -203,7 +206,12 @@
     </div>
   {/if}
 </SectionShell>
-<ExportDialog open={exporting !== ''} pipeline={exporting} oncancel={() => (exporting = '')} />
+<ExportDialog
+  open={exporting !== null}
+  pipeline={exporting?.id ?? ''}
+  name={exporting?.name ?? ''}
+  oncancel={() => (exporting = null)}
+/>
 <ImportDialog
   open={importing}
   oncancel={() => (importing = false)}

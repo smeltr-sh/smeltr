@@ -271,20 +271,20 @@ describe('orderedStepErrors', () => {
 
 describe('diffSteps', () => {
   it('nothing to report between identical steps', () => {
-    expect(diffSteps([ev('a')], [ev('a')])).toEqual([]);
+    expect(diffSteps([ev('a')], [ev('a')], {})).toEqual([]);
   });
 
   it('a step edited in place is modified, not removed-and-added', () => {
     const before = { ...ev('a'), assignments: [{ target: 'x', expr: '1' }] };
     const after = { ...ev('a'), assignments: [{ target: 'x', expr: '2' }] };
-    expect(diffSteps([before], [after])).toEqual([{ kind: 'changed', summary: 'x = 2' }]);
+    expect(diffSteps([before], [after], {})).toEqual([{ kind: 'changed', summary: 'x = 2' }]);
   });
 
   it('a step only in the compare side is added, and vice versa', () => {
-    expect(diffSteps([ev('a')], [ev('a'), ev('b')])).toEqual([
+    expect(diffSteps([ev('a')], [ev('a'), ev('b')], {})).toEqual([
       { kind: 'added', summary: '(no assignments)' },
     ]);
-    expect(diffSteps([ev('a'), ev('b')], [ev('a')])).toEqual([
+    expect(diffSteps([ev('a'), ev('b')], [ev('a')], {})).toEqual([
       { kind: 'removed', summary: '(no assignments)' },
     ]);
   });
@@ -292,7 +292,7 @@ describe('diffSteps', () => {
   it("a parser step is summarized with its format's name", () => {
     const before = { ...newStep('parser'), id: 'p' };
     const after = { ...before, kind: { type: 'grok' as const, patterns: [], customPatterns: [] } };
-    expect(diffSteps([before], [after])).toEqual([
+    expect(diffSteps([before], [after], {})).toEqual([
       { kind: 'changed', summary: '_raw as Regex/Grok' },
     ]);
   });
@@ -300,13 +300,13 @@ describe('diffSteps', () => {
   it('an if step is matched by its id', () => {
     const before = ifStep('check', 'a == 1', [], []);
     const after = ifStep('check', 'a == 2', [], []);
-    expect(diffSteps([before], [after])).toEqual([{ kind: 'changed', summary: 'if a == 2' }]);
+    expect(diffSteps([before], [after], {})).toEqual([{ kind: 'changed', summary: 'if a == 2' }]);
   });
 
   it('two ifs that swap places are unchanged', () => {
     const first = ifStep('first', 'a == 1', [], []);
     const second = ifStep('second', 'a == 2', [], []);
-    expect(diffSteps([first, second], [second, first])).toEqual([]);
+    expect(diffSteps([first, second], [second, first], {})).toEqual([]);
   });
 });
 
@@ -772,9 +772,27 @@ describe('a parser writes into the object it names', () => {
   });
 
   it('names its object in its summary, and not the record', () => {
-    expect(stepSummary(parser({ into: 'app' }))).toBe('_raw as JSON into app');
-    expect(stepSummary(parser({ into: '$' }))).toBe('_raw as JSON');
-    expect(stepSummary(parser({ into: '' }))).toBe('_raw as JSON');
-    expect(stepSummary(parser())).toBe('_raw as JSON');
+    expect(stepSummary(parser({ into: 'app' }), {})).toBe('_raw as JSON into app');
+    expect(stepSummary(parser({ into: '$' }), {})).toBe('_raw as JSON');
+    expect(stepSummary(parser({ into: '' }), {})).toBe('_raw as JSON');
+    expect(stepSummary(parser(), {})).toBe('_raw as JSON');
+  });
+});
+
+describe('a Call step summary', () => {
+  const call = (pipeline: string): Step => ({
+    type: 'call',
+    id: 'c',
+    filter: '',
+    disabled: false,
+    pipeline,
+  });
+
+  it('names the pipeline it calls, and shows the id of one nothing names', () => {
+    expect(stepSummary(call('pipeline-hyijt4wh'), { 'pipeline-hyijt4wh': 'stamp-ecs' })).toBe(
+      'stamp-ecs',
+    );
+    expect(stepSummary(call('pipeline-hyijt4wh'), {})).toBe('pipeline-hyijt4wh');
+    expect(stepSummary(call(''), {})).toBe('(no pipeline chosen)');
   });
 });
