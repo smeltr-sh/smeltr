@@ -283,7 +283,7 @@ flowchart LR
   U[rows no route took, every batch] -- stream key --> A
   D[rows delivered, every batch] -- each sender's rows --> A
   A -- report, then heartbeat --> L[leader: one row per field, per key]
-  A -- report, then heartbeat --> S[leader: a series per sender]
+  A -- report, then heartbeat --> S[leader: a day row per sender]
   L --> API[/api/streams]
 ```
 

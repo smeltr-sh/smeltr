@@ -374,33 +374,41 @@ leader keeps each of the three, with who said it.
 
 A source's senders are judged as the source is. A sender is one value of one
 field of the source's records, such as a firewall's name, or of its stream key
-(Observability, Streams), and its rows are kept in five-minute buckets.
+(Observability, Streams). The leader sums what workers count in each five-minute
+bucket and writes the bucket once it ends. Every field and every value keeps a
+day row of the buckets it was counted in or held a row in, and only a watched
+sender keeps its rows, in five-minute buckets.
 
 ```mermaid
 flowchart LR
-  W[workers: rows by value of each field] --> S[a five-minute series per value]
-  S -- once a day --> P{sent steadily on seven days in a row}
-  P -- yes --> J[judged at the four widths against its own normal]
-  J -- below four readings in a row --> X[Senders below normal]
+  W[workers: rows by value of each field] --> B[leader: each five-minute bucket, written once it ends]
+  B --> D[a day row per field and per value: its buckets]
+  D -- once a day --> P{sent steadily on seven days in a row}
+  P -- yes --> R[its rows, in five-minute buckets]
+  R --> J[judged at the four widths against its own normal]
+  J -- below its range at a width, four readings in a row --> X[Senders below normal]
 ```
 
 Each day the leader picks which values to watch: a value is watched once it went
 no more than an hour without a row, counting only the time its field was
 counted, on each of seven days in a row, and it stays watched for a week after.
 A field that held one value names no sender, and neither does one that passed
-its cap of values on a worker. The pick reads the last two weeks, so a value it
-does not watch keeps only those, and a watched sender keeps the four weeks its
-normal is learned from. Sender rows never roll up into hourly buckets, since
-nothing reads them there.
+its cap of values on a worker. The pick reads the last two weeks of day rows. A
+watched sender keeps its rows from the day it is picked, for the four weeks its
+normal is learned from, and a value the pick stops watching loses them. A newly
+watched sender is judged once it has three days of rows. Sender rows never roll
+up into hourly buckets, since nothing reads them there.
 
 A watched sender is judged at the four widths, below normal only and never by
 the gap. It is judged only where its field was counted, so a field that a
-pipeline change takes out leaves its senders unjudged rather than all below. It
-is not judged while its source warns, is held or is stopped, nor on the reading
-its source crosses: the source's own warning says more. Senders of one source
-that cross on one reading raise one warning that names them, and a sender that
-crosses later raises another. The warning says which of its senders are back,
-and ends once all of them are.
+pipeline change takes out leaves its senders unjudged rather than all below, and
+so does a bucket the leader lost to a restart. It is not judged while its source
+warns that its rows are below normal or that it is blocked, refused, waiting or
+unreachable, nor on the reading its source crosses: the source's own warning
+says more. Senders of one source that cross on one reading raise one warning
+that names them, and a sender that crosses later raises another. The warning
+says which of its senders are back within their range, and ends once all of them
+are.
 
 An editor in the source's worker group lowers one sender's warning to info, and
 a warning all of whose senders were lowered is info. An editor also stops

@@ -595,8 +595,8 @@ fn learn(store: &RegistryStore, as_of: i64, learning: &Learning, pick: Option<Ar
         Some(pick) if pick.day_ms == day => pick,
         _ => Arc::new(match senders::pick(store, day) {
             Ok(pick) => {
-                if let Err(e) = senders::trim(store, &pick) {
-                    tracing::warn!(name: "senders_untrimmed", target: "status", error = %e, "could not drop the old rows of the values not watched, so they are kept until they age out");
+                if let Err(e) = senders::keep(store, &pick) {
+                    tracing::warn!(name: "senders_not_dropped", target: "status", error = %e, "could not drop what the values not watched sent, so it is kept until a later pick drops it");
                 }
                 pick
             }
@@ -610,24 +610,13 @@ fn learn(store: &RegistryStore, as_of: i64, learning: &Learning, pick: Option<Ar
         }),
     };
     let watched = pick.watched(|group, source, field| learning.unchecked(group, source, field));
-    let sender_rows = senders::history(store, &watched, oldest).unwrap_or_else(|e| {
+    let senders = sender_normals(store, &watched, oldest, as_of, learning).unwrap_or_else(|e| {
         tracing::warn!(name: "senders_learn_unreadable", target: "status", error = %e, "could not read the senders' rows, so no sender's normal is learned this hour");
         HashMap::new()
     });
-    let warned = Warned::of_senders(store, sender_rows.keys(), oldest, learning);
     Learned {
         gaps: gaps(store, &buckets, oldest, as_of, learning),
-        senders: sender_rows
-            .into_iter()
-            .map(|(key, of)| {
-                let rows = Rows::of(&of, oldest, as_of);
-                let normals = WIDTHS
-                    .iter()
-                    .filter_map(|&width| normal(&rows, &warned[&key], as_of, width))
-                    .collect();
-                (key, normals)
-            })
-            .collect(),
+        senders,
         widths: buckets
             .into_iter()
             .map(|(key, of)| {
@@ -637,6 +626,32 @@ fn learn(store: &RegistryStore, as_of: i64, learning: &Learning, pick: Option<Ar
             .collect(),
         pick,
     }
+}
+
+/// The normals of each of `watched`, from its rows since `oldest`, as of `as_of`. `watched` holds each source's
+/// senders together, as [`Pick::watched`] gives them: they are read one source at a time, so only that source's rows
+/// are held at once.
+fn sender_normals(
+    store: &RegistryStore,
+    watched: &[SenderKey],
+    oldest: i64,
+    as_of: i64,
+    learning: &Learning,
+) -> Result<HashMap<SenderKey, Vec<Normal>>, super::store::StoreError> {
+    let mut out = HashMap::new();
+    for of_source in watched.chunk_by(|a, b| (&a.0, &a.1) == (&b.0, &b.1)) {
+        let history = senders::history(store, of_source, oldest)?;
+        let warned = Warned::of_senders(store, history.keys(), oldest, learning);
+        out.extend(history.into_iter().map(|(key, of)| {
+            let rows = Rows::of(&of, oldest, as_of);
+            let normals = WIDTHS
+                .iter()
+                .filter_map(|&width| normal(&rows, &warned[&key], as_of, width))
+                .collect();
+            (key, normals)
+        }));
+    }
+    Ok(out)
 }
 
 /// The normals of `key`'s rows `of`, read since `oldest`, as of `as_of`.
@@ -1595,6 +1610,8 @@ mod tests {
             }
             at += FIVE;
         }
+        // A heartbeat in the next bucket writes the last.
+        store.record_streams("g", &StreamReport::default(), true, None, END).unwrap();
     }
 
     /// Each sender's reading at `END`, by its value.
@@ -1655,7 +1672,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        for at in (END - 4 * FIVE..END).step_by(FIVE as usize) {
+        for at in (END - 4 * FIVE..=END).step_by(FIVE as usize) {
             store.record_streams("g", &counted, true, None, at).unwrap();
         }
         let read = sender_readings_at_end(&store);

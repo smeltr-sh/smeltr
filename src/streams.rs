@@ -107,8 +107,8 @@ impl SenderTally {
         self.field(field).count(record, value);
     }
 
-    /// Count each record's value under `field`, where it has one. The field is counted though none has: the leader
-    /// judges a sender only where its field was counted (`leader::senders::FIELD_ROWS`).
+    /// Count each record's value under `field`, where it has one, and the field itself even when no record has one:
+    /// the leader judges a sender only where its field was counted (`leader::senders::FieldDays`).
     pub fn count_rows<V: AsRef<str>>(&mut self, field: &str, values: impl Iterator<Item = (usize, Option<V>)>) {
         let counting = self.field(field);
         for (record, value) in values {
