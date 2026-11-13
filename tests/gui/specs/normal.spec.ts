@@ -88,8 +88,8 @@ function history(
 }
 
 /** Writes `days` days of what each of `values` of `source`'s `field` sent, as the leader writes a bucket once it ends
- * (`leader::senders`): a day row of the five-minute buckets the field was counted in and each value held a row in,
- * and each value's rows at the five-minute tier. */
+ * (`leader::senders`): a day row of the five-minute buckets the field was counted in, and for each value a day row of
+ * the buckets it held a row in and the rows it held in each. */
 function sent(
   leader: Leader,
   source: string,
@@ -99,15 +99,9 @@ function sent(
 ) {
   const db = new DatabaseSync(path.join(leader.proc.dir, 'smeltr-leader-data', 'registry.db'));
   db.exec('PRAGMA busy_timeout = 10000');
-  const series = db.prepare(
-    `INSERT INTO series (metric, labels_json, kind) VALUES (?, ?, 'counter')
-     ON CONFLICT DO UPDATE SET kind = kind RETURNING id`,
-  );
-  const write = db.prepare(
-    `INSERT OR REPLACE INTO series_points (series_id, tier, bucket_ms, value) VALUES (?, ?, ?, ?)`,
-  );
   const valueDay = db.prepare(
-    `INSERT OR REPLACE INTO sender_values (group_id, source, field, value, day_ms, sent) VALUES ('edge', ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO sender_values (group_id, source, field, value, day_ms, sent, rows)
+     VALUES ('edge', ?, ?, ?, ?, ?, ?)`,
   );
   const fieldDay = db.prepare(
     `INSERT OR REPLACE INTO sender_fields (group_id, source, field, day_ms, counted, over) VALUES ('edge', ?, ?, ?, ?, 0)`,
@@ -120,27 +114,35 @@ function sent(
     buckets[i >> 3] |= 1 << (i & 7);
     days.set(day, buckets);
   };
+  /** A day's rows in each bucket, from its first, a LEB128 varint each. */
+  const varints = (counts: number[]) => {
+    const out: number[] = [];
+    for (let n of counts) {
+      for (; n >= 0x80; n = Math.floor(n / 0x80)) out.push((n & 0x7f) | 0x80);
+      out.push(n);
+    }
+    return Uint8Array.from(out);
+  };
   const now = Math.floor(Date.now() / FIVE) * FIVE;
   const counted = new Map<number, Uint8Array>();
   db.exec('BEGIN');
   for (const [value, perSecond] of Object.entries(values)) {
-    const labels = [
-      ['field', field],
-      ['group', 'edge'],
-      ['source', source],
-      ['value', value],
-    ];
-    const { id } = series.get('smeltr_sender_rows_total', JSON.stringify(labels)) as { id: number };
     const held = new Map<number, Uint8Array>();
+    const kept = new Map<number, number[]>();
     for (let at = now - days * DAY; at < now + 2 * FIVE; at += FIVE) {
       const rows = Math.round(perSecond(at) * 300 * (1 + 0.05 * noise(at / FIVE + value.length)));
       if (rows > 0) {
-        write.run(id, FIVE_MINUTE_TIER, at, rows);
         mark(held, at);
+        const day = Math.floor(at / DAY) * DAY;
+        const counts = kept.get(day) ?? [];
+        while (counts.length < (at - day) / FIVE) counts.push(0);
+        counts.push(rows);
+        kept.set(day, counts);
       }
       mark(counted, at);
     }
-    for (const [day, buckets] of held) valueDay.run(source, field, value, day, buckets);
+    for (const [day, buckets] of held)
+      valueDay.run(source, field, value, day, buckets, varints(kept.get(day)!));
   }
   for (const [day, buckets] of counted) fieldDay.run(source, field, day, buckets);
   db.exec('COMMIT');

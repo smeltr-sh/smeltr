@@ -4,8 +4,8 @@
 //! each value of every string field the pipeline delivers, and of the source's stream key, by the records that held
 //! it (`streams::SenderTally`). A field that holds more than `heartbeat::SENDER_VALUES` values on a worker is no
 //! sender field, and is counted no more. The leader sums each [`TIER`] bucket's counts as heartbeats bring them
-//! ([`Pending`]) and writes the bucket once it ends: for each field and each value its day row, of the buckets the
-//! field was counted in and the value held a row in, and for each watched value its rows ([`ROWS`]).
+//! ([`Pending`]) and writes the bucket once it ends into each field's and each value's day row: the buckets the field
+//! was counted in, the buckets the value held a row in, and for a watched value the rows it held in each ([`Rows`]).
 //!
 //! Each day, the pick reads which values are senders: a value is watched once it went no longer than
 //! [`LONGEST_EMPTY`] buckets without a row on each of [`PICK_DAYS`] days in a row, and stays watched until a further
@@ -34,9 +34,6 @@ use crate::heartbeat::SenderCounts;
 /// The tier a sender's buckets are counted in, and its rows kept and judged at.
 pub const TIER: Tier = Tier::FiveMinutes;
 
-/// The rows a watched value held in each bucket.
-pub const ROWS: &str = "smeltr_sender_rows_total";
-
 /// The most [`TIER`] buckets in a row a watched sender may go without a row on each of the days it is picked on.
 const LONGEST_EMPTY: usize = 12;
 
@@ -59,20 +56,18 @@ pub type SenderKey = (String, String, Sender);
 /// A field, by its group, source and name.
 pub type FieldKey = (String, String, String);
 
-/// The series subject of `group`'s `source`'s `field`'s `value`: its labels by name, as every series subject is
-/// (`registry::subject_key`).
-pub fn subject(group: &str, source: &str, field: &str, value: &str) -> String {
-    let labels = [("field", field), ("group", group), ("source", source), ("value", value)];
-    serde_json::to_string(&labels).unwrap_or_default()
-}
-
 /// The [`TIER`] buckets of one day that something held, a bit each, from the day's first; a bucket past the last byte
 /// is not held.
 pub type Buckets = Vec<u8>;
 
+/// Which of its day's [`TIER`] buckets `bucket_ms` is, from the day's first.
+fn index(bucket_ms: i64) -> usize {
+    (bucket_ms.rem_euclid(DAY_MS) / TIER.bucket_ms()) as usize
+}
+
 /// The byte of a day's [`Buckets`] that holds `bucket_ms`, and its bit there.
 fn bit(bucket_ms: i64) -> (usize, u8) {
-    let i = (bucket_ms.rem_euclid(DAY_MS) / TIER.bucket_ms()) as usize;
+    let i = index(bucket_ms);
     (i / 8, 1 << (i % 8))
 }
 
@@ -99,6 +94,45 @@ fn each_marked(day_ms: i64, buckets: &[u8]) -> impl Iterator<Item = i64> + '_ {
     (day_ms..day_ms + DAY_MS)
         .step_by(TIER.bucket_ms() as usize)
         .filter(|&at| marked(buckets, at))
+}
+
+/// The rows a watched value held in each [`TIER`] bucket of one day, from the day's first, each count a LEB128
+/// varint of a byte or two. A bucket past the last reads as none.
+pub type Rows = Vec<u8>;
+
+/// Adds `rows` to what its day's `kept` holds for `bucket_ms`.
+pub fn add_rows(kept: &mut Rows, bucket_ms: i64, rows: u64) {
+    let mut each: Vec<u64> = each_count(kept).collect();
+    let i = index(bucket_ms);
+    if each.len() <= i {
+        each.resize(i + 1, 0);
+    }
+    each[i] = each[i].saturating_add(rows);
+    kept.clear();
+    for mut n in each {
+        while n >= 0x80 {
+            kept.push(n as u8 | 0x80);
+            n >>= 7;
+        }
+        kept.push(n as u8);
+    }
+}
+
+/// Each count in `kept`, from the day's first bucket.
+fn each_count(kept: &[u8]) -> impl Iterator<Item = u64> + '_ {
+    let mut at = 0;
+    std::iter::from_fn(move || {
+        let (mut n, mut shift) = (0u64, 0u32);
+        loop {
+            let byte = *kept.get(at)?;
+            at += 1;
+            n |= u64::from(byte & 0x7f).checked_shl(shift).unwrap_or(0);
+            shift += 7;
+            if byte & 0x80 == 0 {
+                return Some(n);
+            }
+        }
+    })
 }
 
 /// The sender counts of one [`TIER`] bucket, summed across the heartbeats that brought them, until it is written.
@@ -276,13 +310,12 @@ pub fn pick(store: &RegistryStore, day_ms: i64) -> Result<Pick, StoreError> {
 /// pick or judge reads.
 pub fn keep(store: &RegistryStore, pick: &Pick) -> Result<(), StoreError> {
     let watched: HashSet<SenderKey> = pick.watched(|_, _, _| false).into_iter().collect();
-    let kept: Vec<String> = watched
-        .iter()
-        .map(|(group, source, s)| subject(group, source, &s.field, &s.value))
-        .collect();
-    store.watch_senders(watched);
-    store.drop_series_but(ROWS, &kept)?;
-    store.forget_sender_days(read_from(pick.day_ms), day_of(pick.day_ms - TIER.retention_ms()))
+    store.watch_senders(watched.clone());
+    store.forget_senders(
+        &watched,
+        read_from(pick.day_ms),
+        day_of(pick.day_ms - TIER.retention_ms()),
+    )
 }
 
 /// Whether a value that held a row in its `sent` buckets, by day, is steady: it passed on [`PICK_DAYS`] days in a
@@ -322,16 +355,6 @@ pub fn history(
     watched: &[SenderKey],
     since_ms: i64,
 ) -> Result<HashMap<SenderKey, BTreeMap<i64, f64>>, StoreError> {
-    let subjects: Vec<String> = watched
-        .iter()
-        .map(|(group, source, s)| subject(group, source, &s.field, &s.value))
-        .collect();
-    let firsts = store.first_points(ROWS, &subjects, TIER)?;
-    let mut held: HashMap<String, BTreeMap<i64, f64>> = store
-        .subjects_since(ROWS, &subjects, TIER, since_ms)?
-        .into_iter()
-        .map(|(subject, points)| (subject, points.into_iter().collect()))
-        .collect();
     let fields: BTreeSet<FieldKey> = watched
         .iter()
         .map(|(group, source, s)| (group.clone(), source.clone(), s.field.clone()))
@@ -342,21 +365,36 @@ pub fn history(
         let buckets = days.iter().flat_map(|(day, buckets)| each_marked(*day, buckets));
         counted.insert(key, buckets.filter(|&at| at >= since_ms).collect());
     }
-    Ok(watched
-        .iter()
-        .zip(subjects)
-        .filter_map(|(key, own)| {
-            let first = *firsts.get(&own)?;
-            let own = held.remove(&own).unwrap_or_default();
-            let counted = counted.get(&(key.0.clone(), key.1.clone(), key.2.field.clone()))?;
-            let rows = counted
-                .iter()
-                .filter(|&&at| at >= first)
-                .map(|&at| (at, own.get(&at).copied().unwrap_or(0.0)))
-                .collect();
-            Some((key.clone(), rows))
-        })
-        .collect())
+    let mut out = HashMap::new();
+    for key in watched {
+        let (group, source, Sender { field, value }) = key;
+        let held: BTreeMap<i64, u64> = store
+            .sender_rows(group, source, field, value)?
+            .iter()
+            .flat_map(|(day, kept)| each_held(*day, kept))
+            .collect();
+        let (Some(&first), Some(counted)) = (
+            held.keys().next(),
+            counted.get(&(group.clone(), source.clone(), field.clone())),
+        ) else {
+            continue;
+        };
+        let rows = counted
+            .iter()
+            .filter(|&&at| at >= first)
+            .map(|&at| (at, held.get(&at).copied().unwrap_or(0) as f64))
+            .collect();
+        out.insert(key.clone(), rows);
+    }
+    Ok(out)
+}
+
+/// Each bucket of the day starting at `day_ms` that its `kept` rows say held a row, with how many.
+fn each_held(day_ms: i64, kept: &[u8]) -> impl Iterator<Item = (i64, u64)> + '_ {
+    (day_ms..)
+        .step_by(TIER.bucket_ms() as usize)
+        .zip(each_count(kept))
+        .filter(|&(_, rows)| rows > 0)
 }
 
 /// One source's sender fields, as the Senders tab shows them.
@@ -618,8 +656,10 @@ mod tests {
         RegistryStore::open(std::path::Path::new(":memory:")).unwrap()
     }
 
-    fn rows(store: &RegistryStore, value: &str) -> Vec<(i64, f64)> {
-        store.points(ROWS, &subject("g", "s", "devname", value), TIER).unwrap()
+    /// Each bucket `value` of field `devname` keeps rows for, with how many.
+    fn rows(store: &RegistryStore, value: &str) -> Vec<(i64, u64)> {
+        let days = store.sender_rows("g", "s", "devname", value).unwrap();
+        days.iter().flat_map(|(day, kept)| each_held(*day, kept)).collect()
     }
 
     #[test]
@@ -680,7 +720,7 @@ mod tests {
         count(&store, at + 1000, "devname", &[("fw-01", 3)], false);
         assert_eq!(rows(&store, "fw-01"), []);
         beat(&store, at + STEP);
-        assert_eq!(rows(&store, "fw-01"), [(at, 5.0)]);
+        assert_eq!(rows(&store, "fw-01"), [(at, 5)]);
         let days = store.sender_field_days("g", "s", "devname", at).unwrap();
         assert_eq!(days.len(), 1);
         assert_eq!(each_marked(days[0].0, &days[0].1).collect::<Vec<_>>(), [at]);
@@ -740,49 +780,58 @@ mod tests {
         assert_eq!(read[&key], [(at - 2 * STEP, 2.0), (at, 0.0), (at + STEP, 3.0)].into());
     }
 
-    /// Once a pick has read them, only the values it watches keep their rows, and the days no later pick reads are
-    /// forgotten. No sender's rows roll up into the hourly tier.
+    /// Once a pick has read them, only the values it watches keep their rows, for the four weeks a normal is learned
+    /// from, and the days of the rest that no later pick reads are forgotten.
     #[test]
     fn only_a_watched_value_keeps_its_rows() {
         let store = memory_store();
         let day = 100 * DAY_MS;
-        for at in (day - 20 * DAY_MS..day).step_by((12 * STEP) as usize) {
+        let oldest = day - 31 * DAY_MS;
+        for at in (oldest..day).step_by((12 * STEP) as usize) {
             count(&store, at, "devname", &[("fw-01", 1), ("fw-07", 1)], false);
         }
         let (old, recent) = (day - 20 * DAY_MS, day - DAY_MS);
         count(&store, old, "devname", &[("fw-12", 1)], false);
-        count(&store, recent, "devname", &[("fw-12", 1)], false);
+        count(&store, recent, "devname", &[("fw-12", 2)], false);
         beat(&store, day);
-        assert_eq!(
-            rows(&store, "fw-12"),
-            [(old, 1.0), (recent, 1.0)],
-            "kept until a pick says"
-        );
+        assert_eq!(rows(&store, "fw-12"), [(old, 1), (recent, 2)], "kept until a pick says");
 
         keep(&store, &pick(&store, day).unwrap()).unwrap();
         assert_eq!(rows(&store, "fw-12"), []);
-        assert_eq!(rows(&store, "fw-01").first(), Some(&(old, 1.0)), "watched");
+        let learned_from = day_of(day - TIER.retention_ms());
+        assert_eq!(rows(&store, "fw-01").first(), Some(&(learned_from, 1)), "watched");
         count(&store, day, "devname", &[("fw-01", 1), ("fw-12", 1)], false);
         beat(&store, day + STEP);
         assert_eq!(rows(&store, "fw-12"), []);
-        assert_eq!(rows(&store, "fw-01").last(), Some(&(day, 1.0)));
+        assert_eq!(rows(&store, "fw-01").last(), Some(&(day, 1)));
         let mut forgotten = true;
         store
-            .each_sender_value(0, |_, _, days| {
-                forgotten &= days.iter().all(|&(d, _)| d >= read_from(day))
+            .each_sender_value(0, |_, value, days| {
+                let from = if value == "fw-12" { read_from(day) } else { learned_from };
+                forgotten &= days.iter().all(|&(d, _)| d >= from)
             })
             .unwrap();
-        assert!(forgotten, "the days before the pick's");
-
-        let now = day + 10 * DAY_MS;
-        store.maintain(now).unwrap();
         assert!(
-            rows(&store, "fw-01")
-                .iter()
-                .all(|&(at, _)| at >= now - TIER.retention_ms())
+            forgotten,
+            "the days before the pick's, or before the learn's for a watched value"
         );
-        let rolled = store.series_since(ROWS, Tier::OneHour, 0).unwrap();
-        assert!(rolled.is_empty(), "{rolled:?}");
+    }
+
+    /// A bucket's count takes one byte up to 127 rows and more past it, and a count past the last bucket written
+    /// reads as none.
+    #[test]
+    fn rows_are_kept_a_varint_a_bucket() {
+        let day = 100 * DAY_MS;
+        let mut kept = Rows::new();
+        add_rows(&mut kept, day + 2 * STEP, 127);
+        assert_eq!(kept, [0, 0, 127]);
+        add_rows(&mut kept, day + 2 * STEP, 1);
+        add_rows(&mut kept, day + 3 * STEP, u64::MAX);
+        assert_eq!(kept.len(), 2 + 2 + 10);
+        assert_eq!(
+            each_held(day, &kept).collect::<Vec<_>>(),
+            [(day + 2 * STEP, 128), (day + 3 * STEP, u64::MAX)]
+        );
     }
 
     /// A field whose values first held a row after the day's pick read shows on the tab that day, learning until it

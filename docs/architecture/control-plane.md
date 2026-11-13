@@ -375,17 +375,19 @@ leader keeps each of the three, with who said it.
 A source's senders are judged as the source is. A sender is one value of one
 field of the source's records, such as a firewall's name, or of its stream key
 (Observability, Streams). The leader sums what workers count in each five-minute
-bucket and writes the bucket once it ends. Every field and every value keeps a
-day row of the buckets it was counted in or held a row in, and only a watched
-sender keeps its rows, in five-minute buckets.
+bucket and writes the bucket once it ends, into a day row for each field and
+each value: the buckets the field was counted in, the buckets the value held a
+row in, and for a watched sender the rows it held in each. A bucket's count of
+rows takes a byte or two of the day row, so four weeks of one sender's rows take
+10 to 30 kilobytes.
 
 ```mermaid
 flowchart LR
   W[workers: rows by value of each field] --> B[leader: each five-minute bucket, written once it ends]
-  B --> D[a day row per field and per value: its buckets]
+  B --> D[a day row per field and per value: its buckets, and a watched sender's rows in each]
   D -- once a day --> P{sent steadily on seven days in a row}
-  P -- yes --> R[its rows, in five-minute buckets]
-  R --> J[judged at the four widths against its own normal]
+  P -- yes: watched --> J[judged at the four widths against its own normal]
+  D -- a watched sender's rows --> J
   J -- below its range at a width, four readings in a row --> X[Senders below normal]
 ```
 
@@ -394,10 +396,10 @@ no more than an hour without a row, counting only the time its field was
 counted, on each of seven days in a row, and it stays watched for a week after.
 A field that held one value names no sender, and neither does one that passed
 its cap of values on a worker. The pick reads the last two weeks of day rows. A
-watched sender keeps its rows from the day it is picked, for the four weeks its
-normal is learned from, and a value the pick stops watching loses them. A newly
-watched sender is judged once it has three days of rows. Sender rows never roll
-up into hourly buckets, since nothing reads them there.
+watched sender keeps its rows from the day it is picked, in day rows kept for
+the four weeks its normal is learned from. A value the pick stops watching loses
+its rows, and its day rows once no pick reads them. A newly watched sender is
+judged once it has three days of rows.
 
 A watched sender is judged at the four widths, below normal only and never by
 the gap. It is judged only where its field was counted, so a field that a

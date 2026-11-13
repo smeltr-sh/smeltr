@@ -25,14 +25,14 @@
 //! expires. A bucket nothing landed in is a bucket with no row: there is nothing to promote and nothing to delete, so
 //! an outage reads as absent rather than as a zero.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
 
-use super::senders::{Buckets, Days, FieldDays, FieldKey, Pending, Sender, SenderKey};
+use super::senders::{Buckets, Days, FieldDays, FieldKey, Pending, Rows, Sender, SenderKey};
 use super::store::StoreError;
 use crate::heartbeat::SenderCounts;
 
@@ -483,7 +483,7 @@ pub(crate) const STEPS: &[&str] = &[
      ) WITHOUT ROWID;",
     // 15 -- what each sender field and each of its values sent (`senders`), a day row each: the five-minute buckets a
     // field was counted in, a bit each, and whether a worker said it passed its cap of values; the buckets each value
-    // held a row in.
+    // held a row in, and for a watched value the rows it held in each.
     "CREATE TABLE sender_fields (
          group_id TEXT NOT NULL,
          source   TEXT NOT NULL,
@@ -500,6 +500,7 @@ pub(crate) const STEPS: &[&str] = &[
          value    TEXT NOT NULL,
          day_ms   INTEGER NOT NULL,
          sent     BLOB NOT NULL,
+         rows     BLOB,
          PRIMARY KEY (group_id, source, field, value, day_ms)
      ) WITHOUT ROWID;",
 ];
@@ -1155,68 +1156,6 @@ impl RegistryStore {
             .collect()
     }
 
-    /// Each of `subjects` of `metric` at `tier`, with its points at or after `since_ms`, oldest first. A subject with
-    /// none is left out.
-    pub fn subjects_since(
-        &self,
-        metric: &str,
-        subjects: &[String],
-        tier: Tier,
-        since_ms: i64,
-    ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare_cached(
-            "SELECT p.bucket_ms, p.value FROM series s CROSS JOIN series_points p ON p.series_id = s.id \
-             WHERE s.metric = ?1 AND s.labels_json = ?2 AND p.tier = ?3 AND p.bucket_ms >= ?4 ORDER BY p.bucket_ms",
-        )?;
-        let mut out = Vec::new();
-        for subject in subjects {
-            let points = stmt
-                .query_map(params![metric, subject, tier.code(), since_ms], |r| {
-                    Ok((r.get(0)?, r.get(1)?))
-                })?
-                .collect::<rusqlite::Result<SubjectPoints>>()?;
-            if !points.is_empty() {
-                out.push((subject.clone(), points));
-            }
-        }
-        Ok(out)
-    }
-
-    /// The first point at `tier` of each of `subjects` of `metric` that has one, by subject.
-    pub fn first_points(
-        &self,
-        metric: &str,
-        subjects: &[String],
-        tier: Tier,
-    ) -> Result<HashMap<String, i64>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn.prepare_cached(
-            "SELECT MIN(p.bucket_ms) FROM series s CROSS JOIN series_points p ON p.series_id = s.id \
-             WHERE s.metric = ?1 AND s.labels_json = ?2 AND p.tier = ?3",
-        )?;
-        let mut out = HashMap::new();
-        for subject in subjects {
-            if let Some(first) =
-                stmt.query_row(params![metric, subject, tier.code()], |r| r.get::<_, Option<i64>>(0))?
-            {
-                out.insert(subject.clone(), first);
-            }
-        }
-        Ok(out)
-    }
-
-    /// Drops every point of `metric` but those of the `kept` subjects.
-    pub fn drop_series_but(&self, metric: &str, kept: &[String]) -> Result<(), StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "DELETE FROM series_points WHERE series_id IN (SELECT id FROM series \
-             WHERE metric = ?1 AND labels_json NOT IN (SELECT value FROM json_each(?2)))",
-            params![metric, serde_json::json!(kept).to_string()],
-        )?;
-        Ok(())
-    }
-
     /// Every subject of `metric` with a point at or after `since_ms`, each point keyed by its start, `point_ms` wide,
     /// oldest first. A point is summed from the coarsest tier that fits in it, and from the finer tiers that still
     /// hold the window's newest buckets: a point may hold several buckets, which a counter adds and a gauge takes the
@@ -1635,13 +1574,12 @@ impl RegistryStore {
             let next = tier.next().expect("every promoting tier has a next");
             let cutoff = now_ms - tier.retention_ms();
             let aged: Vec<(i64, i64, String, f64)> = {
-                // A sender's rows are read at their own tier only: past it they are gone.
                 let mut stmt = tx.prepare(
                     "SELECT p.series_id, p.bucket_ms, s.kind, p.value \
                      FROM series_points p JOIN series s ON s.id = p.series_id \
-                     WHERE p.tier = ?1 AND p.bucket_ms < ?2 AND s.metric <> ?3",
+                     WHERE p.tier = ?1 AND p.bucket_ms < ?2",
                 )?;
-                stmt.query_map(params![tier.code(), cutoff, super::senders::ROWS], |r| {
+                stmt.query_map(params![tier.code(), cutoff], |r| {
                     Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
                 })?
                 .collect::<rusqlite::Result<_>>()?
@@ -2009,12 +1947,59 @@ impl RegistryStore {
         Ok(days)
     }
 
-    /// Forgets the values' days before `values_before_ms` and the fields' before `fields_before_ms`.
-    pub fn forget_sender_days(&self, values_before_ms: i64, fields_before_ms: i64) -> Result<(), StoreError> {
+    /// The rows `group`'s `source`'s `field`'s `value` held, on each day it keeps them, oldest first.
+    pub fn sender_rows(
+        &self,
+        group: &str,
+        source: &str,
+        field: &str,
+        value: &str,
+    ) -> Result<Vec<(i64, Rows)>, StoreError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare_cached(
+            "SELECT day_ms, rows FROM sender_values \
+             WHERE group_id = ?1 AND source = ?2 AND field = ?3 AND value = ?4 AND rows IS NOT NULL ORDER BY day_ms",
+        )?;
+        let days = stmt
+            .query_map(params![group, source, field, value], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(days)
+    }
+
+    /// Keeps rows only for the `watched` values; forgets the days before `values_before_ms` of the values that keep
+    /// none, and the days before `kept_before_ms` of every value and field.
+    pub fn forget_senders(
+        &self,
+        watched: &HashSet<SenderKey>,
+        values_before_ms: i64,
+        kept_before_ms: i64,
+    ) -> Result<(), StoreError> {
         let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let tx = conn.transaction()?;
-        tx.execute("DELETE FROM sender_values WHERE day_ms < ?1", params![values_before_ms])?;
-        tx.execute("DELETE FROM sender_fields WHERE day_ms < ?1", params![fields_before_ms])?;
+        {
+            let kept: Vec<SenderKey> = tx
+                .prepare("SELECT DISTINCT group_id, source, field, value FROM sender_values WHERE rows IS NOT NULL")?
+                .query_map([], |r| {
+                    let sender = Sender {
+                        field: r.get(2)?,
+                        value: r.get(3)?,
+                    };
+                    Ok((r.get(0)?, r.get(1)?, sender))
+                })?
+                .collect::<rusqlite::Result<_>>()?;
+            let mut drop = tx.prepare(
+                "UPDATE sender_values SET rows = NULL \
+                 WHERE group_id = ?1 AND source = ?2 AND field = ?3 AND value = ?4",
+            )?;
+            for (group, source, sender) in kept.iter().filter(|key| !watched.contains(*key)) {
+                drop.execute(params![group, source, sender.field, sender.value])?;
+            }
+        }
+        tx.execute(
+            "DELETE FROM sender_values WHERE day_ms < ?1 AND (rows IS NULL OR day_ms < ?2)",
+            params![values_before_ms, kept_before_ms],
+        )?;
+        tx.execute("DELETE FROM sender_fields WHERE day_ms < ?1", params![kept_before_ms])?;
         tx.commit()?;
         Ok(())
     }
@@ -2039,12 +2024,12 @@ fn write_senders(
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )?;
         let mut value_read = tx.prepare_cached(
-            "SELECT sent FROM sender_values \
+            "SELECT sent, rows FROM sender_values \
              WHERE group_id = ?1 AND source = ?2 AND field = ?3 AND value = ?4 AND day_ms = ?5",
         )?;
         let mut value_write = tx.prepare_cached(
-            "INSERT OR REPLACE INTO sender_values (group_id, source, field, value, day_ms, sent) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT OR REPLACE INTO sender_values (group_id, source, field, value, day_ms, sent, rows) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         )?;
         for (group, sources) in &pending.fields {
             for (source, fields) in sources {
@@ -2058,12 +2043,13 @@ fn write_senders(
                     }
                     field_write.execute(params![group, source, field, day, counted, over || counts.over])?;
                     for (value, &rows) in &counts.values {
-                        let mut sent: Buckets = value_read
-                            .query_row(params![group, source, field, value, day], |r| r.get(0))
+                        let (mut sent, kept): (Buckets, Option<Rows>) = value_read
+                            .query_row(params![group, source, field, value, day], |r| {
+                                Ok((r.get(0)?, r.get(1)?))
+                            })
                             .optional()?
                             .unwrap_or_default();
                         super::senders::mark(&mut sent, bucket);
-                        value_write.execute(params![group, source, field, value, day, sent])?;
                         let key = (
                             group.clone(),
                             source.clone(),
@@ -2072,15 +2058,13 @@ fn write_senders(
                                 value: value.clone(),
                             },
                         );
-                        if watched.is_none_or(|w| w.contains(&key)) {
-                            let point = SeriesPoint {
-                                metric: super::senders::ROWS,
-                                subject_key: super::senders::subject(group, source, field, value),
-                                counter: true,
-                                value: rows as f64,
-                            };
-                            write_point_at(&tx, &point, super::senders::TIER, bucket)?;
-                        }
+                        // A value not watched keeps no rows.
+                        let kept = watched.is_none_or(|w| w.contains(&key)).then(|| {
+                            let mut kept = kept.unwrap_or_default();
+                            super::senders::add_rows(&mut kept, bucket, rows);
+                            kept
+                        });
+                        value_write.execute(params![group, source, field, value, day, sent, kept])?;
                     }
                 }
             }
