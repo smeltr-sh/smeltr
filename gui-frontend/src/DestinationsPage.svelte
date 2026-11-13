@@ -190,6 +190,7 @@
         anchor={(d) => `destination-${encodeURIComponent(d.id)}`}
         {highlight}
         {only}
+        onduplicate={(d) => (adding = { from: d })}
         empty="No destinations yet."
       >
         {#snippet toolbar()}
@@ -239,14 +240,12 @@
         {/snippet}
         {#snippet rowActions(destination, i)}
           {#if captureGroup}{@render captureButton(destination.id, captureGroup)}{/if}
-          {@render duplicateButton(destination)}
           <button type="button" class="pick remove" onclick={() => removeDestination(i)}
             >Remove</button
           >
         {/snippet}
         {#snippet sharedActions(destination)}
           {@render captureButton(destination.id, SHARED_SCOPE)}
-          {@render duplicateButton(destination)}
           <!-- Reloads: the rows and the saved baseline were read under the old scope, and every
                write from here carries the new one. -->
           <button type="button" class="pick" onclick={() => setScope(SHARED_SCOPE)}
@@ -281,12 +280,6 @@
     </div>
   </SectionShell>
 {/if}
-
-{#snippet duplicateButton(destination: DestinationDto)}
-  <button type="button" class="pick" onclick={() => (adding = { from: destination })}
-    >Duplicate</button
-  >
-{/snippet}
 
 {#snippet captureButton(id: string, scope: string)}
   {#if captureGroup && mayCapture({ kind: 'destination', scope, group: captureGroup })}

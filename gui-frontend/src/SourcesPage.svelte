@@ -200,6 +200,7 @@
         anchor={(s) => `source-${encodeURIComponent(s.id)}`}
         {highlight}
         {only}
+        onduplicate={(s) => (adding = { from: s })}
         empty="No sources yet."
       >
         {#snippet toolbar()}
@@ -227,12 +228,10 @@
             onsaved={(commit) => (editor.readAtCommit = commit)}
           />
         {/snippet}
-        {#snippet rowActions(source, i)}
-          {@render duplicateButton(source)}
+        {#snippet rowActions(_, i)}
           <button type="button" class="pick remove" onclick={() => removeSource(i)}>Remove</button>
         {/snippet}
-        {#snippet sharedActions(source)}
-          {@render duplicateButton(source)}
+        {#snippet sharedActions()}
           <!-- Reloads: the rows and the saved baseline were read under the old scope, and every
                write from here carries the new one. -->
           <button type="button" class="pick" onclick={() => setScope(SHARED_SCOPE)}
@@ -261,10 +260,6 @@
     </div>
   </SectionShell>
 {/if}
-
-{#snippet duplicateButton(source: SourceDto)}
-  <button type="button" class="pick" onclick={() => (adding = { from: source })}>Duplicate</button>
-{/snippet}
 
 <style>
   .fixed {
