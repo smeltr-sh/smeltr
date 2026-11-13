@@ -47,8 +47,9 @@
   /** What `shared/` declares, which this group runs too. Never saved from here: the page writes its own scope,
    * and these belong to the bundle every group draws on (design C -- read here, edited in `shared/`). */
   let sharedSources: SourceDto[] = $state([]);
-  /** A source being added (`NewSource`). It joins the list on Add, and the file on the page's Save. */
-  let adding = $state(false);
+  /** A source being added (`NewSource`), from a copy of `from` where it is one. It joins the list on Add, and the
+   * file on the page's Save. */
+  let adding: { from?: SourceDto } | null = $state(null);
   /** The row to show and mark: the one the map landed on, then the one just added. */
   // Follows the route, which can land on another row without remounting the page.
   let highlight = $derived(focus);
@@ -116,7 +117,7 @@
   function add(made: SourceDto) {
     sources.push(made);
     highlight = made.id;
-    adding = false;
+    adding = null;
   }
 
   function removeSource(i: number) {
@@ -199,11 +200,11 @@
         anchor={(s) => `source-${encodeURIComponent(s.id)}`}
         {highlight}
         {only}
+        onduplicate={(s) => (adding = { from: s })}
         empty="No sources yet."
       >
         {#snippet toolbar()}
-          <button type="button" class="primary" onclick={() => (adding = true)}>+ Add source</button
-          >
+          <button type="button" class="primary" onclick={() => (adding = {})}>+ Add source</button>
         {/snippet}
         {#snippet extra()}
           <button type="button" onclick={() => (location.hash = '#/build/sources/json')}
@@ -240,14 +241,15 @@
       </ObjectList>
 
       <NewSource
-        open={adding}
+        open={adding !== null}
+        from={adding?.from}
         unavailable={unavailable()}
         {secrets}
         {kafka}
         readAt={editor.readAtCommit}
         onsaved={(commit) => (editor.readAtCommit = commit)}
         onadd={add}
-        oncancel={() => (adding = false)}
+        oncancel={() => (adding = null)}
       />
       <SaveBar
         dirty={editor.isDirty}

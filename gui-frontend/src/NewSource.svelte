@@ -15,6 +15,7 @@
     kafka,
     readAt,
     onsaved,
+    from,
     onadd,
     oncancel,
   }: {
@@ -27,6 +28,8 @@
     /** The commit the caller read, for what `SourceFields` saves on its own. */
     readAt: string | null;
     onsaved: (commit: string) => void;
+    /** A source to copy (`NewObject`). */
+    from?: SourceDto;
     /** Takes the source. The dialog stays open until its owner closes it. */
     onadd: (source: SourceDto) => void | Promise<void>;
     oncancel: () => void;
@@ -45,6 +48,7 @@
   blank={blankSource}
   {typeLabel}
   {ready}
+  {from}
   {onadd}
   {oncancel}
 >

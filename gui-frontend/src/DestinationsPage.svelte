@@ -73,8 +73,9 @@
    * destination, so `shared/`'s own page offers none. */
   let capturing: { id: string; scope: string } | null = $state(null);
   const captureGroup = currentScope() === SHARED_SCOPE ? null : currentScope();
-  /** A destination being added (`NewDestination`). It joins the list on Add, and the file on the page's Save. */
-  let adding = $state(false);
+  /** A destination being added (`NewDestination`), from a copy of `from` where it is one. It joins the list on Add,
+   * and the file on the page's Save. */
+  let adding: { from?: DestinationDto } | null = $state(null);
   /** The row to show and mark: the one the map landed on, then the one just added. */
   // Follows the route, which can land on another row without remounting the page.
   let highlight = $derived(focus);
@@ -120,7 +121,7 @@
   function add(draft: DestinationDto) {
     destinations.push(draft);
     highlight = draft.id;
-    adding = false;
+    adding = null;
   }
 
   function removeDestination(i: number) {
@@ -189,10 +190,11 @@
         anchor={(d) => `destination-${encodeURIComponent(d.id)}`}
         {highlight}
         {only}
+        onduplicate={(d) => (adding = { from: d })}
         empty="No destinations yet."
       >
         {#snippet toolbar()}
-          <button type="button" class="primary" onclick={() => (adding = true)}
+          <button type="button" class="primary" onclick={() => (adding = {})}
             >+ Add destination</button
           >
         {/snippet}
@@ -253,12 +255,13 @@
       </ObjectList>
 
       <NewDestination
-        open={adding}
+        open={adding !== null}
+        from={adding?.from}
         unavailable={unavailable()}
         {secrets}
         {kafka}
         onadd={add}
-        oncancel={() => (adding = false)}
+        oncancel={() => (adding = null)}
       />
 
       {#if capturing !== null && captureGroup}

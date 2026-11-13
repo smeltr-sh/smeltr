@@ -829,6 +829,36 @@ const addDestination: Move = {
   },
 };
 
+/** Duplicates a destination from its row's menu: the dialog opens on its fields, filled in as the original's, and the
+ * copy the leader saves is the original under the new id. The copy keeps the original's prefix, which the moves that
+ * pick a destination by kind go by. */
+const duplicateDestination: Move = {
+  name: 'duplicate-destination',
+  weight: (w) =>
+    w.password && w.editing.destinations.length && w.editing.destinations.length < 4 ? 1 : 0,
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const original = rng.pick(world.editing.destinations);
+    const id = `${original.split('-')[0]}-${world.made++}`;
+    await goto(page, leader, '#/build/destinations');
+    await page.getByRole('button', { name: `More actions for ${original}` }).click();
+    await page.getByRole('button', { name: 'Duplicate', exact: true }).click();
+    const form = page.getByRole('dialog', { name: /^new .* destination$/ });
+    const idField = form.getByRole('textbox', { name: /^id/ });
+    await expect(idField).toHaveValue(`${original}-2`);
+    await idField.fill(id);
+    await form.getByRole('button', { name: 'Add', exact: true }).click();
+    await save(j, unsaved(page));
+    world.editing.destinations.push(id);
+    await editingIsSaved(j);
+    const on = encodeURIComponent(world.branch!);
+    const res = await (await j.truth()).get(`/api/areas/shared?branch=${on}`);
+    const byId = (d: string) => res.config.destinations.find((x: { id: string }) => x.id === d);
+    expect(byId(id), `${id} is ${original} under a new id`).toEqual({ ...byId(original), id });
+    return `duplicate destination ${original} as ${id}`;
+  },
+};
+
 const addPipeline: Move = {
   name: 'add-pipeline',
   leadsTo: ['add-route', 'add-route-to-new-destination', 'add-step'],
@@ -3463,6 +3493,7 @@ export const MOVES: readonly Move[] = [
   refusedSource,
   fillAvro,
   addDestination,
+  duplicateDestination,
   addPipeline,
   exportPipeline,
   importPipeline,
