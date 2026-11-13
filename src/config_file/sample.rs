@@ -156,9 +156,9 @@ pub fn read_sample(files: &mut dyn FileSet, id: &str) -> Result<Option<SampleDto
     else {
         return Ok(None);
     };
-    let mut sample: SampleDto = serde_json::from_slice(&bytes).map_err(|source| BundleError::Json { path, source })?;
-    sample.records.iter_mut().for_each(crate::io::upgrade_mistyped);
-    Ok(Some(sample))
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|source| BundleError::Json { path, source })
 }
 
 /// Every sample in the bundle, and every path under `samples/` that did not read, paired with why.
@@ -332,28 +332,6 @@ mod tests {
         assert!(unreadable.is_empty(), "{unreadable:?}");
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].records, MAX_SAMPLE_RECORDS + 5);
-    }
-
-    /// A sample 1.0.0 or 1.1.0 wrote listed its failed fields under `smeltr.mistyped`; it reads with them where this
-    /// build lists them, and a `smeltr` object holding more keeps the rest as a field.
-    #[test]
-    fn a_released_samples_failed_fields_read_where_this_build_lists_them() {
-        let dir = temp_bundle("mistyped-1-1");
-        write(
-            &dir,
-            "old.json",
-            r#"{"id":"old","name":"old","records":[
-                {"id":"x","smeltr":{"mistyped":["id"]},"__capture":{"group":"g"}},
-                {"id":1,"smeltr":{"mistyped":["id"],"note":"kept"}}]}"#,
-        );
-        let sample = read_sample(&mut DirFileSet { root: &dir }, "old").unwrap().unwrap();
-        assert_eq!(
-            serde_json::Value::Array(sample.records.into_iter().map(serde_json::Value::Object).collect()),
-            serde_json::json!([
-                {"id": "x", "__capture": {"group": "g", "mistyped": ["id"]}},
-                {"id": 1, "smeltr": {"note": "kept"}, "__capture": {"mistyped": ["id"]}},
-            ])
-        );
     }
 
     #[test]

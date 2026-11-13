@@ -40,29 +40,11 @@ pub fn unclaimed_of<N: AsRef<str>>(object: &RecordObject, fields: &[(N, DataType
 /// `__capture` fields, which say how it was taken.
 pub const MISTYPED_FIELDS: &str = "__capture.mistyped";
 
-/// Where a sample written by release 1.0.0 or 1.1.0 lists them, among the record's own fields.
-const MISTYPED_FIELDS_1_1: &str = "smeltr.mistyped";
-
 /// The fields `record` lists as failed under `MISTYPED_FIELDS`, `{"__capture": {"mistyped": ["id"]}}`, taken out of
 /// it: a stored record's own field reads as the record, and this list as which of its values failed their type when it
 /// was taken (`RecordChunk::from_objects`). Anything else there is left as a field.
 pub fn take_mistyped(record: &mut RecordObject) -> Vec<String> {
     take_list(record, MISTYPED_FIELDS).unwrap_or_default()
-}
-
-/// A record a sample written by release 1.0.0 or 1.1.0 holds, its failed list moved from where that release kept it
-/// to `MISTYPED_FIELDS` (`docs/architecture/control-plane.md`, Upgrades: config files are upgraded as they are read).
-pub fn upgrade_mistyped(record: &mut RecordObject) {
-    if let Some(names) = take_list(record, MISTYPED_FIELDS_1_1) {
-        let names = names.into_iter().map(serde_json::Value::from).collect();
-        let (outer, inner) = split(MISTYPED_FIELDS);
-        if let serde_json::Value::Object(capture) = record
-            .entry(outer)
-            .or_insert_with(|| serde_json::Value::Object(Default::default()))
-        {
-            capture.insert(inner.to_string(), serde_json::Value::Array(names));
-        }
-    }
 }
 
 fn split(path: &str) -> (&str, &str) {
