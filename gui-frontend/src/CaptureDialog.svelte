@@ -17,7 +17,7 @@
   import Dialog from './Dialog.svelte';
   import Figure from './Figure.svelte';
   import Figures from './Figures.svelte';
-  import { heldCount, progressText, rowRecords, shownRecords, workerChips } from './capture';
+  import { heldCount, heldRows, progressText, shownRecords, workerChips } from './capture';
   import { captureDownloadUrl, captureEndText, type CaptureStatus } from './api';
   import { NOT_IN_DEMO } from './access';
 
@@ -73,7 +73,7 @@
   let shown = $derived(status ? shownRecords(status, only) : []);
   let held = $derived(status ? heldCount(status) : 0);
   /** Each shown record as a row of the grid, the same on both sides: a capture changes nothing. */
-  let records = $derived(rowRecords(shown));
+  let records = $derived(heldRows(shown, status?.columns ?? []));
   let rows = $derived<GridRow[]>(
     records.map((r, i) => ({
       key: i,

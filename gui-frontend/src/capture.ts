@@ -5,9 +5,9 @@
 import { count } from './time';
 import { keySpans } from './names';
 import type {
-  CaptureBatch,
   CaptureStatus,
   CaptureWorkerDto,
+  HeldRecord,
   SourceDto,
   StartPosition,
   startCapture,
@@ -18,18 +18,17 @@ export interface WorkerChip extends CaptureWorkerDto {
   count: number;
 }
 
-/** How many records the capture holds: its rows across every batch. */
+/** How many records the capture holds. */
 export function heldCount(status: CaptureStatus): number {
-  return status.batches.reduce((n, b) => n + b.rows.length, 0);
+  return status.records.length;
 }
 
 /** Every worker the capture knows of, in the leader's order. The leader never
  * drops one, so a chosen chip stays on screen. */
 export function workerChips(status: CaptureStatus): WorkerChip[] {
   const counts = new Map<string, number>();
-  for (const b of status.batches)
-    for (const r of b.rows)
-      if (r.worker !== undefined) counts.set(r.worker, (counts.get(r.worker) ?? 0) + 1);
+  for (const { worker } of status.records)
+    if (worker !== undefined) counts.set(worker, (counts.get(worker) ?? 0) + 1);
   return status.workers.map(({ worker, state }) => ({
     worker,
     state,
@@ -37,63 +36,71 @@ export function workerChips(status: CaptureStatus): WorkerChip[] {
   }));
 }
 
-/** The held batches, or only one worker's rows when a chip is chosen. A batch
- * left with no row is left out. */
-export function shownRecords(status: CaptureStatus, only: string | null): CaptureBatch[] {
-  const batches =
-    only === null
-      ? status.batches
-      : status.batches.map((b) => ({ ...b, rows: b.rows.filter((r) => r.worker === only) }));
-  return batches.filter((b) => b.rows.length > 0);
+/** The held records, or only one worker's when a chip is chosen. */
+export function shownRecords(status: CaptureStatus, only: string | null): HeldRecord[] {
+  return only === null ? status.records : status.records.filter((r) => r.worker === only);
 }
 
-/** The column a record a block holds says why it blocked in (`worker::capture::EXCEPTION_MESSAGE`). It is not a
- * field of the record. */
-export const EXCEPTION_MESSAGE = '__exception.message';
-/** The column an open record's unclaimed fields travel in, as one object (`plan::tree::UNCLAIMED`). */
-const UNCLAIMED = '...';
+/** Where a record a block holds says why it blocked (`worker::capture::EXCEPTION_MESSAGE`). It is not a field of
+ * the record. */
+export const EXCEPTION_MESSAGE = ['__exception', 'message'];
+/** Where a record lists the fields whose values did not read as their type (`io::MISTYPED_FIELDS`). */
+export const MISTYPED_FIELDS = ['__capture', 'mistyped'];
 
-/** One captured row as the record a sample holds it as (`config_file::sample_records`), with what failed on it: why a
- * block holds it, and each value that did not read as its column's type. */
+/** A held record as the grid shows it: its fields, and what failed on it apart from them. */
 export interface CapturedRecord {
   record: Record<string, unknown>;
   exceptions: string[];
   worker?: string;
 }
 
-/** `value` put at `name`, a field's name, in `record`. */
-function putPath(record: Record<string, unknown>, name: string, value: unknown): void {
-  const keys = keySpans(name).map((k) => k.key);
-  let at = record;
-  keys.slice(0, -1).forEach((key) => {
-    const next = at[key];
-    if (next === null || typeof next !== 'object' || Array.isArray(next)) at[key] = {};
-    at = at[key] as Record<string, unknown>;
-  });
-  at[keys[keys.length - 1]] = value;
+/** The value at `path` in `record`, taken out of it. An object the take leaves empty goes too. */
+function take(record: Record<string, unknown>, path: string[]): unknown {
+  const [key, ...rest] = path;
+  const at = record[key];
+  if (rest.length === 0) {
+    delete record[key];
+    return at;
+  }
+  if (at === null || typeof at !== 'object' || Array.isArray(at)) return undefined;
+  const inner = { ...(at as Record<string, unknown>) };
+  const value = take(inner, rest);
+  if (Object.keys(inner).length === 0) delete record[key];
+  else record[key] = inner;
+  return value;
 }
 
-/** Each row of `batches` as its record. */
-export function rowRecords(batches: CaptureBatch[]): CapturedRecord[] {
-  return batches.flatMap((batch) =>
-    batch.rows.map((row) => {
-      const record: Record<string, unknown> = {};
-      const exceptions: string[] = [];
-      batch.columns.forEach(({ name }, i) => {
-        const value = row.values[i];
-        if (value === null || value === undefined) return;
-        if (name === EXCEPTION_MESSAGE) exceptions.push(String(value));
-        else if (name === UNCLAIMED && typeof value === 'object' && !Array.isArray(value))
-          Object.assign(record, value);
-        else putPath(record, name, value);
-      });
-      for (const i of row.failed)
-        exceptions.push(`${batch.columns[i].name} could not be read as ${batch.columns[i].type}`);
-      return row.worker === undefined
-        ? { record, exceptions }
-        : { record, exceptions, worker: row.worker };
-    }),
-  );
+/** The value at `name`, a field's name, in a held record, or undefined where it has none. */
+export function valueAt(record: Record<string, unknown>, name: string): unknown {
+  let at: unknown = record;
+  for (const { key } of keySpans(name)) {
+    if (at === null || typeof at !== 'object' || Array.isArray(at)) return undefined;
+    at = (at as Record<string, unknown>)[key];
+  }
+  return at;
+}
+
+/** Whether a held record's value at `name` did not read as its type. */
+export function mistyped(record: Record<string, unknown>, name: string): boolean {
+  const names = valueAt(record, MISTYPED_FIELDS.join('.'));
+  return Array.isArray(names) && names.includes(name);
+}
+
+/** Each of `held` as the grid shows it: why a block holds it, and each value that did not read as its column's type
+ * (`columns`), as exceptions rather than fields. */
+export function heldRows(held: HeldRecord[], columns: CaptureStatus['columns']): CapturedRecord[] {
+  const types = new Map(columns.map((c) => [c.name, c.type]));
+  return held.map(({ worker, record: sent }) => {
+    const record = { ...sent };
+    const exceptions: string[] = [];
+    const message = take(record, EXCEPTION_MESSAGE);
+    if (message !== undefined && message !== null) exceptions.push(String(message));
+    const mistyped = take(record, MISTYPED_FIELDS);
+    if (Array.isArray(mistyped))
+      for (const name of mistyped)
+        exceptions.push(`${name} could not be read as ${types.get(String(name)) ?? 'its type'}`);
+    return worker === undefined ? { record, exceptions } : { record, exceptions, worker };
+  });
 }
 
 /** A captured value as one cell shows it: a string as it is, anything else as JSON. */
@@ -111,11 +118,8 @@ export function settled(status: CaptureStatus): boolean {
 /** One line on where the capture stands, for the dialog's body. */
 export function progressText(status: CaptureStatus): string {
   const held = count(heldCount(status), 'record');
-  const senders = new Set(
-    status.batches.flatMap((b) =>
-      b.rows.flatMap((r) => (r.worker === undefined ? [] : [r.worker])),
-    ),
-  ).size;
+  const senders = new Set(status.records.flatMap((r) => (r.worker === undefined ? [] : [r.worker])))
+    .size;
   const from = `from ${senders} of ${count(status.workers.length, 'worker')}`;
   if (status.stopped) return `Stopped with ${status.secondsLeft}s left. ${held} ${from}.`;
   if (status.done) return `Finished. ${held} ${from}.`;

@@ -11,8 +11,8 @@ import {
   type SampleRecordDto,
 } from './api';
 
-/** Where a record lists the fields whose value failed its type (`io::take_mistyped`): `smeltr.mistyped`. */
-const TAG = 'smeltr';
+/** Where a record lists the fields whose value failed its type (`io::MISTYPED_FIELDS`): `__capture.mistyped`. */
+const TAG = '__capture';
 const MISTYPED = 'mistyped';
 
 /** One column of the editor: a field of the records, or a path into an internal object, and its type where the capture
@@ -22,17 +22,14 @@ export interface EditColumn {
   type?: string;
 }
 
-/** The columns a record shows: its fields, an internal object's fields as their paths, and not a tag field that holds
- * only its list of mistyped fields, which shows as the cells it marks. A tag that also holds a destination's messages
- * is a field like any other. */
+/** The columns a record shows: its fields, and an internal object's fields as their paths, but not its list of
+ * mistyped fields, which shows as the cells it marks. */
 function recordColumns(record: SampleRecordDto): string[] {
-  const onlyMistyped =
-    mistypedOf(record) !== null && Object.keys(record[TAG] as Record<string, unknown>).length === 1;
   return Object.keys(record)
-    .filter((k) => !(k === TAG && onlyMistyped))
     .flatMap((k) =>
       inner(record, k) ? Object.keys(inner(record, k)!).map((f) => `${k}.${f}`) : [k],
-    );
+    )
+    .filter((c) => c !== `${TAG}.${MISTYPED}`);
 }
 
 /** The object an internal field `key` holds, whose fields are columns of their own. */

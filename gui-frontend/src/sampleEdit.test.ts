@@ -41,7 +41,7 @@ const sql: SampleDto = {
       invoice_id: 1,
       amount: 'n/a',
       status: 'paid',
-      smeltr: { mistyped: ['amount'] },
+      __capture: { mistyped: ['amount'] },
       __source: { name: 'billing-db', type: 'postgres', database: 'billing' },
     },
     {
@@ -73,10 +73,10 @@ describe('editColumns', () => {
     ]);
   });
 
-  it('shows a mistyped list as the cells it marks, and a tag that holds more as a field', () => {
-    expect(editColumns(sql).map((c) => c.name)).not.toContain('smeltr');
-    const at = { ...sql, records: [{ a: 1, smeltr: { mistyped: ['a'], message: 'x' } }] };
-    expect(editColumns(at).map((c) => c.name)).toEqual(['a', 'smeltr']);
+  it('shows a mistyped list as the cells it marks, and what else a capture says of a record as its fields', () => {
+    expect(editColumns(sql).map((c) => c.name)).not.toContain('__capture.mistyped');
+    const at = { ...sql, records: [{ a: 1, __capture: { mistyped: ['a'], group: 'g' } }] };
+    expect(editColumns(at).map((c) => c.name)).toEqual(['a', '__capture.group']);
   });
 
   it('keeps the order the capture gave its columns, which a stored record does not', () => {
@@ -136,7 +136,7 @@ describe('cells', () => {
   it('fixing a mistyped value takes it off the mistyped list, and keeps where it was read from', () => {
     const fixed = withCell(sql.records[0], { name: 'amount', type: 'f64' }, '20');
     expect(fixed.amount).toBe(20);
-    expect(fixed.smeltr).toBeUndefined();
+    expect(fixed.__capture).toBeUndefined();
     expect(fixed.__source).toEqual(sql.records[0].__source);
   });
 
@@ -150,18 +150,18 @@ describe('cells', () => {
   it('breaking a value puts it on the mistyped list', () => {
     const broken = withCell(sql.records[1], { name: 'invoice_id', type: 'i64' }, 'x');
     expect(broken.invoice_id).toBe('x');
-    expect(broken.smeltr).toEqual({ mistyped: ['invoice_id'] });
+    expect(broken.__capture).toEqual({ mistyped: ['invoice_id'] });
   });
 
   it('emptying a typed cell removes the field, and does not list it as mistyped', () => {
     const cleared = withCell(sql.records[1], { name: 'invoice_id', type: 'i64' }, '');
     expect('invoice_id' in cleared).toBe(false);
-    expect(cleared.smeltr).toBeUndefined();
+    expect(cleared.__capture).toBeUndefined();
   });
 
-  it('leaves a record field named like the tag field alone', () => {
-    const own = withCell({ n: 1, smeltr: 'abc' }, { name: 'n', type: 'i64' }, 'x');
-    expect(own.smeltr).toBe('abc');
+  it("a record's own `smeltr` field is a field like any other", () => {
+    const own = withCell({ n: 1, smeltr: { mistyped: 'abc' } }, { name: 'n', type: 'i64' }, 'x');
+    expect(own).toEqual({ n: 'x', smeltr: { mistyped: 'abc' }, __capture: { mistyped: ['n'] } });
   });
 
   it('a string cell may be emptied', () => {

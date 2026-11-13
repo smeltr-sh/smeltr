@@ -58,27 +58,27 @@ describe('fields a fill declares', () => {
 describe('what a finished fill declares', () => {
   const status = (over: Partial<CaptureStatus>): CaptureStatus => ({
     session: 's',
-    records: 0,
     revision: 0,
     done: true,
     stopped: false,
     maxMatches: 1,
     workers: [],
-    batches: [],
+    columns: [],
+    records: [],
     ended: [],
     secondsLeft: 0,
     waitingOn: [],
     truncated: false,
     ...over,
   });
-  const row = (values: unknown[], failed: number[] = []) => ({ values, failed, worker: 'w2' });
+  const held = (record: Record<string, unknown>) => ({ worker: 'w2', record });
 
   it('is the schema’s fields, from the worker that sent the message', () => {
     const fill = filledFrom(
       [],
       status({
         avro: [{ name: 'id', avroType: 'long', suggested: 'i64' }],
-        batches: [{ columns: [], rows: [row([1])] }],
+        records: [held({ id: 1 })],
       }),
     );
     expect(fill).toEqual({ fields: [{ name: 'id', type: 'i64' }], worker: 'w2' });
@@ -87,7 +87,10 @@ describe('what a finished fill declares', () => {
   it('says why a message did not read', () => {
     const fill = filledFrom(
       [],
-      status({ batches: [{ columns: [], rows: [row(['no schema 2'], [0])] }] }),
+      status({
+        columns: [{ name: '_raw', type: 'str' }],
+        records: [held({ _raw: 'no schema 2', __capture: { mistyped: ['_raw'] } })],
+      }),
     );
     expect(fill).toEqual({ error: 'no schema 2' });
   });

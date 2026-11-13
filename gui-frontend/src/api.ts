@@ -2049,7 +2049,7 @@ export function importExport(
  * `{ _raw: text }`. A pasted record was read from nowhere and has no
  * `__source`. One captured at a destination also has the `__destination`
  * fields it was sent with. A value that failed its type is kept as the
- * source spelled it, its field listed under `smeltr.mistyped`, and fails
+ * source spelled it, its field listed under `__capture.mistyped`, and fails
  * again when the sample is read. */
 export type SampleRecordDto = Record<string, unknown>;
 
@@ -3006,40 +3006,12 @@ export interface CaptureBatchDto {
   rows: CapturedRowDto[];
 }
 
-/** A captured row with every column's value. A failed value is kept as its source spelled
- * it, and `failed` holds the indexes of those columns. */
-export interface CapturedRow {
-  values: unknown[];
-  failed: number[];
+/** A record a capture holds, as a sample of it holds it (`config_file::sample_records`), and the worker that sent
+ * it. A value that failed its type is kept as its source spelled it, its field listed under `__capture.mistyped`;
+ * a record a block holds says why under `__exception.message`. */
+export interface HeldRecord {
   worker?: string;
-}
-
-export interface CaptureBatch {
-  columns: { name: string; type: string }[];
-  rows: CapturedRow[];
-}
-
-/** A batch as sent, with each constant column's value put back on every row and `failed`
- * indexing the full column list. */
-export function expandBatch(batch: CaptureBatchDto): CaptureBatch {
-  /** For each value a row sends, the column it belongs to. */
-  const varying: number[] = [];
-  batch.columns.forEach((c, i) => {
-    if (!('value' in c)) varying.push(i);
-  });
-  return {
-    columns: batch.columns.map(({ name, type }) => ({ name, type })),
-    rows: batch.rows.map((row) => {
-      const values = new Array<unknown>(batch.columns.length);
-      batch.columns.forEach((c, i) => {
-        if ('value' in c) values[i] = c.value;
-      });
-      varying.forEach((col, i) => (values[col] = row.values[i] ?? null));
-      const out: CapturedRow = { values, failed: (row.failed ?? []).map((i) => varying[i]) };
-      if (row.worker !== undefined) out.worker = row.worker;
-      return out;
-    }),
-  };
+  record: SampleRecordDto;
 }
 
 /** One worker in a capture, and where it stands. */
@@ -3100,9 +3072,10 @@ export interface AvroField {
   suggested: string;
 }
 
-/** A capture's status with what it holds, its batches expanded (`expandBatch`). */
-export interface CaptureStatus extends CaptureStatusDto {
-  batches: CaptureBatch[];
+/** A capture's status with what it holds: its columns, each named and typed once, and its records. */
+export interface CaptureStatus extends Omit<CaptureStatusDto, 'records'> {
+  columns: { name: string; type: string }[];
+  records: HeldRecord[];
 }
 
 export interface StartCaptureResult {
@@ -3121,8 +3094,7 @@ export interface CaptureStatusResult {
   capture?: CaptureStatus;
 }
 
-/** `res`'s capture with what it holds: `prior`'s batches while its revision
- * stands, read again once it moves. */
+/** `res`'s capture with what it holds: `prior`'s records while its revision stands, read again once it moves. */
 async function withRecords(
   res: Promise<Omit<CaptureStatusResult, 'capture'> & { capture?: CaptureStatusDto }>,
   prior?: CaptureStatus | null,
@@ -3130,19 +3102,22 @@ async function withRecords(
   const { capture, ...rest } = await res;
   if (!capture) return rest;
   const same = prior?.session === capture.session && prior.revision === capture.revision;
-  const batches = same ? prior.batches : await captureRecords(capture.session);
-  return { ...rest, capture: { ...capture, batches } };
+  const held = same
+    ? { columns: prior.columns, records: prior.records }
+    : await heldRecords(capture.session);
+  return { ...rest, capture: { ...capture, ...held } };
 }
 
 /** What `session` holds so far, running or over. */
-async function captureRecords(session: string): Promise<CaptureBatch[]> {
-  const res: { ok: boolean; errors: ApiError[]; batches?: CaptureBatchDto[] } = await apiJson(
-    `/api/captures/${encodeURIComponent(session)}/records`,
-    undefined,
-    'quiet',
-  );
+async function heldRecords(session: string): Promise<Pick<CaptureStatus, 'columns' | 'records'>> {
+  const res: {
+    ok: boolean;
+    errors: ApiError[];
+    columns?: CaptureStatus['columns'];
+    records?: HeldRecord[];
+  } = await apiJson(`/api/captures/${encodeURIComponent(session)}/records`, undefined, 'quiet');
   if (!res.ok) throw new Error(errorText(res.errors) || "the capture's records could not be read");
-  return (res.batches ?? []).map(expandBatch);
+  return { columns: res.columns ?? [], records: res.records ?? [] };
 }
 
 export interface SaveCaptureResult {

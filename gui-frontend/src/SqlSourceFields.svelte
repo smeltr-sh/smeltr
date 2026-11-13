@@ -17,7 +17,7 @@
   import SecretRefInput from './SecretRefInput.svelte';
   import ValidatedField from './ValidatedField.svelte';
   import { CaptureSession, groupToAsk } from './captureSession.svelte';
-  import { cellText, settled } from './capture';
+  import { cellText, settled, valueAt } from './capture';
   import { highlight } from '../../website/src/lib/highlight/highlight';
   import { mintSampleId } from './ids';
   import {
@@ -173,11 +173,7 @@
   ) {
     found = uniqueInResult(found);
     columns = found;
-    const rows: unknown[][] = [];
-    for (const batch of status.batches) {
-      const at = found.map((c) => batch.columns.findIndex((b) => b.name === c.name));
-      for (const row of batch.rows) rows.push(at.map((i) => (i < 0 ? undefined : row.values[i])));
-    }
+    const rows = status.records.map(({ record }) => found.map((c) => valueAt(record, c.name)));
     ran = {
       verdict: status.sql?.verdict,
       rows: rows.slice(0, RUN_ROWS),

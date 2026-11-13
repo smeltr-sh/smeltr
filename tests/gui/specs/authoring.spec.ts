@@ -1137,7 +1137,7 @@ test('A1: a SQL sample is edited a column at a time, and a value fixed to its ty
       { name: '__source.database', type: 'str' },
     ],
     records: [
-      { invoice_id: 1, amount: 'n/a', smeltr: { mistyped: ['amount'] }, __source: db },
+      { invoice_id: 1, amount: 'n/a', __capture: { mistyped: ['amount'] }, __source: db },
       { invoice_id: 2, amount: 3.5, __source: db },
     ],
   });

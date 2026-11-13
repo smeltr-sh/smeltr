@@ -2044,12 +2044,10 @@ const pasteSample: Move = {
 /** The samples pasted on the Samples page, which shows `shared/`'s; a capture's belongs to its group. */
 const pasted = (w: World) => w.editing.samples.filter((s) => s.startsWith('sample '));
 
-/** The fields of `record` a cell shows: all but where it was read from and a tag field holding only its failed list. */
+/** The fields of `record` a cell shows as its own: all but the internal ones, where it was read from and how it was
+ * captured. */
 function ownFields(record: Record<string, unknown>): string[] {
-  const tag = record.smeltr;
-  const onlyFailed =
-    typeof tag === 'object' && tag !== null && Object.keys(tag).join() === 'mistyped';
-  return Object.keys(record).filter((k) => k !== '__source' && !(k === 'smeltr' && onlyFailed));
+  return Object.keys(record).filter((k) => !k.startsWith('__'));
 }
 
 /** Edits a sample on its row, a pasted one or a capture: cuts it down to the ticked records or drops them, removes
@@ -2111,7 +2109,7 @@ const editSample: Move = {
     }
     // A text field that did not fail its type: any text is still one.
     const failed = (rec: Record<string, unknown>) =>
-      ((rec.smeltr as { mistyped?: string[] } | undefined)?.mistyped ?? []) as string[];
+      ((rec.__capture as { mistyped?: string[] } | undefined)?.mistyped ?? []) as string[];
     const texts = draft.flatMap((r) =>
       ownFields(r.record)
         .filter((f) => typeof r.record[f] === 'string' && !failed(r.record).includes(f))

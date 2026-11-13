@@ -4,6 +4,7 @@
 -->
 <script module lang="ts">
   import type { AvroField, CaptureStatus, SqlField, StreamReadFormat } from './api';
+  import { mistyped, valueAt } from './capture';
 
   /** What a source reading payloads holds that its format decides: Avro refuses an encoding and a framing beside
    * it. */
@@ -36,15 +37,16 @@
     declared: SqlField[],
     status: CaptureStatus,
   ): { fields: SqlField[]; worker: string } | { error: string } {
-    const rows = status.batches.flatMap((b) => b.rows);
+    const held = status.records;
     if (status.avro?.length)
-      return { fields: fromSchema(declared, status.avro), worker: rows[0]?.worker ?? '' };
+      return { fields: fromSchema(declared, status.avro), worker: held[0]?.worker ?? '' };
     const failed = status.ended.map(([, end]) => end).find((end) => typeof end !== 'string');
     if (failed) return { error: failed.failed.trim() };
     // A message that did not read holds why in its first field.
-    const unread = rows.find((r) => r.failed.includes(0));
-    if (unread) return { error: String(unread.values[0]) };
-    if (rows.length)
+    const first = status.columns[0]?.name;
+    const unread = first === undefined ? undefined : held.find((r) => mistyped(r.record, first));
+    if (unread && first !== undefined) return { error: String(valueAt(unread.record, first)) };
+    if (held.length)
       return { error: 'The message’s schema is not a record, so it has no fields to fill.' };
     return { error: 'No message arrived. Fill again once one is on its way.' };
   }
