@@ -2879,7 +2879,7 @@ const setAgentPermissions: Move = {
   run: async (j) => {
     const { page, rng } = j;
     await page.getByRole('button', { name: /^signed in as / }).click();
-    await page.getByRole('button', { name: 'Agent permissions' }).click();
+    await page.getByRole('button', { name: 'Agent permissions', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Agent permissions' })).toBeVisible();
     // The journey's person is an administrator, so they are offered the administrator role for their agent, and
     // holding it leaves no levels to set.
