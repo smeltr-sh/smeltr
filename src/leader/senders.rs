@@ -31,7 +31,8 @@ use super::throughput::{self, ExpectedPoint, Learned, Outside, Reading};
 use super::warnings;
 use crate::heartbeat::SenderCounts;
 
-/// The tier a sender's buckets are counted in, and its rows kept and judged at.
+/// The tier a sender's buckets are counted in, and its rows kept and judged at. Every day row holds one bit or count
+/// per bucket of it (store step 15), so changing it takes a new store step.
 pub const TIER: Tier = Tier::FiveMinutes;
 
 /// The most [`TIER`] buckets in a row a watched sender may go without a row on each of the days it is picked on.
@@ -97,7 +98,8 @@ fn each_marked(day_ms: i64, buckets: &[u8]) -> impl Iterator<Item = i64> + '_ {
 }
 
 /// The rows a watched value held in each [`TIER`] bucket of one day, from the day's first, each count a LEB128
-/// varint of a byte or two. A bucket past the last reads as none.
+/// varint: one byte below 128 rows, two below 16,384, three below about two million. A bucket past the last reads as
+/// none.
 pub type Rows = Vec<u8>;
 
 /// Adds `rows` to what its day's `kept` holds for `bucket_ms`.

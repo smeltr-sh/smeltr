@@ -1969,8 +1969,8 @@ impl RegistryStore {
         Ok(days)
     }
 
-    /// Keeps rows only for the `watched` values; forgets the days before `values_before_ms` of the values that keep
-    /// none, and the days before `kept_before_ms` of every value and field.
+    /// Keeps rows only for the `watched` values; forgets each value's day row before `values_before_ms` that holds no
+    /// rows, and every value's and field's day rows before `kept_before_ms`.
     pub fn forget_senders(
         &self,
         watched: &HashSet<SenderKey>,

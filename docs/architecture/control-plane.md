@@ -378,8 +378,8 @@ field of the source's records, such as a firewall's name, or of its stream key
 bucket and writes the bucket once it ends, into a day row for each field and
 each value: the buckets the field was counted in, the buckets the value held a
 row in, and for a watched sender the rows it held in each. A bucket's count of
-rows takes a byte or two of the day row, so four weeks of one sender's rows take
-10 to 30 kilobytes.
+rows takes one to three bytes of the day row, so four weeks of one sender's rows
+take 10 to 30 kilobytes.
 
 ```mermaid
 flowchart LR
