@@ -12,6 +12,7 @@
     unavailable,
     secrets,
     kafka,
+    from,
     onadd,
     oncancel,
   }: {
@@ -21,6 +22,8 @@
     unavailable: string[];
     secrets: SecretDto[];
     kafka: KafkaFacts;
+    /** A destination to copy (`NewObject`). */
+    from?: DestinationDto;
     /** Takes the destination. The dialog stays open until its owner closes it. */
     onadd: (destination: DestinationDto) => void | Promise<void>;
     oncancel: () => void;
@@ -34,6 +37,7 @@
   types={DESTINATION_TYPES}
   blank={blankDestination}
   {typeLabel}
+  {from}
   {onadd}
   {oncancel}
 >
