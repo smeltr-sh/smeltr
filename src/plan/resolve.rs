@@ -1055,14 +1055,14 @@ fn resolve_call(
     Ok(Ir::new(result_ty, span, IrKind::Call { func, args: arg_irs }))
 }
 
-/// The error a use of a variant gets, naming the value where the expression does.
-fn refuse_variant(ir: &Ir, e: &Expr, syms: &SymbolTable) -> Result<(), CompileError> {
+/// The error a use of a variant gets. It names the value only where the expression is a name the user wrote.
+pub fn refuse_variant(ir: &Ir, e: &Expr, syms: &SymbolTable) -> Result<(), CompileError> {
     if ir.ty != DataType::Variant {
         return Ok(());
     }
     Err(CompileError::new(
         None,
-        match named_expr(e) {
+        match named_expr(e).filter(|n| !crate::expr::inline::is_temporary(n)) {
             Some(name) => format!("`{name}` {}", variant_use(Some(&conversion_hint(&name, syms)))),
             None => format!("this value {}", variant_use(None)),
         },
