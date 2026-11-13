@@ -357,12 +357,12 @@ before it. It keeps warning until the source reads inside its range again or an
 editor says otherwise. A window with more rows is learned, so more rows become
 the new normal. A source with too little history has no normal yet. A source
 that is held, unreachable or on a silent worker is not judged, because a warning
-that names the cause is already up. After that warning ends, it is not judged at
-a width while that width's window still contains the stop and the catch-up after
-it. The leader keeps for a year when each warning about a source was up, so its
-end is known across a restart and the gap learns a year of quiet spells less
-those that warned. The Status page ranks sources by how far each is from the
-same normal.
+that names the cause is already up. After that warning ends, the source is not
+judged at a width while that width's window still contains the stop and the
+catch-up after it. The leader keeps for a year when each warning about a source
+was up, so its end is known across a restart and the gap learns a year of quiet
+spells less those that warned. The Status page ranks sources by how far each is
+from the same normal.
 
 An editor in the source's worker group may say any of three things about it.
 Lower turns the warning that is up into info until it ends, and it stays on the
