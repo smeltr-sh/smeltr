@@ -483,7 +483,8 @@ pub(crate) const STEPS: &[&str] = &[
      ) WITHOUT ROWID;",
     // 15 -- what each sender field and each of its values sent (`senders`), a day row each: the five-minute buckets a
     // field was counted in, a bit each, and whether a worker said it passed its cap of values; the buckets each value
-    // held a row in, and for a watched value the rows it held in each.
+    // held a row in, and for a watched value the rows it held in each. Keyed by day first, so the rows a bucket rewrites,
+    // all of them today's, lie together; the indexes read one field's or one value's days.
     "CREATE TABLE sender_fields (
          group_id TEXT NOT NULL,
          source   TEXT NOT NULL,
@@ -491,8 +492,9 @@ pub(crate) const STEPS: &[&str] = &[
          day_ms   INTEGER NOT NULL,
          counted  BLOB NOT NULL,
          over     INTEGER NOT NULL,
-         PRIMARY KEY (group_id, source, field, day_ms)
+         PRIMARY KEY (day_ms, group_id, source, field)
      ) WITHOUT ROWID;
+     CREATE INDEX sender_fields_by_field ON sender_fields (group_id, source, field, day_ms);
      CREATE TABLE sender_values (
          group_id TEXT NOT NULL,
          source   TEXT NOT NULL,
@@ -501,8 +503,9 @@ pub(crate) const STEPS: &[&str] = &[
          day_ms   INTEGER NOT NULL,
          sent     BLOB NOT NULL,
          rows     BLOB,
-         PRIMARY KEY (group_id, source, field, value, day_ms)
-     ) WITHOUT ROWID;",
+         PRIMARY KEY (day_ms, group_id, source, field, value)
+     ) WITHOUT ROWID;
+     CREATE INDEX sender_values_by_value ON sender_values (group_id, source, field, value, day_ms);",
 ];
 
 /// Gives each log a build before lines had types wrote, before step 12 or after a rollback to it, its class and
@@ -1880,7 +1883,7 @@ impl RegistryStore {
         mut each: impl FnMut(&FieldKey, &str, Days),
     ) -> Result<(), StoreError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        // In the primary key's order, which the table is kept in: no sort.
+        // In the order of `sender_values_by_value`: no sort.
         let mut stmt = conn.prepare(
             "SELECT group_id, source, field, value, day_ms, sent FROM sender_values WHERE day_ms >= ?1 \
              ORDER BY group_id, source, field, value, day_ms",
@@ -2019,17 +2022,19 @@ fn write_senders(
         let mut field_read = tx.prepare_cached(
             "SELECT counted, over FROM sender_fields WHERE group_id = ?1 AND source = ?2 AND field = ?3 AND day_ms = ?4",
         )?;
+        // An update, not a replace: a replace would rewrite the row's index entry too, and that lies far from today's
+        // rows.
         let mut field_write = tx.prepare_cached(
-            "INSERT OR REPLACE INTO sender_fields (group_id, source, field, day_ms, counted, over) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO sender_fields (group_id, source, field, day_ms, counted, over) VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+             ON CONFLICT DO UPDATE SET counted = excluded.counted, over = excluded.over",
         )?;
         let mut value_read = tx.prepare_cached(
             "SELECT sent, rows FROM sender_values \
              WHERE group_id = ?1 AND source = ?2 AND field = ?3 AND value = ?4 AND day_ms = ?5",
         )?;
         let mut value_write = tx.prepare_cached(
-            "INSERT OR REPLACE INTO sender_values (group_id, source, field, value, day_ms, sent, rows) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO sender_values (group_id, source, field, value, day_ms, sent, rows) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT DO UPDATE SET sent = excluded.sent, rows = excluded.rows",
         )?;
         for (group, sources) in &pending.fields {
             for (source, fields) in sources {
