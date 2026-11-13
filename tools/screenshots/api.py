@@ -112,7 +112,7 @@ class Client:
                 "show_internal": False, "at_micros": at_micros}
         return self.call("POST", f"/api/areas/{scope}/preview/pipeline", body, {"branch": branch})
 
-    def lock_test(self, branch, scope, name, pipeline, sample, records, fields, at_micros):
+    def lock_test(self, branch, scope, name, pipeline, sample, fields, at_micros):
         """Locks `fields` on every row the pipeline makes of `sample`, as the grid locks the fields chosen in it."""
         pv = self.preview(branch, scope, pipeline, sample, at_micros)
         if not pv["ok"]:
@@ -121,10 +121,7 @@ class Client:
         missing = [f for f in fields if not any(row and f in row for row in leaves)]
         if missing:
             raise ApiError(f"{pipeline} makes no {', '.join(missing)}")
-        rows = [{"row": r["row"]} | ({} if l is None else {"values": {f: l[f] for f in fields if f in l}})
-                for r, l in zip(pv["rows"], leaves)]
-        test = {"id": name, "name": name, "pipeline": pipeline, "sample": sample, "lockedAt": at_micros,
-                "rowsIn": records, "fields": fields, "rows": rows}
+        test = {"name": name, "pipeline": pipeline, "sample": sample, "lockedAt": at_micros, "fields": fields}
         return self.cfg("PUT", f"/tests/{urllib.parse.quote(name)}", branch, scope, test)
 
     # -- changes ------------------------------------------------------------------------------------
