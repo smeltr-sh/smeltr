@@ -428,15 +428,19 @@ fn time_of_day(ended_ms: i64) -> usize {
 fn normal(rows: &Rows, warned: &Warned, as_of: i64, width: Width) -> Option<Normal> {
     let step = BUCKET.bucket_ms();
     let per_day = DAY_MS / step;
-    // Each learned window, newest first, with how many buckets before `as_of` it ended. The last readings' windows are
-    // left out: a warning may yet wait for them, and a source's normal learns nothing from the readings a warning
-    // waited for.
+    // Each learned window, newest first, with how many buckets before `as_of` it ended. A window is learned once a
+    // whole width, and the `WAIT` readings in a row a warning needs, have passed since it ended: until then a window it
+    // shares a bucket with may yet warn and leave it unlearned (`Warned::during`). Learned sooner, a drop that takes
+    // its width to show would teach the normal its own first hours and never fall under it. A window that contains
+    // rows an editor said were normal waits only for those readings, so marking the warning that is up teaches its
+    // level within the hour.
     let learned: Vec<(i64, f64)> = (WAIT..=lookback_ms() / step)
         .filter_map(|i| {
             let ended = as_of - i * step;
+            let waited = i >= WAIT + width.buckets() || warned.said_normal(ended, width.ms());
             let sum = rows
                 .window(ended, width)
-                .filter(|_| !warned.during(ended, width.ms()))?;
+                .filter(|_| waited && !warned.during(ended, width.ms()))?;
             Some((i, sum))
         })
         .collect();
@@ -676,6 +680,8 @@ struct Warned {
     below: Vec<(i64, Option<i64>)>,
     /// When a below-normal warning about it that still holds began.
     held_since: Option<i64>,
+    /// Each period an editor said was normal.
+    normal: Vec<(i64, Option<i64>)>,
 }
 
 impl Warned {
@@ -720,6 +726,7 @@ impl Warned {
                 .chain(reset)
                 .collect(),
             stops,
+            normal: normal.into_iter().map(|(from, to)| (from, Some(to))).collect(),
         }
     }
 
@@ -728,6 +735,11 @@ impl Warned {
     fn during(&self, ended_ms: i64, width_ms: i64) -> bool {
         Warned::overlaps(&self.unlearned, ended_ms, width_ms)
             || Warned::overlaps(&self.below, ended_ms + width_ms, 2 * width_ms)
+    }
+
+    /// Whether the window of `width_ms` that ends at `ended_ms` overlaps a period an editor said was normal.
+    fn said_normal(&self, ended_ms: i64, width_ms: i64) -> bool {
+        Warned::overlaps(&self.normal, ended_ms, width_ms)
     }
 
     /// Whether the period of `length_ms` ending at `ended_ms`, a quiet spell or a warning, overlaps a span not
@@ -1403,6 +1415,31 @@ mod tests {
         assert_eq!(r.shown().unwrap().window, WIDTHS[2].window);
     }
 
+    /// A source that halves is below once its 6-hour window holds the halving. The windows since it halved teach its
+    /// normal nothing until a whole width has passed after them. Each bucket reads 40 to 160 rows, so the halved
+    /// source still reads inside the short widths' ranges.
+    #[test]
+    fn a_source_that_halves_is_below_at_six_hours() {
+        let noisy = |at: i64| {
+            let mut x = at as u64 ^ 0x9e37_79b9_7f4a_7c15;
+            x ^= x >> 33;
+            x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
+            x ^= x >> 33;
+            40.0 + (x % 121) as f64
+        };
+        let halved = END - 8 * HOUR;
+        let store = store_with(29, |at| Some(if at >= halved { noisy(at) / 2.0 } else { noisy(at) }));
+        let r = reading(&store).unwrap();
+        let below: Vec<u64> = r
+            .judged
+            .iter()
+            .filter(|j| j.below)
+            .map(|j| j.window.as_secs() / 60)
+            .collect();
+        assert_eq!(below, [360]);
+        assert_eq!(r.outside, Some(Outside::Below));
+    }
+
     /// Days are counted per time of day: the windows in the half hour after a midnight are that midnight's day.
     #[test]
     fn too_few_days_are_not_judged() {
@@ -1597,29 +1634,32 @@ mod tests {
         assert_eq!(reading(&store).unwrap().outside, None);
     }
 
+    /// Marked Normal six hours after the drop, or six days after it, the warning ends once the normal is learned again:
+    /// a window that contains rows an editor said were normal does not wait its width to be learned.
     #[test]
     fn a_held_below_warning_marked_normal_teaches_its_level_and_ends() {
-        let dropped = END - 6 * DAY_MS;
-        let store = store_with(29, |at| Some(if at >= dropped { 30.0 } else { 100.0 }));
-        warned(&store, "source_rows_below", dropped + 4 * FIVE, None);
-        let held = past(&store, "g", "s", END, &Learning::default()).unwrap().warnings[0].clone();
-        assert_eq!((held.from_millis, held.to_millis, held.learned), (dropped, END, false));
-        let normal = Learning {
-            periods: vec![marks::Period {
-                group: "g".into(),
-                source: "s".into(),
-                from_millis: held.from_millis,
-                to_millis: held.to_millis,
-                was: marks::Was::Normal,
-                by: "John".into(),
-            }],
-            ..Learning::default()
-        };
-        assert_eq!(reading_at(&store, END, &normal).unwrap().outside, None);
-        assert!(
-            past(&store, "g", "s", END + HOUR, &normal).unwrap().warnings[0].learned,
-            "the warning is learned whole, including the windows after it was marked"
-        );
+        for dropped in [END - 6 * HOUR, END - 6 * DAY_MS] {
+            let store = store_with(29, |at| Some(if at >= dropped { 30.0 } else { 100.0 }));
+            warned(&store, "source_rows_below", dropped + 4 * FIVE, None);
+            let held = past(&store, "g", "s", END, &Learning::default()).unwrap().warnings[0].clone();
+            assert_eq!((held.from_millis, held.to_millis, held.learned), (dropped, END, false));
+            let normal = Learning {
+                periods: vec![marks::Period {
+                    group: "g".into(),
+                    source: "s".into(),
+                    from_millis: held.from_millis,
+                    to_millis: held.to_millis,
+                    was: marks::Was::Normal,
+                    by: "John".into(),
+                }],
+                ..Learning::default()
+            };
+            assert_eq!(reading_at(&store, END, &normal).unwrap().outside, None);
+            assert!(
+                past(&store, "g", "s", END + HOUR, &normal).unwrap().warnings[0].learned,
+                "the warning is learned whole, including the windows after it was marked"
+            );
+        }
     }
 
     #[test]
