@@ -121,7 +121,7 @@
     {:else}
       <Figures>
         <Figure label="Records">
-          {held}<span class="of"> of {status.maxMatches}</span>
+          {held} <span class="of">of {status.maxMatches}</span>
           {#snippet after()}
             <div class="meter" aria-hidden="true">
               <div
