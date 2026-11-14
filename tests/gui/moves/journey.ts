@@ -1170,6 +1170,51 @@ const rowsArrive: Move = {
   },
 };
 
+/** The metrics sources the fleet runs on a route, which the map draws. */
+const routed = (w: World) => [
+  ...new Set(
+    w.deploys[w.running].config.routes.map((r) => r.source).filter((s) => s.startsWith('src-')),
+  ),
+];
+
+/** Picks, on a routed source's panel, the preset it is judged against its normal at, or the one its senders are. */
+const pickPreset: Move = {
+  name: 'pick-preset',
+  weight: (w) => (routed(w).length ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const source = rng.pick(routed(world));
+    const senders = rng.below(2) === 1;
+    const preset = rng.pick(['fast', 'sensitive', 'balanced', 'quiet'] as const);
+    const name = preset[0].toUpperCase() + preset.slice(1);
+    // The journey's sources run in `default`, so that is where the map marks them.
+    const card = page.locator(`a.node[title="${source}"][href*="group=default"]`);
+    const panel = page.getByRole('complementary', { name: source, exact: true });
+    const tab = panel.getByRole('link', { name: senders ? 'Senders' : 'History' });
+    await goto(page, leader, '#/map');
+    await expect(async () => {
+      // A card drawn once rows arrive comes with a new layout.
+      await page.reload();
+      await card.click({ timeout: 2_000 });
+      await expect(tab).toBeVisible({ timeout: 2_000 });
+    }).toPass({ timeout: 60_000 });
+    await tab.click();
+    const picker = panel.getByRole('group', {
+      name: senders ? "Senders' preset" : 'Preset',
+      exact: true,
+    });
+    await picker.getByRole('button', { name, exact: true }).click();
+    await expect(picker.getByRole('button', { name, exact: true })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    const at = `/api/areas/default/sources/${encodeURIComponent(source)}`;
+    const read = await (await j.truth()).get(senders ? `${at}/senders` : `${at}/past`);
+    expect(read.preset, `${source}'s ${senders ? "senders' " : ''}preset`).toBe(preset);
+    return `judge ${source}${senders ? "'s senders" : ''} at ${name}`;
+  },
+};
+
 const rollBack: Move = {
   name: 'roll-back',
   leadsTo: ['release'],
@@ -3505,6 +3550,7 @@ export const MOVES: readonly Move[] = [
   comment,
   deploy,
   rowsArrive,
+  pickPreset,
   rollBack,
   release,
   addSecret,

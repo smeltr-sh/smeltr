@@ -35,11 +35,13 @@
     getSourcePast,
     getStats,
     markSourcePast,
+    putSourcePreset,
     type DeliverEdge,
     type MapNode,
     type NodeReadingDto,
     type PastSpan,
     type PipelineStatsDto,
+    type Preset,
     type RouteEdge,
     type SourcePastResponse,
     type SpreadDto,
@@ -55,6 +57,7 @@
   import Help from './Help.svelte';
   import SecondaryTabs from './SecondaryTabs.svelte';
   import SendersTab from './SendersTab.svelte';
+  import PresetPicker from './PresetPicker.svelte';
   import Sparkline from './Sparkline.svelte';
   import ChipPicker from './ChipPicker.svelte';
   import ClockIcon from './ClockIcon.svelte';
@@ -274,6 +277,15 @@
     if (marking.on) return;
     void marking.run(async () => {
       await markSourcePast(node.group, node.authorId, span, was);
+      await readPast();
+    });
+  }
+
+  function pickPreset(preset: Preset) {
+    if (marking.on) return;
+    void marking.run(async () => {
+      const answer = await putSourcePreset(node.group, node.authorId, { rows: preset });
+      pastError = answer.ok ? '' : errorText(answer.errors);
       await readPast();
     });
   }
@@ -689,6 +701,14 @@
     {:else if !past}
       <p class="dim">Reading&hellip;</p>
     {:else}
+      <section>
+        <PresetPicker
+          value={past.preset}
+          label="Preset"
+          editor={holds(node.group, 'editor')}
+          pick={pickPreset}
+        />
+      </section>
       <section>
         <h3>Past year</h3>
         <svg class="year" viewBox="0 0 100 14" preserveAspectRatio="none" aria-hidden="true">

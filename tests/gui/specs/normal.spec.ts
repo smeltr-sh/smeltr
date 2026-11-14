@@ -275,6 +275,19 @@ test('an editor says a quiet spell of a sparse source was an outage, and its nor
   expect((await api.get(past)).silences[0].learned).toBe(false);
   await shoot(admin, '7-outage');
 
+  // An editor picks the preset the source is judged at: Balanced until one is picked.
+  const preset = panel.getByRole('group', { name: 'Preset', exact: true });
+  await expect(preset.getByRole('button', { name: 'Balanced' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await preset.getByRole('button', { name: 'Fast' }).click();
+  await expect(preset.getByRole('button', { name: 'Fast' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  expect((await api.get(past)).preset).toBe('fast');
+
   // Widened, the panel takes the map's place on the same tab; Escape gives the map back.
   const band = admin.getByRole('region', { name: 'edge', exact: true });
   await panel.getByRole('link', { name: 'Widen' }).click();
@@ -306,9 +319,9 @@ test('senders that stop while their source stays within its normal are warned of
     })
     .toBe(1);
 
-  // Ten firewalls of about 3 rows a second each for a week, then two of them stop for the last half hour: the source
-  // reads a fifth less, still within its normal.
-  const stopped = Date.now() - 30 * 60_000;
+  // Ten firewalls of about 3 rows a second each for a week, then two of them stop for the last 45 minutes, longer
+  // than the senders' Quiet preset waits: the source reads a fifth less, still within its normal.
+  const stopped = Date.now() - 45 * 60_000;
   const firewalls = Object.fromEntries(
     Array.from({ length: 10 }, (_, i) => {
       const name = `fw-${String(i + 1).padStart(2, '0')}`;
@@ -400,4 +413,20 @@ test('senders that stop while their source stays within its normal are warned of
   await expect(field('_raw')).not.toContainText('New');
   await watchNew.check();
   await expect.poll(async () => (await read()).watchesNew).toBe(true);
+
+  // An editor picks the preset the senders are judged at: Quiet until one is picked. The tab takes one edit at a time,
+  // so the last is read back first.
+  await expect(watchNew).toBeEnabled();
+  const preset = panel.getByRole('group', { name: "Senders' preset", exact: true });
+  await expect(preset.getByRole('button', { name: 'Quiet' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await preset.getByRole('button', { name: 'Sensitive' }).click();
+  await expect(preset.getByRole('button', { name: 'Sensitive' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  expect((await read()).preset).toBe('sensitive');
+  await shoot(admin, '14-senders-preset');
 });
