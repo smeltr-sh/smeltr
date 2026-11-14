@@ -556,7 +556,7 @@ fn run_loop(
     let function = ctx.function;
 
     let live: Vec<u32> = (0..rows as u32)
-        .filter(|&r| row_is_live(batch, guard, r as usize))
+        .filter(|&r| row_is_live(batch, guard, r as usize) && row_is_live(batch, ctx.live, r as usize))
         .collect();
     let rows_out = live.len() as u64;
     // Each row's element count, where the loop walks an array.
@@ -832,13 +832,14 @@ fn explode_array(
     let array_offsets: Vec<u32> = list.as_ref().map_or(vec![0; rows + 1], |l| l.offsets.to_vec());
     // A null row's offsets may still span elements.
     let holds = |row: usize| list.as_ref().is_some_and(|l| l.validity.is_valid(row));
-    // Each row's span in the exploded batch, and which child elements it takes: every element without a guard,
-    // none for a masked or null row.
+    // Each row's span in the exploded batch, and which child elements it takes: every element of a row that the guard,
+    // if there is one, takes and `Ctx::live` keeps; none of a masked, dropped or null row.
     let mut offsets = vec![0u32; rows + 1];
     let mut element_row: Vec<u32> = Vec::new();
     let mut element_idx: Vec<u32> = Vec::new();
+    let taken = row_mask(batch, &[guard, ctx.live].into_iter().flatten().collect::<Vec<_>>());
     for row in 0..rows {
-        if holds(row) && row_is_live(batch, guard, row) {
+        if holds(row) && taken[row] {
             for i in array_offsets[row]..array_offsets[row + 1] {
                 element_row.push(row as u32);
                 element_idx.push(i);
@@ -853,7 +854,7 @@ fn explode_array(
         exploded.put(slot, col, ctx.pool);
     }
     let elem_col = match list {
-        Some(list) if guard.is_none() && !list.validity.has_nulls() => list.child.deep_copy(ctx.pool),
+        Some(list) if taken.iter().all(|&t| t) && !list.validity.has_nulls() => list.child.deep_copy(ctx.pool),
         Some(list) => list.child.gather(ctx.pool, &element_idx),
         None => Column::empty(element_ty, 0),
     };
