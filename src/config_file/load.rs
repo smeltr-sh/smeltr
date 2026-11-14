@@ -4510,6 +4510,13 @@ mod tests {
     }
 
     #[test]
+    fn a_route_that_names_no_source_is_reported() {
+        let json = example_json().replacen("\"source\": \"kafka-main\"", "\"source\": \"\"", 1);
+        let err = load_str(&json).unwrap_err();
+        assert!(err.to_string().contains("names no source"), "{err}");
+    }
+
+    #[test]
     fn a_route_that_names_no_pipeline_is_reported() {
         let json = example_json().replacen("\"pipeline\": \"main\"", "\"pipeline\": \"\"", 1);
         let err = load_str(&json).unwrap_err();
