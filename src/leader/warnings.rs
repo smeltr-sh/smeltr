@@ -22,6 +22,7 @@ use crate::leader::alerts::{self, Channel};
 use crate::leader::deploy_checks::{FailingTest, Findings};
 use crate::leader::marks::Marks;
 use crate::leader::registry::{FactKey, ThreadHealth};
+use crate::leader::senders::Sender;
 use crate::leader::series::{DRIFT_WINDOW, DeclaredField, LoggedType, RegistryStore, Tier};
 use crate::leader::store::{KeyStanding, Unopenable, WorkerCredentialRecord};
 use crate::leader::throughput;
@@ -112,6 +113,7 @@ conditions! {
     DestinationMemoryBound => "destinationMemoryBound", "Held back by memory", SourcesAndDestinations;
     SourceRowsBelow => "sourceRowsBelow", "Rows below normal", SourcesAndDestinations;
     SourceRowsAbove => "sourceRowsAbove", "Rows above normal", SourcesAndDestinations;
+    SendersBelow => "sendersBelow", "Senders below normal", SourcesAndDestinations;
     GroupNotDeployed => "groupNotDeployed", "Worker group not deployed", Deploys;
     WorkerNotDeployingItsTarget => "workerNotDeployingItsTarget", "Not deploying its target", Deploys;
     WorkerOnAnotherBuild => "workerOnAnotherBuild", "On another build", Deploys;
@@ -223,6 +225,11 @@ pub struct Warning {
     /// links to its editor, and only where the deployed commit says.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub area: Option<String>,
+    /// When the senders a [`Condition::SendersBelow`] names went below normal together. A source's senders that go
+    /// below on a later reading are another warning, so condition and subject alone do not name one; with this they
+    /// do. `None` on every other condition.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crossed_millis: Option<i64>,
 }
 
 impl Warning {
@@ -247,6 +254,7 @@ impl Warning {
             class: None,
             r#type: None,
             area: None,
+            crossed_millis: None,
         }
     }
 
@@ -310,6 +318,7 @@ const DESTINATION_REFUSING: &str = "destination_refusing";
 const DESTINATION_UNREACHABLE: &str = "destination_unreachable";
 const SOURCE_ROWS_BELOW: &str = "source_rows_below";
 const SOURCE_ROWS_ABOVE: &str = "source_rows_above";
+const SENDER_ROWS_BELOW: &str = "sender_rows_below";
 const GROUP_NOT_DEPLOYED: &str = "group_not_deployed";
 const DEPLOY_DOES_NOT_LOAD: &str = "deploy_does_not_load";
 const DEPLOY_FAILS_TESTS: &str = "deploy_fails_tests";
@@ -386,6 +395,7 @@ fn issue_of_fact(entry: &str) -> &str {
         DESTINATION_UNREACHABLE => Condition::DestinationUnreachable.name(),
         SOURCE_ROWS_BELOW => Condition::SourceRowsBelow.name(),
         SOURCE_ROWS_ABOVE => Condition::SourceRowsAbove.name(),
+        SENDER_ROWS_BELOW => Condition::SendersBelow.name(),
         GROUP_NOT_DEPLOYED => Condition::GroupNotDeployed.name(),
         DEPLOY_DOES_NOT_LOAD => Condition::DeployDoesNotLoad.name(),
         DEPLOY_FAILS_TESTS => Condition::DeployFailsTests.name(),
@@ -942,6 +952,21 @@ fn subject_labels(subject_key: &str) -> Option<Vec<(String, String)>> {
 /// built here, compared only as a [`FactKey`], never decoded.
 fn scoped_subject(group: &str, object_id: &str) -> String {
     serde_json::to_string(&(group, object_id)).unwrap_or_else(|_| format!("{group}\u{0}{object_id}"))
+}
+
+/// [`scoped_subject`] for one sender of a source.
+fn sender_subject(group: &str, source: &str, sender: &Sender) -> String {
+    scoped_subject(
+        group,
+        &serde_json::to_string(&(source, &sender.field, &sender.value)).unwrap_or_default(),
+    )
+}
+
+/// The source and the sender a [`sender_subject`] names.
+fn sender_of(subject: &str) -> Option<(String, String, Sender)> {
+    let (group, object): (String, String) = serde_json::from_str(subject).ok()?;
+    let (source, field, value): (String, String, String) = serde_json::from_str(&object).ok()?;
+    Some((group, source, Sender { field, value }))
 }
 
 /// Every source currently blocked, keyed by (group, source id, cause), with the reason its reader gave -- already a
@@ -1958,6 +1983,12 @@ fn outside_normal<'a>(
 }
 
 fn outside_key(reading: &throughput::Reading, side: throughput::Outside) -> FactKey {
+    if let Some(sender) = &reading.sender {
+        return FactKey::new(
+            SENDER_ROWS_BELOW,
+            sender_subject(&reading.group, &reading.source, sender),
+        );
+    }
     let fact = match side {
         throughput::Outside::Below => SOURCE_ROWS_BELOW,
         throughput::Outside::Above => SOURCE_ROWS_ABOVE,
@@ -1988,13 +2019,14 @@ pub fn outside_normal_warnings(
 ) -> Vec<Warning> {
     outside_normal(readings, snapshot, heartbeat_interval)
         .into_iter()
+        .filter(|(r, _)| r.sender.is_none())
         .map(|(r, side)| {
             let condition = match side {
                 throughput::Outside::Below => Condition::SourceRowsBelow,
                 throughput::Outside::Above => Condition::SourceRowsAbove,
             };
             let since_millis = starts.get(&outside_key(r, side)).copied();
-            let lowered_by = marks.lowered_by(&r.group, &r.source, since_millis);
+            let lowered_by = marks.lowered_by(&r.group, &r.source, None, since_millis);
             let severity = match lowered_by {
                 Some(_) => Severity::Info,
                 None => SOURCE_SPANS
@@ -2031,6 +2063,109 @@ pub fn outside_normal_warnings(
                 ),
             )
         })
+        .collect()
+}
+
+/// Senders reading fewer rows than they normally do. The senders of a source that went below on one reading are one
+/// warning, and it names how many of the source's senders are below, and which of them came back since. It ends once
+/// every one is back, and it is info once an editor lowered each one still below. `back` gives the senders of a
+/// source whose warning began at a time and have since ended it.
+pub fn senders_below_warnings(
+    readings: &[throughput::Reading],
+    snapshot: &[ThreadHealth],
+    starts: &HashMap<FactKey, i64>,
+    marks: &Marks,
+    heartbeat_interval: Duration,
+    back: impl Fn(&str, &str, i64) -> Vec<Sender>,
+) -> Vec<Warning> {
+    // Each crossing's senders, by (group, source, when they went below).
+    let mut crossings: BTreeMap<(&str, &str, i64), Vec<&Sender>> = BTreeMap::new();
+    for (r, _) in outside_normal(readings, snapshot, heartbeat_interval) {
+        let (Some(sender), Some(&since)) = (&r.sender, starts.get(&outside_key(r, throughput::Outside::Below))) else {
+            continue;
+        };
+        crossings.entry((&r.group, &r.source, since)).or_default().push(sender);
+    }
+    let judged = |group: &str, source: &str| {
+        readings
+            .iter()
+            .filter(|r| r.sender.is_some() && r.group == group && r.source == source)
+            .count()
+    };
+    crossings
+        .into_iter()
+        .map(|((group, source, since), below)| {
+            let lowered: Vec<(&Sender, &str)> = below
+                .iter()
+                .filter_map(|&s| Some((s, marks.lowered_by(group, source, Some(s), Some(since))?)))
+                .collect();
+            let severity = match lowered.len() == below.len() {
+                true => Severity::Info,
+                false => Severity::Warning,
+            };
+            let mut message = format!(
+                "source {source}: {} of {} senders below normal, {}",
+                below.len(),
+                judged(group, source),
+                named(&below)
+            );
+            let back = back(group, source, since);
+            if !back.is_empty() {
+                let back: Vec<&Sender> = back.iter().collect();
+                message += &format!("; {} {} back", named(&back), if back.len() == 1 { "is" } else { "are" });
+            }
+            for (sender, by) in lowered {
+                message += &format!("; {} {} lowered to info by {by}", sender.field, sender.value);
+            }
+            Warning {
+                crossed_millis: Some(since),
+                ..Warning::new(
+                    Condition::SendersBelow,
+                    SubjectKind::Source,
+                    source.to_string(),
+                    Some(group.to_string()),
+                    severity,
+                    Some(since),
+                    message,
+                )
+            }
+        })
+        .collect()
+}
+
+/// `senders` as a person reads them: each field once, then its values, `devname fw-01 and fw-07, action deny`.
+fn named(senders: &[&Sender]) -> String {
+    let mut by_field: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for s in senders {
+        by_field.entry(&s.field).or_default().push(&s.value);
+    }
+    by_field
+        .into_iter()
+        .map(|(field, mut values)| {
+            values.sort_unstable();
+            let last = values.pop().unwrap_or_default();
+            match values.is_empty() {
+                true => format!("{field} {last}"),
+                false => format!("{field} {} and {last}", values.join(", ")),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The senders of `group`'s `source` whose below-normal warning began at `since_ms` and has ended, from the fact
+/// clock's history.
+pub fn senders_back(store: &RegistryStore, group: &str, source: &str, since_ms: i64) -> Vec<Sender> {
+    store
+        .facts_started(SENDER_ROWS_BELOW, since_ms)
+        .unwrap_or_else(|e| {
+            tracing::warn!(name: "warned_unreadable", target: "status", error = %e, group, source, "could not read which senders came back, so a warning about them names none");
+            Vec::new()
+        })
+        .iter()
+        .filter_map(|subject| sender_of(subject))
+        .filter(|(g, s, _)| g == group && s == source)
+        .map(|(_, _, sender)| sender)
         .collect()
 }
 
@@ -2100,6 +2235,27 @@ const DESTINATION_SPANS: &[(&str, Condition, Severity)] = &[
         Severity::Failed,
     ),
 ];
+
+/// Every below-normal warning about `group`'s `source`'s `sender` that held at any time since `since_ms`, oldest
+/// first.
+pub fn sender_spans(
+    store: &RegistryStore,
+    group: &str,
+    source: &str,
+    sender: &Sender,
+    since_ms: i64,
+) -> Result<Vec<WarningSpan>, crate::leader::store::StoreError> {
+    Ok(store
+        .fact_spans(&[SENDER_ROWS_BELOW], &sender_subject(group, source, sender), since_ms)?
+        .into_iter()
+        .map(|span| WarningSpan {
+            condition: Condition::SendersBelow,
+            severity: Severity::Warning,
+            started_millis: span.started_ms,
+            ended_millis: span.ended_ms,
+        })
+        .collect())
+}
 
 /// Every warning about `group`'s source or destination `id` that held at any time since `since_ms`, oldest first.
 pub fn spans(
@@ -4181,6 +4337,7 @@ mod tests {
         throughput::Reading {
             group: "g".to_string(),
             source: source.to_string(),
+            sender: None,
             ended_ms: NOW,
             judged: vec![throughput::Judged {
                 window: throughput::WINDOW,
@@ -4389,6 +4546,7 @@ mod tests {
         let facts = outside_normal_facts(&readings, &snapshot, INTERVAL);
         let marks = Marks {
             lowered: vec![crate::leader::marks::Lowered {
+                sender: None,
                 group: "g".into(),
                 source: "s".into(),
                 since_millis: NOW - 60_000,
@@ -4411,6 +4569,75 @@ mod tests {
             at(NOW - 30_000).severity,
             Severity::Warning,
             "a warning that began since is a new one"
+        );
+    }
+
+    /// The senders of one source that crossed on one reading are one warning, naming them and how many were judged;
+    /// a later crossing is a warning of its own. One that came back is named as back, and a warning whose every
+    /// sender an editor lowered is info.
+    #[test]
+    fn senders_that_cross_together_are_one_warning() {
+        let snapshot = [thread_health_in("g", "w1", "t0", 0, vec![rows_metric("s")])];
+        let sender = |field: &str, value: &str| Sender {
+            field: field.into(),
+            value: value.into(),
+        };
+        let of = |sender: Sender, rows| throughput::Reading {
+            sender: Some(sender),
+            ..reading_of("s", rows)
+        };
+        let readings = [
+            reading_of("s", 100.0),
+            of(sender("devname", "fw-01"), 0.0),
+            of(sender("devname", "fw-07"), 0.0),
+            of(sender("action", "deny"), 0.0),
+            of(sender("devname", "fw-12"), 100.0),
+        ];
+        let (first, later) = (NOW - 120_000, NOW - 60_000);
+        let starts: HashMap<FactKey, i64> = readings[1..4]
+            .iter()
+            .map(|r| {
+                let at = if r.sender.as_ref().is_some_and(|s| s.field == "action") {
+                    later
+                } else {
+                    first
+                };
+                (outside_key(r, throughput::Outside::Below), at)
+            })
+            .collect();
+        let marks = Marks {
+            lowered: vec![crate::leader::marks::Lowered {
+                sender: Some(sender("action", "deny")),
+                group: "g".into(),
+                source: "s".into(),
+                since_millis: later,
+                by: "John".into(),
+            }],
+            ..Marks::default()
+        };
+        let back = |_: &str, _: &str, since: i64| match since == first {
+            true => vec![sender("devname", "fw-12")],
+            false => Vec::new(),
+        };
+        let got: Vec<(Option<i64>, Severity, String)> =
+            senders_below_warnings(&readings, &snapshot, &starts, &marks, INTERVAL, back)
+                .into_iter()
+                .map(|w| (w.crossed_millis, w.severity, w.message))
+                .collect();
+        assert_eq!(
+            got,
+            [
+                (
+                    Some(first),
+                    Severity::Warning,
+                    "source s: 2 of 4 senders below normal, devname fw-01 and fw-07; devname fw-12 is back".into()
+                ),
+                (
+                    Some(later),
+                    Severity::Info,
+                    "source s: 1 of 4 senders below normal, action deny; action deny lowered to info by John".into()
+                ),
+            ]
         );
     }
 
@@ -4512,6 +4739,7 @@ mod tests {
     fn declared_window(source: &str, present: u64, failed: u64) -> crate::heartbeat::StreamReport {
         use crate::heartbeat::*;
         StreamReport {
+            senders: Vec::new(),
             parsers: vec![ParserShape {
                 source: source.into(),
                 route: "to-es".into(),
@@ -4578,6 +4806,7 @@ mod tests {
     fn untaken_window(source: &str, keys: &[(&str, u64)]) -> crate::heartbeat::StreamReport {
         use crate::heartbeat::*;
         StreamReport {
+            senders: Vec::new(),
             parsers: Vec::new(),
             unmatched: vec![UnmatchedStreams {
                 source: source.into(),
@@ -5051,6 +5280,7 @@ mod tests {
     /// A catalog warning as its own function would raise it, for [`fold_logged_details`] to tell a log on.
     fn catalog(condition: Condition, subject_kind: SubjectKind, subject_id: &str, group: &str) -> Warning {
         Warning {
+            crossed_millis: None,
             area: None,
             condition,
             subject_kind,
@@ -6387,6 +6617,7 @@ mod tests {
     #[test]
     fn a_warning_serializes_to_the_wire_spelling() {
         let w = Warning {
+            crossed_millis: None,
             area: None,
             condition: Condition::SourceBlocked,
             subject_kind: SubjectKind::Source,
@@ -6782,6 +7013,7 @@ mod tests {
     #[test]
     fn issue_facts_add_one_for_each_issue_not_on_the_clock() {
         let issue = |condition, subject: &str, group: Option<&str>| Warning {
+            crossed_millis: None,
             condition,
             subject_kind: SubjectKind::Source,
             subject_id: subject.into(),

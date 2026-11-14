@@ -191,7 +191,7 @@
             >{/if}
         {/snippet}
         <div class="issues" role="list" aria-label={conditionLabel(group.condition)}>
-          {#each group.rows as warning (`${warning.subjectKind}|${warning.subjectId}|${warning.group ?? ''}|${warning.class ?? ''}|${warning.type ?? ''}`)}
+          {#each group.rows as warning (`${warning.subjectKind}|${warning.subjectId}|${warning.group ?? ''}|${warning.class ?? ''}|${warning.type ?? ''}|${warning.crossedMillis ?? ''}`)}
             <div class="issue-row" role="listitem">
               <span class="sev"
                 ><StateMark

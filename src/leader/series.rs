@@ -25,14 +25,16 @@
 //! expires. A bucket nothing landed in is a bucket with no row: there is nothing to promote and nothing to delete, so
 //! an outage reads as absent rather than as a zero.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
 
+use super::senders::{Buckets, Days, FieldDays, FieldKey, Pending, Rows, Sender, SenderKey};
 use super::store::StoreError;
+use crate::heartbeat::SenderCounts;
 
 /// One fixed retention window. Ordered finest first; [`Tier::next`] is where a bucket goes once it ages out of
 /// this one.
@@ -479,6 +481,31 @@ pub(crate) const STEPS: &[&str] = &[
          quiet_ms   INTEGER NOT NULL,
          PRIMARY KEY (group_id, source)
      ) WITHOUT ROWID;",
+    // 15 -- what each sender field and each of its values sent (`senders`), a day row each: the five-minute buckets a
+    // field was counted in, a bit each, and whether a worker said it passed its cap of values; the buckets each value
+    // held a row in, and for a watched value the rows it held in each. Keyed by day first, so the rows a bucket rewrites,
+    // all of them today's, lie together; the indexes read one field's or one value's days.
+    "CREATE TABLE sender_fields (
+         group_id TEXT NOT NULL,
+         source   TEXT NOT NULL,
+         field    TEXT NOT NULL,
+         day_ms   INTEGER NOT NULL,
+         counted  BLOB NOT NULL,
+         over     INTEGER NOT NULL,
+         PRIMARY KEY (day_ms, group_id, source, field)
+     ) WITHOUT ROWID;
+     CREATE INDEX sender_fields_by_field ON sender_fields (group_id, source, field, day_ms);
+     CREATE TABLE sender_values (
+         group_id TEXT NOT NULL,
+         source   TEXT NOT NULL,
+         field    TEXT NOT NULL,
+         value    TEXT NOT NULL,
+         day_ms   INTEGER NOT NULL,
+         sent     BLOB NOT NULL,
+         rows     BLOB,
+         PRIMARY KEY (day_ms, group_id, source, field, value)
+     ) WITHOUT ROWID;
+     CREATE INDEX sender_values_by_value ON sender_values (group_id, source, field, value, day_ms);",
 ];
 
 /// Gives each log a build before lines had types wrote, before step 12 or after a rollback to it, its class and
@@ -626,14 +653,14 @@ fn series_id(conn: &Connection, metric: &str, subject_key: &str, counter: bool) 
 /// whichever the point's kind names. The one place a sample's tier, bucket and kind are decided, so a heartbeat's
 /// hundreds and a single seeded point cannot drift apart.
 fn write_point(conn: &Connection, point: &SeriesPoint<'_>, now_ms: i64) -> rusqlite::Result<()> {
+    write_point_at(conn, point, Tier::TenSeconds, now_ms)
+}
+
+/// [`write_point`] into `tier`'s bucket covering `now_ms`: for a series kept no finer than that tier.
+fn write_point_at(conn: &Connection, point: &SeriesPoint<'_>, tier: Tier, now_ms: i64) -> rusqlite::Result<()> {
     let id = series_id(conn, point.metric, &point.subject_key, point.counter)?;
     conn.prepare_cached(if point.counter { UPSERT_COUNTER } else { UPSERT_GAUGE })?
-        .execute(params![
-            id,
-            Tier::TenSeconds.code(),
-            Tier::TenSeconds.align(now_ms),
-            point.value
-        ])?;
+        .execute(params![id, tier.code(), tier.align(now_ms), point.value])?;
     Ok(())
 }
 
@@ -682,6 +709,9 @@ pub struct RegistryStore {
     /// Logs kept, as [`LOGS_KEPT`] except where a test lowers it. A field rather than a constant so
     /// that `maintain` is what a test exercises, rather than a copy of its `DELETE`.
     logs_kept: i64,
+    /// The senders of the bucket not yet written, and the values whose rows are kept (`senders`). Lock order: taken
+    /// after `conn` when both are held.
+    senders: Mutex<super::senders::Held>,
 }
 
 /// One stored log, as the leader holds it. Every string here already passed through the heartbeat's
@@ -805,6 +835,7 @@ impl RegistryStore {
             conn: Mutex::new(conn),
             next_maintenance_due_ms: AtomicI64::new(0),
             logs_kept: LOGS_KEPT,
+            senders: Mutex::default(),
         })
     }
 
@@ -917,6 +948,19 @@ impl RegistryStore {
         out.retain(|s| entries.contains(&s.entry.as_str()));
         out.sort_by_key(|s| s.started_ms);
         Ok(out)
+    }
+
+    /// The subject of each fact of `entry` that began at `started_ms` and has ended.
+    pub fn facts_started(&self, entry: &str, started_ms: i64) -> Result<Vec<String>, StoreError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        // A fact ends after it began, so the index on its end reads only the facts that ended since.
+        let mut stmt = conn.prepare_cached(
+            "SELECT subject FROM fact_history WHERE ended_ms >= ?2 AND entry = ?1 AND started_ms = ?2",
+        )?;
+        let subjects = stmt
+            .query_map(params![entry, started_ms], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        Ok(subjects)
     }
 
     // -- series -----------------------------------------------------------------
@@ -1062,6 +1106,11 @@ impl RegistryStore {
             }
         }
         tx.commit()?;
+        let senders = match &beat.window.streams {
+            Some(streams) if unseen => Some((streams.group_id, streams.report.senders.as_slice())),
+            _ => None,
+        };
+        self.count_senders(&mut conn, senders, beat.now_ms);
         Ok(())
     }
 
@@ -1772,8 +1821,261 @@ impl RegistryStore {
             now_ms,
         )?;
         tx.commit()?;
+        self.count_senders(&mut conn, Some((group_id, &report.senders)), now_ms);
         Ok(())
     }
+}
+
+impl RegistryStore {
+    /// Adds a beat's `senders`, of the group named with them, to the bucket `now_ms` falls in, once the bucket held
+    /// before is written. A bucket that cannot be written is logged and dropped: its senders read as not counted in it.
+    fn count_senders(&self, conn: &mut Connection, senders: Option<(&str, &[SenderCounts])>, now_ms: i64) {
+        let mut held = self.senders.lock().unwrap_or_else(|e| e.into_inner());
+        let bucket = super::senders::TIER.align(now_ms);
+        if held.pending.bucket_ms != bucket {
+            let ended = std::mem::replace(
+                &mut held.pending,
+                Pending {
+                    bucket_ms: bucket,
+                    ..Pending::default()
+                },
+            );
+            if let Err(e) = write_senders(conn, &ended, held.watched.as_ref()) {
+                tracing::warn!(
+                    name: "senders_not_recorded", target: "status", error = %e,
+                    "a bucket's senders could not be recorded, so they are not judged in it"
+                );
+            }
+        }
+        if let Some((group, senders)) = senders {
+            held.pending.add(group, senders);
+        }
+    }
+
+    /// From the next bucket written on, keeps the rows of the `watched` values only (`senders::keep`).
+    pub fn watch_senders(&self, watched: HashSet<SenderKey>) {
+        self.senders.lock().unwrap_or_else(|e| e.into_inner()).watched = Some(watched);
+    }
+
+    /// Every sender field's days from `since_day_ms`, by group, source and name.
+    pub fn sender_fields_since(&self, since_day_ms: i64) -> Result<BTreeMap<FieldKey, FieldDays>, StoreError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare("SELECT group_id, source, field, day_ms, counted, over FROM sender_fields WHERE day_ms >= ?1")?;
+        let mut rows = stmt.query(params![since_day_ms])?;
+        let mut out: BTreeMap<FieldKey, FieldDays> = BTreeMap::new();
+        while let Some(r) = rows.next()? {
+            let of = out.entry((r.get(0)?, r.get(1)?, r.get(2)?)).or_default();
+            let day: i64 = r.get(3)?;
+            of.counted.insert(day, r.get(4)?);
+            if r.get::<_, bool>(5)? {
+                of.over.insert(day);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Calls `each` with every sender value's days from `since_day_ms`, one value at a time and a field's values one
+    /// after another, so only one value's days are held at once.
+    pub fn each_sender_value(
+        &self,
+        since_day_ms: i64,
+        mut each: impl FnMut(&FieldKey, &str, Days),
+    ) -> Result<(), StoreError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        // In the order of `sender_values_by_value`: no sort.
+        let mut stmt = conn.prepare(
+            "SELECT group_id, source, field, value, day_ms, sent FROM sender_values WHERE day_ms >= ?1 \
+             ORDER BY group_id, source, field, value, day_ms",
+        )?;
+        let mut rows = stmt.query(params![since_day_ms])?;
+        let mut at: Option<(FieldKey, String, Days)> = None;
+        while let Some(r) = rows.next()? {
+            let (group, source, field, value): (String, String, String, String) =
+                (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
+            let same = at
+                .as_ref()
+                .is_some_and(|(k, v, _)| (&k.0, &k.1, &k.2, v) == (&group, &source, &field, &value));
+            if !same && let Some((key, value, days)) = at.replace(((group, source, field), value, Vec::new())) {
+                each(&key, &value, days);
+            }
+            if let Some((_, _, days)) = at.as_mut() {
+                days.push((r.get(4)?, r.get(5)?));
+            }
+        }
+        if let Some((key, value, days)) = at {
+            each(&key, &value, days);
+        }
+        Ok(())
+    }
+
+    /// The buckets `group`'s `source`'s `field` was counted in on each day from `since_day_ms`, oldest first.
+    pub fn sender_field_days(
+        &self,
+        group: &str,
+        source: &str,
+        field: &str,
+        since_day_ms: i64,
+    ) -> Result<Days, StoreError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare_cached(
+            "SELECT day_ms, counted FROM sender_fields \
+             WHERE group_id = ?1 AND source = ?2 AND field = ?3 AND day_ms >= ?4 ORDER BY day_ms",
+        )?;
+        let days = stmt
+            .query_map(params![group, source, field, since_day_ms], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(days)
+    }
+
+    /// The buckets each value of each of `group`'s `source`'s fields held a row in, on each day from `since_day_ms`,
+    /// as (field, day, buckets).
+    pub fn sender_value_days(
+        &self,
+        group: &str,
+        source: &str,
+        since_day_ms: i64,
+    ) -> Result<Vec<(String, i64, Buckets)>, StoreError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare_cached(
+            "SELECT field, day_ms, sent FROM sender_values WHERE group_id = ?1 AND source = ?2 AND day_ms >= ?3",
+        )?;
+        let days = stmt
+            .query_map(params![group, source, since_day_ms], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(days)
+    }
+
+    /// The rows `group`'s `source`'s `field`'s `value` held, on each day it keeps them, oldest first.
+    pub fn sender_rows(
+        &self,
+        group: &str,
+        source: &str,
+        field: &str,
+        value: &str,
+    ) -> Result<Vec<(i64, Rows)>, StoreError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare_cached(
+            "SELECT day_ms, rows FROM sender_values \
+             WHERE group_id = ?1 AND source = ?2 AND field = ?3 AND value = ?4 AND rows IS NOT NULL ORDER BY day_ms",
+        )?;
+        let days = stmt
+            .query_map(params![group, source, field, value], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(days)
+    }
+
+    /// Keeps rows only for the `watched` values; forgets each value's day row before `values_before_ms` that holds no
+    /// rows, and every value's and field's day rows before `kept_before_ms`.
+    pub fn forget_senders(
+        &self,
+        watched: &HashSet<SenderKey>,
+        values_before_ms: i64,
+        kept_before_ms: i64,
+    ) -> Result<(), StoreError> {
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = conn.transaction()?;
+        {
+            let kept: Vec<SenderKey> = tx
+                .prepare("SELECT DISTINCT group_id, source, field, value FROM sender_values WHERE rows IS NOT NULL")?
+                .query_map([], |r| {
+                    let sender = Sender {
+                        field: r.get(2)?,
+                        value: r.get(3)?,
+                    };
+                    Ok((r.get(0)?, r.get(1)?, sender))
+                })?
+                .collect::<rusqlite::Result<_>>()?;
+            let mut drop = tx.prepare(
+                "UPDATE sender_values SET rows = NULL \
+                 WHERE group_id = ?1 AND source = ?2 AND field = ?3 AND value = ?4",
+            )?;
+            for (group, source, sender) in kept.iter().filter(|key| !watched.contains(*key)) {
+                drop.execute(params![group, source, sender.field, sender.value])?;
+            }
+        }
+        tx.execute(
+            "DELETE FROM sender_values WHERE day_ms < ?1 AND (rows IS NULL OR day_ms < ?2)",
+            params![values_before_ms, kept_before_ms],
+        )?;
+        tx.execute("DELETE FROM sender_fields WHERE day_ms < ?1", params![kept_before_ms])?;
+        tx.commit()?;
+        Ok(())
+    }
+}
+
+/// Writes the bucket `pending` holds into each of its fields' and values' day, and each watched value's rows, every
+/// value's while `watched` is `None`.
+fn write_senders(
+    conn: &mut Connection,
+    pending: &Pending,
+    watched: Option<&HashSet<SenderKey>>,
+) -> rusqlite::Result<()> {
+    let bucket = pending.bucket_ms;
+    let day = super::senders::day_of(bucket);
+    let tx = conn.transaction()?;
+    {
+        let mut field_read = tx.prepare_cached(
+            "SELECT counted, over FROM sender_fields WHERE group_id = ?1 AND source = ?2 AND field = ?3 AND day_ms = ?4",
+        )?;
+        // An update, not a replace: a replace would rewrite the row's index entry too, and that lies far from today's
+        // rows.
+        let mut field_write = tx.prepare_cached(
+            "INSERT INTO sender_fields (group_id, source, field, day_ms, counted, over) VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+             ON CONFLICT DO UPDATE SET counted = excluded.counted, over = excluded.over",
+        )?;
+        let mut value_read = tx.prepare_cached(
+            "SELECT sent, rows FROM sender_values \
+             WHERE group_id = ?1 AND source = ?2 AND field = ?3 AND value = ?4 AND day_ms = ?5",
+        )?;
+        let mut value_write = tx.prepare_cached(
+            "INSERT INTO sender_values (group_id, source, field, value, day_ms, sent, rows) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT DO UPDATE SET sent = excluded.sent, rows = excluded.rows",
+        )?;
+        for (group, sources) in &pending.fields {
+            for (source, fields) in sources {
+                for (field, counts) in fields {
+                    let (mut counted, over): (Buckets, bool) = field_read
+                        .query_row(params![group, source, field, day], |r| Ok((r.get(0)?, r.get(1)?)))
+                        .optional()?
+                        .unwrap_or_default();
+                    if counts.counted {
+                        super::senders::mark(&mut counted, bucket);
+                    }
+                    field_write.execute(params![group, source, field, day, counted, over || counts.over])?;
+                    for (value, &rows) in &counts.values {
+                        let (mut sent, kept): (Buckets, Option<Rows>) = value_read
+                            .query_row(params![group, source, field, value, day], |r| {
+                                Ok((r.get(0)?, r.get(1)?))
+                            })
+                            .optional()?
+                            .unwrap_or_default();
+                        super::senders::mark(&mut sent, bucket);
+                        let key = (
+                            group.clone(),
+                            source.clone(),
+                            Sender {
+                                field: field.clone(),
+                                value: value.clone(),
+                            },
+                        );
+                        // A value not watched keeps no rows.
+                        let kept = watched.is_none_or(|w| w.contains(&key)).then(|| {
+                            let mut kept = kept.unwrap_or_default();
+                            super::senders::add_rows(&mut kept, bucket, rows);
+                            kept
+                        });
+                        value_write.execute(params![group, source, field, value, day, sent, kept])?;
+                    }
+                }
+            }
+        }
+    }
+    tx.commit()
 }
 
 /// Add one beat's `report`, seen at `now_ms`, to what `group_id` has accumulated: every count summed, the
@@ -2225,6 +2527,7 @@ mod tests {
     fn stream_report(fields: &[&str], keys: &[&str]) -> crate::heartbeat::StreamReport {
         use crate::heartbeat::*;
         StreamReport {
+            senders: Vec::new(),
             parsers: vec![ParserShape {
                 source: "orders".into(),
                 route: "to-es".into(),

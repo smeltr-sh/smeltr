@@ -220,11 +220,16 @@ pub fn channels(store: &Store) -> Result<Vec<Channel>, StoreError> {
 }
 
 /// Names one warning across looks: the catalog entry and what it is about. Its start and message are left out, so a
-/// warning whose message changes is the same warning. The log line one is about is one element, absent on every
-/// other condition, so a key told before log lines had a class and a type is still the same key.
+/// warning whose message changes is the same warning. Two parts are added only where they apply: the log line the
+/// warning is about, and, for a warning one subject can raise more than once at a time (senders crossing at different
+/// readings), when it crossed. A key made before those parts existed is therefore unchanged.
 pub fn key(w: &Warning) -> String {
     let line = w.r#type.as_ref().map(|kind| (&w.class, kind));
-    serde_json::to_string(&(w.condition, w.subject_kind, &w.group, &w.subject_id, line)).unwrap_or_default()
+    let mut key = serde_json::json!([w.condition, w.subject_kind, w.group, w.subject_id, line]);
+    if let (Some(crossed), Some(parts)) = (w.crossed_millis, key.as_array_mut()) {
+        parts.push(crossed.into());
+    }
+    key.to_string()
 }
 
 /// Whether `channel` takes `w`.
@@ -1151,6 +1156,7 @@ mod tests {
 
     fn warning(condition: Condition, subject: &str, group: Option<&str>) -> Warning {
         Warning {
+            crossed_millis: None,
             condition,
             subject_kind: SubjectKind::Source,
             subject_id: subject.into(),
@@ -1198,6 +1204,27 @@ mod tests {
         let gone = changes(&c, 7, &[], &told);
         assert!(gone.raised.is_empty());
         assert_eq!(gone.cleared, told);
+    }
+
+    /// Senders of one source that cross at different readings are two warnings, so a channel is told of each; a
+    /// warning with no crossing keeps the key it was told under.
+    #[test]
+    fn each_crossing_of_one_subject_is_its_own_warning() {
+        let plain = warning(Condition::SourceRowsBelow, "orders", Some("payments"));
+        assert_eq!(key(&plain), r#"["sourceRowsBelow","source","payments","orders",null]"#);
+        let crossing = |at| Warning {
+            crossed_millis: Some(at),
+            ..warning(Condition::SendersBelow, "orders", Some("payments"))
+        };
+        let (first, later) = (crossing(1_000), crossing(2_000));
+        let c = Channel {
+            conditions: vec![Condition::SendersBelow],
+            ..channel(None)
+        };
+        let told = changes(&c, 5, std::slice::from_ref(&first), &[]).raised;
+        let raised = changes(&c, 6, &[first, later.clone()], &told).raised;
+        assert_eq!(raised.len(), 1, "{raised:?}");
+        assert_eq!(raised[0].warning, key(&later));
     }
 
     /// Every issue the leader can raise is one a channel can be ticked to take, once, so the page never drifts from

@@ -72,6 +72,18 @@ impl SourceMeta {
         }
     }
 
+    /// The `__source` field that names what [`Self::stream_key`] files a record under, where a sender is counted
+    /// under it (`streams::SenderTally`). `None` where the kind declares none.
+    pub fn stream_field(&self) -> Option<&'static str> {
+        let declares = |field: &str| self.source.iter().any(|(f, _)| *f == field);
+        match self.kind {
+            "hecReceiver" | "s2sReceiver" => Some("__source.sourcetype"),
+            "elasticReceiver" => Some("__source.index"),
+            _ if declares("__source.key") => Some("__source.key"),
+            _ => TOPIC_FIELDS.into_iter().find(|f| declares(f)),
+        }
+    }
+
     /// A route condition that takes the records this kind files under `key` ([`Self::stream_key`]). An object's
     /// condition takes its bucket and every key under its prefix, so it also takes a stream filed under a longer
     /// prefix, which is the most a condition can say without the prefix rule itself. `None` where this kind files

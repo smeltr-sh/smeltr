@@ -1,6 +1,6 @@
-//! What an editor said about a source's rows read against its normal (`throughput`): lower the warning that holds to
-//! info, reset the source's history, so its normal is learned again from now, or say a past period of it was normal
-//! or an outage.
+//! What an editor said about a source, as marks: lower the warning on its rows that holds to info; reset its history,
+//! so its normal is learned again from now; say a past period of it was normal or an outage (`throughput`); and say
+//! which of its fields name its senders, and lower a sender's warning to info (`senders`).
 //!
 //! A lowered warning stays on the Issues page for everyone, marked as info, and the views that judge health leave
 //! it out. It is named by when it began, so it stays lowered until it ends, and the next one is a warning again.
@@ -20,10 +20,12 @@ use serde::{Deserialize, Serialize};
 
 use super::AppState;
 use super::envelope::{Empty, Envelope, Refusal};
+use super::senders::Sender;
 use super::series::YEAR_MS;
 use super::store::{Actor, Store};
 use super::throughput::{self, Learning};
 use super::warnings::{self, Condition, SubjectKind};
+use crate::heartbeat::SenderFields;
 
 /// Where the marks are kept, as JSON.
 pub const MARKS_KEY: &str = "warnings.source_rows_marks";
@@ -38,16 +40,56 @@ pub struct Marks {
     pub reset: Vec<Reset>,
     #[serde(default)]
     pub periods: Vec<Period>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<SourceFields>,
 }
 
-/// A source's rows warning that began at `since_millis`, lowered to info by `by`.
+/// A source's rows warning that began at `since_millis`, or one of its sender's, lowered to info by `by`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Lowered {
     pub group: String,
     pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender: Option<Sender>,
     pub since_millis: i64,
     pub by: String,
+}
+
+/// One source's sender fields as an editor changed them: `edits` as its group's workers are sent them, and which fields
+/// stay watched once new ones are not watched.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceFields {
+    /// Absent from the body of [`put_sender_fields`], which names it in its path.
+    #[serde(default)]
+    pub group: String,
+    #[serde(flatten)]
+    pub edits: SenderFields,
+    /// Once an editor stops watching new fields, the fields that stay watched. Any other field is new, except one an
+    /// editor added; a new field is counted but not watched until an editor checks it. `None` while new fields are
+    /// watched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locked: Option<Vec<String>>,
+}
+
+impl SourceFields {
+    /// Whether `field` is watched: an editor did not uncheck it, and it is not new.
+    pub fn watches(&self, field: &str) -> bool {
+        !self.unchecked(field) && !self.is_new(field)
+    }
+
+    /// Whether `field` came after an editor stopped watching new fields, and nobody checked or added it since.
+    pub fn is_new(&self, field: &str) -> bool {
+        let named = |fields: &[String]| fields.iter().any(|f| f == field);
+        self.locked
+            .as_deref()
+            .is_some_and(|kept| !named(kept) && !named(&self.edits.added) && !self.unchecked(field))
+    }
+
+    fn unchecked(&self, field: &str) -> bool {
+        self.edits.unchecked.iter().any(|f| f == field)
+    }
 }
 
 /// A source whose normal `by` said to learn again from `from_millis` on.
@@ -101,34 +143,66 @@ impl Marks {
         .unwrap_or_default()
     }
 
-    /// Who lowered `group`'s `source`'s rows warning that began at `since_millis`, if anyone did.
-    pub fn lowered_by(&self, group: &str, source: &str, since_millis: Option<i64>) -> Option<&str> {
+    /// Who lowered `group`'s `source`'s rows warning, or its `sender`'s, that began at `since_millis`, if anyone did.
+    pub fn lowered_by(
+        &self,
+        group: &str,
+        source: &str,
+        sender: Option<&Sender>,
+        since_millis: Option<i64>,
+    ) -> Option<&str> {
         self.lowered
             .iter()
-            .find(|l| l.group == group && l.source == source && Some(l.since_millis) == since_millis)
+            .find(|l| {
+                l.group == group
+                    && l.source == source
+                    && l.sender.as_ref() == sender
+                    && Some(l.since_millis) == since_millis
+            })
             .map(|l| l.by.as_str())
+    }
+
+    /// What an editor changed of the sender fields of each of `group`'s sources.
+    pub fn sender_fields(&self, group: &str) -> Vec<SenderFields> {
+        self.fields
+            .iter()
+            .filter(|f| f.group == group)
+            .map(|f| f.edits.clone())
+            .collect()
     }
 }
 
-/// When `group`'s `source`'s rows warning that holds began, if one holds.
-fn holding_since(state: &AppState, group: &str, source: &str, now_ms: i64) -> Result<Option<i64>, Refusal> {
+/// When `group`'s `source`'s rows warning that holds began, or its `sender`'s, if one holds.
+fn holding_since(
+    state: &AppState,
+    group: &str,
+    source: &str,
+    sender: Option<&Sender>,
+    now_ms: i64,
+) -> Result<Option<i64>, Refusal> {
     let Some(store) = state.registry.series() else {
         return Ok(None);
     };
-    let spans = warnings::spans(store, SubjectKind::Source, group, source, now_ms)?;
+    let spans = match sender {
+        Some(sender) => warnings::sender_spans(store, group, source, sender, now_ms)?,
+        None => warnings::spans(store, SubjectKind::Source, group, source, now_ms)?,
+    };
     Ok(spans
         .into_iter()
-        .find(|s| s.ended_millis.is_none() && s.condition == Condition::SourceRowsBelow)
+        .find(|s| {
+            s.ended_millis.is_none() && matches!(s.condition, Condition::SourceRowsBelow | Condition::SendersBelow)
+        })
         .map(|s| s.started_millis))
 }
 
 /// Held while the marks are read, changed and written, so two marks made at once are both kept.
 static CHANGING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// One source an editor marks, by the route that marks it.
+/// One source an editor marks, or one of its senders, by the route that marks it.
 struct Marking {
     group: String,
     source: String,
+    sender: Option<Sender>,
     /// The audit's name for what was done.
     action: &'static str,
 }
@@ -147,16 +221,19 @@ impl Marking {
             let _changing = CHANGING.lock().unwrap_or_else(|e| e.into_inner());
             let now_ms = warnings::now_millis();
             let mut marks = Marks::read(&state.store);
-            let since = holding_since(&state, &self.group, &self.source, now_ms)?;
+            let since = holding_since(&state, &self.group, &self.source, self.sender.as_ref(), now_ms)?;
             change(&mut marks, &self, since, &actor, now_ms)?;
             let mut kept = Vec::new();
             for l in marks.lowered {
-                if holding_since(&state, &l.group, &l.source, now_ms)? == Some(l.since_millis) {
+                if holding_since(&state, &l.group, &l.source, l.sender.as_ref(), now_ms)? == Some(l.since_millis) {
                     kept.push(l);
                 }
             }
             marks.lowered = kept;
-            let target = format!("{}/{}", self.group, self.source);
+            let target = match &self.sender {
+                Some(sender) => format!("{}/{}/{}={}", self.group, self.source, sender.field, sender.value),
+                None => format!("{}/{}", self.group, self.source),
+            };
             let event = super::accounts::event_for(&actor, self.action, &target, "ok");
             let text = serde_json::to_string(&marks).expect("marks always serialize");
             Ok(state.store.put_settings(&[(MARKS_KEY, text)], Some(&event))?)
@@ -179,22 +256,128 @@ pub async fn lower(
     let marking = Marking {
         group,
         source,
+        sender: None,
         action: "source-rows-lower",
     };
+    marking.write(state, actor, lowered).await
+}
+
+/// `POST /api/areas/:area/sources/:id/senders/lower`: lowers the warning that holds for one sender of the source to
+/// info until it ends. Refused when none holds.
+pub async fn lower_sender(
+    State(state): State<AppState>,
+    actor: Option<axum::Extension<Actor>>,
+    Path((group, source)): Path<(String, String)>,
+    Json(sender): Json<Sender>,
+) -> Envelope<Empty> {
+    let marking = Marking {
+        group,
+        source,
+        sender: Some(sender),
+        action: "sender-rows-lower",
+    };
+    marking.write(state, actor, lowered).await
+}
+
+/// Lowers the warning about what `m` marks that began at `since` to info, by `actor`.
+fn lowered(marks: &mut Marks, m: &Marking, since: Option<i64>, actor: &Actor, _: i64) -> Result<(), Refusal> {
+    let Some(since) = since else {
+        let what = match &m.sender {
+            Some(sender) => format!("sender {} {} of source {}", sender.field, sender.value, m.source),
+            None => format!("source {}", m.source),
+        };
+        return Err(Refusal::not_found(format!(
+            "{what} in {} has no warning to lower",
+            m.group
+        )));
+    };
+    if marks
+        .lowered_by(&m.group, &m.source, m.sender.as_ref(), Some(since))
+        .is_none()
+    {
+        marks.lowered.push(Lowered {
+            group: m.group.clone(),
+            source: m.source.clone(),
+            sender: m.sender.clone(),
+            since_millis: since,
+            by: actor.display_name.clone(),
+        });
+    }
+    Ok(())
+}
+
+/// The most fields an editor may add to one source, and stop watching or keep watched.
+const ADDED_FIELDS: usize = 32;
+const LISTED_FIELDS: usize = 256;
+
+/// `PUT /api/areas/:area/sources/:id/senders/fields`: the source's sender fields an editor unchecked, added and,
+/// once new fields are not watched, kept watched, whole. Its workers count them from their next heartbeat. Refused
+/// for an added field that is not a field name.
+pub async fn put_sender_fields(
+    State(state): State<AppState>,
+    actor: Option<axum::Extension<Actor>>,
+    Path((group, source)): Path<(String, String)>,
+    Json(fields): Json<SourceFields>,
+) -> Envelope<Empty> {
+    let SourceFields { edits, locked, .. } = fields;
+    let marking = Marking {
+        group,
+        source,
+        sender: None,
+        action: "sender-fields",
+    };
     marking
-        .write(state, actor, |marks, m, since, actor, _| {
-            let Some(since) = since else {
-                return Err(Refusal::not_found(format!(
-                    "source {} in {} has no warning to lower",
+        .write(state, actor, move |marks, m, _, _, _| {
+            if edits.added.len() > ADDED_FIELDS {
+                return Err(Refusal::invalid(format!(
+                    "source {} in {}: at most {ADDED_FIELDS} fields can be added",
                     m.source, m.group
                 )));
-            };
-            if marks.lowered_by(&m.group, &m.source, Some(since)).is_none() {
-                marks.lowered.push(Lowered {
+            }
+            if edits.unchecked.len() > LISTED_FIELDS {
+                return Err(Refusal::invalid(format!(
+                    "source {} in {}: at most {LISTED_FIELDS} fields can be left unwatched",
+                    m.source, m.group
+                )));
+            }
+            if locked.as_ref().is_some_and(|kept| kept.len() > LISTED_FIELDS) {
+                return Err(Refusal::invalid(format!(
+                    "source {} in {}: at most {LISTED_FIELDS} fields can be kept watched",
+                    m.source, m.group
+                )));
+            }
+            let longest = crate::heartbeat::STREAM_NAME_LEN;
+            if edits
+                .added
+                .iter()
+                .chain(&edits.unchecked)
+                .chain(locked.iter().flatten())
+                .any(|name| name.len() > longest)
+            {
+                return Err(Refusal::invalid(format!(
+                    "source {} in {}: a field's name is at most {longest} bytes",
+                    m.source, m.group
+                )));
+            }
+            for name in &edits.added {
+                crate::plan::tree::parse_name(name).map_err(|e| {
+                    Refusal::invalid(format!(
+                        "source {} in {}: {name:?} is not a field name: {e}",
+                        m.source, m.group
+                    ))
+                })?;
+            }
+            marks
+                .fields
+                .retain(|f| (&f.group, &f.edits.source) != (&m.group, &m.source));
+            if !edits.unchecked.is_empty() || !edits.added.is_empty() || locked.is_some() {
+                marks.fields.push(SourceFields {
                     group: m.group.clone(),
-                    source: m.source.clone(),
-                    since_millis: since,
-                    by: actor.display_name.clone(),
+                    edits: SenderFields {
+                        source: m.source.clone(),
+                        ..edits
+                    },
+                    locked,
                 });
             }
             Ok(())
@@ -212,6 +395,7 @@ pub async fn reset_history(
     let marking = Marking {
         group,
         source,
+        sender: None,
         action: "source-rows-reset-history",
     };
     marking
@@ -249,6 +433,7 @@ pub async fn mark(
     let marking = Marking {
         group,
         source,
+        sender: None,
         action: "source-rows-mark",
     };
     marking
@@ -314,19 +499,67 @@ mod tests {
             lowered: vec![Lowered {
                 group: "g".into(),
                 source: "s".into(),
+                sender: None,
                 since_millis: 5,
                 by: "John".into(),
             }],
             ..Marks::default()
         };
-        assert_eq!(marks.lowered_by("g", "s", Some(5)), Some("John"));
+        assert_eq!(marks.lowered_by("g", "s", None, Some(5)), Some("John"));
         assert_eq!(
-            marks.lowered_by("g", "s", Some(6)),
+            marks.lowered_by("g", "s", None, Some(6)),
             None,
             "the next one is a warning again"
         );
-        assert_eq!(marks.lowered_by("g", "other", Some(5)), None);
-        assert_eq!(marks.lowered_by("g", "s", None), None);
+        assert_eq!(marks.lowered_by("g", "other", None, Some(5)), None);
+        assert_eq!(marks.lowered_by("g", "s", None, None), None);
+        let fw = Sender {
+            field: "devname".into(),
+            value: "fw-01".into(),
+        };
+        assert_eq!(
+            marks.lowered_by("g", "s", Some(&fw), Some(5)),
+            None,
+            "a sender's is its own"
+        );
+    }
+
+    #[test]
+    fn a_groups_workers_are_sent_only_its_own_sources_fields() {
+        let edited = |group: &str, source: &str| SourceFields {
+            group: group.into(),
+            edits: SenderFields {
+                source: source.into(),
+                unchecked: vec!["action".into()],
+                added: Vec::new(),
+            },
+            locked: None,
+        };
+        let marks = Marks {
+            fields: vec![edited("g", "s"), edited("other", "t")],
+            ..Marks::default()
+        };
+        assert_eq!(marks.sender_fields("g"), [edited("g", "s").edits]);
+    }
+
+    /// Once an editor stops watching new fields, a field they neither kept nor added is new, and not watched; one
+    /// they unchecked stays unchecked.
+    #[test]
+    fn a_field_that_comes_after_new_ones_stop_being_watched_is_new() {
+        let fields = SourceFields {
+            group: "g".into(),
+            edits: SenderFields {
+                source: "s".into(),
+                unchecked: vec!["action".into()],
+                added: vec!["policyid".into()],
+            },
+            locked: Some(vec!["devname".into()]),
+        };
+        assert!(fields.watches("devname") && fields.watches("policyid"));
+        assert!(!fields.watches("action") && !fields.is_new("action"));
+        assert!(!fields.watches("user") && fields.is_new("user"));
+        let open = SourceFields { locked: None, ..fields };
+        assert!(open.watches("user") && !open.is_new("user"));
     }
 
     #[test]

@@ -271,16 +271,19 @@ counting it.
 ## Streams
 
 A worker's third account is of the data itself: what each Parser produces,
-and what arrives that no route takes. Like the registry and the buffer it is
-one per process, written by every transform thread, drained into the report
-and carried on the heartbeat. Unlike them it describes records, so it carries
-names and counts and never a value.
+what arrives that no route takes, and who sends it. Like the registry and the
+buffer it is one per process, written by every transform thread, drained into
+the report and carried on the heartbeat. Unlike them it describes records, so it
+carries names and counts, and of values only those that name a stream or a
+sender.
 
 ```mermaid
 flowchart LR
   P[Parser, one batch per interval] -- fields, kinds, coverage --> A[account]
   U[rows no route took, every batch] -- stream key --> A
+  D[rows delivered, every batch] -- each sender's rows --> A
   A -- report, then heartbeat --> L[leader: one row per field, per key]
+  A -- report, then heartbeat --> S[leader: a day row per sender]
   L --> API[/api/streams]
 ```
 
@@ -300,10 +303,22 @@ topic, which a receiver fills with the sender's address. A batch that
 it is the one to set up. It is held until a new config, so its rows are
 keyed once.
 
-What one report carries is bounded by the code: a cap on field names per
-Parser and on keys per source, with the rows past either counted rather than
-named. A field name is data, not structure, and without the cap a source
-inventing names would grow a heartbeat without one.
+Senders are counted on every batch, since a sender that goes quiet is what they
+are for: each value of each string field a route delivers at the end of the
+pipeline, and the record's stream key, by the records that held it. A record
+counts once for each field, on the first route that delivers it, so a record two
+routes take is one row of its sender. A field is reported as counted in a window
+even when no record held it, because a sender is judged only where its field was
+counted. A field that passes its cap of values on a worker is counted no more
+there, and every report after says so; a value too long to name is not counted.
+Which fields an editor stopped watching or added (Control plane) reaches each
+worker whole on every heartbeat answer.
+
+What one report carries is bounded by the code: a cap on field names per Parser
+and on keys per source, with the rows past either counted rather than named; a
+cap on how many fields of a source have their senders counted; and a cap on the
+values of each. A field name is data, not structure, and without the caps a
+source that invented names would grow a heartbeat without bound.
 
 The worker keeps no baseline. It reports a window and forgets it once the
 leader has it: the heartbeat's window ([What a heartbeat

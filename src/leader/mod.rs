@@ -53,6 +53,7 @@ pub mod remote;
 pub mod resolver;
 pub mod schema_catalog;
 pub mod secrets;
+pub mod senders;
 pub mod series;
 pub mod sessions;
 pub mod sqlite_store;
@@ -78,7 +79,7 @@ use axum::routing::{delete, get, post, put};
 
 use crate::heartbeat::{HeartbeatRequest, HeartbeatResponse, ThreadKind};
 use envelope::{Empty, Envelope, Refusal};
-use registry::{Registry, ThreadHealth, WorkerFacts};
+use registry::{FactKey, Registry, ThreadHealth, WorkerFacts};
 use store::{Issued, Kept, Spend, Store, StoreError};
 
 #[derive(Clone)]
@@ -477,7 +478,7 @@ async fn heartbeat(
     // threads. A certificate is entitled at its newest version, resolved on every beat so that a new version
     // reaches the fleet on the next one.
     let store = state.store.clone();
-    let (pointer, entitled) = tokio::task::spawn_blocking(move || {
+    let (pointer, entitled, sender_fields) = tokio::task::spawn_blocking(move || {
         (
             deployed_pointer(&data_dir),
             at_newest(
@@ -490,6 +491,7 @@ async fn heartbeat(
                     Default::default()
                 }),
             ),
+            marks::Marks::read(&store).sender_fields(&for_group),
         )
     })
     .await
@@ -546,6 +548,7 @@ async fn heartbeat(
         secrets,
         // Whole on every answer, so a worker that missed a change has it on its next beat.
         log_levels: state.log_levels.get(),
+        sender_fields,
         heartbeat_interval_ms: Some(heartbeat_interval.as_millis() as u64),
     }))
 }
@@ -1130,7 +1133,25 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     // Read, not yet observed: what else is active is known only once the whole catalog is.
     let starts = state.registry.starts_of(&active_facts, now_ms);
     let key_warnings = warnings::encryption_key_warnings(&key, &channels, &kept, &starts);
-    let normal_warnings = warnings::outside_normal_warnings(&readings, &snapshot, &starts, &marks, heartbeat_interval);
+    let mut normal_warnings =
+        warnings::outside_normal_warnings(&readings, &snapshot, &starts, &marks, heartbeat_interval);
+    if let Some(series) = state.registry.series() {
+        // A crossing the clock has not stamped yet reads as this look's now. A look beside this one reads it as its
+        // own, so it is told from the next look on, once stamped, and is named by one time.
+        let stamped: std::collections::HashMap<FactKey, i64> = starts
+            .iter()
+            .filter(|(_, at)| **at != now_ms)
+            .map(|(k, at)| (k.clone(), *at))
+            .collect();
+        normal_warnings.extend(warnings::senders_below_warnings(
+            &readings,
+            &snapshot,
+            &stamped,
+            &marks,
+            heartbeat_interval,
+            |group, source, since| warnings::senders_back(series, group, source, since),
+        ));
+    }
     let credentials = run_store(state.store.clone(), |s| s.list_worker_credentials()).await?;
     let (signing, rotating) = serving_authority(&state.data_dir);
     let serving = serving_certificate(&state.data_dir);
@@ -1504,8 +1525,11 @@ pub struct FlowNormal {
 }
 
 impl FlowNormal {
-    /// `r` at the width a reader is shown (`throughput::Reading::shown`), if one judges it.
+    /// The source `r` reads at the width a reader is shown (`throughput::Reading::shown`), if one judges it.
     fn of(r: &throughput::Reading) -> Option<FlowNormal> {
+        if r.sender.is_some() {
+            return None;
+        }
         let (now, band) = r.shown()?.per_second();
         Some(FlowNormal {
             group: r.group.clone(),

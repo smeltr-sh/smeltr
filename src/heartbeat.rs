@@ -644,6 +644,41 @@ pub struct StreamReport {
     pub parsers: Vec<ParserShape>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unmatched: Vec<UnmatchedStreams>,
+    /// Absent from a worker older than this field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub senders: Vec<SenderCounts>,
+}
+
+/// How many values one field of one source is counted for on one worker. A field that holds more is no sender field:
+/// the worker stops counting it and says so ([`SenderCounts::too_many`]).
+pub const SENDER_VALUES: usize = 256;
+
+/// How many fields of one source's records a worker counts senders in, besides its stream key: what bounds a
+/// report's senders, with [`SENDER_VALUES`].
+pub const SENDER_FIELDS: usize = 64;
+
+/// The rows each value of one field of one source's records held, where the pipeline delivered them: what a sender
+/// is (`leader::senders`). A record counts once for each field, whichever routes deliver it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SenderCounts {
+    pub source: String,
+    /// A field of the record as the pipeline delivers it, or the `__source` field the source files its records under
+    /// (`SourceMeta::stream_field`).
+    pub field: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<SenderRows>,
+    /// The field has held more than [`SENDER_VALUES`] values on this worker, which counts it no more.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub too_many: bool,
+}
+
+/// One value of a field, and how many records held it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SenderRows {
+    pub value: String,
+    pub rows: u64,
 }
 
 /// What one Parser produced from the batches it tallied, on one source's route. Keyed by the author's own ids, which
@@ -718,7 +753,7 @@ fn is_zero_u64(n: &u64) -> bool {
 
 impl StreamReport {
     pub fn is_empty(&self) -> bool {
-        self.parsers.is_empty() && self.unmatched.is_empty()
+        self.parsers.is_empty() && self.unmatched.is_empty() && self.senders.is_empty()
     }
 
     /// This report and `later`, one: the counts sum, a shape's `declared` and `suggested` are the later reading, and
@@ -742,6 +777,43 @@ impl StreamReport {
                 Some(held) => held.absorb(streams),
                 None => self.unmatched.push(streams),
             }
+        }
+        for counts in later.senders {
+            match self
+                .senders
+                .iter_mut()
+                .find(|s| s.source == counts.source && s.field == counts.field)
+            {
+                Some(held) => held.absorb(counts),
+                None => self.senders.push(counts),
+            }
+        }
+    }
+}
+
+impl SenderCounts {
+    /// Fold `later`'s counts into this field's; see [`StreamReport::absorb`]. A field that reached too many values is
+    /// counted no more.
+    pub fn absorb(&mut self, later: SenderCounts) {
+        self.too_many |= later.too_many;
+        let mut at: std::collections::HashMap<String, usize> = self
+            .values
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (v.value.clone(), i))
+            .collect();
+        for value in later.values {
+            match at.get(&value.value) {
+                Some(&i) => self.values[i].rows += value.rows,
+                None => {
+                    at.insert(value.value.clone(), self.values.len());
+                    self.values.push(value);
+                }
+            }
+        }
+        self.too_many |= self.values.len() > SENDER_VALUES;
+        if self.too_many {
+            self.values.clear();
         }
     }
 }
@@ -844,11 +916,29 @@ pub struct HeartbeatResponse {
     /// (`crate::startup_config::log_level`).
     #[serde(default, skip_serializing_if = "LogLevels::is_empty")]
     pub log_levels: LogLevels,
+    /// What an editor changed of the sender fields of each source this worker's group runs, whole on every answer.
+    /// Absent while nobody has changed any, and from a leader too old to say: every field the pipeline delivers as
+    /// a string, and each source's stream key, are then counted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sender_fields: Vec<SenderFields>,
     /// How often the leader has its workers beat, which is the pace it judges them by. A worker beats at this from
     /// the answer that carries it on. Absent from a leader older than this field, and then the worker keeps
     /// [`crate::startup_config::DEFAULT_HEARTBEAT_INTERVAL`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heartbeat_interval_ms: Option<u64>,
+}
+
+/// One source's sender fields as an editor changed them: those it stopped counting, and those it added, which are
+/// counted whatever type their values are.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SenderFields {
+    #[serde(default)]
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unchecked: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub added: Vec<String>,
 }
 
 /// The levels lines are kept at (`crate::logs::levels`), each a label of [`crate::logs::LEVEL_LABELS`].
@@ -2141,6 +2231,7 @@ mod tests {
     #[test]
     fn a_stream_report_has_a_wire_spelling_and_is_optional() {
         let report = StreamReport {
+            senders: Vec::new(),
             parsers: vec![ParserShape {
                 source: "orders".into(),
                 route: "to-es".into(),
@@ -2281,6 +2372,7 @@ mod tests {
     #[test]
     fn a_heartbeat_response_serializes_to_the_wire_spelling() {
         let resp = HeartbeatResponse {
+            sender_fields: Vec::new(),
             holds: Vec::new(),
             deployed: None,
             authority: None,
@@ -2531,6 +2623,7 @@ mod tests {
 
         // Through a response, a vector, an Option -- every shape a caller might have in hand.
         let response = HeartbeatResponse {
+            sender_fields: Vec::new(),
             holds: Vec::new(),
             deployed: None,
             authority: None,

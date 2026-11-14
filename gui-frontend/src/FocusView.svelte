@@ -2,8 +2,8 @@
   The selected object's details (design doc "The map", The panel), docked beside the map so the
   map stays in view. An overview first -- its throughput and how it moved over the window, then
   what accumulates behind it, then what it connects to -- and a tab for each thing worth reading
-  at length: a destination's per-worker buffers, a source's backlog, a pipeline's steps, and the
-  routes it sits on.
+  at length: a destination's per-worker buffers, a source's backlog, history and senders, a
+  pipeline's steps, and the routes it sits on.
 
   What it shows comes from two places: the leader's per-object stats over a window
   (`/api/areas/:area/stats`), read here, and the map's current reading for the node (`/api/map/measurements`),
@@ -11,13 +11,15 @@
 -->
 <script module lang="ts">
   /** The tabs, in the order they show. A kind gets only the ones it has content for. */
-  export type FocusTab = 'overview' | 'buffers' | 'backlog' | 'history' | 'steps' | 'routes';
+  export type FocusTab =
+    'overview' | 'buffers' | 'backlog' | 'history' | 'senders' | 'steps' | 'routes';
 
   export const FOCUS_TABS: FocusTab[] = [
     'overview',
     'buffers',
     'backlog',
     'history',
+    'senders',
     'steps',
     'routes',
   ];
@@ -52,6 +54,7 @@
   import MapPanel from './MapPanel.svelte';
   import Help from './Help.svelte';
   import SecondaryTabs from './SecondaryTabs.svelte';
+  import SendersTab from './SendersTab.svelte';
   import Sparkline from './Sparkline.svelte';
   import ChipPicker from './ChipPicker.svelte';
   import ClockIcon from './ClockIcon.svelte';
@@ -188,6 +191,7 @@
     ...(node.kind === 'destination' ? [{ tab: 'buffers' as const, label: 'Buffers' }] : []),
     ...(hasLag ? [{ tab: 'backlog' as const, label: 'Backlog' }] : []),
     ...(node.kind === 'source' ? [{ tab: 'history' as const, label: 'History' }] : []),
+    ...(node.kind === 'source' ? [{ tab: 'senders' as const, label: 'Senders' }] : []),
     ...(node.kind === 'pipeline' ? [{ tab: 'steps' as const, label: 'Steps' }] : []),
     { tab: 'routes', label: 'Routes' },
   ]);
@@ -708,6 +712,8 @@
         {@render pastSpans('Longest quiet spells', SPELLS_HELP, past.silences)}
       </div>
     {/if}
+  {:else if shown === 'senders'}
+    <SendersTab group={node.group} source={node.authorId} {nowMillis} />
   {:else if shown === 'routes'}
     <section>
       <h3>

@@ -60,7 +60,7 @@ impl Measurements {
             .into_iter()
             .map(|n| ((n.group.clone(), n.kind, n.id.clone()), n))
             .collect();
-        for r in readings {
+        for r in readings.iter().filter(|r| r.sender.is_none()) {
             let Some(shown) = r.shown() else { continue };
             let (_, band) = shown.per_second();
             node(&mut nodes, &r.group, NodeKind::Source, &r.source).expected = Some(Expected {
@@ -665,6 +665,7 @@ mod tests {
     #[test]
     fn warnings_attach_to_their_node() {
         let warning = |condition, subject_kind, id: &str| Warning {
+            crossed_millis: None,
             area: None,
             condition,
             subject_kind,
@@ -711,6 +712,7 @@ mod tests {
     #[test]
     fn a_viewer_reads_only_their_groups() {
         let warning = |group: &str| Warning {
+            crossed_millis: None,
             area: None,
             condition: Condition::WorkerSilent,
             subject_kind: SubjectKind::Worker,
@@ -769,6 +771,7 @@ mod tests {
         ]
         .into();
         let warnings = [Warning {
+            crossed_millis: None,
             area: None,
             condition: Condition::SourceBlocked,
             subject_kind: SubjectKind::Source,
@@ -810,6 +813,7 @@ mod tests {
         let reading = throughput::Reading {
             group: "g".to_string(),
             source: "s".to_string(),
+            sender: None,
             ended_ms: 0,
             judged: vec![throughput::Judged {
                 window: throughput::WINDOW,

@@ -1,6 +1,7 @@
-// A source against its normal: a week of history written into the leader's registry, the last of it a drop, and
-// what the Status page and the Issues page make of it. The history is written straight into `registry.db`, as
-// `examples/demo-traffic.rs history` writes the demo fleet's, since a week cannot be waited for.
+// A source against its normal, and its senders against theirs: a week of history written into the leader's registry,
+// the last of it a drop, and what the Status page, the Issues page and the map's panel make of it. The history is
+// written straight into `registry.db`, as `examples/demo-traffic.rs history` writes the demo fleet's, since a week
+// cannot be waited for.
 import type { Page } from '@playwright/test';
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
@@ -82,6 +83,68 @@ function history(
     const rows = perSecond(at) * 300 * (1 + 0.05 * noise(at / FIVE));
     write.run(series!.id, FIVE_MINUTE_TIER, at, Math.round(rows));
   }
+  db.exec('COMMIT');
+  db.close();
+}
+
+/** Writes `days` days of what each of `values` of `source`'s `field` sent, as the leader writes a bucket once it ends
+ * (`leader::senders`): a day row of the five-minute buckets the field was counted in, and for each value a day row of
+ * the buckets it held a row in and the rows it held in each. */
+function sent(
+  leader: Leader,
+  source: string,
+  field: string,
+  values: Record<string, (at: number) => number>,
+  days: number = 8,
+) {
+  const db = new DatabaseSync(path.join(leader.proc.dir, 'smeltr-leader-data', 'registry.db'));
+  db.exec('PRAGMA busy_timeout = 10000');
+  const valueDay = db.prepare(
+    `INSERT OR REPLACE INTO sender_values (group_id, source, field, value, day_ms, sent, rows)
+     VALUES ('edge', ?, ?, ?, ?, ?, ?)`,
+  );
+  const fieldDay = db.prepare(
+    `INSERT OR REPLACE INTO sender_fields (group_id, source, field, day_ms, counted, over) VALUES ('edge', ?, ?, ?, ?, 0)`,
+  );
+  /** Each day's buckets, a bit each, by the day's start. */
+  const mark = (days: Map<number, Uint8Array>, at: number) => {
+    const day = Math.floor(at / DAY) * DAY;
+    const buckets = days.get(day) ?? new Uint8Array(DAY / FIVE / 8);
+    const i = (at - day) / FIVE;
+    buckets[i >> 3] |= 1 << (i & 7);
+    days.set(day, buckets);
+  };
+  /** A day's rows in each bucket, from its first, a LEB128 varint each. */
+  const varints = (counts: number[]) => {
+    const out: number[] = [];
+    for (let n of counts) {
+      for (; n >= 0x80; n = Math.floor(n / 0x80)) out.push((n & 0x7f) | 0x80);
+      out.push(n);
+    }
+    return Uint8Array.from(out);
+  };
+  const now = Math.floor(Date.now() / FIVE) * FIVE;
+  const counted = new Map<number, Uint8Array>();
+  db.exec('BEGIN');
+  for (const [value, perSecond] of Object.entries(values)) {
+    const held = new Map<number, Uint8Array>();
+    const kept = new Map<number, number[]>();
+    for (let at = now - days * DAY; at < now + 2 * FIVE; at += FIVE) {
+      const rows = Math.round(perSecond(at) * 300 * (1 + 0.05 * noise(at / FIVE + value.length)));
+      if (rows > 0) {
+        mark(held, at);
+        const day = Math.floor(at / DAY) * DAY;
+        const counts = kept.get(day) ?? [];
+        while (counts.length < (at - day) / FIVE) counts.push(0);
+        counts.push(rows);
+        kept.set(day, counts);
+      }
+      mark(counted, at);
+    }
+    for (const [day, buckets] of held)
+      valueDay.run(source, field, value, day, buckets, varints(kept.get(day)!));
+  }
+  for (const [day, buckets] of counted) fieldDay.run(source, field, day, buckets);
   db.exec('COMMIT');
   db.close();
 }
@@ -224,4 +287,117 @@ test('an editor says a quiet spell of a sparse source was an outage, and its nor
   await admin.keyboard.press('Escape');
   await expect(band).toBeVisible();
   await expect(panel.getByRole('link', { name: 'Widen' })).toBeVisible();
+});
+
+test('senders that stop while their source stays within its normal are warned of, and an editor lowers one and edits the fields', async ({
+  admin,
+  api,
+  fleet,
+  leader,
+  es,
+}) => {
+  test.setTimeout(900_000);
+  await admin.setViewportSize({ width: 1920, height: 1080 });
+  await deploy(api, es.url, ['fortigate-firewalls']);
+  await fleet.startWorker(leader, api, 'edge', 'edge-1');
+  await expect
+    .poll(async () => (await api.get('/api/flow?windowMinutes=5')).rowsIn.length, {
+      timeout: 60_000,
+    })
+    .toBe(1);
+
+  // Ten firewalls of about 3 rows a second each for a week, then two of them stop for the last half hour: the source
+  // reads a fifth less, still within its normal.
+  const stopped = Date.now() - 30 * 60_000;
+  const firewalls = Object.fromEntries(
+    Array.from({ length: 10 }, (_, i) => {
+      const name = `fw-${String(i + 1).padStart(2, '0')}`;
+      const stops = name === 'fw-01' || name === 'fw-07';
+      return [name, (at: number) => (stops && at >= stopped ? 0 : 3)];
+    }),
+  );
+  history(leader, 'fortigate-firewalls', (at) => (at >= stopped ? 24 : 30));
+  sent(leader, 'fortigate-firewalls', 'devname', firewalls);
+  sent(leader, 'fortigate-firewalls', 'action', { deny: () => 30 });
+
+  await goto(admin, leader, '#/status/issues');
+  const row = admin
+    .getByRole('list', { name: 'Senders below normal', exact: true })
+    .getByRole('listitem')
+    .filter({ hasText: 'fortigate-firewalls' });
+  // The leader picks and judges senders at its next reading, once a five-minute bucket.
+  await expect(row).toContainText('2 of 10 senders below normal, devname fw-01 and fw-07', {
+    timeout: 420_000,
+  });
+  await shoot(admin, '9-senders-issue');
+
+  await goto(admin, leader, '#/map');
+  await admin
+    .getByRole('region', { name: 'edge', exact: true })
+    .getByRole('link', { name: /fortigate-firewalls/ })
+    .click();
+  const panel = admin.getByRole('complementary', { name: 'fortigate-firewalls', exact: true });
+  await panel.getByRole('link', { name: 'Senders' }).click();
+  // A field with a sender below normal opens on its senders, those below first.
+  const senders = panel.getByRole('row').filter({ hasText: /fw-\d/ });
+  await expect(senders.nth(0)).toContainText('fw-01');
+  await expect(senders.nth(1)).toContainText('fw-07');
+  await expect(panel.getByRole('listitem').filter({ hasText: 'action' })).toContainText(
+    'One value',
+  );
+  await shoot(admin, '10-senders');
+  await panel.getByRole('link', { name: 'Widen' }).click();
+  await shoot(admin, '11-senders-wide');
+
+  const fw01 = senders.filter({ hasText: 'fw-01' });
+  await fw01.getByRole('button', { name: 'Lower to info' }).click();
+  await expect(fw01).toContainText('Lowered to info by');
+
+  // An editor stops watching a field, and adds one the pick cannot offer, then removes it.
+  const field = (name: string) =>
+    panel
+      .getByRole('listitem')
+      .filter({ has: admin.getByRole('checkbox', { name: `Watch ${name}`, exact: true }) });
+  await field('action').getByRole('checkbox').uncheck();
+  await expect(field('action')).toContainText('Not watched');
+  await panel.getByRole('textbox', { name: 'Field' }).fill('policyid');
+  await panel.getByRole('button', { name: 'Add field' }).click();
+  await expect(field('policyid')).toContainText('No values yet');
+  await shoot(admin, '12-senders-edited');
+  const edits = await api.get('/api/areas/edge/sources/fortigate-firewalls/senders');
+  expect(
+    edits.fields
+      .filter((f: { checked: boolean; added: boolean }) => !f.checked || f.added)
+      .map((f: { field: string }) => f.field)
+      .sort(),
+  ).toEqual(['action', 'policyid']);
+  await field('policyid').getByRole('button', { name: 'Remove' }).click();
+  await expect(field('policyid')).toHaveCount(0);
+
+  // An editor stops watching new fields: those watched now stay watched, and one that comes later is new, and
+  // watched only once checked.
+  const read = () => api.get('/api/areas/edge/sources/fortigate-firewalls/senders');
+  const watchNew = panel.getByRole('checkbox', { name: 'Watch new fields' });
+  await watchNew.uncheck();
+  await expect.poll(async () => (await read()).watchesNew).toBe(false);
+  const kept = (await read()).fields
+    .filter((f: { checked: boolean }) => f.checked)
+    .map((f: { field: string }) => f.field);
+  expect(kept).toContain('devname');
+  expect(kept).not.toContain('action');
+  // Stop watching new fields, keeping the fields listed in `locked`; `_raw` is not listed, so it is new.
+  await api.put('/api/areas/edge/sources/fortigate-firewalls/senders/fields', {
+    unchecked: ['action'],
+    added: [],
+    locked: kept.filter((f: string) => f !== '_raw'),
+  });
+  await admin.reload();
+  await expect(field('_raw')).toContainText('New');
+  await expect(field('_raw').getByRole('checkbox')).not.toBeChecked();
+  await shoot(admin, '13-senders-new-field');
+  await field('_raw').getByRole('checkbox').check();
+  await expect(field('_raw').getByRole('checkbox')).toBeChecked();
+  await expect(field('_raw')).not.toContainText('New');
+  await watchNew.check();
+  await expect.poll(async () => (await read()).watchesNew).toBe(true);
 });

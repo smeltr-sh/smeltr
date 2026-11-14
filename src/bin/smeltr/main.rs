@@ -1204,6 +1204,15 @@ async fn setup_leader(
         )
         .route("/api/areas/:area/sources/:id/mark", post(smeltr::leader::marks::mark))
         .route("/api/areas/:area/sources/:id/past", get(smeltr::leader::marks::past))
+        .route("/api/areas/:area/sources/:id/senders", get(smeltr::leader::senders::get))
+        .route(
+            "/api/areas/:area/sources/:id/senders/lower",
+            post(smeltr::leader::marks::lower_sender),
+        )
+        .route(
+            "/api/areas/:area/sources/:id/senders/fields",
+            put(smeltr::leader::marks::put_sender_fields),
+        )
         .route("/api/areas/:area/destinations", put(config_api::put_destinations))
         // Not on `app` below with the rest of the samples routes: the capture a sample is made from is held in
         // `State<AppState>`.

@@ -372,6 +372,55 @@ learned whole, so marking the one that holds teaches the level the source reads
 now, and the warning ends once the normal is learned again, within the hour. The
 leader keeps each of the three, with who said it.
 
+A source's senders are judged as the source is. A sender is one value of one
+field of the source's records, such as a firewall's name, or of its stream key
+(Observability, Streams). The leader sums what workers count in each five-minute
+bucket and writes the bucket once it ends, into a day row for each field and
+each value: the buckets the field was counted in, the buckets the value held a
+row in, and for a watched sender the rows it held in each. A bucket's count of
+rows takes one to three bytes of the day row, so four weeks of one sender's rows
+take 10 to 30 kilobytes.
+
+```mermaid
+flowchart LR
+  W[workers: rows by value of each field] --> B[leader: each five-minute bucket, written once it ends]
+  B --> D[a day row per field and per value: its buckets, and a watched sender's rows in each]
+  D -- once a day --> P{sent steadily on seven days in a row}
+  P -- yes: watched --> J[judged at the four widths against its own normal]
+  D -- a watched sender's rows --> J
+  J -- below its range at a width, four readings in a row --> X[Senders below normal]
+```
+
+Each day the leader picks which values to watch: a value is watched once it went
+no more than an hour without a row, counting only the time its field was
+counted, on each of seven days in a row, and it stays watched for a week after.
+A field that held one value names no sender, and neither does one that passed
+its cap of values on a worker. The pick reads the last two weeks of day rows. A
+watched sender keeps its rows from the day it is picked, in day rows kept for
+the four weeks its normal is learned from. A value the pick stops watching loses
+its rows, and its day rows once no pick reads them. A newly watched sender is
+judged once it has three days of rows.
+
+A watched sender is judged at the four widths, below normal only and never by
+the gap. It is judged only where its field was counted, so a field that a
+pipeline change takes out leaves its senders unjudged rather than all below, and
+so does a bucket the leader lost to a restart. It is not judged while its source
+warns that its rows are below normal or that it is blocked, refused, waiting or
+unreachable, nor on the reading its source crosses: the source's own warning
+says more. Senders of one source that cross on one reading raise one warning
+that names them, and a sender that crosses later raises another. The warning
+says which of its senders are back within their range, and ends once all of them
+are.
+
+An editor in the source's worker group lowers one sender's warning to info, and
+a warning all of whose senders were lowered is info. An editor also stops
+watching a field, or adds one the pick cannot offer, such as a number or a
+nested path. New fields are watched until an editor turns off Watch new fields;
+while it is off, a field that comes later is counted but watched only once an
+editor checks it. The source's Senders tab on the Map lists its fields, what the
+pick read of each, and each watched sender's last day against its range. A field
+first counted since the day's pick is listed the same day, as learning.
+
 ## Upgrades
 
 A released smeltr starts on whatever an earlier supported release left, and
