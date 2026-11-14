@@ -3756,7 +3756,10 @@ fn route_names<T: Copy>(route: &str, kind: &str, id: &str, known: &HashMap<Strin
     if id.is_empty() {
         return Err(format!("route {route:?} names no {kind}"));
     }
-    known.get(id).copied().ok_or_else(|| format!("route {route:?} references unknown {kind} {id:?}"))
+    known
+        .get(id)
+        .copied()
+        .ok_or_else(|| format!("route {route:?} references unknown {kind} {id:?}"))
 }
 
 fn to_route(dto: &RouteDto, maps: &IdMaps, group: &OnException) -> Result<RouteConfig, String> {
