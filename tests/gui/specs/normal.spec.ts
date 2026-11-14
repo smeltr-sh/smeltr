@@ -287,6 +287,10 @@ test('an editor says a quiet spell of a sparse source was an outage, and its nor
     'true',
   );
   expect((await api.get(past)).preset).toBe('fast');
+  await panel.getByRole('button', { name: 'About Preset' }).click();
+  await expect(admin.getByText('brief dips almost never do')).toBeVisible();
+  await shoot(admin, '7b-preset-help');
+  await admin.keyboard.press('Escape');
 
   // Widened, the panel takes the map's place on the same tab; Escape gives the map back.
   const band = admin.getByRole('region', { name: 'edge', exact: true });
