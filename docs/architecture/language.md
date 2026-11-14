@@ -570,10 +570,9 @@ object, and a copy is open as its source is.
 An object type names each field by its path. The fields under one key make
 one object type there, open where the type is: `{a.b: i64, a.c: str, ...}` is
 `{a: {b: i64, c: str, ...}, ...}`, and `{a.b: i64}` is `{a: {b: i64}}`. A
-quoted name is one key: `{"a.b": i64}` names the key `a.b`. A path adds its
-field to an object type written out under the same key, and that type stays
-open or closed as written: `{a: {c: i64}, a.b: str, ...}` is
-`{a: {c: i64, b: str}, ...}`.
+quoted name is one key: `{"a.b": i64}` names the key `a.b`. Object types
+under one key merge field by field, open where either is open:
+`{a: {c: i64}, a.b: str, ...}` is `{a: {c: i64, b: str, ...}, ...}`.
 
 An object a write builds without a declaration, `x = {a: 1}` or `x.a = 1`,
 is open, and the compiler knows it holds no other key: a read of one it

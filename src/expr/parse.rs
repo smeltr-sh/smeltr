@@ -1913,74 +1913,37 @@ impl<'s> Parser<'s> {
     }
 }
 
-/// The object type whose fields are `entries`, each a path and its type. The paths under one key make one object type
-/// there, open when this type is open: the `...` that ends a type keeps the other keys of every object its paths name.
-/// A path adds its field to an object type written out under the same key, and that type stays open or closed as
-/// written: `{a: {c: i64}, a.b: str, ...}` is `{a: {c: i64, b: str}, ...}`.
+/// The object type whose fields are `entries`, each a path and its type. A path such as `a.b` gives the object type at
+/// its first key, `a`, with the rest of the path inside it, open when this type is open: the `...` that ends a type keeps
+/// the other keys of every object its paths name. Object types under one key merge field by field, open where either
+/// is open.
 fn object_type(entries: Vec<(Span, Vec<String>, DataType)>, open: bool) -> Result<DataType, ParseError> {
     let mut fields: Vec<(String, DataType)> = Vec::new();
-    // The objects the paths made, by name. An object type written out later under one of these names takes their
-    // fields in.
-    let mut made: Vec<String> = Vec::new();
     for (span, path, ty) in entries {
-        let fail = |message: String| ParseError { span, message };
-        let (last, under) = path.split_last().expect("a field has a key");
-        let mut at = &mut fields;
-        let mut name = String::new();
-        for key in under {
-            tree::push_key(&mut name, key);
-            let i = match at.iter().position(|(k, _)| k == key) {
-                Some(i) => i,
-                None => {
-                    at.push((key.clone(), DataType::Struct(Vec::new(), open)));
-                    made.push(name.clone());
-                    at.len() - 1
-                }
-            };
-            at = match &mut at[i].1 {
-                DataType::Struct(inner, _) => inner,
-                t => return Err(fail(format!("`{name}` is {} and has no fields", t.spell()))),
-            };
-        }
-        tree::push_key(&mut name, last);
-        let Some(i) = at.iter().position(|(k, _)| k == last) else {
-            at.push((last.clone(), ty));
-            continue;
-        };
-        match (&mut at[i].1, ty) {
-            (DataType::Struct(paths, _), DataType::Struct(mut written, written_open)) if made.contains(&name) => {
-                take_in(&mut written, std::mem::take(paths), &name, &made).map_err(fail)?;
-                made.retain(|m| *m != name);
-                at[i].1 = DataType::Struct(written, written_open);
-            }
-            _ => return Err(fail(format!("object type names `{name}` twice"))),
-        }
+        let (first, rest) = path.split_first().expect("a field has a key");
+        let ty = rest
+            .iter()
+            .rev()
+            .fold(ty, |t, k| DataType::Struct(vec![(k.clone(), t)], open));
+        put_field(&mut fields, first, ty, &tree::spell(first)).map_err(|message| ParseError { span, message })?;
     }
     Ok(DataType::Struct(fields, open))
 }
 
-/// Adds the fields `paths` made under `name` to `written`, the object type written out at `name`. An object the paths
-/// made merges by this rule too; any other key both name is named twice.
-fn take_in(
-    written: &mut Vec<(String, DataType)>,
-    paths: Vec<(String, DataType)>,
-    name: &str,
-    made: &[String],
-) -> Result<(), String> {
-    for (key, ty) in paths {
-        let at = tree::child(name, &key);
-        match written.iter_mut().find(|(k, _)| *k == key) {
-            None => written.push((key, ty)),
-            Some((_, DataType::Struct(inner, _))) if made.contains(&at) => {
-                let DataType::Struct(more, _) = ty else {
-                    unreachable!("a path makes an object")
-                };
-                take_in(inner, more, &at, made)?;
-            }
-            Some(_) => return Err(format!("object type names `{at}` twice")),
-        }
-    }
-    Ok(())
+/// Puts `ty` in `fields` under `key`; `name` is the path to the field, from the type's top, for the error. An object
+/// type already there takes `ty`'s fields in when `ty` is an object type too; any other pair of types is the error
+/// "object type names `name` twice".
+fn put_field(fields: &mut Vec<(String, DataType)>, key: &str, ty: DataType, name: &str) -> Result<(), String> {
+    let Some((_, have)) = fields.iter_mut().find(|(k, _)| k == key) else {
+        fields.push((key.to_string(), ty));
+        return Ok(());
+    };
+    let (DataType::Struct(inner, open), DataType::Struct(more, more_open)) = (have, ty) else {
+        return Err(format!("object type names `{name}` twice"));
+    };
+    *open |= more_open;
+    more.into_iter()
+        .try_for_each(|(k, t)| put_field(inner, &k, t, &tree::child(name, &k)))
 }
 
 /// `base[index]`. A string key applied to a name is the name of that key, `o["a.b"]` the field `o["a.b"]`, so a read, a
@@ -3011,23 +2974,23 @@ mod tests {
         );
         assert_eq!(spelled("x: {\"a.b\": i64, a.c: str};"), "{\"a.b\": i64, a: {c: str}}");
         assert_eq!(spelled("x: array<{a.b: i64}>;"), "array<{a: {b: i64}}>");
-        // A path adds to an object type written out under its key, before or after it, which keeps its openness.
+        // Object types under one key merge field by field, open where either is open.
         assert_eq!(
             spelled("x: {a: {c: i64}, a.b: str, ...};"),
-            "{a: {c: i64, b: str}, ...}"
+            "{a: {c: i64, b: str, ...}, ...}"
         );
         assert_eq!(
             spelled("x: {a.b: str, a: {c: i64, ...}};"),
-            "{a: {c: i64, b: str, ...}}"
+            "{a: {b: str, c: i64, ...}}"
         );
         assert_eq!(
             spelled("x: {a.b.d: str, a: {b: {c: i64}}};"),
-            "{a: {b: {c: i64, d: str}}}"
+            "{a: {b: {d: str, c: i64}}}"
         );
+        assert_eq!(spelled("x: {a: {c: i64}, a: {d: i64}};"), "{a: {c: i64, d: i64}}");
         for (src, message) in [
-            ("x: {a: i64, a.b: str};", "`a` is i64 and has no fields"),
+            ("x: {a: i64, a.b: str};", "object type names `a` twice"),
             ("x: {a.b: str, a: i64};", "object type names `a` twice"),
-            ("x: {a: {c: i64}, a: {d: i64}};", "object type names `a` twice"),
             ("x: {a.c: i64, a: {c: str}};", "object type names `a.c` twice"),
             ("x: {a: {c: i64}, a.c: str};", "object type names `a.c` twice"),
             ("x: {a.b: i64, a.b: str};", "object type names `a.b` twice"),
