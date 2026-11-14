@@ -50,7 +50,7 @@
     pause,
     pauseRun,
     declared,
-    canLock,
+    lockBlocked,
     onlock,
     onsaveoutput,
     saveinput,
@@ -83,7 +83,8 @@
     pauseRun: PauseRun | null;
     /** The whole pipeline's types, each side. */
     declared: { before: Declared | null; after: Declared | null };
-    canLock: boolean;
+    /** Why Lock this as a test is off, or empty while it is on. */
+    lockBlocked: string;
     /** Locks the fields and rows on screen as a test, by `PreviewRow.row`; absent where the pipeline is read
      * only. */
     onlock?: (choice: LockChoice) => void;
@@ -312,11 +313,7 @@
           class="primary"
           data-guide="lock-test"
           onclick={() => onlock({ fields: shown, rows: kept.map((r) => r.key) })}
-          disabled={pause
-            ? 'Resume to lock: a test checks the pipeline’s output.'
-            : !canLock
-              ? INCOMPLETE
-              : ''}
+          disabled={pause ? 'Resume to lock: a test checks the pipeline’s output.' : lockBlocked}
         >
           Lock this as a test
         </Button>
