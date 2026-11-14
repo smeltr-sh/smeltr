@@ -6,6 +6,7 @@ use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::harness::receiver::free_loopback;
 use smeltr::io::elastic::Elastic;
 use smeltr::io::elastic_nodes::{Nodes, Sniffing};
 use smeltr::io::http::{Protocol, Transport};
@@ -132,9 +133,7 @@ fn requests_are_spread_across_the_nodes_the_cluster_names() {
 #[test]
 fn a_worker_prefers_its_zones_nodes_and_falls_to_the_others() {
     let (a, b) = (data_node(), data_node());
-    let gone = TcpListener::bind("127.0.0.1:0").unwrap();
-    let gone_url = format!("http://{}", gone.local_addr().unwrap());
-    drop(gone);
+    let gone_url = format!("http://{}", free_loopback());
     let seed = seed(nodes_answer(&[(&a.url, "z1"), (&b.url, "z2"), (&gone_url, "z2")]));
     let (_, mut transport) = sniffing(&seed.url, Some("z2"));
     for _ in 0..4 {
@@ -163,9 +162,7 @@ fn a_refused_lookup_sends_to_the_url() {
 /// Every node gone: the request still goes, to the url.
 #[test]
 fn with_every_node_gone_a_request_goes_to_the_url() {
-    let gone = TcpListener::bind("127.0.0.1:0").unwrap();
-    let gone_url = format!("http://{}", gone.local_addr().unwrap());
-    drop(gone);
+    let gone_url = format!("http://{}", free_loopback());
     let seed = seed(nodes_answer(&[(&gone_url, "z1")]));
     let (_, mut transport) = sniffing(&seed.url, None);
     assert_eq!(post(&mut transport), Ok(200));

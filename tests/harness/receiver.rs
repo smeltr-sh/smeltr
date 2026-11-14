@@ -7,7 +7,8 @@
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use smeltr::io::{CommitMap, Source, SourceRecord, TopicPartition, build_source};
 use smeltr::plan::topology::{ConnectionLimits, HeldSecrets, Receiver, ReceiverConfig, SecretRef, SourceKind};
@@ -197,13 +198,26 @@ pub fn random_addresses(rng: &mut Rng, ipv6: bool) -> (IpAddr, IpAddr) {
     }
 }
 
-/// A port nothing listens on at `connect`.
-pub fn free_port(connect: IpAddr) -> u16 {
-    std::net::TcpListener::bind((connect, 0))
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+/// A port nothing holds at `at`, for TCP or UDP. It lies below the ports the OS hands out for port 0 (from 32768 on
+/// Linux, from 49152 on macOS and Windows), so a test that asks the OS for a port cannot take it before this one is
+/// bound.
+pub fn free_port(at: IpAddr) -> u16 {
+    static CALLS: AtomicU64 = AtomicU64::new(0);
+    // Not a fuzz seed: tests running side by side must not draw the same ports.
+    let clock = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
+    let mut rng = Rng::seeded(clock ^ u64::from(std::process::id()) ^ CALLS.fetch_add(1, Ordering::Relaxed));
+    loop {
+        let port = 20_000 + rng.below(12_768) as u16;
+        if std::net::TcpListener::bind((at, port)).is_ok() && std::net::UdpSocket::bind((at, port)).is_ok() {
+            return port;
+        }
+    }
+}
+
+/// [`free_port`] on the IPv4 loopback address.
+pub fn free_loopback() -> SocketAddr {
+    let at = Ipv4Addr::LOCALHOST.into();
+    SocketAddr::new(at, free_port(at))
 }
 
 /// No TLS half the time, else served or vouched.

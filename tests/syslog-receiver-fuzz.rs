@@ -77,16 +77,7 @@ const NETWORKS: &[(&str, bool, bool)] = &[
 fn random_settings(rng: &mut Rng, ipv6: bool) -> Settings {
     let (listen, connect) = receiver::random_addresses(rng, ipv6);
     let transport = *rng.pick(&[Transport::Tcp, Transport::Udp]);
-    let port = loop {
-        let port = std::net::TcpListener::bind((connect, 0))
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        if transport == Transport::Tcp || UdpSocket::bind((connect, port)).is_ok() {
-            break port;
-        }
-    };
+    let port = receiver::free_port(connect);
     // Datagrams have no TLS.
     let tls = match transport {
         Transport::Tcp => receiver::random_tls(rng),

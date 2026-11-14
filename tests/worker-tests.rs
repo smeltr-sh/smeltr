@@ -27,6 +27,7 @@ fn kafka_metrics() -> smeltr::metrics::MetricsHandle {
     smeltr::metrics::MetricsHandle::new(std::sync::Arc::new(smeltr::metrics::Metrics::new()), "test")
 }
 
+use crate::harness::receiver::{free_loopback, free_port};
 use crate::live;
 
 fn live_brokers(test_name: &str) -> Option<String> {
@@ -389,14 +390,7 @@ fn standalone_leader_runs_its_own_embedded_worker() {
     };
 
     let data_dir = temp_dir("standalone-data");
-    let port = {
-        // Reserve a free port, then release it immediately for the
-        // subprocess to bind -- a small TOCTOU race, acceptable for a
-        // test spawning an external process that needs a fixed port up
-        // front.
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.local_addr().unwrap().port()
-    };
+    let port = free_loopback().port();
 
     let mut leader = Command::new(env!("CARGO_BIN_EXE_smeltr"))
         .env("SMELTR_LEADER_ENABLED", "1")
@@ -847,10 +841,7 @@ fn a_revoked_worker_keeps_processing_records_after_revocation() {
 #[test]
 fn standalone_enrolls_its_own_worker() {
     let data_dir = temp_dir("standalone-seed");
-    let port = {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.local_addr().unwrap().port()
-    };
+    let port = free_loopback().port();
 
     let mut leader = Command::new(env!("CARGO_BIN_EXE_smeltr"))
         .env("SMELTR_LEADER_ENABLED", "1")
@@ -935,10 +926,7 @@ fn standalone_enrolls_its_own_worker() {
 #[test]
 fn a_worker_discovers_main_and_reports_the_commit_it_deployed() {
     let data_dir = temp_dir("standalone-discovers");
-    let port = {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.local_addr().unwrap().port()
-    };
+    let port = free_loopback().port();
 
     let mut leader = Command::new(env!("CARGO_BIN_EXE_smeltr"))
         .env("SMELTR_LEADER_ENABLED", "1")
@@ -1146,10 +1134,7 @@ impl Standalone {
     fn start_reaching(name: &str, reach: &Reach) -> Standalone {
         install_crypto_provider();
         let data_dir = temp_dir(name);
-        let port = {
-            let listener = std::net::TcpListener::bind((reach.bind.parse::<std::net::IpAddr>().unwrap(), 0)).unwrap();
-            listener.local_addr().unwrap().port()
-        };
+        let port = free_port(reach.bind.parse().unwrap());
 
         let mut command = Command::new(env!("CARGO_BIN_EXE_smeltr"));
         if let Some(host) = reach.worker {
@@ -1552,10 +1537,7 @@ fn a_receiver_answers_a_request_sent_while_its_runtime_was_being_replaced() {
             .running_runtime(Duration::from_secs(40))
             .ok_or("the worker never reported a running runtime")?;
         let (intake, bodies) = collector("127.0.0.1");
-        let at = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap();
+        let at = free_loopback();
         // The token is a variable the worker already has, so the test needs no secret of its own.
         standalone.deploy(
             &[format!(
@@ -1679,10 +1661,7 @@ fn a_certificate_version_the_receiver_could_not_serve_is_refused_and_it_keeps_ru
         }
 
         let (intake, _) = collector("127.0.0.1");
-        let at = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap();
+        let at = free_loopback();
         standalone.deploy(
             &[format!(
                 r#"{{"id":"hook","type":"httpReceiver","port":{},"certificate":"rx",
@@ -1776,11 +1755,7 @@ fn a_worker_pulls_and_is_pushed_to(name: &str, reach: &Reach, pull: &str, sink: 
             .ok_or("the worker never reported a running runtime")?;
         let (intake, bodies) = collector(sink);
         let pulled = steady(pull, "pulled\n");
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
+        let port = free_loopback().port();
         // No `SMELTR_WORKER_LISTEN_ADDRESS`: the worker's own default is what is under test.
         standalone.deploy(
             &[

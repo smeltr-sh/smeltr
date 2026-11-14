@@ -1433,10 +1433,7 @@ fn live_prometheus_remote_writes_under_random_configurations() {
     }));
 
     let endpoint = Endpoint::serve();
-    let web = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap();
+    let web = receiver::free_loopback();
     let dir = std::env::temp_dir().join(format!("smeltr-prometheus-fuzz-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let config_file = dir.join("prometheus.yml");
