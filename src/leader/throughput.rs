@@ -5,9 +5,9 @@
 //! usual window of a time of day is the median of the windows that ended within [`NEIGHBORHOOD`] of it on each of the
 //! newest [`USUAL_DAYS`] days learned there. Each window of the width's history, its newest learned windows, is taken
 //! as a ratio to the usual window of its time of day. The range is the usual window scaled by the lowest and the
-//! highest ratios, a [`TAIL`] of them cut from each end, and widened by [`MARGIN`]. Ratios, because a quiet hour and a
-//! busy one can be pooled only once each is set against its own time of day; a quantile, because rows read are bursty
-//! and often zero, which a mean and a deviation do not describe.
+//! highest ratios, a [`TAIL`] of them cut from each end, and widened by its [`Preset`]'s margin. Ratios, because a
+//! quiet hour and a busy one can be pooled only once each is set against its own time of day; a quantile, because rows
+//! read are bursty and often zero, which a mean and a deviation do not describe.
 //!
 //! A width judges a source only where its usual window holds at least [`GATE`] rows: a window that is usually near
 //! empty has a low edge of zero, which no reading is below. So a source that reads every few seconds is judged at every
@@ -20,13 +20,13 @@
 //! once it has been watched [`GAP_WATCH_MS`]. Until it has been watched a year, its longest spell is taken to be
 //! shorter than the year's longest, and is lengthened by what the rest of the year would likely add.
 //!
-//! A source is below normal while some width has read below its range [`WAIT`] times in a row, since one reading at the
-//! range's edge flickers, or once its quiet spell is longer than [`GAP_MARGIN`] times the longest it learned. Either
-//! raises the same warning, and it stays until some width judges the source and none reads it below its range. Days not
-//! learned are passed over, not counted, so a held warning is judged against the days before it until those are no
-//! longer kept, after which no width judges the source and it still warns. Where no count width judges the source, a
-//! warning ends at the first row after it began that ends a quiet spell the gap read below. Above normal is judged at
-//! [`WINDOW`] alone, and only informs.
+//! A source is below normal while some width has read below its range for as many readings in a row as its [`Preset`]
+//! requires, since one reading at the range's edge flickers, or once its quiet spell is longer than [`GAP_MARGIN`]
+//! times the longest it learned. Either raises the same warning, and it stays until some width judges the source and
+//! none reads it below its range. Days not learned are passed over, not counted, so a held warning is judged against
+//! the days before it until those are no longer kept, after which no width judges the source and it still warns. Where
+//! no count width judges the source, a warning ends at the first row after it began that ends a quiet spell the gap
+//! read below. Above normal is judged at [`WINDOW`] alone, and only informs.
 //!
 //! Only windows the source was running for throughout count. A bucket with no point means no worker reported the source
 //! then -- not deployed, or a worker gone -- which says nothing about how much it reads.
@@ -120,11 +120,65 @@ pub const MIN_DAYS: usize = 3;
 /// The share of past ratios each side of the range leaves out: one in two thousand.
 const TAIL: f64 = 0.0005;
 
-/// How much wider than the ratios the range is, as a share of each edge.
-const MARGIN: f64 = 0.3;
+/// How a source's normal trades how soon it sees a drop against how often a dip that is not a drop warns: how much wider
+/// than its learned spread the range is, and how many readings in a row below it warn. Each is a point the detector was
+/// measured at (`docs/research/normal-detector/paper.md`). A stop reads below any range, so only the wait sets how soon
+/// one is seen. An editor picks one for a source and one for its senders (`marks::Picked`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Preset {
+    Fast,
+    Sensitive,
+    Balanced,
+    Quiet,
+}
 
-/// Readings in a row outside the range before a source is outside its normal.
-const WAIT: i64 = 4;
+/// The preset a source is judged at, and the one its senders are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Presets {
+    pub rows: Preset,
+    pub senders: Preset,
+}
+
+impl Default for Presets {
+    /// Until an editor picks others. Each sender warns on its own, so a source with many senders has that many chances
+    /// for a dip to warn.
+    fn default() -> Self {
+        Presets {
+            rows: Preset::Balanced,
+            senders: Preset::Quiet,
+        }
+    }
+}
+
+impl Preset {
+    const ALL: [Preset; 4] = [Preset::Fast, Preset::Sensitive, Preset::Balanced, Preset::Quiet];
+
+    /// How much wider than the ratios the range is, as a share of each edge.
+    fn margin(self) -> f64 {
+        match self {
+            Preset::Fast | Preset::Quiet => 0.5,
+            Preset::Sensitive => 0.2,
+            Preset::Balanced => 0.3,
+        }
+    }
+
+    /// Readings in a row outside the range before a source is outside its normal.
+    fn wait(self) -> i64 {
+        match self {
+            Preset::Fast => 1,
+            Preset::Sensitive => 3,
+            Preset::Balanced => 4,
+            Preset::Quiet => 6,
+        }
+    }
+
+    /// The most readings any preset waits.
+    fn longest_wait() -> i64 {
+        Preset::ALL.into_iter().map(Preset::wait).max().unwrap_or(1)
+    }
+}
 
 /// The fewest rows a width's usual window holds for that width to judge a source.
 const GATE: f64 = 10.0;
@@ -146,14 +200,15 @@ pub struct Band {
     pub high: f64,
 }
 
-/// What a normal is learned with: the sources an editor said to learn again from a time on ([`marks::Reset`]), the
-/// past periods an editor said were normal or an outage ([`marks::Period`]), and the sender fields an editor changed
-/// ([`marks::SourceFields`]).
+/// What a normal is learned and judged with: the sources an editor said to learn again from a time on
+/// ([`marks::Reset`]), the past periods an editor said were normal or an outage ([`marks::Period`]), the sender fields
+/// an editor changed ([`marks::SourceFields`]), and the presets an editor picked ([`marks::Picked`]).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Learning {
     pub reset: Vec<marks::Reset>,
     pub periods: Vec<marks::Period>,
     pub fields: Vec<marks::SourceFields>,
+    pub presets: Vec<marks::Picked>,
 }
 
 impl Learning {
@@ -164,7 +219,13 @@ impl Learning {
             reset: marks.reset,
             periods: marks.periods,
             fields: marks.fields,
+            presets: marks.presets,
         }
+    }
+
+    /// The presets `group`'s `source`, and its senders, are judged at.
+    pub fn presets_of(&self, group: &str, source: &str) -> Presets {
+        marks::presets_of(&self.presets, group, source)
     }
 
     /// Whether `field` of `group`'s `source` is not watched, as an editor left it (`marks::SourceFields::watches`).
@@ -234,10 +295,10 @@ pub struct Judged {
     pub window: Duration,
     pub rows: f64,
     pub band: Band,
-    /// This reading and the [`WAIT`] - 1 before it were each below their range.
+    /// This reading and those before it its [`Preset`] waits for were each below their range.
     pub below: bool,
-    /// This reading and the [`WAIT`] - 1 before it were each above their range, at [`WINDOW`], the one width above
-    /// normal is judged at.
+    /// This reading and those before it its [`Preset`] waits for were each above their range, at [`WINDOW`], the one
+    /// width above normal is judged at.
     pub above: bool,
 }
 
@@ -418,10 +479,11 @@ pub fn grouped(rows: f64) -> String {
 }
 
 /// One width's normal as of one time: the usual window at each time of day, and the lowest and highest ratios to
-/// it.
+/// it, judged at `preset`.
 #[derive(Debug, Clone, PartialEq)]
 struct Normal {
     width: Width,
+    preset: Preset,
     /// By the bucket of the day a window ends at. None where too few days had one.
     usual: Vec<Option<f64>>,
     low: f64,
@@ -432,9 +494,10 @@ impl Normal {
     /// The range of the window ending at `ended_ms`, or None where this width does not judge the source.
     fn band(&self, ended_ms: i64) -> Option<Band> {
         let usual = self.usual[time_of_day(ended_ms)].filter(|&t| t >= GATE)?;
+        let margin = self.preset.margin();
         Some(Band {
-            low: (1.0 - MARGIN) * ((usual + 1.0) * self.low - 1.0).max(0.0),
-            high: (1.0 + MARGIN) * ((usual + 1.0) * self.high - 1.0),
+            low: (1.0 - margin) * ((usual + 1.0) * self.low - 1.0).max(0.0),
+            high: (1.0 + margin) * ((usual + 1.0) * self.high - 1.0),
         })
     }
 }
@@ -444,26 +507,28 @@ fn time_of_day(ended_ms: i64) -> usize {
     (ended_ms.rem_euclid(DAY_MS) / BUCKET.bucket_ms()) as usize
 }
 
-/// `width`'s normal as of `as_of`, from the windows learned that ended before it, or None while it has no ratio at all.
+/// `width`'s normal at `preset` as of `as_of`, from the windows learned that ended before it, or None while it has no
+/// ratio at all.
 /// Its history is its newest learned windows, as many as fit in [`Width::history_days`] days, and a time of day's usual
 /// window is learned from the newest [`USUAL_DAYS`] days with a learned window near it. Both reach back past what is
 /// not learned, as far as [`lookback_ms`], so a warning that holds for days is still judged against the days before it.
 /// Each window's usual window is that of its time of day as of `as_of`, so every window of the history is set against
 /// the same days. Each window and its usual window get one more row, so a time of day that is usually empty divides
 /// like any other.
-fn normal(rows: &Rows, warned: &Warned, as_of: i64, width: Width) -> Option<Normal> {
+fn normal(rows: &Rows, warned: &Warned, as_of: i64, width: Width, preset: Preset) -> Option<Normal> {
     let step = BUCKET.bucket_ms();
     let per_day = DAY_MS / step;
     // Each learned window, newest first, with how many buckets before `as_of` it ended. A window is learned once a
-    // whole width, and the `WAIT` readings in a row a warning needs, have passed since it ended: until then a window it
-    // shares a bucket with may yet warn and leave it unlearned (`Warned::during`). Learned sooner, a drop that takes
-    // its width to show would teach the normal its own first hours and never fall under it. A window that contains
-    // rows an editor said were normal waits only for those readings, so marking the warning that is up teaches its
-    // level within the hour.
-    let learned: Vec<(i64, f64)> = (WAIT..=lookback_ms() / step)
+    // whole width, and the readings in a row a warning waits for at `preset`, have passed since it ended: until then a
+    // window it shares a bucket with may yet warn and leave it unlearned (`Warned::during`). Learned sooner, a drop that
+    // takes its width to show would teach the normal its own first hours and never fall under it. A window that
+    // contains rows an editor said were normal waits only for those readings, so marking the warning that is up
+    // teaches its level within the hour.
+    let wait = preset.wait();
+    let learned: Vec<(i64, f64)> = (wait..=lookback_ms() / step)
         .filter_map(|i| {
             let ended = as_of - i * step;
-            let waited = i >= WAIT + width.buckets() || warned.said_normal(ended, width.ms());
+            let waited = i >= wait + width.buckets() || warned.said_normal(ended, width.ms());
             let sum = rows
                 .window(ended, width)
                 .filter(|_| waited && !warned.during(ended, width.ms()))?;
@@ -515,6 +580,7 @@ fn normal(rows: &Rows, warned: &Warned, as_of: i64, width: Width) -> Option<Norm
     ratios.sort_by(f64::total_cmp);
     Some(Normal {
         width,
+        preset,
         low: quantile(&ratios, TAIL),
         high: quantile(&ratios, 1.0 - TAIL),
         usual,
@@ -644,13 +710,14 @@ fn sender_normals(
 ) -> Result<HashMap<SenderKey, Vec<Normal>>, super::store::StoreError> {
     let mut out = HashMap::new();
     for of_source in watched.chunk_by(|a, b| (&a.0, &a.1) == (&b.0, &b.1)) {
+        let preset = learning.presets_of(&of_source[0].0, &of_source[0].1).senders;
         let history = senders::history(store, of_source, oldest)?;
         let warned = Warned::of_senders(store, history.keys(), oldest, learning);
         out.extend(history.into_iter().map(|(key, of)| {
             let rows = Rows::of(&of, oldest, as_of);
             let normals = WIDTHS
                 .iter()
-                .filter_map(|&width| normal(&rows, &warned[&key], as_of, width))
+                .filter_map(|&width| normal(&rows, &warned[&key], as_of, width, preset))
                 .collect();
             (key, normals)
         }));
@@ -669,16 +736,17 @@ fn learned(
 ) -> Vec<Normal> {
     let rows = Rows::of(of, oldest, as_of);
     let warned = Warned::of(store, &key.0, &key.1, oldest, learning);
+    let preset = learning.presets_of(&key.0, &key.1).rows;
     WIDTHS
         .iter()
-        .filter_map(|&width| normal(&rows, &warned, as_of, width))
+        .filter_map(|&width| normal(&rows, &warned, as_of, width, preset))
         .collect()
 }
 
 /// [`Readings::at`] without the cache: each source's reading at `ended_ms` against what was `learned`.
 fn compute(store: &RegistryStore, ended_ms: i64, learning: &Learning, learned: &Learned) -> Vec<Reading> {
     let widest = WIDTHS.iter().map(|w| w.ms()).max().unwrap_or_default();
-    let oldest = ended_ms - (WAIT - 1) * BUCKET.bucket_ms() - widest;
+    let oldest = ended_ms - (Preset::longest_wait() - 1) * BUCKET.bucket_ms() - widest;
     let buckets = match history(store, BUCKET.and_finer(), BUCKET, oldest) {
         Ok(buckets) => buckets,
         Err(e) => {
@@ -792,7 +860,8 @@ fn judge(rows: &Rows, warned: &Warned, normal: &Normal, ended_ms: i64) -> Option
     };
     let (now, band) = read(ended_ms)?;
     let each = |past: fn(f64, Band) -> bool| {
-        (0..WAIT).all(|i| read(ended_ms - i * BUCKET.bucket_ms()).is_some_and(|(rows, band)| past(rows, band)))
+        (0..normal.preset.wait())
+            .all(|i| read(ended_ms - i * BUCKET.bucket_ms()).is_some_and(|(rows, band)| past(rows, band)))
     };
     Some(Judged {
         window: normal.width.window,
@@ -857,9 +926,9 @@ struct Warned {
     /// When its rows teach its normal nothing: while a stop about it held, unless an editor said that period was
     /// normal; in any period an editor said was an outage; and before an editor reset its history.
     unlearned: Spans,
-    /// Each below-normal warning about it, from the first reading it waited for ([`waited_from`]), less the periods an
-    /// editor said were normal. One that began in such a period is learned whole, so marking one that still holds
-    /// teaches the level it reads.
+    /// Each below-normal warning about it, from the first reading it may have waited for at any preset
+    /// ([`waited_from`]), less the periods an editor said were normal: its preset may have been another when it was
+    /// raised. One raised in such a period is learned whole, so marking one that still holds teaches the level it reads.
     below: Spans,
     /// When a below-normal warning about it that still holds began.
     held_since: Option<i64>,
@@ -934,8 +1003,8 @@ impl Warned {
                 .min(),
             below: less(
                 below
-                    .map(|s| (waited_from(s), s.ended_millis))
-                    .filter(|&(from, _)| !normal.iter().any(|&(began, ended)| (began..=ended).contains(&from)))
+                    .filter(|s| !normal.iter().any(|&(from, to)| (from..=to).contains(&s.started_millis)))
+                    .map(|s| (waited_from(s, Preset::longest_wait()), s.ended_millis))
                     .collect(),
                 &normal,
             ),
@@ -975,18 +1044,19 @@ impl Warned {
     }
 }
 
-/// The earliest the first reading a below-normal warning waited for can have ended: [`WAIT`] buckets before the
-/// warning was seen. That reading ended [`WAIT`] - 1 buckets before the one that raised the warning, and the warning
-/// was seen up to a heartbeat, taken as one bucket, after that.
-fn waited_from(warning: &warnings::WarningSpan) -> i64 {
-    warning.started_millis - WAIT * BUCKET.bucket_ms()
+/// The earliest the first reading a below-normal warning raised after `wait` readings waited for can have ended:
+/// `wait` buckets before the warning was seen. That reading ended `wait` - 1 buckets before the one that raised the
+/// warning, and the warning was seen up to a heartbeat, taken as one bucket, after that.
+fn waited_from(warning: &warnings::WarningSpan, wait: i64) -> i64 {
+    warning.started_millis - wait * BUCKET.bucket_ms()
 }
 
 /// How many of a source's longest quiet spells [`past`] lists.
 const LONGEST_LISTED: usize = 10;
 
-/// What a source did over the past year that an editor may say was normal or an outage ([`marks::Period`]).
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+/// What a source did over the past year that an editor may say was normal or an outage ([`marks::Period`]), and the
+/// preset it is judged at.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Past {
     /// Its below-normal warnings, newest first: each from the first reading it waited for until it ended, or until now
@@ -994,6 +1064,18 @@ pub struct Past {
     pub warnings: Vec<PastSpan>,
     /// Its longest quiet spells, longest first.
     pub silences: Vec<PastSpan>,
+    pub preset: Preset,
+}
+
+impl Default for Past {
+    /// Nothing, as for a source with no history, at the preset it has until an editor picks another.
+    fn default() -> Self {
+        Past {
+            warnings: Vec::new(),
+            silences: Vec::new(),
+            preset: Presets::default().rows,
+        }
+    }
 }
 
 /// One span of [`Past`], and whether its source's normal learns from it.
@@ -1015,6 +1097,7 @@ pub fn past(
 ) -> Result<Past, super::store::StoreError> {
     let year = now_ms - YEAR_MS;
     let warned = Warned::of(store, group, source, year, learning);
+    let preset = learning.presets_of(group, source).rows;
     let span = |from_millis: i64, to_millis: i64| PastSpan {
         from_millis,
         to_millis,
@@ -1027,13 +1110,14 @@ pub fn past(
             .iter()
             .rev()
             .filter(|s| s.condition == Condition::SourceRowsBelow)
-            .map(|s| span(waited_from(s), s.ended_millis.unwrap_or(now_ms)))
+            .map(|s| span(waited_from(s, preset.wait()), s.ended_millis.unwrap_or(now_ms)))
             .collect(),
         silences: silences
             .into_iter()
             .take(LONGEST_LISTED)
             .map(|(ended, length)| span(ended - length, ended))
             .collect(),
+        preset,
     })
 }
 
@@ -1307,6 +1391,7 @@ pub fn expected_over(
     };
     let rows = Rows::of(&of, oldest, last);
     let warned = Warned::of(store, group, source, oldest, learning);
+    let preset = learning.presets_of(group, source).rows;
     let mut normals: HashMap<i64, Option<Normal>> = HashMap::new();
     let mut out = Vec::new();
     let mut ended_ms = first;
@@ -1314,7 +1399,7 @@ pub fn expected_over(
         let as_of = Tier::OneHour.align(ended_ms);
         let normal = normals
             .entry(as_of)
-            .or_insert_with(|| normal(&rows, &warned, as_of, width));
+            .or_insert_with(|| normal(&rows, &warned, as_of, width, preset));
         if let Some(band) = normal.as_ref().and_then(|n| n.band(ended_ms)) {
             let seconds = width.window.as_secs_f64();
             out.push(ExpectedPoint {
@@ -1589,14 +1674,55 @@ mod tests {
         assert_eq!(r.shown().unwrap().window, WINDOW);
     }
 
+    /// What is learned with once an editor picked `preset` for `g`'s `s`, or for its `senders`.
+    fn at_preset(preset: Preset, senders: bool) -> Learning {
+        let mut presets = Presets::default();
+        *if senders {
+            &mut presets.senders
+        } else {
+            &mut presets.rows
+        } = preset;
+        Learning {
+            presets: vec![marks::Picked {
+                group: "g".into(),
+                source: "s".into(),
+                presets,
+                by: "John".into(),
+            }],
+            ..Learning::default()
+        }
+    }
+
+    /// A preset's margin widens the range by its share of each edge.
     #[test]
-    fn a_source_that_stops_is_below_on_its_fourth_reading() {
+    fn a_presets_margin_widens_its_range() {
+        let store = store_with(7, |_| Some(100.0));
+        for (preset, low, high) in [
+            (Preset::Fast, 50.0, 150.0),
+            (Preset::Sensitive, 80.0, 120.0),
+            (Preset::Balanced, 70.0, 130.0),
+            (Preset::Quiet, 50.0, 150.0),
+        ] {
+            let r = reading_at(&store, END, &at_preset(preset, false)).unwrap();
+            assert_eq!(r.judged[0].band, Band { low, high }, "{preset:?}");
+        }
+    }
+
+    /// A stop reads below every preset's range, so each sees it on the last reading it waits for, and not before.
+    #[test]
+    fn a_source_that_stops_is_below_on_the_last_reading_its_preset_waits_for() {
         let stopped =
             |buckets: i64| store_with(7, move |at| Some(if at >= END - buckets * FIVE { 0.0 } else { 100.0 }));
-        assert_eq!(reading(&stopped(3)).unwrap().outside, None, "three readings wait");
-        let r = reading(&stopped(4)).unwrap();
-        assert_eq!(r.outside, Some(Outside::Below));
-        assert_eq!(r.shown().unwrap().window, WIDTHS[0].window);
+        assert_eq!(Learning::default().presets_of("g", "s").rows, Preset::Balanced);
+        for preset in Preset::ALL {
+            let learning = at_preset(preset, false);
+            let wait = preset.wait();
+            let before = reading_at(&stopped(wait - 1), END, &learning).unwrap();
+            assert_eq!(before.outside, None, "{preset:?} waits {wait} readings");
+            let r = reading_at(&stopped(wait), END, &learning).unwrap();
+            assert_eq!(r.outside, Some(Outside::Below), "{preset:?}");
+            assert_eq!(r.shown().unwrap().window, WIDTHS[0].window);
+        }
     }
 
     /// `rows(bucket)` sent by the `devname` `value` of `g`'s `s`, in each bucket [`store_with`] reads its rows in.
@@ -1628,37 +1754,48 @@ mod tests {
             .unwrap();
     }
 
-    /// Each sender's reading at `END`, by its value.
-    fn sender_readings_at_end(store: &RegistryStore) -> BTreeMap<String, Option<Outside>> {
-        let learning = Learning::default();
-        let learned = learn(store, END, &learning, None);
-        compute(store, END, &learning, &learned)
+    /// Each sender's reading at `END`, learned with `learning`, by its value.
+    fn sender_readings_at_end(store: &RegistryStore, learning: &Learning) -> BTreeMap<String, Option<Outside>> {
+        let learned = learn(store, END, learning, None);
+        compute(store, END, learning, &learned)
             .into_iter()
             .filter_map(|r| Some((r.sender?.value, r.outside)))
             .collect()
     }
 
-    /// A sender that stops sending reads nothing where its field was counted, and is below on its fourth reading,
-    /// though its source is not; one that keeps sending is within its range.
+    /// A sender that stops sending reads nothing where its field was counted, and is below on the last reading its
+    /// preset waits for, though its source is not; one that keeps sending is within its range.
     #[test]
     fn a_sender_that_stops_is_below_though_its_source_is_not() {
-        let stopped = |at: i64| at >= END - 4 * FIVE;
+        let stopped = |at: i64| at >= END - Presets::default().senders.wait() * FIVE;
         let store = store_with(7, |at| Some(if stopped(at) { 90.0 } else { 100.0 }));
         send(&store, 7, "fw-01", |at| (!stopped(at)).then_some(10));
         send(&store, 7, "fw-07", |_| Some(90));
-        let read = sender_readings_at_end(&store);
+        let read = sender_readings_at_end(&store, &Learning::default());
         assert_eq!(read["fw-01"], Some(Outside::Below));
         assert_eq!(read["fw-07"], None);
+    }
+
+    /// A source's senders are judged at their own preset, whatever the source's is.
+    #[test]
+    fn a_sender_is_judged_at_its_sources_senders_preset() {
+        let stopped = |at: i64| at >= END - FIVE;
+        let store = store_with(7, |at| Some(if stopped(at) { 90.0 } else { 100.0 }));
+        send(&store, 7, "fw-01", |at| (!stopped(at)).then_some(10));
+        send(&store, 7, "fw-07", |_| Some(90));
+        let below = |learning: &Learning| sender_readings_at_end(&store, learning)["fw-01"] == Some(Outside::Below);
+        assert!(!below(&at_preset(Preset::Fast, false)));
+        assert!(below(&at_preset(Preset::Fast, true)));
     }
 
     /// When the whole source stops, its own warning says so: none of its senders is judged on that reading.
     #[test]
     fn a_sender_is_not_judged_on_the_reading_its_source_is_below() {
-        let stopped = |at: i64| at >= END - 4 * FIVE;
+        let stopped = |at: i64| at >= END - Presets::default().senders.wait() * FIVE;
         let store = store_with(7, |at| Some(if stopped(at) { 0.0 } else { 100.0 }));
         send(&store, 7, "fw-01", |at| (!stopped(at)).then_some(10));
         send(&store, 7, "fw-07", |at| (!stopped(at)).then_some(90));
-        assert_eq!(sender_readings_at_end(&store), BTreeMap::new());
+        assert_eq!(sender_readings_at_end(&store, &Learning::default()), BTreeMap::new());
     }
 
     /// A field the pipeline stops delivering, as after a change renames it, leaves its senders unjudged; a field still
@@ -1666,12 +1803,13 @@ mod tests {
     #[test]
     fn a_field_no_longer_counted_judges_none_of_its_senders() {
         use crate::heartbeat::{SenderCounts, StreamReport};
-        let stopped = |at: i64| at >= END - 4 * FIVE;
+        let wait = Presets::default().senders.wait();
+        let stopped = |at: i64| at >= END - wait * FIVE;
         let store = store_with(7, |_| Some(100.0));
         send(&store, 7, "fw-01", |at| (!stopped(at)).then_some(10));
         send(&store, 7, "fw-07", |at| (!stopped(at)).then_some(90));
         assert!(
-            !sender_readings_at_end(&store)
+            !sender_readings_at_end(&store, &Learning::default())
                 .values()
                 .any(|o| *o == Some(Outside::Below)),
             "no worker counted the field"
@@ -1686,10 +1824,10 @@ mod tests {
             }],
             ..Default::default()
         };
-        for at in (END - 4 * FIVE..=END).step_by(FIVE as usize) {
+        for at in (END - wait * FIVE..=END).step_by(FIVE as usize) {
             store.record_streams("g", &counted, true, None, at).unwrap();
         }
-        let read = sender_readings_at_end(&store);
+        let read = sender_readings_at_end(&store, &Learning::default());
         assert_eq!(read["fw-01"], Some(Outside::Below));
         assert_eq!(read["fw-07"], Some(Outside::Below));
     }
@@ -1872,15 +2010,18 @@ mod tests {
     #[test]
     fn a_width_learns_no_window_that_shares_a_bucket_with_one_a_below_warning_read() {
         let (store, outage) = outage_and_stop();
-        // Raised on the outage's fourth reading, and seen a heartbeat later.
+        // Raised on the outage's fourth reading, and seen a heartbeat later. Its preset may have waited the longest any
+        // waits.
         let ended = outage + 2 * HOUR;
-        warned(&store, "source_rows_below", outage + 5 * FIVE, Some(ended));
+        let started = outage + 5 * FIVE;
+        warned(&store, "source_rows_below", started, Some(ended));
+        let first = started - Preset::longest_wait() * FIVE;
         for width in WIDTHS {
             let w = width.ms();
-            assert!(learns(&store, outage + FIVE - w, width), "{width:?}: the window before");
+            assert!(learns(&store, first - w, width), "{width:?}: the window before");
             assert!(
-                !learns(&store, outage + 2 * FIVE - w, width),
-                "{width:?}: the first that shares a bucket with the first reading it waited for"
+                !learns(&store, first + FIVE - w, width),
+                "{width:?}: the first that shares a bucket with the first reading it may have waited for"
             );
             assert!(
                 !learns(&store, ended + w - FIVE, width),

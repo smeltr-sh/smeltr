@@ -8,6 +8,7 @@
   import Button, { BUSY } from './Button.svelte';
   import ChevronIcon from './ChevronIcon.svelte';
   import Help from './Help.svelte';
+  import PresetPicker from './PresetPicker.svelte';
   import Sparkline from './Sparkline.svelte';
   import StateMark from './StateMark.svelte';
   import { holds } from './access';
@@ -17,7 +18,9 @@
     getSourceSenders,
     lowerSender,
     putSenderFields,
+    putSourcePreset,
     type FieldNowDto,
+    type Preset,
     type SenderNowDto,
   } from './api';
   import { Busy } from './busy.svelte';
@@ -37,6 +40,7 @@
 
   let fields = $state<FieldNowDto[] | null>(null);
   let watchesNew = $state(true);
+  let preset = $state<Preset | null>(null);
   let problem = $state('');
   /** Folded open or closed by hand; a field with a sender below normal starts open. */
   let folded = $state<Record<string, boolean>>({});
@@ -54,6 +58,7 @@
         if (!current()) return;
         fields = answer.ok ? answer.fields : null;
         watchesNew = answer.ok ? answer.watchesNew : true;
+        preset = answer.ok ? answer.preset : null;
         problem = answer.ok ? '' : errorText(answer.errors);
       })
       .catch((e) => {
@@ -128,6 +133,15 @@
     });
   }
 
+  function pickPreset(picked: Preset) {
+    if (busy.on) return;
+    void busy.run(async () => {
+      const answer = await putSourcePreset(group, source, { senders: picked });
+      problem = answer.ok ? '' : errorText(answer.errors);
+      await read();
+    });
+  }
+
   function lower(field: string, sender: SenderNowDto) {
     if (busy.on) return;
     void busy.run(async () => {
@@ -170,6 +184,11 @@
 </script>
 
 <section>
+  {#if preset}
+    <div class="preset">
+      <PresetPicker value={preset} label="Senders' preset" {editor} pick={pickPreset} />
+    </div>
+  {/if}
   <div class="head">
     <h3>Fields <Help label="Fields">{HELP}</Help></h3>
     {#if fields}
@@ -310,6 +329,12 @@
     justify-content: space-between;
     gap: 0.3rem 0.6rem;
     margin: 0 0 0.5rem;
+  }
+
+  .preset {
+    padding-bottom: 0.85rem;
+    margin-bottom: 0.85rem;
+    border-bottom: 1px solid var(--border);
   }
 
   .head label {

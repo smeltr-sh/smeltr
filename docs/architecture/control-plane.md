@@ -336,16 +336,29 @@ raises info. Its rows are judged at four widths: the last 5 minutes, 30 minutes,
 6 hours and 24 hours. At each, the usual window is the same window at the same
 time of day on the last seven days learned, and the range is the usual window
 scaled by how far that width's learned windows strayed from theirs, a week of
-them for the short widths and four weeks for the long. A width judges a source
-only where its usual window holds ten rows, so a busy source is judged at every
-width and a sparse one at the long ones. A source too sparse for any width is
-judged by the gap: how long it has gone without a row, against half again the
-longest quiet spell it made in the past year. A source warns once some width
-reads below its range four times in a row, or once it outlasts the gap, and the
+them for the short widths and four weeks for the long, and widened by the
+source's preset. A width judges a source only where its usual window holds ten
+rows, so a busy source is judged at every width and a sparse one at the long
+ones. A source too sparse for any width is judged by the gap: how long it has
+gone without a row, against half again the longest quiet spell it made in the
+past year. A source warns once some width reads below its range for as many
+readings in a row as its preset requires, or once it outlasts the gap, and the
 warning holds until some width judges the source and none reads it below its
 range, or, where only the gap judges it, until the first row after it began that
 ends a quiet spell the gap read below. Rows above normal are judged at 30
 minutes alone.
+
+A source's preset sets how soon a drop warns against how often a brief dip does:
+how much wider than its learned spread the range is, and how many readings in a
+row below it warn. Fast warns at the first reading and on the most dips;
+Sensitive and Balanced wait longer; Quiet waits longest and warns on the fewest.
+Each is a point the detector was measured at
+(`docs/research/normal-detector/paper.md`), so an editor picks one of four
+measured trade-offs, never a value in between. A stop reads below every range,
+so the wait alone sets how soon one is seen. A source is at Balanced until an
+editor in its worker group picks another on its History tab on the Map, and the
+leader keeps the pick with who made it. A pick applies from the next reading, to
+everything already learned. The gap is the same at every preset.
 
 What a below-normal warning read, and the time a stop held, are not learned, so
 an outage does not widen the normal. Nor is a window learned until a whole width
@@ -393,7 +406,7 @@ flowchart LR
   D -- once a day --> P{sent steadily on seven days in a row}
   P -- yes: watched --> J[judged at the four widths against its own normal]
   D -- a watched sender's rows --> J
-  J -- below its range at a width, four readings in a row --> X[Senders below normal]
+  J -- below its range at a width, as many readings in a row as its preset requires --> X[Senders below normal]
 ```
 
 Each day the leader picks which values to watch: a value is watched once it went
@@ -407,15 +420,17 @@ its rows, and its day rows once no pick reads them. A newly watched sender is
 judged once it has three days of rows.
 
 A watched sender is judged at the four widths, below normal only and never by
-the gap. It is judged only where its field was counted, so a field that a
-pipeline change takes out leaves its senders unjudged rather than all below, and
-so does a bucket the leader lost to a restart. It is not judged while its source
-warns that its rows are below normal or that it is blocked, refused, waiting or
-unreachable, nor on the reading its source crosses: the source's own warning
-says more. Senders of one source that cross on one reading raise one warning
-that names them, and a sender that crosses later raises another. The warning
-says which of its senders are back within their range, and ends once all of them
-are.
+the gap, at the preset picked for its source's senders. That preset is Quiet
+until an editor picks another on the Senders tab: each sender warns on its own,
+so a source with many senders has that many chances for a dip to warn. It is
+judged only where its field was counted, so a field that a pipeline change takes
+out leaves its senders unjudged rather than all below, and so does a bucket the
+leader lost to a restart. It is not judged while its source warns that its rows
+are below normal or that it is blocked, refused, waiting or unreachable, nor on
+the reading its source crosses: the source's own warning says more. Senders of
+one source that cross on one reading raise one warning that names them, and a
+sender that crosses later raises another. The warning says which of its senders
+are back within their range, and ends once all of them are.
 
 An editor in the source's worker group lowers one sender's warning to info, and
 a warning all of whose senders were lowered is info. An editor also stops

@@ -1,6 +1,7 @@
 //! What an editor said about a source, as marks: lower the warning on its rows that holds to info; reset its history,
-//! so its normal is learned again from now; say a past period of it was normal or an outage (`throughput`); and say
-//! which of its fields name its senders, and lower a sender's warning to info (`senders`).
+//! so its normal is learned again from now; say a past period of it was normal or an outage (`throughput`); pick the
+//! preset it is judged at, and the one its senders are; and say which of its fields name its senders, and lower a
+//! sender's warning to info (`senders`).
 //!
 //! A lowered warning stays on the Issues page for everyone, marked as info, and the views that judge health leave
 //! it out. It is named by when it began, so it stays lowered until it ends, and the next one is a warning again.
@@ -23,7 +24,7 @@ use super::envelope::{Empty, Envelope, Refusal};
 use super::senders::Sender;
 use super::series::YEAR_MS;
 use super::store::{Actor, Store};
-use super::throughput::{self, Learning};
+use super::throughput::{self, Learning, Preset, Presets};
 use super::warnings::{self, Condition, SubjectKind};
 use crate::heartbeat::SenderFields;
 
@@ -42,6 +43,8 @@ pub struct Marks {
     pub periods: Vec<Period>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<SourceFields>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub presets: Vec<Picked>,
 }
 
 /// A source's rows warning that began at `since_millis`, or one of its sender's, lowered to info by `by`.
@@ -90,6 +93,25 @@ impl SourceFields {
     fn unchecked(&self, field: &str) -> bool {
         self.edits.unchecked.iter().any(|f| f == field)
     }
+}
+
+/// The presets `by` last picked for a source and its senders. Only those other than the default are kept.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Picked {
+    pub group: String,
+    pub source: String,
+    #[serde(flatten)]
+    pub presets: Presets,
+    pub by: String,
+}
+
+/// The presets `group`'s `source`, and its senders, are judged at, as `picked`.
+pub fn presets_of(picked: &[Picked], group: &str, source: &str) -> Presets {
+    picked
+        .iter()
+        .find(|p| p.group == group && p.source == source)
+        .map_or_else(Presets::default, |p| p.presets)
 }
 
 /// A source whose normal `by` said to learn again from `from_millis` on.
@@ -160,6 +182,25 @@ impl Marks {
                     && Some(l.since_millis) == since_millis
             })
             .map(|l| l.by.as_str())
+    }
+
+    /// Picks `picking` for `group`'s `source`, by `by`, keeping the preset it does not name.
+    fn pick(&mut self, group: &str, source: &str, picking: Picking, by: &str) {
+        let was = presets_of(&self.presets, group, source);
+        let presets = Presets {
+            rows: picking.rows.unwrap_or(was.rows),
+            senders: picking.senders.unwrap_or(was.senders),
+        };
+        self.presets
+            .retain(|p| (p.group.as_str(), p.source.as_str()) != (group, source));
+        if presets != Presets::default() {
+            self.presets.push(Picked {
+                group: group.into(),
+                source: source.into(),
+                presets,
+                by: by.into(),
+            });
+        }
     }
 
     /// What an editor changed of the sender fields of each of `group`'s sources.
@@ -413,6 +454,35 @@ pub async fn reset_history(
         .await
 }
 
+/// The preset to pick for a source, for its senders, or for both.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Picking {
+    pub rows: Option<Preset>,
+    pub senders: Option<Preset>,
+}
+
+/// `PUT /api/areas/:area/sources/:id/preset`: picks the preset the source is judged at, the one its senders are, or
+/// both. The one not named stays as it was.
+pub async fn put_preset(
+    State(state): State<AppState>,
+    actor: Option<axum::Extension<Actor>>,
+    Path((group, source)): Path<(String, String)>,
+    Json(picking): Json<Picking>,
+) -> Envelope<Empty> {
+    let marking = Marking {
+        group,
+        source,
+        sender: None,
+        action: "source-preset",
+    };
+    marking
+        .write(state, actor, move |marks, m, _, actor, _| {
+            marks.pick(&m.group, &m.source, picking, &actor.display_name);
+            Ok(())
+        })
+        .await
+}
+
 /// A past period of a source, and what to mark it.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -480,10 +550,13 @@ pub async fn past(
     Path((group, source)): Path<(String, String)>,
 ) -> Envelope<throughput::Past> {
     super::blocking_answer(move || {
-        let Some(store) = state.registry.series() else {
-            return Envelope::ok(throughput::Past::default());
-        };
         let learning = Learning::read(&state.store);
+        let Some(store) = state.registry.series() else {
+            return Envelope::ok(throughput::Past {
+                preset: learning.presets_of(&group, &source).rows,
+                ..throughput::Past::default()
+            });
+        };
         throughput::past(store, &group, &source, warnings::now_millis(), &learning).into()
     })
     .await
@@ -560,6 +633,26 @@ mod tests {
         assert!(!fields.watches("user") && fields.is_new("user"));
         let open = SourceFields { locked: None, ..fields };
         assert!(open.watches("user") && !open.is_new("user"));
+    }
+
+    /// A preset picked replaces the one picked before and keeps the one it does not name, and a source at the defaults
+    /// keeps no mark.
+    #[test]
+    fn a_picked_preset_replaces_the_one_before_and_the_default_is_not_kept() {
+        let mut marks = Marks::default();
+        let pick = |rows, senders| Picking { rows, senders };
+        marks.pick("g", "s", pick(Some(Preset::Fast), None), "John");
+        marks.pick("g", "s", pick(Some(Preset::Quiet), None), "John");
+        marks.pick("g", "s", pick(None, Some(Preset::Sensitive)), "John");
+        let expected = Presets {
+            rows: Preset::Quiet,
+            senders: Preset::Sensitive,
+        };
+        assert_eq!(presets_of(&marks.presets, "g", "s"), expected);
+        assert_eq!(presets_of(&marks.presets, "g", "other"), Presets::default());
+        let back = Presets::default();
+        marks.pick("g", "s", pick(Some(back.rows), Some(back.senders)), "John");
+        assert_eq!(marks.presets, []);
     }
 
     #[test]

@@ -1203,8 +1203,15 @@ async fn setup_leader(
             post(smeltr::leader::marks::reset_history),
         )
         .route("/api/areas/:area/sources/:id/mark", post(smeltr::leader::marks::mark))
+        .route(
+            "/api/areas/:area/sources/:id/preset",
+            put(smeltr::leader::marks::put_preset),
+        )
         .route("/api/areas/:area/sources/:id/past", get(smeltr::leader::marks::past))
-        .route("/api/areas/:area/sources/:id/senders", get(smeltr::leader::senders::get))
+        .route(
+            "/api/areas/:area/sources/:id/senders",
+            get(smeltr::leader::senders::get),
+        )
         .route(
             "/api/areas/:area/sources/:id/senders/lower",
             post(smeltr::leader::marks::lower_sender),
