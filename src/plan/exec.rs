@@ -112,7 +112,7 @@ fn run_instr(layout: &[DataType], instr: &Instr, batch: &mut Batch, ctx: &mut Ct
     if let Some(dead) = instr.reuse {
         batch.take_dead(dead).reclaim(ctx.pool);
     }
-    if let Some(written) = skipped(instr, batch, ctx.live) {
+    if let Some(written) = skipped(instr, batch) {
         // Every reader takes the prior on every row: a null of the slot's type is all it needs.
         for slot in written {
             batch.put(slot, Column::empty(layout[slot].clone(), batch.rows()), ctx.pool);
@@ -160,8 +160,8 @@ fn run_instr(layout: &[DataType], instr: &Instr, batch: &mut Batch, ctx: &mut Ct
                     }
                 },
                 Call::Lookup(l) => {
-                    let live = spread::selected(batch, guard, ctx.live);
-                    lookup::run(input, l, outputs, &live, batch, ctx.pool);
+                    let taken = spread::selected(batch, guard, ctx.live);
+                    lookup::run(input, l, outputs, &taken, batch, ctx.pool);
                     convert_outputs(outputs, batch, ctx);
                 }
             }
@@ -445,9 +445,8 @@ fn retract_masked(instr: &Instr, start: usize, batch: &Batch, ctx: &mut Ctx) {
         Op::Call { guard, .. } => *guard,
         _ => instr.guard,
     };
-    let masks: Vec<SlotId> = [guard, ctx.live].into_iter().flatten().collect();
-    if !masks.is_empty() && ctx.errors.len() > start {
-        let taken = row_mask(batch, &masks);
+    if ctx.errors.len() > start {
+        let taken = spread::selected(batch, guard, ctx.live);
         ctx.errors.retract_from(start, |row| taken[row as usize]);
     }
 }
@@ -459,18 +458,18 @@ fn row_mask(batch: &Batch, slots: &[SlotId]) -> Vec<bool> {
         .collect()
 }
 
-/// The slots `instr` writes when it takes no row of `batch`: it then does not run, and they are written empty. That is
-/// an `Eval` lifted ahead of the guarded expression that reads it (`Instr::guard`), or a call whose guard takes no row
-/// or whose rows are all dropped (`Ctx::live`). What it writes is read only on the rows it takes, through a blend that
-/// keeps the prior elsewhere, and never on a dropped row. A parse that merges into an object's unclaimed fields is the
-/// exception and runs. `None` where it runs.
-fn skipped(instr: &Instr, batch: &Batch, live: Option<SlotId>) -> Option<Vec<SlotId>> {
-    let (masks, written) = match &instr.op {
-        // An eval's own slot may be read as a bitmap (`__live`, a guard), which a skipped slot is not, so only the
-        // guard it is lifted under skips it.
-        Op::Eval { .. } => ([instr.guard, None], vec![instr.out]),
+/// The slots `instr` writes where its guard takes no row of `batch`: an `Eval` lifted ahead of the
+/// guarded expression that reads it (`Instr::guard`), or a call under a guard. What either writes is read only on the
+/// rows its guard takes, by a blend that keeps the prior elsewhere, so it is not computed. A parse that merges into
+/// an object's unclaimed fields is the exception and runs. `None` where it runs.
+fn skipped(instr: &Instr, batch: &Batch) -> Option<Vec<SlotId>> {
+    let (guard, written) = match &instr.op {
+        Op::Eval { .. } => (instr.guard?, vec![instr.out]),
         Op::Call {
-            guard, outputs, call, ..
+            guard: Some(guard),
+            outputs,
+            call,
+            ..
         } => {
             let mut written: Vec<SlotId> = outputs.iter().map(|o| o.slot).collect();
             if let Call::Parse { objects, .. } = call {
@@ -481,22 +480,16 @@ fn skipped(instr: &Instr, batch: &Batch, live: Option<SlotId>) -> Option<Vec<Slo
                 }
                 written.extend(objects.iter().map(|o| o.out));
             }
-            ([*guard, live], written)
+            (*guard, written)
         }
         _ => return None,
     };
+    let g = batch.peek(guard).bool().ok()?;
     let rows = batch.rows();
-    let mut taken: Option<Vec<u64>> = None;
-    for mask in masks.into_iter().flatten() {
-        let g = batch.peek(mask).bool().ok()?;
-        let mut selects = vec![0u64; bits::words_for(rows)];
-        bits::and_into(&mut selects, g.validity.bits(), g.values, rows);
-        match &mut taken {
-            Some(t) => t.iter_mut().zip(&selects).for_each(|(t, s)| *t &= s),
-            None => taken = Some(selects),
-        }
-    }
-    (bits::popcount(&taken?) == 0).then_some(written)
+    let words = bits::words_for(rows);
+    let mut taken = vec![0u64; words];
+    bits::and_into(&mut taken, g.validity.bits(), g.values, rows);
+    (bits::popcount(&taken) == 0).then_some(written)
 }
 
 /// Whether `row` is selected by `guard` (`None` selects every row).
@@ -555,9 +548,8 @@ fn run_loop(
     // `run_wave` overwrites `ctx.function` per nested instruction.
     let function = ctx.function;
 
-    let live: Vec<u32> = (0..rows as u32)
-        .filter(|&r| row_is_live(batch, guard, r as usize) && row_is_live(batch, ctx.live, r as usize))
-        .collect();
+    let taken = spread::selected(batch, guard, ctx.live);
+    let live: Vec<u32> = (0..rows as u32).filter(|&r| taken[r as usize]).collect();
     let rows_out = live.len() as u64;
     // Each row's element count, where the loop walks an array.
     let lens: Option<Vec<u32>> = spec.array.map(|(array, _)| {
@@ -837,7 +829,7 @@ fn explode_array(
     let mut offsets = vec![0u32; rows + 1];
     let mut element_row: Vec<u32> = Vec::new();
     let mut element_idx: Vec<u32> = Vec::new();
-    let taken = row_mask(batch, &[guard, ctx.live].into_iter().flatten().collect::<Vec<_>>());
+    let taken = spread::selected(batch, guard, ctx.live);
     for row in 0..rows {
         if holds(row) && taken[row] {
             for i in array_offsets[row]..array_offsets[row + 1] {
@@ -854,7 +846,7 @@ fn explode_array(
         exploded.put(slot, col, ctx.pool);
     }
     let elem_col = match list {
-        Some(list) if taken.iter().all(|&t| t) && !list.validity.has_nulls() => list.child.deep_copy(ctx.pool),
+        Some(list) if !taken.contains(&false) && !list.validity.has_nulls() => list.child.deep_copy(ctx.pool),
         Some(list) => list.child.gather(ctx.pool, &element_idx),
         None => Column::empty(element_ty, 0),
     };
