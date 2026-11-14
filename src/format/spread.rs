@@ -649,16 +649,18 @@ impl<'d> Spread<'d> {
     }
 }
 
-/// Whether each row is one `guard` selects; every row without one. A parser visits only these: a row it skips lays
-/// nothing, so its unclaimed fields stay as they were and its fields are null, which the guard's blend discards.
-pub fn selected(batch: &Batch, guard: Option<SlotId>) -> Vec<bool> {
-    let rows = batch.rows();
-    match guard.map(|g| batch.peek(g).bool().expect("a guard is Bool")) {
-        Some(live) => (0..rows)
-            .map(|r| live.validity.is_valid(r) && bits::get_row(live.values, r))
-            .collect(),
-        None => vec![true; rows],
+/// Whether each row is selected by `guard` and kept by `live` (`Ctx::live`); a missing one selects every row. A parser
+/// visits only these: a row it skips lays nothing, so its unclaimed fields stay as they were and its fields are null.
+/// The guard's blend discards that null, and the serializer never reads a dropped row.
+pub fn selected(batch: &Batch, guard: Option<SlotId>, live: Option<SlotId>) -> Vec<bool> {
+    let mut rows = vec![true; batch.rows()];
+    for mask in [guard, live].into_iter().flatten() {
+        let mask = batch.peek(mask).bool().expect("a guard is Bool");
+        for (r, keep) in rows.iter_mut().enumerate() {
+            *keep &= mask.validity.is_valid(r) && bits::get_row(mask.values, r);
+        }
     }
+    rows
 }
 
 /// One format's reading of a row into a `Spread`. A scanner is made once per batch, which is where its format's
@@ -701,7 +703,7 @@ pub fn parse_batch<S: Scanner>(
     ctx: &mut Ctx,
 ) {
     let rows = batch.rows();
-    let live = selected(batch, guard);
+    let live = selected(batch, guard, ctx.live);
     // A scanner reads rows, and a `__source` field every record shares is one value.
     batch.get_mut(input_slot).expand(ctx.pool);
     let collapsed = {

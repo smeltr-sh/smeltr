@@ -54,19 +54,17 @@ pub fn run_scoped<'a>(
     // Positional, resolved to the author's own id at the wire (`Plan::id`).
     let pipeline = plan.id_label.as_str();
 
-    // Only needed for `smeltr_rows_dropped_total`; every instruction's own prior `__live` reference is baked into its `Ir`.
-    let mut live_slot = SLOT_LIVE;
+    ctx.live = Some(SLOT_LIVE);
     // What this call added, for the error metric. `Unroll` remaps from the wider `ctx.pipeline_error_start` instead:
     // ingest's decode notes share these rows, but belong to the record, not to each route that delivers it.
     let own_start = ctx.errors.len();
 
     for instr in &plan.instrs {
         // A `Drop` step's instruction is the one whose output slot is named `__live`.
-        let redefines_live = metrics.is_some() && plan.provenance.get(instr.out).is_some_and(|o| o.name == "__live");
-        let live_before = if redefines_live {
-            live_popcount(batch, live_slot)
-        } else {
-            0
+        let redefines_live = plan.provenance.get(instr.out).is_some_and(|o| o.name == "__live");
+        let live_before = match (redefines_live, ctx.live) {
+            (true, Some(live)) if metrics.is_some() => live_popcount(batch, live),
+            _ => 0,
         };
         let started = metrics.map(|_| Instant::now());
         // One `Scratch` per top-level instruction: a loop's is charged for everything its trips hold.
@@ -75,10 +73,14 @@ pub fn run_scoped<'a>(
         buffer::check();
         drop(scratch);
 
+        // A `__live` that the guard it was lifted under skipped is an empty column (`skipped`), not a bitmap, so the
+        // rows still live stay the last binding's.
+        if redefines_live && batch.peek(instr.out).bool().is_ok() {
+            ctx.live = Some(instr.out);
+        }
         if let Some(m) = metrics {
             if redefines_live {
-                live_slot = instr.out;
-                let dropped = live_before.saturating_sub(live_popcount(batch, live_slot));
+                let dropped = live_before.saturating_sub(live_popcount(batch, instr.out));
                 incr_per_function(m, pipeline, instr.function, "smeltr_rows_dropped_total", dropped);
             }
             // A loop is timed here, at its own dispatch, and not inside: its body runs once per wave over a
@@ -97,6 +99,7 @@ pub fn run_scoped<'a>(
         }
     }
 
+    ctx.live = None;
     if let Some(m) = metrics {
         record_error_metrics(m, pipeline, ctx.errors, own_start);
     }
@@ -109,7 +112,7 @@ fn run_instr(layout: &[DataType], instr: &Instr, batch: &mut Batch, ctx: &mut Ct
     if let Some(dead) = instr.reuse {
         batch.take_dead(dead).reclaim(ctx.pool);
     }
-    if let Some(written) = skipped(instr, batch) {
+    if let Some(written) = skipped(instr, batch, ctx.live) {
         // Every reader takes the prior on every row: a null of the slot's type is all it needs.
         for slot in written {
             batch.put(slot, Column::empty(layout[slot].clone(), batch.rows()), ctx.pool);
@@ -157,7 +160,8 @@ fn run_instr(layout: &[DataType], instr: &Instr, batch: &mut Batch, ctx: &mut Ct
                     }
                 },
                 Call::Lookup(l) => {
-                    lookup::run(input, l, outputs, guard, batch, ctx.pool);
+                    let live = spread::selected(batch, guard, ctx.live);
+                    lookup::run(input, l, outputs, &live, batch, ctx.pool);
                     convert_outputs(outputs, batch, ctx);
                 }
             }
@@ -441,10 +445,9 @@ fn retract_masked(instr: &Instr, start: usize, batch: &Batch, ctx: &mut Ctx) {
         Op::Call { guard, .. } => *guard,
         _ => instr.guard,
     };
-    if let Some(g) = guard
-        && ctx.errors.len() > start
-    {
-        let taken = row_mask(batch, &[g]);
+    let masks: Vec<SlotId> = [guard, ctx.live].into_iter().flatten().collect();
+    if !masks.is_empty() && ctx.errors.len() > start {
+        let taken = row_mask(batch, &masks);
         ctx.errors.retract_from(start, |row| taken[row as usize]);
     }
 }
@@ -456,18 +459,18 @@ fn row_mask(batch: &Batch, slots: &[SlotId]) -> Vec<bool> {
         .collect()
 }
 
-/// The slots `instr` writes where its guard takes no row of `batch`: an `Eval` lifted ahead of the
-/// guarded expression that reads it (`Instr::guard`), or a call under a guard. What either writes is read only on the
-/// rows its guard takes, by a blend that keeps the prior elsewhere, so it is not computed. A parse that merges into
-/// an object's unclaimed fields is the exception and runs. `None` where it runs.
-fn skipped(instr: &Instr, batch: &Batch) -> Option<Vec<SlotId>> {
-    let (guard, written) = match &instr.op {
-        Op::Eval { .. } => (instr.guard?, vec![instr.out]),
+/// The slots `instr` writes when it takes no row of `batch`: it then does not run, and they are written empty. That is
+/// an `Eval` lifted ahead of the guarded expression that reads it (`Instr::guard`), or a call whose guard takes no row
+/// or whose rows are all dropped (`Ctx::live`). What it writes is read only on the rows it takes, through a blend that
+/// keeps the prior elsewhere, and never on a dropped row. A parse that merges into an object's unclaimed fields is the
+/// exception and runs. `None` where it runs.
+fn skipped(instr: &Instr, batch: &Batch, live: Option<SlotId>) -> Option<Vec<SlotId>> {
+    let (masks, written) = match &instr.op {
+        // An eval's own slot may be read as a bitmap (`__live`, a guard), which a skipped slot is not, so only the
+        // guard it is lifted under skips it.
+        Op::Eval { .. } => ([instr.guard, None], vec![instr.out]),
         Op::Call {
-            guard: Some(guard),
-            outputs,
-            call,
-            ..
+            guard, outputs, call, ..
         } => {
             let mut written: Vec<SlotId> = outputs.iter().map(|o| o.slot).collect();
             if let Call::Parse { objects, .. } = call {
@@ -478,16 +481,22 @@ fn skipped(instr: &Instr, batch: &Batch) -> Option<Vec<SlotId>> {
                 }
                 written.extend(objects.iter().map(|o| o.out));
             }
-            (*guard, written)
+            ([*guard, live], written)
         }
         _ => return None,
     };
-    let g = batch.peek(guard).bool().ok()?;
     let rows = batch.rows();
-    let words = bits::words_for(rows);
-    let mut taken = vec![0u64; words];
-    bits::and_into(&mut taken, g.validity.bits(), g.values, rows);
-    (bits::popcount(&taken) == 0).then_some(written)
+    let mut taken: Option<Vec<u64>> = None;
+    for mask in masks.into_iter().flatten() {
+        let g = batch.peek(mask).bool().ok()?;
+        let mut selects = vec![0u64; bits::words_for(rows)];
+        bits::and_into(&mut selects, g.validity.bits(), g.values, rows);
+        match &mut taken {
+            Some(t) => t.iter_mut().zip(&selects).for_each(|(t, s)| *t &= s),
+            None => taken = Some(selects),
+        }
+    }
+    (bits::popcount(&taken?) == 0).then_some(written)
 }
 
 /// Whether `row` is selected by `guard` (`None` selects every row).
@@ -778,6 +787,7 @@ fn run_wave(
 ) -> Vec<(u32, Region)> {
     let start = ctx.errors.len();
     let outer = std::mem::take(&mut ctx.leaving);
+    let live = ctx.live.take();
     ctx.regions.push(None);
     for instr in body {
         run_instr(layout, instr, wave, ctx, scope);
@@ -793,6 +803,7 @@ fn run_wave(
     let begun = ctx.regions.pop();
     debug_assert!(matches!(begun, Some(None)), "a loop body closes every region it opens");
     ctx.errors.remap_rows_from(start, |row| vec![active[row as usize]]);
+    ctx.live = live;
     let leaving = std::mem::replace(&mut ctx.leaving, outer);
     leaving.into_iter().map(|(r, to)| (active[r as usize], to)).collect()
 }

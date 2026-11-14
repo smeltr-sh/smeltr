@@ -57,6 +57,9 @@ pub struct Ctx<'a> {
     pub leaving: Vec<(u32, crate::expr::ast::Region)>,
     /// What each `catch` took, by the slot of its text, for a `throw` to give back.
     pub caught: Vec<(SlotId, Vec<crate::core::error::Exception>)>,
+    /// The slot of `__live` as the last step left it. A dropped row takes no later step: a kernel passes it by, and
+    /// what an instruction raises on it is retracted. `None` in a loop's wave, whose rows are another batch's.
+    pub live: Option<SlotId>,
 }
 
 /// A region being run (`plan::exec`).
@@ -102,6 +105,7 @@ impl<'a> Ctx<'a> {
             regions: Vec::new(),
             leaving: Vec::new(),
             caught: Vec::new(),
+            live: None,
         }
     }
 

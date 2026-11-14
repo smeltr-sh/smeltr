@@ -992,12 +992,12 @@ impl OutBuilder {
 /// Run one lookup: stringify every row's `input` value (see [`stringify_key`]), match it against the table per its
 /// multiplicity, and write each of `outputs`' matched column or path, as text, straight into its own slot. A row with
 /// no match writes that output's own default, or null (an empty array under `All`), never an exception, as an absent
-/// JSON key does.
+/// JSON key does. Only the rows `live` selects (`spread::selected`) are looked up.
 pub fn run(
     input: SlotId,
     lookup: &Lookup,
     outputs: &[Output],
-    guard: Option<SlotId>,
+    live: &[bool],
     batch: &mut Batch,
     pool: &mut BufferPool,
 ) {
@@ -1008,7 +1008,6 @@ pub fn run(
     } = lookup;
     let (table, multiplicity) = (&**table, *multiplicity);
     let rows = batch.rows();
-    let live = crate::format::spread::selected(batch, guard);
     // The key is read by row, and a `__source` field every record shares is one value.
     batch.get_mut(input).expand(pool);
     let col = batch.peek(input);
@@ -1097,7 +1096,7 @@ pub fn run(
     }
 
     for (out, builder) in outputs.iter().zip(builders) {
-        let col = builder.finish(pool, &live);
+        let col = builder.finish(pool, live);
         batch.put(out.slot, col, pool);
     }
 }
@@ -1155,7 +1154,7 @@ mod tests {
                 time_source: None,
             })
             .collect();
-        run(SLOT_RAW, &lookup, &outputs, None, batch, pool);
+        run(SLOT_RAW, &lookup, &outputs, &vec![true; batch.rows()], batch, pool);
     }
 
     // -- from_csv -----------------------------------------------------

@@ -513,6 +513,37 @@ fn an_if_else_counts_a_failing_row_once() {
     assert_eq!(function_metric(&m, "smeltr_rows_errored_total", 1), 1);
 }
 
+/// A dropped row takes no later step: neither a code step nor a parser after the drop raises on it, and the parser
+/// does not read it.
+#[test]
+fn a_dropped_row_raises_nothing_in_a_later_step() {
+    let parse_s = func(
+        3,
+        FunctionKind::Parser {
+            input: "j".to_string(),
+            into: "p".into(),
+            kind: ParserKind::Json { split_dots: false },
+            declared: vec![],
+        },
+    );
+    let plan = ok(vec![
+        code(0, &json("s: str; j: str;")),
+        code(1, r#"if (s == "x") drop();"#),
+        code(2, "n: i64 = parseInt(s);"),
+        parse_s,
+    ]);
+    let m = run_with_metrics(&plan, &[r#"{"s":"x","j":"x"}"#, r#"{"s":"7","j":"{\"a\":1}"}"#]);
+    assert_eq!(function_metric(&m, "smeltr_rows_dropped_total", 1), 1);
+    let errored = |f: &str| {
+        counter(
+            m.registry(),
+            "smeltr_rows_errored_total",
+            &[("pipeline", "0"), ("function", f)],
+        )
+    };
+    assert_eq!((errored("2"), errored("3")), (None, None));
+}
+
 /// A `catch` that rethrows leaves its exception counted, once; one that does not leaves it uncounted.
 #[test]
 fn a_rethrown_exception_counts_once_and_a_caught_one_not_at_all() {
