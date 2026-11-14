@@ -9,6 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::core::batch::SLOT_LIVE;
 use crate::core::column::DataType;
 use crate::core::error::ExceptionKind;
 use crate::core::id::{FunctionId, SlotId};
@@ -82,15 +83,17 @@ pub struct Instr {
     /// reader set `reuse` rests on; a slot liveness did not see read is already a slot it would hand away.
     pub constant_ok: bool,
     pub function: FunctionId,
+    /// The `__live` binding in force as the instruction runs. A row dropped before it takes no step, so a kernel
+    /// visits only the rows this keeps, and what the instruction raises on any other row is retracted
+    /// (`plan::exec::retract_masked`). `None` in a loop's body, whose rows are its wave's.
+    pub live: Option<SlotId>,
 }
 
 impl Instr {
     /// Every slot this instruction reads from the batch it runs on, its guard included, a slot possibly more than
     /// once. A loop's body runs on the loop's wave, so what it reads counts here, less the slots the loop fills itself.
     pub fn reads(&self, f: &mut impl FnMut(SlotId)) {
-        if let Some(g) = self.guard {
-            f(g);
-        }
+        self.guard.iter().chain(&self.live).copied().for_each(&mut *f);
         match &self.op {
             Op::Eval { ir } => walk_slots(ir, f),
             Op::Call { input, guard, call, .. } => {
@@ -726,8 +729,21 @@ pub fn compile(p: &PipelineConfig, meta: &SourceMeta) -> Result<Plan, Vec<Compil
     // them comes twice.
     let mut seen = HashSet::new();
     plan.warnings.retain(|w| seen.insert((w.function, w.message.clone())));
+    stamp_live(&mut plan);
     liveness(&mut plan);
     Ok(plan)
+}
+
+/// Each top-level instruction's `Instr::live`: the `__live` binding before it. A `Drop` step's instruction is the
+/// one whose output is named `__live`.
+fn stamp_live(plan: &mut Plan) {
+    let mut live = SLOT_LIVE;
+    for instr in &mut plan.instrs {
+        instr.live = Some(live);
+        if plan.provenance.get(instr.out).is_some_and(|o| o.name == "__live") {
+            live = instr.out;
+        }
+    }
 }
 
 /// What a `while`'s condition is called where it is not a `bool`.
@@ -1347,6 +1363,7 @@ impl Compiler<'_> {
             guard: None,
             reuse: None,
             constant_ok: false,
+            live: None,
             function: id,
         });
         self.hoisted.insert(out, depth);
@@ -1595,6 +1612,7 @@ impl Compiler<'_> {
             guard: None,
             reuse: None,
             constant_ok: false,
+            live: None,
             function,
         });
     }
@@ -1662,6 +1680,7 @@ impl Compiler<'_> {
             guard: reach,
             reuse: None,
             constant_ok: false,
+            live: None,
             function: f,
         });
     }
@@ -4015,6 +4034,7 @@ impl Compiler<'_> {
             guard,
             reuse: None,
             constant_ok: false,
+            live: None,
             function: id,
         });
     }
@@ -4106,6 +4126,7 @@ impl Compiler<'_> {
                     guard,
                     reuse: None,
                     constant_ok: false,
+                    live: None,
                     function: id,
                 });
             }
@@ -4163,6 +4184,7 @@ impl Compiler<'_> {
             guard,
             reuse: None,
             constant_ok: false,
+            live: None,
             function: id,
         });
         true

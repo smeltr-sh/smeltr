@@ -163,7 +163,8 @@ mod tests {
 
         let mut ctx = Ctx::new(&mut pool, &mut errors);
         let grok = Grok::new(&matcher, true, &fields, batch.peek(SLOT_RAW));
-        spread::parse_batch(grok, SLOT_RAW, &fields, &[], None, &mut batch, &mut ctx);
+        let every = vec![true; batch.rows()];
+        spread::parse_batch(grok, SLOT_RAW, &fields, &[], &every, &mut batch, &mut ctx);
         inspect(&plan, &batch);
         batch.reclaim(&mut pool);
         errors

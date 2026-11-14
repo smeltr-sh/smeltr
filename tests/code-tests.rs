@@ -513,6 +513,57 @@ fn an_if_else_counts_a_failing_row_once() {
     assert_eq!(function_metric(&m, "smeltr_rows_errored_total", 1), 1);
 }
 
+/// A dropped row takes no later step: neither a code step nor a parser after the drop raises on it, and the parser
+/// does not read it.
+#[test]
+fn a_dropped_row_raises_nothing_in_a_later_step() {
+    let parse_s = func(
+        3,
+        FunctionKind::Parser {
+            input: "j".to_string(),
+            into: "p".into(),
+            kind: ParserKind::Json { split_dots: false },
+            declared: vec![],
+        },
+    );
+    let plan = ok(vec![
+        code(0, &json("s: str; j: str;")),
+        code(1, r#"if (s == "x") drop();"#),
+        code(2, "n: i64 = parseInt(s);"),
+        parse_s,
+    ]);
+    let m = run_with_metrics(&plan, &[r#"{"s":"x","j":"x"}"#, r#"{"s":"7","j":"{\"a\":1}"}"#]);
+    assert_eq!(function_metric(&m, "smeltr_rows_dropped_total", 1), 1);
+    let errored = |f: &str| {
+        counter(
+            m.registry(),
+            "smeltr_rows_errored_total",
+            &[("pipeline", "0"), ("function", f)],
+        )
+    };
+    assert_eq!((errored("2"), errored("3")), (None, None));
+}
+
+/// A loop takes no trip on a dropped row: a dropped row's long array adds no wave, and an array method no element.
+#[test]
+fn a_loop_takes_no_trip_on_a_dropped_row() {
+    let plan = ok(vec![
+        code(0, &json("s: str; xs: array<i64>;")),
+        code(1, r#"if (s == "x") drop();"#),
+        code(
+            2,
+            "best: i64 = 0; for (let x of xs) { if (x > best) { best = x; } } r = xs.map(v => 10 / v);",
+        ),
+    ]);
+    let live = r#"{"s":"y","xs":[1]}"#;
+    let dropped = r#"{"s":"x","xs":[0,0,0]}"#;
+    assert_eq!(
+        function_calls(&plan, &[dropped, live], 2),
+        function_calls(&plan, &[live], 2)
+    );
+    assert!(run_scoped_on(&plan, &[dropped, live], None).entries().is_empty());
+}
+
 /// A `catch` that rethrows leaves its exception counted, once; one that does not leaves it uncounted.
 #[test]
 fn a_rethrown_exception_counts_once_and_a_caught_one_not_at_all() {
