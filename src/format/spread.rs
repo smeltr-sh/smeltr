@@ -649,9 +649,9 @@ impl<'d> Spread<'d> {
     }
 }
 
-/// Whether each row is selected by `guard` and kept by `live` (`Ctx::live`); a missing one selects every row. A parser
-/// visits only these: a row it skips lays nothing, so its unclaimed fields stay as they were and its fields are null.
-/// The guard's blend discards that null, and the serializer never reads a dropped row.
+/// Whether each row is selected by `guard` and kept by `live` (`Instr::live`); a missing one selects every row. A
+/// parser visits only these: a row it skips lays nothing, so its unclaimed fields stay as they were and its fields are
+/// null. The guard's blend discards that null, and the serializer never reads a dropped row.
 pub fn selected(batch: &Batch, guard: Option<SlotId>, live: Option<SlotId>) -> Vec<bool> {
     let mut rows = vec![true; batch.rows()];
     for mask in [guard, live].into_iter().flatten() {
@@ -691,29 +691,28 @@ pub trait Scanner {
     ) -> Option<bool>;
 }
 
-/// Scan every row `guard` selects into `outputs` and the unclaimed fields of `objects`. A row that does not parse is
+/// Scan every row `taken` selects into `outputs` and the unclaimed fields of `objects`. A row that does not parse is
 /// marked on `input_slot`: a parse exception or, for a variant, a refused conversion.
 pub fn parse_batch<S: Scanner>(
     scanner: S,
     input_slot: SlotId,
     outputs: &[Output],
     objects: &[ParseObject],
-    guard: Option<SlotId>,
+    taken: &[bool],
     batch: &mut Batch,
     ctx: &mut Ctx,
 ) {
     let rows = batch.rows();
-    let live = selected(batch, guard, ctx.live);
     // A scanner reads rows, and a `__source` field every record shares is one value.
     batch.get_mut(input_slot).expand(ctx.pool);
     let collapsed = {
         let mut spread = Spread::new(rows, outputs, objects, scanner.split_dots(), batch, ctx);
         spread.converts = S::CONVERTS;
-        spread.read = live.iter().filter(|&&l| l).count();
+        spread.read = taken.iter().filter(|&&l| l).count();
         let input = batch.peek(input_slot);
         let mut scratch = S::Scratch::default();
         let start = ctx.errors.len();
-        for row in (0..rows).filter(|&r| live[r]) {
+        for row in (0..rows).filter(|&r| taken[r]) {
             if scanner.scan(input, row, &mut scratch, &mut spread, ctx.pool) == Some(false) {
                 let kind = match S::CONVERTS {
                     true => ExceptionKind::CoercionRefused { to: spread.top_type() },

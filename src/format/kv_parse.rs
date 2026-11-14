@@ -148,7 +148,8 @@ mod tests {
 
         let mut ctx = Ctx::new(&mut pool, &mut errors);
         let config = KvConfig::default();
-        spread::parse_batch(Kv(&config), SLOT_RAW, &fields, &objects, None, &mut batch, &mut ctx);
+        let every = vec![true; batch.rows()];
+        spread::parse_batch(Kv(&config), SLOT_RAW, &fields, &objects, &every, &mut batch, &mut ctx);
         assert!(errors.is_empty());
         let unclaimed_fields = batch.peek(objects[0].out).variant().unwrap();
         let row = crate::format::tag::decode(unclaimed_fields.get(0));
@@ -187,7 +188,8 @@ mod tests {
         let mut tally = crate::core::tally::FieldTally::new();
         let mut ctx = Ctx::new(&mut pool, &mut errors).tallying(&mut tally);
         let config = KvConfig::default();
-        spread::parse_batch(Kv(&config), SLOT_RAW, &fields, &objects, None, &mut batch, &mut ctx);
+        let every = vec![true; batch.rows()];
+        spread::parse_batch(Kv(&config), SLOT_RAW, &fields, &objects, &every, &mut batch, &mut ctx);
 
         let parses = tally.parses();
         assert_eq!(parses.len(), 1, "one parser step ran");
@@ -226,7 +228,8 @@ mod tests {
         let mut tally = crate::core::tally::FieldTally::new();
         let mut ctx = Ctx::new(&mut pool, &mut errors).tallying(&mut tally);
         let config = KvConfig::default();
-        spread::parse_batch(Kv(&config), SLOT_RAW, &fields, &objects, None, &mut batch, &mut ctx);
+        let every = vec![true; batch.rows()];
+        spread::parse_batch(Kv(&config), SLOT_RAW, &fields, &objects, &every, &mut batch, &mut ctx);
 
         let [parse] = tally.parses() else {
             panic!("one parser step ran")

@@ -141,7 +141,8 @@ mod tests {
 
         let mut ctx = Ctx::new(&mut pool, &mut errors);
         let csv = Csv::new(&config, &fields, batch.peek(SLOT_RAW));
-        spread::parse_batch(csv, SLOT_RAW, &fields, &[], None, &mut batch, &mut ctx);
+        let every = vec![true; batch.rows()];
+        spread::parse_batch(csv, SLOT_RAW, &fields, &[], &every, &mut batch, &mut ctx);
         assert!(errors.is_empty(), "a wide row still parses");
         let written = [SLOT_RAW, fields[0].slot, fields[1].slot];
         assert!(
@@ -174,7 +175,8 @@ mod tests {
 
         let mut ctx = Ctx::new(&mut pool, &mut errors);
         let csv = Csv::new(&config, &fields, batch.peek(SLOT_RAW));
-        spread::parse_batch(csv, SLOT_RAW, &fields, &[], None, &mut batch, &mut ctx);
+        let every = vec![true; batch.rows()];
+        spread::parse_batch(csv, SLOT_RAW, &fields, &[], &every, &mut batch, &mut ctx);
         assert!(errors.is_empty(), "every row parses");
 
         let slot = |name: &str| fields.iter().find(|f| f.name == name).unwrap().slot;

@@ -54,17 +54,19 @@ pub fn run_scoped<'a>(
     // Positional, resolved to the author's own id at the wire (`Plan::id`).
     let pipeline = plan.id_label.as_str();
 
-    ctx.live = Some(SLOT_LIVE);
+    // Only needed for `smeltr_rows_dropped_total`; every instruction's own prior `__live` reference is baked into its `Ir`.
+    let mut live_slot = SLOT_LIVE;
     // What this call added, for the error metric. `Unroll` remaps from the wider `ctx.pipeline_error_start` instead:
     // ingest's decode notes share these rows, but belong to the record, not to each route that delivers it.
     let own_start = ctx.errors.len();
 
     for instr in &plan.instrs {
         // A `Drop` step's instruction is the one whose output slot is named `__live`.
-        let redefines_live = plan.provenance.get(instr.out).is_some_and(|o| o.name == "__live");
-        let live_before = match (redefines_live, ctx.live) {
-            (true, Some(live)) if metrics.is_some() => live_popcount(batch, live),
-            _ => 0,
+        let redefines_live = metrics.is_some() && plan.provenance.get(instr.out).is_some_and(|o| o.name == "__live");
+        let live_before = if redefines_live {
+            live_popcount(batch, live_slot)
+        } else {
+            0
         };
         let started = metrics.map(|_| Instant::now());
         // One `Scratch` per top-level instruction: a loop's is charged for everything its trips hold.
@@ -73,14 +75,10 @@ pub fn run_scoped<'a>(
         buffer::check();
         drop(scratch);
 
-        // A `__live` that the guard it was lifted under skipped is an empty column (`skipped`), not a bitmap, so the
-        // rows still live stay the last binding's.
-        if redefines_live && batch.peek(instr.out).bool().is_ok() {
-            ctx.live = Some(instr.out);
-        }
         if let Some(m) = metrics {
             if redefines_live {
-                let dropped = live_before.saturating_sub(live_popcount(batch, instr.out));
+                live_slot = instr.out;
+                let dropped = live_before.saturating_sub(live_popcount(batch, live_slot));
                 incr_per_function(m, pipeline, instr.function, "smeltr_rows_dropped_total", dropped);
             }
             // A loop is timed here, at its own dispatch, and not inside: its body runs once per wave over a
@@ -99,7 +97,6 @@ pub fn run_scoped<'a>(
         }
     }
 
-    ctx.live = None;
     if let Some(m) = metrics {
         record_error_metrics(m, pipeline, ctx.errors, own_start);
     }
@@ -133,41 +130,46 @@ fn run_instr(layout: &[DataType], instr: &Instr, batch: &mut Batch, ctx: &mut Ct
             outputs,
             call,
         } => {
-            let (input, guard) = (*input, *guard);
+            let (input, taken) = (*input, spread::selected(batch, *guard, instr.live));
             match call {
                 Call::Parse { kind, matcher, objects } => match kind {
                     ParserKind::Json { split_dots } => {
                         let json = json_parse::Json(*split_dots);
-                        spread::parse_batch(json, input, outputs, objects, guard, batch, ctx)
+                        spread::parse_batch(json, input, outputs, objects, &taken, batch, ctx)
                     }
                     ParserKind::Csv(config) => {
                         let csv = csv_parse::Csv::new(config, outputs, batch.peek(input));
-                        spread::parse_batch(csv, input, outputs, objects, guard, batch, ctx)
+                        spread::parse_batch(csv, input, outputs, objects, &taken, batch, ctx)
                     }
                     ParserKind::KeyValue(config) => {
-                        spread::parse_batch(kv_parse::Kv(config), input, outputs, objects, guard, batch, ctx)
+                        spread::parse_batch(kv_parse::Kv(config), input, outputs, objects, &taken, batch, ctx)
                     }
                     ParserKind::Cef { split_dots } => {
-                        spread::parse_batch(kv_parse::Cef(*split_dots), input, outputs, objects, guard, batch, ctx)
+                        spread::parse_batch(kv_parse::Cef(*split_dots), input, outputs, objects, &taken, batch, ctx)
                     }
                     ParserKind::Variant => {
-                        spread::parse_batch(spread::Variant, input, outputs, objects, guard, batch, ctx)
+                        spread::parse_batch(spread::Variant, input, outputs, objects, &taken, batch, ctx)
                     }
                     ParserKind::Grok(config) => {
                         let matcher = matcher.as_deref().expect("a grok parse has its matcher");
                         let grok = grok_parse::Grok::new(matcher, config.split_dots, outputs, batch.peek(input));
-                        spread::parse_batch(grok, input, outputs, objects, guard, batch, ctx)
+                        spread::parse_batch(grok, input, outputs, objects, &taken, batch, ctx)
                     }
                 },
                 Call::Lookup(l) => {
-                    let taken = spread::selected(batch, guard, ctx.live);
                     lookup::run(input, l, outputs, &taken, batch, ctx.pool);
                     convert_outputs(outputs, batch, ctx);
                 }
             }
         }
-        Op::Loop(l) => run_loop(layout, l, batch, ctx, instr.guard, scope),
-        Op::ArrayFold(l) => run_array_fold(layout, l, batch, ctx, instr.guard, scope),
+        Op::Loop(l) => {
+            let taken = spread::selected(batch, instr.guard, instr.live);
+            run_loop(layout, l, batch, ctx, &taken, scope)
+        }
+        Op::ArrayFold(l) => {
+            let taken = spread::selected(batch, instr.guard, instr.live);
+            run_array_fold(layout, l, batch, ctx, &taken, scope)
+        }
         Op::Unroll { array, live, clear } => run_unroll(*array, *live, clear, instr.out, batch, layout, ctx),
         Op::Begin { region, mask } => {
             let col = match mask {
@@ -446,7 +448,7 @@ fn retract_masked(instr: &Instr, start: usize, batch: &Batch, ctx: &mut Ctx) {
         _ => instr.guard,
     };
     if ctx.errors.len() > start {
-        let taken = spread::selected(batch, guard, ctx.live);
+        let taken = spread::selected(batch, guard, instr.live);
         ctx.errors.retract_from(start, |row| taken[row as usize]);
     }
 }
@@ -530,25 +532,17 @@ fn record_error_metrics(
 }
 
 /// `Op::Loop`, as a wavefront: each trip runs `body` once over the rows still running, gathered into a wave. A row is
-/// done when its array runs out, or when a trip cleared its bit in `stay`; the wave compacts by `gather`. A row `guard`
-/// masks out, or whose array is empty or unbound, takes no trip and its accumulators retain. Rows finish out of order,
-/// so final values are reassembled in row order by `assemble`. A loop with no array stops at its budget, which belongs
-/// to the `Code` block (`Ctx::loop_owner`), and marks each row it stops.
+/// done when its array runs out, or when a trip cleared its bit in `stay`; the wave compacts by `gather`. A row that
+/// `taken` leaves out, or whose array is empty or unbound, takes no trip and its accumulators retain. Rows finish out
+/// of order, so final values are reassembled in row order by `assemble`. A loop with no array stops at its budget,
+/// which belongs to the `Code` block (`Ctx::loop_owner`), and marks each row it stops.
 ///
 /// With metrics, records `smeltr_rows_in_total` (batch width) and `smeltr_rows_out_total` (rows the guard let through).
-fn run_loop(
-    layout: &[DataType],
-    spec: &Loop,
-    batch: &mut Batch,
-    ctx: &mut Ctx,
-    guard: Option<SlotId>,
-    scope: MetricsScope,
-) {
+fn run_loop(layout: &[DataType], spec: &Loop, batch: &mut Batch, ctx: &mut Ctx, taken: &[bool], scope: MetricsScope) {
     let rows = batch.rows();
     // `run_wave` overwrites `ctx.function` per nested instruction.
     let function = ctx.function;
 
-    let taken = spread::selected(batch, guard, ctx.live);
     let live: Vec<u32> = (0..rows as u32).filter(|&r| taken[r as usize]).collect();
     let rows_out = live.len() as u64;
     // Each row's element count, where the loop walks an array.
@@ -779,7 +773,6 @@ fn run_wave(
 ) -> Vec<(u32, Region)> {
     let start = ctx.errors.len();
     let outer = std::mem::take(&mut ctx.leaving);
-    let live = ctx.live.take();
     ctx.regions.push(None);
     for instr in body {
         run_instr(layout, instr, wave, ctx, scope);
@@ -795,15 +788,14 @@ fn run_wave(
     let begun = ctx.regions.pop();
     debug_assert!(matches!(begun, Some(None)), "a loop body closes every region it opens");
     ctx.errors.remap_rows_from(start, |row| vec![active[row as usize]]);
-    ctx.live = live;
     let leaving = std::mem::replace(&mut ctx.leaving, outer);
     leaving.into_iter().map(|(r, to)| (active[r as usize], to)).collect()
 }
 
 /// The exploded batch the vectorized loops evaluate over: one pseudo-row per (row, element). `referenced` slots are
 /// broadcast by `gather` against a repeat index built from the array's offsets; the array's child column becomes
-/// `element_slot`. An unbound array is zero elements. So is a masked row's: under a guard the op visits the rows the
-/// loop would, and nothing a masked row holds can raise or cost.
+/// `element_slot`. An unbound array is zero elements. So is the array of a row that `taken` leaves out: the op visits
+/// the rows the loop would, and nothing a masked or dropped row holds can raise or cost.
 ///
 /// Returns the batch, each row's span in it, and each pseudo-row's row.
 fn explode_array(
@@ -812,7 +804,7 @@ fn explode_array(
     array: SlotId,
     element_slot: SlotId,
     referenced: &[SlotId],
-    guard: Option<SlotId>,
+    taken: &[bool],
     ctx: &mut Ctx,
 ) -> (Batch, Vec<u32>, Vec<u32>) {
     let rows = batch.rows();
@@ -824,12 +816,11 @@ fn explode_array(
     let array_offsets: Vec<u32> = list.as_ref().map_or(vec![0; rows + 1], |l| l.offsets.to_vec());
     // A null row's offsets may still span elements.
     let holds = |row: usize| list.as_ref().is_some_and(|l| l.validity.is_valid(row));
-    // Each row's span in the exploded batch, and which child elements it takes: every element of a row that the guard,
-    // if there is one, takes and `Ctx::live` keeps; none of a masked, dropped or null row.
+    // Each row's span in the exploded batch, and which child elements it takes: every element of a row `taken` selects;
+    // none of any other row or of a null row.
     let mut offsets = vec![0u32; rows + 1];
     let mut element_row: Vec<u32> = Vec::new();
     let mut element_idx: Vec<u32> = Vec::new();
-    let taken = spread::selected(batch, guard, ctx.live);
     for row in 0..rows {
         if holds(row) && taken[row] {
             for i in array_offsets[row]..array_offsets[row + 1] {
@@ -942,7 +933,7 @@ fn run_array_fold(
     spec: &ArrayFold,
     batch: &mut Batch,
     ctx: &mut Ctx,
-    guard: Option<SlotId>,
+    taken: &[bool],
     scope: MetricsScope,
 ) {
     use crate::plan::compile::FoldOp;
@@ -953,7 +944,7 @@ fn run_array_fold(
         spec.array,
         spec.element_slot,
         &spec.element_reads(),
-        guard,
+        taken,
         ctx,
     );
     let leaving = run_wave(layout, &spec.body, &mut exploded, &element_row, ctx, scope);
