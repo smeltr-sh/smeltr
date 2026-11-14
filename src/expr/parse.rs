@@ -1333,7 +1333,9 @@ impl<'s> Parser<'s> {
                     Spanned {
                         token: Token::Ident(n),
                         span,
-                    } if n.split('.').all(tree::is_plain) => (span, n.split('.').map(String::from).collect()),
+                    } if span.slice(p.src) == n && n.split('.').all(tree::is_plain) => {
+                        (span, n.split('.').map(String::from).collect())
+                    }
                     Spanned {
                         token: Token::Str(n),
                         span,
@@ -1918,8 +1920,6 @@ fn object_type(entries: Vec<(Span, Vec<String>, DataType)>, open: bool) -> Resul
     // The objects the paths made, by name. Only these take more paths; an object type written out is whole.
     let mut made: Vec<String> = Vec::new();
     for (span, path, ty) in entries {
-        let mut full = String::new();
-        path.iter().for_each(|k| tree::push_key(&mut full, k));
         let fail = |message: String| Err(ParseError { span, message });
         let (last, under) = path.split_last().expect("a field has a key");
         let mut at = &mut fields;
@@ -1937,7 +1937,7 @@ fn object_type(entries: Vec<(Span, Vec<String>, DataType)>, open: bool) -> Resul
             match &at[i].1 {
                 DataType::Struct(..) if made.contains(&name) => {}
                 DataType::Struct(..) => return fail(format!("object type names `{name}` twice")),
-                t => return fail(format!("`{full}` is a path under `{name}`, which is {}", t.spell())),
+                t => return fail(format!("`{name}` is {} and has no fields", t.spell())),
             }
             let DataType::Struct(inner, _) = &mut at[i].1 else {
                 unreachable!("an object the paths made")
@@ -1945,7 +1945,8 @@ fn object_type(entries: Vec<(Span, Vec<String>, DataType)>, open: bool) -> Resul
             at = inner;
         }
         if at.iter().any(|(k, _)| k == last) {
-            return fail(format!("object type names `{full}` twice"));
+            tree::push_key(&mut name, last);
+            return fail(format!("object type names `{name}` twice"));
         }
         at.push((last.clone(), ty));
     }
@@ -2981,10 +2982,14 @@ mod tests {
         assert_eq!(spelled("x: {\"a.b\": i64, a.c: str};"), "{\"a.b\": i64, a: {c: str}}");
         assert_eq!(spelled("x: array<{a.b: i64}>;"), "array<{a: {b: i64}}>");
         for (src, message) in [
-            ("x: {a: i64, a.b: str};", "`a.b` is a path under `a`, which is i64"),
+            ("x: {a: i64, a.b: str};", "`a` is i64 and has no fields"),
             ("x: {a.b: str, a: i64};", "object type names `a` twice"),
             ("x: {a: {c: i64}, a.b: str};", "object type names `a` twice"),
             ("x: {a.b: i64, a.b: str};", "object type names `a.b` twice"),
+            (
+                "x: {$.a: i64};",
+                "expected a field name in an object type: a name, or a string for a key that holds a dot",
+            ),
         ] {
             let e = parse_block(src).unwrap_err();
             assert_eq!(e.message, message, "{src}");
