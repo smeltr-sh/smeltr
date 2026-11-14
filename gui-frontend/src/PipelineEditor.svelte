@@ -402,6 +402,7 @@
       })
       .catch((e) => {
         loadFailed = true;
+        reported(e);
       })
       .finally(() => {
         loading = false;

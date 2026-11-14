@@ -695,23 +695,28 @@ fn to_fields(fields: &[FieldDto]) -> Result<Vec<(String, DataType)>, String> {
         .collect()
 }
 
-/// A parser step's own `declared` list: like `to_fields`, but a top-level `datetime` is legal here -- the parser
-/// pins the field to `Str` and the convert pass after the parse runs `parseTime` over it, auto-detected for the bare string and
-/// with the format for the object. A format is checked here, so a specifier `parseTime` lacks is refused where it is
-/// written. Every other type is exactly `to_data_type`'s, refusals included.
+/// Reads a top-level type, with the time source its text is read by: auto for the bare `"datetime"`, the checked format
+/// for a `datetime` object, and none for any other type, which `to_data_type` reads and refuses as usual.
+fn to_timed_type(ty: &DataTypeDto) -> Result<(DataType, Option<TimeSource>), String> {
+    let time = match ty {
+        DataTypeDto::Scalar(s) if s == "datetime" => TimeSource::Auto,
+        DataTypeDto::Compound(CompoundTypeDto::DateTime { format }) => {
+            timeparse::check_format(format).map_err(|e| format!("datetime format {format:?}: {e}"))?;
+            TimeSource::Format(format.clone())
+        }
+        other => return Ok((to_data_type(other)?, None)),
+    };
+    Ok((DataType::DateTime, Some(time)))
+}
+
+/// A parser step's own `declared` list: like `to_fields`, but a top-level `datetime` is legal here (`to_timed_type`):
+/// the parser pins the field to `Str` and the convert pass after the parse runs `parseTime` over it.
 fn to_declared_fields(fields: &[FieldDto]) -> Result<Vec<DeclaredField>, String> {
     fields
         .iter()
         .map(|f| {
             let build = || -> Result<DeclaredField, String> {
-                let (ty, time_source) = match &f.ty {
-                    DataTypeDto::Scalar(s) if s == "datetime" => (DataType::DateTime, Some(TimeSource::Auto)),
-                    DataTypeDto::Compound(CompoundTypeDto::DateTime { format }) => {
-                        timeparse::check_format(format).map_err(|e| format!("datetime format {format:?}: {e}"))?;
-                        (DataType::DateTime, Some(TimeSource::Format(format.clone())))
-                    }
-                    other => (to_data_type(other)?, None),
-                };
+                let (ty, time_source) = to_timed_type(&f.ty)?;
                 Ok(DeclaredField {
                     name: f.name.clone(),
                     ty,
@@ -730,18 +735,13 @@ fn to_lookup_output(o: &LookupOutputDto) -> Result<LookupOutput, String> {
     let build = || -> Result<LookupOutput, String> {
         let (ty, time_source) = match &o.ty {
             None => (DataType::Str, None),
-            Some(DataTypeDto::Scalar(s)) if s == "datetime" => (DataType::DateTime, Some(TimeSource::Auto)),
-            Some(DataTypeDto::Compound(CompoundTypeDto::DateTime { format })) => {
-                timeparse::check_format(format).map_err(|e| format!("datetime format {format:?}: {e}"))?;
-                (DataType::DateTime, Some(TimeSource::Format(format.clone())))
-            }
             Some(DataTypeDto::Scalar(s)) if s == "skip" => {
                 return Err("\"skip\" is not a type: leave the column out of the outputs instead".to_string());
             }
-            Some(DataTypeDto::Compound(_)) => {
+            Some(DataTypeDto::Compound(c)) if !matches!(c, CompoundTypeDto::DateTime { .. }) => {
                 return Err("a lookup output is one value: bool, i64, f64, str or datetime".to_string());
             }
-            Some(other) => (to_data_type(other)?, None),
+            Some(other) => to_timed_type(other)?,
         };
         let default = o.default.clone().filter(|d| !d.is_empty());
         if let Some(d) = &default
