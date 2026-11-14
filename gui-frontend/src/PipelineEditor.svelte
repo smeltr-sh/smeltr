@@ -10,7 +10,7 @@
   holds, else on the sample this pipeline last ran over in this browser.
 -->
 <script lang="ts">
-  import Button, { BUSY, SAVE_FIRST } from './Button.svelte';
+  import Button, { BUSY, INCOMPLETE, SAVE_FIRST } from './Button.svelte';
   import StateMark from './StateMark.svelte';
   import ExportDialog from './ExportDialog.svelte';
   import InlineError from './InlineError.svelte';
@@ -1010,13 +1010,15 @@
   }
 
   // Locking a test needs a saved pipeline to attach it to, a saved sample to
-  // name, and a run that actually produced the output being locked.
-  let canLockTest = $derived(
-    loadedId !== '' &&
-      selectedSample !== '' &&
-      !heldSession(selectedSample) &&
-      result !== null &&
-      result.ok,
+  // name, and a run that actually produced the output being locked. The lock
+  // page runs the saved pipeline, so an unsaved edit would lock what is not on
+  // screen.
+  let lockBlocked = $derived(
+    isDirty
+      ? SAVE_FIRST
+      : loadedId !== '' && selectedSample !== '' && !heldSession(selectedSample) && result?.ok
+        ? ''
+        : INCOMPLETE,
   );
 
   /** The output rows `rows` names, as a sample holds them. It re-runs the steps the grid ran, at the instant it ran
@@ -1681,7 +1683,7 @@
         {pause}
         {pauseRun}
         declared={{ before: sampleDeclared, after: runDeclared }}
-        canLock={canLockTest}
+        {lockBlocked}
         onlock={readOnly ? undefined : goLockTest}
         onsaveoutput={readOnly ? undefined : (rows) => (savingOutput = rows)}
         saveinput={!readOnly && choices.held && heldSession(selectedSample) === choices.held.session
