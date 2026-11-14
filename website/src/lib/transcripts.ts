@@ -12,8 +12,8 @@ const seconds = (time: string) => {
   return h * 3600 + m * 60 + s;
 };
 
-/** The spoken text of a course's video, in paragraphs split where the narrator pauses. Every released video has one,
- * so the build fails on one that doesn't. */
+/** The spoken text of a course's video, in paragraphs split where the narrator pauses. Every released video has
+ * one: the build fails for a video without one. */
 export async function transcript(course: string, video: string) {
   const load = files[`./transcripts/${course}/${video}.srt`];
   if (!load) throw new Error(`No transcript at src/lib/transcripts/${course}/${video}.srt`);

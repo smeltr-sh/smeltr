@@ -34,7 +34,8 @@
             />
           {/key}
         </div>
-        <!-- A course's own page plays its first video, which Learn search finds at the video's page. -->
+        <!-- A course's own page plays its first video. Learn search finds that video at its own page,
+          `/learn/{course}/{video}.html`. -->
         <div
           data-pagefind-body={page.params.video ? '' : undefined}
           data-pagefind-filter={page.params.video ? 'kind:video' : undefined}

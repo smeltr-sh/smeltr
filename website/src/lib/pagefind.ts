@@ -1,4 +1,4 @@
-/** What Pagefind indexes. A page says which it is with `data-pagefind-filter="kind:…"`. */
+/** The kinds of page the index holds. A page names its kind with `data-pagefind-filter="kind:…"`. */
 export type Kind = 'docs' | 'video';
 
 export type SectionResult = { title: string; url: string; excerpt: string };

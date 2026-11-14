@@ -136,7 +136,7 @@
                 >{:else}{video.title}{/if}
             </h2>
             {#if hits.has(href(entry))}
-              <!-- Pagefind escapes the page's text before it adds its highlight markup. -->
+              <!-- The excerpt is escaped except for its `<mark>`s, so it is rendered as HTML. -->
               <p class="excerpt">{@html hits.get(href(entry))}</p>
             {/if}
             <div class="tags">
