@@ -22,6 +22,7 @@ import {
   spots,
   toggle,
   ungate,
+  unchosen,
   unsent,
 } from './routeFlow';
 
@@ -213,5 +214,21 @@ describe("a route's name", () => {
       'k \u2192 p (2)',
       'k \u2192 Enrich',
     ]);
+  });
+});
+
+describe('a route left to be chosen', () => {
+  it('holds Save back, once a sentence, for a source or a pipeline nobody chose', () => {
+    const routes = [
+      { source: 'k', pipeline: 'p' },
+      { source: 'k', pipeline: '' },
+      { source: 'k', pipeline: '' },
+      { source: '', pipeline: '' },
+    ];
+    expect(unchosen(routes)).toEqual([
+      'a route from k names no pipeline',
+      'a route names no source',
+    ]);
+    expect(unchosen([routes[0]])).toEqual([]);
   });
 });
