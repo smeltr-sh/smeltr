@@ -28,8 +28,12 @@ const target = process.env.SMELTR_DEV_API ?? 'http://127.0.0.1:4000';
 export default defineConfig({
   plugins: [svelte()],
   resolve: { conditions: process.env.VITEST ? ['browser'] : undefined },
-  // happy-dom supplies localStorage; Node's own warns on every test worker that it has no file to keep it in.
-  test: { execArgv: ['--no-experimental-webstorage'] },
+  test: {
+    // happy-dom supplies localStorage; Node's own warns on every test worker that it has no file to keep it in.
+    execArgv: ['--no-experimental-webstorage'],
+    // `just check-all` runs these beside a cargo build, so a test's own waits must fit under load.
+    testTimeout: 20_000,
+  },
   server: {
     // Read from the website: its code tokenizer, and the palette and controls both share.
     fs: {
