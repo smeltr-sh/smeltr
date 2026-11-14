@@ -15,14 +15,8 @@ use smeltr::plan::topology::{
 };
 
 use crate::certs::{Authority, Issued};
+use crate::harness::receiver::free_loopback;
 use crate::live;
-
-fn free_port() -> SocketAddr {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-}
 
 /// A syslog receiver on `listen` admitting senders from `allow_from`, reading messages of up to `max` bytes.
 fn receiver(
@@ -65,16 +59,6 @@ fn open(
     let registry = Arc::new(smeltr::metrics::Metrics::new());
     let subjects = Arc::new(smeltr::metrics::Subjects::default());
     build_source(&SourceKind::Receiver(config), &registry, &subjects, secrets, None).expect("opens")
-}
-
-/// A port free for both TCP and UDP, as a receiver of each binds its own.
-fn free_port_for_both() -> SocketAddr {
-    loop {
-        let at = free_port();
-        if UdpSocket::bind(at).is_ok() {
-            return at;
-        }
-    }
 }
 
 /// A socket sending datagrams to `to` from the loopback address.
@@ -127,7 +111,7 @@ fn closed(stream: &mut impl Read) -> bool {
 /// named by the sender's address.
 #[test]
 fn each_message_is_a_record_however_it_is_framed() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = receiver(at, &["127.0.0.0/8"], None, 1 << 16, &HeldSecrets::default());
     let mut sender = TcpStream::connect(at).unwrap();
     let counted = "<34>1 2026-10-11T22:14:15.003Z web-1 su - ID47 - 'su root' failed\non /dev/pts/8";
@@ -168,7 +152,7 @@ fn each_message_is_a_record_however_it_is_framed() {
 /// than the shortest (RFC 5424, 6.3.3 and 6.4): an octet-counted message arrives byte for byte, for decoding to judge.
 #[test]
 fn a_message_arrives_byte_for_byte_whatever_it_holds() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = receiver(at, &["127.0.0.1"], None, 1 << 16, &HeldSecrets::default());
     let message: &[u8] =
         b"<34>1 2026-10-11T22:14:15Z web-1 su - ID47 [x@32473 v=\"a\x00\x07\x1b\"] \xEF\xBB\xBF\xC0\xAF\xFF tail\n";
@@ -184,7 +168,7 @@ fn a_message_arrives_byte_for_byte_whatever_it_holds() {
 /// closes the socket on its own thread, so a connection the receiver ended itself may close first.
 #[test]
 fn stopping_a_receiver_ends_its_connections_and_leaves_the_others_serving() {
-    let (a, b) = (free_port(), free_port());
+    let (a, b) = (free_loopback(), free_loopback());
     let secrets = HeldSecrets::default();
     let mut stopping = receiver(a, &["127.0.0.0/8"], None, 1 << 16, &secrets);
     let mut staying = receiver(b, &["127.0.0.0/8"], None, 1 << 16, &secrets);
@@ -214,7 +198,15 @@ fn stopping_a_receiver_ends_its_connections_and_leaves_the_others_serving() {
 fn receivers_share_their_threads() {
     let cores = std::thread::available_parallelism().unwrap().get();
     let _receivers: Vec<_> = (0..=cores)
-        .map(|_| receiver(free_port(), &["127.0.0.0/8"], None, 1 << 16, &HeldSecrets::default()))
+        .map(|_| {
+            receiver(
+                free_loopback(),
+                &["127.0.0.0/8"],
+                None,
+                1 << 16,
+                &HeldSecrets::default(),
+            )
+        })
         .collect();
     let threads = std::fs::read_dir("/proc/self/task")
         .unwrap()
@@ -233,7 +225,7 @@ fn receivers_share_their_threads() {
 /// A sender from a network the receiver does not admit is closed before anything it sends is admitted.
 #[test]
 fn a_sender_from_elsewhere_is_closed() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = receiver(at, &["10.0.0.0/8"], None, 1 << 16, &HeldSecrets::default());
     let mut sender = TcpStream::connect(at).unwrap();
     sender.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -246,7 +238,7 @@ fn a_sender_from_elsewhere_is_closed() {
 /// discarded (RFC 5424, 6.1); the connection reads on.
 #[test]
 fn a_message_too_large_is_truncated_and_the_connection_reads_on() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = receiver(at, &["127.0.0.1"], None, 1024, &HeldSecrets::default());
     let mut sender = TcpStream::connect(at).unwrap();
     let oversized = format!("<13>{}", "x".repeat(4096));
@@ -407,7 +399,7 @@ fn counted(message: &str) -> String {
 fn a_sender_is_served_tls_1_3_first_and_tls_1_2() {
     let authority = Authority::new("syslog tests");
     let rsa = rcgen::KeyPair::generate_rsa_for(&rcgen::PKCS_RSA_SHA256, rcgen::RsaKeySize::_2048).unwrap();
-    let at = free_port();
+    let at = free_loopback();
     let mut source = tls_receiver(at, &["127.0.0.1"], &authority, rsa, None, 1 << 16);
 
     let tls13 = Sending {
@@ -439,7 +431,7 @@ fn a_sender_is_served_tls_1_3_first_and_tls_1_2() {
 #[test]
 fn octet_counted_frames_are_read_across_tls_records() {
     let authority = Authority::new("syslog tests");
-    let at = free_port();
+    let at = free_loopback();
     let mut source = tls_receiver(
         at,
         &["127.0.0.1"],
@@ -483,7 +475,7 @@ fn a_receiver_with_trusted_authorities_admits_only_their_senders() {
     let authority = Authority::new("syslog tests");
     let senders = Authority::new("syslog senders");
     let strangers = Authority::new("syslog strangers");
-    let at = free_port();
+    let at = free_loopback();
     let mut source = tls_receiver(
         at,
         &["127.0.0.1"],
@@ -583,7 +575,7 @@ fn a_receiver_admits_a_sender_by_its_certificates_fingerprint() {
     let own = self_signed("sender");
     let issued = Authority::new("syslog senders").issue("sender", vec!["sender".to_string()]);
     let stranger = self_signed("stranger");
-    let at = free_port();
+    let at = free_loopback();
     let senders = Senders {
         fingerprints: vec![fingerprint(Hash::Sha256, &own), fingerprint(Hash::Sha1, &issued)],
         names: Vec::new(),
@@ -606,7 +598,7 @@ fn a_receiver_admits_a_sender_by_its_certificates_fingerprint() {
 fn a_receiver_naming_hosts_admits_only_senders_issued_to_one() {
     let authority = Authority::new("syslog tests");
     let vouching = Authority::new("syslog senders");
-    let at = free_port();
+    let at = free_loopback();
     let senders = Senders {
         fingerprints: Vec::new(),
         names: vec!["*.example.com".into(), "Exact.Example.org".into()],
@@ -638,7 +630,7 @@ fn a_receiver_naming_hosts_admits_only_senders_issued_to_one() {
 #[test]
 fn a_receiver_answers_close_notify_with_its_own() {
     let authority = Authority::new("syslog tests");
-    let at = free_port();
+    let at = free_loopback();
     let mut source = tls_receiver(
         at,
         &["127.0.0.1"],
@@ -676,7 +668,7 @@ fn a_receiver_answers_close_notify_with_its_own() {
 #[test]
 fn a_receiver_closing_a_connection_sends_close_notify() {
     let authority = Authority::new("syslog tests");
-    let at = free_port();
+    let at = free_loopback();
     let mut source = tls_receiver(
         at,
         &["127.0.0.1"],
@@ -701,7 +693,7 @@ fn a_receiver_closing_a_connection_sends_close_notify() {
 #[test]
 fn a_receiver_takes_no_early_data() {
     let authority = Authority::new("syslog tests");
-    let at = free_port();
+    let at = free_loopback();
     let mut source = tls_receiver(
         at,
         &["127.0.0.1"],
@@ -739,7 +731,7 @@ fn a_receiver_takes_no_early_data() {
 #[test]
 fn a_sender_from_elsewhere_is_refused_before_tls() {
     let authority = Authority::new("syslog tests");
-    let at = free_port();
+    let at = free_loopback();
     let mut source = tls_receiver(
         at,
         &["10.0.0.0/8"],
@@ -760,7 +752,7 @@ fn a_real_syslog_client_sends_over_tcp() {
     let Some(image) = live::syslog_sender("a_real_syslog_client_sends_over_tcp") else {
         return;
     };
-    let at: SocketAddr = format!("127.0.0.1:{}", free_port().port()).parse().unwrap();
+    let at: SocketAddr = format!("127.0.0.1:{}", free_loopback().port()).parse().unwrap();
     let mut source = receiver(at, &["127.0.0.1"], None, 1 << 16, &HeldSecrets::default());
     let send = |framing: &[&str], message: &str| {
         let status = std::process::Command::new("docker")
@@ -799,7 +791,7 @@ fn a_real_syslog_client_sends_over_tcp() {
 /// address.
 #[test]
 fn each_datagram_is_a_record() {
-    let at = free_port_for_both();
+    let at = free_loopback();
     let mut source = udp_receiver(at, &["127.0.0.0/8"], 1 << 16);
     let sender = datagram_sender(at);
     for datagram in [
@@ -831,7 +823,7 @@ fn datagrams_of_every_size_rfc_5426_asks_for_are_read() {
     // A host without IPv6 loopback checks IPv4 alone.
     let families = &families[..if crate::harness::receiver::ipv6() { 2 } else { 1 }];
     for &(loopback, sizes) in families {
-        let at = SocketAddr::new(loopback.parse().unwrap(), free_port_for_both().port());
+        let at = SocketAddr::new(loopback.parse().unwrap(), free_loopback().port());
         let mut source = udp_receiver(at, &[loopback], 1 << 16);
         let sender = UdpSocket::bind(SocketAddr::new(loopback.parse().unwrap(), 0)).unwrap();
         sender.connect(at).unwrap();
@@ -850,7 +842,7 @@ fn datagrams_of_every_size_rfc_5426_asks_for_are_read() {
 /// A datagram from a network the receiver does not admit becomes nothing.
 #[test]
 fn a_datagram_from_elsewhere_is_dropped() {
-    let at = free_port_for_both();
+    let at = free_loopback();
     let mut source = udp_receiver(at, &["10.0.0.0/8"], 1 << 16);
     datagram_sender(at)
         .send(b"<13>Oct 11 22:14:15 web-1 app: started")
@@ -861,7 +853,7 @@ fn a_datagram_from_elsewhere_is_dropped() {
 /// A datagram larger than the receiver reads keeps its first bytes, up to the largest (RFC 5424, 6.1).
 #[test]
 fn a_datagram_too_large_is_truncated() {
-    let at = free_port_for_both();
+    let at = free_loopback();
     let mut source = udp_receiver(at, &["127.0.0.1"], 1024);
     let sender = datagram_sender(at);
     let oversized = format!("<13>{}", "x".repeat(4096));
@@ -877,7 +869,7 @@ fn a_datagram_too_large_is_truncated() {
 /// once; once released, datagrams arrive again.
 #[test]
 fn a_datagram_while_blocked_is_dropped_and_counted() {
-    let at = free_port_for_both();
+    let at = free_loopback();
     let mut source = udp_receiver(at, &["127.0.0.1"], 1 << 16);
     let sender = datagram_sender(at);
     source.block().unwrap();
@@ -903,7 +895,7 @@ fn a_datagram_while_blocked_is_dropped_and_counted() {
 /// A TCP port and a UDP port are two ports, whatever their number: a receiver of each serves one at once.
 #[test]
 fn tcp_and_udp_receivers_share_a_port_number() {
-    let at = free_port_for_both();
+    let at = free_loopback();
     let mut over_tcp = receiver(at, &["127.0.0.1"], None, 1 << 16, &HeldSecrets::default());
     let mut over_udp = udp_receiver(at, &["127.0.0.1"], 1 << 16);
     TcpStream::connect(at)
@@ -929,7 +921,7 @@ fn a_real_syslog_client_sends_over_udp() {
     let Some(image) = live::syslog_sender("a_real_syslog_client_sends_over_udp") else {
         return;
     };
-    let at: SocketAddr = format!("127.0.0.1:{}", free_port_for_both().port()).parse().unwrap();
+    let at: SocketAddr = format!("127.0.0.1:{}", free_loopback().port()).parse().unwrap();
     let mut source = udp_receiver(at, &["127.0.0.1"], 1 << 16);
     let send = |format: &str, message: &str| {
         let status = std::process::Command::new("docker")

@@ -32,8 +32,8 @@ use crate::certs;
 use crate::harness::docker::{Container, Scratch, container_logs, share};
 use crate::harness::fuzz::{self, Coverage, Rng};
 use crate::harness::http::gunzip;
-use crate::harness::receiver::commit;
-use crate::otlp_destination_tests::{carried, free_port, post, receiver};
+use crate::harness::receiver::{commit, free_loopback};
+use crate::otlp_destination_tests::{carried, post, receiver};
 use crate::otlp_receiver_fuzz::{Gen, pb_export, random_export};
 
 const SIGNALS: [Signal; 3] = [Signal::Logs, Signal::Metrics, Signal::Traces];
@@ -928,7 +928,7 @@ fn random_exports_and_answers_arrive_as_they_were_received() {
     let mut receivers: Vec<_> = SIGNALS
         .into_iter()
         .map(|signal| {
-            let (from, to) = (free_port(), free_port());
+            let (from, to) = (free_loopback(), free_loopback());
             Ends {
                 signal,
                 first: receiver(from, signal),
@@ -1099,7 +1099,7 @@ fn live_a_collector_passes_on_what_the_fuzzed_destination_sends() {
             reached.push("bufferBytes".into());
         }
 
-        let (from, to) = (free_port(), free_port());
+        let (from, to) = (free_loopback(), free_loopback());
         let (mut first, mut second) = (receiver(from, signal), receiver(to, signal));
         let mut given = Vec::new();
         for _ in 0..1 + g.rng.below(4) {
@@ -1114,7 +1114,7 @@ fn live_a_collector_passes_on_what_the_fuzzed_destination_sends() {
 
         let scratch = Scratch(std::env::temp_dir().join(format!("smeltr-otlp-out-{}-{seed}", std::process::id())));
         std::fs::create_dir_all(&scratch.0).unwrap();
-        let collector_at = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), free_port().port());
+        let collector_at = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), free_loopback().port());
         for (file, contents) in [
             ("config.yaml", collector_config(collector_at, to, signal, reach, token)),
             ("ca.pem", pki.authority.pem.clone()),

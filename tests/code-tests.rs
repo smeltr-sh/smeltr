@@ -4958,6 +4958,27 @@ fn a_spread_of_a_struct_with_a_dotted_field_name_lays_it_down_as_one_key() {
     assert_eq!(rows[0]["t"], json!({"a.b": 1, "c": 2, "d": 4}));
 }
 
+/// A dotted field in an object type names a path: `{a.b: i64, ...}` is `{a: {b: i64, ...}, ...}`, so the object at
+/// `a` keeps its other keys where the type is open and drops them where it is closed.
+#[test]
+fn a_dotted_field_in_an_object_type_is_a_path() {
+    let row = r#"{"records":[{"name":"get","extra":{"out":5,"in":2},"x":1}]}"#;
+    let plan = ok(vec![
+        code(0, &json("records: array<{name: str, extra.out: i64, ...}>;")),
+        code(1, "n = records[0].extra.out + 1;"),
+    ]);
+    let rows = run(&plan, &[row]);
+    assert_eq!(rows[0]["n"], json!(6));
+    assert_eq!(
+        rows[0]["records"],
+        json!([{"name": "get", "extra": {"out": 5, "in": 2}, "x": 1}])
+    );
+
+    let plan = ok(vec![code(0, &json("records: array<{name: str, extra.out: i64}>;"))]);
+    let rows = run(&plan, &[row]);
+    assert_eq!(rows[0]["records"], json!([{"name": "get", "extra": {"out": 5}}]));
+}
+
 /// `!` is Bool: written over the declared object `q`, guarded or not, it is a compile error that names the typed
 /// assignment, since an object keeps its type.
 #[test]

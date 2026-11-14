@@ -48,4 +48,7 @@ leader.wake((now) => {
   waking.now = now;
   window.dispatchEvent(new Event(WAKING_EVENT));
 });
+// The GUI remembers its branch across tabs and builds, and this tab may not hold it: leave it, as for a deleted one.
+const { currentBranch, leaveBranch } = await import('../api');
+if (!leader.holds(currentBranch())) leaveBranch(currentBranch());
 await import('../main');

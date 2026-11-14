@@ -782,9 +782,10 @@ function dtoToDataType(dto: unknown, where: string): DataTypeSpec {
   }
   const o = rec(dto, where);
   if (o.type === 'datetime') {
-    if (typeof o.format !== 'string' || o.format === '') {
+    // The leader's `check_format` refuses a format with no specifier the same way.
+    if (typeof o.format !== 'string' || !/%[^%]/.test(o.format.replaceAll('%%', ''))) {
       throw new PipelineJsonError(
-        `${where}: a datetime object carries the parseTime format its text arrives in; a bare "datetime" detects the shape`,
+        `${where}: datetime format ${JSON.stringify(o.format ?? '')}: it has no specifier, so it reads no time; to detect the format, write the bare "datetime"`,
       );
     }
     return { kind: 'datetime', format: o.format };

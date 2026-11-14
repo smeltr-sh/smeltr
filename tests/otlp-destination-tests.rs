@@ -19,18 +19,12 @@ use smeltr::plan::topology::{
     SourceKind, SourceMeta,
 };
 
+use crate::harness::receiver::free_loopback;
 use crate::harness::{Env, code, compile_ok_for};
 
 /// The step that carries what a receiver's record came under into the fields the destination sends it under.
 pub const CARRY: &str = "resource = __source.resource; \
     scope = {name: __source.scope.name, version: __source.scope.version, attributes: __source.scope.attributes};";
-
-pub fn free_port() -> SocketAddr {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-}
 
 /// A receiver of `signal` admitting `s3cret` as a bearer token.
 pub fn receiver(listen: SocketAddr, signal: Signal) -> Box<dyn Source> {
@@ -148,7 +142,7 @@ fn destination(to: SocketAddr, signal: Signal, compression: Compression) -> Otlp
 /// Receives `export` at one receiver, carries its records through [`CARRY`] to an OTLP destination, and answers what
 /// each receiver read.
 fn round_trip(signal: Signal, export: &Value, items: usize, compression: Compression) -> (Vec<Value>, Vec<Value>) {
-    let (from, to) = (free_port(), free_port());
+    let (from, to) = (free_loopback(), free_loopback());
     let (mut first, mut second) = (receiver(from, signal), receiver(to, signal));
     let body = export.to_string().into_bytes();
     let sent = std::thread::spawn(move || post(from, signal, "application/json", &body));
@@ -280,7 +274,7 @@ fn metric_points_arrive_as_they_were_received() {
 /// is refused naming why, while the rest land.
 #[test]
 fn a_row_of_no_resource_lands_and_a_row_otlp_cannot_take_is_refused() {
-    let to = free_port();
+    let to = free_loopback();
     let mut second = receiver(to, Signal::Traces);
     let config = destination(to, Signal::Traces, Compression::None);
     let agent = agent_config(None, &HeldSecrets::default()).unwrap();

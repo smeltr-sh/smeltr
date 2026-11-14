@@ -9,6 +9,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::harness::receiver::free_loopback;
 use smeltr::io::line_breaker::LineBreaker;
 use smeltr::io::{CommitMap, Source, SourceRecord, TopicPartition, build_source};
 use smeltr::plan::topology::{
@@ -16,13 +17,6 @@ use smeltr::plan::topology::{
 };
 
 const TOKEN: &str = "0d2a5f6c-4b1e-4c3a-9f7d-2e8b6a1c5d40";
-
-fn free_port() -> SocketAddr {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-}
 
 /// An S2S receiver on `listen` that breaks sourcetype `java` before lines starting `ERROR`, taking `token` when given.
 fn receiver(listen: SocketAddr, token: Option<&str>, tls: Option<Tls>, secrets: &mut HeldSecrets) -> Box<dyn Source> {
@@ -317,7 +311,7 @@ impl Forwarder<TcpStream> {
 /// channel, the index the forwarder names, its time and its indexed fields.
 #[test]
 fn chunks_are_broken_into_lines_and_events_by_sourcetype() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = receiver(at, None, None, &mut HeldSecrets::default());
     let mut forwarder = Forwarder::connect(at);
     let answer = forwarder.open(false, false);
@@ -367,7 +361,7 @@ fn chunks_are_broken_into_lines_and_events_by_sourcetype() {
 /// connection ends. With acks, the forwarder sends it again, and it arrives once.
 #[test]
 fn a_connection_without_acks_that_ends_delivers_what_its_channels_hold() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = receiver(at, None, None, &mut HeldSecrets::default());
     for ack in [false, true] {
         let mut forwarder = Forwarder::connect(at);
@@ -392,7 +386,7 @@ fn a_connection_without_acks_that_ends_delivers_what_its_channels_hold() {
 /// closes is acked with that one.
 #[test]
 fn an_id_is_acked_once_every_record_holding_its_bytes_is_committed() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = receiver(at, None, None, &mut HeldSecrets::default());
     let mut forwarder = Forwarder::connect(at);
     forwarder.open(true, false);
@@ -425,7 +419,7 @@ fn an_id_is_acked_once_every_record_holding_its_bytes_is_committed() {
 /// sends the rest, and which the connection ending delivers as it is.
 #[test]
 fn a_line_a_waiting_forwarder_is_stuck_on_is_acked_early_and_arrives_whole() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = receiver(at, None, None, &mut HeldSecrets::default());
     let mut forwarder = Forwarder::connect(at);
     forwarder.open(true, false);
@@ -475,7 +469,7 @@ fn a_line_a_waiting_forwarder_is_stuck_on_is_acked_early_and_arrives_whole() {
 /// A connection that ends on a malformed frame still delivers a line acked early: the forwarder does not send it again.
 #[test]
 fn a_line_acked_early_is_delivered_when_a_malformed_frame_ends_the_connection() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = receiver(at, None, None, &mut HeldSecrets::default());
     let mut forwarder = Forwarder::connect(at);
     forwarder.open(true, false);
@@ -495,7 +489,7 @@ fn a_line_acked_early_is_delivered_when_a_malformed_frame_ends_the_connection() 
 /// A receiver that takes a token closes a connection presenting none, or another, before admitting anything it sent.
 #[test]
 fn a_forwarder_without_the_token_is_closed_before_anything_is_admitted() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = receiver(at, Some(TOKEN), None, &mut HeldSecrets::default());
     let mut v4 = V4::default();
     v4.timezone()
@@ -518,7 +512,7 @@ fn a_forwarder_without_the_token_is_closed_before_anything_is_admitted() {
 
 #[test]
 fn a_handshake_message_past_64_kib_is_refused_before_it_is_read() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = receiver(at, Some(TOKEN), None, &mut HeldSecrets::default());
     // Capabilities within the receiver's request limit and past the handshake's: refused once its size and count
     // are held, before any of it is sent, so a sender without the token makes the receiver hold at most a handshake.
@@ -545,7 +539,7 @@ fn a_handshake_message_past_64_kib_is_refused_before_it_is_read() {
 /// A forwarder that compresses sends its handshake in compressed v3 frames, then `0xf9` and one zlib stream.
 #[test]
 fn a_compressed_stream_is_read_as_it_inflates() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = receiver(at, Some(TOKEN), None, &mut HeldSecrets::default());
     let mut forwarder = Forwarder::connect(at);
     assert!(forwarder.open(true, true).contains("cap_response=success"));
@@ -568,7 +562,7 @@ fn a_compressed_stream_is_read_as_it_inflates() {
 /// A forwarder set to stay on v3 sends its events as v3 messages, which this receiver does not read.
 #[test]
 fn a_v3_stream_is_refused() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = receiver(at, None, None, &mut HeldSecrets::default());
     let mut forwarder = Forwarder::connect(at);
     forwarder.open(false, false);
@@ -581,7 +575,7 @@ fn a_v3_stream_is_refused() {
 /// A frame this receiver does not know closes the connection; what came before it was admitted.
 #[test]
 fn a_malformed_frame_closes_the_connection() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = receiver(at, None, None, &mut HeldSecrets::default());
     let mut forwarder = Forwarder::connect(at);
     forwarder.open(false, false);
@@ -600,7 +594,7 @@ fn a_malformed_frame_closes_the_connection() {
 /// The last id there is leaves no next id to ack from, so no forwarder counting up from 2 sends it.
 #[test]
 fn the_last_event_id_there_is_closes_the_connection() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = receiver(at, None, None, &mut HeldSecrets::default());
     let mut forwarder = Forwarder::connect(at);
     forwarder.open(true, false);
@@ -636,7 +630,7 @@ fn a_forwarder_is_served_over_tls() {
         side: smeltr::io::trust::Side::Server,
         senders: Default::default(),
     };
-    let at = free_port();
+    let at = free_loopback();
     let mut source = receiver(at, None, Some(tls), &mut secrets);
 
     let mut roots = rustls::RootCertStore::empty();
@@ -748,7 +742,7 @@ fn httpout(at: SocketAddr, token: &str, body: &[u8]) -> (u16, serde_json::Value)
 /// event ends with the request. It is answered once delivered, whatever its token: `httpout` asks after no `ackId`.
 #[test]
 fn an_httpout_request_is_its_events_answered_once_delivered() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = hec_receiver(at, 1 << 20);
     let mut v4 = V4::default();
     v4.timezone()
@@ -793,7 +787,7 @@ fn an_httpout_request_is_its_events_answered_once_delivered() {
 /// A body that is not a compressed S2S stream, or that inflates past what a request may hold, is refused whole.
 #[test]
 fn an_httpout_request_it_cannot_read_is_refused_whole() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = hec_receiver(at, 4096);
     let (status, answer) = httpout(at, TOKEN, b"GET /a\n");
     assert_eq!((status, &answer["code"]), (400, &serde_json::json!(6)), "{answer}");
@@ -833,7 +827,7 @@ fn an_httpout_request_it_cannot_read_is_refused_whole() {
 /// so the forwarder does not send it again forever.
 #[test]
 fn an_httpout_request_past_what_a_receiver_holds_is_too_large() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = hec_receiver(at, 1 << 30);
     let mut v4 = V4::default();
     v4.timezone()

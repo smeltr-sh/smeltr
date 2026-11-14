@@ -8,6 +8,7 @@
 //! A retry is safe only because the leader records each window once: a beat
 //! the leader recorded and whose answer was lost goes again, and counts once.
 
+use crate::harness::receiver::free_loopback;
 use smeltr::heartbeat::{HeartbeatClient, HeartbeatRequest, ThreadHeartbeat};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -136,12 +137,7 @@ fn a_leader_that_is_simply_down_still_fails() {
     // success: nothing is listening, both attempts fail, the caller is
     // told. This is what keeps the peek/commit cursor honest -- a failed
     // send is what leaves the window's counts owed rather than lost.
-    let dead = {
-        let l = TcpListener::bind("127.0.0.1:0").unwrap();
-        let a = l.local_addr().unwrap();
-        drop(l);
-        format!("http://{a}")
-    };
+    let dead = format!("http://{}", free_loopback());
     let client = HeartbeatClient::new(&dead, "token", None, true).expect("client");
     assert!(
         client.send(&beat()).is_err(),

@@ -37,6 +37,7 @@
     curve,
     gate,
     gated,
+    CHOOSE,
     halfway,
     isLine,
     moveDest,
@@ -85,7 +86,7 @@
     destinationIds: string[];
     /** An option's text: the id, marked where `shared/` declares it. */
     label: (id: string) => string;
-    /** An option's text for a pipeline: its name. */
+    /** An option's text for a pipeline: its name, or `CHOOSE.pipeline` while none is chosen. */
     pipelineLabel?: (id: string) => string;
     /** How `route` answers `Unmatched`, which takes the rows its delivery rules decline. */
     unmatched?: (route: RouteDto) => Answer;
@@ -799,6 +800,8 @@
       value={source}
       choices={sourceIds}
       choiceLabel={label}
+      placeholder={CHOOSE.source}
+      invalid={!source}
       newLabel={'+ New source…'}
       onnew={onnewsource && (() => onnewsource(setSource))}
       onpick={setSource}
@@ -840,6 +843,8 @@
       value={route.pipeline}
       choices={pipelineIds}
       choiceLabel={pipelineLabel}
+      placeholder={CHOOSE.pipeline}
+      invalid={!route.pipeline}
       newLabel={'+ New pipeline…'}
       onnew={route.source && onnewpipeline ? () => onnewpipeline(route) : undefined}
       onpick={(pipeline) => (route.pipeline = pipeline)}
@@ -1201,8 +1206,7 @@
       </button>
     {:else if menu.kind === 'pipe'}
       {@const route = menu.route}
-      <span class="menu-note"
-        >{route.pipeline ? pipelineLabel(route.pipeline) : '(no pipeline)'}</span
+      <span class="menu-note" class:unchosen={!route.pipeline}>{pipelineLabel(route.pipeline)}</span
       >
       {#if onorderroute}
         {#each [-1, 1] as by (by)}
@@ -1326,8 +1330,9 @@
               onfocus={() => (overKey = key)}
               onblur={() => (overKey = null)}
             >
-              <span class="k">{sends(route, rule, dest) ? '✓' : ''}</span><span class="n"
-                >{route.pipeline ? pipelineLabel(route.pipeline) : '(no pipeline)'}</span
+              <span class="k">{sends(route, rule, dest) ? '✓' : ''}</span><span
+                class="n"
+                class:unchosen={!route.pipeline}>{pipelineLabel(route.pipeline)}</span
               ><span class="mono">{rule ? ruleName(rule) : 'every row'}</span>
             </button>
           {/each}
@@ -1579,6 +1584,10 @@
     background: var(--bg);
     padding: 0 6px;
   }
+  /* A box that holds an invalid picker (`PickOrNew`'s `invalid`) gets the error border. */
+  .box:has(:global([aria-invalid='true'])) {
+    border-color: var(--error);
+  }
   /* A condition's box is as wide as its text laid out, and as high: one line is a box's height. */
   .box.cond {
     height: auto;
@@ -1766,6 +1775,11 @@
     color: var(--dim);
     font-size: var(--text-note);
     white-space: nowrap;
+  }
+  /* `.unchosen` (app.css), over these labels' dim. */
+  .menu-note.unchosen,
+  .n.unchosen {
+    color: var(--accent);
   }
   code {
     font-family: var(--mono);

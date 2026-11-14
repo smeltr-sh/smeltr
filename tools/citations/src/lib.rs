@@ -10,7 +10,7 @@
 
 #![cfg(test)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -157,28 +157,17 @@ fn without_backticks(text: &str) -> String {
     out
 }
 
-fn contains_word(haystack: &str, word: &str) -> bool {
-    let mut from = 0;
-    while let Some(at) = haystack[from..].find(word) {
-        let s = from + at;
-        let e = s + word.len();
-        let before_ok = s == 0 || !is_word_byte(haystack.as_bytes()[s - 1]);
-        let after_ok = e == haystack.len() || !is_word_byte(haystack.as_bytes()[e]);
-        if before_ok && after_ok {
-            return true;
-        }
-        from = s + 1;
-    }
-    false
+/// The words of `text`: its runs of letters, digits and underscores. A cited name is one such run, so it appears in
+/// `text` as a whole word exactly when it is in this set. One set answers every lookup; a scan per name took seconds.
+fn words(text: &str) -> HashSet<&str> {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty())
+        .collect()
 }
 
 /// The checkout this crate sits in, two directories up.
 fn repository() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
-fn is_word_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
 }
 
 #[test]
@@ -232,7 +221,8 @@ fn every_name_a_comment_cites_exists() {
     let allowed: Vec<&str> = NOT_DEFINED_HERE.iter().map(|(n, _)| *n).collect();
     let mut dead: BTreeMap<String, String> = BTreeMap::new();
     let mut cited: Vec<&str> = Vec::new();
-    let defined = |name: &str| contains_word(&corpus, name) || stems.contains(&name.to_ascii_lowercase());
+    let (corpus, own) = (words(&corpus), words(&own));
+    let defined = |name: &str| corpus.contains(name) || stems.contains(&name.to_ascii_lowercase());
 
     for p in &citing {
         let Ok(text) = fs::read_to_string(p) else { continue };
@@ -246,7 +236,7 @@ fn every_name_a_comment_cites_exists() {
                 continue;
             }
             let last = tok.rsplit("::").next().unwrap_or(&tok);
-            if defined(last) || contains_word(&own, last) {
+            if defined(last) || own.contains(last) {
                 continue;
             }
             dead.entry(tok).or_insert(format!("{rel}:{line}"));

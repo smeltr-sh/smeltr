@@ -12,6 +12,7 @@
     onnew,
     onpick,
     label,
+    invalid = false,
     class: className,
   }: {
     value: string;
@@ -25,6 +26,8 @@
     onpick: (v: string) => void;
     /** The picker's name, for a screen reader, where no field label names it. */
     label?: string;
+    /** Marks the picker `aria-invalid` when its value would make the save refused. The caller draws the mark. */
+    invalid?: boolean;
     class?: string;
   } = $props();
 
@@ -35,6 +38,7 @@
 <select
   class={className}
   aria-label={label}
+  aria-invalid={invalid}
   {value}
   onchange={(e) => {
     const el = e.currentTarget;

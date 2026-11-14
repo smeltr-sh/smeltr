@@ -8,19 +8,13 @@ use std::time::Duration;
 
 use crate::live;
 
+use crate::harness::receiver::free_loopback;
 use smeltr::io::line_breaker::LineBreaker;
 use smeltr::io::{CommitMap, Source, SourceRecord, TopicPartition, build_source};
 use smeltr::plan::topology::{
     ApiRecords, HecReceiverConfig, HeldSecrets, HttpReceiverConfig, Receiver, ReceiverConfig, SecretRef, Signal,
     SourceKind, Tls,
 };
-
-fn free_port() -> SocketAddr {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-}
 
 fn token() -> SecretRef {
     SecretRef::LeaderStored {
@@ -123,7 +117,7 @@ fn commit(source: &mut Box<dyn Source>, records: &[SourceRecord]) {
 /// The sender hears nothing until every record of its request is committed, and then 200.
 #[test]
 fn a_request_is_answered_once_its_records_are_committed() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = receiver(at, ApiRecords::Lines);
     let sent = std::thread::spawn(move || send(at, "/ingest", Some("s3cret"), b"{\"n\":1}\n{\"n\":2}\n"));
 
@@ -142,7 +136,7 @@ fn a_request_is_answered_once_its_records_are_committed() {
 /// still arrive.
 #[test]
 fn a_request_is_answered_once_received_by_default() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = receiver_answering(at, ApiRecords::Lines, false);
     assert_eq!(send(at, "/ingest", Some("s3cret"), b"{\"n\":1}\n").0, 200);
     let records = poll_until(&mut source, 1);
@@ -153,7 +147,7 @@ fn a_request_is_answered_once_received_by_default() {
 /// rather than as `::ffff:127.0.0.1`. On a host without IPv6 it listens on `0.0.0.0`, which IPv4 senders still reach.
 #[test]
 fn a_receiver_on_every_address_takes_ipv4_and_ipv6_senders() {
-    let port = free_port().port();
+    let port = free_loopback().port();
     let mut source = receiver(
         SocketAddr::new(std::net::Ipv6Addr::UNSPECIFIED.into(), port),
         ApiRecords::Lines,
@@ -179,7 +173,7 @@ fn a_receiver_on_every_address_takes_ipv4_and_ipv6_senders() {
 /// Each refusal is counted, for the reader to report.
 #[test]
 fn a_request_without_a_listed_token_is_refused_and_nothing_is_taken() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = receiver(at, ApiRecords::Body);
     assert_eq!(send(at, "/ingest", None, b"{}").0, 401);
     assert_eq!(send(at, "/ingest", Some("wrong"), b"{}").0, 401);
@@ -196,7 +190,7 @@ fn a_request_without_a_listed_token_is_refused_and_nothing_is_taken() {
 /// A sender's token is checked before its body is read, so one without a token cannot make a receiver hold anything.
 #[test]
 fn a_request_without_a_token_is_refused_before_its_body_is_read() {
-    let at = free_port();
+    let at = free_loopback();
     let _source = receiver(at, ApiRecords::Body);
     let mut stream = TcpStream::connect(at).unwrap();
     stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -212,7 +206,7 @@ fn a_request_without_a_token_is_refused_before_its_body_is_read() {
 
 #[test]
 fn a_body_it_cannot_read_is_refused_whole() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = receiver(at, ApiRecords::Array("/events".into()));
     let (status, why) = send(at, "/ingest", Some("s3cret"), b"{\"events\":[1,");
     assert_eq!(status, 400, "{why}");
@@ -231,7 +225,7 @@ fn a_body_it_cannot_read_is_refused_whole() {
 
 #[test]
 fn health_answers_while_it_takes_requests_and_not_while_blocked() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = receiver(at, ApiRecords::Body);
     let health = || exchange(TcpStream::connect(at).unwrap(), "GET", "/health", None, b"").0;
     assert_eq!(health(), 200);
@@ -249,7 +243,7 @@ fn health_answers_while_it_takes_requests_and_not_while_blocked() {
 /// A receiver that stops with a request held tells its sender to send it again: its records were never delivered.
 #[test]
 fn a_request_held_when_the_receiver_stops_is_answered_busy() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = receiver(at, ApiRecords::Body);
     let sent = std::thread::spawn(move || send(at, "/ingest", Some("s3cret"), b"{}"));
     poll_until(&mut source, 1);
@@ -327,7 +321,7 @@ fn a_receiver_with_authorities_admits_only_a_sender_they_vouch_for() {
         value: pki.server.1.clone(),
         chain: Some(pki.server.0.clone()),
     }]);
-    let at = free_port();
+    let at = free_loopback();
     let mut source = open(
         ReceiverConfig {
             receiver: Receiver::Http(HttpReceiverConfig {
@@ -406,7 +400,7 @@ const ACKER: &str = "Authorization: Splunk ack3d\r\n";
 /// its envelope names.
 #[test]
 fn a_hec_request_is_answered_success_once_its_events_are_committed() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = hec_receiver(at);
     let body = br#"{"event":"one","host":"web-1","sourcetype":"access","time":1700000000.5,"fields":{"env":"prod"}}
         {"event":{"n":2},"index":"main"}"#;
@@ -453,7 +447,7 @@ fn a_hec_request_is_answered_success_once_its_events_are_committed() {
 /// sender whose token does not acknowledge is held though it names a channel.
 #[test]
 fn a_hec_raw_request_is_its_lines_filed_under_its_query() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = hec_receiver(at);
     let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     gzip.write_all(b"first line\nsecond line\n").unwrap();
@@ -479,7 +473,7 @@ fn a_hec_raw_request_is_its_lines_filed_under_its_query() {
 /// A raw request of a sourcetype with a line breaker is an event where it breaks, not a record per line.
 #[test]
 fn a_hec_raw_request_of_a_sourcetype_with_a_line_breaker_is_its_events() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = hec_receiver(at);
     let body = b"<e>1\n</e><e>2</e>\n<e>3</e>\n".to_vec();
     let path = "/services/collector/raw?sourcetype=xml";
@@ -495,7 +489,7 @@ fn a_hec_raw_request_of_a_sourcetype_with_a_line_breaker_is_its_events() {
 /// What a HEC client is refused, it is refused in HEC's codes, and before anything reaches the inbox.
 #[test]
 fn a_hec_receiver_refuses_in_hecs_codes() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = hec_receiver(at);
     let event = br#"{"event":"x"}"#;
     let path = "/services/collector/event";
@@ -557,7 +551,7 @@ fn a_hec_receiver_refuses_in_hecs_codes() {
 #[test]
 fn a_hec_ack_id_is_true_once_its_events_are_committed() {
     const CHANNEL: &str = "0f8a5c2e-1b7d-4c39-9e61-3a2b4c5d6e7f";
-    let at = free_port();
+    let at = free_loopback();
     let mut source = hec_receiver(at);
     let on_channel = format!("{ACKER}X-Splunk-Request-Channel: {CHANNEL}\r\n");
     let ask = |path: &str, headers: &str, id: u64| {
@@ -702,7 +696,7 @@ mod otlp_messages {
 /// a record, filed under its resource and scope.
 #[test]
 fn an_otlp_export_is_answered_once_its_log_records_are_committed() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = otlp_receiver(at);
     let body = br#"{"resourceLogs":[{
         "resource":{"attributes":[{"key":"service.name","value":{"stringValue":"checkout"}}]},
@@ -760,7 +754,7 @@ fn an_otlp_protobuf_export_is_read_as_its_log_records() {
     use otlp_messages::*;
     use prost::Message;
 
-    let at = free_port();
+    let at = free_loopback();
     let mut source = otlp_receiver(at);
     let text = |s: &str| Some(AnyValue { string_value: s.into() });
     let export = ExportLogsServiceRequest {
@@ -833,7 +827,7 @@ fn an_otlp_protobuf_export_is_read_as_its_log_records() {
 /// encoding OTLP does not have, 400 for a body that does not read, which an exporter drops rather than sends again.
 #[test]
 fn an_otlp_receiver_refuses_before_anything_is_taken() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = otlp_receiver(at);
     let export = br#"{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"body":{"stringValue":"x"}}]}]}]}"#;
     let send = |headers: &str, body: &[u8]| request(TcpStream::connect(at).unwrap(), "POST", "/v1/logs", headers, body);
@@ -881,7 +875,7 @@ fn an_otlp_export_is_held_to_what_it_holds_decoded() {
     use otlp_messages::*;
     use prost::Message;
 
-    let at = free_port();
+    let at = free_loopback();
     let mut source = otlp_receiver_reading(at, 64 << 20);
     let empty = export(0, vec![LogRecord::default(); 1_000_000]).encode_to_vec();
     assert!(empty.len() < 3 << 20, "{} bytes on the wire", empty.len());
@@ -973,7 +967,7 @@ fn a_grpc_export_is_answered_once_its_log_records_are_committed() {
     use otlp_messages::*;
     use prost::Message;
 
-    let at = free_port();
+    let at = free_loopback();
     let mut source = otlp_receiver(at);
     let export = export(
         0,
@@ -1016,7 +1010,7 @@ fn a_grpc_receiver_refuses_in_grpcs_codes() {
     use otlp_messages::*;
     use prost::Message;
 
-    let at = free_port();
+    let at = free_loopback();
     let mut source = otlp_receiver(at);
     let message = export(0, vec![LogRecord::default()]).encode_to_vec();
     let code = |headers: &[(&'static str, &str)], body: Vec<u8>| {
@@ -1070,7 +1064,7 @@ fn a_grpc_receiver_refuses_in_grpcs_codes() {
 /// leaves the others serving.
 #[test]
 fn otlp_receivers_of_each_signal_share_a_port() {
-    let at = free_port();
+    let at = free_loopback();
     let mut logs = otlp_receiver(at);
     let mut traces = otlp_receiver_of(at, Signal::Traces, 4096);
     let post = move |path: &str, body: &[u8]| request(TcpStream::connect(at).unwrap(), "POST", path, OTLP_JSON, body);
@@ -1147,7 +1141,7 @@ fn an_opentelemetry_collector_exports_over_grpc_and_http() {
     let Some(image) = live::otel_collector("an_opentelemetry_collector_exports_over_grpc_and_http") else {
         return;
     };
-    let (grpc_at, http_at) = (free_port(), free_port());
+    let (grpc_at, http_at) = (free_loopback(), free_loopback());
     let mut over_grpc = otlp_receiver(grpc_at);
     let mut over_http = otlp_receiver(http_at);
 
@@ -1233,7 +1227,7 @@ fn an_opentelemetry_sdk_exports_every_signal_over_grpc_and_http() {
     };
     for http in [false, true] {
         let wire = if http { "HTTP" } else { "gRPC" };
-        let at = free_port();
+        let at = free_loopback();
         let signals = [Signal::Logs, Signal::Metrics, Signal::Traces];
         let mut receivers: Vec<_> = signals.map(|s| otlp_receiver_of(at, s, 4096)).into();
         for (signal, source) in signals.into_iter().zip(&mut receivers) {
@@ -1487,7 +1481,7 @@ const REMOTE_WRITE: &str =
 fn a_remote_write_request_is_answered_once_its_samples_are_committed() {
     use remote_write::series;
 
-    let at = free_port();
+    let at = free_loopback();
     let mut source = prometheus_receiver(at);
     let body = remote_write::body(vec![
         series(
@@ -1541,7 +1535,7 @@ fn a_remote_write_request_is_answered_once_its_samples_are_committed() {
 fn a_prometheus_receiver_refuses_before_anything_is_taken() {
     use remote_write::series;
 
-    let at = free_port();
+    let at = free_loopback();
     let mut source = prometheus_receiver(at);
     let body = remote_write::body(vec![series(&[("__name__", "up")], &[(1.0, 1)])]);
     let send = |headers: &str, body: &[u8]| remote_write_request(at, headers, body);
@@ -1651,7 +1645,7 @@ fn a_remote_write_2_request_is_read_as_1_0_is_and_answered_with_what_it_wrote() 
     use prost::Message;
     use remote_write_v2::*;
 
-    let at = free_port();
+    let at = free_loopback();
     let mut source = prometheus_receiver(at);
     let symbols = [
         "",
@@ -1755,7 +1749,7 @@ fn a_remote_write_2_request_naming_a_string_past_its_table_is_refused() {
     use prost::Message;
     use remote_write_v2::*;
 
-    let at = free_port();
+    let at = free_loopback();
     let mut source = prometheus_receiver(at);
     let request = Request {
         symbols: vec![String::new(), "__name__".into()],
@@ -1797,7 +1791,7 @@ fn a_remote_write_2_request_naming_a_string_past_its_table_is_refused() {
 fn a_remote_write_histogram_is_a_record_typed_as_an_otlp_histogram_point() {
     use remote_write::{Histogram, series, span};
 
-    let at = free_port();
+    let at = free_loopback();
     let mut source = prometheus_receiver(at);
     let mut latency = series(&[("__name__", "latency"), ("job", "api")], &[(0.5, 1_700_000_000_000)]);
     latency.histograms = vec![
@@ -1913,7 +1907,7 @@ fn a_remote_write_histogram_is_a_record_typed_as_an_otlp_histogram_point() {
 fn remote_write_exemplars_are_shaped_as_otlp_exemplars_on_a_series_last_record() {
     use remote_write::{Histogram, exemplar, series};
 
-    let at = free_port();
+    let at = free_loopback();
     let mut source = prometheus_receiver(at);
     let mut requests = series(
         &[("__name__", "requests"), ("job", "api")],
@@ -2007,7 +2001,7 @@ fn remote_write_exemplars_are_shaped_as_otlp_exemplars_on_a_series_last_record()
 fn remote_write_metadata_is_a_record_of_each_metric_family() {
     use remote_write::{metadata, series};
 
-    let at = free_port();
+    let at = free_loopback();
     let mut source = prometheus_receiver(at);
     let body = remote_write::body_with(
         vec![series(&[("__name__", "http_requests_total")], &[(3.0, 1_000)])],
@@ -2063,7 +2057,7 @@ fn remote_write_metadata_is_a_record_of_each_metric_family() {
 fn a_histogram_that_does_not_add_up_or_does_not_fit_refuses_the_request() {
     use remote_write::{Histogram, series, span};
 
-    let at = free_port();
+    let at = free_loopback();
     let mut source = prometheus_receiver(at);
     let send = |h: Histogram| {
         let mut s = series(&[("__name__", "latency")], &[(1.0, 1)]);
@@ -2201,7 +2195,7 @@ fn a_histogram_that_does_not_add_up_or_does_not_fit_refuses_the_request() {
 fn a_histogram_counts_what_its_buckets_hold() {
     use remote_write::{Histogram, series, span};
 
-    let at = free_port();
+    let at = free_loopback();
     let mut source = prometheus_receiver(at);
     let mut latency = series(&[("__name__", "latency")], &[]);
     latency.histograms = vec![
@@ -2246,10 +2240,10 @@ fn prometheus_remote_writes_what_it_scrapes() {
     let Some(image) = live::prometheus("prometheus_remote_writes_what_it_scrapes") else {
         return;
     };
-    let at = free_port();
+    let at = free_loopback();
     // A scrape of Prometheus's own metrics is hundreds of series, more than the small receiver of the tests above reads.
     let mut source = prometheus_receiver_reading(at, 1 << 20);
-    let web = free_port();
+    let web = free_loopback();
 
     let dir = std::env::temp_dir().join(format!("smeltr-prometheus-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -2371,7 +2365,7 @@ const BEARER: &str = "Authorization: Bearer s3cret\r\n";
 /// query name, and every other action refused by itself.
 #[test]
 fn a_bulk_request_is_answered_per_action_once_its_documents_are_committed() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = elastic_receiver(at);
     let body = concat!(
         r#"{"index":{"_index":"logs","_id":"a1","pipeline":"parse"}}"#,
@@ -2445,7 +2439,7 @@ fn a_bulk_request_is_answered_per_action_once_its_documents_are_committed() {
 /// otherwise; whatever is refused is refused in Elasticsearch's words and before anything reaches the inbox.
 #[test]
 fn an_elastic_receiver_refuses_in_elasticsearchs_words() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = elastic_receiver(at);
     for headers in [
         BEARER.to_string(),
@@ -2569,7 +2563,7 @@ fn elastic_filebeat_ships_a_line_it_tails() {
     let Some(image) = live::filebeat("elastic_filebeat_ships_a_line_it_tails") else {
         return;
     };
-    let at = free_port();
+    let at = free_loopback();
     let mut source = elastic_receiver(at);
     let dir = std::env::temp_dir().join(format!("smeltr-filebeat-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -2614,7 +2608,7 @@ fn elastic_fluent_bit_ships_a_line_it_tails() {
     let Some(image) = live::fluent_bit("elastic_fluent_bit_ships_a_line_it_tails") else {
         return;
     };
-    let at = free_port();
+    let at = free_loopback();
     let mut source = elastic_receiver(at);
     let dir = std::env::temp_dir().join(format!("smeltr-fluent-bit-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -2661,7 +2655,7 @@ fn elastic_fluent_bit_ships_a_line_it_tails() {
 /// refused `413` before it is read.
 #[test]
 fn a_bulk_request_too_large_to_answer_is_refused() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = elastic_receiver_reading(at, 8 << 20);
     let deletes = "{\"delete\":{}}\n".repeat(300_000);
     let (status, named, refused) = elastic(at, "POST", "/logs/_bulk", BEARER, deletes.as_bytes());

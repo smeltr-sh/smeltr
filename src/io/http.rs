@@ -1058,7 +1058,8 @@ mod tests {
     #[test]
     fn a_host_that_does_not_resolve_is_named() {
         let agent = agent(ureq::Agent::config_builder().proxy(None).build());
-        let e = agent.get("http://es.nowhere.invalid:9200/").call().unwrap_err();
+        // The trailing dot keeps a resolver from trying the name under its search domains, where a wildcard answers.
+        let e = agent.get("http://es.nowhere.invalid.:9200/").call().unwrap_err();
         assert!(e.to_string().contains("could not resolve es.nowhere.invalid"), "{e}");
     }
 

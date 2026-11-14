@@ -4,6 +4,7 @@
 //! a password printed to a console rather than raised as an event, a flag that acts once per start. None of it is
 //! observable from inside one process.
 
+use crate::harness::receiver::free_loopback;
 use std::io::BufRead;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -18,18 +19,6 @@ fn scratch(label: &str) -> std::path::PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
-}
-
-/// A port the OS says is free. Nothing connects to it; the leader needs one to bind.
-///
-/// Asked for per leader rather than carved out of a range per process: nextest runs each test in a process of
-/// its own, side by side, and a range wide enough for one is one the next has already started walking into.
-fn port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("the OS names a free port")
-        .local_addr()
-        .expect("the port it named")
-        .port()
 }
 
 /// A leader, its stderr accumulating on a thread of its own. Killed when it drops, so a test that fails an
@@ -129,7 +118,7 @@ fn start(data_dir: &std::path::Path, extra: &[(&str, &str)]) -> Leader {
     cmd.env("SMELTR_LEADER_ENABLED", "1")
         .env("SMELTR_WORKER_ENABLED", "0")
         .env("SMELTR_LEADER_TLS", "off")
-        .env("SMELTR_GUI_PORT", port().to_string())
+        .env("SMELTR_GUI_PORT", free_loopback().port().to_string())
         .env("SMELTR_LEADER_DATA_DIR", data_dir.join("leader").to_str().unwrap())
         .env(
             "SMELTR_LEADER_SECRET_KEY",

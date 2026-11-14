@@ -59,6 +59,22 @@ export function bundleRoutes(
   }));
 }
 
+/** What a route shows for its source or pipeline while it is still to be chosen. */
+export const CHOOSE = { source: 'choose a source', pipeline: 'choose a pipeline' } as const;
+
+/** A sentence for each source or pipeline of `routes` that `RoutesPage` leaves to be chosen, and that the load would
+ * refuse. Each is listed once. */
+export function unchosen(routes: Routed[]): string[] {
+  const out = routes.map((r) =>
+    !r.source
+      ? 'a route names no source'
+      : !r.pipeline
+        ? `a route from ${r.source} names no pipeline`
+        : '',
+  );
+  return [...new Set(out.filter(Boolean))];
+}
+
 /** Every destination on the card, once each: those a rule sends to, in first-use order, then the ones brought onto
  * the card and not yet wired. */
 export function pills(routes: RouteDto[], extras: string[]): string[] {

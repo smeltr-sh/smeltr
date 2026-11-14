@@ -11,7 +11,7 @@
 //! its seeds reached every option it knows.
 
 use std::io::Write;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -3250,14 +3250,7 @@ fn live_collectors_deliver_random_exports_under_random_configurations() {
         let scratch = Scratch(std::env::temp_dir().join(format!("smeltr-otlp-fuzz-{}-{seed}", std::process::id())));
         let dir = &scratch.0;
         std::fs::create_dir_all(dir).unwrap();
-        let collector_at = SocketAddr::new(
-            Ipv4Addr::LOCALHOST.into(),
-            std::net::TcpListener::bind("127.0.0.1:0")
-                .unwrap()
-                .local_addr()
-                .unwrap()
-                .port(),
-        );
+        let collector_at = receiver::free_loopback();
         let config = collector_config(collector_at, settings.connect, settings.tls, &exporters);
         let trusted = &pki.sender;
         for (file, contents) in [

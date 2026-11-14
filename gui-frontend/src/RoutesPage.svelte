@@ -32,7 +32,7 @@
   import Advanced from './Advanced.svelte';
   import Collapsible from './Collapsible.svelte';
   import RouteFlow from './RouteFlow.svelte';
-  import { bundleRoutes, cards, type Card } from './routeFlow';
+  import { bundleRoutes, cards, CHOOSE, unchosen, type Card } from './routeFlow';
   import JsonEditPage from './JsonEditPage.svelte';
   import RoutePreview from './RoutePreview.svelte';
   import ExceptionMatrix from './ExceptionMatrix.svelte';
@@ -157,13 +157,14 @@
   /** `shared/`'s bundle, whose routes this group runs too. Never saved from here: the page writes its own scope. */
   let shared = $state<FileConfigDto | null>(null);
   let sharedRoutes = $derived(shared?.routes ?? []);
-  let refusals = $derived(
-    problems(
+  let refusals = $derived([
+    ...unchosen(routes),
+    ...problems(
       exceptions,
       bundleRoutes({ routes, pipelines: loadedConfig?.pipelines ?? [] }, shared),
       destinations,
     ),
-  );
+  ]);
   // This page writes two files (`edits.ts`): the routes, and the manifest's
   // answers. The manifest write lands first and can land alone, so a
   // half-landed save keeps what is still unsaved rather than dropping all.
@@ -406,7 +407,7 @@
   /** A shared route in one line, in the direction it runs. */
   function flow(r: RouteDto): string {
     const to = (r.deliver ?? []).flatMap((d) => d.to);
-    return `${r.source || '(no source)'} \u2192 ${r.pipeline ? pipelineLabel(r.pipeline) : '(no pipeline)'} \u2192 ${
+    return `${r.source || CHOOSE.source} \u2192 ${pipelineLabel(r.pipeline)} \u2192 ${
       to.length > 0 ? [...new Set(to)].join(', ') : toUnmatched([r])
     }`;
   }
@@ -420,6 +421,7 @@
   }
 
   function pipelineLabel(id: string): string {
+    if (!id) return CHOOSE.pipeline;
     const name = pipelineNames[id] || id;
     return sharedPipelineIds.has(id) ? `${name} \u2014 shared` : name;
   }
@@ -570,12 +572,14 @@
           >
             {#snippet summary()}
               <span class="sum-flow">
-                <span class="sum-part">{card.source || '(no source)'}</span>
+                <span class="sum-part" class:unchosen={!card.source}
+                  >{card.source || CHOOSE.source}</span
+                >
                 <span class="sum-arrow">&rarr;</span>
                 <span class="sum-part"
-                  >{card.routes
-                    .map((r) => (r.pipeline ? pipelineLabel(r.pipeline) : '(no pipeline)'))
-                    .join(', ')}</span
+                  >{#each card.routes as r, k (r.id)}{k > 0 ? ', ' : ''}<span
+                      class:unchosen={!r.pipeline}>{pipelineLabel(r.pipeline)}</span
+                    >{/each}</span
                 >
                 <span class="sum-arrow">&rarr;</span>
                 <span class="sum-part">{summarizeDeliver(card.routes)}</span>
@@ -615,8 +619,8 @@
             />
             {#each card.routes as route (route.id)}
               {#if card.routes.length > 1}
-                <span class="branch-name"
-                  >{route.pipeline ? pipelineLabel(route.pipeline) : '(no pipeline)'}</span
+                <span class="branch-name" class:unchosen={!route.pipeline}
+                  >{pipelineLabel(route.pipeline)}</span
                 >
               {/if}
               <ExceptionsFold

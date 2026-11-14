@@ -5,6 +5,7 @@
 //! add. The bug this is written against is a route merged after the layer that was supposed to gate it, which is
 //! invisible to anything but the whole thing.
 
+use crate::harness::receiver::free_loopback;
 use std::io::BufRead;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -104,21 +105,9 @@ fn start_with(label: &str, extra: &[(&str, &str)]) -> Leader {
 /// where the operating system's own wording for a taken port is not.
 const BIND_FAILED: &str = "bind smeltr listen address";
 
-/// A port the OS says is free. Reserved and released at once, so the leader about to start can bind it.
-///
-/// Asked for per leader rather than carved out of a range per process: nextest runs each test in a process of
-/// its own, side by side, and a range wide enough for one is one the next has already started walking into.
-fn free_port() -> u16 {
-    std::net::TcpListener::bind((ORIGIN_HOST, 0))
-        .expect("the OS names a free port")
-        .local_addr()
-        .expect("the port it named")
-        .port()
-}
-
 /// One attempt at a serving leader. `Err` carries what it said, for a caller deciding whether to try again.
 fn serve(dir: &std::path::Path, extra: &[(&str, &str)]) -> Result<Leader, String> {
-    let port = free_port();
+    let port = free_loopback().port();
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_smeltr"));
     cmd.current_dir(dir);
