@@ -213,6 +213,11 @@ body {
   --callout: var(--error);
 }
 
+/* What a route still needs before it can be saved: its source or pipeline, still to be chosen. */
+.unchosen {
+  color: var(--accent);
+}
+
 /* An instruction that must be read before acting: data lost, a step that
    cannot be undone, a condition that blocks the task. The only prose a
    page shows unasked (STYLE_GUIDE.md, "Text"). */
