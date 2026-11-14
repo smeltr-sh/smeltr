@@ -685,6 +685,12 @@ test('A1: a route is started before anything else is saved, its source made from
   await expect(admin).toHaveURL(/#\/build\/routes$/);
   await admin.getByRole('button', { name: '+ Add route' }).click();
   const source = admin.getByRole('combobox', { name: 'from source' });
+  // A route holds Save back until its source and its pipeline are chosen.
+  const save = admin.getByRole('button', { name: 'Save', exact: true });
+  const pipeline = admin.getByRole('combobox', { name: 'pipeline' });
+  await expect(admin.getByText('a route names no source')).toBeVisible();
+  await expect(source).toHaveAttribute('aria-invalid', 'true');
+  await expect(save).toBeDisabled();
   await source.selectOption({ label: '+ New source\u2026' });
   const dialog = admin.getByRole('dialog', { name: 'add source' });
   await dialog.getByRole('button', { name: /^Local, each worker/ }).click();
@@ -692,6 +698,10 @@ test('A1: a route is started before anything else is saved, its source made from
   await admin.getByRole('dialog').getByRole('button', { name: 'Add', exact: true }).click();
   await expect(admin.getByRole('dialog')).toBeHidden();
   await expect(source).toHaveValue('metrics-1');
+  await expect(source).toHaveAttribute('aria-invalid', 'false');
+  await expect(admin.getByText('a route from metrics-1 names no pipeline')).toBeVisible();
+  await expect(pipeline).toHaveAttribute('aria-invalid', 'true');
+  await expect(save).toBeDisabled();
   // Saved there and then, as a destination made from the card is.
   const config = await api.get(`/api/areas/shared${ON}`);
   expect(config.config.sources).toContainEqual(

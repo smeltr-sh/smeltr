@@ -59,6 +59,9 @@ export function bundleRoutes(
   }));
 }
 
+/** What a route shows for its source or pipeline while it is still to be chosen. */
+export const CHOOSE = { source: 'choose a source', pipeline: 'choose a pipeline' } as const;
+
 /** A sentence for each source or pipeline of `routes` that `RoutesPage` leaves to be chosen, and that the load would
  * refuse. Each is listed once. */
 export function unchosen(routes: Routed[]): string[] {
