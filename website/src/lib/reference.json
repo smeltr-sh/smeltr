@@ -3795,7 +3795,7 @@
     {
       "name": "{name: T, ...}",
       "declare": "{ip: str, port: i64}",
-      "holds": "Named fields. `{ip: str}` holds only the fields it names; `{ip: str, ...}` also keeps the others. See [Objects](#objects).",
+      "holds": "Named fields. `{ip: str}` holds only the fields it names; `{ip: str, ...}` also keeps the others. A dotted name is a path: `{geo.city: str}` is `{geo: {city: str}}`. A quoted name is one key. See [Objects](#objects).",
       "example": {
         "expr": "{ip: \"10.0.0.1\", port: 443}",
         "result": "{\"ip\":\"10.0.0.1\",\"port\":443}"

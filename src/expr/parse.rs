@@ -1318,7 +1318,7 @@ impl<'s> Parser<'s> {
 
     fn type_expr_inner(&mut self) -> Result<DataType, ParseError> {
         if self.eat_punct(Punct::LBrace) {
-            let mut fields: Vec<(String, DataType)> = Vec::new();
+            let mut entries: Vec<(Span, Vec<String>, DataType)> = Vec::new();
             let mut open = false;
             self.list(Punct::RBrace, "`}` to close the object type", |p| {
                 if open {
@@ -1328,14 +1328,16 @@ impl<'s> Parser<'s> {
                     open = true;
                     return Ok(());
                 }
-                // A field's name is one key: a plain name, or a string for any other.
-                let name = match p.advance() {
+                // A field's name is a path such as `a.b`, or a string, which is one key whatever its characters.
+                let (span, path) = match p.advance() {
                     Spanned {
-                        token: Token::Ident(n), ..
-                    } if tree::is_plain(&n) => n,
+                        token: Token::Ident(n),
+                        span,
+                    } if n.split('.').all(tree::is_plain) => (span, n.split('.').map(String::from).collect()),
                     Spanned {
-                        token: Token::Str(n), ..
-                    } => n,
+                        token: Token::Str(n),
+                        span,
+                    } => (span, vec![n]),
                     s => {
                         return Err(ParseError {
                             span: s.span,
@@ -1347,13 +1349,10 @@ impl<'s> Parser<'s> {
                 };
                 p.expect_punct(Punct::Colon, "`:` after the field name")?;
                 let ty = p.type_expr()?;
-                if fields.iter().any(|(n, _)| *n == name) {
-                    return Err(p.error(format!("object type names `{name}` twice")));
-                }
-                fields.push((name, ty));
+                entries.push((span, path, ty));
                 Ok(())
             })?;
-            return Ok(DataType::Struct(fields, open));
+            return object_type(entries, open);
         }
         let (name, span) = match self.peek() {
             Token::Ident(_) => match self.advance() {
@@ -1910,6 +1909,47 @@ impl<'s> Parser<'s> {
             _ => Err(self.error(format!("expected an expression, found {}", self.describe()))),
         }
     }
+}
+
+/// The object type whose fields are `entries`, each a path and its type. The paths under one key make one object type
+/// there, open when this type is open: the `...` that ends a type keeps the other keys of every object its paths name.
+fn object_type(entries: Vec<(Span, Vec<String>, DataType)>, open: bool) -> Result<DataType, ParseError> {
+    let mut fields: Vec<(String, DataType)> = Vec::new();
+    // The objects the paths made, by name. Only these take more paths; an object type written out is whole.
+    let mut made: Vec<String> = Vec::new();
+    for (span, path, ty) in entries {
+        let mut full = String::new();
+        path.iter().for_each(|k| tree::push_key(&mut full, k));
+        let fail = |message: String| Err(ParseError { span, message });
+        let (last, under) = path.split_last().expect("a field has a key");
+        let mut at = &mut fields;
+        let mut name = String::new();
+        for key in under {
+            tree::push_key(&mut name, key);
+            let i = match at.iter().position(|(k, _)| k == key) {
+                Some(i) => i,
+                None => {
+                    at.push((key.clone(), DataType::Struct(Vec::new(), open)));
+                    made.push(name.clone());
+                    at.len() - 1
+                }
+            };
+            match &at[i].1 {
+                DataType::Struct(..) if made.contains(&name) => {}
+                DataType::Struct(..) => return fail(format!("object type names `{name}` twice")),
+                t => return fail(format!("`{full}` is a path under `{name}`, which is {}", t.spell())),
+            }
+            let DataType::Struct(inner, _) = &mut at[i].1 else {
+                unreachable!("an object the paths made")
+            };
+            at = inner;
+        }
+        if at.iter().any(|(k, _)| k == last) {
+            return fail(format!("object type names `{full}` twice"));
+        }
+        at.push((last.clone(), ty));
+    }
+    Ok(DataType::Struct(fields, open))
 }
 
 /// `base[index]`. A string key applied to a name is the name of that key, `o["a.b"]` the field `o["a.b"]`, so a read, a
@@ -2925,6 +2965,29 @@ mod tests {
         assert_eq!(open("x: {a: i64, ...,};").spell(), "{a: i64, ...}");
         for src in ["x: {..., a: str};", "x: {...: str};"] {
             assert!(parse_block(src).is_err(), "{src} should be refused");
+        }
+        // A dotted field is a path: the object type of its first key, open where the type it is written in is. A
+        // string is one key.
+        let spelled = |src: &str| open(src).spell();
+        assert_eq!(
+            spelled("x: {a.b: i64, a.c: str, d: f64};"),
+            "{a: {b: i64, c: str}, d: f64}"
+        );
+        assert_eq!(spelled("x: {a.b.c: i64, ...};"), "{a: {b: {c: i64, ...}, ...}, ...}");
+        assert_eq!(
+            spelled("x: {a: {b: i64}, c.d: str, ...};"),
+            "{a: {b: i64}, c: {d: str, ...}, ...}"
+        );
+        assert_eq!(spelled("x: {\"a.b\": i64, a.c: str};"), "{\"a.b\": i64, a: {c: str}}");
+        assert_eq!(spelled("x: array<{a.b: i64}>;"), "array<{a: {b: i64}}>");
+        for (src, message) in [
+            ("x: {a: i64, a.b: str};", "`a.b` is a path under `a`, which is i64"),
+            ("x: {a.b: str, a: i64};", "object type names `a` twice"),
+            ("x: {a: {c: i64}, a.b: str};", "object type names `a` twice"),
+            ("x: {a.b: i64, a.b: str};", "object type names `a.b` twice"),
+        ] {
+            let e = parse_block(src).unwrap_err();
+            assert_eq!(e.message, message, "{src}");
         }
         // A `>` the lexer glued to the next token still closes a type argument.
         let nested = |depth: usize| {
