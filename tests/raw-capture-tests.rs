@@ -15,6 +15,7 @@ use smeltr::plan::topology::{
 };
 
 use crate::certs::Authority;
+use crate::harness::receiver::free_loopback;
 
 /// One thing a tap was offered, owned.
 #[derive(Clone, Debug)]
@@ -63,18 +64,6 @@ impl Kept {
     /// Every byte it was offered, in order.
     fn bytes(offered: &[Offered]) -> Vec<u8> {
         offered.iter().flat_map(|o| o.bytes.clone()).collect()
-    }
-}
-
-fn free_port() -> SocketAddr {
-    loop {
-        let at = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap();
-        if UdpSocket::bind(at).is_ok() {
-            return at;
-        }
     }
 }
 
@@ -145,7 +134,7 @@ fn served_by(authority: &Authority) -> (Tls, HeldSecrets) {
 /// What a sender writes is offered as it was written, however little of it frames as syslog.
 #[test]
 fn a_receiver_offers_what_a_sender_writes_before_it_frames_any_of_it() {
-    let at = free_port();
+    let at = free_loopback();
     let (_source, kept) = tapped(syslog(at, Transport::Tcp, &[], None), &HeldSecrets::default());
     let sent = b"no frame here\0\xff\xfe binary too";
     let mut sender = TcpStream::connect(at).unwrap();
@@ -166,7 +155,7 @@ fn a_receiver_offers_what_a_sender_writes_before_it_frames_any_of_it() {
 
 #[test]
 fn a_datagram_is_offered_whole() {
-    let at = free_port();
+    let at = free_loopback();
     let (_source, kept) = tapped(syslog(at, Transport::Udp, &[], None), &HeldSecrets::default());
     let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
     sender.send_to(b"<34>one datagram", at).unwrap();
@@ -178,7 +167,7 @@ fn a_datagram_is_offered_whole() {
 /// A sender its allowFrom refuses is closed unread, and offered as refused, naming it.
 #[test]
 fn a_refused_sender_is_offered_as_closed() {
-    let at = free_port();
+    let at = free_loopback();
     let (_source, kept) = tapped(
         syslog(at, Transport::Tcp, &["10.0.0.0/8"], None),
         &HeldSecrets::default(),
@@ -193,7 +182,7 @@ fn a_refused_sender_is_offered_as_closed() {
 /// A datagram from a sender its allowFrom refuses is offered without its bytes, as refused and from whom.
 #[test]
 fn a_refused_datagram_is_offered_without_its_bytes() {
-    let at = free_port();
+    let at = free_loopback();
     let (_source, kept) = tapped(
         syslog(at, Transport::Udp, &["10.0.0.0/8"], None),
         &HeldSecrets::default(),
@@ -213,7 +202,7 @@ fn a_refused_datagram_is_offered_without_its_bytes() {
 /// A sender that does not speak TLS to a receiver that does fails its handshake, and that is offered with why.
 #[test]
 fn a_failed_handshake_is_offered_as_closed() {
-    let at = free_port();
+    let at = free_loopback();
     let (tls, secrets) = served_by(&Authority::new("raw capture tests"));
     let (_source, kept) = tapped(syslog(at, Transport::Tcp, &[], Some(tls)), &secrets);
     let mut sender = TcpStream::connect(at).unwrap();
@@ -227,7 +216,7 @@ fn a_failed_handshake_is_offered_as_closed() {
 /// An HTTP receiver offers the request as the sender wrote it: its line, its headers and its body.
 #[test]
 fn an_http_receiver_offers_the_request_as_written() {
-    let at = free_port();
+    let at = free_loopback();
     let (_source, kept) = tapped(http(at), &HeldSecrets::default());
     let request = b"POST /ingest HTTP/1.1\r\nHost: receiver\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello";
     let mut sender = TcpStream::connect(at).unwrap();
@@ -239,7 +228,7 @@ fn an_http_receiver_offers_the_request_as_written() {
 /// The listener a capture opens reads what a sender writes and answers nothing, so the sender keeps it.
 #[test]
 fn a_capture_listener_offers_what_arrives_and_answers_nothing() {
-    let at = free_port();
+    let at = free_loopback();
     let mut source = smeltr::io::receiver::open_raw(&http(at), &HeldSecrets::default()).expect("listens");
     let kept = Arc::new(Kept::default());
     source.tap_raw(kept.clone());
@@ -267,7 +256,7 @@ fn a_capture_listener_offers_what_arrives_and_answers_nothing() {
 #[test]
 fn a_capture_listener_is_refused_a_port_a_receiver_holds() {
     for transport in [Transport::Tcp, Transport::Udp] {
-        let at = free_port();
+        let at = free_loopback();
         let config = syslog(at, transport, &[], None);
         let (_source, _kept) = tapped(config.clone(), &HeldSecrets::default());
         let refused = smeltr::io::receiver::open_raw(&config, &HeldSecrets::default());

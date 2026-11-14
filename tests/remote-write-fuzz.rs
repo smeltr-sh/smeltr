@@ -25,6 +25,7 @@ use smeltr::plan::topology::{DestinationKind, HeldSecrets, PrometheusDestination
 
 use crate::certs;
 use crate::harness::fuzz::{self, Coverage, Rng};
+use crate::harness::receiver::free_loopback;
 
 /// One of `items`, owned.
 fn any(rng: &mut Rng, items: Vec<Value>) -> Value {
@@ -1214,10 +1215,7 @@ fn run_prometheus(image: &str, out_of_order: bool) -> (Container, String) {
         ""
     };
     std::fs::write(dir.join("prometheus.yml"), format!("global: {{}}\n{window}")).unwrap();
-    let web = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap();
+    let web = free_loopback();
     let name = format!("smeltr-remote-write-fuzz-{}-{out_of_order}", std::process::id());
     let started = std::process::Command::new("docker")
         .args(["run", "-d", "--rm", "--network", "host", "--name", &name])

@@ -21,6 +21,7 @@ use smeltr::plan::output::{run_to_json, run_to_json_marked};
 use smeltr::plan::topology::{Placement, SourceMeta};
 
 use crate::harness;
+use crate::harness::receiver::free_loopback;
 
 #[derive(serde::Deserialize)]
 struct Reference {
@@ -2043,11 +2044,7 @@ fn the_startup_file_example_starts_a_leader() {
     let dir = std::env::temp_dir().join(format!("smeltr-startup-example-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
+    let port = free_loopback().port();
     let mut leader = std::process::Command::new(env!("CARGO_BIN_EXE_smeltr"))
         .env("SMELTR_CONFIG_FILE", root.join("website/src/lib/startup-example.toml"))
         .env("SMELTR_LEADER_DATA_DIR", dir.join("data"))

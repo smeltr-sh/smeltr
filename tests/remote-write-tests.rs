@@ -14,6 +14,7 @@ use smeltr::io::{Destination, Dispatched, IoError, OwnedRecord, Rejection};
 use smeltr::plan::config::Payload;
 use smeltr::plan::topology::{HeldSecrets, PrometheusDestinationConfig, RemoteWriteVersion};
 
+use crate::harness::receiver::free_loopback;
 use crate::live;
 
 mod wire {
@@ -795,10 +796,7 @@ fn prometheus_stores_what_the_destination_sends() {
     let Some(image) = live::prometheus("prometheus_stores_what_the_destination_sends") else {
         return;
     };
-    let web = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap();
+    let web = free_loopback();
     let name = format!("smeltr-prometheus-store-{}", std::process::id());
     let started = std::process::Command::new("docker")
         .args(["run", "-d", "--rm", "--network", "host", "--name", &name])
