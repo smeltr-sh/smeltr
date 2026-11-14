@@ -32,14 +32,15 @@
   <h3>
     Preset
     <Help label="Preset"
-      >A source warns when its rows stay below their expected range for some 5-minute readings in a
-      row. A preset sets how wide that range is and how many readings it waits.<br /><b>Fast</b>: a
-      stop warns in about 5 minutes. A wide range, so only a deep drop warns, and brief dips warn
-      most often.<br /><b>Sensitive</b>: a stop warns in about 15 minutes. The narrowest range, so
-      it sees the smallest drops; brief dips warn often.<br /><b>Balanced</b>: a stop warns in about
-      20 minutes. A narrow range; brief dips seldom warn.<br /><b>Quiet</b>: a stop warns in about
-      30 minutes. A wide range, so only a deep drop warns; brief dips almost never do.<br />A source
-      starts at Balanced and its senders at Quiet, since every sender's dips warn on their own.</Help
+      >A source warns when its rows stay below their expected range for a set number of 5-minute
+      readings in a row. A preset sets how wide that range is and how many readings it waits. A stop
+      reads below any range, so only the wait sets how soon it warns.<br /><b>Fast</b>: a stop warns
+      in about 5 minutes. A wide range, so only a deep drop warns, and brief dips warn most often.<br
+      /><b>Sensitive</b>: a stop warns in about 15 minutes. The narrowest range, so it sees the
+      smallest drops; brief dips warn often.<br /><b>Balanced</b>: a stop warns in about 20 minutes.
+      A narrow range; brief dips seldom warn.<br /><b>Quiet</b>: a stop warns in about 30 minutes. A
+      wide range, so only a deep drop warns; brief dips almost never do.<br />A source starts at
+      Balanced and its senders at Quiet, since each sender warns on its own.</Help
     >
   </h3>
   {#if editor}
