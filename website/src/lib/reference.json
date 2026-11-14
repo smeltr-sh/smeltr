@@ -66,6 +66,7 @@
       ],
       "notes": [
         "On a named field, a fixed string key is part of the [field name](#names): `geo[\"city\"]` reads `geo.city`.",
+        "An object type names each field by its path: `{geo.city: str, ...}` is `{geo: {city: str, ...}, ...}`.",
         "An object value passed to `at` needs a declared field set and a literal key. An unknown key does not compile. For a declared array of objects, `tags[0][\"name\"]` reads a field of one element."
       ],
       "rejected": [],
