@@ -1611,7 +1611,9 @@ mod tests {
             at += FIVE;
         }
         // A heartbeat in the next bucket writes the last.
-        store.record_streams("g", &StreamReport::default(), true, None, END).unwrap();
+        store
+            .record_streams("g", &StreamReport::default(), true, None, END)
+            .unwrap();
     }
 
     /// Each sender's reading at `END`, by its value.
