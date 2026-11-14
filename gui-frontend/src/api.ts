@@ -4240,7 +4240,7 @@ export function lowerSourceRows(
 /** One span of a source's past year, and whether its normal learns from it (`throughput::PastSpan`). */
 export type PastSpan = { fromMillis: number; toMillis: number; learned: boolean };
 
-/** How soon a source, or its senders, warns of a drop against how often of a dip that is not one
+/** How soon a source, or its senders, warns of a drop against how often a brief dip warns too
  * (`throughput::Preset`). */
 export type Preset = 'fast' | 'sensitive' | 'balanced' | 'quiet';
 
