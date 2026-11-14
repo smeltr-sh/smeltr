@@ -32,7 +32,7 @@
   import Advanced from './Advanced.svelte';
   import Collapsible from './Collapsible.svelte';
   import RouteFlow from './RouteFlow.svelte';
-  import { bundleRoutes, cards, type Card } from './routeFlow';
+  import { bundleRoutes, cards, unchosen, type Card } from './routeFlow';
   import JsonEditPage from './JsonEditPage.svelte';
   import RoutePreview from './RoutePreview.svelte';
   import ExceptionMatrix from './ExceptionMatrix.svelte';
@@ -157,13 +157,14 @@
   /** `shared/`'s bundle, whose routes this group runs too. Never saved from here: the page writes its own scope. */
   let shared = $state<FileConfigDto | null>(null);
   let sharedRoutes = $derived(shared?.routes ?? []);
-  let refusals = $derived(
-    problems(
+  let refusals = $derived([
+    ...unchosen(routes),
+    ...problems(
       exceptions,
       bundleRoutes({ routes, pipelines: loadedConfig?.pipelines ?? [] }, shared),
       destinations,
     ),
-  );
+  ]);
   // This page writes two files (`edits.ts`): the routes, and the manifest's
   // answers. The manifest write lands first and can land alone, so a
   // half-landed save keeps what is still unsaved rather than dropping all.

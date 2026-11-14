@@ -3750,15 +3750,18 @@ fn refusal_cycles(destinations: &[DestinationConfig]) -> Vec<String> {
     errors
 }
 
+/// Looks up the `kind` (source or pipeline) that `route` names, `id`, in `known`. The editor leaves a new route's source
+/// and pipeline empty until they are chosen, so an empty one is reported as not chosen, not as naming something gone.
+fn route_names<T: Copy>(route: &str, kind: &str, id: &str, known: &HashMap<String, T>) -> Result<T, String> {
+    if id.is_empty() {
+        return Err(format!("route {route:?} names no {kind}"));
+    }
+    known.get(id).copied().ok_or_else(|| format!("route {route:?} references unknown {kind} {id:?}"))
+}
+
 fn to_route(dto: &RouteDto, maps: &IdMaps, group: &OnException) -> Result<RouteConfig, String> {
-    let source = *maps
-        .sources
-        .get(&dto.source)
-        .ok_or_else(|| format!("route {:?} references unknown source {:?}", dto.id, dto.source))?;
-    let pipeline = *maps
-        .pipelines
-        .get(&dto.pipeline)
-        .ok_or_else(|| format!("route {:?} references unknown pipeline {:?}", dto.id, dto.pipeline))?;
+    let source = route_names(&dto.id, "source", &dto.source, &maps.sources)?;
+    let pipeline = route_names(&dto.id, "pipeline", &dto.pipeline, &maps.pipelines)?;
     let deliver = dto
         .deliver
         .iter()
@@ -4501,6 +4504,13 @@ mod tests {
         let json = example_json().replacen("\"pipeline\": \"main\"", "\"pipeline\": \"ghost\"", 1);
         let err = load_str(&json).unwrap_err();
         assert!(err.to_string().contains("unknown pipeline"), "{err}");
+    }
+
+    #[test]
+    fn a_route_that_names_no_pipeline_is_reported() {
+        let json = example_json().replacen("\"pipeline\": \"main\"", "\"pipeline\": \"\"", 1);
+        let err = load_str(&json).unwrap_err();
+        assert!(err.to_string().contains("names no pipeline"), "{err}");
     }
 
     #[test]
