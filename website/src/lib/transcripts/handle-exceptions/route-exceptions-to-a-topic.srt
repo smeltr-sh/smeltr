@@ -1,0 +1,107 @@
+1
+00:00:02,300 --> 00:00:06,388
+This video sends records with exceptions to a topic of their own,
+
+2
+00:00:06,388 --> 00:00:09,590
+so a bad record never stops the good ones.
+
+3
+00:00:09,640 --> 00:00:14,664
+Where video 2 left off, tutorial-in is blocked by one bad record,
+
+4
+00:00:14,664 --> 00:00:17,390
+saved as the sample held-record.
+
+5
+00:00:17,440 --> 00:00:21,708
+Make a topic for them: smeltr-tutorial-exceptions.
+
+6
+00:00:23,320 --> 00:00:28,560
+In smeltr, you're on the branch tutorial-exceptions, where you saved the held record.
+
+7
+00:00:28,560 --> 00:00:31,430
+Open the route, and add a destination.
+
+8
+00:00:31,480 --> 00:00:36,930
+A new Kafka destination, tutorial-exceptions, writes to that topic.
+
+9
+00:00:46,600 --> 00:00:52,023
+Its condition is the other half: smeltr.exception isn't null.
+
+10
+00:00:52,440 --> 00:00:54,988
+Now every record goes somewhere.
+
+11
+00:00:54,988 --> 00:00:59,765
+Clean ones to tutorial-out, the rest to tutorial-exceptions.
+
+12
+00:00:59,765 --> 00:01:00,390
+Save.
+
+13
+00:01:00,440 --> 00:01:03,334
+Test it with the record that blocked the source.
+
+14
+00:01:03,334 --> 00:01:05,683
+Route the held-record sample.
+
+15
+00:01:08,120 --> 00:01:10,558
+It goes to tutorial-exceptions.
+
+16
+00:01:10,558 --> 00:01:12,430
+Nothing is unmatched.
+
+17
+00:01:12,480 --> 00:01:15,484
+Open it for review, and deploy it.
+
+18
+00:01:28,120 --> 00:01:30,173
+The source reads again.
+
+19
+00:01:30,173 --> 00:01:32,379
+The issue is gone.
+
+20
+00:01:33,960 --> 00:01:35,643
+Read the exceptions topic.
+
+21
+00:01:35,643 --> 00:01:39,155
+The held record is there, with its exception.
+
+22
+00:01:45,200 --> 00:01:49,742
+And the clean record that waited behind it reached tutorial-out.
+
+23
+00:01:57,960 --> 00:01:59,739
+Check on learning.
+
+24
+00:01:59,939 --> 00:02:05,207
+What two conditions send every record somewhere, clean or not?
+
+25
+00:02:09,607 --> 00:02:16,173
+smeltr.exception equals null, and smeltr.exception isn't null.
+
+26
+00:02:17,073 --> 00:02:18,198
+That's the course.
+
+27
+00:02:18,198 --> 00:02:23,235
+Your bad records now have a place to go, and your sources keep flowing.

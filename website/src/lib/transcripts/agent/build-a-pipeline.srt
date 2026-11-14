@@ -1,0 +1,83 @@
+1
+00:00:00,000 --> 00:00:13,310
+This video shows you how to ask the agent for a pipeline, and how to follow what it does. Here we ask it to parse FortiGate traffic logs, map them to Elastic Common Schema, and route them to Elasticsearch.
+
+2
+00:00:13,360 --> 00:00:20,308
+This FortiGate source is receiving traffic logs, but the Status page says no route took its stream.
+
+3
+00:00:22,920 --> 00:00:24,763
+Open the agent.
+
+4
+00:00:31,640 --> 00:00:34,721
+Tell it what you want, in plain words.
+
+5
+00:00:48,360 --> 00:00:50,174
+Send.
+
+6
+00:00:50,360 --> 00:00:56,710
+It starts by reading the configuration: which group runs the source, and what already exists.
+
+7
+00:00:56,760 --> 00:01:04,185
+It finds no samples, so it captures twenty real records from the source, and saves them on a new branch.
+
+8
+00:01:10,760 --> 00:01:18,137
+Then it reads the documentation it needs: the parser, the syslog receiver, and the language reference.
+
+9
+00:01:35,760 --> 00:01:40,910
+Each indented line is one request it made, with the status that came back.
+
+10
+00:01:40,960 --> 00:01:51,150
+With what it learned, it writes a plan. The plan is to strip the syslog priority, read the key value pairs, and map them to Elastic Common Schema.
+
+11
+00:01:51,200 --> 00:01:54,630
+It saves the pipeline and the route on its branch.
+
+12
+00:01:54,680 --> 00:01:59,743
+Then it checks its own work, with a route preview over the sample.
+
+13
+00:02:11,200 --> 00:02:14,990
+All twenty records match the route, with no exceptions.
+
+14
+00:02:15,040 --> 00:02:18,910
+Nothing is deployed. The branch waits for you to review it.
+
+15
+00:02:18,960 --> 00:02:26,910
+Under Things to know, it tells you what it chose. Here, the original FortiGate fields stay beside the new ones.
+
+16
+00:02:26,960 --> 00:02:28,850
+Check on learning.
+
+17
+00:02:29,050 --> 00:02:32,420
+Where does the agent put what it builds?
+
+18
+00:02:36,820 --> 00:02:42,125
+On a branch. Nothing runs until you approve and deploy it.
+
+19
+00:02:43,025 --> 00:02:46,599
+Where did the records it tested with come from?
+
+20
+00:02:50,999 --> 00:02:54,149
+A capture it ran on the live source.
+
+21
+00:02:55,049 --> 00:02:59,202
+Next, you review what the agent built, and deploy it.

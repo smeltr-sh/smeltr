@@ -1,0 +1,39 @@
+1
+00:00:00,000 --> 00:00:10,270
+This video shows you how to ask the agent about your fleet. It reads the workers and the open issues, as the Status page does, and answers in plain words.
+
+2
+00:00:10,320 --> 00:00:13,966
+Open the agent, and start a new conversation.
+
+3
+00:00:22,800 --> 00:00:26,093
+Ask a question, as you would ask a colleague.
+
+4
+00:00:28,440 --> 00:00:31,712
+It reads the workers and the exceptions.
+
+5
+00:00:34,360 --> 00:00:43,653
+It answers with one worker on the deployed commit, five rows read by the source and five received by the destination, and no exceptions.
+
+6
+00:00:45,320 --> 00:00:50,496
+Now ask about the records themselves. Say how you want it to find out.
+
+7
+00:00:56,440 --> 00:01:05,081
+It captures records from the source, as you can in the GUI. When it gets a setting wrong, it says so, and starts again.
+
+8
+00:01:12,760 --> 00:01:23,590
+It stopped early, at thirty-one records, and says so. Most are traffic logs. Three are event logs: admin activity and housekeeping on the FortiGate.
+
+9
+00:01:23,640 --> 00:01:30,430
+Asking changes no configuration. The agent made no branch, and nothing was deployed.
+
+10
+00:01:30,480 --> 00:01:33,989
+Next, you have the agent fix a problem.

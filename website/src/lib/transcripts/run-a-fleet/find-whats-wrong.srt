@@ -1,0 +1,151 @@
+1
+00:00:02,300 --> 00:00:06,830
+This video shows you how to find what's wrong in your fleet, and why.
+
+2
+00:00:06,880 --> 00:00:09,969
+Status lists every worker, by worker group.
+
+3
+00:00:09,969 --> 00:00:14,030
+Both workers are online, and run the same commit.
+
+4
+00:00:14,080 --> 00:00:17,345
+Rows in and out shows the whole fleet's flow.
+
+5
+00:00:17,345 --> 00:00:20,392
+Above the line are rows read from sources.
+
+6
+00:00:20,392 --> 00:00:23,821
+Below it are rows sent to destinations.
+
+7
+00:00:24,240 --> 00:00:25,680
+Now something breaks.
+
+8
+00:00:25,680 --> 00:00:30,710
+A red banner lists the active issues, and both workers need attention.
+
+9
+00:00:30,760 --> 00:00:31,730
+Open Issues.
+
+10
+00:00:31,730 --> 00:00:37,870
+Destination unreachable names tutorial-out, on both workers in the group.
+
+11
+00:00:37,920 --> 00:00:41,093
+The message says what to check: that the broker is up,
+
+12
+00:00:41,093 --> 00:00:45,470
+that the worker can reach it, and that its credentials are still valid.
+
+13
+00:00:45,520 --> 00:00:47,887
+Each worker also logged the error.
+
+14
+00:00:47,887 --> 00:00:53,070
+Issues lists a worker's logged errors and warnings as Logged a warning.
+
+15
+00:00:53,120 --> 00:00:54,920
+Map traces the flow.
+
+16
+00:00:54,920 --> 00:01:00,430
+tutorial-in still reads, but tutorial-out delivers nothing.
+
+17
+00:01:00,480 --> 00:01:02,364
+The source's lag grows.
+
+18
+00:01:02,364 --> 00:01:06,990
+Its rows wait in Kafka until the destination recovers.
+
+19
+00:01:07,040 --> 00:01:08,895
+Logs give the detail.
+
+20
+00:01:08,895 --> 00:01:11,703
+Choose error, and Search.
+
+21
+00:01:15,920 --> 00:01:20,333
+Each worker tried to connect to kafka-out.example.com,
+
+22
+00:01:20,333 --> 00:01:24,011
+on port 9094, and the connection was refused.
+
+23
+00:01:24,011 --> 00:01:27,190
+Here, that means the broker is down.
+
+24
+00:01:27,240 --> 00:01:27,945
+Add warn.
+
+25
+00:01:27,945 --> 00:01:30,061
+The destination is stalled.
+
+26
+00:01:30,061 --> 00:01:36,145
+Its rows are held and sent again once it recovers, so nothing is lost.
+
+27
+00:01:36,560 --> 00:01:42,639
+Once the broker is back, Destination unreachable clears, and the lag drains.
+
+28
+00:01:44,600 --> 00:01:49,511
+A logged warning fades five minutes after the worker last logged it.
+
+29
+00:01:50,120 --> 00:01:53,541
+A worker that stops answering shows as Silent.
+
+30
+00:01:53,541 --> 00:01:55,910
+Its last seen time turns red.
+
+31
+00:01:55,960 --> 00:02:00,350
+Its partitions move to the other worker, so rows keep flowing.
+
+32
+00:02:00,400 --> 00:02:02,522
+Check on learning.
+
+33
+00:02:02,722 --> 00:02:05,194
+A destination stops taking rows.
+
+34
+00:02:05,194 --> 00:02:09,038
+Where do you see which one it is, and why?
+
+35
+00:02:13,438 --> 00:02:14,263
+On Issues.
+
+36
+00:02:14,263 --> 00:02:18,220
+It names the destination and says what to check.
+
+37
+00:02:18,220 --> 00:02:20,552
+Logs give the detail.
+
+38
+00:02:21,452 --> 00:02:26,319
+Next, send your fleet's logs and metrics to your own platform.

@@ -1,0 +1,119 @@
+1
+00:00:02,300 --> 00:00:05,712
+This video shows you how to review the change you built,
+
+2
+00:00:05,712 --> 00:00:08,350
+deploy it, and see records arrive.
+
+3
+00:00:08,400 --> 00:00:11,435
+Nothing you saved runs until it's deployed.
+
+4
+00:00:11,435 --> 00:00:14,590
+In the branch bar, open it for review.
+
+5
+00:00:14,640 --> 00:00:18,959
+smeltr fills in the title and description from what changed.
+
+6
+00:00:20,240 --> 00:00:22,358
+Open it for review.
+
+7
+00:00:23,320 --> 00:00:26,052
+Read through what you're about to deploy.
+
+8
+00:00:26,052 --> 00:00:29,518
+Every object is added, and none is changed.
+
+9
+00:00:34,360 --> 00:00:39,390
+Your branch is current with main, so main has not changed since you started.
+
+10
+00:00:39,440 --> 00:00:41,559
+Approve and deploy it.
+
+11
+00:00:49,520 --> 00:00:51,082
+smeltr opens Status.
+
+12
+00:00:51,082 --> 00:00:54,180
+Both workers run the new commit.
+
+13
+00:00:56,520 --> 00:00:59,257
+Back in the terminal, send a fresh record.
+
+14
+00:00:59,257 --> 00:01:02,550
+Its timestamp tells it apart from earlier ones.
+
+15
+00:01:02,600 --> 00:01:05,407
+Read the output topic into a file.
+
+16
+00:01:05,407 --> 00:01:10,750
+The command stops after thirty seconds without another record.
+
+17
+00:01:10,800 --> 00:01:12,657
+Then open it.
+
+18
+00:01:14,560 --> 00:01:18,330
+There's yours: uppercase, with event.dataset added.
+
+19
+00:01:19,120 --> 00:01:24,510
+The three you sent first are there too, because this source starts at the earliest record.
+
+20
+00:01:24,560 --> 00:01:28,507
+Map shows your route, running on the standalone group.
+
+21
+00:01:31,480 --> 00:01:33,195
+Check on learning.
+
+22
+00:01:33,395 --> 00:01:35,666
+Your change was open for review.
+
+23
+00:01:35,666 --> 00:01:38,395
+What made your workers run it?
+
+24
+00:01:42,795 --> 00:01:44,967
+Approving and deploying it.
+
+25
+00:01:44,967 --> 00:01:49,188
+Deploying changes main, and workers run main.
+
+26
+00:01:50,088 --> 00:01:51,644
+You sent one record.
+
+27
+00:01:51,644 --> 00:01:55,044
+Why does the output topic hold four?
+
+28
+00:01:59,444 --> 00:02:05,359
+Your source starts at the earliest record, so it also read the three you sent first.
+
+29
+00:02:06,259 --> 00:02:07,741
+That's Getting started.
+
+30
+00:02:07,741 --> 00:02:13,175
+You installed smeltr, enrolled a worker, built a pipeline, and deployed it.

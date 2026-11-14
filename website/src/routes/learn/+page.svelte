@@ -1,5 +1,6 @@
 <script lang="ts">
   import VideoPlayer from '#lib/components/VideoPlayer.svelte';
+  import { search } from '#lib/pagefind.ts';
   import { courseLength, courses, levels, released, roles, topics } from '#lib/videos.ts';
 
   const groups = [
@@ -27,6 +28,32 @@
 
   let picked = $state<Choice[]>([]);
   let query = $state('');
+  const term = $derived(query.trim());
+
+  const href = ({ course, video }: Entry) => `/learn/${course.slug}/${video.slug}`;
+  // The videos whose page Pagefind finds for the search, best match first, each with the text around its match.
+  let hits = $state(new Map<string, string>());
+  const rank = (entry: Entry) => [...hits.keys()].indexOf(href(entry));
+
+  $effect(() => {
+    const words = term;
+    let canceled = false;
+    if (words)
+      search(words, 'video').then(
+        (results) => {
+          // Pagefind names a page by its file, `/learn/{course}/{video}.html`.
+          if (!canceled)
+            hits = new Map(results.map((r) => [r.url.replace(/\.html$/, ''), r.excerpt]));
+        },
+        () => {
+          if (!canceled) hits = new Map();
+        },
+      );
+    else hits = new Map();
+    return () => {
+      canceled = true;
+    };
+  });
 
   const isPicked = (group: Group, value: string) =>
     picked.some((p) => p.group === group && p.value === value);
@@ -38,20 +65,19 @@
   // Within a group a video needs any one of the picked tags; across groups it needs a match in every group that has a
   // pick.
   function matches(entry: Entry, tags: Choice[]) {
-    const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    const text = [entry.video.title, entry.course.title, ...entry.video.topics]
-      .join(' ')
-      .toLowerCase();
     return (
       groups.every(({ key }) => {
         const wanted = tags.filter((p) => p.group === key);
         return !wanted.length || wanted.some((p) => entry.tags[key].includes(p.value));
-      }) && words.every((w) => text.includes(w))
+      }) &&
+      (!term || hits.has(href(entry)))
     );
   }
 
-  const filtering = $derived(picked.length > 0 || query.trim() !== '');
-  const found = $derived(videos.filter((entry) => matches(entry, picked)));
+  const filtering = $derived(picked.length > 0 || term !== '');
+  const found = $derived(
+    videos.filter((entry) => matches(entry, picked)).toSorted((a, b) => rank(a) - rank(b)),
+  );
 
   // How many videos match this tag together with the search and the picks in the other groups. Picks in the tag's own
   // group are left out, since they widen the results.
@@ -109,6 +135,10 @@
               {#if video.youtube}<a href="/learn/{course.slug}/{video.slug}">{video.title}</a
                 >{:else}{video.title}{/if}
             </h2>
+            {#if hits.has(href(entry))}
+              <!-- Pagefind escapes the page's text before it adds its highlight markup. -->
+              <p class="excerpt">{@html hits.get(href(entry))}</p>
+            {/if}
             <div class="tags">
               {#each groups as group (group.key)}
                 {#each entry.tags[group.key] as value (value)}
@@ -210,6 +240,10 @@
   .copy h2 {
     font-size: 1.3rem;
     margin: 0 0 0.9rem;
+  }
+  .excerpt {
+    font-size: 0.92rem;
+    overflow-wrap: anywhere;
   }
   .copy h2 a {
     color: inherit;

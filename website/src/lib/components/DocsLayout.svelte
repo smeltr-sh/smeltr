@@ -221,7 +221,12 @@
       {groups}
     />
   </aside>
-  <div class="docs-content" data-pagefind-body={searchable ? '' : undefined} use:copyButtons>
+  <div
+    class="docs-content"
+    data-pagefind-body={searchable ? '' : undefined}
+    data-pagefind-filter={searchable ? 'kind:docs' : undefined}
+    use:copyButtons
+  >
     {@render children()}
   </div>
   {#if sections.length || entries.length}

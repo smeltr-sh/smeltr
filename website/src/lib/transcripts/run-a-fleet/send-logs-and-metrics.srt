@@ -1,0 +1,163 @@
+1
+00:00:02,300 --> 00:00:08,179
+This video shows you how to send your fleet's own logs and metrics to the platform you already watch.
+
+2
+00:00:08,179 --> 00:00:10,310
+Here, that's Elasticsearch.
+
+3
+00:00:10,360 --> 00:00:14,594
+First, store the Elasticsearch API key as a secret.
+
+4
+00:00:14,594 --> 00:00:17,790
+In Admin, open Secrets, and add one.
+
+5
+00:00:17,840 --> 00:00:19,810
+Name it elastic-api-key.
+
+6
+00:00:19,810 --> 00:00:22,273
+Its value lives on the leader.
+
+7
+00:00:22,273 --> 00:00:25,008
+Paste the key, and add it.
+
+8
+00:00:27,880 --> 00:00:31,451
+In Build, open Sources, and add a source.
+
+9
+00:00:31,451 --> 00:00:36,851
+Local, each worker, holds two: smeltr logs and smeltr metrics.
+
+10
+00:00:36,851 --> 00:00:39,350
+Each runs on every worker.
+
+11
+00:00:39,400 --> 00:00:42,851
+Add smeltr metrics, as fleet-metrics.
+
+12
+00:00:44,360 --> 00:00:47,277
+Then add smeltr logs, as fleet-logs.
+
+13
+00:00:47,277 --> 00:00:50,550
+It keeps lines at info and above.
+
+14
+00:00:57,280 --> 00:01:01,069
+Save them on a new branch, fleet-telemetry.
+
+15
+00:01:04,720 --> 00:01:09,349
+Open Destinations, and add an Elasticsearch destination.
+
+16
+00:01:11,400 --> 00:01:12,919
+Name it fleet-es.
+
+17
+00:01:12,919 --> 00:01:18,070
+Enter its URL, and the index to write to, smeltr-fleet.
+
+18
+00:01:18,120 --> 00:01:22,897
+This Elasticsearch has a certificate from your organization's own authority.
+
+19
+00:01:22,897 --> 00:01:26,070
+Paste that authority under trusted authorities.
+
+20
+00:01:26,120 --> 00:01:31,262
+For the credential, choose an API key, and pick the secret you stored.
+
+21
+00:01:31,262 --> 00:01:33,111
+Add it, and save.
+
+22
+00:01:36,080 --> 00:01:38,186
+Open Routes, and add a route.
+
+23
+00:01:38,186 --> 00:01:40,291
+It starts from fleet-metrics.
+
+24
+00:01:40,291 --> 00:01:42,852
+Make a new pipeline for it.
+
+25
+00:01:45,640 --> 00:01:49,981
+Capture a sample from fleet-metrics, to see its records.
+
+26
+00:01:58,040 --> 00:02:02,424
+smeltr proposes a Parser step that reads each record as JSON,
+
+27
+00:02:02,424 --> 00:02:05,011
+and that is all this pipeline needs.
+
+28
+00:02:05,011 --> 00:02:07,590
+Call it fleet-parse, and save it.
+
+29
+00:02:07,640 --> 00:02:10,081
+Add route picked tutorial-out.
+
+30
+00:02:10,081 --> 00:02:14,262
+Take it off, and send the route to fleet-es.
+
+31
+00:02:15,200 --> 00:02:20,653
+Add a second route, for fleet-logs, through fleet-parse, to fleet-es.
+
+32
+00:02:20,653 --> 00:02:22,043
+Then save.
+
+33
+00:02:28,560 --> 00:02:32,116
+Open it for review, then approve and deploy it.
+
+34
+00:02:32,116 --> 00:02:35,137
+Both workers run the new commit.
+
+35
+00:02:52,560 --> 00:02:57,212
+In Kibana, Discover shows the records arriving in smeltr-fleet.
+
+36
+00:02:58,880 --> 00:03:05,361
+A log carries its level, class, type and message, and the worker that wrote it.
+
+37
+00:03:12,840 --> 00:03:19,073
+A metric carries its name and value, and labels such as the destination it measures.
+
+38
+00:03:29,920 --> 00:03:31,857
+Check on learning.
+
+39
+00:03:32,057 --> 00:03:36,275
+Which sources give your fleet's own logs and metrics?
+
+40
+00:03:40,675 --> 00:03:46,328
+smeltr logs and smeltr metrics, under Local, each worker.
+
+41
+00:03:47,228 --> 00:03:50,953
+Next, get alerted when something breaks.

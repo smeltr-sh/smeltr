@@ -1,0 +1,91 @@
+1
+00:00:02,300 --> 00:00:05,654
+This video shows you how to approve a change in smeltr,
+
+2
+00:00:05,654 --> 00:00:08,710
+and have smeltr push it to GitHub's main.
+
+3
+00:00:08,760 --> 00:00:13,750
+In Git remote, tick Approve: pushes to main, and save.
+
+4
+00:00:13,800 --> 00:00:19,910
+If GitHub protects main, it refuses the push, and Approve shows GitHub's reason.
+
+5
+00:00:19,960 --> 00:00:24,546
+In Sam's browser, Sam marks each record as an event.
+
+6
+00:00:33,800 --> 00:00:37,866
+Sam saves on a branch, and opens it for review.
+
+7
+00:00:46,200 --> 00:00:49,774
+In your browser, Branches lists Sam's change.
+
+8
+00:00:49,774 --> 00:00:51,009
+Open it.
+
+9
+00:00:51,880 --> 00:00:56,390
+It adds event.kind to the pipeline tutorial-in-parse.
+
+10
+00:00:56,440 --> 00:00:58,683
+Approve and deploy is back.
+
+11
+00:00:58,683 --> 00:01:00,197
+Approve it.
+
+12
+00:01:05,360 --> 00:01:11,936
+smeltr squashes the change into one commit, pushes it to GitHub's main, and deploys it.
+
+13
+00:01:13,600 --> 00:01:18,198
+On GitHub, main has the commit, named for the change.
+
+14
+00:01:22,760 --> 00:01:24,667
+Check on learning.
+
+15
+00:01:24,867 --> 00:01:27,861
+Approve: pushes to main is on.
+
+16
+00:01:27,861 --> 00:01:30,557
+What does Approve do?
+
+17
+00:01:34,957 --> 00:01:40,177
+It squashes the change, pushes it to GitHub's main, and deploys it.
+
+18
+00:01:41,077 --> 00:01:44,582
+GitHub protects main, and refuses the push.
+
+19
+00:01:44,582 --> 00:01:46,242
+What happens?
+
+20
+00:01:50,642 --> 00:01:51,821
+Nothing moves.
+
+21
+00:01:51,821 --> 00:01:54,947
+Approve shows GitHub's reason.
+
+22
+00:01:55,847 --> 00:01:57,376
+That's Work as a team.
+
+23
+00:01:57,376 --> 00:02:03,673
+Your team now shares one fleet, reviews each other's changes, and works in GitHub.

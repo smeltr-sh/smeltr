@@ -1,0 +1,131 @@
+1
+00:00:00,000 --> 00:00:03,138
+This video shows you how to change records with steps,
+
+2
+00:00:03,138 --> 00:00:05,950
+and with code when steps aren't enough.
+
+3
+00:00:06,000 --> 00:00:08,429
+Here's the pipeline from the last video.
+
+4
+00:00:08,429 --> 00:00:11,910
+Each step changes the records that reach it, in order.
+
+5
+00:00:11,960 --> 00:00:16,074
+DNS lookups to port 53 are noise for this team.
+
+6
+00:00:16,074 --> 00:00:18,470
+A Drop step removes them.
+
+7
+00:00:18,520 --> 00:00:21,818
+Drop when the destination port is 53.
+
+8
+00:00:21,818 --> 00:00:24,112
+One record is gone.
+
+9
+00:00:25,840 --> 00:00:29,669
+message is parsed now, so it only repeats the fields.
+
+10
+00:00:29,669 --> 00:00:32,220
+A Remove step takes it out.
+
+11
+00:00:38,120 --> 00:00:40,649
+Next, rate each connection's risk.
+
+12
+00:00:40,649 --> 00:00:46,470
+That depends on several fields at once: the action, the port and the bytes.
+
+13
+00:00:46,520 --> 00:00:51,870
+A Code step runs a short program on each record, for logic like this.
+
+14
+00:00:51,920 --> 00:00:55,252
+A denied connection to port 22 is high.
+
+15
+00:00:55,252 --> 00:00:57,559
+Any other denial is medium.
+
+16
+00:00:57,559 --> 00:01:01,147
+An allowed one over 50,000 bytes is watch.
+
+17
+00:01:01,147 --> 00:01:03,199
+The rest are low.
+
+18
+00:01:03,400 --> 00:01:06,312
+Every record now has a risk.
+
+19
+00:01:10,800 --> 00:01:12,810
+Save the pipeline.
+
+20
+00:01:13,800 --> 00:01:16,029
+Now lock this output as a test.
+
+21
+00:01:16,029 --> 00:01:20,080
+It checks the fields on screen, on all ten rows.
+
+22
+00:01:21,280 --> 00:01:23,652
+Name it, and lock it.
+
+23
+00:01:26,440 --> 00:01:28,946
+Samples and review run the test again.
+
+24
+00:01:28,946 --> 00:01:34,750
+It passes while those fields keep their values, and the dropped record stays dropped.
+
+25
+00:01:34,800 --> 00:01:36,681
+Check on learning.
+
+26
+00:01:36,881 --> 00:01:41,769
+A field depends on several other fields, with several cases.
+
+27
+00:01:41,769 --> 00:01:43,672
+Which step fits?
+
+28
+00:01:48,072 --> 00:01:49,097
+A Code step.
+
+29
+00:01:49,097 --> 00:01:54,308
+An if and else chain handles the cases in a few lines.
+
+30
+00:01:55,208 --> 00:01:58,108
+What does a locked test check?
+
+31
+00:02:02,508 --> 00:02:07,114
+That the pipeline still gives the same values in the locked fields for its sample,
+
+32
+00:02:07,114 --> 00:02:09,568
+and still drops the same records.
+
+33
+00:02:10,468 --> 00:02:14,130
+Next, you add fields from lookup tables.

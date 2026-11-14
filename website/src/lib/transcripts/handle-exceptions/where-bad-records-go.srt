@@ -1,0 +1,123 @@
+1
+00:00:02,300 --> 00:00:06,212
+This video shows where a record goes when your pipeline can't read it,
+
+2
+00:00:06,212 --> 00:00:08,550
+and how to tell what went wrong.
+
+3
+00:00:08,600 --> 00:00:10,691
+You need one route that runs.
+
+4
+00:00:10,691 --> 00:00:15,089
+This one reads JSON records from a Kafka source, tutorial-in,
+
+5
+00:00:15,089 --> 00:00:19,110
+and writes them to a Kafka destination, tutorial-out.
+
+6
+00:00:19,160 --> 00:00:25,663
+Its pipeline parses each record as JSON, makes the message uppercase, and adds a field.
+
+7
+00:00:29,920 --> 00:00:33,779
+To build the same route, follow Your first pipeline in the docs.
+
+8
+00:00:33,779 --> 00:00:36,270
+Any route of yours works the same way.
+
+9
+00:00:36,320 --> 00:00:38,258
+Your pipeline reads JSON.
+
+10
+00:00:38,258 --> 00:00:41,390
+Send it a record that isn't JSON.
+
+11
+00:00:41,440 --> 00:00:45,227
+Then read the newest record in the output topic.
+
+12
+00:00:51,320 --> 00:00:52,163
+It arrived.
+
+13
+00:00:52,163 --> 00:00:58,870
+The record goes on, and smeltr writes what went wrong into a field, smeltr.exception.
+
+14
+00:00:58,920 --> 00:01:01,015
+The parse step couldn't read it.
+
+15
+00:01:01,015 --> 00:01:05,710
+The exception's kind is Unparsable, and the message quotes the text.
+
+16
+00:01:05,760 --> 00:01:10,590
+The original text is still in _raw, so nothing is lost.
+
+17
+00:01:10,640 --> 00:01:14,502
+In smeltr, open Build, and open the route.
+
+18
+00:01:17,600 --> 00:01:21,910
+Its Exceptions say what happens to each category of exception.
+
+19
+00:01:21,960 --> 00:01:28,160
+A parse exception is tagged: the record goes on, with its exceptions in smeltr.exception.
+
+20
+00:01:28,160 --> 00:01:30,110
+That's what you just saw.
+
+21
+00:01:30,160 --> 00:01:32,346
+Math and limits are tagged too.
+
+22
+00:01:32,346 --> 00:01:36,030
+Encoding problems are ignored, and still counted.
+
+23
+00:01:36,080 --> 00:01:37,671
+Unmatched is different.
+
+24
+00:01:37,671 --> 00:01:40,991
+A record no destination takes blocks the source.
+
+25
+00:01:40,991 --> 00:01:46,550
+smeltr doesn't accept the record, so it waits at the source while you fix it.
+
+26
+00:01:46,600 --> 00:01:53,310
+Each answer can be changed: ignore, tag, drop, deliver, or block.
+
+27
+00:01:53,360 --> 00:01:55,188
+Check on learning.
+
+28
+00:01:55,388 --> 00:01:57,290
+A record fails to parse.
+
+29
+00:01:57,290 --> 00:02:00,108
+Where does it go by default?
+
+30
+00:02:04,508 --> 00:02:09,912
+On to its destination, with its exceptions in smeltr.exception.
+
+31
+00:02:10,812 --> 00:02:15,479
+Next, you see what happens when a record has nowhere to go.

@@ -1,0 +1,135 @@
+1
+00:00:02,300 --> 00:00:05,796
+This video shows what happens when a record has nowhere to go,
+
+2
+00:00:05,796 --> 00:00:09,070
+and how to find the record that holds things up.
+
+3
+00:00:09,120 --> 00:00:16,110
+It uses the route from video 1: tutorial-in, through tutorial-in-parse, to tutorial-out.
+
+4
+00:00:16,160 --> 00:00:19,796
+Say tutorial-out should get only clean records.
+
+5
+00:00:19,796 --> 00:00:21,557
+Open the route.
+
+6
+00:00:22,480 --> 00:00:28,550
+Add a condition on the line to tutorial-out: smeltr.exception equals null.
+
+7
+00:00:28,600 --> 00:00:32,589
+Save it on a branch, tutorial-clean-only.
+
+8
+00:00:35,760 --> 00:00:38,924
+Open it for review, and deploy it.
+
+9
+00:00:51,160 --> 00:00:55,874
+Now send a record that isn't JSON, and a clean one after it.
+
+10
+00:00:56,800 --> 00:00:59,381
+Back in smeltr, Status shows an issue.
+
+11
+00:00:59,381 --> 00:01:00,796
+Open Issues.
+
+12
+00:01:02,280 --> 00:01:04,446
+tutorial-in is blocked.
+
+13
+00:01:04,446 --> 00:01:10,790
+No condition took a record, and Unmatched is answered with block.
+
+14
+00:01:10,840 --> 00:01:13,090
+smeltr hasn't accepted the record.
+
+15
+00:01:13,090 --> 00:01:18,518
+Kafka isn't told it was read, and a sender that pushes is told to try again later.
+
+16
+00:01:18,518 --> 00:01:21,893
+So nothing is lost, as long as the source keeps it.
+
+17
+00:01:21,893 --> 00:01:27,188
+The clean record waits too, since it's behind the bad one in the same partition.
+
+18
+00:01:27,188 --> 00:01:30,150
+Workers reading other partitions carry on.
+
+19
+00:01:30,200 --> 00:01:34,975
+To see the record, open the Map, and select tutorial-in.
+
+20
+00:01:37,160 --> 00:01:40,308
+Capture shows the record holding it up.
+
+21
+00:01:43,760 --> 00:01:45,893
+Here it is: checkout, card expired.
+
+22
+00:01:45,893 --> 00:01:47,350
+No condition took it.
+
+23
+00:01:47,400 --> 00:01:50,490
+It failed to parse, so it's tagged.
+
+24
+00:01:50,490 --> 00:01:56,710
+Your new condition sends only untagged records, so nothing takes it.
+
+25
+00:01:56,760 --> 00:02:01,098
+Stop, and save it as a sample, so you can test a fix with it.
+
+26
+00:02:01,098 --> 00:02:04,899
+It goes on a new branch, tutorial-exceptions.
+
+27
+00:02:09,640 --> 00:02:11,399
+Check on learning.
+
+28
+00:02:11,599 --> 00:02:13,778
+No destination takes a record.
+
+29
+00:02:13,778 --> 00:02:16,121
+What happens by default?
+
+30
+00:02:20,521 --> 00:02:24,667
+It's Unmatched, and the source blocks until the config changes.
+
+31
+00:02:24,667 --> 00:02:29,215
+smeltr doesn't accept the record, so it waits at the source.
+
+32
+00:02:30,115 --> 00:02:33,457
+Where do you see the record that holds a source up?
+
+33
+00:02:37,857 --> 00:02:41,228
+Select the source on the Map, and capture it.
+
+34
+00:02:42,128 --> 00:02:47,299
+Next, you give these records a place to go, and the source flows again.

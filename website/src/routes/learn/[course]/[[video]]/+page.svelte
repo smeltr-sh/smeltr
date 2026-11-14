@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { page } from '$app/state';
   import VideoPlayer from '#lib/components/VideoPlayer.svelte';
   import { courseLength } from '#lib/videos.ts';
 
@@ -33,16 +34,28 @@
             />
           {/key}
         </div>
-        <div class="under">
-          <h2>{at + 1}. {video.title}</h2>
-          {#if next}
-            <a href="/learn/{course.slug}/{next.slug}"
-              >Next: {course.videos.indexOf(next) + 1}. {next.title} →</a
-            >
-          {/if}
-          {#if course.demo}
-            <a href="/demo/try/" rel="external">Try it yourself in the demo →</a>
-          {/if}
+        <!-- A course's own page plays its first video, which Learn search finds at the video's page. -->
+        <div
+          data-pagefind-body={page.params.video ? '' : undefined}
+          data-pagefind-filter={page.params.video ? 'kind:video' : undefined}
+        >
+          <div class="under">
+            <h2>{at + 1}. {video.title}</h2>
+            {#if next}
+              <a href="/learn/{course.slug}/{next.slug}" data-pagefind-ignore
+                >Next: {course.videos.indexOf(next) + 1}. {next.title} →</a
+              >
+            {/if}
+            {#if course.demo}
+              <a href="/demo/try/" rel="external" data-pagefind-ignore
+                >Try it yourself in the demo →</a
+              >
+            {/if}
+          </div>
+          <details class="transcript">
+            <summary data-pagefind-ignore>Transcript</summary>
+            {#each data.transcript as paragraph, i (i)}<p>{paragraph}</p>{/each}
+          </details>
         </div>
       </div>
       <nav aria-label="Videos">
@@ -119,6 +132,15 @@
     align-items: baseline;
     gap: 1rem;
     margin-top: 1rem;
+  }
+  .transcript {
+    margin-top: 1rem;
+    max-width: 48rem;
+  }
+  .transcript summary {
+    cursor: pointer;
+    font-weight: 600;
+    padding-block: 0.5rem;
   }
   .under h2 {
     font-size: 1.3rem;

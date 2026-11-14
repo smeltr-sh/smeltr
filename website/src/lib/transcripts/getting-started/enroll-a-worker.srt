@@ -1,0 +1,99 @@
+1
+00:00:02,300 --> 00:00:06,880
+This video shows you how to add a worker on a second machine to your leader.
+
+2
+00:00:06,880 --> 00:00:09,430
+Then you see both workers online.
+
+3
+00:00:09,480 --> 00:00:13,270
+Status shows the one worker your leader runs itself.
+
+4
+00:00:13,320 --> 00:00:16,568
+A new worker joins with an enrollment code.
+
+5
+00:00:16,568 --> 00:00:20,643
+In Admin, open Workers, then Enrollment codes.
+
+6
+00:00:21,320 --> 00:00:23,662
+Add a code for the standalone group.
+
+7
+00:00:23,662 --> 00:00:27,515
+It brings in one worker, within twenty-four hours.
+
+8
+00:00:29,160 --> 00:00:30,668
+Mint it.
+
+9
+00:00:32,440 --> 00:00:35,550
+Check the address the worker reaches the leader at.
+
+10
+00:00:35,600 --> 00:00:37,356
+Then copy these lines.
+
+11
+00:00:37,356 --> 00:00:39,910
+They're shown only this once.
+
+12
+00:00:39,960 --> 00:00:45,110
+On the second machine, save them in a file named worker.env.
+
+13
+00:00:45,160 --> 00:00:48,409
+Start the worker from the same image as the leader,
+
+14
+00:00:48,409 --> 00:00:51,350
+with that file, and a volume for its state.
+
+15
+00:00:51,400 --> 00:00:54,156
+Its logs show it enrolled.
+
+16
+00:00:56,520 --> 00:00:59,614
+The code names the leader's certificate authority,
+
+17
+00:00:59,614 --> 00:01:02,990
+so the worker takes that one, and accepts no other.
+
+18
+00:01:03,040 --> 00:01:08,702
+Back on Status, the standalone group has two workers, both online.
+
+19
+00:01:10,240 --> 00:01:15,430
+They're in one group, so both run its pipelines, at the same commit.
+
+20
+00:01:15,480 --> 00:01:17,284
+Check on learning.
+
+21
+00:01:17,484 --> 00:01:20,035
+The leader signed its own certificate.
+
+22
+00:01:20,035 --> 00:01:22,851
+Why does the new worker trust it?
+
+23
+00:01:27,251 --> 00:01:31,076
+Its enrollment code names the leader's certificate authority,
+
+24
+00:01:31,076 --> 00:01:33,996
+and the worker accepts only that one.
+
+25
+00:01:34,896 --> 00:01:38,578
+Next, you build your first pipeline.

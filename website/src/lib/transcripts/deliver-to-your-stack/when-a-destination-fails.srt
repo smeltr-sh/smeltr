@@ -1,0 +1,195 @@
+1
+00:00:02,300 --> 00:00:06,154
+This video shows you what smeltr does when a destination is down,
+
+2
+00:00:06,154 --> 00:00:08,430
+and when it refuses a record.
+
+3
+00:00:08,480 --> 00:00:12,665
+Stop Elasticsearch, and send a record while it's down.
+
+4
+00:00:20,160 --> 00:00:25,236
+Issues flags search-out: the destination is unreachable.
+
+5
+00:00:26,880 --> 00:00:29,572
+smeltr keeps the record and tries again.
+
+6
+00:00:29,572 --> 00:00:34,484
+It moves the source's place in Kafka only after every destination has it,
+
+7
+00:00:34,484 --> 00:00:36,430
+so the records wait there.
+
+8
+00:00:36,480 --> 00:00:39,251
+Start Elasticsearch again.
+
+9
+00:00:40,600 --> 00:00:44,134
+The issue clears, and the record is in the index.
+
+10
+00:00:44,134 --> 00:00:45,960
+Nothing was lost.
+
+11
+00:00:54,400 --> 00:00:57,567
+Now send a record Elasticsearch can't take.
+
+12
+00:00:57,567 --> 00:01:02,030
+Its durationMs is text, and the index holds numbers there.
+
+13
+00:01:02,080 --> 00:01:03,843
+Elasticsearch refuses it.
+
+14
+00:01:03,843 --> 00:01:09,131
+The default answer to a refusal is block: smeltr doesn't accept the record,
+
+15
+00:01:09,131 --> 00:01:12,710
+so Kafka keeps it, and the source waits for you.
+
+16
+00:01:12,760 --> 00:01:18,193
+To see what was refused, open the Map, select search-out, and start a capture.
+
+17
+00:01:18,193 --> 00:01:23,112
+It lists each record the destination refused, with the reason.
+
+18
+00:01:28,360 --> 00:01:32,084
+You can send refused records to a dead-letter destination,
+
+19
+00:01:32,084 --> 00:01:35,038
+such as a Kafka topic, and look at them later.
+
+20
+00:01:35,038 --> 00:01:37,606
+Or fix the pipeline, so the record fits.
+
+21
+00:01:37,606 --> 00:01:38,590
+Do that now.
+
+22
+00:01:38,640 --> 00:01:42,227
+Open the pipeline, tutorial-in-parse.
+
+23
+00:01:46,320 --> 00:01:51,680
+Kafka still holds the blocked record, so capture it from the source, tutorial-in.
+
+24
+00:01:51,680 --> 00:01:56,515
+Start at the earliest record, and use the records as the sample.
+
+25
+00:02:03,160 --> 00:02:08,757
+In the Eval step, add one more assignment: durationMs as f64.
+
+26
+00:02:08,757 --> 00:02:11,926
+It makes the field a number.
+
+27
+00:02:16,440 --> 00:02:20,546
+The text slow isn't a number, so durationMs becomes empty,
+
+28
+00:02:20,546 --> 00:02:26,190
+and the record carries a CoercionRefused exception, so you can still find it.
+
+29
+00:02:26,240 --> 00:02:31,772
+Save it on a branch called deliver-duration, and open it for review.
+
+30
+00:02:40,840 --> 00:02:44,996
+The review shows one change, to tutorial-in-parse.
+
+31
+00:02:44,996 --> 00:02:47,190
+Approve and deploy it.
+
+32
+00:02:47,240 --> 00:02:50,408
+Each worker stops reading, takes the new pipeline,
+
+33
+00:02:50,408 --> 00:02:53,957
+and starts again from its last committed place in Kafka.
+
+34
+00:02:53,957 --> 00:02:56,310
+The refused record is still there.
+
+35
+00:02:56,360 --> 00:03:01,630
+So it's read again, through the fixed pipeline, and reaches Elasticsearch.
+
+36
+00:03:01,630 --> 00:03:07,072
+Its exception says what was wrong, and _raw keeps the original text.
+
+37
+00:03:09,600 --> 00:03:11,411
+Check on learning.
+
+38
+00:03:11,611 --> 00:03:13,620
+Elasticsearch was down.
+
+39
+00:03:13,620 --> 00:03:16,055
+Why was nothing lost?
+
+40
+00:03:20,455 --> 00:03:26,173
+smeltr moves the source's place in Kafka only after every destination has the record,
+
+41
+00:03:26,173 --> 00:03:28,657
+so the records waited there.
+
+42
+00:03:29,557 --> 00:03:32,980
+Elasticsearch refused a record, and the source blocked.
+
+43
+00:03:32,980 --> 00:03:36,692
+Where was the record while you fixed the pipeline?
+
+44
+00:03:41,092 --> 00:03:42,146
+Still in Kafka.
+
+45
+00:03:42,146 --> 00:03:43,974
+smeltr hadn't accepted it,
+
+46
+00:03:43,974 --> 00:03:49,213
+so after the deploy it was read again, through the fixed pipeline.
+
+47
+00:03:50,113 --> 00:03:52,066
+That's Deliver to your stack.
+
+48
+00:03:52,066 --> 00:03:55,838
+You sent records to Elasticsearch, S3 and OpenTelemetry,
+
+49
+00:03:55,838 --> 00:04:00,547
+and kept them safe when a destination failed or refused them.

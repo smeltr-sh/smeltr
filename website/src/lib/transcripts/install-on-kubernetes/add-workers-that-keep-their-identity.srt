@@ -1,0 +1,143 @@
+1
+00:00:02,300 --> 00:00:08,630
+This video shows you how to add a worker on Kubernetes that keeps its identity when its pod restarts.
+
+2
+00:00:08,680 --> 00:00:15,375
+Open a new file, smeltr-worker.yaml, and paste in the worker's manifest from the guide.
+
+3
+00:00:20,280 --> 00:00:23,664
+Its config map says which group the worker joins.
+
+4
+00:00:23,664 --> 00:00:25,550
+Here, the default group.
+
+5
+00:00:25,600 --> 00:00:28,741
+Change the leader's address to yours.
+
+6
+00:00:31,120 --> 00:00:33,913
+This secret holds the enrollment code.
+
+7
+00:00:33,913 --> 00:00:35,190
+Mint one now.
+
+8
+00:00:35,240 --> 00:00:40,660
+In smeltr, open Admin, then Workers, then Enrollment codes.
+
+9
+00:00:41,560 --> 00:00:44,358
+Add an enrollment code for the default group.
+
+10
+00:00:44,358 --> 00:00:47,072
+It brings in one permanent worker.
+
+11
+00:00:47,800 --> 00:00:50,437
+Mint it, and copy the code.
+
+12
+00:00:54,440 --> 00:00:58,252
+Back in the terminal, paste the code into the secret.
+
+13
+00:01:00,480 --> 00:01:02,685
+The stateful set runs one worker.
+
+14
+00:01:02,685 --> 00:01:07,390
+For more, raise replicas, and mint a code that brings in that many.
+
+15
+00:01:07,440 --> 00:01:12,190
+The long grace period gives a stopping worker time to finish its work cleanly.
+
+16
+00:01:12,240 --> 00:01:18,457
+Name the image by the same digest as the leader's, read in from digest.txt.
+
+17
+00:01:19,120 --> 00:01:23,195
+The worker's thread limit comes from its CPU request, just below.
+
+18
+00:01:23,195 --> 00:01:27,990
+Without a thread limit, it would run a thread for every core on its node.
+
+19
+00:01:28,040 --> 00:01:30,611
+Size the memory for what the group runs.
+
+20
+00:01:30,611 --> 00:01:32,990
+The guide's sizing page shows how.
+
+21
+00:01:33,040 --> 00:01:35,760
+Its identity lives in its own volume.
+
+22
+00:01:35,760 --> 00:01:38,350
+Never share or copy that volume.
+
+23
+00:01:38,400 --> 00:01:40,270
+Save the file.
+
+24
+00:01:40,320 --> 00:01:43,262
+Apply it, and wait for the pod.
+
+25
+00:01:51,680 --> 00:01:57,030
+In Status, the default group has one worker, and it's online.
+
+26
+00:01:57,080 --> 00:01:59,610
+The worker needs its code only to enroll.
+
+27
+00:01:59,610 --> 00:02:03,630
+From then on, it reconnects with the credential in its volume.
+
+28
+00:02:03,680 --> 00:02:04,802
+Delete its pod.
+
+29
+00:02:04,802 --> 00:02:09,517
+The stateful set starts it again, with the same volume.
+
+30
+00:02:15,760 --> 00:02:19,870
+Back in Status, it's the same worker, online again.
+
+31
+00:02:19,920 --> 00:02:23,358
+This code is spent, so it enrolls no one else.
+
+32
+00:02:23,358 --> 00:02:29,040
+A code with uses left is a live secret, so guard it like a password.
+
+33
+00:02:30,440 --> 00:02:32,246
+Check on learning.
+
+34
+00:02:32,446 --> 00:02:37,102
+When the worker's pod restarts, how does it reconnect?
+
+35
+00:02:41,502 --> 00:02:45,296
+With the credential it keeps in its own volume.
+
+36
+00:02:46,196 --> 00:02:49,252
+Next, you autoscale workers.

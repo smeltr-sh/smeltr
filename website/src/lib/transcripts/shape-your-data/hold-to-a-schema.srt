@@ -1,0 +1,139 @@
+1
+00:00:00,000 --> 00:00:03,315
+This video shows you how to hold a pipeline to a schema,
+
+2
+00:00:03,315 --> 00:00:05,950
+and fill in the fields it asks for.
+
+3
+00:00:06,000 --> 00:00:11,598
+Security tools often read OCSF, the Open Cybersecurity Schema Framework.
+
+4
+00:00:11,598 --> 00:00:14,670
+Add a schema from one of its classes.
+
+5
+00:00:14,720 --> 00:00:19,885
+These records are network connections, so the class is Network Activity.
+
+6
+00:00:19,885 --> 00:00:22,470
+Name the schema network-activity.
+
+7
+00:00:22,520 --> 00:00:26,604
+Profiles add fields for things like hosts and containers.
+
+8
+00:00:26,604 --> 00:00:32,480
+Tick one, and your records must carry its fields and name it in metadata.profiles.
+
+9
+00:00:32,480 --> 00:00:37,209
+This pipeline fills none of them, so leave every profile unticked.
+
+10
+00:00:37,209 --> 00:00:41,350
+Keep depth 2, with the required and recommended fields.
+
+11
+00:00:41,400 --> 00:00:42,463
+Add it, and save.
+
+12
+00:00:42,463 --> 00:00:44,751
+The schema holds 78 fields.
+
+13
+00:00:48,840 --> 00:00:53,043
+Back in the pipeline, add the schema to the Produces bar.
+
+14
+00:00:56,640 --> 00:00:58,143
+One schema finding.
+
+15
+00:00:58,143 --> 00:01:02,030
+The schema requires seven fields the rows lack.
+
+16
+00:01:02,080 --> 00:01:06,705
+Fields lists them under Not set, each with its type.
+
+17
+00:01:12,960 --> 00:01:15,272
+A Code step fills them in.
+
+18
+00:01:18,320 --> 00:01:22,525
+Network Activity is class 4001, in category 4.
+
+19
+00:01:22,525 --> 00:01:26,364
+A denied connection is activity 5, Refuse.
+
+20
+00:01:26,364 --> 00:01:28,740
+An allowed one is 1, Open.
+
+21
+00:01:28,740 --> 00:01:32,790
+type_uid joins the class and the activity.
+
+22
+00:01:32,840 --> 00:01:35,140
+Severity 1 is informational.
+
+23
+00:01:35,140 --> 00:01:38,343
+time is the timestamp, in milliseconds.
+
+24
+00:01:38,343 --> 00:01:42,470
+metadata names the OCSF version and the product.
+
+25
+00:01:42,520 --> 00:01:49,755
+Last, the addresses and ports go where OCSF puts them, in src_endpoint and dst_endpoint.
+
+26
+00:01:50,120 --> 00:01:52,808
+The rows fit the schema now.
+
+27
+00:01:56,960 --> 00:01:58,915
+Save the pipeline.
+
+28
+00:02:00,360 --> 00:02:02,248
+Check on learning.
+
+29
+00:02:02,448 --> 00:02:07,312
+Where do you see the fields a schema requires and the rows lack?
+
+30
+00:02:11,712 --> 00:02:17,764
+In the pipeline's schema finding, and under Not set in Fields.
+
+31
+00:02:18,664 --> 00:02:24,704
+When you tick a profile on an OCSF class, what must your records then carry?
+
+32
+00:02:29,104 --> 00:02:34,384
+That profile's fields, and its name in metadata.profiles.
+
+33
+00:02:35,284 --> 00:02:36,814
+That's Shape your data.
+
+34
+00:02:36,814 --> 00:02:40,539
+You parsed raw text, transformed it with steps and code,
+
+35
+00:02:40,539 --> 00:02:44,864
+enriched it from lookup tables, and held it to a schema.

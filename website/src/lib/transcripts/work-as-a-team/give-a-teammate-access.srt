@@ -1,0 +1,139 @@
+1
+00:00:02,300 --> 00:00:05,781
+This video shows you how to give a teammate their own account,
+
+2
+00:00:05,781 --> 00:00:08,070
+with only the access they need.
+
+3
+00:00:08,120 --> 00:00:10,986
+In Admin, open Accounts, then Roles.
+
+4
+00:00:10,986 --> 00:00:14,771
+The administrator role holds everything.
+
+5
+00:00:16,520 --> 00:00:19,706
+Add a role for the people who build pipelines.
+
+6
+00:00:19,706 --> 00:00:21,829
+Call it pipeline-team.
+
+7
+00:00:23,600 --> 00:00:29,381
+A role gives each area a level: the shared configuration, or a worker group.
+
+8
+00:00:29,381 --> 00:00:30,750
+A viewer reads it.
+
+9
+00:00:30,750 --> 00:00:33,717
+An editor also saves to it on a branch.
+
+10
+00:00:33,717 --> 00:00:36,710
+A deployer also approves and deploys.
+
+11
+00:00:36,760 --> 00:00:41,370
+For example, an analyst who reviews how data is transformed is a viewer.
+
+12
+00:00:41,370 --> 00:00:44,124
+The people who build pipelines are editors.
+
+13
+00:00:44,124 --> 00:00:48,630
+The team lead who approves and deploys their changes is a deployer.
+
+14
+00:00:48,680 --> 00:00:52,500
+Your pipeline is in shared, and it runs on standalone.
+
+15
+00:00:52,500 --> 00:00:54,950
+Make the role an editor in both.
+
+16
+00:00:55,000 --> 00:00:56,579
+Save it.
+
+17
+00:00:58,600 --> 00:01:00,832
+Now add your teammate's account.
+
+18
+00:01:00,832 --> 00:01:03,830
+On the Accounts tab, choose Add account.
+
+19
+00:01:03,880 --> 00:01:06,357
+Sam signs in with a password.
+
+20
+00:01:06,357 --> 00:01:11,670
+Enter a display name and a username, and tick pipeline-team.
+
+21
+00:01:11,720 --> 00:01:12,239
+Add it.
+
+22
+00:01:12,239 --> 00:01:16,691
+smeltr shows Sam's one-time password, and only once.
+
+23
+00:01:17,800 --> 00:01:22,556
+Hand it to Sam over a channel you trust, then choose Done.
+
+24
+00:01:23,640 --> 00:01:28,658
+Here's Sam, in a browser of their own, signing in with that password.
+
+25
+00:01:30,000 --> 00:01:34,610
+Before anything else, Sam chooses a password of their own.
+
+26
+00:01:36,240 --> 00:01:39,055
+Then Sam signs in with it.
+
+27
+00:01:41,880 --> 00:01:45,076
+Sam's menu has no Admin.
+
+28
+00:01:48,960 --> 00:01:54,590
+In Build, the pen on shared configuration says Sam can edit it, on a branch.
+
+29
+00:01:54,640 --> 00:01:56,477
+Check on learning.
+
+30
+00:01:56,677 --> 00:02:00,076
+Sam builds pipelines but shouldn't deploy them.
+
+31
+00:02:00,076 --> 00:02:03,062
+Which level does Sam's role give?
+
+32
+00:02:07,462 --> 00:02:08,021
+Editor.
+
+33
+00:02:08,021 --> 00:02:10,259
+An editor saves on a branch.
+
+34
+00:02:10,259 --> 00:02:14,135
+Approving and deploying takes a deployer.
+
+35
+00:02:15,035 --> 00:02:19,049
+Next, Sam makes a change, and you review it.

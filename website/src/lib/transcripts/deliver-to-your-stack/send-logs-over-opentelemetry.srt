@@ -1,0 +1,151 @@
+1
+00:00:02,300 --> 00:00:08,230
+This video shows you how to send your records as logs, over OpenTelemetry, to a Collector.
+
+2
+00:00:08,280 --> 00:00:11,568
+Your records already go to Elasticsearch and to S3.
+
+3
+00:00:11,568 --> 00:00:15,372
+Many teams gather their logs in an OpenTelemetry Collector,
+
+4
+00:00:15,372 --> 00:00:18,402
+which sends them on to whatever tools they use.
+
+5
+00:00:18,402 --> 00:00:22,190
+Send your records there too, and they join that stream.
+
+6
+00:00:22,240 --> 00:00:24,899
+The Collector asks for a bearer token.
+
+7
+00:00:24,899 --> 00:00:31,166
+Keep the whole header value in a secret: the word Bearer, a space, and the token.
+
+8
+00:00:36,320 --> 00:00:41,452
+A log record has fields of its own, so give this destination its own pipeline.
+
+9
+00:00:41,452 --> 00:00:43,952
+On the tutorial route, add a pipeline.
+
+10
+00:00:43,952 --> 00:00:47,590
+It becomes a route of its own, from the same source.
+
+11
+00:00:47,640 --> 00:00:49,203
+It asks for a capture.
+
+12
+00:00:49,203 --> 00:00:54,778
+Start at the earliest record, stop once records come in, and use them.
+
+13
+00:01:02,480 --> 00:01:07,040
+smeltr reads them as JSON, and proposes a parser step.
+
+14
+00:01:08,840 --> 00:01:10,118
+Then an Eval step.
+
+15
+00:01:10,118 --> 00:01:15,089
+The message becomes the body, every record gets a severity and a time,
+
+16
+00:01:15,089 --> 00:01:19,523
+and the service goes in the resource, as service.name.
+
+17
+00:01:35,640 --> 00:01:41,129
+Name it tutorial-otel, and save it on a branch called deliver-otel.
+
+18
+00:01:47,080 --> 00:01:51,079
+From the new pipeline, add a destination.
+
+19
+00:01:51,079 --> 00:01:52,167
+OTLP.
+
+20
+00:01:55,280 --> 00:01:56,650
+Call it otel-logs.
+
+21
+00:01:56,650 --> 00:02:02,830
+Give it the Collector's address, without a path: smeltr adds the one for logs.
+
+22
+00:02:02,880 --> 00:02:07,338
+Add a credential for the Authorization header, from your secret.
+
+23
+00:02:08,440 --> 00:02:14,350
+Under Advanced, paste the authority that signed the Collector's certificate.
+
+24
+00:02:14,400 --> 00:02:16,031
+Add it, and save.
+
+25
+00:02:20,760 --> 00:02:22,064
+Open it for review.
+
+26
+00:02:22,064 --> 00:02:25,496
+Three things are added: the destination otel-logs,
+
+27
+00:02:25,496 --> 00:02:33,390
+a route that sends tutorial-in through the pipeline tutorial-otel to that destination, and the pipeline itself.
+
+28
+00:02:33,440 --> 00:02:35,957
+Approve and deploy it.
+
+29
+00:02:46,000 --> 00:02:48,078
+Send a fresh record.
+
+30
+00:02:59,400 --> 00:03:03,973
+The Collector prints it as a log record: the service in its resource,
+
+31
+00:03:03,973 --> 00:03:07,290
+a severity, and your message as the body.
+
+32
+00:03:09,680 --> 00:03:11,506
+Check on learning.
+
+33
+00:03:11,706 --> 00:03:16,718
+Why add a pipeline, instead of changing tutorial-in-parse?
+
+34
+00:03:21,118 --> 00:03:24,952
+tutorial-in-parse also feeds your other destinations.
+
+35
+00:03:24,952 --> 00:03:29,531
+The new pipeline shapes records only for OpenTelemetry.
+
+36
+00:03:30,431 --> 00:03:34,263
+What goes in the secret for the Authorization header?
+
+37
+00:03:38,663 --> 00:03:44,087
+The header's whole value: Bearer, a space, and the token.
+
+38
+00:03:44,987 --> 00:03:49,534
+Next, you see what smeltr does when a destination fails.

@@ -1,0 +1,187 @@
+1
+00:00:02,300 --> 00:00:05,592
+This video shows you how to build your first pipeline.
+
+2
+00:00:05,592 --> 00:00:10,950
+It reads records from one Kafka topic, changes them, and sends them to another.
+
+3
+00:00:11,000 --> 00:00:16,393
+You need two topics: one for the records coming in, and one for the result.
+
+4
+00:00:19,720 --> 00:00:24,386
+Send three records to the input topic, so there's something to capture.
+
+5
+00:00:26,200 --> 00:00:29,035
+In smeltr, open Build, and add a route.
+
+6
+00:00:29,035 --> 00:00:34,578
+It takes records from a source, through a pipeline, to destinations.
+
+7
+00:00:38,560 --> 00:00:40,838
+Start with a new source.
+
+8
+00:00:40,838 --> 00:00:44,286
+Pull, all workers, then Kafka.
+
+9
+00:00:46,360 --> 00:00:47,961
+Call it tutorial-in.
+
+10
+00:00:47,961 --> 00:00:52,723
+Give it the broker, and the input topic, and add it.
+
+11
+00:00:56,520 --> 00:01:01,596
+Main changes only when you deploy, so smeltr asks for a branch.
+
+12
+00:01:01,596 --> 00:01:04,350
+Call it tutorial-first-pipeline.
+
+13
+00:01:04,400 --> 00:01:08,110
+Everything you save from here on goes on that branch.
+
+14
+00:01:08,160 --> 00:01:09,790
+Now make a new pipeline.
+
+15
+00:01:09,790 --> 00:01:11,284
+It asks for a capture.
+
+16
+00:01:11,284 --> 00:01:14,951
+A worker opens the source itself, reads a few records,
+
+17
+00:01:14,951 --> 00:01:18,430
+and hands them back, without deploying anything.
+
+18
+00:01:18,480 --> 00:01:23,391
+Start at the earliest record, so the capture finds the three you sent.
+
+19
+00:01:29,120 --> 00:01:30,241
+There they are.
+
+20
+00:01:30,241 --> 00:01:33,829
+Stop the capture, and use these records.
+
+21
+00:01:36,560 --> 00:01:40,000
+smeltr reads them, and proposes a first step.
+
+22
+00:01:40,000 --> 00:01:42,817
+It reads each record as JSON.
+
+23
+00:01:43,960 --> 00:01:45,261
+Add an Eval step.
+
+24
+00:01:45,261 --> 00:01:49,230
+It sets fields to the values of expressions.
+
+25
+00:01:50,800 --> 00:01:53,403
+Make the message uppercase.
+
+26
+00:01:58,920 --> 00:02:02,190
+Then add a field that labels these records.
+
+27
+00:02:02,190 --> 00:02:06,137
+The dot puts dataset inside an event object.
+
+28
+00:02:08,680 --> 00:02:09,855
+Save the pipeline.
+
+29
+00:02:09,855 --> 00:02:12,087
+You're back on the route.
+
+30
+00:02:13,360 --> 00:02:15,101
+Last, the destination.
+
+31
+00:02:15,101 --> 00:02:20,924
+A new Kafka destination, tutorial-out, writes to the output topic.
+
+32
+00:02:31,280 --> 00:02:37,179
+The route reads tutorial-in, through tutorial-in-parse, to tutorial-out.
+
+33
+00:02:37,179 --> 00:02:38,434
+Save it.
+
+34
+00:02:40,160 --> 00:02:43,344
+Before anything runs, check where the records go.
+
+35
+00:02:43,344 --> 00:02:45,958
+Route the records you captured.
+
+36
+00:02:47,000 --> 00:02:51,119
+All three reach tutorial-out, changed the way you wanted.
+
+37
+00:02:51,119 --> 00:02:52,947
+Nothing was sent.
+
+38
+00:02:53,120 --> 00:02:56,569
+It's all on your branch, and not deployed yet.
+
+39
+00:03:00,080 --> 00:03:01,892
+Check on learning.
+
+40
+00:03:02,092 --> 00:03:05,497
+You saved a source, a pipeline and a destination.
+
+41
+00:03:05,497 --> 00:03:08,599
+Why don't your workers run them yet?
+
+42
+00:03:12,999 --> 00:03:14,452
+They're on a branch.
+
+43
+00:03:14,452 --> 00:03:19,121
+Workers run main, and main changes only when you deploy.
+
+44
+00:03:20,021 --> 00:03:24,151
+How did the capture read records, with nothing deployed?
+
+45
+00:03:28,551 --> 00:03:32,440
+A worker opened the source itself and handed the records back.
+
+46
+00:03:32,440 --> 00:03:38,057
+It marks nothing as read, so your pipeline still gets every record when it runs.
+
+47
+00:03:38,957 --> 00:03:42,693
+Next, you review this change and deploy it.

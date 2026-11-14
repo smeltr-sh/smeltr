@@ -1,0 +1,151 @@
+1
+00:00:00,000 --> 00:00:04,670
+This video shows you how to add fields to your records from lookup tables.
+
+2
+00:00:04,720 --> 00:00:07,620
+A lookup table is shared by every pipeline.
+
+3
+00:00:07,620 --> 00:00:12,402
+Start with one you build by hand: which network is which site.
+
+4
+00:00:12,960 --> 00:00:16,452
+Name the columns network and site.
+
+5
+00:00:16,920 --> 00:00:21,984
+The headquarters is 10.1.0.0/16.
+
+6
+00:00:21,984 --> 00:00:27,206
+The branch office is 10.2.0.0/16.
+
+7
+00:00:27,206 --> 00:00:28,230
+Save.
+
+8
+00:00:28,280 --> 00:00:33,539
+Build a second table the same way: which port is which service.
+
+9
+00:00:39,520 --> 00:00:43,099
+Port 22 is ssh.
+
+10
+00:00:43,520 --> 00:00:49,677
+443 and 8443 are https.
+
+11
+00:00:51,800 --> 00:00:54,582
+123 is ntp.
+
+12
+00:00:54,582 --> 00:00:56,447
+Save.
+
+13
+00:00:57,680 --> 00:01:02,481
+The third table comes from a file: who works on which team.
+
+14
+00:01:08,880 --> 00:01:12,752
+Four users, each with a team and a title.
+
+15
+00:01:12,752 --> 00:01:13,824
+Save.
+
+16
+00:01:16,880 --> 00:01:20,161
+Back in the pipeline, add a Lookup step.
+
+17
+00:01:25,280 --> 00:01:28,783
+It reads src_ip, and looks it up in the sites table.
+
+18
+00:01:28,783 --> 00:01:33,590
+Its match kind is cidr: it finds the network that holds the address.
+
+19
+00:01:33,640 --> 00:01:36,044
+Write the site column as a string.
+
+20
+00:01:36,044 --> 00:01:38,977
+Each connection now has its site.
+
+21
+00:01:41,600 --> 00:01:44,069
+A second Lookup step reads dst_port,
+
+22
+00:01:44,069 --> 00:01:49,402
+and matches it exactly against the port column of the services table.
+
+23
+00:01:54,280 --> 00:01:56,268
+Write service as a string.
+
+24
+00:01:56,268 --> 00:01:59,773
+Each connection now names its service.
+
+25
+00:02:01,760 --> 00:02:04,765
+A third Lookup step adds each user's team.
+
+26
+00:02:04,765 --> 00:02:10,159
+It matches user exactly against the user column of the users table.
+
+27
+00:02:13,960 --> 00:02:18,945
+Write team, and give it a default on miss: unknown.
+
+28
+00:02:20,600 --> 00:02:25,450
+erin isn't in the table, so erin's record gets unknown.
+
+29
+00:02:27,280 --> 00:02:29,408
+Save the pipeline.
+
+30
+00:02:30,640 --> 00:02:32,505
+Check on learning.
+
+31
+00:02:32,705 --> 00:02:37,561
+Which match kind finds the network that holds an IP address?
+
+32
+00:02:41,961 --> 00:02:42,383
+cidr.
+
+33
+00:02:42,383 --> 00:02:46,694
+It finds the network that holds the address.
+
+34
+00:02:47,594 --> 00:02:50,423
+A record's user isn't in the table.
+
+35
+00:02:50,423 --> 00:02:52,558
+What does team get?
+
+36
+00:02:56,958 --> 00:02:58,907
+Its default on miss.
+
+37
+00:02:58,907 --> 00:03:01,553
+Here, that's unknown.
+
+38
+00:03:02,453 --> 00:03:06,182
+Next, you hold the pipeline to a schema.

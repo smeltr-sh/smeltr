@@ -1,0 +1,131 @@
+1
+00:00:02,300 --> 00:00:07,430
+This video shows you how to send your records to Elasticsearch, and find them there.
+
+2
+00:00:07,480 --> 00:00:09,903
+You pick up where Getting started ended.
+
+3
+00:00:09,903 --> 00:00:11,841
+smeltr reads records from Kafka,
+
+4
+00:00:11,841 --> 00:00:16,196
+shapes them with your pipeline, and writes them back to Kafka.
+
+5
+00:00:19,280 --> 00:00:22,390
+Now you send them to Elasticsearch instead.
+
+6
+00:00:22,440 --> 00:00:26,472
+Elasticsearch takes an API key that can write to your index.
+
+7
+00:00:26,472 --> 00:00:28,416
+Keep it in a secret.
+
+8
+00:00:29,520 --> 00:00:33,078
+Call it elastic-api-key, paste the key, and add it.
+
+9
+00:00:33,078 --> 00:00:38,070
+The leader stores it, and sends it only to the workers that need it.
+
+10
+00:00:38,120 --> 00:00:41,849
+Back on the tutorial route, add a destination.
+
+11
+00:00:48,960 --> 00:00:50,239
+Call it search-out.
+
+12
+00:00:50,239 --> 00:00:54,609
+Give it the cluster's address and the index to write to.
+
+13
+00:00:55,440 --> 00:00:59,298
+This cluster's certificate comes from your company's own authority.
+
+14
+00:00:59,298 --> 00:01:02,710
+Paste that authority's certificate, so workers trust it.
+
+15
+00:01:02,760 --> 00:01:07,310
+For the credential, pick an API key, and the secret you just made.
+
+16
+00:01:07,360 --> 00:01:11,714
+Add it, on a branch called deliver-elasticsearch.
+
+17
+00:01:15,080 --> 00:01:18,775
+Take tutorial-out off the route, and save.
+
+18
+00:01:22,720 --> 00:01:28,007
+Nothing else sends to tutorial-out, so delete that destination too.
+
+19
+00:01:32,920 --> 00:01:34,254
+Open it for review.
+
+20
+00:01:34,254 --> 00:01:40,749
+search-out is added, tutorial-out is removed, and the route now sends to search-out.
+
+21
+00:01:48,680 --> 00:01:50,929
+Approve and deploy it.
+
+22
+00:02:01,600 --> 00:02:04,580
+In the terminal, send a fresh record.
+
+23
+00:02:07,080 --> 00:02:09,713
+Then search the index for it.
+
+24
+00:02:12,080 --> 00:02:16,723
+There it is: one hit, shaped by your pipeline.
+
+25
+00:02:19,120 --> 00:02:20,997
+Check on learning.
+
+26
+00:02:21,197 --> 00:02:26,564
+Where is the API key kept, and how does the destination use it?
+
+27
+00:02:30,964 --> 00:02:32,788
+In a secret on the leader.
+
+28
+00:02:32,788 --> 00:02:38,511
+The destination names the secret, so the key never shows in its settings.
+
+29
+00:02:39,411 --> 00:02:40,956
+You saved your change.
+
+30
+00:02:40,956 --> 00:02:45,490
+What has to happen before workers send to Elasticsearch?
+
+31
+00:02:49,890 --> 00:02:52,416
+It has to be approved and deployed.
+
+32
+00:02:52,416 --> 00:02:55,541
+Until then, it waits on its branch.
+
+33
+00:02:56,441 --> 00:03:01,359
+Next, you archive the same records to S3, as Parquet.

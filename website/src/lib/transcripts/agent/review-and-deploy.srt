@@ -1,0 +1,123 @@
+1
+00:00:00,000 --> 00:00:09,501
+This video shows you how to review what the agent built: first its route, then its pipeline, over the records it captured. Then you deploy it.
+
+2
+00:00:13,040 --> 00:00:18,771
+The agent's work is on its own branch, fortigate-ecs. Open it.
+
+3
+00:00:19,560 --> 00:00:28,880
+Under Build, Routes shows the new route: fortigate-syslog, through FortiGate traffic and UTM to ECS, to elasticsearch.
+
+4
+00:00:37,240 --> 00:00:45,510
+Open it to see each part: the source, the pipeline, the destination, and its exceptions, left at their defaults.
+
+5
+00:00:50,640 --> 00:00:59,193
+Route a sample sends saved records through the route, without deploying anything. Choose the sample the agent saved, and click Run.
+
+6
+00:01:02,480 --> 00:01:07,936
+All twenty records go to elasticsearch. The Exceptions column is empty.
+
+7
+00:01:12,680 --> 00:01:17,774
+Sent shows each document as it would be sent to elasticsearch.
+
+8
+00:01:21,960 --> 00:01:26,250
+Now the pipeline. Open it from Pipelines.
+
+9
+00:01:31,120 --> 00:01:42,390
+Open each step to see how it was built. The first parser uses a grok pattern: it takes the syslog priority, and keeps the rest as fortigate.raw.
+
+10
+00:01:42,440 --> 00:01:52,750
+The second parser reads fortigate.raw as key value pairs: pairs are separated by a space, and each key from its value by an equals sign.
+
+11
+00:01:52,800 --> 00:02:02,028
+It declares a type for each field it uses: integers for numbers such as ports, bytes and packets, and strings for the rest.
+
+12
+00:02:05,480 --> 00:02:09,920
+The eval step makes the Elastic Common Schema fields.
+
+13
+00:02:11,320 --> 00:02:16,961
+Each assignment names a field on the left, and where its value comes from on the right.
+
+14
+00:02:24,760 --> 00:02:29,131
+Choose the same sample, to see what each record becomes.
+
+15
+00:02:32,400 --> 00:02:40,770
+The first record is open. It has an @timestamp, and destination and event fields in Elastic Common Schema.
+
+16
+00:02:42,640 --> 00:02:51,464
+The original text is still there too, as _raw. Whether to keep it is your call, and you can ask the agent to change it.
+
+17
+00:02:54,280 --> 00:03:02,707
+Scroll down the record to see the rest of what the agent mapped: network, observer, rule and source fields.
+
+18
+00:03:04,680 --> 00:03:09,660
+When what the agent built looks right, click Open for review.
+
+19
+00:03:15,520 --> 00:03:21,875
+The title and description are filled in from what changed. Click Open for review.
+
+20
+00:03:23,840 --> 00:03:30,454
+The change lists everything added: the route, and the pipeline with its three steps.
+
+21
+00:03:35,880 --> 00:03:41,737
+Click Approve and deploy, then confirm with Approve and deploy.
+
+22
+00:03:42,960 --> 00:03:48,630
+The Status page shows the change deploying to the worker, then Deployed.
+
+23
+00:03:48,680 --> 00:03:55,310
+Within a minute, rows go out: the out figure is the rows per second delivered to elasticsearch.
+
+24
+00:03:55,360 --> 00:03:57,370
+Check on learning.
+
+25
+00:03:57,570 --> 00:04:01,219
+Where do you try a route without deploying it?
+
+26
+00:04:05,619 --> 00:04:08,938
+Route a sample, on the Routes page.
+
+27
+00:04:09,838 --> 00:04:13,341
+How do you see what one record becomes?
+
+28
+00:04:17,741 --> 00:04:22,371
+Open the pipeline, choose a sample, and look at a record.
+
+29
+00:04:23,271 --> 00:04:28,291
+The agent has built a pipeline on its branch. Is it running yet?
+
+30
+00:04:32,691 --> 00:04:39,106
+No. It runs only after you open it for review, approve it, and deploy it.
+
+31
+00:04:40,006 --> 00:04:43,610
+Next, you ask the agent about your fleet.

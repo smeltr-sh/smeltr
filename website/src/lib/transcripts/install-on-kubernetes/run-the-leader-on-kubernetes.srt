@@ -1,0 +1,223 @@
+1
+00:00:02,300 --> 00:00:05,858
+This video shows you how to run the smeltr leader on Kubernetes,
+
+2
+00:00:05,858 --> 00:00:08,670
+reach it through an Ingress, and sign in.
+
+3
+00:00:08,720 --> 00:00:10,094
+Here's the cluster.
+
+4
+00:00:10,094 --> 00:00:12,068
+It has three nodes.
+
+5
+00:00:13,680 --> 00:00:18,353
+It has a default storage class, which gives the leader its volumes.
+
+6
+00:00:18,600 --> 00:00:23,191
+Put the certificate for the leader's name in the cluster, as a TLS secret.
+
+7
+00:00:23,191 --> 00:00:25,528
+The Ingress serves it later.
+
+8
+00:00:26,120 --> 00:00:27,764
+Next, the leader's image.
+
+9
+00:00:27,764 --> 00:00:30,986
+Copy the first commands from the container guide.
+
+10
+00:00:30,986 --> 00:00:34,348
+They pull the release and read its digest.
+
+11
+00:00:40,240 --> 00:00:41,744
+Then copy the checks.
+
+12
+00:00:41,744 --> 00:00:46,714
+They pass only if smeltr's release workflow built this image.
+
+13
+00:00:56,400 --> 00:01:01,303
+Save the verified digest in a file, to read into the manifest.
+
+14
+00:01:07,160 --> 00:01:13,877
+Open a new file, smeltr-leader.yaml, and paste in the leader's manifest from the guide.
+
+15
+00:01:19,480 --> 00:01:20,966
+It has three parts.
+
+16
+00:01:20,966 --> 00:01:24,070
+A config map holds smeltr's settings.
+
+17
+00:01:24,120 --> 00:01:26,818
+The leader listens on port 4000.
+
+18
+00:01:26,818 --> 00:01:32,070
+The pod runs as an ordinary user, which can't open port 443.
+
+19
+00:01:32,120 --> 00:01:35,318
+Change the public origin to your leader's address.
+
+20
+00:01:35,318 --> 00:01:37,830
+It's the address your browser opens.
+
+21
+00:01:37,880 --> 00:01:43,470
+Its own TLS is off, because the Ingress serves HTTPS in front of it.
+
+22
+00:01:43,520 --> 00:01:48,444
+A service gives the leader an address inside the cluster, on port 4000.
+
+23
+00:01:48,444 --> 00:01:51,510
+Only the Ingress reaches it from outside.
+
+24
+00:01:51,560 --> 00:01:57,390
+A stateful set runs the leader: one pod, which keeps its volumes when it restarts.
+
+25
+00:01:57,440 --> 00:01:59,826
+Name the image by its digest.
+
+26
+00:01:59,826 --> 00:02:05,502
+Delete the placeholder, and read in digest.txt with nano's Read File.
+
+27
+00:02:05,502 --> 00:02:08,135
+A tag can move to a newer image.
+
+28
+00:02:08,135 --> 00:02:09,550
+A digest can't.
+
+29
+00:02:09,600 --> 00:02:13,281
+These settings meet Kubernetes' restricted security standard.
+
+30
+00:02:13,281 --> 00:02:14,910
+Leave them as they are.
+
+31
+00:02:14,960 --> 00:02:19,407
+The leader keeps its data and its secrets key in two volumes.
+
+32
+00:02:19,407 --> 00:02:21,350
+Back them up as one set.
+
+33
+00:02:21,400 --> 00:02:23,964
+Size the data volume for your data.
+
+34
+00:02:23,964 --> 00:02:25,430
+Here, ten gigabytes.
+
+35
+00:02:25,430 --> 00:02:30,030
+The secrets volume holds one key, so one gigabyte is plenty.
+
+36
+00:02:30,080 --> 00:02:31,990
+Save the file.
+
+37
+00:02:32,040 --> 00:02:35,275
+Apply it, and wait for the leader's pod.
+
+38
+00:02:44,160 --> 00:02:49,335
+Now open smeltr-ingress.yaml, and paste in the guide's Ingress.
+
+39
+00:02:56,720 --> 00:03:01,609
+Change both names to your leader's address, the same as the public origin.
+
+40
+00:03:06,960 --> 00:03:09,719
+It serves the certificate from the secret you made,
+
+41
+00:03:09,719 --> 00:03:12,270
+and sends requests to the leader's service.
+
+42
+00:03:12,320 --> 00:03:14,798
+Save it, and apply it.
+
+43
+00:03:18,720 --> 00:03:22,798
+On its first start, the leader creates an administrator,
+
+44
+00:03:22,798 --> 00:03:26,070
+and prints a one-time password in its log.
+
+45
+00:03:26,120 --> 00:03:26,566
+Copy it.
+
+46
+00:03:26,566 --> 00:03:29,390
+The leader prints it only on this first start.
+
+47
+00:03:29,440 --> 00:03:31,319
+Open the leader at its address.
+
+48
+00:03:31,319 --> 00:03:35,110
+Your browser trusts the certificate, so there's no warning.
+
+49
+00:03:35,160 --> 00:03:39,325
+Sign in as admin, with the one-time password.
+
+50
+00:03:39,760 --> 00:03:43,767
+Choose your own password, then sign in again with it.
+
+51
+00:03:52,000 --> 00:03:56,417
+Status shows one worker group, with no workers yet.
+
+52
+00:03:57,840 --> 00:03:59,639
+Check on learning.
+
+53
+00:03:59,839 --> 00:04:02,389
+The leader's TLS is off.
+
+54
+00:04:02,389 --> 00:04:06,602
+What serves HTTPS to your browser?
+
+55
+00:04:11,002 --> 00:04:15,467
+The Ingress, with the certificate in its TLS secret.
+
+56
+00:04:16,367 --> 00:04:20,056
+Next, you add workers that keep their identity.

@@ -1,0 +1,99 @@
+1
+00:00:02,300 --> 00:00:05,204
+This video shows you how to size a worker's memory,
+
+2
+00:00:05,204 --> 00:00:08,310
+and how to tell when a worker has too little.
+
+3
+00:00:08,360 --> 00:00:11,490
+A worker sizes itself to its memory limit.
+
+4
+00:00:11,490 --> 00:00:15,444
+On Status, select a worker to see its memory.
+
+5
+00:00:17,280 --> 00:00:23,159
+Memory by part lists what the worker may hold in memory, part by part: each process,
+
+6
+00:00:23,159 --> 00:00:27,818
+each source and destination, and the buffers between them.
+
+7
+00:00:31,000 --> 00:00:36,483
+Expected max is what it holds when every buffer is full.
+
+8
+00:00:36,483 --> 00:00:41,110
+Here, that's 378 MiB, against a limit of 256.
+
+9
+00:00:41,160 --> 00:00:45,388
+The worker warns when its parts add up to more than its limit.
+
+10
+00:00:45,388 --> 00:00:48,443
+Issues lists it as Logged a warning.
+
+11
+00:00:48,840 --> 00:00:53,350
+It still runs, but under load it can be killed for memory.
+
+12
+00:00:53,400 --> 00:00:56,517
+Raise the limit where the worker runs.
+
+13
+00:00:56,517 --> 00:01:02,203
+Here, it's a Docker container, so update its limit to 512 MiB.
+
+14
+00:01:03,120 --> 00:01:07,666
+The worker reads its new limit without a restart.
+
+15
+00:01:07,666 --> 00:01:10,950
+Memory by part now shows 512 MiB.
+
+16
+00:01:11,000 --> 00:01:15,598
+Every worker in a worker group runs the whole group's configuration,
+
+17
+00:01:15,598 --> 00:01:17,870
+so size each one for all of it.
+
+18
+00:01:17,920 --> 00:01:21,675
+For CPU, transform runs one thread per core.
+
+19
+00:01:21,675 --> 00:01:23,211
+This worker has 4.
+
+20
+00:01:23,211 --> 00:01:25,950
+Two cores is a sensible start.
+
+21
+00:01:26,000 --> 00:01:27,886
+Check on learning.
+
+22
+00:01:28,086 --> 00:01:32,791
+Where do you see what a worker may hold in memory, and its limit?
+
+23
+00:01:37,191 --> 00:01:38,078
+On Status.
+
+24
+00:01:38,078 --> 00:01:42,490
+Select the worker, and open Memory by part.
+
+25
+00:01:43,390 --> 00:01:46,876
+Next, back up and restore the leader.
