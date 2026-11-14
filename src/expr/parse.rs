@@ -2796,11 +2796,26 @@ mod tests {
         assert!(parse_expr("xs.map(a.b => 1)").is_err(), "a dotted parameter");
     }
 
+    /// Runs `f` on a thread of its own with a 4 MiB stack: at the nesting limit a debug build needs about the whole of
+    /// a test thread's 2 MiB stack, a release build a quarter of that.
+    fn on_a_big_stack(f: fn()) {
+        std::thread::Builder::new()
+            .stack_size(4 << 20)
+            .spawn(f)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
     /// Nesting past `MAX_DEPTH` is a `ParseError`, not a stack overflow, whichever construct nests: prefix forms,
     /// right-associative tails, postfix chains (which do not recurse in the parser), a mix of both, and statement
     /// blocks.
     #[test]
     fn deep_nesting_is_rejected_not_fatal() {
+        on_a_big_stack(reject_deep_nesting);
+    }
+
+    fn reject_deep_nesting() {
         let n = 20_000;
         let exprs = [
             format!("{}1{}", "(".repeat(n), ")".repeat(n)),
@@ -2854,6 +2869,10 @@ mod tests {
     /// Exactly at the bound parses; one past it does not.
     #[test]
     fn the_bound_is_off_by_none() {
+        on_a_big_stack(parse_to_the_bound);
+    }
+
+    fn parse_to_the_bound() {
         let at = format!(
             "{}1{}",
             "(".repeat(MAX_DEPTH as usize - 1),

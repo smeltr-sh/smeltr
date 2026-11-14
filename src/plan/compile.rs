@@ -25,8 +25,8 @@ use crate::plan::lower;
 use crate::plan::parse_call::{ParseCall, matcher_keys};
 use crate::plan::resolve::{
     Origin, ResourceBuilder, Scope, SlotOrigin, SymbolTable, bind_element, binop_result, blend, coerce_ir, coercible,
-    describe_expr, fits, holds_null, is_condition, lay_key, member_ir, object_key, resolve, source_ir, split_struct,
-    unclaimed_ir, variant_use, widen_to,
+    describe_expr, fits, holds_null, is_condition, lay_key, member_ir, object_key, refuse_variant, resolve, source_ir,
+    split_struct, unclaimed_ir, variant_use, widen_to,
 };
 use crate::plan::topology::{Placement, SourceMeta};
 use crate::plan::tree::{self, Node, Object, Place};
@@ -1627,6 +1627,11 @@ impl Compiler<'_> {
     fn resolve_array_iterable(&mut self, iterable: &Expr, here: Here) -> Option<(SlotId, DataType)> {
         let Here { guard, id } = here;
         let iterable_ir = self.expr_ast(iterable, id)?;
+        if let Err(mut e) = refuse_variant(&iterable_ir, iterable, &self.syms) {
+            e.function = Some(id);
+            self.errors.push(e);
+            return None;
+        }
         let DataType::Array(element_ty) = iterable_ir.ty.clone() else {
             self.err(
                 Some(id),
@@ -2498,15 +2503,20 @@ impl Compiler<'_> {
         let mut resolved: Vec<(Place, Resolved)> = Vec::with_capacity(writes.len());
         for (place, source) in &writes {
             let Some(r) = self.resolve_source(source, id) else {
-                // Reported already. Each place binds as its declared type, or null where it has none, so a later read
-                // does not report again.
+                // Reported already. A failed write has a type but no value. Each place binds as the type its write
+                // declares, else the type its name already has, else the type an `as` gives, else null, so a later
+                // read does not report again.
                 for (place, source) in &writes {
-                    let ty = match (place, source) {
-                        (Place::Unclaimed(_), _) => DataType::Variant,
-                        (_, Source::Expr(e)) => match &e.kind {
-                            ExprKind::Check { ty, .. } | ExprKind::Coerce { ty, .. } => ty.clone(),
-                            _ => DataType::Null,
-                        },
+                    let kind = match source {
+                        Source::Expr(e) => Some(&e.kind),
+                        _ => None,
+                    };
+                    let held = self.syms.lookup(place.name()).map(|s| self.syms.type_of(s).clone());
+                    let ty = match (place, kind, held) {
+                        (Place::Unclaimed(_), ..) => DataType::Variant,
+                        (_, Some(ExprKind::Check { ty, .. }), _) => ty.clone(),
+                        (.., Some(held)) => held,
+                        (_, Some(ExprKind::Coerce { ty, .. }), _) => ty.clone(),
                         _ => DataType::Null,
                     };
                     self.syms.bind_place(place, ty, Origin::Function(id));

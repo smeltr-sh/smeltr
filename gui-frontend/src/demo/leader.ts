@@ -523,6 +523,12 @@ export class DemoLeader {
     return { branches, captures: {} };
   }
 
+  /** Whether this tab holds branch `name`. A tab starts from the recording, so a branch made in another tab is not
+   * one. */
+  holds(name: string): boolean {
+    return Object.hasOwn(this.state.branches, name);
+  }
+
   /** `name`, forked from `main` on its first write, as the leader forks one. */
   private branch(name: string, write = false): Branch | undefined {
     const known = this.state.branches[name];
