@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { defineConfig } from 'vite';
 
@@ -27,6 +28,8 @@ const target = process.env.SMELTR_DEV_API ?? 'http://127.0.0.1:4000';
 export default defineConfig({
   plugins: [svelte()],
   resolve: { conditions: process.env.VITEST ? ['browser'] : undefined },
+  // happy-dom supplies localStorage; Node's own warns on every test worker that it has no file to keep it in.
+  test: { execArgv: ['--no-experimental-webstorage'] },
   server: {
     // Read from the website: its code tokenizer, and the palette and controls both share.
     fs: {

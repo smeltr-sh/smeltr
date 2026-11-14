@@ -829,6 +829,36 @@ const addDestination: Move = {
   },
 };
 
+/** Duplicates a destination from its row's menu: the dialog opens on its fields, filled in as the original's, and the
+ * copy the leader saves is the original under the new id. The copy keeps the original's prefix, which the moves that
+ * pick a destination by kind go by. */
+const duplicateDestination: Move = {
+  name: 'duplicate-destination',
+  weight: (w) =>
+    w.password && w.editing.destinations.length && w.editing.destinations.length < 4 ? 1 : 0,
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const original = rng.pick(world.editing.destinations);
+    const id = `${original.split('-')[0]}-${world.made++}`;
+    await goto(page, leader, '#/build/destinations');
+    await page.getByRole('button', { name: `More actions for ${original}` }).click();
+    await page.getByRole('button', { name: 'Duplicate', exact: true }).click();
+    const form = page.getByRole('dialog', { name: /^new .* destination$/ });
+    const idField = form.getByRole('textbox', { name: /^id/ });
+    await expect(idField).toHaveValue(`${original}-2`);
+    await idField.fill(id);
+    await form.getByRole('button', { name: 'Add', exact: true }).click();
+    await save(j, unsaved(page));
+    world.editing.destinations.push(id);
+    await editingIsSaved(j);
+    const on = encodeURIComponent(world.branch!);
+    const res = await (await j.truth()).get(`/api/areas/shared?branch=${on}`);
+    const byId = (d: string) => res.config.destinations.find((x: { id: string }) => x.id === d);
+    expect(byId(id), `${id} is ${original} under a new id`).toEqual({ ...byId(original), id });
+    return `duplicate destination ${original} as ${id}`;
+  },
+};
+
 const addPipeline: Move = {
   name: 'add-pipeline',
   leadsTo: ['add-route', 'add-route-to-new-destination', 'add-step'],
@@ -865,12 +895,12 @@ const exportPipeline: Move = {
       .getByRole('row', { name: new RegExp(`^${name}\\b`) })
       .getByRole('button', { name: 'Export' })
       .click();
-    const dialog = page.getByRole('dialog', { name: `export ${id}` });
+    const dialog = page.getByRole('dialog', { name: `export ${name}` });
     if (routes)
       await dialog
         .getByRole('switch', { name: 'Include routes, sources and destinations' })
         .check();
-    await expect(dialog.getByRole('row', { name: new RegExp(`^Pipeline ${id} `) })).toBeVisible();
+    await expect(dialog.getByRole('row', { name: new RegExp(`^Pipeline ${name} `) })).toBeVisible();
     const href = await dialog.getByRole('link', { name: 'Download' }).getAttribute('href');
     const zip = await (await page.request.get(new URL(href!, leader.url).toString())).body();
     expect(zip.subarray(0, 2).toString()).toBe('PK');
@@ -906,7 +936,7 @@ const importPipeline: Move = {
       buffer: await zip.body(),
     });
     // Exported from this branch, every object is the one already here, so the import writes nothing.
-    await expect(dialog.getByRole('row', { name: new RegExp(`^Pipeline ${id} `) })).toContainText(
+    await expect(dialog.getByRole('row', { name: new RegExp(`^Pipeline ${name} `) })).toContainText(
       'Same as here',
     );
     await dialog.getByRole('button', { name: 'Import' }).click();
@@ -2044,12 +2074,10 @@ const pasteSample: Move = {
 /** The samples pasted on the Samples page, which shows `shared/`'s; a capture's belongs to its group. */
 const pasted = (w: World) => w.editing.samples.filter((s) => s.startsWith('sample '));
 
-/** The fields of `record` a cell shows: all but where it was read from and a tag field holding only its failed list. */
+/** The fields of `record` a cell shows as its own: all but the internal ones, where it was read from and how it was
+ * captured. */
 function ownFields(record: Record<string, unknown>): string[] {
-  const tag = record.smeltr;
-  const onlyFailed =
-    typeof tag === 'object' && tag !== null && Object.keys(tag).join() === 'mistyped';
-  return Object.keys(record).filter((k) => k !== '__source' && !(k === 'smeltr' && onlyFailed));
+  return Object.keys(record).filter((k) => !k.startsWith('__'));
 }
 
 /** Edits a sample on its row, a pasted one or a capture: cuts it down to the ticked records or drops them, removes
@@ -2111,7 +2139,7 @@ const editSample: Move = {
     }
     // A text field that did not fail its type: any text is still one.
     const failed = (rec: Record<string, unknown>) =>
-      ((rec.smeltr as { mistyped?: string[] } | undefined)?.mistyped ?? []) as string[];
+      ((rec.__capture as { mistyped?: string[] } | undefined)?.mistyped ?? []) as string[];
     const texts = draft.flatMap((r) =>
       ownFields(r.record)
         .filter((f) => typeof r.record[f] === 'string' && !failed(r.record).includes(f))
@@ -2312,7 +2340,14 @@ const capture: Move = {
       j,
       page.getByRole('dialog', { name: new RegExp(destination) }),
       name,
-      (saving) => expect(saving).toContainText('__destination.route'),
+      async (saving) => {
+        // A `__` field starts hidden, as in a pipeline's preview, and the Fields menu lists it.
+        await saving.getByRole('button', { name: 'Choose fields' }).click();
+        await expect(saving.getByRole('group', { name: 'Fields' })).toContainText(
+          '__destination.route',
+        );
+        await saving.getByRole('button', { name: 'Choose fields' }).click();
+      },
       (saving) => expect(saving).toBeHidden(),
     );
     await editingIsSaved(j);
@@ -2874,7 +2909,7 @@ const setAgentPermissions: Move = {
   run: async (j) => {
     const { page, rng } = j;
     await page.getByRole('button', { name: /^signed in as / }).click();
-    await page.getByRole('button', { name: 'Agent permissions' }).click();
+    await page.getByRole('button', { name: 'Agent permissions', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Agent permissions' })).toBeVisible();
     // The journey's person is an administrator, so they are offered the administrator role for their agent, and
     // holding it leaves no levels to set.
@@ -3458,6 +3493,7 @@ export const MOVES: readonly Move[] = [
   refusedSource,
   fillAvro,
   addDestination,
+  duplicateDestination,
   addPipeline,
   exportPipeline,
   importPipeline,

@@ -745,7 +745,7 @@
                 <td class="mono" data-label="Delivers to">
                   {#each delivers.filter((d) => d.route === r.route) as d, i (i)}
                     <div>
-                      {d.destination}{#if d.when}<span class="dim"> when {d.when}</span>{/if}
+                      {d.destination}{#if d.when}{' '}<span class="dim">when {d.when}</span>{/if}
                     </div>
                   {/each}
                 </td>

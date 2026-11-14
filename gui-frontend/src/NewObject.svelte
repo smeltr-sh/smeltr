@@ -1,7 +1,7 @@
 <!--
   Adding a source or a destination: its type is picked first (after its kind, where the catalog has kinds), then
-  its fields, in a dialog. Where it goes on Add is the caller's: its own page lists it and saves it with the page,
-  the Routes page saves it there and then.
+  its fields, in a dialog. Given one to start from, it opens on the fields, filled in as that one's. Where it goes
+  on Add is the caller's: its own page lists it and saves it with the page, the Routes page saves it there and then.
 -->
 <script lang="ts" generics="O extends { id: string; type: T }, T extends string, K extends string">
   import { Busy } from './busy.svelte';
@@ -10,7 +10,8 @@
   import Dialog from './Dialog.svelte';
   import TypeCatalog, { type CatalogKind, type CatalogType } from './TypeCatalog.svelte';
   import Field from './Field.svelte';
-  import { idProblem } from './ids';
+  import { untrack } from 'svelte';
+  import { freeName, idProblem } from './ids';
 
   let {
     open,
@@ -22,6 +23,7 @@
     typeLabel,
     ready = () => true,
     fields,
+    from,
     onadd,
     oncancel,
   }: {
@@ -41,6 +43,8 @@
     ready?: (draft: O) => boolean;
     /** The draft's fields, under its id. */
     fields: Snippet<[O]>;
+    /** An object to copy: the dialog opens on its fields, every one as it is but the id. */
+    from?: O;
     /** Takes the new object. The dialog stays open until its owner closes it. */
     onadd: (made: O) => void | Promise<void>;
     oncancel: () => void;
@@ -49,11 +53,18 @@
   let kind: K | null = $state(null);
   let draft: O | null = $state(null);
   const busy = new Busy();
-  // Each opening starts at the catalog.
+  // Each opening starts at the catalog, or on a copy of `from`.
   $effect(() => {
     if (!open) {
       kind = null;
       draft = null;
+    } else if (from) {
+      const original = from;
+      // Taken once, on opening: the copy is the person's to edit from there.
+      untrack(
+        () =>
+          (draft = { ...$state.snapshot(original), id: freeName(original.id, unavailable) } as O),
+      );
     }
   });
 
@@ -72,7 +83,7 @@
   title={draft ? `new ${heading(typeLabel(draft.type))}` : `add ${noun}`}
   wide
   {oncancel}
-  onback={draft ? () => (draft = null) : kind ? () => (kind = null) : undefined}
+  onback={from ? undefined : draft ? () => (draft = null) : kind ? () => (kind = null) : undefined}
   onsubmit={add}
 >
   {#if draft}

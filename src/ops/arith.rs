@@ -107,9 +107,9 @@ pub fn mul_i64_i64(ctx: &mut Ctx, ins: &[&Column]) -> Column {
         let mut overflowed = false;
         {
             let o = out.i64_mut().unwrap();
-            for i in 0..len {
+            for (i, value) in o.values.iter_mut().enumerate().take(len) {
                 let (r, ovf) = overflows(i);
-                o.values[i] = r;
+                *value = r;
                 overflowed |= ovf;
             }
         }

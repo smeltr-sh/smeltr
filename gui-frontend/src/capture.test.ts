@@ -1,11 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import type { CaptureBatch, CaptureStatus, SourceDto } from './api';
+import type { CaptureStatus, HeldRecord, SourceDto } from './api';
 import {
   captureRequest,
   cellText,
-  filledColumns,
   filterHelp,
-  firstRows,
+  heldRows,
   heldCount,
   progressText,
   settled,
@@ -14,15 +13,17 @@ import {
 } from './capture';
 
 const columns = [
-  { name: '_raw', type: 'string' },
-  { name: '__source.topic', type: 'string' },
+  { name: '_raw', type: 'str' },
+  { name: '__source.topic', type: 'str' },
 ];
-const row = (worker: string, raw: string) => ({ worker, values: [raw, 't'], failed: [] });
+const held = (worker: string, raw: string): HeldRecord => ({
+  worker,
+  record: { _raw: raw, __source: { topic: 't' } },
+});
 
 function status(over: Partial<CaptureStatus> = {}): CaptureStatus {
   return {
     session: 's1',
-    records: 3,
     revision: 3,
     done: false,
     stopped: false,
@@ -32,10 +33,8 @@ function status(over: Partial<CaptureStatus> = {}): CaptureStatus {
       { worker: 'w-b', state: 'answered' },
       { worker: 'w-c', state: 'waiting' },
     ],
-    batches: [
-      { columns, rows: [row('w-a', '1'), row('w-b', '2')] },
-      { columns, rows: [row('w-a', '3')] },
-    ],
+    columns,
+    records: [held('w-a', '1'), held('w-b', '2'), held('w-a', '3')],
     ended: [['w-b', 'matches']],
     secondsLeft: 12,
     waitingOn: ['w-a', 'w-c'],
@@ -71,50 +70,56 @@ describe('workerChips', () => {
   });
 
   it('is empty before anyone is known', () => {
-    expect(workerChips(status({ workers: [], batches: [], ended: [], waitingOn: [] }))).toEqual([]);
+    expect(workerChips(status({ workers: [], records: [], ended: [], waitingOn: [] }))).toEqual([]);
   });
 });
 
-const raws = (batches: CaptureBatch[]) => batches.map((b) => b.rows.map((r) => r.values[0]));
+const raws = (records: HeldRecord[]) => records.map((r) => r.record._raw);
 
 describe('shownRecords', () => {
   it('shows everything with no chip chosen, and one worker with one', () => {
-    expect(raws(shownRecords(status(), null))).toEqual([['1', '2'], ['3']]);
-    expect(raws(shownRecords(status(), 'w-a'))).toEqual([['1'], ['3']]);
-    expect(raws(shownRecords(status(), 'w-b'))).toEqual([['2']]);
+    expect(raws(shownRecords(status(), null))).toEqual(['1', '2', '3']);
+    expect(raws(shownRecords(status(), 'w-a'))).toEqual(['1', '3']);
+    expect(raws(shownRecords(status(), 'w-b'))).toEqual(['2']);
     expect(shownRecords(status(), 'w-c')).toEqual([]);
   });
 });
 
 describe('heldCount', () => {
-  it('counts rows across every batch', () => {
+  it('counts the records held', () => {
     expect(heldCount(status())).toBe(3);
-    expect(heldCount(status({ batches: [] }))).toBe(0);
+    expect(heldCount(status({ records: [] }))).toBe(0);
   });
 });
 
-describe('firstRows', () => {
-  it('takes rows in order across batches, up to the cap', () => {
-    expect(raws(firstRows(status().batches, 2))).toEqual([['1', '2']]);
-    expect(raws(firstRows(status().batches, 3))).toEqual([['1', '2'], ['3']]);
-    expect(raws(firstRows(status().batches, 8))).toEqual([['1', '2'], ['3']]);
-  });
-});
-
-describe('filledColumns', () => {
-  it('leaves out a column null on every row', () => {
-    const batch: CaptureBatch = {
-      columns: [
-        { name: 'a', type: 'string' },
-        { name: '__destination.placement', type: 'string' },
-        { name: '__destination.id', type: 'string' },
-      ],
-      rows: [
-        { values: ['x', null, null], failed: [] },
-        { values: ['y', null, 'id-1'], failed: [] },
-      ],
+describe('heldRows', () => {
+  it('shows each record as its fields, with why it failed apart from them', () => {
+    const record = {
+      __exception: { message: 'elasticsearch refused it' },
+      _raw: 'x',
+      code: 'abc',
+      __capture: { group: 'g', mistyped: ['code', 'gone'] },
     };
-    expect(filledColumns(batch)).toEqual([0, 2]);
+    const types = [
+      { name: 'code', type: 'i64' },
+      { name: 'gone', type: 'f64' },
+    ];
+    expect(heldRows([{ worker: 'w-a', record }], types)).toEqual([
+      {
+        record: { _raw: 'x', code: 'abc', __capture: { group: 'g' } },
+        exceptions: [
+          'elasticsearch refused it',
+          'code could not be read as i64',
+          'gone could not be read as f64',
+        ],
+        worker: 'w-a',
+      },
+    ]);
+    // The record the leader sent is left as it was.
+    expect(record.__capture.mistyped).toEqual(['code', 'gone']);
+    expect(heldRows([{ record: { _raw: 'y' } }], [])).toEqual([
+      { record: { _raw: 'y' }, exceptions: [] },
+    ]);
   });
 });
 
@@ -137,7 +142,7 @@ describe('progressText', () => {
     expect(
       progressText(
         status({
-          batches: [{ columns, rows: [row('w-a', '1')] }],
+          records: [held('w-a', '1')],
           workers: [{ worker: 'w-a', state: 'filling' }],
         }),
       ),

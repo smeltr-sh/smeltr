@@ -455,7 +455,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&saved).unwrap(),
             serde_json::json!([{"user": {"name": "ann"}, "id": "true", "__source": {"offset": 7},
-                "smeltr": {"mistyped": ["id"]}}])
+                "__capture": {"mistyped": ["id"]}}])
         );
         let mut one = batch.clone();
         one.rows[0].values[1] = serde_json::json!(2);

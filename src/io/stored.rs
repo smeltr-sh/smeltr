@@ -36,31 +36,39 @@ pub fn unclaimed_of<N: AsRef<str>>(object: &RecordObject, fields: &[(N, DataType
     (!rest.is_empty()).then_some(serde_json::Value::Object(rest))
 }
 
-/// Where a stored record lists the fields whose values failed their type when it was taken.
-pub const MISTYPED_FIELDS: &str = "smeltr.mistyped";
+/// Where a stored record lists the fields whose values failed their type when it was taken: beside the record's other
+/// `__capture` fields, which say how it was taken.
+pub const MISTYPED_FIELDS: &str = "__capture.mistyped";
 
-/// The fields `record` lists as failed under `MISTYPED_FIELDS`, `{"smeltr": {"mistyped": ["id"]}}`, taken out of it: a
-/// stored record's own field reads as the record, and this list as which of its values failed their type when it was
-/// taken (`RecordChunk::from_objects`). Anything else there is left as a field.
+/// The fields `record` lists as failed under `MISTYPED_FIELDS`, `{"__capture": {"mistyped": ["id"]}}`, taken out of
+/// it: a stored record's own field reads as the record, and this list as which of its values failed their type when it
+/// was taken (`RecordChunk::from_objects`). Anything else there is left as a field.
 pub fn take_mistyped(record: &mut RecordObject) -> Vec<String> {
-    let (outer, inner) = MISTYPED_FIELDS
-        .split_once('.')
-        .expect("the failed list nests one level");
-    let Some(serde_json::Value::Object(tag)) = record.get_mut(outer) else {
-        return Vec::new();
+    take_list(record, MISTYPED_FIELDS).unwrap_or_default()
+}
+
+fn split(path: &str) -> (&str, &str) {
+    path.split_once('.').expect("the failed list nests one level")
+}
+
+/// The list of names at `path`, two keys deep, taken out of `record`; `None`, leaving it, where it is not one.
+fn take_list(record: &mut RecordObject, path: &str) -> Option<Vec<String>> {
+    let (outer, inner) = split(path);
+    let serde_json::Value::Object(tag) = record.get_mut(outer)? else {
+        return None;
     };
-    let names: Vec<String> = match tag.get(inner) {
-        Some(serde_json::Value::Array(items)) => match items.iter().map(|v| v.as_str().map(str::to_string)).collect() {
-            Some(names) => names,
-            None => return Vec::new(),
-        },
-        _ => return Vec::new(),
+    let serde_json::Value::Array(items) = tag.get(inner)? else {
+        return None;
     };
+    let names: Vec<String> = items
+        .iter()
+        .map(|v| v.as_str().map(str::to_string))
+        .collect::<Option<_>>()?;
     tag.remove(inner);
     if tag.is_empty() {
         record.remove(outer);
     }
-    names
+    Some(names)
 }
 
 /// A byte record's object: `{"_raw": text}`.

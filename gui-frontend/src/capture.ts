@@ -3,10 +3,11 @@
 // dialog.
 
 import { count } from './time';
+import { keySpans } from './names';
 import type {
-  CaptureBatch,
   CaptureStatus,
   CaptureWorkerDto,
+  HeldRecord,
   SourceDto,
   StartPosition,
   startCapture,
@@ -17,18 +18,17 @@ export interface WorkerChip extends CaptureWorkerDto {
   count: number;
 }
 
-/** How many records the capture holds: its rows across every batch. */
+/** How many records the capture holds. */
 export function heldCount(status: CaptureStatus): number {
-  return status.batches.reduce((n, b) => n + b.rows.length, 0);
+  return status.records.length;
 }
 
 /** Every worker the capture knows of, in the leader's order. The leader never
  * drops one, so a chosen chip stays on screen. */
 export function workerChips(status: CaptureStatus): WorkerChip[] {
   const counts = new Map<string, number>();
-  for (const b of status.batches)
-    for (const r of b.rows)
-      if (r.worker !== undefined) counts.set(r.worker, (counts.get(r.worker) ?? 0) + 1);
+  for (const { worker } of status.records)
+    if (worker !== undefined) counts.set(worker, (counts.get(worker) ?? 0) + 1);
   return status.workers.map(({ worker, state }) => ({
     worker,
     state,
@@ -36,33 +36,71 @@ export function workerChips(status: CaptureStatus): WorkerChip[] {
   }));
 }
 
-/** The held batches, or only one worker's rows when a chip is chosen. A batch
- * left with no row is left out. */
-export function shownRecords(status: CaptureStatus, only: string | null): CaptureBatch[] {
-  const batches =
-    only === null
-      ? status.batches
-      : status.batches.map((b) => ({ ...b, rows: b.rows.filter((r) => r.worker === only) }));
-  return batches.filter((b) => b.rows.length > 0);
+/** The held records, or only one worker's when a chip is chosen. */
+export function shownRecords(status: CaptureStatus, only: string | null): HeldRecord[] {
+  return only === null ? status.records : status.records.filter((r) => r.worker === only);
 }
 
-/** The first `max` rows across the batches, in order. */
-export function firstRows(batches: CaptureBatch[], max: number): CaptureBatch[] {
-  const out: CaptureBatch[] = [];
-  let left = max;
-  for (const b of batches) {
-    if (left <= 0) break;
-    out.push({ ...b, rows: b.rows.slice(0, left) });
-    left -= b.rows.length;
+/** Where a record a block holds says why it blocked (`worker::capture::EXCEPTION_MESSAGE`). It is not a field of
+ * the record. */
+export const EXCEPTION_MESSAGE = ['__exception', 'message'];
+/** Where a record lists the fields whose values did not read as their type (`io::MISTYPED_FIELDS`). */
+export const MISTYPED_FIELDS = ['__capture', 'mistyped'];
+
+/** A held record as the grid shows it: its fields, and what failed on it apart from them. */
+export interface CapturedRecord {
+  record: Record<string, unknown>;
+  exceptions: string[];
+  worker?: string;
+}
+
+/** The value at `path` in `record`, taken out of it. An object the take leaves empty goes too. */
+function take(record: Record<string, unknown>, path: string[]): unknown {
+  const [key, ...rest] = path;
+  const at = record[key];
+  if (rest.length === 0) {
+    delete record[key];
+    return at;
   }
-  return out;
+  if (at === null || typeof at !== 'object' || Array.isArray(at)) return undefined;
+  const inner = { ...(at as Record<string, unknown>) };
+  const value = take(inner, rest);
+  if (Object.keys(inner).length === 0) delete record[key];
+  else record[key] = inner;
+  return value;
 }
 
-/** The indexes of a batch's columns that hold a value on some row. */
-export function filledColumns(batch: CaptureBatch): number[] {
-  return batch.columns
-    .map((_, i) => i)
-    .filter((i) => batch.rows.some((r) => r.values[i] !== null && r.values[i] !== undefined));
+/** The value at `name`, a field's name, in a held record, or undefined where it has none. */
+export function valueAt(record: Record<string, unknown>, name: string): unknown {
+  let at: unknown = record;
+  for (const { key } of keySpans(name)) {
+    if (at === null || typeof at !== 'object' || Array.isArray(at)) return undefined;
+    at = (at as Record<string, unknown>)[key];
+  }
+  return at;
+}
+
+/** Whether a held record's value at `name` did not read as its type. */
+export function mistyped(record: Record<string, unknown>, name: string): boolean {
+  const names = valueAt(record, MISTYPED_FIELDS.join('.'));
+  return Array.isArray(names) && names.includes(name);
+}
+
+/** Each of `held` as the grid shows it: why a block holds it, and each value that did not read as its column's type
+ * (`columns`), as exceptions rather than fields. */
+export function heldRows(held: HeldRecord[], columns: CaptureStatus['columns']): CapturedRecord[] {
+  const types = new Map(columns.map((c) => [c.name, c.type]));
+  return held.map(({ worker, record: sent }) => {
+    const record = { ...sent };
+    const exceptions: string[] = [];
+    const message = take(record, EXCEPTION_MESSAGE);
+    if (message !== undefined && message !== null) exceptions.push(String(message));
+    const mistyped = take(record, MISTYPED_FIELDS);
+    if (Array.isArray(mistyped))
+      for (const name of mistyped)
+        exceptions.push(`${name} could not be read as ${types.get(String(name)) ?? 'its type'}`);
+    return worker === undefined ? { record, exceptions } : { record, exceptions, worker };
+  });
 }
 
 /** A captured value as one cell shows it: a string as it is, anything else as JSON. */
@@ -80,11 +118,8 @@ export function settled(status: CaptureStatus): boolean {
 /** One line on where the capture stands, for the dialog's body. */
 export function progressText(status: CaptureStatus): string {
   const held = count(heldCount(status), 'record');
-  const senders = new Set(
-    status.batches.flatMap((b) =>
-      b.rows.flatMap((r) => (r.worker === undefined ? [] : [r.worker])),
-    ),
-  ).size;
+  const senders = new Set(status.records.flatMap((r) => (r.worker === undefined ? [] : [r.worker])))
+    .size;
   const from = `from ${senders} of ${count(status.workers.length, 'worker')}`;
   if (status.stopped) return `Stopped with ${status.secondsLeft}s left. ${held} ${from}.`;
   if (status.done) return `Finished. ${held} ${from}.`;

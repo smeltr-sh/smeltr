@@ -22,7 +22,7 @@
 <script lang="ts">
   import Button, { INCOMPLETE } from './Button.svelte';
   import { untrack, type Snippet } from 'svelte';
-  import { stepName, type Step } from './pipeline';
+  import type { NumberedStep, Step } from './pipeline';
   import RecordsGrid, { type GridRow } from './RecordsGrid.svelte';
   import ChipPicker from './ChipPicker.svelte';
   import { count } from './time';
@@ -77,7 +77,7 @@
     /** Each row's attribution, by row. */
     attribution: Map<number, PreviewRow> | null;
     /** Each step by id, with its number in the step list. */
-    stepNumbers: Map<string, { step: Step; number: number }>;
+    stepNumbers: Map<string, NumberedStep>;
     /** Where the records stop: the pipeline up to and including that step. */
     pause: { after: Step[] } | null;
     pauseRun: PauseRun | null;
@@ -181,7 +181,7 @@
         const by = a.step ? stepNumbers.get(a.step) : undefined;
         return {
           message: a.message,
-          by: by && { label: stepName(by.step, by.number), onjump: () => onjump(by.step) },
+          by: by && { label: by.name, onjump: () => onjump(by.step) },
         };
       }),
     })) ?? null,

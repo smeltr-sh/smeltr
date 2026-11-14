@@ -56,6 +56,7 @@
     body,
     rowActions,
     sharedActions,
+    onduplicate,
     validation,
     only,
   }: {
@@ -83,6 +84,8 @@
     /** A row's menu: `.pick` buttons (`ChipPicker`). */
     rowActions: Snippet<[T, number]>;
     sharedActions: Snippet<[T]>;
+    /** Offered first in every row's menu, `shared/`'s too: starts a new one as a copy of the row. */
+    onduplicate?: (item: T) => void;
     /** The page's save errors, which open the row they name. */
     validation?: Validation;
     /** The ids the list is narrowed to (`?only=`), where it is. */
@@ -218,6 +221,9 @@
     {#snippet face()}<MoreIcon />{/snippet}
     <!-- Choosing closes the menu (`ChipPicker` leaves that to its caller). -->
     <div class="menu-picks" onclick={() => (menuFor = null)} role="presentation">
+      {#if onduplicate}
+        <button type="button" class="pick" onclick={() => onduplicate(item)}>Duplicate</button>
+      {/if}
       {#if i < 0}{@render sharedActions(item)}{:else}{@render rowActions(item, i)}{/if}
     </div>
   </ChipPicker>

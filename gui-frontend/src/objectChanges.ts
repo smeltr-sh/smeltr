@@ -22,6 +22,7 @@ import {
 import { diffObjects, type DiffEntry } from './diff';
 import { count } from './time';
 import { stepParts, stepSummary, stepsFromDto } from './pipeline';
+import type { PipelineNames } from './pipelineNames';
 import { bundleRoutes } from './routeFlow';
 
 export type Noun =
@@ -339,7 +340,7 @@ function oneLine(text: string): string {
 }
 
 /** A step said in one line: what it reads and writes, or its expression. */
-export function stepLine(raw: Record<string, unknown>): string {
+export function stepLine(raw: Record<string, unknown>, pipelineNames: PipelineNames): string {
   const str = (key: string) => (typeof raw[key] === 'string' ? (raw[key] as string) : '');
   switch (raw.type) {
     case 'code':
@@ -358,7 +359,7 @@ export function stepLine(raw: Record<string, unknown>): string {
       return oneLine(str('text'));
   }
   try {
-    return stepSummary(stepsFromDto([raw])[0]);
+    return stepSummary(stepsFromDto([raw])[0], pipelineNames);
   } catch {
     // A step this GUI cannot model still has a type to name.
     return '';
@@ -367,11 +368,11 @@ export function stepLine(raw: Record<string, unknown>): string {
 
 /** A step's parts as `stepParts` names them, or its one line where this GUI
  * cannot model it. */
-function stepPartsOf(raw: Record<string, unknown>): string[] {
+function stepPartsOf(raw: Record<string, unknown>, pipelineNames: PipelineNames): string[] {
   try {
-    return stepParts(stepsFromDto([raw])[0]);
+    return stepParts(stepsFromDto([raw])[0], pipelineNames);
   } catch {
-    return [stepLine(raw)];
+    return [stepLine(raw, pipelineNames)];
   }
 }
 
@@ -393,8 +394,9 @@ function stepEntry(
   position: number | undefined,
   then: StepChange[] | undefined,
   els: StepChange[] | undefined,
+  pipelineNames: PipelineNames,
 ): StepChange {
-  const entry: StepChange = { status, type: stepType(raw), summary: stepLine(raw) };
+  const entry: StepChange = { status, type: stepType(raw), summary: stepLine(raw, pipelineNames) };
   const id = stepId(raw);
   if (id !== null) entry.id = id;
   if (position !== undefined) entry.position = position;
@@ -404,20 +406,30 @@ function stepEntry(
 }
 
 /** A step with nothing to compare against: every branch step takes its status. */
-function whole(raw: Record<string, unknown>, status: Status, position?: number): StepChange {
+function whole(
+  raw: Record<string, unknown>,
+  status: Status,
+  pipelineNames: PipelineNames,
+  position?: number,
+): StepChange {
   const branch = (key: string) =>
     raw.type === 'if'
       ? asList(raw[key])
           .filter(isRecord)
-          .map((s) => whole(s, status))
+          .map((s) => whole(s, status, pipelineNames))
       : undefined;
-  return stepEntry(raw, status, position, branch('then'), branch('else'));
+  return stepEntry(raw, status, position, branch('then'), branch('else'), pipelineNames);
 }
 
 /** One list of steps against another, in the order `after` runs them, each
  * removed step placed after the step it followed. Matched by id within the
- * list, so a step moved into a branch reads as removed here and added there. */
-export function compareSteps(before: unknown[], after: unknown[]): StepChange[] {
+ * list, so a step moved into a branch reads as removed here and added there.
+ * `names` names, at each end, the pipelines its Call steps run. */
+export function compareSteps(
+  before: unknown[],
+  after: unknown[],
+  names: { before: PipelineNames; after: PipelineNames },
+): StepChange[] {
   const was = before.filter(isRecord);
   const now = after.filter(isRecord);
   const nowIds = new Set(now.map(stepId).filter((id) => id !== null));
@@ -432,7 +444,7 @@ export function compareSteps(before: unknown[], after: unknown[]): StepChange[] 
   const removedUpTo = (end: number) => {
     for (; next < end; next++) {
       const id = stepId(was[next]);
-      if (id === null || !nowIds.has(id)) out.push(whole(was[next], 'removed'));
+      if (id === null || !nowIds.has(id)) out.push(whole(was[next], 'removed', names.before));
     }
   };
 
@@ -440,7 +452,7 @@ export function compareSteps(before: unknown[], after: unknown[]): StepChange[] 
     const id = stepId(step);
     const at = id === null ? undefined : wasIndex.get(id);
     if (at === undefined) {
-      out.push(whole(step, 'added', i + 1));
+      out.push(whole(step, 'added', names.after, i + 1));
       return;
     }
     // A step behind one already passed is out of the order it had.
@@ -457,11 +469,12 @@ export function compareSteps(before: unknown[], after: unknown[]): StepChange[] 
       step,
       status,
       i + 1,
-      branches ? compareSteps(asList(old.then), asList(step.then)) : undefined,
-      branches ? compareSteps(asList(old.else), asList(step.else)) : undefined,
+      branches ? compareSteps(asList(old.then), asList(step.then), names) : undefined,
+      branches ? compareSteps(asList(old.else), asList(step.else), names) : undefined,
+      names.after,
     );
     if (moved) entry.moved = true;
-    const parts = lineDiff(stepPartsOf(old), stepPartsOf(step));
+    const parts = lineDiff(stepPartsOf(old, names.before), stepPartsOf(step, names.after));
     if (parts.some((p) => p.kind !== 'same')) entry.parts = parts;
     out.push(entry);
   });
@@ -509,6 +522,7 @@ function objectChange(
   before: unknown,
   after: unknown,
   moved: boolean,
+  names: SideNames,
   label = labelOf(after ?? before, id),
 ): ObjectChange | null {
   const status: Status =
@@ -539,6 +553,7 @@ function objectChange(
     const steps = compareSteps(
       asList(isRecord(before) ? before.steps : undefined),
       asList(isRecord(after) ? after.steps : undefined),
+      { before: Object.fromEntries(names.before), after: Object.fromEntries(names.after) },
     );
     change.steps = steps;
     differs ||= hasChange(steps);
@@ -783,6 +798,7 @@ export function objectChanges(pairs: ScopePair[]): ObjectChange[] {
           was.get(id),
           now.get(id),
           moved.has(id),
+          names,
           route,
         );
         if (change && spec.key === 'routes')

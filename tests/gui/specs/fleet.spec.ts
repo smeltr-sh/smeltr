@@ -391,7 +391,6 @@ test('a capture of a blocked source shows the records that blocked it, and why',
 
   const saving = admin.getByRole('dialog', { name: /^Captured (from|at) / });
   await expect(saving).toBeVisible({ timeout: 60_000 });
-  await expect(saving).toContainText('__exception.message');
   await expect(saving).toContainText('matched no route');
   await admin.screenshot({ path: 'results/blocked-source-capture.png' });
 });
@@ -454,7 +453,6 @@ test('a capture at a destination set to block shows the rows it refused, and why
 
   const saving = admin.getByRole('dialog', { name: /^Captured (from|at) / });
   await expect(saving).toBeVisible({ timeout: 60_000 });
-  await expect(saving).toContainText('__exception.message');
   await expect(saving).toContainText('mapper_parsing_exception');
   await admin.screenshot({ path: 'results/refused-destination-capture.png' });
 });
@@ -761,8 +759,12 @@ test('a capture at a destination shows each row its pipeline finished for it, an
   // Saved as a sample like any capture, naming no source, its `__` fields kept.
   const saving = admin.getByRole('dialog', { name: /^Captured (from|at) / });
   await expect(saving).toBeVisible({ timeout: 60_000 });
-  await expect(saving).toContainText('__destination.route');
-  await expect(saving).toContainText('__source.');
+  // A `__` field starts hidden, as in a pipeline's preview, and the Fields menu lists it.
+  await saving.getByRole('button', { name: 'Choose fields' }).click();
+  const fields = saving.getByRole('group', { name: 'Fields' });
+  await expect(fields).toContainText('__destination.route');
+  await expect(fields).toContainText('__source.');
+  await saving.getByRole('button', { name: 'Choose fields' }).click();
   await admin.screenshot({ path: 'results/destination-capture-row.png' });
   await saving.getByLabel('Save as').fill('outgoing rows');
   await saving.getByRole('button', { name: 'Save sample' }).click();
@@ -791,7 +793,11 @@ test('a capture at a destination shows each row its pipeline finished for it, an
     .click();
   // A hundred rows fill in seconds, and the dialog is then the save's.
   const fromMap = admin.getByRole('dialog', { name: /^Captured (from|at) / });
-  await expect(fromMap).toContainText('__destination.route', { timeout: 60_000 });
+  await expect(fromMap.getByRole('button', { name: /^row \d+$/ }).first()).toBeVisible({
+    timeout: 60_000,
+  });
+  await fromMap.getByRole('button', { name: 'Choose fields' }).click();
+  await expect(fromMap.getByRole('group', { name: 'Fields' })).toContainText('__destination.route');
   await admin.screenshot({ path: 'results/destination-capture-map.png' });
 });
 

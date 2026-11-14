@@ -194,15 +194,15 @@ describe('DemoLeader', () => {
     const records = async () =>
       (
         (await leader.answer('GET', at(`/api/captures/${session}/records`), null)).body as {
-          batches: { rows: unknown[] }[];
+          records: { worker?: string; record: Record<string, unknown> }[];
         }
-      ).batches;
+      ).records;
     expect((await status()).done).toBe(false);
     now += 60_000;
     const done = await status();
     expect(done.done).toBe(true);
     expect(done.records).toBe(3);
-    expect((await records())[0].rows).toHaveLength(3);
+    expect((await records()).map((r) => r.worker)).toEqual(['w1', 'w2', 'w1']);
     expect(done.ended).toEqual([
       ['w1', 'matches'],
       ['w2', 'matches'],
