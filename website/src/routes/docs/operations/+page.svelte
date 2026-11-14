@@ -36,6 +36,9 @@
       source too sparse for those warns once it goes half again as long without a row as its longest
       quiet spell of the past year. A source's History tab on the Map lists its warnings and longest
       quiet spells, and an editor marks each Normal, so it is learned, or Outage, so it is not.
+      There an editor also picks the source's preset, from Fast, which warns of a stop in about 5
+      minutes, to Quiet, which takes about 30 minutes and warns of the fewest brief dips. A source's
+      Senders tab lists the senders it carries, each judged against a normal of its own.
     </li>
     <li>
       Use Logs to narrow by level, worker, worker group, message and time. Preserve timestamps,

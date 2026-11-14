@@ -54,6 +54,12 @@
       caption="The Issues page names the source, what it read and what is normal."
     />
     <p>
+      How soon depends on the source's preset, which trades how soon a drop warns against how often
+      a brief dip warns too. A stop warns in about 5 minutes at Fast, 15 at Sensitive, 20 at
+      Balanced and 30 at Quiet. A source starts at Balanced, and an editor picks another on its
+      History tab.
+    </p>
+    <p>
       Smeltr starts warning once a source has three days of history. A source too sparse for its
       rows to be counted, such as an audit log that writes a few rows a day, is watched for four
       weeks instead, then warns once it goes half again as long without a row as its longest quiet
@@ -71,6 +77,22 @@
       alt="The Map's panel for the fortigate-firewalls source, History tab. Warnings: Nov 11, 18:00, for 20 minutes, and Nov 11, 17:15, for 44 minutes. Longest quiet spells: Nov 11, 17:20, for 15 minutes, inside the older warning. Each row has a Normal and Outage switch, set to Outage."
       caption="A warning lasts until no width reads the source below normal, so it outlasts the quiet spell inside it. None of the three is learned."
     />
+  </section>
+  <section aria-labelledby="senders-heading">
+    <h2 id="senders-heading">One sender goes quiet.</h2>
+    <p>
+      A source often carries many senders, such as the firewalls behind one syslog relay. When one
+      of them stops, the source's rows can still look normal. Smeltr counts each source's rows by
+      the values of its fields, and watches each value that has sent at least once an hour on each
+      of seven days in a row, such as a firewall's name, against a normal of its own. When senders
+      fall below their normals, the source warns Senders below normal and names them.
+    </p>
+    <p>
+      The source's Senders tab lists the fields that can name its senders and, for each watched
+      sender, its last day against its range. Senders start at the Quiet preset, since each sender
+      warns on its own. An editor picks another preset there, lowers a sender's warning to info,
+      stops watching a field, or adds a field to watch.
+    </p>
   </section>
   <section aria-labelledby="drift-heading">
     <h2 id="drift-heading">A field stops matching.</h2>
