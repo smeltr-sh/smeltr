@@ -54,8 +54,6 @@ pub fn run_scoped<'a>(
     // Positional, resolved to the author's own id at the wire (`Plan::id`).
     let pipeline = plan.id_label.as_str();
 
-    // Only needed for `smeltr_rows_dropped_total`; every instruction's own prior `__live` reference is baked into its `Ir`.
-    let mut live_slot = SLOT_LIVE;
     // What this call added, for the error metric. `Unroll` remaps from the wider `ctx.pipeline_error_start` instead:
     // ingest's decode notes share these rows, but belong to the record, not to each route that delivers it.
     let own_start = ctx.errors.len();
@@ -63,10 +61,9 @@ pub fn run_scoped<'a>(
     for instr in &plan.instrs {
         // A `Drop` step's instruction is the one whose output slot is named `__live`.
         let redefines_live = metrics.is_some() && plan.provenance.get(instr.out).is_some_and(|o| o.name == "__live");
-        let live_before = if redefines_live {
-            live_popcount(batch, live_slot)
-        } else {
-            0
+        let live_before = match (redefines_live, instr.live) {
+            (true, Some(live)) => live_popcount(batch, live),
+            _ => 0,
         };
         let started = metrics.map(|_| Instant::now());
         // One `Scratch` per top-level instruction: a loop's is charged for everything its trips hold.
@@ -77,8 +74,7 @@ pub fn run_scoped<'a>(
 
         if let Some(m) = metrics {
             if redefines_live {
-                live_slot = instr.out;
-                let dropped = live_before.saturating_sub(live_popcount(batch, live_slot));
+                let dropped = live_before.saturating_sub(live_popcount(batch, instr.out));
                 incr_per_function(m, pipeline, instr.function, "smeltr_rows_dropped_total", dropped);
             }
             // A loop is timed here, at its own dispatch, and not inside: its body runs once per wave over a
@@ -195,7 +191,7 @@ fn run_instr(layout: &[DataType], instr: &Instr, batch: &mut Batch, ctx: &mut Ct
             leave(batch, ctx, &leaving, Some(*to));
         }
         Op::Try(TryStep::Throw { caught, rows, handled }) => {
-            let live = row_mask(batch, &rows.iter().copied().collect::<Vec<_>>());
+            let live = spread::selected(batch, *rows, None);
             if let Some((_, kept)) = ctx.caught.iter_mut().find(|(s, _)| s == caught) {
                 // Taken once: a row a second `throw` reaches has nothing left to raise.
                 let (thrown, rest): (Vec<_>, _) = std::mem::take(kept).into_iter().partition(|a| live[a.row as usize]);
@@ -453,13 +449,6 @@ fn retract_masked(instr: &Instr, start: usize, batch: &Batch, ctx: &mut Ctx) {
     }
 }
 
-/// Each row's selection under every one of `slots`, as guards.
-fn row_mask(batch: &Batch, slots: &[SlotId]) -> Vec<bool> {
-    (0..batch.rows())
-        .map(|row| slots.iter().all(|&s| row_is_live(batch, Some(s), row)))
-        .collect()
-}
-
 /// The slots `instr` writes where its guard takes no row of `batch`: an `Eval` lifted ahead of the
 /// guarded expression that reads it (`Instr::guard`), or a call under a guard. What either writes is read only on the
 /// rows its guard takes, by a blend that keeps the prior elsewhere, so it is not computed. A parse that merges into
@@ -623,7 +612,7 @@ fn run_loop(layout: &[DataType], spec: &Loop, batch: &mut Batch, ctx: &mut Ctx, 
         leaving.extend(run_wave(layout, &spec.body, &mut wave, &active, ctx, scope));
 
         // Read before the accumulators are taken.
-        let stayed = spec.stay.map(|s| row_mask(&wave, &[s]));
+        let stayed = spec.stay.map(|s| spread::selected(&wave, Some(s), None));
         cur = spec.accumulators.iter().map(|(_, w)| wave.take_dead(*w)).collect();
         wave.reclaim(ctx.pool);
         trips += 1;
