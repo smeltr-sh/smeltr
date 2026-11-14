@@ -1,0 +1,103 @@
+1
+00:00:02,300 --> 00:00:06,871
+This video shows you how to make your browser trust your leader's certificate,
+
+2
+00:00:06,871 --> 00:00:09,310
+so smeltr opens with no warning.
+
+3
+00:00:09,360 --> 00:00:12,960
+Chrome warns, because your leader signed its own certificate,
+
+4
+00:00:12,960 --> 00:00:15,430
+with an authority Chrome doesn't know.
+
+5
+00:00:15,480 --> 00:00:19,628
+Go past the warning one last time, and sign in.
+
+6
+00:00:23,360 --> 00:00:26,513
+In Admin, open System, then Leader certificate.
+
+7
+00:00:26,513 --> 00:00:31,745
+Under Current authority is the authority that signed the leader's certificate,
+
+8
+00:00:31,745 --> 00:00:33,470
+with its fingerprint.
+
+9
+00:00:33,520 --> 00:00:37,230
+Download its certificate, ca.pem.
+
+10
+00:00:37,280 --> 00:00:40,393
+Before you trust it, make sure it's your leader's.
+
+11
+00:00:40,393 --> 00:00:44,070
+On the leader's host, print the fingerprint of its copy.
+
+12
+00:00:44,120 --> 00:00:48,190
+On your laptop, print the fingerprint of the file you downloaded.
+
+13
+00:00:48,240 --> 00:00:52,150
+They match, so the file is your leader's own authority.
+
+14
+00:00:52,200 --> 00:00:56,494
+Chrome on Linux trusts the authorities in your certificate database.
+
+15
+00:00:56,494 --> 00:00:58,294
+Add this one there.
+
+16
+00:01:00,240 --> 00:01:05,230
+On Windows or macOS, add it to the system's trust store instead.
+
+17
+00:01:05,280 --> 00:01:08,935
+Restart Chrome, and open smeltr again.
+
+18
+00:01:09,360 --> 00:01:12,501
+Your workers trusted this authority from the start.
+
+19
+00:01:12,501 --> 00:01:14,630
+Their enrollment code named it.
+
+20
+00:01:14,680 --> 00:01:16,506
+Check on learning.
+
+21
+00:01:16,706 --> 00:01:19,041
+The page showed a fingerprint too.
+
+22
+00:01:19,041 --> 00:01:21,976
+Why check it on the leader's host?
+
+23
+00:01:26,376 --> 00:01:30,233
+You downloaded it over a connection your browser doesn't trust yet,
+
+24
+00:01:30,233 --> 00:01:35,299
+so someone in the middle could have swapped both the file and the fingerprint beside it.
+
+25
+00:01:35,299 --> 00:01:39,756
+The file on the leader's host never travelled over that connection.
+
+26
+00:01:40,656 --> 00:01:44,402
+Next, you order a certificate over ACME.

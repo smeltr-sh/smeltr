@@ -1,0 +1,95 @@
+1
+00:00:02,300 --> 00:00:07,350
+This video shows you how to find the pipeline that made the records you read in your SIEM.
+
+2
+00:00:07,400 --> 00:00:12,470
+Your SIEM reads firewall records from Elasticsearch, and smeltr writes them there.
+
+3
+00:00:12,520 --> 00:00:14,301
+You have a viewer account.
+
+4
+00:00:14,301 --> 00:00:17,510
+You can open everything, and change nothing.
+
+5
+00:00:17,560 --> 00:00:18,201
+Open Map.
+
+6
+00:00:18,201 --> 00:00:25,135
+It shows every source, pipeline and destination, and the lines records take between them.
+
+7
+00:00:27,080 --> 00:00:30,002
+Elasticsearch is the destination siem.
+
+8
+00:00:30,002 --> 00:00:30,910
+Click it.
+
+9
+00:00:30,960 --> 00:00:35,282
+Show this path keeps only what feeds siem: the source firewall,
+
+10
+00:00:35,282 --> 00:00:37,670
+and the pipeline firewall-parse.
+
+11
+00:00:37,720 --> 00:00:39,890
+Its Routes tab says it in words.
+
+12
+00:00:39,890 --> 00:00:45,950
+Records from firewall run through firewall-parse, and go to siem when risk is not low.
+
+13
+00:00:46,000 --> 00:00:49,028
+Click firewall-parse, and open it.
+
+14
+00:00:51,920 --> 00:00:54,546
+Its steps run from top to bottom.
+
+15
+00:00:54,546 --> 00:00:58,127
+A parser reads the firewall line into fields.
+
+16
+00:00:58,127 --> 00:01:00,593
+A drop step drops some records.
+
+17
+00:01:00,593 --> 00:01:02,821
+A rename renames two fields.
+
+18
+00:01:02,821 --> 00:01:04,572
+A Code step sets risk.
+
+19
+00:01:04,572 --> 00:01:08,270
+And the last step removes the original line.
+
+20
+00:01:08,320 --> 00:01:10,364
+Check on learning.
+
+21
+00:01:10,564 --> 00:01:13,153
+Your SIEM reads from one destination.
+
+22
+00:01:13,153 --> 00:01:16,762
+How do you find the pipeline that feeds it?
+
+23
+00:01:21,162 --> 00:01:26,543
+On Map, click the destination, and choose Show this path.
+
+24
+00:01:27,443 --> 00:01:31,494
+Next, follow one record through this pipeline.

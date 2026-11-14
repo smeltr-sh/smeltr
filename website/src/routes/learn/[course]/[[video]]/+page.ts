@@ -1,4 +1,5 @@
 import { error } from '@sveltejs/kit';
+import { transcript } from '#lib/transcripts.ts';
 import { courses, released } from '#lib/videos.ts';
 
 export const entries = () =>
@@ -8,11 +9,11 @@ export const entries = () =>
   ]);
 
 /** Without a video in the path, the course page plays its first released video. */
-export function load({ params }: { params: { course: string; video?: string } }) {
+export async function load({ params }: { params: { course: string; video?: string } }) {
   const course = courses.find((c) => c.slug === params.course);
   const video = params.video
     ? course && released(course).find((v) => v.slug === params.video)
     : course && released(course)[0];
   if (!course || !video) error(404, 'No such video');
-  return { course, video };
+  return { course, video, transcript: await transcript(course.slug, video.slug) };
 }

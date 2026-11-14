@@ -1,0 +1,99 @@
+1
+00:00:02,300 --> 00:00:05,568
+This video shows you how to catch an exception in your code,
+
+2
+00:00:05,568 --> 00:00:08,190
+and decide what happens to the record.
+
+3
+00:00:08,240 --> 00:00:10,967
+Here's the Code step from the last video.
+
+4
+00:00:10,967 --> 00:00:12,710
+Two records still fail.
+
+5
+00:00:12,760 --> 00:00:16,463
+Their lines are stack traces, so json can't read them.
+
+6
+00:00:16,463 --> 00:00:20,150
+Each record is marked with an Unparsable exception.
+
+7
+00:00:20,200 --> 00:00:24,452
+A marked record goes to its exception answer at the end of the pipeline.
+
+8
+00:00:24,452 --> 00:00:27,347
+But a stack trace is a normal line from this app.
+
+9
+00:00:27,347 --> 00:00:28,950
+It shouldn't be marked.
+
+10
+00:00:29,000 --> 00:00:32,044
+Put the json call in a try block.
+
+11
+00:00:33,920 --> 00:00:38,230
+A catch block runs on each record that failed in the try.
+
+12
+00:00:38,230 --> 00:00:40,110
+e holds the exception.
+
+13
+00:00:40,160 --> 00:00:42,275
+Record what went wrong.
+
+14
+00:00:42,275 --> 00:00:45,390
+e.kind is the kind of exception.
+
+15
+00:00:45,440 --> 00:00:47,104
+Now no record fails.
+
+16
+00:00:47,104 --> 00:00:49,950
+The catch cleared the exception.
+
+17
+00:00:50,000 --> 00:00:55,215
+The stack trace keeps its message, and app_error says Unparsable.
+
+18
+00:00:56,280 --> 00:01:01,445
+The records that parsed never reach the catch, so they have no app_error.
+
+19
+00:01:03,360 --> 00:01:04,848
+Save.
+
+20
+00:01:07,160 --> 00:01:09,295
+Check on learning.
+
+21
+00:01:09,495 --> 00:01:13,114
+Which records does a catch block run on?
+
+22
+00:01:17,514 --> 00:01:21,429
+The records that failed inside its try.
+
+23
+00:01:22,329 --> 00:01:26,643
+What happens to an exception that a catch block catches?
+
+24
+00:01:31,043 --> 00:01:35,158
+It's cleared, so the record is no longer marked.
+
+25
+00:01:36,058 --> 00:01:38,891
+Next, you work with arrays.

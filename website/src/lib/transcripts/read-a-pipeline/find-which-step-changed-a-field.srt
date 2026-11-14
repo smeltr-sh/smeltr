@@ -1,0 +1,79 @@
+1
+00:00:02,300 --> 00:00:07,030
+This video shows you how to find which step set or changed a field.
+
+2
+00:00:07,080 --> 00:00:11,390
+You're in firewall-parse, with records you captured from firewall.
+
+3
+00:00:11,440 --> 00:00:13,846
+This record says risk is high.
+
+4
+00:00:13,846 --> 00:00:16,370
+Which step decided that?
+
+5
+00:00:16,640 --> 00:00:21,306
+Each field has a sign beside it that names the step that last changed it.
+
+6
+00:00:21,306 --> 00:00:23,150
+Hover it to see the step.
+
+7
+00:00:23,200 --> 00:00:24,582
+Click the sign.
+
+8
+00:00:24,582 --> 00:00:26,150
+The step opens.
+
+9
+00:00:26,200 --> 00:00:29,918
+A denied connection to port 22 gets high.
+
+10
+00:00:29,918 --> 00:00:33,030
+This one was denied, to port 22.
+
+11
+00:00:33,080 --> 00:00:36,568
+A field can be changed by more than one step.
+
+12
+00:00:36,568 --> 00:00:40,470
+user.name came from the parser, then the rename.
+
+13
+00:00:40,520 --> 00:00:43,089
+To find the records one step changed,
+
+14
+00:00:43,089 --> 00:00:47,369
+pause after it, and keep only rows changed by a step.
+
+15
+00:00:55,040 --> 00:00:59,483
+Every record left here had its risk set by this step.
+
+16
+00:01:00,480 --> 00:01:02,428
+Check on learning.
+
+17
+00:01:02,628 --> 00:01:05,597
+The sign beside a field is the Code step's.
+
+18
+00:01:05,597 --> 00:01:07,854
+What does that tell you?
+
+19
+00:01:12,254 --> 00:01:17,206
+The Code step was the last step to set or change that field.
+
+20
+00:01:18,106 --> 00:01:22,714
+Next, find the original of a record that already arrived.

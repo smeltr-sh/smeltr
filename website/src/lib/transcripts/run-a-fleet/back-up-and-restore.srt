@@ -1,0 +1,83 @@
+1
+00:00:02,300 --> 00:00:07,710
+This video shows you how to back up the leader, and how to restore it when it's lost.
+
+2
+00:00:07,760 --> 00:00:11,273
+A complete backup needs two things: the leader's data,
+
+3
+00:00:11,273 --> 00:00:15,630
+and the secrets encryption key that decrypts its stored secrets.
+
+4
+00:00:15,680 --> 00:00:19,132
+Stop the leader first, so the copy is consistent.
+
+5
+00:00:19,132 --> 00:00:22,870
+In standalone mode, that stops its own worker too.
+
+6
+00:00:22,920 --> 00:00:26,875
+Copy the leader's data directory out of its volume.
+
+7
+00:00:27,080 --> 00:00:30,072
+Then copy the key into a file of its own.
+
+8
+00:00:30,072 --> 00:00:33,883
+Keep the two copies apart, and protect both.
+
+9
+00:00:36,640 --> 00:00:39,059
+Start the leader again.
+
+10
+00:00:41,320 --> 00:00:45,163
+Now the leader is lost, and its volume with it.
+
+11
+00:00:46,920 --> 00:00:52,910
+worker-2, in its own container, keeps running what it has, but can't reach its leader.
+
+12
+00:00:52,960 --> 00:00:56,521
+To restore, create the leader without starting it.
+
+13
+00:00:56,521 --> 00:00:58,790
+Use the same image as before.
+
+14
+00:00:58,840 --> 00:01:01,576
+Put back the data and the key.
+
+15
+00:01:02,720 --> 00:01:05,494
+Then start it, and sign in again.
+
+16
+00:01:05,494 --> 00:01:08,364
+A backup holds no sessions.
+
+17
+00:01:17,400 --> 00:01:22,166
+Both workers are back online, and run the same commit as before.
+
+18
+00:01:24,560 --> 00:01:26,426
+Check on learning.
+
+19
+00:01:26,626 --> 00:01:31,026
+What two things does a complete backup of the leader need?
+
+20
+00:01:35,426 --> 00:01:41,599
+Its data, and its secrets encryption key, each in its own protected copy.
+
+21
+00:01:42,499 --> 00:01:45,539
+Next, upgrade smeltr.

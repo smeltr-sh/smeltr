@@ -1,0 +1,103 @@
+1
+00:00:02,300 --> 00:00:06,332
+This video shows you how to upgrade smeltr: back up first,
+
+2
+00:00:06,332 --> 00:00:09,230
+then the leader, then each worker.
+
+3
+00:00:09,280 --> 00:00:12,055
+Open Admin, System, General.
+
+4
+00:00:12,055 --> 00:00:15,723
+It shows the version the leader runs.
+
+5
+00:00:15,723 --> 00:00:17,230
+Here, 1.1.0.
+
+6
+00:00:17,280 --> 00:00:20,871
+Read the release notes of the new version before you upgrade,
+
+7
+00:00:20,871 --> 00:00:24,070
+and try the upgrade on a copy of your setup first.
+
+8
+00:00:24,120 --> 00:00:30,793
+Stop the leader, and back up its data and key, as in Back up and restore the leader.
+
+9
+00:00:32,480 --> 00:00:37,833
+Keep the old image too, so you can go back to the old version with that backup.
+
+10
+00:00:42,960 --> 00:00:47,559
+Point SMELTR_IMAGE, in .env, at the new image.
+
+11
+00:00:52,480 --> 00:00:54,095
+Start the leader on it.
+
+12
+00:00:54,095 --> 00:00:58,558
+It upgrades its data as it starts, with no manual step.
+
+13
+00:01:01,920 --> 00:01:03,021
+Sign in again.
+
+14
+00:01:03,021 --> 00:01:07,977
+worker-2 still runs 1.1.0, so Status shows it On another build.
+
+15
+00:01:07,977 --> 00:01:12,668
+It keeps running what it has, and takes nothing new.
+
+16
+00:01:19,880 --> 00:01:21,552
+Upgrade each worker next.
+
+17
+00:01:21,552 --> 00:01:27,110
+Remove its container, and run it again on the new image, with the same volume.
+
+18
+00:01:27,160 --> 00:01:31,104
+It keeps its identity, so it needs no new enrollment.
+
+19
+00:01:35,600 --> 00:01:39,326
+Both workers now run the new version, on the same commit.
+
+20
+00:01:39,326 --> 00:01:42,868
+Check that rows still flow before you finish.
+
+21
+00:01:45,120 --> 00:01:47,023
+Check on learning.
+
+22
+00:01:47,223 --> 00:01:50,708
+What do you do before you upgrade the leader?
+
+23
+00:01:55,108 --> 00:02:00,122
+Stop it, back up its data and key, and keep the old image.
+
+24
+00:02:01,022 --> 00:02:02,270
+That's Run a fleet.
+
+25
+00:02:02,270 --> 00:02:07,198
+You found what's wrong, sent the fleet's logs and metrics to your platform,
+
+26
+00:02:07,198 --> 00:02:12,397
+got alerted, sized a worker, backed up the leader and upgraded smeltr.

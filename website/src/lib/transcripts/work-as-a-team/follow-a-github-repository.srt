@@ -1,0 +1,135 @@
+1
+00:00:02,300 --> 00:00:06,362
+This video shows you how to connect smeltr to a GitHub repository,
+
+2
+00:00:06,362 --> 00:00:09,990
+so your team reviews and merges changes on GitHub.
+
+3
+00:00:10,040 --> 00:00:12,674
+Here's the team's repository on GitHub.
+
+4
+00:00:12,674 --> 00:00:13,630
+It's empty.
+
+5
+00:00:13,680 --> 00:00:17,622
+In smeltr, open Admin, System, Git remote.
+
+6
+00:00:17,622 --> 00:00:21,319
+Enter the repository's clone URL.
+
+7
+00:00:23,240 --> 00:00:27,195
+Add a GitHub token that can read the repository and push to it.
+
+8
+00:00:27,195 --> 00:00:30,710
+smeltr stores it encrypted, and never shows it again.
+
+9
+00:00:30,760 --> 00:00:33,856
+Fetch every minute, and save.
+
+10
+00:00:34,960 --> 00:00:39,454
+The repository was empty, so smeltr pushes its main there.
+
+11
+00:00:40,280 --> 00:00:44,634
+On GitHub, main now holds your routes and pipelines.
+
+12
+00:00:51,880 --> 00:00:55,135
+In Sam's browser, Sam keeps the message as it came,
+
+13
+00:00:55,135 --> 00:00:58,670
+and removes the assignment that uppercases it.
+
+14
+00:01:01,920 --> 00:01:06,620
+Sam saves on a branch of their own, and opens it for review.
+
+15
+00:01:13,480 --> 00:01:17,990
+Every save goes to GitHub, on a branch of the same name.
+
+16
+00:01:18,040 --> 00:01:22,986
+While Approve: pushes to main is off, changes are merged on GitHub,
+
+17
+00:01:22,986 --> 00:01:26,230
+so smeltr doesn't deploy this one itself.
+
+18
+00:01:26,280 --> 00:01:29,429
+On GitHub, open a pull request from the branch.
+
+19
+00:01:29,429 --> 00:01:33,244
+Your team reviews it there, like any other code.
+
+20
+00:01:35,400 --> 00:01:38,548
+When it's merged, main moves.
+
+21
+00:01:41,520 --> 00:01:43,595
+smeltr fetches main every minute.
+
+22
+00:01:43,595 --> 00:01:48,722
+It checks that every worker group loads the new commit, then deploys it.
+
+23
+00:01:50,440 --> 00:01:53,064
+Status shows the fleet on the new commit.
+
+24
+00:01:53,064 --> 00:01:58,270
+A commit that doesn't load leaves the fleet where it was, and Status says why.
+
+25
+00:01:58,320 --> 00:02:00,196
+Check on learning.
+
+26
+00:02:00,396 --> 00:02:03,195
+smeltr follows a GitHub repository.
+
+27
+00:02:03,195 --> 00:02:05,795
+Where is a change merged?
+
+28
+00:02:10,195 --> 00:02:11,030
+On GitHub.
+
+29
+00:02:11,030 --> 00:02:16,136
+smeltr pushes each save to a branch, and deploys main.
+
+30
+00:02:17,036 --> 00:02:19,312
+A commit on main doesn't load.
+
+31
+00:02:19,312 --> 00:02:21,732
+What does the fleet run?
+
+32
+00:02:26,132 --> 00:02:28,021
+The last commit that did.
+
+33
+00:02:28,021 --> 00:02:31,265
+Status says why the new one didn't.
+
+34
+00:02:32,165 --> 00:02:38,074
+Next, you approve changes in smeltr, and smeltr pushes them to GitHub's main.

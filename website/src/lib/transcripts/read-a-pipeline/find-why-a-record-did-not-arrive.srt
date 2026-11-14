@@ -1,0 +1,107 @@
+1
+00:00:02,300 --> 00:00:06,950
+This video shows you how to find out why a record never reached your SIEM.
+
+2
+00:00:07,000 --> 00:00:11,710
+Your SIEM holds nothing for carol's DNS lookups or for bob's web traffic.
+
+3
+00:00:11,710 --> 00:00:15,230
+Both are in the records you captured from firewall.
+
+4
+00:00:15,280 --> 00:00:16,632
+Start with carol.
+
+5
+00:00:16,632 --> 00:00:18,699
+Search for the name carol.
+
+6
+00:00:18,699 --> 00:00:24,706
+A DNS lookup to port 53 shows an empty row: the pipeline dropped it.
+
+7
+00:00:25,040 --> 00:00:29,569
+The drop step, drop where dst_port == 53, dropped them.
+
+8
+00:00:29,569 --> 00:00:32,830
+It shows how many records it dropped.
+
+9
+00:00:32,880 --> 00:00:37,606
+Keep only the dropped rows: every one is a lookup to port 53.
+
+10
+00:00:37,606 --> 00:00:41,925
+A dropped record is not sent to any destination.
+
+11
+00:00:43,360 --> 00:00:49,530
+On Map, the pipeline's Steps tab counts what each step dropped in the running pipeline.
+
+12
+00:00:54,520 --> 00:00:56,087
+Now bob's web traffic.
+
+13
+00:00:56,087 --> 00:00:58,366
+It did come out of the pipeline.
+
+14
+00:00:58,366 --> 00:01:02,100
+Route a sample shows where each record goes.
+
+15
+00:01:06,160 --> 00:01:07,290
+Search for bob.
+
+16
+00:01:07,290 --> 00:01:12,940
+The row that allowed a connection to port 443 is bob's web traffic.
+
+17
+00:01:13,240 --> 00:01:15,112
+It went to archive only.
+
+18
+00:01:15,112 --> 00:01:21,310
+siem takes a record only when risk is not low, and this record's risk is low.
+
+19
+00:01:21,360 --> 00:01:24,620
+Every record the pipeline kept went to archive.
+
+20
+00:01:24,620 --> 00:01:28,757
+Only those whose risk is not low also went to siem.
+
+21
+00:01:30,200 --> 00:01:32,082
+Check on learning.
+
+22
+00:01:32,282 --> 00:01:36,440
+A record came out of the pipeline, but isn't in your SIEM.
+
+23
+00:01:36,440 --> 00:01:38,259
+What kept it out?
+
+24
+00:01:42,659 --> 00:01:46,099
+The route's delivery condition for that destination.
+
+25
+00:01:46,099 --> 00:01:49,610
+Route a sample shows where each record goes.
+
+26
+00:01:50,510 --> 00:01:55,377
+You can now read a pipeline from end to end: where a record came from,
+
+27
+00:01:55,377 --> 00:01:59,384
+what changed it, and why it did or didn't arrive.

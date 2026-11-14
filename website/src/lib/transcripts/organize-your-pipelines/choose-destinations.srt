@@ -1,0 +1,87 @@
+1
+00:00:02,300 --> 00:00:06,906
+This video shows you how to send only some of a pipeline's records to a destination,
+
+2
+00:00:06,906 --> 00:00:09,310
+by what the pipeline made of them.
+
+3
+00:00:09,360 --> 00:00:13,059
+Checkout records run through checkout-parse to checkout-out.
+
+4
+00:00:13,059 --> 00:00:16,790
+Declined payments should also go to a topic of their own.
+
+5
+00:00:16,840 --> 00:00:21,710
+From checkout-parse, add a new Kafka destination, declined-out.
+
+6
+00:00:21,710 --> 00:00:25,324
+It writes to the topic smeltr-declined.
+
+7
+00:00:33,840 --> 00:00:38,174
+Put the change on a new branch, declined-payments.
+
+8
+00:00:39,600 --> 00:00:43,710
+As it stands, every checkout record would go there too.
+
+9
+00:00:44,000 --> 00:00:49,510
+Add a delivery condition to its line: message equals payment declined.
+
+10
+00:00:49,560 --> 00:00:53,022
+A delivery condition reads the pipeline's output,
+
+11
+00:00:53,022 --> 00:00:56,837
+so it can test message, a field checkout-parse parsed.
+
+12
+00:00:56,837 --> 00:01:01,550
+A route's condition runs before the pipeline, on the raw record.
+
+13
+00:01:01,600 --> 00:01:05,013
+Save the route, and route the checkout sample.
+
+14
+00:01:14,840 --> 00:01:17,800
+Every record still goes to checkout-out.
+
+15
+00:01:17,800 --> 00:01:21,870
+Only the declined payment also goes to declined-out.
+
+16
+00:01:21,920 --> 00:01:25,223
+Open it for review, and deploy it.
+
+17
+00:01:34,040 --> 00:01:35,999
+Check on learning.
+
+18
+00:01:36,199 --> 00:01:38,862
+A delivery condition can test message.
+
+19
+00:01:38,862 --> 00:01:41,564
+Why can't a route's condition?
+
+20
+00:01:45,964 --> 00:01:50,089
+A route's condition runs before the pipeline, on the raw record.
+
+21
+00:01:50,089 --> 00:01:55,524
+A delivery condition runs after it, and reads the fields the pipeline made.
+
+22
+00:01:56,424 --> 00:02:01,133
+Next, share steps between pipelines with a Call step.

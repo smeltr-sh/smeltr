@@ -1,0 +1,87 @@
+1
+00:00:02,300 --> 00:00:07,950
+This video shows you how to find the original line behind a record that already arrived.
+
+2
+00:00:08,000 --> 00:00:19,188
+In Elasticsearch, a record says risk high, from 10.2.7.44 to port 22, at 05:47:27.
+
+3
+00:00:19,880 --> 00:00:26,510
+firewall-parse removes _raw, so Elasticsearch never got the original line.
+
+4
+00:00:26,560 --> 00:00:31,470
+But the source, Kafka, still keeps it, until its retention runs out.
+
+5
+00:00:31,520 --> 00:00:34,008
+Capture from firewall again.
+
+6
+00:00:39,320 --> 00:00:43,030
+Keep only records that mention 10.2.7.44.
+
+7
+00:00:43,030 --> 00:00:50,670
+A capture from a source reads each record as it arrived, so the filter tests _raw.
+
+8
+00:00:50,720 --> 00:00:55,263
+Under Advanced, start at a time just before the record.
+
+9
+00:00:58,120 --> 00:01:01,233
+Start it, and use these records.
+
+10
+00:01:08,280 --> 00:01:14,870
+Find the record you saw in Elasticsearch: its time is 05:47:27.
+
+11
+00:01:14,920 --> 00:01:18,479
+Its output matches Elasticsearch.
+
+12
+00:01:18,479 --> 00:01:22,670
+Risk high, from 10.2.7.44 to port 22.
+
+13
+00:01:22,720 --> 00:01:25,672
+And here is its original line.
+
+14
+00:01:27,800 --> 00:01:30,944
+These records ran through the pipeline as it is now.
+
+15
+00:01:30,944 --> 00:01:35,190
+If it changed since the record went through, the output can differ.
+
+16
+00:01:35,240 --> 00:01:37,107
+Check on learning.
+
+17
+00:01:37,307 --> 00:01:41,797
+Why can this capture reach a record from before it started?
+
+18
+00:01:46,197 --> 00:01:50,944
+Kafka keeps records, so a capture can start at an earlier time.
+
+19
+00:01:50,944 --> 00:01:54,709
+A source that keeps nothing can't go back.
+
+20
+00:01:55,609 --> 00:02:01,169
+Why does the capture's filter test _raw, not src_ip?
+
+21
+00:02:05,569 --> 00:02:12,425
+A capture from a source reads records as they arrived, before the pipeline made src_ip.
+
+22
+00:02:13,325 --> 00:02:17,480
+Next, find out why a record did not arrive.

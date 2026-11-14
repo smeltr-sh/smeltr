@@ -1,0 +1,127 @@
+1
+00:00:02,300 --> 00:00:07,470
+This video shows you how to run a route on only some of your workers, with a worker group.
+
+2
+00:00:07,520 --> 00:00:11,342
+Two workers in the standalone group run every route.
+
+3
+00:00:11,342 --> 00:00:17,670
+A new site, edge, gets a worker of its own, and a topic of its own, smeltr-edge-in.
+
+4
+00:00:17,720 --> 00:00:22,535
+Open Admin, Worker groups, and add a group called edge.
+
+5
+00:00:28,160 --> 00:00:32,540
+A group is configuration, so it goes on a branch, edge-group.
+
+6
+00:00:32,540 --> 00:00:35,430
+It stays Pending until you deploy it.
+
+7
+00:00:35,480 --> 00:00:40,094
+Open Build, and switch from Shared configuration to edge.
+
+8
+00:00:47,600 --> 00:00:50,738
+The routes from shared configuration come first.
+
+9
+00:00:50,738 --> 00:00:53,234
+Every worker group runs them.
+
+10
+00:00:53,920 --> 00:01:00,843
+Add a route for edge, from a new Kafka source, edge-in, that reads smeltr-edge-in.
+
+11
+00:01:14,040 --> 00:01:18,033
+A group's route can use shared pipelines and destinations.
+
+12
+00:01:18,033 --> 00:01:22,763
+Send it through tutorial-in-parse to tutorial-out, and save.
+
+13
+00:01:24,400 --> 00:01:27,092
+Open it for review, and deploy it.
+
+14
+00:01:27,092 --> 00:01:29,275
+The group goes live.
+
+15
+00:01:35,920 --> 00:01:38,273
+Now enroll a worker into edge.
+
+16
+00:01:38,273 --> 00:01:44,364
+Under Admin, Workers, Enrollment codes, add a code for the edge group.
+
+17
+00:01:46,560 --> 00:01:48,910
+The settings it gives you name the group.
+
+18
+00:01:48,910 --> 00:01:53,121
+Start the edge worker with them, as you did in Getting started.
+
+19
+00:01:55,600 --> 00:02:00,523
+Status now lists three workers across two worker groups.
+
+20
+00:02:01,600 --> 00:02:05,149
+On Map, each group has a panel of its own.
+
+21
+00:02:05,149 --> 00:02:08,870
+Under edge, edge-in flows to tutorial-out.
+
+22
+00:02:08,920 --> 00:02:12,076
+tutorial-in shows 0 rows a second under edge.
+
+23
+00:02:12,076 --> 00:02:13,198
+That's expected.
+
+24
+00:02:13,198 --> 00:02:19,019
+Shared configuration runs in every group, so the edge worker reads tutorial-in too.
+
+25
+00:02:19,019 --> 00:02:21,754
+It shares tutorial-in's consumer group,
+
+26
+00:02:21,754 --> 00:02:27,110
+and Kafka gave both of tutorial-in's partitions to the standalone workers.
+
+27
+00:02:27,160 --> 00:02:29,110
+Check on learning.
+
+28
+00:02:29,310 --> 00:02:34,538
+Why does tutorial-in show 0 rows a second under edge?
+
+29
+00:02:38,938 --> 00:02:42,241
+Shared configuration runs in every worker group.
+
+30
+00:02:42,241 --> 00:02:45,819
+The edge worker shares tutorial-in's consumer group,
+
+31
+00:02:45,819 --> 00:02:49,997
+and Kafka gave both of its partitions to standalone.
+
+32
+00:02:50,897 --> 00:02:54,984
+Next, move a pipeline to another leader.

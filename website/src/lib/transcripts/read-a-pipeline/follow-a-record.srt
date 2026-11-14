@@ -1,0 +1,103 @@
+1
+00:00:02,300 --> 00:00:07,750
+This video shows you how to follow one record from its original text to what arrived.
+
+2
+00:00:07,800 --> 00:00:11,630
+You're in firewall-parse, the pipeline that feeds siem.
+
+3
+00:00:11,680 --> 00:00:15,508
+To see real records, capture some from its source.
+
+4
+00:00:15,508 --> 00:00:19,170
+Choose Sample, Add sample, then Capture.
+
+5
+00:00:20,320 --> 00:00:23,755
+The capture target is the source, firewall.
+
+6
+00:00:23,755 --> 00:00:24,670
+Start it.
+
+7
+00:00:24,720 --> 00:00:27,561
+A capture copies records as they arrive.
+
+8
+00:00:27,561 --> 00:00:30,362
+The pipeline goes on as before.
+
+9
+00:00:33,280 --> 00:00:34,534
+Use these records.
+
+10
+00:00:34,534 --> 00:00:38,830
+The pipeline runs on them here, and sends nothing anywhere.
+
+11
+00:00:38,880 --> 00:00:40,799
+Each row is one record.
+
+12
+00:00:40,799 --> 00:00:45,470
+The struck-out text is _raw, the original firewall line.
+
+13
+00:00:45,470 --> 00:00:47,750
+The last step removed it.
+
+14
+00:00:47,800 --> 00:00:48,836
+Open a record.
+
+15
+00:00:48,836 --> 00:00:52,471
+Green fields are what the pipeline added.
+
+16
+00:00:56,880 --> 00:01:01,817
+Open the removed fields, to read the original line beside the others.
+
+17
+00:01:02,160 --> 00:01:06,277
+To see a record partway through, pause it after a step.
+
+18
+00:01:06,277 --> 00:01:08,190
+Pause after the parser.
+
+19
+00:01:08,240 --> 00:01:13,625
+_raw is still there, next to the fields the parser read from it.
+
+20
+00:01:14,680 --> 00:01:17,983
+Move the pause to the rename step.
+
+21
+00:01:17,983 --> 00:01:20,720
+user is now user.name.
+
+22
+00:01:24,800 --> 00:01:28,310
+Clear the pause to see the whole pipeline again.
+
+23
+00:01:28,360 --> 00:01:30,239
+Check on learning.
+
+24
+00:01:30,439 --> 00:01:34,866
+How do you see a record as it was after the second step?
+
+25
+00:01:39,266 --> 00:01:43,543
+Pause the records after that step, with its pause button.
+
+26
+00:01:44,443 --> 00:01:48,195
+Next, find which step changed a field.

@@ -185,3 +185,10 @@ article td {
   border-bottom: 1px solid var(--border);
   overflow-wrap: break-word;
 }
+
+/* A search result's matched words. */
+mark {
+  background: var(--panel);
+  color: var(--ink);
+  font-weight: 600;
+}

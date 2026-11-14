@@ -1,0 +1,111 @@
+1
+00:00:02,300 --> 00:00:06,843
+This video shows you how to get an email when something in your fleet breaks,
+
+2
+00:00:06,843 --> 00:00:08,870
+and again when it clears.
+
+3
+00:00:08,920 --> 00:00:12,249
+In Admin, open System, then Alerts.
+
+4
+00:00:12,249 --> 00:00:15,797
+First, turn on the mail server.
+
+5
+00:00:19,520 --> 00:00:21,341
+Enter its host and port.
+
+6
+00:00:21,341 --> 00:00:25,287
+Choose STARTTLS, which encrypts the mail on its way.
+
+7
+00:00:25,287 --> 00:00:29,301
+Enter the address alerts come from, and save.
+
+8
+00:00:30,120 --> 00:00:32,010
+Add an email channel.
+
+9
+00:00:32,010 --> 00:00:36,350
+Name it ops-team, and send to ops@example.com.
+
+10
+00:00:36,400 --> 00:00:39,910
+Include the message, so the email says what to check.
+
+11
+00:00:39,960 --> 00:00:40,940
+Send a test.
+
+12
+00:00:40,940 --> 00:00:43,226
+The mail server accepted it.
+
+13
+00:00:43,226 --> 00:00:45,541
+Then add the channel.
+
+14
+00:00:48,960 --> 00:00:53,129
+For chat or paging, add a webhook instead: Slack,
+
+15
+00:00:53,129 --> 00:00:57,387
+Microsoft Teams, PagerDuty or generic JSON.
+
+16
+00:00:58,920 --> 00:01:03,896
+Under What each channel gets, tick the issues the channel receives.
+
+17
+00:01:03,896 --> 00:01:07,759
+Here, all the issues about sources and destinations.
+
+18
+00:01:07,759 --> 00:01:08,730
+Save.
+
+19
+00:01:12,680 --> 00:01:15,515
+Now the broker behind tutorial-out stops.
+
+20
+00:01:15,515 --> 00:01:18,950
+The leader looks for issues every minute.
+
+21
+00:01:19,880 --> 00:01:26,000
+The email names Destination unreachable on tutorial-out, and says what to check.
+
+22
+00:01:28,400 --> 00:01:32,744
+Once the broker is back, a second email says it cleared.
+
+23
+00:01:34,640 --> 00:01:37,231
+Before planned work, mute the channel.
+
+24
+00:01:37,231 --> 00:01:40,491
+It stays quiet for the time you choose.
+
+25
+00:01:45,200 --> 00:01:47,195
+Check on learning.
+
+26
+00:01:47,395 --> 00:01:51,272
+Where do you choose which issues a channel gets?
+
+27
+00:01:55,672 --> 00:02:01,741
+In Admin, System, Alerts, under What each channel gets.
+
+28
+00:02:02,641 --> 00:02:05,610
+Next, size a worker.

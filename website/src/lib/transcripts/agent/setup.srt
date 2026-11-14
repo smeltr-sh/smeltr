@@ -1,0 +1,95 @@
+1
+00:00:00,000 --> 00:00:13,910
+This course shows you how to use the AI agent to do your data engineering. You tell it what you want, and you review what it builds. This video sets it up: turn on AI agents, choose what your agent may do, and open it.
+
+2
+00:00:13,960 --> 00:00:18,271
+First, an administrator turns on AI agents.
+
+3
+00:00:18,880 --> 00:00:23,441
+Under Admin, open System, then AI agents.
+
+4
+00:00:29,080 --> 00:00:31,293
+Turn on Enabled.
+
+5
+00:00:31,560 --> 00:00:43,642
+The provider can be Anthropic, OpenAI, or Other, for any OpenAI-compatible service. This course uses Anthropic: its endpoint URL and model are already filled in.
+
+6
+00:00:43,880 --> 00:00:53,024
+The model here is the one each conversation starts with. Type its name as the provider gives it. This course uses claude-haiku-5-5.
+
+7
+00:00:54,040 --> 00:01:03,054
+The context window is the most the model reads at once. Leave it as it is: on Save, it is set to what the provider says the model holds.
+
+8
+00:01:03,520 --> 00:01:08,875
+Paste in the API key. It is stored encrypted, and never shown again.
+
+9
+00:01:09,160 --> 00:01:16,430
+Kept for sets how long a conversation lasts: one nobody adds to for ninety days is deleted.
+
+10
+00:01:16,480 --> 00:01:24,590
+Save. Saving asks the endpoint for a short answer, to check the key works. The key now shows as Stored.
+
+11
+00:01:24,640 --> 00:01:31,401
+Now set what your own agent may do. Open the menu under your name, then Agent permissions.
+
+12
+00:01:37,280 --> 00:01:50,264
+Your agent never holds more than you do. An area is the shared configuration, or one worker group. In each area, your agent holds the lower of your level and the one you give it here.
+
+13
+00:01:51,200 --> 00:02:01,750
+A viewer is read-only. An editor can read and write, on a branch. A deployer has the final approval over changes, before they go live.
+
+14
+00:02:01,800 --> 00:02:07,416
+Choose editor, so the agent can build, and you still decide what deploys.
+
+15
+00:02:07,840 --> 00:02:09,767
+Save.
+
+16
+00:02:11,320 --> 00:02:17,034
+The Agent button opens your agent at the bottom of any page.
+
+17
+00:02:21,680 --> 00:02:26,011
+You type here. What your agent does appears above, as it happens.
+
+18
+00:02:31,320 --> 00:02:41,909
+The model chip beside the prompt shows Haiku 5.5. Open it to pick another model your key reaches, or how much effort the model puts in.
+
+19
+00:02:49,000 --> 00:02:50,890
+Check on learning.
+
+20
+00:02:51,090 --> 00:02:57,150
+Your agent is set to deployer, but you are an editor. Can it deploy?
+
+21
+00:03:01,550 --> 00:03:05,200
+No. It never holds more than you do.
+
+22
+00:03:06,100 --> 00:03:09,100
+Where do you turn AI agents on?
+
+23
+00:03:13,500 --> 00:03:17,704
+Admin, System, AI agents.
+
+24
+00:03:18,604 --> 00:03:23,070
+Next, you have the agent build a pipeline from live data.

@@ -1,0 +1,135 @@
+1
+00:00:02,300 --> 00:00:06,750
+This video shows you how to install smeltr with Docker Compose,
+
+2
+00:00:06,750 --> 00:00:09,788
+as one leader and worker served over HTTPS.
+
+3
+00:00:09,788 --> 00:00:12,870
+Then you sign in for the first time.
+
+4
+00:00:12,920 --> 00:00:16,417
+Make a folder for smeltr, and go into it.
+
+5
+00:00:16,920 --> 00:00:21,377
+Download the compose file of the release you want.
+
+6
+00:00:21,377 --> 00:00:23,350
+Here, that's 1.1.0.
+
+7
+00:00:23,400 --> 00:00:27,617
+It runs the leader and a worker in one container.
+
+8
+00:00:30,160 --> 00:00:36,670
+The leader serves HTTPS on port 443, with a certificate it signs itself.
+
+9
+00:00:36,720 --> 00:00:41,870
+Everything it keeps goes in one volume, so back that volume up.
+
+10
+00:00:41,920 --> 00:00:46,070
+Two settings go in a file named .env, beside it.
+
+11
+00:00:46,120 --> 00:00:48,910
+The image, with the release's version.
+
+12
+00:00:48,960 --> 00:00:53,470
+And the address your browser opens, with this machine's name.
+
+13
+00:00:53,520 --> 00:00:55,004
+Start it.
+
+14
+00:00:56,520 --> 00:01:00,497
+On its first start, smeltr creates an administrator,
+
+15
+00:01:00,497 --> 00:01:03,990
+and prints a one-time password in its logs.
+
+16
+00:01:04,040 --> 00:01:04,618
+Copy it.
+
+17
+00:01:04,618 --> 00:01:07,097
+It's shown only this once.
+
+18
+00:01:07,920 --> 00:01:10,150
+Open the leader at its address.
+
+19
+00:01:10,200 --> 00:01:11,602
+The browser warns you.
+
+20
+00:01:11,602 --> 00:01:17,030
+The leader signed its own certificate, and the browser doesn't know who signed it.
+
+21
+00:01:17,080 --> 00:01:19,994
+For this first sign-in, go on to the leader.
+
+22
+00:01:19,994 --> 00:01:23,910
+A later video sets up a certificate your browser trusts.
+
+23
+00:01:23,960 --> 00:01:28,157
+Sign in as admin, with the one-time password.
+
+24
+00:01:28,480 --> 00:01:32,126
+smeltr asks you to choose your own password.
+
+25
+00:01:35,080 --> 00:01:39,056
+Then sign in again, with your new password.
+
+26
+00:01:41,320 --> 00:01:43,165
+Status opens on the fleet.
+
+27
+00:01:43,165 --> 00:01:49,070
+The standalone worker group has one worker, and its check mark says it's online.
+
+28
+00:01:49,120 --> 00:01:52,087
+Running shows the commit the worker runs.
+
+29
+00:01:52,087 --> 00:01:55,910
+When you deploy a change, it moves to the new one.
+
+30
+00:01:55,960 --> 00:01:57,930
+Check on learning.
+
+31
+00:01:58,130 --> 00:02:03,678
+After the first start, where do you find the password for your first sign-in?
+
+32
+00:02:08,078 --> 00:02:11,591
+In the leader's logs, from its first start.
+
+33
+00:02:11,591 --> 00:02:13,906
+It's shown only once.
+
+34
+00:02:14,806 --> 00:02:18,567
+Next, you enroll a worker on another machine.

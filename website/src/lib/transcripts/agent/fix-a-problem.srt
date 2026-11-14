@@ -1,0 +1,67 @@
+1
+00:00:00,000 --> 00:00:09,150
+This video shows you how to have the agent fix a problem. Here, admin logins from the FortiGate reach Elasticsearch marked as network connections.
+
+2
+00:00:09,200 --> 00:00:15,521
+Describe the problem to the agent: what you see, what you want, and how it should find out.
+
+3
+00:00:31,280 --> 00:00:33,117
+Send.
+
+4
+00:00:34,760 --> 00:00:40,990
+It reads the deployed configuration, and finds the step that marks every record as a network connection.
+
+5
+00:00:41,040 --> 00:00:47,350
+It captures twenty records. Two are event logs: a configuration change and a system event.
+
+6
+00:00:47,400 --> 00:01:00,734
+On a new branch, it declares the fields it reads and adds a step for event logs. Admin logins become authentication, configuration changes become configuration, and other events become host events.
+
+7
+00:01:01,400 --> 00:01:12,240
+It saves the records as a sample on the branch, and runs its change over them. The capture has no admin login, so it makes up two, checks them, and deletes them.
+
+8
+00:01:14,920 --> 00:01:21,367
+It says what it changed, what it checked, what it left alone, and that nothing is deployed.
+
+9
+00:01:24,920 --> 00:01:30,343
+Look at the fix yourself before you deploy it. Open its branch, as in video 3.
+
+10
+00:01:35,440 --> 00:01:40,031
+Open the pipeline, and choose the sample the agent saved.
+
+11
+00:01:50,080 --> 00:01:57,724
+Filter the output for event logs, and open the configuration change. Its event category is now configuration.
+
+12
+00:02:04,400 --> 00:02:09,427
+Filter for traffic logs. They are still network connections.
+
+13
+00:02:16,000 --> 00:02:25,259
+Open the branch for review. The change shows the parser the agent changed and the step it added. Then click Approve and deploy.
+
+14
+00:02:44,920 --> 00:02:46,901
+Check on learning.
+
+15
+00:02:47,101 --> 00:02:52,087
+The agent says it fixed the problem. How do you confirm it?
+
+16
+00:02:56,487 --> 00:03:01,769
+Open its branch, and look at the problem records in the sample it saved.
+
+17
+00:03:02,669 --> 00:03:13,143
+That is the course. You can now turn on the agent, have it build, review and deploy its work, ask it about your fleet, and have it fix a problem.

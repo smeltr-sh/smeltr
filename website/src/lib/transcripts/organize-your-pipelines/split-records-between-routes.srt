@@ -1,0 +1,159 @@
+1
+00:00:02,300 --> 00:00:07,670
+This video shows you how to send some of a source's records through a pipeline of their own.
+
+2
+00:00:07,720 --> 00:00:10,316
+You're where Getting started ended.
+
+3
+00:00:10,316 --> 00:00:16,842
+One route sends every record from tutorial-in through tutorial-in-parse to tutorial-out.
+
+4
+00:00:16,842 --> 00:00:21,230
+The records come from two services, checkout and search.
+
+5
+00:00:21,280 --> 00:00:24,890
+Checkout records should get a pipeline of their own.
+
+6
+00:00:24,890 --> 00:00:27,190
+Add a route, from tutorial-in.
+
+7
+00:00:27,240 --> 00:00:31,182
+The card now draws every route that reads tutorial-in.
+
+8
+00:00:31,182 --> 00:00:34,030
+The new route sits beside the first.
+
+9
+00:00:34,080 --> 00:00:38,402
+Give the new route a condition, so it takes only checkout records.
+
+10
+00:00:38,402 --> 00:00:43,350
+A route's condition reads the raw record, before any pipeline parses it.
+
+11
+00:00:43,400 --> 00:00:46,578
+Make a new pipeline for it, and capture a sample.
+
+12
+00:00:46,578 --> 00:00:50,110
+The capture keeps only the records the route takes.
+
+13
+00:00:50,160 --> 00:00:53,884
+Start it, and stop it after a few records.
+
+14
+00:00:55,640 --> 00:01:00,354
+Save them as a sample called checkout, to check the routes with later.
+
+15
+00:01:00,354 --> 00:01:05,533
+A sample is saved on a branch, so make a new branch, checkout-route.
+
+16
+00:01:06,760 --> 00:01:09,605
+Call the pipeline checkout-parse.
+
+17
+00:01:09,605 --> 00:01:13,050
+smeltr reads each record as JSON.
+
+18
+00:01:14,880 --> 00:01:20,014
+Add an Eval step that labels these records smeltr.checkout.
+
+19
+00:01:28,480 --> 00:01:29,756
+Save the pipeline.
+
+20
+00:01:29,756 --> 00:01:31,870
+It goes on the same branch.
+
+21
+00:01:31,920 --> 00:01:37,670
+Back on the route, send checkout-parse to a new Kafka destination, checkout-out.
+
+22
+00:01:37,670 --> 00:01:41,073
+It writes to the topic smeltr-checkout.
+
+23
+00:01:50,080 --> 00:01:52,009
+Save the route.
+
+24
+00:01:52,880 --> 00:01:56,479
+Before you deploy, route the checkout sample.
+
+25
+00:02:03,320 --> 00:02:06,527
+Each checkout record goes to both destinations.
+
+26
+00:02:06,527 --> 00:02:07,960
+Routes have no order.
+
+27
+00:02:07,960 --> 00:02:11,372
+Every route whose condition matches a record runs,
+
+28
+00:02:11,372 --> 00:02:15,870
+and the first route has no condition, so it takes every record.
+
+29
+00:02:15,920 --> 00:02:18,903
+To send each record through only one pipeline,
+
+30
+00:02:18,903 --> 00:02:22,356
+give the first route the opposite condition.
+
+31
+00:02:26,240 --> 00:02:28,057
+Route the sample again.
+
+32
+00:02:28,057 --> 00:02:32,213
+Now checkout records go only to checkout-out.
+
+33
+00:02:33,200 --> 00:02:36,626
+Open the branch for review, and deploy it.
+
+34
+00:02:44,000 --> 00:02:45,864
+Check on learning.
+
+35
+00:02:46,064 --> 00:02:48,559
+Two routes match the same record.
+
+36
+00:02:48,559 --> 00:02:50,898
+Which pipeline runs it?
+
+37
+00:02:55,298 --> 00:02:55,669
+Both.
+
+38
+00:02:55,669 --> 00:02:57,228
+Routes have no order.
+
+39
+00:02:57,228 --> 00:03:04,213
+To send a record through only one, give the routes conditions that exclude each other.
+
+40
+00:03:05,113 --> 00:03:09,421
+Next, choose destinations by what a record holds.

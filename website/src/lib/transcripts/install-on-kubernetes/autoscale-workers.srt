@@ -1,0 +1,135 @@
+1
+00:00:02,300 --> 00:00:06,692
+This video shows you how to run workers that grow and shrink with load,
+
+2
+00:00:06,692 --> 00:00:09,790
+each pod enrolling itself when it starts.
+
+3
+00:00:09,840 --> 00:00:17,367
+Open a new file, smeltr-worker-ingest.yaml, and paste in the guide's autoscaled manifest.
+
+4
+00:00:22,240 --> 00:00:25,030
+These workers join the ingest group.
+
+5
+00:00:25,080 --> 00:00:29,015
+As before, change the leader's address to yours.
+
+6
+00:00:30,640 --> 00:00:33,562
+This secret holds the enrollment code.
+
+7
+00:00:33,562 --> 00:00:35,161
+Mint one now.
+
+8
+00:00:40,320 --> 00:00:43,940
+In Enrollment codes, add a code for the ingest group.
+
+9
+00:00:43,940 --> 00:00:46,950
+This time it brings in ephemeral workers.
+
+10
+00:00:47,000 --> 00:00:50,426
+The autoscaler starts and removes pods all the time.
+
+11
+00:00:50,426 --> 00:00:53,983
+The leader forgets an ephemeral worker once it's gone,
+
+12
+00:00:53,983 --> 00:00:57,390
+so removed pods don't pile up as silent workers.
+
+13
+00:00:57,440 --> 00:01:00,816
+The autoscaler decides how many pods there are,
+
+14
+00:01:00,816 --> 00:01:04,263
+so an ephemeral code has no limit and no expiry.
+
+15
+00:01:04,263 --> 00:01:06,490
+It works until you withdraw it.
+
+16
+00:01:06,490 --> 00:01:08,190
+Mint it, and copy it.
+
+17
+00:01:08,240 --> 00:01:12,672
+Back in the terminal, paste the ephemeral code into the secret.
+
+18
+00:01:14,760 --> 00:01:19,710
+The workers run as a deployment, so any pod can be replaced by another.
+
+19
+00:01:19,760 --> 00:01:26,136
+Name the image by the same digest as the leader's, read in from digest.txt.
+
+20
+00:01:27,600 --> 00:01:33,270
+Each pod keeps its identity in an empty dir, so it lives and dies with the pod.
+
+21
+00:01:33,320 --> 00:01:36,440
+The autoscaler keeps between two and twelve pods.
+
+22
+00:01:36,440 --> 00:01:41,790
+It adds pods when they average more than seventy percent of the CPU they request.
+
+23
+00:01:41,840 --> 00:01:43,750
+Save the file.
+
+24
+00:01:43,800 --> 00:01:44,574
+Apply it.
+
+25
+00:01:44,574 --> 00:01:49,903
+The code's secret stays: every new pod enrolls with it.
+
+26
+00:01:59,000 --> 00:02:03,750
+In Status, the ingest group has two workers, both online.
+
+27
+00:02:03,800 --> 00:02:07,198
+Delete one of the pods, as a scale-down would.
+
+28
+00:02:15,920 --> 00:02:21,040
+The stopped worker told the leader it was going, and the leader forgot it at once.
+
+29
+00:02:21,040 --> 00:02:23,550
+The new pod enrolled as a new worker.
+
+30
+00:02:23,600 --> 00:02:25,498
+Check on learning.
+
+31
+00:02:25,698 --> 00:02:30,805
+Why does the autoscaled manifest keep the enrollment code's secret?
+
+32
+00:02:35,205 --> 00:02:39,173
+Every new pod enrolls with it, as a new worker.
+
+33
+00:02:40,073 --> 00:02:42,016
+That's Install on Kubernetes.
+
+34
+00:02:42,016 --> 00:02:48,647
+You ran the leader, added a worker that keeps its identity, and autoscaled a worker group.

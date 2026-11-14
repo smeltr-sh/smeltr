@@ -1,0 +1,103 @@
+1
+00:00:02,300 --> 00:00:04,992
+This video shows you how to copy a pipeline,
+
+2
+00:00:04,992 --> 00:00:08,350
+and what it needs, from one leader to another.
+
+3
+00:00:08,400 --> 00:00:11,871
+A second leader, staging, has nothing built yet.
+
+4
+00:00:11,871 --> 00:00:14,470
+Copy the checkout pipeline to it.
+
+5
+00:00:14,520 --> 00:00:18,710
+On this leader, select Export on checkout-parse's row.
+
+6
+00:00:18,760 --> 00:00:23,728
+The export holds the pipeline, and the pipelines it calls.
+
+7
+00:00:23,728 --> 00:00:25,910
+Here, that's stamp-ecs.
+
+8
+00:00:25,960 --> 00:00:29,259
+Turn on Include routes, sources and destinations,
+
+9
+00:00:29,259 --> 00:00:33,190
+to take its route, and what the route reads and writes.
+
+10
+00:00:33,240 --> 00:00:34,489
+Download the file.
+
+11
+00:00:34,489 --> 00:00:39,110
+It names secrets and certificates, but never holds their values.
+
+12
+00:00:39,160 --> 00:00:44,190
+On staging, open Build, Pipelines, and select Import.
+
+13
+00:00:44,240 --> 00:00:47,386
+Import into Shared, and choose the file.
+
+14
+00:00:47,386 --> 00:00:51,290
+smeltr asks for a branch: import-checkout.
+
+15
+00:00:51,800 --> 00:00:53,720
+Each object is New here.
+
+16
+00:00:53,720 --> 00:00:56,959
+Untick any you want to leave out.
+
+17
+00:00:57,200 --> 00:00:57,842
+Import.
+
+18
+00:00:57,842 --> 00:01:01,102
+It's one save on your branch.
+
+19
+00:01:03,000 --> 00:01:06,350
+Review it, and deploy it, like any other change.
+
+20
+00:01:06,400 --> 00:01:08,251
+Check on learning.
+
+21
+00:01:08,451 --> 00:01:09,938
+You import a pipeline.
+
+22
+00:01:09,938 --> 00:01:13,377
+When do the workers on that leader run it?
+
+23
+00:01:17,777 --> 00:01:19,299
+Once you deploy it.
+
+24
+00:01:19,299 --> 00:01:23,262
+The import lands on a branch, as one save.
+
+25
+00:01:24,162 --> 00:01:25,449
+That's the course.
+
+26
+00:01:25,449 --> 00:01:30,698
+You can now split, deliver, share, group and move your pipelines.

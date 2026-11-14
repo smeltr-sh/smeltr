@@ -1,0 +1,123 @@
+1
+00:00:02,300 --> 00:00:05,970
+This video shows you how to put a reverse proxy in front of your leader,
+
+2
+00:00:05,970 --> 00:00:08,830
+so it serves your organization's certificate.
+
+3
+00:00:08,880 --> 00:00:12,171
+Your laptop trusts your organization's authority,
+
+4
+00:00:12,171 --> 00:00:15,230
+but not the leader's own, so Chrome warns.
+
+5
+00:00:15,280 --> 00:00:20,968
+On the leader's host, your organization's certificate and key are in the certs folder.
+
+6
+00:00:25,440 --> 00:00:26,774
+The proxy is Caddy.
+
+7
+00:00:26,774 --> 00:00:30,550
+It serves that certificate, and forwards to smeltr.
+
+8
+00:00:30,600 --> 00:00:32,391
+Add the proxy to compose.
+
+9
+00:00:32,391 --> 00:00:34,756
+The leader turns its own TLS off,
+
+10
+00:00:34,756 --> 00:00:39,350
+and no longer publishes a port, so only the proxy reaches it.
+
+11
+00:00:39,400 --> 00:00:40,971
+Start it.
+
+12
+00:00:44,000 --> 00:00:45,585
+Open smeltr again.
+
+13
+00:00:45,585 --> 00:00:47,610
+There's no warning now.
+
+14
+00:00:47,610 --> 00:00:48,914
+Sign in.
+
+15
+00:00:50,640 --> 00:00:55,070
+One worker has gone silent: the one on the other machine.
+
+16
+00:00:55,120 --> 00:00:57,760
+On the worker's host, its log says why.
+
+17
+00:00:57,760 --> 00:01:01,880
+It doesn't trust the certificate the proxy presents.
+
+18
+00:01:02,920 --> 00:01:08,044
+Start it again, giving it your organization's authority to verify the leader with.
+
+19
+00:01:08,044 --> 00:01:12,270
+Its state volume keeps its identity, so it doesn't enroll again.
+
+20
+00:01:12,320 --> 00:01:16,156
+Back in smeltr, both workers are online.
+
+21
+00:01:17,560 --> 00:01:19,340
+Check on learning.
+
+22
+00:01:19,540 --> 00:01:22,541
+The leader turned its own TLS off.
+
+23
+00:01:22,541 --> 00:01:25,083
+Why is that safe here?
+
+24
+00:01:29,483 --> 00:01:31,109
+It publishes no port,
+
+25
+00:01:31,109 --> 00:01:37,127
+so other machines reach it only through the proxy, which serves HTTPS.
+
+26
+00:01:38,027 --> 00:01:43,262
+Why did the second worker go silent, while the first stayed online?
+
+27
+00:01:47,662 --> 00:01:52,260
+It met the proxy's certificate, from an authority it didn't trust yet.
+
+28
+00:01:52,260 --> 00:01:56,670
+The first runs inside the leader, and reaches it directly.
+
+29
+00:01:57,570 --> 00:01:59,062
+That's Trusted HTTPS.
+
+30
+00:01:59,062 --> 00:02:01,904
+You trusted your leader's own authority,
+
+31
+00:02:01,904 --> 00:02:06,624
+ordered a certificate over ACME, and put a proxy in front.

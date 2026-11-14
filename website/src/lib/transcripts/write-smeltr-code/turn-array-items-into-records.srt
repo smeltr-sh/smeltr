@@ -1,0 +1,139 @@
+1
+00:00:02,300 --> 00:00:07,428
+This video shows you how to turn each item of an array into a record of its own,
+
+2
+00:00:07,428 --> 00:00:10,150
+with an Unroll step and with code.
+
+3
+00:00:10,200 --> 00:00:12,772
+Here's the pipeline from the last video.
+
+4
+00:00:12,772 --> 00:00:16,430
+Each of its three records holds an array of API calls.
+
+5
+00:00:16,480 --> 00:00:22,030
+To search or count the calls one by one, each call needs to be a record of its own.
+
+6
+00:00:22,080 --> 00:00:26,602
+Add an Unroll step, and name the array field: records.
+
+7
+00:00:29,120 --> 00:00:33,390
+Three records become seventeen: one for each call.
+
+8
+00:00:33,440 --> 00:00:37,750
+Each new record holds one call in records, and nothing else.
+
+9
+00:00:37,800 --> 00:00:42,029
+Turn on the switch "keep the parent record's fields on every element",
+
+10
+00:00:42,029 --> 00:00:44,868
+and each new record keeps the other fields too.
+
+11
+00:00:44,868 --> 00:00:48,350
+The six calls of the first record share its bytes_out.
+
+12
+00:00:48,400 --> 00:00:50,491
+Often you want only the call.
+
+13
+00:00:50,491 --> 00:00:52,550
+Turn the switch off again.
+
+14
+00:00:52,600 --> 00:00:55,365
+Each call still sits one level down,
+
+15
+00:00:55,365 --> 00:01:00,356
+inside records: its fields are named records.eventName and so on.
+
+16
+00:01:00,356 --> 00:01:03,505
+Add a Rename step from records to dollar.
+
+17
+00:01:03,505 --> 00:01:06,178
+Dollar is the whole record.
+
+18
+00:01:09,520 --> 00:01:11,521
+The call becomes the record.
+
+19
+00:01:11,521 --> 00:01:16,524
+Its fields are now the record's own: eventName, not records.eventName.
+
+20
+00:01:16,524 --> 00:01:22,070
+So later steps, and the destination, read each call as a record of its own.
+
+21
+00:01:22,120 --> 00:01:24,012
+A Code step does the same.
+
+22
+00:01:24,012 --> 00:01:27,359
+The unroll function makes one record per item.
+
+23
+00:01:27,359 --> 00:01:32,306
+Its second argument is the same switch: false keeps no other fields.
+
+24
+00:01:32,306 --> 00:01:37,470
+Then $ = records makes the call the whole record, as the Rename did.
+
+25
+00:01:37,520 --> 00:01:42,285
+The result is the same: seventeen records, each one call.
+
+26
+00:01:44,840 --> 00:01:49,830
+The fields you named keep their types: eventName and errorCode are strings.
+
+27
+00:01:49,880 --> 00:01:51,347
+Save.
+
+28
+00:01:54,280 --> 00:01:56,491
+Check on learning.
+
+29
+00:01:56,691 --> 00:01:59,625
+A record's array holds six items.
+
+30
+00:01:59,625 --> 00:02:03,071
+What does unroll with true give?
+
+31
+00:02:07,471 --> 00:02:13,718
+Six records, each holding one item, and each keeping the record's other fields.
+
+32
+00:02:14,618 --> 00:02:17,977
+How do you make an item the whole record?
+
+33
+00:02:22,377 --> 00:02:26,038
+Rename records to dollar with a Rename step,
+
+34
+00:02:26,038 --> 00:02:30,798
+or assign it to dollar in code, as in $ = records.
+
+35
+00:02:31,698 --> 00:02:34,559
+You've finished Write smeltr code.

@@ -1,0 +1,127 @@
+1
+00:00:02,300 --> 00:00:06,866
+This video shows you how to work with the items of an array: keep some,
+
+2
+00:00:06,866 --> 00:00:09,270
+change them, and add them up.
+
+3
+00:00:09,320 --> 00:00:12,480
+This pipeline reads AWS CloudTrail.
+
+4
+00:00:12,480 --> 00:00:16,150
+Its Parser step reads each record.
+
+5
+00:00:16,920 --> 00:00:21,310
+One record holds an array of API calls, in Records.
+
+6
+00:00:21,360 --> 00:00:22,621
+Add a Code step.
+
+7
+00:00:22,621 --> 00:00:26,372
+Records is a variant, so give it a type.
+
+8
+00:00:27,040 --> 00:00:29,064
+It's an array of objects.
+
+9
+00:00:29,064 --> 00:00:34,430
+Name the fields you use: eventName and errorCode are strings.
+
+10
+00:00:34,480 --> 00:00:39,481
+filter keeps the items for which your function is true.
+
+11
+00:00:39,481 --> 00:00:43,391
+In r => r.errorCode != null, r is one call.
+
+12
+00:00:43,391 --> 00:00:48,310
+Keep the calls that failed: those with an errorCode.
+
+13
+00:00:48,360 --> 00:00:52,190
+This record has six calls, and one failed.
+
+14
+00:00:52,240 --> 00:00:55,936
+map replaces each item with your function's value.
+
+15
+00:00:55,936 --> 00:00:59,190
+Keep only the name of each failed call.
+
+16
+00:00:59,240 --> 00:01:01,857
+Now failed is an array of names.
+
+17
+00:01:01,857 --> 00:01:06,390
+Records is unchanged: filter and map give new arrays.
+
+18
+00:01:06,440 --> 00:01:10,420
+For a total, visit each call with for...of.
+
+19
+00:01:10,420 --> 00:01:13,334
+Add up the bytes S3 sent.
+
+20
+00:01:17,360 --> 00:01:20,583
+Name the byte count in the type too.
+
+21
+00:01:23,920 --> 00:01:26,458
+Only calls to S3 have a byte count.
+
+22
+00:01:26,458 --> 00:01:29,950
+For the others, two question marks give zero.
+
+23
+00:01:30,000 --> 00:01:33,310
+bytes_out is the total for each record.
+
+24
+00:01:33,600 --> 00:01:35,112
+Save.
+
+25
+00:01:37,920 --> 00:01:40,121
+Check on learning.
+
+26
+00:01:40,321 --> 00:01:42,989
+What does filter give?
+
+27
+00:01:47,389 --> 00:01:51,465
+A new array of the items for which its expression is true.
+
+28
+00:01:51,465 --> 00:01:54,314
+The original array is unchanged.
+
+29
+00:01:55,214 --> 00:01:57,390
+No function adds up an array.
+
+30
+00:01:57,390 --> 00:02:00,992
+How do you total a value over its items?
+
+31
+00:02:05,392 --> 00:02:10,389
+Visit each item with for...of, and add its value to a total.
+
+32
+00:02:11,289 --> 00:02:15,207
+Next, you turn array items into records.

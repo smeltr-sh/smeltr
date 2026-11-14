@@ -1,0 +1,159 @@
+1
+00:00:02,300 --> 00:00:05,846
+This video shows you how to get a certificate from Let's Encrypt,
+
+2
+00:00:05,846 --> 00:00:09,070
+so your browser trusts your leader with no setup.
+
+3
+00:00:09,120 --> 00:00:13,900
+Your leader runs its own worker, which reaches it at 127.0.0.1.
+
+4
+00:00:13,900 --> 00:00:18,224
+Let's Encrypt won't issue a certificate for that address,
+
+5
+00:00:18,224 --> 00:00:22,150
+and the leader refuses one that doesn't cover it.
+
+6
+00:00:22,200 --> 00:00:25,683
+So tell that worker to use your leader's name.
+
+7
+00:00:25,683 --> 00:00:29,830
+Add SMELTR_LEADER_URL, set to your leader's address.
+
+8
+00:00:29,880 --> 00:00:32,405
+Then restart the leader.
+
+9
+00:00:35,280 --> 00:00:39,270
+Chrome warns, because your leader signed its own certificate.
+
+10
+00:00:39,320 --> 00:00:43,222
+Go past the warning one last time, and sign in.
+
+11
+00:00:49,160 --> 00:00:53,380
+In Admin, open System, then Leader certificate.
+
+12
+00:00:53,380 --> 00:00:56,315
+Under Source, choose ACME.
+
+13
+00:01:00,280 --> 00:01:02,641
+The directory is Let's Encrypt.
+
+14
+00:01:02,641 --> 00:01:08,110
+For another authority, choose Other, and enter its directory URL.
+
+15
+00:01:08,160 --> 00:01:10,750
+Names holds your leader's name.
+
+16
+00:01:10,800 --> 00:01:14,952
+Enter a contact email, and agree to the terms of service.
+
+17
+00:01:15,080 --> 00:01:22,269
+Under Advanced, Challenge picks how Let's Encrypt checks that the name is yours.
+
+18
+00:01:22,269 --> 00:01:27,750
+With TLS-ALPN-01, port 443 on the name must reach the leader.
+
+19
+00:01:27,750 --> 00:01:31,190
+With HTTP-01, port 80 must reach it.
+
+20
+00:01:31,240 --> 00:01:34,748
+With DNS-01, the leader proves it with a DNS record,
+
+21
+00:01:34,748 --> 00:01:38,510
+so nothing has to reach the leader from the internet.
+
+22
+00:01:38,560 --> 00:01:41,974
+The leader publishes that record through Cloudflare.
+
+23
+00:01:41,974 --> 00:01:46,670
+Paste an API token that can read your zone and edit its DNS records.
+
+24
+00:01:46,720 --> 00:01:48,990
+Select Get certificate.
+
+25
+00:01:49,080 --> 00:01:50,720
+The page shows each step.
+
+26
+00:01:50,720 --> 00:01:53,673
+The leader adds the DNS record in Cloudflare,
+
+27
+00:01:53,673 --> 00:01:57,488
+and waits for the zone's nameservers to serve it.
+
+28
+00:02:02,880 --> 00:02:07,830
+Then Let's Encrypt checks the names, and the leader installs the certificate.
+
+29
+00:02:07,880 --> 00:02:13,210
+It comes from a new authority, so the leader hands that authority to your workers first.
+
+30
+00:02:13,210 --> 00:02:17,230
+Once they all hold it, the leader serves the new certificate.
+
+31
+00:02:17,280 --> 00:02:19,563
+The leader renews it on its own.
+
+32
+00:02:19,563 --> 00:02:21,230
+The page shows when.
+
+33
+00:02:21,280 --> 00:02:23,910
+Open smeltr in a new browser window.
+
+34
+00:02:23,960 --> 00:02:27,608
+There's no warning this time, and nothing to install.
+
+35
+00:02:28,400 --> 00:02:30,218
+Check on learning.
+
+36
+00:02:30,418 --> 00:02:33,258
+Your leader is on a private network.
+
+37
+00:02:33,258 --> 00:02:37,565
+Why can it still get a certificate with DNS-01?
+
+38
+00:02:41,965 --> 00:02:46,321
+Let's Encrypt checks a DNS record in your domain, not the leader.
+
+39
+00:02:46,321 --> 00:02:49,065
+Nothing has to reach the leader.
+
+40
+00:02:49,965 --> 00:02:54,039
+Next, you put a reverse proxy in front of your leader.

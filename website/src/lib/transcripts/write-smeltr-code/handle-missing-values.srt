@@ -1,0 +1,123 @@
+1
+00:00:02,300 --> 00:00:06,670
+This video shows you how to handle values that are missing from a record.
+
+2
+00:00:06,720 --> 00:00:09,344
+Here's the Code step from the last video.
+
+3
+00:00:09,344 --> 00:00:13,030
+It reads each log line into the field app, with types.
+
+4
+00:00:13,080 --> 00:00:15,414
+Not every line has every field.
+
+5
+00:00:15,414 --> 00:00:21,790
+This one is background work, with no request, so it has no status and no duration.
+
+6
+00:00:21,840 --> 00:00:25,070
+A field a record lacks reads as null.
+
+7
+00:00:25,120 --> 00:00:30,457
+Now mark each request as a success or a failure, with a ternary: a condition,
+
+8
+00:00:30,457 --> 00:00:36,190
+a value for true after the question mark, and a value for false after the colon.
+
+9
+00:00:36,240 --> 00:00:40,790
+But this record made no request, and it says success.
+
+10
+00:00:40,840 --> 00:00:45,679
+A comparison such as greater than is false when one side is null.
+
+11
+00:00:45,679 --> 00:00:49,310
+So the ternary took the value after the colon.
+
+12
+00:00:49,360 --> 00:00:53,190
+Set outcome only where there is a status.
+
+13
+00:00:53,240 --> 00:00:58,075
+Now this record has no outcome, and the requests keep theirs.
+
+14
+00:01:02,240 --> 00:01:04,681
+Every record needs a message.
+
+15
+00:01:04,681 --> 00:01:10,030
+Take app.msg, or the whole line for a record that has no msg.
+
+16
+00:01:10,080 --> 00:01:13,390
+Two question marks give a fallback for null.
+
+17
+00:01:13,440 --> 00:01:18,569
+The stack trace has no app, so its message is the line itself.
+
+18
+00:01:19,040 --> 00:01:22,828
+Its text is now in message and in app's fields.
+
+19
+00:01:22,828 --> 00:01:26,248
+Writing null to a field removes it.
+
+20
+00:01:26,840 --> 00:01:28,353
+Save.
+
+21
+00:01:30,960 --> 00:01:33,101
+Check on learning.
+
+22
+00:01:33,301 --> 00:01:36,513
+A record has no status.
+
+23
+00:01:36,513 --> 00:01:40,564
+What does app.status >= 400 ?
+
+24
+00:01:40,564 --> 00:01:44,935
+"failure" : "success" give?
+
+25
+00:01:49,335 --> 00:01:49,913
+success.
+
+26
+00:01:49,913 --> 00:01:53,236
+The comparison is false when one side is null,
+
+27
+00:01:53,236 --> 00:01:57,232
+so the ternary takes the value after the colon.
+
+28
+00:01:58,132 --> 00:02:02,030
+How do you give a fallback for a value that is null?
+
+29
+00:02:06,430 --> 00:02:12,162
+With two question marks, as in app.msg ??
+
+30
+00:02:12,162 --> 00:02:13,321
+log.
+
+31
+00:02:14,221 --> 00:02:17,979
+Next, you catch bad data with try.

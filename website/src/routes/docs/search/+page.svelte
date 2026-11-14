@@ -2,16 +2,7 @@
   import { browser, dev } from '$app/env';
   import { page } from '$app/state';
   import DocsLayout from '#lib/components/DocsLayout.svelte';
-
-  type SectionResult = { title: string; url: string; excerpt: string };
-  type Result = {
-    url: string;
-    meta: { title: string };
-    excerpt: string;
-    sub_results: SectionResult[];
-  };
-  type Search = { results: { id: string; data: () => Promise<Result> }[] };
-  type Pagefind = { search: (query: string) => Promise<Search> };
+  import { search, type Result } from '#lib/pagefind.ts';
 
   let query = $derived(browser ? (page.url.searchParams.get('q') ?? '').trim() : '');
   let results = $state<Result[]>([]);
@@ -30,13 +21,9 @@
     failed = false;
     loading = !!term;
     if (term) {
-      // Pagefind writes this module after prerendering. It must remain a runtime import.
-      const bundle = '/pagefind/pagefind.js';
       void (async () => {
         try {
-          const pagefind: Pagefind = await import(/* @vite-ignore */ bundle);
-          const search = await pagefind.search(term);
-          const matches = await Promise.all(search.results.map((result) => result.data()));
+          const matches = await search(term, 'docs');
           if (!canceled) results = matches;
         } catch {
           if (!canceled) failed = true;
@@ -149,11 +136,6 @@
   }
   .excerpt {
     overflow-wrap: anywhere;
-  }
-  .excerpt :global(mark) {
-    background: var(--panel);
-    color: var(--ink);
-    font-weight: 600;
   }
   .sub-results {
     padding-left: 1.25rem;

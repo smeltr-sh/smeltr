@@ -1,0 +1,175 @@
+1
+00:00:02,300 --> 00:00:05,409
+This video shows you how to review a teammate's change,
+
+2
+00:00:05,409 --> 00:00:08,270
+ask for what it's missing, and deploy it.
+
+3
+00:00:08,320 --> 00:00:09,604
+Here's Sam's browser.
+
+4
+00:00:09,604 --> 00:00:14,058
+Sam wants the pipeline to drop records from the search service.
+
+5
+00:00:15,200 --> 00:00:17,490
+Sam needs records to try it on.
+
+6
+00:00:17,490 --> 00:00:21,183
+Add a sample and capture from the earliest record.
+
+7
+00:00:21,183 --> 00:00:23,334
+Three records arrive.
+
+8
+00:00:30,680 --> 00:00:35,150
+Sam stops the capture and uses these records, without saving them.
+
+9
+00:00:35,200 --> 00:00:40,478
+Sam adds a Drop step, and drops each record whose service is search.
+
+10
+00:00:44,480 --> 00:00:47,430
+The preview strikes out the search record.
+
+11
+00:00:47,480 --> 00:00:51,189
+Sam saves the pipeline, on a branch of its own.
+
+12
+00:00:54,720 --> 00:00:56,417
+Then opens it for review.
+
+13
+00:00:56,417 --> 00:01:01,089
+smeltr fills in the title and description from what changed.
+
+14
+00:01:06,400 --> 00:01:10,251
+Sam is an editor, so Approve and deploy stays off.
+
+15
+00:01:10,251 --> 00:01:13,710
+Deploying this takes a deployer in shared.
+
+16
+00:01:13,760 --> 00:01:17,468
+In your browser, Branches lists Sam's change.
+
+17
+00:01:17,468 --> 00:01:18,727
+Open it.
+
+18
+00:01:19,960 --> 00:01:25,550
+It changes one thing: it adds a Drop step to the pipeline tutorial-in-parse.
+
+19
+00:01:25,600 --> 00:01:27,710
+But no test covers it.
+
+20
+00:01:27,760 --> 00:01:28,765
+Ask for one.
+
+21
+00:01:28,765 --> 00:01:33,048
+Say why, choose Request changes, and submit.
+
+22
+00:01:36,600 --> 00:01:39,651
+Sam sees your request on the change.
+
+23
+00:01:41,120 --> 00:01:43,267
+A test needs a saved sample.
+
+24
+00:01:43,267 --> 00:01:49,466
+So in the pipeline, Sam saves the records as the sample tutorial-records.
+
+25
+00:02:01,600 --> 00:02:04,194
+A test checks only what's on screen.
+
+26
+00:02:04,194 --> 00:02:09,261
+Sam shows just the service field, which says what got through.
+
+27
+00:02:12,960 --> 00:02:19,079
+Lock this as a test shows what it will check: checkout, dropped, checkout.
+
+28
+00:02:19,079 --> 00:02:21,829
+Sam names it and locks it.
+
+29
+00:02:22,640 --> 00:02:24,852
+Then Sam renames the dataset.
+
+30
+00:02:24,852 --> 00:02:28,045
+The test doesn't check that field.
+
+31
+00:02:35,400 --> 00:02:40,630
+Back on your view of the change, the test still passes after Sam's last edit.
+
+32
+00:02:40,680 --> 00:02:46,270
+Open Tests to read what it checks: the service field, on three rows.
+
+33
+00:02:46,320 --> 00:02:47,274
+It's ready.
+
+34
+00:02:47,274 --> 00:02:49,781
+Approve and deploy it.
+
+35
+00:02:53,680 --> 00:02:58,397
+History names Sam as the author, and you as the deployer.
+
+36
+00:03:03,960 --> 00:03:05,781
+Check on learning.
+
+37
+00:03:05,981 --> 00:03:08,509
+Sam opened a change to shared.
+
+38
+00:03:08,509 --> 00:03:10,626
+Who can deploy it?
+
+39
+00:03:15,026 --> 00:03:18,929
+A deployer in shared, or an administrator.
+
+40
+00:03:18,929 --> 00:03:21,573
+Sam, an editor, can't.
+
+41
+00:03:22,473 --> 00:03:24,949
+You wanted a test before deploying.
+
+42
+00:03:24,949 --> 00:03:27,176
+How did you ask for it?
+
+43
+00:03:31,576 --> 00:03:35,945
+With Request changes, and a comment that says why.
+
+44
+00:03:36,845 --> 00:03:40,919
+Next, you connect smeltr to a GitHub repository.
