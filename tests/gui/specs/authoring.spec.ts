@@ -1702,6 +1702,13 @@ test('◎ pauses the records after a step', async ({ admin, leader, api }) => {
   await expect(paused).toBeHidden();
   await expect(dropped).toHaveClass(/dropped/);
   await expect(lock).toBeEnabled();
+
+  // The lock page runs the saved pipeline, so an unsaved edit holds the lock back.
+  await admin.locator('#pipeline-name').fill('renamed');
+  await expect(lock).toBeDisabled();
+  await expect(lock).toHaveAccessibleDescription('Save or discard your changes first.');
+  await admin.getByRole('button', { name: 'Discard' }).click();
+  await expect(lock).toBeEnabled();
 });
 
 // A3, which step did it. Once typing settles, a field carries the sign of the step that last touched it, held it
