@@ -4240,14 +4240,19 @@ export function lowerSourceRows(
 /** One span of a source's past year, and whether its normal learns from it (`throughput::PastSpan`). */
 export type PastSpan = { fromMillis: number; toMillis: number; learned: boolean };
 
+/** How soon a source, or its senders, warns of a drop against how often of a dip that is not one
+ * (`throughput::Preset`). */
+export type Preset = 'fast' | 'sensitive' | 'balanced' | 'quiet';
+
 /** What a source did over the past year that an editor may say was normal or an outage
  * (`throughput::Past`): its Rows below normal warnings that ended, newest first, and its longest
- * quiet spells, longest first. */
+ * quiet spells, longest first; and the preset it is judged at. */
 export type SourcePastResponse = {
   ok: boolean;
   errors: ApiError[];
   warnings: PastSpan[];
   silences: PastSpan[];
+  preset: Preset;
 };
 
 export function getSourcePast(group: string, source: string): Promise<SourcePastResponse> {
@@ -4265,6 +4270,18 @@ export function markSourcePast(
   return apiJson(
     inArea(`/sources/${encodeURIComponent(source)}/mark`, group),
     json('POST', { fromMillis: span.fromMillis, toMillis: span.toMillis, was }),
+  );
+}
+
+/** Picks the preset `group`'s `source` is judged at. */
+export function putSourcePreset(
+  group: string,
+  source: string,
+  preset: Preset,
+): Promise<{ ok: boolean; errors: ApiError[] }> {
+  return apiJson(
+    inArea(`/sources/${encodeURIComponent(source)}/preset`, group),
+    json('PUT', { preset }),
   );
 }
 
@@ -4305,6 +4322,8 @@ export type SourceSendersResponse = {
   errors: ApiError[];
   fields: FieldNowDto[];
   watchesNew: boolean;
+  /** The preset its senders are judged at. */
+  preset: Preset;
 };
 
 export function getSourceSenders(group: string, source: string): Promise<SourceSendersResponse> {
@@ -4320,6 +4339,18 @@ export function lowerSender(
   return apiJson(
     inArea(`/sources/${encodeURIComponent(source)}/senders/lower`, group),
     json('POST', sender),
+  );
+}
+
+/** Picks the preset `group`'s `source`'s senders are judged at. */
+export function putSendersPreset(
+  group: string,
+  source: string,
+  preset: Preset,
+): Promise<{ ok: boolean; errors: ApiError[] }> {
+  return apiJson(
+    inArea(`/sources/${encodeURIComponent(source)}/senders/preset`, group),
+    json('PUT', { preset }),
   );
 }
 

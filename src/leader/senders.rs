@@ -24,10 +24,10 @@ use serde::{Deserialize, Serialize};
 
 use super::AppState;
 use super::envelope::Envelope;
-use super::marks::Marks;
+use super::marks::{self, Marks};
 use super::series::{RegistryStore, Tier};
 use super::store::StoreError;
-use super::throughput::{self, ExpectedPoint, Learned, Outside, Reading};
+use super::throughput::{self, ExpectedPoint, Learned, Outside, Preset, Reading};
 use super::warnings;
 use crate::heartbeat::SenderCounts;
 
@@ -407,14 +407,18 @@ pub struct SourceSenders {
     pub fields: Vec<FieldNow>,
     /// A field that comes later is watched, until an editor says not (`marks::SourceFields::locked`).
     pub watches_new: bool,
+    /// The preset its senders are judged at (`marks::Picked`).
+    pub preset: Preset,
 }
 
 impl Default for SourceSenders {
-    /// No fields, and new ones watched, as for a source nobody edited.
+    /// No fields, new ones watched and the preset senders have until an editor picks another, as for a source nobody
+    /// edited.
     fn default() -> Self {
         SourceSenders {
             fields: Vec::new(),
             watches_new: true,
+            preset: Preset::SENDERS,
         }
     }
 }
@@ -464,10 +468,13 @@ pub async fn get(
     let interval = crate::startup_config::leader_heartbeat_interval();
     let readings = throughput::readings(&state, now_ms, interval, false).await;
     super::blocking_answer(move || {
-        let Some(store) = state.registry.series() else {
-            return Envelope::ok(SourceSenders::default());
-        };
         let marks = Marks::read(&state.store);
+        let Some(store) = state.registry.series() else {
+            return Envelope::ok(SourceSenders {
+                preset: marks::picked(&marks.presets, &group, &source, true),
+                ..SourceSenders::default()
+            });
+        };
         let learned = state.throughput.learned();
         let at = Now {
             store,
@@ -579,6 +586,7 @@ impl Now<'_> {
         Ok(SourceSenders {
             fields,
             watches_new: edited.locked.is_none(),
+            preset: marks::picked(&marks.presets, group, source, true),
         })
     }
 

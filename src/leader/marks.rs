@@ -1,6 +1,7 @@
 //! What an editor said about a source, as marks: lower the warning on its rows that holds to info; reset its history,
-//! so its normal is learned again from now; say a past period of it was normal or an outage (`throughput`); and say
-//! which of its fields name its senders, and lower a sender's warning to info (`senders`).
+//! so its normal is learned again from now; say a past period of it was normal or an outage (`throughput`); pick the
+//! preset it is judged at, and the one its senders are; and say which of its fields name its senders, and lower a
+//! sender's warning to info (`senders`).
 //!
 //! A lowered warning stays on the Issues page for everyone, marked as info, and the views that judge health leave
 //! it out. It is named by when it began, so it stays lowered until it ends, and the next one is a warning again.
@@ -23,7 +24,7 @@ use super::envelope::{Empty, Envelope, Refusal};
 use super::senders::Sender;
 use super::series::YEAR_MS;
 use super::store::{Actor, Store};
-use super::throughput::{self, Learning};
+use super::throughput::{self, Learning, Preset};
 use super::warnings::{self, Condition, SubjectKind};
 use crate::heartbeat::SenderFields;
 
@@ -42,6 +43,8 @@ pub struct Marks {
     pub periods: Vec<Period>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<SourceFields>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub presets: Vec<Picked>,
 }
 
 /// A source's rows warning that began at `since_millis`, or one of its sender's, lowered to info by `by`.
@@ -90,6 +93,30 @@ impl SourceFields {
     fn unchecked(&self, field: &str) -> bool {
         self.edits.unchecked.iter().any(|f| f == field)
     }
+}
+
+/// The preset `by` picked for a source, or for its `senders`. Only one other than the default is kept.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Picked {
+    pub group: String,
+    pub source: String,
+    pub senders: bool,
+    pub preset: Preset,
+    pub by: String,
+}
+
+/// The preset `group`'s `source`, or its `senders`, is judged at, as `presets` were picked.
+pub fn picked(presets: &[Picked], group: &str, source: &str, senders: bool) -> Preset {
+    presets
+        .iter()
+        .find(|p| p.group == group && p.source == source && p.senders == senders)
+        .map_or(unpicked(senders), |p| p.preset)
+}
+
+/// The preset of a source, or of its `senders`, until an editor picks another.
+fn unpicked(senders: bool) -> Preset {
+    if senders { Preset::SENDERS } else { Preset::ROWS }
 }
 
 /// A source whose normal `by` said to learn again from `from_millis` on.
@@ -413,6 +440,66 @@ pub async fn reset_history(
         .await
 }
 
+/// A preset to pick.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Picking {
+    pub preset: Preset,
+}
+
+/// `PUT /api/areas/:area/sources/:id/preset`: picks the preset the source is judged at.
+pub async fn put_preset(
+    State(state): State<AppState>,
+    actor: Option<axum::Extension<Actor>>,
+    Path((group, source)): Path<(String, String)>,
+    Json(picking): Json<Picking>,
+) -> Envelope<Empty> {
+    let marking = Marking {
+        group,
+        source,
+        sender: None,
+        action: "source-rows-preset",
+    };
+    marking.write(state, actor, pick(picking.preset, false)).await
+}
+
+/// `PUT /api/areas/:area/sources/:id/senders/preset`: picks the preset the source's senders are judged at.
+pub async fn put_senders_preset(
+    State(state): State<AppState>,
+    actor: Option<axum::Extension<Actor>>,
+    Path((group, source)): Path<(String, String)>,
+    Json(picking): Json<Picking>,
+) -> Envelope<Empty> {
+    let marking = Marking {
+        group,
+        source,
+        sender: None,
+        action: "sender-rows-preset",
+    };
+    marking.write(state, actor, pick(picking.preset, true)).await
+}
+
+/// Picks `preset` for what is marked, or for its `senders`, in place of the one picked before.
+fn pick(
+    preset: Preset,
+    senders: bool,
+) -> impl FnOnce(&mut Marks, &Marking, Option<i64>, &Actor, i64) -> Result<(), Refusal> + Send + 'static {
+    move |marks, m, _, actor, _| {
+        marks
+            .presets
+            .retain(|p| (&p.group, &p.source, p.senders) != (&m.group, &m.source, senders));
+        if preset != unpicked(senders) {
+            marks.presets.push(Picked {
+                group: m.group.clone(),
+                source: m.source.clone(),
+                senders,
+                preset,
+                by: actor.display_name.clone(),
+            });
+        }
+        Ok(())
+    }
+}
+
 /// A past period of a source, and what to mark it.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -480,10 +567,13 @@ pub async fn past(
     Path((group, source)): Path<(String, String)>,
 ) -> Envelope<throughput::Past> {
     super::blocking_answer(move || {
-        let Some(store) = state.registry.series() else {
-            return Envelope::ok(throughput::Past::default());
-        };
         let learning = Learning::read(&state.store);
+        let Some(store) = state.registry.series() else {
+            return Envelope::ok(throughput::Past {
+                preset: learning.preset(&group, &source),
+                ..throughput::Past::default()
+            });
+        };
         throughput::past(store, &group, &source, warnings::now_millis(), &learning).into()
     })
     .await
@@ -560,6 +650,31 @@ mod tests {
         assert!(!fields.watches("user") && fields.is_new("user"));
         let open = SourceFields { locked: None, ..fields };
         assert!(open.watches("user") && !open.is_new("user"));
+    }
+
+    /// A preset picked replaces the one picked before, and the default is not kept. A source's and its senders' are
+    /// each their own.
+    #[test]
+    fn a_picked_preset_replaces_the_one_before_and_the_default_is_not_kept() {
+        let mut marks = Marks::default();
+        let m = Marking {
+            group: "g".into(),
+            source: "s".into(),
+            sender: None,
+            action: "source-rows-preset",
+        };
+        let mut at = |preset, senders| pick(preset, senders)(&mut marks, &m, None, &Actor::system(), 0).unwrap();
+        at(Preset::Fast, false);
+        at(Preset::Quiet, false);
+        at(Preset::Sensitive, true);
+        assert_eq!(picked(&marks.presets, "g", "s", false), Preset::Quiet);
+        assert_eq!(picked(&marks.presets, "g", "s", true), Preset::Sensitive);
+        assert_eq!(picked(&marks.presets, "g", "other", false), Preset::ROWS);
+        assert_eq!(picked(&marks.presets, "g", "other", true), Preset::SENDERS);
+        let mut at = |preset, senders| pick(preset, senders)(&mut marks, &m, None, &Actor::system(), 0).unwrap();
+        at(Preset::ROWS, false);
+        at(Preset::SENDERS, true);
+        assert_eq!(marks.presets, []);
     }
 
     #[test]

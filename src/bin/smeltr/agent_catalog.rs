@@ -727,13 +727,13 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/areas/:area/sources/:id/past",
-        what: "The source's Rows below normal warnings that ended in the past year, newest first, and its longest quiet spells of the year, longest first; each with whether its normal learns from it. The area is the source's worker group. No query.",
+        what: "The source's Rows below normal warnings that ended in the past year, newest first, and its longest quiet spells of the year, longest first; each with whether its normal learns from it; and the preset it is judged at. The area is the source's worker group. No query.",
         body: "",
     },
     Route {
         method: "GET",
         path: "/api/areas/:area/sources/:id/senders",
-        what: "The source's sender fields: each field with whether it is watched, what was learned of it, and its senders, each with its rows per second over the last day, its expected range and whether it is below normal. The area is the source's worker group. No query.",
+        what: "The source's sender fields: each field with whether it is watched, what was learned of it, and its senders, each with its rows per second over the last day, its expected range and whether it is below normal; and the preset its senders are judged at. The area is the source's worker group. No query.",
         body: "",
     },
     Route {
@@ -753,6 +753,18 @@ pub const CATALOG: &[Route] = &[
         path: "/api/areas/:area/sources/:id/mark",
         what: "Say a past period of the source was normal, so its normal learns from it though it warned, or an outage, so its normal does not though it did not warn. Replaces what was said about that same period. The area is the source's worker group. No query.",
         body: "{ fromMillis: number, toMillis: number, was: 'normal' | 'outage' }",
+    },
+    Route {
+        method: "PUT",
+        path: "/api/areas/:area/sources/:id/preset",
+        what: "Pick the preset at which the source's rows are judged against their normal, balanced until one is picked. A faster preset sees a stop sooner and warns on more dips: a stop is seen in about 5 minutes at fast, 15 at sensitive, 20 at balanced and 30 at quiet. The area is the source's worker group. No query.",
+        body: "{ preset: 'fast' | 'sensitive' | 'balanced' | 'quiet' }",
+    },
+    Route {
+        method: "PUT",
+        path: "/api/areas/:area/sources/:id/senders/preset",
+        what: "Pick the preset at which the source's senders are judged against their normals, quiet until one is picked. The presets are the same four as the source's own. The area is the source's worker group. No query.",
+        body: "{ preset: 'fast' | 'sensitive' | 'balanced' | 'quiet' }",
     },
     Route {
         method: "GET",
