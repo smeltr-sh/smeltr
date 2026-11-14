@@ -473,9 +473,9 @@ pub fn parse_epoch_digits(text: &str) -> Option<i64> {
     }
 }
 
-/// Whether every `%` in `fmt` opens a specifier `parse_with_format_at` takes, and an epoch specifier stands alone.
-/// `Err` names the first one that does not, so a format can be refused where it is written rather than fail every
-/// row.
+/// Checks `fmt` before any row is read: it must hold a specifier, each `%` in it must open one that
+/// `parse_with_format_at` takes, and an epoch specifier must be the whole format. `Err` names the first check that
+/// fails, so a format is refused where it is written, not failed on every row.
 pub fn check_format(fmt: &str) -> Result<(), String> {
     let mut chars = fmt.chars();
     let mut whole: Option<String> = None;
@@ -500,6 +500,9 @@ pub fn check_format(fmt: &str) -> Result<(), String> {
     }
     match whole {
         Some(spec) if fields > 1 => Err(format!("`{spec}` names the whole instant and takes no other specifier")),
+        _ if fields == 0 => Err(
+            r#"it has no specifier, so it reads no time; to detect the format, write the bare "datetime""#.to_string(),
+        ),
         _ => Ok(()),
     }
 }
@@ -780,7 +783,13 @@ mod tests {
         assert_eq!(check_format("ts=%s"), Ok(()));
         assert_eq!(check_format("%Q%%"), Ok(()));
         assert!(check_format("%Y-%m-%d %").unwrap_err().contains("trailing"));
-        assert_eq!(check_format("no specifiers at all"), Ok(()));
+        assert!(check_format("").unwrap_err().contains(r#"bare "datetime""#));
+        assert!(
+            check_format("no specifiers at all")
+                .unwrap_err()
+                .contains("no specifier")
+        );
+        assert!(check_format("%%").unwrap_err().contains("no specifier"));
     }
 
     #[test]
