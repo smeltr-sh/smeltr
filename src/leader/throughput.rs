@@ -133,12 +133,26 @@ pub enum Preset {
     Quiet,
 }
 
+/// The preset a source is judged at, and the one its senders are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Presets {
+    pub rows: Preset,
+    pub senders: Preset,
+}
+
+impl Default for Presets {
+    /// Until an editor picks others. Each sender warns on its own, so a source with many senders has that many chances
+    /// for a dip to warn.
+    fn default() -> Self {
+        Presets {
+            rows: Preset::Balanced,
+            senders: Preset::Quiet,
+        }
+    }
+}
+
 impl Preset {
-    /// A source's preset until an editor picks another.
-    pub const ROWS: Preset = Preset::Balanced;
-    /// A source's senders' preset until an editor picks another. Each sender warns on its own, so a source with many
-    /// senders has that many chances for a dip to warn.
-    pub const SENDERS: Preset = Preset::Quiet;
     const ALL: [Preset; 4] = [Preset::Fast, Preset::Sensitive, Preset::Balanced, Preset::Quiet];
 
     /// How much wider than the ratios the range is, as a share of each edge.
@@ -158,6 +172,11 @@ impl Preset {
             Preset::Balanced => 4,
             Preset::Quiet => 6,
         }
+    }
+
+    /// The most readings any preset waits.
+    fn longest_wait() -> i64 {
+        Preset::ALL.into_iter().map(Preset::wait).max().unwrap_or(1)
     }
 }
 
@@ -204,14 +223,9 @@ impl Learning {
         }
     }
 
-    /// The preset `group`'s `source` is judged at.
-    pub fn preset(&self, group: &str, source: &str) -> Preset {
-        marks::picked(&self.presets, group, source, false)
-    }
-
-    /// The preset `group`'s `source`'s senders are judged at.
-    pub fn senders_preset(&self, group: &str, source: &str) -> Preset {
-        marks::picked(&self.presets, group, source, true)
+    /// The presets `group`'s `source`, and its senders, are judged at.
+    pub fn presets_of(&self, group: &str, source: &str) -> Presets {
+        marks::presets_of(&self.presets, group, source)
     }
 
     /// Whether `field` of `group`'s `source` is not watched, as an editor left it (`marks::SourceFields::watches`).
@@ -696,7 +710,7 @@ fn sender_normals(
 ) -> Result<HashMap<SenderKey, Vec<Normal>>, super::store::StoreError> {
     let mut out = HashMap::new();
     for of_source in watched.chunk_by(|a, b| (&a.0, &a.1) == (&b.0, &b.1)) {
-        let preset = learning.senders_preset(&of_source[0].0, &of_source[0].1);
+        let preset = learning.presets_of(&of_source[0].0, &of_source[0].1).senders;
         let history = senders::history(store, of_source, oldest)?;
         let warned = Warned::of_senders(store, history.keys(), oldest, learning);
         out.extend(history.into_iter().map(|(key, of)| {
@@ -722,7 +736,7 @@ fn learned(
 ) -> Vec<Normal> {
     let rows = Rows::of(of, oldest, as_of);
     let warned = Warned::of(store, &key.0, &key.1, oldest, learning);
-    let preset = learning.preset(&key.0, &key.1);
+    let preset = learning.presets_of(&key.0, &key.1).rows;
     WIDTHS
         .iter()
         .filter_map(|&width| normal(&rows, &warned, as_of, width, preset))
@@ -732,8 +746,7 @@ fn learned(
 /// [`Readings::at`] without the cache: each source's reading at `ended_ms` against what was `learned`.
 fn compute(store: &RegistryStore, ended_ms: i64, learning: &Learning, learned: &Learned) -> Vec<Reading> {
     let widest = WIDTHS.iter().map(|w| w.ms()).max().unwrap_or_default();
-    let longest_wait = Preset::ALL.into_iter().map(Preset::wait).max().unwrap_or(1);
-    let oldest = ended_ms - (longest_wait - 1) * BUCKET.bucket_ms() - widest;
+    let oldest = ended_ms - (Preset::longest_wait() - 1) * BUCKET.bucket_ms() - widest;
     let buckets = match history(store, BUCKET.and_finer(), BUCKET, oldest) {
         Ok(buckets) => buckets,
         Err(e) => {
@@ -913,9 +926,9 @@ struct Warned {
     /// When its rows teach its normal nothing: while a stop about it held, unless an editor said that period was
     /// normal; in any period an editor said was an outage; and before an editor reset its history.
     unlearned: Spans,
-    /// Each below-normal warning about it, from the first reading it waited for ([`waited_from`]), less the periods an
-    /// editor said were normal. One that began in such a period is learned whole, so marking one that still holds
-    /// teaches the level it reads.
+    /// Each below-normal warning about it, from the first reading it may have waited for at any preset
+    /// ([`waited_from`]), less the periods an editor said were normal: its preset may have been another when it was
+    /// raised. One raised in such a period is learned whole, so marking one that still holds teaches the level it reads.
     below: Spans,
     /// When a below-normal warning about it that still holds began.
     held_since: Option<i64>,
@@ -937,8 +950,7 @@ impl Warned {
             .into_iter()
             .filter(|s| s.condition == Condition::SourceRowsBelow)
             .collect();
-        let wait = learning.preset(group, source).wait();
-        Warned::new(group, source, stops, below, wait, learning)
+        Warned::new(group, source, stops, below, learning)
     }
 
     /// [`Warned::of`] for each of `senders`, each source's warnings read once. A source's below-normal warnings count
@@ -964,11 +976,7 @@ impl Warned {
                 });
                 let below = warnings::sender_spans(store, group, source, sender, since_ms)
                     .unwrap_or_else(|e| unreadable(e, group, source));
-                let wait = learning.senders_preset(group, source).wait();
-                (
-                    key.clone(),
-                    Warned::new(group, source, stops.clone(), below, wait, learning),
-                )
+                (key.clone(), Warned::new(group, source, stops.clone(), below, learning))
             })
             .collect()
     }
@@ -979,15 +987,8 @@ impl Warned {
             .unwrap_or_else(|e| unreadable(e, group, source))
     }
 
-    /// `group`'s `source`'s spans from its `stops` and its `below`-normal warnings, each raised after `wait` readings.
-    fn new(
-        group: &str,
-        source: &str,
-        stops: Spans,
-        below: Vec<warnings::WarningSpan>,
-        wait: i64,
-        learning: &Learning,
-    ) -> Warned {
+    /// `group`'s `source`'s spans from its `stops` and its `below`-normal warnings.
+    fn new(group: &str, source: &str, stops: Spans, below: Vec<warnings::WarningSpan>, learning: &Learning) -> Warned {
         let below = below.iter();
         let reset_from = learning.reset_from(group, source);
         let reset = reset_from.map(|from| (i64::MIN, Some(from)));
@@ -1002,8 +1003,8 @@ impl Warned {
                 .min(),
             below: less(
                 below
-                    .map(|s| (waited_from(s, wait), s.ended_millis))
-                    .filter(|&(from, _)| !normal.iter().any(|&(began, ended)| (began..=ended).contains(&from)))
+                    .filter(|s| !normal.iter().any(|&(from, to)| (from..=to).contains(&s.started_millis)))
+                    .map(|s| (waited_from(s, Preset::longest_wait()), s.ended_millis))
                     .collect(),
                 &normal,
             ),
@@ -1045,8 +1046,7 @@ impl Warned {
 
 /// The earliest the first reading a below-normal warning raised after `wait` readings waited for can have ended:
 /// `wait` buckets before the warning was seen. That reading ended `wait` - 1 buckets before the one that raised the
-/// warning, and the warning was seen up to a heartbeat, taken as one bucket, after that. A warning is taken to have
-/// waited as long as its source's preset waits now.
+/// warning, and the warning was seen up to a heartbeat, taken as one bucket, after that.
 fn waited_from(warning: &warnings::WarningSpan, wait: i64) -> i64 {
     warning.started_millis - wait * BUCKET.bucket_ms()
 }
@@ -1073,7 +1073,7 @@ impl Default for Past {
         Past {
             warnings: Vec::new(),
             silences: Vec::new(),
-            preset: Preset::ROWS,
+            preset: Presets::default().rows,
         }
     }
 }
@@ -1097,7 +1097,7 @@ pub fn past(
 ) -> Result<Past, super::store::StoreError> {
     let year = now_ms - YEAR_MS;
     let warned = Warned::of(store, group, source, year, learning);
-    let preset = learning.preset(group, source);
+    let preset = learning.presets_of(group, source).rows;
     let span = |from_millis: i64, to_millis: i64| PastSpan {
         from_millis,
         to_millis,
@@ -1391,7 +1391,7 @@ pub fn expected_over(
     };
     let rows = Rows::of(&of, oldest, last);
     let warned = Warned::of(store, group, source, oldest, learning);
-    let preset = learning.preset(group, source);
+    let preset = learning.presets_of(group, source).rows;
     let mut normals: HashMap<i64, Option<Normal>> = HashMap::new();
     let mut out = Vec::new();
     let mut ended_ms = first;
@@ -1676,12 +1676,17 @@ mod tests {
 
     /// What is learned with once an editor picked `preset` for `g`'s `s`, or for its `senders`.
     fn at_preset(preset: Preset, senders: bool) -> Learning {
+        let mut presets = Presets::default();
+        *if senders {
+            &mut presets.senders
+        } else {
+            &mut presets.rows
+        } = preset;
         Learning {
             presets: vec![marks::Picked {
                 group: "g".into(),
                 source: "s".into(),
-                senders,
-                preset,
+                presets,
                 by: "John".into(),
             }],
             ..Learning::default()
@@ -1708,7 +1713,7 @@ mod tests {
     fn a_source_that_stops_is_below_on_the_last_reading_its_preset_waits_for() {
         let stopped =
             |buckets: i64| store_with(7, move |at| Some(if at >= END - buckets * FIVE { 0.0 } else { 100.0 }));
-        assert_eq!(Learning::default().preset("g", "s"), Preset::Balanced);
+        assert_eq!(Learning::default().presets_of("g", "s").rows, Preset::Balanced);
         for preset in Preset::ALL {
             let learning = at_preset(preset, false);
             let wait = preset.wait();
@@ -1762,7 +1767,7 @@ mod tests {
     /// preset waits for, though its source is not; one that keeps sending is within its range.
     #[test]
     fn a_sender_that_stops_is_below_though_its_source_is_not() {
-        let stopped = |at: i64| at >= END - Preset::SENDERS.wait() * FIVE;
+        let stopped = |at: i64| at >= END - Presets::default().senders.wait() * FIVE;
         let store = store_with(7, |at| Some(if stopped(at) { 90.0 } else { 100.0 }));
         send(&store, 7, "fw-01", |at| (!stopped(at)).then_some(10));
         send(&store, 7, "fw-07", |_| Some(90));
@@ -1786,7 +1791,7 @@ mod tests {
     /// When the whole source stops, its own warning says so: none of its senders is judged on that reading.
     #[test]
     fn a_sender_is_not_judged_on_the_reading_its_source_is_below() {
-        let stopped = |at: i64| at >= END - Preset::SENDERS.wait() * FIVE;
+        let stopped = |at: i64| at >= END - Presets::default().senders.wait() * FIVE;
         let store = store_with(7, |at| Some(if stopped(at) { 0.0 } else { 100.0 }));
         send(&store, 7, "fw-01", |at| (!stopped(at)).then_some(10));
         send(&store, 7, "fw-07", |at| (!stopped(at)).then_some(90));
@@ -1798,7 +1803,7 @@ mod tests {
     #[test]
     fn a_field_no_longer_counted_judges_none_of_its_senders() {
         use crate::heartbeat::{SenderCounts, StreamReport};
-        let wait = Preset::SENDERS.wait();
+        let wait = Presets::default().senders.wait();
         let stopped = |at: i64| at >= END - wait * FIVE;
         let store = store_with(7, |_| Some(100.0));
         send(&store, 7, "fw-01", |at| (!stopped(at)).then_some(10));
@@ -2005,15 +2010,18 @@ mod tests {
     #[test]
     fn a_width_learns_no_window_that_shares_a_bucket_with_one_a_below_warning_read() {
         let (store, outage) = outage_and_stop();
-        // Raised on the outage's fourth reading, and seen a heartbeat later.
+        // Raised on the outage's fourth reading, and seen a heartbeat later. Its preset may have waited the longest any
+        // waits.
         let ended = outage + 2 * HOUR;
-        warned(&store, "source_rows_below", outage + 5 * FIVE, Some(ended));
+        let started = outage + 5 * FIVE;
+        warned(&store, "source_rows_below", started, Some(ended));
+        let first = started - Preset::longest_wait() * FIVE;
         for width in WIDTHS {
             let w = width.ms();
-            assert!(learns(&store, outage + FIVE - w, width), "{width:?}: the window before");
+            assert!(learns(&store, first - w, width), "{width:?}: the window before");
             assert!(
-                !learns(&store, outage + 2 * FIVE - w, width),
-                "{width:?}: the first that shares a bucket with the first reading it waited for"
+                !learns(&store, first + FIVE - w, width),
+                "{width:?}: the first that shares a bucket with the first reading it may have waited for"
             );
             assert!(
                 !learns(&store, ended + w - FIVE, width),

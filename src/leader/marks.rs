@@ -24,7 +24,7 @@ use super::envelope::{Empty, Envelope, Refusal};
 use super::senders::Sender;
 use super::series::YEAR_MS;
 use super::store::{Actor, Store};
-use super::throughput::{self, Learning, Preset};
+use super::throughput::{self, Learning, Preset, Presets};
 use super::warnings::{self, Condition, SubjectKind};
 use crate::heartbeat::SenderFields;
 
@@ -95,28 +95,23 @@ impl SourceFields {
     }
 }
 
-/// The preset `by` picked for a source, or for its `senders`. Only one other than the default is kept.
+/// The presets `by` last picked for a source and its senders. Only those other than the default are kept.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Picked {
     pub group: String,
     pub source: String,
-    pub senders: bool,
-    pub preset: Preset,
+    #[serde(flatten)]
+    pub presets: Presets,
     pub by: String,
 }
 
-/// The preset `group`'s `source`, or its `senders`, is judged at, as `presets` were picked.
-pub fn picked(presets: &[Picked], group: &str, source: &str, senders: bool) -> Preset {
-    presets
+/// The presets `group`'s `source`, and its senders, are judged at, as `picked`.
+pub fn presets_of(picked: &[Picked], group: &str, source: &str) -> Presets {
+    picked
         .iter()
-        .find(|p| p.group == group && p.source == source && p.senders == senders)
-        .map_or(unpicked(senders), |p| p.preset)
-}
-
-/// The preset of a source, or of its `senders`, until an editor picks another.
-fn unpicked(senders: bool) -> Preset {
-    if senders { Preset::SENDERS } else { Preset::ROWS }
+        .find(|p| p.group == group && p.source == source)
+        .map_or_else(Presets::default, |p| p.presets)
 }
 
 /// A source whose normal `by` said to learn again from `from_millis` on.
@@ -187,6 +182,25 @@ impl Marks {
                     && Some(l.since_millis) == since_millis
             })
             .map(|l| l.by.as_str())
+    }
+
+    /// Picks `picking` for `group`'s `source`, by `by`, keeping the preset it does not name.
+    fn pick(&mut self, group: &str, source: &str, picking: Picking, by: &str) {
+        let was = presets_of(&self.presets, group, source);
+        let presets = Presets {
+            rows: picking.rows.unwrap_or(was.rows),
+            senders: picking.senders.unwrap_or(was.senders),
+        };
+        self.presets
+            .retain(|p| (p.group.as_str(), p.source.as_str()) != (group, source));
+        if presets != Presets::default() {
+            self.presets.push(Picked {
+                group: group.into(),
+                source: source.into(),
+                presets,
+                by: by.into(),
+            });
+        }
     }
 
     /// What an editor changed of the sender fields of each of `group`'s sources.
@@ -440,13 +454,15 @@ pub async fn reset_history(
         .await
 }
 
-/// A preset to pick.
+/// The preset to pick for a source, for its senders, or for both.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Picking {
-    pub preset: Preset,
+    pub rows: Option<Preset>,
+    pub senders: Option<Preset>,
 }
 
-/// `PUT /api/areas/:area/sources/:id/preset`: picks the preset the source is judged at.
+/// `PUT /api/areas/:area/sources/:id/preset`: picks the preset the source is judged at, the one its senders are, or
+/// both. The one not named stays as it was.
 pub async fn put_preset(
     State(state): State<AppState>,
     actor: Option<axum::Extension<Actor>>,
@@ -457,47 +473,14 @@ pub async fn put_preset(
         group,
         source,
         sender: None,
-        action: "source-rows-preset",
+        action: "source-preset",
     };
-    marking.write(state, actor, pick(picking.preset, false)).await
-}
-
-/// `PUT /api/areas/:area/sources/:id/senders/preset`: picks the preset the source's senders are judged at.
-pub async fn put_senders_preset(
-    State(state): State<AppState>,
-    actor: Option<axum::Extension<Actor>>,
-    Path((group, source)): Path<(String, String)>,
-    Json(picking): Json<Picking>,
-) -> Envelope<Empty> {
-    let marking = Marking {
-        group,
-        source,
-        sender: None,
-        action: "sender-rows-preset",
-    };
-    marking.write(state, actor, pick(picking.preset, true)).await
-}
-
-/// Picks `preset` for what is marked, or for its `senders`, in place of the one picked before.
-fn pick(
-    preset: Preset,
-    senders: bool,
-) -> impl FnOnce(&mut Marks, &Marking, Option<i64>, &Actor, i64) -> Result<(), Refusal> + Send + 'static {
-    move |marks, m, _, actor, _| {
-        marks
-            .presets
-            .retain(|p| (&p.group, &p.source, p.senders) != (&m.group, &m.source, senders));
-        if preset != unpicked(senders) {
-            marks.presets.push(Picked {
-                group: m.group.clone(),
-                source: m.source.clone(),
-                senders,
-                preset,
-                by: actor.display_name.clone(),
-            });
-        }
-        Ok(())
-    }
+    marking
+        .write(state, actor, move |marks, m, _, actor, _| {
+            marks.pick(&m.group, &m.source, picking, &actor.display_name);
+            Ok(())
+        })
+        .await
 }
 
 /// A past period of a source, and what to mark it.
@@ -570,7 +553,7 @@ pub async fn past(
         let learning = Learning::read(&state.store);
         let Some(store) = state.registry.series() else {
             return Envelope::ok(throughput::Past {
-                preset: learning.preset(&group, &source),
+                preset: learning.presets_of(&group, &source).rows,
                 ..throughput::Past::default()
             });
         };
@@ -652,28 +635,23 @@ mod tests {
         assert!(open.watches("user") && !open.is_new("user"));
     }
 
-    /// A preset picked replaces the one picked before, and the default is not kept. A source's and its senders' are
-    /// each their own.
+    /// A preset picked replaces the one picked before and keeps the one it does not name, and a source at the defaults
+    /// keeps no mark.
     #[test]
     fn a_picked_preset_replaces_the_one_before_and_the_default_is_not_kept() {
         let mut marks = Marks::default();
-        let m = Marking {
-            group: "g".into(),
-            source: "s".into(),
-            sender: None,
-            action: "source-rows-preset",
+        let pick = |rows, senders| Picking { rows, senders };
+        marks.pick("g", "s", pick(Some(Preset::Fast), None), "John");
+        marks.pick("g", "s", pick(Some(Preset::Quiet), None), "John");
+        marks.pick("g", "s", pick(None, Some(Preset::Sensitive)), "John");
+        let expected = Presets {
+            rows: Preset::Quiet,
+            senders: Preset::Sensitive,
         };
-        let mut at = |preset, senders| pick(preset, senders)(&mut marks, &m, None, &Actor::system(), 0).unwrap();
-        at(Preset::Fast, false);
-        at(Preset::Quiet, false);
-        at(Preset::Sensitive, true);
-        assert_eq!(picked(&marks.presets, "g", "s", false), Preset::Quiet);
-        assert_eq!(picked(&marks.presets, "g", "s", true), Preset::Sensitive);
-        assert_eq!(picked(&marks.presets, "g", "other", false), Preset::ROWS);
-        assert_eq!(picked(&marks.presets, "g", "other", true), Preset::SENDERS);
-        let mut at = |preset, senders| pick(preset, senders)(&mut marks, &m, None, &Actor::system(), 0).unwrap();
-        at(Preset::ROWS, false);
-        at(Preset::SENDERS, true);
+        assert_eq!(presets_of(&marks.presets, "g", "s"), expected);
+        assert_eq!(presets_of(&marks.presets, "g", "other"), Presets::default());
+        let back = Presets::default();
+        marks.pick("g", "s", pick(Some(back.rows), Some(back.senders)), "John");
         assert_eq!(marks.presets, []);
     }
 

@@ -18,7 +18,7 @@
     getSourceSenders,
     lowerSender,
     putSenderFields,
-    putSendersPreset,
+    putSourcePreset,
     type FieldNowDto,
     type Preset,
     type SenderNowDto,
@@ -136,7 +136,7 @@
   function pickPreset(picked: Preset) {
     if (busy.on) return;
     void busy.run(async () => {
-      const answer = await putSendersPreset(group, source, picked);
+      const answer = await putSourcePreset(group, source, { senders: picked });
       problem = answer.ok ? '' : errorText(answer.errors);
       await read();
     });

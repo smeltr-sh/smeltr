@@ -4273,15 +4273,15 @@ export function markSourcePast(
   );
 }
 
-/** Picks the preset `group`'s `source` is judged at. */
+/** Picks the preset `group`'s `source` is judged at (`rows`), the one its senders are, or both. */
 export function putSourcePreset(
   group: string,
   source: string,
-  preset: Preset,
+  picked: { rows?: Preset; senders?: Preset },
 ): Promise<{ ok: boolean; errors: ApiError[] }> {
   return apiJson(
     inArea(`/sources/${encodeURIComponent(source)}/preset`, group),
-    json('PUT', { preset }),
+    json('PUT', picked),
   );
 }
 
@@ -4339,18 +4339,6 @@ export function lowerSender(
   return apiJson(
     inArea(`/sources/${encodeURIComponent(source)}/senders/lower`, group),
     json('POST', sender),
-  );
-}
-
-/** Picks the preset `group`'s `source`'s senders are judged at. */
-export function putSendersPreset(
-  group: string,
-  source: string,
-  preset: Preset,
-): Promise<{ ok: boolean; errors: ApiError[] }> {
-  return apiJson(
-    inArea(`/sources/${encodeURIComponent(source)}/senders/preset`, group),
-    json('PUT', { preset }),
   );
 }
 

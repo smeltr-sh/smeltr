@@ -27,7 +27,7 @@ use super::envelope::Envelope;
 use super::marks::{self, Marks};
 use super::series::{RegistryStore, Tier};
 use super::store::StoreError;
-use super::throughput::{self, ExpectedPoint, Learned, Outside, Preset, Reading};
+use super::throughput::{self, ExpectedPoint, Learned, Outside, Preset, Presets, Reading};
 use super::warnings;
 use crate::heartbeat::SenderCounts;
 
@@ -418,7 +418,7 @@ impl Default for SourceSenders {
         SourceSenders {
             fields: Vec::new(),
             watches_new: true,
-            preset: Preset::SENDERS,
+            preset: Presets::default().senders,
         }
     }
 }
@@ -471,7 +471,7 @@ pub async fn get(
         let marks = Marks::read(&state.store);
         let Some(store) = state.registry.series() else {
             return Envelope::ok(SourceSenders {
-                preset: marks::picked(&marks.presets, &group, &source, true),
+                preset: marks::presets_of(&marks.presets, &group, &source).senders,
                 ..SourceSenders::default()
             });
         };
@@ -586,7 +586,7 @@ impl Now<'_> {
         Ok(SourceSenders {
             fields,
             watches_new: edited.locked.is_none(),
-            preset: marks::picked(&marks.presets, group, source, true),
+            preset: marks::presets_of(&marks.presets, group, source).senders,
         })
     }
 

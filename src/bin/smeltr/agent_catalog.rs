@@ -757,14 +757,8 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "PUT",
         path: "/api/areas/:area/sources/:id/preset",
-        what: "Pick the preset at which the source's rows are judged against their normal, balanced until one is picked. A faster preset sees a stop sooner and warns on more dips: a stop is seen in about 5 minutes at fast, 15 at sensitive, 20 at balanced and 30 at quiet. The area is the source's worker group. No query.",
-        body: "{ preset: 'fast' | 'sensitive' | 'balanced' | 'quiet' }",
-    },
-    Route {
-        method: "PUT",
-        path: "/api/areas/:area/sources/:id/senders/preset",
-        what: "Pick the preset at which the source's senders are judged against their normals, quiet until one is picked. The presets are the same four as the source's own. The area is the source's worker group. No query.",
-        body: "{ preset: 'fast' | 'sensitive' | 'balanced' | 'quiet' }",
+        what: "Pick the preset at which the source's rows are judged against their normal (rows, balanced until one is picked), the one at which its senders are judged against theirs (senders, quiet until one is picked), or both; the one not named stays as it was. A faster preset sees a stop sooner and warns on more dips: a stop is seen in about 5 minutes at fast, 15 at sensitive, 20 at balanced and 30 at quiet. The area is the source's worker group. No query.",
+        body: "{ rows?: 'fast' | 'sensitive' | 'balanced' | 'quiet', senders?: 'fast' | 'sensitive' | 'balanced' | 'quiet' }",
     },
     Route {
         method: "GET",

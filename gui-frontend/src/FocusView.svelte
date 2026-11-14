@@ -284,7 +284,7 @@
   function pickPreset(preset: Preset) {
     if (marking.on) return;
     void marking.run(async () => {
-      const answer = await putSourcePreset(node.group, node.authorId, preset);
+      const answer = await putSourcePreset(node.group, node.authorId, { rows: preset });
       pastError = answer.ok ? '' : errorText(answer.errors);
       await readPast();
     });
