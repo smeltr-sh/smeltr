@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount } from 'svelte';
 import PipelineEditor from './PipelineEditor.svelte';
+import { RECOMPUTE_MS } from './FindBox.svelte';
 import { setBranch, setScope, SHARED_SCOPE } from './api';
 import { dropAll } from './edits';
 import { load, signedOut } from './session';
@@ -71,6 +72,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   if (editor) await unmount(editor);
   editor = undefined;
   target.remove();
@@ -82,11 +84,13 @@ afterEach(async () => {
 
 /** The sample the editor's last preview ran over, once it ran. */
 async function lastRan(sample: string | null) {
+  await vi.advanceTimersByTimeAsync(RECOMPUTE_MS);
   await vi.waitFor(() => expect(ranOver.at(-1)).toBe(sample), { timeout: 3000 });
 }
 
 describe('the sample a pipeline opens on', () => {
   it('follows the pipeline when the editor is kept across a change of route', async () => {
+    vi.useFakeTimers();
     Object.assign(route, { id: 'a', sample: 's1' });
     editor = mount(PipelineEditor, {
       target,
@@ -117,7 +121,7 @@ describe('the sample a pipeline opens on', () => {
     ranOver = [];
     Object.assign(route, { id: 'd', sample: undefined });
     await vi.waitFor(() => expect(target.querySelector('#pipeline-name')).not.toBeNull());
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    await vi.advanceTimersByTimeAsync(600);
     expect(ranOver.filter((s) => s !== null)).toEqual([]);
   });
 });
