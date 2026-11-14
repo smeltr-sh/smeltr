@@ -644,6 +644,24 @@ describe('lookup output types', () => {
     });
     expect(() => parsePipelineDtoJson(text)).toThrow(/one value/);
   });
+
+  it('refuses a datetime format with no specifier, and keeps one with', () => {
+    const read = (format: string) => () =>
+      parsePipelineDtoJson(
+        JSON.stringify({
+          name: 'p',
+          steps: [
+            {
+              ...(stepToDto(lookup([])) as object),
+              outputs: [{ source: 'a', field: 'a', type: { type: 'datetime', format } }],
+            },
+          ],
+        }),
+      );
+    for (const format of ['', 'no time here', '%%'])
+      expect(read(format)).toThrow(/bare "datetime"/);
+    expect(read('%Y 100%%')).not.toThrow();
+  });
 });
 
 describe('an if’s id', () => {
