@@ -2267,8 +2267,9 @@ export interface PreviewResult {
   /** One entry per parser step, in run order -- what the field-declaration
    * panel reads to propose fields from a sample. */
   parsers: ParserProposal[];
-  /** Each grok step's fields as the pipeline types them, by step id. Absent when the pipeline did not compile. */
-  grok_fields?: Record<string, { name: string; type: unknown }[]>;
+  /** Each grok step's fields, by step id: each with its type in the pipeline, and the type it takes where the author
+   * chooses none. Absent when the pipeline did not compile. */
+  grok_fields?: Record<string, { name: string; type: unknown; auto: unknown }[]>;
   /** The record the pipeline writes. Absent when it did not compile. */
   dictionary?: DictionaryOut;
   /** The answer to `PreviewRequest.afterDot`. Absent where the dot follows no value. */

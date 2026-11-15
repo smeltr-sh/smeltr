@@ -477,6 +477,8 @@ struct Compiler<'p> {
     folding: Vec<Folding>,
     /// What `type_at` asks: the type of an expression where a step begins.
     probe: Option<std::rc::Rc<Probe>>,
+    /// The fields the grok step being compiled has a chosen type for; its parse warns of any that no pattern captures.
+    chosen: Vec<String>,
 }
 
 /// A vectorized loop being compiled: its accumulators, each one's write with the type it binds once compiled, and
@@ -599,6 +601,7 @@ impl<'p> Compiler<'p> {
             hoisted: HashMap::new(),
             pass: Pass::Outside,
             probe,
+            chosen: Vec::new(),
         }
     }
 
@@ -2791,6 +2794,7 @@ impl Compiler<'_> {
     fn parse_into(&mut self, call: &ParseCall, in_slot: SlotId, dest: Dest, here: Here) {
         let Dest { target, ty, merge } = dest;
         let Here { guard, id } = here;
+        let chosen = std::mem::take(&mut self.chosen);
         let (kind, matcher) = match call.kind(self.grok_patterns) {
             Ok(k) => k,
             Err(message) => return self.err(Some(id), message),
@@ -2824,6 +2828,14 @@ impl Compiler<'_> {
                 Some(id),
                 format!("`{k}` is the engine's own field; give the capture or column another name"),
             );
+        }
+        for name in chosen {
+            if !keys.iter().flatten().any(|(k, _)| *k == name) {
+                self.warn(
+                    id,
+                    format!("no pattern captures `{name}`, so this step never writes it"),
+                );
+            }
         }
         if self.writes_a_local(target, keys.iter().flatten().map(|(k, _)| k), id) {
             return;
@@ -4543,7 +4555,12 @@ impl Compiler<'_> {
                 into,
                 kind,
                 declared,
-            } => lower::parser(input, into, kind, declared, |n| self.held(n)),
+            } => {
+                if let ParserKind::Grok(_) = kind {
+                    self.chosen = declared.iter().map(|d| d.name.clone()).collect();
+                }
+                lower::parser(input, into, kind, declared, |n| self.held(n))
+            }
             FunctionKind::Lookup {
                 input,
                 table,
@@ -4567,6 +4584,7 @@ impl Compiler<'_> {
             c.code_block(&lowered.body, here);
             c.code_block(&lowered.after, Here { guard: outer, ..here });
         });
+        self.chosen.clear();
     }
 
     /// Compile the code `stmts` under `here`'s guard, each function it calls expanded.

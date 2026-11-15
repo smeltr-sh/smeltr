@@ -215,6 +215,19 @@ mod tests {
         assert!(errors.is_empty(), "{:?}", errors.entries());
     }
 
+    /// A type chosen for a field no pattern captures is a warning: the step declares the field and never writes it.
+    #[test]
+    fn a_chosen_type_no_pattern_captures_is_a_warning() {
+        let config = GrokConfig {
+            split_dots: true,
+            patterns: vec!["%{WORD:action}".into()],
+            custom_patterns: vec![],
+        };
+        let plan = compile_pipeline(config, &[("action", DataType::Str), ("status", DataType::I64)]);
+        let warnings: Vec<_> = plan.warnings.iter().map(|w| w.message.as_str()).collect();
+        assert_eq!(warnings, ["no pattern captures `status`, so this step never writes it"]);
+    }
+
     /// A schema the pipeline produces types a capture nothing declares, over its pattern's type; a pattern's
     /// `datetime` keeps its format where the schema's type is `datetime` too.
     #[test]
