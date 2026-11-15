@@ -31,9 +31,9 @@
     </p>
     <ProductScreenshot
       source="feed-health-volume"
-      height={1800}
-      crop={{ x: 2150, y: 470, width: 690, height: 950 }}
-      alt="The Map's panel for the fortigate-firewalls source: Rows below normal, input 0 rows a second, expected 228 to 746. Its 24-hour chart runs inside the expected band through the day, then twice drops to nothing."
+      height={2200}
+      crop={{ x: 2150, y: 470, width: 690, height: 1410 }}
+      alt="The Map's panel for the fortigate-firewalls source: Rows below normal, input 0 rows a second, expected 227 to 756. Its 24-hour chart runs inside the expected band through the day, then drops to nothing twice."
       caption="Over the last 24 hours the source reads within its band, until the relay stops, twice."
     />
     <p>
@@ -48,9 +48,9 @@
         source: 'feed-health-issues-phone',
         height: 2200,
         width: 1440,
-        crop: { x: 472, y: 916, width: 920, height: 382 },
+        crop: { x: 472, y: 956, width: 920, height: 388 },
       }}
-      alt="The Issues page: Rows below normal, for the fortigate-firewalls source, which read 0 rows in 5 minutes where 71,695 to 226,858 is normal at this time of day."
+      alt="The Issues page: Rows below normal, for the fortigate-firewalls source, which read 0 rows in 5 minutes where 68,071 to 226,804 is normal at this time of day."
       caption="The Issues page names the source, what it read and what is normal."
     />
     <p>
@@ -72,9 +72,9 @@
     </p>
     <ProductScreenshot
       source="feed-health-history"
-      height={1800}
-      crop={{ x: 2150, y: 470, width: 690, height: 1000 }}
-      alt="The Map's panel for the fortigate-firewalls source, History tab. Warnings: Nov 11, 18:00, for 20 minutes, and Nov 11, 17:15, for 44 minutes. Longest quiet spells: Nov 11, 17:20, for 15 minutes, inside the older warning. Each row has a Normal and Outage switch, set to Outage."
+      height={2200}
+      crop={{ x: 2150, y: 470, width: 690, height: 1560 }}
+      alt="The Map's panel for the fortigate-firewalls source, History tab, at the Balanced preset. Warnings: Nov 15, 04:05, for 20 minutes, and Nov 15, 03:25, for 40 minutes. Longest quiet spells: Nov 15, 03:30, for 15 minutes, inside the older warning. Each row has a Normal and Outage switch, set to Outage."
       caption="A warning lasts until no width reads the source below normal, so it outlasts the quiet spell inside it. None of the three is learned."
     />
   </section>
@@ -110,7 +110,7 @@
         source: 'feed-health-issues-phone',
         height: 2200,
         width: 1440,
-        crop: { x: 472, y: 464, width: 920, height: 336 },
+        crop: { x: 472, y: 503, width: 920, height: 344 },
       }}
       alt="The Issues page: Field not its declared type, for the fortigate-traffic pipeline, whose field proto has failed to read as its declared type in the last hour."
       caption="The Issues page names the pipeline, the field and the step."

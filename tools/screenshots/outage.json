@@ -4,6 +4,7 @@
     "site": "feed-health-volume",
     "hash": "#/map?group=network&kind=source&id=fortigate-firewalls&range=24h",
     "themes": ["light", "dark"],
+    "height": 1100,
     "delay": 5000,
     "steps": [{ "delay": 1000 }, { "blur": true }]
   },
@@ -12,6 +13,7 @@
     "site": "feed-health-history",
     "hash": "#/map?group=network&kind=source&id=fortigate-firewalls&panel=history",
     "themes": ["light", "dark"],
+    "height": 1100,
     "delay": 3000,
     "steps": [{ "delay": 1000 }, { "blur": true }]
   },
