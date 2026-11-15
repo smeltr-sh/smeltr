@@ -128,9 +128,17 @@ state_dir = "/var/lib/smeltr-worker"</code
   smeltr:{version}</code
     ></pre>
   <p>
-    The container needs no inbound published port unless its group runs a receiver; then publish the
-    receiver's port, for example <code>-p 8088:8088</code>. The container must be able to reach the
-    leader and every configured source and destination.
+    The container needs no inbound published port unless its group runs a receiver. Docker can
+    publish a new port only by recreating the container, so publish the ports of the receivers the
+    group will run when you first start the container, for example <code>-p 6514:6514</code> for syslog.
+    The container must be able to reach the leader and every configured source and destination.
+  </p>
+  <p>
+    For a group whose receivers change often, run the worker as the binary, as above, or start the
+    container with <code>--network host</code> on a Linux host. A container on the host network
+    shares the host's network, so a new receiver needs no change to the container, but it loses the
+    container's network isolation; see Docker's
+    <a href="https://docs.docker.com/engine/network/drivers/host/">host network driver</a>.
   </p>
   <p>
     Leave <code>worker.leader.ca</code> unset for normal enrollment. An enrollment code can verify

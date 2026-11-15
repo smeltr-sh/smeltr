@@ -207,7 +207,7 @@ token = 0d2a5f6c-4b1e-4c3a-9f7d-2e8b6a1c5d40`;
   </p>
   <ul>
     <li>
-      On Kubernetes, add the port to the worker pods:
+      On Kubernetes, add a Service that sends to the port:
       <a href="/docs/enroll-worker/kubernetes#receiver">Expose a receiver</a>.
     </li>
     <li>
