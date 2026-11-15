@@ -72,7 +72,12 @@
                 >{:else}{chapter}{/if}{/each}
           </p>
         {/if}
-        <button onclick={() => (picks = [])}>Start over</button>
+        <button
+          onclick={() => {
+            picks = [];
+            scrollTo(0, 0);
+          }}>Start over</button
+        >
       </div>
     {/if}
   </section>
