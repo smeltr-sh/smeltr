@@ -31,10 +31,10 @@ use crate::plan::config::{
 use crate::plan::parse_call::split_dots_default;
 use crate::plan::topology::{
     AccessKey, Acknowledgement, AfterCommit, ApiRecords, AssumedRole, AzureAccess, AzureCredential, AzureStore,
-    CatalogSignIn, Cloud, ConnectionLimits, DeliverRule, DeltaDestinationConfig, DestinationConfig, DestinationKind,
-    DocIdPolicy, Endpoint, EntraSignIn, Framing, GcsAccess, GcsStore, HttpDestinationConfig, IcebergDestinationConfig,
-    KafkaDestinationConfig, KafkaProps, KafkaService, KafkaSourceConfig, ListPlace, ListStart,
-    LogAnalyticsDestinationConfig, NamedCertificate, NamedSecret, Newlines, ObjectFormat, ObjectQueue,
+    BulkAction, CatalogSignIn, Cloud, ConnectionLimits, DeliverRule, DeltaDestinationConfig, DestinationConfig,
+    DestinationKind, Endpoint, EntraSignIn, Framing, GcsAccess, GcsStore, HttpDestinationConfig,
+    IcebergDestinationConfig, KafkaDestinationConfig, KafkaProps, KafkaService, KafkaSourceConfig, ListPlace,
+    ListStart, LogAnalyticsDestinationConfig, NamedCertificate, NamedSecret, Newlines, ObjectFormat, ObjectQueue,
     ObjectSourceConfig, ObjectsDestinationConfig, OktaSignIn, OtlpDestinationConfig, PrometheusDestinationConfig,
     RemoteWriteVersion, RequestBody, RouteConfig, S3Access, S3Store, SftpAccess, SftpCredential, SftpStore,
     SourceConfig, SourceKind, SplunkHecDestinationConfig, StartPosition, StopPosition, Tls, TopologyConfig, Transport,

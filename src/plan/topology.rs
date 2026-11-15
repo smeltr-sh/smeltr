@@ -144,6 +144,9 @@ pub type RecordFields = std::borrow::Cow<'static, [(std::borrow::Cow<'static, st
 /// The `__source` field holding each record's payload as the source read it, before any decoding.
 pub const SOURCE_BYTES: &str = "__source.bytes";
 
+/// The `__destination` field a pipeline sets to give a row its document ID.
+pub const DOC_ID: &str = "__destination.id";
+
 /// The `__source` fields that read a record's topic, each under the name its kind gives it.
 const TOPIC_FIELDS: [&str; 4] = ["__source.topic", "__source.url", "__source.remote", "__source.database"];
 
@@ -1644,23 +1647,6 @@ impl DestinationKind {
         }
     }
 
-    /// Whether this destination keys documents on the row's own `__destination.id`. Kafka never does -- it has no document
-    /// identity, and its own `key` is a partition key, a different thing entirely (`io::OutgoingRecord`).
-    pub fn wants_doc_id(&self) -> bool {
-        match self {
-            DestinationKind::Kafka(_) => false,
-            DestinationKind::Elasticsearch(e) => e.doc_id.wants_doc_id(),
-            DestinationKind::SplunkHec(_)
-            | DestinationKind::Objects(_)
-            | DestinationKind::Http(_)
-            | DestinationKind::Prometheus(_)
-            | DestinationKind::LogAnalytics(_)
-            | DestinationKind::Otlp(_)
-            | DestinationKind::Iceberg(_)
-            | DestinationKind::Delta(_) => false,
-        }
-    }
-
     /// The `__destination` field this kind reads to place a row. `None` for one that sends every row to one place.
     pub fn placement(&self) -> Option<Placement> {
         match self {
@@ -1758,14 +1744,13 @@ impl DestinationKind {
         }
     }
 
-    /// Which field of the row this destination reads the document identity from, if it does. `None` means it relies on
-    /// the pipeline's own `__destination.id`, or wants no identity at all.
+    /// Which field of the row this destination reads the document identity from, if it does. `None` means it reads
+    /// the pipeline's own `__destination.id` (held apart from the row's fields), or has no document identity at all.
     pub fn id_field(&self) -> Option<&str> {
         match self {
             DestinationKind::Kafka(_) => None,
-            DestinationKind::Elasticsearch(e) if e.doc_id.wants_doc_id() => e.id_field.as_deref(),
-            DestinationKind::Elasticsearch(_)
-            | DestinationKind::SplunkHec(_)
+            DestinationKind::Elasticsearch(e) => e.id_field.as_deref().filter(|f| *f != DOC_ID),
+            DestinationKind::SplunkHec(_)
             | DestinationKind::Objects(_)
             | DestinationKind::Http(_)
             | DestinationKind::Prometheus(_)
@@ -1799,8 +1784,8 @@ pub struct ElasticDestinationConfig {
     /// The TLS this client speaks. `None` is no certificate and the platform's own roots -- which an
     /// internally-issued server certificate will not be under.
     pub tls: Option<Tls>,
-    /// Where each document's `_id` comes from, and therefore what a re-send after a crash does. See `DocIdPolicy`.
-    pub doc_id: DocIdPolicy,
+    /// What happens to a document whose `_id` is already in the index. See `BulkAction`.
+    pub action: BulkAction,
     /// How many bulk requests this destination starts with outstanding, each on its own connection.
     ///
     /// Where it begins, not where it stays: see `max_in_flight` for where it stops, and `egress::pacing` for what
@@ -1819,8 +1804,8 @@ pub struct ElasticDestinationConfig {
     pub buffer_bytes: usize,
     /// How long one batch may take to deliver before it is a stall.
     pub stall_after: std::time::Duration,
-    /// Which of the row's own fields holds the document's identity, for a `doc_id` policy that wants one. `None` (the
-    /// default) means the row must set `__destination.id` itself.
+    /// Which of the row's own fields holds the document's `_id`. `None` (the default) reads the pipeline's
+    /// `__destination.id`. A row where that field is null has Elasticsearch generate the `_id`.
     ///
     /// This is the ordinary case and the reason it is configured here rather than written into every pipeline: a
     /// document that has a stable identity usually already carries it in a field, and pointing at that field is
@@ -1828,8 +1813,8 @@ pub struct ElasticDestinationConfig {
     /// so has to live in a real serialized field anyway (design doc, Runtime stages: a document identity and a
     /// partition key are separate on purpose).
     ///
-    /// A pipeline that needs to *compute* an identity still sets `__destination.id`, which takes precedence per row — the same
-    /// relationship `__destination.index` has to `default_index`.
+    /// A pipeline that needs to *compute* an identity sets `__destination.id`, which is the field read when this names
+    /// none. Where it names another, that field wins over the pipeline's `__destination.id` for this destination.
     pub id_field: Option<String>,
     /// Present when the worker learns the cluster's nodes from `url` and spreads its requests across them.
     pub sniff: Option<Sniff>,
@@ -2847,52 +2832,23 @@ impl ElasticDestinationConfig {
     }
 }
 
-/// Where an Elasticsearch document's `_id` comes from.
-///
-/// At-least-once means a batch can be re-sent after a crash between flush and commit. Elasticsearch is one of the few
-/// destinations where that need not produce a duplicate document — but only if smeltr supplies a *stable* id, and only
-/// at a cost, so which of the three this is has to be asked for by name rather than inferred.
-///
-/// A named list rather than a pair of booleans (`use an id?` × `create or index?`): the question an operator is answering — what should happen when the same document arrives twice — has three
-/// sensible answers with different outcomes, and two independent booleans would spell four combinations of which one
-/// (an id with no conflict policy) is meaningless.
-///
-/// The id itself comes from the row's own `__destination.id` field, set by the pipeline exactly the way `__destination.index` is (design
-/// doc, Runtime stages). A row that leaves it null falls back to `Auto` for that row alone.
+/// The bulk action an Elasticsearch destination writes each document with, named as Elasticsearch names it. A
+/// document goes with the `_id` its row's id field holds, and with none where that is null, so Elasticsearch generates
+/// one and a re-send after a crash is a second document.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum DocIdPolicy {
-    /// Elasticsearch generates the `_id`. The fastest option and the default: nothing has to be checked against what is
-    /// already indexed. Plain at-least-once — a re-send after a crash indexes a second copy of the document.
+pub enum BulkAction {
+    /// Writes a document only where its `_id` is new: a re-send is refused as a `version_conflict_engine_exception`,
+    /// which counts as success, so the first copy is kept. The default, and the only action a data stream accepts.
     #[default]
-    Auto,
-    /// The row's `__destination.id` as `_id`, written with a `create` action: a re-send is refused as a
-    /// `version_conflict_engine_exception`, which counts as success, so the **first** copy is kept and the duplicate is
-    /// dropped. Effectively-once, at the cost of real indexing throughput — Elasticsearch must check for an existing
-    /// document rather than blindly appending.
-    Dedupe,
-    /// The row's `__destination.id` as `_id`, written with an `index` action: a re-send **replaces** the document, so the last
-    /// copy is kept. Also removes duplicates, and additionally lets a pipeline reprocess a record to correct what was
-    /// indexed the first time.
+    Create,
+    /// Writes a document whether or not its `_id` is already there: a re-send replaces it, so the last copy is kept, and a pipeline can
+    /// reprocess a record to correct what was indexed the first time.
     ///
-    /// Not usable against a data stream, which accepts only `create`.
-    ///
-    /// **"Last" is not guaranteed to be the last one smeltr saw.** A worker keeps several batches in flight at once
-    /// (`runtime::Reader::max_in_flight`), so two versions of the same `_id` in different batches can reach the cluster in
-    /// either order and the loser is whichever arrives second. `Auto`/`Dedupe` are unaffected: they write with
-    /// `create`, so a duplicate is refused rather than overwritten, which is the semantic they are asking for either
-    /// way.
-    ///
-    /// Accepted deliberately rather than special-cased -- holding `Overwrite` destinations to one batch in flight would
-    /// buy determinism for the uncommon case at the cost of a rule every future destination has to know about. Revisit
-    /// if a deployment actually depends on it.
-    Overwrite,
-}
-
-impl DocIdPolicy {
-    /// Whether this policy wants a `__destination.id` from the row at all.
-    pub fn wants_doc_id(self) -> bool {
-        !matches!(self, DocIdPolicy::Auto)
-    }
+    /// "Last" is not the last smeltr saw. A worker keeps several batches in flight (`runtime::Reader::max_in_flight`),
+    /// so two versions of one `_id` in different batches can reach the cluster in either order. Accepted rather than
+    /// special-cased: holding `Index` destinations to one batch in flight would buy determinism for the uncommon case
+    /// at the cost of a rule every future destination has to know about.
+    Index,
 }
 
 #[derive(Clone, Debug)]

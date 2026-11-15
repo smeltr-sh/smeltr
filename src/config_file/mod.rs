@@ -172,8 +172,7 @@ impl LoadedSystem {
             .keys()
             .map(|&d| (d, crate::plan::topology::dlq_chain(&named, d)))
             .collect();
-        let mut errors = self.check_doc_id_sources(&compiled);
-        errors.extend(self.check_bytes_fields(&compiled));
+        let mut errors = self.check_bytes_fields(&compiled);
         let (records, refused) = self.parquet_records(&compiled);
         compiled.records = records;
         compiled.native_variants = (self.topology.destinations.iter())
@@ -534,68 +533,6 @@ impl LoadedSystem {
                         "source `{name}` reaches destination `{dest_name}`, which writes the bytes of `{field}`, {why}"
                     ),
                 ));
-            }
-        }
-        errors
-    }
-
-    /// A destination that keys documents on `__destination.id` must be handed one: every route delivering to it needs a pipeline
-    /// that binds the field. Otherwise every document gets a generated `_id`, which is the at-least-once behavior
-    /// `docId` was set to avoid, silently.
-    ///
-    /// Checked against the leaves of `Plan::tree`, so a `__destination.id` bound inside a `Code` block counts, and over the
-    /// compiled routes. Where an exception delivers a row is exempt: that row is a failure on its way to be looked at,
-    /// not a document the destination dedupes.
-    fn check_doc_id_sources(&self, compiled: &CompiledTopology) -> Vec<CompileError> {
-        // A destination naming its own `idField` needs nothing from any pipeline.
-        let wants: Vec<_> = self
-            .topology
-            .destinations
-            .iter()
-            .filter(|d| d.kind.wants_doc_id() && d.kind.id_field().is_none())
-            .map(|d| (d.id, d.name.clone()))
-            .collect();
-        if wants.is_empty() {
-            return Vec::new();
-        }
-
-        let mut errors = Vec::new();
-        for (r, route) in compiled.routes.iter().enumerate() {
-            let Some(plan) = compiled.plan_for(route.source, route.pipeline) else {
-                continue; // `compile_topology` already reported this
-            };
-            if plan.tree.leaf("__destination.id").is_some() {
-                continue;
-            }
-            // A delivered destination's DLQ takes the same document, identity and all.
-            let mut written: Vec<DestId> = route.deliver.iter().flat_map(|rule| rule.to.iter().copied()).collect();
-            let salvage: Vec<DestId> = written
-                .iter()
-                .filter_map(|d| compiled.dlq_of.get(d))
-                .flatten()
-                .copied()
-                .collect();
-            written.extend(salvage);
-            written.sort_unstable();
-            written.dedup();
-            {
-                for dest in &written {
-                    let Some((_, name)) = wants.iter().find(|(id, _)| id == dest) else {
-                        continue;
-                    };
-                    errors.push(CompileError::new(
-                        None,
-                        format!(
-                            "route {r} writes to destination `{name}`, which is configured to \
-                             key documents on a stable id, but names no `idField` and its \
-                             pipeline never sets `__destination.id`. Every document would get a generated \
-                             id instead, which is the plain at-least-once behavior `docId` was \
-                             set to avoid -- give that destination an `idField` naming the field \
-                             the identity lives in, or set `__destination.id` in the pipeline if it has \
-                             to be computed, or set `docId` back to `auto`"
-                        ),
-                    ));
-                }
             }
         }
         errors
