@@ -435,17 +435,17 @@ runs.
 A **static** parser needs no sample at all, so the author never types a
 name. Its fields are known before any row: grok's are its captures, in
 capture order, and CSV's are its ordered column table, which the workspace
-fills in from the configuration. The preview reports each at the type the
-pipeline gives it: a schema the pipeline produces types a field it names, a
-grok capture's pattern types the rest of grok's, and the rest of CSV's are
-`str`. Each field's type menu offers `auto` with that type, and a field the
-author hasn't chosen a type for shows `auto` there, so it follows the parse
-and the schemas as they change. A grok step stores only the types the author
-chooses: choosing `auto` again drops the choice, and a choice for a capture the
-pattern lost goes with it. A CSV column is stored typed `auto` until the author
-chooses. A column CSV should drop is typed `skip`, which keeps the columns
-after it aligned without inventing a field. A key-value key typed `skip` makes
-no field either. Under Advanced, **rebuild the line** writes the field the
+fills in from the configuration. Every field shows the one type it is
+stored at, which is the type it runs at. A field is first typed when it is
+made: a schema the pipeline produces gives a field it names its type, else
+the sample gives a proposed CSV column its type, else a grok capture takes
+its pattern's type and a new column is `str`. A capture the pattern no
+longer makes is removed. Where a schema the pipeline produces types a field otherwise,
+its warning gives a button that writes the field at the schema's type, and
+a ⚠ on the field's own line opens the warning and the button. A
+column CSV should drop is typed `skip`, which keeps the columns after it
+aligned without inventing a field. A key-value key typed `skip` makes no
+field either. Under Advanced, **rebuild the line** writes the field the
 parser reads back with each skipped column left empty, or each skipped pair
 left out, and says how many.
 

@@ -15,8 +15,6 @@ export type DataTypeSpec =
   | { kind: 'named'; name: NamedType }
   /** A CSV column left out of the record: it holds its position and produces no field, so it has no type. */
   | { kind: 'skip' }
-  /** A CSV column the pipeline types: at the type a schema it produces gives it, else `str`. */
-  | { kind: 'auto' }
   /** A declared datetime: `format` is the `parseTime` format its text arrives in, or empty for auto-detect. */
   | { kind: 'datetime'; format: string }
   | { kind: 'array'; of: NamedType }
@@ -40,13 +38,7 @@ export type NamedType = (typeof NAMED_TYPES)[number];
 /** One choice in a field's type picker: a declared type as the picker names it, with an array's element type and
  * nothing else of an object. */
 export type TypeKey =
-  | NamedType
-  | 'datetime'
-  | `array of ${NamedType}`
-  | 'object'
-  | 'array of objects'
-  | 'skip'
-  | 'auto';
+  NamedType | 'datetime' | `array of ${NamedType}` | 'object' | 'array of objects' | 'skip';
 
 /** The named types in the order a picker lists them, the common ones first. */
 const PICKED_NAMED: NamedType[] = ['str', 'i64', 'f64', 'bool', 'variant'];
@@ -89,7 +81,6 @@ export function withTypeKey(ty: DataTypeSpec, key: TypeKey): DataTypeSpec {
   if (key === typeKey(ty)) return ty;
   const fields = ty.kind === 'object' || ty.kind === 'arrayOfObjects' ? ty.fields : [];
   if (key === 'skip') return { kind: 'skip' };
-  if (key === 'auto') return { kind: 'auto' };
   // Auto-detect is where the author lands.
   if (key === 'datetime') return { kind: 'datetime', format: '' };
   if (key === 'object') return { kind: 'object', fields, open: false };
@@ -123,14 +114,6 @@ export function proposedTypeSpec(f: ProposedField): DataTypeSpec | null {
   return arrayOf && (NAMED_TYPES as readonly string[]).includes(arrayOf)
     ? { kind: 'array', of: arrayOf as NamedType }
     : null;
-}
-
-/** A parser step's count for its summary: how many fields it declares, or for grok how many types the author chose. */
-function parserCount(step: Extract<Step, { type: 'parser' }>): string {
-  const n = step.declared.length;
-  if (n === 0) return '';
-  if (step.kind.type !== 'grok') return ` (${n} declared)`;
-  return ` (${n} ${n === 1 ? 'type' : 'types'} chosen)`;
 }
 
 export function isDeclared(declared: FieldSpec[], name: string): boolean {
@@ -374,7 +357,6 @@ export function newStep(type: StepType, parseInput = '_raw'): Step {
 function dataTypeDto(ty: DataTypeSpec): unknown {
   if (ty.kind === 'named') return ty.name;
   if (ty.kind === 'skip') return 'skip';
-  if (ty.kind === 'auto') return 'auto';
   if (ty.kind === 'datetime')
     return ty.format ? { type: 'datetime', format: ty.format } : 'datetime';
   if (ty.kind === 'array') return { type: 'array', of: ty.of };
@@ -637,6 +619,24 @@ export function stepsRun(steps: Step[], target: Step, includeTarget: boolean): S
   return run;
 }
 
+/** Where the field a parser declares as `name` lands in the record: under the object its `into` names. */
+export function declaredPath(step: Extract<Step, { type: 'parser' }>, name: string): string {
+  const into = shownInto(step.into);
+  return into ? `${into}.${name}` : name;
+}
+
+/** Gives each field a parser of `steps` declares the type a schema fix (`PreviewResult.fixes`) asks for, where one
+ * asks. */
+export function takeSchemaTypes(steps: Step[], fixes: { path: string; type: unknown }[]) {
+  for (const step of flatSteps(steps)) {
+    if (step.type !== 'parser') continue;
+    for (const field of step.declared) {
+      const fix = fixes.find((f) => f.path === declaredPath(step, field.name));
+      if (fix && field.ty.kind !== 'skip') field.ty = dtoToDataType(fix.type, field.name);
+    }
+  }
+}
+
 /** The object a parser's `into` names, as its header and its Advanced show it: none for `$`, where every parser
  * writes unless told otherwise, nor for a blank box, which names nothing. */
 export function shownInto(into: string): string | null {
@@ -693,7 +693,7 @@ export function stepSummary(step: Step, pipelineNames: PipelineNames): string {
         ? `${step.fields.length} ${step.fields.length === 1 ? 'name' : 'names'}: ${step.fields.join(', ')}`
         : '(no names)';
     case 'parser':
-      return `${step.input || '_raw'} as ${PARSER_FORMAT_NAMES[step.kind.type]}${shownInto(step.into) ? ` into ${shownInto(step.into)}` : ''}${parserCount(step)}`;
+      return `${step.input || '_raw'} as ${PARSER_FORMAT_NAMES[step.kind.type]}${shownInto(step.into) ? ` into ${shownInto(step.into)}` : ''}${step.declared.length ? ` (${step.declared.length} declared)` : ''}`;
     case 'lookup':
       return `${step.input || '…'} → ${step.outputs.map((o) => o.field || '…').join(', ') || '(no outputs)'}`;
     case 'unroll':
@@ -781,7 +781,6 @@ function oneOf<T extends string>(v: unknown, options: readonly T[], where: strin
 export function dtoToDataType(dto: unknown, where: string): DataTypeSpec {
   if (typeof dto === 'string') {
     if (dto === 'skip') return { kind: 'skip' };
-    if (dto === 'auto') return { kind: 'auto' };
     if (dto === 'datetime') return { kind: 'datetime', format: '' };
     if (!(NAMED_TYPES as readonly string[]).includes(dto)) {
       throw new PipelineJsonError(

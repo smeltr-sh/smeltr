@@ -14,7 +14,6 @@ use crate::core::column::{Column, DataType, Validity};
 use crate::core::ctx::Ctx;
 use crate::core::error::{ErrorSink, ExceptionKind};
 use crate::core::id::{FunctionId, SlotId};
-use crate::format::grok_pattern::Holds;
 use crate::format::record::RecordView;
 use crate::leader::envelope::{ApiError, Envelope, Refusal};
 use crate::plan;
@@ -125,14 +124,14 @@ pub struct AfterDot {
     pub methods: Vec<plan::dot::Method>,
 }
 
-/// A grok or CSV step's field: its type in the pipeline, and the type it takes where the author chooses none.
+/// A field a schema the pipeline produces types otherwise than the rows hold it: what its warning says, the field's
+/// path, and the type the schemas agree on, which a declaration of it can take.
 #[derive(Debug, serde::Serialize)]
-pub struct ParsedField {
-    /// Its type in the pipeline: the author's choice, else the type the name already holds, else `auto`.
-    #[serde(flatten)]
-    pub field: config_file::FieldDto,
-    /// A produced schema's type, else the pattern's, else `str` (`Holds::under`).
-    pub auto: config_file::DataTypeDto,
+pub struct SchemaFix {
+    pub message: String,
+    pub path: String,
+    #[serde(rename = "type")]
+    pub ty: config_file::DataTypeDto,
 }
 
 #[derive(Default, serde::Serialize)]
@@ -148,8 +147,8 @@ pub struct Preview {
     /// the parse decided, so it is what the parser did rather than a second reading of the records.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parsers: Vec<ParserOut>,
-    /// Each grok or CSV step's fields, by step id. Empty when the pipeline did not compile.
-    pub parsed_fields: BTreeMap<String, Vec<ParsedField>>,
+    /// Each grok step's fields, as the pipeline types them, by step id. Empty when the pipeline did not compile.
+    pub parsed_fields: BTreeMap<String, Vec<config_file::FieldDto>>,
     /// The dictionary of what the pipeline writes (`plan::dictionary`), when asked. Absent when it did not compile.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dictionary: Option<DictionaryOut>,
@@ -159,6 +158,9 @@ pub struct Preview {
     /// How many of `warnings` are where the rows break the schemas the pipeline produces.
     #[serde(skip_serializing_if = "is_zero")]
     pub schema_findings: u32,
+    /// The warnings a field's declared type answers, each with that type.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fixes: Vec<SchemaFix>,
     /// The fields the schemas the pipeline produces require or recommend and its rows lack, which the editor shows
     /// as columns.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -926,7 +928,7 @@ pub fn run_preview(
         }
     };
     if records.is_empty() {
-        let (found, missing) = schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &record, first);
+        let (found, fixes, missing) = schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &record, first);
         warnings.extend(found.iter().map(warn));
         return Envelope::ok(Preview {
             stage: None,
@@ -937,13 +939,14 @@ pub fn run_preview(
             rows: vec![],
             unfiltered: filter.as_ref().map(|_| 0),
             parsers: vec![],
-            parsed_fields: parsed_fields(&plan, &pipeline_cfg.produces),
+            parsed_fields: parsed_fields(&plan),
             dictionary: req.dictionary.then(|| DictionaryOut {
                 compiled: Dictionary::of(&record),
                 sampled: None,
             }),
             warnings,
             schema_findings: found.len() as u32,
+            fixes,
             missing,
         });
     }
@@ -1062,7 +1065,7 @@ pub fn run_preview(
 
     // The dictionary is of every row: a filter chooses what is shown, not what the pipeline writes.
     let sampled = plan::dictionary::with_sample(&record, rows.iter().filter_map(|(r, _)| r.json.as_ref()));
-    let (found, missing) = schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &sampled, first);
+    let (found, fixes, missing) = schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &sampled, first);
     warnings.extend(found.iter().map(warn));
     let unfiltered = filter.as_ref().map(|_| rows.len() as u32);
     let rows = rows
@@ -1082,60 +1085,45 @@ pub fn run_preview(
         rows,
         unfiltered,
         parsers,
-        parsed_fields: parsed_fields(&plan, &pipeline_cfg.produces),
+        parsed_fields: parsed_fields(&plan),
         warnings,
         schema_findings: found.len() as u32,
+        fixes,
         missing,
         as_sample,
     })
 }
 
 /// Each grok step's fields in `plan`, by step id, spelled as a declaration spells them.
-fn parsed_fields(plan: &Plan, produces: &[Arc<Schema>]) -> BTreeMap<String, Vec<ParsedField>> {
-    let dto = |ty: &DataType, time_source: &Option<plan::config::TimeSource>| match time_source {
-        Some(plan::config::TimeSource::Format(format)) => {
-            config_file::DataTypeDto::Compound(config_file::CompoundTypeDto::DateTime { format: format.clone() })
-        }
-        _ => config_file::DataTypeDto::Scalar(ty.to_string()),
-    };
+fn parsed_fields(plan: &Plan) -> BTreeMap<String, Vec<config_file::FieldDto>> {
     let mut out = BTreeMap::new();
     for i in &plan.instrs {
         if let plan::compile::Op::Call {
             outputs,
-            call: plan::compile::Call::Parse { kind, matcher, .. },
+            call: plan::compile::Call::Parse { kind, .. },
             ..
         } = &i.op
-            && matches!(
-                kind,
-                plan::config::ParserKind::Grok(_) | plan::config::ParserKind::Csv(_)
-            )
+            && matches!(kind, plan::config::ParserKind::Grok(_))
             && let Some(step) = plan.step_ids.get(i.function as usize)
         {
-            let field = |o: &plan::compile::Output| {
-                // A CSV column holds text; a grok capture what its pattern gives it.
-                let holds = match (kind, matcher) {
-                    (plan::config::ParserKind::Grok(c), Some(m)) => m
-                        .capture_names()
-                        .into_iter()
-                        .find(|n| tree::name_of(n, c.split_dots) == o.name)
-                        .map_or_else(Holds::text, |n| m.holds(n)),
-                    _ => Holds::text(),
-                };
-                // The output's slot is named by the field's path in the record, the path a schema's field uses.
-                let path = plan.provenance.get(o.slot).map_or(o.name.as_str(), |p| p.name.as_str());
-                let auto = holds.under(produces, path);
-                ParsedField {
-                    field: config_file::FieldDto {
-                        name: o.name.clone(),
-                        ty: dto(&o.ty, &o.time_source),
-                    },
-                    auto: dto(&auto.ty, &auto.time_source),
-                }
+            let field = |o: &plan::compile::Output| config_file::FieldDto {
+                name: o.name.clone(),
+                ty: type_dto(&o.ty, o.time_source.as_ref()),
             };
             out.insert(step.clone(), outputs.iter().map(field).collect());
         }
     }
     out
+}
+
+/// `ty` spelled as a declaration spells it, a `datetime` with the format it is read by.
+fn type_dto(ty: &DataType, time_source: Option<&plan::config::TimeSource>) -> config_file::DataTypeDto {
+    match time_source {
+        Some(plan::config::TimeSource::Format(format)) => {
+            config_file::DataTypeDto::Compound(config_file::CompoundTypeDto::DateTime { format: format.clone() })
+        }
+        _ => config_file::DataTypeDto::Scalar(ty.to_string()),
+    }
 }
 
 /// The rows of `batch` that `plan` finished and `rows` shows, as a sample holds them: each as a capture at a
@@ -1185,26 +1173,39 @@ fn as_sample(
     }
 }
 
-/// A warning for each field of `record`, what `plan` writes, that breaks the schemas the pipeline produces
-/// (`schema::check`): at the step that wrote the field, or at `first` where the source gave it. A field the schemas
-/// require and the record lacks has no step that wrote it, and is warned of with none. With them, every field the
-/// schemas require or recommend and the record lacks; one recommended is no warning.
+/// The schemas the pipeline produces (`schema::check`) as `record`, the fields `plan` writes, breaks them, in three
+/// lists. The first warns of each field the record holds at a type a schema gives otherwise, at the step that wrote
+/// it, or at `first` where the source gave it, and of each field a schema requires and the record lacks, at no step.
+/// The second holds the fix for each of those warnings that a declaration of its field answers. The third holds every
+/// field the schemas require or recommend and the record lacks; a field only recommended is in this list and has no
+/// warning in the first.
 fn schema_warnings(
     produces: &[Arc<Schema>],
     plan: &Plan,
     record: &DataType,
     first: Option<FunctionId>,
-) -> (Vec<CompileError>, Vec<crate::schema::Missing>) {
+) -> (Vec<CompileError>, Vec<SchemaFix>, Vec<crate::schema::Missing>) {
     let findings = crate::schema::check(produces, record);
+    let mut fixes = Vec::new();
     let warned = crate::schema::told(produces, &findings)
         .into_iter()
         .filter(|t| t.breaks)
         .map(|t| {
-            let at = (t.keys).and_then(|keys| plan::dictionary::writer(plan, &keys).or(first));
-            CompileError::new(at, t.message)
+            let at = (t.keys.as_ref()).and_then(|keys| plan::dictionary::writer(plan, keys).or(first));
+            let warning = CompileError::new(at, t.message);
+            if let Some(path) = t.keys.map(|keys| keys.join("."))
+                && let Some(ty) = crate::schema::read_as(produces, &path)
+            {
+                fixes.push(SchemaFix {
+                    message: warning.message.clone(),
+                    path,
+                    ty: type_dto(&ty, None),
+                });
+            }
+            warning
         })
         .collect();
-    (warned, crate::schema::missing(produces, &findings))
+    (warned, fixes, crate::schema::missing(produces, &findings))
 }
 
 /// Clear every `reuse` that would hand away a binding of a name, so `touched` can read each binding after the run.
@@ -1752,7 +1753,7 @@ mod tests {
             warnings_of(config, &[]),
             [(
                 Some("s".to_string()),
-                "`@timestamp` is str, but Stamped has it as datetime. Write it as datetime.".to_string()
+                "`@timestamp` is str, but Stamped has it as datetime.".to_string()
             )]
         );
         // A pipeline that produces no schema is held to none.
@@ -1772,28 +1773,33 @@ mod tests {
         assert_eq!(
             serde_json::to_value(fields).unwrap(),
             serde_json::json!([
-                {"name": "time", "type": "i64", "auto": "i64"},
-                {"name": "n2", "type": "i64", "auto": "i64"},
-                {"name": "at", "type": at, "auto": at},
-                {"name": "took", "type": "f64", "auto": "i64"}
+                {"name": "time", "type": "i64"},
+                {"name": "n2", "type": "i64"},
+                {"name": "at", "type": at},
+                {"name": "took", "type": "f64"}
             ])
         );
     }
 
-    /// A CSV column typed `auto` takes a produced schema's type, else `str`; one the author types keeps it.
+    /// A field declared otherwise than a produced schema types it is warned of with the schema's type, which the
+    /// declaration can take.
     #[test]
-    fn a_csv_steps_columns_come_as_the_pipeline_types_them() {
+    fn a_warning_a_declared_type_answers_comes_with_that_type() {
         let step = r#"{"id":"s","type":"parser","input":"_raw","kind":{"type":"csv","delimiter":","},
-            "declared":[{"name":"time","type":"auto"},{"name":"host","type":"auto"},{"name":"ratio","type":"f64"}]}"#;
+            "declared":[{"name":"time","type":"str"},{"name":"host","type":"str"}]}"#;
         let config = producing(r#"["login"]"#).replace(r#"{"id":"s","type":"code","body":"x = 1;"}"#, step);
-        let fields = &previewed(config, &[]).parsed_fields["s"];
+        let preview = previewed(config, &[]);
+        let fixes: Vec<[String; 3]> = (preview.fixes.iter())
+            .map(|f| [&f.message, &f.path, &serde_json::to_string(&f.ty).unwrap()].map(String::clone))
+            .collect();
         assert_eq!(
-            serde_json::to_value(fields).unwrap(),
-            serde_json::json!([
-                {"name": "time", "type": "i64", "auto": "i64"},
-                {"name": "host", "type": "str", "auto": "str"},
-                {"name": "ratio", "type": "f64", "auto": "str"}
-            ])
+            fixes,
+            [["`time` is str, but Login has it as i64.", "time", r#""i64""#].map(String::from)]
+        );
+        assert!(
+            preview.warnings.iter().any(|w| w.message == fixes[0][0]),
+            "{:?}",
+            preview.warnings
         );
     }
 
@@ -1808,7 +1814,7 @@ mod tests {
             warnings_of(producing(r#"["stamped"]"#), &columns),
             [(
                 Some("u".to_string()),
-                "`@timestamp` is str, but Stamped has it as datetime. Write it as datetime.".to_string()
+                "`@timestamp` is str, but Stamped has it as datetime.".to_string()
             )]
         );
     }

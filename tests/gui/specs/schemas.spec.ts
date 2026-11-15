@@ -505,10 +505,12 @@ test("a new route's pipeline makes the schema it produces from Produces, which s
   const bundle = (await api.get(`${SHARED}${ON}`)).config;
   expect(bundle.schemas.map((s: { id: string }) => s.id)).toEqual(['ecs']);
   await expect(produces.getByRole('status')).toContainText('schema finding', { timeout: 15_000 });
-  // The preview types each field the schema names at the schema's type.
-  await expect(admin.getByText(/is str, but ecs has it as i64/)).toHaveCount(0);
-  await expect(admin.getByText('http.response.status_code: i64')).toBeVisible();
+  // A field typed before the schema keeps its type, and its warning writes the schema's.
+  const warning = admin.locator('.step-errors');
+  await expect(warning.getByText(/status_code is str, but ecs has it as i64/)).toBeVisible();
   await shoot(admin, 'schema-pick-made');
+  await warning.getByRole('button', { name: 'Write http.response.status_code as i64' }).click();
+  await expect(admin.getByText('http.response.status_code: i64')).toBeVisible({ timeout: 15_000 });
 });
 
 test("a new route's pipeline starts producing what the route's destinations accept", async ({
@@ -535,6 +537,44 @@ test("a new route's pipeline starts producing what the route's destinations acce
   ).toHaveText(['+ add schema', 'audit', '+ New schema…']);
   await expect(produces.getByRole('status')).toContainText('schema finding', { timeout: 15_000 });
   await shoot(admin, 'schema-pick-accepted');
+});
+
+// A proposed CSV column is typed from the sample, unless a schema the pipeline produces types it otherwise.
+test("a new pipeline's CSV columns take a produced schema's types over the sample's", async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await api.put(`${SHARED}/schemas${ON}`, [
+    { id: 'tally', fields: [{ field: 'code', type: 'str' }] },
+  ]);
+  await api.put(`${SHARED}/sources${ON}`, [
+    { id: 'web', type: 'syslogReceiver', port: 6514, allowFrom: ['10.0.0.0/8'] },
+  ]);
+  await api.put(`${SHARED}/destinations${ON}`, [
+    {
+      id: 'search',
+      type: 'elasticsearch',
+      url: 'http://127.0.0.1:9',
+      defaultIndex: 'logs',
+      accepts: ['tally'],
+    },
+  ]);
+  await goto(admin, leader, '#/build/pipelines/new?source=web&to=search');
+  await admin.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click();
+  await expect(admin.locator('.produces').getByRole('link', { name: 'tally' })).toBeVisible();
+  await admin.getByRole('button', { name: 'Choose a sample' }).click();
+  await admin.getByRole('button', { name: 'Add sample' }).click();
+  const form = admin.getByRole('dialog');
+  await form.getByRole('button', { name: 'Paste' }).click();
+  await form.getByLabel(/^Records/).fill('code,count\n200,3\n404,1\n');
+  await form.getByRole('button', { name: 'Use these records' }).click();
+  await expect(form).toHaveCount(0);
+  await admin.locator('button.expander[data-parser="csv"]').click();
+  const shown = (name: string) =>
+    admin.getByRole('combobox', { name: `${name} type` }).locator('option:checked');
+  await expect(shown('code')).toHaveText('str', { timeout: 15_000 });
+  await expect(shown('count')).toHaveText('i64');
 });
 
 /** The ECS importer: one row per field of ECS's `generated/csv/fields.csv` (Elastic Common Schema, Apache 2.0). The
@@ -1146,9 +1186,7 @@ test("review's pipeline card shows its schema findings, each under the step that
 
   const card = admin.locator('.card').filter({ hasText: 'pipeline · default' });
   const step = card.locator('.step');
-  await expect(
-    step.getByText('time is str, but Login has it as i64. Write it as i64.'),
-  ).toBeVisible({
+  await expect(step.getByText('time is str, but Login has it as i64.')).toBeVisible({
     timeout: 15_000,
   });
   const below = card.getByRole('status').first();

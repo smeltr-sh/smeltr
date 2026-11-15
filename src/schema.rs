@@ -511,9 +511,9 @@ pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<Told> {
             Misfit::Type { ty, wants } => {
                 let path = f.path();
                 let schema = title(&f.schema);
-                // A timestamp written as epoch milliseconds is the case a function answers.
+                // A datetime is written as epoch milliseconds with a function, not by retyping it, which is worth saying.
                 let how = match (ty, wants.as_str()) {
-                    (DataType::DateTime, "i64") => ": `.epochMillis()` gives one",
+                    (DataType::DateTime, "i64") => " Write it as i64: `.epochMillis()` gives an i64.",
                     _ => "",
                 };
                 let message = match wants.starts_with('{') {
@@ -525,10 +525,7 @@ pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<Told> {
                         ),
                         None => format!("`{path}` is {}, but {schema} has it as an object.", ty.spell()),
                     },
-                    false => format!(
-                        "`{path}` is {}, but {schema} has it as {wants}. Write it as {wants}{how}.",
-                        ty.spell()
-                    ),
+                    false => format!("`{path}` is {}, but {schema} has it as {wants}.{how}", ty.spell()),
                 };
                 out.push(Told {
                     keys: Some(f.keys.clone()),
@@ -788,7 +785,7 @@ mod tests {
                 Told {
                     keys: Some(vec!["time".to_string()]),
                     message:
-                        "`time` is datetime, but Login has it as i64. Write it as i64: `.epochMillis()` gives one."
+                        "`time` is datetime, but Login has it as i64. Write it as i64: `.epochMillis()` gives an i64."
                             .to_string(),
                     breaks: true,
                     recommended: None,

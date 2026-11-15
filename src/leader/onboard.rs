@@ -2,9 +2,9 @@
 //!
 //! [`propose`] takes a captured sample and returns the first steps of a pipeline for it and the condition a route
 //! would take its rows under. The steps are a proposal for the author to edit, never a configuration that runs. The
-//! GUI shows them in the step editor: a CSV Parser with its columns named, or a grok Parser with its pattern. The
-//! proposal types no field: the pipeline types each, from the schemas it produces or else as its parse reads it.
-//! Nothing reaches a worker until a change is deployed.
+//! GUI shows them in the step editor: a CSV Parser with its columns typed from the sample, or a grok Parser with its
+//! pattern, whose captures the GUI stores at the types the pipeline gives them. Where a schema the pipeline produces
+//! types a column otherwise, the GUI takes the schema's type. Nothing reaches a worker until a change is deployed.
 
 #[cfg(test)]
 mod fuzz_sniff;
@@ -12,10 +12,11 @@ mod fuzz_sniff;
 use serde::Serialize;
 
 use crate::config_file::{DataTypeDto, FieldDto, ParserKindDto, StepDto};
+use crate::core::column::DataType;
 use crate::format::grok_pattern::unfold;
 use crate::format::grok_scan::Matcher;
 use crate::format::spread::sniff_scalar;
-use crate::format::tag::Tag;
+use crate::format::tag::{Suggestion, Tag};
 use crate::format::{cef_scan, csv_scan, kv_scan};
 use crate::heartbeat::STREAM_FIELDS_PER_PARSER;
 use crate::io::RecordObject;
@@ -213,6 +214,20 @@ fn is_header(first: &[String], rest: &[Option<Vec<String>>]) -> bool {
         })
 }
 
+/// The type a CSV column's values suggest, as a preview suggests one for a field it read (`tag::Suggestion`). An
+/// empty field says nothing, and a column of them is `str`.
+fn column_type<'a>(values: impl Iterator<Item = &'a str>) -> String {
+    let mut seen = Suggestion::default();
+    for v in values.map(str::trim).filter(|v| !v.is_empty()) {
+        seen.saw(&sniff_scalar(v.as_bytes()));
+    }
+    match seen.suggest() {
+        DataType::Null => DataType::Str,
+        ty => ty,
+    }
+    .to_string()
+}
+
 /// The most records [`propose`] reads a format from.
 const PROPOSED_FROM: usize = 200;
 
@@ -310,12 +325,18 @@ pub fn propose(records: &[RecordObject], filed: Option<&[serde_json::Value]>) ->
             header,
             columns,
         }) => {
+            let rows: Vec<Vec<String>> = texts
+                .iter()
+                .skip(usize::from(header.is_some()))
+                .filter_map(|t| csv_fields(t, *delimiter))
+                .filter(|r| r.len() == *columns)
+                .collect();
             let declared = (0..*columns)
                 .map(|i| FieldDto {
                     name: header
                         .as_ref()
                         .map_or_else(|| format!("column_{}", i + 1), |h| h[i].trim().to_string()),
-                    ty: DataTypeDto::Scalar("auto".to_string()),
+                    ty: DataTypeDto::Scalar(column_type(rows.iter().map(|r| r[i].as_str()))),
                 })
                 .collect();
             let kind = ParserKindDto::Csv {
@@ -440,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn a_csv_proposal_names_its_columns_and_types_none() {
+    fn a_csv_proposal_types_its_columns_from_their_values() {
         let p = propose(&raw(&["host,bytes,ratio,ok", "a,1,0.5,true", "b,2,1,false"]), None);
         let Some(StepDto::Parser {
             kind: ParserKindDto::Csv { delimiter, .. },
@@ -460,7 +481,8 @@ mod tests {
             .collect();
         assert_eq!(
             got,
-            ["host", "bytes", "ratio", "ok"].map(|a| (a.to_string(), "auto".to_string()))
+            [("host", "str"), ("bytes", "i64"), ("ratio", "f64"), ("ok", "bool")]
+                .map(|(a, b)| (a.to_string(), b.to_string()))
         );
         assert_eq!((p.format, p.read, p.of), (Some("csv"), 3, 3));
         assert!(
@@ -482,8 +504,14 @@ mod tests {
         let Some(StepDto::Parser { declared, .. }) = p.steps.last().cloned() else {
             panic!("a CSV parser: {p:?}")
         };
-        let names: Vec<String> = declared.into_iter().map(|f| f.name).collect();
-        assert_eq!(names, ["host", "bytes"], "the header was read as a row");
+        let types: Vec<String> = declared
+            .into_iter()
+            .map(|f| match f.ty {
+                DataTypeDto::Scalar(t) => t,
+                DataTypeDto::Compound(_) => unreachable!(),
+            })
+            .collect();
+        assert_eq!(types, ["str", "i64"], "the header was typed as a row");
     }
 
     #[test]

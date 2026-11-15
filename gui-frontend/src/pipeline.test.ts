@@ -367,21 +367,20 @@ describe('parser', () => {
     }
   });
 
-  it("carries a csv step's columns as its declared list, a skip and an auto column included", () => {
+  it("carries a csv step's columns as its declared list, a skip column included", () => {
     const step = parser({
       kind: { type: 'csv', delimiter: ',' },
       declared: [
         { name: 'host', ty: { kind: 'named', name: 'str' } },
         { name: 'unwanted', ty: { kind: 'skip' } },
         { name: 'code', ty: { kind: 'named', name: 'i64' } },
-        { name: 'status', ty: { kind: 'auto' } },
       ],
     });
 
-    // `skip` and `auto` are bare type strings on the wire, like any named type.
+    // `skip` is a bare type string on the wire, like any named type.
     const dto = stepToDto(step) as { kind: unknown; declared: { name: string; type: unknown }[] };
     expect(dto.kind).toEqual({ type: 'csv', delimiter: ',' });
-    expect(dto.declared.map((f) => f.type)).toEqual(['str', 'skip', 'i64', 'auto']);
+    expect(dto.declared.map((f) => f.type)).toEqual(['str', 'skip', 'i64']);
 
     // Position is the column, so the order has to survive the round trip.
     const back = roundTrip(step);

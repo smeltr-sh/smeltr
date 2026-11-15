@@ -4022,9 +4022,9 @@ test('A1: a capture shows every record it holds, each opening on its fields', as
   await expect(rows.last()).toHaveAttribute('aria-expanded', 'true');
 });
 
-// A grok step's capture is typed automatically, by a schema the pipeline produces, else by its pattern; the step
-// stores only a type the author chooses, and choosing auto again lets the pipeline type it.
-test('a grok capture is typed automatically until the author chooses a type', async ({
+// A grok step stores each capture at the type the pipeline gives it, from a schema it produces, else its pattern. A
+// type the schema disagrees with is marked on the field's line, and its warning writes the schema's type.
+test("a grok capture is stored at the pipeline's type, and a schema's warning writes its own", async ({
   admin,
   leader,
   api,
@@ -4059,24 +4059,30 @@ test('a grok capture is typed automatically until the author chooses a type', as
     .fill('%{WORD:method} %{INT:status} %{WORD:bytes} %{NUMBER:took} \\[%{HTTPDATE:at}\\]');
   const shown = (name: string) =>
     admin.getByRole('combobox', { name: `${name} type` }).locator('option:checked');
-  await expect(shown('status')).toHaveText('auto · str');
-  await expect(shown('bytes')).toHaveText('auto · i64');
-  await expect(shown('took')).toHaveText('auto · f64');
-  await expect(shown('at')).toHaveText('auto · datetime');
+  await expect(shown('status')).toHaveText('str');
+  await expect(shown('bytes')).toHaveText('i64');
+  await expect(shown('took')).toHaveText('f64');
+  await expect(shown('at')).toHaveText('datetime');
 
-  await admin.getByRole('combobox', { name: 'took type' }).selectOption('i64');
-  await expect(shown('took')).toHaveText('i64');
-  await expect(
-    admin.getByRole('combobox', { name: 'took type' }).locator('option[value=""]'),
-  ).toHaveText('auto · f64');
+  // A type the schema disagrees with: the mark on its line shows the warning, whose button writes the schema's.
   await admin.getByRole('combobox', { name: 'bytes type' }).selectOption('str');
-  await admin.getByRole('combobox', { name: 'bytes type' }).selectOption('');
-  await expect(shown('bytes')).toHaveText('auto · i64');
+  const mark = admin.getByRole('button', { name: /^`?bytes`? is str, but web has it as i64/ });
+  await mark.click();
+  await admin.getByRole('button', { name: 'Write bytes as i64' }).first().click();
+  await expect(shown('bytes')).toHaveText('i64');
+  await expect(mark).toHaveCount(0);
+
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect
     .poll(
       async () =>
         (await api.get(`/api/areas/shared/pipelines/web${ON}`)).pipeline.steps[0].declared,
     )
-    .toEqual([{ name: 'took', type: 'i64' }]);
+    .toEqual([
+      { name: 'method', type: 'str' },
+      { name: 'status', type: 'str' },
+      { name: 'bytes', type: 'i64' },
+      { name: 'took', type: 'f64' },
+      { name: 'at', type: { type: 'datetime', format: '%d/%b/%Y:%H:%M:%S %z' } },
+    ]);
 });

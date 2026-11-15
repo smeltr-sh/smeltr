@@ -762,8 +762,7 @@ fn to_lookup_output(o: &LookupOutputDto) -> Result<LookupOutput, String> {
 
 /// A CSV step's `declared` list is its column table: entry `i` describes column `i`, left to right. An entry typed
 /// `"skip"` holds its position and produces no field, which is how a column the author does not want keeps every column
-/// after it aligned. An entry typed `"auto"` declares nothing, so the column takes the type a schema the pipeline
-/// produces gives it, else `str`.
+/// after it aligned.
 ///
 /// Returns each column's name, `None` where it is skipped, and the fields the kept ones declare -- `CsvConfig::headers`
 /// and the `Parser`'s own `declared`, which is why one authored list becomes two.
@@ -776,9 +775,7 @@ fn to_csv_columns(columns: &[FieldDto]) -> Result<(Vec<Option<String>>, Vec<Decl
             continue;
         }
         headers.push(Some(c.name.clone()));
-        if !matches!(&c.ty, DataTypeDto::Scalar(s) if s == "auto") {
-            kept.extend(to_declared_fields(std::slice::from_ref(c))?);
-        }
+        kept.extend(to_declared_fields(std::slice::from_ref(c))?);
     }
     Ok((headers, kept))
 }
