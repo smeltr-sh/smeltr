@@ -19,8 +19,8 @@
     declared: SchemaDto[];
     /** The add choice's name, read out: "Add a schema it produces". */
     adding: string;
-    /** Opens New schema, so a schema is made there and then. Without it, a schema is made on the Schemas page. */
-    onnew?: () => void;
+    /** Opens New schema, so a schema is made there and then. */
+    onnew: () => void;
     readOnly?: boolean;
   } = $props();
 
@@ -35,11 +35,10 @@
     <a class="mono" href="#/build/schemas?open={encodeURIComponent(id)}">{id}</a>
   </RemovableChip>
 {/each}
-{#if !readOnly && offered.length === 0 && onnew}
-  <button type="button" class="add link-button" onclick={onnew}>+ New schema…</button>
-{:else if !readOnly && offered.length === 0}
-  <!-- Nothing left to choose: a schema is made on the Schemas page. -->
-  <a class="add" href="#/build/schemas">Add a schema on the Schemas page</a>
+{#if !readOnly && offered.length === 0}
+  <button type="button" class="add link-button" aria-label={adding} onclick={onnew}
+    >+ New schema…</button
+  >
 {:else if !readOnly}
   <PickOrNew
     class="schema-add"

@@ -18,7 +18,7 @@
     SchemaDto,
     SchemaReadFormat,
   } from './api';
-  import { FIELD_TYPES, importSchema, readSchema } from './api';
+  import { FIELD_TYPES, importSchema, putSchemas, readSchema } from './api';
   import { REQUIREMENTS } from './schemas';
 
   export type SchemaStart = 'ecs' | 'ocsf' | 'otlp' | 'csv' | 'jsonSchema' | 'import' | 'empty';
@@ -193,6 +193,19 @@
     });
     if (!read.ok) throw new Error(read.errors.map((e) => e.message).join(' '));
     return read.schema;
+  }
+
+  /** Makes the schema `draft` asks for and saves it with `own`, the scope's schemas, for a page that offers New
+   * schema beside a list of schemas. Returns the schema and the commit the save made. Throws the leader's refusal. */
+  export async function saveNewSchema(
+    draft: SchemaDraft,
+    own: SchemaDto[],
+    config: FileConfigDto | null,
+  ): Promise<{ schema: SchemaDto; commit: string | null }> {
+    const schema = await schemaOf(draft, config);
+    const saved = await putSchemas([...own, schema]);
+    if (!saved.ok) throw new Error(saved.errors.map((e) => e.message).join(' '));
+    return { schema, commit: saved.commit ?? null };
   }
 </script>
 

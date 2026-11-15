@@ -21,7 +21,7 @@
     /** What the last run found, absent before one. */
     findings: number | undefined;
     /** Opens New schema, offered beside the bundle's schemas. */
-    onnew?: () => void;
+    onnew: () => void;
     readOnly?: boolean;
   } = $props();
 </script>

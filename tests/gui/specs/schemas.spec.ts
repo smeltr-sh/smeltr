@@ -432,6 +432,34 @@ test("a destination's accepts is saved with it", async ({ admin, leader, api }) 
   expect(saved.config.destinations[0].accepts).toEqual(['audit']);
 });
 
+test('a destination makes a schema it accepts from its accepts, and the page saves after it', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await api.put(`${SHARED}/destinations${ON}`, [
+    { id: 'search', type: 'elasticsearch', url: 'http://127.0.0.1:9', defaultIndex: 'logs' },
+  ]);
+  await goto(admin, leader, '#/build/destinations');
+  await admin
+    .getByRole('button', { name: /search/ })
+    .first()
+    .click();
+  await admin.getByRole('button', { name: 'Add a schema it accepts' }).click();
+  const dialog = admin.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'ECS', exact: true }).click();
+  await dialog.getByLabel('id', { exact: true }).fill('ecs');
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(dialog).toBeHidden({ timeout: 30_000 });
+  await expect(admin.getByRole('link', { name: 'ecs', exact: true })).toBeVisible();
+  await shoot(admin, 'schema-pick-destination');
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
+  const saved = (await api.get(`${SHARED}${ON}`)).config;
+  expect(saved.schemas.map((s: { id: string }) => s.id)).toEqual(['ecs']);
+  expect(saved.destinations[0].accepts).toEqual(['ecs']);
+});
+
 /** Access-log lines, which a new pipeline is proposed a Grok parser for. */
 const ACCESS_LOG = [
   '203.0.113.7 - - [14/Nov/2026:21:02:11 -0500] "GET /index.html HTTP/1.1" 200 5120 "-" "Mozilla/5.0"',
@@ -465,7 +493,7 @@ test("a new route's pipeline makes the schema it produces from Produces, which s
   await makePipeline(admin, leader, api, '#/build/pipelines/new?source=web');
   const produces = admin.locator('.produces');
   await shoot(admin, 'schema-pick-none');
-  await produces.getByRole('button', { name: '+ New schema…' }).click();
+  await produces.getByRole('button', { name: 'Add a schema it produces' }).click();
   const dialog = admin.getByRole('dialog');
   await dialog.getByRole('button', { name: 'ECS', exact: true }).click();
   await dialog.getByLabel('id', { exact: true }).fill('ecs');

@@ -19,6 +19,7 @@
   import { BUILT_IN, lay, overrideCount, problems } from './exceptions';
   import DestinationFields from './DestinationFields.svelte';
   import SchemaChips from './SchemaChips.svelte';
+  import NewSchema, { saveNewSchema, type SchemaDraft } from './NewSchema.svelte';
   import JsonEditPage from './JsonEditPage.svelte';
   import CaptureFlow from './CaptureFlow.svelte';
   import {
@@ -61,6 +62,20 @@
   let ownSchemas: SchemaDto[] = $state([]);
   let sharedSchemas: SchemaDto[] = $state([]);
   let schemas = $derived([...sharedSchemas, ...ownSchemas]);
+  /** The scope's bundle as the leader reads it, which the import's pipeline runs in. */
+  let ownConfig: FileConfigDto | null = null;
+  /** The destination whose accepts the new schema will be named in, while New schema is open. */
+  let schemaFor: DestinationDto | null = $state(null);
+  /** Makes the schema `draft` asks for, saves it with the scope's schemas, and names it in `schemaFor`'s accepts. */
+  async function addSchema(draft: SchemaDraft) {
+    const { schema, commit } = await saveNewSchema(draft, $state.snapshot(ownSchemas), ownConfig);
+    ownSchemas.push(schema);
+    // The schema's save moved the branch past what the page read, so the page's own save is made against the
+    // branch as it now is.
+    editor.readAtCommit = commit;
+    if (schemaFor) schemaFor.accepts = [...(schemaFor.accepts ?? []), schema.id];
+    schemaFor = null;
+  }
   let all = $derived([...destinations, ...sharedDestinations]);
   let refusals = $derived(
     problems(
@@ -91,6 +106,7 @@
       routes = config.routes;
       pipelines = config.pipelines;
       ownSchemas = config.schemas ?? [];
+      ownConfig = config;
       await loadShared();
     },
   });
@@ -225,6 +241,7 @@
                 }
                 declared={schemas}
                 adding="Add a schema it accepts"
+                onnew={() => (schemaFor = destination)}
               />
             </div>
           </Field>
@@ -262,6 +279,13 @@
         {kafka}
         onadd={add}
         oncancel={() => (adding = null)}
+      />
+      <NewSchema
+        open={schemaFor !== null}
+        unavailable={schemas.map((s) => s.id)}
+        importers={pipelines.map((p) => ({ id: p.id, name: p.name }))}
+        onadd={addSchema}
+        oncancel={() => (schemaFor = null)}
       />
 
       {#if capturing !== null && captureGroup}
