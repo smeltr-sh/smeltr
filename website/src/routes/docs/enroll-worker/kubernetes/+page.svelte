@@ -313,20 +313,10 @@ spec:
   <h2 id="receiver">Expose a receiver</h2>
   <p>
     A receiver is a source that senders connect to. Every worker of its group listens on the
-    receiver's <code>port</code>, so each worker pod needs that port open, and senders need one
-    address that reaches all of them. Add the port to the worker container, beside its
-    <code>env</code>. This example uses port 8088:
+    receiver's <code>port</code>, and senders need one address that reaches all of them. Add a Service
+    that selects the worker pods and sends to that port. It changes nothing in the worker pods, so they
+    keep running. This example uses port 8088:
   </p>
-  <pre><code>          ports:
-            - name: receiver
-              containerPort: 8088
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: receiver
-            periodSeconds: 5</code
-    ></pre>
-  <p>Then add a Service that selects the worker pods:</p>
   <pre><code
       >apiVersion: v1
 kind: Service
@@ -339,7 +329,7 @@ spec:
   ports:
     - name: receiver
       port: 8088
-      targetPort: receiver</code
+      targetPort: 8088</code
     ></pre>
   <p>
     Pick a
@@ -348,11 +338,33 @@ spec:
       >Service type</a
     > for your balancer. For an autoscaled worker group, select its Deployment's pods.
   </p>
+  <ul>
+    <li>
+      The worker runs as a non-root user without capabilities and cannot listen on a port below
+      1024. For syslog's 514, set the receiver's <code>port</code> to a high one, such as 5514, and
+      give the Service <code>port: 514</code> with <code>targetPort: 5514</code>.
+    </li>
+    <li>
+      A syslog receiver over UDP needs <code>protocol: UDP</code> on the Service's port. Its
+      <code>allowFrom</code> sees the address a datagram arrives from, so the Service keeps the
+      sender's own: <code>externalTrafficPolicy: Local</code> on a LoadBalancer or NodePort Service.
+    </li>
+  </ul>
+  <h3 id="receiver-probe">Take a busy worker out of the Service</h3>
   <p>
     <code>GET /health</code> on the receiver port answers 200 while the receiver takes requests and 503
-    while it is full, blocked or stopping, so the readiness probe takes a busy worker out of the Service
-    until it can take requests again. The probe is optional.
+    while it is full, blocked or stopping. A readiness probe on it takes a busy worker out of the
+    Service until it can take requests again. Without one, a busy worker answers senders busy, and they
+    send again. The probe is part of the worker pod, so adding it restarts every worker: add it with the
+    StatefulSet when you know the receiver's port. Put it in the worker container, beside its
+    <code>env</code>:
   </p>
+  <pre><code>          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8088
+            periodSeconds: 5</code
+    ></pre>
   <ul>
     <li>
       A receiver that names a certificate speaks TLS, so its probe adds <code>scheme: HTTPS</code>.
@@ -364,16 +376,6 @@ spec:
       included. An <code>httpGet</code> probe has none, so use a
       <code>tcpSocket</code> probe on the receiver port there. It confirms only that the worker listens.
     </li>
-    <li>
-      The worker runs as a non-root user without capabilities and cannot listen on a port below
-      1024. For syslog's 514, set the receiver's <code>port</code> to a high one, such as 5514, and
-      give the Service <code>port: 514</code> with <code>targetPort: receiver</code>.
-    </li>
-    <li>
-      A syslog receiver over UDP needs <code>protocol: UDP</code> on its container port and on the
-      Service's, and has no health path, so it takes no probe. Its <code>allowFrom</code> sees the
-      address a datagram arrives from, so the Service keeps the sender's own:
-      <code>externalTrafficPolicy: Local</code> on a LoadBalancer or NodePort Service.
-    </li>
+    <li>A syslog receiver over UDP has no health path, so it takes no probe.</li>
   </ul>
 </GuideLayout>
