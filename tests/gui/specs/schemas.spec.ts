@@ -505,7 +505,7 @@ test("a new route's pipeline makes the schema it produces from Produces, which s
   const bundle = (await api.get(`${SHARED}${ON}`)).config;
   expect(bundle.schemas.map((s: { id: string }) => s.id)).toEqual(['ecs']);
   await expect(produces.getByRole('status')).toContainText('schema finding', { timeout: 15_000 });
-  // The untouched proposal is proposed again, and the parser declares each field at the schema's type.
+  // The untouched proposal is proposed again, and the preview types each field the schema names at the schema's type.
   await expect(admin.getByText(/is str, but ecs has it as i64/)).toHaveCount(0);
   await expect(admin.getByText('http.response.status_code: i64')).toBeVisible();
   await shoot(admin, 'schema-pick-made');
