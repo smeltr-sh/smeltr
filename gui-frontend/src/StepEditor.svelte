@@ -306,26 +306,20 @@
       ps.declared = declared;
   });
 
-  /** The warning a declared field's type answers, from the last preview, with what answers it. */
-  function fixOf(ps: ParserStep, name: string) {
-    const path = declaredPath(ps, name);
-    const fix = fixes.find((f) => f.path === path && stepWarningMessages.includes(f.message));
-    if (!fix || !name) return undefined;
-    const ty = dtoToDataType(fix.type, name);
-    return {
-      message: fix.message,
-      stated: fix.stated,
-      label: `Write ${name} as ${typeKey(ty)}`,
-      onfix: () => setType(ps, name, ty),
-    };
-  }
-
-  /** The declared field of this step a warning is about, and what answers it. */
-  function fixOfMessage(message: string) {
-    if (step.type !== 'parser') return undefined;
+  /** The warnings on this step that a declared field's type answers, from the last preview: each with its field, and
+   * the button that answers it. */
+  let stepFixes = $derived.by(() => {
+    if (step.type !== 'parser') return [];
     const ps = step;
-    return ps.declared.map((d) => fixOf(ps, d.name)).find((f) => f?.message === message);
-  }
+    return ps.declared.flatMap(({ name }) => {
+      const path = declaredPath(ps, name);
+      const fix = fixes.find((f) => f.path === path && stepWarningMessages.includes(f.message));
+      if (!fix || !name) return [];
+      const ty = dtoToDataType(fix.type, name);
+      const label = `Write ${name} as ${typeKey(ty)}`;
+      return [{ name, message: fix.message, label, onfix: () => setType(ps, name, ty) }];
+    });
+  });
 
   /** What one definition contributes, for its summary line: the captures its own text names. */
   function bringsOf(pattern: string): string {
@@ -423,11 +417,11 @@
 {/snippet}
 
 {#snippet stepMessage(message: string, warn: boolean)}
-  {@const fix = warn && !readOnly ? fixOfMessage(message) : undefined}
+  {@const fix = warn && !readOnly ? stepFixes.find((f) => f.message === message) : undefined}
   <div class="step-error-msg" class:warn>
     <StateMark state={warn ? 'warning' : 'error'} size={15} />
     <span
-      ><Ticked text={fix?.stated ?? message} />{#if fix}
+      ><Ticked text={message} />{#if fix}
         <Button type="button" class="compact" onclick={fix.onfix}>{fix.label}</Button>{/if}</span
     >
   </div>
@@ -953,7 +947,7 @@
                     groups={declaredTypeGroups(false)}
                     disabled={readOnly}
                     label={field.name}
-                    fix={fixOf(ps, field.name)}
+                    fix={stepFixes.find((f) => f.name === field.name)}
                   >
                     {#snippet name()}
                       <span class="derived-name ellipsis" title="from the pattern"
@@ -1050,7 +1044,7 @@
                   <FieldRow
                     bind:ty={ps.declared[i].ty}
                     groups={declaredTypeGroups(isCsv || parserKind.type === 'keyValue')}
-                    fix={fixOf(ps, field.name)}
+                    fix={stepFixes.find((f) => f.name === field.name)}
                     number={isCsv ? i + 1 : undefined}
                     disabled={readOnly}
                     label={field.name || (isCsv ? 'column' : 'field')}

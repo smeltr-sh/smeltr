@@ -1186,9 +1186,7 @@ test("review's pipeline card shows its schema findings, each under the step that
 
   const card = admin.locator('.card').filter({ hasText: 'pipeline · default' });
   const step = card.locator('.step');
-  await expect(
-    step.getByText('time is str, but Login has it as i64. Write it as i64.'),
-  ).toBeVisible({
+  await expect(step.getByText('time is str, but Login has it as i64.')).toBeVisible({
     timeout: 15_000,
   });
   const below = card.getByRole('status').first();

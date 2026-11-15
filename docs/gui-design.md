@@ -442,7 +442,7 @@ the sample gives a proposed CSV column its type, else a grok capture takes
 its pattern's type and a new column is `str`. A capture the pattern no
 longer makes is removed. Where a schema the pipeline produces types a field otherwise,
 its warning gives a button that writes the field at the schema's type, and
-a ⚠ on the field's own line shows the warning and the button on hover. A
+a ⚠ on the field's own line opens the warning and the button. A
 column CSV should drop is typed `skip`, which keeps the columns after it
 aligned without inventing a field. A key-value key typed `skip` makes no
 field either. Under Advanced, **rebuild the line** writes the field the

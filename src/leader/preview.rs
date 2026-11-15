@@ -129,8 +129,6 @@ pub struct AfterDot {
 #[derive(Debug, serde::Serialize)]
 pub struct SchemaFix {
     pub message: String,
-    /// The warning without the sentence that says to write the type, for a screen whose button writes it.
-    pub stated: String,
     pub path: String,
     #[serde(rename = "type")]
     pub ty: config_file::DataTypeDto,
@@ -1195,16 +1193,14 @@ fn schema_warnings(
         .map(|t| {
             let at = (t.keys.as_ref()).and_then(|keys| plan::dictionary::writer(plan, keys).or(first));
             let warning = CompileError::new(at, t.message);
-            if let Some((keys, stated)) = t.keys.zip(t.stated) {
-                let path = keys.join(".");
-                if let Some(ty) = crate::schema::read_as(produces, &path) {
-                    fixes.push(SchemaFix {
-                        message: warning.message.clone(),
-                        stated: crate::expr::inline::user_names(&stated).into_owned(),
-                        path,
-                        ty: type_dto(&ty, None),
-                    });
-                }
+            if let Some(path) = t.keys.map(|keys| keys.join("."))
+                && let Some(ty) = crate::schema::read_as(produces, &path)
+            {
+                fixes.push(SchemaFix {
+                    message: warning.message.clone(),
+                    path,
+                    ty: type_dto(&ty, None),
+                });
             }
             warning
         })
@@ -1757,7 +1753,7 @@ mod tests {
             warnings_of(config, &[]),
             [(
                 Some("s".to_string()),
-                "`@timestamp` is str, but Stamped has it as datetime. Write it as datetime.".to_string()
+                "`@timestamp` is str, but Stamped has it as datetime.".to_string()
             )]
         );
         // A pipeline that produces no schema is held to none.
@@ -1793,18 +1789,12 @@ mod tests {
             "declared":[{"name":"time","type":"str"},{"name":"host","type":"str"}]}"#;
         let config = producing(r#"["login"]"#).replace(r#"{"id":"s","type":"code","body":"x = 1;"}"#, step);
         let preview = previewed(config, &[]);
-        let fixes: Vec<[String; 4]> = (preview.fixes.iter())
-            .map(|f| [&f.message, &f.stated, &f.path, &serde_json::to_string(&f.ty).unwrap()].map(String::clone))
+        let fixes: Vec<[String; 3]> = (preview.fixes.iter())
+            .map(|f| [&f.message, &f.path, &serde_json::to_string(&f.ty).unwrap()].map(String::clone))
             .collect();
         assert_eq!(
             fixes,
-            [[
-                "`time` is str, but Login has it as i64. Write it as i64.",
-                "`time` is str, but Login has it as i64.",
-                "time",
-                r#""i64""#
-            ]
-            .map(String::from)]
+            [["`time` is str, but Login has it as i64.", "time", r#""i64""#].map(String::from)]
         );
         assert!(
             preview.warnings.iter().any(|w| w.message == fixes[0][0]),
@@ -1824,7 +1814,7 @@ mod tests {
             warnings_of(producing(r#"["stamped"]"#), &columns),
             [(
                 Some("u".to_string()),
-                "`@timestamp` is str, but Stamped has it as datetime. Write it as datetime.".to_string()
+                "`@timestamp` is str, but Stamped has it as datetime.".to_string()
             )]
         );
     }

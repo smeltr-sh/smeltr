@@ -2269,9 +2269,9 @@ export interface PreviewResult {
   parsers: ParserProposal[];
   /** Each grok step's fields as the pipeline types them, by step id. Absent when the pipeline did not compile. */
   parsed_fields?: Record<string, { name: string; type: unknown }[]>;
-  /** The warnings a field's declared type answers: the warning, the warning without the sentence that says to write
-   * the type, the field's path, and the type the produced schemas agree on (`leader::preview::SchemaFix`). */
-  fixes?: { message: string; stated: string; path: string; type: unknown }[];
+  /** The warnings a field's declared type answers: the warning, the field's path, and the type the produced schemas
+   * agree on (`leader::preview::SchemaFix`). */
+  fixes?: { message: string; path: string; type: unknown }[];
   /** The record the pipeline writes. Absent when it did not compile. */
   dictionary?: DictionaryOut;
   /** The answer to `PreviewRequest.afterDot`. Absent where the dot follows no value. */

@@ -4067,7 +4067,7 @@ test("a grok capture is stored at the pipeline's type, and a schema's warning wr
   // A type the schema disagrees with: the mark on its line shows the warning, whose button writes the schema's.
   await admin.getByRole('combobox', { name: 'bytes type' }).selectOption('str');
   const mark = admin.getByRole('button', { name: /^`?bytes`? is str, but web has it as i64/ });
-  await mark.hover();
+  await mark.click();
   await admin.getByRole('button', { name: 'Write bytes as i64' }).first().click();
   await expect(shown('bytes')).toHaveText('i64');
   await expect(mark).toHaveCount(0);

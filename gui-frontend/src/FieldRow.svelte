@@ -12,7 +12,9 @@
   import TypePicker from './TypePicker.svelte';
   import DatetimeFormat from './DatetimeFormat.svelte';
   import Nested from './Nested.svelte';
-  import SchemaFixMark from './SchemaFixMark.svelte';
+  import Button from './Button.svelte';
+  import Help from './Help.svelte';
+  import Ticked from './Ticked.svelte';
   import { typeKey, withTypeKey, type DataTypeSpec, type TypeKey } from './pipeline';
 
   let {
@@ -42,8 +44,8 @@
     end?: Snippet;
     /** Under the row, indented: an object's own fields. */
     nested?: Snippet;
-    /** A warning the field's type answers (`SchemaFixMark`). */
-    fix?: { stated: string; label: string; onfix: () => void };
+    /** A warning the field's type answers: a mark on the row opens it, with a button that writes the type. */
+    fix?: { message: string; label: string; onfix: () => void };
   } = $props();
 
   let menuOpen = $state(false);
@@ -60,11 +62,14 @@
     onpick={(key) => (ty = withTypeKey(ty, key))}
   />
   <span class="end">
-    {#if fix && !disabled}<SchemaFixMark
-        stated={fix.stated}
-        label={fix.label}
-        onfix={fix.onfix}
-      />{/if}
+    {#if fix && !disabled}
+      <Help label={fix.message} warning>
+        <Ticked text={fix.message} />
+        <div class="fix">
+          <Button type="button" class="compact" onclick={fix.onfix}>{fix.label}</Button>
+        </div>
+      </Help>
+    {/if}
     {#if end}
       {@render end()}
     {:else if actions && !disabled}
