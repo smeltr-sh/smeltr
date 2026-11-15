@@ -3173,7 +3173,7 @@ test('A10: an Elasticsearch destination signs in with a username and password', 
   await admin.getByRole('button', { name: '+ Add destination' }).click();
   const dialog = admin.getByRole('dialog');
   await dialog.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
-  await dialog.getByRole('textbox', { name: /^id/ }).fill('search');
+  await dialog.getByRole('textbox', { name: 'id', exact: true }).fill('search');
   await dialog.getByRole('textbox', { name: 'url' }).fill('https://es.example.com:9200');
   await dialog.getByRole('textbox', { name: 'default index' }).fill('logs');
   const credential = dialog.getByRole('combobox', { name: /^credential/ });
@@ -3202,8 +3202,8 @@ test('A10: an Elasticsearch destination signs in with a username and password', 
   ]);
 });
 
-// A10, sources and destinations from a form. Under dedupe an Elasticsearch destination's id field starts as
-// `__destination.id`, which is saved as no id field at all; another field name is saved as it is.
+// A10, sources and destinations from a form. An Elasticsearch destination's id field starts as `__destination.id`,
+// which is saved as no id field at all; another field name is saved as it is, and so is the bulk action `index`.
 test('A10: an Elasticsearch id field starts as __destination.id', async ({
   admin,
   leader,
@@ -3217,14 +3217,16 @@ test('A10: an Elasticsearch id field starts as __destination.id', async ({
     await dialog.getByRole('textbox', { name: /^id$/ }).fill(id);
     await dialog.getByRole('textbox', { name: 'url' }).fill('https://es.example.com:9200');
     await dialog.getByRole('textbox', { name: 'default index' }).fill('logs');
-    await dialog.getByRole('combobox', { name: 'duplicate documents' }).selectOption('dedupe');
     return dialog;
   };
   let dialog = await add('computed');
+  await dialog.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
   await expect(dialog.getByRole('textbox', { name: 'ID field' })).toHaveValue('__destination.id');
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   dialog = await add('keyed');
+  await dialog.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
   await dialog.getByRole('textbox', { name: 'ID field' }).fill('event.id');
+  await dialog.getByRole('combobox', { name: 'bulk action' }).selectOption('index');
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
@@ -3234,11 +3236,10 @@ test('A10: an Elasticsearch id field starts as __destination.id', async ({
     type: 'elasticsearch',
     url: 'https://es.example.com:9200',
     defaultIndex: 'logs',
-    docId: 'dedupe',
   };
   expect(saved.config.destinations).toEqual([
     { id: 'computed', ...common },
-    { id: 'keyed', ...common, idField: 'event.id' },
+    { id: 'keyed', ...common, idField: 'event.id', action: 'index' },
   ]);
 });
 

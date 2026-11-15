@@ -139,9 +139,6 @@ pub struct DestinationTarget {
     pub destination: Box<dyn Destination>,
     /// `DestinationConfig::on_reject`.
     pub on_reject: Answer,
-    /// Whether this destination keys documents on the row's `__destination.id`, so a row without one is counted
-    /// (`smeltr_rows_without_doc_id_total`).
-    pub wants_doc_id: bool,
     /// The `__destination` field that places a row in it, if it reads one.
     pub placement: Option<Placement>,
 }
@@ -633,7 +630,6 @@ impl Output {
 #[derive(Default)]
 struct Outcomes {
     sent: HashMap<DestId, u64>,
-    without_doc_id: HashMap<DestId, u64>,
     no_rule: u64,
     unmatched: u64,
     over_budget: u64,
@@ -1949,10 +1945,6 @@ impl Transform {
                     continue;
                 }
                 let doc_id = row.doc_id_for(target.id).map(str::to_string);
-                // Delivered without the dedupe it was configured for, and counted so that is not silent.
-                if target.wants_doc_id && doc_id.is_none() {
-                    *out.outcomes.without_doc_id.entry(target.id).or_insert(0) += 1;
-                }
                 // Where a refusal of this row goes, worked out while the row's identities are still here: a refusal
                 // comes back with the acknowledgment, after the columns are gone. Every DLQ down the chain, since a
                 // DLQ that refuses sends it on to its own; one a rule already sent the row to has it, and is left out.
@@ -2190,15 +2182,9 @@ impl Transform {
         let mut raw: Option<Arc<Chunk>> = None;
         let raw_record = lane.meta.decodes();
         for &to in targets {
-            let Some(target) = self.destinations.iter().find(|d| d.id == to) else {
+            if !self.destinations.iter().any(|d| d.id == to) {
                 out.outcomes.drop_rows(dropped, records.len() as u64);
                 continue;
-            };
-            // No pipeline ran, so there is no `__destination.id` and no field to read one from: a destination keying on
-            // an identity gets none and generates its own, which is the dedupe it was configured for silently not
-            // happening. Counted under the name that already exists for it.
-            if target.wants_doc_id {
-                *out.outcomes.without_doc_id.entry(to).or_insert(0) += records.len() as u64;
             }
             let payload = self.topology.payload(to);
             let kept = self.kept(to);
@@ -2280,14 +2266,10 @@ impl Transform {
                 n,
             );
         }
-        for (name, counts) in [
-            ("smeltr_rows_sent_total", o.sent),
-            ("smeltr_rows_without_doc_id_total", o.without_doc_id),
-        ] {
-            for (dest, n) in counts {
-                let dest_label = dest.to_string();
-                self.metrics.incr(name, &[("destination", dest_label.as_str())], n);
-            }
+        for (dest, n) in o.sent {
+            let dest_label = dest.to_string();
+            self.metrics
+                .incr("smeltr_rows_sent_total", &[("destination", dest_label.as_str())], n);
         }
     }
 }

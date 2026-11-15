@@ -5205,23 +5205,19 @@
             "what": "The [credential](/docs/secrets) holding the user's password."
           },
           {
-            "name": "docId",
+            "name": "action",
             "type": "string",
-            "default": "auto",
-            "examples": ["dedupe"],
-            "what": "Who chooses each document's id. See [Duplicate documents](/docs/destinations/elasticsearch#duplicate-documents).",
+            "default": "create",
+            "examples": ["index"],
+            "what": "What happens when a document arrives with an ID already in the index. See [Duplicate documents](/docs/destinations/elasticsearch#duplicate-documents).",
             "values": [
               {
-                "value": "auto",
-                "what": "Lets Elasticsearch choose each document's id."
+                "value": "create",
+                "what": "Keeps the first copy. The only action a data stream accepts."
               },
               {
-                "value": "dedupe",
-                "what": "Keeps the first document written under an id."
-              },
-              {
-                "value": "overwrite",
-                "what": "Replaces the document written under an id."
+                "value": "index",
+                "what": "Replaces the copy already there with the new one."
               }
             ]
           },
@@ -5230,7 +5226,7 @@
             "type": "string",
             "absent": "`__destination.id`",
             "examples": ["event.id", "request_id"],
-            "what": "The field holding a document's id under `dedupe` or `overwrite`."
+            "what": "The row field each document's ID is read from. A row with no ID gets one Elasticsearch generates."
           },
           {
             "name": "inFlight",
@@ -5287,13 +5283,13 @@
               "auth",
               "username",
               "password",
-              "docId",
-              "idField"
+              "action"
             ]
           },
           {
             "section": "Advanced",
             "settings": [
+              "idField",
               "inFlight",
               "maxBulkBytes",
               "bufferBytes",

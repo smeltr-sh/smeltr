@@ -64,7 +64,6 @@ fn a_worker_around_a_metrics_source_ships_real_counters_as_ordinary_json_rows() 
         name: "0".to_string(),
         destination: Box::new(dest.clone()),
         on_reject: Answer::Block,
-        wants_doc_id: false,
         placement: Some(smeltr::plan::topology::Placement::Topic),
     });
 

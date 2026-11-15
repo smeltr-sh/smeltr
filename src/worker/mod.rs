@@ -1667,7 +1667,6 @@ fn pool_targets(
             name: d.name.clone(),
             destination: Box::new(e.handle()),
             on_reject: d.on_reject.clone(),
-            wants_doc_id: d.kind.wants_doc_id(),
             placement: d.kind.placement(),
         });
     }
@@ -5671,7 +5670,7 @@ mod tests {
                 tls: None,
                 auth: None,
                 basic: None,
-                doc_id: DocIdPolicy::default(),
+                action: BulkAction::default(),
                 in_flight: 4,
                 max_bulk_bytes: 5 * 1024 * 1024,
                 buffer_bytes: 64 * 1024 * 1024,

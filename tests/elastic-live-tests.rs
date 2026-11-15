@@ -33,7 +33,7 @@ fn deliver(
     let rows: Vec<OwnedRecord> = rows.iter().map(OwnedRecord::from).collect();
     Ok(d.deliver(0, Cow::Owned(rows))?.1)
 }
-use smeltr::plan::topology::DocIdPolicy;
+use smeltr::plan::topology::BulkAction;
 
 fn unique(prefix: &str) -> String {
     format!(
@@ -45,12 +45,12 @@ fn unique(prefix: &str) -> String {
     )
 }
 
-fn dest(url: &str, index: &str, doc_id: DocIdPolicy) -> HttpDestination<Elastic, HttpTransport> {
+fn dest(url: &str, index: &str, action: BulkAction) -> HttpDestination<Elastic, HttpTransport> {
     // No identity: this Elastic cluster is plain http, and what a transport presents is nothing.
     let config = smeltr::io::http::agent_config(None, &Default::default()).expect("an agent with no identity");
     HttpDestination::new(
         elastic::transport(url, None, &config),
-        Elastic::new(index).with_doc_id_policy(doc_id),
+        Elastic::new(index).with_action(action),
     )
     .with_stall_after(Duration::from_secs(30))
 }
@@ -97,7 +97,7 @@ fn documents_sent_to_a_real_cluster_are_really_indexed() {
         return;
     };
     let index = unique("smeltr-live");
-    let mut d = dest(&url, &index, DocIdPolicy::Auto);
+    let mut d = dest(&url, &index, BulkAction::Create);
 
     let bodies: Vec<String> = (0..3).map(|i| format!(r#"{{"n":{i},"kind":"live"}}"#)).collect();
     let rows: Vec<OutgoingRecord<'_>> = bodies.iter().map(|b| OutgoingRecord::new(b.as_bytes())).collect();
@@ -106,19 +106,19 @@ fn documents_sent_to_a_real_cluster_are_really_indexed() {
     assert_eq!(count(&url, &index), 3, "every document landed");
 }
 
-/// `Dedupe` writes `create`, so a re-send of the same identity is refused
-/// by the cluster and the first copy is kept. This is the guarantee that
+/// Under `create` a re-send of the same identity is refused by the
+/// cluster and the first copy is kept. This is the guarantee that
 /// makes an at-least-once redelivery survivable, and it depends entirely
 /// on Elasticsearch's own behavior rather than on ours.
 #[test]
-fn dedupe_keeps_the_first_copy_when_a_batch_is_redelivered() {
-    let Some(url) = live::elastic("dedupe_keeps_the_first_copy_when_a_batch_is_redelivered") else {
+fn create_keeps_the_first_copy_when_a_batch_is_redelivered() {
+    let Some(url) = live::elastic("create_keeps_the_first_copy_when_a_batch_is_redelivered") else {
         return;
     };
-    let index = unique("smeltr-dedupe");
+    let index = unique("smeltr-create");
     let id = "stable-identity";
 
-    let mut d = dest(&url, &index, DocIdPolicy::Dedupe);
+    let mut d = dest(&url, &index, BulkAction::Create);
     deliver(
         &mut d,
         &[OutgoingRecord::new(br#"{"attempt":"first"}"#).with_doc_id(Some(id))],
@@ -127,12 +127,12 @@ fn dedupe_keeps_the_first_copy_when_a_batch_is_redelivered() {
 
     // The same batch again, exactly as a redelivery after a crash between
     // flush and commit would send it.
-    let mut again = dest(&url, &index, DocIdPolicy::Dedupe);
+    let mut again = dest(&url, &index, BulkAction::Create);
     deliver(
         &mut again,
         &[OutgoingRecord::new(br#"{"attempt":"second"}"#).with_doc_id(Some(id))],
     )
-    .expect("a version conflict counts as delivered under dedupe");
+    .expect("a version conflict counts as delivered under create");
 
     assert_eq!(count(&url, &index), 1, "one document, not two");
     assert_eq!(
@@ -142,19 +142,18 @@ fn dedupe_keeps_the_first_copy_when_a_batch_is_redelivered() {
     );
 }
 
-/// `Overwrite` writes `index`, so the same identity replaces what was
-/// there. The opposite of the above, and the reason the two are separate
-/// named policies rather than one flag.
+/// Under `index` the same identity replaces what was there. The opposite
+/// of the above.
 #[test]
-fn overwrite_replaces_the_document_with_the_same_identity() {
-    let Some(url) = live::elastic("overwrite_replaces_the_document_with_the_same_identity") else {
+fn index_replaces_the_document_with_the_same_identity() {
+    let Some(url) = live::elastic("index_replaces_the_document_with_the_same_identity") else {
         return;
     };
-    let index = unique("smeltr-overwrite");
+    let index = unique("smeltr-index");
     let id = "stable-identity";
 
     for attempt in ["first", "second"] {
-        let mut d = dest(&url, &index, DocIdPolicy::Overwrite);
+        let mut d = dest(&url, &index, BulkAction::Index);
         let body = format!(r#"{{"attempt":"{attempt}"}}"#);
         deliver(&mut d, &[OutgoingRecord::new(body.as_bytes()).with_doc_id(Some(id))]).unwrap();
     }
@@ -177,7 +176,7 @@ fn an_index_override_routes_to_a_different_real_index() {
     let default_index = unique("smeltr-default");
     let other_index = unique("smeltr-override");
 
-    let mut d = dest(&url, &default_index, DocIdPolicy::Auto);
+    let mut d = dest(&url, &default_index, BulkAction::Create);
     deliver(
         &mut d,
         &[
@@ -216,7 +215,7 @@ fn a_document_a_real_cluster_refuses_is_a_rejection_and_the_batch_survives() {
         .read_to_string()
         .ok();
 
-    let mut d = dest(&url, &index, DocIdPolicy::Auto);
+    let mut d = dest(&url, &index, BulkAction::Create);
     // Not an error: one refused document must not fail the hand-over, or
     // the whole batch stays uncommitted behind a document that will never
     // be accepted.
@@ -305,7 +304,7 @@ fn an_integer_or_a_string_mapped_as_a_date_reads_as_its_mapping_says() {
         .read_to_string()
         .ok();
 
-    let mut d = dest(&url, &index, DocIdPolicy::Auto);
+    let mut d = dest(&url, &index, BulkAction::Create);
     let rejections = deliver(
         &mut d,
         &[OutgoingRecord::new(

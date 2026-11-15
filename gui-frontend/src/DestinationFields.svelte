@@ -38,7 +38,7 @@
     OBJECT_PREFIX,
     type DestinationDto,
     type SecretDto,
-    type DocIdPolicy,
+    type BulkAction,
     type Compression,
     type SchemaRegistry,
     type HttpCompression,
@@ -113,6 +113,7 @@
   function elasticModified(d: DestinationDto): boolean {
     if (d.type !== 'elasticsearch') return false;
     return (
+      d.idField !== undefined ||
       d.zoneUrls !== undefined ||
       d.sniff === true ||
       requestDeliveryModified(d, 'maxBulkBytes', LIMITS.maxBulkBytes.default)
@@ -372,45 +373,39 @@
     </Field>
     <TlsFields value={destination} farEnd="destination" />
     <ConnectorAccess store="elasticsearch" value={destination} show="credential" {secrets} />
-    <Field field="docId" label="duplicate documents">
+    <Field field="action" label="bulk action">
       {#snippet help()}
-        After a crash a document can be sent twice. Under <code>auto</code> that is a second copy;
-        <code>dedupe</code>
-        and <code>overwrite</code> catch it.
+        What happens when a document arrives with an id already in the index.
       {/snippet}
       <select
-        value={destination.docId ?? 'auto'}
+        value={destination.action ?? 'create'}
         onchange={(e) => {
           if (destination.type === 'elasticsearch')
-            destination.docId = e.currentTarget.value as DocIdPolicy;
+            destination.action = e.currentTarget.value as BulkAction;
         }}
       >
-        <option value="auto">auto &mdash; send no id</option>
-        <option value="dedupe">dedupe &mdash; keep the first copy, drop re-sends</option>
-        <option value="overwrite">overwrite &mdash; replace with the latest copy</option>
+        <option value="create">create &mdash; keep the first copy</option>
+        <option value="index">index &mdash; replace it with the new copy</option>
       </select>
     </Field>
-    {#if (destination.docId ?? 'auto') !== 'auto'}
-      <Nested>
-        <Field required field="idField" label="ID field">
-          {#snippet help()}
-            The row field each document's id is read from. It starts as <code>__destination.id</code
-            >, the field a pipeline sets; name another field and it is used instead.
-          {/snippet}
-          <input
-            type="text"
-            value={idFieldOf(destination)}
-            oninput={(e) => {
-              if (destination.type !== 'elasticsearch') return;
-              const v = e.currentTarget.value;
-              if (v === DOC_ID_FIELD) delete destination.idField;
-              else destination.idField = v;
-            }}
-          />
-        </Field>
-      </Nested>
-    {/if}
     <Advanced label="Advanced" modified={elasticModified(destination)}>
+      <Field required field="idField" label="ID field">
+        {#snippet help()}
+          The row field each document's id is read from. It starts as <code>__destination.id</code>,
+          the field a pipeline sets; name another field and it is used instead. A row with no id
+          gets one Elasticsearch generates.
+        {/snippet}
+        <input
+          type="text"
+          value={idFieldOf(destination)}
+          oninput={(e) => {
+            if (destination.type !== 'elasticsearch') return;
+            const v = e.currentTarget.value;
+            if (v === DOC_ID_FIELD) delete destination.idField;
+            else destination.idField = v;
+          }}
+        />
+      </Field>
       <RequestDelivery
         value={destination}
         size="maxBulkBytes"

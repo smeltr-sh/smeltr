@@ -35,7 +35,7 @@ document's systems.
 
 | area | status |
 |---|---|
-| Elasticsearch via the Bulk API, `docId` policies (Runtime stages) | built, on the HTTP destination core (`io::http`) |
+| Elasticsearch via the Bulk API, `create` and `index` actions (Runtime stages) | built, on the HTTP destination core (`io::http`) |
 | Splunk HEC: event or raw endpoint, indexer acknowledgement (Runtime stages) | built (`io::splunk`) |
 | Event Hubs (`eventHubs`), through its Kafka endpoint (Runtime stages, Config plane, Security) | built, as a Kafka destination signed in with a connection string, a service principal, the host's managed identity or, in an AKS pod, its workload identity. Not built: the managed identities of App Service, Container Apps and Functions, which Azure's instance metadata service does not serve; a live test of Entra sign-in, which the emulator lacks. Compression is none or gzip, which only the Premium and Dedicated tiers take; the emulator refuses gzip, so the live fuzzer checks it only as refused |
 | HTTP (`http`) (Runtime stages, Config plane, Secrets boundary) | built (`io::http_post`) |
@@ -187,7 +187,7 @@ catalog's volume entry both wait on it.
 - **Some memory parts report no fill:** a Kafka client's queue, which only librdkafka's statistics measure, and a destination's senders, whose size is an estimate.
 - **Two steps are not yet code** (Compiler). An `if` step compiles from `Step::If` rather than lowering to a code `if`. There is no `delete` step.
 - **Unroll's output is not bounded at hand-over.** One poll's records can fan out without bound, and a turn's whole output for a destination is handed over in one call; only `MemoryBudget` bounds it.
-- **`overwrite` and `dedupe` are not ordered.** Two versions of one `_id`, in one batch or in two, can land in either order.
+- **Writes of one `_id` are not ordered.** Two versions of one `_id`, in one batch or in two, can land in either order: a batch can go out as several requests, and an item the cluster asks for again is sent again alone.
 - **Elasticsearch: not attempted.** Index templates and ILM, `update`/`upsert` actions, OpenSearch-specific behavior.
 - **The registry never evicts a retired thread** of a permanent worker, and `thread_id` is whatever the caller sends, so one credential can grow the map.
 - **A decode exception is not counted:** `GuessedEncoding` and `InvalidUtf8` mark the row, but no counter rates them per source.

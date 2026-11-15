@@ -245,7 +245,6 @@ fn run_bundle(bundle: &str, rows: usize, max_rows: usize, gate: Option<&Gate>) -
             )
             .expect("destination"),
             on_reject: d.on_reject.clone(),
-            wants_doc_id: d.kind.wants_doc_id(),
             placement: d.kind.placement(),
         })
         .collect();

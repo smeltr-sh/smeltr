@@ -81,7 +81,6 @@ fn transform_with(
         name: "es".to_string(),
         destination: Box::new(dest.clone()),
         on_reject: Answer::Drop,
-        wants_doc_id: false,
         placement: Some(smeltr::plan::topology::Placement::Topic),
     };
     let transform = Transform::new(

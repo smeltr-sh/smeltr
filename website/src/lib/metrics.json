@@ -218,13 +218,6 @@
   },
   {
     "group": "Destinations",
-    "name": "smeltr_rows_without_doc_id_total",
-    "kind": "counter",
-    "labels": ["destination"],
-    "what": "Records sent to a `dedupe` or `overwrite` destination with no document ID."
-  },
-  {
-    "group": "Destinations",
     "name": "smeltr_rows_send_failed_total",
     "kind": "counter",
     "labels": ["destination"],

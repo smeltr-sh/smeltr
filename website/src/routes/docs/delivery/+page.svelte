@@ -131,8 +131,8 @@
       back into the same input topic.
     </li>
     <li>
-      Plan for redelivery. Preserve stable document IDs when using Elasticsearch dedupe or
-      overwrite, and check how downstream consumers handle duplicates.
+      Plan for redelivery. Give Elasticsearch documents stable IDs, and check how downstream
+      consumers handle duplicates.
     </li>
     <li>
       Review and deploy the recovery route. Verify the worker commit, actual destination records,
