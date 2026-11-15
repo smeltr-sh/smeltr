@@ -527,9 +527,7 @@
     {@const toEvent = (destination.endpoint ?? 'event') === 'event'}
     {#each ['index', 'sourcetype', 'source', 'host'] as const as key (key)}
       {#snippet keyHelp()}
-        {#if key !== 'index'}
-          A document's own <code>{key}</code> wins.
-        {/if}
+        A document's own <code>{key}</code> wins.
       {/snippet}
       <Field
         optional
