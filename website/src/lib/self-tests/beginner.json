@@ -1,13 +1,4 @@
 {
-  "chapters": [
-    "How smeltr works",
-    "Install and enroll",
-    "Bring in a syslog feed",
-    "Shape the records",
-    "Deliver and deploy",
-    "Watch it run",
-    "When it breaks"
-  ],
   "questions": [
     {
       "chapter": 1,

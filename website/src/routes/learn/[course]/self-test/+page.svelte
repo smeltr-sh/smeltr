@@ -1,8 +1,11 @@
 <script lang="ts">
+  import { parts } from '#lib/videos.ts';
+
   let { data } = $props();
   const course = $derived(data.course);
   const test = $derived(data.test);
   const listed = $derived(data.listed);
+  const chapters = $derived(parts(course));
 
   // The choice picked for each question, by position. A pick is final: the page shows the answer at once.
   let picks = $state<(number | undefined)[]>([]);
@@ -30,7 +33,7 @@
       {#each test.questions as q, i (i)}
         {@const pick = picks[i]}
         <li>
-          <p class="eyebrow">Chapter {q.chapter} · {test.chapters[q.chapter - 1]}</p>
+          <p class="eyebrow">Chapter {q.chapter} · {chapters[q.chapter - 1]}</p>
           <h2>{q.question}</h2>
           <div class="choices">
             {#each q.choices as choice, c (c)}
@@ -66,7 +69,7 @@
         {:else}
           <p>
             Watch again:
-            {#each review as n, k (n)}{@const chapter = `${n}. ${test.chapters[n - 1]}`}{k
+            {#each review as n, k (n)}{@const chapter = `${n}. ${chapters[n - 1]}`}{k
                 ? ', '
                 : ''}{#if listed}<a href="/learn/{course.slug}">{chapter}</a
                 >{:else}{chapter}{/if}{/each}

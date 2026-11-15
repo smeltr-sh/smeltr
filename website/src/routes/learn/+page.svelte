@@ -1,7 +1,15 @@
 <script lang="ts">
   import VideoPlayer from '#lib/components/VideoPlayer.svelte';
   import { search } from '#lib/pagefind.ts';
-  import { courseLength, courses, levels, released, roles, topics } from '#lib/videos.ts';
+  import {
+    courseLength,
+    courses,
+    fullCourses,
+    levels,
+    released,
+    roles,
+    topics,
+  } from '#lib/videos.ts';
 
   const groups = [
     { key: 'level', name: 'Level', values: levels },
@@ -10,7 +18,10 @@
   ] as const;
   type Group = (typeof groups)[number]['key'];
 
-  const videos = courses
+  // Full courses stand apart from the tutorials, which the search and tags find.
+  const tutorials = courses.filter((c) => !c.full);
+
+  const videos = tutorials
     .flatMap((course) =>
       course.videos.map((video, i) => {
         const tags: Record<Group, readonly string[]> = {
@@ -99,6 +110,27 @@
     <h1>Learn</h1>
   </section>
 
+  <h2 class="band">Courses</h2>
+  <div class="full">
+    {#each fullCourses as course (course.slug)}
+      {@const video = released(course)[0]}
+      <article class="card" class:soon={!video}>
+        {#if video}
+          <VideoPlayer {video} href="/learn/{course.slug}" />
+        {:else}
+          <div class="blank"></div>
+        {/if}
+        <div class="copy">
+          <p class="eyebrow">{video ? courseLength(course) : 'Coming soon'}</p>
+          <h3>
+            {#if video}<a href="/learn/{course.slug}">{course.title}</a>{:else}{course.title}{/if}
+          </h3>
+        </div>
+      </article>
+    {/each}
+  </div>
+
+  <h2 class="band">Tutorials</h2>
   <div class="find">
     <input type="search" aria-label="Find a video" placeholder="Find a video…" bind:value={query} />
     {#each groups as group (group.key)}
@@ -157,7 +189,7 @@
     </div>
   {:else}
     <div class="library">
-      {#each courses as course (course.slug)}
+      {#each tutorials as course (course.slug)}
         <article class="card">
           <VideoPlayer
             video={released(course)[0] ?? course.videos[0]}
@@ -177,6 +209,37 @@
 </div>
 
 <style>
+  .marketing h2.band {
+    font-size: 1.6rem;
+    margin: 0 0 1.2rem;
+  }
+  .marketing .full + h2.band {
+    margin-top: 4rem;
+  }
+  .full {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 1rem;
+  }
+  .full .copy {
+    padding: 0.9rem 1rem 1rem;
+  }
+  .full h3 {
+    font-size: 1.1rem;
+  }
+  .full h3 a {
+    color: inherit;
+    text-decoration: none;
+  }
+  /* A course not out yet holds its place, empty, where its video will be. */
+  .blank {
+    aspect-ratio: 16 / 9;
+    border-bottom: 1px dashed var(--border);
+  }
+  .card.soon {
+    border-style: dashed;
+    background: none;
+  }
   .marketing .page-hero {
     padding-bottom: 1.5rem;
   }
@@ -254,6 +317,7 @@
     font-size: 0.92rem;
   }
   @media (max-width: 46rem) {
+    .full,
     .library,
     .group {
       grid-template-columns: 1fr;
