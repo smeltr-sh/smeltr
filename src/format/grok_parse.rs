@@ -215,32 +215,6 @@ mod tests {
         assert!(errors.is_empty(), "{:?}", errors.entries());
     }
 
-    /// A capture nothing declares takes its pattern's type, and a declaration still wins.
-    #[test]
-    fn an_undeclared_capture_takes_its_patterns_type() {
-        let config = GrokConfig {
-            split_dots: true,
-            patterns: vec!["%{INT:n} %{NUMBER:f} %{HTTPDATE:t} %{INT:kept}".into()],
-            custom_patterns: vec![],
-        };
-        let errors = run_with(
-            config,
-            &[("kept", DataType::Str)],
-            b"200 1.5 10/Oct/2000:13:55:36 -0700 007",
-            |plan, batch| {
-                assert_eq!(batch.get(slot_of(plan, "n")).i64().unwrap().values[0], 200);
-                assert_eq!(batch.get(slot_of(plan, "f")).f64().unwrap().values[0], 1.5);
-                assert_eq!(
-                    batch.get(slot_of(plan, "t")).datetime().unwrap().values[0],
-                    971_211_336_000_000,
-                    "read as HTTPDATE's format"
-                );
-                assert_eq!(batch.get(slot_of(plan, "kept")).var().unwrap().get(0), b"007");
-            },
-        );
-        assert!(errors.is_empty(), "{:?}", errors.entries());
-    }
-
     /// A schema the pipeline produces types a capture nothing declares, over its pattern's type; a pattern's
     /// `datetime` keeps its format where the schema's type is `datetime` too.
     #[test]

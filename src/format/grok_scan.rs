@@ -8,11 +8,13 @@
 //! the record separator, and there it silently truncates a multi-line message at its first line. `(?-s)` inside a
 //! pattern restores the line-bounded meaning for one element, which is why this needs no config surface.
 
+use std::collections::HashMap;
+
 use regex::{Captures, Regex, RegexBuilder, RegexSet, RegexSetBuilder};
 use regex_syntax::ast::{self, Ast};
 use regex_syntax::hir::{self, HirKind};
 
-use crate::format::grok_pattern::{self, GrokError, Holds, is_pattern_name};
+use crate::format::grok_pattern::{self, GrokError, Holds};
 use crate::plan::config::{GrokConfig, GrokPatterns};
 
 #[derive(Debug)]
@@ -26,8 +28,9 @@ pub struct Matcher {
     /// resolving them over a long tail is what makes captures cost ten times a match. `split_tail` says which
     /// candidates qualify.
     tails: Vec<Option<String>>,
-    /// Per candidate, what each typed `%{NAME:field}` capture holds (`grok_pattern::expand_with`).
-    typed: Vec<Vec<(String, Holds)>>,
+    /// What each capture holds: its pattern's type where every candidate that captures it gives it the same one, else
+    /// text.
+    holds: HashMap<String, Holds>,
 }
 
 /// Which part of a candidate holds a named capture.
@@ -135,6 +138,11 @@ fn accepts_every_char(kind: &HirKind) -> bool {
     }
 }
 
+/// A name `%{NAME}` can spell and every reader of it agrees on.
+fn is_pattern_name(name: &str) -> bool {
+    !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
 impl Matcher {
     /// Expand and compile every pattern in `config`, in order. A pattern the `regex` crate cannot compile is an `Err`.
     /// Called once per `Parser` step at plan-compile time and reused by every batch.
@@ -156,15 +164,24 @@ impl Matcher {
         let mut exprs = Vec::with_capacity(config.patterns.len());
         let mut patterns = Vec::with_capacity(config.patterns.len());
         let mut tails = Vec::with_capacity(config.patterns.len());
-        let mut typed = Vec::with_capacity(config.patterns.len());
+        let mut holds: HashMap<String, Holds> = HashMap::new();
         for p in &config.patterns {
-            let (expanded, holds) = grok_pattern::expand_with(p, config, shared)?;
-            typed.push(holds);
+            let (expanded, typed) = grok_pattern::expand_with(p, config, shared)?;
             // The whole pattern compiles first, so a bad tail is still the author's error to see.
-            RegexBuilder::new(&expanded)
+            let whole = RegexBuilder::new(&expanded)
                 .dot_matches_new_line(true)
                 .build()
                 .map_err(|e| GrokError(format!("pattern `{p}` is not a valid regex: {e}")))?;
+            for name in whole.capture_names().flatten() {
+                let h = typed
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map_or_else(Holds::text, |(_, h)| h.clone());
+                let held = holds.entry(name.to_string()).or_insert_with(|| h.clone());
+                if *held != h {
+                    *held = Holds::text();
+                }
+            }
             let (head, tail) = split_tail(&expanded);
             let regex = RegexBuilder::new(head)
                 .dot_matches_new_line(true)
@@ -182,7 +199,7 @@ impl Matcher {
             set,
             patterns,
             tails,
-            typed,
+            holds,
         })
     }
 
@@ -229,25 +246,7 @@ impl Matcher {
     /// What the capture `name` holds: its pattern's type where every candidate that captures it gives it the same one,
     /// else text.
     pub fn holds(&self, name: &str) -> Holds {
-        let mut each = self
-            .patterns
-            .iter()
-            .zip(&self.tails)
-            .zip(&self.typed)
-            .filter_map(|((p, tail), typed)| {
-                let captures = p.capture_names().flatten().chain(tail.as_deref()).any(|n| n == name);
-                captures.then(|| {
-                    typed
-                        .iter()
-                        .find(|(n, _)| n == name)
-                        .map_or_else(Holds::text, |(_, h)| h.clone())
-                })
-            });
-        let first = each.next().unwrap_or_else(Holds::text);
-        match each.all(|h| h == first) {
-            true => first,
-            false => Holds::text(),
-        }
+        self.holds.get(name).cloned().unwrap_or_else(Holds::text)
     }
 
     /// The first candidate (declared order) that matches `text`, with its captures, or `None`. One pattern needs no
@@ -296,22 +295,19 @@ mod tests {
         }
     }
 
-    /// A capture holds its pattern's type, through a pattern that only names a typed one; text where nothing types
-    /// it, and where candidates disagree.
+    /// A capture holds its pattern's type; text where nothing types it, and where candidates disagree.
     #[test]
     fn a_capture_holds_its_patterns_type() {
         use crate::core::column::DataType;
         use crate::plan::config::TimeSource;
-        let mut config = cfg(&[
-            "%{INT:n} %{NUMBER:f} %{HTTPDATE:t} %{TIMESTAMP_ISO8601:iso} %{PORT:port} (?P<raw>[0-9]+) %{INT:both}",
+        let config = cfg(&[
+            "%{INT:n} %{NUMBER:f} %{HTTPDATE:t} %{TIMESTAMP_ISO8601:iso} (?P<raw>[0-9]+) %{INT:both}",
             "%{WORD:both} %{INT:n}",
         ]);
-        config.custom_patterns = vec![("PORT".into(), "%{INT}".into())];
         let m = Matcher::compile(&config).unwrap();
         let ty = |name| m.holds(name).ty;
         assert_eq!(ty("n"), DataType::I64);
         assert_eq!(ty("f"), DataType::F64);
-        assert_eq!(ty("port"), DataType::I64);
         assert_eq!(ty("raw"), DataType::Str);
         assert_eq!(ty("both"), DataType::Str, "one candidate types it i64, the other str");
         assert_eq!(

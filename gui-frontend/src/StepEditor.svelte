@@ -315,6 +315,19 @@
   // owed, timer included -- a save landing before the timer fires would serialize the same stale list as one landing
   // mid-request.
   let timer: ReturnType<typeof setTimeout> | undefined;
+  /** A string of everything a grok step's captures answer depends on, so an answer that comes back after it changes
+   * is dropped; `null` for any other step. */
+  function capturesKey(): string | null {
+    if (step.type !== 'parser' || step.kind.type !== 'grok') return null;
+    const { patterns, customPatterns } = step.kind;
+    return JSON.stringify([
+      patterns,
+      customPatterns,
+      splitsDots(step.kind),
+      step.into,
+      grokPatterns,
+    ]);
+  }
   $effect(() => {
     if (step.type !== 'parser' || step.kind.type !== 'grok') {
       captures = null;
@@ -324,7 +337,7 @@
     const { patterns, customPatterns } = step.kind;
     const { into } = step;
     const split = splitsDots(step.kind);
-    const key = JSON.stringify([patterns, customPatterns, split, grokPatterns]);
+    const key = capturesKey();
 
     beginReconcile();
     let settled = false;
@@ -346,16 +359,7 @@
       })
         .then((r) => {
           // Another keystroke landed while this was in flight; its answer is the current one.
-          if (step.type !== 'parser' || step.kind.type !== 'grok') return;
-          if (
-            JSON.stringify([
-              step.kind.patterns,
-              step.kind.customPatterns,
-              splitsDots(step.kind),
-              grokPatterns,
-            ]) !== key
-          )
-            return;
+          if (capturesKey() !== key) return;
           captureError = r.ok ? null : errorText(r.errors) || 'these patterns do not compile';
           if (!r.ok) return;
           captures = r.captures;
