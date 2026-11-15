@@ -1296,11 +1296,16 @@
     });
   });
 
+  /** Counts proposals asked for, so only the latest one's answer lands. */
+  let proposals = 0;
+
   async function proposeFrom(records: SampleRecordDto[]) {
+    const asked = ++proposals;
     proposedFrom = null;
     proposeError = '';
     try {
       const p = await proposeOnboard(records);
+      if (asked !== proposals) return;
       // Each capture's proposal replaces the last one's, a proposal of no steps too.
       steps = stepsFromDto(p.steps ?? []);
       proposed = '';
@@ -1322,6 +1327,7 @@
           : null;
       if (parser?.type === 'parser' && upTo) {
         const res = await fetchPreview(upTo, selectedSample);
+        if (asked !== proposals) return;
         const read = res.ok ? res.parsers.at(-1) : undefined;
         if (read) declareProposed(parser.declared, read.fields);
       }
@@ -1332,10 +1338,10 @@
       const proposedSteps = withoutDeclared(steps);
       await tick();
       await fieldsSettled();
-      if (withoutDeclared(steps) === proposedSteps)
+      if (asked === proposals && withoutDeclared(steps) === proposedSteps)
         proposedFrom = { records, steps: signatureOf(steps) };
     } catch (e) {
-      proposeError = unreported(e);
+      if (asked === proposals) proposeError = unreported(e);
     }
   }
 
