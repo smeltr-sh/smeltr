@@ -12,6 +12,7 @@
   import TypePicker from './TypePicker.svelte';
   import DatetimeFormat from './DatetimeFormat.svelte';
   import Nested from './Nested.svelte';
+  import SchemaFixMark from './SchemaFixMark.svelte';
   import { typeKey, withTypeKey, type DataTypeSpec, type TypeKey } from './pipeline';
 
   let {
@@ -24,8 +25,7 @@
     actions,
     end,
     nested,
-    auto,
-    onauto,
+    fix,
   }: {
     ty: DataTypeSpec;
     groups: TypeKey[][];
@@ -42,11 +42,8 @@
     end?: Snippet;
     /** Under the row, indented: an object's own fields. */
     nested?: Snippet;
-    /** Present where the field may be typed automatically: whether it is, and the type it then has, `''` where that
-     * is not known. */
-    auto?: { type: string; on: boolean };
-    /** Lets the field be typed automatically again. */
-    onauto?: () => void;
+    /** A warning the field's type answers (`SchemaFixMark`). */
+    fix?: { stated: string; label: string; onfix: () => void };
   } = $props();
 
   let menuOpen = $state(false);
@@ -56,15 +53,18 @@
   {#if number !== undefined}<span class="number">{number}</span>{/if}
   {@render name()}
   <TypePicker
-    value={auto?.on ? '' : typeKey(ty)}
+    value={typeKey(ty)}
     {groups}
     {disabled}
     ariaLabel={`${label} type`}
-    auto={auto?.type}
     onpick={(key) => (ty = withTypeKey(ty, key))}
-    {onauto}
   />
   <span class="end">
+    {#if fix && !disabled}<SchemaFixMark
+        stated={fix.stated}
+        label={fix.label}
+        onfix={fix.onfix}
+      />{/if}
     {#if end}
       {@render end()}
     {:else if actions && !disabled}
@@ -76,7 +76,7 @@
     {/if}
   </span>
 </div>
-{#if ty.kind === 'datetime' && !auto?.on}
+{#if ty.kind === 'datetime'}
   {@const dt = ty}
   <div class="under" class:numbered={number !== undefined}>
     <DatetimeFormat bind:format={dt.format} {disabled} />

@@ -833,7 +833,10 @@ pub fn encode_as(tag: &Tag<'_>, to: &DataType, hint: &mut usize, now: i64, out: 
     let fit = match to {
         DataType::Str => match tag {
             Tag::Array(_) | Tag::Object(_) => None,
-            t => Some(variant::put_str(out, &tag::stringify_scalar(t))),
+            t => {
+                variant::put_str(out, &tag::stringify_scalar(t));
+                Some(())
+            }
         },
         DataType::I64 => i64_of(cell).map(|v| variant::put_i64(out, v)),
         DataType::F64 => f64_of(cell).map(|v| variant::put_f64(out, v)),

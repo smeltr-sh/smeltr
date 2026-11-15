@@ -483,6 +483,9 @@ pub struct Told {
     /// The field's keys, for a field whose type misfits.
     pub keys: Option<Vec<String>>,
     pub message: String,
+    /// For a field whose type misfits, the message without the sentence that says to write the schema's type, for a
+    /// screen whose button writes it.
+    pub stated: Option<String>,
     /// Whether it says the rows break a schema. A recommended field they lack does not.
     pub breaks: bool,
     /// For a sentence of recommended fields the rows lack, those fields, for a reader that lists them itself.
@@ -516,23 +519,33 @@ pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<Told> {
                     (DataType::DateTime, "i64") => ": `.epochMillis()` gives one",
                     _ => "",
                 };
-                let message = match wants.starts_with('{') {
+                let (message, stated) = match wants.starts_with('{') {
                     // An object's spelling is no fix to write: the fields under it are.
                     true => match under(schemas, f) {
-                        Some(field) => format!(
-                            "`{path}` is {}, but {schema} has it as an object. Write the fields under it, such as `{field}`.",
-                            ty.spell()
+                        Some(field) => (
+                            format!(
+                                "`{path}` is {}, but {schema} has it as an object. Write the fields under it, such as `{field}`.",
+                                ty.spell()
+                            ),
+                            None,
                         ),
-                        None => format!("`{path}` is {}, but {schema} has it as an object.", ty.spell()),
+                        None => (
+                            format!("`{path}` is {}, but {schema} has it as an object.", ty.spell()),
+                            None,
+                        ),
                     },
-                    false => format!(
-                        "`{path}` is {}, but {schema} has it as {wants}. Write it as {wants}{how}.",
-                        ty.spell()
-                    ),
+                    false => {
+                        let stated = format!("`{path}` is {}, but {schema} has it as {wants}.", ty.spell());
+                        (
+                            format!("{stated} Write it as {wants}{how}."),
+                            how.is_empty().then_some(stated),
+                        )
+                    }
                 };
                 out.push(Told {
                     keys: Some(f.keys.clone()),
                     message,
+                    stated,
                     breaks: true,
                     recommended: None,
                 });
@@ -551,6 +564,7 @@ pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<Told> {
     for (schema, paths) in missing {
         out.push(Told {
             keys: None,
+            stated: None,
             message: format!(
                 "{} requires {}; the rows lack {}.",
                 title(schema),
@@ -565,6 +579,7 @@ pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<Told> {
         let ticked: Vec<String> = paths.iter().map(|p| format!("`{p}`")).collect();
         out.push(Told {
             keys: None,
+            stated: None,
             message: format!(
                 "{} recommends {}; the rows lack {}.",
                 title(schema),
@@ -790,12 +805,15 @@ mod tests {
                     message:
                         "`time` is datetime, but Login has it as i64. Write it as i64: `.epochMillis()` gives one."
                             .to_string(),
+                    // Its sentence on what to write says more than the type: a button cannot write it for the author.
+                    stated: None,
                     breaks: true,
                     recommended: None,
                 },
                 Told {
                     keys: None,
                     message: "Login requires `activity_id`, `user` and `metadata`; the rows lack them.".to_string(),
+                    stated: None,
                     breaks: true,
                     recommended: None,
                 },

@@ -48,6 +48,7 @@
     type StepDiffRow,
     PROPOSED_FORMAT_NAMES,
     newStep,
+    takeSchemaTypes,
   } from './pipeline';
   import {
     productionOf,
@@ -1009,6 +1010,10 @@
       result = res;
       if (res.ok) [lastGoodResult, lastGoodRun] = [res, { at, steps: ran }];
       lastSample = sample;
+      if (res.ok && proposedSteps && at >= proposedSteps.at) {
+        if (proposedSteps.signature === signatureOf(ran)) takeSchemaTypes(steps, res.fixes ?? []);
+        proposedSteps = null;
+      }
     } catch (e) {
       requestError = unreported(e);
     } finally {
@@ -1269,6 +1274,9 @@
 
   /** Counts proposals asked for, so only the latest one's answer lands. */
   let proposals = 0;
+  /** The steps a proposal made and when, until the first run after it. That run can retype a field the proposal typed
+   * from the sample, where a schema the pipeline produces gives it another type. */
+  let proposedSteps: { at: number; signature: string } | null = null;
 
   async function proposeFrom(records: SampleRecordDto[]) {
     const asked = ++proposals;
@@ -1278,6 +1286,7 @@
       if (asked !== proposals) return;
       // Each capture's proposal replaces the last one's, a proposal of no steps too.
       steps = stepsFromDto(p.steps ?? []);
+      proposedSteps = { at: Date.now() * 1000, signature: signatureOf(steps) };
       proposed = '';
       if (p.structured) {
         proposed = 'These records arrive as fields, so they need no parser.';
@@ -1616,6 +1625,7 @@
             {lookupTables}
             {grokPatterns}
             parsedFields={lastGoodResult?.parsed_fields}
+            fixes={lastGoodResult?.fixes}
             parseInput={parseInputFor(sampleRows[0])}
             pausedAt={pause?.step ?? null}
             ran={pause?.run ?? null}
