@@ -626,6 +626,7 @@ export type DestinationDto = {
       username?: string;
       password?: SecretRef;
       docId?: DocIdPolicy;
+      /** The row field each document's id is read from. Absent is `DOC_ID_FIELD`. */
       idField?: string;
       inFlight?: number;
       maxBulkBytes?: ByteCount;
@@ -1056,6 +1057,9 @@ export type StreamFormat = 'json' | 'text' | 'bytes';
 
 /** `ObjectPrefix::DEFAULT`. */
 export const OBJECT_PREFIX = '%Y/%m/%d/%H/';
+
+/** The field an Elasticsearch destination reads each document's id from when it names none. */
+export const DOC_ID_FIELD = '__destination.id';
 
 /** What each cloud takes as an object's storage class, mirroring `io::objects` (`S3_STORAGE_CLASSES`,
  * `GCS_STORAGE_CLASSES`, `AZURE_ACCESS_TIERS`). The load refuses any other. */

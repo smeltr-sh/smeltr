@@ -3202,6 +3202,46 @@ test('A10: an Elasticsearch destination signs in with a username and password', 
   ]);
 });
 
+// A10, sources and destinations from a form. Under dedupe an Elasticsearch destination's id field starts as
+// `__destination.id`, which is saved as no id field at all; another field name is saved as it is.
+test('A10: an Elasticsearch id field starts as __destination.id', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await goto(admin, leader, '#/build/destinations');
+  const add = async (id: string) => {
+    await admin.getByRole('button', { name: '+ Add destination' }).click();
+    const dialog = admin.getByRole('dialog');
+    await dialog.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
+    await dialog.getByRole('textbox', { name: /^id$/ }).fill(id);
+    await dialog.getByRole('textbox', { name: 'url' }).fill('https://es.example.com:9200');
+    await dialog.getByRole('textbox', { name: 'default index' }).fill('logs');
+    await dialog.getByRole('combobox', { name: 'duplicate documents' }).selectOption('dedupe');
+    return dialog;
+  };
+  let dialog = await add('computed');
+  await expect(dialog.getByRole('textbox', { name: 'id field' })).toHaveValue('__destination.id');
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  dialog = await add('keyed');
+  await dialog.getByRole('textbox', { name: 'id field' }).fill('event.id');
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
+
+  const saved = await api.get(`/api/areas/shared${ON}`);
+  const common = {
+    type: 'elasticsearch',
+    url: 'https://es.example.com:9200',
+    defaultIndex: 'logs',
+    docId: 'dedupe',
+  };
+  expect(saved.config.destinations).toEqual([
+    { id: 'computed', ...common },
+    { id: 'keyed', ...common, idField: 'event.id' },
+  ]);
+});
+
 // A10, sources and destinations from a form. A Delta table's root is checked as it is typed; its partition columns
 // are chips.
 test('A10: a Delta destination is added from its form and saved as the leader accepts it', async ({

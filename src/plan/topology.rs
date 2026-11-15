@@ -1759,12 +1759,14 @@ impl DestinationKind {
         }
     }
 
-    /// Which field of the row this destination reads the document identity from, if it does. `None` means it relies on
-    /// the pipeline's own `__destination.id`, or wants no identity at all.
+    /// Which field of the row this destination reads the document identity from, if it does. `None` means it reads
+    /// the pipeline's own `__destination.id` (held apart from the row's fields), or wants no identity at all.
     pub fn id_field(&self) -> Option<&str> {
         match self {
             DestinationKind::Kafka(_) => None,
-            DestinationKind::Elasticsearch(e) if e.doc_id.wants_doc_id() => e.id_field.as_deref(),
+            DestinationKind::Elasticsearch(e) if e.doc_id.wants_doc_id() => {
+                e.id_field.as_deref().filter(|f| *f != "__destination.id")
+            }
             DestinationKind::Elasticsearch(_)
             | DestinationKind::SplunkHec(_)
             | DestinationKind::Objects(_)
@@ -1829,8 +1831,8 @@ pub struct ElasticDestinationConfig {
     /// so has to live in a real serialized field anyway (design doc, Runtime stages: a document identity and a
     /// partition key are separate on purpose).
     ///
-    /// A pipeline that needs to *compute* an identity still sets `__destination.id`, which takes precedence per row — the same
-    /// relationship `__destination.index` has to `default_index`.
+    /// A pipeline that needs to *compute* an identity sets `__destination.id`, which is the field read when this names
+    /// none. Where it names another, that field wins over the pipeline's `__destination.id` for this destination.
     pub id_field: Option<String>,
     /// Present when the worker learns the cluster's nodes from `url` and spreads its requests across them.
     pub sniff: Option<Sniff>,

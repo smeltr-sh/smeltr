@@ -1100,7 +1100,8 @@ fn a_reserved_field_is_still_readable_after_a_dynamic_parser() {
     }
 }
 
-/// Identity is `__destination.id`, else the destination's own `idField` read as text, else generated; a missing one is counted only where the destination keys on it.
+/// Identity is the field the destination's `idField` names, read as text, else `__destination.id`, else generated; a missing
+/// identity is counted only where the destination keys on it.
 #[test]
 fn document_identity_resolves_per_destination() {
     let routes = vec![route_with_deliver(deliver_to(&[0, 1, 2, 3]))];
@@ -1135,12 +1136,12 @@ fn document_identity_resolves_per_destination() {
     let s = |v: &str| Some(v.to_string());
     assert_eq!(
         ids(&dests[0]),
-        vec![s("computed"), s("e-1"), None],
-        "__destination.id wins, then the configured field"
+        vec![s("e-0"), s("e-1"), None],
+        "the configured field wins over __destination.id"
     );
     assert_eq!(
         ids(&dests[1]),
-        vec![s("computed"), s("7"), None],
+        vec![s("4242"), s("7"), None],
         "a non-string field is read as its text"
     );
     assert_eq!(ids(&dests[2]), vec![s("computed"), None, None]);

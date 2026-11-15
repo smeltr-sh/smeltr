@@ -1,6 +1,7 @@
 /** What a destination is, by its type: its name, where it writes, and a new one of it. */
 import {
   LIMITS,
+  DOC_ID_FIELD,
   OBJECT_PREFIX,
   type CloudStore,
   type DestinationDto,
@@ -114,6 +115,7 @@ export function writes(d: DestinationDto): string {
 
 /** The prefix a destination writes under, as its field shows it. */
 export const prefixOf = (d: ObjectDestination) => d.prefix ?? OBJECT_PREFIX;
+export const idFieldOf = (d: { idField?: string }) => d.idField ?? DOC_ID_FIELD;
 
 /** What a destination connects to, as its row says it. */
 export function at(d: DestinationDto): string {

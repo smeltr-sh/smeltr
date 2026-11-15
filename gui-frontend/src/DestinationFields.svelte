@@ -34,6 +34,7 @@
   import SchemaRegistryFields from './SchemaRegistryFields.svelte';
   import {
     LIMITS,
+    DOC_ID_FIELD,
     OBJECT_PREFIX,
     type DestinationDto,
     type SecretDto,
@@ -60,6 +61,7 @@
     isObjectStore,
     objectModified,
     prefixOf,
+    idFieldOf,
     sendsCredential,
   } from './destinations';
 
@@ -163,7 +165,7 @@
     >
       <input type="text" bind:value={destination.brokers} placeholder="host:9092,host2:9092" />
     </Field>
-    <Field required field="defaultTopic" label="default topic">
+    <Field required field="defaultTopic" label="default topic" overriddenBy="__destination.topic">
       <input type="text" bind:value={destination.defaultTopic} />
     </Field>
     {@render formatFields(destination, AVRO_STREAM_FORMATS, 'json', streamFormatHelp)}
@@ -253,10 +255,12 @@
       {/snippet}
       <input type="text" bind:value={destination.namespace} placeholder="namespace" />
     </Field>
-    <Field required field="defaultEventHub" label="default event hub">
-      {#snippet help()}
-        The event hub a record goes to unless its pipeline sets <code>__destination.topic</code>.
-      {/snippet}
+    <Field
+      required
+      field="defaultEventHub"
+      label="default event hub"
+      overriddenBy="__destination.topic"
+    >
       <input type="text" bind:value={destination.defaultEventHub} />
     </Field>
     <ConnectorAccess
@@ -363,7 +367,7 @@
       sends={sendsCredential(destination)}
       placeholder="https://es.internal:9200"
     />
-    <Field required field="defaultIndex" label="default index">
+    <Field required field="defaultIndex" label="default index" overriddenBy="__destination.index">
       <input type="text" bind:value={destination.defaultIndex} />
     </Field>
     <TlsFields value={destination} farEnd="destination" />
@@ -388,19 +392,20 @@
     </Field>
     {#if (destination.docId ?? 'auto') !== 'auto'}
       <Nested>
-        <Field optional field="idField" label="id field">
+        <Field required field="idField" label="id field">
           {#snippet help()}
-            The row field that already holds each document's stable id. Leave it empty and the
-            pipeline must set <code>__destination.id</code>.
+            The row field each document's id is read from. It starts as <code>__destination.id</code
+            >, the field a pipeline sets; name another field and it is used instead.
           {/snippet}
           <input
             type="text"
-            value={destination.idField ?? ''}
+            value={idFieldOf(destination)}
             oninput={(e) => {
-              if (destination.type === 'elasticsearch')
-                destination.idField = optional(e.currentTarget.value);
+              if (destination.type !== 'elasticsearch') return;
+              const v = e.currentTarget.value;
+              if (v === DOC_ID_FIELD) delete destination.idField;
+              else destination.idField = v;
             }}
-            placeholder="event.id"
           />
         </Field>
       </Nested>
@@ -526,9 +531,7 @@
     )}
     {#each ['index', 'sourcetype', 'source', 'host'] as const as key (key)}
       {#snippet keyHelp()}
-        {#if key === 'index'}
-          A row's <code>__destination.index</code> picks its own.
-        {:else}
+        {#if key !== 'index'}
           A document's own <code>{key}</code> wins.
         {/if}
       {/snippet}
@@ -536,7 +539,12 @@
         optional
         field={key}
         label={key}
-        help={(destination.endpoint ?? 'event') === 'event' ? keyHelp : undefined}
+        overriddenBy={key === 'index' && (destination.endpoint ?? 'event') === 'event'
+          ? '__destination.index'
+          : undefined}
+        help={key !== 'index' && (destination.endpoint ?? 'event') === 'event'
+          ? keyHelp
+          : undefined}
       >
         <input
           type="text"
@@ -793,11 +801,11 @@
     {#if o.type !== 'sftp'}
       <ConnectorAccess store={o.type} value={o} show="credential" {secrets} />
     {/if}
-    <Field optional field="prefix" label="prefix">
+    <Field optional field="prefix" label="prefix" overriddenBy="__destination.prefix">
       {#snippet help()}
-        What every {o.type === 'sftp' ? 'file path' : 'object key'} starts with.
+        What {o.type === 'sftp' ? 'file paths' : 'object keys'} start with.
         <code>%Y %m %d %H %M</code>
-        are the write time, UTC. A row's <code>__destination.prefix</code> picks its own.
+        are the write time, UTC.
       {/snippet}
       <input
         type="text"

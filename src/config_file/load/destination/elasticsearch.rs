@@ -65,6 +65,7 @@ impl DestinationSpec for ElasticsearchDestinationDto {
             auth,
             username,
             password,
+            id_field,
             ..
         } = self;
         check_elastic_sign_in(&d.id, auth, username, password, errors);
@@ -78,6 +79,11 @@ impl DestinationSpec for ElasticsearchDestinationDto {
                 .at("zoneAttribute")
                 .push(format!("destination {:?} names a blank zone attribute", d.id)),
             _ => {}
+        }
+        if id_field.as_deref().is_some_and(blank) {
+            errors
+                .at("idField")
+                .push(format!("destination {:?} names a blank id field", d.id));
         }
         check_http_delivery(
             &HttpDelivery {

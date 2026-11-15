@@ -1523,6 +1523,18 @@ fn a_doc_id_policy_needs_a_pipeline_that_sets_id_out() {
     };
     assert!(errs.iter().any(|e| e.message.contains("__destination.id")), "{errs:?}");
 
+    // Naming `__destination.id` as the id field is naming the field it reads anyway.
+    let named = json("").replace(
+        r#""docId":"dedupe""#,
+        r#""docId":"dedupe","idField":"__destination.id""#,
+    );
+    let Err(errs) = load_str(&named).expect("loads").compile_topology() else {
+        panic!("an id field of `__destination.id` still needs a pipeline that sets it");
+    };
+    assert!(errs.iter().any(|e| e.message.contains("__destination.id")), "{errs:?}");
+    let blank = json("").replace(r#""docId":"dedupe""#, r#""docId":"dedupe","idField":" ""#);
+    assert!(load_str(&blank).is_err(), "a blank id field names no field");
+
     let ok = load_str(&json(
         r#"{"id":"e","type":"eval","assignments":[{"target":"__destination.id","expr":"_raw"}]}"#,
     ))
