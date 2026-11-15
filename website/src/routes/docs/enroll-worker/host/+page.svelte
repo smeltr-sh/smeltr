@@ -134,10 +134,10 @@ state_dir = "/var/lib/smeltr-worker"</code
     The container must be able to reach the leader and every configured source and destination.
   </p>
   <p>
-    For a group whose receivers change often, run the worker as the binary above, or start the
-    container with <code>--network host</code>: it then shares the host's network, so a new receiver
-    needs no change to the container. It also gives up the container's network isolation; see
-    Docker's
+    For a group whose receivers change often, run the worker as the binary, as above, or start the
+    container with <code>--network host</code> on a Linux host. A container on the host network
+    shares the host's network, so a new receiver needs no change to the container, but it loses the
+    container's network isolation; see Docker's
     <a href="https://docs.docker.com/engine/network/drivers/host/">host network driver</a>.
   </p>
   <p>
