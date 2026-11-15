@@ -307,12 +307,7 @@
     return caps.map((c) => {
       // A capture's name is the parser's key: one key, or under splitDots a path split at its dots.
       const name = (split ? c.name.split('.') : [c.name]).reduce(pushKey, '');
-      const pattern = dtoToDataType(c.type, name);
-      // The pattern's own `datetime` keeps its format, which a schema's lacks.
-      const schema = produced?.typeOf(name);
-      const ty =
-        schema !== undefined && schema !== typeKey(pattern) ? dtoToDataType(schema, name) : pattern;
-      return { name, ty: chosen.get(name) ?? ty };
+      return { name, ty: chosen.get(name) ?? dtoToDataType(c.type, name) };
     });
   }
 
@@ -340,7 +335,13 @@
 
     clearTimeout(timer);
     timer = setTimeout(() => {
-      grokCaptures(patterns, customPatterns, grokPatterns)
+      grokCaptures({
+        patterns,
+        customPatterns,
+        grokPatterns,
+        splitDots: split,
+        produces: produced?.ids ?? [],
+      })
         .then((r) => {
           // Another keystroke landed while this was in flight; its answer is the current one.
           if (step.type !== 'parser' || step.kind.type !== 'grok') return;

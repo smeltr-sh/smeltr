@@ -242,14 +242,29 @@ pub struct GrokCapturesRequest {
     /// name one that is not saved yet.
     #[serde(default)]
     pub grok_patterns: Vec<config_file::GrokPatternDto>,
+    /// Whether the step splits capture names at their dots, so a name meets a schema's dotted path.
+    #[serde(default = "yes")]
+    pub split_dots: bool,
+    /// The ids of the schemas the pipeline produces. A capture they name takes the type they give it, as it would
+    /// in the pipeline (`schema::read_as`).
+    #[serde(default)]
+    pub produces: Vec<String>,
+    /// The schemas `produces` is chosen from; of two with one id, the later wins. The leader reads its own from the
+    /// branch.
+    #[serde(default)]
+    pub schemas: Vec<config_file::SchemaDto>,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// The editor keeps the fields it has when a half-typed pattern cannot compile, so a failure carries no captures.
 #[derive(Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GrokCaptures {
-    /// Every capture across the patterns, in the order they appear, deduped, each with the type its pattern gives it
-    /// (`Matcher::holds`).
+    /// Every capture across the patterns, in the order they appear, deduped, each with the type a produced schema
+    /// gives it, else the type its pattern gives it (`Matcher::holds`).
     pub captures: Vec<config_file::FieldDto>,
 }
 
@@ -683,8 +698,12 @@ pub fn run_route_preview(
 
 /// Compiling a pattern touches nothing outside itself, so this is the whole answer and a route only wraps it.
 pub fn captures_of(req: GrokCapturesRequest) -> Envelope<GrokCaptures> {
+    let produced: Vec<Arc<Schema>> = (req.produces.iter())
+        .filter_map(|id| req.schemas.iter().rev().find(|s| s.id == *id))
+        .filter_map(|dto| crate::schema::read(dto).ok().map(Arc::new))
+        .collect();
     let config = crate::plan::config::GrokConfig {
-        split_dots: true,
+        split_dots: req.split_dots,
         patterns: req.patterns,
         custom_patterns: req.custom_patterns.into_iter().map(|p| (p.name, p.pattern)).collect(),
     };
@@ -696,11 +715,15 @@ pub fn captures_of(req: GrokCapturesRequest) -> Envelope<GrokCaptures> {
                 .into_iter()
                 .map(|name| {
                     let holds = m.holds(name);
-                    let ty = match holds.time_source {
-                        Some(crate::plan::config::TimeSource::Format(format)) => {
+                    // The pattern's own `datetime` keeps its format, which a schema's lacks.
+                    let schema = crate::schema::read_as(&produced, &tree::name_of(name, config.split_dots))
+                        .filter(|ty| *ty != holds.ty);
+                    let ty = match (schema, holds.time_source) {
+                        (Some(ty), _) => config_file::DataTypeDto::Scalar(ty.to_string()),
+                        (None, Some(crate::plan::config::TimeSource::Format(format))) => {
                             config_file::DataTypeDto::Compound(config_file::CompoundTypeDto::DateTime { format })
                         }
-                        _ => config_file::DataTypeDto::Scalar(holds.ty.to_string()),
+                        (None, _) => config_file::DataTypeDto::Scalar(holds.ty.to_string()),
                     };
                     config_file::FieldDto {
                         name: name.to_string(),
