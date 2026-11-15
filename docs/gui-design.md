@@ -436,9 +436,10 @@ A **static** parser needs no sample at all, so the author never types a
 name. Grok's fields are its captures, which the preview reports in capture
 order, each at the type the pipeline gives it: a schema the pipeline
 produces types a capture it names, and the pattern types the rest. Each
-capture the author hasn't chosen a type for reads `auto` with its type,
-and only a type the author chooses is stored in the step, so the others
-follow the pattern and the schemas as they change. Choosing `auto` again drops the choice, and a choice for a capture
+capture's type menu offers `auto` with that type, and a capture the author
+hasn't chosen a type for shows `auto` there. Only a type the author chooses is stored
+in the step, so the others follow the pattern and the schemas as they
+change. Choosing `auto` again drops the choice, and a choice for a capture
 the pattern lost goes with it. CSV's fields are its ordered column table,
 which the workspace fills in from the configuration, leaving only the type
 to choose. A column CSV should drop is typed `skip`, which keeps the

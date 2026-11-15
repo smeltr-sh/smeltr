@@ -14,6 +14,7 @@ use crate::core::column::{Column, DataType, Validity};
 use crate::core::ctx::Ctx;
 use crate::core::error::{ErrorSink, ExceptionKind};
 use crate::core::id::{FunctionId, SlotId};
+use crate::format::grok_pattern::Holds;
 use crate::format::record::RecordView;
 use crate::leader::envelope::{ApiError, Envelope, Refusal};
 use crate::plan;
@@ -124,6 +125,16 @@ pub struct AfterDot {
     pub methods: Vec<plan::dot::Method>,
 }
 
+/// A grok step's field: its type in the pipeline, and the type it takes where the author chooses none.
+#[derive(Debug, serde::Serialize)]
+pub struct GrokField {
+    /// Its type in the pipeline: the author's choice, else the type the name already holds, else `auto`.
+    #[serde(flatten)]
+    pub field: config_file::FieldDto,
+    /// A produced schema's type, else the pattern's (`Holds::under`).
+    pub auto: config_file::DataTypeDto,
+}
+
 #[derive(Default, serde::Serialize)]
 pub struct Preview {
     pub stage: Option<&'static str>,
@@ -137,9 +148,8 @@ pub struct Preview {
     /// the parse decided, so it is what the parser did rather than a second reading of the records.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parsers: Vec<ParserOut>,
-    /// Each grok step's fields as the pipeline types them, by step id: a type the author chose, else a produced
-    /// schema's, else the pattern's (`Holds::under`). Empty when the pipeline did not compile.
-    pub grok_fields: BTreeMap<String, Vec<config_file::FieldDto>>,
+    /// Each grok step's fields, by step id. Empty when the pipeline did not compile.
+    pub grok_fields: BTreeMap<String, Vec<GrokField>>,
     /// The dictionary of what the pipeline writes (`plan::dictionary`), when asked. Absent when it did not compile.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dictionary: Option<DictionaryOut>,
@@ -927,7 +937,7 @@ pub fn run_preview(
             rows: vec![],
             unfiltered: filter.as_ref().map(|_| 0),
             parsers: vec![],
-            grok_fields: grok_fields(&plan),
+            grok_fields: grok_fields(&plan, &pipeline_cfg.produces),
             dictionary: req.dictionary.then(|| DictionaryOut {
                 compiled: Dictionary::of(&record),
                 sampled: None,
@@ -1072,7 +1082,7 @@ pub fn run_preview(
         rows,
         unfiltered,
         parsers,
-        grok_fields: grok_fields(&plan),
+        grok_fields: grok_fields(&plan, &pipeline_cfg.produces),
         warnings,
         schema_findings: found.len() as u32,
         missing,
@@ -1081,15 +1091,12 @@ pub fn run_preview(
 }
 
 /// Each grok step's fields in `plan`, by step id, spelled as a declaration spells them.
-fn grok_fields(plan: &Plan) -> BTreeMap<String, Vec<config_file::FieldDto>> {
-    let field = |o: &plan::compile::Output| config_file::FieldDto {
-        name: o.name.clone(),
-        ty: match &o.time_source {
-            Some(plan::config::TimeSource::Format(format)) => {
-                config_file::DataTypeDto::Compound(config_file::CompoundTypeDto::DateTime { format: format.clone() })
-            }
-            _ => config_file::DataTypeDto::Scalar(o.ty.to_string()),
-        },
+fn grok_fields(plan: &Plan, produces: &[Arc<Schema>]) -> BTreeMap<String, Vec<GrokField>> {
+    let dto = |ty: &DataType, time_source: &Option<plan::config::TimeSource>| match time_source {
+        Some(plan::config::TimeSource::Format(format)) => {
+            config_file::DataTypeDto::Compound(config_file::CompoundTypeDto::DateTime { format: format.clone() })
+        }
+        _ => config_file::DataTypeDto::Scalar(ty.to_string()),
     };
     let mut out = BTreeMap::new();
     for i in &plan.instrs {
@@ -1097,13 +1104,30 @@ fn grok_fields(plan: &Plan) -> BTreeMap<String, Vec<config_file::FieldDto>> {
             outputs,
             call:
                 plan::compile::Call::Parse {
-                    kind: plan::config::ParserKind::Grok(_),
+                    kind: plan::config::ParserKind::Grok(c),
+                    matcher: Some(m),
                     ..
                 },
             ..
         } = &i.op
             && let Some(step) = plan.step_ids.get(i.function as usize)
         {
+            let field = |o: &plan::compile::Output| {
+                let capture = m
+                    .capture_names()
+                    .into_iter()
+                    .find(|n| tree::name_of(n, c.split_dots) == o.name);
+                // The output's slot is named by the field's path in the record, the path a schema's field uses.
+                let path = plan.provenance.get(o.slot).map_or(o.name.as_str(), |p| p.name.as_str());
+                let auto = capture.map_or_else(Holds::text, |n| m.holds(n)).under(produces, path);
+                GrokField {
+                    field: config_file::FieldDto {
+                        name: o.name.clone(),
+                        ty: dto(&o.ty, &o.time_source),
+                    },
+                    auto: dto(&auto.ty, &auto.time_source),
+                }
+            };
             out.insert(step.clone(), outputs.iter().map(field).collect());
         }
     }
@@ -1740,13 +1764,14 @@ mod tests {
             "patterns":["%{WORD:time} %{INT:n2} %{HTTPDATE:at} %{INT:took}"]},"declared":[{"name":"took","type":"f64"}]}"#;
         let config = producing(r#"["login"]"#).replace(r#"{"id":"s","type":"code","body":"x = 1;"}"#, step);
         let fields = &previewed(config, &[]).grok_fields["s"];
+        let at = serde_json::json!({"type": "datetime", "format": "%d/%b/%Y:%H:%M:%S %z"});
         assert_eq!(
             serde_json::to_value(fields).unwrap(),
             serde_json::json!([
-                {"name": "time", "type": "i64"},
-                {"name": "n2", "type": "i64"},
-                {"name": "at", "type": {"type": "datetime", "format": "%d/%b/%Y:%H:%M:%S %z"}},
-                {"name": "took", "type": "f64"}
+                {"name": "time", "type": "i64", "auto": "i64"},
+                {"name": "n2", "type": "i64", "auto": "i64"},
+                {"name": "at", "type": at, "auto": at},
+                {"name": "took", "type": "f64", "auto": "i64"}
             ])
         );
     }

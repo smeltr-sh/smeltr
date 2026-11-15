@@ -60,7 +60,7 @@
     {groups}
     {disabled}
     ariaLabel={`${label} type`}
-    auto={auto && (auto.on ? auto.type : '')}
+    auto={auto?.type}
     onpick={(key) => (ty = withTypeKey(ty, key))}
     {onauto}
   />

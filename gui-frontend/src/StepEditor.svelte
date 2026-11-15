@@ -278,14 +278,17 @@
     return { name: '', ty: { kind: 'named', name: 'str' } };
   }
 
-  /** A grok step's fields: each capture as the pipeline types it, and whether the author chose that type. Until a
-   * preview has compiled, it shows the types the author chose. */
-  function grokRows(ps: ParserStep): { name: string; ty: DataTypeSpec; chosen: boolean }[] {
+  /** A grok step's fields: each capture as the pipeline types it, whether the author chose that type, and the type
+   * it has where the author chooses none. Until a preview has compiled, it shows the types the author chose. */
+  function grokRows(
+    ps: ParserStep,
+  ): { name: string; ty: DataTypeSpec; chosen: boolean; auto: string }[] {
     const typed = grokFields?.[ps.id];
-    if (!typed) return ps.declared.map((f) => ({ ...f, chosen: true }));
+    if (!typed) return ps.declared.map((f) => ({ ...f, chosen: true, auto: '' }));
     return typed.map((f) => {
       const chosen = ps.declared.find((d) => d.name === f.name);
-      return { name: f.name, ty: chosen?.ty ?? dtoToDataType(f.type, f.name), chosen: !!chosen };
+      const ty = chosen?.ty ?? dtoToDataType(f.type, f.name);
+      return { name: f.name, ty, chosen: !!chosen, auto: typeKey(dtoToDataType(f.auto, f.name)) };
     });
   }
 
@@ -922,7 +925,7 @@
                     groups={declaredTypeGroups(false)}
                     disabled={readOnly}
                     label={row.name}
-                    auto={{ type: row.chosen ? '' : typeKey(row.ty), on: !row.chosen }}
+                    auto={{ type: row.auto, on: !row.chosen }}
                     onauto={() => chooseType(ps, row.name, null)}
                   >
                     {#snippet name()}

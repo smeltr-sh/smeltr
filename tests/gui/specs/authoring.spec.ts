@@ -4068,6 +4068,9 @@ test('a grok capture is typed automatically until the author chooses a type', as
 
   await admin.getByRole('combobox', { name: 'took type' }).selectOption('i64');
   await expect(shown('took')).toHaveText('i64');
+  await expect(
+    admin.getByRole('combobox', { name: 'took type' }).locator('option[value=""]'),
+  ).toHaveText('auto · f64');
   await admin.getByRole('combobox', { name: 'bytes type' }).selectOption('str');
   await admin.getByRole('combobox', { name: 'bytes type' }).selectOption('');
   await expect(shown('bytes')).toHaveText('auto · i64');
