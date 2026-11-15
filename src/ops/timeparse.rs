@@ -1,11 +1,12 @@
 //! `parseTime`'s engine: a strftime-like format subset and an ordered candidate list for auto-detect.
 //!
-//! Auto-detect reads a run of digits as a compact date first -- `%Y%m%d%H%M%S`, then `%Y%m%d` -- and as a Unix
-//! epoch when it is neither, before it tries any other text shape. A valid date is the more specific reading, so it
-//! wins: `20231114` is the 14th of November, not the 231st day of 1970. The epoch's unit comes from the magnitude of
-//! the integer part (`parse_epoch_digits`): seconds below 10^11, milliseconds below 10^14, microseconds below 10^17,
-//! nanoseconds past that. Each bound is the year 5138 in its unit, so the only values read in the wrong unit are
-//! milliseconds before March 1973, which read as seconds. A sign and a fraction are taken.
+//! Auto-detect reads a run of digits as a compact date -- `%Y%m%d%H%M%S`, `%Y%m%d%H%M` or `%Y%m%d` -- or as a Unix
+//! epoch, before it tries any other text shape. Where both read, the instant nearer the reference wins, and with no
+//! reference the date does: `20231114` is the 14th of November 2023, not the 235th day of 1970, and `202311142213` is
+//! 22:13 that day, not May 1976. The epoch's unit comes from the magnitude of the integer part (`parse_epoch_digits`):
+//! seconds below 10^11, milliseconds below 10^14, microseconds below 10^17, nanoseconds past that. Each bound is the
+//! year 5138 in its unit, so the only values read in the wrong unit are milliseconds before March 1973, which read as
+//! seconds. A sign and a fraction are taken.
 //!
 //! Specifiers: `%Y` exactly four digits, `%y` exactly two, `%m`/`%d` one or two digits, `%e` a day with an optional
 //! leading space (syslog's `Oct  1`), `%H`/`%M`/`%S` two digits, `%I` one or two (with `%p` `AM`/`PM`), `%f` one to six
@@ -420,8 +421,9 @@ const WHOLE_INSTANT_SPECIFIERS: &[&str] = &["%s", "%Q"];
 /// Auto-detect candidates, most common first; the first match wins. The shapes are mutually exclusive
 /// (`candidate_formats_are_mutually_exclusive`), which is what makes the sticky hint in `parse_auto_hinted` sound.
 const CANDIDATE_FORMATS: &[&str] = &[
-    // Compact digits. These two are tried before the epoch reading (`parse_auto_hinted_at`), so they stay first.
+    // Compact digits. These are weighed against the epoch reading (`parse_auto_hinted_at`), so they stay first.
     "%Y%m%d%H%M%S",
+    "%Y%m%d%H%M",
     "%Y%m%d",
     // ISO 8601, `T` separator. ISO 8601 takes a comma or a full stop before the fraction.
     "%Y-%m-%dT%H:%M:%S.%f%z",
@@ -495,7 +497,7 @@ const EPOCH_UNIT_BOUNDS: [(i64, i64, usize); 3] = [
 ];
 const EPOCH_HINT: usize = usize::MAX;
 /// How many of `CANDIDATE_FORMATS` are the all-digit shapes read ahead of the epoch.
-const COMPACT_CANDIDATES: usize = 2;
+const COMPACT_CANDIDATES: usize = 3;
 
 /// A run of digits, with an optional sign and an optional fraction, as epoch microseconds. The unit is the first of
 /// seconds, milliseconds, microseconds and nanoseconds whose bound the integer part is below (the module doc). `None`
@@ -606,15 +608,21 @@ fn write_name(out: &mut Vec<u8>, name: &str) -> std::io::Result<()> {
 
 /// `parse_auto_hinted` with the reference a yearless candidate infers its year from.
 pub fn parse_auto_hinted_at(text: &str, hint: usize, reference: Option<i64>) -> Option<(i64, usize)> {
-    // A run of digits: a compact date if it is one, else an epoch. The compact shapes are the first two candidates
-    // and fail on the first byte of any other text, so trying them here costs nothing on the common case.
-    for (i, fmt) in CANDIDATE_FORMATS[..COMPACT_CANDIDATES].iter().enumerate() {
-        if let Some(us) = parse_with_format_at(text, fmt, reference) {
-            return Some((us, i));
+    // A run of digits: a compact date, an epoch, or both. The compact shapes are the first candidates and fail on
+    // the first byte of any other text, so trying them first costs almost nothing on the common case.
+    let date = CANDIDATE_FORMATS[..COMPACT_CANDIDATES]
+        .iter()
+        .enumerate()
+        .find_map(|(i, fmt)| parse_with_format_at(text, fmt, reference).map(|us| (us, i)));
+    let epoch = parse_epoch_digits(text).map(|us| (us, EPOCH_HINT));
+    match (date, epoch, reference) {
+        (Some(d), Some(e), Some(r)) => {
+            let nearer = |(us, _): (i64, usize)| (i128::from(us) - i128::from(r)).unsigned_abs();
+            return Some(if nearer(e) < nearer(d) { e } else { d });
         }
-    }
-    if let Some(us) = parse_epoch_digits(text) {
-        return Some((us, EPOCH_HINT));
+        (Some(d), _, _) => return Some(d),
+        (None, Some(e), _) => return Some(e),
+        (None, None, _) => {}
     }
     if let Some(fmt) = CANDIDATE_FORMATS.get(hint)
         && let Some(us) = parse_with_format_at(text, fmt, reference)
@@ -798,7 +806,26 @@ mod tests {
         assert_eq!(formatted(date("2007-03-04").unwrap(), "%y%m%d").unwrap(), "070304");
     }
 
-    /// A run of digits that is a valid compact date is that date; one that is not is an epoch.
+    /// Digits that read both as a compact date and as an epoch take the instant nearer the reference.
+    #[test]
+    fn digits_with_two_readings_take_the_one_nearer_the_reference() {
+        let r = Some(parse_auto("2026-11-14").unwrap());
+        let read = |text| parse_auto_hinted_at(text, usize::MAX, r).map(|(us, _)| us);
+        assert_eq!(
+            read("202311142213"),
+            parse_with_format("2023-11-14 22:13", "%Y-%m-%d %H:%M")
+        );
+        // The year 1234 as a date, November 1973 in milliseconds.
+        assert_eq!(read("123412011200"), Some(123_412_011_200 * 1_000));
+        assert_eq!(
+            parse_auto("123412011200"),
+            parse_with_format("1234-12-01 12:00", "%Y-%m-%d %H:%M"),
+            "no reference"
+        );
+        assert_eq!(read("20231114"), parse_with_format("2023-11-14", "%Y-%m-%d"));
+    }
+
+    /// With no reference, a run of digits that is a valid compact date is that date; one that is not is an epoch.
     #[test]
     fn auto_detect_reads_a_compact_date_before_an_epoch() {
         assert_eq!(parse_auto("20231114"), parse_with_format("2023-11-14", "%Y-%m-%d"));
@@ -808,6 +835,11 @@ mod tests {
         );
         // Month 13: not a date, so the eight digits are seconds.
         assert_eq!(parse_auto("20231314"), Some(20_231_314 * 1_000_000));
+        // Twelve digits are a date and a count of milliseconds, here the date.
+        assert_eq!(
+            parse_auto("202311142213"),
+            parse_with_format("2023-11-14 22:13", "%Y-%m-%d %H:%M")
+        );
         // Ten digits are never a compact date: `%Y%m%d` leaves two over.
         assert_eq!(parse_auto("2023111422"), Some(2_023_111_422 * 1_000_000));
     }
@@ -1220,6 +1252,7 @@ mod tests {
     fn one_sample_per_candidate() -> Vec<(&'static str, &'static str)> {
         vec![
             ("%Y%m%d%H%M%S", "20260825123045"),
+            ("%Y%m%d%H%M", "202608251230"),
             ("%Y%m%d", "20260825"),
             ("%Y-%m-%dT%H:%M:%S.%f%z", "2026-08-25T12:30:45.123456+05:00"),
             ("%Y-%m-%dT%H:%M:%S,%f%z", "2026-08-25T12:30:45,123456+05:00"),
