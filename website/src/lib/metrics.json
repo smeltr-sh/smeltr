@@ -148,6 +148,13 @@
   },
   {
     "group": "Processing",
+    "name": "smeltr_route_matched_bytes_total",
+    "kind": "counter",
+    "labels": ["source", "route", "pipeline"],
+    "what": "Bytes of the records the route's condition matched, as the source read them. Sum it over a pipeline's routes for the pipeline's bytes in."
+  },
+  {
+    "group": "Processing",
     "name": "smeltr_route_out_total",
     "kind": "counter",
     "labels": ["source", "route", "pipeline"],
