@@ -378,8 +378,6 @@ pub struct MetricsSource {
     /// Its deployment is stopping: what it counted since its last poll is owed now, and dies with the runtime unless
     /// a poll carries it ([`Source::stop_taking`]).
     stopping: bool,
-    /// A poll since it began stopping left nothing owed.
-    finished: bool,
     next_offset: i64,
     /// A fixed synthetic `__source.topic`, so a route can select metrics rows like any other source's.
     topic: std::sync::Arc<str>,
@@ -458,7 +456,6 @@ impl MetricsSource {
             bucket: config.bucket,
             last_drain: None,
             stopping: false,
-            finished: false,
             next_offset: 0,
             topic: std::sync::Arc::from(METRICS_TOPIC),
             subjects: Arc::default(),
@@ -484,7 +481,7 @@ impl Source for MetricsSource {
         max_bytes: usize,
         timeout: Duration,
     ) -> Result<Vec<SourceRecord>, IoError> {
-        if let Some(last) = self.last_drain.filter(|_| !self.stopping) {
+        if let Some(last) = self.last_drain {
             let waited = last.elapsed();
             if waited < self.bucket {
                 std::thread::sleep((self.bucket - waited).min(timeout));
@@ -544,7 +541,6 @@ impl Source for MetricsSource {
         }
         advance(&mut self.cursor, &sent);
         advance(&mut self.mirrored, &sent_mirrored);
-        self.finished = self.stopping && self.last_drain.is_some();
         Ok(out.finish())
     }
 
@@ -556,8 +552,11 @@ impl Source for MetricsSource {
     /// It holds what was counted since its last poll until a poll carries it, so it is polled again at once. The
     /// deployment stops it after every other source, so that poll carries their last counts too.
     fn stop_taking(&mut self) -> bool {
-        self.stopping = true;
-        !self.finished
+        if !self.stopping {
+            self.stopping = true;
+            self.last_drain = None;
+        }
+        self.last_drain.is_none()
     }
 }
 
