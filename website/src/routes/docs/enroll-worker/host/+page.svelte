@@ -134,6 +134,13 @@ state_dir = "/var/lib/smeltr-worker"</code
     The container must be able to reach the leader and every configured source and destination.
   </p>
   <p>
+    For a group whose receivers change often, run the worker as the binary above, or start the
+    container with <code>--network host</code>: it then shares the host's network, so a new receiver
+    needs no change to the container. It also gives up the container's network isolation; see
+    Docker's
+    <a href="https://docs.docker.com/engine/network/drivers/host/">host network driver</a>.
+  </p>
+  <p>
     Leave <code>worker.leader.ca</code> unset for normal enrollment. An enrollment code can verify
     the leader’s CA fingerprint and save the matching certificate. The worker also trusts the public
     roots, Mozilla’s and the host’s own, unless <code>worker.leader.trust_public</code> is false. If you
