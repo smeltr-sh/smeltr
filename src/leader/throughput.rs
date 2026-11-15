@@ -9,6 +9,9 @@
 //! quiet hour and a busy one can be pooled only once each is set against its own time of day; a quantile, because rows
 //! read are bursty and often zero, which a mean and a deviation do not describe.
 //!
+//! A source whose rows differ by weekday is judged at each time of day against the days of its own kind, learned
+//! from four weeks of them, and a window that reaches into the day before against both days' kinds ([`week`]).
+//!
 //! A width judges a source only where its usual window holds at least [`GATE`] rows: a window that is usually near
 //! empty has a low edge of zero, which no reading is below. So a source that reads every few seconds is judged at every
 //! width, and one that reads a few rows an hour only at the long ones.
@@ -62,6 +65,10 @@ use super::series::{RegistryStore, Silence, SubjectPoints, Swing, Tier, Watch, Y
 use super::store::Store;
 use super::warnings::{self, Condition, SubjectKind, label};
 use super::{AppState, ROWS_IN_METRIC, marks, run_store};
+
+mod week;
+
+use week::{Week, Weekly};
 
 /// The width above normal is judged at, and the one a source's rate is shown at where no other is called for.
 pub const WINDOW: Duration = Duration::from_secs(30 * 60);
@@ -484,16 +491,34 @@ pub fn grouped(rows: f64) -> String {
 struct Normal {
     width: Width,
     preset: Preset,
-    /// By the bucket of the day a window ends at. None where too few days had one.
-    usual: Vec<Option<f64>>,
+    usual: Usual,
     low: f64,
     high: f64,
+}
+
+/// A width's usual windows: one for each time of day, or, where a source's days differ by weekday, one for each time
+/// of each kind of day.
+#[derive(Debug, Clone, PartialEq)]
+enum Usual {
+    /// By the bucket of the UTC day a window ends at. None where too few days had one.
+    Daily(Vec<Option<f64>>),
+    Weekly(Weekly),
+}
+
+impl Usual {
+    /// The usual window ending at `ended_ms`, or None where too few days had one.
+    fn at(&self, ended_ms: i64) -> Option<f64> {
+        match self {
+            Usual::Daily(usual) => usual[time_of_day(ended_ms)],
+            Usual::Weekly(weekly) => weekly.at(ended_ms),
+        }
+    }
 }
 
 impl Normal {
     /// The range of the window ending at `ended_ms`, or None where this width does not judge the source.
     fn band(&self, ended_ms: i64) -> Option<Band> {
-        let usual = self.usual[time_of_day(ended_ms)].filter(|&t| t >= GATE)?;
+        let usual = self.usual.at(ended_ms).filter(|&t| t >= GATE)?;
         let margin = self.preset.margin();
         Some(Band {
             low: (1.0 - margin) * ((usual + 1.0) * self.low - 1.0).max(0.0),
@@ -510,12 +535,12 @@ fn time_of_day(ended_ms: i64) -> usize {
 /// `width`'s normal at `preset` as of `as_of`, from the windows learned that ended before it, or None while it has no
 /// ratio at all.
 /// Its history is its newest learned windows, as many as fit in [`Width::history_days`] days, and a time of day's usual
-/// window is learned from the newest [`USUAL_DAYS`] days with a learned window near it. Both reach back past what is
-/// not learned, as far as [`lookback_ms`], so a warning that holds for days is still judged against the days before it.
-/// Each window's usual window is that of its time of day as of `as_of`, so every window of the history is set against
-/// the same days. Each window and its usual window get one more row, so a time of day that is usually empty divides
-/// like any other.
-fn normal(rows: &Rows, warned: &Warned, as_of: i64, width: Width, preset: Preset) -> Option<Normal> {
+/// window is learned from the newest [`USUAL_DAYS`] days with a learned window near it, or, where `week` tells its days
+/// apart, from the days of its kind ([`Weekly`]). Both reach back past what is not learned, as far as [`lookback_ms`],
+/// so a warning that holds for days is still judged against the days before it. Each window's usual window is that of
+/// its time of day as of `as_of`, so every window of the history is set against the same days. Each window and its
+/// usual window get one more row, so a time of day that is usually empty divides like any other.
+fn normal(rows: &Rows, warned: &Warned, as_of: i64, width: Width, preset: Preset, week: &Week) -> Option<Normal> {
     let step = BUCKET.bucket_ms();
     let per_day = DAY_MS / step;
     // Each learned window, newest first, with how many buckets before `as_of` it ended. A window is learned once a
@@ -535,12 +560,40 @@ fn normal(rows: &Rows, warned: &Warned, as_of: i64, width: Width, preset: Preset
             Some((i, sum))
         })
         .collect();
+    let usual = if week.daily() {
+        Usual::Daily(daily(&learned, as_of))
+    } else {
+        Usual::Weekly(Weekly::learn(rows, warned, as_of, width, wait, &learned, *week))
+    };
+    let mut ratios: Vec<f64> = learned
+        .iter()
+        .take((width.history_days * per_day) as usize)
+        .filter_map(|&(i, sum)| Some((sum + 1.0) / (usual.at(as_of - i * step)? + 1.0)))
+        .collect();
+    if ratios.is_empty() {
+        return None;
+    }
+    ratios.sort_by(f64::total_cmp);
+    Some(Normal {
+        width,
+        preset,
+        low: quantile(&ratios, TAIL),
+        high: quantile(&ratios, 1.0 - TAIL),
+        usual,
+    })
+}
+
+/// The usual window at each bucket of the UTC day, from the `learned` windows (how many buckets before `as_of` each
+/// ended, and its rows, newest first): the median of those near it on the newest [`USUAL_DAYS`] days that have one.
+fn daily(learned: &[(i64, f64)], as_of: i64) -> Vec<Option<f64>> {
+    let step = BUCKET.bucket_ms();
+    let per_day = DAY_MS / step;
     let mut by_time: Vec<Vec<(i64, f64)>> = vec![Vec::new(); per_day as usize];
-    for &(i, sum) in &learned {
+    for &(i, sum) in learned {
         by_time[time_of_day(as_of - i * step)].push((i, sum));
     }
     let across = NEIGHBORHOOD.as_millis() as i64 / step;
-    let usual: Vec<Option<f64>> = (0..per_day)
+    (0..per_day)
         .map(|at| {
             // Each window near `at`, grouped by the day it is near: a window in the half hour after a midnight counts
             // for that midnight's day. A time of day has one window a day, newest first, so the newest days near `at`
@@ -568,23 +621,7 @@ fn normal(rows: &Rows, warned: &Warned, as_of: i64, width: Width, preset: Preset
             sums.sort_by(f64::total_cmp);
             Some(quantile(&sums, 0.5))
         })
-        .collect();
-    let mut ratios: Vec<f64> = learned
-        .iter()
-        .take((width.history_days * per_day) as usize)
-        .filter_map(|&(i, sum)| Some((sum + 1.0) / (usual[time_of_day(as_of - i * step)]? + 1.0)))
-        .collect();
-    if ratios.is_empty() {
-        return None;
-    }
-    ratios.sort_by(f64::total_cmp);
-    Some(Normal {
-        width,
-        preset,
-        low: quantile(&ratios, TAIL),
-        high: quantile(&ratios, 1.0 - TAIL),
-        usual,
-    })
+        .collect()
 }
 
 /// Each source's normal at each width that has one.
@@ -715,9 +752,11 @@ fn sender_normals(
         let warned = Warned::of_senders(store, history.keys(), oldest, learning);
         out.extend(history.into_iter().map(|(key, of)| {
             let rows = Rows::of(&of, oldest, as_of);
+            let warned = &warned[&key];
+            let week = Week::learn(&rows, warned, as_of);
             let normals = WIDTHS
                 .iter()
-                .filter_map(|&width| normal(&rows, &warned[&key], as_of, width, preset))
+                .filter_map(|&width| normal(&rows, warned, as_of, width, preset, &week))
                 .collect();
             (key, normals)
         }));
@@ -737,9 +776,10 @@ fn learned(
     let rows = Rows::of(of, oldest, as_of);
     let warned = Warned::of(store, &key.0, &key.1, oldest, learning);
     let preset = learning.presets_of(&key.0, &key.1).rows;
+    let week = Week::learn(&rows, &warned, as_of);
     WIDTHS
         .iter()
-        .filter_map(|&width| normal(&rows, &warned, as_of, width, preset))
+        .filter_map(|&width| normal(&rows, &warned, as_of, width, preset, &week))
         .collect()
 }
 
@@ -899,10 +939,16 @@ impl Rows {
 
     /// Rows read over `width` ending at `ended_ms`, or None if any of its buckets has no point or is not held.
     fn window(&self, ended_ms: i64, width: Width) -> Option<f64> {
-        let end = usize::try_from((ended_ms - self.start_ms).div_euclid(BUCKET.bucket_ms())).ok()?;
-        let start = end.checked_sub(width.buckets() as usize)?;
-        let (&(after, missing_after), &(before, missing_before)) = (self.before.get(end)?, self.before.get(start)?);
-        (missing_after == missing_before).then_some(after - before)
+        let (rows, missing) = self.read(ended_ms - width.ms(), ended_ms)?;
+        (missing == 0).then_some(rows)
+    }
+
+    /// Rows read from `from_ms` until `to_ms`, and how many of its buckets have no point, or None if any is not held.
+    fn read(&self, from_ms: i64, to_ms: i64) -> Option<(f64, u32)> {
+        let at = |ms: i64| usize::try_from((ms - self.start_ms).div_euclid(BUCKET.bucket_ms())).ok();
+        let (&(after, missing_after), &(before, missing_before)) =
+            (self.before.get(at(to_ms)?)?, self.before.get(at(from_ms)?)?);
+        Some((after - before, missing_after - missing_before))
     }
 }
 
@@ -1021,8 +1067,14 @@ impl Warned {
     /// Whether the `width_ms` ending at `ended_ms` teaches the normal nothing: it overlaps a span not learned, or it
     /// shares a bucket with a window of its width that ended while a below-normal warning waited or held.
     fn during(&self, ended_ms: i64, width_ms: i64) -> bool {
-        Warned::overlaps(&self.unlearned, ended_ms, width_ms)
-            || Warned::overlaps(&self.below, ended_ms + width_ms, 2 * width_ms)
+        self.part_during(ended_ms, width_ms, width_ms)
+    }
+
+    /// [`Warned::during`] for the `length_ms` ending at `ended_ms` that is part of a window of `width_ms`: whether any
+    /// of its buckets is one a window of that width would not be learned for.
+    fn part_during(&self, ended_ms: i64, length_ms: i64, width_ms: i64) -> bool {
+        Warned::overlaps(&self.unlearned, ended_ms, length_ms)
+            || Warned::overlaps(&self.below, ended_ms + width_ms, length_ms + width_ms)
     }
 
     /// Whether the window of `width_ms` that ends at `ended_ms` overlaps a period an editor said was normal.
@@ -1393,13 +1445,18 @@ pub fn expected_over(
     let warned = Warned::of(store, group, source, oldest, learning);
     let preset = learning.presets_of(group, source).rows;
     let mut normals: HashMap<i64, Option<Normal>> = HashMap::new();
+    // A week holds all day.
+    let mut weeks: HashMap<i64, Week> = HashMap::new();
     let mut out = Vec::new();
     let mut ended_ms = first;
     while ended_ms <= last {
         let as_of = Tier::OneHour.align(ended_ms);
-        let normal = normals
-            .entry(as_of)
-            .or_insert_with(|| normal(&rows, &warned, as_of, width, preset));
+        let normal = normals.entry(as_of).or_insert_with(|| {
+            let week = weeks
+                .entry(as_of.div_euclid(DAY_MS))
+                .or_insert_with(|| Week::learn(&rows, &warned, as_of));
+            normal(&rows, &warned, as_of, width, preset, week)
+        });
         if let Some(band) = normal.as_ref().and_then(|n| n.band(ended_ms)) {
             let seconds = width.window.as_secs_f64();
             out.push(ExpectedPoint {
@@ -1890,6 +1947,63 @@ mod tests {
             .collect();
         assert_eq!(below, [360]);
         assert_eq!(r.outside, Some(Outside::Below));
+    }
+
+    /// 100 rows a bucket from 06:00 to 20:00 UTC on a working day, a fifth of that at the weekend, and 10 at night.
+    fn office(at: i64) -> f64 {
+        let hour = at.rem_euclid(DAY_MS) / HOUR;
+        // UTC day 0 was a Thursday.
+        let working = (at.div_euclid(DAY_MS) + 3).rem_euclid(7) < 5;
+        match ((6..20).contains(&hour), working) {
+            (false, _) => 10.0,
+            (true, true) => 100.0,
+            (true, false) => 20.0,
+        }
+    }
+
+    /// An office's working day is judged against its working days: one that reads at its weekend's level is below,
+    /// while its weekend reads within its range.
+    #[test]
+    fn a_working_day_that_reads_at_its_weekends_level_is_below() {
+        let thursday = END - 6 * HOUR;
+        let saturday = END - 6 * DAY_MS + 18 * HOUR;
+        let wait = Preset::Balanced.wait();
+        let dropped = |at: i64| (thursday - wait * FIVE..thursday).contains(&at);
+        let store = store_with(29, |at| Some(if dropped(at) { 20.0 } else { office(at) }));
+        let learning = Learning::default();
+        assert_eq!(
+            reading_at(&store, thursday, &learning).unwrap().outside,
+            Some(Outside::Below)
+        );
+        let store = store_with(29, |at| Some(office(at)));
+        assert_eq!(reading_at(&store, thursday, &learning).unwrap().outside, None);
+        assert_eq!(reading_at(&store, saturday, &learning).unwrap().outside, None);
+    }
+
+    /// A sender's days are its own: one that sends in office hours is below on a working day at its weekend's level,
+    /// while its source, which reads the same every day, is not.
+    #[test]
+    fn a_sender_is_judged_against_its_own_kinds_of_day() {
+        let thursday = END - 6 * HOUR;
+        let wait = Presets::default().senders.wait();
+        let dropped = |at: i64| (thursday - wait * FIVE..thursday).contains(&at);
+        let store = store_with(29, |_| Some(1000.0));
+        send(&store, 29, "fw-01", |at| {
+            Some(if dropped(at) { 20 } else { office(at) as u64 })
+        });
+        // A field with one value is not watched.
+        send(&store, 29, "fw-07", |_| Some(900));
+        let learning = Learning::default();
+        let learned = learn(&store, Tier::OneHour.align(thursday), &learning, None);
+        let read: BTreeMap<Option<String>, Option<Outside>> = compute(&store, thursday, &learning, &learned)
+            .into_iter()
+            .map(|r| (r.sender.map(|s| s.value), r.outside))
+            .collect();
+        let fw = |value: &str| Some(value.to_string());
+        assert_eq!(
+            read,
+            BTreeMap::from([(None, None), (fw("fw-01"), Some(Outside::Below)), (fw("fw-07"), None)])
+        );
     }
 
     /// Days are counted per time of day: the windows in the half hour after a midnight are that midnight's day.

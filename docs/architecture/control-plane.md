@@ -334,19 +334,32 @@ destination is back, so it is a warning where the other two are failures.
 A source reading fewer rows than it normally does warns, and one reading more
 raises info. Its rows are judged at four widths: the last 5 minutes, 30 minutes,
 6 hours and 24 hours. At each, the usual window is the same window at the same
-time of day on the last seven days learned, and the range is the usual window
-scaled by how far that width's learned windows strayed from theirs, a week of
-them for the short widths and four weeks for the long, and widened by the
-source's preset. A width judges a source only where its usual window holds ten
-rows, so a busy source is judged at every width and a sparse one at the long
-ones. A source too sparse for any width is judged by the gap: how long it has
-gone without a row, against half again the longest quiet spell it made in the
-past year. A source warns once some width reads below its range for as many
-readings in a row as its preset requires, or once it outlasts the gap, and the
-warning holds until some width judges the source and none reads it below its
-range, or, where only the gap judges it, until the first row after it began that
-ends a quiet spell the gap read below. Rows above normal are judged at 30
-minutes alone.
+time of day on the last seven days learned, or, for a source whose weekdays
+differ, on the days of its kind, and the range is the usual window scaled by how
+far that width's learned windows strayed from theirs, a week of them for the
+short widths and four weeks for the long, and widened by the source's preset. A
+width judges a source only where its usual window holds ten rows, so a busy
+source is judged at every width and a sparse one at the long ones. A source too
+sparse for any width is judged by the gap: how long it has gone without a row,
+against half again the longest quiet spell it made in the past year. A source
+warns once some width reads below its range for as many readings in a row as its
+preset requires, or once it outlasts the gap, and the warning holds until some
+width judges the source and none reads it below its range, or, where only the
+gap judges it, until the first row after it began that ends a quiet spell the
+gap read below. Rows above normal are judged at 30 minutes alone.
+
+A source whose rows differ by weekday, such as an office's working days against
+its weekend, is judged against days of its own kind. Its days start at its
+quietest hour, so that one day holds one day's traffic in whatever time zone it
+keeps. Its kinds are none, the weekdays split in two, or each weekday its own,
+and a split is kept only where it predicted each of the last four weeks, held
+out in turn, better than no split did. A kind's usual window is learned from
+that kind's days in the last four weeks. A window that reaches into the day
+before, as a Monday's 24 hours reach into Sunday, takes as its usual window the
+usual end of a day of yesterday's kind and the usual start of a day of today's
+kind. A source's days are told apart once it has four weeks of history, and its
+kinds are learned again each day. A watched sender's days are told apart the
+same way, from its own rows.
 
 A source's preset sets how soon a drop warns against how often a brief dip does:
 how much wider than its learned spread the range is, and how many readings in a
