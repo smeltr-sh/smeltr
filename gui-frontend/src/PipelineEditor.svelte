@@ -1286,6 +1286,10 @@
    * proposed ones, a change to Produces proposes them again, since the schema types the fields the proposal
    * declares. */
   let proposedFrom: { records: SampleRecordDto[]; steps: string } | null = null;
+  /** The steps as text, leaving out each parser's `declared` fields, so a Grok step declaring its own captures
+   * doesn't change it. */
+  const withoutDeclared = (theSteps: Step[]) =>
+    JSON.stringify(theSteps.map(stepToDto), (k, v) => (k === 'declared' ? undefined : v));
 
   $effect(() => {
     void JSON.stringify(produces);
@@ -1326,7 +1330,13 @@
       }
       if (p.format)
         proposed = `${p.read} of ${p.of} records read as ${PROPOSED_FORMAT_NAMES[p.format]}`;
-      proposedFrom = { records, steps: signatureOf(steps) };
+      // Remember the proposal only after each Grok step has declared its captures, which it does itself once the
+      // proposal lands, and only if the author hasn't changed the steps meanwhile.
+      const proposedSteps = withoutDeclared(steps);
+      await tick();
+      await fieldsSettled();
+      if (withoutDeclared(steps) === proposedSteps)
+        proposedFrom = { records, steps: signatureOf(steps) };
     } catch (e) {
       proposeError = unreported(e);
     }
