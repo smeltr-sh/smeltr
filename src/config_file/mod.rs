@@ -564,7 +564,7 @@ impl LoadedSystem {
             let Some(plan) = compiled.plan_for(route.source, route.pipeline) else {
                 continue; // `compile_topology` already reported this
             };
-            if plan.tree.leaf("__destination.id").is_some() {
+            if plan.tree.leaf(crate::plan::topology::DOC_ID).is_some() {
                 continue;
             }
             // A delivered destination's DLQ takes the same document, identity and all.

@@ -392,7 +392,7 @@
     </Field>
     {#if (destination.docId ?? 'auto') !== 'auto'}
       <Nested>
-        <Field required field="idField" label="id field">
+        <Field required field="idField" label="ID field">
           {#snippet help()}
             The row field each document's id is read from. It starts as <code>__destination.id</code
             >, the field a pipeline sets; name another field and it is used instead.
@@ -529,6 +529,7 @@
       'json',
       streamFormatHelp,
     )}
+    {@const toEvent = (destination.endpoint ?? 'event') === 'event'}
     {#each ['index', 'sourcetype', 'source', 'host'] as const as key (key)}
       {#snippet keyHelp()}
         {#if key !== 'index'}
@@ -539,12 +540,8 @@
         optional
         field={key}
         label={key}
-        overriddenBy={key === 'index' && (destination.endpoint ?? 'event') === 'event'
-          ? '__destination.index'
-          : undefined}
-        help={key !== 'index' && (destination.endpoint ?? 'event') === 'event'
-          ? keyHelp
-          : undefined}
+        overriddenBy={key === 'index' && toEvent ? '__destination.index' : undefined}
+        help={key !== 'index' && toEvent ? keyHelp : undefined}
       >
         <input
           type="text"

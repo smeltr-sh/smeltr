@@ -145,6 +145,9 @@ pub type RecordFields = std::borrow::Cow<'static, [(std::borrow::Cow<'static, st
 /// The `__source` field holding each record's payload as the source read it, before any decoding.
 pub const SOURCE_BYTES: &str = "__source.bytes";
 
+/// The `__destination` field a pipeline sets to give a row its document ID.
+pub const DOC_ID: &str = "__destination.id";
+
 /// The `__source` fields that read a record's topic, each under the name its kind gives it.
 const TOPIC_FIELDS: [&str; 4] = ["__source.topic", "__source.url", "__source.remote", "__source.database"];
 
@@ -1765,7 +1768,7 @@ impl DestinationKind {
         match self {
             DestinationKind::Kafka(_) => None,
             DestinationKind::Elasticsearch(e) if e.doc_id.wants_doc_id() => {
-                e.id_field.as_deref().filter(|f| *f != "__destination.id")
+                e.id_field.as_deref().filter(|f| *f != DOC_ID)
             }
             DestinationKind::Elasticsearch(_)
             | DestinationKind::SplunkHec(_)

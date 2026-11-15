@@ -58,7 +58,7 @@
     bare?: boolean;
     required?: boolean;
     optional?: boolean;
-    /** The `__destination` field by which a row replaces this setting. */
+    /** The `__destination` field a row sets to replace this setting. */
     overriddenBy?: string;
     children: Snippet;
   } = $props();
