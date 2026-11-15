@@ -60,7 +60,14 @@
   /** What an accepts list may name beside the built-ins. */
   let ownSchemas: SchemaDto[] = $state([]);
   let sharedSchemas: SchemaDto[] = $state([]);
-  let schemas = $derived([...sharedSchemas, ...ownSchemas]);
+  /** The scope's bundle as the leader reads it, which a schema import's pipeline runs in. */
+  let ownConfig: FileConfigDto | null = $state.raw(null);
+  function made(schema: SchemaDto, commit: string | null) {
+    ownSchemas.push(schema);
+    // The schema's save moved the branch past what the page read, so the page's own save is made against the
+    // branch as it now is.
+    editor.readAtCommit = commit;
+  }
   let all = $derived([...destinations, ...sharedDestinations]);
   let refusals = $derived(
     problems(
@@ -91,6 +98,7 @@
       routes = config.routes;
       pipelines = config.pipelines;
       ownSchemas = config.schemas ?? [];
+      ownConfig = config;
       await loadShared();
     },
   });
@@ -223,8 +231,12 @@
                   () => destination.accepts ?? [],
                   (ids) => (destination.accepts = ids.length > 0 ? ids : undefined)
                 }
-                declared={schemas}
+                shared={sharedSchemas}
+                own={ownSchemas}
+                config={ownConfig}
+                importers={pipelines.map((p) => ({ id: p.id, name: p.name }))}
                 adding="Add a schema it accepts"
+                onmade={made}
               />
             </div>
           </Field>

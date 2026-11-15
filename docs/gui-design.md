@@ -433,14 +433,19 @@ TypeScript: a second copy of the type table would drift from the one that
 runs.
 
 A **static** parser needs no sample at all, so the author never types a
-name: Grok's fields are its captures and CSV's are its ordered column
-table, and the workspace fills the names in from the configuration and
-leaves only the type to choose. Grok's fields follow the pattern as it is
-edited, in capture order. A name that survives keeps the type chosen for
-it. A new name starts as `str`. A name the pattern lost goes with it. A
-column CSV should drop is typed `skip`, which keeps the columns after it
-aligned without inventing a field. A key-value key typed `skip` makes no
-field either. Under Advanced, **rebuild the line** writes the field the
+name. Its fields are known before any row: grok's are its captures, in
+capture order, and CSV's are its ordered column table, which the workspace
+fills in from the configuration. The preview reports each at the type the
+pipeline gives it: a schema the pipeline produces types a field it names, a
+grok capture's pattern types the rest of grok's, and the rest of CSV's are
+`str`. Each field's type menu offers `auto` with that type, and a field the
+author hasn't chosen a type for shows `auto` there, so it follows the parse
+and the schemas as they change. A grok step stores only the types the author
+chooses: choosing `auto` again drops the choice, and a choice for a capture the
+pattern lost goes with it. A CSV column is stored typed `auto` until the author
+chooses. A column CSV should drop is typed `skip`, which keeps the columns
+after it aligned without inventing a field. A key-value key typed `skip` makes
+no field either. Under Advanced, **rebuild the line** writes the field the
 parser reads back with each skipped column left empty, or each skipped pair
 left out, and says how many.
 

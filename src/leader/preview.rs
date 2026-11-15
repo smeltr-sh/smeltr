@@ -14,6 +14,7 @@ use crate::core::column::{Column, DataType, Validity};
 use crate::core::ctx::Ctx;
 use crate::core::error::{ErrorSink, ExceptionKind};
 use crate::core::id::{FunctionId, SlotId};
+use crate::format::grok_pattern::Holds;
 use crate::format::record::RecordView;
 use crate::leader::envelope::{ApiError, Envelope, Refusal};
 use crate::plan;
@@ -124,6 +125,16 @@ pub struct AfterDot {
     pub methods: Vec<plan::dot::Method>,
 }
 
+/// A grok or CSV step's field: its type in the pipeline, and the type it takes where the author chooses none.
+#[derive(Debug, serde::Serialize)]
+pub struct ParsedField {
+    /// Its type in the pipeline: the author's choice, else the type the name already holds, else `auto`.
+    #[serde(flatten)]
+    pub field: config_file::FieldDto,
+    /// A produced schema's type, else the pattern's, else `str` (`Holds::under`).
+    pub auto: config_file::DataTypeDto,
+}
+
 #[derive(Default, serde::Serialize)]
 pub struct Preview {
     pub stage: Option<&'static str>,
@@ -137,6 +148,8 @@ pub struct Preview {
     /// the parse decided, so it is what the parser did rather than a second reading of the records.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parsers: Vec<ParserOut>,
+    /// Each grok or CSV step's fields, by step id. Empty when the pipeline did not compile.
+    pub parsed_fields: BTreeMap<String, Vec<ParsedField>>,
     /// The dictionary of what the pipeline writes (`plan::dictionary`), when asked. Absent when it did not compile.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dictionary: Option<DictionaryOut>,
@@ -228,41 +241,6 @@ pub struct FieldOut {
 
 fn is_zero(n: &u32) -> bool {
     *n == 0
-}
-
-/// A grok pattern's captures, which are the fields the step can produce. The editor fills a step's field names in from
-/// this rather than asking the author to retype what the pattern already says.
-#[derive(Default, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GrokCapturesRequest {
-    pub patterns: Vec<String>,
-    #[serde(default)]
-    pub custom_patterns: Vec<config_file::CustomPatternDto>,
-    /// The bundle's patterns, which the step may name. The editor has them already, and a step being edited may
-    /// name one that is not saved yet.
-    #[serde(default)]
-    pub grok_patterns: Vec<config_file::GrokPatternDto>,
-    /// Whether the step splits capture names at their dots, so a name meets a schema's dotted path.
-    pub split_dots: bool,
-    /// The name the step parses into; each capture is a field under it.
-    pub into: String,
-    /// The ids of the schemas the pipeline produces. A capture they name takes the type they give it, as it would
-    /// in the pipeline (`schema::read_as`).
-    #[serde(default)]
-    pub produces: Vec<String>,
-    /// The schemas `produces` is chosen from; of two with one id, the later wins. The leader reads its own from the
-    /// branch.
-    #[serde(default)]
-    pub schemas: Vec<config_file::SchemaDto>,
-}
-
-/// The editor keeps the fields it has when a half-typed pattern cannot compile, so a failure carries no captures.
-#[derive(Default, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GrokCaptures {
-    /// Every capture across the patterns, in the order they appear, deduped, each with the type a produced schema
-    /// gives it, else the type its pattern gives it (`Matcher::holds`).
-    pub captures: Vec<config_file::FieldDto>,
 }
 
 /// A line breaker as it is typed into a sourcetype's row.
@@ -693,43 +671,6 @@ pub fn run_route_preview(
     })
 }
 
-/// Compiling a pattern touches nothing outside itself, so this is the whole answer and a route only wraps it.
-pub fn captures_of(req: GrokCapturesRequest) -> Envelope<GrokCaptures> {
-    let produced: Vec<Arc<Schema>> = (req.produces.iter())
-        .filter_map(|id| req.schemas.iter().rev().find(|s| s.id == *id))
-        .filter_map(|dto| crate::schema::read(dto).ok().map(Arc::new))
-        .collect();
-    let config = crate::plan::config::GrokConfig {
-        split_dots: req.split_dots,
-        patterns: req.patterns,
-        custom_patterns: req.custom_patterns.into_iter().map(|p| (p.name, p.pattern)).collect(),
-    };
-    let shared = req.grok_patterns.into_iter().map(|p| (p.id, p.pattern)).collect();
-    match crate::format::grok_scan::Matcher::compile_with(&config, &shared) {
-        Ok(m) => Envelope::ok(GrokCaptures {
-            captures: m
-                .capture_names()
-                .into_iter()
-                .map(|name| {
-                    let path = tree::join(tree::under_record(&req.into), &tree::name_of(name, config.split_dots));
-                    let holds = m.holds(name).under(&produced, &path);
-                    let ty = match holds.time_source {
-                        Some(crate::plan::config::TimeSource::Format(format)) => {
-                            config_file::DataTypeDto::Compound(config_file::CompoundTypeDto::DateTime { format })
-                        }
-                        _ => config_file::DataTypeDto::Scalar(holds.ty.to_string()),
-                    };
-                    config_file::FieldDto {
-                        name: name.to_string(),
-                        ty,
-                    }
-                })
-                .collect(),
-        }),
-        Err(e) => Envelope::refused(Refusal::invalid(e.to_string())),
-    }
-}
-
 /// Not `ok` when a save would refuse the pattern, with why, word for word as the save says it.
 pub fn line_breaker_verdict(req: LineBreakerRequest) -> Envelope {
     let refusal = config_file::line_breaker_refusal("this line breaker", &req.pattern);
@@ -996,6 +937,7 @@ pub fn run_preview(
             rows: vec![],
             unfiltered: filter.as_ref().map(|_| 0),
             parsers: vec![],
+            parsed_fields: parsed_fields(&plan, &pipeline_cfg.produces),
             dictionary: req.dictionary.then(|| DictionaryOut {
                 compiled: Dictionary::of(&record),
                 sampled: None,
@@ -1140,11 +1082,60 @@ pub fn run_preview(
         rows,
         unfiltered,
         parsers,
+        parsed_fields: parsed_fields(&plan, &pipeline_cfg.produces),
         warnings,
         schema_findings: found.len() as u32,
         missing,
         as_sample,
     })
+}
+
+/// Each grok step's fields in `plan`, by step id, spelled as a declaration spells them.
+fn parsed_fields(plan: &Plan, produces: &[Arc<Schema>]) -> BTreeMap<String, Vec<ParsedField>> {
+    let dto = |ty: &DataType, time_source: &Option<plan::config::TimeSource>| match time_source {
+        Some(plan::config::TimeSource::Format(format)) => {
+            config_file::DataTypeDto::Compound(config_file::CompoundTypeDto::DateTime { format: format.clone() })
+        }
+        _ => config_file::DataTypeDto::Scalar(ty.to_string()),
+    };
+    let mut out = BTreeMap::new();
+    for i in &plan.instrs {
+        if let plan::compile::Op::Call {
+            outputs,
+            call: plan::compile::Call::Parse { kind, matcher, .. },
+            ..
+        } = &i.op
+            && matches!(
+                kind,
+                plan::config::ParserKind::Grok(_) | plan::config::ParserKind::Csv(_)
+            )
+            && let Some(step) = plan.step_ids.get(i.function as usize)
+        {
+            let field = |o: &plan::compile::Output| {
+                // A CSV column holds text; a grok capture what its pattern gives it.
+                let holds = match (kind, matcher) {
+                    (plan::config::ParserKind::Grok(c), Some(m)) => m
+                        .capture_names()
+                        .into_iter()
+                        .find(|n| tree::name_of(n, c.split_dots) == o.name)
+                        .map_or_else(Holds::text, |n| m.holds(n)),
+                    _ => Holds::text(),
+                };
+                // The output's slot is named by the field's path in the record, the path a schema's field uses.
+                let path = plan.provenance.get(o.slot).map_or(o.name.as_str(), |p| p.name.as_str());
+                let auto = holds.under(produces, path);
+                ParsedField {
+                    field: config_file::FieldDto {
+                        name: o.name.clone(),
+                        ty: dto(&o.ty, &o.time_source),
+                    },
+                    auto: dto(&auto.ty, &auto.time_source),
+                }
+            };
+            out.insert(step.clone(), outputs.iter().map(field).collect());
+        }
+    }
+    out
 }
 
 /// The rows of `batch` that `plan` finished and `rows` shows, as a sample holds them: each as a capture at a
@@ -1769,6 +1760,43 @@ mod tests {
         assert_eq!(warnings_of(config, &[]), []);
     }
 
+    /// A grok step's fields come typed as the pipeline types them: a chosen type, else a produced schema's, else the
+    /// pattern's.
+    #[test]
+    fn a_grok_steps_fields_come_as_the_pipeline_types_them() {
+        let step = r#"{"id":"s","type":"parser","input":"_raw","kind":{"type":"grok",
+            "patterns":["%{WORD:time} %{INT:n2} %{HTTPDATE:at} %{INT:took}"]},"declared":[{"name":"took","type":"f64"}]}"#;
+        let config = producing(r#"["login"]"#).replace(r#"{"id":"s","type":"code","body":"x = 1;"}"#, step);
+        let fields = &previewed(config, &[]).parsed_fields["s"];
+        let at = serde_json::json!({"type": "datetime", "format": "%d/%b/%Y:%H:%M:%S %z"});
+        assert_eq!(
+            serde_json::to_value(fields).unwrap(),
+            serde_json::json!([
+                {"name": "time", "type": "i64", "auto": "i64"},
+                {"name": "n2", "type": "i64", "auto": "i64"},
+                {"name": "at", "type": at, "auto": at},
+                {"name": "took", "type": "f64", "auto": "i64"}
+            ])
+        );
+    }
+
+    /// A CSV column typed `auto` takes a produced schema's type, else `str`; one the author types keeps it.
+    #[test]
+    fn a_csv_steps_columns_come_as_the_pipeline_types_them() {
+        let step = r#"{"id":"s","type":"parser","input":"_raw","kind":{"type":"csv","delimiter":","},
+            "declared":[{"name":"time","type":"auto"},{"name":"host","type":"auto"},{"name":"ratio","type":"f64"}]}"#;
+        let config = producing(r#"["login"]"#).replace(r#"{"id":"s","type":"code","body":"x = 1;"}"#, step);
+        let fields = &previewed(config, &[]).parsed_fields["s"];
+        assert_eq!(
+            serde_json::to_value(fields).unwrap(),
+            serde_json::json!([
+                {"name": "time", "type": "i64", "auto": "i64"},
+                {"name": "host", "type": "str", "auto": "str"},
+                {"name": "ratio", "type": "f64", "auto": "str"}
+            ])
+        );
+    }
+
     #[test]
     fn a_field_the_source_gave_is_warned_at_the_first_step() {
         let column = |name: &str| crate::heartbeat::CaptureColumn {
@@ -1845,6 +1873,66 @@ mod tests {
         let meta = SourceMeta::of_columns(&sample.columns).unwrap();
         let read = read_sample(&meta, &sample.columns, &sample.records).unwrap();
         assert!(read.warnings.is_empty(), "{:?}", read.warnings);
+    }
+
+    /// A JSON or key-value parse converts a key a produced schema types as it lays it: a value that does not fit is
+    /// null, and an exception on its row. A key no schema types keeps what it arrived as.
+    #[test]
+    fn a_dynamic_parse_converts_the_keys_a_produced_schema_types() {
+        for (body, raws) in [
+            (
+                "Object.assign($, json(_raw));",
+                [r#"{"time":"42","user":{"name":7},"other":"5"}"#, r#"{"time":"soon"}"#],
+            ),
+            (
+                "Object.assign($, kv(_raw));",
+                ["time=42 user.name=7 other=5", "time=soon"],
+            ),
+        ] {
+            let step = format!(r#"{{"id":"s","type":"code","body":{}}}"#, serde_json::json!(body));
+            let config = producing(r#"["login"]"#).replace(r#"{"id":"s","type":"code","body":"x = 1;"}"#, &step);
+            let records = raws
+                .map(|raw| serde_json::json!({ "_raw": raw }).as_object().unwrap().clone())
+                .to_vec();
+            let previewed = run_preview(
+                PreviewRequest {
+                    config,
+                    pipeline: Some("p".into()),
+                    sample: None,
+                    show_internal: false,
+                    at_micros: None,
+                    filter: None,
+                    attribution: false,
+                    as_sample: true,
+                    dictionary: false,
+                    after_dot: None,
+                    capture_filter: None,
+                },
+                Default::default(),
+                &[],
+                records,
+            );
+            let errors: Vec<_> = previewed.errors.iter().map(|e| &e.message).collect();
+            assert!(previewed.succeeded(), "{body}: {errors:?}");
+            let rows = serde_json::to_value(&previewed.body.rows).unwrap();
+            let refused = rows[1]["exceptions"].as_array().unwrap().iter().any(|e| {
+                e["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains(r#"time is "soon", which could not parse as i64"#)
+            });
+            assert!(refused, "{body}: {}", rows[1]["exceptions"]);
+            let sample = previewed.body.as_sample.unwrap();
+            let first = &sample.records[0];
+            assert_eq!(first["time"], serde_json::json!(42), "{body}: {first:?}");
+            assert_eq!(first["user"]["name"], serde_json::json!("7"), "{body}: {first:?}");
+            assert_eq!(first["other"], serde_json::json!("5"), "{body}: no schema types it");
+            assert!(
+                sample.records[1].get("time").is_none_or(|t| t.is_null()),
+                "{body}: {:?}",
+                sample.records[1]
+            );
+        }
     }
 
     /// A sample of a captured sample's output says how the output was made, in place of how its input was captured:

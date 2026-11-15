@@ -793,7 +793,7 @@ test('A1: a source with no route is routed from the map, its pipeline made from 
   await expect(dialog.getByRole('combobox', { name: /^Worker group/ })).toHaveValue('default');
   await captureThree(admin, 'own metrics');
 
-  // A metrics record is a line of JSON: a JSON Parser is proposed, its fields declared from the capture.
+  // A metrics record is a line of JSON: a JSON Parser is proposed, and it declares no field.
   await expect(admin.getByText('3 of 3 records read as JSON')).toBeVisible();
   // Raw JSON holds what the editor made, and its Save comes back to the route as the editor's does.
   await admin.getByRole('button', { name: 'Raw JSON' }).click();
@@ -830,9 +830,7 @@ test('A1: a source with no route is routed from the map, its pipeline made from 
     input: '_raw',
     kind: { type: 'json' },
   });
-  expect(made.steps[0].declared.map((f: { name: string }) => f.name)).toEqual(
-    expect.arrayContaining(['metric', 'value', 'ts']),
-  );
+  expect(made.steps[0].declared ?? []).toEqual([]);
 });
 
 // A1, records from a chosen point rather than only what arrives now.
@@ -4024,8 +4022,9 @@ test('A1: a capture shows every record it holds, each opening on its fields', as
   await expect(rows.last()).toHaveAttribute('aria-expanded', 'true');
 });
 
-// A new grok capture is declared at the type a schema the pipeline produces gives it, else at its pattern's type.
-test('a new grok capture is declared at its schema type, else its pattern type', async ({
+// A grok step's capture is typed automatically, by a schema the pipeline produces, else by its pattern; the step
+// stores only a type the author chooses, and choosing auto again lets the pipeline type it.
+test('a grok capture is typed automatically until the author chooses a type', async ({
   admin,
   leader,
   api,
@@ -4049,7 +4048,7 @@ test('a new grok capture is declared at its schema type, else its pattern type',
         id: 'line',
         input: '_raw',
         kind: { type: 'grok', patterns: ['%{WORD:method}'] },
-        declared: [{ name: 'method', type: 'str' }],
+        declared: [],
       },
     ],
   });
@@ -4058,8 +4057,26 @@ test('a new grok capture is declared at its schema type, else its pattern type',
   await admin
     .getByPlaceholder('%{IP:client} %{WORD:action}')
     .fill('%{WORD:method} %{INT:status} %{WORD:bytes} %{NUMBER:took} \\[%{HTTPDATE:at}\\]');
-  await expect(admin.getByRole('combobox', { name: 'status type' })).toHaveValue('str');
-  await expect(admin.getByRole('combobox', { name: 'bytes type' })).toHaveValue('i64');
-  await expect(admin.getByRole('combobox', { name: 'took type' })).toHaveValue('f64');
-  await expect(admin.getByRole('combobox', { name: 'at type' })).toHaveValue('datetime');
+  const shown = (name: string) =>
+    admin.getByRole('combobox', { name: `${name} type` }).locator('option:checked');
+  await expect(shown('status')).toHaveText('auto · str');
+  await expect(shown('bytes')).toHaveText('auto · i64');
+  await expect(shown('took')).toHaveText('auto · f64');
+  await expect(shown('at')).toHaveText('auto · datetime');
+
+  await admin.getByRole('combobox', { name: 'took type' }).selectOption('i64');
+  await expect(shown('took')).toHaveText('i64');
+  await expect(
+    admin.getByRole('combobox', { name: 'took type' }).locator('option[value=""]'),
+  ).toHaveText('auto · f64');
+  await admin.getByRole('combobox', { name: 'bytes type' }).selectOption('str');
+  await admin.getByRole('combobox', { name: 'bytes type' }).selectOption('');
+  await expect(shown('bytes')).toHaveText('auto · i64');
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect
+    .poll(
+      async () =>
+        (await api.get(`/api/areas/shared/pipelines/web${ON}`)).pipeline.steps[0].declared,
+    )
+    .toEqual([{ name: 'took', type: 'i64' }]);
 });

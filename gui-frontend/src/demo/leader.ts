@@ -939,7 +939,6 @@ export class DemoLeader {
       if (within === '/preview/pipeline') return this.preview(name, scope, json());
       if (within === '/preview/routes') return this.routePreview(name, scope, json());
       if (within === '/preview/test-lock') return this.lockTest(name, scope, json());
-      if (within === '/preview/grok') return this.grokCaptures(name, scope, json());
       if (within === '/samples') {
         const { capture, ...save } = json() as {
           capture: string;
@@ -1386,17 +1385,6 @@ export class DemoLeader {
 
   private sampleOn(branch: Branch | undefined, scope: string, id: string): SampleDto | undefined {
     return branch?.samples[scope]?.[id];
-  }
-
-  /** A grok pattern's captures, typed by the schemas on the branch: `shared/`'s, and the group's own. */
-  private grokCaptures(name: string, scope: string, req: object): Promise<Answer> {
-    const branch = this.branch(name) ?? this.state.branches.main;
-    const bundles =
-      scope === SHARED ? [branch.bundles[SHARED]] : [branch.bundles[SHARED], branch.bundles[scope]];
-    return this.ask('/grok-captures', {
-      ...req,
-      schemas: bundles.flatMap((b) => (b?.schemas as unknown[] | undefined) ?? []),
-    });
   }
 
   private async preview(

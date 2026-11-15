@@ -64,26 +64,18 @@
     withTypeKey,
     OBJECT_FIELD_TYPE_GROUPS,
     dtoToDataType,
+    type DataTypeSpec,
     type TypeKey,
   } from './pipeline';
   import { fieldNotes, type OpenProposal, type Suggestion } from './proposal';
   import { fieldError } from './errorMarks';
   import { ago, count } from './time';
-  import { pushKey } from './names';
   import { SvelteMap } from 'svelte/reactivity';
   import StepGlyph from './StepGlyph.svelte';
   import StateMark from './StateMark.svelte';
   import Ticked from './Ticked.svelte';
-  import {
-    errorText,
-    grokCaptures,
-    type GrokCaptures,
-    type GrokPatternDto,
-    type LookupTableDto,
-  } from './api';
+  import type { GrokPatternDto, LookupTableDto, PreviewResult } from './api';
   import { sharedGrokSuggestions } from './grokPatterns';
-  import { producedSchemas } from './producedSchemas.svelte';
-  import { beginReconcile, endReconcile } from './grokFields';
   import { unfinishedRows } from './unfinished.svelte';
   import { editable } from './access';
 
@@ -96,6 +88,7 @@
     pipelineNames = {},
     lookupTables = [],
     grokPatterns = [],
+    parsedFields,
     parseInput = '_raw',
     pausedAt = null,
     ran = null,
@@ -117,6 +110,8 @@
     lookupTables?: LookupTableDto[];
     /** The bundle's grok patterns, `shared/`'s and the scope's own, which a grok step may name. */
     grokPatterns?: GrokPatternDto[];
+    /** Each grok or CSV step's fields as the pipeline types them, by step id (`PreviewResult.parsed_fields`). */
+    parsedFields?: PreviewResult['parsed_fields'];
     /** The field a new parse step reads. */
     parseInput?: string;
     /** The step the records are paused after. */
@@ -278,106 +273,47 @@
     if (j < 0 || j >= declared.length) return;
     [declared[i], declared[j]] = [declared[j], declared[i]];
   }
-  /** A field or column as `+` adds it. */
-  function newField(): FieldSpec {
-    return { name: '', ty: { kind: 'named', name: 'str' } };
+  /** A field or column as `+` adds it: a column the pipeline types, a field typed `str`. */
+  function newField(column: boolean): FieldSpec {
+    return { name: '', ty: column ? { kind: 'auto' } : { kind: 'named', name: 'str' } };
   }
 
-  const produced = producedSchemas();
-
-  /** A grok step's captures, as the compiled pattern reports them. `null` until the first answer arrives. */
-  let captures: GrokCaptures['captures'] | null = $state(null);
-  /** Why a half-typed pattern does not compile. The fields on screen stay as they are while it says something. */
-  let captureError: string | null = $state(null);
-
-  /**
-   * Fill a grok step's field names in from its pattern, keeping the type already chosen for a name that survives, and
-   * giving a new name the type a schema the pipeline produces gives it, else the type its pattern gives it.
-   *
-   * Naming a capture is how a grok field is declared, so the two cannot be edited into disagreement -- which is what
-   * makes the compiler's refusal of either direction unreachable from here. `captures` comes from the server because a
-   * definition can mint one the pattern text never names, and only the compiled matcher sees those.
-   */
-  function reconcile(
-    declared: FieldSpec[],
-    caps: GrokCaptures['captures'],
-    split: boolean,
-  ): FieldSpec[] {
-    const chosen = new Map(declared.map((f) => [f.name, f.ty]));
-    return caps.map((c) => {
-      // A capture's name is the parser's key: one key, or under splitDots a path split at its dots.
-      const name = (split ? c.name.split('.') : [c.name]).reduce(pushKey, '');
-      return { name, ty: chosen.get(name) ?? dtoToDataType(c.type, name) };
+  /** A grok step's fields: each capture as the pipeline types it, whether the author chose that type, and the type
+   * it has where the author chooses none. Until a preview has compiled, it shows the types the author chose. */
+  function grokRows(
+    ps: ParserStep,
+  ): { name: string; ty: DataTypeSpec; chosen: boolean; auto: string }[] {
+    const typed = parsedFields?.[ps.id];
+    if (!typed) return ps.declared.map((f) => ({ ...f, chosen: true, auto: '' }));
+    return typed.map((f) => {
+      const chosen = ps.declared.find((d) => d.name === f.name);
+      const ty = chosen?.ty ?? dtoToDataType(f.type, f.name);
+      return { name: f.name, ty, chosen: !!chosen, auto: typeKey(dtoToDataType(f.auto, f.name)) };
     });
   }
 
-  // Debounced: the author is typing a pattern, and every keystroke is a half-written one. The whole window counts as
-  // owed, timer included -- a save landing before the timer fires would serialize the same stale list as one landing
-  // mid-request.
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  /** A string of everything a grok step's captures answer depends on, so an answer that comes back after it changes
-   * is dropped; `null` for any other step. */
-  function capturesKey(): string | null {
-    if (step.type !== 'parser' || step.kind.type !== 'grok') return null;
-    const { patterns, customPatterns } = step.kind;
-    return JSON.stringify([
-      patterns,
-      customPatterns,
-      splitsDots(step.kind),
-      step.into,
-      grokPatterns,
-    ]);
+  /** A CSV column's automatic type, as the last preview typed it, and whether the column takes it. */
+  function csvAuto(ps: ParserStep, field: FieldSpec): { type: string; on: boolean } {
+    const typed = parsedFields?.[ps.id]?.find((f) => f.name === field.name);
+    return {
+      type: typed ? typeKey(dtoToDataType(typed.auto, field.name)) : '',
+      on: field.ty.kind === 'auto',
+    };
   }
+
+  /** Chooses `ty` for the capture `name`, or with `null` lets the pipeline type it again. */
+  function chooseType(ps: ParserStep, name: string, ty: DataTypeSpec | null) {
+    const rest = ps.declared.filter((d) => d.name !== name);
+    ps.declared = ty ? [...rest, { name, ty }] : rest;
+  }
+
+  // A type chosen for a capture the pattern has since lost types nothing; the step drops it once a preview says so.
   $effect(() => {
-    if (step.type !== 'parser' || step.kind.type !== 'grok') {
-      captures = null;
-      captureError = null;
-      return;
-    }
-    const { patterns, customPatterns } = step.kind;
-    const { into } = step;
-    const split = splitsDots(step.kind);
-    const key = capturesKey();
-
-    beginReconcile();
-    let settled = false;
-    const settle = () => {
-      if (settled) return;
-      settled = true;
-      endReconcile();
-    };
-
-    clearTimeout(timer);
-    timer = setTimeout(() => {
-      grokCaptures({
-        patterns,
-        customPatterns,
-        grokPatterns,
-        splitDots: split,
-        into,
-        produces: produced?.ids ?? [],
-      })
-        .then((r) => {
-          // Another keystroke landed while this was in flight; its answer is the current one.
-          if (capturesKey() !== key) return;
-          captureError = r.ok ? null : errorText(r.errors) || 'these patterns do not compile';
-          if (!r.ok) return;
-          captures = r.captures;
-          step.declared = reconcile(step.declared, r.captures, split);
-        })
-        // Unreachable server, or a rejection that is not JSON. Say so: the fields are read-only, so there is nothing
-        // the author can do here but edit the pattern again, which is what retries it.
-        .catch((e: unknown) => {
-          captureError = `${e instanceof Error ? e.message : String(e)} -- edit a pattern to try again`;
-        })
-        .finally(settle);
-    }, 250);
-
-    // A further edit supersedes this reconciliation; the effect that replaces it owes its own.
-    return () => {
-      clearTimeout(timer);
-      settle();
-    };
+    if (step.type !== 'parser' || step.kind.type !== 'grok') return;
+    const typed = parsedFields?.[step.id];
+    if (!typed) return;
+    const kept = step.declared.filter((d) => typed.some((f) => f.name === d.name));
+    if (kept.length < step.declared.length) step.declared = kept;
   });
 
   /** What one definition contributes, for its summary line: the captures its own text names. */
@@ -976,7 +912,7 @@
             <div class="rows">
               <div class="rows-label">
                 <span class="field-name"
-                  >{isCsv ? 'columns' : 'declared fields'}
+                  >{isCsv ? 'columns' : isGrok ? 'fields' : 'declared fields'}
                   {#if isCsv}
                     <Help label="columns">
                       One row per column, in the record's order. To leave a column out, set its type
@@ -991,13 +927,23 @@
                   {/if}</span
                 >
               </div>
-              {#if isGrok && captureError}
-                <small class="note"
-                  >These patterns do not compile yet, so the fields below are the last ones that did
-                  — {captureError}</small
-                >
+              {#if isGrok}
+                {#each grokRows(ps) as row (row.name)}
+                  <FieldRow
+                    bind:ty={() => row.ty, (ty) => chooseType(ps, row.name, ty)}
+                    groups={declaredTypeGroups(false)}
+                    disabled={readOnly}
+                    label={row.name}
+                    auto={{ type: row.auto, on: !row.chosen }}
+                    onauto={() => chooseType(ps, row.name, null)}
+                  >
+                    {#snippet name()}
+                      <span class="derived-name ellipsis" title="from the pattern">{row.name}</span>
+                    {/snippet}
+                  </FieldRow>
+                {/each}
               {/if}
-              {#each ps.declared as field, i (field)}
+              {#each isGrok ? [] : ps.declared as field, i (field)}
                 <div class="glide-row" animate:glideTo>
                   {#snippet fieldActions()}
                     {#if isCsv}
@@ -1016,7 +962,7 @@
                       <button
                         type="button"
                         class="pick"
-                        onclick={() => ps.declared.splice(i, 0, newField())}
+                        onclick={() => ps.declared.splice(i, 0, newField(true))}
                         >Add column above</button
                       >
                     {/if}
@@ -1084,29 +1030,25 @@
                   <FieldRow
                     bind:ty={ps.declared[i].ty}
                     groups={declaredTypeGroups(isCsv || parserKind.type === 'keyValue')}
+                    auto={isCsv ? csvAuto(ps, field) : undefined}
+                    onauto={() => (ps.declared[i].ty = { kind: 'auto' })}
                     number={isCsv ? i + 1 : undefined}
                     disabled={readOnly}
                     label={field.name || (isCsv ? 'column' : 'field')}
-                    actions={isGrok ? undefined : fieldActions}
+                    actions={fieldActions}
                     nested={field.ty.kind === 'object' || field.ty.kind === 'arrayOfObjects'
                       ? objectFields
                       : undefined}
                   >
                     {#snippet name()}
-                      {#if isGrok}
-                        <span class="derived-name ellipsis" title="from the pattern"
-                          >{field.name}</span
-                        >
-                      {:else}
-                        <Locked>
-                          <ValidatedField
-                            placeholder="name"
-                            bind:value={ps.declared[i].name}
-                            errors={stepErrorMessages}
-                            warnings={stepWarningMessages}
-                          />
-                        </Locked>
-                      {/if}
+                      <Locked>
+                        <ValidatedField
+                          placeholder="name"
+                          bind:value={ps.declared[i].name}
+                          errors={stepErrorMessages}
+                          warnings={stepWarningMessages}
+                        />
+                      </Locked>
                     {/snippet}
                   </FieldRow>
                 </div>
@@ -1116,7 +1058,7 @@
                   <button
                     type="button"
                     class="add-small"
-                    onclick={() => ps.declared.push(newField())}
+                    onclick={() => ps.declared.push(newField(isCsv))}
                     >+ {isCsv ? 'column' : 'field'}</button
                   >
                   <!-- Only a dynamic parser's fields come from what it reads (docs/gui-design.md, "The workspace"):

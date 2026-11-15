@@ -155,8 +155,9 @@ export type Route =
   | { tab: 'me'; page: 'agent'; conversation?: string };
 
 /** What a route being made takes: all of `source`, or what `condition` selects of it. `group` is where the map
- * showed the source, which a capture of a shared one needs. */
-export type Making = { source: string; condition?: string; group?: string };
+ * showed the source, which a capture of a shared one needs. `to` is the destinations the route already delivers to. A
+ * new pipeline starts out producing the schemas they accept. */
+export type Making = { source: string; condition?: string; group?: string; to?: string[] };
 
 /** The Routes page, opening a new route that takes `make`. Save returns to `back`. */
 export function newRouteHash(make: Making, back?: string): string {
@@ -182,6 +183,7 @@ export function newPipelineHash(make: Making, back?: string, json = false): stri
   const q = new URLSearchParams({ source: make.source });
   if (make.condition) q.set('condition', make.condition);
   if (make.group) q.set('group', make.group);
+  for (const t of make.to ?? []) q.append('to', t);
   if (back) q.set('back', back);
   return `#/build/pipelines/new${json ? '/json' : ''}?${q}`;
 }
@@ -201,8 +203,17 @@ function backFrom(params: URLSearchParams): { back?: string } {
 function makingFrom(params: URLSearchParams, key: string): Making | undefined {
   const source = params.get(key);
   if (!source) return undefined;
-  const [condition, group] = [params.get('condition'), params.get('group')];
-  return { source, ...(condition ? { condition } : {}), ...(group ? { group } : {}) };
+  const [condition, group, to] = [
+    params.get('condition'),
+    params.get('group'),
+    params.getAll('to'),
+  ];
+  return {
+    source,
+    ...(condition ? { condition } : {}),
+    ...(group ? { group } : {}),
+    ...(to.length ? { to } : {}),
+  };
 }
 
 /** Where a tab lands when its own label is clicked. */

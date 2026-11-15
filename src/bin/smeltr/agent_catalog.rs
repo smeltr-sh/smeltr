@@ -177,12 +177,6 @@ pub const CATALOG: &[Route] = &[
     },
     Route {
         method: "POST",
-        path: "/api/areas/:area/preview/grok",
-        what: "The captures a grok pattern declares, each with the type the produced schemas on the branch give it, else its pattern's. Reads no sample. Query: branch.",
-        body: "{ patterns: string[], customPatterns?: { name, pattern }[], grokPatterns?: { id, pattern }[], splitDots: bool, into: string (the name the step parses into, $ for the record), produces?: id[] }",
-    },
-    Route {
-        method: "POST",
         path: "/api/preview/line-breaker",
         what: "Check whether a save would accept this line-breaker pattern. No query.",
         body: "{ pattern: string }",

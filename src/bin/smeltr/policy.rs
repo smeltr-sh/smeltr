@@ -192,7 +192,7 @@ fn in_area(method: &Method, within: &[&str]) -> Option<Level> {
 
         // Samples, and what a preview of them shows.
         (Method::GET | Method::HEAD, ["samples"])
-        | (Method::POST, ["preview", "pipeline" | "routes" | "grok" | "schema-import"]) => Level::Viewer,
+        | (Method::POST, ["preview", "pipeline" | "routes" | "schema-import"]) => Level::Viewer,
         (Method::GET | Method::HEAD | Method::PUT | Method::DELETE, ["samples", _]) => read,
         (Method::POST, ["samples"]) => Level::Editor,
         _ => return None,
@@ -368,7 +368,6 @@ mod tests {
             (Method::GET, "/api/areas/payments/samples/s1"),
             (Method::POST, "/api/areas/payments/preview/pipeline"),
             (Method::POST, "/api/areas/payments/preview/routes"),
-            (Method::POST, "/api/areas/payments/preview/grok"),
             (Method::POST, "/api/areas/payments/preview/schema-import"),
         ] {
             assert_eq!(need(&method, path), area("payments", Level::Viewer), "{method} {path}");
