@@ -3220,9 +3220,11 @@ test('A10: an Elasticsearch id field starts as __destination.id', async ({
     return dialog;
   };
   let dialog = await add('computed');
+  await dialog.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
   await expect(dialog.getByRole('textbox', { name: 'id field' })).toHaveValue('__destination.id');
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   dialog = await add('keyed');
+  await dialog.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
   await dialog.getByRole('textbox', { name: 'id field' }).fill('event.id');
   await dialog.getByRole('combobox', { name: 'bulk action' }).selectOption('index');
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();

@@ -113,6 +113,7 @@
   function elasticModified(d: DestinationDto): boolean {
     if (d.type !== 'elasticsearch') return false;
     return (
+      d.idField !== undefined ||
       d.zoneUrls !== undefined ||
       d.sniff === true ||
       requestDeliveryModified(d, 'maxBulkBytes', LIMITS.maxBulkBytes.default)
@@ -372,23 +373,6 @@
     </Field>
     <TlsFields value={destination} farEnd="destination" />
     <ConnectorAccess store="elasticsearch" value={destination} show="credential" {secrets} />
-    <Field required field="idField" label="id field">
-      {#snippet help()}
-        The row field each document's id is read from. It starts as <code>__destination.id</code>,
-        the field a pipeline sets; name another field and it is used instead. A row with no id gets
-        one Elasticsearch generates.
-      {/snippet}
-      <input
-        type="text"
-        value={idFieldOf(destination)}
-        oninput={(e) => {
-          if (destination.type !== 'elasticsearch') return;
-          const v = e.currentTarget.value;
-          if (v === DOC_ID_FIELD) delete destination.idField;
-          else destination.idField = v;
-        }}
-      />
-    </Field>
     <Field field="action" label="bulk action">
       {#snippet help()}
         What happens when a document arrives with an id already in the index.
@@ -405,6 +389,23 @@
       </select>
     </Field>
     <Advanced label="Advanced" modified={elasticModified(destination)}>
+      <Field required field="idField" label="id field">
+        {#snippet help()}
+          The row field each document's id is read from. It starts as <code>__destination.id</code>,
+          the field a pipeline sets; name another field and it is used instead. A row with no id
+          gets one Elasticsearch generates.
+        {/snippet}
+        <input
+          type="text"
+          value={idFieldOf(destination)}
+          oninput={(e) => {
+            if (destination.type !== 'elasticsearch') return;
+            const v = e.currentTarget.value;
+            if (v === DOC_ID_FIELD) delete destination.idField;
+            else destination.idField = v;
+          }}
+        />
+      </Field>
       <RequestDelivery
         value={destination}
         size="maxBulkBytes"
