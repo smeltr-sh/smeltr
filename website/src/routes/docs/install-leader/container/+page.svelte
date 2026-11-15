@@ -82,8 +82,9 @@ SMELTR_PUBLIC_ORIGIN=https://smeltr.example.com</code
     ></pre>
   <p>
     A <a href="/docs/sources#push-all-workers">receiver</a> listens on its own port, and Docker can
-    publish a new port only by recreating the container. <code>compose.yaml</code> lists each receiver's
-    default port, commented out: uncomment the ones you will use before you start it.
+    publish a new port only by recreating the container. <code>compose.yaml</code> lists receivers' default
+    ports, commented out: uncomment the ones you will use before you start it, and add a line for any
+    other.
   </p>
   <p>Start it, and read the first-login credentials from its logs:</p>
   <pre><code

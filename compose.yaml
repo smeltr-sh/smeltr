@@ -21,16 +21,13 @@ services:
       # The process is not root and cannot bind 443, so it listens high and the host publishes the real port.
       - "443:8443"
       # Each receiver listens on its own port, and Docker can publish a new port only by recreating the container.
-      # Uncomment the ports of the receivers this install will run before its first `up`: each is the port its source
-      # form proposes.
-      # - "8080:8080"      # HTTP
+      # Each port listed is the one its source form proposes. Uncomment the ports of the receivers this install will
+      # run before its first `up`, and add a line for any other.
       # - "8088:8088"      # Splunk HEC
       # - "9997:9997"      # Splunk S2S
       # - "4318:4318"      # OTLP
       # - "6514:6514"      # syslog over TCP
       # - "6514:6514/udp"  # syslog over UDP
-      # - "9000:9000"      # socket over TCP
-      # - "9000:9000/udp"  # socket over UDP
       # - "9090:9090"      # Prometheus remote write
       # - "9200:9200"      # Elasticsearch bulk
     environment:
