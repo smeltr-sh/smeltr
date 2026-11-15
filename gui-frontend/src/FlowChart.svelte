@@ -41,6 +41,8 @@
     outPoints,
     from,
     to,
+    unit,
+    label,
     onhover,
   }: {
     inPoints: (number | null)[];
@@ -50,6 +52,10 @@
      * gutter is as wide as the labels need, and the data decides those. */
     from: string;
     to: string;
+    /** What the axis counts, such as `rows/s` or `MiB/s`. */
+    unit: string;
+    /** What the chart shows, for a screen reader. */
+    label: string;
     /** Which bucket the pointer is over, by index into `inPoints` and `outPoints`, and
      * `null` when it is away. */
     onhover?: (slot: number | null) => void;
@@ -149,12 +155,7 @@
 
 <div class="flow-chart" bind:clientWidth={width}>
   {#if plotWidth > 1}
-    <svg
-      viewBox="0 0 {width} {HEIGHT}"
-      preserveAspectRatio="none"
-      role="img"
-      aria-label="Rows in per second drawn above a baseline and rows out below it, over the chosen window"
-    >
+    <svg viewBox="0 0 {width} {HEIGHT}" preserveAspectRatio="none" role="img" aria-label={label}>
       {#each grid as g (g.value)}
         {#if g.value !== 0}
           <line class="grid" x1={gutter} y1={g.up} x2={width - RIGHT} y2={g.up} />
@@ -182,8 +183,8 @@
         {/if}
       {/each}
 
-      <text class="side" x={gutter + 6} y={BASELINE - 7}>in</text>
-      <text class="side" x={gutter + 6} y={BASELINE + 15}>out</text>
+      <text class="side" x={gutter + 6} y={BASELINE - 7}>in, {unit}</text>
+      <text class="side" x={gutter + 6} y={BASELINE + 15}>out, {unit}</text>
 
       <text class="clock start" x={gutter} y={PLOT + 15}>{from}</text>
       <text class="clock end" x={width - RIGHT} y={PLOT + 15}>{to}</text>

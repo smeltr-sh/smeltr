@@ -674,10 +674,13 @@ const SUBJECT_LABELS: [&str; 3] = ["source", "destination", "pipeline"];
 /// Metrics exposed by `GET /api/flow` keep one series per authenticated worker so the dashboard can focus its
 /// charts on a worker. Warning inputs deliberately remain logical group/subject series: partition ownership can
 /// move between workers, and splitting those series would leave stale or duplicate warnings behind.
-const WORKER_SCOPED_METRICS: [&str; 5] = [
+const WORKER_SCOPED_METRICS: [&str; 8] = [
     "smeltr_rows_polled_total",
     "smeltr_bytes_polled_total",
+    "smeltr_route_matched_total",
+    "smeltr_route_matched_bytes_total",
     "smeltr_rows_sent_total",
+    "smeltr_bytes_sent_total",
     "smeltr_rows_delivered_total",
     "smeltr_bytes_delivered_total",
 ];

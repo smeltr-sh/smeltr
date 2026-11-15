@@ -67,6 +67,7 @@ pub mod tree;
 pub mod updates;
 pub mod warnings;
 
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -1459,6 +1460,76 @@ struct WarningList {
 struct FlowQuery {
     #[serde(default = "default_window_minutes")]
     window_minutes: i64,
+    /// With `group` and `subject`, narrows the series to that one object's in and out ([`FlowKind::metrics`]).
+    kind: Option<FlowKind>,
+    group: Option<String>,
+    subject: Option<String>,
+}
+
+/// One kind of object the Status page totals, and where its rows are counted coming in and going out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FlowKind {
+    Source,
+    Pipeline,
+    Route,
+    Destination,
+}
+
+impl FlowKind {
+    const ALL: [FlowKind; 4] = [
+        FlowKind::Source,
+        FlowKind::Pipeline,
+        FlowKind::Route,
+        FlowKind::Destination,
+    ];
+
+    /// The label naming an object of this kind on its series.
+    fn label(self) -> &'static str {
+        match self {
+            FlowKind::Source => "source",
+            FlowKind::Pipeline => "pipeline",
+            FlowKind::Route => "route",
+            FlowKind::Destination => "destination",
+        }
+    }
+
+    /// Its rows in, rows out, bytes in and bytes out. Out is what was handed to destinations, so a row sent to two
+    /// counts twice; a destination's own out is what it delivered.
+    fn metrics(self) -> [&'static str; 4] {
+        match self {
+            FlowKind::Source => [ROWS_IN_METRIC, ROWS_SENT_METRIC, BYTES_POLLED_METRIC, BYTES_SENT_METRIC],
+            FlowKind::Pipeline | FlowKind::Route => [
+                ROUTE_MATCHED_METRIC,
+                ROWS_SENT_METRIC,
+                ROUTE_MATCHED_BYTES_METRIC,
+                BYTES_SENT_METRIC,
+            ],
+            FlowKind::Destination => [
+                ROWS_SENT_METRIC,
+                ROWS_DELIVERED_METRIC,
+                BYTES_SENT_METRIC,
+                BYTES_DELIVERED_METRIC,
+            ],
+        }
+    }
+}
+
+/// One object's counts over the window, on one worker: what a row of the Status page's flow table sums.
+#[derive(Debug, Default, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FlowTotal {
+    pub kind: Option<FlowKind>,
+    pub group: String,
+    pub worker_id: Option<String>,
+    pub subject_id: String,
+    /// A route's source and pipeline, which its table row names.
+    pub source: Option<String>,
+    pub pipeline: Option<String>,
+    pub rows_in: f64,
+    pub rows_out: f64,
+    pub bytes_in: f64,
+    pub bytes_out: f64,
 }
 
 fn default_window_minutes() -> i64 {
@@ -1510,6 +1581,9 @@ pub struct FlowResponse {
     pub bytes_out: Vec<FlowSeries>,
     /// Every source's reading against its normal, whatever the window asked for.
     pub normals: Vec<FlowNormal>,
+    /// Every source's, pipeline's, route's and destination's counts over the window, in the same points the series
+    /// are read in, so a row's total is its chart's.
+    pub totals: Vec<FlowTotal>,
 }
 
 /// One source's reading against its normal, as rows per second: what the Status page ranks by
@@ -1553,6 +1627,7 @@ impl FlowResponse {
             series.retain(|s| access.allows(&s.group, access::Level::Viewer));
         }
         self.normals.retain(|n| access.allows(&n.group, access::Level::Viewer));
+        self.totals.retain(|t| access.allows(&t.group, access::Level::Viewer));
         self
     }
 }
@@ -1573,6 +1648,13 @@ const ROWS_DELIVERED_METRIC: &str = "smeltr_rows_delivered_total";
 const SOURCE_LAG_METRIC: &str = "smeltr_source_lag";
 /// `Transform::poll`'s payload bytes read, beside its row count (`runtime.rs`).
 const BYTES_POLLED_METRIC: &str = "smeltr_bytes_polled_total";
+/// `Transform::count_outcomes`' bytes handed to a destination's queue, beside [`ROWS_SENT_METRIC`].
+const BYTES_SENT_METRIC: &str = "smeltr_bytes_sent_total";
+/// `Transform::count_outcomes`' count of rows each route's own condition matched (`runtime.rs`), labeled with the
+/// route's id.
+const ROUTE_MATCHED_METRIC: &str = "smeltr_route_matched_total";
+/// The bytes of those rows as their source read them.
+const ROUTE_MATCHED_BYTES_METRIC: &str = "smeltr_route_matched_bytes_total";
 /// `egress::note_delivered`'s bytes acknowledged, beside its row count: the weight of what a destination took.
 const BYTES_DELIVERED_METRIC: &str = "smeltr_bytes_delivered_total";
 /// `Transform::place_unmatched`'s count of rows no route on their source matched (`runtime.rs`), counted whether the
@@ -1582,10 +1664,15 @@ const ROWS_UNMATCHED_METRIC: &str = "smeltr_rows_unmatched_total";
 /// (`runtime.rs`) -- batches, not rows: nothing processed one, so it has no rows to count.
 const BATCHES_DLQ_METRIC: &str = "smeltr_batches_dlq_total";
 
-/// [`FlowResponse`] for the last `window`. No durable registry behind this leader (`Registry::series`, e.g. a
+/// [`FlowResponse`] for the last `window`: the fleet's in and out, or with `only` one object's
+/// ([`FlowKind::metrics`]). No durable registry behind this leader (`Registry::series`, e.g. a
 /// freshly-`Registry::default`ed one in a test) answers with empty series rather than an error: there is simply no
 /// history to serve yet.
-pub fn flow_snapshot(state: &AppState, window: Duration) -> Result<FlowResponse, StoreError> {
+pub fn flow_snapshot(
+    state: &AppState,
+    window: Duration,
+    only: Option<(FlowKind, &str, &str)>,
+) -> Result<FlowResponse, StoreError> {
     let point_ms = series::chart_point_ms(window);
     let Some(store) = state.registry.series() else {
         return Ok(FlowResponse {
@@ -1595,25 +1682,89 @@ pub fn flow_snapshot(state: &AppState, window: Duration) -> Result<FlowResponse,
             bytes_in: Vec::new(),
             bytes_out: Vec::new(),
             normals: Vec::new(),
+            totals: Vec::new(),
         });
     };
     // From the start of the point the window begins in, so the chart's first point is read whole, as `stats::build`
     // does for the source panel.
     let since_ms = (warnings::now_millis() - window.as_millis() as i64).div_euclid(point_ms) * point_ms;
+    let series = |metric, label, only| flow_series(store, metric, label, only, point_ms, since_ms);
+    let [rows_in, rows_out, bytes_in, bytes_out] = match only {
+        Some((kind, group, subject)) => {
+            let [a, b, c, d] = kind.metrics();
+            let one = Some((group, subject));
+            [
+                series(a, kind.label(), one)?,
+                series(b, kind.label(), one)?,
+                series(c, kind.label(), one)?,
+                series(d, kind.label(), one)?,
+            ]
+        }
+        None => [
+            series(ROWS_IN_METRIC, "source", None)?,
+            series(ROWS_DELIVERED_METRIC, "destination", None)?,
+            series(BYTES_POLLED_METRIC, "source", None)?,
+            series(BYTES_DELIVERED_METRIC, "destination", None)?,
+        ],
+    };
     Ok(FlowResponse {
         bucket_millis: point_ms,
-        rows_in: flow_series(store, ROWS_IN_METRIC, "source", point_ms, since_ms)?,
-        rows_out: flow_series(store, ROWS_DELIVERED_METRIC, "destination", point_ms, since_ms)?,
-        bytes_in: flow_series(store, BYTES_POLLED_METRIC, "source", point_ms, since_ms)?,
-        bytes_out: flow_series(store, BYTES_DELIVERED_METRIC, "destination", point_ms, since_ms)?,
+        rows_in,
+        rows_out,
+        bytes_in,
+        bytes_out,
         normals: Vec::new(),
+        totals: flow_totals(store, point_ms, since_ms)?,
     })
 }
 
+/// [`FlowTotal`]s for every kind, from the points [`flow_series`] reads, so the two agree.
+fn flow_totals(store: &series::RegistryStore, point_ms: i64, since_ms: i64) -> Result<Vec<FlowTotal>, StoreError> {
+    let mut read: HashMap<&str, Vec<(String, series::SubjectPoints)>> = HashMap::new();
+    let mut totals: BTreeMap<(FlowKind, String, Option<String>, String), FlowTotal> = BTreeMap::new();
+    for kind in FlowKind::ALL {
+        for (at, metric) in kind.metrics().into_iter().enumerate() {
+            if !read.contains_key(metric) {
+                read.insert(metric, store.sums_since(metric, point_ms, since_ms)?);
+            }
+            for (subject_key, points) in &read[metric] {
+                let label = |name| subject_label(subject_key, name);
+                let (Some(group), Some(subject_id)) = (label(GROUP_LABEL), label(kind.label())) else {
+                    continue;
+                };
+                let worker_id = label("worker");
+                let total = totals
+                    .entry((kind, group.clone(), worker_id.clone(), subject_id.clone()))
+                    .or_insert_with(|| FlowTotal {
+                        kind: Some(kind),
+                        group,
+                        worker_id,
+                        subject_id,
+                        ..FlowTotal::default()
+                    });
+                if kind == FlowKind::Route {
+                    total.source = total.source.take().or_else(|| label("source"));
+                    total.pipeline = total.pipeline.take().or_else(|| label("pipeline"));
+                }
+                let sum: f64 = points.iter().map(|(_, value)| value).sum();
+                *[
+                    &mut total.rows_in,
+                    &mut total.rows_out,
+                    &mut total.bytes_in,
+                    &mut total.bytes_out,
+                ][at] += sum;
+            }
+        }
+    }
+    Ok(totals.into_values().collect())
+}
+
+/// `metric`'s series, one per subject `label_name` names, or with `only` the one object (group, subject).
 fn flow_series(
     store: &series::RegistryStore,
     metric: &str,
     label_name: &str,
+    only: Option<(&str, &str)>,
     point_ms: i64,
     since_ms: i64,
 ) -> Result<Vec<FlowSeries>, StoreError> {
@@ -1630,6 +1781,9 @@ fn flow_series(
             exemplar.get_or_insert(subject_key);
             continue;
         };
+        if only.is_some_and(|(g, id)| (g, id) != (group.as_str(), subject_id.as_str())) {
+            continue;
+        }
         out.push(FlowSeries {
             worker_id: subject_label(&subject_key, "worker"),
             group,
@@ -1666,7 +1820,11 @@ async fn get_flow(
     Query(query): Query<FlowQuery>,
 ) -> Result<Envelope<FlowResponse>, Refusal> {
     let minutes = query.window_minutes.clamp(1, MAX_WINDOW_MINUTES);
-    let mut flow = flow_snapshot(&state, Duration::from_secs((minutes * 60) as u64))
+    let only = match (query.kind, &query.group, &query.subject) {
+        (Some(kind), Some(group), Some(subject)) => Some((kind, group.as_str(), subject.as_str())),
+        _ => None,
+    };
+    let mut flow = flow_snapshot(&state, Duration::from_secs((minutes * 60) as u64), only)
         .map_err(|e| Refusal::internal(e.to_string()))?;
     let heartbeat_interval = crate::startup_config::leader_heartbeat_interval();
     let readings = throughput::readings(&state, warnings::now_millis(), heartbeat_interval, false).await;
@@ -5517,7 +5675,7 @@ mod flow_endpoint_tests {
 
     #[test]
     fn no_data_is_empty_series_not_an_error() {
-        let flow = flow_snapshot(&state(), Duration::from_secs(3600)).unwrap();
+        let flow = flow_snapshot(&state(), Duration::from_secs(3600), None).unwrap();
         assert!(flow.rows_in.is_empty());
         assert!(flow.rows_out.is_empty());
     }
@@ -5541,7 +5699,7 @@ mod flow_endpoint_tests {
             log_levels: Default::default(),
             data_dir: std::env::temp_dir(),
         };
-        let flow = flow_snapshot(&state, Duration::from_secs(3600)).unwrap();
+        let flow = flow_snapshot(&state, Duration::from_secs(3600), None).unwrap();
         assert!(flow.rows_in.is_empty());
         assert!(flow.rows_out.is_empty());
     }
@@ -5568,7 +5726,7 @@ mod flow_endpoint_tests {
             )
             .unwrap();
 
-        let flow = flow_snapshot(&state, Duration::from_secs(3600)).unwrap();
+        let flow = flow_snapshot(&state, Duration::from_secs(3600), None).unwrap();
         assert_eq!(flow.rows_in.len(), 1);
         assert_eq!(flow.rows_in[0].subject_id, "7");
         assert_eq!(flow.rows_in[0].group, "prod-west");
@@ -5578,6 +5736,56 @@ mod flow_endpoint_tests {
         assert_eq!(flow.rows_out[0].subject_id, "2");
         assert_eq!(flow.rows_out[0].group, "prod-west");
         assert_eq!(flow.rows_out[0].points[0].value, 9.0);
+    }
+
+    /// A route's row totals its in where its condition matched and its out where it handed rows to destinations, two
+    /// destinations counting a row twice; asked for alone, its series are those counts and no other route's.
+    #[test]
+    fn a_route_totals_what_it_matched_and_what_it_sent() {
+        let state = state();
+        let store = state.registry.series().unwrap();
+        let now = warnings::now_millis();
+        let route =
+            |id: &str| format!(r#"[["group","g"],["pipeline","p"],["route","{id}"],["source","s"],["worker","w"]]"#);
+        let sent = |dest: &str| {
+            format!(
+                r#"[["destination","{dest}"],["group","g"],["pipeline","p"],["route","r"],["source","s"],["worker","w"]]"#
+            )
+        };
+        store
+            .record_delta(ROUTE_MATCHED_METRIC, &route("r"), now, 10.0)
+            .unwrap();
+        store
+            .record_delta(ROUTE_MATCHED_BYTES_METRIC, &route("r"), now, 400.0)
+            .unwrap();
+        store
+            .record_delta(ROUTE_MATCHED_METRIC, &route("other"), now, 99.0)
+            .unwrap();
+        for dest in ["a", "b"] {
+            store.record_delta(ROWS_SENT_METRIC, &sent(dest), now, 10.0).unwrap();
+            store.record_delta(BYTES_SENT_METRIC, &sent(dest), now, 500.0).unwrap();
+        }
+
+        let flow = flow_snapshot(&state, Duration::from_secs(3600), Some((FlowKind::Route, "g", "r"))).unwrap();
+        let r = flow
+            .totals
+            .iter()
+            .find(|t| t.kind == Some(FlowKind::Route) && t.subject_id == "r")
+            .unwrap();
+        assert_eq!(
+            (r.rows_in, r.rows_out, r.bytes_in, r.bytes_out),
+            (10.0, 20.0, 400.0, 1000.0)
+        );
+        assert_eq!((r.source.as_deref(), r.pipeline.as_deref()), (Some("s"), Some("p")));
+        let p = flow.totals.iter().find(|t| t.kind == Some(FlowKind::Pipeline)).unwrap();
+        assert_eq!(
+            (p.subject_id.as_str(), p.rows_in),
+            ("p", 109.0),
+            "a pipeline sums its routes"
+        );
+        assert_eq!(flow.rows_in.len(), 1, "only route r's series");
+        assert_eq!(flow.rows_in[0].points[0].value, 10.0);
+        assert_eq!(flow.bytes_out.iter().map(|s| s.points[0].value).sum::<f64>(), 1000.0);
     }
 
     /// A 30-day window is served in six-hour points. Each sums the buckets inside it, and the newest point, still in
@@ -5599,7 +5807,7 @@ mod flow_endpoint_tests {
         store.record_delta(ROWS_IN_METRIC, key, point, 2.0).unwrap();
         store.record_delta(ROWS_IN_METRIC, key, point + 1, 3.0).unwrap();
 
-        let flow = flow_snapshot(&state, Duration::from_secs(30 * 86_400)).unwrap();
+        let flow = flow_snapshot(&state, Duration::from_secs(30 * 86_400), None).unwrap();
         let points: Vec<(i64, f64)> = flow.rows_in[0]
             .points
             .iter()
@@ -5640,7 +5848,12 @@ mod flow_endpoint_tests {
         let flow = get_flow(
             State(state),
             axum::Extension(payments),
-            Query(FlowQuery { window_minutes: 60 }),
+            Query(FlowQuery {
+                window_minutes: 60,
+                kind: None,
+                group: None,
+                subject: None,
+            }),
         )
         .await
         .unwrap();
@@ -5674,7 +5887,7 @@ mod flow_endpoint_tests {
             )
             .unwrap();
 
-        let flow = flow_snapshot(&state, Duration::from_secs(3600)).unwrap();
+        let flow = flow_snapshot(&state, Duration::from_secs(3600), None).unwrap();
         assert_eq!(flow.bytes_in.len(), 1);
         assert_eq!(flow.bytes_in[0].subject_id, "7");
         assert_eq!(flow.bytes_in[0].group, "prod-west");
@@ -5690,7 +5903,7 @@ mod flow_endpoint_tests {
                 8192.0,
             )
             .unwrap();
-        let flow = flow_snapshot(&state, Duration::from_secs(3600)).unwrap();
+        let flow = flow_snapshot(&state, Duration::from_secs(3600), None).unwrap();
         assert_eq!(flow.bytes_out.len(), 1);
         assert_eq!(flow.bytes_out[0].subject_id, "2");
         assert_eq!(flow.bytes_out[0].points[0].value, 8192.0);
@@ -5720,7 +5933,7 @@ mod flow_endpoint_tests {
             )
             .unwrap();
 
-        let flow = flow_snapshot(&state, Duration::from_secs(3600)).unwrap();
+        let flow = flow_snapshot(&state, Duration::from_secs(3600), None).unwrap();
         assert_eq!(
             flow.rows_in
                 .iter()
@@ -5742,7 +5955,7 @@ mod flow_endpoint_tests {
             .unwrap();
 
         assert!(
-            flow_snapshot(&state, Duration::from_secs(3600))
+            flow_snapshot(&state, Duration::from_secs(3600), None)
                 .unwrap()
                 .rows_in
                 .is_empty()
@@ -5763,7 +5976,7 @@ mod flow_endpoint_tests {
             )
             .unwrap();
 
-        let flow = flow_snapshot(&state, Duration::from_secs(60)).unwrap();
+        let flow = flow_snapshot(&state, Duration::from_secs(60), None).unwrap();
         assert!(
             flow.rows_in.is_empty(),
             "the point is two minutes old and the window is one"
@@ -5773,10 +5986,10 @@ mod flow_endpoint_tests {
     #[test]
     fn the_bucket_width_is_the_width_of_the_charts_points() {
         let state = state();
-        let hour = flow_snapshot(&state, Duration::from_secs(3600)).unwrap();
+        let hour = flow_snapshot(&state, Duration::from_secs(3600), None).unwrap();
         assert_eq!(hour.bucket_millis, 10_000, "an hour is 360 ten-second points");
 
-        let day = flow_snapshot(&state, Duration::from_secs(24 * 3600)).unwrap();
+        let day = flow_snapshot(&state, Duration::from_secs(24 * 3600), None).unwrap();
         assert_eq!(day.bucket_millis, 5 * 60_000, "a day is 288 five-minute points");
     }
 
@@ -5788,6 +6001,9 @@ mod flow_endpoint_tests {
             axum::Extension(access::Access::Administrator),
             Query(FlowQuery {
                 window_minutes: 1_000_000,
+                kind: None,
+                group: None,
+                subject: None,
             }),
         )
         .await
@@ -5801,7 +6017,12 @@ mod flow_endpoint_tests {
         let zero = get_flow(
             State(state),
             axum::Extension(access::Access::Administrator),
-            Query(FlowQuery { window_minutes: 0 }),
+            Query(FlowQuery {
+                window_minutes: 0,
+                kind: None,
+                group: None,
+                subject: None,
+            }),
         )
         .await
         .unwrap();
