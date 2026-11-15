@@ -109,12 +109,8 @@ export function writes(d: DestinationDto): string {
 /** `ObjectPrefix::DEFAULT`. */
 export const OBJECT_PREFIX = '%Y/%m/%d/%H/';
 
-/** The field an Elasticsearch destination reads each document's id from when it names none. */
-export const DOC_ID_FIELD = '__destination.id';
-
 /** The prefix a destination writes under, as its field shows it. */
 export const prefixOf = (d: ObjectDestination) => d.prefix ?? OBJECT_PREFIX;
-export const idFieldOf = (d: { idField?: string }) => d.idField ?? DOC_ID_FIELD;
 
 /** What a destination connects to, as its row says it. */
 export function at(d: DestinationDto): string {

@@ -3202,9 +3202,10 @@ test('A10: an Elasticsearch destination signs in with a username and password', 
   ]);
 });
 
-// A10, sources and destinations from a form. An Elasticsearch destination's id field starts as `__destination.id`,
-// which is saved as no id field at all; another field name is saved as it is, and so is the bulk action `index`.
-test('A10: an Elasticsearch id field starts as __destination.id', async ({
+// A10, sources and destinations from a form. An Elasticsearch destination's ID field starts empty, with
+// `__destination.id` as its hint, and is saved as no ID field at all; another field name is saved as it is, and so is
+// the bulk action `index`.
+test('A10: an Elasticsearch ID field starts empty, with __destination.id as its hint', async ({
   admin,
   leader,
   api,
@@ -3221,7 +3222,9 @@ test('A10: an Elasticsearch id field starts as __destination.id', async ({
   };
   let dialog = await add('computed');
   await dialog.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
-  await expect(dialog.getByRole('textbox', { name: 'ID field' })).toHaveValue('__destination.id');
+  const idField = dialog.getByRole('textbox', { name: 'ID field' });
+  await expect(idField).toHaveValue('');
+  await expect(idField).toHaveAttribute('placeholder', '__destination.id');
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   dialog = await add('keyed');
   await dialog.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();

@@ -624,7 +624,7 @@ export type DestinationDto = {
       username?: string;
       password?: SecretRef;
       action?: BulkAction;
-      /** The row field each document's id is read from. Absent is `DOC_ID_FIELD`. */
+      /** The row field each document's id is read from. Absent is `__destination.id`. */
       idField?: string;
       inFlight?: number;
       maxBulkBytes?: ByteCount;

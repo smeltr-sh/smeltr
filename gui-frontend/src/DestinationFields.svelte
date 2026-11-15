@@ -59,9 +59,7 @@
     isObjectStore,
     objectModified,
     prefixOf,
-    DOC_ID_FIELD,
     OBJECT_PREFIX,
-    idFieldOf,
     sendsCredential,
   } from './destinations';
 
@@ -389,21 +387,20 @@
       </select>
     </Field>
     <Advanced label="Advanced" modified={elasticModified(destination)}>
-      <Field required field="idField" label="ID field">
+      <Field optional field="idField" label="ID field">
         {#snippet help()}
-          The row field each document's id is read from. It starts as <code>__destination.id</code>,
-          the field a pipeline sets; name another field and it is used instead. A row with no id
-          gets one Elasticsearch generates.
+          The row field each document's ID is read from. Left empty, the ID is read from
+          <code>__destination.id</code>, the field a pipeline sets. A row with no ID gets one
+          Elasticsearch generates.
         {/snippet}
         <input
           type="text"
-          value={idFieldOf(destination)}
+          value={destination.idField ?? ''}
           oninput={(e) => {
-            if (destination.type !== 'elasticsearch') return;
-            const v = e.currentTarget.value;
-            if (v === DOC_ID_FIELD) delete destination.idField;
-            else destination.idField = v;
+            if (destination.type === 'elasticsearch')
+              destination.idField = optional(e.currentTarget.value);
           }}
+          placeholder="__destination.id"
         />
       </Field>
       <RequestDelivery
