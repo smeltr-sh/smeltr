@@ -46,7 +46,6 @@
     type NumberedStep,
     type Step,
     type StepDiffRow,
-    declareProposed,
     PROPOSED_FORMAT_NAMES,
     newStep,
   } from './pipeline';
@@ -1289,19 +1288,6 @@
           proposed =
             'No format read nearly all of these records, so they need a parser of your own.';
         return;
-      }
-      // A grok step types its captures itself, from the schemas the pipeline produces or else its pattern.
-      const parser = steps.find((s) => s.type === 'parser' && s.kind.type !== 'grok');
-      // The parser declares what it read, as Propose would add it.
-      const upTo =
-        parser?.type === 'parser' && parser.declared.length === 0
-          ? truncateSteps(steps, parser, true)
-          : null;
-      if (parser?.type === 'parser' && upTo) {
-        const res = await fetchPreview(upTo, selectedSample);
-        if (asked !== proposals) return;
-        const read = res.ok ? res.parsers.at(-1) : undefined;
-        if (read) declareProposed(parser.declared, read.fields);
       }
       if (p.format)
         proposed = `${p.read} of ${p.of} records read as ${PROPOSED_FORMAT_NAMES[p.format]}`;

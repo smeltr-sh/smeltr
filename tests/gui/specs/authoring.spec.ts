@@ -793,7 +793,7 @@ test('A1: a source with no route is routed from the map, its pipeline made from 
   await expect(dialog.getByRole('combobox', { name: /^Worker group/ })).toHaveValue('default');
   await captureThree(admin, 'own metrics');
 
-  // A metrics record is a line of JSON: a JSON Parser is proposed, its fields declared from the capture.
+  // A metrics record is a line of JSON: a JSON Parser is proposed, and it declares no field.
   await expect(admin.getByText('3 of 3 records read as JSON')).toBeVisible();
   // Raw JSON holds what the editor made, and its Save comes back to the route as the editor's does.
   await admin.getByRole('button', { name: 'Raw JSON' }).click();
@@ -830,9 +830,7 @@ test('A1: a source with no route is routed from the map, its pipeline made from 
     input: '_raw',
     kind: { type: 'json' },
   });
-  expect(made.steps[0].declared.map((f: { name: string }) => f.name)).toEqual(
-    expect.arrayContaining(['metric', 'value', 'ts']),
-  );
+  expect(made.steps[0].declared ?? []).toEqual([]);
 });
 
 // A1, records from a chosen point rather than only what arrives now.

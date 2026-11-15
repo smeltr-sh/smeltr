@@ -133,15 +133,6 @@ function parserCount(step: Extract<Step, { type: 'parser' }>): string {
   return ` (${n} ${n === 1 ? 'type' : 'types'} chosen)`;
 }
 
-/** Declare each of `fields` that `declared` does not declare yet, as `proposedTypeSpec` types it. A field this
- * builder cannot type stays undeclared. */
-export function declareProposed(declared: FieldSpec[], fields: ProposedField[]) {
-  for (const f of fields) {
-    const ty = proposedTypeSpec(f);
-    if (ty && !isDeclared(declared, f.name)) declared.push({ name: f.name, ty });
-  }
-}
-
 export function isDeclared(declared: FieldSpec[], name: string): boolean {
   return declared.some((d) => d.name === name);
 }

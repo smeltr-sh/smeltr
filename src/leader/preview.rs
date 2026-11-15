@@ -1105,7 +1105,10 @@ fn parsed_fields(plan: &Plan, produces: &[Arc<Schema>]) -> BTreeMap<String, Vec<
             call: plan::compile::Call::Parse { kind, matcher, .. },
             ..
         } = &i.op
-            && matches!(kind, plan::config::ParserKind::Grok(_) | plan::config::ParserKind::Csv(_))
+            && matches!(
+                kind,
+                plan::config::ParserKind::Grok(_) | plan::config::ParserKind::Csv(_)
+            )
             && let Some(step) = plan.step_ids.get(i.function as usize)
         {
             let field = |o: &plan::compile::Output| {
@@ -1870,6 +1873,66 @@ mod tests {
         let meta = SourceMeta::of_columns(&sample.columns).unwrap();
         let read = read_sample(&meta, &sample.columns, &sample.records).unwrap();
         assert!(read.warnings.is_empty(), "{:?}", read.warnings);
+    }
+
+    /// A JSON or key-value parse converts a key a produced schema types as it lays it: a value that does not fit is
+    /// null, and an exception on its row. A key no schema types keeps what it arrived as.
+    #[test]
+    fn a_dynamic_parse_converts_the_keys_a_produced_schema_types() {
+        for (body, raws) in [
+            (
+                "Object.assign($, json(_raw));",
+                [r#"{"time":"42","user":{"name":7},"other":"5"}"#, r#"{"time":"soon"}"#],
+            ),
+            (
+                "Object.assign($, kv(_raw));",
+                ["time=42 user.name=7 other=5", "time=soon"],
+            ),
+        ] {
+            let step = format!(r#"{{"id":"s","type":"code","body":{}}}"#, serde_json::json!(body));
+            let config = producing(r#"["login"]"#).replace(r#"{"id":"s","type":"code","body":"x = 1;"}"#, &step);
+            let records = raws
+                .map(|raw| serde_json::json!({ "_raw": raw }).as_object().unwrap().clone())
+                .to_vec();
+            let previewed = run_preview(
+                PreviewRequest {
+                    config,
+                    pipeline: Some("p".into()),
+                    sample: None,
+                    show_internal: false,
+                    at_micros: None,
+                    filter: None,
+                    attribution: false,
+                    as_sample: true,
+                    dictionary: false,
+                    after_dot: None,
+                    capture_filter: None,
+                },
+                Default::default(),
+                &[],
+                records,
+            );
+            let errors: Vec<_> = previewed.errors.iter().map(|e| &e.message).collect();
+            assert!(previewed.succeeded(), "{body}: {errors:?}");
+            let rows = serde_json::to_value(&previewed.body.rows).unwrap();
+            let refused = rows[1]["exceptions"].as_array().unwrap().iter().any(|e| {
+                e["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains(r#"time is "soon", which could not parse as i64"#)
+            });
+            assert!(refused, "{body}: {}", rows[1]["exceptions"]);
+            let sample = previewed.body.as_sample.unwrap();
+            let first = &sample.records[0];
+            assert_eq!(first["time"], serde_json::json!(42), "{body}: {first:?}");
+            assert_eq!(first["user"]["name"], serde_json::json!("7"), "{body}: {first:?}");
+            assert_eq!(first["other"], serde_json::json!("5"), "{body}: no schema types it");
+            assert!(
+                sample.records[1].get("time").is_none_or(|t| t.is_null()),
+                "{body}: {:?}",
+                sample.records[1]
+            );
+        }
     }
 
     /// A sample of a captured sample's output says how the output was made, in place of how its input was captured:
