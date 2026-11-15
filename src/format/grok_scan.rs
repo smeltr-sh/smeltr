@@ -8,11 +8,13 @@
 //! the record separator, and there it silently truncates a multi-line message at its first line. `(?-s)` inside a
 //! pattern restores the line-bounded meaning for one element, which is why this needs no config surface.
 
+use std::collections::HashMap;
+
 use regex::{Captures, Regex, RegexBuilder, RegexSet, RegexSetBuilder};
 use regex_syntax::ast::{self, Ast};
 use regex_syntax::hir::{self, HirKind};
 
-use crate::format::grok_pattern::{self, GrokError};
+use crate::format::grok_pattern::{self, GrokError, Holds};
 use crate::plan::config::{GrokConfig, GrokPatterns};
 
 #[derive(Debug)]
@@ -26,6 +28,9 @@ pub struct Matcher {
     /// resolving them over a long tail is what makes captures cost ten times a match. `split_tail` says which
     /// candidates qualify.
     tails: Vec<Option<String>>,
+    /// What each capture holds: its pattern's type where every candidate that captures it gives it the same one, else
+    /// text.
+    holds: HashMap<String, Holds>,
 }
 
 /// Which part of a candidate holds a named capture.
@@ -159,13 +164,24 @@ impl Matcher {
         let mut exprs = Vec::with_capacity(config.patterns.len());
         let mut patterns = Vec::with_capacity(config.patterns.len());
         let mut tails = Vec::with_capacity(config.patterns.len());
+        let mut holds: HashMap<String, Holds> = HashMap::new();
         for p in &config.patterns {
-            let expanded = grok_pattern::expand_with(p, config, shared)?;
+            let (expanded, typed) = grok_pattern::expand_with(p, config, shared)?;
             // The whole pattern compiles first, so a bad tail is still the author's error to see.
-            RegexBuilder::new(&expanded)
+            let whole = RegexBuilder::new(&expanded)
                 .dot_matches_new_line(true)
                 .build()
                 .map_err(|e| GrokError(format!("pattern `{p}` is not a valid regex: {e}")))?;
+            for name in whole.capture_names().flatten() {
+                let h = typed
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map_or_else(Holds::text, |(_, h)| h.clone());
+                let held = holds.entry(name.to_string()).or_insert_with(|| h.clone());
+                if *held != h {
+                    *held = Holds::text();
+                }
+            }
             let (head, tail) = split_tail(&expanded);
             let regex = RegexBuilder::new(head)
                 .dot_matches_new_line(true)
@@ -179,7 +195,12 @@ impl Matcher {
             .dot_matches_new_line(true)
             .build()
             .map_err(|e| GrokError(format!("pattern set failed to compile: {e}")))?;
-        Ok(Matcher { set, patterns, tails })
+        Ok(Matcher {
+            set,
+            patterns,
+            tails,
+            holds,
+        })
     }
 
     /// What is wrong with each of a bundle's patterns, by name: a built-in's name, or a definition that does not
@@ -220,6 +241,12 @@ impl Matcher {
             }
         }
         names
+    }
+
+    /// What the capture `name` holds: its pattern's type where every candidate that captures it gives it the same one,
+    /// else text.
+    pub fn holds(&self, name: &str) -> Holds {
+        self.holds.get(name).cloned().unwrap_or_else(Holds::text)
     }
 
     /// The first candidate (declared order) that matches `text`, with its captures, or `None`. One pattern needs no
@@ -266,6 +293,42 @@ mod tests {
             patterns: patterns.iter().map(|s| s.to_string()).collect(),
             custom_patterns: vec![],
         }
+    }
+
+    /// A capture holds its pattern's type; text where nothing types it, and where candidates disagree.
+    #[test]
+    fn a_capture_holds_its_patterns_type() {
+        use crate::core::column::DataType;
+        use crate::plan::config::TimeSource;
+        let config = cfg(&[
+            "%{INT:n} %{NUMBER:f} %{HTTPDATE:t} %{TIMESTAMP_ISO8601:iso} (?P<raw>[0-9]+) %{INT:both}",
+            "%{WORD:both} %{INT:n}",
+        ]);
+        let m = Matcher::compile(&config).unwrap();
+        let ty = |name| m.holds(name).ty;
+        assert_eq!(ty("n"), DataType::I64);
+        assert_eq!(ty("f"), DataType::F64);
+        assert_eq!(ty("raw"), DataType::Str);
+        assert_eq!(ty("both"), DataType::Str, "one candidate types it i64, the other str");
+        assert_eq!(
+            m.holds("t").time_source,
+            Some(TimeSource::Format("%d/%b/%Y:%H:%M:%S %z".into()))
+        );
+        assert_eq!(m.holds("iso").time_source, Some(TimeSource::Auto));
+    }
+
+    /// The whole-line built-ins name fields as ECS does, so each holds the type ECS gives it: `http.version` and
+    /// `log.syslog.version` are keywords.
+    #[test]
+    fn a_whole_line_capture_holds_its_ecs_type() {
+        use crate::core::column::DataType;
+        let apache = Matcher::compile(&cfg(&["%{COMMONAPACHELOG}"])).unwrap();
+        assert_eq!(apache.holds("http.version").ty, DataType::Str);
+        assert_eq!(apache.holds("timestamp").ty, DataType::DateTime);
+        let syslog = Matcher::compile(&cfg(&["%{SYSLOG5424LINE}"])).unwrap();
+        assert_eq!(syslog.holds("log.syslog.version").ty, DataType::Str);
+        let line = Matcher::compile(&cfg(&["%{SYSLOGLINE}"])).unwrap();
+        assert_eq!(line.holds("process.pid").ty, DataType::I64);
     }
 
     #[test]

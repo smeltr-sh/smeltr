@@ -714,7 +714,7 @@ mod tests {
                 (
                     "p".to_string(),
                     Some("s".to_string()),
-                    "`@timestamp` is str, but Stamped has it as datetime. Write it as datetime.".to_string(),
+                    "`@timestamp` is str, but Stamped has it as datetime.".to_string(),
                     true
                 ),
                 (

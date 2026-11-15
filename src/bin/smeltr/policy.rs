@@ -92,8 +92,7 @@ pub fn need(method: &Method, path: &str) -> Need {
             Method::POST,
             [
                 "preview",
-                "grok" | "onboard" | "line-breaker" | "format" | "certificate" | "sql" | "schema-read"
-                | "schema-export",
+                "onboard" | "line-breaker" | "format" | "certificate" | "sql" | "schema-read" | "schema-export",
             ],
         )
         | (Method::GET | Method::HEAD, ["preview", "schema-standards"]) => Need::Somewhere(Level::Viewer),
@@ -382,7 +381,6 @@ mod tests {
             assert_eq!(need(&method, path), area("payments", Level::Editor), "{method} {path}");
         }
         for path in [
-            "/api/preview/grok",
             "/api/preview/onboard",
             "/api/preview/line-breaker",
             "/api/preview/format",

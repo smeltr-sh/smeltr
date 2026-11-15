@@ -4612,6 +4612,7 @@ mod tests {
             step_ids: Vec::new(),
             lookup_tables: Default::default(),
             grok_patterns: Default::default(),
+            produces: Vec::new(),
         }];
         let metas = SourceMetas::from([(0, SourceMeta::KAFKA), (1, SourceMeta::KAFKA)]);
         let compiled = compile_topology_with(

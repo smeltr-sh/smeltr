@@ -22,6 +22,8 @@ pub struct PipelineConfig {
     pub lookup_tables: std::collections::HashMap<String, Result<LookupSource, String>>,
     /// The bundle's grok patterns, for any grok in the pipeline to name.
     pub grok_patterns: GrokPatterns,
+    /// The schemas the pipeline produces. They give a field a parse finds its type, where nothing else types it.
+    pub produces: Vec<std::sync::Arc<crate::schema::Schema>>,
 }
 
 impl PipelineConfig {

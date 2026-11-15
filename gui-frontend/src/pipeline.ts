@@ -116,15 +116,6 @@ export function proposedTypeSpec(f: ProposedField): DataTypeSpec | null {
     : null;
 }
 
-/** Declare each of `fields` that `declared` does not declare yet, as `proposedTypeSpec` types it. A field this
- * builder cannot type stays undeclared. */
-export function declareProposed(declared: FieldSpec[], fields: ProposedField[]) {
-  for (const f of fields) {
-    const ty = proposedTypeSpec(f);
-    if (ty && !isDeclared(declared, f.name)) declared.push({ name: f.name, ty });
-  }
-}
-
 export function isDeclared(declared: FieldSpec[], name: string): boolean {
   return declared.some((d) => d.name === name);
 }
@@ -628,6 +619,24 @@ export function stepsRun(steps: Step[], target: Step, includeTarget: boolean): S
   return run;
 }
 
+/** Where the field a parser declares as `name` lands in the record: under the object its `into` names. */
+export function declaredPath(step: Extract<Step, { type: 'parser' }>, name: string): string {
+  const into = shownInto(step.into);
+  return into ? `${into}.${name}` : name;
+}
+
+/** Gives each field a parser of `steps` declares the type a schema fix (`PreviewResult.fixes`) asks for, where one
+ * asks. */
+export function takeSchemaTypes(steps: Step[], fixes: { path: string; type: unknown }[]) {
+  for (const step of flatSteps(steps)) {
+    if (step.type !== 'parser') continue;
+    for (const field of step.declared) {
+      const fix = fixes.find((f) => f.path === declaredPath(step, field.name));
+      if (fix && field.ty.kind !== 'skip') field.ty = dtoToDataType(fix.type, field.name);
+    }
+  }
+}
+
 /** The object a parser's `into` names, as its header and its Advanced show it: none for `$`, where every parser
  * writes unless told otherwise, nor for a blank box, which names nothing. */
 export function shownInto(into: string): string | null {
@@ -769,7 +778,7 @@ function oneOf<T extends string>(v: unknown, options: readonly T[], where: strin
   );
 }
 
-function dtoToDataType(dto: unknown, where: string): DataTypeSpec {
+export function dtoToDataType(dto: unknown, where: string): DataTypeSpec {
   if (typeof dto === 'string') {
     if (dto === 'skip') return { kind: 'skip' };
     if (dto === 'datetime') return { kind: 'datetime', format: '' };

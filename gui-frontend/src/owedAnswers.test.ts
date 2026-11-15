@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { beginReconcile, endReconcile, fieldsSettled } from './grokFields';
+import { beginReconcile, endReconcile, fieldsSettled } from './owedAnswers';
 
-describe('grok field reconciliation', () => {
+describe('owed answers', () => {
   it('is settled when nothing is owed', async () => {
     await expect(fieldsSettled()).resolves.toBeUndefined();
   });
@@ -13,7 +13,7 @@ describe('grok field reconciliation', () => {
       settled = true;
     });
 
-    // A save arriving now must not proceed: the step's `declared` still disagrees with its pattern.
+    // A save arriving now must not proceed: the field's answer is still owed.
     await Promise.resolve();
     expect(settled).toBe(false);
 
@@ -22,7 +22,7 @@ describe('grok field reconciliation', () => {
     expect(settled).toBe(true);
   });
 
-  it('waits for every grok step, not just the first to answer', async () => {
+  it('waits for every field, not just the first to answer', async () => {
     beginReconcile();
     beginReconcile();
     let settled = false;

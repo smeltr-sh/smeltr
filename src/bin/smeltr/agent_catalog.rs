@@ -177,12 +177,6 @@ pub const CATALOG: &[Route] = &[
     },
     Route {
         method: "POST",
-        path: "/api/preview/grok",
-        what: "List the capture names grok patterns declare, with no sample. No query.",
-        body: "{ patterns: string[], customPatterns?: { name, pattern }[], grokPatterns?: { id, pattern }[] }",
-    },
-    Route {
-        method: "POST",
         path: "/api/preview/line-breaker",
         what: "Check whether a save would accept this line-breaker pattern. No query.",
         body: "{ pattern: string }",

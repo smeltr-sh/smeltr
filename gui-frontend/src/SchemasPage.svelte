@@ -21,12 +21,10 @@
   import Field from './Field.svelte';
   import JsonEditPage from './JsonEditPage.svelte';
   import SchemaFields from './SchemaFields.svelte';
-  import NewSchema, { READ_FORMATS, type SchemaDraft } from './NewSchema.svelte';
+  import NewSchema, { schemaOf, type SchemaDraft } from './NewSchema.svelte';
   import CrossButton from './CrossButton.svelte';
   import { RESOURCES_TABS } from './nav';
   import {
-    readSchema,
-    importSchema,
     exportSchema,
     type ExportFormat,
     sharedConfig,
@@ -106,39 +104,7 @@
   let taken = $derived([...schemas, ...sharedSchemas].map((s) => s.id));
 
   async function add(draft: SchemaDraft) {
-    let schema: SchemaDto = { id: draft.id, fields: [] };
-    if (draft.type === 'import') {
-      if (!config) throw new Error('the bundle has not loaded');
-      const read = await importSchema({
-        id: draft.id,
-        config: $state.snapshot(config),
-        pipeline: draft.pipeline,
-        text: draft.file,
-        lineBreaker: draft.lineBreaker,
-      });
-      if (!read.ok) throw new Error(read.errors.map((e) => e.message).join(' '));
-      schema = read.schema;
-    } else if (READ_FORMATS[draft.type]) {
-      const read = await readSchema({
-        id: draft.id,
-        format: READ_FORMATS[draft.type]!,
-        text: draft.text,
-        ...((draft.type === 'ecs' || draft.type === 'ocsf') && draft.builtIn
-          ? { builtIn: true, ...(draft.release ? { release: draft.release } : {}) }
-          : {}),
-        ...(draft.type === 'ocsf'
-          ? {
-              class: draft.class,
-              cut: { depth: draft.depth, levels: draft.levels, profiles: draft.profiles },
-            }
-          : {}),
-        ...(draft.type === 'ecs' ? { requirements: draft.requirements } : {}),
-        ...(draft.type === 'otlp' ? { signal: draft.signal } : {}),
-        ...(draft.type === 'csv' ? { columns: draft.columns, types: draft.types } : {}),
-      });
-      if (!read.ok) throw new Error(read.errors.map((e) => e.message).join(' '));
-      schema = read.schema;
-    }
+    const schema = await schemaOf(draft, config && $state.snapshot(config));
     schemas.push(schema);
     opened = new Set(opened).add(draft.id);
     adding = false;

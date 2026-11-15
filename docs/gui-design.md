@@ -433,11 +433,16 @@ TypeScript: a second copy of the type table would drift from the one that
 runs.
 
 A **static** parser needs no sample at all, so the author never types a
-name: Grok's fields are its captures and CSV's are its ordered column
-table, and the workspace fills the names in from the configuration and
-leaves only the type to choose. Grok's fields follow the pattern as it is
-edited, in capture order. A name that survives keeps the type chosen for
-it. A new name starts as `str`. A name the pattern lost goes with it. A
+name. Its fields are known before any row: grok's are its captures, in
+capture order, and CSV's are its ordered column table, which the workspace
+fills in from the configuration. Every field shows the one type it is
+stored at, which is the type it runs at. A field is first typed when it is
+made: a schema the pipeline produces gives a field it names its type, else
+the sample gives a proposed CSV column its type, else a grok capture takes
+its pattern's type and a new column is `str`. A capture the pattern no
+longer makes is removed. Where a schema the pipeline produces types a field otherwise,
+its warning gives a button that writes the field at the schema's type, and
+a ⚠ on the field's own line opens the warning and the button. A
 column CSV should drop is typed `skip`, which keeps the columns after it
 aligned without inventing a field. A key-value key typed `skip` makes no
 field either. Under Advanced, **rebuild the line** writes the field the

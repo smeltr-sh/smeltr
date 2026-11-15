@@ -307,53 +307,27 @@ impl TypedBuilder {
         self.filled = row + 1;
         match &mut self.store {
             Store::Bool(values) => {
-                let parsed = match cell {
-                    Cell::Text { text, .. } => parse_bool(text),
-                    Cell::Tag(Tag::Str(s)) => parse_bool(s),
-                    Cell::Tag(Tag::Bool(x)) => Some(*x),
-                    _ => None,
-                };
+                let parsed = bool_of(cell);
                 values.push(parsed);
                 (parsed.is_some(), arrived(cell, parsed.is_some(), Kind::Bool))
             }
             Store::I64(values) => {
-                let parsed = match cell {
-                    Cell::Text { text, .. } => parse_i64(text),
-                    Cell::Tag(Tag::Str(s)) => parse_i64(s),
-                    Cell::Tag(Tag::I64(x)) => Some(*x),
-                    Cell::Tag(Tag::F64(x)) => round_i64(*x),
-                    _ => None,
-                };
+                let parsed = i64_of(cell);
                 values.push(parsed);
                 (parsed.is_some(), arrived(cell, parsed.is_some(), Kind::Int))
             }
             Store::F64(values) => {
-                // Widening is always a coercion.
-                let parsed = match cell {
-                    Cell::Text { text, .. } => parse_f64(text),
-                    Cell::Tag(Tag::Str(s)) => parse_f64(s),
-                    Cell::Tag(Tag::F64(x)) => Some(*x),
-                    Cell::Tag(Tag::I64(x)) => Some(*x as f64),
-                    _ => None,
-                };
+                let parsed = f64_of(cell);
                 values.push(parsed);
                 (parsed.is_some(), arrived(cell, parsed.is_some(), Kind::Float))
             }
-            // A number is an epoch, its unit by magnitude.
             Store::DateTime {
                 values,
                 format,
                 hint,
                 now,
             } => {
-                let parsed = match cell {
-                    Cell::Text { text, .. } => read_time(text, format.as_deref(), hint, *now),
-                    Cell::Tag(Tag::Str(s)) => read_time(s, format.as_deref(), hint, *now),
-                    Cell::Tag(Tag::DateTime(x)) => Some(*x),
-                    Cell::Tag(Tag::I64(x)) => parse_epoch_digits(&x.to_string()),
-                    Cell::Tag(Tag::F64(x)) => parse_epoch_digits(&x.to_string()),
-                    _ => None,
-                };
+                let parsed = time_of(cell, format.as_deref(), hint, *now);
                 values.push(parsed);
                 (parsed.is_some(), arrived(cell, false, Kind::Str))
             }
@@ -803,6 +777,77 @@ fn is_empty(cell: Cell<'_, '_>, blank_is_null: bool) -> bool {
         Cell::Tag(_) => false,
         Cell::Variant(b) => b[0] == variant::NULL,
     }
+}
+
+fn bool_of(cell: Cell<'_, '_>) -> Option<bool> {
+    match cell {
+        Cell::Text { text, .. } => parse_bool(text),
+        Cell::Tag(Tag::Str(s)) => parse_bool(s),
+        Cell::Tag(Tag::Bool(x)) => Some(*x),
+        _ => None,
+    }
+}
+
+fn i64_of(cell: Cell<'_, '_>) -> Option<i64> {
+    match cell {
+        Cell::Text { text, .. } => parse_i64(text),
+        Cell::Tag(Tag::Str(s)) => parse_i64(s),
+        Cell::Tag(Tag::I64(x)) => Some(*x),
+        Cell::Tag(Tag::F64(x)) => round_i64(*x),
+        _ => None,
+    }
+}
+
+/// Widening is always a coercion.
+fn f64_of(cell: Cell<'_, '_>) -> Option<f64> {
+    match cell {
+        Cell::Text { text, .. } => parse_f64(text),
+        Cell::Tag(Tag::Str(s)) => parse_f64(s),
+        Cell::Tag(Tag::F64(x)) => Some(*x),
+        Cell::Tag(Tag::I64(x)) => Some(*x as f64),
+        _ => None,
+    }
+}
+
+/// A number is an epoch, its unit by magnitude.
+fn time_of(cell: Cell<'_, '_>, format: Option<&str>, hint: &mut usize, now: i64) -> Option<i64> {
+    match cell {
+        Cell::Text { text, .. } => read_time(text, format, hint, now),
+        Cell::Tag(Tag::Str(s)) => read_time(s, format, hint, now),
+        Cell::Tag(Tag::DateTime(x)) => Some(*x),
+        Cell::Tag(Tag::I64(x)) => parse_epoch_digits(&x.to_string()),
+        Cell::Tag(Tag::F64(x)) => parse_epoch_digits(&x.to_string()),
+        _ => None,
+    }
+}
+
+/// Encode `tag` into `out` as a value of `to`, one of the types a parse reads text as (`schema::read_as`), by the
+/// table a declared field converts by. Returns whether it fit; where it did not, `out` holds null. Blank text under a
+/// type that is not `str` is null, and fits. `hint` and `now` are a `datetime`'s, as `TypedBuilder` keeps them.
+pub fn encode_as(tag: &Tag<'_>, to: &DataType, hint: &mut usize, now: i64, out: &mut Vec<u8>) -> bool {
+    let cell = Cell::Tag(tag);
+    if *to != DataType::Str && is_empty(cell, true) {
+        variant::put_null(out);
+        return true;
+    }
+    let fit = match to {
+        DataType::Str => match tag {
+            Tag::Array(_) | Tag::Object(_) => None,
+            t => {
+                variant::put_str(out, &tag::stringify_scalar(t));
+                Some(())
+            }
+        },
+        DataType::I64 => i64_of(cell).map(|v| variant::put_i64(out, v)),
+        DataType::F64 => f64_of(cell).map(|v| variant::put_f64(out, v)),
+        DataType::Bool => bool_of(cell).map(|v| variant::put_bool(out, v)),
+        DataType::DateTime => time_of(cell, None, hint, now).map(|v| variant::put_datetime(out, v)),
+        _ => None,
+    };
+    if fit.is_none() {
+        variant::put_null(out);
+    }
+    fit.is_some()
 }
 
 /// The kind a value arrived as, for the tally: a value's own kind; quoted text, a string; other text, the type it

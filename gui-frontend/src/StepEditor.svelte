@@ -63,19 +63,20 @@
     typeKey,
     withTypeKey,
     OBJECT_FIELD_TYPE_GROUPS,
+    dtoToDataType,
+    declaredPath,
+    type DataTypeSpec,
     type TypeKey,
   } from './pipeline';
   import { fieldNotes, type OpenProposal, type Suggestion } from './proposal';
   import { fieldError } from './errorMarks';
   import { ago, count } from './time';
-  import { pushKey } from './names';
   import { SvelteMap } from 'svelte/reactivity';
   import StepGlyph from './StepGlyph.svelte';
   import StateMark from './StateMark.svelte';
   import Ticked from './Ticked.svelte';
-  import { errorText, grokCaptures, type GrokPatternDto, type LookupTableDto } from './api';
+  import type { GrokPatternDto, LookupTableDto, PreviewResult } from './api';
   import { sharedGrokSuggestions } from './grokPatterns';
-  import { beginReconcile, endReconcile } from './grokFields';
   import { unfinishedRows } from './unfinished.svelte';
   import { editable } from './access';
 
@@ -88,6 +89,8 @@
     pipelineNames = {},
     lookupTables = [],
     grokPatterns = [],
+    parsedFields,
+    fixes = [],
     parseInput = '_raw',
     pausedAt = null,
     ran = null,
@@ -109,6 +112,10 @@
     lookupTables?: LookupTableDto[];
     /** The bundle's grok patterns, `shared/`'s and the scope's own, which a grok step may name. */
     grokPatterns?: GrokPatternDto[];
+    /** Each grok step's fields as the pipeline types them, by step id (`PreviewResult.parsed_fields`). */
+    parsedFields?: PreviewResult['parsed_fields'];
+    /** The warnings a declared field's type answers (`PreviewResult.fixes`). */
+    fixes?: NonNullable<PreviewResult['fixes']>;
     /** The field a new parse step reads. */
     parseInput?: string;
     /** The step the records are paused after. */
@@ -275,80 +282,43 @@
     return { name: '', ty: { kind: 'named', name: 'str' } };
   }
 
-  /** A grok step's captures, as the compiled pattern reports them. `null` until the first answer arrives. */
-  let captures: string[] | null = $state(null);
-  /** Why a half-typed pattern does not compile. The fields on screen stay as they are while it says something. */
-  let captureError: string | null = $state(null);
-
-  /**
-   * Fill a grok step's field names in from its pattern, keeping the type already chosen for a name that survives.
-   *
-   * Naming a capture is how a grok field is declared, so the two cannot be edited into disagreement -- which is what
-   * makes the compiler's refusal of either direction unreachable from here. `captures` comes from the server because a
-   * definition can mint one the pattern text never names, and only the compiled matcher sees those.
-   */
-  function reconcile(declared: FieldSpec[], caps: string[], split: boolean): FieldSpec[] {
-    const chosen = new Map(declared.map((f) => [f.name, f.ty]));
-    // A capture's name is the parser's key: one key, or under splitDots a path split at its dots.
-    const names = caps.map((c) => (split ? c.split('.') : [c]).reduce(pushKey, ''));
-    return names.map((name) => ({ name, ty: chosen.get(name) ?? { kind: 'named', name: 'str' } }));
+  /** Gives the field `name` declares the type `ty`. */
+  function setType(ps: ParserStep, name: string, ty: DataTypeSpec) {
+    ps.declared = ps.declared.map((d) => (d.name === name ? { name, ty } : d));
   }
 
-  // Debounced: the author is typing a pattern, and every keystroke is a half-written one. The whole window counts as
-  // owed, timer included -- a save landing before the timer fires would serialize the same stale list as one landing
-  // mid-request.
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  // A grok step declares each capture its pattern makes, in capture order, typing a new one as the pipeline does: by a
+  // schema it produces, else by the pattern. A capture the pattern no longer makes goes. Only the last preview knows
+  // the captures, as a definition can make one the pattern's text never names.
   $effect(() => {
-    if (step.type !== 'parser' || step.kind.type !== 'grok') {
-      captures = null;
-      captureError = null;
-      return;
-    }
-    const { patterns, customPatterns } = step.kind;
-    const split = splitsDots(step.kind);
-    const key = JSON.stringify([patterns, customPatterns, split, grokPatterns]);
+    if (step.type !== 'parser' || step.kind.type !== 'grok') return;
+    const typed = parsedFields?.[step.id];
+    if (!typed) return;
+    const ps = step;
+    const declared = typed.map(
+      (f) =>
+        ps.declared.find((d) => d.name === f.name) ?? {
+          name: f.name,
+          ty: dtoToDataType(f.type, f.name),
+        },
+    );
+    if (declared.length !== ps.declared.length || declared.some((d, i) => d !== ps.declared[i]))
+      ps.declared = declared;
+  });
 
-    beginReconcile();
-    let settled = false;
-    const settle = () => {
-      if (settled) return;
-      settled = true;
-      endReconcile();
-    };
-
-    clearTimeout(timer);
-    timer = setTimeout(() => {
-      grokCaptures(patterns, customPatterns, grokPatterns)
-        .then((r) => {
-          // Another keystroke landed while this was in flight; its answer is the current one.
-          if (step.type !== 'parser' || step.kind.type !== 'grok') return;
-          if (
-            JSON.stringify([
-              step.kind.patterns,
-              step.kind.customPatterns,
-              splitsDots(step.kind),
-              grokPatterns,
-            ]) !== key
-          )
-            return;
-          captureError = r.ok ? null : errorText(r.errors) || 'these patterns do not compile';
-          if (!r.ok) return;
-          captures = r.captures;
-          step.declared = reconcile(step.declared, r.captures, split);
-        })
-        // Unreachable server, or a rejection that is not JSON. Say so: the fields are read-only, so there is nothing
-        // the author can do here but edit the pattern again, which is what retries it.
-        .catch((e: unknown) => {
-          captureError = `${e instanceof Error ? e.message : String(e)} -- edit a pattern to try again`;
-        })
-        .finally(settle);
-    }, 250);
-
-    // A further edit supersedes this reconciliation; the effect that replaces it owes its own.
-    return () => {
-      clearTimeout(timer);
-      settle();
-    };
+  /** The warnings on this step that a declared field's type answers, from the last preview: each with its field, and
+   * the button that answers it. */
+  let stepFixes = $derived.by(() => {
+    if (step.type !== 'parser') return [];
+    const ps = step;
+    return ps.declared.flatMap(({ name }) => {
+      const path = declaredPath(ps, name);
+      const fix = fixes.find((f) => f.path === path && stepWarningMessages.includes(f.message));
+      if (!fix || !name) return [];
+      const ty = dtoToDataType(fix.type, name);
+      const label = `Write ${name} as ${typeKey(ty)}`;
+      return [{ name, message: fix.message, label, onfix: () => setType(ps, name, ty) }];
+    });
   });
 
   /** What one definition contributes, for its summary line: the captures its own text names. */
@@ -447,9 +417,13 @@
 {/snippet}
 
 {#snippet stepMessage(message: string, warn: boolean)}
+  {@const fix = warn && !readOnly ? stepFixes.find((f) => f.message === message) : undefined}
   <div class="step-error-msg" class:warn>
     <StateMark state={warn ? 'warning' : 'error'} size={15} />
-    <span><Ticked text={message} /></span>
+    <span
+      ><Ticked text={message} />{#if fix}
+        <Button type="button" class="compact" onclick={fix.onfix}>{fix.label}</Button>{/if}</span
+    >
   </div>
 {/snippet}
 
@@ -625,6 +599,8 @@
           {pipelineNames}
           {lookupTables}
           {grokPatterns}
+          {parsedFields}
+          {fixes}
           {parseInput}
           {pausedAt}
           {ran}
@@ -647,6 +623,8 @@
           {pipelineNames}
           {lookupTables}
           {grokPatterns}
+          {parsedFields}
+          {fixes}
           {parseInput}
           {pausedAt}
           {ran}
@@ -947,7 +925,7 @@
             <div class="rows">
               <div class="rows-label">
                 <span class="field-name"
-                  >{isCsv ? 'columns' : 'declared fields'}
+                  >{isCsv ? 'columns' : isGrok ? 'fields' : 'declared fields'}
                   {#if isCsv}
                     <Help label="columns">
                       One row per column, in the record's order. To leave a column out, set its type
@@ -962,13 +940,24 @@
                   {/if}</span
                 >
               </div>
-              {#if isGrok && captureError}
-                <small class="note"
-                  >These patterns do not compile yet, so the fields below are the last ones that did
-                  — {captureError}</small
-                >
+              {#if isGrok}
+                {#each ps.declared as field (field.name)}
+                  <FieldRow
+                    bind:ty={() => field.ty, (ty) => setType(ps, field.name, ty)}
+                    groups={declaredTypeGroups(false)}
+                    disabled={readOnly}
+                    label={field.name}
+                    fix={stepFixes.find((f) => f.name === field.name)}
+                  >
+                    {#snippet name()}
+                      <span class="derived-name ellipsis" title="from the pattern"
+                        >{field.name}</span
+                      >
+                    {/snippet}
+                  </FieldRow>
+                {/each}
               {/if}
-              {#each ps.declared as field, i (field)}
+              {#each isGrok ? [] : ps.declared as field, i (field)}
                 <div class="glide-row" animate:glideTo>
                   {#snippet fieldActions()}
                     {#if isCsv}
@@ -1055,29 +1044,24 @@
                   <FieldRow
                     bind:ty={ps.declared[i].ty}
                     groups={declaredTypeGroups(isCsv || parserKind.type === 'keyValue')}
+                    fix={stepFixes.find((f) => f.name === field.name)}
                     number={isCsv ? i + 1 : undefined}
                     disabled={readOnly}
                     label={field.name || (isCsv ? 'column' : 'field')}
-                    actions={isGrok ? undefined : fieldActions}
+                    actions={fieldActions}
                     nested={field.ty.kind === 'object' || field.ty.kind === 'arrayOfObjects'
                       ? objectFields
                       : undefined}
                   >
                     {#snippet name()}
-                      {#if isGrok}
-                        <span class="derived-name ellipsis" title="from the pattern"
-                          >{field.name}</span
-                        >
-                      {:else}
-                        <Locked>
-                          <ValidatedField
-                            placeholder="name"
-                            bind:value={ps.declared[i].name}
-                            errors={stepErrorMessages}
-                            warnings={stepWarningMessages}
-                          />
-                        </Locked>
-                      {/if}
+                      <Locked>
+                        <ValidatedField
+                          placeholder="name"
+                          bind:value={ps.declared[i].name}
+                          errors={stepErrorMessages}
+                          warnings={stepWarningMessages}
+                        />
+                      </Locked>
                     {/snippet}
                   </FieldRow>
                 </div>

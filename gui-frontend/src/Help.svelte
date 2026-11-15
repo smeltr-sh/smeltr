@@ -1,6 +1,6 @@
 <!--
   The explainer register (STYLE_GUIDE.md, "Text"): a `?` beside a label
-  that opens the long form on demand, in a `Popover`.
+  that opens the long form on demand, in a `Popover`. A warning's mark opens the warning the same way.
 
   The `?` is a span with a button's role, not a `<button>`: a button is
   labelable, so inside a `<label>` it would become the label's control,
@@ -15,8 +15,18 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import Popover from './Popover.svelte';
+  import StateMark from './StateMark.svelte';
 
-  let { label, children }: { label: string; children: Snippet } = $props();
+  let {
+    label,
+    warning = false,
+    children,
+  }: {
+    label: string;
+    /** Shows a warning's mark in place of the `?`; `label` names it. */
+    warning?: boolean;
+    children: Snippet;
+  } = $props();
 
   const id = `help-${++seq}`;
   let ask: HTMLSpanElement;
@@ -32,8 +42,8 @@
   bind:this={ask}
   role="button"
   tabindex="0"
-  class="ask"
-  aria-label="About {label}"
+  class={warning ? 'warning' : 'ask'}
+  aria-label={warning ? label : `About ${label}`}
   aria-controls={id}
   aria-expanded={open}
   onpointerdown={() => (openAtPress = open)}
@@ -47,7 +57,8 @@
     if (e.key !== 'Enter' && e.key !== ' ') return;
     e.preventDefault();
     pop.toggle();
-  }}>?</span
+  }}
+  >{#if warning}<StateMark state="warning" size={15} />{:else}?{/if}</span
 >
 <Popover bind:this={pop} bind:open {id} anchor={() => ask}>
   {@render children()}
@@ -78,6 +89,13 @@
   .ask:hover {
     color: var(--ink);
     border-color: var(--ink);
+  }
+
+  .warning {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 0.25rem;
+    cursor: pointer;
   }
 
   /* No outline of its own, so the accent border is the focus ring. */

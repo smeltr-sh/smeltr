@@ -55,6 +55,7 @@ fn worker(source: &FakeSource, dest: &AsyncDestination) -> Worker {
         step_ids: Vec::new(),
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
+        produces: Vec::new(),
     }];
     let topology = compile_topology(&routes, &pipelines).unwrap();
     let mut w = Worker::new(
@@ -105,6 +106,7 @@ fn two_lanes_to(
         step_ids: Vec::new(),
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
+        produces: Vec::new(),
     }];
     let topology = Arc::new(compile_topology(&routes, &pipelines).unwrap());
     let ready = Arc::new(Ready::new());
@@ -703,6 +705,7 @@ fn pipeline(id: usize, body: &str) -> PipelineConfig {
         step_ids: Vec::new(),
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
+        produces: Vec::new(),
     }
 }
 

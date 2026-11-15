@@ -266,7 +266,7 @@ export const GROK_BUILTIN_PATTERNS: StdFuncEntry[] = [
     'A whole RFC 5424 syslog line, with its version after the priority.',
     ['<165>1 2003-10-11T22:14:15Z host app - ID47 - An event'],
     [],
-    '<(?P<log.syslog.priority>[0-9]{1,3})>%{POSINT:log.syslog.version} (?:-|%{TIMESTAMP_ISO8601:timestamp}) (?:-|%{NOTSPACE:host.hostname}) (?:-|%{NOTSPACE:log.syslog.appname}) (?:-|%{NOTSPACE:log.syslog.procid}) (?:-|%{NOTSPACE:log.syslog.msgid}) (?:-|(?P<log.syslog.structured_data>(?:\\[(?:[^\\]"\\\\]|\\\\.|"(?:[^"\\\\]|\\\\.)*")*\\])+))(?: %{GREEDYDATA:message})?',
+    '<(?P<log.syslog.priority>[0-9]{1,3})>(?P<log.syslog.version>%{POSINT}) (?:-|%{TIMESTAMP_ISO8601:timestamp}) (?:-|%{NOTSPACE:host.hostname}) (?:-|%{NOTSPACE:log.syslog.appname}) (?:-|%{NOTSPACE:log.syslog.procid}) (?:-|%{NOTSPACE:log.syslog.msgid}) (?:-|(?P<log.syslog.structured_data>(?:\\[(?:[^\\]"\\\\]|\\\\.|"(?:[^"\\\\]|\\\\.)*")*\\])+))(?: %{GREEDYDATA:message})?',
   ),
   builtin(
     'CISCOASALINE',
@@ -282,7 +282,7 @@ export const GROK_BUILTIN_PATTERNS: StdFuncEntry[] = [
     "A web server's access log line in the common format.",
     ['127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /a.gif HTTP/1.0" 200 2326'],
     [],
-    '%{IPORHOST:source.address} (?:-|%{NOTSPACE:apache.access.user.identity}) (?:-|%{NOTSPACE:user.name}) \\[%{HTTPDATE:timestamp}\\] "(?:(?P<http.request.method>[!#$%&\'*+.^_`|~0-9A-Za-z-]+) %{NOTSPACE:url.original}(?: HTTP/%{NUMBER:http.version})?|%{DATA})" (?P<http.response.status_code>[0-9]{3}) (?:(?P<http.response.body.bytes>[0-9]+)|-)',
+    '%{IPORHOST:source.address} (?:-|%{NOTSPACE:apache.access.user.identity}) (?:-|%{NOTSPACE:user.name}) \\[%{HTTPDATE:timestamp}\\] "(?:(?P<http.request.method>[!#$%&\'*+.^_`|~0-9A-Za-z-]+) %{NOTSPACE:url.original}(?: HTTP/(?P<http.version>%{NUMBER}))?|%{DATA})" (?P<http.response.status_code>[0-9]{3}) (?:(?P<http.response.body.bytes>[0-9]+)|-)',
   ),
   builtin(
     'COMBINEDAPACHELOG',

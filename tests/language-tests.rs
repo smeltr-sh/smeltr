@@ -551,7 +551,7 @@ cases! {
     a_parse_lays_keys_into_a_built_object: "x = {a: 1}; Object.assign($, json(_raw)); y = x.b;",
         [r#"{"x": {"b": 2}}"#], Rows(&[(r#"{"x": {"a": 1, "b": 2}, "y": 2}"#, None)]);
     object_assign_parses_into_a_local: r#"let v = {}; Object.assign(v, grok(_raw, ["%{INT:status}"])); s = v.status;"#,
-        ["200"], Rows(&[(r#"{"s": "200"}"#, None)]);
+        ["200"], Rows(&[(r#"{"s": 200}"#, None)]);
     object_assign_merges_each_source_in_turn: r#"x = {a: 1}; Object.assign(x, json(_raw), {c: 3}); y: i64 = x.b;"#,
         [r#"{"b": "2"}"#], Rows(&[(r#"{"x": {"a": 1, "b": "2", "c": 3}, "y": 2}"#, None)]);
     object_assign_keeps_a_closed_object_closed: r#"x: {a: i64} = {a: 1}; Object.assign(x, {b: 2});"#,
@@ -583,7 +583,7 @@ cases! {
         [r#"{"t":"{}"}"#], Error(&["spread"]);
     a_parse_that_misses_keeps_what_a_local_holds: r#"Object.assign($, json(_raw)) a: str = $.a; b: str = $.b; let v = {}; Object.assign(v, json(a)); Object.assign(v, grok(b, ["%{INT:z}"])); s = v.z;"#,
         [r#"{"a":"{\"z\":\"5\"}","b":"nope"}"#],
-        Rows(&[(r#"{"a":"{\"z\":\"5\"}","b":"nope","s":"5"}"#, Some(r#"b is "nope", which grok could not parse"#))]);
+        Rows(&[(r#"{"a":"{\"z\":\"5\"}","b":"nope","s":5}"#, Some(r#"b is "nope", which grok could not parse"#))]);
     a_guarded_lookup_into_a_local_writes_the_rows_it_takes: r#"Object.assign($, json(_raw)) f: bool = $.f; s: str = $.s; let v = {}; if (f) { Object.assign(v, lookup("codes", s, {column: "code", fields: {text: "message"}})) } t = v.text;"#,
         [r#"{"f": false, "s": "200", "text": "rec"}"#, r#"{"f": true, "s": "999", "text": "rec"}"#, r#"{"f": true, "s": "200", "text": "rec"}"#],
         Rows(&[
@@ -605,7 +605,7 @@ cases! {
         Rows(&[(r#"{"f": true, "x": "s", "o": 1}"#, None), (r#"{"f": false, "x": "s", "o": "s"}"#, None)]);
     a_guarded_parse_into_a_name_keeps_a_skipped_rows_key: r#"Object.assign($, json(_raw)) f: bool = $.f; s: str = $.s; x: {...} = $.x; if (f) { Object.assign(x, grok(s, ["%{INT:n}"])) }"#,
         [r#"{"f": false, "s": "5", "x": {"n": "4"}}"#, r#"{"f": true, "s": "5", "x": {"n": "4"}}"#],
-        Rows(&[(r#"{"f": false, "s": "5", "x": {"n": "4"}}"#, None), (r#"{"f": true, "s": "5", "x": {"n": "5"}}"#, None)]);
+        Rows(&[(r#"{"f": false, "s": "5", "x": {"n": 4}}"#, None), (r#"{"f": true, "s": "5", "x": {"n": 5}}"#, None)]);
     object_assign_lays_a_variant_over_what_its_target_holds: r#"Object.assign($, json(_raw)) f: bool = $.f; o = {a: {b: 1}, n: 1}; if (f) { Object.assign(o, v) }"#,
         [r#"{"f": true, "v": {"a": {"c": 2}, "n": 7, "z": 3}}"#, r#"{"f": false, "v": {"n": 7}}"#],
         Rows(&[
@@ -641,7 +641,7 @@ cases! {
     a_format_names_a_field_the_call_writes: r#"Object.assign($, grok(_raw, ["%{INT:n}"], {formats: {m: "%Y"}}))"#,
         ["5"], Error(&["`formats` names `m`"]);
     a_parse_writes_an_object: r#"x = grok(_raw, ["%{INT:n} %{WORD:w}"]);"#,
-        ["5 a"], Rows(&[(r#"{"x": {"n": "5", "w": "a"}}"#, None)]);
+        ["5 a"], Rows(&[(r#"{"x": {"n": 5, "w": "a"}}"#, None)]);
     a_declared_parse_types_its_object: r#"x: {n: i64, ...} = json(_raw);"#,
         [r#"{"n": "5", "m": 1}"#], Rows(&[(r#"{"x": {"n": 5, "m": 1}}"#, None)]);
     a_parse_into_a_bound_name_needs_a_declaration: "x = json(_raw); x = json(_raw);",

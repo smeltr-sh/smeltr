@@ -2263,6 +2263,11 @@ export interface PreviewResult {
   /** One entry per parser step, in run order -- what the field-declaration
    * panel reads to propose fields from a sample. */
   parsers: ParserProposal[];
+  /** Each grok step's fields as the pipeline types them, by step id. Absent when the pipeline did not compile. */
+  parsed_fields?: Record<string, { name: string; type: unknown }[]>;
+  /** The warnings a field's declared type answers: the warning, the field's path, and the type the produced schemas
+   * agree on (`leader::preview::SchemaFix`). */
+  fixes?: { message: string; path: string; type: unknown }[];
   /** The record the pipeline writes. Absent when it did not compile. */
   dictionary?: DictionaryOut;
   /** The answer to `PreviewRequest.afterDot`. Absent where the dot follows no value. */
@@ -2376,28 +2381,6 @@ export async function checkCaptureFilter(
 ): Promise<CaptureFilterCheck | null> {
   const res = await previewPipeline({ config, captureFilter: { text, destination } });
   return (res.ok && res.capture_filter) || null;
-}
-
-/** What a grok pattern captures, which is the set of fields the step declares.
- *
- * Not part of `previewPipeline`: that needs a chosen sample and answers nothing
- * once compilation fails, and both are exactly when the editor needs these
- * names -- a pattern that just gained a capture nothing declares does not
- * compile, and this is the list that fixes it. `ok: false` carries the reason a
- * half-typed pattern will not compile, and the editor keeps the fields it has. */
-export interface GrokCaptures {
-  ok: boolean;
-  errors: ApiError[];
-  captures: string[];
-}
-
-/** `grokPatterns` are the bundle's, which the step's patterns may name. */
-export function grokCaptures(
-  patterns: string[],
-  customPatterns: { name: string; pattern: string }[],
-  grokPatterns: GrokPatternDto[] = [],
-): Promise<GrokCaptures> {
-  return post('/api/preview/grok', { patterns, customPatterns, grokPatterns }, 'quiet');
 }
 
 /** Whether a save would take a line breaker, asked as one is typed. Not `ok` when it would refuse it, with why, in

@@ -236,6 +236,7 @@ mod tests {
             step_ids: Vec::new(),
             lookup_tables: Default::default(),
             grok_patterns: Default::default(),
+            produces: Vec::new(),
         };
         let plan = crate::plan::compile::compile(&p, &crate::plan::topology::SourceMeta::NONE).unwrap();
         let keys = |k: &[&str]| k.iter().map(|k| k.to_string()).collect::<Vec<_>>();

@@ -2084,6 +2084,59 @@ const produceSchema: Move = {
   },
 };
 
+/** Opens New schema from the schema picker named `named` (a pipeline's Produces or a destination's accepts), makes a
+ * schema with the id `id` from the built-in ECS release, and saves it, naming a branch if the GUI asks for one. */
+async function newSchemaFrom(j: Journey, named: string, id: string) {
+  const { page } = j;
+  const picker = page.getByRole('combobox', { name: named });
+  // A picker with no schema left to offer is the New schema button alone, under the picker's name.
+  if (await picker.count()) await picker.selectOption({ label: '+ New schema…' });
+  else await page.getByRole('button', { name: named }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'ECS', exact: true }).click();
+  await dialog.getByLabel('id', { exact: true }).fill(id);
+  await saveBy(j, dialog.getByRole('button', { name: 'Add', exact: true }), () =>
+    expect(dialog).toBeHidden({ timeout: 30_000 }),
+  );
+  j.world.editing.schemas.push(id);
+  await expect(page.getByRole('link', { name: id, exact: true })).toBeVisible();
+}
+
+const makeSchemaInPlace: Move = {
+  name: 'make-schema-in-place',
+  weight: (w) =>
+    w.password &&
+    w.editing.schemas.length < 2 &&
+    (w.editing.pipelines.length || w.editing.destinations.length)
+      ? 1
+      : 0,
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const id = `schema-${world.made++}`;
+    const pipelines = world.editing.pipelines;
+    const destinations = world.editing.destinations;
+    if (pipelines.length && (!destinations.length || rng.chance(2))) {
+      const pipeline = rng.pick(pipelines);
+      await goto(page, leader, '#/build/pipelines');
+      await page.getByRole('link', { name: pipeline, exact: true }).click();
+      await newSchemaFrom(j, 'Add a schema it produces', id);
+      await save(j, () => expect(page.getByText('Saved.')).toBeVisible());
+      world.editing.produces.push(`${pipeline}:${id}`);
+      await editingIsSaved(j);
+      return `make schema ${id} from what "${pipeline}" produces`;
+    }
+    const destination = rng.pick(destinations);
+    await goto(page, leader, `#/build/destinations/${encodeURIComponent(destination)}`);
+    await newSchemaFrom(j, 'Add a schema it accepts', id);
+    await save(j, unsaved(page));
+    await editingIsSaved(j);
+    const res = await (await j.truth()).get(`/api/areas/shared?branch=${world.branch}`);
+    const saved = res.config.destinations.find((d: { id: string }) => d.id === destination);
+    expect(saved.accepts, `${destination} accepts the schema made from it`).toContain(id);
+    return `make schema ${id} from what ${destination} accepts`;
+  },
+};
+
 const pasteSample: Move = {
   name: 'paste-sample',
   leadsTo: ['edit-sample', 'delete-sample', 'save-output-sample'],
@@ -3568,6 +3621,7 @@ export const MOVES: readonly Move[] = [
   addBuiltInSchema,
   mapSchemaField,
   produceSchema,
+  makeSchemaInPlace,
   pasteSample,
   editSample,
   deleteSample,

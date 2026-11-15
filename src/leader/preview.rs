@@ -124,6 +124,16 @@ pub struct AfterDot {
     pub methods: Vec<plan::dot::Method>,
 }
 
+/// A field a schema the pipeline produces types otherwise than the rows hold it: what its warning says, the field's
+/// path, and the type the schemas agree on, which a declaration of it can take.
+#[derive(Debug, serde::Serialize)]
+pub struct SchemaFix {
+    pub message: String,
+    pub path: String,
+    #[serde(rename = "type")]
+    pub ty: config_file::DataTypeDto,
+}
+
 #[derive(Default, serde::Serialize)]
 pub struct Preview {
     pub stage: Option<&'static str>,
@@ -137,6 +147,8 @@ pub struct Preview {
     /// the parse decided, so it is what the parser did rather than a second reading of the records.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parsers: Vec<ParserOut>,
+    /// Each grok step's fields, as the pipeline types them, by step id. Empty when the pipeline did not compile.
+    pub parsed_fields: BTreeMap<String, Vec<config_file::FieldDto>>,
     /// The dictionary of what the pipeline writes (`plan::dictionary`), when asked. Absent when it did not compile.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dictionary: Option<DictionaryOut>,
@@ -146,6 +158,9 @@ pub struct Preview {
     /// How many of `warnings` are where the rows break the schemas the pipeline produces.
     #[serde(skip_serializing_if = "is_zero")]
     pub schema_findings: u32,
+    /// The warnings a field's declared type answers, each with that type.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fixes: Vec<SchemaFix>,
     /// The fields the schemas the pipeline produces require or recommend and its rows lack, which the editor shows
     /// as columns.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -228,28 +243,6 @@ pub struct FieldOut {
 
 fn is_zero(n: &u32) -> bool {
     *n == 0
-}
-
-/// A grok pattern's captures, which are the fields the step can produce. The editor fills a step's field names in from
-/// this rather than asking the author to retype what the pattern already says.
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GrokCapturesRequest {
-    pub patterns: Vec<String>,
-    #[serde(default)]
-    pub custom_patterns: Vec<config_file::CustomPatternDto>,
-    /// The bundle's patterns, which the step may name. The editor has them already, and a step being edited may
-    /// name one that is not saved yet.
-    #[serde(default)]
-    pub grok_patterns: Vec<config_file::GrokPatternDto>,
-}
-
-/// The editor keeps the fields it has when a half-typed pattern cannot compile, so a failure carries no captures.
-#[derive(Default, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GrokCaptures {
-    /// Every capture across the patterns, in the order they appear, deduped.
-    pub captures: Vec<String>,
 }
 
 /// A line breaker as it is typed into a sourcetype's row.
@@ -680,22 +673,6 @@ pub fn run_route_preview(
     })
 }
 
-/// Compiling a pattern touches nothing outside itself, so this is the whole answer and a route only wraps it.
-pub fn captures_of(req: GrokCapturesRequest) -> Envelope<GrokCaptures> {
-    let config = crate::plan::config::GrokConfig {
-        split_dots: true,
-        patterns: req.patterns,
-        custom_patterns: req.custom_patterns.into_iter().map(|p| (p.name, p.pattern)).collect(),
-    };
-    let shared = req.grok_patterns.into_iter().map(|p| (p.id, p.pattern)).collect();
-    match crate::format::grok_scan::Matcher::compile_with(&config, &shared) {
-        Ok(m) => Envelope::ok(GrokCaptures {
-            captures: m.capture_names().into_iter().map(str::to_string).collect(),
-        }),
-        Err(e) => Envelope::refused(Refusal::invalid(e.to_string())),
-    }
-}
-
 /// Not `ok` when a save would refuse the pattern, with why, word for word as the save says it.
 pub fn line_breaker_verdict(req: LineBreakerRequest) -> Envelope {
     let refusal = config_file::line_breaker_refusal("this line breaker", &req.pattern);
@@ -951,7 +928,7 @@ pub fn run_preview(
         }
     };
     if records.is_empty() {
-        let (found, missing) = schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &record, first);
+        let (found, fixes, missing) = schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &record, first);
         warnings.extend(found.iter().map(warn));
         return Envelope::ok(Preview {
             stage: None,
@@ -962,12 +939,14 @@ pub fn run_preview(
             rows: vec![],
             unfiltered: filter.as_ref().map(|_| 0),
             parsers: vec![],
+            parsed_fields: parsed_fields(&plan),
             dictionary: req.dictionary.then(|| DictionaryOut {
                 compiled: Dictionary::of(&record),
                 sampled: None,
             }),
             warnings,
             schema_findings: found.len() as u32,
+            fixes,
             missing,
         });
     }
@@ -1086,7 +1065,7 @@ pub fn run_preview(
 
     // The dictionary is of every row: a filter chooses what is shown, not what the pipeline writes.
     let sampled = plan::dictionary::with_sample(&record, rows.iter().filter_map(|(r, _)| r.json.as_ref()));
-    let (found, missing) = schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &sampled, first);
+    let (found, fixes, missing) = schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &sampled, first);
     warnings.extend(found.iter().map(warn));
     let unfiltered = filter.as_ref().map(|_| rows.len() as u32);
     let rows = rows
@@ -1106,11 +1085,45 @@ pub fn run_preview(
         rows,
         unfiltered,
         parsers,
+        parsed_fields: parsed_fields(&plan),
         warnings,
         schema_findings: found.len() as u32,
+        fixes,
         missing,
         as_sample,
     })
+}
+
+/// Each grok step's fields in `plan`, by step id, spelled as a declaration spells them.
+fn parsed_fields(plan: &Plan) -> BTreeMap<String, Vec<config_file::FieldDto>> {
+    let mut out = BTreeMap::new();
+    for i in &plan.instrs {
+        if let plan::compile::Op::Call {
+            outputs,
+            call: plan::compile::Call::Parse { kind, .. },
+            ..
+        } = &i.op
+            && matches!(kind, plan::config::ParserKind::Grok(_))
+            && let Some(step) = plan.step_ids.get(i.function as usize)
+        {
+            let field = |o: &plan::compile::Output| config_file::FieldDto {
+                name: o.name.clone(),
+                ty: type_dto(&o.ty, o.time_source.as_ref()),
+            };
+            out.insert(step.clone(), outputs.iter().map(field).collect());
+        }
+    }
+    out
+}
+
+/// `ty` spelled as a declaration spells it, a `datetime` with the format it is read by.
+fn type_dto(ty: &DataType, time_source: Option<&plan::config::TimeSource>) -> config_file::DataTypeDto {
+    match time_source {
+        Some(plan::config::TimeSource::Format(format)) => {
+            config_file::DataTypeDto::Compound(config_file::CompoundTypeDto::DateTime { format: format.clone() })
+        }
+        _ => config_file::DataTypeDto::Scalar(ty.to_string()),
+    }
 }
 
 /// The rows of `batch` that `plan` finished and `rows` shows, as a sample holds them: each as a capture at a
@@ -1160,26 +1173,39 @@ fn as_sample(
     }
 }
 
-/// A warning for each field of `record`, what `plan` writes, that breaks the schemas the pipeline produces
-/// (`schema::check`): at the step that wrote the field, or at `first` where the source gave it. A field the schemas
-/// require and the record lacks has no step that wrote it, and is warned of with none. With them, every field the
-/// schemas require or recommend and the record lacks; one recommended is no warning.
+/// The schemas the pipeline produces (`schema::check`) as `record`, the fields `plan` writes, breaks them, in three
+/// lists. The first warns of each field the record holds at a type a schema gives otherwise, at the step that wrote
+/// it, or at `first` where the source gave it, and of each field a schema requires and the record lacks, at no step.
+/// The second holds the fix for each of those warnings that a declaration of its field answers. The third holds every
+/// field the schemas require or recommend and the record lacks; a field only recommended is in this list and has no
+/// warning in the first.
 fn schema_warnings(
     produces: &[Arc<Schema>],
     plan: &Plan,
     record: &DataType,
     first: Option<FunctionId>,
-) -> (Vec<CompileError>, Vec<crate::schema::Missing>) {
+) -> (Vec<CompileError>, Vec<SchemaFix>, Vec<crate::schema::Missing>) {
     let findings = crate::schema::check(produces, record);
+    let mut fixes = Vec::new();
     let warned = crate::schema::told(produces, &findings)
         .into_iter()
         .filter(|t| t.breaks)
         .map(|t| {
-            let at = (t.keys).and_then(|keys| plan::dictionary::writer(plan, &keys).or(first));
-            CompileError::new(at, t.message)
+            let at = (t.keys.as_ref()).and_then(|keys| plan::dictionary::writer(plan, keys).or(first));
+            let warning = CompileError::new(at, t.message);
+            if let Some(path) = t.keys.map(|keys| keys.join("."))
+                && let Some(ty) = crate::schema::read_as(produces, &path)
+            {
+                fixes.push(SchemaFix {
+                    message: warning.message.clone(),
+                    path,
+                    ty: type_dto(&ty, None),
+                });
+            }
+            warning
         })
         .collect();
-    (warned, crate::schema::missing(produces, &findings))
+    (warned, fixes, crate::schema::missing(produces, &findings))
 }
 
 /// Clear every `reuse` that would hand away a binding of a name, so `touched` can read each binding after the run.
@@ -1727,12 +1753,54 @@ mod tests {
             warnings_of(config, &[]),
             [(
                 Some("s".to_string()),
-                "`@timestamp` is str, but Stamped has it as datetime. Write it as datetime.".to_string()
+                "`@timestamp` is str, but Stamped has it as datetime.".to_string()
             )]
         );
         // A pipeline that produces no schema is held to none.
         let config = compiling().replace(r#""body":"x = 1;""#, body);
         assert_eq!(warnings_of(config, &[]), []);
+    }
+
+    /// A grok step's fields come typed as the pipeline types them: a chosen type, else a produced schema's, else the
+    /// pattern's.
+    #[test]
+    fn a_grok_steps_fields_come_as_the_pipeline_types_them() {
+        let step = r#"{"id":"s","type":"parser","input":"_raw","kind":{"type":"grok",
+            "patterns":["%{WORD:time} %{INT:n2} %{HTTPDATE:at} %{INT:took}"]},"declared":[{"name":"took","type":"f64"}]}"#;
+        let config = producing(r#"["login"]"#).replace(r#"{"id":"s","type":"code","body":"x = 1;"}"#, step);
+        let fields = &previewed(config, &[]).parsed_fields["s"];
+        let at = serde_json::json!({"type": "datetime", "format": "%d/%b/%Y:%H:%M:%S %z"});
+        assert_eq!(
+            serde_json::to_value(fields).unwrap(),
+            serde_json::json!([
+                {"name": "time", "type": "i64"},
+                {"name": "n2", "type": "i64"},
+                {"name": "at", "type": at},
+                {"name": "took", "type": "f64"}
+            ])
+        );
+    }
+
+    /// A field declared otherwise than a produced schema types it is warned of with the schema's type, which the
+    /// declaration can take.
+    #[test]
+    fn a_warning_a_declared_type_answers_comes_with_that_type() {
+        let step = r#"{"id":"s","type":"parser","input":"_raw","kind":{"type":"csv","delimiter":","},
+            "declared":[{"name":"time","type":"str"},{"name":"host","type":"str"}]}"#;
+        let config = producing(r#"["login"]"#).replace(r#"{"id":"s","type":"code","body":"x = 1;"}"#, step);
+        let preview = previewed(config, &[]);
+        let fixes: Vec<[String; 3]> = (preview.fixes.iter())
+            .map(|f| [&f.message, &f.path, &serde_json::to_string(&f.ty).unwrap()].map(String::clone))
+            .collect();
+        assert_eq!(
+            fixes,
+            [["`time` is str, but Login has it as i64.", "time", r#""i64""#].map(String::from)]
+        );
+        assert!(
+            preview.warnings.iter().any(|w| w.message == fixes[0][0]),
+            "{:?}",
+            preview.warnings
+        );
     }
 
     #[test]
@@ -1746,7 +1814,7 @@ mod tests {
             warnings_of(producing(r#"["stamped"]"#), &columns),
             [(
                 Some("u".to_string()),
-                "`@timestamp` is str, but Stamped has it as datetime. Write it as datetime.".to_string()
+                "`@timestamp` is str, but Stamped has it as datetime.".to_string()
             )]
         );
     }
@@ -1811,6 +1879,66 @@ mod tests {
         let meta = SourceMeta::of_columns(&sample.columns).unwrap();
         let read = read_sample(&meta, &sample.columns, &sample.records).unwrap();
         assert!(read.warnings.is_empty(), "{:?}", read.warnings);
+    }
+
+    /// A JSON or key-value parse converts a key a produced schema types as it lays it: a value that does not fit is
+    /// null, and an exception on its row. A key no schema types keeps what it arrived as.
+    #[test]
+    fn a_dynamic_parse_converts_the_keys_a_produced_schema_types() {
+        for (body, raws) in [
+            (
+                "Object.assign($, json(_raw));",
+                [r#"{"time":"42","user":{"name":7},"other":"5"}"#, r#"{"time":"soon"}"#],
+            ),
+            (
+                "Object.assign($, kv(_raw));",
+                ["time=42 user.name=7 other=5", "time=soon"],
+            ),
+        ] {
+            let step = format!(r#"{{"id":"s","type":"code","body":{}}}"#, serde_json::json!(body));
+            let config = producing(r#"["login"]"#).replace(r#"{"id":"s","type":"code","body":"x = 1;"}"#, &step);
+            let records = raws
+                .map(|raw| serde_json::json!({ "_raw": raw }).as_object().unwrap().clone())
+                .to_vec();
+            let previewed = run_preview(
+                PreviewRequest {
+                    config,
+                    pipeline: Some("p".into()),
+                    sample: None,
+                    show_internal: false,
+                    at_micros: None,
+                    filter: None,
+                    attribution: false,
+                    as_sample: true,
+                    dictionary: false,
+                    after_dot: None,
+                    capture_filter: None,
+                },
+                Default::default(),
+                &[],
+                records,
+            );
+            let errors: Vec<_> = previewed.errors.iter().map(|e| &e.message).collect();
+            assert!(previewed.succeeded(), "{body}: {errors:?}");
+            let rows = serde_json::to_value(&previewed.body.rows).unwrap();
+            let refused = rows[1]["exceptions"].as_array().unwrap().iter().any(|e| {
+                e["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains(r#"time is "soon", which could not parse as i64"#)
+            });
+            assert!(refused, "{body}: {}", rows[1]["exceptions"]);
+            let sample = previewed.body.as_sample.unwrap();
+            let first = &sample.records[0];
+            assert_eq!(first["time"], serde_json::json!(42), "{body}: {first:?}");
+            assert_eq!(first["user"]["name"], serde_json::json!("7"), "{body}: {first:?}");
+            assert_eq!(first["other"], serde_json::json!("5"), "{body}: no schema types it");
+            assert!(
+                sample.records[1].get("time").is_none_or(|t| t.is_null()),
+                "{body}: {:?}",
+                sample.records[1]
+            );
+        }
     }
 
     /// A sample of a captured sample's output says how the output was made, in place of how its input was captured:
