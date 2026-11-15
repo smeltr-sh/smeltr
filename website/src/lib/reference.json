@@ -3593,7 +3593,7 @@
       "name": "__destination.id",
       "type": "str",
       "setBy": "pipeline",
-      "what": "The Elasticsearch document ID, read when the destination's id field is left at `__destination.id`. Null means Elasticsearch generates the ID."
+      "what": "The Elasticsearch document ID, read when the destination's ID field is left at `__destination.id`. Null means Elasticsearch generates the ID."
     },
     {
       "name": "smeltr.exception",

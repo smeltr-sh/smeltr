@@ -75,21 +75,21 @@
         >
         <tr
           ><th scope="row">index</th><td
-            >Replaces the document with that ID. Two copies sent close together can arrive in either
-            order.</td
+            >Replaces the document with that ID. Two copies sent close together can land in either
+            order, so either can end up kept.</td
           ></tr
         >
       </tbody>
     </table>
   </div>
   <p>
-    Each document's ID is read from the id field: <code>__destination.id</code> unless you name
+    Each document's ID is read from the ID field: <code>__destination.id</code> unless you name
     another field, such as <code>event.id</code>. A record with no ID gets one Elasticsearch
     generates, so a record resent after a crash can create a second document. A
     <a
       href="https://www.elastic.co/docs/manage-data/data-store/data-streams/time-series-data-stream-tsds"
       >time series data stream</a
-    > takes no ID of its own: leave the ID empty for one.
+    > takes no ID of its own, so a row sent to one needs a null ID.
   </p>
 
   <h2 id="verify">Verify</h2>

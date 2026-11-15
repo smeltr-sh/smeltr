@@ -5209,7 +5209,7 @@
             "type": "string",
             "default": "create",
             "examples": ["index"],
-            "what": "What happens when a document arrives with an id already in the index. See [Duplicate documents](/docs/destinations/elasticsearch#duplicate-documents).",
+            "what": "What happens when a document arrives with an ID already in the index. See [Duplicate documents](/docs/destinations/elasticsearch#duplicate-documents).",
             "values": [
               {
                 "value": "create",
@@ -5217,7 +5217,7 @@
               },
               {
                 "value": "index",
-                "what": "Replaces it with the new copy."
+                "what": "Replaces the copy already there with the new one."
               }
             ]
           },
@@ -5226,7 +5226,7 @@
             "type": "string",
             "absent": "`__destination.id`",
             "examples": ["event.id", "request_id"],
-            "what": "The row field each document's id is read from. A row with no id gets one Elasticsearch generates."
+            "what": "The row field each document's ID is read from. A row with no ID gets one Elasticsearch generates."
           },
           {
             "name": "inFlight",
