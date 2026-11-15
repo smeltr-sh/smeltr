@@ -1053,12 +1053,6 @@ export type ObjectFormat = 'ndjson' | 'json' | 'parquet' | 'avro' | 'csv' | 'tex
 /** What a Kafka, Splunk HEC or HTTP destination writes: the record as JSON, one field's text, or one field's bytes. */
 export type StreamFormat = 'json' | 'text' | 'bytes';
 
-/** `ObjectPrefix::DEFAULT`. */
-export const OBJECT_PREFIX = '%Y/%m/%d/%H/';
-
-/** The field an Elasticsearch destination reads each document's id from when it names none. */
-export const DOC_ID_FIELD = '__destination.id';
-
 /** What each cloud takes as an object's storage class, mirroring `io::objects` (`S3_STORAGE_CLASSES`,
  * `GCS_STORAGE_CLASSES`, `AZURE_ACCESS_TIERS`). The load refuses any other. */
 export const STORAGE_CLASSES: Record<CloudStore, readonly string[]> = {

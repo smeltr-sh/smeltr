@@ -34,8 +34,6 @@
   import SchemaRegistryFields from './SchemaRegistryFields.svelte';
   import {
     LIMITS,
-    DOC_ID_FIELD,
-    OBJECT_PREFIX,
     type DestinationDto,
     type SecretDto,
     type BulkAction,
@@ -61,6 +59,8 @@
     isObjectStore,
     objectModified,
     prefixOf,
+    DOC_ID_FIELD,
+    OBJECT_PREFIX,
     idFieldOf,
     sendsCredential,
   } from './destinations';

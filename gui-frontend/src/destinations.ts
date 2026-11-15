@@ -1,12 +1,5 @@
 /** What a destination is, by its type: its name, where it writes, and a new one of it. */
-import {
-  LIMITS,
-  DOC_ID_FIELD,
-  OBJECT_PREFIX,
-  type CloudStore,
-  type DestinationDto,
-  type ObjectStore,
-} from './api';
+import { LIMITS, type CloudStore, type DestinationDto, type ObjectStore } from './api';
 import { byteCount } from './bytes';
 import { accessModified } from './ConnectorAccess.svelte';
 import { requestDeliveryModified } from './RequestDelivery.svelte';
@@ -112,6 +105,12 @@ export function writes(d: DestinationDto): string {
       return d.unityCatalog?.table ?? d.location ?? '';
   }
 }
+
+/** `ObjectPrefix::DEFAULT`. */
+export const OBJECT_PREFIX = '%Y/%m/%d/%H/';
+
+/** The field an Elasticsearch destination reads each document's id from when it names none. */
+export const DOC_ID_FIELD = '__destination.id';
 
 /** The prefix a destination writes under, as its field shows it. */
 export const prefixOf = (d: ObjectDestination) => d.prefix ?? OBJECT_PREFIX;
