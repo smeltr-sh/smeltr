@@ -58,9 +58,9 @@ fn a_matching_line_produces_typed_declared_fields() {
     b.reclaim(&mut env.pool);
 }
 
-/// A capture nothing declares is still a field the pattern names, so it arrives as the string it matched.
+/// A capture nothing declares is still a field the pattern names, so it arrives as the type its pattern gives it.
 #[test]
-fn a_capture_nothing_declares_is_a_str_field() {
+fn a_capture_nothing_declares_takes_its_patterns_type() {
     let plan = compile_ok(vec![code(
         0,
         r#"action: str; Object.assign($, grok(_raw, ["%{WORD:action} %{INT:status}"]));"#,
@@ -72,7 +72,7 @@ fn a_capture_nothing_declares_is_a_str_field() {
     let rows = env.run(&plan, &mut b);
     assert_eq!(
         parsed(&rows[0]),
-        parsed(br#"{"_raw":"login 200","action":"login","status":"200"}"#)
+        parsed(br#"{"_raw":"login 200","action":"login","status":200}"#)
     );
     b.reclaim(&mut env.pool);
 }

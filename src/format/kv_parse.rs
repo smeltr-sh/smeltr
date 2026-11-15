@@ -116,6 +116,7 @@ mod tests {
             step_ids: vec!["p".into()],
             lookup_tables: Default::default(),
             grok_patterns: Default::default(),
+            produces: Vec::new(),
         };
         compile(&p, &crate::plan::topology::SourceMeta::KAFKA).unwrap_or_else(|e| panic!("compile failed: {e:?}"))
     }

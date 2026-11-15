@@ -2352,7 +2352,7 @@
           "name": "parseTime",
           "signature": "value.parseTime([format][, reference = now()])",
           "group": "Reading text",
-          "summary": "Parses text into a datetime. With no format, a run of digits is a compact date when it reads as one (`YYYYMMDD` or `YYYYMMDDHHMMSS`), else a Unix epoch whose unit comes from its magnitude — seconds below 10^11, then milliseconds, microseconds and nanoseconds at each further thousand — and other text is matched against the common shapes — ISO 8601, `YYYY-MM-DD HH:MM:SS`, `YYYY/MM/DD HH:MM:SS`, syslog's `Mon  D HH:MM:SS`, and Apache's `[D/Mon/YYYY:HH:MM:SS +ZZZZ]`. Give a `strftime` format to pin it, and a reference instant to fix the year a syslog stamp does not carry. A parser's declared `datetime` field is this call: the bare type detects, and `{\"type\":\"datetime\",\"format\":...}` pins. Other languages call this `strptime`.",
+          "summary": "Parses text into a datetime. With no format, a run of digits is a compact date (`YYYYMMDD`, `YYYYMMDDHHMM` or `YYYYMMDDHHMMSS`) or a Unix epoch whose unit comes from its magnitude — seconds below 10^11, then milliseconds, microseconds and nanoseconds at each further thousand. Digits that read as both take the time nearer the reference time. Other text is matched against the common shapes — ISO 8601, `YYYY-MM-DD HH:MM:SS`, `YYYY/MM/DD HH:MM:SS`, syslog's `Mon  D HH:MM:SS`, and Apache's `[D/Mon/YYYY:HH:MM:SS +ZZZZ]`. Give a `strftime` format to pin it, and a reference time to fix the year a syslog stamp does not carry. A parser's declared `datetime` field is this call: the bare type detects, and `{\"type\":\"datetime\",\"format\":...}` pins. Other languages call this `strptime`.",
           "examples": [
             {
               "expr": "\"1998-08-30T12:00:00Z\".parseTime()",
@@ -2429,15 +2429,26 @@
               "result": "\"1998-08-30T12:00:00.000000Z\""
             }
           ],
-          "specifierBlurb": "`parseTime(value, format)` takes these, and only these. Every other byte of the format must match the text literally, and text left over when the format runs out makes the result null rather than a partial read. Auto-detect tries an ordered list of formats built from the same specifiers, so every rule below holds for `parseTime(value)` too.",
+          "specifierBlurb": "`parseTime(value, format)` takes these, and only these. A specifier written right against another, as in `%Y%m%d`, reads its full width. Every other byte of the format must match the text literally, except that a letter matches in either case, and text left over when the format runs out makes the result null rather than a partial read. Auto-detect tries an ordered list of formats built from the same specifiers, so every rule below holds for `parseTime(value)` too.",
           "specifiers": [
             {
               "specifier": "%Y",
-              "matches": "The year, exactly four digits. There is no two-digit year: every century pivot is wrong for someone.",
+              "matches": "The year, exactly four digits.",
               "examples": [
                 {
                   "expr": "\"2026-08-30\".parseTime(\"%Y-%m-%d\")",
                   "result": "\"2026-08-30T00:00:00.000000Z\""
+                }
+              ],
+              "group": "The date"
+            },
+            {
+              "specifier": "%y",
+              "matches": "The year's last two digits. The century is the one that puts the year nearest the reference time (the third argument, or the current time when none is given): at most 49 years after it or 50 before. Auto-detect never reads a two-digit year.",
+              "examples": [
+                {
+                  "expr": "\"14/11/23\".parseTime(\"%d/%m/%y\", \"2026-06-01T00:00:00Z\".parseTime())",
+                  "result": "\"2023-11-14T00:00:00.000000Z\""
                 }
               ],
               "group": "The date"

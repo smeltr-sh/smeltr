@@ -3099,6 +3099,21 @@ mod tests {
         assert_eq!(file.worker.heartbeat.stop_after_unreachable_secs, Some(-1));
     }
 
+    fn names(r: &super::Envelope<super::GrokCaptures>) -> Vec<&str> {
+        r.captures.iter().map(|c| c.name.as_str()).collect()
+    }
+
+    /// Each capture comes with the type its pattern gives it, which the editor declares a new field at.
+    #[test]
+    fn a_capture_comes_with_its_patterns_type() {
+        let r = captures(&["%{WORD:action} %{INT:status} %{HTTPDATE:at}"]);
+        let types = serde_json::to_value(r.captures.iter().map(|c| &c.ty).collect::<Vec<_>>()).unwrap();
+        assert_eq!(
+            types,
+            serde_json::json!(["str", "i64", {"type": "datetime", "format": "%d/%b/%Y:%H:%M:%S %z"}])
+        );
+    }
+
     fn captures(patterns: &[&str]) -> super::Envelope<super::GrokCaptures> {
         captures_of(GrokCapturesRequest {
             patterns: patterns.iter().map(|p| p.to_string()).collect(),
@@ -3118,7 +3133,7 @@ mod tests {
                 pattern: "%{WORD:vendor}".to_string(),
             }],
         });
-        assert_eq!(got.captures, vec!["vendor"]);
+        assert_eq!(names(&got), vec!["vendor"]);
     }
 
     /// No sample, no pipeline, no compile of anything but the patterns: the captures are in the pattern text, which is
@@ -3127,7 +3142,7 @@ mod tests {
     fn a_patterns_captures_need_no_records() {
         let r = captures(&["%{WORD:action} %{INT:status}"]);
         assert!(r.succeeded());
-        assert_eq!(r.captures, vec!["action", "status"]);
+        assert_eq!(names(&r), vec!["action", "status"]);
         assert!(r.errors.is_empty());
     }
 
@@ -3135,7 +3150,7 @@ mod tests {
     #[test]
     fn every_candidate_patterns_captures_are_offered_once() {
         let r = captures(&["^%{INT:n}$", "^%{WORD:w} %{INT:n}$"]);
-        assert_eq!(r.captures, vec!["n", "w"]);
+        assert_eq!(names(&r), vec!["n", "w"]);
     }
 
     /// A line breaker as it is typed gets the save's verdict, in the save's words.
@@ -3178,7 +3193,7 @@ mod tests {
     /// An unnamed capture declares nothing, so it is not offered.
     #[test]
     fn an_unnamed_capture_is_not_a_field() {
-        assert_eq!(captures(&["%{WORD:action} %{INT}"]).captures, vec!["action"]);
+        assert_eq!(names(&captures(&["%{WORD:action} %{INT}"])), vec!["action"]);
     }
 
     /// A half-typed pattern is the normal state of an editor, so it answers rather than failing the request -- the

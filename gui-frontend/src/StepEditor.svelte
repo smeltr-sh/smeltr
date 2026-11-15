@@ -63,6 +63,7 @@
     typeKey,
     withTypeKey,
     OBJECT_FIELD_TYPE_GROUPS,
+    dtoToDataType,
     type TypeKey,
   } from './pipeline';
   import { fieldNotes, type OpenProposal, type Suggestion } from './proposal';
@@ -73,8 +74,15 @@
   import StepGlyph from './StepGlyph.svelte';
   import StateMark from './StateMark.svelte';
   import Ticked from './Ticked.svelte';
-  import { errorText, grokCaptures, type GrokPatternDto, type LookupTableDto } from './api';
+  import {
+    errorText,
+    grokCaptures,
+    type GrokCaptures,
+    type GrokPatternDto,
+    type LookupTableDto,
+  } from './api';
   import { sharedGrokSuggestions } from './grokPatterns';
+  import { producedSchemas } from './producedSchemas.svelte';
   import { beginReconcile, endReconcile } from './grokFields';
   import { unfinishedRows } from './unfinished.svelte';
   import { editable } from './access';
@@ -275,23 +283,37 @@
     return { name: '', ty: { kind: 'named', name: 'str' } };
   }
 
+  const produced = producedSchemas();
+
   /** A grok step's captures, as the compiled pattern reports them. `null` until the first answer arrives. */
-  let captures: string[] | null = $state(null);
+  let captures: GrokCaptures['captures'] | null = $state(null);
   /** Why a half-typed pattern does not compile. The fields on screen stay as they are while it says something. */
   let captureError: string | null = $state(null);
 
   /**
-   * Fill a grok step's field names in from its pattern, keeping the type already chosen for a name that survives.
+   * Fill a grok step's field names in from its pattern, keeping the type already chosen for a name that survives, and
+   * giving a new name the type a schema the pipeline produces gives it, else the type its pattern gives it.
    *
    * Naming a capture is how a grok field is declared, so the two cannot be edited into disagreement -- which is what
    * makes the compiler's refusal of either direction unreachable from here. `captures` comes from the server because a
    * definition can mint one the pattern text never names, and only the compiled matcher sees those.
    */
-  function reconcile(declared: FieldSpec[], caps: string[], split: boolean): FieldSpec[] {
+  function reconcile(
+    declared: FieldSpec[],
+    caps: GrokCaptures['captures'],
+    split: boolean,
+  ): FieldSpec[] {
     const chosen = new Map(declared.map((f) => [f.name, f.ty]));
-    // A capture's name is the parser's key: one key, or under splitDots a path split at its dots.
-    const names = caps.map((c) => (split ? c.split('.') : [c]).reduce(pushKey, ''));
-    return names.map((name) => ({ name, ty: chosen.get(name) ?? { kind: 'named', name: 'str' } }));
+    return caps.map((c) => {
+      // A capture's name is the parser's key: one key, or under splitDots a path split at its dots.
+      const name = (split ? c.name.split('.') : [c.name]).reduce(pushKey, '');
+      const pattern = dtoToDataType(c.type, name);
+      // The pattern's own `datetime` keeps its format, which a schema's lacks.
+      const schema = produced?.typeOf(name);
+      const ty =
+        schema !== undefined && schema !== typeKey(pattern) ? dtoToDataType(schema, name) : pattern;
+      return { name, ty: chosen.get(name) ?? ty };
+    });
   }
 
   // Debounced: the author is typing a pattern, and every keystroke is a half-written one. The whole window counts as

@@ -1193,8 +1193,9 @@ fn the_grok_pattern_table_matches_the_engine() {
     for row in &rows {
         assert!(!row.matches.trim().is_empty(), "{} has no gloss", row.name);
         let given = [format!("t = {}", serde_json::to_string(&row.example).unwrap())];
-        // A whole-line pattern also writes the fields it names; `v` is the whole match either way.
-        let (got, _) = evaluate(&format!("grok(t, [\"^%{{{}:v}}$\"])", row.name), &given);
+        // A whole-line pattern also writes the fields it names; `v` is the whole match either way, as text, since a
+        // raw group holds text whatever its pattern holds.
+        let (got, _) = evaluate(&format!("grok(t, [\"^(?P<v>%{{{}}})$\"])", row.name), &given);
         assert_eq!(
             got.as_ref().and_then(|g| g.get("v")),
             Some(&serde_json::json!(row.example)),

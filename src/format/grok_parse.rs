@@ -88,6 +88,15 @@ mod tests {
     };
 
     fn compile_pipeline(config: GrokConfig, declared: &[(&str, DataType)]) -> Plan {
+        compile_producing(config, declared, Vec::new())
+    }
+
+    /// `compile_pipeline`, for a pipeline that produces `produces`.
+    fn compile_producing(
+        config: GrokConfig,
+        declared: &[(&str, DataType)],
+        produces: Vec<std::sync::Arc<crate::schema::Schema>>,
+    ) -> Plan {
         let p = PipelineConfig {
             id: 0,
             name: "test".into(),
@@ -110,6 +119,7 @@ mod tests {
             step_ids: vec!["p".into()],
             lookup_tables: Default::default(),
             grok_patterns: Default::default(),
+            produces,
         };
         compile(&p, &crate::plan::topology::SourceMeta::KAFKA).unwrap_or_else(|e| {
             panic!(
@@ -203,6 +213,69 @@ mod tests {
             },
         );
         assert!(errors.is_empty(), "{:?}", errors.entries());
+    }
+
+    /// A capture nothing declares takes its pattern's type, and a declaration still wins.
+    #[test]
+    fn an_undeclared_capture_takes_its_patterns_type() {
+        let config = GrokConfig {
+            split_dots: true,
+            patterns: vec!["%{INT:n} %{NUMBER:f} %{HTTPDATE:t} %{INT:kept}".into()],
+            custom_patterns: vec![],
+        };
+        let errors = run_with(
+            config,
+            &[("kept", DataType::Str)],
+            b"200 1.5 10/Oct/2000:13:55:36 -0700 007",
+            |plan, batch| {
+                assert_eq!(batch.get(slot_of(plan, "n")).i64().unwrap().values[0], 200);
+                assert_eq!(batch.get(slot_of(plan, "f")).f64().unwrap().values[0], 1.5);
+                assert_eq!(
+                    batch.get(slot_of(plan, "t")).datetime().unwrap().values[0],
+                    971_211_336_000_000,
+                    "read as HTTPDATE's format"
+                );
+                assert_eq!(batch.get(slot_of(plan, "kept")).var().unwrap().get(0), b"007");
+            },
+        );
+        assert!(errors.is_empty(), "{:?}", errors.entries());
+    }
+
+    /// A schema the pipeline produces types a capture nothing declares, over its pattern's type; a pattern's
+    /// `datetime` keeps its format where the schema's type is `datetime` too.
+    #[test]
+    fn a_produced_schema_types_an_undeclared_capture() {
+        use crate::config_file::{SchemaDto, SchemaFieldDto};
+        let field = |name: &str, ty: &str| SchemaFieldDto {
+            field: name.into(),
+            ty: ty.into(),
+            ..Default::default()
+        };
+        let schema = crate::schema::read(&SchemaDto {
+            id: "web".into(),
+            fields: vec![field("status", "str"), field("bytes", "i64"), field("at", "datetime")],
+            ..Default::default()
+        })
+        .unwrap();
+        let config = GrokConfig {
+            split_dots: true,
+            patterns: vec!["%{INT:status} %{WORD:bytes} %{HTTPDATE:at} %{INT:n}".into()],
+            custom_patterns: vec![],
+        };
+        let plan = compile_producing(config, &[], vec![std::sync::Arc::new(schema)]);
+        let fields = parse_fields(&plan);
+        let of = |name: &str| fields.iter().find(|f| f.name == name).unwrap();
+        assert_eq!(of("status").ty, DataType::Str);
+        assert_eq!(of("bytes").ty, DataType::I64);
+        assert_eq!(
+            of("n").ty,
+            DataType::I64,
+            "a field no schema names keeps its pattern's type"
+        );
+        assert_eq!(
+            of("at").time_source,
+            Some(crate::plan::config::TimeSource::Format("%d/%b/%Y:%H:%M:%S %z".into()))
+        );
     }
 
     /// A whole-line pattern with nothing declared, as onboarding proposes one, writes every field it names.

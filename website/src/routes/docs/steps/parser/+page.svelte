@@ -202,9 +202,12 @@
     pattern.
   </p>
   <p>
-    The captures are the step's fields, each with a type. With several patterns, the first one that
-    matches a record parses it. If none matches, the record has an <code>Unparsable</code> exception.
-    A matched pattern with an absent optional capture leaves that field null.
+    The captures are the step's fields, each with a type. A new capture takes its type from a schema
+    the pipeline produces, or else from its pattern: <code>INT</code> is <code>i64</code>,
+    <code>NUMBER</code> is <code>f64</code>, <code>HTTPDATE</code> is <code>datetime</code>, and
+    most others are <code>str</code>. With several patterns, the first one that matches a record
+    parses it. If none matches, the record has an <code>Unparsable</code> exception. A matched pattern
+    with an absent optional capture leaves that field null.
   </p>
   <p>
     The parser groups each named pattern it inserts, so a choice or a case-insensitive flag applies
