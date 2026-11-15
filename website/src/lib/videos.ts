@@ -1,3 +1,5 @@
+import beginnerSelfTest from '#lib/self-tests/beginner.json';
+
 /** Each video has one level. Learn lists videos easiest level first. */
 export const levels = ['Beginner', 'Intermediate', 'Advanced'] as const;
 
@@ -46,12 +48,26 @@ export type Video = {
   topics: (typeof topics)[number][];
 };
 
-/** Videos watched in order. The course's page is /learn/{slug}. */
+/** A question with four choices, one of them right. `chapter` is where the course teaches it, counted from 1 in its
+ * self-test's `chapters`; `answer` is the course's own answer, shown once the visitor picks. */
+export type Question = {
+  chapter: number;
+  question: string;
+  choices: string[];
+  right: number;
+  answer: string;
+};
+
+/** Questions a visitor answers after the course. The page scores them in the browser and keeps nothing. */
+export type SelfTest = { chapters: string[]; questions: Question[] };
+
+/** Videos watched in order. The course's page is /learn/{slug}, and its self-test /learn/{slug}/self-test. */
 export type Course = {
   title: string;
   slug: string;
   /** The demo has what the course shows, so the course links to it. */
   demo?: true;
+  selfTest?: SelfTest;
   videos: Video[];
 };
 
@@ -68,6 +84,29 @@ export const walkthrough: Video = {
 };
 
 const allCourses: Course[] = [
+  {
+    title: 'Beginner',
+    slug: 'beginner',
+    selfTest: beginnerSelfTest,
+    videos: [
+      {
+        title: 'Smeltr Beginner',
+        slug: 'smeltr-beginner',
+        level: 'Beginner',
+        roles: ['Security analyst', 'Data analyst', 'Data engineer', 'Administrator'],
+        topics: [
+          'Install',
+          'Docker',
+          'Workers',
+          'Pipelines',
+          'Parsing',
+          'Deploy',
+          'Status',
+          'Exceptions',
+        ],
+      },
+    ],
+  },
   {
     title: 'Demo walkthrough',
     slug: 'demo-walkthrough',
@@ -662,6 +701,10 @@ export const released = (course: Course) => course.videos.filter((v) => v.youtub
 
 /** The courses the site shows: those with a video out. */
 export const courses = allCourses.filter((c) => released(c).length);
+
+/** The courses with a self-test. Its page is out before its course's video, so the video can show the page's
+ * address. */
+export const selfTested = allCourses.filter((c) => c.selfTest);
 
 /** How many videos the course has and how long the released ones run, as its cards say it. */
 export function courseLength(course: Course): string {

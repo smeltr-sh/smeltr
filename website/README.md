@@ -36,6 +36,8 @@ shows its poster from `static/videos/` and loads YouTube's player, from
 youtube-nocookie.com, only when the visitor presses play, so a visitor who does
 not watch never contacts YouTube. A video with no YouTube id is coming soon: its
 course lists it, and it has no page yet.
+A course with a self-test also has `/learn/{course}/self-test`: multiple-choice questions on the course, scored in
+the browser, with nothing kept.
 
 The site links the repository in one place, `src/lib/release.ts`, which names
 the repository's owner once and builds the source, download, image and license

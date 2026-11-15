@@ -1,0 +1,279 @@
+{
+  "chapters": [
+    "How smeltr works",
+    "Install and enroll",
+    "Bring in a syslog feed",
+    "Shape the records",
+    "Deliver and deploy",
+    "Watch it run",
+    "When it breaks"
+  ],
+  "questions": [
+    {
+      "chapter": 1,
+      "question": "Which part of smeltr reads from sources and delivers to destinations?",
+      "choices": ["A worker", "The leader", "A pipeline", "A route"],
+      "answer": "The leader holds the configuration, and workers move the data.",
+      "right": 0
+    },
+    {
+      "chapter": 1,
+      "question": "The leader goes down. What happens to the data your workers are moving?",
+      "choices": [
+        "It keeps flowing",
+        "It stops until the leader comes back",
+        "The workers hold it until the leader comes back",
+        "The workers send it to their destinations without the pipeline"
+      ],
+      "answer": "It keeps flowing. Each worker runs the commit it already has.",
+      "right": 0
+    },
+    {
+      "chapter": 2,
+      "question": "Where do you find the password for your first sign-in?",
+      "choices": [
+        "In compose.yaml",
+        "In the leader's logs, from its first start",
+        "It's admin, until you change it",
+        "On the leader's sign-in page"
+      ],
+      "answer": "In the leader's logs, from its first start. smeltr prints it once, and Docker keeps it there.",
+      "right": 1
+    },
+    {
+      "chapter": 2,
+      "question": "The leader signed its own certificate. Why does the new worker trust it?",
+      "choices": [
+        "It trusts whichever certificate it sees first",
+        "It doesn't check certificates inside Docker",
+        "Its enrollment code names the leader's certificate authority",
+        "You copy the certificate into the worker's system trust store"
+      ],
+      "answer": "Its enrollment code names the leader's certificate authority, and the worker accepts only that one.",
+      "right": 2
+    },
+    {
+      "chapter": 3,
+      "question": "Syslog carries no password. How does a Syslog receiver decide who may send to it?",
+      "choices": [
+        "By the host name in each line",
+        "By the addresses you allow",
+        "By the program name in each line",
+        "It accepts every sender, and the pipeline drops the rest"
+      ],
+      "answer": "By the addresses you allow.",
+      "right": 1
+    },
+    {
+      "chapter": 3,
+      "question": "Why capture a sample before you build the pipeline?",
+      "choices": [
+        "Workers deploy only pipelines that have a sample",
+        "Capturing opens the receiver's port",
+        "So you build and check the pipeline on lines that really arrive",
+        "The sample holds lines back until the pipeline is deployed"
+      ],
+      "answer": "So the pipeline is built and checked against the lines that really arrive.",
+      "right": 2
+    },
+    {
+      "chapter": 4,
+      "question": "Your pipeline parses each line into fields. Why keep event.original?",
+      "choices": [
+        "It holds what went wrong when a line can't be read",
+        "It's the original line, the evidence of what really arrived",
+        "The pipeline reads its fields from it at the destination",
+        "The record can't be sent without it"
+      ],
+      "answer": "It's the original line, the evidence of what really arrived.",
+      "right": 1
+    },
+    {
+      "chapter": 4,
+      "question": "A Parser step has two patterns, and a line matches both. Which one is used?",
+      "choices": [
+        "The one that reads the most fields",
+        "The last one in the list",
+        "Both, and their fields are merged",
+        "The first one in the list"
+      ],
+      "answer": "The first one in the list.",
+      "right": 3
+    },
+    {
+      "chapter": 4,
+      "question": "Why declare the time as a datetime?",
+      "choices": [
+        "So smeltr sorts the records by time",
+        "So smeltr reads it into one standard form",
+        "So smeltr drops lines older than a day",
+        "So the line keeps its original text"
+      ],
+      "answer": "So smeltr reads it into one standard form, ISO 8601, and fills in the year and time zone the line left out.",
+      "right": 1
+    },
+    {
+      "chapter": 5,
+      "question": "Where does the Elasticsearch API key live, and why not in the configuration?",
+      "choices": [
+        "In a secret on the leader, because the configuration is in Git",
+        "In the destination's settings, saved in Git with the rest of the configuration",
+        "On each worker, in a file you copy there",
+        "In the leader's logs, next to the first password"
+      ],
+      "answer": "In a secret on the leader. The configuration is in Git, and secrets never go there.",
+      "right": 0
+    },
+    {
+      "chapter": 5,
+      "question": "A deploy goes wrong. How do you undo it?",
+      "choices": [
+        "Delete the branch it came from",
+        "Restart the workers",
+        "Roll back to the commit before it, in History",
+        "Change it back on the branch and save; the workers pick it up"
+      ],
+      "answer": "Roll back to the commit before it, in History. The workers move back to that commit, and stay there until you release it.",
+      "right": 2
+    },
+    {
+      "chapter": 6,
+      "question": "In the course's login feed, how do rows in and rows out compare?",
+      "choices": [
+        "They're the same: every row in goes out",
+        "Fewer go out, because the pipeline drops the noise",
+        "Fewer go out, because the pipeline drops failed logins",
+        "More go out, one for each field"
+      ],
+      "answer": "Fewer go out, because the pipeline drops the noise. Every login goes on to search.",
+      "right": 1
+    },
+    {
+      "chapter": 6,
+      "question": "Where does smeltr list what needs your attention?",
+      "choices": ["On History", "On Branches", "In the worker's logs", "On Issues"],
+      "answer": "On Issues. A red banner on every page shows when there are any.",
+      "right": 3
+    },
+    {
+      "chapter": 7,
+      "question": "A line doesn't match any pattern. By default, where does the record go?",
+      "choices": [
+        "It's dropped",
+        "It waits on the worker until you fix the pattern",
+        "On to its destination, with what went wrong in smeltr.exception",
+        "Back to the sender, which sends it again"
+      ],
+      "answer": "On to its destination, with what went wrong in smeltr.exception, and the line as it arrived in event.original.",
+      "right": 2
+    },
+    {
+      "chapter": 7,
+      "question": "You changed a pattern. How do you know the old lines still read the same?",
+      "choices": [
+        "The test you saved runs on the sample, and still passes",
+        "Nothing needed: a pattern change never alters how old lines read",
+        "A reviewer reads the new pattern",
+        "smeltr refuses a pattern that changes how old lines read"
+      ],
+      "answer": "The test you saved runs on the sample, and still passes.",
+      "right": 0
+    },
+    {
+      "chapter": 7,
+      "question": "Elasticsearch was down. Why was no login lost?",
+      "choices": [
+        "smeltr sent the records to another destination",
+        "smeltr wrote them to a file for you to send again",
+        "The worker passed them to the leader",
+        "smeltr held the records and tried again until Elasticsearch came back"
+      ],
+      "answer": "smeltr held the records and tried again until Elasticsearch came back. In a longer outage, rsyslog's queue holds the rest.",
+      "right": 3
+    },
+    {
+      "chapter": 1,
+      "question": "What does a pipeline do, and what joins it to a source and its destinations?",
+      "choices": [
+        "It reads from a source; a worker group joins it",
+        "It shapes each record with a list of steps; a route joins it",
+        "It stores records; a branch joins it",
+        "It's a group of workers; the leader joins it"
+      ],
+      "answer": "A pipeline is a list of steps that shapes each record. A route joins it to one source and its destinations.",
+      "right": 1
+    },
+    {
+      "chapter": 5,
+      "question": "You saved a change on a branch. Why don't your workers run it?",
+      "choices": [
+        "Workers pick up a branch only after a restart",
+        "Workers run main, which changes only when a change is reviewed and deployed",
+        "A branch needs a new sample before it runs",
+        "A branch runs only on the leader's own worker"
+      ],
+      "answer": "Workers run main. Main changes only when a change is reviewed and deployed.",
+      "right": 1
+    },
+    {
+      "chapter": 2,
+      "question": "A new worker must join your fleet. What does it need from the leader?",
+      "choices": [
+        "The administrator's password",
+        "A copy of the configuration repository",
+        "An enrollment code, minted for its group",
+        "A certificate from a public certificate authority"
+      ],
+      "answer": "An enrollment code, minted for its group.",
+      "right": 2
+    },
+    {
+      "chapter": 3,
+      "question": "Why use TCP rather than UDP for syslog, wherever the sender can send it?",
+      "choices": [
+        "TCP encrypts the lines",
+        "UDP can't carry a line longer than 100 bytes",
+        "smeltr receives syslog only over TCP",
+        "Over UDP, a busy receiver drops what it can't take"
+      ],
+      "answer": "Over UDP nothing tells the sender to slow down, so a busy receiver drops what it can't take.",
+      "right": 3
+    },
+    {
+      "chapter": 4,
+      "question": "A field you need is wrong in Elasticsearch. How do you find which step changed it?",
+      "choices": [
+        "Open the pipeline on a sample, and pause the records after each step",
+        "Read the worker's logs",
+        "Remove one step at a time, and deploy after each",
+        "Look at the field on History"
+      ],
+      "answer": "Open the pipeline on a sample, and pause the records after each step to see them as they leave it.",
+      "right": 0
+    },
+    {
+      "chapter": 7,
+      "question": "Your pipeline can't read a line. How do you find out?",
+      "choices": [
+        "The worker stops the route and raises an issue",
+        "The receiver refuses the line, and the sender's log shows it",
+        "The record carries it in smeltr.exception, and Map counts exceptions on each step",
+        "The worker's logs list each line it can't read"
+      ],
+      "answer": "The record carries it, in smeltr.exception. On Map, the pipeline's Steps tab counts exceptions on each step.",
+      "right": 2
+    },
+    {
+      "chapter": 5,
+      "question": "You want each record to name the program that wrote it, as process.name, and to deploy that. In what order do you work?",
+      "choices": [
+        "Rename it on main, check it on the sample, lock the new test, and save",
+        "Start a branch, rename it, deploy from the branch, then check it on the sample",
+        "Start a branch, rename it, check it on the sample, lock the new test, review and deploy",
+        "Start a branch, rename it, deploy it, then check it on the sample and review"
+      ],
+      "answer": "Work on a branch, so the workers keep running main. Rename program to process.name, check it on the sample, and lock the new result as the test. Then open it for review, approve and deploy it.",
+      "right": 2
+    }
+  ]
+}

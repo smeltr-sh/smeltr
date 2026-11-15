@@ -47,6 +47,9 @@
                 >Next: {course.videos.indexOf(next) + 1}. {next.title} →</a
               >
             {/if}
+            {#if course.selfTest}
+              <a href="/learn/{course.slug}/self-test" data-pagefind-ignore>Test yourself →</a>
+            {/if}
             {#if course.demo}
               <a href="/demo/try/" rel="external" data-pagefind-ignore
                 >Try it yourself in the demo →</a
