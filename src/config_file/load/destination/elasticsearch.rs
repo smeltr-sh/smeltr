@@ -22,10 +22,10 @@ pub struct ElasticsearchDestinationDto {
     /// The credential holding `username`'s password.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password: Option<SecretRefDto>,
-    /// `"auto"` (default), `"dedupe"`, or `"overwrite"`; see `plan::topology::DocIdPolicy`.
-    #[serde(default, skip_serializing_if = "DocIdPolicyDto::is_default")]
-    pub doc_id: DocIdPolicyDto,
-    /// The row field holding the document identity. Omitted, the pipeline must set `__destination.id`.
+    /// `"create"` (default) or `"index"`; see `plan::topology::BulkAction`.
+    #[serde(default, alias = "docId", skip_serializing_if = "BulkActionDto::is_default")]
+    pub action: BulkActionDto,
+    /// The row field holding the document's `_id`. Omitted, it is `__destination.id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id_field: Option<String>,
     #[serde(default, skip_serializing_if = "InFlight::is_default")]
@@ -121,7 +121,7 @@ impl DestinationSpec for ElasticsearchDestinationDto {
             auth,
             username,
             password,
-            doc_id,
+            action,
             id_field,
             in_flight,
             max_bulk_bytes,
@@ -146,10 +146,9 @@ impl DestinationSpec for ElasticsearchDestinationDto {
             auth: auth.as_ref().map(to_secret_ref),
             // Validation refused a username without a password, and a password without a username.
             basic: username.clone().zip(password.as_ref().map(to_secret_ref)),
-            doc_id: match doc_id {
-                crate::config_file::dto::DocIdPolicyDto::Auto => DocIdPolicy::Auto,
-                crate::config_file::dto::DocIdPolicyDto::Dedupe => DocIdPolicy::Dedupe,
-                crate::config_file::dto::DocIdPolicyDto::Overwrite => DocIdPolicy::Overwrite,
+            action: match action {
+                BulkActionDto::Create => BulkAction::Create,
+                BulkActionDto::Index => BulkAction::Index,
             },
             id_field: id_field.clone(),
             in_flight: in_flight.start(affords(*buffer_bytes, max_bulk_bytes.0)),

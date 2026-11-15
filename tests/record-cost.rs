@@ -113,7 +113,6 @@ fn time(bundle: &str, source: Box<dyn Source>, meta: SourceMeta) -> (f64, refere
         name: system.topology.destinations[0].name.clone(),
         destination: Box::new(sink.clone()),
         on_reject: system.topology.destinations[0].on_reject.clone(),
-        wants_doc_id: false,
         placement: Some(smeltr::plan::topology::Placement::Topic),
     }];
     let mut worker = Worker::new(

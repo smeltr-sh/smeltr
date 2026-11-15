@@ -264,19 +264,17 @@ fn target_with(id: DestId, dest: impl Destination + 'static, on_reject: Answer) 
         name: format!("dest-{id}"),
         destination: Box::new(dest),
         on_reject,
-        wants_doc_id: false,
         placement: Some(smeltr::plan::topology::Placement::Topic),
     }
 }
 
-/// A destination that keys documents on `__destination.id`, or on the field its topology's `id_fields` names.
+/// A destination that places rows by `__destination.index`, as Elasticsearch does.
 fn keyed(id: DestId, dest: impl Destination + 'static) -> DestinationTarget {
     DestinationTarget {
         id,
         name: format!("dest-{id}"),
         destination: Box::new(dest),
         on_reject: Answer::Block,
-        wants_doc_id: true,
         placement: Some(smeltr::plan::topology::Placement::Index),
     }
 }
@@ -1100,8 +1098,7 @@ fn a_reserved_field_is_still_readable_after_a_dynamic_parser() {
     }
 }
 
-/// Identity is the field the destination's `idField` names, read as text, else `__destination.id`, else generated; a missing
-/// identity is counted only where the destination keys on it.
+/// Identity is the field the destination's `idField` names, read as text, else `__destination.id`, else none.
 #[test]
 fn document_identity_resolves_per_destination() {
     let routes = vec![route_with_deliver(deliver_to(&[0, 1, 2, 3]))];
@@ -1150,13 +1147,6 @@ fn document_identity_resolves_per_destination() {
         vec![s("computed"), None, None],
         "__destination.id travels whether or not the destination keys on it"
     );
-    for (dest, missing) in [("0", Some(1)), ("1", Some(1)), ("2", Some(2)), ("3", None)] {
-        assert_eq!(
-            counter(&w, "smeltr_rows_without_doc_id_total", &[("destination", dest)]),
-            missing,
-            "destination {dest}"
-        );
-    }
     assert!(
         dests.iter().all(|d| d.sent().len() == 3),
         "a missing identity never blocks delivery"
@@ -2275,11 +2265,9 @@ fn a_refused_unmatched_row_obeys_the_destination_s_reject_policy() {
     }
 }
 
-/// No pipeline ran, so an unmatched row carries no `__destination.id` and no field to read one from. A destination that keys
-/// on an identity generates its own instead, which is its dedupe silently not happening -- counted under the name
-/// that already exists for that.
+/// No pipeline ran, so an unmatched row carries no `__destination.id` and no field to read one from.
 #[test]
-fn an_unmatched_row_to_a_keyed_destination_is_counted_as_having_no_identity() {
+fn an_unmatched_row_carries_no_identity() {
     let src = FakeSource::new([record("x", 0, 0), record("y", 1, 0)]);
     let mut w = worker_with_unmatched(vec![], vec![], &src, deliver(&[0]));
     let dlq = FakeDestination::new();
@@ -2289,10 +2277,6 @@ fn an_unmatched_row_to_a_keyed_destination_is_counted_as_having_no_identity() {
 
     assert_eq!(dlq.sent().len(), 2);
     assert!(dlq.sent().iter().all(|r| r.doc_id.is_none()));
-    assert_eq!(
-        counter(&w, "smeltr_rows_without_doc_id_total", &[("destination", "0")]),
-        Some(2)
-    );
 }
 
 // -- unprocessable batches ----------------------------------------------------

@@ -496,11 +496,9 @@ export function sqlStatement(source: SourceDto): Promise<SqlStatementsResult> {
  * `plan::topology::Signal`. */
 export type OtlpSignal = 'logs' | 'metrics' | 'traces';
 
-/** What happens when the same document reaches Elasticsearch twice.
- * `auto` is plain at-least-once: a re-send after a crash indexes a second
- * copy. The other two key the document on a stable id and pay indexing
- * throughput for it. */
-export type DocIdPolicy = 'auto' | 'dedupe' | 'overwrite';
+/** The bulk action an Elasticsearch destination writes each document with: what a second document with the same
+ * id does. */
+export type BulkAction = 'create' | 'index';
 
 /** A destination's codecs, mirroring `config_file::dto::CompressionDto`. A
  * closed set, so the editor offers a dropdown and no save can refuse one. */
@@ -625,7 +623,7 @@ export type DestinationDto = {
       /** Basic auth, in place of `auth`: `username` and `password` together. */
       username?: string;
       password?: SecretRef;
-      docId?: DocIdPolicy;
+      action?: BulkAction;
       /** The row field each document's id is read from. Absent is `DOC_ID_FIELD`. */
       idField?: string;
       inFlight?: number;

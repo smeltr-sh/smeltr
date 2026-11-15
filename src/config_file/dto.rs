@@ -2003,19 +2003,21 @@ impl Default for InFlight {
     }
 }
 
-/// Wire form of `plan::topology::DocIdPolicy`.
+/// Wire form of `plan::topology::BulkAction`. The older values still read: `auto` and `dedupe` as `create`, `overwrite`
+/// as `index`.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum DocIdPolicyDto {
+pub enum BulkActionDto {
     #[default]
-    Auto,
-    Dedupe,
-    Overwrite,
+    #[serde(alias = "auto", alias = "dedupe")]
+    Create,
+    #[serde(alias = "overwrite")]
+    Index,
 }
 
-impl DocIdPolicyDto {
+impl BulkActionDto {
     pub(super) fn is_default(&self) -> bool {
-        *self == DocIdPolicyDto::default()
+        *self == BulkActionDto::default()
     }
 }
 
