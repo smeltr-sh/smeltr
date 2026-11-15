@@ -1705,8 +1705,8 @@ impl Transform {
             );
             // The one batch this interval describes for the leader (`streams::Streams::due`): its Parsers tally
             // what they produce, which every other batch skips. A batch the route took no row of is not it.
-            let took_rows = bits::any_set(mask.bool().expect("a route mask is Bool").values, slice.len());
             let matched = bits::popcount(mask.bool().expect("a route mask is Bool").values) as u64;
+            let took_rows = matched > 0;
             let observed = match (&self.streams, &lane.source_name) {
                 (Some(streams), Some(name)) if took_rows && streams.due(route_idx) => Some((streams, name)),
                 _ => None,
