@@ -193,6 +193,19 @@ impl Holds {
             time_source: None,
         }
     }
+
+    /// What the parsed field `path` holds where nothing declares it: the type the produced `schemas` give it
+    /// (`schema::read_as`), else the type `self` holds. A `datetime` in `self` keeps its time format where the schemas
+    /// also say `datetime`, since a schema's has none.
+    pub fn under(self, schemas: &[std::sync::Arc<crate::schema::Schema>], path: &str) -> Holds {
+        match crate::schema::read_as(schemas, path).filter(|ty| *ty != self.ty) {
+            Some(ty) => Holds {
+                time_source: (ty == DataType::DateTime).then_some(TimeSource::Auto),
+                ty,
+            },
+            None => self,
+        }
+    }
 }
 
 /// Bound on macro nesting. A cycle is caught by name before this; the bound keeps a long chain from exhausting the
