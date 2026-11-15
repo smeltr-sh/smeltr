@@ -494,28 +494,49 @@ impl Source for MetricsSource {
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
 
-        // Samples past `max_rows`/`max_bytes` are gone: at-least-once does not apply to metrics.
+        // Samples past `max_rows`/`max_bytes` stay owed: a cursor moves past only what a batch carries.
         let mut out = crate::io::RecordChunkBuilder::new();
         let mut bytes = 0usize;
         // What this process recorded, then what the worker's other process did: one worker, one stream.
-        let mut samples = self.metrics.take_delta(&mut self.cursor);
-        samples.extend(self.metrics.take_mirrored_delta(&mut self.mirrored));
-        // Idle counters last, so a cutoff drops a 0 before it drops a count.
-        samples.sort_by_key(|s| s.value.is_idle());
-        for mut sample in samples {
+        let own = delta(&self.metrics.values.lock().unwrap(), Some(&self.cursor));
+        let mirrored = delta(&self.metrics.mirrored.lock().unwrap(), Some(&self.mirrored));
+        let mut samples: Vec<(bool, MetricSample)> = own
+            .into_iter()
+            .map(|s| (false, s))
+            .chain(mirrored.into_iter().map(|s| (true, s)))
+            .collect();
+        // Idle counters last, so a cutoff leaves out a 0 before it leaves a count owed.
+        samples.sort_by_key(|(_, s)| s.value.is_idle());
+        let moved = |s: &MetricSample| s.value.is_counter() && !s.value.is_idle();
+        let owed = samples.iter().filter(|(_, s)| moved(s)).count();
+        let (mut sent, mut sent_mirrored) = (Vec::new(), Vec::new());
+        for (is_mirrored, sample) in samples {
             if out.len() >= max_rows {
                 break;
             }
-            self.subjects.resolve(&mut sample.key.labels);
+            let mut labeled = sample.clone();
+            self.subjects.resolve(&mut labeled.key.labels);
             let mut raw = Vec::new();
-            sample.write_json(ts_millis, &mut raw);
+            labeled.write_json(ts_millis, &mut raw);
             if !out.is_empty() && bytes + raw.len() > max_bytes {
                 break;
             }
             bytes += raw.len();
             out.push(&raw, self.next_offset, 0, self.topic.clone(), None);
             self.next_offset += 1;
+            if is_mirrored {
+                sent_mirrored.push(sample)
+            } else {
+                sent.push(sample)
+            }
         }
+        // A count the cutoff left is owed now, not a bucket from now: the cut falls on the same keys every time, and
+        // waiting would starve them. A gauge or an idle counter left out owes nothing.
+        if sent.iter().chain(&sent_mirrored).filter(|s| moved(s)).count() < owed {
+            self.last_drain = None;
+        }
+        advance(&mut self.cursor, &sent);
+        advance(&mut self.mirrored, &sent_mirrored);
         Ok(out.finish())
     }
 
@@ -686,6 +707,40 @@ mod tests {
         assert_eq!(
             (row["source"].as_str(), row["value"].as_u64()),
             (Some("moved"), Some(5))
+        );
+    }
+
+    /// A count past the row budget stays owed, and the next poll carries it without waiting out the bucket.
+    #[test]
+    fn a_count_past_the_budget_goes_in_the_next_poll() {
+        let m = Arc::new(Metrics::new());
+        m.incr("rows_in", &[("source", "a")], 5);
+        m.incr("rows_in", &[("source", "b")], 7);
+        let mut source = MetricsSource::new(
+            m,
+            MetricsSourceConfig {
+                bucket: Duration::from_secs(3600),
+            },
+        );
+        let mut read = Vec::new();
+        for _ in 0..2 {
+            let rows = source.poll_batch(1, 1 << 20, Duration::ZERO).unwrap();
+            assert_eq!(
+                rows.len(),
+                1,
+                "each poll carries one row, and the second is due at once"
+            );
+            let row: serde_json::Value = serde_json::from_slice(rows[0].bytes().unwrap()).unwrap();
+            read.push((
+                row["source"].as_str().unwrap().to_string(),
+                row["value"].as_u64().unwrap(),
+            ));
+        }
+        read.sort();
+        assert_eq!(read, [("a".to_string(), 5), ("b".to_string(), 7)]);
+        assert!(
+            source.poll_batch(1, 1 << 20, Duration::ZERO).unwrap().is_empty(),
+            "nothing is owed, so the bucket paces the next poll again"
         );
     }
 
