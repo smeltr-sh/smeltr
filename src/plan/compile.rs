@@ -694,7 +694,7 @@ pub fn compile(p: &PipelineConfig, meta: &SourceMeta) -> Result<Plan, Vec<Compil
         step_ids: p.step_ids.clone(),
         id_label: p.id.to_string(),
         placement_slots: Placement::ALL.map(|p| c.syms.lookup(p.field())),
-        id_out_slot: c.syms.lookup("__destination.id"),
+        id_out_slot: c.syms.lookup(crate::plan::topology::DOC_ID),
         slot_layout: c.syms.layout,
         instrs: c.instrs,
         provenance: c.syms.origins,
