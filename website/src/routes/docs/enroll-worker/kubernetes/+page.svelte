@@ -354,11 +354,10 @@ spec:
   <p>
     <code>GET /health</code> on the receiver port answers 200 while the receiver takes requests and
     503 while it is full, blocked or stopping. A readiness probe on it takes a busy worker out of
-    the Service until it can take requests again. Without one, a busy worker answers senders busy,
-    and they send again. The probe is part of the worker pod, so adding it restarts every worker:
-    add it with the StatefulSet when you know the receiver's port. Put it in the worker container,
-    beside its
-    <code>env</code>:
+    the Service until it can take requests again. Without one, senders keep sending to a worker that
+    gives a busy answer. The probe is part of the worker pod, so adding it restarts every worker:
+    add it when you create the StatefulSet, if you already know the receiver's port. Put it in the
+    worker container, beside its <code>env</code>:
   </p>
   <pre><code>          readinessProbe:
             httpGet:

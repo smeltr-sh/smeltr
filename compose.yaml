@@ -20,8 +20,9 @@ services:
     ports:
       # The process is not root and cannot bind 443, so it listens high and the host publishes the real port.
       - "443:8443"
-      # Each receiver listens on its own port, and Docker can add a port only by recreating the container. Uncomment
-      # the receivers this install will run before its first `up`, at the port its form proposes.
+      # Each receiver listens on its own port, and Docker can publish a new port only by recreating the container.
+      # Uncomment the ports of the receivers this install will run before its first `up`: each is the port its source
+      # form proposes.
       # - "8080:8080"      # HTTP
       # - "8088:8088"      # Splunk HEC
       # - "9997:9997"      # Splunk S2S

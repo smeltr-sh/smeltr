@@ -130,8 +130,8 @@ state_dir = "/var/lib/smeltr-worker"</code
   <p>
     The container needs no inbound published port unless its group runs a receiver. Docker can
     publish a new port only by recreating the container, so publish the ports of the receivers the
-    group will run when you first start it, for example <code>-p 6514:6514</code> for syslog. The container
-    must be able to reach the leader and every configured source and destination.
+    group will run when you first start the container, for example <code>-p 6514:6514</code> for syslog.
+    The container must be able to reach the leader and every configured source and destination.
   </p>
   <p>
     Leave <code>worker.leader.ca</code> unset for normal enrollment. An enrollment code can verify
