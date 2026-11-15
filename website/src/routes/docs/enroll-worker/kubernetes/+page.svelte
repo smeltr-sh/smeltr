@@ -313,9 +313,9 @@ spec:
   <h2 id="receiver">Expose a receiver</h2>
   <p>
     A receiver is a source that senders connect to. Every worker of its group listens on the
-    receiver's <code>port</code>, and senders need one address that reaches all of them. Add a Service
-    that selects the worker pods and sends to that port. It changes nothing in the worker pods, so they
-    keep running. This example uses port 8088:
+    receiver's <code>port</code>, and senders need one address that reaches all of them. Add a
+    Service that selects the worker pods and sends to that port. It changes nothing in the worker
+    pods, so they keep running. This example uses port 8088:
   </p>
   <pre><code
       >apiVersion: v1
@@ -352,11 +352,12 @@ spec:
   </ul>
   <h3 id="receiver-probe">Take a busy worker out of the Service</h3>
   <p>
-    <code>GET /health</code> on the receiver port answers 200 while the receiver takes requests and 503
-    while it is full, blocked or stopping. A readiness probe on it takes a busy worker out of the
-    Service until it can take requests again. Without one, a busy worker answers senders busy, and they
-    send again. The probe is part of the worker pod, so adding it restarts every worker: add it with the
-    StatefulSet when you know the receiver's port. Put it in the worker container, beside its
+    <code>GET /health</code> on the receiver port answers 200 while the receiver takes requests and
+    503 while it is full, blocked or stopping. A readiness probe on it takes a busy worker out of
+    the Service until it can take requests again. Without one, a busy worker answers senders busy,
+    and they send again. The probe is part of the worker pod, so adding it restarts every worker:
+    add it with the StatefulSet when you know the receiver's port. Put it in the worker container,
+    beside its
     <code>env</code>:
   </p>
   <pre><code>          readinessProbe:

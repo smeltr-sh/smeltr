@@ -80,6 +80,11 @@ curl -fsSLO {taggedFile('compose.yaml', version)}</code
       >SMELTR_IMAGE=smeltr:{version}
 SMELTR_PUBLIC_ORIGIN=https://smeltr.example.com</code
     ></pre>
+  <p>
+    A <a href="/docs/sources#push-all-workers">receiver</a> listens on its own port, and Docker can
+    publish a new port only by recreating the container. <code>compose.yaml</code> lists each receiver's
+    default port, commented out: uncomment the ones you will use before you start it.
+  </p>
   <p>Start it, and read the first-login credentials from its logs:</p>
   <pre><code
       >docker compose up -d
