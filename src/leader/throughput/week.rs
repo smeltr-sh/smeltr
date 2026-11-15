@@ -1,17 +1,20 @@
-//! How a source's days differ by weekday, and its usual windows where they do.
+//! A source's days and their kinds, and its usual windows by kind.
 //!
-//! A source whose rows differ by weekday, an office's working days against its weekends, is judged at each time of day
-//! against the days of its own kind. Its days start at its quietest hour, where one day's traffic has ended and the
-//! next one's has not begun, so a day holds one day's traffic whatever time zone the source keeps. Its kinds are the
-//! weekdays split in two, or each weekday its own, kept only where they predicted each of the last [`WEEKS`] weeks,
-//! held out in turn, better than no kinds: a rhythm that is not there passes each week as a coin toss would.
+//! A source's days start at its quietest hour, where one day's traffic has ended and the next one's has not begun, so
+//! a day holds one day's traffic whatever time zone the source keeps. A source whose rows differ by weekday, an
+//! office's working days against its weekends, is judged at each time of day against the days of its own kind. Its
+//! kinds are the weekdays split in two, or each weekday its own, kept only where they predicted each of the last
+//! [`WEEKS`] weeks, held out in turn, better than one kind: a rhythm that is not there passes each week as a coin toss
+//! would. Any other source has one kind.
 //!
 //! A window that reaches into the day before holds the end of yesterday and the start of today, and its usual window
-//! is the usual end of a day of yesterday's kind plus the usual start of a day of today's. Set against today's kind
-//! alone, a Monday's 24 hours, which hold most of Sunday's, would read low every week, and the range, which every day
-//! shares, would widen to take them in.
+//! is learned from days of today's kind whose day before was of yesterday's kind. Set against today's kind alone, a
+//! Monday's 24 hours, which hold most of Sunday's, would read low every week, and the range, which every day shares,
+//! would widen to take them in.
 
-use super::{BUCKET, DAY_MS, MIN_DAYS, NEIGHBORHOOD, Rows, Warned, Width, quantile};
+use std::collections::{BTreeMap, BTreeSet};
+
+use super::{BUCKET, DAY_MS, MIN_DAYS, NEIGHBORHOOD, Rows, USUAL_DAYS, Warned, Width, quantile};
 
 /// How many weeks the kinds are learned from, each held out in turn, and so how many a grouping must predict.
 const WEEKS: i64 = 4;
@@ -53,11 +56,6 @@ impl Week {
         week
     }
 
-    /// Whether its days are all of one kind, and so not told apart.
-    pub(super) fn daily(&self) -> bool {
-        self.kinds == [0; 7]
-    }
-
     /// The day `at_ms` falls in, counting the one that began at the start time on 1 January 1970 as day 0.
     fn day(&self, at_ms: i64) -> i64 {
         (at_ms - self.start_ms).div_euclid(DAY_MS)
@@ -76,11 +74,6 @@ impl Week {
 
     fn kind(&self, day: i64) -> usize {
         self.kinds[weekday(day)] as usize
-    }
-
-    /// How many kinds its days are of.
-    fn count(&self) -> usize {
-        self.kinds.iter().max().map_or(1, |&k| k as usize + 1)
     }
 }
 
@@ -222,119 +215,72 @@ fn distance(hours: &[f64; 24], to: &[Option<f64>]) -> f64 {
         .sum()
 }
 
-/// A usual window or part of one at each bucket of a day, None where too few days had one.
+/// A usual window at each bucket of a day, None where too few days had one.
 type ByAt = Vec<Option<f64>>;
 
-/// One width's usual windows where days are told apart by a [`Week`]. A window is placed by the day its last bucket
-/// falls in and that bucket's place in the day, `at`. One that fits in its day has the usual whole window of its day's
-/// kind there; one that reaches into the day before has the usual first `at + 1` buckets of a day of its day's kind
-/// plus the usual rest of it from the end of a day of the day before's kind.
+/// One width's usual windows by the kinds of day of a [`Week`]. A window is placed by the day its last bucket
+/// falls in and that bucket's place in the day, `at`. Its usual window is the median of the windows near `at` on the
+/// newest days of its day's kind, and, where it reaches into the day before, on days whose day before was of that day's
+/// kind too.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Weekly {
     week: Week,
-    buckets: i64,
-    /// By kind: the usual part of a window in its own day, which is the whole window where it fits.
-    today: Vec<ByAt>,
-    /// By kind, where a window ending at `at` reaches into the day before: the usual part in that day.
-    yesterday: Vec<ByAt>,
+    /// By the kind of a day and of the day before it: the usual window ending at each bucket of the day.
+    usual: BTreeMap<(usize, usize), ByAt>,
 }
 
 impl Weekly {
     /// `width`'s usual windows by `week` as of `as_of`, from its `learned` windows (how many buckets before `as_of`
-    /// each ended, and its rows) and, for the parts, from `rows` that `warned` leaves learned and that ended a `wait` and
-    /// a width before `as_of`, as a whole window must. Each is the median of the windows or parts within
-    /// [`NEIGHBORHOOD`] of its time on the days of its kind in the last [`WEEKS`] weeks, and None where fewer than
-    /// [`MIN_DAYS`] of those days have one. A day's start and end parts are taken at the same neighbors, so the two
-    /// medians add up to a window's width.
-    pub(super) fn learn(
-        rows: &Rows,
-        warned: &Warned,
-        as_of: i64,
-        width: Width,
-        wait: i64,
-        learned: &[(i64, f64)],
-        week: Week,
-    ) -> Weekly {
+    /// each ended, and its rows). Each is the median of the windows within [`NEIGHBORHOOD`] of its time on the newest
+    /// [`USUAL_DAYS`] days in the last [`WEEKS`] weeks that have one, and None where fewer than [`MIN_DAYS`] days have
+    /// one.
+    pub(super) fn learn(as_of: i64, width: Width, learned: &[(i64, f64)], week: Week) -> Weekly {
         let step = BUCKET.bucket_ms();
         let per_day = DAY_MS / step;
         let across = NEIGHBORHOOD.as_millis() as i64 / step;
-        let buckets = width.buckets();
         let today = week.day(as_of);
         let first = today - WEEKS * 7;
         let index = |day: i64| usize::try_from(day - first).ok();
-        let mut whole = vec![vec![None; per_day as usize]; (today - first + 1) as usize];
+        let mut windows = vec![vec![None; per_day as usize]; (today - first + 1) as usize];
         for &(i, sum) in learned {
             let (day, at) = week.place(as_of - i * step);
-            if let Some(of) = index(day).and_then(|d| whole.get_mut(d)) {
+            if let Some(of) = index(day).and_then(|d| windows.get_mut(d)) {
                 of[at] = Some(sum);
             }
         }
-        let learned_part = |from: i64, to: i64| {
-            let (sum, missing) = rows.read(from, to)?;
-            let ago = (as_of - to).div_euclid(step);
-            let waited = ago >= wait + buckets || (ago >= wait && warned.said_normal(to, to - from));
-            (missing == 0 && waited && !warned.part_during(to, to - from, width.ms())).then_some(sum)
-        };
-        // Each day's start until the end of bucket `at`, and its end from where a window ending at `at` begins.
-        let parts: Vec<(ByAt, ByAt)> = (first..=today)
-            .map(|day| {
-                let (start, end) = (week.day_start(day), week.day_start(day + 1));
-                (0..buckets - 1)
-                    .map(|at| {
-                        let head = learned_part(start, start + (at + 1) * step);
-                        (head, learned_part(end - (buckets - at - 1) * step, end))
-                    })
-                    .unzip()
-            })
-            .collect();
-        let whole_at =
-            |day: i64, at: i64| whole.get(index(day + at.div_euclid(per_day))?)?[at.rem_euclid(per_day) as usize];
-        let part_at = |of: &[Option<f64>], at: i64| *of.get(usize::try_from(at).ok()?)?;
-        let head_at = |day: i64, at: i64| part_at(&parts.get(index(day)?)?.0, at);
-        let tail_at = |day: i64, at: i64| part_at(&parts.get(index(day)?)?.1, at);
         // A window near `at` that ends in the day before or after counts for the day it is near, as in a daily normal.
-        let usual = |kind: usize, at: i64, of: &dyn Fn(i64, i64) -> Option<f64>| {
-            let (mut sums, mut days) = (Vec::new(), 0);
-            for day in (first..=today).filter(|&day| week.kind(day) == kind) {
-                let before = sums.len();
-                sums.extend((at - across..=at + across).filter_map(|near| of(day, near)));
-                days += usize::from(sums.len() > before);
+        let window_at =
+            |day: i64, at: i64| windows.get(index(day + at.div_euclid(per_day))?)?[at.rem_euclid(per_day) as usize];
+        let usual = |kind: usize, before: usize, at: i64| {
+            let into_before = at + 1 < width.buckets();
+            let days = (first..=today)
+                .rev()
+                .filter(|&day| week.kind(day) == kind && (!into_before || week.kind(day - 1) == before));
+            let (mut sums, mut found) = (Vec::new(), 0);
+            for day in days {
+                if found == USUAL_DAYS as usize {
+                    break;
+                }
+                let had = sums.len();
+                sums.extend((at - across..=at + across).filter_map(|near| window_at(day, near)));
+                found += usize::from(sums.len() > had);
             }
             sums.sort_by(f64::total_cmp);
-            (days >= MIN_DAYS).then(|| quantile(&sums, 0.5))
+            (found >= MIN_DAYS).then(|| quantile(&sums, 0.5))
         };
-        let kinds = 0..week.count();
-        Weekly {
-            week,
-            buckets,
-            today: kinds
-                .clone()
-                .map(|kind| {
-                    (0..per_day)
-                        .map(|at| {
-                            if at + 1 < buckets {
-                                usual(kind, at, &head_at)
-                            } else {
-                                usual(kind, at, &whole_at)
-                            }
-                        })
-                        .collect()
-                })
-                .collect(),
-            yesterday: kinds
-                .map(|kind| (0..buckets - 1).map(|at| usual(kind, at, &tail_at)).collect())
-                .collect(),
-        }
+        let usual = (0..7)
+            .map(|weekday| (week.kinds[weekday] as usize, week.kinds[(weekday + 6) % 7] as usize))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(|(kind, before)| ((kind, before), (0..per_day).map(|at| usual(kind, before, at)).collect()))
+            .collect();
+        Weekly { week, usual }
     }
 
     /// The usual window ending at `ended_ms`, or None where too few days had one.
     pub(super) fn at(&self, ended_ms: i64) -> Option<f64> {
         let (day, at) = self.week.place(ended_ms);
-        let today = self.today[self.week.kind(day)][at]?;
-        if at as i64 + 1 >= self.buckets {
-            return Some(today);
-        }
-        Some(today + self.yesterday[self.week.kind(day - 1)][at]?)
+        self.usual[&(self.week.kind(day), self.week.kind(day - 1))][at]
     }
 }
 
@@ -342,7 +288,7 @@ impl Weekly {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::super::{Learning, Preset, Usual, WIDTHS, normal};
+    use super::super::{Learning, Preset, WIDTHS, normal};
     use super::*;
 
     const FIVE: i64 = 5 * 60 * 1000;
@@ -388,7 +334,7 @@ mod tests {
     #[test]
     fn a_source_with_no_weekly_rhythm_has_one_kind_of_day() {
         let week = Week::learn(&rows(30, MONDAY, noisy), &nothing_warned(), MONDAY + HOUR_MS);
-        assert!(week.daily(), "{week:?}");
+        assert_eq!(week.kinds, [0; 7]);
     }
 
     /// An office five hours behind UTC works from 13:00 to 01:00 UTC, so a UTC day would hold the end of Friday's work
@@ -421,18 +367,15 @@ mod tests {
         assert_eq!(week.kinds, [0, 0, 0, 0, 0, 1, 1]);
     }
 
-    /// A Monday's 24 hours hold most of Sunday. Its usual window is Sunday's usual end plus Monday's usual start, and a
-    /// Saturday's is Friday's end plus Saturday's start. A Tuesday's is two working days'.
+    /// A Monday's 24 hours hold most of Sunday. Its usual window is made up of Sunday's end and Monday's start, and a
+    /// Saturday's of Friday's end and Saturday's start. A Tuesday's is two working days'.
     #[test]
     fn a_day_window_into_the_day_before_is_that_days_part_and_todays() {
         let rows = rows(30, MONDAY, office);
         let warned = nothing_warned();
         let week = Week::learn(&rows, &warned, MONDAY);
         let normal = normal(&rows, &warned, MONDAY, WIDTHS[3], Preset::Balanced, &week).unwrap();
-        let Usual::Weekly(weekly) = &normal.usual else {
-            panic!("{week:?} tells no days apart");
-        };
-        let at = |day: i64, hour: i64| weekly.at(MONDAY + day * DAY_MS + hour * HOUR_MS);
+        let at = |day: i64, hour: i64| normal.usual.at(MONDAY + day * DAY_MS + hour * HOUR_MS);
         // In buckets: a night of 6 hours is 72 at 10, the 4 hours after 20:00 are 48, a day's 14 hours of work 168.
         let (night, evening, working, weekend) = (720.0, 480.0, 16_800.0, 3360.0);
         assert_eq!(at(-7, 6), Some(night + weekend + evening), "Monday");
@@ -443,9 +386,7 @@ mod tests {
             "Saturday"
         );
         assert_eq!(at(-2, 0), Some(night + working + evening), "Friday, whole");
-        // Every window is its usual one but where the newest weekend's parts near midnight are not all learned yet:
-        // there a median falls between two neighbors, half a night's bucket from the window.
-        assert_eq!((normal.low, normal.high), (1.0, 4561.0 / 4556.0));
+        assert_eq!((normal.low, normal.high), (1.0, 1.0));
     }
 
     /// A working day that reads at the weekend's level is below the range of working days. Set against every day, the
@@ -460,12 +401,8 @@ mod tests {
             normal.band(tuesday_noon).unwrap().low
         };
         let week = Week::learn(&rows, &warned, MONDAY);
-        assert!(!week.daily());
         assert_eq!(low(&week), 70.0);
-        let daily = Week {
-            start_ms: 0,
-            kinds: [0; 7],
-        };
-        assert!(low(&daily) < 20.0, "{}", low(&daily));
+        let one_kind = Week { kinds: [0; 7], ..week };
+        assert!(low(&one_kind) < 20.0, "{}", low(&one_kind));
     }
 }

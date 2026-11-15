@@ -3,14 +3,15 @@
 //! A source's normal is learned from the rows it read, which the registry already keeps (`series.rs`), and it is judged
 //! at each of four [`WIDTHS`]: the rows of the last 5 minutes, 30 minutes, 6 hours and 24 hours. At one width, the
 //! usual window of a time of day is the median of the windows that ended within [`NEIGHBORHOOD`] of it on each of the
-//! newest [`USUAL_DAYS`] days learned there. Each window of the width's history, its newest learned windows, is taken
+//! newest [`USUAL_DAYS`] days of its kind learned there. Each window of the width's history, its newest learned windows, is taken
 //! as a ratio to the usual window of its time of day. The range is the usual window scaled by the lowest and the
 //! highest ratios, a [`TAIL`] of them cut from each end, and widened by its [`Preset`]'s margin. Ratios, because a
 //! quiet hour and a busy one can be pooled only once each is set against its own time of day; a quantile, because rows
 //! read are bursty and often zero, which a mean and a deviation do not describe.
 //!
-//! A source whose rows differ by weekday is judged at each time of day against the days of its own kind, learned
-//! from four weeks of them, and a window that reaches into the day before against both days' kinds ([`week`]).
+//! A source's days start at its quietest hour, and a source whose rows differ by weekday tells its days apart by kind
+//! ([`week`]). A window that reaches into the day before is set against days of today's kind that followed a day of
+//! that day's kind.
 //!
 //! A width judges a source only where its usual window holds at least [`GATE`] rows: a window that is usually near
 //! empty has a low edge of zero, which no reading is below. So a source that reads every few seconds is judged at every
@@ -485,34 +486,15 @@ pub fn grouped(rows: f64) -> String {
     out
 }
 
-/// One width's normal as of one time: the usual window at each time of day, and the lowest and highest ratios to
-/// it, judged at `preset`.
+/// One width's normal as of one time: the usual window at each time of each kind of day, and the lowest and highest
+/// ratios to it, judged at `preset`.
 #[derive(Debug, Clone, PartialEq)]
 struct Normal {
     width: Width,
     preset: Preset,
-    usual: Usual,
+    usual: Weekly,
     low: f64,
     high: f64,
-}
-
-/// A width's usual windows: one for each time of day, or, where a source's days differ by weekday, one for each time
-/// of each kind of day.
-#[derive(Debug, Clone, PartialEq)]
-enum Usual {
-    /// By the bucket of the UTC day a window ends at. None where too few days had one.
-    Daily(Vec<Option<f64>>),
-    Weekly(Weekly),
-}
-
-impl Usual {
-    /// The usual window ending at `ended_ms`, or None where too few days had one.
-    fn at(&self, ended_ms: i64) -> Option<f64> {
-        match self {
-            Usual::Daily(usual) => usual[time_of_day(ended_ms)],
-            Usual::Weekly(weekly) => weekly.at(ended_ms),
-        }
-    }
 }
 
 impl Normal {
@@ -527,19 +509,14 @@ impl Normal {
     }
 }
 
-/// Which bucket of its day the window ending at `ended_ms` ends at.
-fn time_of_day(ended_ms: i64) -> usize {
-    (ended_ms.rem_euclid(DAY_MS) / BUCKET.bucket_ms()) as usize
-}
-
 /// `width`'s normal at `preset` as of `as_of`, from the windows learned that ended before it, or None while it has no
 /// ratio at all.
 /// Its history is its newest learned windows, as many as fit in [`Width::history_days`] days, and a time of day's usual
-/// window is learned from the newest [`USUAL_DAYS`] days with a learned window near it, or, where `week` tells its days
-/// apart, from the days of its kind ([`Weekly`]). Both reach back past what is not learned, as far as [`lookback_ms`],
-/// so a warning that holds for days is still judged against the days before it. Each window's usual window is that of
-/// its time of day as of `as_of`, so every window of the history is set against the same days. Each window and its
-/// usual window get one more row, so a time of day that is usually empty divides like any other.
+/// window is learned from the newest [`USUAL_DAYS`] days of its kind in `week` with a learned window near it
+/// ([`Weekly`]). Both reach back past what is not learned, as far as [`lookback_ms`], so a warning that holds for days
+/// is still judged against the days before it. Each window's usual window is that of its time of day as of `as_of`, so
+/// every window of the history is set against the same days. Each window and its usual window get one more row, so a
+/// time of day that is usually empty divides like any other.
 fn normal(rows: &Rows, warned: &Warned, as_of: i64, width: Width, preset: Preset, week: &Week) -> Option<Normal> {
     let step = BUCKET.bucket_ms();
     let per_day = DAY_MS / step;
@@ -560,11 +537,7 @@ fn normal(rows: &Rows, warned: &Warned, as_of: i64, width: Width, preset: Preset
             Some((i, sum))
         })
         .collect();
-    let usual = if week.daily() {
-        Usual::Daily(daily(&learned, as_of))
-    } else {
-        Usual::Weekly(Weekly::learn(rows, warned, as_of, width, wait, &learned, *week))
-    };
+    let usual = Weekly::learn(as_of, width, &learned, *week);
     let mut ratios: Vec<f64> = learned
         .iter()
         .take((width.history_days * per_day) as usize)
@@ -581,47 +554,6 @@ fn normal(rows: &Rows, warned: &Warned, as_of: i64, width: Width, preset: Preset
         high: quantile(&ratios, 1.0 - TAIL),
         usual,
     })
-}
-
-/// The usual window at each bucket of the UTC day, from the `learned` windows (how many buckets before `as_of` each
-/// ended, and its rows, newest first): the median of those near it on the newest [`USUAL_DAYS`] days that have one.
-fn daily(learned: &[(i64, f64)], as_of: i64) -> Vec<Option<f64>> {
-    let step = BUCKET.bucket_ms();
-    let per_day = DAY_MS / step;
-    let mut by_time: Vec<Vec<(i64, f64)>> = vec![Vec::new(); per_day as usize];
-    for &(i, sum) in learned {
-        by_time[time_of_day(as_of - i * step)].push((i, sum));
-    }
-    let across = NEIGHBORHOOD.as_millis() as i64 / step;
-    (0..per_day)
-        .map(|at| {
-            // Each window near `at`, grouped by the day it is near: a window in the half hour after a midnight counts
-            // for that midnight's day. A time of day has one window a day, newest first, so the newest days near `at`
-            // are among the first of each.
-            let near: Vec<(i64, f64)> = (-across..=across)
-                .flat_map(|off| {
-                    let of = &by_time[(at + off).rem_euclid(per_day) as usize];
-                    of.iter()
-                        .take(USUAL_DAYS as usize)
-                        .map(move |&(i, sum)| ((i + off).div_euclid(per_day), sum))
-                })
-                .collect();
-            let mut days: Vec<i64> = near.iter().map(|&(day, _)| day).collect();
-            days.sort_unstable();
-            days.dedup();
-            if days.len() < MIN_DAYS {
-                return None;
-            }
-            let newest = days[days.len().min(USUAL_DAYS as usize) - 1];
-            let mut sums: Vec<f64> = near
-                .into_iter()
-                .filter(|&(day, _)| day <= newest)
-                .map(|(_, sum)| sum)
-                .collect();
-            sums.sort_by(f64::total_cmp);
-            Some(quantile(&sums, 0.5))
-        })
-        .collect()
 }
 
 /// Each source's normal at each width that has one.
@@ -1067,14 +999,8 @@ impl Warned {
     /// Whether the `width_ms` ending at `ended_ms` teaches the normal nothing: it overlaps a span not learned, or it
     /// shares a bucket with a window of its width that ended while a below-normal warning waited or held.
     fn during(&self, ended_ms: i64, width_ms: i64) -> bool {
-        self.part_during(ended_ms, width_ms, width_ms)
-    }
-
-    /// [`Warned::during`] for the `length_ms` ending at `ended_ms` that is part of a window of `width_ms`: whether any
-    /// of its buckets is one a window of that width would not be learned for.
-    fn part_during(&self, ended_ms: i64, length_ms: i64, width_ms: i64) -> bool {
-        Warned::overlaps(&self.unlearned, ended_ms, length_ms)
-            || Warned::overlaps(&self.below, ended_ms + width_ms, length_ms + width_ms)
+        Warned::overlaps(&self.unlearned, ended_ms, width_ms)
+            || Warned::overlaps(&self.below, ended_ms + width_ms, 2 * width_ms)
     }
 
     /// Whether the window of `width_ms` that ends at `ended_ms` overlaps a period an editor said was normal.
