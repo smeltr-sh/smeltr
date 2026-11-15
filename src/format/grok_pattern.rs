@@ -167,12 +167,12 @@ pub const BUILTINS: &[(&str, &str)] = &[
 ];
 
 /// The built-ins that give a type other than `str`, with the format a `datetime` one is read in (`None` reads it as
-/// `parseTime` does with no format). A pattern defined as only `%{X}` gives what `X` gives (`holds`), so `NUMBER` is
-/// `f64` through `BASE10NUM`.
+/// `parseTime` does with no format).
 const TYPED: &[(&str, DataType, Option<&str>)] = &[
     ("INT", DataType::I64, None),
     ("POSINT", DataType::I64, None),
     ("BASE10NUM", DataType::F64, None),
+    ("NUMBER", DataType::F64, None),
     ("HTTPDATE", DataType::DateTime, Some("%d/%b/%Y:%H:%M:%S %z")),
     ("SYSLOGTIMESTAMP", DataType::DateTime, Some("%b %e %H:%M:%S")),
     ("TIMESTAMP_ISO8601", DataType::DateTime, None),
@@ -328,8 +328,7 @@ fn expand_at_depth<'a>(
                 )));
             }
             chain.push(which);
-            let inner_own = own && which.1 != Defined::Bundle;
-            let inner = expand_at_depth(def, config, shared, inner_own, chain, typed);
+            let inner = expand_at_depth(def, config, shared, own && which.1 != Defined::Bundle, chain, typed);
             chain.pop();
             let inner = inner?;
             match field {
@@ -341,7 +340,7 @@ fn expand_at_depth<'a>(
                              not starting with a digit)"
                         )));
                     }
-                    if let Some(h) = holds(which, def, config, shared, inner_own) {
+                    if let Some(h) = holds(which) {
                         typed.push((f.to_string(), h));
                     }
                     out.push_str("(?P<");
@@ -369,25 +368,14 @@ fn expand_at_depth<'a>(
     Ok(out)
 }
 
-/// What a match of the pattern `which`, defined as `def`, holds where it is typed: a built-in in `TYPED`, or a pattern
-/// defined as only `%{X}` for a typed `X`, resolved as the expansion resolved it. `None` where it is not typed. The
-/// expansion has already refused a loop.
-fn holds(which: (&str, Defined), def: &str, config: &GrokConfig, shared: &GrokPatterns, own: bool) -> Option<Holds> {
-    if which.1 == Defined::BuiltIn
-        && let Some((_, ty, format)) = TYPED.iter().find(|(n, ..)| *n == which.0)
-    {
-        return Some(Holds {
-            ty: ty.clone(),
-            time_source: (*ty == DataType::DateTime)
-                .then(|| format.map_or(TimeSource::Auto, |f| TimeSource::Format(f.to_string()))),
-        });
-    }
-    let name = def
-        .strip_prefix("%{")?
-        .strip_suffix('}')
-        .filter(|n| is_pattern_name(n))?;
-    let (next, def) = lookup(name, config, shared, own)?;
-    holds(next, def, config, shared, own && next.1 != Defined::Bundle)
+/// What a match of the pattern `which` holds, where it is a built-in in `TYPED`; `None` where it is not.
+fn holds(which: (&str, Defined)) -> Option<Holds> {
+    let (_, ty, format) = TYPED.iter().find(|(n, ..)| which == (*n, Defined::BuiltIn))?;
+    Some(Holds {
+        ty: ty.clone(),
+        time_source: (*ty == DataType::DateTime)
+            .then(|| format.map_or(TimeSource::Auto, |f| TimeSource::Format(f.to_string()))),
+    })
 }
 
 /// `pattern` with every built-in that captures a field written out as its definition, recursively, so each field it
@@ -475,11 +463,6 @@ fn path(chain: &[(&str, Defined)], next: &str) -> String {
         .chain([next])
         .collect::<Vec<_>>()
         .join(" → ")
-}
-
-/// A name `%{NAME}` can spell and every reader of it agrees on.
-pub fn is_pattern_name(name: &str) -> bool {
-    !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
 /// A field name: dot-separated segments, each ASCII letters/digits/underscore and not starting with a digit.

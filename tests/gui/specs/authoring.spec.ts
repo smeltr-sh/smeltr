@@ -4024,34 +4024,8 @@ test('A1: a capture shows every record it holds, each opening on its fields', as
   await expect(rows.last()).toHaveAttribute('aria-expanded', 'true');
 });
 
-// A capture the author types into a grok step is declared at the type its pattern gives it.
-test('a new grok capture is declared at its pattern type', async ({ admin, leader, api }) => {
-  await api.put(`/api/areas/shared/pipelines/access${ON}`, {
-    id: 'access',
-    name: 'access',
-    steps: [
-      {
-        type: 'parser',
-        id: 'line',
-        input: '_raw',
-        kind: { type: 'grok', patterns: ['%{WORD:method}'] },
-        declared: [{ name: 'method', type: 'str' }],
-      },
-    ],
-  });
-  await goto(admin, leader, '#/build/pipelines/access');
-  await admin.locator('button.expander[data-parser="grok"]').click();
-  await admin
-    .getByPlaceholder('%{IP:client} %{WORD:action}')
-    .fill('%{WORD:method} %{INT:status} %{NUMBER:took} \\[%{HTTPDATE:at}\\]');
-  await expect(admin.getByRole('combobox', { name: 'status type' })).toHaveValue('i64');
-  await expect(admin.getByRole('combobox', { name: 'took type' })).toHaveValue('f64');
-  await expect(admin.getByRole('combobox', { name: 'at type' })).toHaveValue('datetime');
-  await expect(admin.getByRole('combobox', { name: 'method type' })).toHaveValue('str');
-});
-
-// Where the pipeline produces a schema, a new capture the schema names is declared at the schema's type instead.
-test('a new grok capture is declared at the type its produced schema gives it', async ({
+// A new grok capture is declared at the type a schema the pipeline produces gives it, else at its pattern's type.
+test('a new grok capture is declared at its schema type, else its pattern type', async ({
   admin,
   leader,
   api,
@@ -4083,8 +4057,9 @@ test('a new grok capture is declared at the type its produced schema gives it', 
   await admin.locator('button.expander[data-parser="grok"]').click();
   await admin
     .getByPlaceholder('%{IP:client} %{WORD:action}')
-    .fill('%{WORD:method} %{INT:status} %{WORD:bytes} %{INT:took}');
+    .fill('%{WORD:method} %{INT:status} %{WORD:bytes} %{NUMBER:took} \\[%{HTTPDATE:at}\\]');
   await expect(admin.getByRole('combobox', { name: 'status type' })).toHaveValue('str');
   await expect(admin.getByRole('combobox', { name: 'bytes type' })).toHaveValue('i64');
-  await expect(admin.getByRole('combobox', { name: 'took type' })).toHaveValue('i64');
+  await expect(admin.getByRole('combobox', { name: 'took type' })).toHaveValue('f64');
+  await expect(admin.getByRole('combobox', { name: 'at type' })).toHaveValue('datetime');
 });
