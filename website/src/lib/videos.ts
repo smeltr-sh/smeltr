@@ -752,11 +752,21 @@ export const fullCourses = allCourses.filter((c) => c.full);
 export const selfTested = allCourses.filter((c) => c.selfTest);
 
 /** What a course is watched in: a long video's chapters, or else the course's videos. A self-test's questions name
- * their chapter by its place here. */
-export const parts = (course: Course): string[] =>
-  course.videos.length === 1 && course.videos[0].chapters
-    ? course.videos[0].chapters.map((c) => c.title)
-    : course.videos.map((v) => v.title);
+ * their chapter by its place here. `href` plays the part, once it is out. */
+export function parts(course: Course): { title: string; href?: string }[] {
+  const [first] = course.videos;
+  if (course.videos.length === 1 && first.chapters) {
+    const watch = first.youtube ? `/learn/${course.slug}/${first.slug}` : undefined;
+    return first.chapters.map((c) => ({
+      title: c.title,
+      href: watch && c.start !== undefined ? `${watch}#t=${c.start}` : undefined,
+    }));
+  }
+  return course.videos.map((v) => ({
+    title: v.title,
+    href: v.youtube ? `/learn/${course.slug}/${v.slug}` : undefined,
+  }));
+}
 
 /** How many videos (or a long video's chapters) the course has and how long the released ones run, as its cards say it. */
 export function courseLength(course: Course): string {

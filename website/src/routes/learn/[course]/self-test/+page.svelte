@@ -29,38 +29,46 @@
         >{:else}{course.title}{/if}
     </p>
     <h1>Self-test</h1>
-    <ol class="questions">
-      {#each test.questions as q, i (i)}
-        {@const pick = picks[i]}
-        <li>
-          <p class="eyebrow">Chapter {q.chapter} · {chapters[q.chapter - 1]}</p>
-          <h2>{q.question}</h2>
-          <div class="choices">
-            {#each q.choices as choice, c (c)}
-              <button
-                class:right={pick !== undefined && c === q.right}
-                class:wrong={pick === c && c !== q.right}
-                aria-disabled={pick !== undefined}
-                aria-pressed={pick === c}
-                onclick={() => (picks[i] ??= c)}
-              >
-                <span class="mark" aria-hidden="true"
-                  >{pick !== undefined && c === q.right ? '✓' : pick === c ? '✗' : ''}</span
-                >{choice}</button
-              >
-            {/each}
-          </div>
-          {#if pick !== undefined}
-            <p class="answer">
-              <strong class:right={pick === q.right} class:wrong={pick !== q.right}
-                >{pick === q.right ? 'Right.' : 'Wrong.'}</strong
-              >
-              {q.answer}
-            </p>
-          {/if}
-        </li>
-      {/each}
-    </ol>
+
+    {#snippet question(i: number)}
+      {@const q = test.questions[i]}
+      {@const pick = picks[i]}
+      <li>
+        <h3>{q.question}</h3>
+        <div class="choices">
+          {#each q.choices as choice, c (c)}
+            <button
+              class:right={pick !== undefined && c === q.right}
+              class:wrong={pick === c && c !== q.right}
+              aria-disabled={pick !== undefined}
+              aria-pressed={pick === c}
+              onclick={() => (picks[i] ??= c)}
+            >
+              <span class="mark" aria-hidden="true"
+                >{pick !== undefined && c === q.right ? '✓' : pick === c ? '✗' : ''}</span
+              >{choice}</button
+            >
+          {/each}
+        </div>
+        {#if pick !== undefined}
+          <p class="answer">
+            <strong class:right={pick === q.right} class:wrong={pick !== q.right}
+              >{pick === q.right ? 'Right.' : 'Wrong.'}</strong
+            >
+            {q.answer}
+          </p>
+        {/if}
+      </li>
+    {/snippet}
+    {#each chapters as chapter, c (c)}
+      {@const mine = test.questions.flatMap((q, i) => (q.chapter === c + 1 ? [i] : []))}
+      {#if mine.length}
+        <h2 class="chapter">{c + 1}. {chapter.title}</h2>
+        <ol class="questions">
+          {#each mine as i (i)}{@render question(i)}{/each}
+        </ol>
+      {/if}
+    {/each}
     {#if done}
       <div class="score" role="status">
         <h2>{right} of {test.questions.length} right</h2>
@@ -69,10 +77,9 @@
         {:else}
           <p>
             Watch again:
-            {#each review as n, k (n)}{@const chapter = `${n}. ${chapters[n - 1]}`}{k
+            {#each review as n, k (n)}{@const part = chapters[n - 1]}{k
                 ? ', '
-                : ''}{#if listed}<a href="/learn/{course.slug}">{chapter}</a
-                >{:else}{chapter}{/if}{/each}
+                : ''}{#if part.href}<a href={part.href}>{n}. {part.title}</a>{:else}{n}. {part.title}{/if}{/each}
           </p>
         {/if}
         <button
@@ -90,6 +97,14 @@
   .marketing .self-test {
     padding-top: 2.5rem;
     max-width: 48rem;
+  }
+  .marketing h2.chapter {
+    font-size: 1.4rem;
+    margin: 2.5rem 0 1rem;
+  }
+  h3 {
+    font-size: 1.15rem;
+    margin: 0 0 1rem;
   }
   .eyebrow a {
     color: inherit;
@@ -111,9 +126,6 @@
     border-radius: var(--radius-card);
     background: var(--panel);
     padding: 1.3rem 1.4rem 1.5rem;
-  }
-  .questions .eyebrow {
-    margin-bottom: 0.5rem;
   }
   .marketing h2 {
     max-width: none;

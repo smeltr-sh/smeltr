@@ -125,6 +125,9 @@
           <h3>
             {#if video}<a href="/learn/{course.slug}">{course.title}</a>{:else}{course.title}{/if}
           </h3>
+          {#if course.selfTest}
+            <a class="demo" href="/learn/{course.slug}/self-test">Test yourself →</a>
+          {/if}
         </div>
       </article>
     {/each}
