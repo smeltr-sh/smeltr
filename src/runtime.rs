@@ -139,9 +139,6 @@ pub struct DestinationTarget {
     pub destination: Box<dyn Destination>,
     /// `DestinationConfig::on_reject`.
     pub on_reject: Answer,
-    /// Whether this destination keys documents on the row's `__destination.id`, so a row without one is counted
-    /// (`smeltr_rows_without_doc_id_total`).
-    pub wants_doc_id: bool,
     /// The `__destination` field that places a row in it, if it reads one.
     pub placement: Option<Placement>,
 }
@@ -633,7 +630,6 @@ impl Output {
 #[derive(Default)]
 struct Outcomes {
     sent: HashMap<DestId, u64>,
-    without_doc_id: HashMap<DestId, u64>,
     no_rule: u64,
     unmatched: u64,
     over_budget: u64,
@@ -1948,18 +1944,7 @@ impl Transform {
                 if matches!(payload, Payload::Bytes { .. }) && !delivered.insert((row.origin, target.id)) {
                     continue;
                 }
-                // The pipeline's `__destination.id` wins over the destination's configured field, as its placement wins over
-                // its default.
-                let doc_id = row.doc_id.as_deref().or_else(|| {
-                    row.doc_id_by_dest
-                        .iter()
-                        .find(|(d, _)| *d == target.id)
-                        .map(|(_, v)| v.as_str())
-                });
-                // Delivered without the dedupe it was configured for, and counted so that is not silent.
-                if target.wants_doc_id && doc_id.is_none() {
-                    *out.outcomes.without_doc_id.entry(target.id).or_insert(0) += 1;
-                }
+                let doc_id = row.doc_id_for(target.id).map(str::to_string);
                 // Where a refusal of this row goes, worked out while the row's identities are still here: a refusal
                 // comes back with the acknowledgment, after the columns are gone. Every DLQ down the chain, since a
                 // DLQ that refuses sends it on to its own; one a rule already sent the row to has it, and is left out.
@@ -1969,12 +1954,7 @@ impl Transform {
                         .iter()
                         .map(|&dlq| SalvageTarget {
                             dlq,
-                            doc_id: row.doc_id.clone().or_else(|| {
-                                row.doc_id_by_dest
-                                    .iter()
-                                    .find(|(d, _)| *d == dlq)
-                                    .map(|(_, v)| v.clone())
-                            }),
+                            doc_id: row.doc_id_for(dlq).map(str::to_string),
                             reached: dests.contains(&dlq),
                         })
                         .collect()
@@ -2016,7 +1996,7 @@ impl Transform {
                         payload: payload.clone(),
                         unfit,
                         placement: target.placement.and_then(|p| row.placements[p as usize].clone()),
-                        doc_id: doc_id.map(str::to_string),
+                        doc_id,
                         key: None,
                         salvaged: false,
                         salvage_to,
@@ -2202,15 +2182,9 @@ impl Transform {
         let mut raw: Option<Arc<Chunk>> = None;
         let raw_record = lane.meta.decodes();
         for &to in targets {
-            let Some(target) = self.destinations.iter().find(|d| d.id == to) else {
+            if !self.destinations.iter().any(|d| d.id == to) {
                 out.outcomes.drop_rows(dropped, records.len() as u64);
                 continue;
-            };
-            // No pipeline ran, so there is no `__destination.id` and no field to read one from: a destination keying on
-            // an identity gets none and generates its own, which is the dedupe it was configured for silently not
-            // happening. Counted under the name that already exists for it.
-            if target.wants_doc_id {
-                *out.outcomes.without_doc_id.entry(to).or_insert(0) += records.len() as u64;
             }
             let payload = self.topology.payload(to);
             let kept = self.kept(to);
@@ -2292,14 +2266,10 @@ impl Transform {
                 n,
             );
         }
-        for (name, counts) in [
-            ("smeltr_rows_sent_total", o.sent),
-            ("smeltr_rows_without_doc_id_total", o.without_doc_id),
-        ] {
-            for (dest, n) in counts {
-                let dest_label = dest.to_string();
-                self.metrics.incr(name, &[("destination", dest_label.as_str())], n);
-            }
+        for (dest, n) in o.sent {
+            let dest_label = dest.to_string();
+            self.metrics
+                .incr("smeltr_rows_sent_total", &[("destination", dest_label.as_str())], n);
         }
     }
 }
@@ -2887,15 +2857,26 @@ struct SerializedRow {
     set: u32,
     /// The row's value of each `Placement`, in `Placement::ALL` order.
     placements: [Option<String>; Placement::ALL.len()],
-    /// The pipeline's `__destination.id`, if set. Wins over `doc_id_by_dest`.
+    /// The pipeline's `__destination.id`, if set.
     doc_id: Option<String>,
-    /// Each interested destination's configured `id_field` value on this row. Per destination because the field name is
-    /// per-destination config.
-    doc_id_by_dest: Vec<(DestId, String)>,
+    /// Each interested destination that names its own `id_field`, and that field's value on this row. Per destination
+    /// because the field name is per-destination config.
+    doc_id_by_dest: Vec<(DestId, Option<String>)>,
     /// The record it was made from, by its index in the batch: an `Unroll` makes several rows of one.
     origin: u32,
     /// The row as columns, where a destination it is bound for, or a DLQ down a chain from one, writes them.
     columns: Option<Columns>,
+}
+
+impl SerializedRow {
+    /// The identity `dest` files this row under: the value of its own `id_field` where it names one, the pipeline's
+    /// `__destination.id` where it does not.
+    fn doc_id_for(&self, dest: DestId) -> Option<&str> {
+        match self.doc_id_by_dest.iter().find(|(d, _)| *d == dest) {
+            Some((_, value)) => value.as_deref(),
+            None => self.doc_id.as_deref(),
+        }
+    }
 }
 
 /// One batch as it arrived: the records, their text, what their source says they carry, and the instant it is
@@ -3392,20 +3373,16 @@ fn run_and_serialize(
         // A chosen destination's DLQ counts as reachable: `offer_salvage` sends there after the columns are gone, so this
         // is the only moment its identity can be read.
         let chosen = &scratch;
-        let doc_id_by_dest: Vec<(DestId, String)> = if doc_id.is_some() {
-            Vec::new()
-        } else {
-            id_fields
-                .iter()
-                .filter(|(dest, _)| {
-                    chosen.contains(dest)
-                        || chosen
-                            .iter()
-                            .any(|c| egress.dlq_of.get(c).is_some_and(|dlqs| dlqs.contains(dest)))
-                })
-                .filter_map(|(dest, name)| serializer.text(name, row).map(|v| (*dest, v)))
-                .collect()
-        };
+        let doc_id_by_dest: Vec<(DestId, Option<String>)> = id_fields
+            .iter()
+            .filter(|(dest, _)| {
+                chosen.contains(dest)
+                    || chosen
+                        .iter()
+                        .any(|c| egress.dlq_of.get(c).is_some_and(|dlqs| dlqs.contains(dest)))
+            })
+            .map(|(dest, name)| (*dest, serializer.text(name, row)))
+            .collect();
         let reads = reads_of(set, &scratch);
         if reads.columns {
             cut.push((out.len(), row));
@@ -3550,12 +3527,7 @@ fn copy_for_captures(
                 doc.clear();
                 write(row, &mut doc);
                 let object = crate::worker::capture::tapped_object(&doc);
-                let doc_id = r.doc_id.clone().or_else(|| {
-                    r.doc_id_by_dest
-                        .iter()
-                        .find(|(d, _)| *d == tap.dest)
-                        .map(|(_, v)| v.clone())
-                });
+                let doc_id = r.doc_id_for(tap.dest).map(str::to_string);
                 let placement = tap.placement.and_then(|p| r.placements[p as usize].clone());
                 let mut sent = finished.row(batch, row, object);
                 crate::worker::capture::place(&mut sent, [placement, doc_id, Some(route.id.clone())]);
@@ -3889,11 +3861,7 @@ pub fn preview_routes_at(
                                 .map(Placement::name)
                                 .into_iter()
                                 .zip(doc.placements)
-                                .chain([(
-                                    "id",
-                                    doc.doc_id
-                                        .or_else(|| doc.doc_id_by_dest.first().map(|(_, v)| v.clone())),
-                                )])
+                                .chain([("id", doc.doc_id_by_dest.into_iter().find_map(|(_, v)| v).or(doc.doc_id))])
                                 .filter_map(|(name, value)| Some((name, value?)))
                                 .collect(),
                         })

@@ -1621,22 +1621,27 @@ fn the_step_reference_matches_the_engine() {
     );
 }
 
-/// The variants serde names when it refuses an unknown one, or `None` for any other refusal.
-fn variants(error: &str) -> Option<std::collections::BTreeSet<String>> {
+/// The variants serde names when it refuses an unknown one for `setting`, or `None` for any other refusal.
+fn variants(error: &str, setting: &str) -> Option<std::collections::BTreeSet<String>> {
     let (_, expected) = error.split_once("unknown variant `notAValue`, expected ")?;
     let names = regex::Regex::new(r"`([^`]+)`").unwrap();
     Some(
         names
             .captures_iter(expected)
             .map(|c| c[1].to_string())
-            .filter(|v| !OLD_NAMES.contains(&v.as_str()))
+            .filter(|v| !OLD_NAMES.contains(&(setting, v.as_str())))
             .collect(),
     )
 }
 
-/// Values the engine still reads under a name it no longer writes, which the page does not list: `sourceBytes` is
-/// `bytes`.
-const OLD_NAMES: &[&str] = &["sourceBytes"];
+/// Values the engine still reads under a name it no longer writes, which the page does not list, by setting:
+/// `sourceBytes` is `bytes`; `auto` and `dedupe` are `create`, `overwrite` is `index`.
+const OLD_NAMES: &[(&str, &str)] = &[
+    ("format", "sourceBytes"),
+    ("action", "auto"),
+    ("action", "dedupe"),
+    ("action", "overwrite"),
+];
 
 /// What the leader refuses of a bundle holding `entry` alone under `section`, or `None` when the bundle does not
 /// read at all.
@@ -1753,7 +1758,7 @@ fn check_connectors<T: serde::de::DeserializeOwned + serde::Serialize>(
             if let Some(unknown) = unknown {
                 let mut with = full.clone();
                 with.insert(r.name.clone(), unknown);
-                if let Some(engine) = load(&with).err().and_then(|e| variants(&e)) {
+                if let Some(engine) = load(&with).err().and_then(|e| variants(&e, &r.name)) {
                     let name = |v: &serde_json::Value| -> String {
                         v.get("type").unwrap_or(v).as_str().unwrap_or_default().to_string()
                     };

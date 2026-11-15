@@ -66,7 +66,6 @@ fn target(id: DestId, dest: &FakeDestination) -> DestinationTarget {
         name: id.to_string(),
         destination: Box::new(dest.clone()),
         on_reject: Answer::Drop,
-        wants_doc_id: false,
         placement: Some(smeltr::plan::topology::Placement::Topic),
     }
 }

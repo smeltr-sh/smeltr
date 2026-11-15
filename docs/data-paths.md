@@ -80,7 +80,7 @@ flowchart TD
 
 - A block here, or one on a marked row (Pipeline exception), holds the batch: the pool passes the source over and never re-runs it, since the same rows meet the same routes and fail the same way. A destination's own block is re-run instead, because the destination can recover by itself.
 - A destination that writes the record gets the record object, the document a pipeline with no steps would write: `{"_raw": ...}` for a byte record, `{}` for one whose source's `encoding` is `none`, a typed record's fields otherwise. One that writes a field as text gets that field's text, the decoded text for `_raw` and base64 for a `bytes` field. One that writes bytes (`format: "bytes"`) gets one `bytes` field of each source record, `__source.bytes` unless it names another: the payload as the source read it, before decoding. A text destination naming a field the record lacks refuses the row.
-- No pipeline ran, so there is no `__destination.id`: a destination keying on an identity gets none, counted as `smeltr_rows_without_doc_id_total`.
+- No pipeline ran, so there is no `__destination.id`: a destination that reads it sends the document with no `_id`, and Elasticsearch generates one.
 
 ## Pipeline exception
 

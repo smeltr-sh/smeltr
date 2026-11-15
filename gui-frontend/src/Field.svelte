@@ -17,6 +17,8 @@
   `aria-required` on its control. `optional` is one that may be left empty.
   Either one opens the `?` with "Required." or "Optional.". A field that
   always holds a value, such as a toggle or a select, is neither.
+  `overriddenBy` names the `__destination` field a row sets to replace this
+  setting. The label shows the override glyph after its name, and the `?` says the same.
 -->
 <script module lang="ts">
   let seq = 0;
@@ -26,6 +28,7 @@
   import type { Component, Snippet } from 'svelte';
   import Help from './Help.svelte';
   import Locked from './Locked.svelte';
+  import OverrideIcon from './OverrideIcon.svelte';
   import StateMark from './StateMark.svelte';
   import { validationContext } from './validation.svelte';
 
@@ -41,6 +44,7 @@
     bare = false,
     required = false,
     optional = false,
+    overriddenBy,
     children,
   }: {
     label: string;
@@ -54,6 +58,8 @@
     bare?: boolean;
     required?: boolean;
     optional?: boolean;
+    /** The `__destination` field a row sets to replace this setting. */
+    overriddenBy?: string;
     children: Snippet;
   } = $props();
 
@@ -100,9 +106,11 @@
 
 {#snippet name()}
   <span class="name" class:bare class:required
-    >{#if Icon}<Icon />{/if}<span id={nameId}>{label}</span>{#if help}<Help {label}
+    >{#if Icon}<Icon />{/if}<span id={nameId}>{label}</span>{#if overriddenBy}<OverrideIcon
+      />{/if}{#if help || overriddenBy}<Help {label}
         >{#if required}<strong>Required.</strong>{' '}{:else if optional}<strong>Optional.</strong
-          >{' '}{/if}{#if typeof help === 'string'}{help}{:else}{@render help()}{/if}</Help
+          >{' '}{/if}{#if overriddenBy}A row whose pipeline sets <code>{overriddenBy}</code> uses
+          that instead.{' '}{/if}{#if typeof help === 'string'}{help}{:else if help}{@render help()}{/if}</Help
       >{/if}</span
   >
 {/snippet}

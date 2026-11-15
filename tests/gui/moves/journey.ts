@@ -752,7 +752,7 @@ async function addElasticsearch(j: Journey, id: string, index: string) {
   const { page, sink } = j;
   await page.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
   const form = page.getByRole('dialog', { name: /new Elasticsearch destination/ });
-  await form.getByRole('textbox', { name: /^id/ }).fill(id);
+  await form.getByRole('textbox', { name: 'id', exact: true }).fill(id);
   await form.getByRole('textbox', { name: 'url' }).fill(sink.url);
   await form.getByRole('textbox', { name: 'default index' }).fill(index);
   await form.getByRole('button', { name: 'Add', exact: true }).click();
@@ -844,7 +844,7 @@ const duplicateDestination: Move = {
     await page.getByRole('button', { name: `More actions for ${original}` }).click();
     await page.getByRole('button', { name: 'Duplicate', exact: true }).click();
     const form = page.getByRole('dialog', { name: /^new .* destination$/ });
-    const idField = form.getByRole('textbox', { name: /^id/ });
+    const idField = form.getByRole('textbox', { name: 'id', exact: true });
     await expect(idField).toHaveValue(`${original}-2`);
     await idField.fill(id);
     await form.getByRole('button', { name: 'Add', exact: true }).click();

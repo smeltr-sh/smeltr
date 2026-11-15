@@ -419,7 +419,7 @@ test("a destination's accepts is saved with it", async ({ admin, leader, api }) 
   await admin.getByRole('button', { name: '+ Add destination' }).click();
   const dialog = admin.getByRole('dialog');
   await dialog.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
-  await dialog.getByRole('textbox', { name: /^id/ }).fill('search');
+  await dialog.getByRole('textbox', { name: 'id', exact: true }).fill('search');
   await dialog.getByRole('textbox', { name: 'url' }).fill('https://es.example.com:9200');
   await dialog.getByRole('textbox', { name: 'default index' }).fill('logs');
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();

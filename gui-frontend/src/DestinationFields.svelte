@@ -34,10 +34,9 @@
   import SchemaRegistryFields from './SchemaRegistryFields.svelte';
   import {
     LIMITS,
-    OBJECT_PREFIX,
     type DestinationDto,
     type SecretDto,
-    type DocIdPolicy,
+    type BulkAction,
     type Compression,
     type SchemaRegistry,
     type HttpCompression,
@@ -60,6 +59,7 @@
     isObjectStore,
     objectModified,
     prefixOf,
+    OBJECT_PREFIX,
     sendsCredential,
   } from './destinations';
 
@@ -111,6 +111,7 @@
   function elasticModified(d: DestinationDto): boolean {
     if (d.type !== 'elasticsearch') return false;
     return (
+      d.idField !== undefined ||
       d.zoneUrls !== undefined ||
       d.sniff === true ||
       requestDeliveryModified(d, 'maxBulkBytes', LIMITS.maxBulkBytes.default)
@@ -163,7 +164,7 @@
     >
       <input type="text" bind:value={destination.brokers} placeholder="host:9092,host2:9092" />
     </Field>
-    <Field required field="defaultTopic" label="default topic">
+    <Field required field="defaultTopic" label="default topic" overriddenBy="__destination.topic">
       <input type="text" bind:value={destination.defaultTopic} />
     </Field>
     {@render formatFields(destination, AVRO_STREAM_FORMATS, 'json', streamFormatHelp)}
@@ -253,10 +254,12 @@
       {/snippet}
       <input type="text" bind:value={destination.namespace} placeholder="namespace" />
     </Field>
-    <Field required field="defaultEventHub" label="default event hub">
-      {#snippet help()}
-        The event hub a record goes to unless its pipeline sets <code>__destination.topic</code>.
-      {/snippet}
+    <Field
+      required
+      field="defaultEventHub"
+      label="default event hub"
+      overriddenBy="__destination.topic"
+    >
       <input type="text" bind:value={destination.defaultEventHub} />
     </Field>
     <ConnectorAccess
@@ -363,49 +366,43 @@
       sends={sendsCredential(destination)}
       placeholder="https://es.internal:9200"
     />
-    <Field required field="defaultIndex" label="default index">
+    <Field required field="defaultIndex" label="default index" overriddenBy="__destination.index">
       <input type="text" bind:value={destination.defaultIndex} />
     </Field>
     <TlsFields value={destination} farEnd="destination" />
     <ConnectorAccess store="elasticsearch" value={destination} show="credential" {secrets} />
-    <Field field="docId" label="duplicate documents">
+    <Field field="action" label="bulk action">
       {#snippet help()}
-        After a crash a document can be sent twice. Under <code>auto</code> that is a second copy;
-        <code>dedupe</code>
-        and <code>overwrite</code> catch it.
+        What happens when a document arrives with an id already in the index.
       {/snippet}
       <select
-        value={destination.docId ?? 'auto'}
+        value={destination.action ?? 'create'}
         onchange={(e) => {
           if (destination.type === 'elasticsearch')
-            destination.docId = e.currentTarget.value as DocIdPolicy;
+            destination.action = e.currentTarget.value as BulkAction;
         }}
       >
-        <option value="auto">auto &mdash; send no id</option>
-        <option value="dedupe">dedupe &mdash; keep the first copy, drop re-sends</option>
-        <option value="overwrite">overwrite &mdash; replace with the latest copy</option>
+        <option value="create">create &mdash; keep the first copy</option>
+        <option value="index">index &mdash; replace it with the new copy</option>
       </select>
     </Field>
-    {#if (destination.docId ?? 'auto') !== 'auto'}
-      <Nested>
-        <Field optional field="idField" label="id field">
-          {#snippet help()}
-            The row field that already holds each document's stable id. Leave it empty and the
-            pipeline must set <code>__destination.id</code>.
-          {/snippet}
-          <input
-            type="text"
-            value={destination.idField ?? ''}
-            oninput={(e) => {
-              if (destination.type === 'elasticsearch')
-                destination.idField = optional(e.currentTarget.value);
-            }}
-            placeholder="event.id"
-          />
-        </Field>
-      </Nested>
-    {/if}
     <Advanced label="Advanced" modified={elasticModified(destination)}>
+      <Field optional field="idField" label="ID field">
+        {#snippet help()}
+          The row field each document's ID is read from. Left empty, the ID is read from
+          <code>__destination.id</code>, the field a pipeline sets. A row with no ID gets one
+          Elasticsearch generates.
+        {/snippet}
+        <input
+          type="text"
+          value={destination.idField ?? ''}
+          oninput={(e) => {
+            if (destination.type === 'elasticsearch')
+              destination.idField = optional(e.currentTarget.value);
+          }}
+          placeholder="__destination.id"
+        />
+      </Field>
       <RequestDelivery
         value={destination}
         size="maxBulkBytes"
@@ -524,19 +521,17 @@
       'json',
       streamFormatHelp,
     )}
+    {@const toEvent = (destination.endpoint ?? 'event') === 'event'}
     {#each ['index', 'sourcetype', 'source', 'host'] as const as key (key)}
       {#snippet keyHelp()}
-        {#if key === 'index'}
-          A row's <code>__destination.index</code> picks its own.
-        {:else}
-          A document's own <code>{key}</code> wins.
-        {/if}
+        A document's own <code>{key}</code> wins.
       {/snippet}
       <Field
         optional
         field={key}
         label={key}
-        help={(destination.endpoint ?? 'event') === 'event' ? keyHelp : undefined}
+        overriddenBy={key === 'index' && toEvent ? '__destination.index' : undefined}
+        help={key !== 'index' && toEvent ? keyHelp : undefined}
       >
         <input
           type="text"
@@ -793,11 +788,11 @@
     {#if o.type !== 'sftp'}
       <ConnectorAccess store={o.type} value={o} show="credential" {secrets} />
     {/if}
-    <Field optional field="prefix" label="prefix">
+    <Field optional field="prefix" label="prefix" overriddenBy="__destination.prefix">
       {#snippet help()}
-        What every {o.type === 'sftp' ? 'file path' : 'object key'} starts with.
+        What {o.type === 'sftp' ? 'file paths' : 'object keys'} start with.
         <code>%Y %m %d %H %M</code>
-        are the write time, UTC. A row's <code>__destination.prefix</code> picks its own.
+        are the write time, UTC.
       {/snippet}
       <input
         type="text"
