@@ -3879,11 +3879,7 @@ pub fn preview_routes_at(
                                 .map(Placement::name)
                                 .into_iter()
                                 .zip(doc.placements)
-                                .chain([(
-                                    "id",
-                                    doc.doc_id
-                                        .or_else(|| doc.doc_id_by_dest.into_iter().find_map(|(_, v)| v)),
-                                )])
+                                .chain([("id", doc.doc_id_by_dest.into_iter().find_map(|(_, v)| v).or(doc.doc_id))])
                                 .filter_map(|(name, value)| Some((name, value?)))
                                 .collect(),
                         })
