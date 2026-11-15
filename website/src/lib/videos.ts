@@ -46,11 +46,11 @@ export type Video = {
   level: (typeof levels)[number];
   roles: (typeof roles)[number][];
   topics: (typeof topics)[number][];
-  /** A long video's chapters, in order, as YouTube marks them: each starts `start` seconds in. */
+  /** A long video's chapters, in order, as YouTube marks them: each starts `start` seconds in, once the video is out. */
   chapters?: Chapter[];
 };
 
-export type Chapter = { title: string; start: number };
+export type Chapter = { title: string; start?: number };
 
 /** A question with four choices, one of them right. `chapter` is where the course teaches it, counted from 1 in the
  * course's `parts`; `answer` is the course's own answer, shown once the visitor picks. */
@@ -123,6 +123,15 @@ const allCourses: Course[] = [
       {
         title: 'Smeltr Beginner',
         slug: 'smeltr-beginner',
+        chapters: [
+          { title: 'How smeltr works' },
+          { title: 'Install and enroll' },
+          { title: 'Bring in a syslog feed' },
+          { title: 'Shape the records' },
+          { title: 'Deliver and deploy' },
+          { title: 'Watch it run' },
+          { title: 'When it breaks' },
+        ],
         level: 'Beginner',
         roles: ['Security analyst', 'Data analyst', 'Data engineer', 'Administrator'],
         topics: [

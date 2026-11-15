@@ -31,12 +31,12 @@
   {#if video.chapters}
     <h2>Chapters</h2>
     <ol class="rows">
-      {#each video.chapters as chapter, i (chapter.start)}
+      {#each video.chapters as chapter, i (chapter.title)}
         <li>
-          <a href="{watch}#t={chapter.start}">
+          <a href={chapter.start === undefined ? watch : `${watch}#t=${chapter.start}`}>
             <span class="n">{i + 1}</span>
             <span class="t">{chapter.title}</span>
-            <span class="m">{time(chapter.start)}</span>
+            {#if chapter.start !== undefined}<span class="m">{time(chapter.start)}</span>{/if}
           </a>
         </li>
       {/each}

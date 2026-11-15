@@ -26,7 +26,9 @@
   $effect(seek);
 
   // Under the player: the chapter last chosen in a long video, or else the video's place in the course.
-  const chapter = $derived(video.chapters?.findLastIndex((c) => c.start <= (start ?? 0)) ?? -1);
+  const chapter = $derived(
+    video.chapters?.findLastIndex((c) => (c.start ?? 0) <= (start ?? 0)) ?? -1,
+  );
   const heading = $derived(
     chapter >= 0
       ? `${chapter + 1}. ${video.chapters![chapter].title}`
@@ -98,10 +100,10 @@
             }}><span aria-hidden="true">{open ? '›' : '‹'}</span></button
           >
           <ol id="course-videos">
-            {#each video.chapters ?? [] as chapter, i (chapter.start)}
+            {#each video.chapters ?? [] as chapter, i (chapter.title)}
               <li>
                 <a
-                  href="#t={chapter.start}"
+                  href="#t={chapter.start ?? 0}"
                   aria-current={chapter.start === start ? 'true' : undefined}
                   title={open ? undefined : chapter.title}
                 >
