@@ -727,7 +727,7 @@ fn a_route_regex_condition_actually_matches_real_raw_bytes() {
     batch.put(SLOT_RAW, b.finish(), &mut pool);
 
     let mut ctx = Ctx::new(&mut pool, &mut errors);
-    let masks = route_masks(&topology.routes, source_id, &mut batch, &mut ctx, None);
+    let masks = route_masks(&topology.routes, source_id, &mut batch, &mut ctx);
     assert_eq!(masks.len(), 1);
     let (_, m0) = &masks[0];
     assert!(
