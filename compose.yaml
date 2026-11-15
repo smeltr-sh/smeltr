@@ -22,7 +22,7 @@ services:
       - "443:8443"
       # Each receiver listens on its own port, and Docker can publish a new port only by recreating the container.
       # Each port listed is the one its source form proposes. Uncomment the ports of the receivers this install will
-      # run before its first `up`, and add a line for any other.
+      # run before its first `up`, and add a line for any receiver not listed.
       # - "8088:8088"      # Splunk HEC
       # - "9997:9997"      # Splunk S2S
       # - "4318:4318"      # OTLP
