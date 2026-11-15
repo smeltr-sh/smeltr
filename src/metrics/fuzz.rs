@@ -40,6 +40,8 @@ struct Reader {
     /// When it last read, as late as it could have been.
     last_drain: Option<Instant>,
     next_offset: i64,
+    /// Told its deployment is stopping.
+    stopping: bool,
 }
 
 fn random_labels(rng: &mut Rng) -> Vec<(&'static str, String)> {
@@ -103,6 +105,9 @@ fn resolved(
 /// A sample as a record must read: its name, its labels, and its value.
 #[derive(Debug)]
 struct Owed {
+    /// The series as recorded, and whether this process mirrors it: the cursor a carried sample moves.
+    key: MetricKey,
+    mirrored: bool,
     name: &'static str,
     labels: Vec<(&'static str, String)>,
     value: MetricValue,
@@ -155,9 +160,11 @@ fn read(record: &[u8], labels: usize, from: i64, to: i64) -> Result<Record, Stri
 fn reads_as(number: &serde_json::Number, value: MetricValue) -> bool {
     match value {
         MetricValue::Counter(n) => number.as_u64() == Some(n),
-        MetricValue::FloatCounter(g) | MetricValue::Gauge(g) => number
-            .as_f64()
-            .is_some_and(|f| f.to_bits() == g.to_bits() || (f == 0.0 && g == 0.0)),
+        // Through the same parse as the record, which rounds a long float its own way.
+        MetricValue::FloatCounter(g) | MetricValue::Gauge(g) => number.as_f64().is_some_and(|f| {
+            let g = serde_json::from_str::<f64>(&g.to_string()).unwrap_or(g);
+            f.to_bits() == g.to_bits() || (f == 0.0 && g == 0.0)
+        }),
     }
 }
 
@@ -222,6 +229,10 @@ fn every_poll_carries_what_its_source_owes_moved_samples_first_within_its_batch(
             "a batch cut by its bytes",
             "a lone record past its bytes",
             "two sources",
+            "a count left owed",
+            "a source told to stop",
+            "a stopping source still owing",
+            "a stopping source finished",
         ]
         .map(String::from),
     );
@@ -259,6 +270,7 @@ fn every_poll_carries_what_its_source_owes_moved_samples_first_within_its_batch(
                     subjects: named,
                     last_drain: None,
                     next_offset: 0,
+                    stopping: false,
                 });
                 if readers.len() > 1 {
                     cov.reach("two sources");
@@ -459,6 +471,23 @@ fn every_poll_carries_what_its_source_owes_moved_samples_first_within_its_batch(
             }
 
             for (r, reader) in readers.iter_mut().enumerate() {
+                // Told to stop, a source's next poll is due at once, and it holds counts until a poll leaves nothing
+                // owed.
+                if reader.stopping || rng.chance(8) {
+                    if !reader.stopping {
+                        reader.last_drain = None;
+                    }
+                    let holds = reader.source.stop_taking();
+                    if holds != reader.last_drain.is_none() {
+                        return Err(format!("round {round}, source {r}: stop_taking said {holds}"));
+                    }
+                    cov.reach(match (reader.stopping, holds) {
+                        (false, _) => "a source told to stop",
+                        (true, true) => "a stopping source still owing",
+                        (true, false) => "a stopping source finished",
+                    });
+                    reader.stopping = true;
+                }
                 for _ in 0..rng.below(3) {
                     let most_rows = if rng.chance(2) { 4 } else { 500 };
                     let max_rows = rng.below(most_rows);
@@ -503,10 +532,16 @@ fn every_poll_carries_what_its_source_owes_moved_samples_first_within_its_batch(
                         cov.reach("a poll waiting out its bucket");
                     }
                     reader.last_drain = Some(Instant::now());
-                    let mut owed = take(&values, &mut reader.cursor);
-                    owed.extend(take(&mirrored, &mut reader.mirrored));
-                    let mut owed: Vec<Owed> = (owed.into_iter())
-                        .map(|(key, value)| {
+                    // Where each cursor would be were every sample carried; a cursor moves only past those that are.
+                    let (mut own_past, mut mirrored_past) = (reader.cursor.clone(), reader.mirrored.clone());
+                    let own = take(&values, &mut own_past).into_iter().map(|(k, v)| (false, k, v));
+                    let owed = own.chain(
+                        take(&mirrored, &mut mirrored_past)
+                            .into_iter()
+                            .map(|(k, v)| (true, k, v)),
+                    );
+                    let mut owed: Vec<Owed> = owed
+                        .map(|(is_mirrored, key, value)| {
                             let labels = match &reader.subjects {
                                 Some(subjects) => {
                                     let labels = resolved(subjects, &key.labels, true);
@@ -536,6 +571,8 @@ fn every_poll_carries_what_its_source_owes_moved_samples_first_within_its_batch(
                                 name: key.name,
                                 labels,
                                 value,
+                                key,
+                                mirrored: is_mirrored,
                             }
                         })
                         .collect();
@@ -558,6 +595,13 @@ fn every_poll_carries_what_its_source_owes_moved_samples_first_within_its_batch(
                             ));
                         };
                         let carried = owed.remove(at);
+                        let (cursor, past) = match carried.mirrored {
+                            true => (&mut reader.mirrored, &mirrored_past),
+                            false => (&mut reader.cursor, &own_past),
+                        };
+                        if let Some(value) = past.get(&carried.key) {
+                            cursor.insert(carried.key.clone(), *value);
+                        }
                         // Moved samples first: a cut drops an idle counter before one that moved.
                         if idle(carried.value) {
                             seen_idle = true;
@@ -582,6 +626,12 @@ fn every_poll_carries_what_its_source_owes_moved_samples_first_within_its_batch(
                     }
                     if batch.len() == 1 && size > max_bytes {
                         cov.reach("a lone record past its bytes");
+                    }
+                    // A count it left is owed at once, not a bucket later.
+                    let left = owed.iter().any(|o| o.value.is_counter() && !idle(o.value));
+                    if left {
+                        cov.reach("a count left owed");
+                        reader.last_drain = None;
                     }
                     // What it left: only past its rows, or a sample that would pass its bytes, and idle ones only
                     // once every moved one is in.

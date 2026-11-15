@@ -63,10 +63,11 @@
   </p>
   <pre><code>{@html highlight(json(metricRecord))}</code></pre>
   <p>
-    A counter's value is how much it grew since its last record, and a counter that did not grow
-    gives no record. A gauge gives its current value every bucket. The first bucket comes at once
-    and holds everything counted since the worker started. A bucket larger than the source's batch
-    limits is cut, and the counts cut from it are lost.
+    A counter's value is how much it grew since its last bucket, and a counter that did not grow
+    gives 0. A gauge gives its current value every bucket. The first bucket comes at once and holds
+    everything counted since the worker started. A bucket larger than the source's batch limits is
+    split, and the rest follows at once as the next bucket. When the worker stops or takes a new
+    deployment, the source gives one last bucket after every other source has stopped.
   </p>
   <p>
     Every record carries <code>thread</code>, the worker thread that counted it:
