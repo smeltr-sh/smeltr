@@ -375,6 +375,11 @@ pub struct MetricsSource {
     bucket: Duration,
     /// `None` until the first poll, which is due immediately.
     last_drain: Option<Instant>,
+    /// Its deployment is stopping: what it counted since its last poll is owed now, and dies with the runtime unless
+    /// a poll carries it ([`Source::stop_taking`]).
+    stopping: bool,
+    /// A poll since it began stopping left nothing owed.
+    finished: bool,
     next_offset: i64,
     /// A fixed synthetic `__source.topic`, so a route can select metrics rows like any other source's.
     topic: std::sync::Arc<str>,
@@ -452,6 +457,8 @@ impl MetricsSource {
             mirrored: Cursor::default(),
             bucket: config.bucket,
             last_drain: None,
+            stopping: false,
+            finished: false,
             next_offset: 0,
             topic: std::sync::Arc::from(METRICS_TOPIC),
             subjects: Arc::default(),
@@ -477,7 +484,7 @@ impl Source for MetricsSource {
         max_bytes: usize,
         timeout: Duration,
     ) -> Result<Vec<SourceRecord>, IoError> {
-        if let Some(last) = self.last_drain {
+        if let Some(last) = self.last_drain.filter(|_| !self.stopping) {
             let waited = last.elapsed();
             if waited < self.bucket {
                 std::thread::sleep((self.bucket - waited).min(timeout));
@@ -505,7 +512,7 @@ impl Source for MetricsSource {
             .map(|s| (false, s))
             .chain(mirrored.into_iter().map(|s| (true, s)))
             .collect();
-        // Idle counters last, so a cutoff leaves out a 0 before it leaves a count owed.
+        // Idle counters go last, so a cutoff leaves out a 0 before it leaves out a count.
         samples.sort_by_key(|(_, s)| s.value.is_idle());
         let moved = |s: &MetricSample| s.value.is_counter() && !s.value.is_idle();
         let owed = samples.iter().filter(|(_, s)| moved(s)).count();
@@ -530,19 +537,27 @@ impl Source for MetricsSource {
                 sent.push(sample)
             }
         }
-        // A count the cutoff left is owed now, not a bucket from now: the cut falls on the same keys every time, and
-        // waiting would starve them. A gauge or an idle counter left out owes nothing.
+        // A count the cutoff left out is polled again at once, not at the next bucket: the cut falls on the same keys
+        // every time, and waiting would starve them. A gauge or an idle counter left out owes nothing.
         if sent.iter().chain(&sent_mirrored).filter(|s| moved(s)).count() < owed {
             self.last_drain = None;
         }
         advance(&mut self.cursor, &sent);
         advance(&mut self.mirrored, &sent_mirrored);
+        self.finished = self.stopping && self.last_drain.is_some();
         Ok(out.finish())
     }
 
     /// Nothing upstream to acknowledge.
     fn commit(&mut self, _offsets: &CommitMap) -> Result<(), IoError> {
         Ok(())
+    }
+
+    /// It holds what was counted since its last poll until a poll carries it, so it is polled again at once. The
+    /// deployment stops it after every other source, so that poll carries their last counts too.
+    fn stop_taking(&mut self) -> bool {
+        self.stopping = true;
+        !self.finished
     }
 }
 
@@ -742,6 +757,31 @@ mod tests {
             source.poll_batch(1, 1 << 20, Duration::ZERO).unwrap().is_empty(),
             "nothing is owed, so the bucket paces the next poll again"
         );
+    }
+
+    /// A stopping source is polled at once for what it counted since its last poll, and holds nothing once a poll
+    /// has carried it.
+    #[test]
+    fn a_stopping_source_hands_over_its_counts_without_waiting_out_the_bucket() {
+        let m = Arc::new(Metrics::new());
+        let mut source = MetricsSource::new(
+            m.clone(),
+            MetricsSourceConfig {
+                bucket: Duration::from_secs(3600),
+            },
+        );
+        source.poll_batch(100, 1 << 20, Duration::ZERO).unwrap();
+        m.incr("rows_in", &[("source", "a")], 5);
+        assert!(
+            source.poll_batch(100, 1 << 20, Duration::ZERO).unwrap().is_empty(),
+            "inside its bucket"
+        );
+
+        assert!(source.stop_taking(), "it holds the count");
+        let rows = source.poll_batch(100, 1 << 20, Duration::ZERO).unwrap();
+        let row: serde_json::Value = serde_json::from_slice(rows[0].bytes().unwrap()).unwrap();
+        assert_eq!(row["value"].as_u64(), Some(5));
+        assert!(!source.stop_taking(), "the poll carried it");
     }
 
     #[test]

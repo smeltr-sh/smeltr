@@ -40,6 +40,9 @@ struct Reader {
     /// When it last read, as late as it could have been.
     last_drain: Option<Instant>,
     next_offset: i64,
+    /// Told its deployment is stopping, and whether a poll since has left nothing owed.
+    stopping: bool,
+    finished: bool,
 }
 
 fn random_labels(rng: &mut Rng) -> Vec<(&'static str, String)> {
@@ -228,6 +231,9 @@ fn every_poll_carries_what_its_source_owes_moved_samples_first_within_its_batch(
             "a lone record past its bytes",
             "two sources",
             "a count left owed",
+            "a source told to stop",
+            "a stopping source still owing",
+            "a stopping source finished",
         ]
         .map(String::from),
     );
@@ -265,6 +271,8 @@ fn every_poll_carries_what_its_source_owes_moved_samples_first_within_its_batch(
                     subjects: named,
                     last_drain: None,
                     next_offset: 0,
+                    stopping: false,
+                    finished: false,
                 });
                 if readers.len() > 1 {
                     cov.reach("two sources");
@@ -465,6 +473,22 @@ fn every_poll_carries_what_its_source_owes_moved_samples_first_within_its_batch(
             }
 
             for (r, reader) in readers.iter_mut().enumerate() {
+                // A stopping source says it holds counts until a poll leaves nothing owed, and waits out no bucket.
+                if reader.stopping || rng.chance(8) {
+                    let holds = reader.source.stop_taking();
+                    if holds == reader.finished {
+                        return Err(format!(
+                            "round {round}, source {r}: stop_taking said {holds} once finished was {}",
+                            reader.finished
+                        ));
+                    }
+                    cov.reach(match (reader.stopping, holds) {
+                        (false, _) => "a source told to stop",
+                        (true, true) => "a stopping source still owing",
+                        (true, false) => "a stopping source finished",
+                    });
+                    reader.stopping = true;
+                }
                 for _ in 0..rng.below(3) {
                     let most_rows = if rng.chance(2) { 4 } else { 500 };
                     let max_rows = rng.below(most_rows);
@@ -481,7 +505,7 @@ fn every_poll_carries_what_its_source_owes_moved_samples_first_within_its_batch(
                     );
                     // Whether the poll ends inside its bucket, by a margin that covers the poll itself; a poll too
                     // near its bucket's end to tell is not made.
-                    let since = reader.last_drain.map(|at| at.elapsed());
+                    let since = reader.last_drain.filter(|_| !reader.stopping).map(|at| at.elapsed());
                     let margin = Duration::from_millis(60);
                     let inside = since.is_some_and(|since| since + timeout + margin < reader.bucket);
                     let near = since.is_some_and(|since| since + timeout < reader.bucket + margin);
@@ -605,10 +629,12 @@ fn every_poll_carries_what_its_source_owes_moved_samples_first_within_its_batch(
                         cov.reach("a lone record past its bytes");
                     }
                     // A count it left is owed at once, not a bucket later.
-                    if owed.iter().any(|o| o.value.is_counter() && !idle(o.value)) {
+                    let left = owed.iter().any(|o| o.value.is_counter() && !idle(o.value));
+                    if left {
                         cov.reach("a count left owed");
                         reader.last_drain = None;
                     }
+                    reader.finished = reader.stopping && !left;
                     // What it left: only past its rows, or a sample that would pass its bytes, and idle ones only
                     // once every moved one is in.
                     if !owed.is_empty() {
