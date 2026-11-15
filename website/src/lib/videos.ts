@@ -46,7 +46,8 @@ export type Video = {
   level: (typeof levels)[number];
   roles: (typeof roles)[number][];
   topics: (typeof topics)[number][];
-  /** A long video's chapters, in order, as YouTube marks them: each starts `start` seconds in, once the video is out. */
+  /** A long video's chapters, in order, as YouTube marks them: each starts `start` seconds in. The titles come first,
+   * for the self-test; the starts come with the video. */
   chapters?: Chapter[];
 };
 
