@@ -92,8 +92,7 @@ pub fn need(method: &Method, path: &str) -> Need {
             Method::POST,
             [
                 "preview",
-                "grok" | "onboard" | "line-breaker" | "format" | "certificate" | "sql" | "schema-read"
-                | "schema-export",
+                "onboard" | "line-breaker" | "format" | "certificate" | "sql" | "schema-read" | "schema-export",
             ],
         )
         | (Method::GET | Method::HEAD, ["preview", "schema-standards"]) => Need::Somewhere(Level::Viewer),
@@ -193,7 +192,7 @@ fn in_area(method: &Method, within: &[&str]) -> Option<Level> {
 
         // Samples, and what a preview of them shows.
         (Method::GET | Method::HEAD, ["samples"])
-        | (Method::POST, ["preview", "pipeline" | "routes" | "schema-import"]) => Level::Viewer,
+        | (Method::POST, ["preview", "pipeline" | "routes" | "grok" | "schema-import"]) => Level::Viewer,
         (Method::GET | Method::HEAD | Method::PUT | Method::DELETE, ["samples", _]) => read,
         (Method::POST, ["samples"]) => Level::Editor,
         _ => return None,
@@ -369,6 +368,7 @@ mod tests {
             (Method::GET, "/api/areas/payments/samples/s1"),
             (Method::POST, "/api/areas/payments/preview/pipeline"),
             (Method::POST, "/api/areas/payments/preview/routes"),
+            (Method::POST, "/api/areas/payments/preview/grok"),
             (Method::POST, "/api/areas/payments/preview/schema-import"),
         ] {
             assert_eq!(need(&method, path), area("payments", Level::Viewer), "{method} {path}");
@@ -382,7 +382,6 @@ mod tests {
             assert_eq!(need(&method, path), area("payments", Level::Editor), "{method} {path}");
         }
         for path in [
-            "/api/preview/grok",
             "/api/preview/onboard",
             "/api/preview/line-breaker",
             "/api/preview/format",

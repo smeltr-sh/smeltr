@@ -177,9 +177,9 @@ pub const CATALOG: &[Route] = &[
     },
     Route {
         method: "POST",
-        path: "/api/preview/grok",
-        what: "List the capture names grok patterns declare, with no sample. No query.",
-        body: "{ patterns: string[], customPatterns?: { name, pattern }[], grokPatterns?: { id, pattern }[] }",
+        path: "/api/areas/:area/preview/grok",
+        what: "The captures a grok pattern declares, each with the type the produced schemas on the branch give it, else its pattern's. Reads no sample. Query: branch.",
+        body: "{ patterns: string[], customPatterns?: { name, pattern }[], grokPatterns?: { id, pattern }[], splitDots?: bool, produces?: id[] }",
     },
     Route {
         method: "POST",

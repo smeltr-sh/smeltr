@@ -2392,17 +2392,21 @@ export async function checkCaptureFilter(
 export interface GrokCaptures {
   ok: boolean;
   errors: ApiError[];
-  /** Each capture's name, and the type its pattern gives it, in the form a declared field's type takes. */
+  /** Each capture's name, and the type a produced schema gives it, else the type its pattern gives it, in the form a
+   * declared field's type takes. */
   captures: { name: string; type: unknown }[];
 }
 
 /** `grokPatterns` are the bundle's, which the step's patterns may name. */
-export function grokCaptures(
-  patterns: string[],
-  customPatterns: { name: string; pattern: string }[],
-  grokPatterns: GrokPatternDto[] = [],
-): Promise<GrokCaptures> {
-  return post('/api/preview/grok', { patterns, customPatterns, grokPatterns }, 'quiet');
+export function grokCaptures(req: {
+  patterns: string[];
+  customPatterns: { name: string; pattern: string }[];
+  grokPatterns?: GrokPatternDto[];
+  splitDots: boolean;
+  /** The ids of the schemas the pipeline produces, which give the captures they name their types. */
+  produces: string[];
+}): Promise<GrokCaptures> {
+  return post(branched(inArea('/preview/grok')), req, 'quiet');
 }
 
 /** Whether a save would take a line breaker, asked as one is typed. Not `ok` when it would refuse it, with why, in

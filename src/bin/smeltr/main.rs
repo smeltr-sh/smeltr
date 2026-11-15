@@ -425,13 +425,34 @@ fn run_pipeline_callers(raw: config_file::RawBundle) -> Envelope<PipelineCallers
     )
 }
 
-/// The captures of a grok pattern, with no sample and no pipeline.
+/// The captures of a grok pattern. It reads no sample.
 ///
 /// Deliberately not part of an area's `preview/pipeline`: that needs a chosen sample and answers nothing once
 /// compilation fails, and both are exactly when an editor most needs the names -- a step whose pattern just gained a
 /// capture nothing declares does not compile, and it is this list that says what to declare.
-async fn grok_captures(Json(req): Json<GrokCapturesRequest>) -> Envelope<GrokCaptures> {
-    captures_of(req)
+///
+/// The schemas the request's `produces` names are read from `branch`: `shared/`'s, and a group's own.
+async fn grok_captures(
+    axum::extract::Path(area): axum::extract::Path<String>,
+    axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
+    Json(mut req): Json<GrokCapturesRequest>,
+) -> Envelope<GrokCaptures> {
+    if req.produces.is_empty() {
+        return captures_of(req);
+    }
+    let branch = q.name().to_string();
+    blocking_answer(move || {
+        let reading = match config_api::Reading::open_in(&smeltr::startup_config::leader_data_dir(), &branch, &area) {
+            Ok(reading) => reading,
+            Err(e) => return Envelope::refused(e),
+        };
+        req.schemas = reading
+            .runnable(reading.raw())
+            .map(|run| run.file.schemas)
+            .unwrap_or_default();
+        captures_of(req)
+    })
+    .await
 }
 
 /// The records of a captured sample, for `/api/preview/onboard`.
@@ -1186,6 +1207,7 @@ async fn setup_leader(
         // Here for `State<AppState>`: a preview may run over a capture the leader holds.
         .route("/api/areas/:area/preview/pipeline", post(preview))
         .route("/api/areas/:area/preview/routes", post(route_preview))
+        .route("/api/areas/:area/preview/grok", post(grok_captures))
         // Not on `app` below with the rest of the worker-groups routes: both need `State<AppState>` -- the listing
         // for `shared`'s hue, the create for a new group's -- the same reason `get_map` is here. `deploy_change`
         // asks the store whether a remote owns `main`.
@@ -2245,7 +2267,6 @@ async fn run_leader() {
     }
 
     let app = Router::new()
-        .route("/api/preview/grok", post(grok_captures))
         .route("/api/preview/onboard", post(onboard_propose))
         .route("/api/preview/line-breaker", post(line_breaker))
         .route("/api/preview/format", post(format))
@@ -3114,11 +3135,33 @@ mod tests {
         );
     }
 
+    /// A capture a produced schema names takes the schema's type over its pattern's, as the pipeline types it.
+    #[test]
+    fn a_capture_comes_with_the_type_its_produced_schema_gives_it() {
+        let schema = serde_json::json!({"id": "s", "title": "s", "fields": [
+            {"field": "http.status", "type": "f64"},
+            {"field": "action", "type": "i64"}
+        ]});
+        let r = captures_of(GrokCapturesRequest {
+            patterns: vec!["%{WORD:action} %{INT:http.status} %{INT:bytes}".to_string()],
+            custom_patterns: vec![],
+            grok_patterns: vec![],
+            split_dots: true,
+            produces: vec!["s".to_string()],
+            schemas: vec![serde_json::from_value(schema).unwrap()],
+        });
+        let types = serde_json::to_value(r.captures.iter().map(|c| &c.ty).collect::<Vec<_>>()).unwrap();
+        assert_eq!(types, serde_json::json!(["i64", "f64", "i64"]));
+    }
+
     fn captures(patterns: &[&str]) -> super::Envelope<super::GrokCaptures> {
         captures_of(GrokCapturesRequest {
             patterns: patterns.iter().map(|p| p.to_string()).collect(),
             custom_patterns: vec![],
             grok_patterns: vec![],
+            split_dots: true,
+            produces: vec![],
+            schemas: vec![],
         })
     }
 
@@ -3132,6 +3175,9 @@ mod tests {
                 id: "VENDOR".to_string(),
                 pattern: "%{WORD:vendor}".to_string(),
             }],
+            split_dots: true,
+            produces: vec![],
+            schemas: vec![],
         });
         assert_eq!(names(&got), vec!["vendor"]);
     }

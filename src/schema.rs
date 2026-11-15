@@ -402,6 +402,18 @@ impl Schema {
     }
 }
 
+/// The type every one of `schemas` that names `path` gives it, where they agree and it is one a parse reads text as.
+/// `None` where none names it, or they disagree.
+pub fn read_as(schemas: &[Arc<Schema>], path: &str) -> Option<DataType> {
+    let mut each = schemas.iter().filter_map(|s| s.fields.iter().find(|f| f.path == path));
+    let ty = each.next()?.ty.clone();
+    let readable = matches!(
+        ty,
+        DataType::Str | DataType::I64 | DataType::F64 | DataType::Bool | DataType::DateTime
+    );
+    (readable && each.all(|f| f.ty == ty)).then_some(ty)
+}
+
 /// Where a record breaks the schemas a pipeline produces, all of them at once: a row keeps one of them, so a field
 /// breaks them when every schema that names it says so, a field is missing when every schema requires it, and a
 /// field is recommended when every schema requires or recommends it and some only recommend it.
