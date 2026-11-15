@@ -180,6 +180,9 @@ pub struct ParseObject {
     pub out: SlotId,
     /// Whether it is declared closed: a key under it that no field takes is dropped.
     pub closed: bool,
+    /// The record's or the target's, where a schema the pipeline produces types keys under it: the keys a dynamic
+    /// parse converts as it lays them.
+    pub schema: Option<std::sync::Arc<crate::format::spread::SchemaKeys>>,
 }
 
 /// What an `Op::Call` runs.
@@ -1521,6 +1524,7 @@ impl Compiler<'_> {
                 name: tree::key_under(target, &name).to_string(),
                 under,
                 closed,
+                schema: None,
             })
             .collect()
     }
@@ -2913,9 +2917,18 @@ impl Compiler<'_> {
                         Origin::Function(id),
                     ),
                     closed: *closed,
+                    schema: None,
                 })
                 .collect(),
         };
+        let mut objects = objects;
+        if matches!(
+            kind,
+            ParserKind::Json { .. } | ParserKind::KeyValue(_) | ParserKind::Cef { .. }
+        ) && let Some(o) = objects.iter_mut().find(|o| o.name.is_empty())
+        {
+            o.schema = self.schema_keys(target).map(std::sync::Arc::new);
+        }
         // A declared object the tree does not hold is new, and replaces what held its name, as each object a parse
         // into a name writes does.
         let new: Vec<&String> = declared_objects
@@ -3386,6 +3399,23 @@ impl Compiler<'_> {
                 .cloned(),
             None => self.syms.lookup(name).map(|s| self.syms.type_of(s).clone()),
         }
+    }
+
+    /// The keys under `target` the schemas the pipeline produces type, each where they agree on a type a parse reads
+    /// text as (`schema::read_as`).
+    fn schema_keys(&self, target: &str) -> Option<crate::format::spread::SchemaKeys> {
+        let paths: std::collections::BTreeSet<&str> = self
+            .produces
+            .iter()
+            .flat_map(|s| s.fields.iter().map(|f| f.path.as_str()))
+            .collect();
+        crate::format::spread::SchemaKeys::new(paths.into_iter().filter_map(|path| {
+            let key = match target {
+                "" | tree::ROOT => path,
+                t => path.strip_prefix(t)?.strip_prefix('.')?,
+            };
+            Some((key.to_string(), crate::schema::read_as(self.produces, path)?))
+        }))
     }
 
     /// What a parse into `target` declares: every field the target holds, at its type, where the parse may find any

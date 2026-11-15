@@ -1,31 +1,51 @@
 <!--
-  A list of schemas by id, as chips, each a link to it on the Schemas page, and a choice of the rest to add: what a
-  pipeline produces, and what a destination accepts.
+  The schemas a pipeline produces or a destination accepts, listed by id as chips that link to the Schemas page, with
+  a choice of the other schemas to add. New schema makes one there and then, saves it with the scope's schemas at
+  once, and names it in the list.
 -->
 <script lang="ts">
-  import type { SchemaDto } from './api';
+  import { putSchemas, type FileConfigDto, type SchemaDto } from './api';
   import RemovableChip from './RemovableChip.svelte';
+  import PickOrNew from './PickOrNew.svelte';
+  import NewSchema, { schemaOf, type SchemaDraft } from './NewSchema.svelte';
 
   let {
     ids = $bindable(),
-    declared,
+    shared,
+    own,
+    config,
+    importers,
     adding,
+    onmade,
     readOnly = false,
   }: {
     ids: string[];
-    /** The bundle's schemas, `shared/`'s and the scope's, offered to add. */
-    declared: SchemaDto[];
+    /** `shared/`'s schemas, offered to add. */
+    shared: SchemaDto[];
+    /** The scope's schemas, offered to add; a new schema is saved with them. */
+    own: SchemaDto[];
+    /** The scope's bundle as the leader reads it, which a schema import's pipeline runs in. */
+    config: FileConfigDto | null;
+    /** The pipelines an import may run. */
+    importers: { id: string; name: string }[];
     /** The add choice's name, read out: "Add a schema it produces". */
     adding: string;
+    /** Called with the schema New schema made and the commit its save made. */
+    onmade: (schema: SchemaDto, commit: string | null) => void;
     readOnly?: boolean;
   } = $props();
 
-  let picking = $state('');
+  const declared = $derived([...shared, ...own]);
   const offered = $derived(declared.filter((d) => !ids.includes(d.id)));
+  let making = $state(false);
 
-  function add(id: string) {
-    if (id && !ids.includes(id)) ids = [...ids, id];
-    picking = '';
+  async function make(draft: SchemaDraft) {
+    const schema = await schemaOf(draft, config);
+    const saved = await putSchemas([...$state.snapshot(own), schema]);
+    if (!saved.ok) throw new Error(saved.errors.map((e) => e.message).join(' '));
+    onmade(schema, saved.commit ?? null);
+    ids = [...ids, schema.id];
+    making = false;
   }
 </script>
 
@@ -38,15 +58,29 @@
   </RemovableChip>
 {/each}
 {#if !readOnly && offered.length === 0}
-  <!-- Nothing left to choose: a schema is made on the Schemas page. -->
-  <a class="add" href="#/build/schemas">Add a schema on the Schemas page</a>
+  <button type="button" class="add link-button" aria-label={adding} onclick={() => (making = true)}
+    >+ New schema…</button
+  >
 {:else if !readOnly}
-  <select aria-label={adding} bind:value={picking} onchange={() => add(picking)}>
-    <option value="">+ add schema</option>
-    {#each offered as d (d.id)}
-      <option value={d.id}>{d.id}</option>
-    {/each}
-  </select>
+  <PickOrNew
+    class="schema-add"
+    label={adding}
+    value=""
+    placeholder="+ add schema"
+    choices={offered.map((d) => d.id)}
+    newLabel="+ New schema…"
+    onnew={() => (making = true)}
+    onpick={(id) => (ids = [...ids, id])}
+  />
+{/if}
+{#if !readOnly}
+  <NewSchema
+    open={making}
+    unavailable={declared.map((d) => d.id)}
+    {importers}
+    onadd={make}
+    oncancel={() => (making = false)}
+  />
 {/if}
 
 <style>
@@ -55,7 +89,7 @@
     font-size: var(--text-note);
   }
 
-  select {
+  :global(select.schema-add) {
     width: auto;
     border-color: transparent;
     background: none;

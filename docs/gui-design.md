@@ -433,20 +433,21 @@ TypeScript: a second copy of the type table would drift from the one that
 runs.
 
 A **static** parser needs no sample at all, so the author never types a
-name. Grok's fields are its captures, which the preview reports in capture
-order, each at the type the pipeline gives it: a schema the pipeline
-produces types a capture it names, and the pattern types the rest. Each
-capture's type menu offers `auto` with that type, and a capture the author
-hasn't chosen a type for shows `auto` there. Only a type the author chooses is stored
-in the step, so the others follow the pattern and the schemas as they
-change. Choosing `auto` again drops the choice, and a choice for a capture
-the pattern lost goes with it. CSV's fields are its ordered column table,
-which the workspace fills in from the configuration, leaving only the type
-to choose. A column CSV should drop is typed `skip`, which keeps the
-columns after it aligned without inventing a field. A key-value key typed
-`skip` makes no field either. Under Advanced, **rebuild the line** writes
-the field the parser reads back with each skipped column left empty, or each
-skipped pair left out, and says how many.
+name. Its fields are known before any row: grok's are its captures, in
+capture order, and CSV's are its ordered column table, which the workspace
+fills in from the configuration. The preview reports each at the type the
+pipeline gives it: a schema the pipeline produces types a field it names, a
+grok capture's pattern types the rest of grok's, and the rest of CSV's are
+`str`. Each field's type menu offers `auto` with that type, and a field the
+author hasn't chosen a type for shows `auto` there, so it follows the parse
+and the schemas as they change. A grok step stores only the types the author
+chooses: choosing `auto` again drops the choice, and a choice for a capture the
+pattern lost goes with it. A CSV column is stored typed `auto` until the author
+chooses. A column CSV should drop is typed `skip`, which keeps the columns
+after it aligned without inventing a field. A key-value key typed `skip` makes
+no field either. Under Advanced, **rebuild the line** writes the field the
+parser reads back with each skipped column left empty, or each skipped pair
+left out, and says how many.
 
 A Remove step shows the record before it as a tree, from the data dictionary
 of a preview of the steps ahead of it, the same preview the step diff runs:

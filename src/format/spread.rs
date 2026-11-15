@@ -26,7 +26,7 @@ use crate::core::tally::FieldSeen;
 use crate::core::variant::{self, Value};
 use crate::format::json::MAX_NESTING;
 use crate::format::tag::{self, Suggestion, Tag};
-use crate::format::typed::{Cell, Slot, TypedBuilder};
+use crate::format::typed::{self, Cell, Slot, TypedBuilder};
 use crate::plan::compile::{Output, ParseObject};
 use crate::plan::tree;
 
@@ -46,6 +46,39 @@ pub enum Step {
 }
 
 /// A node of the name tree the parse declares, by decoded keys.
+/// The keys the schemas a pipeline produces type, under a dynamic parse's target, as a tree of names: a key the parse
+/// lays into the unclaimed fields at one of them is converted to its type as it is laid.
+#[derive(Debug, Default)]
+pub struct SchemaKeys {
+    /// Each name's keys, and its type where a schema types it. The first is the target's.
+    nodes: Vec<(std::collections::HashMap<String, usize>, Option<DataType>)>,
+}
+
+impl SchemaKeys {
+    /// The tree of `typed`, each a name under the target and its type. `None` where `typed` is empty.
+    pub fn new(typed: impl IntoIterator<Item = (String, DataType)>) -> Option<SchemaKeys> {
+        let mut keys = SchemaKeys {
+            nodes: vec![Default::default()],
+        };
+        for (name, ty) in typed {
+            let mut n = 0;
+            for key in tree::segments(&name) {
+                n = match keys.nodes[n].0.get(key.as_ref()) {
+                    Some(&c) => c,
+                    None => {
+                        keys.nodes.push(Default::default());
+                        let c = keys.nodes.len() - 1;
+                        keys.nodes[n].0.insert(key.into_owned(), c);
+                        c
+                    }
+                };
+            }
+            keys.nodes[n].1 = Some(ty);
+        }
+        (keys.nodes.len() > 1).then_some(keys)
+    }
+}
+
 #[derive(Default)]
 struct Node {
     children: Keys<String, usize>,
@@ -67,6 +100,8 @@ struct Frame {
     home_depth: usize,
     /// The value is copied only for a preview's tally: its object is closed and drops it.
     tally_only: bool,
+    /// The name in `Spread::schema` the walk is at, where it names one.
+    schema: Option<usize>,
 }
 
 /// An object the parse lays keys into.
@@ -150,6 +185,14 @@ pub struct Spread<'d> {
     converts: bool,
     /// What the row just scanned lost, which `parse_batch` marks.
     pub lost: Lost,
+    /// The keys a produced schema types: a value laid at one of them is converted to its type.
+    schema: Option<std::sync::Arc<SchemaKeys>>,
+    /// Rows where a value laid at a key `schema` types did not fit its type, with the key, the value and the type.
+    /// Marked at `collapse`.
+    misfits: Vec<(usize, String, String, DataType)>,
+    /// A `datetime` key's reading, as `TypedBuilder` keeps it.
+    hint: usize,
+    now: i64,
 }
 
 /// What a row's read lost. Each is a warning on the row.
@@ -191,6 +234,13 @@ impl<'d> Spread<'d> {
             discovered: ctx.fields.is_some().then(Discovered::default),
             converts: false,
             lost: Lost::default(),
+            schema: objects
+                .iter()
+                .find(|o| o.name.is_empty())
+                .and_then(|o| o.schema.clone()),
+            misfits: Vec::new(),
+            hint: 0,
+            now: ctx.now_micros,
         };
         for (i, f) in fields.iter().enumerate() {
             let n = s.node_at(&f.name);
@@ -250,6 +300,7 @@ impl<'d> Spread<'d> {
             home,
             home_depth: 0,
             tally_only: false,
+            schema: self.schema.as_ref().map(|_| 0),
         });
     }
 
@@ -305,11 +356,16 @@ impl<'d> Spread<'d> {
             Some(o) => (Some(o), depth + 1),
             None => (parent.home, parent.home_depth),
         };
+        let schema = match (&self.schema, parent.schema) {
+            (Some(keys), Some(n)) => keys.nodes[n].0.get(key.as_ref()).copied(),
+            _ => None,
+        };
         self.frames.push(Frame {
             node,
             home,
             home_depth,
             tally_only: parent.tally_only,
+            schema,
         });
         self.keys.push(key);
         check();
@@ -342,7 +398,11 @@ impl<'d> Spread<'d> {
             }
             self.frames.last_mut().expect("a key was entered").tally_only = true;
         }
-        if object && !f.tally_only && !self.objects[home].closed && self.holds(home, f.home_depth) {
+        // An object a schema types keys under is walked, so each of them is converted as it is laid.
+        let typed_under = f
+            .schema
+            .is_some_and(|n| self.schema.as_ref().is_some_and(|k| !k.nodes[n].0.is_empty()));
+        if object && !f.tally_only && !self.objects[home].closed && (typed_under || self.holds(home, f.home_depth)) {
             return Step::Into;
         }
         Step::Copy
@@ -442,6 +502,10 @@ impl<'d> Spread<'d> {
             self.arena.truncate(range.start);
             return;
         }
+        let range = match f.schema.and_then(|n| self.schema.as_ref()?.nodes[n].1.clone()) {
+            Some(to) => self.convert(range, &to),
+            None => range,
+        };
         let home = f.home.expect("a copied value has an object");
         let mut hit = self.stamp();
         self.seed(home);
@@ -450,6 +514,33 @@ impl<'d> Spread<'d> {
         if hit {
             self.contradicted();
         }
+    }
+
+    /// Converts the value at `range` of the arena in place to `to`, the schema's type for the walk's key. A value that
+    /// does not fit becomes null and is a misfit on the row. A value already of type `to` is left as it is.
+    fn convert(&mut self, range: Range<usize>, to: &DataType) -> Range<usize> {
+        let Some(tag) = tag::decode(&self.arena[range.clone()]) else {
+            return range;
+        };
+        let already = matches!(
+            (&tag, to),
+            (Tag::Str(_), DataType::Str)
+                | (Tag::I64(_), DataType::I64)
+                | (Tag::F64(_), DataType::F64)
+                | (Tag::Bool(_), DataType::Bool)
+                | (Tag::DateTime(_), DataType::DateTime)
+        );
+        if already {
+            return range;
+        }
+        let mut out = Vec::new();
+        if !typed::encode_as(&tag, to, &mut self.hint, self.now, &mut out) {
+            let value = tag::json_text(&self.arena[range.clone()]);
+            self.misfits.push((self.row, spelled(&self.keys), value, to.clone()));
+        }
+        self.arena.truncate(range.start);
+        self.arena.extend_from_slice(&out);
+        range.start..self.arena.len()
     }
 
     /// The type the tree declares at node `n`.
@@ -601,6 +692,16 @@ impl<'d> Spread<'d> {
                 false => ExceptionKind::UnparsableField { to: self.type_at(n) },
             };
             ctx.raise_at(row, field, kind).read = vec![Read::new(Some((input, key)), value)];
+        }
+        if let Some(root) = self.nodes[0].object {
+            let field = self.objects[root].out;
+            for (row, key, value, to) in std::mem::take(&mut self.misfits) {
+                let kind = match self.converts {
+                    true => ExceptionKind::CoercionRefused { to },
+                    false => ExceptionKind::UnparsableField { to },
+                };
+                ctx.raise_at(row, field, kind).read = vec![Read::new(Some((input, key)), Some(value))];
+            }
         }
         if let Some(tally) = ctx.fields.as_deref_mut() {
             tally.parsed(ctx.function, self.read as u32);

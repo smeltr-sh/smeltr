@@ -26,7 +26,7 @@
     pipelineNames = {},
     lookupTables = [],
     grokPatterns = [],
-    grokFields,
+    parsedFields,
     parseInput = '_raw',
     pausedAt = null,
     ran = null,
@@ -47,8 +47,8 @@
     lookupTables?: LookupTableDto[];
     /** The bundle's grok patterns, `shared/`'s and the scope's own, which a grok step may name. */
     grokPatterns?: GrokPatternDto[];
-    /** Each grok step's fields as the pipeline types them, by step id (`PreviewResult.grok_fields`). */
-    grokFields?: PreviewResult['grok_fields'];
+    /** Each grok or CSV step's fields as the pipeline types them, by step id (`PreviewResult.parsed_fields`). */
+    parsedFields?: PreviewResult['parsed_fields'];
     /** The field a new parse step reads. */
     parseInput?: string;
     /** The step the records are paused after, threaded down so a nested step can be paused at. */
@@ -123,7 +123,7 @@
         {pipelineNames}
         {lookupTables}
         {grokPatterns}
-        {grokFields}
+        {parsedFields}
         {parseInput}
         {pausedAt}
         {ran}

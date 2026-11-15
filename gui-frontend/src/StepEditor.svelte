@@ -88,7 +88,7 @@
     pipelineNames = {},
     lookupTables = [],
     grokPatterns = [],
-    grokFields,
+    parsedFields,
     parseInput = '_raw',
     pausedAt = null,
     ran = null,
@@ -110,8 +110,8 @@
     lookupTables?: LookupTableDto[];
     /** The bundle's grok patterns, `shared/`'s and the scope's own, which a grok step may name. */
     grokPatterns?: GrokPatternDto[];
-    /** Each grok step's fields as the pipeline types them, by step id (`PreviewResult.grok_fields`). */
-    grokFields?: PreviewResult['grok_fields'];
+    /** Each grok or CSV step's fields as the pipeline types them, by step id (`PreviewResult.parsed_fields`). */
+    parsedFields?: PreviewResult['parsed_fields'];
     /** The field a new parse step reads. */
     parseInput?: string;
     /** The step the records are paused after. */
@@ -273,9 +273,9 @@
     if (j < 0 || j >= declared.length) return;
     [declared[i], declared[j]] = [declared[j], declared[i]];
   }
-  /** A field or column as `+` adds it. */
-  function newField(): FieldSpec {
-    return { name: '', ty: { kind: 'named', name: 'str' } };
+  /** A field or column as `+` adds it: a column the pipeline types, a field typed `str`. */
+  function newField(column: boolean): FieldSpec {
+    return { name: '', ty: column ? { kind: 'auto' } : { kind: 'named', name: 'str' } };
   }
 
   /** A grok step's fields: each capture as the pipeline types it, whether the author chose that type, and the type
@@ -283,13 +283,22 @@
   function grokRows(
     ps: ParserStep,
   ): { name: string; ty: DataTypeSpec; chosen: boolean; auto: string }[] {
-    const typed = grokFields?.[ps.id];
+    const typed = parsedFields?.[ps.id];
     if (!typed) return ps.declared.map((f) => ({ ...f, chosen: true, auto: '' }));
     return typed.map((f) => {
       const chosen = ps.declared.find((d) => d.name === f.name);
       const ty = chosen?.ty ?? dtoToDataType(f.type, f.name);
       return { name: f.name, ty, chosen: !!chosen, auto: typeKey(dtoToDataType(f.auto, f.name)) };
     });
+  }
+
+  /** A CSV column's automatic type, as the last preview typed it, and whether the column takes it. */
+  function csvAuto(ps: ParserStep, field: FieldSpec): { type: string; on: boolean } {
+    const typed = parsedFields?.[ps.id]?.find((f) => f.name === field.name);
+    return {
+      type: typed ? typeKey(dtoToDataType(typed.auto, field.name)) : '',
+      on: field.ty.kind === 'auto',
+    };
   }
 
   /** Chooses `ty` for the capture `name`, or with `null` lets the pipeline type it again. */
@@ -301,7 +310,7 @@
   // A type chosen for a capture the pattern has since lost types nothing; the step drops it once a preview says so.
   $effect(() => {
     if (step.type !== 'parser' || step.kind.type !== 'grok') return;
-    const typed = grokFields?.[step.id];
+    const typed = parsedFields?.[step.id];
     if (!typed) return;
     const kept = step.declared.filter((d) => typed.some((f) => f.name === d.name));
     if (kept.length < step.declared.length) step.declared = kept;
@@ -953,7 +962,7 @@
                       <button
                         type="button"
                         class="pick"
-                        onclick={() => ps.declared.splice(i, 0, newField())}
+                        onclick={() => ps.declared.splice(i, 0, newField(true))}
                         >Add column above</button
                       >
                     {/if}
@@ -1021,6 +1030,8 @@
                   <FieldRow
                     bind:ty={ps.declared[i].ty}
                     groups={declaredTypeGroups(isCsv || parserKind.type === 'keyValue')}
+                    auto={isCsv ? csvAuto(ps, field) : undefined}
+                    onauto={() => (ps.declared[i].ty = { kind: 'auto' })}
                     number={isCsv ? i + 1 : undefined}
                     disabled={readOnly}
                     label={field.name || (isCsv ? 'column' : 'field')}
@@ -1047,7 +1058,7 @@
                   <button
                     type="button"
                     class="add-small"
-                    onclick={() => ps.declared.push(newField())}
+                    onclick={() => ps.declared.push(newField(isCsv))}
                     >+ {isCsv ? 'column' : 'field'}</button
                   >
                   <!-- Only a dynamic parser's fields come from what it reads (docs/gui-design.md, "The workspace"):

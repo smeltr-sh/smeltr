@@ -262,18 +262,23 @@ not find leaves the prior value. Last write wins. `$ = f(…)` replaces the
 record with what the parse gives. Each bound field is a declared field
 of the parse, converted to its type, and a key no field claims goes to the
 unclaimed fields. `x = f(…)` makes `x` the object the parse gives, and binds a
-name nothing binds; `x: T = f(…)` binds it afresh at `T`. A CSV header or a
-grok capture you don't type takes the type the schemas the pipeline produces
-give it, where they name it, agree, and give a type a parse can read from text
-(`str`, `i64`, `f64`, `bool` or `datetime`). Otherwise a CSV header is `str`,
-and a grok capture takes its pattern's type: `INT` and `POSINT` give `i64`,
-`NUMBER` gives `f64`, and `HTTPDATE`, `SYSLOGTIMESTAMP` and
-`TIMESTAMP_ISO8601` give a `datetime`, read as the pattern writes it. A
+name nothing binds; `x: T = f(…)` binds it afresh at `T`.
+
+A field a parse writes and nothing types takes the type the schemas the
+pipeline produces give it, where they name it, agree, and give a type a parse
+can read from text (`str`, `i64`, `f64`, `bool` or `datetime`). Otherwise a CSV
+header is `str`, and a grok capture takes its pattern's type: `INT` and
+`POSINT` give `i64`, `NUMBER` gives `f64`, and `HTTPDATE`, `SYSLOGTIMESTAMP`
+and `TIMESTAMP_ISO8601` give a `datetime`, read as the pattern writes it. A
 pattern's `datetime` keeps its format where the schemas also say `datetime`. A
 custom pattern that is only `%{NAME}` gives `NAME`'s type. Any other capture is
-`str`, and so is one that two of a step's patterns type differently. A `json`
-or `kv` parse lays keys no guard reaches, so it runs outside every `if` and
-loop.
+`str`, and so is one that two of a step's patterns type differently. A `json`,
+`kv` or `cef` parse finds its keys only on the row, so it converts each key the
+schemas type as it lays it into the unclaimed fields: a value that does not
+convert becomes null and raises an exception on its row. A key no schema types
+keeps what it arrived as. Every such key stays a variant to the steps after the
+parse, so a step that reads one by name declares it. A `json`, `kv` or `cef`
+parse lays keys no guard reaches, so it runs outside every `if` and loop.
 
 `grok`'s built-in patterns include whole lines, a syslog line or a web access
 log line, and each of those names its own fields as the Elastic Common Schema

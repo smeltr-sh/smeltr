@@ -413,6 +413,12 @@ describe('a route made from another page', () => {
     });
   });
 
+  it("carries the route's destinations to its new pipeline, which starts producing what they accept", () => {
+    const delivering = { ...make, to: ['elastic', 'archive'] };
+    expect(parseRoute(newPipelineHash(delivering))).toMatchObject({ for: delivering });
+    expect(parseRoute(newPipelineHash({ ...make, to: [] }))).toMatchObject({ for: make });
+  });
+
   it('follows only a link back into the app', () => {
     expect(parseRoute('#/build/routes?back=https%3A%2F%2Fexample.com')).toEqual({
       tab: 'build',
