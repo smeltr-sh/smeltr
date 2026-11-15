@@ -143,8 +143,15 @@
     "group": "Processing",
     "name": "smeltr_route_matched_total",
     "kind": "counter",
-    "labels": ["source", "route"],
-    "what": "Records the route's condition matched."
+    "labels": ["source", "route", "pipeline"],
+    "what": "Records the route's condition matched. Sum it over a pipeline's routes for the pipeline's records in."
+  },
+  {
+    "group": "Processing",
+    "name": "smeltr_route_out_total",
+    "kind": "counter",
+    "labels": ["source", "route", "pipeline"],
+    "what": "Records the route's pipeline passed on, before its delivery rules."
   },
   {
     "group": "Processing",
@@ -213,8 +220,15 @@
     "group": "Destinations",
     "name": "smeltr_rows_sent_total",
     "kind": "counter",
-    "labels": ["destination"],
-    "what": "Records handed to the destination."
+    "labels": ["source", "route", "pipeline", "destination"],
+    "what": "Records handed to the destination, by the route that sent them. A record no route took carries no `route` or `pipeline` label."
+  },
+  {
+    "group": "Destinations",
+    "name": "smeltr_bytes_sent_total",
+    "kind": "counter",
+    "labels": ["source", "route", "pipeline", "destination"],
+    "what": "Bytes of the records `smeltr_rows_sent_total` counts, by the same labels."
   },
   {
     "group": "Destinations",

@@ -487,11 +487,13 @@ fn a_catch_all_route_delivers_every_row_and_commits_once() {
     // "a" and "b": one byte each of payload, which is what a byte rate is a rate of.
     assert_eq!(counter(&w, "smeltr_bytes_polled_total", &[("source", "0")]), Some(2));
     // The route's own id, not its position: reordering the list must not re-attribute this count.
-    assert_eq!(
-        counter(&w, "smeltr_route_matched_total", &[("source", "0"), ("route", "r")]),
-        rows
-    );
-    assert_eq!(counter(&w, "smeltr_rows_sent_total", &[("destination", "0")]), rows);
+    let route = [("source", "0"), ("route", "r"), ("pipeline", "0")];
+    assert_eq!(counter(&w, "smeltr_route_matched_total", &route), rows);
+    assert_eq!(counter(&w, "smeltr_route_out_total", &route), rows);
+    let sent = [("source", "0"), ("route", "r"), ("pipeline", "0"), ("destination", "0")];
+    assert_eq!(counter(&w, "smeltr_rows_sent_total", &sent), rows);
+    // Each document as it is sent, `{"_raw":"a","greeting":"hi"}`.
+    assert_eq!(counter(&w, "smeltr_bytes_sent_total", &sent), Some(2 * 28));
     assert_eq!(
         counter(&w, "smeltr_function_calls_total", &f0),
         Some(1),
@@ -786,6 +788,10 @@ fn a_dropped_row_is_delivered_nowhere_and_counted_under_its_function() {
     let dropped = |f: &str| counter(&w, "smeltr_rows_dropped_total", &[("pipeline", "0"), ("function", f)]);
     assert_eq!(dropped("0"), Some(1));
     assert_eq!(dropped("1"), None);
+    // The route took both rows, and its pipeline passed one on.
+    let route = [("source", "0"), ("route", "r"), ("pipeline", "0")];
+    assert_eq!(counter(&w, "smeltr_route_matched_total", &route), Some(2));
+    assert_eq!(counter(&w, "smeltr_route_out_total", &route), Some(1));
 }
 
 /// An `if`'s condition is its own step's work: the calls that check it, and a row error it raises, are counted
@@ -2123,8 +2129,9 @@ fn an_unmatched_row_under_block_blocks_the_source_before_any_route_runs() {
 
     let e = tick(&mut w).expect_err("block fails the tick so nothing commits");
     assert!(e.to_string().contains("matched no route"), "{e}");
-    let routed = counter(&w, "smeltr_route_matched_total", &[("source", "0")]);
-    assert!(routed.is_some(), "the first turn evaluated the routes");
+    // A batch is counted as run whether or not it is handed off.
+    let ran = counter(&w, "smeltr_tick_batches_total", &[("source", "0")]);
+    assert!(ran.is_some(), "the first turn ran the batch");
     for attempt in 0..3 {
         tick(&mut w).expect("a held batch is not run again");
         assert!(src.is_blocked(), "{attempt}");
@@ -2139,9 +2146,14 @@ fn an_unmatched_row_under_block_blocks_the_source_before_any_route_runs() {
     assert!(dest.sent().is_empty(), "the matched row is not sent either");
     assert!(src.committed().is_empty());
     assert_eq!(
+        counter(&w, "smeltr_tick_batches_total", &[("source", "0")]),
+        ran,
+        "the batch was not run again"
+    );
+    assert_eq!(
         counter(&w, "smeltr_route_matched_total", &[("source", "0")]),
-        routed,
-        "the routes were not evaluated again"
+        None,
+        "a batch never handed off counts no route"
     );
     assert_eq!(counter(&w, "smeltr_rows_dropped_total", &[("source", "0")]), None);
 }

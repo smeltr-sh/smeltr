@@ -9,7 +9,6 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::core::batch::{Batch, SLOT_LIVE};
-use crate::core::bits;
 use crate::core::column::{Column, DataType, Scalar};
 use crate::core::ctx::Ctx;
 use crate::core::error::ExceptionKind;
@@ -18,7 +17,7 @@ use crate::expr::ast::Span;
 use crate::expr::eval::eval;
 use crate::expr::ir::{Ir, IrKind, flatten};
 use crate::format::encoding::Encoding;
-use crate::metrics::{MetricsHandle, MetricsSourceConfig};
+use crate::metrics::MetricsSourceConfig;
 use crate::ops::BinOp;
 use crate::plan::compile::parse;
 use crate::plan::compile::{Plan, compile, ingest_fields};
@@ -3748,22 +3747,11 @@ pub(crate) fn output_condition(
 ///
 /// Returns, for each route belonging to `source`, its index into `routes` and the Bool mask of rows dispatched to it.
 /// A route that matches nothing still gets an all-false mask, since a batch's routing shape can vary row to row.
-///
-/// `metrics`, when present, records `smeltr_route_matched_total{source,route}` — the popcount of each route's own returned
-/// mask — once per route per call, batch granularity (design doc, Observability). `None` for every caller
-/// that isn't the real runtime driver loop (tests, benches): the metric is additive instrumentation, never load-bearing
-/// for routing itself.
-///
-/// The `route` label is the route's own id, not its position: a series outlives the list's order, and the whole point
-/// of a route id is that reordering or deleting a neighbor does not re-attribute this one's history
-/// (`RouteConfig::id`). `source` is positional here and resolved at the wire, because routing works in `SourceId`
-/// (`worker::resolve_subject_labels`).
 pub fn route_masks<'a>(
     routes: &'a [CompiledRoute],
     source: SourceId,
     batch: &mut Batch,
     ctx: &mut Ctx<'a>,
-    metrics: Option<&MetricsHandle>,
 ) -> Vec<(usize, Column)> {
     let sp = Span::default();
     let live = || Ir::new(DataType::Bool, sp, IrKind::Field(SLOT_LIVE));
@@ -3789,16 +3777,6 @@ pub fn route_masks<'a>(
             ),
         };
         let matched = eval(&matched_ir, batch, ctx);
-
-        if let Some(m) = metrics {
-            let count = bits::popcount(matched.bool().unwrap().values) as u64;
-            m.incr(
-                "smeltr_route_matched_total",
-                &[("source", &source.to_string()), ("route", r.id.as_str())],
-                count,
-            );
-        }
-
         out.push((i, matched));
     }
     out
@@ -3886,7 +3864,7 @@ mod tests {
         bits::fill_valid(live.bool_mut().unwrap().values, records.len());
         batch.put(SLOT_LIVE, live, &mut pool);
         let mut ctx = Ctx::new(&mut pool, &mut errors);
-        let masks = route_masks(&routes, 0, &mut batch, &mut ctx, None);
+        let masks = route_masks(&routes, 0, &mut batch, &mut ctx);
         let mask = masks[0].1.bool().unwrap().values;
         let taken = (0..records.len()).map(|r| bits::get_row(mask, r)).collect();
         batch.reclaim(&mut pool);
@@ -4818,7 +4796,7 @@ mod tests {
         let mut batch = seed_batch(&mut pool, &["a", "b", "c"]);
         let mut ctx = Ctx::new(&mut pool, &mut errors);
 
-        let masks = route_masks(&routes, 0, &mut batch, &mut ctx, None);
+        let masks = route_masks(&routes, 0, &mut batch, &mut ctx);
         assert_eq!(masks.len(), 1);
         let rows: Vec<bool> = (0..3)
             .map(|r| bits::get_row(masks[0].1.bool().unwrap().values, r))
@@ -4836,7 +4814,7 @@ mod tests {
         let mut batch = seed_batch(&mut pool, &["a"]);
         let mut ctx = Ctx::new(&mut pool, &mut errors);
 
-        let masks = route_masks(&routes, 0, &mut batch, &mut ctx, None);
+        let masks = route_masks(&routes, 0, &mut batch, &mut ctx);
         assert!(masks.is_empty(), "route belongs to source 1, not 0");
         batch.reclaim(&mut pool);
     }
@@ -4855,7 +4833,7 @@ mod tests {
         let mut batch = seed_batch(&mut pool, &["x", "yy"]);
         let mut ctx = Ctx::new(&mut pool, &mut errors);
 
-        let masks = route_masks(&routes, 0, &mut batch, &mut ctx, None);
+        let masks = route_masks(&routes, 0, &mut batch, &mut ctx);
         let rows = |m: &Column| {
             (0..2)
                 .map(|r| bits::get_row(m.bool().unwrap().values, r))
@@ -4907,7 +4885,7 @@ mod tests {
         let mut batch = seed_batch(&mut pool, &["x1", "y2"]);
         let mut ctx = Ctx::new(&mut pool, &mut errors);
 
-        let masks = route_masks(&routes, 0, &mut batch, &mut ctx, None);
+        let masks = route_masks(&routes, 0, &mut batch, &mut ctx);
         let (_, m0) = &masks[0];
         assert_eq!(
             (0..2)
