@@ -65,31 +65,31 @@
   <h3 id="duplicate-documents">Duplicate documents</h3>
   <div class="table-scroll">
     <table>
-      <thead><tr><th scope="col">Policy</th><th scope="col">Behavior</th></tr></thead>
+      <thead><tr><th scope="col">Bulk action</th><th scope="col">Behavior</th></tr></thead>
       <tbody>
         <tr
-          ><th scope="row">auto (default)</th><td
-            >Sends no document ID. A record resent after a crash can create a second document.</td
+          ><th scope="row">create (default)</th><td
+            >Keeps the first document written with an ID. A resent copy is refused and counts as
+            delivered. The only action a data stream accepts.</td
           ></tr
         >
         <tr
-          ><th scope="row">dedupe</th><td
-            >Use a stable ID and keep the first document written with that ID.</td
-          ></tr
-        >
-        <tr
-          ><th scope="row">overwrite</th><td
-            >Replace the document with that ID. Concurrent requests can arrive out of order. This
-            policy cannot write to a data stream.</td
+          ><th scope="row">index</th><td
+            >Replaces the document with that ID. Two copies sent close together can arrive in either
+            order.</td
           ></tr
         >
       </tbody>
     </table>
   </div>
   <p>
-    For dedupe or overwrite, set <code>idField</code> to a stable field such as
-    <code>event.id</code>, or have the pipeline set <code>__destination.id</code>. Keep auto when
-    records have no stable ID.
+    Each document's ID is read from the id field: <code>__destination.id</code> unless you name
+    another field, such as <code>event.id</code>. A record with no ID gets one Elasticsearch
+    generates, so a record resent after a crash can create a second document. A
+    <a
+      href="https://www.elastic.co/docs/manage-data/data-store/data-streams/time-series-data-stream-tsds"
+      >time series data stream</a
+    > takes no ID of its own: leave the ID empty for one.
   </p>
 
   <h2 id="verify">Verify</h2>
