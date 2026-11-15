@@ -44,6 +44,7 @@ fn a_worker_around_a_logs_source_ships_this_process_s_own_logs_as_json_rows() {
         step_ids: Vec::new(),
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
+        produces: Vec::new(),
     }];
     let metas = SourceMetas::from([(9, SourceMeta::LOGS)]);
     let topology = compile_topology_with(&routes, &pipelines, Default::default(), &metas).unwrap();
@@ -127,6 +128,7 @@ fn a_route_can_select_logs_rows_by_their_topic() {
         step_ids: Vec::new(),
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
+        produces: Vec::new(),
     };
     compile(&p, &SourceMeta::LOGS).expect("a logs row carries __source.topic");
 }

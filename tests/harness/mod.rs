@@ -45,6 +45,7 @@ pub fn pipeline(body: Vec<Step>) -> PipelineConfig {
         step_ids: Vec::new(),
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
+        produces: Vec::new(),
     }
 }
 

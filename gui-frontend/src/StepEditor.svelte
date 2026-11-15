@@ -82,6 +82,7 @@
     type LookupTableDto,
   } from './api';
   import { sharedGrokSuggestions } from './grokPatterns';
+  import { producedSchemas } from './producedSchemas.svelte';
   import { beginReconcile, endReconcile } from './grokFields';
   import { unfinishedRows } from './unfinished.svelte';
   import { editable } from './access';
@@ -282,6 +283,8 @@
     return { name: '', ty: { kind: 'named', name: 'str' } };
   }
 
+  const produced = producedSchemas();
+
   /** A grok step's captures, as the compiled pattern reports them. `null` until the first answer arrives. */
   let captures: GrokCaptures['captures'] | null = $state(null);
   /** Why a half-typed pattern does not compile. The fields on screen stay as they are while it says something. */
@@ -289,7 +292,7 @@
 
   /**
    * Fill a grok step's field names in from its pattern, keeping the type already chosen for a name that survives, and
-   * giving a new name the type its pattern gives it.
+   * giving a new name the type a schema the pipeline produces gives it, else the type its pattern gives it.
    *
    * Naming a capture is how a grok field is declared, so the two cannot be edited into disagreement -- which is what
    * makes the compiler's refusal of either direction unreachable from here. `captures` comes from the server because a
@@ -304,7 +307,12 @@
     return caps.map((c) => {
       // A capture's name is the parser's key: one key, or under splitDots a path split at its dots.
       const name = (split ? c.name.split('.') : [c.name]).reduce(pushKey, '');
-      return { name, ty: chosen.get(name) ?? dtoToDataType(c.type, name) };
+      const pattern = dtoToDataType(c.type, name);
+      // The pattern's own `datetime` keeps its format, which a schema's lacks.
+      const schema = produced?.typeOf(name);
+      const ty =
+        schema !== undefined && schema !== typeKey(pattern) ? dtoToDataType(schema, name) : pattern;
+      return { name, ty: chosen.get(name) ?? ty };
     });
   }
 

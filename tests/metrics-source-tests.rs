@@ -41,6 +41,7 @@ fn a_worker_around_a_metrics_source_ships_real_counters_as_ordinary_json_rows() 
         step_ids: Vec::new(),
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
+        produces: Vec::new(),
     }];
     // A metrics row carries the topic the source stamps it with, and no
     // partition or offset a pipeline could mean anything by.
@@ -135,6 +136,7 @@ fn a_route_can_select_metrics_rows_by_their_topic() {
         step_ids: Vec::new(),
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
+        produces: Vec::new(),
     };
     compile(&p, &SourceMeta::METRICS).expect("a metrics row carries __source.topic");
 }

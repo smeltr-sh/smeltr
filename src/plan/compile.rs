@@ -442,6 +442,8 @@ struct Compiler<'p> {
     tables: &'p HashMap<String, Result<LookupSource, String>>,
     /// The bundle's grok patterns (`PipelineConfig::grok_patterns`).
     grok_patterns: &'p GrokPatterns,
+    /// The schemas the pipeline produces (`PipelineConfig::produces`).
+    produces: &'p [std::sync::Arc<crate::schema::Schema>],
     syms: SymbolTable,
     res: ResourceBuilder,
     instrs: Vec<Instr>,
@@ -580,6 +582,7 @@ impl<'p> Compiler<'p> {
         Compiler {
             tables: &p.lookup_tables,
             grok_patterns: &p.grok_patterns,
+            produces: &p.produces,
             ingest: ingest.iter().map(|(n, _)| n.to_string()).collect(),
             tries: 0,
             regions: Vec::new(),
@@ -3373,9 +3376,25 @@ impl Compiler<'_> {
         }
     }
 
+    /// The type every schema the pipeline produces that names the field `name` gives it, where they agree and it is
+    /// one a parse reads text as. `None` where none names it, or they disagree.
+    fn schema_type(&self, name: &str) -> Option<DataType> {
+        let mut each = self
+            .produces
+            .iter()
+            .filter_map(|s| s.fields.iter().find(|f| f.path == name));
+        let ty = each.next()?.ty.clone();
+        let readable = matches!(
+            ty,
+            DataType::Str | DataType::I64 | DataType::F64 | DataType::Bool | DataType::DateTime
+        );
+        (readable && each.all(|f| f.ty == ty)).then_some(ty)
+    }
+
     /// What a parse into `target` declares: every field the target holds, at its type, where the parse may find any
     /// key; the keys it can find, where it finds only those (`keys`), each at the type the target or `ty` gives it,
-    /// else the type the parse gives it. A new target with no `ty` is an open object.
+    /// else the type a schema the pipeline produces gives it (`schema_type`), else the type the parse gives it. A new
+    /// target with no `ty` is an open object.
     fn parse_fields(
         &self,
         target: &str,
@@ -3399,8 +3418,11 @@ impl Compiler<'_> {
             for (k, holds) in keys {
                 let name = tree::join(target, &k);
                 if open && declared.iter().all(|d| d.name != name) {
-                    declared.push(match self.held_type(target, &name, ty) {
+                    let ty = (self.held_type(target, &name, ty))
+                        .or_else(|| self.schema_type(&name).filter(|t| *t != holds.ty));
+                    declared.push(match ty {
                         Some(ty) => field(name, ty),
+                        // The parse's own type keeps its time format, which a schema's `datetime` lacks.
                         None => DeclaredField {
                             name,
                             ty: holds.ty,
@@ -4766,6 +4788,7 @@ mod tests {
             step_ids: vec!["eval-1".into()],
             lookup_tables: Default::default(),
             grok_patterns: Default::default(),
+            produces: Vec::new(),
         }
     }
 
