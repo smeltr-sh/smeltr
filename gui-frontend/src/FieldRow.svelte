@@ -24,6 +24,8 @@
     actions,
     end,
     nested,
+    auto,
+    onauto,
   }: {
     ty: DataTypeSpec;
     groups: TypeKey[][];
@@ -40,6 +42,11 @@
     end?: Snippet;
     /** Under the row, indented: an object's own fields. */
     nested?: Snippet;
+    /** Present where the field may be typed automatically: whether it is, and the type it then has, `''` where that
+     * is not known. */
+    auto?: { type: string; on: boolean };
+    /** Lets the field be typed automatically again. */
+    onauto?: () => void;
   } = $props();
 
   let menuOpen = $state(false);
@@ -49,11 +56,13 @@
   {#if number !== undefined}<span class="number">{number}</span>{/if}
   {@render name()}
   <TypePicker
-    value={typeKey(ty)}
+    value={auto?.on ? '' : typeKey(ty)}
     {groups}
     {disabled}
     ariaLabel={`${label} type`}
+    auto={auto && (auto.on ? auto.type : '')}
     onpick={(key) => (ty = withTypeKey(ty, key))}
+    {onauto}
   />
   <span class="end">
     {#if end}
@@ -67,7 +76,7 @@
     {/if}
   </span>
 </div>
-{#if ty.kind === 'datetime'}
+{#if ty.kind === 'datetime' && !auto?.on}
   {@const dt = ty}
   <div class="under" class:numbered={number !== undefined}>
     <DatetimeFormat bind:format={dt.format} {disabled} />

@@ -11,13 +11,20 @@
     groups,
     disabled = false,
     ariaLabel = 'type',
+    auto,
     onpick,
+    onauto,
   }: {
-    value: TypeKey;
+    /** `''` where the field is typed automatically. */
+    value: TypeKey | '';
     groups: TypeKey[][];
     disabled?: boolean;
     ariaLabel?: string;
+    /** Present where the field may be typed automatically: the type it then has, `''` where that is not known. */
+    auto?: string;
     onpick: (key: TypeKey) => void;
+    /** The automatic type is picked. */
+    onauto?: () => void;
   } = $props();
 </script>
 
@@ -25,9 +32,20 @@
   class="type-picker"
   {disabled}
   aria-label={ariaLabel}
+  title={auto === undefined
+    ? undefined
+    : 'auto: the type a schema the pipeline produces gives it, else the type its pattern gives it'}
   {value}
-  onchange={(e) => onpick((e.currentTarget as HTMLSelectElement).value as TypeKey)}
+  onchange={(e) => {
+    const key = (e.currentTarget as HTMLSelectElement).value;
+    if (key === '') onauto?.();
+    else onpick(key as TypeKey);
+  }}
 >
+  {#if auto !== undefined}
+    <option value="">{auto ? `auto · ${auto}` : 'auto'}</option>
+    <hr />
+  {/if}
   {#each groups as group, g (g)}
     {#if g > 0}<hr />{/if}
     {#each group as key (key)}

@@ -24,11 +24,6 @@ export class ProducedSchemas {
     this.#schemas = schemas;
     this.tree = schemas.length > 0 ? new SchemaTree(schemas) : null;
   }
-
-  /** The produced schemas' ids. */
-  get ids(): string[] {
-    return this.#schemas.map((s) => s.id);
-  }
 }
 
 /** Makes one `ProducedSchemas` the one every field below reads. */

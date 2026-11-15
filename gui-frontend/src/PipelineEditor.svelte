@@ -56,7 +56,7 @@
     type FieldProposal,
     type OpenProposal,
   } from './proposal';
-  import { fieldsSettled } from './grokFields';
+  import { fieldsSettled } from './owedAnswers';
   import { provideUnfinishedRows } from './unfinished.svelte';
   import { provideProducedSchemas } from './producedSchemas.svelte';
   import RemovableChip from './RemovableChip.svelte';
@@ -571,8 +571,7 @@
     if (badLookupTables.length > 0) {
       return false;
     }
-    // A grok step's fields follow its pattern, and that answer is asynchronous: serializing between the edit and the
-    // answer would send a `declared` list the pattern disagrees with, which the compiler refuses.
+    // A code field's layout is the server's answer: serializing before it lands would send the text as it was.
     await fieldsSettled();
     saving = true;
     saveMessage = '';
@@ -1608,6 +1607,7 @@
             {pipelineNames}
             {lookupTables}
             {grokPatterns}
+            grokFields={lastGoodResult?.grok_fields}
             parseInput={parseInputFor(sampleRows[0])}
             pausedAt={pause?.step ?? null}
             ran={pause?.run ?? null}
