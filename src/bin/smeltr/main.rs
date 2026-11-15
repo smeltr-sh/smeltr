@@ -46,9 +46,8 @@ mod worker_groups_api;
 use smeltr::config_file;
 use smeltr::leader::envelope::{ApiError, Envelope, Refusal};
 use smeltr::leader::preview::{
-    FormatRequest, Formatted, GrokCaptures, GrokCapturesRequest, LineBreakerRequest, Preview, PreviewRequest,
-    RoutePreview, RoutePreviewRequest, captures_of, format_code, line_breaker_verdict, run_preview, run_route_preview,
-    single_origin_declared_at,
+    FormatRequest, Formatted, LineBreakerRequest, Preview, PreviewRequest, RoutePreview, RoutePreviewRequest,
+    format_code, line_breaker_verdict, run_preview, run_route_preview, single_origin_declared_at,
 };
 use smeltr::leader::sessions;
 use smeltr::leader::{blocking, blocking_answer};
@@ -423,36 +422,6 @@ fn run_pipeline_callers(raw: config_file::RawBundle) -> Envelope<PipelineCallers
         config_api::read_status(&raw.unreadable),
         errors,
     )
-}
-
-/// The captures of a grok pattern. It reads no sample.
-///
-/// Deliberately not part of an area's `preview/pipeline`: that needs a chosen sample and answers nothing once
-/// compilation fails, and both are exactly when an editor most needs the names -- a step whose pattern just gained a
-/// capture nothing declares does not compile, and it is this list that says what to declare.
-///
-/// The schemas the request's `produces` names are read from `branch`: `shared/`'s, and a group's own.
-async fn grok_captures(
-    axum::extract::Path(area): axum::extract::Path<String>,
-    axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
-    Json(mut req): Json<GrokCapturesRequest>,
-) -> Envelope<GrokCaptures> {
-    if req.produces.is_empty() {
-        return captures_of(req);
-    }
-    let branch = q.name().to_string();
-    blocking_answer(move || {
-        let reading = match config_api::Reading::open_in(&smeltr::startup_config::leader_data_dir(), &branch, &area) {
-            Ok(reading) => reading,
-            Err(e) => return Envelope::refused(e),
-        };
-        req.schemas = reading
-            .runnable(reading.raw())
-            .map(|run| run.file.schemas)
-            .unwrap_or_default();
-        captures_of(req)
-    })
-    .await
 }
 
 /// The records of a captured sample, for `/api/preview/onboard`.
@@ -1207,7 +1176,6 @@ async fn setup_leader(
         // Here for `State<AppState>`: a preview may run over a capture the leader holds.
         .route("/api/areas/:area/preview/pipeline", post(preview))
         .route("/api/areas/:area/preview/routes", post(route_preview))
-        .route("/api/areas/:area/preview/grok", post(grok_captures))
         // Not on `app` below with the rest of the worker-groups routes: both need `State<AppState>` -- the listing
         // for `shared`'s hue, the create for a new group's -- the same reason `get_map` is here. `deploy_change`
         // asks the store whether a remote owns `main`.
@@ -2572,9 +2540,7 @@ fn bind_listener(addr: std::net::SocketAddr) -> std::net::TcpListener {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        FormatRequest, GrokCapturesRequest, LineBreakerRequest, captures_of, format_code, line_breaker_verdict,
-    };
+    use super::{FormatRequest, LineBreakerRequest, format_code, line_breaker_verdict};
     use smeltr::expr::pretty::Kind;
 
     /// A leader on every address takes IPv4 on every OS, Windows too. A host without IPv6 has nothing to test.
@@ -3120,94 +3086,6 @@ mod tests {
         assert_eq!(file.worker.heartbeat.stop_after_unreachable_secs, Some(-1));
     }
 
-    fn names(r: &super::Envelope<super::GrokCaptures>) -> Vec<&str> {
-        r.captures.iter().map(|c| c.name.as_str()).collect()
-    }
-
-    /// Each capture comes with the type its pattern gives it, which the editor declares a new field at.
-    #[test]
-    fn a_capture_comes_with_its_patterns_type() {
-        let r = captures(&["%{WORD:action} %{INT:status} %{HTTPDATE:at}"]);
-        let types = serde_json::to_value(r.captures.iter().map(|c| &c.ty).collect::<Vec<_>>()).unwrap();
-        assert_eq!(
-            types,
-            serde_json::json!(["str", "i64", {"type": "datetime", "format": "%d/%b/%Y:%H:%M:%S %z"}])
-        );
-    }
-
-    /// A capture a produced schema names takes the schema's type over its pattern's, as the pipeline types it.
-    #[test]
-    fn a_capture_comes_with_the_type_its_produced_schema_gives_it() {
-        let schema = serde_json::json!({"id": "s", "title": "s", "fields": [
-            {"field": "http.status", "type": "f64"},
-            {"field": "action", "type": "i64"}
-        ]});
-        let r = captures_of(GrokCapturesRequest {
-            patterns: vec!["%{WORD:action} %{INT:http.status} %{INT:bytes}".to_string()],
-            split_dots: true,
-            produces: vec!["s".to_string()],
-            schemas: vec![serde_json::from_value(schema).unwrap()],
-            ..Default::default()
-        });
-        let types = serde_json::to_value(r.captures.iter().map(|c| &c.ty).collect::<Vec<_>>()).unwrap();
-        assert_eq!(types, serde_json::json!(["i64", "f64", "i64"]));
-    }
-
-    /// A capture of a step that parses into `x` is typed by the schema's `x.<capture>`.
-    #[test]
-    fn a_capture_under_a_name_is_typed_by_the_schema_there() {
-        let schema = serde_json::json!({"id": "s", "title": "s", "fields": [{"field": "x.bytes", "type": "f64"}]});
-        let r = captures_of(GrokCapturesRequest {
-            patterns: vec!["%{INT:bytes}".to_string()],
-            into: "$.x".to_string(),
-            produces: vec!["s".to_string()],
-            schemas: vec![serde_json::from_value(schema).unwrap()],
-            ..Default::default()
-        });
-        assert_eq!(
-            serde_json::to_value(&r.captures[0].ty).unwrap(),
-            serde_json::json!("f64")
-        );
-    }
-
-    fn captures(patterns: &[&str]) -> super::Envelope<super::GrokCaptures> {
-        captures_of(GrokCapturesRequest {
-            patterns: patterns.iter().map(|p| p.to_string()).collect(),
-            ..Default::default()
-        })
-    }
-
-    /// The editor sends the bundle's patterns with the step's, so a capture minted inside a shared one is listed.
-    #[test]
-    fn a_capture_inside_a_shared_pattern_is_listed() {
-        let got = captures_of(GrokCapturesRequest {
-            patterns: vec!["%{VENDOR}".to_string()],
-            grok_patterns: vec![smeltr::config_file::GrokPatternDto {
-                id: "VENDOR".to_string(),
-                pattern: "%{WORD:vendor}".to_string(),
-            }],
-            ..Default::default()
-        });
-        assert_eq!(names(&got), vec!["vendor"]);
-    }
-
-    /// No sample, no pipeline, no compile of anything but the patterns: the captures are in the pattern text, which is
-    /// what lets an editor fill a step's field names in while the step itself does not compile.
-    #[test]
-    fn a_patterns_captures_need_no_records() {
-        let r = captures(&["%{WORD:action} %{INT:status}"]);
-        assert!(r.succeeded());
-        assert_eq!(names(&r), vec!["action", "status"]);
-        assert!(r.errors.is_empty());
-    }
-
-    /// The union over candidate patterns, deduped, since any of them may match a row.
-    #[test]
-    fn every_candidate_patterns_captures_are_offered_once() {
-        let r = captures(&["^%{INT:n}$", "^%{WORD:w} %{INT:n}$"]);
-        assert_eq!(names(&r), vec!["n", "w"]);
-    }
-
     /// A line breaker as it is typed gets the save's verdict, in the save's words.
     #[test]
     fn a_typed_line_breaker_gets_the_saves_verdict() {
@@ -3243,22 +3121,6 @@ mod tests {
         assert_eq!(format("a&&b", Kind::Expr).as_deref(), Some("a && b"));
         assert_eq!(format("x=1", Kind::Block).as_deref(), Some("x = 1;"));
         assert_eq!(format("x = (", Kind::Block), None);
-    }
-
-    /// An unnamed capture declares nothing, so it is not offered.
-    #[test]
-    fn an_unnamed_capture_is_not_a_field() {
-        assert_eq!(names(&captures(&["%{WORD:action} %{INT}"])), vec!["action"]);
-    }
-
-    /// A half-typed pattern is the normal state of an editor, so it answers rather than failing the request -- the
-    /// editor keeps the fields it already has.
-    #[test]
-    fn a_pattern_that_does_not_compile_says_so() {
-        let r = captures(&["%{NOT_A_PATTERN:x}"]);
-        assert!(!r.succeeded());
-        assert!(r.captures.is_empty());
-        assert!(r.errors[0].message.contains("NOT_A_PATTERN"), "names the pattern");
     }
 
     fn upload(data: &std::path::Path, bytes: &[u8], delimiter: u8) -> super::Envelope<super::Upload> {

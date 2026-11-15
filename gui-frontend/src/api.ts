@@ -2267,6 +2267,8 @@ export interface PreviewResult {
   /** One entry per parser step, in run order -- what the field-declaration
    * panel reads to propose fields from a sample. */
   parsers: ParserProposal[];
+  /** Each grok step's fields as the pipeline types them, by step id. Absent when the pipeline did not compile. */
+  grok_fields?: Record<string, { name: string; type: unknown }[]>;
   /** The record the pipeline writes. Absent when it did not compile. */
   dictionary?: DictionaryOut;
   /** The answer to `PreviewRequest.afterDot`. Absent where the dot follows no value. */
@@ -2380,35 +2382,6 @@ export async function checkCaptureFilter(
 ): Promise<CaptureFilterCheck | null> {
   const res = await previewPipeline({ config, captureFilter: { text, destination } });
   return (res.ok && res.capture_filter) || null;
-}
-
-/** What a grok pattern captures, which is the set of fields the step declares.
- *
- * Not part of `previewPipeline`: that needs a chosen sample and answers nothing
- * once compilation fails, and both are exactly when the editor needs these
- * names -- a pattern that just gained a capture nothing declares does not
- * compile, and this is the list that fixes it. `ok: false` carries the reason a
- * half-typed pattern will not compile, and the editor keeps the fields it has. */
-export interface GrokCaptures {
-  ok: boolean;
-  errors: ApiError[];
-  /** Each capture's name, and the type a produced schema gives it, else the type its pattern gives it, in the form a
-   * declared field's type takes. */
-  captures: { name: string; type: unknown }[];
-}
-
-/** `grokPatterns` are the bundle's, which the step's patterns may name. */
-export function grokCaptures(req: {
-  patterns: string[];
-  customPatterns: { name: string; pattern: string }[];
-  grokPatterns?: GrokPatternDto[];
-  splitDots: boolean;
-  /** The name the step parses into. */
-  into: string;
-  /** The ids of the schemas the pipeline produces, which give the captures they name their types. */
-  produces: string[];
-}): Promise<GrokCaptures> {
-  return post(branched(inArea('/preview/grok')), req, 'quiet');
 }
 
 /** Whether a save would take a line breaker, asked as one is typed. Not `ok` when it would refuse it, with why, in

@@ -116,6 +116,14 @@ export function proposedTypeSpec(f: ProposedField): DataTypeSpec | null {
     : null;
 }
 
+/** A parser step's count for its summary: how many fields it declares, or for grok how many types the author chose. */
+function parserCount(step: Extract<Step, { type: 'parser' }>): string {
+  const n = step.declared.length;
+  if (n === 0) return '';
+  if (step.kind.type !== 'grok') return ` (${n} declared)`;
+  return ` (${n} ${n === 1 ? 'type' : 'types'} chosen)`;
+}
+
 /** Declare each of `fields` that `declared` does not declare yet, as `proposedTypeSpec` types it. A field this
  * builder cannot type stays undeclared. */
 export function declareProposed(declared: FieldSpec[], fields: ProposedField[]) {
@@ -684,7 +692,7 @@ export function stepSummary(step: Step, pipelineNames: PipelineNames): string {
         ? `${step.fields.length} ${step.fields.length === 1 ? 'name' : 'names'}: ${step.fields.join(', ')}`
         : '(no names)';
     case 'parser':
-      return `${step.input || '_raw'} as ${PARSER_FORMAT_NAMES[step.kind.type]}${shownInto(step.into) ? ` into ${shownInto(step.into)}` : ''}${step.declared.length ? ` (${step.declared.length} declared)` : ''}`;
+      return `${step.input || '_raw'} as ${PARSER_FORMAT_NAMES[step.kind.type]}${shownInto(step.into) ? ` into ${shownInto(step.into)}` : ''}${parserCount(step)}`;
     case 'lookup':
       return `${step.input || '…'} → ${step.outputs.map((o) => o.field || '…').join(', ') || '(no outputs)'}`;
     case 'unroll':

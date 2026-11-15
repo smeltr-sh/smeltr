@@ -2,7 +2,7 @@
 //!
 //! The demo runs the real GUI in a visitor's browser over a leader the page itself plays: it holds the visitor's
 //! bundle, samples and fleet. What only the engine can answer comes here -- a preview, a route preview, a save's
-//! validation, a grok pattern's captures, a line breaker's verdict, which records a capture filter keeps, a scope's
+//! validation, a line breaker's verdict, which records a capture filter keeps, a scope's
 //! tests and what they make of it, a branch's map, what a captured sample reads as, the schema catalog, what breaks
 //! a schema in a group and what a branch changed. Each request carries the bundle and the sample it is about, so
 //! nothing is stored and one visitor never sees another. Every answer comes from the functions the leader's own
@@ -26,9 +26,8 @@ use smeltr::config_file::{self, BundleAt, DeclaredAt, FileConfig, RawBundle, Sam
 use smeltr::leader::envelope::{ApiError, Empty, Envelope, Refusal};
 use smeltr::leader::git;
 use smeltr::leader::preview::{
-    AfterDotRequest, CaptureFilterRequest, FormatRequest, Formatted, GrokCaptures, GrokCapturesRequest,
-    LineBreakerRequest, Preview, PreviewRequest, RoutePreview, TestResult, captures_of, format_code,
-    line_breaker_verdict, lock_test, run_preview, run_route_preview, run_test,
+    AfterDotRequest, CaptureFilterRequest, FormatRequest, Formatted, LineBreakerRequest, Preview, PreviewRequest,
+    RoutePreview, TestResult, format_code, line_breaker_verdict, lock_test, run_preview, run_route_preview, run_test,
 };
 use smeltr::leader::schema_catalog as catalog;
 use tokio::sync::Semaphore;
@@ -275,10 +274,6 @@ async fn validate(State(service): State<Service>, Json(bundle): Json<Bundle>) ->
             Envelope::with(Empty, status, errors.iter().map(ApiError::from_validation).collect())
         })
         .await
-}
-
-async fn grok_captures(State(service): State<Service>, Json(req): Json<GrokCapturesRequest>) -> Envelope<GrokCaptures> {
-    service.run(unavailable, move || captures_of(req)).await
 }
 
 async fn line_breaker(State(service): State<Service>, Json(req): Json<LineBreakerRequest>) -> Envelope {
@@ -713,7 +708,6 @@ fn app(service: Service) -> Router {
         .route("/preview", post(preview))
         .route("/route-preview", post(route_preview))
         .route("/validate", post(validate))
-        .route("/grok-captures", post(grok_captures))
         .route("/line-breaker", post(line_breaker))
         .route("/format", post(format))
         .route("/capture-filter", post(capture_filter))

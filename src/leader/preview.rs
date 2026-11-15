@@ -137,6 +137,9 @@ pub struct Preview {
     /// the parse decided, so it is what the parser did rather than a second reading of the records.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parsers: Vec<ParserOut>,
+    /// Each grok step's fields as the pipeline types them, by step id: a type the author chose, else a produced
+    /// schema's, else the pattern's (`Holds::under`). Empty when the pipeline did not compile.
+    pub grok_fields: BTreeMap<String, Vec<config_file::FieldDto>>,
     /// The dictionary of what the pipeline writes (`plan::dictionary`), when asked. Absent when it did not compile.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dictionary: Option<DictionaryOut>,
@@ -228,41 +231,6 @@ pub struct FieldOut {
 
 fn is_zero(n: &u32) -> bool {
     *n == 0
-}
-
-/// A grok pattern's captures, which are the fields the step can produce. The editor fills a step's field names in from
-/// this rather than asking the author to retype what the pattern already says.
-#[derive(Default, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GrokCapturesRequest {
-    pub patterns: Vec<String>,
-    #[serde(default)]
-    pub custom_patterns: Vec<config_file::CustomPatternDto>,
-    /// The bundle's patterns, which the step may name. The editor has them already, and a step being edited may
-    /// name one that is not saved yet.
-    #[serde(default)]
-    pub grok_patterns: Vec<config_file::GrokPatternDto>,
-    /// Whether the step splits capture names at their dots, so a name meets a schema's dotted path.
-    pub split_dots: bool,
-    /// The name the step parses into; each capture is a field under it.
-    pub into: String,
-    /// The ids of the schemas the pipeline produces. A capture they name takes the type they give it, as it would
-    /// in the pipeline (`schema::read_as`).
-    #[serde(default)]
-    pub produces: Vec<String>,
-    /// The schemas `produces` is chosen from; of two with one id, the later wins. The leader reads its own from the
-    /// branch.
-    #[serde(default)]
-    pub schemas: Vec<config_file::SchemaDto>,
-}
-
-/// The editor keeps the fields it has when a half-typed pattern cannot compile, so a failure carries no captures.
-#[derive(Default, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GrokCaptures {
-    /// Every capture across the patterns, in the order they appear, deduped, each with the type a produced schema
-    /// gives it, else the type its pattern gives it (`Matcher::holds`).
-    pub captures: Vec<config_file::FieldDto>,
 }
 
 /// A line breaker as it is typed into a sourcetype's row.
@@ -693,43 +661,6 @@ pub fn run_route_preview(
     })
 }
 
-/// Compiling a pattern touches nothing outside itself, so this is the whole answer and a route only wraps it.
-pub fn captures_of(req: GrokCapturesRequest) -> Envelope<GrokCaptures> {
-    let produced: Vec<Arc<Schema>> = (req.produces.iter())
-        .filter_map(|id| req.schemas.iter().rev().find(|s| s.id == *id))
-        .filter_map(|dto| crate::schema::read(dto).ok().map(Arc::new))
-        .collect();
-    let config = crate::plan::config::GrokConfig {
-        split_dots: req.split_dots,
-        patterns: req.patterns,
-        custom_patterns: req.custom_patterns.into_iter().map(|p| (p.name, p.pattern)).collect(),
-    };
-    let shared = req.grok_patterns.into_iter().map(|p| (p.id, p.pattern)).collect();
-    match crate::format::grok_scan::Matcher::compile_with(&config, &shared) {
-        Ok(m) => Envelope::ok(GrokCaptures {
-            captures: m
-                .capture_names()
-                .into_iter()
-                .map(|name| {
-                    let path = tree::join(tree::under_record(&req.into), &tree::name_of(name, config.split_dots));
-                    let holds = m.holds(name).under(&produced, &path);
-                    let ty = match holds.time_source {
-                        Some(crate::plan::config::TimeSource::Format(format)) => {
-                            config_file::DataTypeDto::Compound(config_file::CompoundTypeDto::DateTime { format })
-                        }
-                        _ => config_file::DataTypeDto::Scalar(holds.ty.to_string()),
-                    };
-                    config_file::FieldDto {
-                        name: name.to_string(),
-                        ty,
-                    }
-                })
-                .collect(),
-        }),
-        Err(e) => Envelope::refused(Refusal::invalid(e.to_string())),
-    }
-}
-
 /// Not `ok` when a save would refuse the pattern, with why, word for word as the save says it.
 pub fn line_breaker_verdict(req: LineBreakerRequest) -> Envelope {
     let refusal = config_file::line_breaker_refusal("this line breaker", &req.pattern);
@@ -996,6 +927,7 @@ pub fn run_preview(
             rows: vec![],
             unfiltered: filter.as_ref().map(|_| 0),
             parsers: vec![],
+            grok_fields: grok_fields(&plan),
             dictionary: req.dictionary.then(|| DictionaryOut {
                 compiled: Dictionary::of(&record),
                 sampled: None,
@@ -1140,11 +1072,42 @@ pub fn run_preview(
         rows,
         unfiltered,
         parsers,
+        grok_fields: grok_fields(&plan),
         warnings,
         schema_findings: found.len() as u32,
         missing,
         as_sample,
     })
+}
+
+/// Each grok step's fields in `plan`, by step id, spelled as a declaration spells them.
+fn grok_fields(plan: &Plan) -> BTreeMap<String, Vec<config_file::FieldDto>> {
+    let field = |o: &plan::compile::Output| config_file::FieldDto {
+        name: o.name.clone(),
+        ty: match &o.time_source {
+            Some(plan::config::TimeSource::Format(format)) => {
+                config_file::DataTypeDto::Compound(config_file::CompoundTypeDto::DateTime { format: format.clone() })
+            }
+            _ => config_file::DataTypeDto::Scalar(o.ty.to_string()),
+        },
+    };
+    let mut out = BTreeMap::new();
+    for i in &plan.instrs {
+        if let plan::compile::Op::Call {
+            outputs,
+            call:
+                plan::compile::Call::Parse {
+                    kind: plan::config::ParserKind::Grok(_),
+                    ..
+                },
+            ..
+        } = &i.op
+            && let Some(step) = plan.step_ids.get(i.function as usize)
+        {
+            out.insert(step.clone(), outputs.iter().map(field).collect());
+        }
+    }
+    out
 }
 
 /// The rows of `batch` that `plan` finished and `rows` shows, as a sample holds them: each as a capture at a
@@ -1767,6 +1730,25 @@ mod tests {
         // A pipeline that produces no schema is held to none.
         let config = compiling().replace(r#""body":"x = 1;""#, body);
         assert_eq!(warnings_of(config, &[]), []);
+    }
+
+    /// A grok step's fields come typed as the pipeline types them: a chosen type, else a produced schema's, else the
+    /// pattern's.
+    #[test]
+    fn a_grok_steps_fields_come_as_the_pipeline_types_them() {
+        let step = r#"{"id":"s","type":"parser","input":"_raw","kind":{"type":"grok",
+            "patterns":["%{WORD:time} %{INT:n2} %{HTTPDATE:at} %{INT:took}"]},"declared":[{"name":"took","type":"f64"}]}"#;
+        let config = producing(r#"["login"]"#).replace(r#"{"id":"s","type":"code","body":"x = 1;"}"#, step);
+        let fields = &previewed(config, &[]).grok_fields["s"];
+        assert_eq!(
+            serde_json::to_value(fields).unwrap(),
+            serde_json::json!([
+                {"name": "time", "type": "i64"},
+                {"name": "n2", "type": "i64"},
+                {"name": "at", "type": {"type": "datetime", "format": "%d/%b/%Y:%H:%M:%S %z"}},
+                {"name": "took", "type": "f64"}
+            ])
+        );
     }
 
     #[test]
