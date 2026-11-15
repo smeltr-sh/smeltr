@@ -1322,7 +1322,7 @@ pub struct CapturedRow {
 
 /// The columns a destination batch adds after the route's fields, in this order: the topic, index or key prefix the
 /// row chose there; its document id there; and the route that made it.
-pub const DESTINATION_COLUMNS: [&str; 3] = ["__destination.placement", crate::plan::topology::DOC_ID, "__destination.route"];
+pub const DESTINATION_COLUMNS: [&str; 3] = ["__destination.placement", "__destination.id", "__destination.route"];
 
 impl CaptureBatch {
     pub fn new(columns: Vec<CaptureColumn>) -> CaptureBatch {
