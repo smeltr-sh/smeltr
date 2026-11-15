@@ -2403,6 +2403,8 @@ export function grokCaptures(req: {
   customPatterns: { name: string; pattern: string }[];
   grokPatterns?: GrokPatternDto[];
   splitDots: boolean;
+  /** The name the step parses into. */
+  into: string;
   /** The ids of the schemas the pipeline produces, which give the captures they name their types. */
   produces: string[];
 }): Promise<GrokCaptures> {

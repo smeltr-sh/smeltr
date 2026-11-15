@@ -232,7 +232,7 @@ fn is_zero(n: &u32) -> bool {
 
 /// A grok pattern's captures, which are the fields the step can produce. The editor fills a step's field names in from
 /// this rather than asking the author to retype what the pattern already says.
-#[derive(serde::Deserialize)]
+#[derive(Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GrokCapturesRequest {
     pub patterns: Vec<String>,
@@ -243,8 +243,9 @@ pub struct GrokCapturesRequest {
     #[serde(default)]
     pub grok_patterns: Vec<config_file::GrokPatternDto>,
     /// Whether the step splits capture names at their dots, so a name meets a schema's dotted path.
-    #[serde(default = "yes")]
     pub split_dots: bool,
+    /// The name the step parses into; each capture is a field under it.
+    pub into: String,
     /// The ids of the schemas the pipeline produces. A capture they name takes the type they give it, as it would
     /// in the pipeline (`schema::read_as`).
     #[serde(default)]
@@ -253,10 +254,6 @@ pub struct GrokCapturesRequest {
     /// branch.
     #[serde(default)]
     pub schemas: Vec<config_file::SchemaDto>,
-}
-
-fn yes() -> bool {
-    true
 }
 
 /// The editor keeps the fields it has when a half-typed pattern cannot compile, so a failure carries no captures.
@@ -714,16 +711,13 @@ pub fn captures_of(req: GrokCapturesRequest) -> Envelope<GrokCaptures> {
                 .capture_names()
                 .into_iter()
                 .map(|name| {
-                    let holds = m.holds(name);
-                    // The pattern's own `datetime` keeps its format, which a schema's lacks.
-                    let schema = crate::schema::read_as(&produced, &tree::name_of(name, config.split_dots))
-                        .filter(|ty| *ty != holds.ty);
-                    let ty = match (schema, holds.time_source) {
-                        (Some(ty), _) => config_file::DataTypeDto::Scalar(ty.to_string()),
-                        (None, Some(crate::plan::config::TimeSource::Format(format))) => {
+                    let path = tree::join(tree::under_record(&req.into), &tree::name_of(name, config.split_dots));
+                    let holds = m.holds(name).under(&produced, &path);
+                    let ty = match holds.time_source {
+                        Some(crate::plan::config::TimeSource::Format(format)) => {
                             config_file::DataTypeDto::Compound(config_file::CompoundTypeDto::DateTime { format })
                         }
-                        (None, _) => config_file::DataTypeDto::Scalar(holds.ty.to_string()),
+                        _ => config_file::DataTypeDto::Scalar(holds.ty.to_string()),
                     };
                     config_file::FieldDto {
                         name: name.to_string(),

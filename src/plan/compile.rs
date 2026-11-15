@@ -3378,7 +3378,7 @@ impl Compiler<'_> {
 
     /// What a parse into `target` declares: every field the target holds, at its type, where the parse may find any
     /// key; the keys it can find, where it finds only those (`keys`), each at the type the target or `ty` gives it,
-    /// else the type a schema the pipeline produces gives it (`schema::read_as`), else the type the parse gives it. A new
+    /// else the type a schema the pipeline produces gives it, else the type the parse gives it (`Holds::under`). A new
     /// target with no `ty` is an open object.
     fn parse_fields(
         &self,
@@ -3403,16 +3403,12 @@ impl Compiler<'_> {
             for (k, holds) in keys {
                 let name = tree::join(target, &k);
                 if open && declared.iter().all(|d| d.name != name) {
-                    let ty = (self.held_type(target, &name, ty))
-                        .or_else(|| crate::schema::read_as(self.produces, &name).filter(|t| *t != holds.ty));
-                    declared.push(match ty {
+                    declared.push(match self.held_type(target, &name, ty) {
                         Some(ty) => field(name, ty),
-                        // The parse's own type keeps its time format, which a schema's `datetime` lacks.
-                        None => DeclaredField {
-                            name,
-                            ty: holds.ty,
-                            time_source: holds.time_source,
-                        },
+                        None => {
+                            let Holds { ty, time_source } = holds.under(self.produces, &name);
+                            DeclaredField { name, ty, time_source }
+                        }
                     });
                 }
             }

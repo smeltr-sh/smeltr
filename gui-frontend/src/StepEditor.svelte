@@ -322,6 +322,7 @@
       return;
     }
     const { patterns, customPatterns } = step.kind;
+    const { into } = step;
     const split = splitsDots(step.kind);
     const key = JSON.stringify([patterns, customPatterns, split, grokPatterns]);
 
@@ -340,6 +341,7 @@
         customPatterns,
         grokPatterns,
         splitDots: split,
+        into,
         produces: produced?.ids ?? [],
       })
         .then((r) => {

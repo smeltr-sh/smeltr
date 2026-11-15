@@ -3144,24 +3144,36 @@ mod tests {
         ]});
         let r = captures_of(GrokCapturesRequest {
             patterns: vec!["%{WORD:action} %{INT:http.status} %{INT:bytes}".to_string()],
-            custom_patterns: vec![],
-            grok_patterns: vec![],
             split_dots: true,
             produces: vec!["s".to_string()],
             schemas: vec![serde_json::from_value(schema).unwrap()],
+            ..Default::default()
         });
         let types = serde_json::to_value(r.captures.iter().map(|c| &c.ty).collect::<Vec<_>>()).unwrap();
         assert_eq!(types, serde_json::json!(["i64", "f64", "i64"]));
     }
 
+    /// A capture of a step that parses into `x` is typed by the schema's `x.<capture>`.
+    #[test]
+    fn a_capture_under_a_name_is_typed_by_the_schema_there() {
+        let schema = serde_json::json!({"id": "s", "title": "s", "fields": [{"field": "x.bytes", "type": "f64"}]});
+        let r = captures_of(GrokCapturesRequest {
+            patterns: vec!["%{INT:bytes}".to_string()],
+            into: "$.x".to_string(),
+            produces: vec!["s".to_string()],
+            schemas: vec![serde_json::from_value(schema).unwrap()],
+            ..Default::default()
+        });
+        assert_eq!(
+            serde_json::to_value(&r.captures[0].ty).unwrap(),
+            serde_json::json!("f64")
+        );
+    }
+
     fn captures(patterns: &[&str]) -> super::Envelope<super::GrokCaptures> {
         captures_of(GrokCapturesRequest {
             patterns: patterns.iter().map(|p| p.to_string()).collect(),
-            custom_patterns: vec![],
-            grok_patterns: vec![],
-            split_dots: true,
-            produces: vec![],
-            schemas: vec![],
+            ..Default::default()
         })
     }
 
@@ -3170,14 +3182,11 @@ mod tests {
     fn a_capture_inside_a_shared_pattern_is_listed() {
         let got = captures_of(GrokCapturesRequest {
             patterns: vec!["%{VENDOR}".to_string()],
-            custom_patterns: vec![],
             grok_patterns: vec![smeltr::config_file::GrokPatternDto {
                 id: "VENDOR".to_string(),
                 pattern: "%{WORD:vendor}".to_string(),
             }],
-            split_dots: true,
-            produces: vec![],
-            schemas: vec![],
+            ..Default::default()
         });
         assert_eq!(names(&got), vec!["vendor"]);
     }
