@@ -202,9 +202,16 @@
     pattern.
   </p>
   <p>
-    The captures are the step's fields, each with a type. With several patterns, the first one that
-    matches a record parses it. If none matches, the record has an <code>Unparsable</code> exception.
-    A matched pattern with an absent optional capture leaves that field null.
+    The captures are the step's fields, each with a type. A new capture starts at the type its
+    pattern gives it: <code>INT</code> and <code>POSINT</code> give <code>i64</code>,
+    <code>NUMBER</code>
+    gives
+    <code>f64</code>, and <code>HTTPDATE</code>, <code>SYSLOGTIMESTAMP</code> and
+    <code>TIMESTAMP_ISO8601</code> give <code>datetime</code>, read as the pattern writes it. Every
+    other capture starts as <code>str</code>, and so does one that two of the patterns type
+    differently. With several patterns, the first one that matches a record parses it. If none
+    matches, the record has an <code>Unparsable</code> exception. A matched pattern with an absent optional
+    capture leaves that field null.
   </p>
   <p>
     The parser groups each named pattern it inserts, so a choice or a case-insensitive flag applies

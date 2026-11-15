@@ -248,8 +248,9 @@ pub struct GrokCapturesRequest {
 #[derive(Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GrokCaptures {
-    /// Every capture across the patterns, in the order they appear, deduped.
-    pub captures: Vec<String>,
+    /// Every capture across the patterns, in the order they appear, deduped, each with the type its pattern gives it
+    /// (`Matcher::holds`).
+    pub captures: Vec<config_file::FieldDto>,
 }
 
 /// A line breaker as it is typed into a sourcetype's row.
@@ -690,7 +691,23 @@ pub fn captures_of(req: GrokCapturesRequest) -> Envelope<GrokCaptures> {
     let shared = req.grok_patterns.into_iter().map(|p| (p.id, p.pattern)).collect();
     match crate::format::grok_scan::Matcher::compile_with(&config, &shared) {
         Ok(m) => Envelope::ok(GrokCaptures {
-            captures: m.capture_names().into_iter().map(str::to_string).collect(),
+            captures: m
+                .capture_names()
+                .into_iter()
+                .map(|name| {
+                    let holds = m.holds(name);
+                    let ty = match holds.time_source {
+                        Some(crate::plan::config::TimeSource::Format(format)) => {
+                            config_file::DataTypeDto::Compound(config_file::CompoundTypeDto::DateTime { format })
+                        }
+                        _ => config_file::DataTypeDto::Scalar(holds.ty.to_string()),
+                    };
+                    config_file::FieldDto {
+                        name: name.to_string(),
+                        ty,
+                    }
+                })
+                .collect(),
         }),
         Err(e) => Envelope::refused(Refusal::invalid(e.to_string())),
     }

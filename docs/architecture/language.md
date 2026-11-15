@@ -262,9 +262,14 @@ not find leaves the prior value. Last write wins. `$ = f(…)` replaces the
 record with what the parse gives. Each bound field is a declared field
 of the parse, converted to its type, and a key no field claims goes to the
 unclaimed fields. `x = f(…)` makes `x` the object the parse gives, and binds a
-name nothing binds; `x: T = f(…)` binds it afresh at `T`. A grok capture or a
-CSV header nothing types is `str`. A `json` or `kv` parse lays keys no guard
-reaches, so it runs outside every `if` and loop.
+name nothing binds; `x: T = f(…)` binds it afresh at `T`. A CSV header
+nothing types is `str`. A grok capture you don't type takes its pattern's type:
+`INT` and `POSINT` give `i64`, `NUMBER` gives `f64`, and `HTTPDATE`,
+`SYSLOGTIMESTAMP` and `TIMESTAMP_ISO8601` give a `datetime`, read as the
+pattern writes it. A custom pattern that is only `%{NAME}` gives `NAME`'s
+type. Any other capture is `str`, and so is one that two of a step's patterns
+type differently. A `json` or `kv` parse lays keys no guard reaches, so it runs
+outside every `if` and loop.
 
 `grok`'s built-in patterns include whole lines, a syslog line or a web access
 log line, and each of those names its own fields as the Elastic Common Schema

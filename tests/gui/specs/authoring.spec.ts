@@ -4023,3 +4023,29 @@ test('A1: a capture shows every record it holds, each opening on its fields', as
   await rows.last().click();
   await expect(rows.last()).toHaveAttribute('aria-expanded', 'true');
 });
+
+// A capture the author types into a grok step is declared at the type its pattern gives it.
+test('a new grok capture is declared at its pattern type', async ({ admin, leader, api }) => {
+  await api.put(`/api/areas/shared/pipelines/access${ON}`, {
+    id: 'access',
+    name: 'access',
+    steps: [
+      {
+        type: 'parser',
+        id: 'line',
+        input: '_raw',
+        kind: { type: 'grok', patterns: ['%{WORD:method}'] },
+        declared: [{ name: 'method', type: 'str' }],
+      },
+    ],
+  });
+  await goto(admin, leader, '#/build/pipelines/access');
+  await admin.locator('button.expander[data-parser="grok"]').click();
+  await admin
+    .getByPlaceholder('%{IP:client} %{WORD:action}')
+    .fill('%{WORD:method} %{INT:status} %{NUMBER:took} \\[%{HTTPDATE:at}\\]');
+  await expect(admin.getByRole('combobox', { name: 'status type' })).toHaveValue('i64');
+  await expect(admin.getByRole('combobox', { name: 'took type' })).toHaveValue('f64');
+  await expect(admin.getByRole('combobox', { name: 'at type' })).toHaveValue('datetime');
+  await expect(admin.getByRole('combobox', { name: 'method type' })).toHaveValue('str');
+});

@@ -20,6 +20,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::expr::ast::{Expr, ExprKind, Value};
+use crate::format::grok_pattern::Holds;
 use crate::format::grok_scan::Matcher;
 use crate::plan::config::{CsvConfig, GrokConfig, GrokPatterns, KvConfig, MatchKind, Multiplicity, ParserKind};
 use crate::plan::tree;
@@ -347,21 +348,21 @@ impl<'e> ParseCall<'e> {
     }
 }
 
-/// The keys a parse finds, where its configuration fixes them: a CSV's headers, a grok pattern's captures. `None`
-/// where the record names them.
-pub fn matcher_keys(kind: &ParserKind, matcher: &Option<Arc<Matcher>>) -> Option<Vec<String>> {
+/// The keys a parse finds, where its configuration fixes them, each with what it holds: a CSV's headers, text; a grok
+/// pattern's captures, what their patterns hold (`Matcher::holds`). `None` where the record names them.
+pub fn matcher_keys(kind: &ParserKind, matcher: &Option<Arc<Matcher>>) -> Option<Vec<(String, Holds)>> {
     match kind {
         ParserKind::Csv(c) => Some(
             c.headers
                 .iter()
                 .flatten()
-                .map(|h| tree::name_of(h, c.split_dots).into_owned())
+                .map(|h| (tree::name_of(h, c.split_dots).into_owned(), Holds::text()))
                 .collect(),
         ),
         ParserKind::Grok(c) => matcher.as_ref().map(|m| {
             m.capture_names()
                 .into_iter()
-                .map(|n| tree::name_of(n, c.split_dots).into_owned())
+                .map(|n| (tree::name_of(n, c.split_dots).into_owned(), m.holds(n)))
                 .collect()
         }),
         ParserKind::Json { .. } | ParserKind::KeyValue(_) | ParserKind::Cef { .. } | ParserKind::Variant => None,

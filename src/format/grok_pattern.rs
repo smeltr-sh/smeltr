@@ -4,7 +4,8 @@
 //! `BUILTINS` is a curated library written against what the `regex` crate supports (no backreferences, no lookarounds),
 //! not an import of the logstash set. `Matcher::compile` refusing a pattern is the audit for anything added later.
 
-use crate::plan::config::{GrokConfig, GrokPatterns};
+use crate::core::column::DataType;
+use crate::plan::config::{GrokConfig, GrokPatterns, TimeSource};
 
 /// Extend through `GrokConfig::custom_patterns` or a bundle's `GrokPatterns` rather than here.
 pub const BUILTINS: &[(&str, &str)] = &[
@@ -124,7 +125,7 @@ pub const BUILTINS: &[(&str, &str)] = &[
     (
         "SYSLOG5424LINE",
         concat!(
-            r"<(?P<log.syslog.priority>[0-9]{1,3})>%{POSINT:log.syslog.version} ",
+            r"<(?P<log.syslog.priority>[0-9]{1,3})>(?P<log.syslog.version>%{POSINT}) ",
             r"(?:-|%{TIMESTAMP_ISO8601:timestamp}) (?:-|%{NOTSPACE:host.hostname}) ",
             r"(?:-|%{NOTSPACE:log.syslog.appname}) (?:-|%{NOTSPACE:log.syslog.procid}) ",
             r"(?:-|%{NOTSPACE:log.syslog.msgid}) ",
@@ -155,7 +156,7 @@ pub const BUILTINS: &[(&str, &str)] = &[
         concat!(
             r"%{IPORHOST:source.address} (?:-|%{NOTSPACE:apache.access.user.identity}) (?:-|%{NOTSPACE:user.name}) ",
             r#"\[%{HTTPDATE:timestamp}\] "(?:(?P<http.request.method>[!#$%&'*+.^_`|~0-9A-Za-z-]+) %{NOTSPACE:url.original}"#,
-            r#"(?: HTTP/%{NUMBER:http.version})?|%{DATA})" "#,
+            r#"(?: HTTP/(?P<http.version>%{NUMBER}))?|%{DATA})" "#,
             r"(?P<http.response.status_code>[0-9]{3}) (?:(?P<http.response.body.bytes>[0-9]+)|-)",
         ),
     ),
@@ -164,6 +165,35 @@ pub const BUILTINS: &[(&str, &str)] = &[
         r#"%{COMMONAPACHELOG} "(?:-|%{DATA:http.request.referrer})" "(?:-|%{DATA:user_agent.original})""#,
     ),
 ];
+
+/// The built-ins that give a type other than `str`, with the format a `datetime` one is read in (`None` reads it as
+/// `parseTime` does with no format). A pattern defined as only `%{X}` gives what `X` gives (`holds`), so `NUMBER` is
+/// `f64` through `BASE10NUM`.
+const TYPED: &[(&str, DataType, Option<&str>)] = &[
+    ("INT", DataType::I64, None),
+    ("POSINT", DataType::I64, None),
+    ("BASE10NUM", DataType::F64, None),
+    ("HTTPDATE", DataType::DateTime, Some("%d/%b/%Y:%H:%M:%S %z")),
+    ("SYSLOGTIMESTAMP", DataType::DateTime, Some("%b %e %H:%M:%S")),
+    ("TIMESTAMP_ISO8601", DataType::DateTime, None),
+];
+
+/// What a capture holds: its type, and how a `datetime` one's text is read.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Holds {
+    pub ty: DataType,
+    pub time_source: Option<TimeSource>,
+}
+
+impl Holds {
+    /// Text: a capture of a pattern nothing types, or of a raw `(?P<name>…)` group.
+    pub fn text() -> Self {
+        Holds {
+            ty: DataType::Str,
+            time_source: None,
+        }
+    }
+}
 
 /// Bound on macro nesting. A cycle is caught by name before this; the bound keeps a long chain from exhausting the
 /// stack.
@@ -186,12 +216,19 @@ impl std::error::Error for GrokError {}
 /// Expand every macro in `pattern`, resolving names against `config.custom_patterns` first and `BUILTINS` second,
 /// recursively.
 pub fn expand(pattern: &str, config: &GrokConfig) -> Result<String, GrokError> {
-    expand_with(pattern, config, &GrokPatterns::new())
+    expand_with(pattern, config, &GrokPatterns::new()).map(|(regex, _)| regex)
 }
 
-/// `expand`, with the bundle's `shared` patterns resolved between the step's own and the built-ins.
-pub fn expand_with(pattern: &str, config: &GrokConfig, shared: &GrokPatterns) -> Result<String, GrokError> {
-    expand_at_depth(pattern, config, shared, true, &mut Vec::new())
+/// `expand`, with the bundle's `shared` patterns resolved between the step's own and the built-ins. Returns the regex,
+/// and for each typed capture its name and what it holds, in pattern order.
+pub fn expand_with(
+    pattern: &str,
+    config: &GrokConfig,
+    shared: &GrokPatterns,
+) -> Result<(String, Vec<(String, Holds)>), GrokError> {
+    let mut typed = Vec::new();
+    let regex = expand_at_depth(pattern, config, shared, true, &mut Vec::new(), &mut typed)?;
+    Ok((regex, typed))
 }
 
 /// Whether `name` is a built-in pattern, which a bundle's pattern may not take: shadowing it would change every
@@ -242,6 +279,7 @@ fn expand_at_depth<'a>(
     shared: &'a GrokPatterns,
     own: bool,
     chain: &mut Vec<(&'a str, Defined)>,
+    typed: &mut Vec<(String, Holds)>,
 ) -> Result<String, GrokError> {
     let mut out = String::with_capacity(pattern.len() * 2);
     let mut i = 0;
@@ -277,7 +315,8 @@ fn expand_at_depth<'a>(
                 )));
             }
             chain.push(which);
-            let inner = expand_at_depth(def, config, shared, own && which.1 != Defined::Bundle, chain);
+            let inner_own = own && which.1 != Defined::Bundle;
+            let inner = expand_at_depth(def, config, shared, inner_own, chain, typed);
             chain.pop();
             let inner = inner?;
             match field {
@@ -288,6 +327,9 @@ fn expand_at_depth<'a>(
                              (each dot-separated segment must be ASCII letters/digits/underscore, \
                              not starting with a digit)"
                         )));
+                    }
+                    if let Some(h) = holds(which, def, config, shared, inner_own) {
+                        typed.push((f.to_string(), h));
                     }
                     out.push_str("(?P<");
                     out.push_str(f);
@@ -312,6 +354,27 @@ fn expand_at_depth<'a>(
         }
     }
     Ok(out)
+}
+
+/// What a match of the pattern `which`, defined as `def`, holds where it is typed: a built-in in `TYPED`, or a pattern
+/// defined as only `%{X}` for a typed `X`, resolved as the expansion resolved it. `None` where it is not typed. The
+/// expansion has already refused a loop.
+fn holds(which: (&str, Defined), def: &str, config: &GrokConfig, shared: &GrokPatterns, own: bool) -> Option<Holds> {
+    if which.1 == Defined::BuiltIn
+        && let Some((_, ty, format)) = TYPED.iter().find(|(n, ..)| *n == which.0)
+    {
+        return Some(Holds {
+            ty: ty.clone(),
+            time_source: (*ty == DataType::DateTime)
+                .then(|| format.map_or(TimeSource::Auto, |f| TimeSource::Format(f.to_string()))),
+        });
+    }
+    let name = def
+        .strip_prefix("%{")?
+        .strip_suffix('}')
+        .filter(|n| is_pattern_name(n))?;
+    let (next, def) = lookup(name, config, shared, own)?;
+    holds(next, def, config, shared, own && next.1 != Defined::Bundle)
 }
 
 /// `pattern` with every built-in that captures a field written out as its definition, recursively, so each field it
@@ -399,6 +462,11 @@ fn path(chain: &[(&str, Defined)], next: &str) -> String {
         .chain([next])
         .collect::<Vec<_>>()
         .join(" → ")
+}
+
+/// A name `%{NAME}` can spell and every reader of it agrees on.
+pub fn is_pattern_name(name: &str) -> bool {
+    !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
 /// A field name: dot-separated segments, each ASCII letters/digits/underscore and not starting with a digit.

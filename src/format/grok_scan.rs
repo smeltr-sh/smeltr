@@ -12,7 +12,7 @@ use regex::{Captures, Regex, RegexBuilder, RegexSet, RegexSetBuilder};
 use regex_syntax::ast::{self, Ast};
 use regex_syntax::hir::{self, HirKind};
 
-use crate::format::grok_pattern::{self, GrokError};
+use crate::format::grok_pattern::{self, GrokError, Holds, is_pattern_name};
 use crate::plan::config::{GrokConfig, GrokPatterns};
 
 #[derive(Debug)]
@@ -26,6 +26,8 @@ pub struct Matcher {
     /// resolving them over a long tail is what makes captures cost ten times a match. `split_tail` says which
     /// candidates qualify.
     tails: Vec<Option<String>>,
+    /// Per candidate, what each typed `%{NAME:field}` capture holds (`grok_pattern::expand_with`).
+    typed: Vec<Vec<(String, Holds)>>,
 }
 
 /// Which part of a candidate holds a named capture.
@@ -133,11 +135,6 @@ fn accepts_every_char(kind: &HirKind) -> bool {
     }
 }
 
-/// A name `%{NAME}` can spell and every reader of it agrees on.
-fn is_pattern_name(name: &str) -> bool {
-    !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-}
-
 impl Matcher {
     /// Expand and compile every pattern in `config`, in order. A pattern the `regex` crate cannot compile is an `Err`.
     /// Called once per `Parser` step at plan-compile time and reused by every batch.
@@ -159,8 +156,10 @@ impl Matcher {
         let mut exprs = Vec::with_capacity(config.patterns.len());
         let mut patterns = Vec::with_capacity(config.patterns.len());
         let mut tails = Vec::with_capacity(config.patterns.len());
+        let mut typed = Vec::with_capacity(config.patterns.len());
         for p in &config.patterns {
-            let expanded = grok_pattern::expand_with(p, config, shared)?;
+            let (expanded, holds) = grok_pattern::expand_with(p, config, shared)?;
+            typed.push(holds);
             // The whole pattern compiles first, so a bad tail is still the author's error to see.
             RegexBuilder::new(&expanded)
                 .dot_matches_new_line(true)
@@ -179,7 +178,12 @@ impl Matcher {
             .dot_matches_new_line(true)
             .build()
             .map_err(|e| GrokError(format!("pattern set failed to compile: {e}")))?;
-        Ok(Matcher { set, patterns, tails })
+        Ok(Matcher {
+            set,
+            patterns,
+            tails,
+            typed,
+        })
     }
 
     /// What is wrong with each of a bundle's patterns, by name: a built-in's name, or a definition that does not
@@ -220,6 +224,30 @@ impl Matcher {
             }
         }
         names
+    }
+
+    /// What the capture `name` holds: its pattern's type where every candidate that captures it gives it the same one,
+    /// else text.
+    pub fn holds(&self, name: &str) -> Holds {
+        let mut each = self
+            .patterns
+            .iter()
+            .zip(&self.tails)
+            .zip(&self.typed)
+            .filter_map(|((p, tail), typed)| {
+                let captures = p.capture_names().flatten().chain(tail.as_deref()).any(|n| n == name);
+                captures.then(|| {
+                    typed
+                        .iter()
+                        .find(|(n, _)| n == name)
+                        .map_or_else(Holds::text, |(_, h)| h.clone())
+                })
+            });
+        let first = each.next().unwrap_or_else(Holds::text);
+        match each.all(|h| h == first) {
+            true => first,
+            false => Holds::text(),
+        }
     }
 
     /// The first candidate (declared order) that matches `text`, with its captures, or `None`. One pattern needs no
@@ -266,6 +294,45 @@ mod tests {
             patterns: patterns.iter().map(|s| s.to_string()).collect(),
             custom_patterns: vec![],
         }
+    }
+
+    /// A capture holds its pattern's type, through a pattern that only names a typed one; text where nothing types
+    /// it, and where candidates disagree.
+    #[test]
+    fn a_capture_holds_its_patterns_type() {
+        use crate::core::column::DataType;
+        use crate::plan::config::TimeSource;
+        let mut config = cfg(&[
+            "%{INT:n} %{NUMBER:f} %{HTTPDATE:t} %{TIMESTAMP_ISO8601:iso} %{PORT:port} (?P<raw>[0-9]+) %{INT:both}",
+            "%{WORD:both} %{INT:n}",
+        ]);
+        config.custom_patterns = vec![("PORT".into(), "%{INT}".into())];
+        let m = Matcher::compile(&config).unwrap();
+        let ty = |name| m.holds(name).ty;
+        assert_eq!(ty("n"), DataType::I64);
+        assert_eq!(ty("f"), DataType::F64);
+        assert_eq!(ty("port"), DataType::I64);
+        assert_eq!(ty("raw"), DataType::Str);
+        assert_eq!(ty("both"), DataType::Str, "one candidate types it i64, the other str");
+        assert_eq!(
+            m.holds("t").time_source,
+            Some(TimeSource::Format("%d/%b/%Y:%H:%M:%S %z".into()))
+        );
+        assert_eq!(m.holds("iso").time_source, Some(TimeSource::Auto));
+    }
+
+    /// The whole-line built-ins name fields as ECS does, so each holds the type ECS gives it: `http.version` and
+    /// `log.syslog.version` are keywords.
+    #[test]
+    fn a_whole_line_capture_holds_its_ecs_type() {
+        use crate::core::column::DataType;
+        let apache = Matcher::compile(&cfg(&["%{COMMONAPACHELOG}"])).unwrap();
+        assert_eq!(apache.holds("http.version").ty, DataType::Str);
+        assert_eq!(apache.holds("timestamp").ty, DataType::DateTime);
+        let syslog = Matcher::compile(&cfg(&["%{SYSLOG5424LINE}"])).unwrap();
+        assert_eq!(syslog.holds("log.syslog.version").ty, DataType::Str);
+        let line = Matcher::compile(&cfg(&["%{SYSLOGLINE}"])).unwrap();
+        assert_eq!(line.holds("process.pid").ty, DataType::I64);
     }
 
     #[test]

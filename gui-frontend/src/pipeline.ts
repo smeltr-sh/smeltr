@@ -769,7 +769,7 @@ function oneOf<T extends string>(v: unknown, options: readonly T[], where: strin
   );
 }
 
-function dtoToDataType(dto: unknown, where: string): DataTypeSpec {
+export function dtoToDataType(dto: unknown, where: string): DataTypeSpec {
   if (typeof dto === 'string') {
     if (dto === 'skip') return { kind: 'skip' };
     if (dto === 'datetime') return { kind: 'datetime', format: '' };

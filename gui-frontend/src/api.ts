@@ -2392,7 +2392,8 @@ export async function checkCaptureFilter(
 export interface GrokCaptures {
   ok: boolean;
   errors: ApiError[];
-  captures: string[];
+  /** Each capture's name, and the type its pattern gives it, in the form a declared field's type takes. */
+  captures: { name: string; type: unknown }[];
 }
 
 /** `grokPatterns` are the bundle's, which the step's patterns may name. */

@@ -16,6 +16,7 @@ use crate::core::id::{FunctionId, SlotId};
 use crate::expr::ast::{Catch, Expr, ExprKind, Region, Site, Span, Stmt, Value};
 use crate::expr::ir::{Ir, IrKind, Layer, flatten};
 use crate::expr::parse::parse_block_shaped;
+use crate::format::grok_pattern::Holds;
 use crate::ops::BinOp;
 use crate::plan::binding::{self, Source};
 use crate::plan::config::{
@@ -2815,13 +2816,13 @@ impl Compiler<'_> {
             }
         }
         let keys = matcher_keys(&kind, &matcher);
-        if let Some(k) = keys.iter().flatten().find(|k| tree::is_internal(tree::head(k))) {
+        if let Some((k, _)) = keys.iter().flatten().find(|(k, _)| tree::is_internal(tree::head(k))) {
             return self.err(
                 Some(id),
                 format!("`{k}` is the engine's own field; give the capture or column another name"),
             );
         }
-        if self.writes_a_local(target, keys.iter().flatten(), id) {
+        if self.writes_a_local(target, keys.iter().flatten().map(|(k, _)| k), id) {
             return;
         }
         let formats = match call.formats() {
@@ -3373,13 +3374,13 @@ impl Compiler<'_> {
     }
 
     /// What a parse into `target` declares: every field the target holds, at its type, where the parse may find any
-    /// key; the keys it can find, where it finds only those (`keys`), each at the type the target or `ty` holds, else
-    /// `str`. A new target with no `ty` is an open object.
+    /// key; the keys it can find, where it finds only those (`keys`), each at the type the target or `ty` gives it,
+    /// else the type the parse gives it. A new target with no `ty` is an open object.
     fn parse_fields(
         &self,
         target: &str,
         kind: &ParserKind,
-        keys: Option<Vec<String>>,
+        keys: Option<Vec<(String, Holds)>>,
         ty: Option<&DataType>,
     ) -> Vec<DeclaredField> {
         let field = |name: String, ty: DataType| DeclaredField {
@@ -3395,11 +3396,17 @@ impl Compiler<'_> {
                 }
                 _ => (Vec::new(), true),
             };
-            for k in keys {
+            for (k, holds) in keys {
                 let name = tree::join(target, &k);
                 if open && declared.iter().all(|d| d.name != name) {
-                    let ty = self.held_type(target, &name, ty).unwrap_or(DataType::Str);
-                    declared.push(field(name, ty));
+                    declared.push(match self.held_type(target, &name, ty) {
+                        Some(ty) => field(name, ty),
+                        None => DeclaredField {
+                            name,
+                            ty: holds.ty,
+                            time_source: holds.time_source,
+                        },
+                    });
                 }
             }
             return declared;
