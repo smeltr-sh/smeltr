@@ -1,20 +1,22 @@
 //! `parseTime`'s engine: a strftime-like format subset and an ordered candidate list for auto-detect.
 //!
-//! Auto-detect reads a run of digits as a compact date first -- `%Y%m%d%H%M%S`, then `%Y%m%d` -- and as a Unix
-//! epoch when it is neither, before it tries any other text shape. A valid date is the more specific reading, so it
-//! wins: `20231114` is the 14th of November, not the 231st day of 1970. The epoch's unit comes from the magnitude of
-//! the integer part (`parse_epoch_digits`): seconds below 10^11, milliseconds below 10^14, microseconds below 10^17,
-//! nanoseconds past that. Each bound is the year 5138 in its unit, so the only values read in the wrong unit are
-//! milliseconds before March 1973, which read as seconds. A sign and a fraction are taken.
+//! Auto-detect reads a run of digits as a compact date -- `%Y%m%d%H%M%S`, `%Y%m%d%H%M` or `%Y%m%d` -- or as a Unix
+//! epoch, before it tries any other text shape. Where both read, the instant nearer the reference wins, and with no
+//! reference the date does: `20231114` is the 14th of November 2023, not the 235th day of 1970, and `202311142213` is
+//! 22:13 that day, not May 1976. The epoch's unit comes from the magnitude of the integer part (`parse_epoch_digits`):
+//! seconds below 10^11, milliseconds below 10^14, microseconds below 10^17, nanoseconds past that. Each bound is the
+//! year 5138 in its unit, so the only values read in the wrong unit are milliseconds before March 1973, which read as
+//! seconds. A sign and a fraction are taken.
 //!
-//! Specifiers: `%Y` exactly four digits, `%m`/`%d` one or two digits, `%e` a day with an optional leading space
-//! (syslog's `Oct  1`), `%H`/`%M`/`%S` two digits, `%I` one or two (with `%p` `AM`/`PM`), `%f` one to six fractional
-//! digits, `%z` an offset (`Z`, `+HH:MM`, `+HHMM`, or a fixed named zone), `%b`/`%B` and `%a`/`%A` English
-//! month/weekday names (weekdays are consumed, not checked), `%s` a Unix epoch in seconds and `%Q` one in
-//! milliseconds (sign and fraction taken, as auto-detect takes them), `%%` a literal percent. Every other byte must
-//! match literally and trailing input is a failure. `%s` and `%Q` name the whole instant, so a format that pairs one
-//! with a date, time or zone specifier is refused. No two-digit year: every century pivot is wrong for someone. A format
-//! with no `%z` reads as UTC.
+//! Specifiers: `%Y` exactly four digits, `%y` exactly two, `%m`/`%d` one or two digits, `%e` a day with an optional
+//! leading space (syslog's `Oct  1`), `%H`/`%M`/`%S` two digits, `%I` one or two (with `%p` `AM`/`PM`), `%f` one to six
+//! fractional digits, `%z` an offset (`Z`, `+HH:MM`, `+HHMM`, or a fixed named zone), `%b`/`%B` and `%a`/`%A` English
+//! month/weekday names (weekdays are consumed, not checked), `%s` a Unix epoch in seconds and `%Q` one in milliseconds
+//! (sign and fraction taken, as auto-detect takes them), `%%` a literal percent. A specifier written right against
+//! another, as in `%Y%m%d`, reads all its digits, since `2023111` could be the 11th of January or the 1st of November.
+//! Every other byte must match literally, except that a letter matches in either case, and trailing input is a failure.
+//! `%s` and `%Q` name the whole instant, so a format that pairs one with a date, time or zone specifier is refused. A
+//! format with no `%z` reads as UTC.
 //!
 //! Every field is range-checked, so a stamp that names no instant is `None` rather than one that rolled over: `%H`
 //! 0-23, `%I` 1-12, `%M` 0-59, `%S` 0-60, an offset within +/-23:59, and the date through `valid_date_days`. The
@@ -26,6 +28,10 @@
 //! unless that puts the stamp more than a day ahead of it -- a December line read in January was written last year --
 //! or more than eleven months behind it -- the reader's clock behind the writer's: next year. A `Feb 29` that lands
 //! in a non-leap year is unparseable. With no reference the year stays 1970.
+//!
+//! `%y` takes its century from the reference too: the year ending in those two digits that lies nearest the
+//! reference's, up to forty-nine years ahead of it or fifty behind. Only a format its author writes can contain `%y`.
+//! Auto-detect never guesses a two-digit year, since `10/11/12` has more than one reading.
 
 use std::io::Write as _;
 
@@ -297,6 +303,13 @@ fn infer_year(reference: i64, month: u32, day: u32, of_day: i64) -> Option<i64> 
     i64::try_from(t).ok()
 }
 
+/// The year ending in `yy` that lies nearest the reference's year: at most forty-nine ahead of it, or fifty behind.
+fn century_nearest(reference: i64, yy: i64) -> i64 {
+    let (ry, _, _) = civil_from_days(reference.div_euclid(MICROS_PER_DAY));
+    let first = ry - 50;
+    first + (yy - first).rem_euclid(100)
+}
+
 /// Parse `text` against `fmt`, returning epoch microseconds. `None` on any mismatch, trailing input included. A
 /// format with no `%Y` infers its year from `reference` (the module doc), or reads 1970 without one.
 pub fn parse_with_format_at(text: &str, fmt: &str, reference: Option<i64>) -> Option<i64> {
@@ -305,23 +318,30 @@ pub fn parse_with_format_at(text: &str, fmt: &str, reference: Option<i64>) -> Op
     let (mut ti, mut fi) = (0usize, 0usize);
 
     let (mut year, mut month, mut day) = (None::<i64>, 1u32, 1u32);
+    let mut short_year: Option<i64> = None;
     let (mut hour, mut min, mut sec, mut micros, mut offset) = (0i64, 0i64, 0i64, 0i64, 0i64);
     let mut is_pm: Option<bool> = None;
     // `%s`/`%Q` name the whole instant; any field specifier beside one is a contradiction.
     let mut epoch: Option<i64> = None;
     let mut fields = 0usize;
+    // Whether the format's previous element was a specifier, so a specifier here is written right against it.
+    let mut joined = false;
 
     while fi < fb.len() {
         if fb[fi] == b'%' && fi + 1 < fb.len() {
             let spec = fb[fi + 1];
             fi += 2;
             fields += 1;
+            // A specifier written right against another, as in `%Y%m%d`, takes its full width: `2023111` has two readings.
+            let narrowest = if joined || fb.get(fi) == Some(&b'%') { 2 } else { 1 };
+            joined = true;
             match spec {
                 b's' => epoch = Some(take_epoch(tb, &mut ti, 1_000_000, 6)?),
                 b'Q' => epoch = Some(take_epoch(tb, &mut ti, 1_000, 3)?),
                 b'Y' => year = Some(take_digits(tb, &mut ti, 4, 4)?),
-                b'm' => month = take_digits(tb, &mut ti, 1, 2)? as u32,
-                b'd' => day = take_digits(tb, &mut ti, 1, 2)? as u32,
+                b'y' => short_year = Some(take_digits(tb, &mut ti, 2, 2)?),
+                b'm' => month = take_digits(tb, &mut ti, narrowest, 2)? as u32,
+                b'd' => day = take_digits(tb, &mut ti, narrowest, 2)? as u32,
                 b'e' => {
                     if tb.get(ti) == Some(&b' ') {
                         ti += 1;
@@ -329,7 +349,7 @@ pub fn parse_with_format_at(text: &str, fmt: &str, reference: Option<i64>) -> Op
                     day = take_digits(tb, &mut ti, 1, 2)? as u32;
                 }
                 b'H' => hour = in_range(take_digits(tb, &mut ti, 2, 2)?, 0, 24)?,
-                b'I' => hour = in_range(take_digits(tb, &mut ti, 1, 2)?, 1, 12)?,
+                b'I' => hour = in_range(take_digits(tb, &mut ti, narrowest, 2)?, 1, 12)?,
                 b'M' => min = in_range(take_digits(tb, &mut ti, 2, 2)?, 0, 59)?,
                 b'S' => sec = in_range(take_digits(tb, &mut ti, 2, 2)?, 0, 60)?,
                 b'f' => micros = take_fraction(tb, &mut ti)?,
@@ -340,15 +360,18 @@ pub fn parse_with_format_at(text: &str, fmt: &str, reference: Option<i64>) -> Op
                 b'%' if tb.get(ti) == Some(&b'%') => {
                     ti += 1;
                     fields -= 1;
+                    joined = false;
                 }
                 _ => return None,
             }
         } else {
-            if tb.get(ti) != Some(&fb[fi]) {
+            // RFC 3339 lets `T` and `Z` be lower case; a letter matches either case.
+            if !tb.get(ti).is_some_and(|c| c.eq_ignore_ascii_case(&fb[fi])) {
                 return None;
             }
             ti += 1;
             fi += 1;
+            joined = false;
         }
     }
     if ti != tb.len() {
@@ -374,6 +397,9 @@ pub fn parse_with_format_at(text: &str, fmt: &str, reference: Option<i64>) -> Op
     }
 
     let of_day = hour * 3_600_000_000 + min * 60_000_000 + sec * 1_000_000 + micros - offset;
+    if let Some(yy) = short_year {
+        year = Some(century_nearest(reference.unwrap_or(0), yy));
+    }
     // `2026-02-30` is unparseable, as JS's `Date.parse` has it, rather than March 2nd.
     match (year, reference) {
         (Some(y), _) => Some(valid_date_days(y, month, day)? * MICROS_PER_DAY + of_day),
@@ -386,7 +412,7 @@ pub fn parse_with_format_at(text: &str, fmt: &str, reference: Option<i64>) -> Op
 /// published reference cannot name one the parser lacks, or miss one it has
 /// (`the_reference_documents_every_format_specifier`).
 pub const FORMAT_SPECIFIERS: &[&str] = &[
-    "%Y", "%m", "%d", "%e", "%H", "%I", "%M", "%S", "%f", "%z", "%b", "%B", "%a", "%A", "%p", "%s", "%Q", "%%",
+    "%Y", "%y", "%m", "%d", "%e", "%H", "%I", "%M", "%S", "%f", "%z", "%b", "%B", "%a", "%A", "%p", "%s", "%Q", "%%",
 ];
 
 /// The specifiers that name a whole instant on their own. A format holds at most one of them and nothing else.
@@ -395,20 +421,38 @@ const WHOLE_INSTANT_SPECIFIERS: &[&str] = &["%s", "%Q"];
 /// Auto-detect candidates, most common first; the first match wins. The shapes are mutually exclusive
 /// (`candidate_formats_are_mutually_exclusive`), which is what makes the sticky hint in `parse_auto_hinted` sound.
 const CANDIDATE_FORMATS: &[&str] = &[
-    // Compact digits. These two are tried before the epoch reading (`parse_auto_hinted_at`), so they stay first.
+    // Compact digits. These are weighed against the epoch reading (`parse_auto_hinted_at`), so they stay first.
     "%Y%m%d%H%M%S",
+    "%Y%m%d%H%M",
     "%Y%m%d",
-    // ISO 8601, `T` separator.
+    // ISO 8601, `T` separator. ISO 8601 takes a comma or a full stop before the fraction.
     "%Y-%m-%dT%H:%M:%S.%f%z",
+    "%Y-%m-%dT%H:%M:%S,%f%z",
     "%Y-%m-%dT%H:%M:%S%z",
     "%Y-%m-%dT%H:%M:%S.%f",
+    "%Y-%m-%dT%H:%M:%S,%f",
     "%Y-%m-%dT%H:%M:%S",
     "%Y-%m-%dT%H:%M%z",
     "%Y-%m-%dT%H:%M",
-    // ISO-ish, space separator.
+    "%Y-%m-%dT%H%z",
+    "%Y-%m-%dT%H",
+    // ISO 8601's basic format: no separators in the date or the time. It never mixes with the extended format above.
+    "%Y%m%dT%H%M%S.%f%z",
+    "%Y%m%dT%H%M%S,%f%z",
+    "%Y%m%dT%H%M%S%z",
+    "%Y%m%dT%H%M%S.%f",
+    "%Y%m%dT%H%M%S,%f",
+    "%Y%m%dT%H%M%S",
+    "%Y%m%dT%H%M%z",
+    "%Y%m%dT%H%M",
+    "%Y%m%dT%H%z",
+    "%Y%m%dT%H",
+    // ISO-ish, space separator. A comma before the fraction is log4j's and Python logging's default.
     "%Y-%m-%d %H:%M:%S.%f%z",
+    "%Y-%m-%d %H:%M:%S,%f%z",
     "%Y-%m-%d %H:%M:%S%z",
     "%Y-%m-%d %H:%M:%S.%f",
+    "%Y-%m-%d %H:%M:%S,%f",
     "%Y-%m-%d %H:%M:%S",
     "%Y-%m-%d %H:%M",
     // Slash dates, year first.
@@ -453,7 +497,7 @@ const EPOCH_UNIT_BOUNDS: [(i64, i64, usize); 3] = [
 ];
 const EPOCH_HINT: usize = usize::MAX;
 /// How many of `CANDIDATE_FORMATS` are the all-digit shapes read ahead of the epoch.
-const COMPACT_CANDIDATES: usize = 2;
+const COMPACT_CANDIDATES: usize = 3;
 
 /// A run of digits, with an optional sign and an optional fraction, as epoch microseconds. The unit is the first of
 /// seconds, milliseconds, microseconds and nanoseconds whose bound the integer part is below (the module doc). `None`
@@ -528,6 +572,7 @@ pub fn format_into(us: i64, fmt: &str, out: &mut Vec<u8>) -> bool {
         }
         let written = match chars.next() {
             Some('Y') => write!(out, "{year:04}"),
+            Some('y') => write!(out, "{:02}", year.rem_euclid(100)),
             Some('m') => write!(out, "{month:02}"),
             Some('d') => write!(out, "{day:02}"),
             Some('e') => write!(out, "{day:>2}"),
@@ -563,15 +608,21 @@ fn write_name(out: &mut Vec<u8>, name: &str) -> std::io::Result<()> {
 
 /// `parse_auto_hinted` with the reference a yearless candidate infers its year from.
 pub fn parse_auto_hinted_at(text: &str, hint: usize, reference: Option<i64>) -> Option<(i64, usize)> {
-    // A run of digits: a compact date if it is one, else an epoch. The compact shapes are the first two candidates
-    // and fail on the first byte of any other text, so trying them here costs nothing on the common case.
-    for (i, fmt) in CANDIDATE_FORMATS[..COMPACT_CANDIDATES].iter().enumerate() {
-        if let Some(us) = parse_with_format_at(text, fmt, reference) {
-            return Some((us, i));
+    // A run of digits: a compact date, an epoch, or both. The compact shapes are the first candidates and fail on
+    // the first byte of any other text, so trying them first costs almost nothing on the common case.
+    let date = CANDIDATE_FORMATS[..COMPACT_CANDIDATES]
+        .iter()
+        .enumerate()
+        .find_map(|(i, fmt)| parse_with_format_at(text, fmt, reference).map(|us| (us, i)));
+    let epoch = parse_epoch_digits(text).map(|us| (us, EPOCH_HINT));
+    match (date, epoch, reference) {
+        (Some(d), Some(e), Some(r)) => {
+            let nearer = |(us, _): (i64, usize)| (i128::from(us) - i128::from(r)).unsigned_abs();
+            return Some(if nearer(e) < nearer(d) { e } else { d });
         }
-    }
-    if let Some(us) = parse_epoch_digits(text) {
-        return Some((us, EPOCH_HINT));
+        (Some(d), _, _) => return Some(d),
+        (None, Some(e), _) => return Some(e),
+        (None, None, _) => {}
     }
     if let Some(fmt) = CANDIDATE_FORMATS.get(hint)
         && let Some(us) = parse_with_format_at(text, fmt, reference)
@@ -668,7 +719,113 @@ mod tests {
         assert_eq!(parse_epoch_digits("9999999999999999999"), None);
     }
 
-    /// A run of digits that is a valid compact date is that date; one that is not is an epoch.
+    /// ISO 8601's comma before the fraction, its basic format, an hour alone and RFC 3339's lower-case `t` all read
+    /// as the instant the extended form names.
+    #[test]
+    fn auto_detect_reads_every_iso_form_emitters_write() {
+        let t = parse_auto("2023-11-14T22:13:20.5Z").unwrap();
+        for text in [
+            "2023-11-14T22:13:20,5Z",
+            "2023-11-14 22:13:20,5+00:00",
+            "20231114T221320.5Z",
+            "20231114T221320,5+0000",
+            "2023-11-14t22:13:20.5z",
+        ] {
+            assert_eq!(parse_auto(text), Some(t), "{text}");
+        }
+        let hour = parse_auto("2023-11-14T22:00:00Z");
+        for text in [
+            "2023-11-14T22",
+            "2023-11-14T22Z",
+            "20231114T22",
+            "20231114T2200",
+            "20231114T220000",
+        ] {
+            assert_eq!(parse_auto(text), hour, "{text}");
+        }
+    }
+
+    /// ISO 8601 never mixes its basic and extended formats in one stamp, and auto-detect reads no mix.
+    #[test]
+    fn auto_detect_refuses_basic_and_extended_mixed() {
+        for text in [
+            "2023-11-14T2213",
+            "2023-11-14T221320Z",
+            "20231114T22:13",
+            "2023-11-14T22:1320",
+        ] {
+            assert_eq!(parse_auto(text), None, "{text}");
+        }
+    }
+
+    /// Fields run together read all their digits, so seven digits are no date: `2023111` could be January or November.
+    #[test]
+    fn specifiers_run_together_read_their_full_width() {
+        assert_eq!(parse_with_format("2023111", "%Y%m%d"), None);
+        assert_eq!(parse_auto("2023111"), Some(2_023_111 * 1_000_000), "seconds");
+        assert_eq!(
+            parse_with_format("20231114", "%Y%m%d"),
+            parse_with_format("2023-11-14", "%Y-%m-%d")
+        );
+        assert_eq!(
+            parse_with_format("8/5/2026", "%m/%d/%Y"),
+            parse_with_format("2026-08-05", "%Y-%m-%d")
+        );
+        assert_eq!(
+            parse_with_format("2026-8-5", "%Y-%m-%d"),
+            parse_with_format("2026-08-05", "%Y-%m-%d")
+        );
+    }
+
+    /// `%y` takes the year ending in its digits nearest the reference's: forty-nine ahead at most, fifty behind.
+    #[test]
+    fn a_two_digit_year_takes_the_century_nearest_the_reference() {
+        let reference = Some(parse_auto("2026-06-01").unwrap());
+        let read = |text| parse_with_format_at(text, "%y-%m-%d", reference);
+        let date = |text| parse_with_format(text, "%Y-%m-%d");
+        assert_eq!(read("26-11-14"), date("2026-11-14"));
+        assert_eq!(read("75-11-14"), date("2075-11-14"), "forty-nine ahead");
+        assert_eq!(read("76-11-14"), date("1976-11-14"), "fifty behind");
+        assert_eq!(
+            read("00-02-29"),
+            date("2000-02-29"),
+            "the century decides the leap year"
+        );
+        assert_eq!(
+            parse_with_format_at("00-02-29", "%y-%m-%d", Some(parse_auto("1950-01-01").unwrap())),
+            None
+        );
+        assert_eq!(
+            parse_with_format("69-01-01", "%y-%m-%d"),
+            date("1969-01-01"),
+            "no reference: nearest 1970"
+        );
+        assert_eq!(parse_with_format("20-01-01", "%y-%m-%d"), date("1920-01-01"));
+        assert_eq!(parse_with_format("2026-01-01", "%y-%m-%d"), None, "exactly two digits");
+        assert_eq!(parse_auto("26-11-14"), None, "auto-detect never guesses one");
+        assert_eq!(formatted(date("2007-03-04").unwrap(), "%y%m%d").unwrap(), "070304");
+    }
+
+    /// Digits that read both as a compact date and as an epoch take the instant nearer the reference.
+    #[test]
+    fn digits_with_two_readings_take_the_one_nearer_the_reference() {
+        let r = Some(parse_auto("2026-11-14").unwrap());
+        let read = |text| parse_auto_hinted_at(text, usize::MAX, r).map(|(us, _)| us);
+        assert_eq!(
+            read("202311142213"),
+            parse_with_format("2023-11-14 22:13", "%Y-%m-%d %H:%M")
+        );
+        // The year 1234 as a date, November 1973 in milliseconds.
+        assert_eq!(read("123412011200"), Some(123_412_011_200 * 1_000));
+        assert_eq!(
+            parse_auto("123412011200"),
+            parse_with_format("1234-12-01 12:00", "%Y-%m-%d %H:%M"),
+            "no reference"
+        );
+        assert_eq!(read("20231114"), parse_with_format("2023-11-14", "%Y-%m-%d"));
+    }
+
+    /// With no reference, a run of digits that is a valid compact date is that date; one that is not is an epoch.
     #[test]
     fn auto_detect_reads_a_compact_date_before_an_epoch() {
         assert_eq!(parse_auto("20231114"), parse_with_format("2023-11-14", "%Y-%m-%d"));
@@ -678,6 +835,11 @@ mod tests {
         );
         // Month 13: not a date, so the eight digits are seconds.
         assert_eq!(parse_auto("20231314"), Some(20_231_314 * 1_000_000));
+        // Twelve digits are a date and a count of milliseconds, here the date.
+        assert_eq!(
+            parse_auto("202311142213"),
+            parse_with_format("2023-11-14 22:13", "%Y-%m-%d %H:%M")
+        );
         // Ten digits are never a compact date: `%Y%m%d` leaves two over.
         assert_eq!(parse_auto("2023111422"), Some(2_023_111_422 * 1_000_000));
     }
@@ -1090,16 +1252,33 @@ mod tests {
     fn one_sample_per_candidate() -> Vec<(&'static str, &'static str)> {
         vec![
             ("%Y%m%d%H%M%S", "20260825123045"),
+            ("%Y%m%d%H%M", "202608251230"),
             ("%Y%m%d", "20260825"),
             ("%Y-%m-%dT%H:%M:%S.%f%z", "2026-08-25T12:30:45.123456+05:00"),
+            ("%Y-%m-%dT%H:%M:%S,%f%z", "2026-08-25T12:30:45,123456+05:00"),
             ("%Y-%m-%dT%H:%M:%S%z", "2026-08-25T12:30:45+05:00"),
             ("%Y-%m-%dT%H:%M:%S.%f", "2026-08-25T12:30:45.123456"),
+            ("%Y-%m-%dT%H:%M:%S,%f", "2026-08-25T12:30:45,123456"),
             ("%Y-%m-%dT%H:%M:%S", "2026-08-25T12:30:45"),
             ("%Y-%m-%dT%H:%M%z", "2026-08-25T12:30+05:00"),
             ("%Y-%m-%dT%H:%M", "2026-08-25T12:30"),
+            ("%Y-%m-%dT%H%z", "2026-08-25T12+05:00"),
+            ("%Y-%m-%dT%H", "2026-08-25T12"),
+            ("%Y%m%dT%H%M%S.%f%z", "20260825T123045.123456+0500"),
+            ("%Y%m%dT%H%M%S,%f%z", "20260825T123045,123456+0500"),
+            ("%Y%m%dT%H%M%S%z", "20260825T123045Z"),
+            ("%Y%m%dT%H%M%S.%f", "20260825T123045.123456"),
+            ("%Y%m%dT%H%M%S,%f", "20260825T123045,123456"),
+            ("%Y%m%dT%H%M%S", "20260825T123045"),
+            ("%Y%m%dT%H%M%z", "20260825T1230+0500"),
+            ("%Y%m%dT%H%M", "20260825T1230"),
+            ("%Y%m%dT%H%z", "20260825T12+05"),
+            ("%Y%m%dT%H", "20260825T12"),
             ("%Y-%m-%d %H:%M:%S.%f%z", "2026-08-25 12:30:45.123456+05:00"),
+            ("%Y-%m-%d %H:%M:%S,%f%z", "2026-08-25 12:30:45,123456+05:00"),
             ("%Y-%m-%d %H:%M:%S%z", "2026-08-25 12:30:45+05:00"),
             ("%Y-%m-%d %H:%M:%S.%f", "2026-08-25 12:30:45.123456"),
+            ("%Y-%m-%d %H:%M:%S,%f", "2026-08-25 12:30:45,123456"),
             ("%Y-%m-%d %H:%M:%S", "2026-08-25 12:30:45"),
             ("%Y-%m-%d %H:%M", "2026-08-25 12:30"),
             ("%Y/%m/%d %H:%M:%S", "2026/08/25 12:30:45"),
