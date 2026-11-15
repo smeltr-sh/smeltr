@@ -22,7 +22,6 @@
   import StepList from './StepList.svelte';
   import Connections from './Connections.svelte';
   import PipelineProduces from './PipelineProduces.svelte';
-  import NewSchema, { saveNewSchema, type SchemaDraft } from './NewSchema.svelte';
   import { acceptedBy } from './schemas';
   import SectionShell from './SectionShell.svelte';
   import JsonEditPage from './JsonEditPage.svelte';
@@ -1262,17 +1261,8 @@
     adding = true;
   }
 
-  /** New schema, opened from Produces. */
-  let addingSchema = $state(false);
-  /** The scope's bundle as the leader reads it, which the import's pipeline runs in. */
-  let ownConfig: FileConfigDto | null = null;
-  /** Makes the schema `draft` asks for, saves it with the scope's schemas, and names it in Produces. */
-  async function addSchema(draft: SchemaDraft) {
-    const { schema } = await saveNewSchema(draft, $state.snapshot(ownSchemas), ownConfig);
-    ownSchemas.push(schema);
-    produces = [...produces, schema.id];
-    addingSchema = false;
-  }
+  /** The scope's bundle as the leader reads it, which a schema import's pipeline runs in. */
+  let ownConfig: FileConfigDto | null = $state.raw(null);
 
   /** What the proposal read, said over the steps it made. */
   let proposed = $state('');
@@ -1617,17 +1607,13 @@
     {#if id !== 'new'}<Connections kind="pipeline" {id} />{/if}
     <PipelineProduces
       bind:produces
-      declared={[...sharedSchemas, ...ownSchemas]}
-      findings={result?.ok ? (result.schema_findings ?? 0) : undefined}
-      onnew={() => (addingSchema = true)}
-      {readOnly}
-    />
-    <NewSchema
-      open={addingSchema}
-      unavailable={[...sharedSchemas, ...ownSchemas].map((s) => s.id)}
+      shared={sharedSchemas}
+      own={ownSchemas}
+      config={ownConfig}
       importers={otherPipelines.map((p) => ({ id: p.id, name: p.name }))}
-      onadd={addSchema}
-      oncancel={() => (addingSchema = false)}
+      onmade={(schema) => ownSchemas.push(schema)}
+      findings={result?.ok ? (result.schema_findings ?? 0) : undefined}
+      {readOnly}
     />
 
     {#if moved}

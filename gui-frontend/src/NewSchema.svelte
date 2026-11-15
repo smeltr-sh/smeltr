@@ -17,9 +17,14 @@
     Requirement,
     SchemaDto,
     SchemaReadFormat,
+    SchemaStandards,
   } from './api';
-  import { FIELD_TYPES, importSchema, putSchemas, readSchema } from './api';
+  import { FIELD_TYPES, importSchema, readSchema } from './api';
   import { REQUIREMENTS } from './schemas';
+
+  /** The leader's answer to which releases of ECS and OCSF it carries, asked once: a page may hold a New schema per
+   * list. */
+  let asked: Promise<SchemaStandards> | null = null;
 
   export type SchemaStart = 'ecs' | 'ocsf' | 'otlp' | 'csv' | 'jsonSchema' | 'import' | 'empty';
 
@@ -194,19 +199,6 @@
     if (!read.ok) throw new Error(read.errors.map((e) => e.message).join(' '));
     return read.schema;
   }
-
-  /** Makes the schema `draft` asks for and saves it with `own`, the scope's schemas, for a page that offers New
-   * schema beside a list of schemas. Returns the schema and the commit the save made. Throws the leader's refusal. */
-  export async function saveNewSchema(
-    draft: SchemaDraft,
-    own: SchemaDto[],
-    config: FileConfigDto | null,
-  ): Promise<{ schema: SchemaDto; commit: string | null }> {
-    const schema = await schemaOf(draft, config);
-    const saved = await putSchemas([...own, schema]);
-    if (!saved.ok) throw new Error(saved.errors.map((e) => e.message).join(' '));
-    return { schema, commit: saved.commit ?? null };
-  }
 </script>
 
 <script lang="ts">
@@ -214,7 +206,7 @@
   import Field from './Field.svelte';
   import { suggestId } from './ids';
   import LineBreakerField from './LineBreakerField.svelte';
-  import { getSchemaStandards, type SchemaStandards, type StandardRelease } from './api';
+  import { getSchemaStandards, type StandardRelease } from './api';
   import Segmented from './Segmented.svelte';
   import { count } from './time';
   import Help from './Help.svelte';
@@ -240,7 +232,7 @@
    * page opens rather than the dialog, so it is here by the time a tile is chosen. */
   let standards = $state<SchemaStandards | null>(null);
   $effect(() => {
-    getSchemaStandards().then(
+    (asked ??= getSchemaStandards()).then(
       (s) => (standards = s),
       () => {},
     );
