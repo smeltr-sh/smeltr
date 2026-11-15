@@ -1268,25 +1268,11 @@
   /** Why no proposal was made. Its calls are quiet: this is said beside the samples. */
   let proposeError = $state('');
 
-  /** The records the steps were last proposed from, and the steps as proposed: while the steps are still the
-   * proposed ones, a change to Produces proposes them again, since the schema types the fields the proposal
-   * declares. */
-  let proposedFrom: { records: SampleRecordDto[]; steps: string } | null = null;
-
-  $effect(() => {
-    void JSON.stringify(produces);
-    untrack(() => {
-      if (making && proposedFrom && proposedFrom.steps === signatureOf(steps))
-        void proposeFrom(proposedFrom.records);
-    });
-  });
-
   /** Counts proposals asked for, so only the latest one's answer lands. */
   let proposals = 0;
 
   async function proposeFrom(records: SampleRecordDto[]) {
     const asked = ++proposals;
-    proposedFrom = null;
     proposeError = '';
     try {
       const p = await proposeOnboard(records);
@@ -1304,7 +1290,8 @@
             'No format read nearly all of these records, so they need a parser of your own.';
         return;
       }
-      const parser = steps.find((s) => s.type === 'parser');
+      // A grok step types its captures itself, from the schemas the pipeline produces or else its pattern.
+      const parser = steps.find((s) => s.type === 'parser' && s.kind.type !== 'grok');
       // The parser declares what it read, as Propose would add it.
       const upTo =
         parser?.type === 'parser' && parser.declared.length === 0
@@ -1318,7 +1305,6 @@
       }
       if (p.format)
         proposed = `${p.read} of ${p.of} records read as ${PROPOSED_FORMAT_NAMES[p.format]}`;
-      proposedFrom = { records, steps: signatureOf(steps) };
     } catch (e) {
       if (asked === proposals) proposeError = unreported(e);
     }
@@ -1643,7 +1629,7 @@
             {pipelineNames}
             {lookupTables}
             {grokPatterns}
-            grokFields={lastGoodResult?.grok_fields}
+            parsedFields={lastGoodResult?.parsed_fields}
             parseInput={parseInputFor(sampleRows[0])}
             pausedAt={pause?.step ?? null}
             ran={pause?.run ?? null}

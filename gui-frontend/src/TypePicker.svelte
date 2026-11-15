@@ -34,7 +34,7 @@
   aria-label={ariaLabel}
   title={auto === undefined
     ? undefined
-    : 'auto: the type a schema the pipeline produces gives it, else the type its pattern gives it'}
+    : 'auto: the type a schema the pipeline produces gives it, else the type its parse gives it'}
   {value}
   onchange={(e) => {
     const key = (e.currentTarget as HTMLSelectElement).value;

@@ -15,6 +15,8 @@ export type DataTypeSpec =
   | { kind: 'named'; name: NamedType }
   /** A CSV column left out of the record: it holds its position and produces no field, so it has no type. */
   | { kind: 'skip' }
+  /** A CSV column the pipeline types: at the type a schema it produces gives it, else `str`. */
+  | { kind: 'auto' }
   /** A declared datetime: `format` is the `parseTime` format its text arrives in, or empty for auto-detect. */
   | { kind: 'datetime'; format: string }
   | { kind: 'array'; of: NamedType }
@@ -38,7 +40,13 @@ export type NamedType = (typeof NAMED_TYPES)[number];
 /** One choice in a field's type picker: a declared type as the picker names it, with an array's element type and
  * nothing else of an object. */
 export type TypeKey =
-  NamedType | 'datetime' | `array of ${NamedType}` | 'object' | 'array of objects' | 'skip';
+  | NamedType
+  | 'datetime'
+  | `array of ${NamedType}`
+  | 'object'
+  | 'array of objects'
+  | 'skip'
+  | 'auto';
 
 /** The named types in the order a picker lists them, the common ones first. */
 const PICKED_NAMED: NamedType[] = ['str', 'i64', 'f64', 'bool', 'variant'];
@@ -81,6 +89,7 @@ export function withTypeKey(ty: DataTypeSpec, key: TypeKey): DataTypeSpec {
   if (key === typeKey(ty)) return ty;
   const fields = ty.kind === 'object' || ty.kind === 'arrayOfObjects' ? ty.fields : [];
   if (key === 'skip') return { kind: 'skip' };
+  if (key === 'auto') return { kind: 'auto' };
   // Auto-detect is where the author lands.
   if (key === 'datetime') return { kind: 'datetime', format: '' };
   if (key === 'object') return { kind: 'object', fields, open: false };
@@ -374,6 +383,7 @@ export function newStep(type: StepType, parseInput = '_raw'): Step {
 function dataTypeDto(ty: DataTypeSpec): unknown {
   if (ty.kind === 'named') return ty.name;
   if (ty.kind === 'skip') return 'skip';
+  if (ty.kind === 'auto') return 'auto';
   if (ty.kind === 'datetime')
     return ty.format ? { type: 'datetime', format: ty.format } : 'datetime';
   if (ty.kind === 'array') return { type: 'array', of: ty.of };
@@ -780,6 +790,7 @@ function oneOf<T extends string>(v: unknown, options: readonly T[], where: strin
 export function dtoToDataType(dto: unknown, where: string): DataTypeSpec {
   if (typeof dto === 'string') {
     if (dto === 'skip') return { kind: 'skip' };
+    if (dto === 'auto') return { kind: 'auto' };
     if (dto === 'datetime') return { kind: 'datetime', format: '' };
     if (!(NAMED_TYPES as readonly string[]).includes(dto)) {
       throw new PipelineJsonError(
