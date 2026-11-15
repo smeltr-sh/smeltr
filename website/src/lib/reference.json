@@ -2429,15 +2429,26 @@
               "result": "\"1998-08-30T12:00:00.000000Z\""
             }
           ],
-          "specifierBlurb": "`parseTime(value, format)` takes these, and only these. Every other byte of the format must match the text literally, and text left over when the format runs out makes the result null rather than a partial read. Auto-detect tries an ordered list of formats built from the same specifiers, so every rule below holds for `parseTime(value)` too.",
+          "specifierBlurb": "`parseTime(value, format)` takes these, and only these. A specifier written right against another, as in `%Y%m%d`, reads its full width. Every other byte of the format must match the text literally, except that a letter matches in either case, and text left over when the format runs out makes the result null rather than a partial read. Auto-detect tries an ordered list of formats built from the same specifiers, so every rule below holds for `parseTime(value)` too.",
           "specifiers": [
             {
               "specifier": "%Y",
-              "matches": "The year, exactly four digits. There is no two-digit year: every century pivot is wrong for someone.",
+              "matches": "The year, exactly four digits.",
               "examples": [
                 {
                   "expr": "\"2026-08-30\".parseTime(\"%Y-%m-%d\")",
                   "result": "\"2026-08-30T00:00:00.000000Z\""
+                }
+              ],
+              "group": "The date"
+            },
+            {
+              "specifier": "%y",
+              "matches": "The year's last two digits. The century is the one that puts the year nearest the reference time (the third argument, or the current time when none is given): at most 49 years after it or 50 before. Auto-detect never reads a two-digit year.",
+              "examples": [
+                {
+                  "expr": "\"14/11/23\".parseTime(\"%d/%m/%y\", \"2026-06-01T00:00:00Z\".parseTime())",
+                  "result": "\"2023-11-14T00:00:00.000000Z\""
                 }
               ],
               "group": "The date"
