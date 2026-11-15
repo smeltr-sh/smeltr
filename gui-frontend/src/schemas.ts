@@ -15,6 +15,16 @@ export const REQUIREMENT_MARK: Record<Requirement, string> = {
 /** The recommended fields a list names before a button shows the rest, so a standard's long list stays short. */
 export const RECOMMENDED_NAMED = 5;
 
+/** The schemas destinations `to` accept, each once, in the order they name them. */
+export function acceptedBy(
+  to: string[],
+  destinations: Pick<DestinationDto, 'id' | 'accepts'>[],
+): string[] {
+  return [
+    ...new Set(destinations.filter((d) => to.includes(d.id)).flatMap((d) => d.accepts ?? [])),
+  ];
+}
+
 /** One object naming a schema: a pipeline producing it, or a destination accepting it. */
 export type User = { kind: 'pipeline' | 'destination'; id: string };
 

@@ -2,7 +2,7 @@
   Adding a schema (`NewObject`): read from a file a standard publishes (ECS, an OCSF class, a CSV of fields, JSON
   Schema), made from an OpenTelemetry signal's records, imported by a pipeline of the bundle run over an uploaded
   file of any other format, or empty. What it starts from is the draft's `type`; the schema itself is made on Add
-  (`SchemasPage`).
+  (`schemaOf`), by the page that opened this.
 -->
 <script lang="ts" module>
   import type { CatalogType } from './TypeCatalog.svelte';
@@ -10,13 +10,15 @@
     CsvColumns,
     CsvPreview,
     EcsRequirements,
+    FileConfigDto,
     OcsfClass,
     OcsfProfile,
     OtlpSignal,
     Requirement,
+    SchemaDto,
     SchemaReadFormat,
   } from './api';
-  import { FIELD_TYPES } from './api';
+  import { FIELD_TYPES, importSchema, readSchema } from './api';
   import { REQUIREMENTS } from './schemas';
 
   export type SchemaStart = 'ecs' | 'ocsf' | 'otlp' | 'csv' | 'jsonSchema' | 'import' | 'empty';
@@ -151,6 +153,47 @@
       glyph: { d: 'M12 12 H52 V52 H12 Z M18 18 V46 H46 V18 Z', evenodd: true },
     },
   ];
+
+  /** The schema `draft` makes, read by the leader. `config` is the bundle the import's pipeline runs in. Throws
+   * the leader's refusal. */
+  export async function schemaOf(
+    draft: SchemaDraft,
+    config: FileConfigDto | null,
+  ): Promise<SchemaDto> {
+    if (draft.type === 'import') {
+      if (!config) throw new Error('the bundle has not loaded');
+      const read = await importSchema({
+        id: draft.id,
+        config,
+        pipeline: draft.pipeline,
+        text: draft.file,
+        lineBreaker: draft.lineBreaker,
+      });
+      if (!read.ok) throw new Error(read.errors.map((e) => e.message).join(' '));
+      return read.schema;
+    }
+    const format = READ_FORMATS[draft.type];
+    if (!format) return { id: draft.id, fields: [] };
+    const read = await readSchema({
+      id: draft.id,
+      format,
+      text: draft.text,
+      ...((draft.type === 'ecs' || draft.type === 'ocsf') && draft.builtIn
+        ? { builtIn: true, ...(draft.release ? { release: draft.release } : {}) }
+        : {}),
+      ...(draft.type === 'ocsf'
+        ? {
+            class: draft.class,
+            cut: { depth: draft.depth, levels: draft.levels, profiles: draft.profiles },
+          }
+        : {}),
+      ...(draft.type === 'ecs' ? { requirements: draft.requirements } : {}),
+      ...(draft.type === 'otlp' ? { signal: draft.signal } : {}),
+      ...(draft.type === 'csv' ? { columns: draft.columns, types: draft.types } : {}),
+    });
+    if (!read.ok) throw new Error(read.errors.map((e) => e.message).join(' '));
+    return read.schema;
+  }
 </script>
 
 <script lang="ts">
@@ -158,12 +201,7 @@
   import Field from './Field.svelte';
   import { suggestId } from './ids';
   import LineBreakerField from './LineBreakerField.svelte';
-  import {
-    getSchemaStandards,
-    readSchema,
-    type SchemaStandards,
-    type StandardRelease,
-  } from './api';
+  import { getSchemaStandards, type SchemaStandards, type StandardRelease } from './api';
   import Segmented from './Segmented.svelte';
   import { count } from './time';
   import Help from './Help.svelte';

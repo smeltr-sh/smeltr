@@ -5,11 +5,13 @@
 <script lang="ts">
   import type { SchemaDto } from './api';
   import RemovableChip from './RemovableChip.svelte';
+  import PickOrNew from './PickOrNew.svelte';
 
   let {
     ids = $bindable(),
     declared,
     adding,
+    onnew,
     readOnly = false,
   }: {
     ids: string[];
@@ -17,16 +19,12 @@
     declared: SchemaDto[];
     /** The add choice's name, read out: "Add a schema it produces". */
     adding: string;
+    /** Opens New schema, so a schema is made there and then. Without it, a schema is made on the Schemas page. */
+    onnew?: () => void;
     readOnly?: boolean;
   } = $props();
 
-  let picking = $state('');
   const offered = $derived(declared.filter((d) => !ids.includes(d.id)));
-
-  function add(id: string) {
-    if (id && !ids.includes(id)) ids = [...ids, id];
-    picking = '';
-  }
 </script>
 
 {#each ids as id (id)}
@@ -37,16 +35,22 @@
     <a class="mono" href="#/build/schemas?open={encodeURIComponent(id)}">{id}</a>
   </RemovableChip>
 {/each}
-{#if !readOnly && offered.length === 0}
+{#if !readOnly && offered.length === 0 && onnew}
+  <button type="button" class="add link-button" onclick={onnew}>+ New schema…</button>
+{:else if !readOnly && offered.length === 0}
   <!-- Nothing left to choose: a schema is made on the Schemas page. -->
   <a class="add" href="#/build/schemas">Add a schema on the Schemas page</a>
 {:else if !readOnly}
-  <select aria-label={adding} bind:value={picking} onchange={() => add(picking)}>
-    <option value="">+ add schema</option>
-    {#each offered as d (d.id)}
-      <option value={d.id}>{d.id}</option>
-    {/each}
-  </select>
+  <PickOrNew
+    class="schema-add"
+    label={adding}
+    value=""
+    placeholder="+ add schema"
+    choices={offered.map((d) => d.id)}
+    newLabel="+ New schema…"
+    {onnew}
+    onpick={(id) => (ids = [...ids, id])}
+  />
 {/if}
 
 <style>
@@ -55,7 +59,7 @@
     font-size: var(--text-note);
   }
 
-  select {
+  :global(select.schema-add) {
     width: auto;
     border-color: transparent;
     background: none;

@@ -22,6 +22,8 @@
   import StepList from './StepList.svelte';
   import Connections from './Connections.svelte';
   import PipelineProduces from './PipelineProduces.svelte';
+  import NewSchema, { schemaOf, type SchemaDraft } from './NewSchema.svelte';
+  import { acceptedBy } from './schemas';
   import SectionShell from './SectionShell.svelte';
   import JsonEditPage from './JsonEditPage.svelte';
   import Toggle from './Toggle.svelte';
@@ -63,6 +65,7 @@
   import { declaredRecord, type Declared } from './recordDiff';
   import {
     sharedConfig,
+    putSchemas,
     getPipeline,
     putPipeline,
     getConfig,
@@ -91,6 +94,7 @@
     errorMessage,
     type GrokPatternDto,
     type SchemaDto,
+    type FileConfigDto,
     type LookupTableDto,
     type PipelineDto,
     type Connected,
@@ -308,6 +312,12 @@
         ownLookupTables = res.config.lookupTables;
         ownGrokPatterns = res.config.grokPatterns ?? [];
         ownSchemas = res.config.schemas ?? [];
+        ownConfig = res.config;
+      }
+      // A new route's pipeline starts producing what the route's destinations accept.
+      if (making?.to && produces.length === 0) {
+        const destinations = [...(res.config?.destinations ?? []), ...(shared?.destinations ?? [])];
+        produces = acceptedBy(making.to, destinations);
       }
       if (shared) {
         sharedPipelines = shared.pipelines;
@@ -1253,12 +1263,40 @@
     adding = true;
   }
 
+  /** New schema, opened from Produces. */
+  let addingSchema = $state(false);
+  /** The scope's bundle as the leader reads it, which the import's pipeline runs in. */
+  let ownConfig: FileConfigDto | null = null;
+  /** Makes the schema `draft` asks for, saves it with the scope's schemas, and names it in Produces. */
+  async function addSchema(draft: SchemaDraft) {
+    const schema = await schemaOf(draft, ownConfig);
+    const saved = await putSchemas([...$state.snapshot(ownSchemas), schema]);
+    if (!saved.ok) throw new Error(saved.errors.map((e) => e.message).join(' '));
+    ownSchemas.push(schema);
+    produces = [...produces, schema.id];
+    addingSchema = false;
+  }
+
   /** What the proposal read, said over the steps it made. */
   let proposed = $state('');
   /** Why no proposal was made. Its calls are quiet: this is said beside the samples. */
   let proposeError = $state('');
 
+  /** The records the steps were last proposed from, and the steps as proposed: while the steps are still the
+   * proposed ones, a change to Produces proposes them again, since the schema types the fields the proposal
+   * declares. */
+  let proposedFrom: { records: SampleRecordDto[]; steps: string } | null = null;
+
+  $effect(() => {
+    void JSON.stringify(produces);
+    untrack(() => {
+      if (making && proposedFrom && proposedFrom.steps === signatureOf(steps))
+        void proposeFrom(proposedFrom.records);
+    });
+  });
+
   async function proposeFrom(records: SampleRecordDto[]) {
+    proposedFrom = null;
     proposeError = '';
     try {
       const p = await proposeOnboard(records);
@@ -1288,6 +1326,7 @@
       }
       if (p.format)
         proposed = `${p.read} of ${p.of} records read as ${PROPOSED_FORMAT_NAMES[p.format]}`;
+      proposedFrom = { records, steps: signatureOf(steps) };
     } catch (e) {
       proposeError = unreported(e);
     }
@@ -1567,7 +1606,15 @@
       bind:produces
       declared={[...sharedSchemas, ...ownSchemas]}
       findings={result?.ok ? (result.schema_findings ?? 0) : undefined}
+      onnew={readOnly ? undefined : () => (addingSchema = true)}
       {readOnly}
+    />
+    <NewSchema
+      open={addingSchema}
+      unavailable={[...sharedSchemas, ...ownSchemas].map((s) => s.id)}
+      importers={otherPipelines.map((p) => ({ id: p.id, name: p.name }))}
+      onadd={addSchema}
+      oncancel={() => (addingSchema = false)}
     />
 
     {#if moved}

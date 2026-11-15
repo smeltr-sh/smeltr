@@ -289,7 +289,8 @@
 
   /** The pipeline editor, making a pipeline for `route`, and back to it. */
   function newPipeline(route: RouteDto) {
-    const making = { source: route.source, condition: route.condition ?? undefined, group };
+    const to = [...new Set((route.deliver ?? []).flatMap((d) => d.to))].filter(Boolean);
+    const making = { source: route.source, condition: route.condition ?? undefined, group, to };
     location.hash = newPipelineHash(making, routeBackHash(route.id, back, group));
   }
 

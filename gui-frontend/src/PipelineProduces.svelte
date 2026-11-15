@@ -11,6 +11,7 @@
     produces = $bindable(),
     declared,
     findings,
+    onnew,
     readOnly = false,
   }: {
     /** The schema ids, in the order named. */
@@ -19,13 +20,21 @@
     declared: SchemaDto[];
     /** What the last run found, absent before one. */
     findings: number | undefined;
+    /** Opens New schema, offered beside the bundle's schemas. */
+    onnew?: () => void;
     readOnly?: boolean;
   } = $props();
 </script>
 
 <div class="produces">
   <span class="label">Produces</span>
-  <SchemaChips bind:ids={produces} {declared} adding="Add a schema it produces" {readOnly} />
+  <SchemaChips
+    bind:ids={produces}
+    {declared}
+    adding="Add a schema it produces"
+    {onnew}
+    {readOnly}
+  />
   {#if readOnly && produces.length === 0}<span class="dim">no schema</span>{/if}
   <span class="grow"></span>
   {#if produces.length > 0 && findings !== undefined}
