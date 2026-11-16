@@ -5574,8 +5574,11 @@ mod flow_endpoint_tests {
         assert!(flow.totals.is_empty());
     }
 
-    /// The totals of `kind` in `flow`, as (group, worker, subject, rows in, rows out, bytes in, bytes out).
-    fn totals_of(flow: &FlowResponse, kind: FlowKind) -> Vec<(&str, Option<&str>, &str, f64, f64, f64, f64)> {
+    /// Group, worker, subject, rows in, rows out, bytes in and bytes out.
+    type TotalRow<'a> = (&'a str, Option<&'a str>, &'a str, f64, f64, f64, f64);
+
+    /// The totals of `kind` in `flow`.
+    fn totals_of(flow: &FlowResponse, kind: FlowKind) -> Vec<TotalRow<'_>> {
         flow.totals
             .iter()
             .filter(|t| t.kind == Some(kind))
