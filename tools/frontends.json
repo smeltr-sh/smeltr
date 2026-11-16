@@ -13,7 +13,8 @@
       "../website/src/lib/highlight",
       "../website/src/lib/foundry",
       "../website/src/lib/reference.json",
-      "../website/src/lib/code-language.json"
+      "../website/src/lib/code-language.json",
+      "../website/src/lib/metrics.json"
     ],
     "embed": {
       "missing": "GUI baked in -- it will serve a page saying so",
@@ -44,7 +45,8 @@
       "../website/src/lib/highlight",
       "../website/src/lib/foundry",
       "../website/src/lib/reference.json",
-      "../website/src/lib/code-language.json"
+      "../website/src/lib/code-language.json",
+      "../website/src/lib/metrics.json"
     ]
   }
 }
