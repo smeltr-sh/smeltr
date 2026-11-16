@@ -126,14 +126,16 @@ pub fn need(method: &Method, path: &str) -> Need {
             Need::Somewhere(Level::Deployer)
         }
 
-        // What the Status and Map pages read, the warnings as Prometheus scrapes them, the area picker, and what a
-        // source or destination form asks of the build. The streams and the warnings are filtered by their handlers
-        // to the groups the caller views.
+        // What the Status, Metrics and Map pages read, the warnings as Prometheus scrapes them, the area picker, and
+        // what a source or destination form asks of the build. The streams, the series and the warnings are filtered
+        // by their handlers to the groups the caller views.
         (Method::GET | Method::HEAD, ["cluster"])
         | (Method::GET | Method::HEAD, ["streams"])
         | (Method::GET | Method::HEAD, ["warnings"])
         | (Method::GET | Method::HEAD, ["metrics"])
         | (Method::GET | Method::HEAD, ["flow"])
+        | (Method::GET | Method::HEAD, ["series"])
+        | (Method::GET | Method::HEAD, ["series", "metrics"])
         | (Method::GET | Method::HEAD, ["map"])
         | (Method::GET | Method::HEAD, ["map", "measurements"])
         | (Method::GET | Method::HEAD, ["worker-groups"])
@@ -170,8 +172,9 @@ fn in_area(method: &Method, within: &[&str]) -> Option<Level> {
             | ["pipelines", _, "export", "contents"]
             | ["tests"]
             | ["stats"]
-            | ["sources", _, "past"]
+            | ["sources", _, "past" | "chart"]
             | ["sources", _, "senders"]
+            | ["sources", _, "senders", "past" | "chart"]
             | ["lookups", "file" | "mmdb"]
             | [_, _, "connections"],
         ) => Level::Viewer,
@@ -185,9 +188,9 @@ fn in_area(method: &Method, within: &[&str]) -> Option<Level> {
         )
         | (Method::POST, ["undo"] | ["lookups", "upload"] | ["test-runs"] | ["imports"]) => Level::Editor,
         // What an admin says about a source's rows warning: it changes no configuration and touches no worker.
-        (Method::POST, ["sources", _, "lower" | "reset-history" | "mark"])
+        (Method::POST, ["sources", _, "reset-history" | "mark"])
         | (Method::PUT, ["sources", _, "preset"])
-        | (Method::POST, ["sources", _, "senders", "lower"])
+        | (Method::POST, ["sources", _, "senders", "mark"])
         | (Method::PUT, ["sources", _, "senders", "fields"]) => Level::Editor,
 
         // Samples, and what a preview of them shows.
@@ -342,10 +345,9 @@ mod tests {
     #[test]
     fn a_mark_on_a_sources_rows_warning_needs_editor_in_its_area() {
         for path in [
-            "/api/areas/payments/sources/s1/lower",
             "/api/areas/payments/sources/s1/reset-history",
             "/api/areas/payments/sources/s1/mark",
-            "/api/areas/payments/sources/s1/senders/lower",
+            "/api/areas/payments/sources/s1/senders/mark",
         ] {
             assert_eq!(need(&Method::POST, path), area("payments", Level::Editor), "{path}");
         }
@@ -355,10 +357,15 @@ mod tests {
         ] {
             assert_eq!(need(&Method::PUT, path), area("payments", Level::Editor), "{path}");
         }
-        assert_eq!(
-            need(&Method::GET, "/api/areas/payments/sources/s1/senders"),
-            area("payments", Level::Viewer)
-        );
+        for path in [
+            "/api/areas/payments/sources/s1/past",
+            "/api/areas/payments/sources/s1/chart",
+            "/api/areas/payments/sources/s1/senders",
+            "/api/areas/payments/sources/s1/senders/past",
+            "/api/areas/payments/sources/s1/senders/chart",
+        ] {
+            assert_eq!(need(&Method::GET, path), area("payments", Level::Viewer), "{path}");
+        }
     }
 
     #[test]
@@ -516,6 +523,8 @@ mod tests {
             "/api/metrics",
             "/api/streams",
             "/api/flow",
+            "/api/series",
+            "/api/series/metrics",
             "/api/map",
             "/api/map/measurements",
             "/api/worker-groups",

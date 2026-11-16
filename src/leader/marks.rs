@@ -1,22 +1,20 @@
-//! What an editor said about a source, as marks: lower the warning on its rows that holds to info; reset its history,
-//! so its normal is learned again from now; say a past period of it was normal or an outage (`throughput`); pick the
-//! preset it is judged at, and the one its senders are; and say which of its fields name its senders, and lower a
-//! sender's warning to info (`senders`).
+//! What an editor said about a source, as marks: answer what one of its below-normal warnings, or one of its
+//! sender's, was (`throughput`, `senders`); reset its history, so its normal is learned again from now; pick the preset
+//! it is judged at, and the one its senders are; and say which of its fields name its senders.
 //!
-//! A lowered warning stays on the Issues page for everyone, marked as info, and the views that judge health leave
-//! it out. It is named by when it began, so it stays lowered until it ends, and the next one is a warning again.
-//! Nothing is learned from the time it held.
+//! An answer names a warning by when it began ([`Mark`]), so every page that shows the warning answers the same one.
+//! A warning nobody answered stays a warning, and nothing is learned from the time it held. One answered Outage is
+//! info, and stays on the Issues page for everyone until it ends; nothing is learned from it either. One answered
+//! Normal is info too, and is learned whole, by the count widths and the gap alike, so it ends once its level is. A
+//! source's warning answered Normal is learned by its senders too.
 //!
 //! A source whose history was reset learns its normal only from what it read after the reset, so it has none, and
 //! does not warn, until it has [`super::throughput::MIN_DAYS`] days of that.
 //!
-//! A period said to be normal is learned from though it warned, and one said to be an outage is not learned from though
-//! it did not warn. The count widths and the gap learn from the same periods.
-//!
 //! All are kept in one setting, with who said each.
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use serde::{Deserialize, Serialize};
 
 use super::AppState;
@@ -24,7 +22,7 @@ use super::envelope::{Empty, Envelope, Refusal};
 use super::senders::Sender;
 use super::series::YEAR_MS;
 use super::store::{Actor, Store};
-use super::throughput::{self, Learning, Preset, Presets};
+use super::throughput::{self, Preset, Presets};
 use super::warnings::{self, Condition, SubjectKind};
 use crate::heartbeat::SenderFields;
 
@@ -35,28 +33,46 @@ pub const MARKS_KEY: &str = "warnings.source_rows_marks";
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Marks {
-    #[serde(default)]
-    pub lowered: Vec<Lowered>,
+    /// What an editor answered each below-normal warning was.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub answers: Vec<Mark>,
+    /// The warnings a leader before answers lowered to info, each read as answered Outage ([`Marks::read`]).
+    #[serde(default, skip_serializing)]
+    pub(super) lowered: Vec<Mark>,
     #[serde(default)]
     pub reset: Vec<Reset>,
-    #[serde(default)]
-    pub periods: Vec<Period>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<SourceFields>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub presets: Vec<Picked>,
 }
 
-/// A source's rows warning that began at `since_millis`, or one of its sender's, lowered to info by `by`.
+/// What `by` answered a source's rows warning that began at `since_millis`, or one of its sender's, was.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Lowered {
+pub struct Mark {
     pub group: String,
     pub source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sender: Option<Sender>,
     pub since_millis: i64,
+    /// Absent from a warning lowered before answers, which was an outage.
+    #[serde(default)]
+    pub was: Was,
     pub by: String,
+}
+
+/// The answer to `group`'s `source`'s rows warning, or its `sender`'s, that began at `since_millis`, among `answers`.
+pub(super) fn answer<'a>(
+    answers: &'a [Mark],
+    group: &str,
+    source: &str,
+    sender: Option<&Sender>,
+    since_millis: Option<i64>,
+) -> Option<&'a Mark> {
+    answers.iter().find(|m| {
+        m.group == group && m.source == source && m.sender.as_ref() == sender && Some(m.since_millis) == since_millis
+    })
 }
 
 /// One source's sender fields as an editor changed them: `edits` as its group's workers are sent them, and which fields
@@ -106,14 +122,6 @@ pub struct Picked {
     pub by: String,
 }
 
-/// The presets `group`'s `source`, and its senders, are judged at, as `picked`.
-pub fn presets_of(picked: &[Picked], group: &str, source: &str) -> Presets {
-    picked
-        .iter()
-        .find(|p| p.group == group && p.source == source)
-        .map_or_else(Presets::default, |p| p.presets)
-}
-
 /// A source whose normal `by` said to learn again from `from_millis` on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -124,34 +132,23 @@ pub struct Reset {
     pub by: String,
 }
 
-/// A past period of a source an editor said was normal or an outage.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Period {
-    pub group: String,
-    pub source: String,
-    pub from_millis: i64,
-    pub to_millis: i64,
-    pub was: Was,
-    pub by: String,
-}
-
-/// What an editor said a past period of a source was.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// What an editor answered a below-normal warning was.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Was {
     Normal,
+    #[default]
     Outage,
 }
 
 impl Marks {
-    /// The marks as stored. None when they cannot be read, which is logged: every warning is then a warning, and
-    /// every normal learned from all it can be.
+    /// The marks as stored, a warning lowered before answers as answered Outage. None when they cannot be read, which
+    /// is logged: every warning is then a warning, and every normal learned from all it can be.
     pub fn read(store: &Store) -> Marks {
         let text = match store.setting(MARKS_KEY) {
             Ok(text) => text,
             Err(e) => {
-                tracing::warn!(name: "marks_unreadable", target: "status", error = %e, "could not read which rows warnings were lowered or had their history reset, so none is");
+                tracing::warn!(name: "marks_unreadable", target: "status", error = %e, "could not read which rows warnings were answered or had their history reset, so none is");
                 return Marks::default();
             }
         };
@@ -162,31 +159,60 @@ impl Marks {
                 })
                 .ok()
         })
+        .map(|mut marks: Marks| {
+            let lowered = std::mem::take(&mut marks.lowered);
+            marks.answers.extend(lowered);
+            marks
+        })
         .unwrap_or_default()
     }
 
-    /// Who lowered `group`'s `source`'s rows warning, or its `sender`'s, that began at `since_millis`, if anyone did.
-    pub fn lowered_by(
+    /// The answer to `group`'s `source`'s rows warning, or its `sender`'s, that began at `since_millis`, if an editor
+    /// gave one.
+    pub fn answer(
         &self,
         group: &str,
         source: &str,
         sender: Option<&Sender>,
         since_millis: Option<i64>,
-    ) -> Option<&str> {
-        self.lowered
+    ) -> Option<&Mark> {
+        answer(&self.answers, group, source, sender, since_millis)
+    }
+
+    /// Whether an editor answered `group`'s `source`'s below-normal warning, or its `sender`'s, that began at
+    /// `since_millis` was normal.
+    pub fn said_normal(&self, group: &str, source: &str, sender: Option<&Sender>, since_millis: i64) -> bool {
+        self.answer(group, source, sender, Some(since_millis))
+            .is_some_and(|m| m.was == Was::Normal)
+    }
+
+    /// When `group`'s `source` was last said to learn again from, if it was.
+    pub fn reset_from(&self, group: &str, source: &str) -> Option<i64> {
+        self.reset
             .iter()
-            .find(|l| {
-                l.group == group
-                    && l.source == source
-                    && l.sender.as_ref() == sender
-                    && Some(l.since_millis) == since_millis
-            })
-            .map(|l| l.by.as_str())
+            .filter(|r| r.group == group && r.source == source)
+            .map(|r| r.from_millis)
+            .max()
+    }
+
+    /// The presets `group`'s `source`, and its senders, are judged at.
+    pub fn presets_of(&self, group: &str, source: &str) -> Presets {
+        self.presets
+            .iter()
+            .find(|p| p.group == group && p.source == source)
+            .map_or_else(Presets::default, |p| p.presets)
+    }
+
+    /// Whether `field` of `group`'s `source` is not watched, as an editor left it ([`SourceFields::watches`]).
+    pub fn unchecked(&self, group: &str, source: &str, field: &str) -> bool {
+        self.fields
+            .iter()
+            .any(|f| f.group == group && f.edits.source == source && !f.watches(field))
     }
 
     /// Picks `picking` for `group`'s `source`, by `by`, keeping the preset it does not name.
     fn pick(&mut self, group: &str, source: &str, picking: Picking, by: &str) {
-        let was = presets_of(&self.presets, group, source);
+        let was = self.presets_of(group, source);
         let presets = Presets {
             rows: picking.rows.unwrap_or(was.rows),
             senders: picking.senders.unwrap_or(was.senders),
@@ -213,27 +239,25 @@ impl Marks {
     }
 }
 
-/// When `group`'s `source`'s rows warning that holds began, or its `sender`'s, if one holds.
-fn holding_since(
+/// `group`'s `source`'s below-normal warnings, or its `sender`'s, that held at or after `since_ms`.
+fn below(
     state: &AppState,
     group: &str,
     source: &str,
     sender: Option<&Sender>,
-    now_ms: i64,
-) -> Result<Option<i64>, Refusal> {
+    since_ms: i64,
+) -> Result<Vec<warnings::WarningSpan>, Refusal> {
     let Some(store) = state.registry.series() else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
     let spans = match sender {
-        Some(sender) => warnings::sender_spans(store, group, source, sender, now_ms)?,
-        None => warnings::spans(store, SubjectKind::Source, group, source, now_ms)?,
+        Some(sender) => warnings::sender_spans(store, group, source, sender, since_ms)?,
+        None => warnings::spans(store, SubjectKind::Source, group, source, since_ms)?,
     };
     Ok(spans
         .into_iter()
-        .find(|s| {
-            s.ended_millis.is_none() && matches!(s.condition, Condition::SourceRowsBelow | Condition::SendersBelow)
-        })
-        .map(|s| s.started_millis))
+        .filter(|s| matches!(s.condition, Condition::SourceRowsBelow | Condition::SendersBelow))
+        .collect())
 }
 
 /// Held while the marks are read, changed and written, so two marks made at once are both kept.
@@ -249,28 +273,27 @@ struct Marking {
 }
 
 impl Marking {
-    /// Makes `change` to the stored marks, given when the source's rows warning that holds began, and writes them
-    /// with who made it, leaving out every lowered warning that no longer holds. Off the async runtime.
+    /// What it names, as a refusal says it.
+    fn what(&self) -> String {
+        match &self.sender {
+            Some(sender) => format!("sender {} {} of source {}", sender.field, sender.value, self.source),
+            None => format!("source {}", self.source),
+        }
+    }
+
+    /// Makes `change` to the stored marks and writes them with who made it. Off the async runtime.
     async fn write(
         self,
         state: AppState,
         actor: Option<axum::Extension<Actor>>,
-        change: impl FnOnce(&mut Marks, &Marking, Option<i64>, &Actor, i64) -> Result<(), Refusal> + Send + 'static,
+        change: impl FnOnce(&mut Marks, &Marking, &Actor, i64) -> Result<(), Refusal> + Send + 'static,
     ) -> Envelope {
         let actor = actor.map(|a| a.0).unwrap_or_else(Actor::system);
         let written = super::blocking(move || -> Result<(), Refusal> {
             let _changing = CHANGING.lock().unwrap_or_else(|e| e.into_inner());
             let now_ms = warnings::now_millis();
             let mut marks = Marks::read(&state.store);
-            let since = holding_since(&state, &self.group, &self.source, self.sender.as_ref(), now_ms)?;
-            change(&mut marks, &self, since, &actor, now_ms)?;
-            let mut kept = Vec::new();
-            for l in marks.lowered {
-                if holding_since(&state, &l.group, &l.source, l.sender.as_ref(), now_ms)? == Some(l.since_millis) {
-                    kept.push(l);
-                }
-            }
-            marks.lowered = kept;
+            change(&mut marks, &self, &actor, now_ms)?;
             let target = match &self.sender {
                 Some(sender) => format!("{}/{}/{}={}", self.group, self.source, sender.field, sender.value),
                 None => format!("{}/{}", self.group, self.source),
@@ -285,66 +308,6 @@ impl Marking {
             Err(refusal) => Envelope::refused(refusal),
         }
     }
-}
-
-/// `POST /api/areas/:area/sources/:id/lower`: lowers the rows warning that holds for the source to info until it
-/// ends. Refused when none holds.
-pub async fn lower(
-    State(state): State<AppState>,
-    actor: Option<axum::Extension<Actor>>,
-    Path((group, source)): Path<(String, String)>,
-) -> Envelope<Empty> {
-    let marking = Marking {
-        group,
-        source,
-        sender: None,
-        action: "source-rows-lower",
-    };
-    marking.write(state, actor, lowered).await
-}
-
-/// `POST /api/areas/:area/sources/:id/senders/lower`: lowers the warning that holds for one sender of the source to
-/// info until it ends. Refused when none holds.
-pub async fn lower_sender(
-    State(state): State<AppState>,
-    actor: Option<axum::Extension<Actor>>,
-    Path((group, source)): Path<(String, String)>,
-    Json(sender): Json<Sender>,
-) -> Envelope<Empty> {
-    let marking = Marking {
-        group,
-        source,
-        sender: Some(sender),
-        action: "sender-rows-lower",
-    };
-    marking.write(state, actor, lowered).await
-}
-
-/// Lowers the warning about what `m` marks that began at `since` to info, by `actor`.
-fn lowered(marks: &mut Marks, m: &Marking, since: Option<i64>, actor: &Actor, _: i64) -> Result<(), Refusal> {
-    let Some(since) = since else {
-        let what = match &m.sender {
-            Some(sender) => format!("sender {} {} of source {}", sender.field, sender.value, m.source),
-            None => format!("source {}", m.source),
-        };
-        return Err(Refusal::not_found(format!(
-            "{what} in {} has no warning to lower",
-            m.group
-        )));
-    };
-    if marks
-        .lowered_by(&m.group, &m.source, m.sender.as_ref(), Some(since))
-        .is_none()
-    {
-        marks.lowered.push(Lowered {
-            group: m.group.clone(),
-            source: m.source.clone(),
-            sender: m.sender.clone(),
-            since_millis: since,
-            by: actor.display_name.clone(),
-        });
-    }
-    Ok(())
 }
 
 /// The most fields an editor may add to one source, and stop watching or keep watched.
@@ -368,7 +331,7 @@ pub async fn put_sender_fields(
         action: "sender-fields",
     };
     marking
-        .write(state, actor, move |marks, m, _, _, _| {
+        .write(state, actor, move |marks, m, _, _| {
             if edits.added.len() > ADDED_FIELDS {
                 return Err(Refusal::invalid(format!(
                     "source {} in {}: at most {ADDED_FIELDS} fields can be added",
@@ -440,7 +403,7 @@ pub async fn reset_history(
         action: "source-rows-reset-history",
     };
     marking
-        .write(state, actor, |marks, m, _, actor, now_ms| {
+        .write(state, actor, |marks, m, actor, now_ms| {
             // Only the last reset says anything: it forgets more than every one before it.
             marks.reset.retain(|r| (&r.group, &r.source) != (&m.group, &m.source));
             marks.reset.push(Reset {
@@ -476,24 +439,33 @@ pub async fn put_preset(
         action: "source-preset",
     };
     marking
-        .write(state, actor, move |marks, m, _, actor, _| {
+        .write(state, actor, move |marks, m, actor, _| {
             marks.pick(&m.group, &m.source, picking, &actor.display_name);
             Ok(())
         })
         .await
 }
 
-/// A past period of a source, and what to mark it.
+/// A below-normal warning of a source, by when it began, and what an editor answered it was.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Marked {
-    pub from_millis: i64,
-    pub to_millis: i64,
+    pub since_millis: i64,
     pub was: Was,
 }
 
-/// `POST /api/areas/:area/sources/:id/mark`: says a past period of the source was normal or an outage, in place of
-/// what was said about that same period. Refused for a period that is empty or not over.
+/// A below-normal warning of one sender of a source, and what an editor answered it was.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SenderMarked {
+    #[serde(flatten)]
+    pub sender: Sender,
+    #[serde(flatten)]
+    pub marked: Marked,
+}
+
+/// `POST /api/areas/:area/sources/:id/mark`: answers what one of the source's below-normal warnings of the past year
+/// was, in place of any answer before. Refused when none began then.
 pub async fn mark(
     State(state): State<AppState>,
     actor: Option<axum::Extension<Actor>>,
@@ -506,40 +478,64 @@ pub async fn mark(
         sender: None,
         action: "source-rows-mark",
     };
-    marking
-        .write(state, actor, move |marks, m, _, actor, now_ms| {
-            if marked.from_millis >= marked.to_millis || marked.to_millis > now_ms {
-                return Err(Refusal::invalid(format!(
-                    "source {} in {}: a period to mark must end after it begins, and must be over",
-                    m.source, m.group
+    marking.write_mark(state, actor, marked).await
+}
+
+/// `POST /api/areas/:area/sources/:id/senders/mark`: [`mark`] for one sender of the source.
+pub async fn mark_sender(
+    State(state): State<AppState>,
+    actor: Option<axum::Extension<Actor>>,
+    Path((group, source)): Path<(String, String)>,
+    Json(SenderMarked { sender, marked }): Json<SenderMarked>,
+) -> Envelope<Empty> {
+    let marking = Marking {
+        group,
+        source,
+        sender: Some(sender),
+        action: "sender-rows-mark",
+    };
+    marking.write_mark(state, actor, marked).await
+}
+
+impl Marking {
+    /// Writes `marked`, once it names one of the warnings of the past year of what this marks.
+    async fn write_mark(self, state: AppState, actor: Option<axum::Extension<Actor>>, marked: Marked) -> Envelope {
+        let read = state.clone();
+        self.write(state, actor, move |marks, m, actor, now_ms| {
+            let began = below(&read, &m.group, &m.source, m.sender.as_ref(), now_ms - YEAR_MS)?
+                .iter()
+                .any(|s| s.started_millis == marked.since_millis);
+            if !began {
+                return Err(Refusal::not_found(format!(
+                    "{} in {} has no warning of the past year that began then",
+                    m.what(),
+                    m.group
                 )));
             }
-            // A period past a year is past what any normal learns from.
-            marks
-                .periods
-                .retain(|p| p.to_millis >= now_ms - YEAR_MS && !p.is(&m.group, &m.source, &marked));
-            marks.periods.push(Period {
-                group: m.group.clone(),
-                source: m.source.clone(),
-                from_millis: marked.from_millis,
-                to_millis: marked.to_millis,
-                was: marked.was,
-                by: actor.display_name.clone(),
-            });
+            marks.said(m, &marked, actor, now_ms);
             Ok(())
         })
         .await
+    }
 }
 
-impl Period {
-    /// Whether this is `group`'s `source`'s period `marked` names.
-    fn is(&self, group: &str, source: &str, marked: &Marked) -> bool {
-        (
-            self.group.as_str(),
-            self.source.as_str(),
-            self.from_millis,
-            self.to_millis,
-        ) == (group, source, marked.from_millis, marked.to_millis)
+impl Marks {
+    /// Answers the warning `marked` names of what `m` names, by `actor`, in place of any answer before.
+    fn said(&mut self, m: &Marking, marked: &Marked, actor: &Actor, now_ms: i64) {
+        // A warning past a year is past what any normal learns from, and long over.
+        self.answers.retain(|n| {
+            n.since_millis >= now_ms - YEAR_MS
+                && (&n.group, &n.source, &n.sender, n.since_millis)
+                    != (&m.group, &m.source, &m.sender, marked.since_millis)
+        });
+        self.answers.push(Mark {
+            group: m.group.clone(),
+            source: m.source.clone(),
+            sender: m.sender.clone(),
+            since_millis: marked.since_millis,
+            was: marked.was,
+            by: actor.display_name.clone(),
+        });
     }
 }
 
@@ -549,15 +545,96 @@ pub async fn past(
     State(state): State<AppState>,
     Path((group, source)): Path<(String, String)>,
 ) -> Envelope<throughput::Past> {
+    past_of(state, group, source, None).await
+}
+
+/// `GET /api/areas/:area/sources/:id/senders/past?field=&value=`: [`past`] for one sender of the source.
+pub async fn past_sender(
+    State(state): State<AppState>,
+    Path((group, source)): Path<(String, String)>,
+    Query(sender): Query<Sender>,
+) -> Envelope<throughput::Past> {
+    past_of(state, group, source, Some(sender)).await
+}
+
+/// What [`chart`] and [`chart_sender`] are asked: a span, and for a sender, which.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChartQuery {
+    pub from_millis: i64,
+    pub to_millis: i64,
+}
+
+/// `GET /api/areas/:area/sources/:id/chart?fromMillis=&toMillis=`: the source's rows against its range over a span,
+/// as History draws it around a warning ([`throughput::chart`]).
+pub async fn chart(
+    State(state): State<AppState>,
+    Path((group, source)): Path<(String, String)>,
+    Query(asked): Query<ChartQuery>,
+) -> Envelope<throughput::Chart> {
+    chart_of(state, group, source, None, asked).await
+}
+
+/// `GET /api/areas/:area/sources/:id/senders/chart?field=&value=&fromMillis=&toMillis=`: [`chart`] for one sender of
+/// the source.
+pub async fn chart_sender(
+    State(state): State<AppState>,
+    Path((group, source)): Path<(String, String)>,
+    Query(sender): Query<Sender>,
+    Query(asked): Query<ChartQuery>,
+) -> Envelope<throughput::Chart> {
+    chart_of(state, group, source, Some(sender), asked).await
+}
+
+async fn chart_of(
+    state: AppState,
+    group: String,
+    source: String,
+    sender: Option<Sender>,
+    asked: ChartQuery,
+) -> Envelope<throughput::Chart> {
     super::blocking_answer(move || {
-        let learning = Learning::read(&state.store);
+        let Some(store) = state.registry.series() else {
+            return Envelope::ok(throughput::Chart::default());
+        };
+        let learning = Marks::read(&state.store);
+        let now_ms = warnings::now_millis();
+        throughput::chart(
+            store,
+            &group,
+            &source,
+            sender.as_ref(),
+            asked.from_millis,
+            asked.to_millis,
+            now_ms,
+            &learning,
+        )
+        .into()
+    })
+    .await
+}
+
+async fn past_of(state: AppState, group: String, source: String, sender: Option<Sender>) -> Envelope<throughput::Past> {
+    super::blocking_answer(move || {
+        let learning = Marks::read(&state.store);
         let Some(store) = state.registry.series() else {
             return Envelope::ok(throughput::Past {
-                preset: learning.presets_of(&group, &source).rows,
+                preset: learning.presets_of(&group, &source).of(sender.as_ref()),
                 ..throughput::Past::default()
             });
         };
-        throughput::past(store, &group, &source, warnings::now_millis(), &learning).into()
+        let answer = || -> Result<throughput::Past, Refusal> {
+            let now_ms = warnings::now_millis();
+            let mut past = throughput::past(store, &group, &source, sender.as_ref(), now_ms, &learning)?;
+            if sender.is_none() {
+                past.quiet_limit_millis = state
+                    .throughput
+                    .learned()
+                    .and_then(|l| l.quiet_limit_ms(&group, &source));
+            }
+            Ok(past)
+        };
+        answer().into()
     })
     .await
 }
@@ -566,35 +643,59 @@ pub async fn past(
 mod tests {
     use super::*;
 
+    /// An answer names one warning of one subject, by when it began, and takes the place of the answer before it.
     #[test]
-    fn a_lowered_warning_is_named_by_when_it_began() {
-        let marks = Marks {
-            lowered: vec![Lowered {
-                group: "g".into(),
-                source: "s".into(),
-                sender: None,
-                since_millis: 5,
-                by: "John".into(),
-            }],
-            ..Marks::default()
-        };
-        assert_eq!(marks.lowered_by("g", "s", None, Some(5)), Some("John"));
-        assert_eq!(
-            marks.lowered_by("g", "s", None, Some(6)),
-            None,
-            "the next one is a warning again"
-        );
-        assert_eq!(marks.lowered_by("g", "other", None, Some(5)), None);
-        assert_eq!(marks.lowered_by("g", "s", None, None), None);
+    fn an_answer_names_one_warning_and_replaces_the_one_before() {
         let fw = Sender {
             field: "devname".into(),
             value: "fw-01".into(),
         };
+        let of = |sender: Option<Sender>| Marking {
+            group: "g".into(),
+            source: "s".into(),
+            sender,
+            action: "test",
+        };
+        let marked = |since_millis, was| Marked { since_millis, was };
+        let now = YEAR_MS;
+        let mut marks = Marks::default();
+        let john = Actor::system();
+        let was =
+            |marks: &Marks, sender: Option<&Sender>, since| marks.answer("g", "s", sender, Some(since)).map(|m| m.was);
+        marks.said(&of(None), &marked(10, Was::Normal), &john, now);
+        marks.said(&of(Some(fw.clone())), &marked(30, Was::Outage), &john, now);
+        assert_eq!(was(&marks, None, 10), Some(Was::Normal));
+        assert_eq!(was(&marks, None, 11), None, "the next one is not answered");
+        assert_eq!(was(&marks, Some(&fw), 10), None, "a sender's warnings are its own");
+        assert_eq!(was(&marks, Some(&fw), 30), Some(Was::Outage));
+        assert_eq!(was(&marks, None, 30), None);
+        assert_eq!(marks.answer("g", "s", None, None), None);
+        marks.said(&of(None), &marked(10, Was::Outage), &john, now);
+        assert_eq!(was(&marks, None, 10), Some(Was::Outage));
+        assert_eq!(marks.answers.len(), 2, "answered twice, kept once");
+        marks.said(&of(None), &marked(20, Was::Normal), &john, now + YEAR_MS - 15);
         assert_eq!(
-            marks.lowered_by("g", "s", Some(&fw), Some(5)),
-            None,
-            "a sender's is its own"
+            marks.answers.iter().map(|m| m.since_millis).collect::<Vec<_>>(),
+            [20],
+            "answers to warnings past a year are dropped"
         );
+    }
+
+    /// A leader before answers kept the warnings it lowered to info apart. Each reads as answered Outage, and is
+    /// written back as one.
+    #[test]
+    fn a_warning_lowered_before_answers_reads_as_answered_outage() {
+        let dir = std::env::temp_dir().join(format!("smeltr-marks-lowered-{}", std::process::id()));
+        let store = crate::leader::store::Store::open(std::path::Path::new(":memory:"), &dir.join("k")).unwrap();
+        let before = r#"{"lowered":[{"group":"g","source":"s","sinceMillis":5,"by":"John"}],"reset":[]}"#;
+        store.put_settings(&[(MARKS_KEY, before.into())], None).unwrap();
+        let marks = Marks::read(&store);
+        let answer = marks.answer("g", "s", None, Some(5)).unwrap();
+        assert_eq!((answer.was, answer.by.as_str()), (Was::Outage, "John"));
+        let text = serde_json::to_string(&marks).unwrap();
+        assert!(!text.contains("lowered"), "{text}");
+        store.put_settings(&[(MARKS_KEY, text)], None).unwrap();
+        assert_eq!(Marks::read(&store), marks);
     }
 
     #[test]
@@ -648,8 +749,8 @@ mod tests {
             rows: Preset::Quiet,
             senders: Preset::Sensitive,
         };
-        assert_eq!(presets_of(&marks.presets, "g", "s"), expected);
-        assert_eq!(presets_of(&marks.presets, "g", "other"), Presets::default());
+        assert_eq!(marks.presets_of("g", "s"), expected);
+        assert_eq!(marks.presets_of("g", "other"), Presets::default());
         let back = Presets::default();
         marks.pick("g", "s", pick(Some(back.rows), Some(back.senders)), "John");
         assert_eq!(marks.presets, []);
@@ -667,12 +768,12 @@ mod tests {
                 from_millis: 7,
                 by: "John".into(),
             }],
-            periods: vec![Period {
+            answers: vec![Mark {
                 group: "g".into(),
                 source: "s".into(),
-                from_millis: 3,
-                to_millis: 5,
-                was: Was::Outage,
+                sender: None,
+                since_millis: 3,
+                was: Was::Normal,
                 by: "John".into(),
             }],
             ..Marks::default()

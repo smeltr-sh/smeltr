@@ -269,3 +269,29 @@ body {
 .tokens .tok-key {
   color: var(--tok-key);
 }
+
+/* A chart series' color, set on whatever marks it: its line, its bar, its swatch (`MetricsChart.svelte`). */
+.series-0 {
+  --c: var(--series-0);
+}
+.series-1 {
+  --c: var(--series-1);
+}
+.series-2 {
+  --c: var(--series-2);
+}
+.series-3 {
+  --c: var(--series-3);
+}
+.series-4 {
+  --c: var(--series-4);
+}
+.series-5 {
+  --c: var(--series-5);
+}
+.series-6 {
+  --c: var(--series-6);
+}
+.series-other {
+  --c: var(--series-other);
+}

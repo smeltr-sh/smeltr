@@ -35,7 +35,7 @@ export default defineConfig({
     testTimeout: 20_000,
   },
   server: {
-    // Read from the website: its code tokenizer, and the palette and controls both share.
+    // Read from the website: its code tokenizer, the palette and controls both share, and what each metric counts.
     fs: {
       allow: [
         '.',
@@ -43,6 +43,7 @@ export default defineConfig({
         '../website/src/lib/foundry',
         '../website/src/lib/reference.json',
         '../website/src/lib/code-language.json',
+        '../website/src/lib/metrics.json',
       ],
     },
     proxy: {

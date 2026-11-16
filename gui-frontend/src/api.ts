@@ -2884,6 +2884,9 @@ export interface WarningDto {
   /** When the senders a `sendersBelow` names went below normal: one source raises it once for each
    * reading senders crossed on. Absent on every other condition. */
   crossedMillis?: number;
+  /** An editor said this `sourceRowsBelow` was normal, so the level it reads is
+   * being learned and it ends once it is. Absent on every other condition. */
+  saidNormal?: boolean;
 }
 
 /** What a reader scans before the sentence. */
@@ -4117,40 +4120,15 @@ export function regenerateEncryptionKey(): Promise<
 
 // -- flow (E2), `src/leader/mod.rs` ----------------------------------------
 //
-// Rows in per source and rows out per destination, over a window the caller
-// chooses -- the leader's own durable series, so it survives a reload.
+// Each object's counts over a window the caller chooses -- the leader's own durable series,
+// so they survive a reload.
 
-/** One bucket of a series. Absent from `points` entirely when nothing
- * landed in it -- a gap, not a zero: an outage reads as no data, not as
- * throughput that dropped to nothing. */
-export type FlowPointDto = { bucketMillis: number; value: number };
-
-/** One worker's source or destination series within a `FlowResponseDto`. Group and
- * worker identity keep independently reported samples separate; older retained
- * series can lack the worker identity. */
-export type FlowSeriesDto = {
-  group: string;
-  workerId?: string | null;
-  subjectId: string;
-  points: FlowPointDto[];
-};
-
-/** `bucketMillis` is how wide each point of the window's chart is
- * (`series::chart_point_ms`). A point is summed from the coarsest tier that fits
- * in it, and its newest buckets from the finer tiers that still hold them. */
+/** The Status page's table over the window: its chart reads the same counters from `getSeries`
+ * (`flow.ts`, `FLOW_METRICS`). */
 export type FlowResponseDto = {
-  bucketMillis: number;
-  rowsIn: FlowSeriesDto[];
-  rowsOut: FlowSeriesDto[];
-  bytesIn: FlowSeriesDto[];
-  /** Payload bytes a destination acknowledged, which is a queue later than the
-   * moment `rowsOut` counts a row. The two part company while a destination
-   * falls behind, so this is the weight of what landed, not of what `rowsOut`
-   * says left. */
-  bytesOut: FlowSeriesDto[];
   /** Every source's reading against its normal, whatever window the response is for. */
   normals: FlowNormalDto[];
-  /** Every object's counts over the window, per worker, in the points the series are read in. */
+  /** Every object's counts over the window, per worker, in the points the chart draws. */
   totals: FlowTotalDto[];
 };
 
@@ -4225,57 +4203,125 @@ export function getLogs(query: string): Promise<LogsResponseDto> {
   return readJson(`/api/logs?${query}`);
 }
 
-/** The fleet's flow, or with `only` one object's in and out in place of the fleet's. */
-export function getFlow(
-  windowMinutes: number,
-  only?: { kind: FlowKind; group: string; subject: string },
-): Promise<FlowResponseDto> {
-  const q = new URLSearchParams({ windowMinutes: String(windowMinutes), ...only });
-  return readJson(`/api/flow?${q}`);
+export function getFlow(windowMinutes: number): Promise<FlowResponseDto> {
+  return readJson(`/api/flow?windowMinutes=${windowMinutes}`);
 }
 
-/** Lowers the Rows below normal warning that holds for `group`'s `source` to info until it ends. */
-export function lowerSourceRows(
-  group: string,
-  source: string,
-): Promise<{ ok: boolean; errors: ApiError[] }> {
-  return apiJson(inArea(`/sources/${encodeURIComponent(source)}/lower`, group), { method: 'POST' });
+/** How a counter is drawn: its rate, or what each minute, hour or day added up to (`leader::query::Draw`). */
+export type SeriesDraw = 'perSecond' | 'totals';
+
+/** One series of `GET /api/series`: the subjects whose split label holds `name`, added together. */
+export type SeriesSplitDto = { name: string; points: [number, number][] };
+
+/** `GET /api/series` (`leader::query::SeriesAnswer`). */
+export type SeriesAnswerDto = {
+  metric: string;
+  counter: boolean;
+  draw: SeriesDraw;
+  pointMillis: number;
+  fromMillis: number;
+  series: SeriesSplitDto[];
+};
+
+/** One metric the leader keeps series of, each label with the values they hold (`leader::query::StoredMetric`). */
+export type StoredMetricDto = { name: string; counter: boolean; labels: Record<string, string[]> };
+
+export function getSeries(query: string): Promise<SeriesAnswerDto> {
+  return readJson(`/api/series?${query}`);
 }
 
-/** One span of a source's past year, and whether its normal learns from it (`throughput::PastSpan`). */
-export type PastSpan = { fromMillis: number; toMillis: number; learned: boolean };
+export async function getSeriesMetrics(): Promise<StoredMetricDto[]> {
+  return (await readJson<{ metrics: StoredMetricDto[] }>('/api/series/metrics')).metrics;
+}
+
+/** One span of a source's past year, or a sender's, and whether its normal learns from it
+ * (`throughput::PastSpan`): a warning only once an editor answered it was normal. A warning's
+ * `fromMillis` is when it began, which names it to `markWarning`, and `markedBy` who answered
+ * what it was: Normal where it is `learned`, else Outage. `holds` on the warning that holds,
+ * which runs until now. */
+export type PastSpan = {
+  fromMillis: number;
+  toMillis: number;
+  learned: boolean;
+  holds?: boolean;
+  markedBy?: string;
+};
+
+/** One value of one field of a source's records that sends it rows (`senders::Sender`). */
+export type Sender = { field: string; value: string };
+
+/** The path under a source for it, or for one of its `sender`s, and the query naming the sender. */
+function subjectPath(source: string, sender: Sender | undefined, path: string, query = {}): string {
+  const q = new URLSearchParams({ ...(sender ?? {}), ...query });
+  const at = `/sources/${encodeURIComponent(source)}${sender ? '/senders' : ''}/${path}`;
+  return q.size > 0 ? `${at}?${q}` : at;
+}
 
 /** How soon a source, or its senders, warns of a drop against how often a brief dip warns too
  * (`throughput::Preset`). */
 export type Preset = 'fast' | 'sensitive' | 'balanced' | 'quiet';
 
-/** What a source did over the past year that an editor may say was normal or an outage
- * (`throughput::Past`): its Rows below normal warnings that ended, newest first, and its longest
- * quiet spells, longest first; and the preset it is judged at. */
+/** A source's, or one of its senders', past year (`throughput::Past`): its below normal warnings,
+ * newest first, which an editor may say were normal, and its longest quiet spells, longest first
+ * (none for a sender); the preset it is judged at; and, while either is to come, when it is first
+ * judged and when its weekdays are told apart. */
 export type SourcePastResponse = {
   ok: boolean;
   errors: ApiError[];
   warnings: PastSpan[];
   silences: PastSpan[];
   preset: Preset;
+  judgedFromMillis?: number;
+  weekdaysFromMillis?: number;
+  /** How long a source may go without a row before it warns, while its quiet spells judge it. */
+  quietLimitMillis?: number;
 };
 
-export function getSourcePast(group: string, source: string): Promise<SourcePastResponse> {
-  return apiJson(inArea(`/sources/${encodeURIComponent(source)}/past`, group));
-}
-
-/** Says a past span of `group`'s `source` was normal, so its normal learns from it, or an outage,
- * so it does not. */
-export function markSourcePast(
+/** `group`'s `source`'s past year, or its `sender`'s. */
+export function getSourcePast(
   group: string,
   source: string,
-  span: PastSpan,
+  sender?: Sender,
+): Promise<SourcePastResponse> {
+  return apiJson(inArea(subjectPath(source, sender, 'past'), group));
+}
+
+/** Answers the below normal warning of `group`'s `source`, or of its `sender`, that began at
+ * `sinceMillis` was normal, so its normal learns from it, or an outage, so it does not. Either
+ * turns it into info. */
+export function markWarning(
+  group: string,
+  source: string,
+  sinceMillis: number,
   was: 'normal' | 'outage',
+  sender?: Sender,
 ): Promise<{ ok: boolean; errors: ApiError[] }> {
   return apiJson(
-    inArea(`/sources/${encodeURIComponent(source)}/mark`, group),
-    json('POST', { fromMillis: span.fromMillis, toMillis: span.toMillis, was }),
+    inArea(subjectPath(source, sender, 'mark'), group),
+    json('POST', { ...sender, sinceMillis, was }),
   );
+}
+
+/** A source's rows, or a sender's, against its range over a span (`throughput::Chart`): rows per
+ * second in each point, by when it began, and the range it was expected to read. */
+export type SourceChartResponse = {
+  ok: boolean;
+  errors: ApiError[];
+  pointMillis: number;
+  points: [number, number][];
+  expected: ExpectedPointDto[];
+};
+
+/** `group`'s `source`'s chart from `fromMillis` until `toMillis`, or its `sender`'s. */
+export function getSourceChart(
+  group: string,
+  source: string,
+  fromMillis: number,
+  toMillis: number,
+  sender?: Sender,
+): Promise<SourceChartResponse> {
+  const span = { fromMillis: String(fromMillis), toMillis: String(toMillis) };
+  return apiJson(inArea(subjectPath(source, sender, 'chart', span), group));
 }
 
 /** Picks the preset `group`'s `source` is judged at (`rows`), the one its senders are, or both. */
@@ -4308,7 +4354,14 @@ export type SenderNowDto = {
   low: number | null;
   high: number | null;
   below: boolean;
-  loweredBy: string | null;
+  /** When its warning that holds began, which names it to `markWarning`. */
+  sinceMillis: number | null;
+  /** Who answered what its warning that holds was; answered and not `saidNormal`, it was an outage. */
+  markedBy: string | null;
+  /** An editor answered its warning that holds was normal. */
+  saidNormal: boolean;
+  /** How many below normal warnings about it held in the last 30 days. */
+  warned: number;
 };
 
 /** One field of a source and its watched senders, those below normal first (`senders::FieldNow`).
@@ -4333,18 +4386,6 @@ export type SourceSendersResponse = {
 
 export function getSourceSenders(group: string, source: string): Promise<SourceSendersResponse> {
   return apiJson(inArea(`/sources/${encodeURIComponent(source)}/senders`, group));
-}
-
-/** Lowers the warning that holds for one sender of `group`'s `source` to info until it ends. */
-export function lowerSender(
-  group: string,
-  source: string,
-  sender: { field: string; value: string },
-): Promise<{ ok: boolean; errors: ApiError[] }> {
-  return apiJson(
-    inArea(`/sources/${encodeURIComponent(source)}/senders/lower`, group),
-    json('POST', sender),
-  );
 }
 
 /** Sets which of `group`'s `source`'s fields an editor stopped watching, which they added and, once

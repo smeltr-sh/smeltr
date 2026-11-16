@@ -1,12 +1,12 @@
-// Turning a `FlowResponseDto` (E2, `GET /api/flow`) into what the Status page draws: a
-// dense, gap-aware grid for the chart, and a ranking by how far each source is from its normal
+// What the Status page draws of its flow (E2): a dense, gap-aware grid for the chart, read from
+// `GET /api/series`, and a ranking by how far each source is from its normal
 // (the Main storyboard's "Furthest from normal").
 //
 // A bucket the leader never wrote is absent from `points` -- a gap, not a zero
 // (`src/leader/series.rs`) -- and every function here keeps that distinction rather than
 // filling it in.
 
-import type { FlowNormalDto, FlowPointDto, FlowSeriesDto } from './api';
+import type { FlowKind, FlowNormalDto, SeriesAnswerDto } from './api';
 
 /** The window picker (E2: sixty minutes by default, out to thirty days). */
 export const FLOW_WINDOWS: { label: string; minutes: number }[] = [
@@ -22,72 +22,53 @@ export const DEFAULT_WINDOW_MINUTES = 60;
 /** How many rows the ranked table shows (Main storyboard). */
 export const FURTHEST_FROM_NORMAL_LIMIT = 8;
 
-/** The per-second rate implied by one bucket's total, whatever the bucket counts -- rows for
- * the chart, payload bytes for the reading beside it. */
-export function bucketRate(point: FlowPointDto, bucketMillis: number): number {
-  return point.value / (bucketMillis / 1000);
-}
+/** Each kind's rows in, rows out, bytes in and bytes out (`leader::FlowKind::metrics`). Out is what was handed to
+ * destinations; a destination's own out, and the fleet's, is what destinations acknowledged. */
+export const FLOW_METRICS: Record<FlowKind | 'fleet', [string, string, string, string]> = {
+  fleet: [
+    'smeltr_rows_polled_total',
+    'smeltr_rows_delivered_total',
+    'smeltr_bytes_polled_total',
+    'smeltr_bytes_delivered_total',
+  ],
+  source: [
+    'smeltr_rows_polled_total',
+    'smeltr_rows_sent_total',
+    'smeltr_bytes_polled_total',
+    'smeltr_bytes_sent_total',
+  ],
+  pipeline: [
+    'smeltr_route_matched_total',
+    'smeltr_rows_sent_total',
+    'smeltr_route_matched_bytes_total',
+    'smeltr_bytes_sent_total',
+  ],
+  route: [
+    'smeltr_route_matched_total',
+    'smeltr_rows_sent_total',
+    'smeltr_route_matched_bytes_total',
+    'smeltr_bytes_sent_total',
+  ],
+  destination: [
+    'smeltr_rows_sent_total',
+    'smeltr_rows_delivered_total',
+    'smeltr_bytes_sent_total',
+    'smeltr_bytes_delivered_total',
+  ],
+};
 
-/** The point boundary at or before `fromMillis`: where a dense series starts, and so the
- * instant its slot 0 stands for. The leader reads a window from the start of the point it
- * begins in, so that point is whole. */
-export function firstBucket(bucketMillis: number, fromMillis: number): number {
-  return Math.floor(fromMillis / bucketMillis) * bucketMillis;
-}
-
-/** `points` reindexed onto every expected bucket boundary from `fromMillis` to `toMillis`,
- * step `bucketMillis` -- `null` where the leader recorded nothing. What a chart draws
- * through rather than across (E2, "a gap is not a zero"). */
-export function denseSeries(
-  points: FlowPointDto[],
-  bucketMillis: number,
-  fromMillis: number,
-  toMillis: number,
-): (number | null)[] {
-  const byBucket = new Map(points.map((p) => [p.bucketMillis, p.value]));
-  const start = firstBucket(bucketMillis, fromMillis);
-  const end = Math.floor(toMillis / bucketMillis) * bucketMillis;
+/** Every series of `answer` added together, on each of its points from the first through `toMillis`: `null` where
+ * nothing landed (E2, "a gap is not a zero"). */
+export function denseAnswer(answer: SeriesAnswerDto, toMillis: number): (number | null)[] {
+  const sums = new Map<number, number>();
+  for (const s of answer.series) {
+    for (const [at, value] of s.points) sums.set(at, (sums.get(at) ?? 0) + value);
+  }
   const out: (number | null)[] = [];
-  for (let t = start; t <= end; t += bucketMillis) {
-    const v = byBucket.get(t);
-    out.push(v === undefined ? null : v);
+  for (let at = answer.fromMillis; at <= toMillis; at += answer.pointMillis) {
+    out.push(sums.get(at) ?? null);
   }
   return out;
-}
-
-/** `denseSeries` per second rather than per bucket -- the unit the panel's own headline
- * reads (`currentRate`), so a chart drawn from this and the number above it cannot
- * disagree. It is also the only unit that holds across the window picker: a point is 10s
- * at sixty minutes and six hours at thirty days, so raw totals from two windows are not the
- * same measurement. A gap stays a gap; there is no rate where there was no bucket. */
-export function denseRates(
-  points: FlowPointDto[],
-  bucketMillis: number,
-  fromMillis: number,
-  toMillis: number,
-): (number | null)[] {
-  const start = firstBucket(bucketMillis, fromMillis);
-  return denseSeries(points, bucketMillis, fromMillis, toMillis).map((value, i) =>
-    value === null
-      ? null
-      : bucketRate({ bucketMillis: start + i * bucketMillis, value }, bucketMillis),
-  );
-}
-
-/** Every subject of a metric summed bucket by bucket, for a whole-fleet total. A bucket is
- * present the moment any one subject reported into it -- the rest contribute nothing, which
- * is correct addition, not a guess about what they were doing -- and absent only when
- * nothing anywhere did. */
-export function sumSeries(series: FlowSeriesDto[]): FlowPointDto[] {
-  const totals = new Map<number, number>();
-  for (const s of series) {
-    for (const p of s.points) {
-      totals.set(p.bucketMillis, (totals.get(p.bucketMillis) ?? 0) + p.value);
-    }
-  }
-  return [...totals.entries()]
-    .sort(([a], [b]) => a - b)
-    .map(([bucketMillis, value]) => ({ bucketMillis, value }));
 }
 
 /** The bucket before the one `nowMillis` falls in: the most recent one that has closed.
@@ -98,24 +79,6 @@ export function sumSeries(series: FlowSeriesDto[]): FlowPointDto[] {
  * closed bucket would be two answers to the same question. */
 export function lastClosedBucket(bucketMillis: number, nowMillis: number): number {
   return Math.floor(nowMillis / bucketMillis) * bucketMillis - bucketMillis;
-}
-
-/** The rate over the bucket that has just closed, or `null` where the series does not hold
- * it.
- *
- * Not the bucket covering `nowMillis`. That one is still filling, so its running total over
- * the bucket's full width climbs from nothing to the true rate and starts again -- and
- * before its first row lands there is no row there at all, which is not a rate of zero. A
- * closed bucket is a whole count over a known width. `null` rather than 0 where the series
- * does not hold it, the same distinction the chart draws as a gap. */
-export function currentRate(
-  points: FlowPointDto[],
-  bucketMillis: number,
-  nowMillis: number,
-): number | null {
-  const closed = lastClosedBucket(bucketMillis, nowMillis);
-  const point = points.find((p) => p.bucketMillis === closed);
-  return point ? bucketRate(point, bucketMillis) : null;
 }
 
 /** A source's reading against its normal, as the Status page ranks it. `awayPercent` is how

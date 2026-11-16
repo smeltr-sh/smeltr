@@ -223,7 +223,7 @@ async fn get_map_measurements(
         let live = smeltr::leader::stats::Live {
             snapshot: &snapshot,
             heartbeat_interval: smeltr::startup_config::leader_heartbeat_interval(),
-            learning: smeltr::leader::throughput::Learning::default(),
+            learning: smeltr::leader::marks::Marks::default(),
         };
         Ok(Measurements {
             commit: Some(commit),
@@ -296,7 +296,7 @@ async fn get_stats(
                     let live = smeltr::leader::stats::Live {
                         snapshot: &snapshot,
                         heartbeat_interval: smeltr::startup_config::leader_heartbeat_interval(),
-                        learning: smeltr::leader::throughput::Learning::read(&state.store),
+                        learning: smeltr::leader::marks::Marks::read(&state.store),
                     };
                     smeltr::leader::stats::build(&group, &system, kind, &id, window, state.registry.series(), live)
                 }
@@ -1187,7 +1187,6 @@ async fn setup_leader(
         // Not on `app` below with the rest of the config routes: saving a connector asks the certificate list whether
         // it holds the certificate named.
         .route("/api/areas/:area/sources", put(config_api::put_sources))
-        .route("/api/areas/:area/sources/:id/lower", post(smeltr::leader::marks::lower))
         .route(
             "/api/areas/:area/sources/:id/reset-history",
             post(smeltr::leader::marks::reset_history),
@@ -1198,13 +1197,22 @@ async fn setup_leader(
             put(smeltr::leader::marks::put_preset),
         )
         .route("/api/areas/:area/sources/:id/past", get(smeltr::leader::marks::past))
+        .route("/api/areas/:area/sources/:id/chart", get(smeltr::leader::marks::chart))
         .route(
             "/api/areas/:area/sources/:id/senders",
             get(smeltr::leader::senders::get),
         )
         .route(
-            "/api/areas/:area/sources/:id/senders/lower",
-            post(smeltr::leader::marks::lower_sender),
+            "/api/areas/:area/sources/:id/senders/mark",
+            post(smeltr::leader::marks::mark_sender),
+        )
+        .route(
+            "/api/areas/:area/sources/:id/senders/past",
+            get(smeltr::leader::marks::past_sender),
+        )
+        .route(
+            "/api/areas/:area/sources/:id/senders/chart",
+            get(smeltr::leader::marks::chart_sender),
         )
         .route(
             "/api/areas/:area/sources/:id/senders/fields",

@@ -607,6 +607,11 @@
         {@const IssuesPage = pages.issues}
         <IssuesPage />
       {/if}
+    {:else if route.page === 'metrics'}
+      {#if pages.metrics}
+        {@const MetricsPage = pages.metrics}
+        <MetricsPage view={route.view} />
+      {/if}
     {:else if route.page === 'logs'}
       {#if pages.logs}
         {@const LogsPage = pages.logs}
@@ -889,11 +894,29 @@
     /* A group's hue is the accent's own lightness and chroma, turned. */
     --scope-l: 60%;
     --scope-c: 0.17;
+    /* A chart's series, in the order they are handed out: hues told apart under every common color blindness,
+       the same in every palette. Other is no series' hue. */
+    --series-0: #2a78d6;
+    --series-1: #eb6834;
+    --series-2: #1baf7a;
+    --series-3: #eda100;
+    --series-4: #e87ba4;
+    --series-5: #008300;
+    --series-6: #6250d6;
+    --series-other: #8c8a84;
   }
   :root[data-theme='dark'] {
     --accent-h: 48;
     --scope-l: 70%;
     --scope-c: 0.17;
+    --series-0: #3987e5;
+    --series-1: #d95926;
+    --series-2: #199e70;
+    --series-3: #c98500;
+    --series-4: #d55181;
+    --series-5: #0ca30c;
+    --series-6: #9085e9;
+    --series-other: #8a8983;
   }
 
   /* Ember: oxblood chrome, steel-blue actions, a teal second color, sand notes. */

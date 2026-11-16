@@ -158,7 +158,7 @@ async function shoot(page: Page, name: string) {
   await page.emulateMedia({ colorScheme: 'light' });
 }
 
-test('a source that drops below its normal is ranked and warned of, and an editor lowers it or resets its history', async ({
+test('a source that drops below its normal is ranked and warned of, and an editor answers what it was or resets its history', async ({
   admin,
   api,
   fleet,
@@ -170,9 +170,15 @@ test('a source that drops below its normal is ranked and warned of, and an edito
   await deploy(api, es.url, ['firewall-syslog', 'nginx-access', 'linux-auth']);
   await fleet.startWorker(leader, api, 'edge', 'edge-1');
   await expect
-    .poll(async () => (await api.get('/api/flow?windowMinutes=5')).rowsIn.length, {
-      timeout: 60_000,
-    })
+    .poll(
+      async () =>
+        (await api.get('/api/flow?windowMinutes=5')).totals.filter(
+          (t: { kind: string }) => t.kind === 'source',
+        ).length,
+      {
+        timeout: 60_000,
+      },
+    )
     .toBe(3);
 
   // About 30 rows a second for a week, then about 5 for the last half hour: long enough for the leader's four
@@ -204,10 +210,44 @@ test('a source that drops below its normal is ranked and warned of, and an edito
   await expect(row).toBeVisible({ timeout: 60_000 });
   await shoot(admin, '2-issue');
 
-  await row.getByRole('button', { name: 'Lower to info' }).click();
-  await expect(row).toContainText('lowered to info by');
-  await expect(row.getByRole('button', { name: 'Lower to info' })).toHaveCount(0);
-  await shoot(admin, '3-lowered');
+  // A warning nobody answered stays a warning, with neither answer pressed. Outage turns it into info.
+  const was = row.getByRole('group', { name: 'firewall-syslog: the warning that is up' });
+  await expect(was.getByRole('button', { name: 'Outage' })).toHaveAttribute(
+    'aria-pressed',
+    'false',
+  );
+  await expect(was.getByRole('button', { name: 'Normal' })).toHaveAttribute(
+    'aria-pressed',
+    'false',
+  );
+  await was.getByRole('button', { name: 'Outage' }).click();
+  await expect(row).toContainText('marked Outage by');
+  await expect(was.getByRole('button', { name: 'Outage' })).toHaveAttribute('aria-pressed', 'true');
+  await shoot(admin, '3-outage');
+
+  // History charts the source against its range and lists the warning that is up, which opens on the rows around it.
+  await goto(
+    admin,
+    leader,
+    '#/map?group=edge&kind=source&id=firewall-syslog&panel=history&range=24h',
+  );
+  const panel = admin.getByRole('complementary', { name: 'firewall-syslog', exact: true });
+  await expect(panel.getByText('Rows per second, over the last 24 hours')).toBeVisible();
+  const up = panel
+    .getByRole('listitem')
+    .filter({ has: admin.getByRole('img', { name: 'up now' }) });
+  await expect(up).toContainText('Marked by');
+  await up.getByRole('button', { expanded: false }).click();
+  await expect(up.getByText('24 hours ago')).toBeVisible({ timeout: 30_000 });
+  await shoot(admin, '3b-history-warning');
+
+  // Said Normal on the Issues page, it is Normal on History too: the source learns the level it reads now.
+  await goto(admin, leader, '#/status/issues');
+  await was.getByRole('button', { name: 'Normal' }).click();
+  await expect(was.getByRole('button', { name: 'Normal' })).toHaveAttribute('aria-pressed', 'true');
+  const past = await api.get('/api/areas/edge/sources/firewall-syslog/past');
+  expect(past.warnings[0]).toMatchObject({ holds: true, learned: true });
+  await shoot(admin, '3c-said-normal');
 
   await row.getByRole('button', { name: 'Reset history' }).click();
   const dialog = admin.getByRole('dialog');
@@ -218,7 +258,7 @@ test('a source that drops below its normal is ranked and warned of, and an edito
   await shoot(admin, '5-reset');
 });
 
-test('an editor says a quiet spell of a sparse source was an outage, and its normal stops learning it', async ({
+test('History lists the quiet spells a sparse source learned, and an editor picks its preset', async ({
   admin,
   api,
   fleet,
@@ -230,9 +270,15 @@ test('an editor says a quiet spell of a sparse source was an outage, and its nor
   await deploy(api, es.url, ['audit-log']);
   await fleet.startWorker(leader, api, 'edge', 'edge-1');
   await expect
-    .poll(async () => (await api.get('/api/flow?windowMinutes=5')).rowsIn.length, {
-      timeout: 60_000,
-    })
+    .poll(
+      async () =>
+        (await api.get('/api/flow?windowMinutes=5')).totals.filter(
+          (t: { kind: string }) => t.kind === 'source',
+        ).length,
+      {
+        timeout: 60_000,
+      },
+    )
     .toBe(1);
 
   // A row every three hours for four weeks, but for one quiet spell of nine hours two weeks ago.
@@ -262,18 +308,9 @@ test('an editor says a quiet spell of a sparse source was an outage, and its nor
   await panel.getByRole('link', { name: 'History' }).click();
   // Eight hours and 55 minutes, in whole hours.
   const spell = panel.getByRole('listitem').filter({ hasText: '8 hours' });
-  await expect(spell.getByRole('button', { name: 'Normal' })).toHaveAttribute(
-    'aria-pressed',
-    'true',
-  );
+  await expect(spell).toContainText('Normal');
+  await expect(spell.getByRole('button')).toHaveCount(0);
   await shoot(admin, '6-history');
-  await spell.getByRole('button', { name: 'Outage' }).click();
-  await expect(spell.getByRole('button', { name: 'Outage' })).toHaveAttribute(
-    'aria-pressed',
-    'true',
-  );
-  expect((await api.get(past)).silences[0].learned).toBe(false);
-  await shoot(admin, '7-outage');
 
   // An editor picks the preset the source is judged at: Balanced until one is picked.
   const preset = panel.getByRole('group', { name: 'Preset', exact: true });
@@ -296,17 +333,14 @@ test('an editor says a quiet spell of a sparse source was an outage, and its nor
   const band = admin.getByRole('region', { name: 'edge', exact: true });
   await panel.getByRole('link', { name: 'Widen' }).click();
   await expect(band).toBeHidden();
-  await expect(spell.getByRole('button', { name: 'Outage' })).toHaveAttribute(
-    'aria-pressed',
-    'true',
-  );
+  await expect(spell).toContainText('Normal');
   await shoot(admin, '8-history-wide');
   await admin.keyboard.press('Escape');
   await expect(band).toBeVisible();
   await expect(panel.getByRole('link', { name: 'Widen' })).toBeVisible();
 });
 
-test('senders that stop while their source stays within its normal are warned of, and an editor lowers one and edits the fields', async ({
+test('senders that stop while their source stays within its normal are warned of, and an editor marks one and edits the fields', async ({
   admin,
   api,
   fleet,
@@ -318,9 +352,15 @@ test('senders that stop while their source stays within its normal are warned of
   await deploy(api, es.url, ['fortigate-firewalls']);
   await fleet.startWorker(leader, api, 'edge', 'edge-1');
   await expect
-    .poll(async () => (await api.get('/api/flow?windowMinutes=5')).rowsIn.length, {
-      timeout: 60_000,
-    })
+    .poll(
+      async () =>
+        (await api.get('/api/flow?windowMinutes=5')).totals.filter(
+          (t: { kind: string }) => t.kind === 'source',
+        ).length,
+      {
+        timeout: 60_000,
+      },
+    )
     .toBe(1);
 
   // Ten firewalls of about 3 rows a second each for a week, then two of them stop for the last 45 minutes, longer
@@ -367,8 +407,44 @@ test('senders that stop while their source stays within its normal are warned of
   await shoot(admin, '11-senders-wide');
 
   const fw01 = senders.filter({ hasText: 'fw-01' });
-  await fw01.getByRole('button', { name: 'Lower to info' }).click();
-  await expect(fw01).toContainText('Lowered to info by');
+  await expect(fw01).toContainText('1 in 30 days');
+  const fw01was = fw01.getByRole('group', { name: 'devname fw-01: the warning that is up' });
+  await fw01was.getByRole('button', { name: 'Outage' }).click();
+  await expect(fw01).toContainText('Marked by');
+
+  // A sender's warning is marked as a source's is, and only that sender's: fw-07's Normal leaves fw-01 an outage.
+  const fw07 = senders.filter({ hasText: 'fw-07' });
+  const fw07was = fw07.getByRole('group', { name: 'devname fw-07: the warning that is up' });
+  await expect(fw07was.getByRole('button', { name: 'Outage' })).toHaveAttribute(
+    'aria-pressed',
+    'false',
+  );
+  await fw07was.getByRole('button', { name: 'Normal' }).click();
+  await expect(fw07was.getByRole('button', { name: 'Normal' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  const sender = (value: string) =>
+    api.get(
+      `/api/areas/edge/sources/fortigate-firewalls/senders/past?field=devname&value=${value}`,
+    );
+  expect((await sender('fw-07')).warnings[0]).toMatchObject({ holds: true, learned: true });
+  expect((await sender('fw-01')).warnings[0]).toMatchObject({ holds: true, learned: false });
+
+  // A sender opens on its own chart and warnings, as History shows a source.
+  await fw01.getByRole('button', { name: 'fw-01' }).click();
+  await expect(panel.getByText('devname fw-01', { exact: true })).toBeVisible();
+  await expect(panel.getByText(/Rows per second, over the last/)).toBeVisible();
+  const warning = panel.getByRole('listitem').filter({ hasText: 'Marked by' });
+  await expect(warning.getByRole('button', { name: 'Outage' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await warning.getByRole('button', { expanded: false }).click();
+  await expect(warning.getByText('24 hours ago')).toBeVisible({ timeout: 30_000 });
+  await shoot(admin, '11b-sender');
+  await panel.getByRole('button', { name: 'Senders', exact: true }).click();
+  await expect(fw01).toBeVisible();
 
   // An editor stops watching a field, and adds one the pick cannot offer, then removes it.
   const field = (name: string) =>
