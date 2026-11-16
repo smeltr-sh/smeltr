@@ -4862,34 +4862,20 @@ mod tests {
         p
     }
 
-    /// A name the source does not declare, on a source whose record keeps the fields it does not declare, is read from
-    /// those fields as a variant: its exception says the source does not declare it and names the fields it does.
-    /// Once a parse lays the record's fields, a name it does not claim is a variant of the parse's, as anywhere.
+    /// A name read from the fields an open record's source does not declare is said to be one; a name a parse leaves
+    /// unclaimed is a variant, as anywhere.
     #[test]
     fn a_name_the_source_does_not_declare_is_said_so() {
-        let error = |meta: &SourceMeta, body: &str| match compile(&code_pipeline(body), meta) {
-            Ok(_) => panic!("{body} compiled"),
-            Err(e) => e[0].message.clone(),
-        };
-        let fields = |n: usize| (1..=n).map(|i| (format!("f{i}"), DataType::Str)).collect::<Vec<_>>();
-        let open = |n: usize| SourceMeta::KAFKA.declaring_open(fields(n)).unwrap();
+        let meta = SourceMeta::KAFKA
+            .declaring_open(vec![("f".into(), DataType::Str)])
+            .unwrap();
+        let error = |body: &str| compile(&code_pipeline(body), &meta).expect_err(body)[0].message.clone();
         assert_eq!(
-            error(&open(2), "Object.assign($, json(_raw))"),
-            "`_raw` is not a field this source declares: it declares `f1` and `f2`. Read one of those, or give \
-             `_raw` a type to read it from the record's other fields -- `_raw: str = _raw;`"
+            error("Object.assign($, json(_raw))"),
+            "`_raw` is not a field this source declares. Read a field it declares, or give `_raw` a type to read it \
+             from the record's other fields -- `_raw: str = _raw;`"
         );
-        assert_eq!(
-            error(&open(7), "x = _raw.trim()"),
-            "`_raw` is not a field this source declares: it declares `f1`, `f2`, `f3`, `f4`, `f5` and 2 more. Read \
-             one of those, or give `_raw` a type to read it from the record's other fields -- `_raw: type = _raw;`"
-        );
-        assert_eq!(
-            error(&open(0), "x = _raw.trim()"),
-            "`_raw` is not a field this source declares. Give it a type to read it from the record's fields -- \
-             `_raw: type = _raw;`"
-        );
-        let parsed = error(&open(1), "Object.assign($, json(f1)); x = z.trim()");
-        assert!(parsed.starts_with("`z` is a variant"), "{parsed}");
+        assert!(error("Object.assign($, json(f)); x = z.trim()").starts_with("`z` is a variant"));
     }
 
     /// A filter of `true` runs the step on every row, as no filter does: what it deletes leaves the record, and it

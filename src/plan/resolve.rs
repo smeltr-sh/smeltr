@@ -221,24 +221,6 @@ impl SymbolTable {
         self.root.leaf(name)
     }
 
-    /// Where `name` reads from the record's fields the source does not declare (`SourceMeta::opened`), the fields the
-    /// source declares, engine fields aside. `None` where a declared field, a step or a parse gives `name` its value.
-    pub fn undeclared_by_source(&self, name: &str) -> Option<Vec<&str>> {
-        if self.reads_only || self.lookup(name).is_some() {
-            return None;
-        }
-        let (object, at, _) = self.root.deepest(name);
-        let slot = object.unclaimed.filter(|_| at.is_empty())?;
-        (self.origins[slot].origin == Origin::Ingest).then(|| {
-            self.origins
-                .iter()
-                .filter(|o| o.origin == Origin::Ingest && o.name != tree::UNCLAIMED)
-                .map(|o| o.name.as_str())
-                .filter(|n| !tree::is_internal(tree::head(n)))
-                .collect()
-        })
-    }
-
     /// The slot of the record's own leaf `name`, a top-level name, where a local hides it too.
     pub fn field_lookup(&self, name: &str) -> Option<SlotId> {
         match self.open.iter().find(|s| s.name == name) {
@@ -2034,31 +2016,18 @@ fn resolve_element_access(
 /// What a use of a variant says, after the value's name, with `hint`, the conversion the caller knows, or the one
 /// that fits any name.
 /// The exception for a use of the variant `name` where it reads from the record's fields the source does not declare
-/// (`SymbolTable::undeclared_by_source`): it names the fields the source does declare. `hint` is the declaration that
-/// types `name`.
+/// (`SourceMeta::opened`), and nothing in the pipeline gives it a value. `hint` is the declaration that types `name`.
 pub fn undeclared_use(name: &str, hint: &str, syms: &SymbolTable) -> Option<String> {
-    const SHOWN: usize = 5;
-    let declared = syms.undeclared_by_source(name)?;
-    if declared.is_empty() {
-        return Some(format!(
-            "`{name}` is not a field this source declares. Give it a type to read it from the record's fields -- {hint}"
-        ));
-    }
-    let mut names: Vec<String> = declared.iter().take(SHOWN).map(|n| format!("`{n}`")).collect();
-    let listed = match declared.len() {
-        n if n > SHOWN => format!("{} and {} more", names.join(", "), n - SHOWN),
-        _ => {
-            let last = names.pop().expect("not empty");
-            match names.is_empty() {
-                true => last,
-                false => format!("{} and {last}", names.join(", ")),
-            }
-        }
-    };
-    Some(format!(
-        "`{name}` is not a field this source declares: it declares {listed}. Read one of those, or give `{name}` a type \
-         to read it from the record's other fields -- {hint}"
-    ))
+    let (object, at, _) = syms.root.deepest(name);
+    let ingested = object
+        .unclaimed
+        .is_some_and(|slot| syms.origins[slot].origin == Origin::Ingest);
+    (ingested && at.is_empty() && !syms.reads_only && syms.lookup(name).is_none()).then(|| {
+        format!(
+            "`{name}` is not a field this source declares. Read a field it declares, or give `{name}` a type to read \
+             it from the record's other fields -- {hint}"
+        )
+    })
 }
 
 pub fn variant_use(hint: Option<&str>) -> String {
