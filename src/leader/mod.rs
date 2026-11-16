@@ -48,6 +48,7 @@ pub mod onboard;
 pub mod outbound;
 pub mod preview;
 pub mod private_file;
+pub mod query;
 pub mod registry;
 pub mod remote;
 pub mod resolver;
@@ -1633,7 +1634,7 @@ impl FlowResponse {
 }
 
 /// The group label `registry::subject_key` stamps on every series subject.
-const GROUP_LABEL: &str = "group";
+pub(crate) const GROUP_LABEL: &str = "group";
 /// `Reader::step`'s count of records read from the source (`runtime.rs`), the "in" of E2.
 pub(crate) const ROWS_IN_METRIC: &str = "smeltr_rows_polled_total";
 /// `Transform::count_outcomes`' count of rows handed to a destination's queue (`runtime.rs`). The destination page
@@ -4100,6 +4101,8 @@ pub fn admin_router() -> Router<AppState> {
         .route("/api/warnings", get(list_warnings))
         .route("/api/metrics", get(warning_metrics))
         .route("/api/flow", get(get_flow))
+        .route("/api/series", get(query::get_series))
+        .route("/api/series/metrics", get(query::get_metrics))
         .route("/api/streams", get(get_streams))
         .route("/api/logs", get(get_logs))
         .route(

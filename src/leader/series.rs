@@ -106,12 +106,14 @@ impl Tier {
         ms.div_euclid(self.bucket_ms()) * self.bucket_ms()
     }
 
-    /// The coarsest tier whose buckets fit in a point `point_ms` wide: what such a point is summed from.
-    fn within(point_ms: i64) -> Tier {
+    /// The coarsest tier whose buckets fit whole in a point `point_ms` wide that starts `offset_ms` past the epoch's
+    /// boundaries: what such a point is summed from. A day starting on a half hour is summed from buckets no wider
+    /// than half an hour.
+    fn within_from(point_ms: i64, offset_ms: i64) -> Tier {
         Tier::ALL
             .into_iter()
             .rev()
-            .find(|tier| tier.bucket_ms() <= point_ms)
+            .find(|tier| tier.bucket_ms() <= point_ms && offset_ms.rem_euclid(tier.bucket_ms()) == 0)
             .unwrap_or(Tier::TenSeconds)
     }
 }
@@ -1181,9 +1183,21 @@ impl RegistryStore {
         point_ms: i64,
         since_ms: i64,
     ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
+        self.series_at_from(metric, point_ms, 0, since_ms)
+    }
+
+    /// [`RegistryStore::series_at`] with each point starting `offset_ms` past the epoch's boundaries: a day that
+    /// starts at a reader's midnight rather than UTC's.
+    fn series_at_from(
+        &self,
+        metric: &str,
+        point_ms: i64,
+        offset_ms: i64,
+        since_ms: i64,
+    ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
         let mut by_subject: BTreeMap<String, SubjectPoints> = BTreeMap::new();
         for (subject_key, points) in self
-            .series_since_at(metric, Tier::within(point_ms).and_finer(), since_ms)?
+            .series_since_at(metric, Tier::within_from(point_ms, offset_ms).and_finer(), since_ms)?
             .into_iter()
             .flatten()
         {
@@ -1191,7 +1205,7 @@ impl RegistryStore {
             of.extend(
                 points
                     .into_iter()
-                    .map(|(at, value)| (at.div_euclid(point_ms) * point_ms, value))
+                    .map(|(at, value)| ((at - offset_ms).div_euclid(point_ms) * point_ms + offset_ms, value))
                     .filter(|(at, _)| *at >= since_ms),
             );
         }
@@ -1212,7 +1226,7 @@ impl RegistryStore {
         point_ms: i64,
         since_ms: i64,
     ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
-        self.merged_at(metric, point_ms, since_ms, |sum, value| sum + value)
+        self.merged_at(metric, point_ms, 0, since_ms, |sum, value| sum + value)
     }
 
     /// [`RegistryStore::sums_since`], asked of the store at most once per ten-second bucket of `now_ms` for each
@@ -1252,7 +1266,31 @@ impl RegistryStore {
         point_ms: i64,
         since_ms: i64,
     ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
-        self.merged_at(metric, point_ms, since_ms, f64::max)
+        self.merged_at(metric, point_ms, 0, since_ms, f64::max)
+    }
+
+    /// Every subject of `metric` with a point at or after `since_ms`, each point `point_ms` wide and starting
+    /// `offset_ms` past the epoch's boundaries, its buckets added for a counter and the highest taken for a gauge.
+    pub fn points_from(
+        &self,
+        metric: &str,
+        counter: bool,
+        point_ms: i64,
+        offset_ms: i64,
+        since_ms: i64,
+    ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
+        let merge: fn(f64, f64) -> f64 = if counter { |sum, value| sum + value } else { f64::max };
+        self.merged_at(metric, point_ms, offset_ms, since_ms, merge)
+    }
+
+    /// Every metric the store holds a series of, each with every subject it has one for and whether it counts.
+    pub fn metric_subjects(&self) -> Result<Vec<(String, String, bool)>, StoreError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare("SELECT metric, labels_json, kind FROM series ORDER BY metric, labels_json")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, String>(2)? == COUNTER)))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
     }
 
     /// [`RegistryStore::series_at`] with each point's values merged into one by `merge`.
@@ -1260,11 +1298,12 @@ impl RegistryStore {
         &self,
         metric: &str,
         point_ms: i64,
+        offset_ms: i64,
         since_ms: i64,
         merge: fn(f64, f64) -> f64,
     ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
         Ok(self
-            .series_at(metric, point_ms, since_ms)?
+            .series_at_from(metric, point_ms, offset_ms, since_ms)?
             .into_iter()
             .map(|(subject_key, points)| {
                 let mut merged: SubjectPoints = Vec::new();
@@ -3708,7 +3747,7 @@ mod tests {
             let point = chart_point_ms(window);
             assert!(window.as_millis() as i64 <= CHART_POINTS * point, "{m} minutes");
             assert!(
-                Tier::within(point).retention_ms() >= window.as_millis() as i64,
+                Tier::within_from(point, 0).retention_ms() >= window.as_millis() as i64,
                 "{m} minutes"
             );
         }

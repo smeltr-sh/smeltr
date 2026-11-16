@@ -476,6 +476,18 @@ pub const CATALOG: &[Route] = &[
     },
     Route {
         method: "GET",
+        path: "/api/series/metrics",
+        what: "Every stored metric: whether it counts, and each label with the values its series hold (`group` is the worker group; `worker` only on the flow counters). No query.",
+        body: "",
+    },
+    Route {
+        method: "GET",
+        path: "/api/series",
+        what: "One stored metric over a window, as points per series. Query: metric, filter (label:value, comma-separated), by (the label to split by; none adds all into one), windowMinutes (default 60, max 30 days), draw (perSecond|totals: a counter's rate, or what each minute, hour or day added up to), utcOffsetMinutes. To show the person a chart, link `#/status/metrics` with the same query.",
+        body: "",
+    },
+    Route {
+        method: "GET",
         path: "/api/streams",
         what: "Fields each parser produced and unmatched row keys per source, filtered to visible groups. No query.",
         body: "",
