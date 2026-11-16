@@ -71,7 +71,12 @@ const MICROS = new Set(['lockedAt']);
 export function shifted(value: unknown, deltaMs: number, key?: string): unknown {
   if (Array.isArray(value)) return value.map((v) => shifted(v, deltaMs, key));
   if (value !== null && typeof value === 'object') {
-    const width = (value as { bucketMillis?: unknown }).bucketMillis;
+    // A series answer names its width `pointMillis`; its points are `[millis, value]` on that grid.
+    const { bucketMillis, pointMillis } = value as {
+      bucketMillis?: unknown;
+      pointMillis?: unknown;
+    };
+    const width = bucketMillis ?? pointMillis;
     const delta =
       typeof width === 'number' && width > 0 && width < 1.5e12
         ? Math.round(deltaMs / width) * width

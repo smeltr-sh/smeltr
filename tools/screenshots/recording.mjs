@@ -8,20 +8,21 @@ import { partFile } from '../../gui-frontend/src/demo/parts.js';
 export const STATS = /^\/api\/areas\/[^/]+\/stats$/;
 /** The answers the fleet moves in, read again over a minute so the demo moves as the fleet did. */
 export const LIVE =
-  /^\/api\/(map\/measurements|areas\/[^/?]+\/stats|flow|cluster|workers|warnings|streams)\b/;
-/** The windows each chart opens on (`DEFAULT_CHART_RANGE` in `map.ts`, `DEFAULT_WINDOW_MINUTES` in `flow.ts`). */
+  /^\/api\/(map\/measurements|areas\/[^/?]+\/stats|flow|series|cluster|workers|warnings|streams)\b/;
+/** The windows each chart opens on (`DEFAULT_CHART_RANGE` in `map.ts`, `DEFAULT_WINDOW_MINUTES` in `flow.ts`,
+ * `DEFAULT_VIEW` in `metricsView.ts`). */
 const OPENS_ON = [
   [STATS, '10'],
-  [/^\/api\/flow$/, '60'],
+  [/^\/api\/(flow|series)$/, '60'],
 ];
 
-/** Whether `key` is a read the visitor picks -- a chart at a window it does not open on, or the flow of one row of
- * the Status page's Totals -- which stands still. */
+/** Whether `key` is a read the visitor picks -- a chart at a window it does not open on, or a series narrowed by a
+ * filter, as a row of the Status page's Totals narrows its chart -- which stands still. */
 export function picked(key) {
   const url = new URL(key, 'http://recording');
   const window = url.searchParams.get('windowMinutes');
   return (
-    url.searchParams.has('subject') ||
+    (url.pathname === '/api/series' && !!url.searchParams.get('filter')) ||
     (window !== null && !OPENS_ON.some(([p, opens]) => p.test(url.pathname) && opens === window))
   );
 }

@@ -55,6 +55,19 @@ describe('shifted', () => {
       rowsIn: [{ points: [{ bucketMillis: RECORDED + 10_000, value: 3 }] }],
     });
   });
+
+  it("moves a series answer's points by whole points", () => {
+    const series = {
+      pointMillis: 10_000,
+      fromMillis: RECORDED,
+      series: [{ name: '', points: [[RECORDED, 3]] }],
+    };
+    expect(shifted(series, 12_345)).toEqual({
+      pointMillis: 10_000,
+      fromMillis: RECORDED + 10_000,
+      series: [{ name: '', points: [[RECORDED + 10_000, 3]] }],
+    });
+  });
 });
 
 describe('callersOf', () => {
