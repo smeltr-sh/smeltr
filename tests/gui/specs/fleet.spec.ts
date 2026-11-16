@@ -417,6 +417,7 @@ test('the Metrics page charts any stored metric, split by a label, as a rate or 
   await panel.getByRole('spinbutton', { name: 'Top' }).press('Enter');
   await expect(admin).toHaveURL(/top=1\b/);
   await expect(panel.getByRole('listitem').filter({ hasText: /^Other$/ })).toBeVisible();
+  await shoot(admin, panel, 'metrics-top-1');
 
   // Narrowed to one group, the other's row goes, and the view is in the address to hand on.
   await panel.getByRole('button', { name: '+ Filter' }).click();

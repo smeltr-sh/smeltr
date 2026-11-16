@@ -74,6 +74,14 @@
     return d;
   }
 
+  /** Where `points` holds a value with none on either side: a line through one point draws nothing, so it is a dot. */
+  const lone = (points: (number | null)[]) =>
+    points.flatMap((v, i) =>
+      v !== null && (points[i - 1] ?? null) === null && (points[i + 1] ?? null) === null
+        ? [{ i, v }]
+        : [],
+    );
+
   let hover = $state<number | null>(null);
   function track(e: PointerEvent) {
     const box = (e.currentTarget as SVGRectElement).ownerSVGElement?.getBoundingClientRect();
@@ -131,6 +139,9 @@
       {:else}
         {#each series as s (s.name)}
           <path class="line {tone(s)}" d={path(s.points)} />
+          {#each lone(s.points) as { i, v } (i)}
+            <circle class="dot {tone(s)}" cx={xLine(i)} cy={y(v)} r="2.5" />
+          {/each}
         {/each}
         {#if hoverX !== null}
           <line class="rule" x1={hoverX} x2={hoverX} y1="0" y2={PLOT} />
@@ -218,6 +229,10 @@
     stroke: var(--c);
     stroke-width: 2;
     stroke-linejoin: round;
+  }
+
+  .dot {
+    fill: var(--c);
   }
 
   .rule {
