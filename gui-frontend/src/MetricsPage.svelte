@@ -39,6 +39,7 @@
     toneOf,
     unitOf,
     type Mark,
+    filtersFor,
     type Drawn,
     type MetricsView,
   } from './metricsView';
@@ -70,13 +71,16 @@
   let failed = $state<string | null>(null);
 
   /** The list grows as workers report metrics they had not before, so it is read with every answer. */
-  function readMetrics() {
-    getSeriesMetrics()
+  function readMetrics(): Promise<unknown> {
+    return getSeriesMetrics()
       .then((m) => (metrics = m))
       .catch((e: Error) => (failed = e.message));
   }
 
   let metric = $derived(metrics?.find((m) => m.name === view.metric) ?? null);
+
+  const filterOf = (v: MetricsView, m: string) =>
+    filtersFor(v.filter, metrics?.find((s) => s.name === m)?.labels);
 
   /** Which metric each drawn series is of, by its name. */
   let metricOf = $state(new Map<string, string>());
@@ -99,7 +103,9 @@
   }
 
   async function read(asked: MetricsView) {
-    readMetrics();
+    // Which labels each metric carries decides which filters it takes, so the first read waits for them.
+    const listed = readMetrics();
+    if (metrics === null) await listed;
     try {
       const offset = -new Date().getTimezoneOffset();
       const each = (ago: number) =>
@@ -108,7 +114,12 @@
             // Totals of different metrics stacked would add up to nothing.
             getSeries(
               seriesQuery(
-                { ...asked, metric: m, draw: asked.more.length ? 'perSecond' : asked.draw },
+                {
+                  ...asked,
+                  metric: m,
+                  filter: filterOf(asked, m),
+                  draw: asked.more.length ? 'perSecond' : asked.draw,
+                },
                 offset,
                 ago,
               ),
@@ -439,15 +450,21 @@
     return values.length ? values.reduce((a, v) => a + v, 0) / values.length : 0;
   }
   const sort = new TableSort<'name' | 'total' | 'now' | 'average' | 'highest'>();
-  let sorted = $derived(
-    sort.apply(rows, {
+  let sorted = $derived.by(() => {
+    const all = sort.apply(rows, {
       name: (r) => r.name,
       total: (r) => r.total,
       now: (r) => r.now,
       average: (r) => r.average,
       highest: (r) => r.highest,
-    }),
-  );
+    });
+    // Several metrics' rows are sorted within each metric: their units need not compare.
+    return view.more.length
+      ? [view.metric ?? '', ...view.more].flatMap((m) =>
+          all.filter((r) => (metricOf.get(r.name) ?? view.metric) === m),
+        )
+      : all;
+  });
   let sum = $derived(rows.reduce((a, r) => a + r.total, 0));
 </script>
 

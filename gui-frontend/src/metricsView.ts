@@ -68,6 +68,16 @@ export function toHash(v: MetricsView): string {
   return `#/status/metrics?${params(v)}`;
 }
 
+/** The filters that narrow a metric carrying `labels`: those by worker group, which every series has, or by a label
+ * it carries. A filter by a label only another metric drawn beside it carries would leave it with nothing. Not yet
+ * knowing its labels, it takes them all. */
+export function filtersFor(
+  filter: [string, string][],
+  labels: Record<string, unknown> | undefined,
+): [string, string][] {
+  return filter.filter(([label]) => !labels || label === 'group' || label in labels);
+}
+
 /** A week, in minutes: how far back the comparison line reads. */
 export const WEEK_MINUTES = 7 * 24 * 60;
 

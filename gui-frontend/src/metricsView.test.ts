@@ -3,6 +3,7 @@ import {
   DEFAULT_VIEW,
   alongside,
   described,
+  filtersFor,
   fold,
   laidOn,
   onGrid,
@@ -26,6 +27,16 @@ describe('metricsView', () => {
     };
     const hash = toHash(view);
     expect(viewFromParams(new URLSearchParams(hash.split('?')[1]))).toEqual(view);
+  });
+
+  it('narrows each metric only by the filters whose label it carries, and by its group', () => {
+    const filter: [string, string][] = [
+      ['group', 'east'],
+      ['source', 'orders'],
+    ];
+    expect(filtersFor(filter, { destination: ['splunk'] })).toEqual([['group', 'east']]);
+    expect(filtersFor(filter, { source: ['orders'] })).toEqual(filter);
+    expect(filtersFor(filter, undefined)).toEqual(filter);
   });
 
   it('reads a bare hash as the default view, and drops what it cannot read', () => {
