@@ -969,7 +969,7 @@ export class DemoLeader {
 
   private seriesStore: Promise<SeriesStore | undefined> | undefined;
 
-  /** The leader's series reads, asked of every point the fleet stored, moved to now by whole ten-second buckets. */
+  /** The leader's series reads, asked of every point the fleet stored, moved to now. */
   private async series(url: URL): Promise<Answer> {
     this.seriesStore ??= this.part(SERIES_PART).then(
       (part) => part && new SeriesStore((part as SeriesPart).series),
@@ -978,8 +978,7 @@ export class DemoLeader {
     if (!store) return NOT_RECORDED;
     if (url.pathname === '/api/series/metrics') return ok({ metrics: store.metrics() });
     const now = this.now();
-    const shift = Math.round((now - this.recording.recordedAt) / 10_000) * 10_000;
-    const answer = store.answer(url.searchParams, now, shift);
+    const answer = store.answer(url.searchParams, now, store.shiftTo(now));
     return typeof answer === 'string' ? refused(400, [bareError(answer)]) : ok({ ...answer });
   }
 

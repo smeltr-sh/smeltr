@@ -93,8 +93,18 @@ const valueOf = (labels: [string, string][], name: string) => labels.find(([k]) 
 export class SeriesStore {
   private readonly byMetric = new Map<string, StoredSeries[]>();
 
+  /** The newest ten-second bucket stored, which was still filling when the points were read. */
+  private readonly newest: number = 0;
+
   constructor(series: StoredSeries[]) {
     for (const s of series) {
+      for (const [code, gaps] of s.tiers) {
+        if (code === TIERS[0].code)
+          this.newest = Math.max(
+            this.newest,
+            gaps.reduce((a, b) => a + b, 0),
+          );
+      }
       const of = this.byMetric.get(s.metric) ?? [];
       of.push(s);
       this.byMetric.set(s.metric, of);
@@ -123,6 +133,12 @@ export class SeriesStore {
         ),
       };
     });
+  }
+
+  /** How far to move every point so the newest bucket stored, which was still filling, is the one filling at
+   * `nowMs`: the last bucket a chart draws, the one before it, is then whole. */
+  shiftTo(nowMs: number): number {
+    return floorTo(nowMs, TIERS[0].bucket) - this.newest;
   }
 
   /** `query::answer` for the query `q` holds, at `nowMs`, with every point moved `shiftMs` later: the answer, or why
