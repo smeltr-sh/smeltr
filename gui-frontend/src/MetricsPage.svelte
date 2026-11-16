@@ -40,7 +40,6 @@
     toneOf,
     unitOf,
     type Mark,
-    filtersFor,
     type Drawn,
     type MetricsView,
   } from './metricsView';
@@ -78,39 +77,30 @@
       .catch((e: Error) => (failed = e.message));
   }
 
-  let metric = $derived(metrics?.find((m) => m.name === view.metric) ?? null);
+  const stored = (name: string) => metrics?.find((m) => m.name === name);
+  /** The first metric, whose unit is the left axis's, and whose labels the filters and the split offer. */
+  let metric = $derived(stored(view.metrics[0]) ?? null);
 
-  const filterOf = (v: MetricsView, m: string) =>
-    filtersFor(v.filter, metrics?.find((s) => s.name === m)?.labels);
-
-  /** The metrics `v` draws: its first, and each of the others that fits beside those before it, so a link that asks
+  /** The metrics `v` draws: its first, and each after it that fits beside those kept before it, so a link that asks
    * for a third unit or a gauge beside counters draws what can be drawn. */
   function drawnOf(v: MetricsView): string[] {
-    const kept: StoredMetricDto[] = [];
-    const first = v.metric ?? '';
-    for (const name of v.more) {
-      const m = metrics?.find((s) => s.name === name);
-      const before = [
-        metrics?.find((s) => s.name === first) ?? { name: first, counter: true },
-        ...kept,
-      ];
-      if (m && fitsBeside(m, before)) kept.push(m);
+    const kept: { name: string; counter: boolean }[] = [];
+    for (const name of v.metrics) {
+      const m = kept.length ? stored(name) : (stored(name) ?? { name, counter: true });
+      if (m && fitsBeside(m, kept)) kept.push(m);
     }
-    return [first, ...kept.map((m) => m.name)];
+    return kept.map((m) => m.name);
   }
+  let charted = $derived(drawnOf(view));
 
   /** Which metric each drawn series is of, by its name. */
   let metricOf = $state(new Map<string, string>());
-  /** Several metrics' answers as one: each series named for its metric, and its split value after it. */
+  /** The metrics' answers as one: beside another, each series is named for its metric, and its split value after it. */
   function together(answers: SeriesAnswerDto[]): SeriesAnswerDto {
-    if (answers.length === 1) {
-      metricOf = new Map(answers[0].series.map((s) => [s.name, answers[0].metric]));
-      return answers[0];
-    }
     const of = new Map<string, string>();
     const series = answers.flatMap((a) =>
       a.series.map((s) => {
-        const name = s.name ? `${a.metric} · ${s.name}` : a.metric;
+        const name = answers.length === 1 ? s.name : s.name ? `${a.metric} · ${s.name}` : a.metric;
         of.set(name, a.metric);
         return { ...s, name };
       }),
@@ -129,19 +119,7 @@
       const each = (ago: number) =>
         Promise.all(
           drawnOf(asked).map((m) =>
-            // Totals of different metrics stacked would add up to nothing.
-            getSeries(
-              seriesQuery(
-                {
-                  ...asked,
-                  metric: m,
-                  filter: filterOf(asked, m),
-                  draw: asked.more.length ? 'perSecond' : asked.draw,
-                },
-                offset,
-                ago,
-              ),
-            ),
+            getSeries(seriesQuery(asked, m, offset, ago, stored(m)?.labels)),
           ),
         ).then(together);
       const [got, then, marks] = await Promise.all([
@@ -245,9 +223,9 @@
   // -- the question -------------------------------------------------------------------------------------------------
 
   let picking = $state(false);
-  /** Which metric the open list picks: 0 the first, k the k-th of `more`, or a new one. */
-  let pickingFor = $state<number | 'new'>(0);
-  function pick(at: number | 'new') {
+  /** Which of the view's metrics the open list picks, or `metrics.length` for one more. */
+  let pickingFor = $state(0);
+  function pick(at: number) {
     picking = !(picking && pickingFor === at);
     pickingFor = at;
   }
@@ -255,13 +233,10 @@
   /** The metrics, in the website's reference groups, narrowed by `search`. */
   let groups = $derived.by(() => {
     const by = new Map<string, { m: StoredMetricDto; what: string }[]>();
-    // Adding or changing a metric beside others offers only those that fit beside them.
-    const shownNow = [view.metric ?? '', ...view.more];
-    const others = shownNow
-      .filter((_, i) => (pickingFor === 'new' ? true : i !== pickingFor))
-      .flatMap((n) => metrics?.find((s) => s.name === n) ?? []);
+    // Beside others, the list offers only the metrics that fit beside them.
+    const others = view.metrics.filter((_, i) => i !== pickingFor).flatMap((n) => stored(n) ?? []);
     for (const m of metrics ?? []) {
-      if (view.more.length + (pickingFor === 'new' ? 1 : 0) && !fitsBeside(m, others)) continue;
+      if (!fitsBeside(m, others)) continue;
       const { group, what } = described(m.name, Object.keys(m.labels));
       if (search && !`${m.name} ${what}`.toLowerCase().includes(search.toLowerCase())) continue;
       by.set(group, [...(by.get(group) ?? []), { m, what }]);
@@ -271,17 +246,15 @@
   function choose(m: StoredMetricDto) {
     picking = false;
     search = '';
-    if (pickingFor !== 0) {
-      const more = [...view.more];
-      if (pickingFor === 'new') more.push(m.name);
-      else more[pickingFor - 1] = m.name;
-      go({ more, draw: 'perSecond' });
-      return;
-    }
-    // A split or filter by a label the new metric lacks would empty the chart.
-    const has = (label: string) => label in m.labels;
+    const names =
+      pickingFor === view.metrics.length
+        ? [...view.metrics, m.name]
+        : view.metrics.with(pickingFor, m.name);
+    const chosen = names.flatMap((n) => (n === m.name ? [m] : (stored(n) ?? [])));
+    // A split or filter by a label none of the metrics carries would empty the chart.
+    const has = (label: string) => label === GROUP || chosen.some((c) => label in c.labels);
     go({
-      metric: m.name,
+      metrics: names,
       by: has(view.by) ? view.by : '',
       filter: view.filter.filter(([label]) => has(label)),
       draw: m.counter ? view.draw : 'perSecond',
@@ -325,7 +298,7 @@
   );
   let all = $derived(answer ? onGrid(answer, count) : []);
   /** A series in another unit than the first metric's is drawn against the right-hand axis. */
-  const onRight = (name: string) => unitOf(metricOf.get(name) ?? view.metric ?? '') !== unit;
+  const onRight = (name: string) => unitOf(metricOf.get(name) ?? '') !== unit;
   let shown = $derived.by(() => {
     const left = all.filter((s) => !onRight(s.name));
     const right = all.filter((s) => onRight(s.name));
@@ -337,25 +310,48 @@
     const r = rank(fold(right, view.top), l.length).map((s) => ({ ...s, right: true }));
     return [...l, ...r];
   });
-  let rightUnit = $derived(
-    shown.find((s) => s.right)
-      ? unitOf(metricOf.get(shown.find((s) => s.right)!.name) ?? '')
-      : null,
-  );
-  let rightScale = $derived(
-    rightUnit === 'bytes'
-      ? byteUnit(
-          Math.max(0, ...shown.filter((s) => s.right).flatMap((s) => s.points.map((v) => v ?? 0))),
-        )
-      : { unit: rightUnit === 'seconds' ? 's' : (rightUnit ?? ''), size: 1 },
-  );
-  function amountIn(u: string | null, value: number): string {
+  /** `value` in unit `u`, plain. */
+  function amountIn(u: string, value: number): string {
     if (u === 'bytes') return bytes(value);
     if (u === 'seconds') return `${value.toFixed(value < 10 ? 2 : 0)} s`;
     return value >= 100 || Number.isInteger(value)
       ? Math.round(value).toLocaleString()
       : value.toFixed(2);
   }
+  /** The axis `series` are drawn against, in unit `u`: what a drawn value is divided by, what the axis is labelled,
+   * and how a drawn value reads. */
+  function axisOf(u: string, series: Drawn[]) {
+    const peak = Math.max(
+      0,
+      ...(totals
+        ? Array.from({ length: count }, (_, i) =>
+            series.reduce((a, s) => a + (s.points[i] ?? 0), 0),
+          )
+        : series.flatMap((s) => s.points.map((v) => v ?? 0))),
+    );
+    const scale = u === 'bytes' ? byteUnit(peak) : { unit: u === 'seconds' ? 's' : u, size: 1 };
+    const rated = answer?.counter && !totals;
+    return {
+      size: scale.size,
+      label: !answer?.counter
+        ? scale.unit
+        : totals
+          ? `${scale.unit || 'count'} per ${barWord}`
+          : `${scale.unit || 'count'}/s`,
+      format: (v: number) => `${amountIn(u, v * scale.size)}${rated ? '/s' : ''}`,
+    };
+  }
+  let leftAxis = $derived(
+    axisOf(
+      unit,
+      shown.filter((s) => !s.right),
+    ),
+  );
+  let rightAxis = $derived.by(() => {
+    const right = shown.filter((s) => s.right);
+    return right.length ? axisOf(unitOf(metricOf.get(right[0].name) ?? ''), right) : null;
+  });
+  const sizeOf = (s: Drawn | undefined) => (s?.right ? rightAxis!.size : leftAxis.size);
   let previous = $derived(
     before && view.weekBefore
       ? // Each axis's Other adds up only what that axis left out.
@@ -385,39 +381,14 @@
           .filter((m) => m.i >= 0 && m.i < count && (m.end === undefined || m.end >= 0))
       : null,
   );
-  let unit = $derived(unitOf(view.metric ?? ''));
+  let unit = $derived(unitOf(view.metrics[0]));
   let windowLabel = $derived(
     FLOW_WINDOWS.find((w) => w.minutes === view.windowMinutes)?.label ?? `${view.windowMinutes}m`,
   );
   let pointSeconds = $derived((answer?.pointMillis ?? 1000) / 1000);
-  let largest = $derived(
-    Math.max(
-      0,
-      ...(totals
-        ? Array.from({ length: count }, (_, i) => shown.reduce((a, s) => a + (s.points[i] ?? 0), 0))
-        : shown.filter((s) => !s.right).flatMap((s) => s.points.map((v) => v ?? 0))),
-    ),
-  );
-  let scale = $derived(
-    unit === 'bytes' ? byteUnit(largest) : { unit: unit === 'seconds' ? 's' : unit, size: 1 },
-  );
   let barWord = $derived(
     answer?.pointMillis === MINUTE ? 'minute' : answer?.pointMillis === HOUR ? 'hour' : 'day',
   );
-  let axisUnit = $derived(
-    !answer?.counter
-      ? scale.unit
-      : totals
-        ? `${scale.unit || 'count'} per ${barWord}`
-        : `${scale.unit || 'count'}/s`,
-  );
-
-  /** `value` in the metric's own unit, plain. */
-  const amount = (value: number) => amountIn(unit, value);
-  const rate = (value: number) => `${amount(value)}/s`;
-  /** A point's value as drawn: a rate per second for a counter drawn per second. */
-  const drawn = (value: number) => (answer?.counter && !totals ? rate(value) : amount(value));
-
   const startOf = (i: number) => (answer?.fromMillis ?? 0) + i * (answer?.pointMillis ?? 0);
   const day = (t: number, o: Intl.DateTimeFormatOptions) =>
     new Date(t).toLocaleDateString('en-GB', o);
@@ -455,19 +426,14 @@
 
   /** Each series' row: a counter's total and its rate, or a gauge's latest, average and highest. */
   let rows = $derived(
-    all.map((s, rank) => {
+    all.map((s) => {
       const values = s.points.filter((v): v is number => v !== null);
       const total = totals ? s.total : s.total * pointSeconds;
       return {
         name: s.name,
-        tone: toneOf(
-          view.more.length
-            ? (shown.find((d) => d.name === s.name)?.slot ?? null)
-            : rank < view.top || all.length <= view.top
-              ? rank
-              : null,
-        ),
-        u: unitOf(metricOf.get(s.name) ?? view.metric ?? ''),
+        // A series folded into Other has no slot of its own, so it takes Other's tone.
+        tone: toneOf(shown.find((d) => d.name === s.name)?.slot ?? null),
+        u: unitOf(metricOf.get(s.name) ?? ''),
         total,
         average: answer?.counter ? total / Math.max(1, count * pointSeconds) : average(values),
         highest: values.length
@@ -489,12 +455,8 @@
       average: (r) => r.average,
       highest: (r) => r.highest,
     });
-    // Several metrics' rows are sorted within each metric: their units need not compare.
-    return view.more.length
-      ? [view.metric ?? '', ...view.more].flatMap((m) =>
-          all.filter((r) => (metricOf.get(r.name) ?? view.metric) === m),
-        )
-      : all;
+    // Each metric's rows are sorted among themselves: different metrics' units need not compare.
+    return charted.flatMap((m) => all.filter((r) => metricOf.get(r.name) === m));
   });
   let sum = $derived(rows.reduce((a, r) => a + r.total, 0));
 </script>
@@ -539,26 +501,18 @@
     <MetricsChart
       series={shown.map((s) => ({
         ...s,
-        points: s.points.map((v) =>
-          v === null ? null : v / (s.right ? rightScale.size : scale.size),
-        ),
+        points: s.points.map((v) => (v === null ? null : v / sizeOf(s))),
       }))}
-      right={rightUnit === null
-        ? null
-        : {
-            unit: `${rightScale.unit || 'count'}/s`,
-            format: (v: number) => `${amountIn(rightUnit, v * rightScale.size)}/s`,
-          }}
+      right={rightAxis && { unit: rightAxis.label, format: rightAxis.format }}
       bars={totals}
       {ticks}
-      unit={axisUnit}
+      unit={leftAxis.label}
       {at}
-      format={(v) => drawn(v * scale.size)}
-      previous={previous?.map((p, k) =>
-        p.map((v) => (v === null ? null : v / (shown[k]?.right ? rightScale.size : scale.size))),
-      ) ?? null}
+      format={leftAxis.format}
+      previous={previous?.map((p, k) => p.map((v) => (v === null ? null : v / sizeOf(shown[k])))) ??
+        null}
       {marks}
-      label="{view.metric}{view.by
+      label="{view.metrics.join(', ')}{view.by
         ? `, by ${labelName(view.by).toLowerCase()}`
         : ''}, over the chosen window"
     />
@@ -568,7 +522,7 @@
 {#if inline}
   <figure class="inline" aria-label="Metric">
     <figcaption>
-      <span class="mono">{view.metric}</span>
+      <span class="mono">{view.metrics.join(', ')}</span>
       {#each view.filter as [label, value] (label + value)}
         <span class="chip"
           ><span class="dim">{labelName(label).toLowerCase()}</span>
@@ -595,34 +549,27 @@
     <section class="panel" aria-label="Metric">
       <div class="ask">
         <div class="picker">
-          <button
-            type="button"
-            class="metric-btn"
-            aria-haspopup="listbox"
-            aria-expanded={picking && pickingFor === 0}
-            onclick={() => pick(0)}
-            ><span class="mono">{view.metric}</span><span class="caret" aria-hidden="true">▾</span
-            ></button
-          >
-          {#each view.more as m, k (k)}
-            <span class="more"
+          {#each view.metrics as m, k (k)}
+            <span class="pick"
               ><button
                 type="button"
                 class="metric-btn"
                 aria-haspopup="listbox"
-                aria-expanded={picking && pickingFor === k + 1}
-                onclick={() => pick(k + 1)}
+                aria-expanded={picking && pickingFor === k}
+                onclick={() => pick(k)}
                 ><span class="mono">{m}</span><span class="caret" aria-hidden="true">▾</span
                 ></button
-              ><button
-                type="button"
-                class="drop"
-                aria-label="Remove metric {m}"
-                onclick={() => go({ more: view.more.filter((_, j) => j !== k) })}>×</button
-              ></span
+              >{#if view.metrics.length > 1}<button
+                  type="button"
+                  class="drop"
+                  aria-label="Remove metric {m}"
+                  onclick={() => go({ metrics: view.metrics.filter((_, j) => j !== k) })}>×</button
+                >{/if}</span
             >
           {/each}
-          <button type="button" class="chip add" onclick={() => pick('new')}>+ Metric</button>
+          <button type="button" class="chip add" onclick={() => pick(view.metrics.length)}
+            >+ Metric</button
+          >
           {#if picking}
             <div class="pop">
               <!-- svelte-ignore a11y_autofocus -->
@@ -634,7 +581,7 @@
                     <button
                       type="button"
                       role="option"
-                      aria-selected={m.name === view.metric}
+                      aria-selected={m.name === view.metrics[pickingFor]}
                       class="pop-item"
                       onclick={() => choose(m)}
                       ><span class="mono">{m.name}</span><span class="what">{what}</span></button
@@ -704,7 +651,7 @@
         {/if}
 
         <div class="controls">
-          {#if (metric?.counter ?? true) && !view.more.length}
+          {#if (metric?.counter ?? true) && view.metrics.length === 1}
             <Segmented
               label="Draw"
               options={[
@@ -761,16 +708,17 @@
                     <td class="num">{amountIn(r.u, r.average)}/s</td>
                     <td class="num">{amountIn(r.u, r.highest)}/s</td>
                   {:else}
-                    <td class="num">{amount(r.now)}</td>
-                    <td class="num">{amount(r.average)}</td>
-                    <td class="num">{amount(r.highest)}</td>
+                    <td class="num">{amountIn(r.u, r.now)}</td>
+                    <td class="num">{amountIn(r.u, r.average)}</td>
+                    <td class="num">{amountIn(r.u, r.highest)}</td>
                   {/if}
                 </tr>
               {/each}
             </tbody>
-            {#if answer.counter && rows.length > 1 && !view.more.length}
+            {#if answer.counter && rows.length > 1 && charted.length === 1}
               <tfoot
-                ><tr><td>Total</td><td class="num">{amount(sum)}</td><td></td><td></td></tr></tfoot
+                ><tr><td>Total</td><td class="num">{amountIn(unit, sum)}</td><td></td><td></td></tr
+                ></tfoot
               >
             {/if}
           </table>
@@ -827,7 +775,7 @@
     align-items: center;
   }
 
-  .more {
+  .pick {
     display: inline-flex;
     align-items: center;
   }

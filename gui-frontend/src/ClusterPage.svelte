@@ -284,7 +284,7 @@
     // On UTC's clock, as `/api/flow` totals the table, so a row's total is its chart's.
     const read = (metric: string, filter: [string, string][]) =>
       getSeries(
-        seriesQuery({ ...DEFAULT_VIEW, metric, filter, windowMinutes: ask.windowMinutes }, 0),
+        seriesQuery({ ...DEFAULT_VIEW, filter, windowMinutes: ask.windowMinutes }, metric, 0),
       );
     Promise.all([
       ...ask.metrics.map((metric) => read(metric, ask.filter)),

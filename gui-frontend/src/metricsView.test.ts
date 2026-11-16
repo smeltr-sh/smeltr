@@ -18,8 +18,7 @@ describe('metricsView', () => {
   it('rides the hash and back', () => {
     const view = {
       ...DEFAULT_VIEW,
-      metric: 'smeltr_bytes_polled_total',
-      more: ['smeltr_rows_polled_total'],
+      metrics: ['smeltr_bytes_polled_total', 'smeltr_rows_polled_total'],
       filter: [['group', 'east']] as [string, string][],
       by: 'source',
       windowMinutes: 1440,
@@ -54,7 +53,7 @@ describe('metricsView', () => {
 
   it('reads a repeated metric in a link once', () => {
     const v = viewFromParams(new URLSearchParams('metric=a&metric=b&metric=a&metric=b'));
-    expect([v.metric, ...v.more]).toEqual(['a', 'b']);
+    expect(v.metrics).toEqual(['a', 'b']);
   });
 
   it('reads a bare hash as the default view, and drops what it cannot read', () => {

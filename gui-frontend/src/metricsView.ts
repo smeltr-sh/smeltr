@@ -4,9 +4,8 @@ import catalog from '../../website/src/lib/metrics.json';
 import type { SeriesAnswerDto, SeriesDraw } from './api';
 
 export type MetricsView = {
-  metric?: string;
-  /** Further metrics drawn on the same chart, each split and filtered alike. */
-  more: string[];
+  /** Drawn on one chart, each split and filtered alike; at least one. */
+  metrics: string[];
   filter: [string, string][];
   by: string;
   windowMinutes: number;
@@ -20,8 +19,7 @@ export type MetricsView = {
 };
 
 export const DEFAULT_VIEW: MetricsView = {
-  metric: 'smeltr_rows_polled_total',
-  more: [],
+  metrics: ['smeltr_rows_polled_total'],
   filter: [],
   by: '',
   windowMinutes: 60,
@@ -34,11 +32,9 @@ export const DEFAULT_VIEW: MetricsView = {
 export function viewFromParams(params: URLSearchParams): MetricsView {
   const minutes = Number(params.get('windowMinutes'));
   const top = Number(params.get('top'));
+  const named = [...new Set(params.getAll('metric').filter(Boolean))];
   return {
-    metric: params.get('metric') || DEFAULT_VIEW.metric,
-    more: [...new Set(params.getAll('metric').slice(1))].filter(
-      (m) => m && m !== (params.get('metric') || DEFAULT_VIEW.metric),
-    ),
+    metrics: named.length ? named : DEFAULT_VIEW.metrics,
     filter: (params.get('filter') ?? '')
       .split(',')
       .map((pair) => pair.split(':'))
@@ -54,8 +50,7 @@ export function viewFromParams(params: URLSearchParams): MetricsView {
 
 function params(v: MetricsView): URLSearchParams {
   const q = new URLSearchParams();
-  if (v.metric) q.set('metric', v.metric);
-  for (const m of v.more) q.append('metric', m);
+  for (const m of v.metrics) q.append('metric', m);
   if (v.filter.length) q.set('filter', v.filter.map(([k, value]) => `${k}:${value}`).join(','));
   if (v.by) q.set('by', v.by);
   q.set('windowMinutes', String(v.windowMinutes));
@@ -94,15 +89,25 @@ export function fitsBeside(
 /** A week, in minutes: how far back the comparison line reads. */
 export const WEEK_MINUTES = 7 * 24 * 60;
 
-/** The query `GET /api/series` takes for `v`, with the reader's clock, so hours and days start where theirs do, and
- * its window ending `agoMinutes` before now. */
-export function seriesQuery(v: MetricsView, utcOffsetMinutes: number, agoMinutes = 0): string {
+/** The query `GET /api/series` takes for `metric` as `v` draws it: with the filters whose label it carries
+ * (`labels`; all of them while those are unknown), the reader's clock, so hours and days start where theirs do, and
+ * its window ending `agoMinutes` before now. Beside other metrics it is drawn per second: totals of different
+ * metrics stacked would add up to nothing. */
+export function seriesQuery(
+  v: MetricsView,
+  metric: string,
+  utcOffsetMinutes: number,
+  agoMinutes = 0,
+  labels?: Record<string, unknown>,
+): string {
   const q = new URLSearchParams({
-    metric: v.metric ?? '',
-    filter: v.filter.map(([k, value]) => `${k}:${value}`).join(','),
+    metric,
+    filter: filtersFor(v.filter, labels)
+      .map(([k, value]) => `${k}:${value}`)
+      .join(','),
     by: v.by,
     windowMinutes: String(v.windowMinutes),
-    draw: v.draw,
+    draw: v.metrics.length > 1 ? 'perSecond' : v.draw,
     utcOffsetMinutes: String(utcOffsetMinutes),
   });
   if (agoMinutes) q.set('agoMinutes', String(agoMinutes));
