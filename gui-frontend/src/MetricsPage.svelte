@@ -16,15 +16,14 @@
   import { clockTime } from './time';
   import { getSeries, getSeriesMetrics, type SeriesAnswerDto, type StoredMetricDto } from './api';
   import {
-    TOPS,
     described,
     fold,
     onGrid,
     seriesQuery,
     toHash,
+    toneOf,
     unitOf,
     type MetricsView,
-    type Top,
   } from './metricsView';
 
   let { view }: { view: MetricsView } = $props();
@@ -217,7 +216,7 @@
       const total = totals ? s.total : s.total * pointSeconds;
       return {
         name: s.name,
-        tone: rank < view.top || all.length <= view.top ? `series-${rank}` : 'series-other',
+        tone: toneOf(rank < view.top || all.length <= view.top ? rank : null),
         total,
         average: answer?.counter ? total / Math.max(1, count * pointSeconds) : average(values),
         highest: values.length
@@ -328,12 +327,21 @@
       >
 
       <div class="controls">
-        {#if all.length > TOPS[0]}
-          <Segmented
-            label="Show"
-            options={TOPS.map((t) => ({ value: String(t), label: `Top ${t}` }))}
-            bind:value={() => String(view.top), (v) => go({ top: Number(v) as Top })}
-          />
+        {#if all.length > 1}
+          <label class="split"
+            ><span class="dim">Top</span>
+            <input
+              class="top"
+              type="number"
+              min="1"
+              step="1"
+              value={view.top}
+              onchange={(e) => {
+                const top = e.currentTarget.valueAsNumber;
+                if (Number.isInteger(top) && top > 0) go({ top });
+              }}
+            /></label
+          >
         {/if}
         {#if metric?.counter ?? true}
           <Segmented
@@ -366,9 +374,7 @@
         <ul class="legend">
           {#each shown as s (s.name)}
             <li>
-              <span class="swatch series-{s.slot ?? 'other'}"></span><span class="mono"
-                >{s.name}</span
-              >
+              <span class="swatch {toneOf(s.slot)}"></span><span class="mono">{s.name}</span>
             </li>
           {/each}
         </ul>
@@ -573,6 +579,10 @@
     display: inline-flex;
     gap: 0.4rem;
     align-items: center;
+  }
+
+  .top {
+    width: 4.5rem;
   }
 
   .dim,

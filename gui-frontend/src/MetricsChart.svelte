@@ -1,14 +1,14 @@
 <!--
   Several series on one axis: a line each, or as bars, stacked, each bar what that minute, hour or day added up to.
-  The colors are the categorical palette's, in rank order (`metricsView.ts`, `fold`); a series past them is Other,
-  in a neutral that is no series' hue.
+  The colors are the categorical palette's, in rank order (`metricsView.ts`, `toneOf`); the series folded into Other
+  is drawn in a neutral that is no series' hue.
 
   The svg is sized from its measured width, so one user unit is one pixel and the pointer reads straight across
   (`FlowChart.svelte` says why).
 -->
 <script lang="ts">
   import { axisLabel, axisStep, axisTop, axisValues } from './flowChart';
-  import type { Drawn } from './metricsView';
+  import { toneOf, type Drawn } from './metricsView';
 
   let {
     series,
@@ -57,7 +57,7 @@
   let slotW = $derived(count > 0 ? plotW / count : 0);
   const xLine = (i: number) => gutter + (count > 1 ? (i * plotW) / (count - 1) : plotW / 2);
   const xBar = (i: number) => gutter + i * slotW;
-  const tone = (s: Drawn) => `series-${s.slot ?? 'other'}`;
+  const tone = (s: Drawn) => toneOf(s.slot);
 
   /** A line through `points`, broken where one is missing: a gap is missing history, not zero. */
   function path(points: (number | null)[]): string {

@@ -399,7 +399,11 @@ test('the Metrics page charts any stored metric, split by a label, as a rate or 
   await fleet.startWorker(leader, api, 'east', 'east-1');
   await fleet.startWorker(leader, api, 'west', 'west-1');
 
-  await goto(admin, leader, '#/status/metrics?metric=smeltr_rows_polled_total&by=group&windowMinutes=15');
+  await goto(
+    admin,
+    leader,
+    '#/status/metrics?metric=smeltr_rows_polled_total&by=group&windowMinutes=15',
+  );
   const panel = admin.getByRole('region', { name: 'Metric' });
   const table = panel.getByRole('table');
   // A reading lands a ten-second bucket at a time, and the page asks again as often.
@@ -407,6 +411,12 @@ test('the Metrics page charts any stored metric, split by a label, as a rate or 
   await expect(table.getByRole('row', { name: /^west\b/ })).toBeVisible();
   await expect(panel.getByText('rows/s', { exact: true })).toBeVisible();
   await shoot(admin, panel, 'metrics-by-group');
+
+  // However many the reader asks for are drawn on their own, and the rest add up to Other.
+  await panel.getByRole('spinbutton', { name: 'Top' }).fill('1');
+  await panel.getByRole('spinbutton', { name: 'Top' }).press('Enter');
+  await expect(admin).toHaveURL(/top=1\b/);
+  await expect(panel.getByRole('listitem').filter({ hasText: /^Other$/ })).toBeVisible();
 
   // Narrowed to one group, the other's row goes, and the view is in the address to hand on.
   await panel.getByRole('button', { name: '+ Filter' }).click();

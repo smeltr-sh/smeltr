@@ -3,16 +3,14 @@
 import catalog from '../../website/src/lib/metrics.json';
 import type { SeriesAnswerDto, SeriesDraw } from './api';
 
-export type Top = 3 | 5 | 7;
-export const TOPS: Top[] = [3, 5, 7];
-
 export type MetricsView = {
   metric?: string;
   filter: [string, string][];
   by: string;
   windowMinutes: number;
   draw: SeriesDraw;
-  top: Top;
+  /** How many of the busiest series are drawn on their own; the rest add up to Other. */
+  top: number;
 };
 
 export const DEFAULT_VIEW: MetricsView = {
@@ -36,7 +34,7 @@ export function viewFromParams(params: URLSearchParams): MetricsView {
     by: params.get('by') ?? '',
     windowMinutes: Number.isFinite(minutes) && minutes > 0 ? minutes : DEFAULT_VIEW.windowMinutes,
     draw: params.get('draw') === 'totals' ? 'totals' : 'perSecond',
-    top: (TOPS as number[]).includes(top) ? (top as Top) : DEFAULT_VIEW.top,
+    top: Number.isInteger(top) && top > 0 ? top : DEFAULT_VIEW.top,
   };
 }
 
@@ -84,6 +82,15 @@ export function unitOf(name: string): 'bytes' | 'seconds' | 'rows' | '' {
   return '';
 }
 
+/** The categorical palette's colors, `--series-0` on (`App.svelte`). */
+const PALETTE = 7;
+
+/** The color class of the series at `slot`: past the palette the colors come round again, and the legend and the
+ * table, which name each series, tell two of one color apart. */
+export function toneOf(slot: number | null): string {
+  return slot === null ? 'series-other' : `series-${slot % PALETTE}`;
+}
+
 export type Drawn = {
   name: string;
   /** Its color, by rank; `null` for the series folded into Other. */
@@ -114,7 +121,7 @@ export function onGrid(answer: SeriesAnswerDto, count: number): Drawn[] {
 }
 
 /** The `top` busiest of `all` and, when there are more, one Other that adds the rest up. */
-export function fold(all: Drawn[], top: Top): Drawn[] {
+export function fold(all: Drawn[], top: number): Drawn[] {
   if (all.length <= top) return all;
   const rest = all.slice(top);
   const count = rest[0].points.length;

@@ -5,6 +5,7 @@ import {
   fold,
   onGrid,
   toHash,
+  toneOf,
   unitOf,
   viewFromParams,
 } from './metricsView';
@@ -18,7 +19,7 @@ describe('metricsView', () => {
       by: 'source',
       windowMinutes: 1440,
       draw: 'totals' as const,
-      top: 3 as const,
+      top: 30,
     };
     const hash = toHash(view);
     expect(viewFromParams(new URLSearchParams(hash.split('?')[1]))).toEqual(view);
@@ -26,9 +27,19 @@ describe('metricsView', () => {
 
   it('reads a bare hash as the default view, and drops what it cannot read', () => {
     expect(viewFromParams(new URLSearchParams(''))).toEqual(DEFAULT_VIEW);
-    expect(viewFromParams(new URLSearchParams('top=4&window=-1&filter=bad')).top).toBe(
+    expect(viewFromParams(new URLSearchParams('top=0&windowMinutes=-1&filter=bad')).top).toBe(
       DEFAULT_VIEW.top,
     );
+  });
+
+  it('brings the palette round again past its last color, and gives Other its own', () => {
+    expect([0, 6, 7, 29, null].map(toneOf)).toEqual([
+      'series-0',
+      'series-6',
+      'series-0',
+      'series-1',
+      'series-other',
+    ]);
   });
 
   it('lays sparse points on the grid, busiest first, and folds the rest into Other', () => {
