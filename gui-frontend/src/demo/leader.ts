@@ -20,6 +20,8 @@ import type {
 } from '../api';
 import { CHANGED_EVENT } from './guide';
 import { bareError } from '../errors.svelte';
+import { SERIES_PART } from './parts';
+import { SeriesStore, type SeriesPart } from './series';
 
 /** What `tools/screenshots/demo.mjs` recorded and every page reads. The rest it recorded is in parts of their own,
  * each read the first time it is asked for (`Parts`). */
@@ -71,12 +73,7 @@ const MICROS = new Set(['lockedAt']);
 export function shifted(value: unknown, deltaMs: number, key?: string): unknown {
   if (Array.isArray(value)) return value.map((v) => shifted(v, deltaMs, key));
   if (value !== null && typeof value === 'object') {
-    // A series answer names its width `pointMillis`; its points are `[millis, value]` on that grid.
-    const { bucketMillis, pointMillis } = value as {
-      bucketMillis?: unknown;
-      pointMillis?: unknown;
-    };
-    const width = bucketMillis ?? pointMillis;
+    const width = (value as { bucketMillis?: unknown }).bucketMillis;
     const delta =
       typeof width === 'number' && width > 0 && width < 1.5e12
         ? Math.round(deltaMs / width) * width
@@ -823,6 +820,7 @@ export class DemoLeader {
       if (capture) return this.captureStatus(decodeURIComponent(capture[1]));
       const records = path.match(/^\/api\/captures\/([^/]+)\/records$/);
       if (records) return this.captureRecords(decodeURIComponent(records[1]));
+      if (path === '/api/series' || path === '/api/series/metrics') return this.series(url);
       const live = this.live(url, branch);
       if (live) return live;
       return this.nearest(url);
@@ -967,6 +965,22 @@ export class DemoLeader {
     if (method === 'GET') return this.nearest(url);
     // `results` too: a test run's caller reads it whether or not the run was refused.
     return { status: 403, body: { ok: false, errors: [bareError(DEMO_REFUSAL)], results: [] } };
+  }
+
+  private seriesStore: Promise<SeriesStore | undefined> | undefined;
+
+  /** The leader's series reads, asked of every point the fleet stored, moved to now by whole ten-second buckets. */
+  private async series(url: URL): Promise<Answer> {
+    this.seriesStore ??= this.part(SERIES_PART).then(
+      (part) => part && new SeriesStore((part as SeriesPart).series),
+    );
+    const store = await this.seriesStore;
+    if (!store) return NOT_RECORDED;
+    if (url.pathname === '/api/series/metrics') return ok({ metrics: store.metrics() });
+    const now = this.now();
+    const shift = Math.round((now - this.recording.recordedAt) / 10_000) * 10_000;
+    const answer = store.answer(url.searchParams, now, shift);
+    return typeof answer === 'string' ? refused(400, [bareError(answer)]) : ok({ ...answer });
   }
 
   /** A live answer, as the fleet moved when it was recorded, round and round. The map's measurements and a node's

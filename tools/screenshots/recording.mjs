@@ -3,27 +3,24 @@
 // (`gui-frontend/src/demo/parts.js`, which the demo finds them by), under `recorded/` beside it.
 import fs from 'node:fs';
 import path from 'node:path';
-import { partFile } from '../../gui-frontend/src/demo/parts.js';
+import { SERIES_PART, partFile } from '../../gui-frontend/src/demo/parts.js';
 
 export const STATS = /^\/api\/areas\/[^/]+\/stats$/;
 /** The answers the fleet moves in, read again over a minute so the demo moves as the fleet did. */
 export const LIVE =
-  /^\/api\/(map\/measurements|areas\/[^/?]+\/stats|flow|series|cluster|workers|warnings|streams)\b/;
-/** The windows each chart opens on (`DEFAULT_CHART_RANGE` in `map.ts`, `DEFAULT_WINDOW_MINUTES` in `flow.ts`,
- * `DEFAULT_VIEW` in `metricsView.ts`). */
+  /^\/api\/(map\/measurements|areas\/[^/?]+\/stats|flow|cluster|workers|warnings|streams)\b/;
+/** The windows each chart opens on (`DEFAULT_CHART_RANGE` in `map.ts`, `DEFAULT_WINDOW_MINUTES` in `flow.ts`). */
 const OPENS_ON = [
   [STATS, '10'],
-  [/^\/api\/(flow|series)$/, '60'],
+  [/^\/api\/flow$/, '60'],
 ];
 
-/** Whether `key` is a read the visitor picks -- a chart at a window it does not open on, or a series narrowed by a
- * filter, as a row of the Status page's Totals narrows its chart -- which stands still. */
-export function picked(key) {
+/** Whether `key` is a chart's read at a window it does not open on: the visitor picks it, and it stands still. */
+export function pickedWindow(key) {
   const url = new URL(key, 'http://recording');
   const window = url.searchParams.get('windowMinutes');
   return (
-    (url.pathname === '/api/series' && !!url.searchParams.get('filter')) ||
-    (window !== null && !OPENS_ON.some(([p, opens]) => p.test(url.pathname) && opens === window))
+    window !== null && !OPENS_ON.some(([p, opens]) => p.test(url.pathname) && opens === window)
   );
 }
 
@@ -37,7 +34,7 @@ function shown(value) {
 }
 
 /** Writes `recording` to `out` and its parts beside it, replacing the parts an earlier one wrote. */
-export async function write(out, { recordedAt, answers, moving, movingAt, captures }) {
+export async function write(out, { recordedAt, answers, moving, movingAt, captures, series }) {
   const dir = path.join(path.dirname(out), 'recorded');
   fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(dir);
@@ -45,10 +42,11 @@ export async function write(out, { recordedAt, answers, moving, movingAt, captur
     fs.writeFileSync(path.join(dir, await partFile(key)), shown(value));
   const every = {};
   for (const [key, answer] of Object.entries(answers)) {
-    if (picked(key)) await part(key, answer);
+    if (pickedWindow(key)) await part(key, answer);
     else every[key] = answer;
   }
   for (const [key, pool] of Object.entries(captures)) await part(key, pool);
+  await part(SERIES_PART, series);
   fs.writeFileSync(out, shown({ recordedAt, answers: every, moving, movingAt }));
   return fs.readdirSync(dir).length;
 }
