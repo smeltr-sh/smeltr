@@ -8,10 +8,10 @@ COPY gui-frontend/package.json gui-frontend/package-lock.json ./
 RUN npm ci
 COPY gui-frontend/ ./
 # Expression fields color code with the website's tokenizer and suggest from its language reference; the palette
-# and controls are the website's too.
+# and controls are the website's too, and so is what each metric counts.
 COPY website/src/lib/highlight/ /src/website/src/lib/highlight/
 COPY website/src/lib/foundry/ /src/website/src/lib/foundry/
-COPY website/src/lib/reference.json website/src/lib/code-language.json /src/website/src/lib/
+COPY website/src/lib/reference.json website/src/lib/code-language.json website/src/lib/metrics.json /src/website/src/lib/
 RUN npm run build
 
 # ---- builder: the `smeltr` binary ------------------------------------------------------------------------------

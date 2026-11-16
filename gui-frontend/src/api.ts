@@ -4234,6 +4234,33 @@ export function getFlow(
   return readJson(`/api/flow?${q}`);
 }
 
+/** How a counter is drawn: its rate, or what each minute, hour or day added up to (`leader::query::Draw`). */
+export type SeriesDraw = 'perSecond' | 'totals';
+
+/** One series of `GET /api/series`: the subjects whose split label holds `name`, added together. */
+export type SeriesSplitDto = { name: string; points: [number, number][] };
+
+/** `GET /api/series` (`leader::query::SeriesAnswer`). */
+export type SeriesAnswerDto = {
+  metric: string;
+  counter: boolean;
+  draw: SeriesDraw;
+  pointMillis: number;
+  fromMillis: number;
+  series: SeriesSplitDto[];
+};
+
+/** One metric the leader keeps series of, each label with the values they hold (`leader::query::StoredMetric`). */
+export type StoredMetricDto = { name: string; counter: boolean; labels: Record<string, string[]> };
+
+export function getSeries(query: string): Promise<SeriesAnswerDto> {
+  return readJson(`/api/series?${query}`);
+}
+
+export async function getSeriesMetrics(): Promise<StoredMetricDto[]> {
+  return (await readJson<{ metrics: StoredMetricDto[] }>('/api/series/metrics')).metrics;
+}
+
 /** Lowers the Rows below normal warning that holds for `group`'s `source` to info until it ends. */
 export function lowerSourceRows(
   group: string,

@@ -136,9 +136,9 @@ pub fn answer(
         .into_iter()
         .find(|(metric, _, _)| *metric == query.metric)
         .map(|(_, _, counter)| counter);
-    let Some(counter) = counter else {
-        return Ok(Err(format!("no series of `{}` is stored", query.metric)));
-    };
+    // A metric nothing has reported yet is a quiet one, not a wrong question: by Prometheus's naming, a counter's
+    // name ends `_total`.
+    let counter = counter.unwrap_or_else(|| query.metric.ends_with("_total"));
     // A gauge's bars would be its highest per bar, which is what its line already draws.
     let draw = if counter { query.draw } else { Draw::PerSecond };
     let (point_ms, from_ms) = grid(draw, window_minutes, offset_ms, now_ms);
@@ -417,10 +417,15 @@ mod tests {
     }
 
     #[test]
+    fn a_metric_nothing_reported_yet_answers_empty() {
+        let quiet = ask(&store(), &asked("smeltr_commits_total"), &["east"]);
+        assert!(quiet.counter && quiet.series.is_empty());
+    }
+
+    #[test]
     fn what_cannot_be_asked_says_why() {
         let store = store();
         let refused = |query: SeriesQuery| answer(&store, &query, |_| true, NOON).unwrap().unwrap_err();
-        assert!(refused(asked("smeltr_nothing_total")).contains("no series"));
         assert!(
             refused(SeriesQuery {
                 filter: "source".into(),

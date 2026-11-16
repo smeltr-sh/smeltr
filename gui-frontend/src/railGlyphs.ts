@@ -13,6 +13,8 @@ export const RAIL_GLYPHS: Record<string, Glyph> = {
   },
   // smeltr's own logs, the same droplet the map draws for them.
   Logs: SYSTEM_GLYPHS.logs,
+  // The droplet smeltr's own metrics leave by on the map.
+  Metrics: SYSTEM_GLYPHS.metrics,
   // Leaving an edge: where rows enter the fleet.
   Sources: { d: 'M8 12 H15 V52 H8 Z M20 29 H42 V18 L58 32 L42 46 V35 H20 Z' },
   // An arrow through a block: rows worked on inside it.
