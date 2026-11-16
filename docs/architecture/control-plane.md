@@ -357,8 +357,9 @@ and a split is kept only where it predicted each of the last four weeks, held
 out in turn, better than no split did. A window that reaches into the day
 before, as a Monday's 24 hours reach into Sunday, is learned only from windows
 on days whose day before was of the same kind as that day before. For an office,
-a Monday learns from Mondays. A source's days are told apart once it has four
-weeks of history, and its kinds are learned again each day. A watched sender's
+a Monday learns from Mondays. A source is judged once it has a week of rows, so
+its first weekend is learned before it can warn, and its days are told apart
+once it has four weeks. Its kinds are learned again each day. A watched sender's
 days are told apart the same way, from its own rows.
 
 A source's preset sets how soon a drop warns against how often a brief dip does:
@@ -396,7 +397,7 @@ outage: the warning turns into info until it ends, stays on the Issues page for
 everyone, and is not learned. Normal marks it normal: the warning turns into
 info and is learned whole. A warning nobody marked stays a warning, and is not
 learned. Reset history forgets what the source read before now, so it has no
-normal until it has enough history again. The source's History tab on the Map
+normal until it has a week of rows again. The source's History tab on the Map
 charts its rows against its range. It lists the source's warnings of the past
 year, including the one that is up, each opening on the rows around it, and the
 source's longest quiet spells, each shown Normal when it is learned and Outage
@@ -436,7 +437,7 @@ its cap of values on a worker. The pick reads the last two weeks of day rows. A
 watched sender keeps its rows from the day it is picked, in day rows kept for
 the four weeks its normal is learned from. A value the pick stops watching loses
 its rows, and its day rows once no pick reads them. A newly watched sender is
-judged once it has three days of rows.
+judged once it has a week of rows.
 
 A watched sender is judged at the four widths, below normal only and never by
 the gap, at the preset picked for its source's senders. That preset is Quiet
