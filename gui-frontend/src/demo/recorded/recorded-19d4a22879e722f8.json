@@ -1,1 +1,1 @@
-{"batches":[]}
+{"batches":[{"columns":[{"name":"__capture.timestamp","type":"datetime"},{"name":"__capture.destination","type":"str"},{"name":"__capture.group","type":"str"},{"name":"__capture.config","type":"str"},{"name":"__capture.failed","type":"array<{worker: str, reason: str}>"}],"rows":[]}]}

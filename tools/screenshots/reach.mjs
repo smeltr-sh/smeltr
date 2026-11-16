@@ -7,6 +7,8 @@
  * moves the link, so each range is a page too, and is opened before its choices show. */
 const SEGMENTED = '.seg[role=group] button:not(:disabled)';
 const OPENED = [{ face: 'button[aria-label="Chart range"]', choice: '[popover] button.pick' }];
+/** A table row that narrows the page to itself, as the Status page's Totals narrow its chart. */
+const ROW = 'td button.pick';
 
 /** How long a page must say nothing is loading before it counts as drawn. */
 const QUIET_MS = 1500;
@@ -24,6 +26,7 @@ const AT_ONCE = 4;
 export async function reachable(open, base) {
   const seen = new Set(['#/status']);
   const queue = ['#/status'];
+  const rowsSeen = new Set();
   let busy = 0;
   const visit = async (hash) => {
     const page = await open(hash);
@@ -42,6 +45,7 @@ export async function reachable(open, base) {
       for (let i = 0; i < choices; i++) {
         await page.locator(SEGMENTED).nth(i).click();
         await settle(page);
+        await pickRows(page, rowsSeen);
       }
       for (const { face, choice } of OPENED) {
         if (!(await page.locator(face).count())) continue;
@@ -52,6 +56,7 @@ export async function reachable(open, base) {
           await page.locator(choice).nth(i).click();
           await settle(page);
           seen.add(await page.evaluate(() => location.hash));
+          await pickRows(page, rowsSeen);
         }
       }
     } finally {
@@ -77,6 +82,32 @@ export async function reachable(open, base) {
   };
   await Promise.all(Array.from({ length: AT_ONCE }, worker));
   return [...seen];
+}
+
+/** Picks each row `ROW` finds, then none, skipping a row already picked on this page with columns that count the
+ * same: a pick reads the row by its names and its page, not by the unit the table is in. */
+async function pickRows(page, seen) {
+  const rows = page.locator(ROW);
+  const count = await rows.count();
+  for (let i = 0; i < count; i++) {
+    const key = await rows.nth(i).evaluate((button) => {
+      const row = button.closest('tr');
+      const counts = [...row.closest('table').querySelectorAll('th')].map((th) =>
+        th.textContent.trim().split(/\s+/).pop(),
+      );
+      const names = [...row.cells].filter((td) => !td.classList.contains('num'));
+      return JSON.stringify([location.hash, counts, names.map((td) => td.textContent.trim())]);
+    });
+    if (seen.has(key)) continue;
+    seen.add(key);
+    await rows.nth(i).click();
+    await settle(page);
+  }
+  const shown = page.locator(`${ROW}[aria-pressed=true]`);
+  if (await shown.count()) {
+    await shown.click();
+    await settle(page);
+  }
 }
 
 /** Until the page's reads have answered and it has drawn them: the GUI says it is still loading in these words, and

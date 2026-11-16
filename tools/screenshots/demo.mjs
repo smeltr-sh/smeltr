@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { reachable } from './reach.mjs';
-import { LIVE, STATS, pickedWindow, write } from './recording.mjs';
+import { LIVE, STATS, picked, write } from './recording.mjs';
 
 const BASE = 'https://127.0.0.1:8443';
 const DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -186,7 +186,7 @@ await reader.close();
 // The fleet moving: every live answer read again every five seconds for a minute, so the demo's Map, charts and
 // counters move as the fleet's did. A config read is not live; the demo's own edits change those.
 // A chart moves on the window it opens on; on any other it stands still, as recorded.
-const live = Object.keys(answers).filter((k) => LIVE.test(k) && !pickedWindow(k));
+const live = Object.keys(answers).filter((k) => LIVE.test(k) && !picked(k));
 const api = await ctx.newPage();
 await api.goto(`${BASE}/#/map`, { waitUntil: 'networkidle' });
 const moving = {};
@@ -229,7 +229,11 @@ const capture = (group, what, branch) =>
         await new Promise((r) => setTimeout(r, 1000));
         const { capture } = await fetch(`/api/captures/${started.session}`).then((r) => r.json());
         if (!capture.done) continue;
-        const { batches } = await fetch(`/api/captures/${started.session}/records`).then((r) => r.json());
+        // The demo's leader keeps a pool as one batch of the rows it held, each with the worker that sent it.
+        const { columns, records } = await fetch(`/api/captures/${started.session}/records`).then(
+          (r) => r.json(),
+        );
+        const batches = [{ columns, rows: records }];
         if (batches.every((b) => !b.rows.length)) {
           await send('DELETE', `/api/captures/${started.session}`);
           return { batches };

@@ -15,12 +15,14 @@ const OPENS_ON = [
   [/^\/api\/flow$/, '60'],
 ];
 
-/** Whether `key` is a chart's read at a window it does not open on: the visitor picks it, and it stands still. */
-export function pickedWindow(key) {
+/** Whether `key` is a read the visitor picks -- a chart at a window it does not open on, or the flow of one row of
+ * the Status page's Totals -- which stands still. */
+export function picked(key) {
   const url = new URL(key, 'http://recording');
   const window = url.searchParams.get('windowMinutes');
   return (
-    window !== null && !OPENS_ON.some(([p, opens]) => p.test(url.pathname) && opens === window)
+    url.searchParams.has('subject') ||
+    (window !== null && !OPENS_ON.some(([p, opens]) => p.test(url.pathname) && opens === window))
   );
 }
 
@@ -42,7 +44,7 @@ export async function write(out, { recordedAt, answers, moving, movingAt, captur
     fs.writeFileSync(path.join(dir, await partFile(key)), shown(value));
   const every = {};
   for (const [key, answer] of Object.entries(answers)) {
-    if (pickedWindow(key)) await part(key, answer);
+    if (picked(key)) await part(key, answer);
     else every[key] = answer;
   }
   for (const [key, pool] of Object.entries(captures)) await part(key, pool);
