@@ -116,9 +116,9 @@ fn main() {
 /// An output older than its sources is an error on a release build and a warning otherwise. `cargo build` does not run
 /// the bundlers: that would put node on the path of every `cargo check`, and a script that writes to a path it watches
 /// rebuilds forever. A stale build is silent where a missing one announces itself, which is why only staleness is
-/// promoted on release. `SMELTR_ALLOW_STALE_GUI=1` keeps it a warning.
+/// promoted on release. `SMELTR_ALLOW_STALE_FRONTENDS=1` keeps it a warning.
 fn warn_if_stale(manifest: &Path, frontend: &Frontend) {
-    println!("cargo:rerun-if-env-changed=SMELTR_ALLOW_STALE_GUI");
+    println!("cargo:rerun-if-env-changed=SMELTR_ALLOW_STALE_FRONTENDS");
 
     let Some(built) = newest_mtime(&frontend.path(manifest, frontend.output)) else {
         return; // nothing built: the empty branch already warns
@@ -137,7 +137,7 @@ fn warn_if_stale(manifest: &Path, frontend: &Frontend) {
 
     let output = format!("{}/{}", frontend.dir, frontend.output);
     let release = std::env::var("PROFILE").as_deref() == Ok("release");
-    let overridden = std::env::var("SMELTR_ALLOW_STALE_GUI").is_ok_and(|v| !v.is_empty());
+    let overridden = std::env::var("SMELTR_ALLOW_STALE_FRONTENDS").is_ok_and(|v| !v.is_empty());
     if release && !overridden {
         panic!(
             "{output} is older than its sources, so this release binary would embed the PREVIOUS \
@@ -145,7 +145,7 @@ fn warn_if_stale(manifest: &Path, frontend: &Frontend) {
              \n\
              Build both, in order:    just build\n\
              \n\
-             Set SMELTR_ALLOW_STALE_GUI=1 to build anyway (profiling, benchmarks -- anything \
+             Set SMELTR_ALLOW_STALE_FRONTENDS=1 to build anyway (profiling, benchmarks -- anything \
              that does not care about the GUI or its docs). A debug build only warns."
         );
     }

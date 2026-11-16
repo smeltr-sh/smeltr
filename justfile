@@ -626,13 +626,13 @@ check-tls: tls-up
 # a call site pays to raise a log, and memory-budget-cost what the memory
 # budget's accounting costs, record-cost a typed record against the same data
 # as `_raw` JSON, and guard-cost a guarded write by how many rows its guard
-# takes. Builds past a stale GUI, which is what
-# `SMELTR_ALLOW_STALE_GUI` is for: a benchmark does not embed the frontend.
+# takes. Builds even when the frontends are stale, which is what
+# `SMELTR_ALLOW_STALE_FRONTENDS` is for: a benchmark does not need them.
 [doc("Every profiling suite, and its numbers.")]
 [group("dev")]
 [env("KAFKA_TEST_BROKERS", "localhost:19092")]
 [env("ES_TEST_URL", "http://localhost:9200")]
-[env("SMELTR_ALLOW_STALE_GUI", "1")]
+[env("SMELTR_ALLOW_STALE_FRONTENDS", "1")]
 measure:
     cargo test --profile dist --test panos-ecs-profile --test logs-cost --test memory-budget-cost --test record-cost --test guard-cost -- --ignored --nocapture --test-threads=1
     just live-up
@@ -671,7 +671,7 @@ bench-log:
 [env("MYSQL_TEST_HOST", "127.0.0.1:13306")]
 [env("MARIADB_TEST_HOST", "127.0.0.1:13307")]
 [env("SMELTR_LIVE_TESTS", "required")]
-[env("SMELTR_ALLOW_STALE_GUI", "1")]
+[env("SMELTR_ALLOW_STALE_FRONTENDS", "1")]
 connector-speed: live-up
     cargo test --profile dist --test connector-speed -- --ignored --exact speed --nocapture
 
