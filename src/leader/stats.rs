@@ -30,12 +30,9 @@ use super::series::{RegistryStore, chart_point_ms};
 use super::throughput::{self, ExpectedPoint};
 use super::warnings::{self, SubjectKind, WarningSpan, label, stale_after_ms};
 use super::{
-    BYTES_DELIVERED_METRIC, BYTES_POLLED_METRIC, ROWS_DELIVERED_METRIC, ROWS_IN_METRIC, ROWS_SENT_METRIC,
-    ROWS_UNMATCHED_METRIC, SOURCE_LAG_METRIC,
+    BYTES_DELIVERED_METRIC, BYTES_POLLED_METRIC, ROUTE_MATCHED_METRIC, ROWS_DELIVERED_METRIC, ROWS_IN_METRIC,
+    ROWS_SENT_METRIC, ROWS_UNMATCHED_METRIC, SOURCE_LAG_METRIC,
 };
-
-/// `route_masks`' count of rows each route's own condition matched (`plan::topology`), labeled with the route's id.
-const ROUTE_MATCHED_METRIC: &str = "smeltr_route_matched_total";
 /// `Transform::poll`'s time inside the source's own read, labeled with the source (`runtime.rs`).
 const TICK_POLL_SECONDS_METRIC: &str = "smeltr_tick_poll_seconds_total";
 /// `plan::exec`'s per-step counts, labeled with the pipeline and the step within it.

@@ -4150,6 +4150,27 @@ export type FlowResponseDto = {
   bytesOut: FlowSeriesDto[];
   /** Every source's reading against its normal, whatever window the response is for. */
   normals: FlowNormalDto[];
+  /** Every object's counts over the window, per worker, in the points the series are read in. */
+  totals: FlowTotalDto[];
+};
+
+/** What the Status page totals by (`leader::FlowKind`). */
+export type FlowKind = 'source' | 'pipeline' | 'route' | 'destination';
+
+/** One object's counts over the window, on one worker. Out is what was handed to destinations,
+ * a row sent to two counting twice; a destination's own out is what it delivered. */
+export type FlowTotalDto = {
+  kind: FlowKind;
+  group: string;
+  workerId?: string | null;
+  subjectId: string;
+  /** A route's source and pipeline. */
+  source?: string | null;
+  pipeline?: string | null;
+  rowsIn: number;
+  rowsOut: number;
+  bytesIn: number;
+  bytesOut: number;
 };
 
 /** One source's reading against its normal at the width it is shown at (`throughput::Reading::shown`), in rows
@@ -4204,8 +4225,13 @@ export function getLogs(query: string): Promise<LogsResponseDto> {
   return readJson(`/api/logs?${query}`);
 }
 
-export function getFlow(windowMinutes: number): Promise<FlowResponseDto> {
-  return readJson(`/api/flow?windowMinutes=${windowMinutes}`);
+/** The fleet's flow, or with `only` one object's in and out in place of the fleet's. */
+export function getFlow(
+  windowMinutes: number,
+  only?: { kind: FlowKind; group: string; subject: string },
+): Promise<FlowResponseDto> {
+  const q = new URLSearchParams({ windowMinutes: String(windowMinutes), ...only });
+  return readJson(`/api/flow?${q}`);
 }
 
 /** Lowers the Rows below normal warning that holds for `group`'s `source` to info until it ends. */
