@@ -46,11 +46,15 @@ pub struct Hit {
 /// The pages, by path.
 pub struct Docs(Vec<Page>);
 
+mod built {
+    include!(concat!(env!("OUT_DIR"), "/website.rs"));
+}
+
 static DOCS: LazyLock<Docs> = LazyLock::new(|| {
-    Docs(
-        serde_json::from_str(include_str!(concat!(env!("OUT_DIR"), "/docs.json")))
-            .expect("docs.json is the generator's"),
-    )
+    let json = built::FILES.iter().find(|(path, _)| *path == "docs.json");
+    Docs(json.map_or_else(Vec::new, |(_, json)| {
+        serde_json::from_slice(json).expect("docs.json is the generator's")
+    }))
 });
 
 /// The docs this build shipped with.

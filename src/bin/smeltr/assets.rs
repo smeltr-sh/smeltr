@@ -4,7 +4,7 @@ use axum::body::Body;
 use axum::http::{StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 
-include!(concat!(env!("OUT_DIR"), "/embedded_assets.rs"));
+include!(concat!(env!("OUT_DIR"), "/gui-frontend.rs"));
 
 /// One bundler's output needs one short table. Unknown extensions download rather than being guessed at.
 fn content_type(path: &str) -> &'static str {
@@ -24,13 +24,13 @@ fn content_type(path: &str) -> &'static str {
 
 /// A scan, so the lookup holds whatever order `build.rs` writes the table in. A Vite build is a few dozen files.
 fn lookup(path: &str) -> Option<&'static [u8]> {
-    ASSETS.iter().find(|(name, _)| *name == path).map(|(_, bytes)| *bytes)
+    FILES.iter().find(|(name, _)| *name == path).map(|(_, bytes)| *bytes)
 }
 
 /// Whether this build carries only `build.rs`'s placeholder page. A real Vite build always emits hashed files under
 /// `assets/`.
 pub fn is_placeholder_only() -> bool {
-    ASSETS.len() == 1 && ASSETS[0].0 == "index.html"
+    FILES.len() == 1 && FILES[0].0 == "index.html"
 }
 
 /// Serves an embedded asset. A path that is plainly not a file falls back

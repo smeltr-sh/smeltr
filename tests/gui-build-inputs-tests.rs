@@ -159,7 +159,7 @@ fn quoted_in(text: &str, start: &str, end: &str) -> Vec<String> {
 /// the other misses.
 #[test]
 fn build_rs_and_build_if_stale_name_the_same_frontends() {
-    let rust = quoted_in(&read("build.rs"), ": Frontend = Frontend {", "};");
+    let rust = quoted_in(&read("build.rs"), ": Frontend = Frontend {", "missing:");
     let js = quoted_in(&read("tools/build-if-stale.mjs"), "const FRONTENDS = {", "\n};");
     assert!(rust.len() > 4, "found no frontends in build.rs");
     assert_eq!(rust, js);
