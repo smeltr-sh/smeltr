@@ -303,7 +303,7 @@
               {#each labels as l (l)}<option value={l}>{labelName(l)}</option>{/each}
             </select>
             <select aria-label="Filter value" onchange={(e) => addFilter(e.currentTarget.value)}>
-              <option value="">value</option>
+              <option value="">Value</option>
               {#each metric.labels[addLabel] ?? [] as v (v)}<option value={v}>{v}</option>{/each}
             </select>
           </span>
