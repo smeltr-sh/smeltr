@@ -19,6 +19,8 @@ describe('renderMarkdown', () => {
     expect(renderMarkdown(`Look:\n\n[Rows by source](${link})`)).toBe(
       `<p>Look:</p>\n<div class="chart-slot" data-chart="${link.replace('&', '&amp;')}"><a href="${link.replace('&', '&amp;')}">Rows by source</a></div>\n`,
     );
+    expect(renderMarkdown(`- [a](${link})\n- [b](${link})`).match(/data-chart/g)).toHaveLength(2);
+    expect(renderMarkdown(`1. [a](${link})`)).toContain('data-chart');
     expect(renderMarkdown(`See [rows](${link}) here`)).not.toContain('data-chart');
     expect(renderMarkdown(`[a](${link}) [b](${link})`)).not.toContain('data-chart');
     expect(renderMarkdown('[issues](#/status/issues)')).not.toContain('data-chart');

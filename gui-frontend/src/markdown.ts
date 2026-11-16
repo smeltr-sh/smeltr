@@ -34,6 +34,8 @@ md.core.ruler.push('chart_slots', (state) => {
     if (!href.startsWith(CHART_LINK) || parts.at(-1)?.type !== 'link_close') continue;
     if (parts.slice(1, -1).some((t) => t.type === 'link_open')) continue;
     open.tag = close.tag = 'div';
+    // A tight list's item hides its paragraph's tags, which would drop the slot.
+    open.hidden = close.hidden = false;
     open.attrSet('class', 'chart-slot');
     open.attrSet('data-chart', href);
   }
