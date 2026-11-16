@@ -34,8 +34,8 @@
     errorText,
     getSourcePast,
     getStats,
-    markSourcePast,
     putSourcePreset,
+    type ApiError,
     type DeliverEdge,
     type MapNode,
     type NodeReadingDto,
@@ -49,7 +49,6 @@
   } from './api';
   import { holds } from './access';
   import { Busy } from './busy.svelte';
-  import Segmented from './Segmented.svelte';
   import { dateTime, lasted } from './time';
   import { untrack, type Snippet } from 'svelte';
   import PencilIcon from './PencilIcon.svelte';
@@ -59,6 +58,7 @@
   import SendersTab from './SendersTab.svelte';
   import PresetPicker from './PresetPicker.svelte';
   import Sparkline from './Sparkline.svelte';
+  import WarningList from './WarningList.svelte';
   import ChipPicker from './ChipPicker.svelte';
   import ClockIcon from './ClockIcon.svelte';
   import { byteUnit, bytes } from './bytes';
@@ -222,14 +222,15 @@
       "A route's condition picks rows from its source; each delivery's condition picks which of them go to that destination. Conditions can overlap, so a source's matches can add up past what it read.",
   };
   const WARNINGS_HELP =
-    'Rows below normal warnings of the past year. The windows a warning read are not learned unless marked Normal; marking the one that holds Normal teaches the level the source reads now.';
+    'Rows below normal warnings of the past year. Until it is marked, the one that is up stays a warning. Mark it Outage to turn it into info until it ends, or Normal to turn it into info and learn the level the source reads now. A warning is learned only if it is marked Normal.';
+  /** What a source still learning is not judged on yet (`throughput::Past`). */
+  const LEARNING = {
+    judged: 'Learning: this source is judged once it has 3 days of rows.',
+    weekdays:
+      'Until it has 4 weeks of rows, every day of the week is judged alike, so a quiet weekend can warn.',
+  };
   const SPELLS_HELP =
     "The source's longest quiet spells of the past year. The longest one learned sets how long the source may go without a row before it warns.";
-  /** What an editor in the source's group may say a span was. */
-  const WAS: { value: 'normal' | 'outage'; label: string }[] = [
-    { value: 'normal', label: 'Normal' },
-    { value: 'outage', label: 'Outage' },
-  ];
 
   function readPast() {
     const asked = { group: node.group, id: node.authorId };
@@ -272,13 +273,10 @@
     readPast();
   });
 
-  function mark(span: PastSpan, was: 'normal' | 'outage') {
-    // One mark at a time, each read back before the next, so the list never shows an older answer last.
-    if (marking.on) return;
-    void marking.run(async () => {
-      await markSourcePast(node.group, node.authorId, span, was);
-      await readPast();
-    });
+  /** Reads History again after a change its warnings made, saying what the leader refused. */
+  async function pastChanged(errors: ApiError[]) {
+    await readPast();
+    if (errors.length > 0) pastError = errorText(errors);
   }
 
   function pickPreset(preset: Preset) {
@@ -708,6 +706,15 @@
           editor={holds(node.group, 'editor')}
           pick={pickPreset}
         />
+        <h3 class="with-range against">
+          <span>Rows per second, over the last {chart.label}</span>{@render rangePicker()}
+        </h3>
+        {#if past.judgedFromMillis !== undefined}
+          <p class="dim small learning">{LEARNING.judged}</p>
+        {:else if past.weekdaysFromMillis !== undefined}
+          <p class="dim small learning">{LEARNING.weekdays}</p>
+        {/if}
+        {@render overWindow('rows/s', ratePoints, chartBand)}
       </section>
       <section>
         <h3>Past year</h3>
@@ -728,12 +735,35 @@
         </div>
       </section>
       <div class="columns">
-        {@render pastSpans('Warnings', WARNINGS_HELP, past.warnings)}
-        {@render pastSpans('Longest quiet spells', SPELLS_HELP, past.silences)}
+        <section>
+          <h3>Warnings <Help label="Warnings">{WARNINGS_HELP}</Help></h3>
+          <WarningList
+            group={node.group}
+            source={node.authorId}
+            spans={past.warnings}
+            editor={holds(node.group, 'editor')}
+            busy={marking}
+            changed={pastChanged}
+          />
+        </section>
+        {@render pastSpans(
+          'Longest quiet spells',
+          SPELLS_HELP,
+          past.silences,
+          past.quietLimitMillis === undefined
+            ? ''
+            : `Warns after ${lasted(past.quietLimitMillis)} without a row.`,
+        )}
       </div>
     {/if}
   {:else if shown === 'senders'}
-    <SendersTab group={node.group} source={node.authorId} {nowMillis} />
+    <SendersTab
+      group={node.group}
+      source={node.authorId}
+      {nowMillis}
+      range={chart}
+      picker={rangePicker}
+    />
   {:else if shown === 'routes'}
     <section>
       <h3>
@@ -863,9 +893,10 @@
   />
 {/snippet}
 
-{#snippet pastSpans(heading: string, help: string, spans: PastSpan[])}
+{#snippet pastSpans(heading: string, help: string, spans: PastSpan[], note = '')}
   <section>
     <h3>{heading} <Help label={heading}>{help}</Help></h3>
+    {#if note}<p class="small gap-line">{note}</p>{/if}
     {#if spans.length === 0}
       <p class="dim small">None in the past year.</p>
     {:else}
@@ -877,15 +908,7 @@
               ><span class="nowrap">{when} &middot;</span>
               <span class="nowrap">{lasted(span.toMillis - span.fromMillis)}</span></span
             >
-            {#if holds(node.group, 'editor')}
-              <Segmented
-                label="{heading}: {when}"
-                options={WAS}
-                bind:value={() => (span.learned ? 'normal' : 'outage'), (was) => mark(span, was)}
-              />
-            {:else}
-              <span class="dim small">{span.learned ? 'Normal' : 'Outage'}</span>
-            {/if}
+            <span class="dim small">{span.learned ? 'Normal' : 'Outage'}</span>
           </li>
         {/each}
       </ul>
@@ -991,6 +1014,7 @@
 
   .tabs {
     margin: 0.7rem 0 0.2rem;
+    container-type: inline-size;
   }
 
   .small {
@@ -1109,6 +1133,18 @@
     align-items: center;
     justify-content: space-between;
     gap: 0.5rem;
+  }
+
+  h3.against {
+    margin-top: 0.85rem;
+  }
+
+  .learning {
+    margin: 0 0 0.5rem;
+  }
+
+  .gap-line {
+    margin: 0 0 0.4rem;
   }
 
   .facts {
