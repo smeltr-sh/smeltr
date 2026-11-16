@@ -29,6 +29,7 @@
   } from './api';
   import {
     WEEK_MINUTES,
+    fitsBeside,
     alongside,
     described,
     laidOn,
@@ -82,6 +83,22 @@
   const filterOf = (v: MetricsView, m: string) =>
     filtersFor(v.filter, metrics?.find((s) => s.name === m)?.labels);
 
+  /** The metrics `v` draws: its first, and each of the others that fits beside those before it, so a link that asks
+   * for a third unit or a gauge beside counters draws what can be drawn. */
+  function drawnOf(v: MetricsView): string[] {
+    const kept: StoredMetricDto[] = [];
+    const first = v.metric ?? '';
+    for (const name of v.more) {
+      const m = metrics?.find((s) => s.name === name);
+      const before = [
+        metrics?.find((s) => s.name === first) ?? { name: first, counter: true },
+        ...kept,
+      ];
+      if (m && fitsBeside(m, before)) kept.push(m);
+    }
+    return [first, ...kept.map((m) => m.name)];
+  }
+
   /** Which metric each drawn series is of, by its name. */
   let metricOf = $state(new Map<string, string>());
   /** Several metrics' answers as one: each series named for its metric, and its split value after it. */
@@ -111,7 +128,7 @@
       const offset = -new Date().getTimezoneOffset();
       const each = (ago: number) =>
         Promise.all(
-          [asked.metric ?? '', ...asked.more].map((m) =>
+          drawnOf(asked).map((m) =>
             // Totals of different metrics stacked would add up to nothing.
             getSeries(
               seriesQuery(
@@ -238,7 +255,13 @@
   /** The metrics, in the website's reference groups, narrowed by `search`. */
   let groups = $derived.by(() => {
     const by = new Map<string, { m: StoredMetricDto; what: string }[]>();
+    // Adding or changing a metric beside others offers only those that fit beside them.
+    const shownNow = [view.metric ?? '', ...view.more];
+    const others = shownNow
+      .filter((_, i) => (pickingFor === 'new' ? true : i !== pickingFor))
+      .flatMap((n) => metrics?.find((s) => s.name === n) ?? []);
     for (const m of metrics ?? []) {
+      if (view.more.length + (pickingFor === 'new' ? 1 : 0) && !fitsBeside(m, others)) continue;
       const { group, what } = described(m.name, Object.keys(m.labels));
       if (search && !`${m.name} ${what}`.toLowerCase().includes(search.toLowerCase())) continue;
       by.set(group, [...(by.get(group) ?? []), { m, what }]);
@@ -335,7 +358,14 @@
   }
   let previous = $derived(
     before && view.weekBefore
-      ? alongside(shown, laidOn(before, answer!, count, WEEK_MINUTES * MINUTE))
+      ? // Each axis's Other adds up only what that axis left out.
+        [false, true].flatMap((right) => {
+          const laid = laidOn(before, answer!, count, WEEK_MINUTES * MINUTE);
+          return alongside(
+            shown.filter((s) => !!s.right === right),
+            laid.filter((b) => onRight(b.name) === right),
+          );
+        })
       : null,
   );
   let marks = $derived(

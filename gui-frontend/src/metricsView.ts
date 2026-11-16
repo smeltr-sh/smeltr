@@ -36,7 +36,9 @@ export function viewFromParams(params: URLSearchParams): MetricsView {
   const top = Number(params.get('top'));
   return {
     metric: params.get('metric') || DEFAULT_VIEW.metric,
-    more: params.getAll('metric').slice(1).filter(Boolean),
+    more: [...new Set(params.getAll('metric').slice(1))].filter(
+      (m) => m && m !== (params.get('metric') || DEFAULT_VIEW.metric),
+    ),
     filter: (params.get('filter') ?? '')
       .split(',')
       .map((pair) => pair.split(':'))
@@ -76,6 +78,17 @@ export function filtersFor(
   labels: Record<string, unknown> | undefined,
 ): [string, string][] {
   return filter.filter(([label]) => !labels || label === 'group' || label in labels);
+}
+
+/** Whether `next` may be drawn beside `others`: not one of them, of their kind (counters and gauges are read
+ * differently), and with them in no more than two units, one for each axis. */
+export function fitsBeside(
+  next: { name: string; counter: boolean },
+  others: { name: string; counter: boolean }[],
+): boolean {
+  if (others.some((o) => o.name === next.name)) return false;
+  if (others.length && others[0].counter !== next.counter) return false;
+  return new Set([...others, next].map((m) => unitOf(m.name))).size <= 2;
 }
 
 /** A week, in minutes: how far back the comparison line reads. */

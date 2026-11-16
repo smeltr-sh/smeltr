@@ -4,6 +4,7 @@ import {
   alongside,
   described,
   filtersFor,
+  fitsBeside,
   fold,
   laidOn,
   onGrid,
@@ -37,6 +38,23 @@ describe('metricsView', () => {
     expect(filtersFor(filter, { destination: ['splunk'] })).toEqual([['group', 'east']]);
     expect(filtersFor(filter, { source: ['orders'] })).toEqual(filter);
     expect(filtersFor(filter, undefined)).toEqual(filter);
+  });
+
+  it('draws beside others only a metric not among them, of their kind, in at most two units', () => {
+    const rows = { name: 'smeltr_rows_polled_total', counter: true };
+    const bytes = { name: 'smeltr_bytes_polled_total', counter: true };
+    const seconds = { name: 'smeltr_tick_poll_seconds_total', counter: true };
+    const gauge = { name: 'smeltr_process_memory_bytes', counter: false };
+    expect(fitsBeside(bytes, [rows])).toBe(true);
+    expect(fitsBeside(rows, [rows])).toBe(false);
+    expect(fitsBeside(gauge, [rows])).toBe(false);
+    expect(fitsBeside(seconds, [rows, bytes])).toBe(false);
+    expect(fitsBeside(seconds, [rows])).toBe(true);
+  });
+
+  it('reads a repeated metric in a link once', () => {
+    const v = viewFromParams(new URLSearchParams('metric=a&metric=b&metric=a&metric=b'));
+    expect([v.metric, ...v.more]).toEqual(['a', 'b']);
   });
 
   it('reads a bare hash as the default view, and drops what it cannot read', () => {
