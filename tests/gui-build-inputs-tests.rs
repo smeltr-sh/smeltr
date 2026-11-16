@@ -142,3 +142,25 @@ fn every_build_of_the_gui_carries_the_website_files_it_imports() {
     }
     assert!(missing.is_empty(), "{}", missing.join("\n"));
 }
+
+/// The quoted strings in each `start`..`end` block of `text`, in order.
+fn quoted_in(text: &str, start: &str, end: &str) -> Vec<String> {
+    let quoted = Regex::new(r#"["']([^"']+)["']"#).unwrap();
+    let mut out = Vec::new();
+    for block in text.split(start).skip(1) {
+        let block = block.split(end).next().unwrap();
+        out.extend(quoted.captures_iter(block).map(|m| m[1].to_string()));
+    }
+    out
+}
+
+/// `tools/build-if-stale.mjs` rebuilds a frontend when a source is newer than its output; `build.rs` warns when an
+/// output is older than its sources. Both must name the same frontends: a path only one of them names is a stale build
+/// the other misses.
+#[test]
+fn build_rs_and_build_if_stale_name_the_same_frontends() {
+    let rust = quoted_in(&read("build.rs"), ": Frontend = Frontend {", "};");
+    let js = quoted_in(&read("tools/build-if-stale.mjs"), "const FRONTENDS = {", "\n};");
+    assert!(rust.len() > 4, "found no frontends in build.rs");
+    assert_eq!(rust, js);
+}
