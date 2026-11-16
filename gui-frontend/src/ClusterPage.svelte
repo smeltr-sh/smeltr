@@ -1172,10 +1172,12 @@
         <div>
           <h2 id="{uid}-flow">
             {unitWord} in and out — {#if picked}{selectionLabel === 'whole fleet'
-                ? `group ${picked.group}, `
+                ? ''
                 : `${selectionLabel}, `}{KINDS.find((k) => k.value === kind)?.one}
               <span class="picked mono"
-                >{picked.subjectId}<button
+                >{selectionLabel === 'whole fleet'
+                  ? `${picked.subjectId} (${picked.group})`
+                  : picked.subjectId}<button
                   type="button"
                   aria-label={selectionLabel === 'whole fleet'
                     ? 'Show the whole fleet'
