@@ -205,7 +205,7 @@
           <path class="before" d={beforeSteps} />
         {/if}
         {#each Array.from({ length: count }, (_, i) => i) as i (i)}
-          {#each series as s, k (s.name)}
+          {#each series as s, k (s.slot ?? -1)}
             {@const below = series.slice(0, k).reduce((a, t) => a + (t.points[i] ?? 0), 0)}
             {@const v = s.points[i] ?? 0}
             {#if v > 0}
@@ -223,11 +223,11 @@
         {/each}
       {:else}
         {#if previous}
-          {#each series as s, k (s.name)}
+          {#each series as s, k (s.slot ?? -1)}
             <path class="line before {tone(s)}" d={path(previous[k] ?? [])} />
           {/each}
         {/if}
-        {#each series as s (s.name)}
+        {#each series as s (s.slot ?? -1)}
           <path class="line {tone(s)}" d={path(s.points)} />
           {#each lone(s.points) as { i, v } (i)}
             <circle class="dot {tone(s)}" cx={xLine(i)} cy={y(v)} r="2.5" />
@@ -235,7 +235,7 @@
         {/each}
         {#if hoverX !== null}
           <line class="rule" x1={hoverX} x2={hoverX} y1="0" y2={PLOT} />
-          {#each tip as { s, v } (s.name)}
+          {#each tip as { s, v } (s.slot ?? -1)}
             {#if v !== null}
               <circle class="mark {tone(s)}" cx={hoverX} cy={y(v)} r="4" />
             {/if}
@@ -274,7 +274,7 @@
             <span></span><span></span><span></span><span>A week before</span>
           </div>
         {/if}
-        {#each tip as { s, v, was } (s.name)}
+        {#each tip as { s, v, was } (s.slot ?? -1)}
           <div class="tip-row" class:compare={previous !== null}>
             <span class="swatch {tone(s)}"></span><span class="mono">{s.name || 'All'}</span><strong
               >{v === null ? '--' : format(v)}</strong

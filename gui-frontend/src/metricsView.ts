@@ -108,7 +108,7 @@ export function toneOf(slot: number | null): string {
 
 export type Drawn = {
   name: string;
-  /** Its color, by rank; `null` for the series folded into Other. */
+  /** Its rank, which also keys it: a split value may itself be named Other; `null` for the series folded into Other. */
   slot: number | null;
   /** One value per point of the window, `null` where nothing landed. */
   points: (number | null)[];

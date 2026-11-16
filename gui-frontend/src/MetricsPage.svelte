@@ -487,7 +487,7 @@
       <div class="over">
         {#if shown.length > 1}
           <ul class="legend">
-            {#each shown as s (s.name)}
+            {#each shown as s (s.slot ?? -1)}
               <li>
                 <span class="swatch {toneOf(s.slot)}"></span><span class="mono">{s.name}</span>
               </li>
