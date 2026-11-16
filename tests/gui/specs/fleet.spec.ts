@@ -338,7 +338,7 @@ test('rows in and out are charted over the window the engineer picks', async ({
   ).toBeVisible();
   await expect(table.getByRole('row', { name: /^Total/ })).toHaveCount(0);
   await table.getByRole('button', { name: 'all' }).first().click();
-  await expect(flow.getByRole('heading')).toContainText('route all');
+  await expect(flow.getByRole('heading')).toContainText(/group (east|west), route all/);
   await expect(flow.getByText(new RegExp(`^matched ${MOVING.source}`))).toBeVisible({
     timeout: 30_000,
   });

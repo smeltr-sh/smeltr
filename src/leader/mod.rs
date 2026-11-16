@@ -1718,16 +1718,18 @@ pub fn flow_snapshot(
     })
 }
 
-/// [`FlowTotal`]s for every kind, from the points [`flow_series`] reads, so the two agree.
+/// [`FlowTotal`]s for every kind, from the points [`flow_series`] reads, so the two agree. Read once per ten-second
+/// bucket ([`series::RegistryStore::sums_this_bucket`]), however often it is asked.
 fn flow_totals(store: &series::RegistryStore, point_ms: i64, since_ms: i64) -> Result<Vec<FlowTotal>, StoreError> {
-    let mut read: HashMap<&str, Vec<(String, series::SubjectPoints)>> = HashMap::new();
+    let now_ms = warnings::now_millis();
+    let mut read: HashMap<&str, Arc<Vec<(String, series::SubjectPoints)>>> = HashMap::new();
     let mut totals: BTreeMap<(FlowKind, String, Option<String>, String), FlowTotal> = BTreeMap::new();
     for kind in FlowKind::ALL {
         for (at, metric) in kind.metrics().into_iter().enumerate() {
             if !read.contains_key(metric) {
-                read.insert(metric, store.sums_since(metric, point_ms, since_ms)?);
+                read.insert(metric, store.sums_this_bucket(metric, point_ms, since_ms, now_ms)?);
             }
-            for (subject_key, points) in &read[metric] {
+            for (subject_key, points) in read[metric].iter() {
                 let label = |name| subject_label(subject_key, name);
                 let (Some(group), Some(subject_id)) = (label(GROUP_LABEL), label(kind.label())) else {
                     continue;
