@@ -241,13 +241,17 @@
         <div class="line" class:said={item.kind === 'message'}>
           {#if item.kind === 'message'}<span class="prompt" aria-label={me}>›</span>{/if}<Markdown
             text={item.text}
+            charts={item.kind === 'answer' && item.text !== shown.writing}
           />
         </div>
       {:else if item.kind === 'message' || item.kind === 'answer'}
         {@const who = item.kind === 'message' ? me : 'Agent'}
         <ConversationEntry author={who}>
           {#snippet head()}<span class="who">{who}</span>{/snippet}
-          <Markdown text={item.text} />
+          <Markdown
+            text={item.text}
+            charts={item.kind === 'answer' && item.text !== shown.writing}
+          />
         </ConversationEntry>
       {:else if item.kind === 'call'}
         {@const answered = item.result ? split(item.result.output) : null}

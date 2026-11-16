@@ -42,7 +42,14 @@
     type MetricsView,
   } from './metricsView';
 
-  let { view }: { view: MetricsView } = $props();
+  let {
+    view,
+    inline = false,
+  }: {
+    view: MetricsView;
+    /** The chart alone, as the agent shows it in a reply: no page around it, nothing to change, no table. */
+    inline?: boolean;
+  } = $props();
 
   const GROUP = 'group';
   const WORKER = 'worker';
@@ -258,6 +265,9 @@
       : null,
   );
   let unit = $derived(unitOf(view.metric ?? ''));
+  let windowLabel = $derived(
+    FLOW_WINDOWS.find((w) => w.minutes === view.windowMinutes)?.label ?? `${view.windowMinutes}m`,
+  );
   let pointSeconds = $derived((answer?.pointMillis ?? 1000) / 1000);
   let largest = $derived(
     Math.max(
@@ -361,144 +371,27 @@
   let sum = $derived(rows.reduce((a, r) => a + r.total, 0));
 </script>
 
-<SectionShell>
-  <PageHeader title="Metrics">
-    {#snippet help()}
-      Every counter and gauge the workers report, kept for 30 days. Pick one, filter it, and split
-      it by one label.
-    {/snippet}
-  </PageHeader>
-
-  <section class="panel" aria-label="Metric">
-    <div class="ask">
-      <div class="picker">
-        <button
-          type="button"
-          class="metric-btn"
-          aria-haspopup="listbox"
-          aria-expanded={picking}
-          onclick={() => (picking = !picking)}
-          ><span class="mono">{view.metric}</span><span class="caret" aria-hidden="true">▾</span
-          ></button
-        >
-        {#if picking}
-          <div class="pop">
-            <!-- svelte-ignore a11y_autofocus -->
-            <input class="search" placeholder="Search metrics" bind:value={search} autofocus />
-            <div role="listbox" aria-label="Metric">
-              {#each groups as [group, items] (group)}
-                <div class="pop-group">{group}</div>
-                {#each items as { m, what } (m.name)}
-                  <button
-                    type="button"
-                    role="option"
-                    aria-selected={m.name === view.metric}
-                    class="pop-item"
-                    onclick={() => choose(m)}
-                    ><span class="mono">{m.name}</span><span class="what">{what}</span></button
-                  >
-                {/each}
-              {/each}
-            </div>
-          </div>
-        {/if}
-      </div>
-
-      <div class="chips">
-        {#each view.filter as [label, value], i (label + value)}
-          <span class="chip"
-            ><span class="dim">{labelName(label).toLowerCase()}</span>
-            <span class="mono">{value}</span><button
-              type="button"
-              aria-label="Remove filter {labelName(label).toLowerCase()} {value}"
-              onclick={() => go({ filter: view.filter.filter((_, j) => j !== i) })}>×</button
-            ></span
-          >
-        {/each}
-        {#if adding && metric}
-          <span class="chip adding">
-            <select aria-label="Filter by" bind:value={addLabel}>
-              {#each labels as l (l)}<option value={l}>{labelName(l)}</option>{/each}
-            </select>
-            <select aria-label="Filter value" onchange={(e) => addFilter(e.currentTarget.value)}>
-              <option value="">Value</option>
-              {#each metric.labels[addLabel] ?? [] as v (v)}<option value={v}>{v}</option>{/each}
-            </select>
-          </span>
-        {:else if metric}
-          <button
-            type="button"
-            class="chip add"
-            onclick={() => {
-              adding = true;
-              addLabel = labels[0] ?? GROUP;
-            }}>+ Filter</button
-          >
-        {/if}
-      </div>
-
-      <label class="split"
-        ><span class="dim">Split by</span>
-        <select value={view.by} onchange={(e) => go({ by: e.currentTarget.value })}>
-          <option value="">None</option>
-          {#each labels as l (l)}<option value={l}>{labelName(l)}</option>{/each}
-        </select></label
-      >
-      {#if view.by && all.length > 1}
-        <label class="split"
-          ><span class="dim">Top</span>
-          <input
-            class="top"
-            type="number"
-            min="1"
-            step="1"
-            value={view.top}
-            onchange={(e) => {
-              const top = e.currentTarget.valueAsNumber;
-              if (Number.isInteger(top) && top > 0) go({ top });
-            }}
-          /></label
-        >
+{#snippet answered()}
+  {#if failed}
+    <p class="empty">{failed}</p>
+  {:else if metrics !== null && metrics.length === 0}
+    <p class="empty">No metrics recorded yet.</p>
+  {:else if answer === null}
+    <p class="empty">Loading…</p>
+  {:else if all.length === 0}
+    <p class="empty">Nothing recorded in this window yet.</p>
+  {:else}
+    <div class="over">
+      {#if shown.length > 1}
+        <ul class="legend">
+          {#each shown as s (s.slot ?? -1)}
+            <li>
+              <span class="swatch {toneOf(s.slot)}"></span><span class="mono">{s.name}</span>
+            </li>
+          {/each}
+        </ul>
       {/if}
-
-      <div class="controls">
-        {#if metric?.counter ?? true}
-          <Segmented
-            label="Draw"
-            options={[
-              { value: 'perSecond', label: 'Per second' },
-              { value: 'totals', label: 'Totals' },
-            ]}
-            bind:value={() => view.draw, (v) => go({ draw: v })}
-          />
-        {/if}
-        <Segmented
-          label="Chart window"
-          options={FLOW_WINDOWS.map((w) => ({ value: String(w.minutes), label: w.label }))}
-          bind:value={() => String(view.windowMinutes), (v) => go({ windowMinutes: Number(v) })}
-        />
-      </div>
-    </div>
-
-    {#if failed}
-      <p class="empty">{failed}</p>
-    {:else if metrics !== null && metrics.length === 0}
-      <p class="empty">No metrics recorded yet.</p>
-    {:else if answer === null}
-      <p class="empty">Loading…</p>
-    {:else if all.length === 0}
-      <p class="empty">Nothing recorded in this window yet.</p>
-    {:else}
-      <div class="over">
-        {#if shown.length > 1}
-          <ul class="legend">
-            {#each shown as s (s.slot ?? -1)}
-              <li>
-                <span class="swatch {toneOf(s.slot)}"></span><span class="mono">{s.name}</span>
-              </li>
-            {/each}
-          </ul>
-        {/if}
+      {#if !inline}
         <div class="switches">
           <label
             ><Toggle checked={view.marks} onchange={() => go({ marks: !view.marks })} /> Deploys and issues</label
@@ -510,79 +403,240 @@
             /> A week before</label
           >
         </div>
-      </div>
-      <MetricsChart
-        series={shown.map((s) => ({
-          ...s,
-          points: s.points.map((v) => (v === null ? null : v / scale.size)),
-        }))}
-        bars={totals}
-        {ticks}
-        unit={axisUnit}
-        {at}
-        format={(v) => drawn(v * scale.size)}
-        previous={previous?.map((p) => p.map((v) => (v === null ? null : v / scale.size))) ?? null}
-        {marks}
-        label="{view.metric}{view.by
-          ? `, by ${labelName(view.by).toLowerCase()}`
-          : ''}, over the chosen window"
-      />
+      {/if}
+    </div>
+    <MetricsChart
+      series={shown.map((s) => ({
+        ...s,
+        points: s.points.map((v) => (v === null ? null : v / scale.size)),
+      }))}
+      bars={totals}
+      {ticks}
+      unit={axisUnit}
+      {at}
+      format={(v) => drawn(v * scale.size)}
+      previous={previous?.map((p) => p.map((v) => (v === null ? null : v / scale.size))) ?? null}
+      {marks}
+      label="{view.metric}{view.by
+        ? `, by ${labelName(view.by).toLowerCase()}`
+        : ''}, over the chosen window"
+    />
+  {/if}
+{/snippet}
 
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th aria-sort={sort.aria('name')}
-                ><SortButton {sort} key="name">{view.by ? labelName(view.by) : ''}</SortButton></th
-              >
-              {#if answer.counter}
-                <th class="num" aria-sort={sort.aria('total')}
-                  ><SortButton {sort} key="total">Total</SortButton></th
-                >
-              {:else}
-                <th class="num" aria-sort={sort.aria('now')}
-                  ><SortButton {sort} key="now">Now</SortButton></th
-                >
-              {/if}
-              <th class="num" aria-sort={sort.aria('average')}
-                ><SortButton {sort} key="average">Average</SortButton></th
-              >
-              <th class="num" aria-sort={sort.aria('highest')}
-                ><SortButton {sort} key="highest">Highest</SortButton></th
-              >
-            </tr>
-          </thead>
-          <tbody>
-            {#each sorted as r (r.name)}
-              <tr>
-                <td
-                  ><span class="swatch {r.tone}"></span>
-                  <span class="mono">{r.name || 'All'}</span></td
-                >
-                {#if answer.counter}
-                  <td class="num">{amount(r.total)}</td>
-                  <td class="num">{rate(r.average)}</td>
-                  <td class="num">{rate(r.highest)}</td>
-                {:else}
-                  <td class="num">{amount(r.now)}</td>
-                  <td class="num">{amount(r.average)}</td>
-                  <td class="num">{amount(r.highest)}</td>
-                {/if}
-              </tr>
-            {/each}
-          </tbody>
-          {#if answer.counter && rows.length > 1}
-            <tfoot
-              ><tr><td>Total</td><td class="num">{amount(sum)}</td><td></td><td></td></tr></tfoot
+{#if inline}
+  <figure class="inline" aria-label="Metric">
+    <figcaption>
+      <span class="mono">{view.metric}</span>
+      {#each view.filter as [label, value] (label + value)}
+        <span class="chip"
+          ><span class="dim">{labelName(label).toLowerCase()}</span>
+          <span class="mono">{value}</span></span
+        >
+      {/each}
+      <span class="dim"
+        >{view.by ? `by ${labelName(view.by).toLowerCase()} · ` : ''}{windowLabel}{totals
+          ? ' · totals'
+          : ''}{view.weekBefore ? ' · dashed: a week before' : ''}</span
+      >
+    </figcaption>
+    {@render answered()}
+  </figure>
+{:else}
+  <SectionShell>
+    <PageHeader title="Metrics">
+      {#snippet help()}
+        Every counter and gauge the workers report, kept for 30 days. Pick one, filter it, and split
+        it by one label.
+      {/snippet}
+    </PageHeader>
+
+    <section class="panel" aria-label="Metric">
+      <div class="ask">
+        <div class="picker">
+          <button
+            type="button"
+            class="metric-btn"
+            aria-haspopup="listbox"
+            aria-expanded={picking}
+            onclick={() => (picking = !picking)}
+            ><span class="mono">{view.metric}</span><span class="caret" aria-hidden="true">▾</span
+            ></button
+          >
+          {#if picking}
+            <div class="pop">
+              <!-- svelte-ignore a11y_autofocus -->
+              <input class="search" placeholder="Search metrics" bind:value={search} autofocus />
+              <div role="listbox" aria-label="Metric">
+                {#each groups as [group, items] (group)}
+                  <div class="pop-group">{group}</div>
+                  {#each items as { m, what } (m.name)}
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={m.name === view.metric}
+                      class="pop-item"
+                      onclick={() => choose(m)}
+                      ><span class="mono">{m.name}</span><span class="what">{what}</span></button
+                    >
+                  {/each}
+                {/each}
+              </div>
+            </div>
+          {/if}
+        </div>
+
+        <div class="chips">
+          {#each view.filter as [label, value], i (label + value)}
+            <span class="chip"
+              ><span class="dim">{labelName(label).toLowerCase()}</span>
+              <span class="mono">{value}</span><button
+                type="button"
+                aria-label="Remove filter {labelName(label).toLowerCase()} {value}"
+                onclick={() => go({ filter: view.filter.filter((_, j) => j !== i) })}>×</button
+              ></span
+            >
+          {/each}
+          {#if adding && metric}
+            <span class="chip adding">
+              <select aria-label="Filter by" bind:value={addLabel}>
+                {#each labels as l (l)}<option value={l}>{labelName(l)}</option>{/each}
+              </select>
+              <select aria-label="Filter value" onchange={(e) => addFilter(e.currentTarget.value)}>
+                <option value="">Value</option>
+                {#each metric.labels[addLabel] ?? [] as v (v)}<option value={v}>{v}</option>{/each}
+              </select>
+            </span>
+          {:else if metric}
+            <button
+              type="button"
+              class="chip add"
+              onclick={() => {
+                adding = true;
+                addLabel = labels[0] ?? GROUP;
+              }}>+ Filter</button
             >
           {/if}
-        </table>
+        </div>
+
+        <label class="split"
+          ><span class="dim">Split by</span>
+          <select value={view.by} onchange={(e) => go({ by: e.currentTarget.value })}>
+            <option value="">None</option>
+            {#each labels as l (l)}<option value={l}>{labelName(l)}</option>{/each}
+          </select></label
+        >
+        {#if view.by && all.length > 1}
+          <label class="split"
+            ><span class="dim">Top</span>
+            <input
+              class="top"
+              type="number"
+              min="1"
+              step="1"
+              value={view.top}
+              onchange={(e) => {
+                const top = e.currentTarget.valueAsNumber;
+                if (Number.isInteger(top) && top > 0) go({ top });
+              }}
+            /></label
+          >
+        {/if}
+
+        <div class="controls">
+          {#if metric?.counter ?? true}
+            <Segmented
+              label="Draw"
+              options={[
+                { value: 'perSecond', label: 'Per second' },
+                { value: 'totals', label: 'Totals' },
+              ]}
+              bind:value={() => view.draw, (v) => go({ draw: v })}
+            />
+          {/if}
+          <Segmented
+            label="Chart window"
+            options={FLOW_WINDOWS.map((w) => ({ value: String(w.minutes), label: w.label }))}
+            bind:value={() => String(view.windowMinutes), (v) => go({ windowMinutes: Number(v) })}
+          />
+        </div>
       </div>
-    {/if}
-  </section>
-</SectionShell>
+
+      {@render answered()}
+      {#if answer !== null && all.length > 0}
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th aria-sort={sort.aria('name')}
+                  ><SortButton {sort} key="name">{view.by ? labelName(view.by) : ''}</SortButton
+                  ></th
+                >
+                {#if answer.counter}
+                  <th class="num" aria-sort={sort.aria('total')}
+                    ><SortButton {sort} key="total">Total</SortButton></th
+                  >
+                {:else}
+                  <th class="num" aria-sort={sort.aria('now')}
+                    ><SortButton {sort} key="now">Now</SortButton></th
+                  >
+                {/if}
+                <th class="num" aria-sort={sort.aria('average')}
+                  ><SortButton {sort} key="average">Average</SortButton></th
+                >
+                <th class="num" aria-sort={sort.aria('highest')}
+                  ><SortButton {sort} key="highest">Highest</SortButton></th
+                >
+              </tr>
+            </thead>
+            <tbody>
+              {#each sorted as r (r.name)}
+                <tr>
+                  <td
+                    ><span class="swatch {r.tone}"></span>
+                    <span class="mono">{r.name || 'All'}</span></td
+                  >
+                  {#if answer.counter}
+                    <td class="num">{amount(r.total)}</td>
+                    <td class="num">{rate(r.average)}</td>
+                    <td class="num">{rate(r.highest)}</td>
+                  {:else}
+                    <td class="num">{amount(r.now)}</td>
+                    <td class="num">{amount(r.average)}</td>
+                    <td class="num">{amount(r.highest)}</td>
+                  {/if}
+                </tr>
+              {/each}
+            </tbody>
+            {#if answer.counter && rows.length > 1}
+              <tfoot
+                ><tr><td>Total</td><td class="num">{amount(sum)}</td><td></td><td></td></tr></tfoot
+              >
+            {/if}
+          </table>
+        </div>
+      {/if}
+    </section>
+  </SectionShell>
+{/if}
 
 <style>
+  .inline {
+    margin: 0.4em 0;
+    padding: 0.6rem 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    background: var(--panel);
+  }
+  .inline figcaption {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.3rem 0.6rem;
+    margin-bottom: 0.5rem;
+    font-size: var(--text-note);
+  }
+
   .panel {
     border: 1px solid var(--border);
     border-radius: var(--radius-card);
