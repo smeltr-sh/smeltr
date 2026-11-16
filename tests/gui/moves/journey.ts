@@ -1018,7 +1018,9 @@ const refusedRoute: Move = {
     await startRoute(j, source, pipeline);
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     // The leader says why, and the edit stays to be put right or discarded.
-    await expect(page.getByRole('alert').filter({ hasText: '`_raw` is a variant' })).toBeVisible();
+    await expect(
+      page.getByRole('alert').filter({ hasText: '`_raw` is not a field this source declares' }),
+    ).toBeVisible();
     await expect(page.getByText('Unsaved', { exact: true }).first()).toBeVisible();
     await page.getByRole('button', { name: 'Discard' }).click();
     await unsaved(page)();

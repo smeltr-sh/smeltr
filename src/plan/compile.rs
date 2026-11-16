@@ -28,7 +28,7 @@ use crate::plan::parse_call::{ParseCall, matcher_keys};
 use crate::plan::resolve::{
     Origin, ResourceBuilder, Scope, SlotOrigin, SymbolTable, bind_element, binop_result, blend, coerce_ir, coercible,
     describe_expr, fits, holds_null, is_condition, lay_key, member_ir, object_key, refuse_variant, resolve, source_ir,
-    split_struct, unclaimed_ir, variant_use, widen_to,
+    split_struct, unclaimed_ir, undeclared_use, variant_use, widen_to,
 };
 use crate::plan::topology::{Placement, SourceMeta};
 use crate::plan::tree::{self, Node, Object, Place};
@@ -2808,10 +2808,12 @@ impl Compiler<'_> {
             // Bytes are not text until a `decode` says how to read them.
             DataType::Str | DataType::Null => {}
             DataType::Variant => {
-                return self.err(
-                    Some(id),
-                    format!("`{}` {}", describe_expr(call.input), variant_use(None)),
-                );
+                let named = match &call.input.kind {
+                    ExprKind::Field(name) => undeclared_use(name, &format!("`{name}: str = {name};`"), &self.syms),
+                    _ => None,
+                };
+                let message = named.unwrap_or_else(|| format!("`{}` {}", describe_expr(call.input), variant_use(None)));
+                return self.err(Some(id), message);
             }
             t => {
                 let mut message = format!(
@@ -3491,13 +3493,10 @@ impl Compiler<'_> {
         // misses on every row.
         let in_ty = match self.syms.type_of(in_slot).clone() {
             DataType::Variant => {
-                self.err(
-                    Some(id),
-                    format!(
-                        "lookup input `{input}` {}",
-                        variant_use(Some(&format!("`{input}: str = {input};`")))
-                    ),
-                );
+                let hint = format!("`{input}: str = {input};`");
+                let message = undeclared_use(input, &hint, &self.syms)
+                    .unwrap_or_else(|| format!("lookup input `{input}` {}", variant_use(Some(&hint))));
+                self.err(Some(id), message);
                 return;
             }
             t => t,
@@ -4861,6 +4860,22 @@ mod tests {
             FunctionKind::Code { body: body.into() },
         ))];
         p
+    }
+
+    /// A name read from the fields an open record's source does not declare is said to be one; a name a parse leaves
+    /// unclaimed is a variant, as anywhere.
+    #[test]
+    fn a_name_the_source_does_not_declare_is_said_so() {
+        let meta = SourceMeta::KAFKA
+            .declaring_open(vec![("f".into(), DataType::Str)])
+            .unwrap();
+        let error = |body: &str| compile(&code_pipeline(body), &meta).expect_err(body)[0].message.clone();
+        assert_eq!(
+            error("Object.assign($, json(_raw))"),
+            "`_raw` is not a field this source declares. Read a field it declares, or give `_raw` a type to read it \
+             from the record's other fields -- `_raw: str = _raw;`"
+        );
+        assert!(error("Object.assign($, json(f)); x = z.trim()").starts_with("`z` is a variant"));
     }
 
     /// A filter of `true` runs the step on every row, as no filter does: what it deletes leaves the record, and it
