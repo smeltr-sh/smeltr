@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import { SERIES_PART, partFile } from './parts';
