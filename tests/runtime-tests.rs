@@ -488,6 +488,8 @@ fn a_catch_all_route_delivers_every_row_and_commits_once() {
     // The route's own id, not its position: reordering the list must not re-attribute this count.
     let route = [("source", "0"), ("route", "r"), ("pipeline", "0")];
     assert_eq!(counter(&w, "smeltr_route_matched_total", &route), rows);
+    // As the source read them: the same bytes `smeltr_bytes_polled_total` counted, since the route took every row.
+    assert_eq!(counter(&w, "smeltr_route_matched_bytes_total", &route), Some(2));
     assert_eq!(counter(&w, "smeltr_route_out_total", &route), rows);
     let sent = [("source", "0"), ("route", "r"), ("pipeline", "0"), ("destination", "0")];
     assert_eq!(counter(&w, "smeltr_rows_sent_total", &sent), rows);

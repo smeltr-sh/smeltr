@@ -631,7 +631,7 @@ impl Output {
 /// failed, a row it refused -- happened, and is counted when it happens.
 #[derive(Default)]
 struct Outcomes {
-    /// By route, the rows its condition took and the rows its pipeline passed on.
+    /// By route, the rows its condition took, their bytes as read, and the rows its pipeline passed on.
     routes: HashMap<usize, RouteRows>,
     /// By destination and the route that sent them; no route for a row no pipeline ran on.
     sent: HashMap<(DestId, Option<u32>), Sent>,
@@ -646,6 +646,7 @@ struct Outcomes {
 #[derive(Default)]
 struct RouteRows {
     matched: u64,
+    matched_bytes: u64,
     out: u64,
 }
 
@@ -1701,7 +1702,12 @@ impl Transform {
             );
             // The one batch this interval describes for the leader (`streams::Streams::due`): its Parsers tally
             // what they produce, which every other batch skips. A batch the route took no row of is not it.
-            let matched = bits::popcount(mask.bool().expect("a route mask is Bool").values) as u64;
+            let taken_by_route = mask.bool().expect("a route mask is Bool").values;
+            let matched = bits::popcount(taken_by_route) as u64;
+            let mut matched_bytes = 0u64;
+            bits::for_each_set(taken_by_route, slice.len(), |i| {
+                matched_bytes += slice[i].read_size() as u64
+            });
             let took_rows = matched > 0;
             let observed = match (&self.streams, &lane.source_name) {
                 (Some(streams), Some(name)) if took_rows && streams.due(route_idx) => Some((streams, name)),
@@ -1772,6 +1778,7 @@ impl Transform {
                 route_idx,
                 RouteRows {
                     matched,
+                    matched_bytes,
                     out: docs.rows.len() as u64,
                 },
             );
@@ -2295,6 +2302,8 @@ impl Transform {
             let [route, pipeline] = route_labels(idx);
             let labels = [("source", source_label), (route.0, &route.1), (pipeline.0, &pipeline.1)];
             self.metrics.incr("smeltr_route_matched_total", &labels, taken.matched);
+            self.metrics
+                .incr("smeltr_route_matched_bytes_total", &labels, taken.matched_bytes);
             self.metrics.incr("smeltr_route_out_total", &labels, taken.out);
         }
         for ((dest, route), sent) in o.sent {
