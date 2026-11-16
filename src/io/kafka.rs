@@ -45,8 +45,8 @@ const PLACE_RETRY_EVERY: Duration = Duration::from_secs(5);
 /// group-wide rebalance churn.
 const MAX_POLL_INTERVAL: Duration = Duration::from_secs(300);
 
-/// How often a source's lag sampler pays for a broker round trip. Committed offsets come back in one batched call,
-/// but `fetch_watermarks` has no such form -- one call per assigned partition, every interval. E2's window is
+/// How often a source's lag sampler pays for a broker round trip. The read positions are the client's own, but
+/// `fetch_watermarks` has no batched form -- one call per assigned partition, every interval. E2's window is
 /// minutes wide, so nothing needs this fresher than a chart does, and `leader::warnings` reads lag in ten-second
 /// buckets: one bucket, one sample.
 const LAG_SAMPLE_INTERVAL: Duration = Duration::from_secs(10);
@@ -2476,8 +2476,8 @@ mod tests {
         };
         let mut source = KafkaSource::new(&config, &Default::default()).unwrap();
 
-        // Read the first three, commit only the first, then block: two read but not durable, and everything produced
-        // from here on unread.
+        // Read the first three, commit only the first, then block: everything produced from here on is unread, and the
+        // two read but not committed are not lag.
         let deadline = Instant::now() + Duration::from_secs(20);
         let mut got = 0;
         while got < 3 && Instant::now() < deadline {
@@ -2493,21 +2493,21 @@ mod tests {
         source.block().unwrap();
         produce_n(&mock, topic, 5);
 
-        // High watermark 8, committed 1: lag 7, and it must arrive while blocked, with `poll_batch` returning nothing.
+        // High watermark 8, read 3: lag 5, and it must arrive while blocked, with `poll_batch` returning nothing.
         let deadline = Instant::now() + Duration::from_secs(30);
         let mut seen = Vec::new();
         while Instant::now() < deadline {
             let batch = source.poll_batch(10, 1_000_000, Duration::from_millis(200)).unwrap();
             assert!(batch.is_empty(), "a blocked source must not consume");
             seen.extend(source.lag());
-            if seen.iter().any(|l| l.lag == 7) {
+            if seen.iter().any(|l| l.lag == 5) {
                 break;
             }
         }
         let sample = seen
             .iter()
-            .find(|l| l.lag == 7)
-            .unwrap_or_else(|| panic!("no sample with lag 7 while blocked; saw {seen:?}"));
+            .find(|l| l.lag == 5)
+            .unwrap_or_else(|| panic!("no sample with lag 5 while blocked; saw {seen:?}"));
         assert_eq!(sample.partition.topic.as_ref(), topic);
         assert_eq!(sample.partition.partition, 0);
     }

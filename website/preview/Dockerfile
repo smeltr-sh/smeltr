@@ -18,6 +18,8 @@ COPY Cargo.toml Cargo.lock build.rs ./
 COPY src/ src/
 COPY tools/citations/ tools/citations/
 COPY tools/check-scope/ tools/check-scope/
+COPY tools/frontends.json tools/
+COPY gui-frontend/not-built/ gui-frontend/not-built/
 COPY .git/ .git/
 # The service serves no GUI; the page that asks it is the website's.
 ENV SMELTR_NO_GUI=1

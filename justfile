@@ -55,18 +55,17 @@ need-deny: (need "cargo-deny" "Run: cargo install cargo-deny --locked")
 [private]
 need-docker: (need "docker" "Install Docker from https://docs.docker.com/get-docker")
 
-# Frontend, then an optimized binary embedding it. Quick to rebuild; `dist` builds what you ship.
+# Frontends, then an optimized binary embedding them. Quick to rebuild; `dist` builds what you ship.
 [group("dev")]
-build: need-rust gui
+build: need-rust frontends
     cargo build --release --bin smeltr
 
-# What the GUI tests and screenshots run: the frontend, the demo site and unoptimized binaries embedding them. They
+# What the GUI tests and screenshots run: the frontends, the demo site and unoptimized binaries embedding them. They
 # share `target/debug` with the Rust tests, so the dependencies build once, and a GUI edit rebuilds in less than half
 # of the time `build` takes.
-[doc("Frontend and demo, then unoptimized binaries embedding them: what the GUI tests run.")]
+[doc("Frontends and demo, then unoptimized binaries embedding them: what the GUI tests run.")]
 [group("dev")]
-build-dev: need-rust gui fips-dll
-    npm --prefix gui-frontend run build:demo
+build-dev: need-rust (frontends "gui" "docs" "demo") fips-dll
     cargo build --bin smeltr --bin smeltr-demo
 
 # Windows loads the AWS-LC FIPS module from a DLL beside each binary, the test binaries in `deps` included
@@ -85,14 +84,14 @@ fips-dll: need-rust
 # The website demo: the GUI over the leader its page plays, in
 # gui-frontend/dist-demo, and the preview service it asks.
 [group("dev")]
-demo: need-rust gui
-    npm --prefix gui-frontend run build:demo
+demo: need-rust (frontends "gui" "docs" "demo")
     cargo build --release --bin smeltr-demo
 
-# Frontend only -- what to run when build.rs says dist is stale.
+# Builds the frontends `tools/frontends.json` names, or each one the binary embeds when none is named, each only when
+# stale -- what to run when build.rs says one is stale.
 [group("dev")]
-gui: deps-gui
-    node gui-frontend/build-if-stale.mjs
+frontends *names: deps-gui deps-website
+    node tools/build-if-stale.mjs {{names}}
 
 [private]
 deps-gui: need-node
@@ -174,7 +173,7 @@ sbom image="smeltr:latest": need-docker
 
 [doc("Release archives from a committed branch, and SHA256SUMS.")]
 [windows]
-dist: need-rust gui
+dist: need-rust frontends
     powershell -NoProfile -ExecutionPolicy Bypass -File tools/dist.ps1 "{{version}}"
 
 [private]
@@ -449,12 +448,6 @@ website: need-node
     npm --prefix website run format:check
     npm --prefix website run check
     npm --prefix website run build
-    node website/scripts/docs-markdown.js --check
-
-# The docs as Markdown the leader's AI agent reads, written from the website's build. Run it after a change to the docs.
-docs-markdown: need-node
-    npm --prefix website run build
-    node website/scripts/docs-markdown.js --leader
 
 # `--wait` blocks on tests/live/compose.live.yaml's healthchecks. The fixture topics
 # need four partitions each; an auto-created topic gets one. These recipes
@@ -632,13 +625,13 @@ check-tls: tls-up
 # a call site pays to raise a log, and memory-budget-cost what the memory
 # budget's accounting costs, record-cost a typed record against the same data
 # as `_raw` JSON, and guard-cost a guarded write by how many rows its guard
-# takes. Builds past a stale GUI, which is what
-# `SMELTR_ALLOW_STALE_GUI` is for: a benchmark does not embed the frontend.
+# takes. Builds even when the frontends are stale, which is what
+# `SMELTR_ALLOW_STALE_FRONTENDS` is for: a benchmark does not need them.
 [doc("Every profiling suite, and its numbers.")]
 [group("dev")]
 [env("KAFKA_TEST_BROKERS", "localhost:19092")]
 [env("ES_TEST_URL", "http://localhost:9200")]
-[env("SMELTR_ALLOW_STALE_GUI", "1")]
+[env("SMELTR_ALLOW_STALE_FRONTENDS", "1")]
 measure:
     cargo test --profile dist --test panos-ecs-profile --test logs-cost --test memory-budget-cost --test record-cost --test guard-cost -- --ignored --nocapture --test-threads=1
     just live-up
@@ -677,7 +670,7 @@ bench-log:
 [env("MYSQL_TEST_HOST", "127.0.0.1:13306")]
 [env("MARIADB_TEST_HOST", "127.0.0.1:13307")]
 [env("SMELTR_LIVE_TESTS", "required")]
-[env("SMELTR_ALLOW_STALE_GUI", "1")]
+[env("SMELTR_ALLOW_STALE_FRONTENDS", "1")]
 connector-speed: live-up
     cargo test --profile dist --test connector-speed -- --ignored --exact speed --nocapture
 
@@ -704,14 +697,14 @@ fmt: need-rust deps-gui deps-website
 run-dev: build-dev
     cargo run --bin smeltr
 
-# Frontend, then an optimized binary, started.
+# Frontends, then an optimized binary, started.
 [unix]
-run: gui
+run: frontends
     cargo run --release --bin smeltr
 
 # Windows loads the AWS-LC FIPS module from a DLL beside the binary (`tools/fips-dll.ps1`).
 [windows]
-run: gui
+run: frontends
     cargo build --release --bin smeltr
     powershell -NoProfile -ExecutionPolicy Bypass -File tools/fips-dll.ps1 "{{ env('CARGO_TARGET_DIR', 'target') }}/release"
     cargo run --release --bin smeltr

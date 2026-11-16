@@ -7,10 +7,11 @@
 //!   its name (`src/io/kafka.rs` picks `kafka_tests`), and the tests whose source names its path. One under
 //!   `src/bin/` picks the binaries' tests and the tests that launch the binary.
 //! - A `tests/` file picks its integration module or its own test target. One the targets share picks all of them.
-//! - The GUI picks its own checks. The site picks its own and the tests that hold it to the engine, except what the
-//!   GUI or `build.rs` names, which runs everything.
+//! - The GUI picks its own checks. The site picks its own and the tests that hold it to the engine; a site path the GUI
+//!   or `tools/frontends.json` names runs everything.
 //! - A crate under `tools/` picks its own tests.
-//! - `Cargo.toml`, `Cargo.lock`, `deny.toml` and `build.rs` pick every Rust test; all but `build.rs` add `cargo deny`.
+//! - `Cargo.toml`, `Cargo.lock`, `deny.toml`, `build.rs` and `tools/frontends.json` pick every Rust test; the first
+//!   three add `cargo deny`.
 //! - Any other file picks the Rust tests whose source names it. One nothing names, or no merge base, runs everything:
 //!   a path not placed costs time, never coverage.
 
@@ -142,7 +143,7 @@ impl Owner {
 }
 
 /// The sources the plan reads: every `.rs` file under `src/` and `tests/`, and the site paths the GUI and
-/// `build.rs` name.
+/// `tools/frontends.json` name.
 struct Tree {
     sources: BTreeMap<String, String>,
     /// Files a `#[path]` attribute places, by the module path it gives them.
@@ -173,7 +174,7 @@ impl Tree {
                 );
             }
         }
-        for file in ["Cargo.toml", "build.rs", "gui-frontend/vite.config.ts"] {
+        for file in ["Cargo.toml", "tools/frontends.json", "gui-frontend/vite.config.ts"] {
             if let Ok(text) = fs::read_to_string(root.join(file)) {
                 files.insert(file.to_string(), text);
             }
@@ -186,9 +187,9 @@ impl Tree {
         let mut shared_site = BTreeSet::new();
         let mut site_importers = BTreeSet::new();
         for (path, text) in &files {
-            if path == "build.rs" || path.starts_with("gui-frontend/") {
+            if path == "tools/frontends.json" || path.starts_with("gui-frontend/") {
                 let names = site_names(text);
-                if path != "build.rs" && !names.is_empty() {
+                if path != "tools/frontends.json" && !names.is_empty() {
                     site_importers.insert(path.clone());
                 }
                 shared_site.extend(names);
@@ -279,8 +280,9 @@ impl Tree {
         if path.starts_with("website/") {
             if self.shared_site.iter().any(|n| path.starts_with(n.as_str())) {
                 plan.all = true;
-                plan.why
-                    .push(format!("{path}: the GUI or build.rs reads it, so everything"));
+                plan.why.push(format!(
+                    "{path}: the GUI or tools/frontends.json reads it, so everything"
+                ));
                 return true;
             }
             plan.website = true;
@@ -311,10 +313,13 @@ impl Tree {
             why(plan, &format!("the {name} crate's tests"));
             return true;
         }
-        if matches!(path, "Cargo.toml" | "Cargo.lock" | "deny.toml" | "build.rs") {
+        if matches!(
+            path,
+            "Cargo.toml" | "Cargo.lock" | "deny.toml" | "build.rs" | "tools/frontends.json"
+        ) {
             plan.rust_all = true;
             plan.clippy = true;
-            plan.deny |= path != "build.rs";
+            plan.deny |= matches!(path, "Cargo.toml" | "Cargo.lock" | "deny.toml");
             why(plan, "every Rust test");
             return true;
         }
@@ -590,7 +595,7 @@ mod tests {
                 "src/ops/stdfuncs.rs",
                 "include_str!(\"../../gui-frontend/src/stdlib.ts\")",
             ),
-            ("build.rs", "watch(\"website/src/lib/highlight\")"),
+            ("tools/frontends.json", "\"../website/src/lib/highlight\""),
             (
                 "gui-frontend/src/main.ts",
                 "import '../../website/src/lib/foundry/palette.css';",
@@ -708,7 +713,7 @@ mod tests {
     }
 
     #[test]
-    fn the_site_runs_everything_only_where_the_gui_or_build_rs_reads_it() {
+    fn the_site_runs_everything_only_where_the_gui_or_the_frontends_list_reads_it() {
         assert!(plan(&["website/src/lib/highlight/x.ts"]).all);
         let p = plan(&["website/src/routes/a.svelte"]);
         assert!(p.website && p.docs && !p.all);
@@ -722,6 +727,8 @@ mod tests {
     fn the_manifests_run_every_rust_test_and_deny() {
         let p = plan(&["Cargo.lock"]);
         assert!(p.rust_all && p.deny && p.clippy);
+        let p = plan(&["tools/frontends.json"]);
+        assert!(p.rust_all && !p.deny);
         assert_eq!(p.jobs()[0], ["check-rust"]);
     }
 

@@ -4,7 +4,7 @@ use axum::body::Body;
 use axum::http::{StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 
-include!(concat!(env!("OUT_DIR"), "/embedded_assets.rs"));
+use smeltr::embedded;
 
 /// One bundler's output needs one short table. Unknown extensions download rather than being guessed at.
 fn content_type(path: &str) -> &'static str {
@@ -22,15 +22,10 @@ fn content_type(path: &str) -> &'static str {
     }
 }
 
-/// A scan, so the lookup holds whatever order `build.rs` writes the table in. A Vite build is a few dozen files.
-fn lookup(path: &str) -> Option<&'static [u8]> {
-    ASSETS.iter().find(|(name, _)| *name == path).map(|(_, bytes)| *bytes)
-}
-
-/// Whether this build carries only `build.rs`'s placeholder page. A real Vite build always emits hashed files under
-/// `assets/`.
+/// Whether this build carries only the page `gui-frontend/not-built` holds: a real Vite build always emits hashed files
+/// under `assets/`, and this build has none.
 pub fn is_placeholder_only() -> bool {
-    ASSETS.len() == 1 && ASSETS[0].0 == "index.html"
+    embedded::files("gui").all(|(path, _)| path == "index.html")
 }
 
 /// Serves an embedded asset. A path that is plainly not a file falls back
@@ -40,7 +35,7 @@ pub async fn serve(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
 
-    if let Some(bytes) = lookup(path) {
+    if let Some(bytes) = embedded::file("gui", path) {
         return (
             StatusCode::OK,
             [(header::CONTENT_TYPE, content_type(path))],
@@ -54,7 +49,7 @@ pub async fn serve(uri: Uri) -> Response {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     }
 
-    match lookup("index.html") {
+    match embedded::file("gui", "index.html") {
         Some(bytes) => (
             StatusCode::OK,
             [(header::CONTENT_TYPE, content_type("index.html"))],
@@ -71,7 +66,7 @@ mod tests {
 
     #[test]
     fn there_is_always_an_index() {
-        assert!(lookup("index.html").is_some());
+        assert!(embedded::file("gui", "index.html").is_some());
     }
 
     #[test]

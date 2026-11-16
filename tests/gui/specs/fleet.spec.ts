@@ -329,6 +329,19 @@ test('rows in and out are charted over the window the engineer picks', async ({
   await expect(table.getByRole('row', { name: /own-metrics\s+east/ })).toBeVisible();
   await expect(table.getByRole('row', { name: /^Total/ })).toBeVisible();
   await shoot(admin, flow, 'flow-sources');
+  // Each column sorts the table, as the Status page's other tables do.
+  await table.getByRole('button', { name: 'Name' }).click();
+  await expect(table.getByRole('columnheader', { name: 'Name' })).toHaveAttribute(
+    'aria-sort',
+    'ascending',
+  );
+  await table.getByRole('button', { name: 'Rows sent' }).click();
+  await table.getByRole('button', { name: 'Rows sent' }).click();
+  await expect(table.getByRole('columnheader', { name: 'Rows sent' })).toHaveAttribute(
+    'aria-sort',
+    'descending',
+  );
+  await shoot(admin, flow, 'flow-sorted');
   await flow
     .getByRole('group', { name: 'Show by' })
     .getByRole('button', { name: 'Routes' })

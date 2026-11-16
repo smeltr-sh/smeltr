@@ -33,9 +33,10 @@ trap 'git -C "$root" worktree remove --force "$work/ref" 2>/dev/null || true; rm
 # The test binary's path changes with its hash, so ask cargo for it and copy it aside. Both sides build as
 # `[profile.dist]` does, what ships; as overrides, since the reference predates that profile. Each side has a
 # target of its own: cargo hashes a path package by name and version, so a shared one runs one side's build script
-# for the other, and a target an older run shared can still hold the other side's output.
+# for the other, and a target an older run shared can still hold the other side's output. A reference commit from before the
+# rename reads only `SMELTR_ALLOW_STALE_GUI`, so both are set.
 build() {
-    (cd "$1" && SMELTR_ALLOW_STALE_GUI=1 CARGO_TARGET_DIR=$3 \
+    (cd "$1" && SMELTR_ALLOW_STALE_FRONTENDS=1 SMELTR_ALLOW_STALE_GUI=1 CARGO_TARGET_DIR=$3 \
         CARGO_PROFILE_RELEASE_LTO=fat CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
         cargo test --release --test reference-pipelines --no-run --message-format=json) |
         jq -r 'select(.executable != null and .target.name == "reference-pipelines") | .executable' |

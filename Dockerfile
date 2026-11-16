@@ -1,18 +1,18 @@
 # syntax=docker/dockerfile:1
 # The stages split so that nothing which compiled the binary ships with it.
 
-# ---- frontend: gui-frontend/dist, embedded into the binary at compile time (build.rs) -------------------------
-FROM node:26-bookworm-slim AS frontend
-WORKDIR /src/gui-frontend
-COPY gui-frontend/package.json gui-frontend/package-lock.json ./
-RUN npm ci
-COPY gui-frontend/ ./
-# Expression fields color code with the website's tokenizer and suggest from its language reference; the palette
-# and controls are the website's too.
-COPY website/src/lib/highlight/ /src/website/src/lib/highlight/
-COPY website/src/lib/foundry/ /src/website/src/lib/foundry/
-COPY website/src/lib/reference.json website/src/lib/code-language.json /src/website/src/lib/
-RUN npm run build
+# ---- frontends: what the binary embeds (tools/frontends.json), built as `just` builds them --------------------
+FROM node:26-bookworm-slim AS frontends
+WORKDIR /src
+COPY gui-frontend/package.json gui-frontend/package-lock.json gui-frontend/
+COPY website/package.json website/package-lock.json website/
+RUN npm --prefix gui-frontend ci && npm --prefix website ci
+COPY gui-frontend/ gui-frontend/
+COPY website/ website/
+COPY tools/frontends.json tools/build-if-stale.mjs tools/
+# The site's license page shows it.
+COPY COMMERCIAL-LICENSE.md ./
+RUN node tools/build-if-stale.mjs
 
 # ---- builder: the `smeltr` binary ------------------------------------------------------------------------------
 # The same base as the runtime stage, so the binary's glibc floor cannot land above the glibc it runs on. Build
@@ -40,8 +40,11 @@ COPY Cargo.toml Cargo.lock build.rs ./
 COPY src/ src/
 COPY tools/citations/ tools/citations/
 COPY tools/check-scope/ tools/check-scope/
+COPY tools/frontends.json tools/
+COPY gui-frontend/not-built/ gui-frontend/not-built/
 COPY .git/ .git/
-COPY --from=frontend /src/gui-frontend/dist gui-frontend/dist
+COPY --from=frontends /src/gui-frontend/dist gui-frontend/dist
+COPY --from=frontends /src/website/leader-docs website/leader-docs
 # The registry and `target` are cache mounts, so a source change recompiles smeltr alone: the vendored C --
 # AWS-LC, librdkafka, krb5, SASL, OpenSSL, SQLite, curl -- turns over only when Cargo.lock does. A cache mount is
 # not part of the image, so the binary is copied out of it here, and the stages below take it from /smeltr.
