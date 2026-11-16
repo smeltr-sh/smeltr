@@ -1,0 +1,22 @@
+{
+  "gui-frontend": {
+    "output": "dist",
+    "sources": [
+      "src",
+      "public",
+      "index.html",
+      "package.json",
+      "../website/src/lib/highlight",
+      "../website/src/lib/foundry",
+      "../website/src/lib/reference.json",
+      "../website/src/lib/code-language.json"
+    ],
+    "missing": "GUI baked in -- it will serve a page saying so",
+    "placeholder": "not-built"
+  },
+  "website": {
+    "output": "leader-docs",
+    "sources": ["src", "scripts", "package.json", "vite.config.ts"],
+    "missing": "docs for its AI agent to read"
+  }
+}

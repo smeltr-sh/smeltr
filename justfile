@@ -92,7 +92,7 @@ demo: need-rust frontends
 # The GUI and the docs its AI agent reads, each built when stale -- what to run when build.rs says one is stale.
 [group("dev")]
 frontends: deps-gui deps-website
-    node tools/build-if-stale.mjs gui docs
+    node tools/build-if-stale.mjs
 
 [private]
 deps-gui: need-node

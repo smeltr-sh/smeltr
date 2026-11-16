@@ -50,6 +50,8 @@ COPY Cargo.toml Cargo.lock build.rs ./
 COPY src/ src/
 COPY tools/citations/ tools/citations/
 COPY tools/check-scope/ tools/check-scope/
+COPY tools/frontends.json tools/
+COPY gui-frontend/not-built/ gui-frontend/not-built/
 COPY .git/ .git/
 COPY --from=frontend /src/gui-frontend/dist gui-frontend/dist
 COPY --from=docs /src/website/leader-docs website/leader-docs

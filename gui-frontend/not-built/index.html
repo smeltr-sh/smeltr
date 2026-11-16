@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>smeltr - GUI not built</title>
+<style>
+  body {
+    font:
+      15px/1.6 system-ui,
+      sans-serif;
+    max-width: 40rem;
+    margin: 4rem auto;
+    padding: 0 1.5rem;
+  }
+  code {
+    background: #f4f4f5;
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+  }
+  pre {
+    background: #f4f4f5;
+    padding: 0.8rem 1rem;
+    border-radius: 6px;
+    overflow-x: auto;
+  }
+</style>
+<h1>The GUI was not built into this binary</h1>
+<p>
+  smeltr is running -- its API is answering on this same port -- but the browser assets were absent
+  when this executable was compiled, so there is no interface to show you.
+</p>
+<p>Build the frontend and rebuild smeltr:</p>
+<pre>
+cd gui-frontend &amp;&amp; npm ci &amp;&amp; npm run build
+cargo build --release</pre>
