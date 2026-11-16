@@ -6008,8 +6008,8 @@ mod tests {
 
     /// The logs buffer is the process's, so what it reports about itself carries no thread -- and a
     /// redeploy, which retires every thread-labeled key the new deployment has no counterpart for, leaves it
-    /// alone. `smeltr_logs_written_total` does carry a `site`, which is a call site rather than a thread and so
-    /// is nobody's to retire.
+    /// alone. `smeltr_logs_written_total` does carry a `class` and `type`, which name a line rather than a thread
+    /// and so are nobody's to retire.
     #[test]
     fn what_the_logs_buffer_reports_belongs_to_no_thread() {
         let registry = Arc::new(Metrics::new());
