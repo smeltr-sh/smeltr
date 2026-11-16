@@ -149,7 +149,7 @@ pub fn build_destination(
             // certificate is parsed once rather than once per sender.
             let config = http::agent_config(c.tls.as_ref(), secrets)?;
             let protocol = elastic::Elastic::new(c.default_index.clone())
-                .with_doc_id_policy(c.doc_id)
+                .with_action(c.action)
                 .with_unwritten(http::Unwritten::new(metrics.clone(), id, name));
             // One transport per request the buffer affords, each with its own connection, and one more for the
             // destination's own. The loop starts at `in_flight` and climbs; the senders above it are parked until it

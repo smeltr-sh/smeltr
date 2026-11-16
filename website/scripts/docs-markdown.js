@@ -1,15 +1,15 @@
 // The docs as Markdown, for language models: the site's and the leader's AI agent's one text.
 //
 // Converts each docs page `vite build` prerendered. Writes each page's twin beside it (`docs/x.html` gets
-// `docs/x.md`) and `llms.txt`, which lists them. With `--leader`, also writes `src/leader/docs.json`, each page cut
-// into its sections at its headings; with `--check`, fails when that file is not what this build makes.
+// `docs/x.md`), `llms.txt`, which lists them, and `leader-docs/docs.json`, each page cut into its sections at its
+// headings, which build.rs embeds for the leader's AI agent.
 
-import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { Window } from 'happy-dom';
 import TurndownService from 'turndown';
 
 const BUILD = new URL('../build/', import.meta.url);
-const LEADER = new URL('../../src/leader/docs.json', import.meta.url);
+const LEADER = new URL('../leader-docs/', import.meta.url);
 
 const turndown = new TurndownService({
   headingStyle: 'atx',
@@ -211,24 +211,8 @@ writeFileSync(
   ].join('\n'),
 );
 
-if (process.argv.includes('--leader') || process.argv.includes('--check')) {
-  // A section to a line, so a diff shows the section that changed rather than its whole page.
-  const page = (p) => {
-    const head = JSON.stringify({ path: p.path, title: p.title });
-    const body = sections(p)
-      .map((s) => JSON.stringify(s))
-      .join(',\n');
-    return `${head.slice(0, -1)},"sections":[\n${body}\n]}`;
-  };
-  const json = `[\n${all.map(page).join(',\n')}\n]\n`;
-  if (process.argv.includes('--check')) {
-    if (readFileSync(LEADER, 'utf8').replaceAll('\r\n', '\n') !== json) {
-      console.error(
-        'src/leader/docs.json is not what this build of the docs makes: run `just docs-markdown`.',
-      );
-      process.exit(1);
-    }
-  } else {
-    writeFileSync(LEADER, json);
-  }
-}
+mkdirSync(LEADER, { recursive: true });
+writeFileSync(
+  new URL('docs.json', LEADER),
+  JSON.stringify(all.map((p) => ({ path: p.path, title: p.title, sections: sections(p) }))),
+);

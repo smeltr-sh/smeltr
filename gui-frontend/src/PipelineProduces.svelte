@@ -3,29 +3,27 @@
   its rows do not fit them. The editor and review say where; nothing refuses a save.
 -->
 <script lang="ts">
+  import type { ComponentProps } from 'svelte';
   import SchemaChips from './SchemaChips.svelte';
-  import type { SchemaDto } from './api';
   import { count } from './time';
 
   let {
     produces = $bindable(),
-    declared,
     findings,
     readOnly = false,
+    ...chips
   }: {
     /** The schema ids, in the order named. */
     produces: string[];
-    /** The bundle's own schemas, `shared/`'s and the scope's. */
-    declared: SchemaDto[];
     /** What the last run found, absent before one. */
     findings: number | undefined;
     readOnly?: boolean;
-  } = $props();
+  } & Omit<ComponentProps<typeof SchemaChips>, 'ids' | 'adding' | 'readOnly'> = $props();
 </script>
 
 <div class="produces">
   <span class="label">Produces</span>
-  <SchemaChips bind:ids={produces} {declared} adding="Add a schema it produces" {readOnly} />
+  <SchemaChips bind:ids={produces} adding="Add a schema it produces" {readOnly} {...chips} />
   {#if readOnly && produces.length === 0}<span class="dim">no schema</span>{/if}
   <span class="grow"></span>
   {#if produces.length > 0 && findings !== undefined}

@@ -289,7 +289,7 @@ setup.ilm.enabled: false`;
   </p>
   <ul>
     <li>
-      On Kubernetes, add the port to the worker pods and put a Service in front of them:
+      On Kubernetes, add a Service that sends to the port:
       <a href="/docs/enroll-worker/kubernetes#receiver">Expose a receiver</a>.
     </li>
     <li>

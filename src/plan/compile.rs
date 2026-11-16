@@ -16,6 +16,7 @@ use crate::core::id::{FunctionId, SlotId};
 use crate::expr::ast::{Catch, Expr, ExprKind, Region, Site, Span, Stmt, Value};
 use crate::expr::ir::{Ir, IrKind, Layer, flatten};
 use crate::expr::parse::parse_block_shaped;
+use crate::format::grok_pattern::Holds;
 use crate::ops::BinOp;
 use crate::plan::binding::{self, Source};
 use crate::plan::config::{
@@ -27,7 +28,7 @@ use crate::plan::parse_call::{ParseCall, matcher_keys};
 use crate::plan::resolve::{
     Origin, ResourceBuilder, Scope, SlotOrigin, SymbolTable, bind_element, binop_result, blend, coerce_ir, coercible,
     describe_expr, fits, holds_null, is_condition, lay_key, member_ir, object_key, refuse_variant, resolve, source_ir,
-    split_struct, unclaimed_ir, variant_use, widen_to,
+    split_struct, unclaimed_ir, undeclared_use, variant_use, widen_to,
 };
 use crate::plan::topology::{Placement, SourceMeta};
 use crate::plan::tree::{self, Node, Object, Place};
@@ -179,6 +180,9 @@ pub struct ParseObject {
     pub out: SlotId,
     /// Whether it is declared closed: a key under it that no field takes is dropped.
     pub closed: bool,
+    /// The record's or the target's, where a schema the pipeline produces types keys under it: the keys a dynamic
+    /// parse converts as it lays them.
+    pub schema: Option<std::sync::Arc<crate::format::spread::SchemaKeys>>,
 }
 
 /// What an `Op::Call` runs.
@@ -441,6 +445,8 @@ struct Compiler<'p> {
     tables: &'p HashMap<String, Result<LookupSource, String>>,
     /// The bundle's grok patterns (`PipelineConfig::grok_patterns`).
     grok_patterns: &'p GrokPatterns,
+    /// The schemas the pipeline produces (`PipelineConfig::produces`).
+    produces: &'p [std::sync::Arc<crate::schema::Schema>],
     syms: SymbolTable,
     res: ResourceBuilder,
     instrs: Vec<Instr>,
@@ -474,6 +480,8 @@ struct Compiler<'p> {
     folding: Vec<Folding>,
     /// What `type_at` asks: the type of an expression where a step begins.
     probe: Option<std::rc::Rc<Probe>>,
+    /// The fields the grok step being compiled has a chosen type for; its parse warns of any that no pattern captures.
+    chosen: Vec<String>,
 }
 
 /// A vectorized loop being compiled: its accumulators, each one's write with the type it binds once compiled, and
@@ -579,6 +587,7 @@ impl<'p> Compiler<'p> {
         Compiler {
             tables: &p.lookup_tables,
             grok_patterns: &p.grok_patterns,
+            produces: &p.produces,
             ingest: ingest.iter().map(|(n, _)| n.to_string()).collect(),
             tries: 0,
             regions: Vec::new(),
@@ -595,6 +604,7 @@ impl<'p> Compiler<'p> {
             hoisted: HashMap::new(),
             pass: Pass::Outside,
             probe,
+            chosen: Vec::new(),
         }
     }
 
@@ -694,7 +704,7 @@ pub fn compile(p: &PipelineConfig, meta: &SourceMeta) -> Result<Plan, Vec<Compil
         step_ids: p.step_ids.clone(),
         id_label: p.id.to_string(),
         placement_slots: Placement::ALL.map(|p| c.syms.lookup(p.field())),
-        id_out_slot: c.syms.lookup("__destination.id"),
+        id_out_slot: c.syms.lookup(crate::plan::topology::DOC_ID),
         slot_layout: c.syms.layout,
         instrs: c.instrs,
         provenance: c.syms.origins,
@@ -1514,6 +1524,7 @@ impl Compiler<'_> {
                 name: tree::key_under(target, &name).to_string(),
                 under,
                 closed,
+                schema: None,
             })
             .collect()
     }
@@ -2787,6 +2798,7 @@ impl Compiler<'_> {
     fn parse_into(&mut self, call: &ParseCall, in_slot: SlotId, dest: Dest, here: Here) {
         let Dest { target, ty, merge } = dest;
         let Here { guard, id } = here;
+        let chosen = std::mem::take(&mut self.chosen);
         let (kind, matcher) = match call.kind(self.grok_patterns) {
             Ok(k) => k,
             Err(message) => return self.err(Some(id), message),
@@ -2796,10 +2808,12 @@ impl Compiler<'_> {
             // Bytes are not text until a `decode` says how to read them.
             DataType::Str | DataType::Null => {}
             DataType::Variant => {
-                return self.err(
-                    Some(id),
-                    format!("`{}` {}", describe_expr(call.input), variant_use(None)),
-                );
+                let named = match &call.input.kind {
+                    ExprKind::Field(name) => undeclared_use(name, &format!("`{name}: str = {name};`"), &self.syms),
+                    _ => None,
+                };
+                let message = named.unwrap_or_else(|| format!("`{}` {}", describe_expr(call.input), variant_use(None)));
+                return self.err(Some(id), message);
             }
             t => {
                 let mut message = format!(
@@ -2815,13 +2829,21 @@ impl Compiler<'_> {
             }
         }
         let keys = matcher_keys(&kind, &matcher);
-        if let Some(k) = keys.iter().flatten().find(|k| tree::is_internal(tree::head(k))) {
+        if let Some((k, _)) = keys.iter().flatten().find(|(k, _)| tree::is_internal(tree::head(k))) {
             return self.err(
                 Some(id),
                 format!("`{k}` is the engine's own field; give the capture or column another name"),
             );
         }
-        if self.writes_a_local(target, keys.iter().flatten(), id) {
+        for name in chosen {
+            if !keys.iter().flatten().any(|(k, _)| *k == name) {
+                self.warn(
+                    id,
+                    format!("no pattern captures `{name}`, so this step never writes it"),
+                );
+            }
+        }
+        if self.writes_a_local(target, keys.iter().flatten().map(|(k, _)| k), id) {
             return;
         }
         let formats = match call.formats() {
@@ -2897,9 +2919,18 @@ impl Compiler<'_> {
                         Origin::Function(id),
                     ),
                     closed: *closed,
+                    schema: None,
                 })
                 .collect(),
         };
+        let mut objects = objects;
+        if matches!(
+            kind,
+            ParserKind::Json { .. } | ParserKind::KeyValue(_) | ParserKind::Cef { .. }
+        ) && let Some(o) = objects.iter_mut().find(|o| o.name.is_empty())
+        {
+            o.schema = self.schema_keys(target).map(std::sync::Arc::new);
+        }
         // A declared object the tree does not hold is new, and replaces what held its name, as each object a parse
         // into a name writes does.
         let new: Vec<&String> = declared_objects
@@ -3372,14 +3403,32 @@ impl Compiler<'_> {
         }
     }
 
+    /// The keys under `target` the schemas the pipeline produces type, each where they agree on a type a parse reads
+    /// text as (`schema::read_as`).
+    fn schema_keys(&self, target: &str) -> Option<crate::format::spread::SchemaKeys> {
+        let paths: std::collections::BTreeSet<&str> = self
+            .produces
+            .iter()
+            .flat_map(|s| s.fields.iter().map(|f| f.path.as_str()))
+            .collect();
+        crate::format::spread::SchemaKeys::new(paths.into_iter().filter_map(|path| {
+            let key = match target {
+                "" | tree::ROOT => path,
+                t => path.strip_prefix(t)?.strip_prefix('.')?,
+            };
+            Some((key.to_string(), crate::schema::read_as(self.produces, path)?))
+        }))
+    }
+
     /// What a parse into `target` declares: every field the target holds, at its type, where the parse may find any
-    /// key; the keys it can find, where it finds only those (`keys`), each at the type the target or `ty` holds, else
-    /// `str`. A new target with no `ty` is an open object.
+    /// key; the keys it can find, where it finds only those (`keys`), each at the type the target or `ty` gives it,
+    /// else the type a schema the pipeline produces gives it, else the type the parse gives it (`Holds::under`). A new
+    /// target with no `ty` is an open object.
     fn parse_fields(
         &self,
         target: &str,
         kind: &ParserKind,
-        keys: Option<Vec<String>>,
+        keys: Option<Vec<(String, Holds)>>,
         ty: Option<&DataType>,
     ) -> Vec<DeclaredField> {
         let field = |name: String, ty: DataType| DeclaredField {
@@ -3395,11 +3444,16 @@ impl Compiler<'_> {
                 }
                 _ => (Vec::new(), true),
             };
-            for k in keys {
+            for (k, holds) in keys {
                 let name = tree::join(target, &k);
                 if open && declared.iter().all(|d| d.name != name) {
-                    let ty = self.held_type(target, &name, ty).unwrap_or(DataType::Str);
-                    declared.push(field(name, ty));
+                    declared.push(match self.held_type(target, &name, ty) {
+                        Some(ty) => field(name, ty),
+                        None => {
+                            let Holds { ty, time_source } = holds.under(self.produces, &name);
+                            DeclaredField { name, ty, time_source }
+                        }
+                    });
                 }
             }
             return declared;
@@ -3439,13 +3493,10 @@ impl Compiler<'_> {
         // misses on every row.
         let in_ty = match self.syms.type_of(in_slot).clone() {
             DataType::Variant => {
-                self.err(
-                    Some(id),
-                    format!(
-                        "lookup input `{input}` {}",
-                        variant_use(Some(&format!("`{input}: str = {input};`")))
-                    ),
-                );
+                let hint = format!("`{input}: str = {input};`");
+                let message = undeclared_use(input, &hint, &self.syms)
+                    .unwrap_or_else(|| format!("lookup input `{input}` {}", variant_use(Some(&hint))));
+                self.err(Some(id), message);
                 return;
             }
             t => t,
@@ -4533,7 +4584,12 @@ impl Compiler<'_> {
                 into,
                 kind,
                 declared,
-            } => lower::parser(input, into, kind, declared, |n| self.held(n)),
+            } => {
+                if let ParserKind::Grok(_) = kind {
+                    self.chosen = declared.iter().map(|d| d.name.clone()).collect();
+                }
+                lower::parser(input, into, kind, declared, |n| self.held(n))
+            }
             FunctionKind::Lookup {
                 input,
                 table,
@@ -4557,6 +4613,7 @@ impl Compiler<'_> {
             c.code_block(&lowered.body, here);
             c.code_block(&lowered.after, Here { guard: outer, ..here });
         });
+        self.chosen.clear();
     }
 
     /// Compile the code `stmts` under `here`'s guard, each function it calls expanded.
@@ -4759,6 +4816,7 @@ mod tests {
             step_ids: vec!["eval-1".into()],
             lookup_tables: Default::default(),
             grok_patterns: Default::default(),
+            produces: Vec::new(),
         }
     }
 
@@ -4802,6 +4860,22 @@ mod tests {
             FunctionKind::Code { body: body.into() },
         ))];
         p
+    }
+
+    /// A name read from the fields an open record's source does not declare is said to be one; a name a parse leaves
+    /// unclaimed is a variant, as anywhere.
+    #[test]
+    fn a_name_the_source_does_not_declare_is_said_so() {
+        let meta = SourceMeta::KAFKA
+            .declaring_open(vec![("f".into(), DataType::Str)])
+            .unwrap();
+        let error = |body: &str| compile(&code_pipeline(body), &meta).expect_err(body)[0].message.clone();
+        assert_eq!(
+            error("Object.assign($, json(_raw))"),
+            "`_raw` is not a field this source declares. Read a field it declares, or give `_raw` a type to read it \
+             from the record's other fields -- `_raw: str = _raw;`"
+        );
+        assert!(error("Object.assign($, json(f)); x = z.trim()").starts_with("`z` is a variant"));
     }
 
     /// A filter of `true` runs the step on every row, as no filter does: what it deletes leaves the record, and it

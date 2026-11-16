@@ -909,6 +909,9 @@ struct ReaderHandle {
     report: Arc<Mutex<child::ReaderReport>>,
     stop: Arc<Stop>,
     thread: JoinHandle<()>,
+    /// True for a reader that reports on the others, such as a metrics source: it stops after them, so its last poll
+    /// carries what they counted to the end.
+    stops_last: bool,
 }
 
 /// One thread of the transform pool. It holds no source, so it owns no partitions.
@@ -1021,12 +1024,18 @@ fn stop_deployment(mut deployment: Deployment) {
     for e in &deployment.egress {
         e.finish();
     }
-    for r in &deployment.readers {
-        r.stop.raise(drain_by);
-    }
-    // Ingest first: it stops polling and stays alive to commit what the pool still lands.
-    for r in std::mem::take(&mut deployment.readers) {
-        let _ = r.thread.join();
+    // Ingest first: it stops polling and stays alive to commit what the pool still lands. A reader that stops last
+    // begins stopping once the rest have ended, so what they counted to the end is there to read.
+    let (last, first): (Vec<_>, Vec<_>) = std::mem::take(&mut deployment.readers)
+        .into_iter()
+        .partition(|r| r.stops_last);
+    for readers in [first, last] {
+        for r in &readers {
+            r.stop.raise(drain_by);
+        }
+        for r in readers {
+            let _ = r.thread.join();
+        }
     }
     for t in &deployment.pool {
         t.stop.raise(drain_by);
@@ -1249,6 +1258,7 @@ fn spawn_reader(
     let destinations: Vec<crate::core::id::DestId> =
         topology.destinations_reachable_from(source_id).into_iter().collect();
 
+    let stops_last = matches!(kind, crate::plan::topology::SourceKind::Metrics(_));
     let stop = Arc::new(Stop::default());
     let thread_id = format!("reader-{source_id}");
     let report = Arc::new(Mutex::new(child::ReaderReport {
@@ -1294,6 +1304,7 @@ fn spawn_reader(
             report,
             stop,
             thread: handle,
+            stops_last,
         },
         lane,
     ))
@@ -1667,7 +1678,6 @@ fn pool_targets(
             name: d.name.clone(),
             destination: Box::new(e.handle()),
             on_reject: d.on_reject.clone(),
-            wants_doc_id: d.kind.wants_doc_id(),
             placement: d.kind.placement(),
         });
     }
@@ -5671,7 +5681,7 @@ mod tests {
                 tls: None,
                 auth: None,
                 basic: None,
-                doc_id: DocIdPolicy::default(),
+                action: BulkAction::default(),
                 in_flight: 4,
                 max_bulk_bytes: 5 * 1024 * 1024,
                 buffer_bytes: 64 * 1024 * 1024,

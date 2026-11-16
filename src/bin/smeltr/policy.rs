@@ -92,8 +92,7 @@ pub fn need(method: &Method, path: &str) -> Need {
             Method::POST,
             [
                 "preview",
-                "grok" | "onboard" | "line-breaker" | "format" | "certificate" | "sql" | "schema-read"
-                | "schema-export",
+                "onboard" | "line-breaker" | "format" | "certificate" | "sql" | "schema-read" | "schema-export",
             ],
         )
         | (Method::GET | Method::HEAD, ["preview", "schema-standards"]) => Need::Somewhere(Level::Viewer),
@@ -171,8 +170,9 @@ fn in_area(method: &Method, within: &[&str]) -> Option<Level> {
             | ["pipelines", _, "export", "contents"]
             | ["tests"]
             | ["stats"]
-            | ["sources", _, "past"]
+            | ["sources", _, "past" | "chart"]
             | ["sources", _, "senders"]
+            | ["sources", _, "senders", "past" | "chart"]
             | ["lookups", "file" | "mmdb"]
             | [_, _, "connections"],
         ) => Level::Viewer,
@@ -186,9 +186,9 @@ fn in_area(method: &Method, within: &[&str]) -> Option<Level> {
         )
         | (Method::POST, ["undo"] | ["lookups", "upload"] | ["test-runs"] | ["imports"]) => Level::Editor,
         // What an admin says about a source's rows warning: it changes no configuration and touches no worker.
-        (Method::POST, ["sources", _, "lower" | "reset-history" | "mark"])
+        (Method::POST, ["sources", _, "reset-history" | "mark"])
         | (Method::PUT, ["sources", _, "preset"])
-        | (Method::POST, ["sources", _, "senders", "lower"])
+        | (Method::POST, ["sources", _, "senders", "mark"])
         | (Method::PUT, ["sources", _, "senders", "fields"]) => Level::Editor,
 
         // Samples, and what a preview of them shows.
@@ -343,10 +343,9 @@ mod tests {
     #[test]
     fn a_mark_on_a_sources_rows_warning_needs_editor_in_its_area() {
         for path in [
-            "/api/areas/payments/sources/s1/lower",
             "/api/areas/payments/sources/s1/reset-history",
             "/api/areas/payments/sources/s1/mark",
-            "/api/areas/payments/sources/s1/senders/lower",
+            "/api/areas/payments/sources/s1/senders/mark",
         ] {
             assert_eq!(need(&Method::POST, path), area("payments", Level::Editor), "{path}");
         }
@@ -356,10 +355,15 @@ mod tests {
         ] {
             assert_eq!(need(&Method::PUT, path), area("payments", Level::Editor), "{path}");
         }
-        assert_eq!(
-            need(&Method::GET, "/api/areas/payments/sources/s1/senders"),
-            area("payments", Level::Viewer)
-        );
+        for path in [
+            "/api/areas/payments/sources/s1/past",
+            "/api/areas/payments/sources/s1/chart",
+            "/api/areas/payments/sources/s1/senders",
+            "/api/areas/payments/sources/s1/senders/past",
+            "/api/areas/payments/sources/s1/senders/chart",
+        ] {
+            assert_eq!(need(&Method::GET, path), area("payments", Level::Viewer), "{path}");
+        }
     }
 
     #[test]
@@ -382,7 +386,6 @@ mod tests {
             assert_eq!(need(&method, path), area("payments", Level::Editor), "{method} {path}");
         }
         for path in [
-            "/api/preview/grok",
             "/api/preview/onboard",
             "/api/preview/line-breaker",
             "/api/preview/format",

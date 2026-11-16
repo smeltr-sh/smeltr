@@ -16,7 +16,7 @@ use smeltr::core::error::ExceptionKind;
 use smeltr::plan::compile::compile;
 use smeltr::plan::config::{Answer, Payload};
 use smeltr::plan::output::run_to_json;
-use smeltr::plan::topology::{DocIdPolicy, route_masks};
+use smeltr::plan::topology::{BulkAction, route_masks};
 
 fn join_errors(e: &[smeltr::plan::config::CompileError]) -> String {
     e.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("; ")
@@ -727,7 +727,7 @@ fn a_route_regex_condition_actually_matches_real_raw_bytes() {
     batch.put(SLOT_RAW, b.finish(), &mut pool);
 
     let mut ctx = Ctx::new(&mut pool, &mut errors);
-    let masks = route_masks(&topology.routes, source_id, &mut batch, &mut ctx, None);
+    let masks = route_masks(&topology.routes, source_id, &mut batch, &mut ctx);
     assert_eq!(masks.len(), 1);
     let (_, m0) = &masks[0];
     assert!(
@@ -1468,140 +1468,65 @@ fn elastic(system: &smeltr::config_file::LoadedSystem, i: usize) -> &smeltr::pla
     }
 }
 
-/// `docId` round-trips and the default is not written.
+/// `action` takes Elasticsearch's names, and the values `docId` had before still read: `auto` and `dedupe` as
+/// `create`, `overwrite` as `index`.
 #[test]
-fn a_document_id_policy_round_trips_and_the_default_stays_absent() {
-    let json = r#"{
+fn a_bulk_action_reads_its_names_and_the_old_ones() {
+    let es = |id: &str, extra: &str| {
+        format!(r#"{{"id":"{id}","type":"elasticsearch","url":"http://es:9200","defaultIndex":"logs"{extra}}}"#)
+    };
+    let json = format!(
+        r#"{{
       "version": 1,
-      "sources": [{"id":"s","type":"kafka","brokers":"b:9092","topics":["t"],"groupId":"g"}],
-      "destinations": [
-        {"id":"dedupe","type":"elasticsearch","url":"http://es:9200",
-         "defaultIndex":"logs","docId":"dedupe"},
-        {"id":"overwrite","type":"elasticsearch","url":"http://es:9200",
-         "defaultIndex":"logs","docId":"overwrite"},
-        {"id":"plain","type":"elasticsearch","url":"http://es:9200","defaultIndex":"logs"}
-      ],
-      "pipelines": [{"id":"p","name":"p","steps":[
-        {"id":"e","type":"eval","assignments":[{"target":"__destination.id","expr":"_raw"}]}
-      ]}],
-      "routes": [{"id":"r","source":"s","pipeline":"p",
-        "deliver":[{"to":["dedupe","overwrite","plain"]}]}]
-    }"#;
-    let system = load_str(json).expect("must load");
-    system.compile_topology().expect("must compile");
-    assert_eq!(elastic(&system, 0).doc_id, DocIdPolicy::Dedupe);
-    assert_eq!(elastic(&system, 1).doc_id, DocIdPolicy::Overwrite);
-    assert_eq!(elastic(&system, 2).doc_id, DocIdPolicy::Auto);
-
-    let reloaded = load_str(json).expect("re-load");
-    assert_eq!(elastic(&reloaded, 0).doc_id, DocIdPolicy::Dedupe);
+      "sources": [{{"id":"s","type":"kafka","brokers":"b:9092","topics":["t"],"groupId":"g"}}],
+      "destinations": [{}, {}, {}, {}, {}, {}],
+      "pipelines": [{{"id":"p","name":"p","steps":[]}}],
+      "routes": [{{"id":"r","source":"s","pipeline":"p",
+        "deliver":[{{"to":["plain","create","index","auto","dedupe","overwrite"]}}]}}]
+    }}"#,
+        es("plain", ""),
+        es("create", r#","action":"create""#),
+        es("index", r#","action":"index""#),
+        es("auto", r#","docId":"auto""#),
+        es("dedupe", r#","docId":"dedupe""#),
+        es("overwrite", r#","docId":"overwrite""#),
+    );
+    let system = load_str(&json).expect("must load");
+    system.compile_topology().expect("a pipeline that sets no id compiles");
+    let actions: Vec<BulkAction> = (0..6).map(|i| elastic(&system, i).action).collect();
+    use BulkAction::{Create, Index};
+    assert_eq!(actions, [Create, Create, Index, Create, Create, Index]);
 }
 
-/// A `docId` destination with no `__destination.id` upstream looks like it dedupes
-/// and does not.
+/// The id field names the field a document's `_id` is read from: `__destination.id` when it names none, and naming
+/// `__destination.id` says the same. A blank one names no field.
 #[test]
-fn a_doc_id_policy_needs_a_pipeline_that_sets_id_out() {
-    let json = |steps: &str| {
+fn an_id_field_names_where_the_id_is_read() {
+    let json = |extra: &str| {
         format!(
             r#"{{
               "version": 1,
               "sources": [{{"id":"s","type":"kafka","brokers":"b:9092","topics":["t"],"groupId":"g"}}],
               "destinations": [
-                {{"id":"es","type":"elasticsearch","url":"http://es:9200",
-                 "defaultIndex":"logs","docId":"dedupe"}}
+                {{"id":"es","type":"elasticsearch","url":"http://es:9200","defaultIndex":"logs"{extra}}}
               ],
-              "pipelines": [{{"id":"p","name":"p","steps":[{steps}]}}],
-              "routes": [{{"id":"r","source":"s","pipeline":"p",
-                "deliver":[{{"to":["es"]}}]}}]
+              "pipelines": [{{"id":"p","name":"p","steps":[]}}],
+              "routes": [{{"id":"r","source":"s","pipeline":"p","deliver":[{{"to":["es"]}}]}}]
             }}"#
         )
     };
-
-    let system = load_str(&json("")).expect("loads -- this is structural");
-    let Err(errs) = system.compile_topology() else {
-        panic!("a dedupe destination with no `__destination.id` upstream must not compile");
+    let id_field = |extra: &str| {
+        let system = load_str(&json(extra)).expect("must load");
+        system.compile_topology().expect("must compile");
+        system.topology.destinations[0].kind.id_field().map(str::to_string)
     };
-    assert!(errs.iter().any(|e| e.message.contains("__destination.id")), "{errs:?}");
-
-    let ok = load_str(&json(
-        r#"{"id":"e","type":"eval","assignments":[{"target":"__destination.id","expr":"_raw"}]}"#,
-    ))
-    .expect("must load");
-    ok.compile_topology().expect("must compile");
-}
-
-/// A destination naming its own `idField` needs nothing from the
-/// pipeline, and the field survives a save.
-#[test]
-fn a_destination_that_names_its_own_id_field_needs_nothing_from_the_pipeline() {
-    let json = r#"{
-      "version": 1,
-      "sources": [{"id":"s","type":"kafka","brokers":"b:9092","topics":["t"],"groupId":"g"}],
-      "destinations": [
-        {"id":"es","type":"elasticsearch","url":"http://es:9200",
-         "defaultIndex":"logs","docId":"dedupe","idField":"event.id"}
-      ],
-      "pipelines": [{"id":"p","name":"p","steps":[]}],
-      "routes": [{"id":"r","source":"s","pipeline":"p",
-        "deliver":[{"to":["es"]}]}]
-    }"#;
-    let system = load_str(json).expect("must load");
-    system.compile_topology().expect("must compile");
-    assert_eq!(elastic(&system, 0).id_field.as_deref(), Some("event.id"));
-    load_str(json)
-        .expect("re-load")
-        .compile_topology()
-        .expect("still compiles after a round trip");
-
-    let plain = json.replace(r#","docId":"dedupe","idField":"event.id""#, "");
-    let plain = load_str(&plain).expect("loads without a docId policy");
-    assert_eq!(elastic(&plain, 0).id_field, None);
-    assert_eq!(elastic(&plain, 0).doc_id, DocIdPolicy::Auto);
-}
-
-/// A destination that a delivered destination's refusals go to takes the same document, so it is held to the same
-/// requirement.
-#[test]
-fn where_refusals_go_is_checked_too() {
-    let json = r#"{
-      "version": 1,
-      "sources": [{"id":"s","type":"kafka","brokers":"b:9092","topics":["t"],"groupId":"g"}],
-      "destinations": [
-        {"id":"main","type":"kafka","brokers":"b:9092","defaultTopic":"out",
-         "exceptions":{"kinds":{"Refused":{"deliver":["review"]}}}},
-        {"id":"review","type":"elasticsearch","url":"http://es:9200",
-         "defaultIndex":"failed","docId":"dedupe"}
-      ],
-      "pipelines": [{"id":"p","name":"p","steps":[]}],
-      "routes": [{"id":"r","source":"s","pipeline":"p",
-        "deliver":[{"to":["main"]}]}]
-    }"#;
-    let system = load_str(json).expect("must load");
-    let Err(errs) = system.compile_topology() else {
-        panic!("review keys on `_id` and no pipeline sets `__destination.id`");
-    };
-    assert!(errs.iter().any(|e| e.message.contains("__destination.id")), "{errs:?}");
-}
-
-/// The check is against the tree's leaves, so a `__destination.id` bound inside a
-/// `Code` block counts.
-#[test]
-fn an_id_out_set_inside_a_code_block_satisfies_the_check() {
-    let json = r#"{
-      "version": 1,
-      "sources": [{"id":"s","type":"kafka","brokers":"b:9092","topics":["t"],"groupId":"g"}],
-      "destinations": [
-        {"id":"es","type":"elasticsearch","url":"http://es:9200",
-         "defaultIndex":"logs","docId":"overwrite"}
-      ],
-      "pipelines": [{"id":"p","name":"p","steps":[
-        {"id":"c","type":"code","body":"__destination.id = _raw;"}
-      ]}],
-      "routes": [{"id":"r","source":"s","pipeline":"p",
-        "deliver":[{"to":["es"]}]}]
-    }"#;
-    let system = load_str(json).expect("must load");
-    system.compile_topology().expect("must compile");
+    assert_eq!(id_field(""), None);
+    assert_eq!(id_field(r#","idField":"__destination.id""#), None);
+    assert_eq!(id_field(r#","idField":"event.id""#).as_deref(), Some("event.id"));
+    assert!(
+        load_str(&json(r#","idField":" ""#)).is_err(),
+        "a blank id field names no field"
+    );
 }
 
 /// An unset credential variable is refused at construction, not a silent
@@ -1619,7 +1544,7 @@ fn a_missing_credential_environment_variable_is_refused_at_construction() {
                 "SMELTR_ES_AUTH_DEFINITELY_NOT_SET".into(),
             )),
             basic: None,
-            doc_id: Default::default(),
+            action: Default::default(),
             id_field: None,
             in_flight: 4,
             max_bulk_bytes: 5 * 1024 * 1024,

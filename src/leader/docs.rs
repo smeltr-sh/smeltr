@@ -1,8 +1,8 @@
 //! The user docs the website publishes, as the Markdown this build shipped with, for the AI agent to read: the same
 //! Markdown the site serves beside each page.
 //!
-//! `docs.json` is written from the website's build by `just docs-markdown`, and `just website` fails when it is stale.
-//! Each page is cut into sections at its headings; the first section is the page's opening, under its title.
+//! build.rs embeds them from the website's build, which `just frontends` runs; a binary built without that build has
+//! none. Each page is cut into sections at its headings; the first section is the page's opening, under its title.
 
 use std::sync::LazyLock;
 
@@ -43,69 +43,84 @@ pub struct Hit {
     pub snippet: String,
 }
 
-static PAGES: LazyLock<Vec<Page>> =
-    LazyLock::new(|| serde_json::from_str(include_str!("docs.json")).expect("docs.json is the generator's"));
+/// The pages, by path.
+pub struct Docs(Vec<Page>);
 
-/// Every page, by path.
-pub fn pages() -> &'static [Page] {
-    &PAGES
+static DOCS: LazyLock<Docs> = LazyLock::new(|| {
+    Docs(
+        crate::embedded::file("docs", "docs.json").map_or_else(Vec::new, |json| {
+            serde_json::from_slice(json).expect("docs.json is the generator's")
+        }),
+    )
+});
+
+/// The docs this build shipped with.
+pub fn docs() -> &'static Docs {
+    &DOCS
 }
 
-/// The sections whose text holds every word of `query`, ignoring case, in page order. At most [`MAX_HITS`].
-pub fn search(query: &str) -> Vec<Hit> {
-    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
-    if words.is_empty() {
-        return Vec::new();
+impl Docs {
+    /// Every page, by path.
+    pub fn pages(&self) -> &[Page] {
+        &self.0
     }
-    let mut hits = Vec::new();
-    for page in pages() {
-        for section in &page.sections {
-            let text = section.text.to_lowercase();
-            if words.iter().all(|w| text.contains(w.as_str())) {
-                hits.push(Hit {
-                    path: page.path.clone(),
-                    title: page.title.clone(),
-                    section: section.id.clone(),
-                    heading: section.heading.clone(),
-                    snippet: snippet(&section.text, &text, &words[0]),
-                });
-                if hits.len() == MAX_HITS {
-                    return hits;
+
+    /// The sections whose text holds every word of `query`, ignoring case, in page order. At most [`MAX_HITS`].
+    pub fn search(&self, query: &str) -> Vec<Hit> {
+        let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        if words.is_empty() {
+            return Vec::new();
+        }
+        let mut hits = Vec::new();
+        for page in self.pages() {
+            for section in &page.sections {
+                let text = section.text.to_lowercase();
+                if words.iter().all(|w| text.contains(w.as_str())) {
+                    hits.push(Hit {
+                        path: page.path.clone(),
+                        title: page.title.clone(),
+                        section: section.id.clone(),
+                        heading: section.heading.clone(),
+                        snippet: snippet(&section.text, &text, &words[0]),
+                    });
+                    if hits.len() == MAX_HITS {
+                        return hits;
+                    }
                 }
             }
         }
+        hits
     }
-    hits
-}
 
-/// The page at `path`, `/docs/...`.
-pub fn page(path: &str) -> Option<&'static Page> {
-    pages().iter().find(|p| p.path == path)
-}
+    /// The page at `path`, `/docs/...`.
+    pub fn page(&self, path: &str) -> Option<&Page> {
+        self.pages().iter().find(|p| p.path == path)
+    }
 
-/// One page's opening, or with `section` that heading's text and everything under it. `None` when there is no such
-/// page or heading.
-pub fn read(path: &str, section: Option<&str>) -> Option<String> {
-    let page = page(path)?;
-    let sections = match section {
-        None => &page.sections[..1],
-        Some(id) => {
-            let start = page.sections.iter().position(|s| s.id == id)?;
-            let level = page.sections[start].level;
-            let end = page.sections[start + 1..]
+    /// One page's opening, or with `section` that heading's text and everything under it. `None` when there is no such
+    /// page or heading.
+    pub fn read(&self, path: &str, section: Option<&str>) -> Option<String> {
+        let page = self.page(path)?;
+        let sections = match section {
+            None => &page.sections[..1],
+            Some(id) => {
+                let start = page.sections.iter().position(|s| s.id == id)?;
+                let level = page.sections[start].level;
+                let end = page.sections[start + 1..]
+                    .iter()
+                    .position(|s| s.level <= level)
+                    .map_or(page.sections.len(), |n| start + 1 + n);
+                &page.sections[start..end]
+            }
+        };
+        Some(
+            sections
                 .iter()
-                .position(|s| s.level <= level)
-                .map_or(page.sections.len(), |n| start + 1 + n);
-            &page.sections[start..end]
-        }
-    };
-    Some(
-        sections
-            .iter()
-            .map(|s| s.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n\n"),
-    )
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        )
+    }
 }
 
 /// Up to [`SNIPPET`] bytes of `text` either side of where `word` first falls in `lower`, its lowercase.
@@ -138,56 +153,59 @@ fn snippet(text: &str, lower: &str, word: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn every_page_is_under_docs_and_opens_with_its_heading() {
-        assert!(pages().len() > 50);
-        for page in pages() {
-            assert!(page.path.starts_with("/docs"), "{}", page.path);
-            assert_eq!(page.sections[0].id, "");
-            assert!(
-                page.sections[0].text.lines().any(|l| l.starts_with("# ")),
-                "{}",
-                page.path
-            );
-        }
+    fn docs() -> Docs {
+        let section = |id: &str, level: u8, text: &str| Section {
+            id: id.into(),
+            level,
+            heading: text.trim_start_matches('#').trim().into(),
+            text: text.into(),
+        };
+        let page = |path: &str, sections: Vec<Section>| Page {
+            path: path.into(),
+            title: sections[0].heading.clone(),
+            sections,
+        };
+        Docs(vec![
+            page(
+                "/docs/sources/kafka",
+                vec![
+                    section("", 1, "# Kafka\n\nReads topics."),
+                    section("consumer", 2, "## Consumer group\n\nOne Kafka consumer per worker."),
+                    section("offsets", 3, "### Offsets\n\nCommitted after a batch lands."),
+                    section("tls", 2, "## TLS\n\nThe broker's certificate."),
+                ],
+            ),
+            page(
+                "/docs/sources/http",
+                vec![section("", 1, "# HTTP\n\nThe consumer posts rows.")],
+            ),
+        ])
     }
 
     #[test]
     fn a_page_reads_its_opening_or_a_heading_with_what_is_under_it() {
-        let page = pages()
-            .iter()
-            .find(|p| p.sections.windows(2).any(|w| w[0].level == 2 && w[1].level == 3))
-            .unwrap();
-        let at = page
-            .sections
-            .windows(2)
-            .position(|w| w[0].level == 2 && w[1].level == 3)
-            .unwrap();
-        let (h2, h3) = (&page.sections[at], &page.sections[at + 1]);
-        let section = read(&page.path, Some(&h2.id)).unwrap();
-        assert!(section.starts_with(&h2.text) && section.contains(&h3.text));
-        assert!(!section.contains(&page.sections[0].text));
-        assert_eq!(read(&page.path, None).unwrap(), page.sections[0].text);
-        assert_eq!(read(&page.path, Some("no-such-heading")), None);
-        assert_eq!(read("/docs/no-such-page", None), None);
+        let docs = docs();
+        let kafka = "/docs/sources/kafka";
+        let consumer = docs.read(kafka, Some("consumer")).unwrap();
+        assert!(consumer.starts_with("## Consumer group") && consumer.contains("### Offsets"));
+        assert!(!consumer.contains("# Kafka") && !consumer.contains("## TLS"));
+        assert_eq!(docs.read(kafka, None).unwrap(), "# Kafka\n\nReads topics.");
+        assert_eq!(docs.read(kafka, Some("no-such-heading")), None);
+        assert_eq!(docs.read("/docs/no-such-page", None), None);
     }
 
     #[test]
     fn a_search_finds_the_sections_holding_every_word() {
-        let hits = search("KAFKA consumer");
-        assert!(hits.iter().any(|h| h.path == "/docs/sources/kafka"));
-        for hit in &hits {
-            let text = read(
-                &hit.path,
-                Some(&hit.section).filter(|s| !s.is_empty()).map(String::as_str),
-            )
-            .unwrap();
-            let text = text.to_lowercase();
-            assert!(text.contains("kafka") && text.contains("consumer"), "{hit:?}");
-        }
-        assert!(search("").is_empty());
-        assert!(search("zzzz-no-such-word").is_empty());
-        assert_eq!(search("the").len(), MAX_HITS);
+        let docs = docs();
+        let found =
+            |q: &str| -> Vec<(String, String)> { docs.search(q).into_iter().map(|h| (h.path, h.section)).collect() };
+        assert_eq!(
+            found("KAFKA consumer"),
+            [("/docs/sources/kafka".into(), "consumer".into())]
+        );
+        assert_eq!(found("consumer").len(), 2);
+        assert!(found("").is_empty());
+        assert!(found("zzzz-no-such-word").is_empty());
     }
 
     #[test]

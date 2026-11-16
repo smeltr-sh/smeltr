@@ -14,7 +14,7 @@ use std::time::Duration;
 use smeltr::io::elastic::{Elastic, PendingDoc, bulk_body, classify_response};
 use smeltr::io::http::{HttpDestination, Outcome, Protocol, Response, Transport};
 use smeltr::io::{Destination, Dispatched, IoError, OutgoingRecord, OwnedRecord, Rejection};
-use smeltr::plan::topology::DocIdPolicy;
+use smeltr::plan::topology::BulkAction;
 use std::borrow::Cow;
 
 use crate::harness::destination::read_request;
@@ -33,7 +33,7 @@ fn doc(index: &str, body: &str) -> PendingDoc {
 fn a_bulk_body_is_action_and_document_lines() {
     let body = bulk_body(
         &[doc("logs", r#"{"a":1}"#), doc("audit", r#"{"b":2}"#)],
-        DocIdPolicy::Auto,
+        BulkAction::Create,
     );
     assert_eq!(
         String::from_utf8(body).unwrap(),
@@ -46,7 +46,7 @@ fn a_bulk_body_is_action_and_document_lines() {
 /// is data rather than a literal and has to be escaped like any other.
 #[test]
 fn an_index_name_is_escaped_not_interpolated() {
-    let body = bulk_body(&[doc(r#"we"ird"#, "{}")], DocIdPolicy::Auto);
+    let body = bulk_body(&[doc(r#"we"ird"#, "{}")], BulkAction::Create);
     let text = String::from_utf8(body).unwrap();
     assert!(text.starts_with(r#"{"create":{"_index":"we\"ird"}}"#), "{text}");
     // And the result is still parseable as the action line it claims to be.
@@ -64,10 +64,10 @@ fn the_policy_chooses_the_bulk_action() {
         id: Some("x".into()),
         body: b"{}".to_vec(),
     };
-    let dedupe = String::from_utf8(bulk_body(&[d()], DocIdPolicy::Dedupe)).unwrap();
-    let overwrite = String::from_utf8(bulk_body(&[d()], DocIdPolicy::Overwrite)).unwrap();
-    assert!(dedupe.starts_with(r#"{"create":"#), "{dedupe}");
-    assert!(overwrite.starts_with(r#"{"index":"#), "{overwrite}");
+    let create = String::from_utf8(bulk_body(&[d()], BulkAction::Create)).unwrap();
+    let index = String::from_utf8(bulk_body(&[d()], BulkAction::Index)).unwrap();
+    assert!(create.starts_with(r#"{"create":"#), "{create}");
+    assert!(index.starts_with(r#"{"index":"#), "{index}");
 }
 
 // --- reading the response ----------------------------------------------
@@ -76,7 +76,7 @@ fn the_policy_chooses_the_bulk_action() {
 fn a_clean_response_reports_nothing_to_do() {
     let body = br#"{"took":3,"errors":false,"items":[{"create":{"status":201}}]}"#;
     assert_eq!(
-        classify_response(body, 1, DocIdPolicy::Auto).unwrap(),
+        classify_response(body, 1, BulkAction::Create).unwrap(),
         Outcome::default()
     );
 }
@@ -89,7 +89,7 @@ fn a_two_hundred_with_errors_true_is_a_failure() {
         {"create":{"status":201}},
         {"create":{"status":400,"error":{"type":"mapper_parsing_exception","reason":"bad field"}}}
     ]}"#;
-    let out = classify_response(body, 2, DocIdPolicy::Auto).unwrap();
+    let out = classify_response(body, 2, BulkAction::Create).unwrap();
     assert!(out.retryable.is_empty());
     assert_eq!(out.permanent.len(), 1);
     assert_eq!(out.permanent[0].0, 1, "the second document");
@@ -109,38 +109,35 @@ fn a_busy_cluster_is_retryable_and_a_bad_document_is_not() {
         {"create":{"status":503,"error":{"type":"unavailable_shards_exception","reason":"later"}}},
         {"create":{"status":201}}
     ]}"#;
-    let out = classify_response(body, 4, DocIdPolicy::Auto).unwrap();
+    let out = classify_response(body, 4, BulkAction::Create).unwrap();
     assert_eq!(out.retryable, vec![0, 2]);
     assert_eq!(out.permanent.len(), 1);
     assert_eq!(out.permanent[0].0, 1);
 }
 
-/// A version conflict under `Dedupe` is the at-least-once re-send arriving
-/// twice -- which is the whole outcome that policy exists to produce.
-/// Counting it as an error would turn the dedupe into a stall.
+/// A version conflict under `Create` is the at-least-once re-send arriving
+/// twice -- which is the whole outcome that action exists to produce.
+/// Counting it as an error would turn it into a stall.
 #[test]
-fn a_version_conflict_counts_as_delivered_when_deduping() {
+fn a_version_conflict_counts_as_delivered_under_create() {
     let body = br#"{"errors":true,"items":[
         {"create":{"status":409,"error":{"type":"version_conflict_engine_exception","reason":"dup"}}}
     ]}"#;
-    assert!(classify_response(body, 1, DocIdPolicy::Dedupe).unwrap().is_clean());
+    assert!(classify_response(body, 1, BulkAction::Create).unwrap().is_clean());
 }
 
-/// ...and only then. `Auto` sets no id, so it has nothing to conflict
-/// with; `Overwrite` writes `index`, which replaces rather than conflicts.
-/// A 409 under either means something outside smeltr is versioning the
-/// document, and swallowing it would be the "assume it was fine" that
-/// every other branch here refuses.
+/// ...and only then. `Index` replaces rather than conflicts, so a 409
+/// under it means something outside smeltr is versioning the document,
+/// and swallowing it would be the "assume it was fine" that every other
+/// branch here refuses.
 #[test]
-fn a_version_conflict_is_a_real_failure_under_any_other_policy() {
+fn a_version_conflict_is_a_real_failure_under_index() {
     let body = br#"{"errors":true,"items":[
-        {"create":{"status":409,"error":{"type":"version_conflict_engine_exception","reason":"dup"}}}
+        {"index":{"status":409,"error":{"type":"version_conflict_engine_exception","reason":"dup"}}}
     ]}"#;
-    for policy in [DocIdPolicy::Auto, DocIdPolicy::Overwrite] {
-        let out = classify_response(body, 1, policy).unwrap();
-        assert_eq!(out.permanent.len(), 1, "{policy:?} must not swallow it");
-        assert!(out.permanent[0].1.contains("version_conflict"));
-    }
+    let out = classify_response(body, 1, BulkAction::Index).unwrap();
+    assert_eq!(out.permanent.len(), 1, "index must not swallow it");
+    assert!(out.permanent[0].1.contains("version_conflict"));
 }
 
 /// A busy cluster sends every document again after a wait, and the wait counts as throttling.
@@ -275,14 +272,14 @@ fn a_document_the_mapping_refuses_is_rejected_alone() {
 #[test]
 fn a_response_that_answers_the_wrong_number_of_documents_is_an_error() {
     let body = br#"{"errors":true,"items":[{"create":{"status":201}}]}"#;
-    let e = classify_response(body, 3, DocIdPolicy::Auto).unwrap_err();
+    let e = classify_response(body, 3, BulkAction::Create).unwrap_err();
     assert!(e.to_string().contains("answered 1 of 3"), "{e}");
 }
 
 #[test]
 fn an_unreadable_response_is_an_error_not_a_success() {
-    assert!(classify_response(b"not json at all", 1, DocIdPolicy::Auto).is_err());
-    assert!(classify_response(br#"{"errors":true}"#, 1, DocIdPolicy::Auto).is_err());
+    assert!(classify_response(b"not json at all", 1, BulkAction::Create).is_err());
+    assert!(classify_response(br#"{"errors":true}"#, 1, BulkAction::Create).is_err());
 }
 
 // --- the retry and accounting loop --------------------------------------
@@ -603,31 +600,11 @@ fn a_batch_past_the_bulk_size_is_posted_in_rounds() {
 
 // --- the document id policy ---------------------------------------------
 
-/// Under the default policy a row's `__destination.id` is ignored outright. It is
-/// not a free upgrade: keying documents on an id costs real indexing
-/// throughput, so it has to be asked for by name -- and the same pipeline
-/// may well be setting the field for a *different* destination on the
-/// route.
+/// A row's id goes as the document's `_id`, and a row with none leaves Elasticsearch to generate one.
 #[test]
-fn the_default_policy_ignores_a_rows_doc_id() {
+fn a_row_with_no_doc_id_gets_a_generated_one() {
     let (t, sent) = scripted(&[Ok(r#"{"errors":false}"#)]);
     let mut d = HttpDestination::new(t, Elastic::new("logs"));
-    deliver(
-        &mut d,
-        &[OutgoingRecord::new(br#"{"a":1}"#).with_doc_id(Some("orders-3-991"))],
-    )
-    .unwrap();
-    assert!(!sent.lock().unwrap()[0].contains("_id"), "{}", sent.lock().unwrap()[0]);
-}
-
-/// A row that leaves `__destination.id` null under a policy that wants one still
-/// gets indexed, with a generated id -- what it would have had anyway.
-/// Refusing it would take a whole batch down over one row with no natural
-/// identity; the runtime counts it instead.
-#[test]
-fn a_row_with_no_doc_id_still_indexes_under_a_policy_that_wants_one() {
-    let (t, sent) = scripted(&[Ok(r#"{"errors":false}"#)]);
-    let mut d = HttpDestination::new(t, Elastic::new("logs").with_doc_id_policy(DocIdPolicy::Dedupe));
     deliver(
         &mut d,
         &[
@@ -651,7 +628,7 @@ fn a_row_with_no_doc_id_still_indexes_under_a_policy_that_wants_one() {
 #[test]
 fn a_document_id_is_not_a_partition_key() {
     let (t, sent) = scripted(&[Ok(r#"{"errors":false}"#)]);
-    let mut d = HttpDestination::new(t, Elastic::new("logs").with_doc_id_policy(DocIdPolicy::Dedupe));
+    let mut d = HttpDestination::new(t, Elastic::new("logs"));
     deliver(&mut d, &[OutgoingRecord::new(b"{}").with_key(Some(b"partition-key"))]).unwrap();
     assert!(
         !sent.lock().unwrap()[0].contains("partition-key"),

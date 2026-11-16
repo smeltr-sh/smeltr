@@ -7,14 +7,14 @@
 use super::http::{HttpTransport, Outcome, Protocol, Response, Unwritten, push_json_string};
 use super::{IoError, OwnedRecord};
 use crate::format::json_scan::{Malformed, Next, Reader};
-use crate::plan::topology::DocIdPolicy;
+use crate::plan::topology::BulkAction;
 
 /// One document waiting to be indexed, kept until the cluster confirms it. The bulk body is rebuilt from these on every
 /// attempt, because a retry must contain only the documents that failed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PendingDoc {
     pub index: String,
-    /// The document's `_id`, when the policy asks for one. `None` lets Elasticsearch generate one.
+    /// The document's `_id`. `None` lets Elasticsearch generate one.
     pub id: Option<String>,
     pub body: Vec<u8>,
 }
@@ -24,13 +24,12 @@ pub struct PendingDoc {
 /// Every `body` here holds no newline of its own -- `Elastic::admit` refuses one that does, since a line ending early
 /// would pair every action after it with the wrong document.
 ///
-/// `Dedupe` writes `create`, so a re-send of an id already present comes back as a `version_conflict_engine_exception`
-/// (counted as success by `classify_response`) instead of a silent overwrite. `Overwrite` writes `index`. `Auto` writes
-/// `create` too: with no id there is nothing to conflict with, and `create` is the action a data stream accepts.
-pub fn bulk_body(docs: &[PendingDoc], policy: DocIdPolicy) -> Vec<u8> {
-    let action: &[u8] = match policy {
-        DocIdPolicy::Auto | DocIdPolicy::Dedupe => br#"{"create":{"_index":"#,
-        DocIdPolicy::Overwrite => br#"{"index":{"_index":"#,
+/// Under `Create` a re-send of an id already present comes back as a `version_conflict_engine_exception`, which
+/// `classify_response` counts as success.
+pub fn bulk_body(docs: &[PendingDoc], action: BulkAction) -> Vec<u8> {
+    let action: &[u8] = match action {
+        BulkAction::Create => br#"{"create":{"_index":"#,
+        BulkAction::Index => br#"{"index":{"_index":"#,
     };
     let mut out = Vec::new();
     for d in docs {
@@ -49,13 +48,13 @@ pub fn bulk_body(docs: &[PendingDoc], policy: DocIdPolicy) -> Vec<u8> {
 
 /// Reads one bulk response body and says what to do with each document. An item that cannot be found or parsed is
 /// permanent rather than assumed fine.
-pub fn classify_response(body: &[u8], count: usize, policy: DocIdPolicy) -> Result<Outcome, IoError> {
-    classify(body, count, policy).map(|(outcome, _)| outcome)
+pub fn classify_response(body: &[u8], count: usize, action: BulkAction) -> Result<Outcome, IoError> {
+    classify(body, count, action).map(|(outcome, _)| outcome)
 }
 
 /// [`classify_response`]'s outcome, and how many documents a data stream's failure store took: each answered as
 /// written, though not to the index it was sent to.
-fn classify(body: &[u8], count: usize, policy: DocIdPolicy) -> Result<(Outcome, usize), IoError> {
+fn classify(body: &[u8], count: usize, action: BulkAction) -> Result<(Outcome, usize), IoError> {
     let Bulk { errors, items } = bulk(body).map_err(|_| {
         IoError::transient(format!(
             "bulk response was not JSON: {}",
@@ -87,10 +86,10 @@ fn classify(body: &[u8], count: usize, policy: DocIdPolicy) -> Result<(Outcome, 
 
         match (status, error_type) {
             (200..=299, _) => {}
-            // Under `Dedupe` a conflict is the at-least-once re-send arriving twice: the outcome the policy exists to
-            // produce. Under any other policy nothing smeltr sent can conflict, so a 409 means something else is
-            // versioning the document.
-            (409, Some("version_conflict_engine_exception")) if policy == DocIdPolicy::Dedupe => {}
+            // Under `Create` a conflict means the document is already there, as when an at-least-once re-send arrives
+            // twice: the outcome the action exists to produce. Under `Index` nothing smeltr sent can conflict, so a 409
+            // means something else is versioning the document.
+            (409, Some("version_conflict_engine_exception")) if action == BulkAction::Create => {}
             (429, _) | (503, _) => out.retryable.push(i),
             (_, Some(t))
                 if t == "es_rejected_execution_exception"
@@ -237,8 +236,8 @@ fn close(r: &mut Reader, next: &Next) -> Result<(), Malformed> {
 #[derive(Clone, Debug)]
 pub struct Elastic {
     pub default_index: String,
-    /// `Auto` by default: plain at-least-once, at no cost.
-    pub doc_id: DocIdPolicy,
+    /// `Create` by default.
+    pub action: BulkAction,
     /// Counts the documents a failure store took, where the destination reports on itself.
     unwritten: Option<Unwritten>,
 }
@@ -247,7 +246,7 @@ impl Elastic {
     pub fn new(default_index: impl Into<String>) -> Self {
         Elastic {
             default_index: default_index.into(),
-            doc_id: DocIdPolicy::default(),
+            action: BulkAction::default(),
             unwritten: None,
         }
     }
@@ -257,8 +256,8 @@ impl Elastic {
         self
     }
 
-    pub fn with_doc_id_policy(mut self, policy: DocIdPolicy) -> Self {
-        self.doc_id = policy;
+    pub fn with_action(mut self, action: BulkAction) -> Self {
+        self.action = action;
         self
     }
 }
@@ -292,10 +291,8 @@ impl Protocol for Elastic {
         }
         Ok(PendingDoc {
             index: row.placement.clone().unwrap_or_else(|| self.default_index.clone()),
-            // Only when this destination asked for one: under `Auto` a row's `__destination.id` is ignored, since a pipeline may
-            // set it for a different destination on the same route. A null `__destination.id` under a policy that wants one
-            // falls back to a generated id for that row; `runtime` counts it.
-            id: self.doc_id.wants_doc_id().then(|| row.doc_id.clone()).flatten(),
+            // A null id leaves Elasticsearch to generate one.
+            id: row.doc_id.clone(),
             body: row.value.clone(),
         })
     }
@@ -305,7 +302,7 @@ impl Protocol for Elastic {
     }
 
     fn body(&self, docs: &[PendingDoc]) -> Vec<u8> {
-        bulk_body(docs, self.doc_id)
+        bulk_body(docs, self.action)
     }
 
     /// Per-document failures live inside a 200 body. A 400 (a request the cluster could not read) or a 413 (one larger
@@ -315,7 +312,7 @@ impl Protocol for Elastic {
         let count = items.len();
         match response.status {
             200..300 => {
-                let (outcome, failure_stored) = classify(&response.body, count, self.doc_id)?;
+                let (outcome, failure_stored) = classify(&response.body, count, self.action)?;
                 if let Some(unwritten) = self.unwritten.as_ref().filter(|_| failure_stored > 0) {
                     unwritten.note("document", failure_stored as u64, || {
                         format!("{failure_stored} document(s) went to their data stream's failure store")

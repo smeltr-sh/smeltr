@@ -1,5 +1,6 @@
 <script lang="ts">
   import { page } from '$app/state';
+  import CourseOverview from '#lib/components/CourseOverview.svelte';
   import VideoPlayer from '#lib/components/VideoPlayer.svelte';
   import { courseLength } from '#lib/videos.ts';
 
@@ -14,88 +15,137 @@
   // under the player and never folds.
   let open = $state(true);
   let touched = false;
+
+  // A chapter's link is `#t={seconds}`: the video plays from there.
+  let start = $state<number>();
+  const seek = () => {
+    const t = /^#t=(\d+)$/.exec(location.hash);
+    start = t ? Number(t[1]) : undefined;
+    if (t && !touched) open = false;
+  };
+  $effect(seek);
+
+  // Under the player: the chapter last chosen in a long video, or else the video's place in the course.
+  const chapter = $derived(
+    video.chapters?.findLastIndex((c) => (c.start ?? 0) <= (start ?? 0)) ?? -1,
+  );
+  const heading = $derived(
+    chapter >= 0
+      ? `${chapter + 1}. ${video.chapters![chapter].title}`
+      : `${at + 1}. ${video.title}`,
+  );
 </script>
+
+<svelte:window onhashchange={seek} />
 
 <svelte:head><title>{video.title} — smeltr</title></svelte:head>
 
 <div class="marketing">
-  <section class="watch">
-    <p class="eyebrow"><a href="/learn">Learn</a> · {courseLength(course)}</p>
-    <h1>{course.title}</h1>
-    <div class="layout" class:open>
-      <div>
-        <div class="player">
-          {#key video}
-            <VideoPlayer
-              {video}
-              onplay={() => {
-                if (!touched) open = false;
-              }}
-            />
-          {/key}
-        </div>
-        <!-- A course's own page plays its first video. Learn search finds that video at its own page,
-          `/learn/{course}/{video}.html`. -->
-        <div
-          data-pagefind-body={page.params.video ? '' : undefined}
-          data-pagefind-filter={page.params.video ? 'kind:video' : undefined}
-        >
-          <div class="under">
-            <h2>{at + 1}. {video.title}</h2>
-            {#if next}
-              <a href="/learn/{course.slug}/{next.slug}" data-pagefind-ignore
-                >Next: {course.videos.indexOf(next) + 1}. {next.title} →</a
-              >
-            {/if}
-            {#if course.demo}
-              <a href="/demo/try/" rel="external" data-pagefind-ignore
-                >Try it yourself in the demo →</a
-              >
-            {/if}
+  {#if !page.params.video && course.about}
+    <CourseOverview {course} about={course.about} />
+  {:else}
+    <section class="watch">
+      <p class="eyebrow"><a href="/learn">Learn</a> · {courseLength(course)}</p>
+      <h1>
+        {#if course.about}<a href="/learn/{course.slug}">{course.title}</a
+          >{:else}{course.title}{/if}
+      </h1>
+      <div class="layout" class:open>
+        <div>
+          <div class="player">
+            {#key `${video.slug}@${start}`}
+              <VideoPlayer
+                {video}
+                {start}
+                onplay={() => {
+                  if (!touched) open = false;
+                }}
+              />
+            {/key}
           </div>
-          <details class="transcript">
-            <summary data-pagefind-ignore>Transcript</summary>
-            {#each data.transcript as paragraph, i (i)}<p>{paragraph}</p>{/each}
-          </details>
+          <!-- A course's own page plays its first video. Learn search finds that video at its own page,
+          `/learn/{course}/{video}.html`. -->
+          <div
+            data-pagefind-body={page.params.video ? '' : undefined}
+            data-pagefind-filter={page.params.video ? 'kind:video' : undefined}
+          >
+            <div class="under">
+              <h2>{heading}</h2>
+              {#if next}
+                <a href="/learn/{course.slug}/{next.slug}" data-pagefind-ignore
+                  >Next: {course.videos.indexOf(next) + 1}. {next.title} →</a
+                >
+              {/if}
+              {#if course.demo}
+                <a href="/demo/try/" rel="external" data-pagefind-ignore
+                  >Try it yourself in the demo →</a
+                >
+              {/if}
+            </div>
+            <details class="transcript">
+              <summary data-pagefind-ignore>Transcript</summary>
+              {#each data.transcript as paragraph, i (i)}<p>{paragraph}</p>{/each}
+            </details>
+          </div>
         </div>
-      </div>
-      <nav aria-label="Videos">
-        <button
-          class="toggle"
-          aria-expanded={open}
-          aria-controls="course-videos"
-          aria-label="Show titles"
-          onclick={() => {
-            touched = true;
-            open = !open;
-          }}><span aria-hidden="true">{open ? '›' : '‹'}</span></button
-        >
-        <ol id="course-videos">
-          {#each course.videos as v, i (v.slug)}
-            <li>
-              {#if v.youtube}
+        <nav aria-label="Videos">
+          <button
+            class="toggle"
+            aria-expanded={open}
+            aria-controls="course-videos"
+            aria-label="Show titles"
+            onclick={() => {
+              touched = true;
+              open = !open;
+            }}><span aria-hidden="true">{open ? '›' : '‹'}</span></button
+          >
+          <ol id="course-videos">
+            {#each video.chapters ?? [] as chapter, i (chapter.title)}
+              <li>
                 <a
-                  href="/learn/{course.slug}/{v.slug}"
-                  aria-current={v.slug === video.slug ? 'page' : undefined}
-                  title={open ? undefined : v.title}
+                  href="#t={chapter.start ?? 0}"
+                  aria-current={chapter.start === start ? 'true' : undefined}
+                  title={open ? undefined : chapter.title}
                 >
                   <span class="n">{i + 1}</span>
-                  <span class="t">{v.title}</span>
-                  {#if v.minutes}<span class="m">{v.minutes} min</span>{/if}
+                  <span class="t">{chapter.title}</span>
                 </a>
-              {:else}
-                <span class="planned" title={open ? undefined : v.title}>
-                  <span class="n">{i + 1}</span>
-                  <span class="t">{v.title}</span>
-                  <span class="m">Coming soon</span>
-                </span>
-              {/if}
-            </li>
-          {/each}
-        </ol>
-      </nav>
-    </div>
-  </section>
+              </li>
+            {/each}
+            {#each video.chapters ? [] : course.videos as v, i (v.slug)}
+              <li>
+                {#if v.youtube}
+                  <a
+                    href="/learn/{course.slug}/{v.slug}"
+                    aria-current={v.slug === video.slug ? 'page' : undefined}
+                    title={open ? undefined : v.title}
+                  >
+                    <span class="n">{i + 1}</span>
+                    <span class="t">{v.title}</span>
+                    {#if v.minutes}<span class="m">{v.minutes} min</span>{/if}
+                  </a>
+                {:else}
+                  <span class="planned" title={open ? undefined : v.title}>
+                    <span class="n">{i + 1}</span>
+                    <span class="t">{v.title}</span>
+                    <span class="m">Coming soon</span>
+                  </span>
+                {/if}
+              </li>
+            {/each}
+            {#if course.selfTest}
+              <li>
+                <a href="/learn/{course.slug}/self-test" title={open ? undefined : 'Self-test'}>
+                  <span class="n">✓</span>
+                  <span class="t">Self-test</span>
+                </a>
+              </li>
+            {/if}
+          </ol>
+        </nav>
+      </div>
+    </section>
+  {/if}
 </div>
 
 <style>
@@ -107,8 +157,12 @@
     font-size: clamp(2rem, 4vw, 3rem);
     margin-bottom: 1.5rem;
   }
-  .eyebrow a {
+  .eyebrow a,
+  h1 a {
     color: inherit;
+  }
+  h1 a {
+    text-decoration: none;
   }
   .layout {
     display: grid;
@@ -205,7 +259,7 @@
       white-space: nowrap;
     }
   }
-  [aria-current='page'] {
+  [aria-current] {
     background: var(--band-bg);
     color: var(--band-ink);
   }

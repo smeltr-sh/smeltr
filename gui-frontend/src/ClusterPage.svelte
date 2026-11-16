@@ -45,7 +45,7 @@
   import StateMark from './StateMark.svelte';
   import { severityState, type State } from './stateGlyphs';
   import { pipelineNamesAt, type PipelineNames } from './pipelineNames';
-  import { bytes } from './bytes';
+  import { byteUnit, bytes } from './bytes';
   import SortButton from './SortButton.svelte';
   import FoldAllButton from './FoldAllButton.svelte';
   import Chips from './Chips.svelte';
@@ -62,6 +62,7 @@
     MAIN_BRANCH,
     type ClusterHealth,
     type ClusterStatus,
+    type FlowKind,
     type FlowResponseDto,
     type WarningDto,
   } from './api';
@@ -233,9 +234,20 @@
   let flow: FlowResponseDto | null = $state(null);
   let flowFetchedAt = $state(Date.now());
 
+  /** What the chart and the table count. */
+  let unit: 'rows' | 'bytes' = $state('rows');
+  /** What the table lists. */
+  let kind: FlowKind = $state('source');
+  /** The table row the chart is narrowed to, or `null` for everything the selection holds. */
+  let picked: { group: string; subjectId: string } | null = $state(null);
+  /** The picked row's own in and out, read beside the fleet's: the page's other panels go on
+   * reading the fleet. */
+  let pickedFlow: FlowResponseDto | null = $state(null);
+
   function fetchFlow() {
-    // Reads `windowMinutes`, so the effect below re-fetches the moment the picker changes
-    // rather than waiting for the next tick.
+    // Reads `windowMinutes`, `kind` and `picked`, so the effect below re-fetches the moment
+    // any of them changes rather than waiting for the next tick.
+    const only = picked && { kind, group: picked.group, subject: picked.subjectId };
     getFlow(windowMinutes)
       .then((f) => {
         flow = f;
@@ -244,21 +256,33 @@
       .catch(() => {
         // Keep showing the last window rather than blanking a working chart over one bad poll.
       });
+    if (!only) {
+      pickedFlow = null;
+      return;
+    }
+    getFlow(windowMinutes, only)
+      .then((f) => {
+        // A pick changed while this was in flight answers for a row no longer shown.
+        if (picked?.group === only.group && picked.subjectId === only.subject) pickedFlow = f;
+      })
+      .catch(() => {});
+  }
+
+  function pick(row: { group: string; subjectId: string } | null) {
+    picked = row;
+    pickedFlow = null;
+    if (!autoRefresh) fetchFlow();
+  }
+
+  function chooseKind(next: FlowKind) {
+    kind = next;
+    pick(null);
   }
 
   // `$derived.by`: in the expression form TypeScript narrows `flow` to its `null`
   // initializer (as `workerRows` below notes for `status`).
-  let fleetIn = $derived.by(() =>
-    flow ? sumSeries(flow.rowsIn.filter((series) => flowMatchesSelection(series))) : [],
-  );
   let fleetOut = $derived.by(() =>
     flow ? sumSeries(flow.rowsOut.filter((series) => flowMatchesSelection(series))) : [],
-  );
-  let fleetBytesIn = $derived.by(() =>
-    flow ? sumSeries(flow.bytesIn.filter((series) => flowMatchesSelection(series))) : [],
-  );
-  let fleetBytesOut = $derived.by(() =>
-    flow ? sumSeries(flow.bytesOut.filter((series) => flowMatchesSelection(series))) : [],
   );
   let bucketMillis = $derived.by(() => flow?.bucketMillis ?? 0);
   let windowFrom = $derived(flowFetchedAt - windowMinutes * 60_000);
@@ -268,27 +292,6 @@
    * the two cannot give different answers about the same instant. */
   let windowTo = $derived(bucketMillis ? lastClosedBucket(bucketMillis, flowFetchedAt) : 0);
 
-  // rows/s, not rows per bucket: the unit the rate line above the chart is in, and the
-  // only one that holds across the picker -- a point is 10s at sixty minutes and six
-  // hours at thirty days.
-  let fleetInDense = $derived(
-    bucketMillis ? denseRates(fleetIn, bucketMillis, windowFrom, windowTo) : [],
-  );
-  let fleetOutDense = $derived(
-    bucketMillis ? denseRates(fleetOut, bucketMillis, windowFrom, windowTo) : [],
-  );
-  // Bytes are not drawn -- one scale cannot carry rows and bytes, and a second axis buys
-  // less than the reading does. They are read off the same grid, so the hovered slot names
-  // one bucket across all four.
-  let fleetBytesInDense = $derived(
-    bucketMillis ? denseRates(fleetBytesIn, bucketMillis, windowFrom, windowTo) : [],
-  );
-  let fleetBytesOutDense = $derived(
-    bucketMillis ? denseRates(fleetBytesOut, bucketMillis, windowFrom, windowTo) : [],
-  );
-  let hasFlowData = $derived(
-    fleetInDense.some((v) => v !== null) || fleetOutDense.some((v) => v !== null),
-  );
   /** The fleet line at the top of the page, which answers before the chart is reached. The
    * flow panel reads its own last slot instead: that is this same closed bucket, off the
    * grid the pointer moves over. */
@@ -305,6 +308,99 @@
   /** A byte rate, `--` where the bucket is missing, for the same reason `rateText` gives. */
   const bytesText = (rate: number | null) => (rate === null ? '--' : `${bytes(rate)}/s`);
 
+  // -- the flow panel's chart and table: the fleet's, or one picked row's, in rows or bytes.
+
+  /** What the chart draws: the picked row's series once they have been read, else the fleet's. */
+  // `$derived.by`, as for `fleetOut` above: the expression form narrows both to `null`.
+  let shown = $derived.by((): FlowResponseDto | null => (picked ? pickedFlow : flow));
+  // Per second, not per bucket: the unit the rate line above the chart is in, and the only
+  // one that holds across the picker -- a point is 10s at sixty minutes and six hours at
+  // thirty days.
+  function chartRates(series: FlowResponseDto['rowsIn'] | undefined): (number | null)[] {
+    if (!series || !bucketMillis) return [];
+    return denseRates(
+      sumSeries(series.filter((s) => flowMatchesSelection(s))),
+      bucketMillis,
+      windowFrom,
+      windowTo,
+    );
+  }
+  let chartIn = $derived(chartRates(unit === 'rows' ? shown?.rowsIn : shown?.bytesIn));
+  let chartOut = $derived(chartRates(unit === 'rows' ? shown?.rowsOut : shown?.bytesOut));
+  let hasChartData = $derived(chartIn.some((v) => v !== null) || chartOut.some((v) => v !== null));
+  /** Bytes are drawn in the unit the busiest bucket reads best in. */
+  let chartScale = $derived(
+    unit === 'rows'
+      ? { unit: 'rows/s', size: 1 }
+      : (({ unit, size }) => ({ unit: `${unit}/s`, size }))(
+          byteUnit(Math.max(0, ...chartIn.map((v) => v ?? 0), ...chartOut.map((v) => v ?? 0))),
+        ),
+  );
+  const scaled = (dense: (number | null)[]) =>
+    dense.map((v) => (v === null ? null : v / chartScale.size));
+  const rateOf = (rate: number | null) =>
+    unit === 'rows' ? `${rateText(rate)} rows/s` : bytesText(rate);
+
+  const KINDS: { value: FlowKind; label: string; one: string }[] = [
+    { value: 'source', label: 'Sources', one: 'source' },
+    { value: 'pipeline', label: 'Pipelines', one: 'pipeline' },
+    { value: 'route', label: 'Routes', one: 'route' },
+    { value: 'destination', label: 'Destinations', one: 'destination' },
+  ];
+  /** What each half counts, named for where it is counted (`leader::FlowKind::metrics`). The
+   * fleet's out is what destinations delivered, which only a destination's own series carries. */
+  const WORDS: Record<FlowKind, [string, string]> = {
+    source: ['read', 'sent'],
+    pipeline: ['matched', 'sent'],
+    route: ['matched', 'sent'],
+    destination: ['received', 'delivered'],
+  };
+  const FLEET_WORDS: [string, string] = ['read', 'delivered'];
+  let chartWords = $derived(picked ? WORDS[kind] : FLEET_WORDS);
+  type TableRow = {
+    group: string;
+    subjectId: string;
+    source?: string | null;
+    pipeline?: string | null;
+    in: number;
+    out: number;
+  };
+  /** One row per object the selection holds, its workers' counts added. */
+  let tableRows = $derived.by(() => {
+    const rows = new Map<string, TableRow>();
+    // An answer from before the leader totalled the window has none.
+    for (const t of flow?.totals ?? []) {
+      if (t.kind !== kind || !flowMatchesSelection(t)) continue;
+      const key = JSON.stringify([t.group, t.subjectId]);
+      const row = rows.get(key) ?? { group: t.group, subjectId: t.subjectId, in: 0, out: 0 };
+      row.source ??= t.source;
+      row.pipeline ??= t.pipeline;
+      row.in += unit === 'rows' ? t.rowsIn : t.bytesIn;
+      row.out += unit === 'rows' ? t.rowsOut : t.bytesOut;
+      rows.set(key, row);
+    }
+    return [...rows.values()].sort((a, b) => b.in - a.in || b.out - a.out);
+  });
+  /** Only sources' and destinations' rows add up to the selection's: a row goes to every
+   * route that matches it, so routes and pipelines can count it more than once. */
+  let showsSum = $derived(kind === 'source' || kind === 'destination');
+  const totalsSort = new TableSort<'name' | 'group' | 'source' | 'pipeline' | 'in' | 'out'>();
+  let sortedTableRows = $derived(
+    totalsSort.apply(tableRows, {
+      name: (r) => r.subjectId,
+      group: (r) => r.group,
+      source: (r) => r.source,
+      pipeline: (r) => r.pipeline,
+      in: (r) => r.in,
+      out: (r) => r.out,
+    }),
+  );
+  let sumIn = $derived(tableRows.reduce((a, r) => a + r.in, 0));
+  let sumOut = $derived(tableRows.reduce((a, r) => a + r.out, 0));
+  const amount = (n: number) => (unit === 'rows' ? Math.round(n).toLocaleString() : bytes(n));
+  let unitWord = $derived(unit === 'rows' ? 'Rows' : 'Bytes');
+  const isPicked = (r: TableRow) => picked?.group === r.group && picked.subjectId === r.subjectId;
+
   /** The bucket the pointer is over, or `null` when it is away. `FlowChart` owns finding
    * it; the reading is made here, where the series it does not draw are held. */
   let hoveredSlot: number | null = $state(null);
@@ -312,7 +408,7 @@
   /** Which bucket the readout names: the hovered one, or the last the chart drew. That
    * last slot is the bucket `currentRate` reads, so the line and the chart's right edge
    * are one reading and cannot disagree. */
-  let readSlot = $derived(hoveredSlot ?? fleetInDense.length - 1);
+  let readSlot = $derived(hoveredSlot ?? chartIn.length - 1);
   let readAt = $derived(
     bucketMillis && readSlot >= 0
       ? clockTime(firstBucket(bucketMillis, windowFrom) + readSlot * bucketMillis)
@@ -1086,42 +1182,132 @@
       <div class="panel-head">
         <div>
           <h2 id="{uid}-flow">
-            Rows in and out — {selectionLabel}
-            <Help label="Rows in and out"
-              >Above the line, rows per second read from sources; below it, rows delivered to
-              destinations. A gap in a line is missing history, not zero.</Help
+            {unitWord} in and out — {#if picked}{selectionLabel === 'whole fleet'
+                ? ''
+                : `${selectionLabel}, `}{KINDS.find((k) => k.value === kind)?.one}
+              <span class="picked mono"
+                >{selectionLabel === 'whole fleet'
+                  ? `${picked.subjectId} (${picked.group})`
+                  : picked.subjectId}<button
+                  type="button"
+                  aria-label={selectionLabel === 'whole fleet'
+                    ? 'Show the whole fleet'
+                    : `Show all of ${selectionLabel}`}
+                  onclick={() => pick(null)}>×</button
+                ></span
+              >{:else}{selectionLabel}{/if}
+            <Help label="{unitWord} in and out"
+              >Above the line, what came in per second; below it, what went out. A source reads and
+              sends on; a pipeline or route matches and sends on; a destination receives and
+              delivers. A row goes to every route whose condition matches it, so routes and
+              pipelines can add up to more than their sources read, and a row sent to two
+              destinations is sent twice. A gap in a line is missing history, not zero.</Help
             >
           </h2>
         </div>
-        <Segmented
-          label="Chart window"
-          options={FLOW_WINDOWS.map((w) => ({ value: String(w.minutes), label: w.label }))}
-          bind:value={() => String(windowMinutes), (v) => chooseWindow(Number(v))}
-        />
+        <div class="controls">
+          <Segmented
+            label="Count"
+            options={[
+              { value: 'rows', label: 'Rows' },
+              { value: 'bytes', label: 'Bytes' },
+            ]}
+            bind:value={unit}
+          />
+          <Segmented
+            label="Chart window"
+            options={FLOW_WINDOWS.map((w) => ({ value: String(w.minutes), label: w.label }))}
+            bind:value={() => String(windowMinutes), (v) => chooseWindow(Number(v))}
+          />
+        </div>
       </div>
-      {#if flow === null}
+      {#if flow === null || shown === null}
         <p class="empty">Loading…</p>
-      {:else if !hasFlowData}
+      {:else if !hasChartData}
         <p class="empty">No rows recorded in this window yet.</p>
       {:else}
         <p class="rate">
           <span class="at mono">{readAt}</span>
-          <span>
-            in <strong>{rateText(readFrom(fleetInDense))}</strong> rows/s ·
-            <strong>{bytesText(readFrom(fleetBytesInDense))}</strong>
-          </span>
-          <span>
-            out <strong>{rateText(readFrom(fleetOutDense))}</strong> rows/s ·
-            <strong>{bytesText(readFrom(fleetBytesOutDense))}</strong> delivered
-          </span>
+          <span>{chartWords[0]} <strong>{rateOf(readFrom(chartIn))}</strong></span>
+          <span>{chartWords[1]} <strong>{rateOf(readFrom(chartOut))}</strong></span>
         </p>
         <FlowChart
-          inPoints={fleetInDense}
-          outPoints={fleetOutDense}
+          inPoints={scaled(chartIn)}
+          outPoints={scaled(chartOut)}
+          unit={chartScale.unit}
+          words={chartWords}
+          label="{unitWord} per second, in above the line and out below it, over the chosen window"
           from={clockTime(firstBucket(bucketMillis, windowFrom))}
           to={clockTime(windowTo)}
           onhover={(slot) => (hoveredSlot = slot)}
         />
+      {/if}
+      <div class="table-head">
+        <Segmented
+          label="Show by"
+          options={KINDS.map(({ value, label }) => ({ value, label }))}
+          bind:value={() => kind, chooseKind}
+        />
+      </div>
+      {#if tableRows.length > 0}
+        <div class="table-wrap">
+          <table>
+            <thead
+              ><tr
+                ><th aria-sort={totalsSort.aria('name')}
+                  ><SortButton sort={totalsSort} key="name">Name</SortButton></th
+                >
+                <th aria-sort={totalsSort.aria('group')}
+                  ><SortButton sort={totalsSort} key="group"
+                    ><WorkerGroupIcon />Worker group</SortButton
+                  ></th
+                >
+                {#if kind === 'route'}<th aria-sort={totalsSort.aria('source')}
+                    ><SortButton sort={totalsSort} key="source">Source</SortButton></th
+                  ><th aria-sort={totalsSort.aria('pipeline')}
+                    ><SortButton sort={totalsSort} key="pipeline">Pipeline</SortButton></th
+                  >{/if}
+                <th class="num" aria-sort={totalsSort.aria('in')}
+                  ><SortButton sort={totalsSort} key="in">{unitWord} {WORDS[kind][0]}</SortButton
+                  ></th
+                ><th class="num" aria-sort={totalsSort.aria('out')}
+                  ><SortButton sort={totalsSort} key="out">{unitWord} {WORDS[kind][1]}</SortButton
+                  ></th
+                ></tr
+              ></thead
+            >
+            <tbody>
+              {#each sortedTableRows as r (JSON.stringify([r.group, r.subjectId]))}
+                <tr class:picked-row={isPicked(r)}>
+                  <td class="mono"
+                    ><button
+                      type="button"
+                      class="pick"
+                      aria-pressed={isPicked(r)}
+                      onclick={() => pick(isPicked(r) ? null : r)}>{r.subjectId}</button
+                    ></td
+                  >
+                  <td>{r.group}</td>
+                  {#if kind === 'route'}<td class="mono">{r.source ?? ''}</td><td class="mono"
+                      >{r.pipeline ?? ''}</td
+                    >{/if}
+                  <td class="num">{amount(r.in)}</td><td class="num">{amount(r.out)}</td>
+                </tr>
+              {/each}
+            </tbody>
+            {#if showsSum}
+              <tfoot
+                ><tr
+                  ><td>Total</td><td></td><td class="num">{amount(sumIn)}</td><td class="num"
+                    >{amount(sumOut)}</td
+                  ></tr
+                ></tfoot
+              >
+            {/if}
+          </table>
+        </div>
+      {:else}
+        <p class="empty">No rows recorded in this window yet.</p>
       {/if}
     </section>
 
@@ -1828,6 +2014,47 @@
   }
   tbody tr:last-child td {
     border-bottom: 0;
+  }
+  .controls {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .table-head {
+    margin: 1rem 0 0.5rem;
+  }
+  tfoot td {
+    font-weight: 600;
+    border-top: 1px solid var(--border);
+  }
+  .pick {
+    all: unset;
+    cursor: pointer;
+  }
+  .pick:hover,
+  .pick:focus-visible {
+    text-decoration: underline;
+  }
+  tr.picked-row td {
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+  tr.picked-row td:first-child {
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+  .picked {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.05rem 0.2rem 0.05rem 0.5rem;
+    border: 1px solid var(--accent);
+    border-radius: 999px;
+    font-size: 0.85em;
+    font-weight: 500;
+  }
+  .picked button {
+    all: unset;
+    cursor: pointer;
+    padding: 0 0.3rem;
   }
   .num {
     text-align: right;

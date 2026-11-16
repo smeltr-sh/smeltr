@@ -1,6 +1,7 @@
 node_modules
 .svelte-kit
 /build
+/leader-docs
 /preview/build
 
 # `wrangler dev` scratch: bundles and local asset state.

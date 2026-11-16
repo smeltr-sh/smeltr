@@ -402,6 +402,18 @@ impl Schema {
     }
 }
 
+/// The type every one of `schemas` that names `path` gives it, where they agree and it is one a parse reads text as.
+/// `None` where none names it, or they disagree.
+pub fn read_as(schemas: &[Arc<Schema>], path: &str) -> Option<DataType> {
+    let mut each = schemas.iter().filter_map(|s| s.fields.iter().find(|f| f.path == path));
+    let ty = each.next()?.ty.clone();
+    let readable = matches!(
+        ty,
+        DataType::Str | DataType::I64 | DataType::F64 | DataType::Bool | DataType::DateTime
+    );
+    (readable && each.all(|f| f.ty == ty)).then_some(ty)
+}
+
 /// Where a record breaks the schemas a pipeline produces, all of them at once: a row keeps one of them, so a field
 /// breaks them when every schema that names it says so, a field is missing when every schema requires it, and a
 /// field is recommended when every schema requires or recommends it and some only recommend it.
@@ -499,9 +511,9 @@ pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<Told> {
             Misfit::Type { ty, wants } => {
                 let path = f.path();
                 let schema = title(&f.schema);
-                // A timestamp written as epoch milliseconds is the case a function answers.
+                // A datetime is written as epoch milliseconds with a function, not by retyping it, which is worth saying.
                 let how = match (ty, wants.as_str()) {
-                    (DataType::DateTime, "i64") => ": `.epochMillis()` gives one",
+                    (DataType::DateTime, "i64") => " Write it as i64: `.epochMillis()` gives an i64.",
                     _ => "",
                 };
                 let message = match wants.starts_with('{') {
@@ -513,10 +525,7 @@ pub fn told(schemas: &[Arc<Schema>], findings: &[Finding]) -> Vec<Told> {
                         ),
                         None => format!("`{path}` is {}, but {schema} has it as an object.", ty.spell()),
                     },
-                    false => format!(
-                        "`{path}` is {}, but {schema} has it as {wants}. Write it as {wants}{how}.",
-                        ty.spell()
-                    ),
+                    false => format!("`{path}` is {}, but {schema} has it as {wants}.{how}", ty.spell()),
                 };
                 out.push(Told {
                     keys: Some(f.keys.clone()),
@@ -776,7 +785,7 @@ mod tests {
                 Told {
                     keys: Some(vec!["time".to_string()]),
                     message:
-                        "`time` is datetime, but Login has it as i64. Write it as i64: `.epochMillis()` gives one."
+                        "`time` is datetime, but Login has it as i64. Write it as i64: `.epochMillis()` gives an i64."
                             .to_string(),
                     breaks: true,
                     recommended: None,

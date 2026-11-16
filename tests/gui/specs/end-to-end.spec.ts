@@ -60,7 +60,7 @@ test('W12: a fresh leader is set up, changed, reviewed and deployed from the GUI
   await goto(page, leader, '#/build/destinations');
   await page.getByRole('button', { name: '+ Add destination' }).click();
   await page.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
-  await page.getByRole('textbox', { name: /^id/ }).fill('search');
+  await page.getByRole('textbox', { name: 'id', exact: true }).fill('search');
   await page.getByRole('textbox', { name: 'url' }).fill(es.url);
   await page.getByRole('textbox', { name: 'default index' }).fill('metrics');
   await page.getByRole('button', { name: 'Add', exact: true }).click();

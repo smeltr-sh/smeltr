@@ -44,8 +44,8 @@ import { historyRow } from './change';
 
 /** What one branch or deploy holds of what the moves add: the ids of sources, destinations, lookup tables, grok
  * patterns, schemas and worker groups, the names of pipelines and samples, each eval step as its pipeline and the field
- * it sets, each schema a pipeline produces as its pipeline and the schema's id, and each route by its source, its
- * pipeline's name and the destination it delivers to, if any. */
+ * it sets, each schema a pipeline produces as its pipeline and the schema's id, the pipelines with a Parser of `_raw`,
+ * and each route by its source, its pipeline's name and the destination it delivers to, if any. */
 export type Config = {
   sources: string[];
   destinations: string[];
@@ -56,6 +56,7 @@ export type Config = {
   grokPatterns: string[];
   schemas: string[];
   produces: string[];
+  parses: string[];
   samples: string[];
   groups: string[];
 };
@@ -70,6 +71,7 @@ const EMPTY: Config = {
   grokPatterns: [],
   schemas: [],
   produces: [],
+  parses: [],
   samples: [],
   groups: [],
 };
@@ -241,13 +243,15 @@ async function configOn(api: Api, branch: string): Promise<Config> {
       id: string;
       name: string;
       produces?: string[];
-      steps: { type: string; assignments?: { target: string }[] }[];
+      steps: { type: string; input?: string; assignments?: { target: string }[] }[];
     }[]) {
       c.pipelines.push(p.name);
       names.set(p.id, p.name);
       c.produces.push(...(p.produces ?? []).map((schema) => `${p.name}:${schema}`));
       for (const step of p.steps)
         if (step.type === 'eval') c.steps.push(`${p.name}:${step.assignments![0].target}`);
+      if (p.steps.some((step) => step.type === 'parser' && step.input === '_raw'))
+        c.parses.push(p.name);
     }
     routes.push(...res.config.routes);
     c.lookups.push(...(res.config.lookupTables ?? []).map((t: { id: string }) => t.id));
@@ -565,6 +569,7 @@ async function routeFromMap(
   for (let n = 2; world.editing.pipelines.includes(named); n += 1) named = `${pipeline}-${n}`;
   await save(j, () => expect(picker.locator('option:checked')).toHaveText(named));
   world.editing.pipelines.push(named);
+  world.editing.parses.push(named);
   const to = world.editing.destinations.length ? j.rng.pick(world.editing.destinations) : null;
   if (to) await sendTo(j, page.locator(`.flow[data-source="${source}"]`), to);
   await save(j, () => expect(page).toHaveURL(/#\/map/));
@@ -752,17 +757,17 @@ async function addElasticsearch(j: Journey, id: string, index: string) {
   const { page, sink } = j;
   await page.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
   const form = page.getByRole('dialog', { name: /new Elasticsearch destination/ });
-  await form.getByRole('textbox', { name: /^id/ }).fill(id);
+  await form.getByRole('textbox', { name: 'id', exact: true }).fill(id);
   await form.getByRole('textbox', { name: 'url' }).fill(sink.url);
   await form.getByRole('textbox', { name: 'default index' }).fill(index);
   await form.getByRole('button', { name: 'Add', exact: true }).click();
   return form;
 }
 
-/** The pipelines that compile for `source`. A pipeline made from a capture parses `_raw` as JSON, which an Avro source,
- * reading declared fields, does not have: the leader refuses that route's save. */
+/** The pipelines that compile for `source`. A pipeline with a Parser of `_raw` needs a source with a `_raw` field. An
+ * Avro source has none, since it reads declared fields, and the leader refuses that route's save. */
 const pipelinesFor = (w: World, source: string) =>
-  w.editing.pipelines.filter((p) => !(source.startsWith('avro-') && p.endsWith('-parse')));
+  w.editing.pipelines.filter((p) => !(source.startsWith('avro-') && w.editing.parses.includes(p)));
 
 /** The sources a new route can take, each with a pipeline that compiles for it. */
 const routable = (w: World) => w.editing.sources.filter((s) => pipelinesFor(w, s).length);
@@ -844,7 +849,7 @@ const duplicateDestination: Move = {
     await page.getByRole('button', { name: `More actions for ${original}` }).click();
     await page.getByRole('button', { name: 'Duplicate', exact: true }).click();
     const form = page.getByRole('dialog', { name: /^new .* destination$/ });
-    const idField = form.getByRole('textbox', { name: /^id/ });
+    const idField = form.getByRole('textbox', { name: 'id', exact: true });
     await expect(idField).toHaveValue(`${original}-2`);
     await idField.fill(id);
     await form.getByRole('button', { name: 'Add', exact: true }).click();
@@ -1013,7 +1018,9 @@ const refusedRoute: Move = {
     await startRoute(j, source, pipeline);
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     // The leader says why, and the edit stays to be put right or discarded.
-    await expect(page.getByRole('alert').filter({ hasText: '`_raw` is a variant' })).toBeVisible();
+    await expect(
+      page.getByRole('alert').filter({ hasText: '`_raw` is not a field this source declares' }),
+    ).toBeVisible();
     await expect(page.getByText('Unsaved', { exact: true }).first()).toBeVisible();
     await page.getByRole('button', { name: 'Discard' }).click();
     await unsaved(page)();
@@ -2081,6 +2088,154 @@ const produceSchema: Move = {
     world.editing.produces.push(pair);
     await editingIsSaved(j);
     return `name schema ${schema} under what "${pipeline}" produces`;
+  },
+};
+
+/** Opens New schema from the schema picker named `named` (a pipeline's Produces or a destination's accepts), makes a
+ * schema with the id `id` from the built-in ECS release, and saves it, naming a branch if the GUI asks for one. */
+async function newSchemaFrom(j: Journey, named: string, id: string) {
+  const { page } = j;
+  const picker = page.getByRole('combobox', { name: named });
+  // A picker with no schema left to offer is the New schema button alone, under the picker's name.
+  const button = page.getByRole('button', { name: named });
+  await expect(picker.or(button)).toBeVisible();
+  if (await picker.count()) await picker.selectOption({ label: '+ New schema…' });
+  else await button.click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'ECS', exact: true }).click();
+  await dialog.getByLabel('id', { exact: true }).fill(id);
+  await saveBy(j, dialog.getByRole('button', { name: 'Add', exact: true }), () =>
+    expect(dialog).toBeHidden({ timeout: 30_000 }),
+  );
+  j.world.editing.schemas.push(id);
+  await expect(page.getByRole('link', { name: id, exact: true })).toBeVisible();
+}
+
+const makeSchemaInPlace: Move = {
+  name: 'make-schema-in-place',
+  weight: (w) =>
+    w.password &&
+    w.editing.schemas.length < 2 &&
+    (w.editing.pipelines.length || w.editing.destinations.length)
+      ? 1
+      : 0,
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const id = `schema-${world.made++}`;
+    const pipelines = world.editing.pipelines;
+    const destinations = world.editing.destinations;
+    if (pipelines.length && (!destinations.length || rng.chance(2))) {
+      const pipeline = rng.pick(pipelines);
+      await goto(page, leader, '#/build/pipelines');
+      await page.getByRole('link', { name: pipeline, exact: true }).click();
+      await newSchemaFrom(j, 'Add a schema it produces', id);
+      await save(j, () => expect(page.getByText('Saved.')).toBeVisible());
+      world.editing.produces.push(`${pipeline}:${id}`);
+      await editingIsSaved(j);
+      return `make schema ${id} from what "${pipeline}" produces`;
+    }
+    const destination = rng.pick(destinations);
+    await goto(page, leader, `#/build/destinations/${encodeURIComponent(destination)}`);
+    await newSchemaFrom(j, 'Add a schema it accepts', id);
+    await save(j, unsaved(page));
+    await editingIsSaved(j);
+    const res = await (await j.truth()).get(`/api/areas/shared?branch=${world.branch}`);
+    const saved = res.config.destinations.find((d: { id: string }) => d.id === destination);
+    expect(saved.accepts, `${destination} accepts the schema made from it`).toContain(id);
+    return `make schema ${id} from what ${destination} accepts`;
+  },
+};
+
+/** The fields the schemas in `ids` type alike (every schema that names one gives it the same type), each with that
+ * type: i64, f64, bool or datetime. A Parser that declares one as str is warned, and the warning's button writes that
+ * type. */
+function schemaTyped(
+  schemas: { id: string; fields: { field: string; type: unknown }[] }[],
+  ids: string[],
+) {
+  const named = schemas.filter((s) => ids.includes(s.id)).flatMap((s) => s.fields);
+  const types = new Map<string, Set<unknown>>();
+  for (const { field, type } of named) types.set(field, (types.get(field) ?? new Set()).add(type));
+  return (
+    [...types]
+      // A Parser declares keys of objects, so a field inside an array is left out.
+      .filter(
+        ([field, ts]) =>
+          ts.size === 1 &&
+          !named.some((f) => field.startsWith(`${f.field}.`) && f.type !== 'object'),
+      )
+      .map(([field, ts]) => ({ field, type: [...ts][0] }))
+      .filter((f): f is { field: string; type: string } =>
+        ['i64', 'f64', 'bool', 'datetime'].includes(f.type as string),
+      )
+  );
+}
+
+/** The pipelines this move can fix a field in: they produce a schema, and no Avro source routes to them, so a Parser
+ * of `_raw` compiles in them. */
+const fixable = (w: World) => [
+  ...new Set(
+    w.editing.produces
+      .map((ps) => ps.split(':')[0])
+      .filter(
+        (p) => !w.editing.routes.some((r) => r.pipeline === p && r.source.startsWith('avro-')),
+      ),
+  ),
+];
+
+const fixSchemaType: Move = {
+  name: 'fix-schema-type',
+  weight: (w) => (w.password && fixable(w).length ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const pipeline = rng.pick(fixable(world));
+    const on = world.branch === null ? '' : `?branch=${encodeURIComponent(world.branch)}`;
+    const { config } = await (await j.truth()).get(`/api/areas/shared${on}`);
+    const { produces, steps } = config.pipelines.find(
+      (p: { name: string }) => p.name === pipeline,
+    ) as { produces: string[]; steps: { type: string; declared?: { name: string }[] }[] };
+    // A field's type is stated once, so a field a Parser in the pipeline already declares is left out.
+    const declared = steps
+      .flatMap((s) => (s.type === 'parser' ? s.declared! : []))
+      .map((d) => d.name);
+    const typed = schemaTyped(config.schemas, produces).filter((f) => !declared.includes(f.field));
+    if (!typed.length) return `nothing "${pipeline}" produces types a field other than str`;
+    const { field, type } = rng.pick(typed);
+    await goto(page, leader, '#/build/pipelines');
+    await page.getByRole('link', { name: pipeline, exact: true }).click();
+    await page.getByRole('button', { name: 'Add step' }).click();
+    await page
+      .getByRole('dialog', { name: 'add step' })
+      .getByRole('button', { name: 'Parser', exact: true })
+      .click();
+    // The new step is the last expanded one. A field it declares starts as str.
+    const step = page.locator('.card.open').last();
+    await step.getByRole('button', { name: '+ field' }).click();
+    await step.getByPlaceholder('name').last().fill(field);
+    const write = page.getByRole('button', { name: `Write ${field} as ${type}` });
+    if (rng.chance(2)) {
+      // Press the button in the popover that the mark on the field's line opens.
+      await step
+        .getByRole('button', { name: new RegExp(`is str, but .* has it as ${type}`) })
+        .click();
+      await write.last().click();
+    } else
+      // Press the button in the step's warning.
+      await step
+        .locator('.step-errors')
+        .getByRole('button', { name: `Write ${field} as ${type}` })
+        .click();
+    await expect(write).toHaveCount(0, { timeout: 15_000 });
+    await save(j, () => expect(page.getByText('Saved.')).toBeVisible());
+    if (!world.editing.parses.includes(pipeline)) world.editing.parses.push(pipeline);
+    await editingIsSaved(j);
+    const saved = (
+      await (await j.truth()).get(`/api/areas/shared?branch=${encodeURIComponent(world.branch!)}`)
+    ).config.pipelines.find((p: { name: string }) => p.name === pipeline);
+    expect(saved.steps.at(-1).declared, `${field} is written as ${type}`).toEqual([
+      { name: field, type },
+    ]);
+    return `declare ${field} in a Parser of "${pipeline}", and write it as ${type} as the schemas have it`;
   },
 };
 
@@ -3568,6 +3723,8 @@ export const MOVES: readonly Move[] = [
   addBuiltInSchema,
   mapSchemaField,
   produceSchema,
+  makeSchemaInPlace,
+  fixSchemaType,
   pasteSample,
   editSample,
   deleteSample,

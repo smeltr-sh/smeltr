@@ -793,7 +793,7 @@ test('A1: a source with no route is routed from the map, its pipeline made from 
   await expect(dialog.getByRole('combobox', { name: /^Worker group/ })).toHaveValue('default');
   await captureThree(admin, 'own metrics');
 
-  // A metrics record is a line of JSON: a JSON Parser is proposed, its fields declared from the capture.
+  // A metrics record is a line of JSON: a JSON Parser is proposed, and it declares no field.
   await expect(admin.getByText('3 of 3 records read as JSON')).toBeVisible();
   // Raw JSON holds what the editor made, and its Save comes back to the route as the editor's does.
   await admin.getByRole('button', { name: 'Raw JSON' }).click();
@@ -830,9 +830,7 @@ test('A1: a source with no route is routed from the map, its pipeline made from 
     input: '_raw',
     kind: { type: 'json' },
   });
-  expect(made.steps[0].declared.map((f: { name: string }) => f.name)).toEqual(
-    expect.arrayContaining(['metric', 'value', 'ts']),
-  );
+  expect(made.steps[0].declared ?? []).toEqual([]);
 });
 
 // A1, records from a chosen point rather than only what arrives now.
@@ -3173,7 +3171,7 @@ test('A10: an Elasticsearch destination signs in with a username and password', 
   await admin.getByRole('button', { name: '+ Add destination' }).click();
   const dialog = admin.getByRole('dialog');
   await dialog.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
-  await dialog.getByRole('textbox', { name: /^id/ }).fill('search');
+  await dialog.getByRole('textbox', { name: 'id', exact: true }).fill('search');
   await dialog.getByRole('textbox', { name: 'url' }).fill('https://es.example.com:9200');
   await dialog.getByRole('textbox', { name: 'default index' }).fill('logs');
   const credential = dialog.getByRole('combobox', { name: /^credential/ });
@@ -3199,6 +3197,50 @@ test('A10: an Elasticsearch destination signs in with a username and password', 
       username: 'smeltr_writer',
       password: { secret: 'es-password', version: 1 },
     },
+  ]);
+});
+
+// A10, sources and destinations from a form. An Elasticsearch destination's ID field starts empty, with
+// `__destination.id` as its hint, and is saved as no ID field at all; another field name is saved as it is, and so is
+// the bulk action `index`.
+test('A10: an Elasticsearch ID field starts empty, with __destination.id as its hint', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await goto(admin, leader, '#/build/destinations');
+  const add = async (id: string) => {
+    await admin.getByRole('button', { name: '+ Add destination' }).click();
+    const dialog = admin.getByRole('dialog');
+    await dialog.getByRole('button', { name: 'Elasticsearch', exact: true }).click();
+    await dialog.getByRole('textbox', { name: /^id$/ }).fill(id);
+    await dialog.getByRole('textbox', { name: 'url' }).fill('https://es.example.com:9200');
+    await dialog.getByRole('textbox', { name: 'default index' }).fill('logs');
+    return dialog;
+  };
+  let dialog = await add('computed');
+  await dialog.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
+  const idField = dialog.getByRole('textbox', { name: 'ID field' });
+  await expect(idField).toHaveValue('');
+  await expect(idField).toHaveAttribute('placeholder', '__destination.id');
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  dialog = await add('keyed');
+  await dialog.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
+  await dialog.getByRole('textbox', { name: 'ID field' }).fill('event.id');
+  await dialog.getByRole('combobox', { name: 'bulk action' }).selectOption('index');
+  await dialog.getByRole('button', { name: 'Add', exact: true }).click();
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
+
+  const saved = await api.get(`/api/areas/shared${ON}`);
+  const common = {
+    type: 'elasticsearch',
+    url: 'https://es.example.com:9200',
+    defaultIndex: 'logs',
+  };
+  expect(saved.config.destinations).toEqual([
+    { id: 'computed', ...common },
+    { id: 'keyed', ...common, idField: 'event.id', action: 'index' },
   ]);
 });
 
@@ -4022,4 +4064,69 @@ test('A1: a capture shows every record it holds, each opening on its fields', as
   await expect(rows).toHaveCount(12);
   await rows.last().click();
   await expect(rows.last()).toHaveAttribute('aria-expanded', 'true');
+});
+
+// A grok step stores each capture at the type the pipeline gives it, from a schema it produces, else its pattern. A
+// type the schema disagrees with is marked on the field's line, and its warning writes the schema's type.
+test("a grok capture is stored at the pipeline's type, and a schema's warning writes its own", async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await api.put(`/api/areas/shared/schemas${ON}`, [
+    {
+      id: 'web',
+      fields: [
+        { field: 'status', type: 'str' },
+        { field: 'bytes', type: 'i64' },
+      ],
+    },
+  ]);
+  await api.put(`/api/areas/shared/pipelines/web${ON}`, {
+    id: 'web',
+    name: 'web',
+    produces: ['web'],
+    steps: [
+      {
+        type: 'parser',
+        id: 'line',
+        input: '_raw',
+        kind: { type: 'grok', patterns: ['%{WORD:method}'] },
+        declared: [],
+      },
+    ],
+  });
+  await goto(admin, leader, '#/build/pipelines/web');
+  await admin.locator('button.expander[data-parser="grok"]').click();
+  await admin
+    .getByPlaceholder('%{IP:client} %{WORD:action}')
+    .fill('%{WORD:method} %{INT:status} %{WORD:bytes} %{NUMBER:took} \\[%{HTTPDATE:at}\\]');
+  const shown = (name: string) =>
+    admin.getByRole('combobox', { name: `${name} type` }).locator('option:checked');
+  await expect(shown('status')).toHaveText('str');
+  await expect(shown('bytes')).toHaveText('i64');
+  await expect(shown('took')).toHaveText('f64');
+  await expect(shown('at')).toHaveText('datetime');
+
+  // A type the schema disagrees with: the mark on its line shows the warning, whose button writes the schema's.
+  await admin.getByRole('combobox', { name: 'bytes type' }).selectOption('str');
+  const mark = admin.getByRole('button', { name: /^`?bytes`? is str, but web has it as i64/ });
+  await mark.click();
+  await admin.getByRole('button', { name: 'Write bytes as i64' }).first().click();
+  await expect(shown('bytes')).toHaveText('i64');
+  await expect(mark).toHaveCount(0);
+
+  await admin.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect
+    .poll(
+      async () =>
+        (await api.get(`/api/areas/shared/pipelines/web${ON}`)).pipeline.steps[0].declared,
+    )
+    .toEqual([
+      { name: 'method', type: 'str' },
+      { name: 'status', type: 'str' },
+      { name: 'bytes', type: 'i64' },
+      { name: 'took', type: 'f64' },
+      { name: 'at', type: { type: 'datetime', format: '%d/%b/%Y:%H:%M:%S %z' } },
+    ]);
 });

@@ -53,7 +53,7 @@
     "name": "smeltr_source_lag",
     "kind": "gauge",
     "labels": ["source", "topic", "partition"],
-    "what": "What the source has yet to finish. Kafka: records in the partition past the group's committed offset. SQS and Azure Storage Queue: messages on the queue, held ones included, as partition 0 of a topic named for the queue."
+    "what": "What the source has yet to finish. Kafka: records in the partition past what the source has read. SQS and Azure Storage Queue: messages on the queue, held ones included, as partition 0 of a topic named for the queue."
   },
   {
     "group": "Sources",
@@ -143,8 +143,22 @@
     "group": "Processing",
     "name": "smeltr_route_matched_total",
     "kind": "counter",
-    "labels": ["source", "route"],
-    "what": "Records the route's condition matched."
+    "labels": ["source", "route", "pipeline"],
+    "what": "Records the route's condition matched. Sum it over a pipeline's routes for the pipeline's records in."
+  },
+  {
+    "group": "Processing",
+    "name": "smeltr_route_matched_bytes_total",
+    "kind": "counter",
+    "labels": ["source", "route", "pipeline"],
+    "what": "Bytes of the records the route's condition matched, as the source read them. Sum it over a pipeline's routes for the pipeline's bytes in."
+  },
+  {
+    "group": "Processing",
+    "name": "smeltr_route_out_total",
+    "kind": "counter",
+    "labels": ["source", "route", "pipeline"],
+    "what": "Records the route's pipeline passed on, before its delivery rules."
   },
   {
     "group": "Processing",
@@ -213,15 +227,15 @@
     "group": "Destinations",
     "name": "smeltr_rows_sent_total",
     "kind": "counter",
-    "labels": ["destination"],
-    "what": "Records handed to the destination."
+    "labels": ["source", "route", "pipeline", "destination"],
+    "what": "Records handed to the destination, by the route that sent them. A record no route took carries no `route` or `pipeline` label."
   },
   {
     "group": "Destinations",
-    "name": "smeltr_rows_without_doc_id_total",
+    "name": "smeltr_bytes_sent_total",
     "kind": "counter",
-    "labels": ["destination"],
-    "what": "Records sent to a `dedupe` or `overwrite` destination with no document ID."
+    "labels": ["source", "route", "pipeline", "destination"],
+    "what": "Bytes of the records `smeltr_rows_sent_total` counts, by the same labels."
   },
   {
     "group": "Destinations",

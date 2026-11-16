@@ -1,9 +1,10 @@
 //! Setting up a source from a capture: what its records are, read off the records themselves.
 //!
 //! [`propose`] takes a captured sample and returns the first steps of a pipeline for it and the condition a route
-//! would take its rows under. The steps are a proposal for the author to edit, never a configuration that runs: the
-//! GUI shows them in the step editor, a CSV Parser with its columns already declared and typed, and the GUI declares
-//! any other Parser's fields from a preview of the sample. Nothing reaches a worker until a change is deployed.
+//! would take its rows under. The steps are a proposal for the author to edit, never a configuration that runs. The
+//! GUI shows them in the step editor: a CSV Parser with its columns typed from the sample, or a grok Parser with its
+//! pattern, whose captures the GUI stores at the types the pipeline gives them. Where a schema the pipeline produces
+//! types a column otherwise, the GUI takes the schema's type. Nothing reaches a worker until a change is deployed.
 
 #[cfg(test)]
 mod fuzz_sniff;

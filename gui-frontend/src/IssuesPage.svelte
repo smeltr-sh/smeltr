@@ -14,11 +14,12 @@
   import Collapsible from './Collapsible.svelte';
   import Chips from './Chips.svelte';
   import Button, { BUSY } from './Button.svelte';
+  import Segmented from './Segmented.svelte';
   import { ask } from './Confirm.svelte';
   import { holds } from './access';
   import {
     listWarnings,
-    lowerSourceRows,
+    markWarning,
     resetSourceHistory,
     setScope,
     conditionLabel,
@@ -64,6 +65,10 @@
     holds(w.group, 'editor');
 
   const marking = new Busy();
+  const WAS: { value: 'normal' | 'outage'; label: string }[] = [
+    { value: 'normal', label: 'Normal' },
+    { value: 'outage', label: 'Outage' },
+  ];
 
   async function mark(call: () => Promise<unknown>) {
     await marking.run(async () => {
@@ -233,19 +238,27 @@
               <span class="issue-actions">
                 {#if markable(warning) && warning.group !== null}
                   {@const group = warning.group}
-                  {#if warning.severity === 'warning'}
-                    <Button
-                      class="compact"
-                      disabled={marking.on ? BUSY : ''}
-                      onclick={() => mark(() => lowerSourceRows(group, warning.subjectId))}
-                      >Lower to info</Button
-                    >
-                  {/if}
                   <Button
                     class="compact"
                     disabled={marking.on ? BUSY : ''}
                     onclick={() => resetHistory(warning, group)}>Reset history</Button
                   >
+                  {#if warning.condition === 'sourceRowsBelow' && warning.sinceMillis !== null}
+                    {@const since = warning.sinceMillis}
+                    <Segmented
+                      label="{warning.subjectId}: the warning that is up"
+                      options={WAS}
+                      bind:value={
+                        () =>
+                          (warning.saidNormal
+                            ? 'normal'
+                            : warning.severity === 'info'
+                              ? 'outage'
+                              : '') as 'normal' | 'outage',
+                        (was) => mark(() => markWarning(group, warning.subjectId, since, was))
+                      }
+                    />
+                  {/if}
                 {/if}
               </span>
             </div>

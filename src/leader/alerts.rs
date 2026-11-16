@@ -1157,6 +1157,7 @@ mod tests {
     fn warning(condition: Condition, subject: &str, group: Option<&str>) -> Warning {
         Warning {
             crossed_millis: None,
+            said_normal: false,
             condition,
             subject_kind: SubjectKind::Source,
             subject_id: subject.into(),
@@ -1214,6 +1215,7 @@ mod tests {
         assert_eq!(key(&plain), r#"["sourceRowsBelow","source","payments","orders",null]"#);
         let crossing = |at| Warning {
             crossed_millis: Some(at),
+            said_normal: false,
             ..warning(Condition::SendersBelow, "orders", Some("payments"))
         };
         let (first, later) = (crossing(1_000), crossing(2_000));

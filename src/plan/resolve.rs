@@ -1063,7 +1063,10 @@ pub fn refuse_variant(ir: &Ir, e: &Expr, syms: &SymbolTable) -> Result<(), Compi
     Err(CompileError::new(
         None,
         match named_expr(e).filter(|n| !crate::expr::inline::is_temporary(n)) {
-            Some(name) => format!("`{name}` {}", variant_use(Some(&conversion_hint(&name, syms)))),
+            Some(name) => {
+                let hint = conversion_hint(&name, syms);
+                undeclared_use(&name, &hint, syms).unwrap_or_else(|| format!("`{name}` {}", variant_use(Some(&hint))))
+            }
             None => format!("this value {}", variant_use(None)),
         },
     ))
@@ -2012,6 +2015,21 @@ fn resolve_element_access(
 
 /// What a use of a variant says, after the value's name, with `hint`, the conversion the caller knows, or the one
 /// that fits any name.
+/// The exception for a use of the variant `name` where it reads from the record's fields the source does not declare
+/// (`SourceMeta::opened`), and nothing in the pipeline gives it a value. `hint` is the declaration that types `name`.
+pub fn undeclared_use(name: &str, hint: &str, syms: &SymbolTable) -> Option<String> {
+    let (object, at, _) = syms.root.deepest(name);
+    let ingested = object
+        .unclaimed
+        .is_some_and(|slot| syms.origins[slot].origin == Origin::Ingest);
+    (ingested && at.is_empty() && !syms.reads_only && syms.lookup(name).is_none()).then(|| {
+        format!(
+            "`{name}` is not a field this source declares. Read a field it declares, or give `{name}` a type to read \
+             it from the record's other fields -- {hint}"
+        )
+    })
+}
+
 pub fn variant_use(hint: Option<&str>) -> String {
     let hint = hint.unwrap_or("`name: type = name;`");
     format!("is a variant: give it a type first -- {hint}")

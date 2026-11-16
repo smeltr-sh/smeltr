@@ -22,6 +22,7 @@
   import StepList from './StepList.svelte';
   import Connections from './Connections.svelte';
   import PipelineProduces from './PipelineProduces.svelte';
+  import { acceptedBy } from './schemas';
   import SectionShell from './SectionShell.svelte';
   import JsonEditPage from './JsonEditPage.svelte';
   import Toggle from './Toggle.svelte';
@@ -45,9 +46,9 @@
     type NumberedStep,
     type Step,
     type StepDiffRow,
-    declareProposed,
     PROPOSED_FORMAT_NAMES,
     newStep,
+    takeSchemaTypes,
   } from './pipeline';
   import {
     productionOf,
@@ -56,7 +57,7 @@
     type FieldProposal,
     type OpenProposal,
   } from './proposal';
-  import { fieldsSettled } from './grokFields';
+  import { fieldsSettled } from './owedAnswers';
   import { provideUnfinishedRows } from './unfinished.svelte';
   import { provideProducedSchemas } from './producedSchemas.svelte';
   import RemovableChip from './RemovableChip.svelte';
@@ -91,6 +92,7 @@
     errorMessage,
     type GrokPatternDto,
     type SchemaDto,
+    type FileConfigDto,
     type LookupTableDto,
     type PipelineDto,
     type Connected,
@@ -308,6 +310,12 @@
         ownLookupTables = res.config.lookupTables;
         ownGrokPatterns = res.config.grokPatterns ?? [];
         ownSchemas = res.config.schemas ?? [];
+        ownConfig = res.config;
+      }
+      // A new route's pipeline starts producing what the route's destinations accept.
+      if (making?.to && produces.length === 0) {
+        const destinations = [...(res.config?.destinations ?? []), ...(shared?.destinations ?? [])];
+        produces = acceptedBy(making.to, destinations);
       }
       if (shared) {
         sharedPipelines = shared.pipelines;
@@ -571,8 +579,7 @@
     if (badLookupTables.length > 0) {
       return false;
     }
-    // A grok step's fields follow its pattern, and that answer is asynchronous: serializing between the edit and the
-    // answer would send a `declared` list the pattern disagrees with, which the compiler refuses.
+    // A code field's layout is the server's answer: serializing before it lands would send the text as it was.
     await fieldsSettled();
     saving = true;
     saveMessage = '';
@@ -1003,6 +1010,10 @@
       result = res;
       if (res.ok) [lastGoodResult, lastGoodRun] = [res, { at, steps: ran }];
       lastSample = sample;
+      if (res.ok && proposedSteps && at >= proposedSteps.at) {
+        if (proposedSteps.signature === signatureOf(ran)) takeSchemaTypes(steps, res.fixes ?? []);
+        proposedSteps = null;
+      }
     } catch (e) {
       requestError = unreported(e);
     } finally {
@@ -1253,17 +1264,29 @@
     adding = true;
   }
 
+  /** The scope's bundle as the leader reads it, which a schema import's pipeline runs in. */
+  let ownConfig: FileConfigDto | null = $state.raw(null);
+
   /** What the proposal read, said over the steps it made. */
   let proposed = $state('');
   /** Why no proposal was made. Its calls are quiet: this is said beside the samples. */
   let proposeError = $state('');
 
+  /** Counts proposals asked for, so only the latest one's answer lands. */
+  let proposals = 0;
+  /** The steps a proposal made and when, until the first run after it. That run can retype a field the proposal typed
+   * from the sample, where a schema the pipeline produces gives it another type. */
+  let proposedSteps: { at: number; signature: string } | null = null;
+
   async function proposeFrom(records: SampleRecordDto[]) {
+    const asked = ++proposals;
     proposeError = '';
     try {
       const p = await proposeOnboard(records);
+      if (asked !== proposals) return;
       // Each capture's proposal replaces the last one's, a proposal of no steps too.
       steps = stepsFromDto(p.steps ?? []);
+      proposedSteps = { at: Date.now() * 1000, signature: signatureOf(steps) };
       proposed = '';
       if (p.structured) {
         proposed = 'These records arrive as fields, so they need no parser.';
@@ -1275,21 +1298,10 @@
             'No format read nearly all of these records, so they need a parser of your own.';
         return;
       }
-      const parser = steps.find((s) => s.type === 'parser');
-      // The parser declares what it read, as Propose would add it.
-      const upTo =
-        parser?.type === 'parser' && parser.declared.length === 0
-          ? truncateSteps(steps, parser, true)
-          : null;
-      if (parser?.type === 'parser' && upTo) {
-        const res = await fetchPreview(upTo, selectedSample);
-        const read = res.ok ? res.parsers.at(-1) : undefined;
-        if (read) declareProposed(parser.declared, read.fields);
-      }
       if (p.format)
         proposed = `${p.read} of ${p.of} records read as ${PROPOSED_FORMAT_NAMES[p.format]}`;
     } catch (e) {
-      proposeError = unreported(e);
+      if (asked === proposals) proposeError = unreported(e);
     }
   }
 
@@ -1565,7 +1577,11 @@
     {#if id !== 'new'}<Connections kind="pipeline" {id} />{/if}
     <PipelineProduces
       bind:produces
-      declared={[...sharedSchemas, ...ownSchemas]}
+      shared={sharedSchemas}
+      own={ownSchemas}
+      config={ownConfig}
+      importers={otherPipelines.map((p) => ({ id: p.id, name: p.name }))}
+      onmade={(schema) => ownSchemas.push(schema)}
       findings={result?.ok ? (result.schema_findings ?? 0) : undefined}
       {readOnly}
     />
@@ -1608,6 +1624,8 @@
             {pipelineNames}
             {lookupTables}
             {grokPatterns}
+            parsedFields={lastGoodResult?.parsed_fields}
+            fixes={lastGoodResult?.fixes}
             parseInput={parseInputFor(sampleRows[0])}
             pausedAt={pause?.step ?? null}
             ran={pause?.run ?? null}

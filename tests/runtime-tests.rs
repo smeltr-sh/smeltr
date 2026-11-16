@@ -22,7 +22,7 @@ use smeltr::plan::topology::{
     CompiledTopology, DeliverRule, RouteConfig, SourceMeta, SourceMetas, compile_topology, compile_topology_with,
 };
 use smeltr::runtime::{
-    DROPPED_REJECTED, DROPPED_UNPROCESSABLE, DestinationTarget, MAX_IN_FLIGHT, MAX_TRACKED, Polled, Reader, Worker,
+    DROPPED_REJECTED, DROPPED_UNPROCESSABLE, DestinationTarget, MAX_IN_FLIGHT, Polled, Reader, TRACKED_BYTES, Worker,
 };
 
 use crate::harness;
@@ -55,6 +55,7 @@ fn pipeline(id: usize, body: Vec<Step>) -> PipelineConfig {
         step_ids: Vec::new(),
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
+        produces: Vec::new(),
     }
 }
 
@@ -264,19 +265,17 @@ fn target_with(id: DestId, dest: impl Destination + 'static, on_reject: Answer) 
         name: format!("dest-{id}"),
         destination: Box::new(dest),
         on_reject,
-        wants_doc_id: false,
         placement: Some(smeltr::plan::topology::Placement::Topic),
     }
 }
 
-/// A destination that keys documents on `__destination.id`, or on the field its topology's `id_fields` names.
+/// A destination that places rows by `__destination.index`, as Elasticsearch does.
 fn keyed(id: DestId, dest: impl Destination + 'static) -> DestinationTarget {
     DestinationTarget {
         id,
         name: format!("dest-{id}"),
         destination: Box::new(dest),
         on_reject: Answer::Block,
-        wants_doc_id: true,
         placement: Some(smeltr::plan::topology::Placement::Index),
     }
 }
@@ -487,11 +486,15 @@ fn a_catch_all_route_delivers_every_row_and_commits_once() {
     // "a" and "b": one byte each of payload, which is what a byte rate is a rate of.
     assert_eq!(counter(&w, "smeltr_bytes_polled_total", &[("source", "0")]), Some(2));
     // The route's own id, not its position: reordering the list must not re-attribute this count.
-    assert_eq!(
-        counter(&w, "smeltr_route_matched_total", &[("source", "0"), ("route", "r")]),
-        rows
-    );
-    assert_eq!(counter(&w, "smeltr_rows_sent_total", &[("destination", "0")]), rows);
+    let route = [("source", "0"), ("route", "r"), ("pipeline", "0")];
+    assert_eq!(counter(&w, "smeltr_route_matched_total", &route), rows);
+    // As the source read them: the same bytes `smeltr_bytes_polled_total` counted, since the route took every row.
+    assert_eq!(counter(&w, "smeltr_route_matched_bytes_total", &route), Some(2));
+    assert_eq!(counter(&w, "smeltr_route_out_total", &route), rows);
+    let sent = [("source", "0"), ("route", "r"), ("pipeline", "0"), ("destination", "0")];
+    assert_eq!(counter(&w, "smeltr_rows_sent_total", &sent), rows);
+    // Each document as it is sent, `{"_raw":"a","greeting":"hi"}`.
+    assert_eq!(counter(&w, "smeltr_bytes_sent_total", &sent), Some(2 * 28));
     assert_eq!(
         counter(&w, "smeltr_function_calls_total", &f0),
         Some(1),
@@ -786,6 +789,10 @@ fn a_dropped_row_is_delivered_nowhere_and_counted_under_its_function() {
     let dropped = |f: &str| counter(&w, "smeltr_rows_dropped_total", &[("pipeline", "0"), ("function", f)]);
     assert_eq!(dropped("0"), Some(1));
     assert_eq!(dropped("1"), None);
+    // The route took both rows, and its pipeline passed one on.
+    let route = [("source", "0"), ("route", "r"), ("pipeline", "0")];
+    assert_eq!(counter(&w, "smeltr_route_matched_total", &route), Some(2));
+    assert_eq!(counter(&w, "smeltr_route_out_total", &route), Some(1));
 }
 
 /// An `if`'s condition is its own step's work: the calls that check it, and a row error it raises, are counted
@@ -1100,7 +1107,7 @@ fn a_reserved_field_is_still_readable_after_a_dynamic_parser() {
     }
 }
 
-/// Identity is `__destination.id`, else the destination's own `idField` read as text, else generated; a missing one is counted only where the destination keys on it.
+/// Identity is the field the destination's `idField` names, read as text, else `__destination.id`, else none.
 #[test]
 fn document_identity_resolves_per_destination() {
     let routes = vec![route_with_deliver(deliver_to(&[0, 1, 2, 3]))];
@@ -1135,12 +1142,12 @@ fn document_identity_resolves_per_destination() {
     let s = |v: &str| Some(v.to_string());
     assert_eq!(
         ids(&dests[0]),
-        vec![s("computed"), s("e-1"), None],
-        "__destination.id wins, then the configured field"
+        vec![s("e-0"), s("e-1"), None],
+        "the configured field wins over __destination.id"
     );
     assert_eq!(
         ids(&dests[1]),
-        vec![s("computed"), s("7"), None],
+        vec![s("4242"), s("7"), None],
         "a non-string field is read as its text"
     );
     assert_eq!(ids(&dests[2]), vec![s("computed"), None, None]);
@@ -1149,13 +1156,6 @@ fn document_identity_resolves_per_destination() {
         vec![s("computed"), None, None],
         "__destination.id travels whether or not the destination keys on it"
     );
-    for (dest, missing) in [("0", Some(1)), ("1", Some(1)), ("2", Some(2)), ("3", None)] {
-        assert_eq!(
-            counter(&w, "smeltr_rows_without_doc_id_total", &[("destination", dest)]),
-            missing,
-            "destination {dest}"
-        );
-    }
     assert!(
         dests.iter().all(|d| d.sent().len() == 3),
         "a missing identity never blocks delivery"
@@ -2123,8 +2123,9 @@ fn an_unmatched_row_under_block_blocks_the_source_before_any_route_runs() {
 
     let e = tick(&mut w).expect_err("block fails the tick so nothing commits");
     assert!(e.to_string().contains("matched no route"), "{e}");
-    let routed = counter(&w, "smeltr_route_matched_total", &[("source", "0")]);
-    assert!(routed.is_some(), "the first turn evaluated the routes");
+    // A batch is counted as run whether or not it is handed off.
+    let ran = counter(&w, "smeltr_tick_batches_total", &[("source", "0")]);
+    assert!(ran.is_some(), "the first turn ran the batch");
     for attempt in 0..3 {
         tick(&mut w).expect("a held batch is not run again");
         assert!(src.is_blocked(), "{attempt}");
@@ -2139,9 +2140,14 @@ fn an_unmatched_row_under_block_blocks_the_source_before_any_route_runs() {
     assert!(dest.sent().is_empty(), "the matched row is not sent either");
     assert!(src.committed().is_empty());
     assert_eq!(
+        counter(&w, "smeltr_tick_batches_total", &[("source", "0")]),
+        ran,
+        "the batch was not run again"
+    );
+    assert_eq!(
         counter(&w, "smeltr_route_matched_total", &[("source", "0")]),
-        routed,
-        "the routes were not evaluated again"
+        None,
+        "a batch never handed off counts no route"
     );
     assert_eq!(counter(&w, "smeltr_rows_dropped_total", &[("source", "0")]), None);
 }
@@ -2274,11 +2280,9 @@ fn a_refused_unmatched_row_obeys_the_destination_s_reject_policy() {
     }
 }
 
-/// No pipeline ran, so an unmatched row carries no `__destination.id` and no field to read one from. A destination that keys
-/// on an identity generates its own instead, which is its dedupe silently not happening -- counted under the name
-/// that already exists for that.
+/// No pipeline ran, so an unmatched row carries no `__destination.id` and no field to read one from.
 #[test]
-fn an_unmatched_row_to_a_keyed_destination_is_counted_as_having_no_identity() {
+fn an_unmatched_row_carries_no_identity() {
     let src = FakeSource::new([record("x", 0, 0), record("y", 1, 0)]);
     let mut w = worker_with_unmatched(vec![], vec![], &src, deliver(&[0]));
     let dlq = FakeDestination::new();
@@ -2288,10 +2292,6 @@ fn an_unmatched_row_to_a_keyed_destination_is_counted_as_having_no_identity() {
 
     assert_eq!(dlq.sent().len(), 2);
     assert!(dlq.sent().iter().all(|r| r.doc_id.is_none()));
-    assert_eq!(
-        counter(&w, "smeltr_rows_without_doc_id_total", &[("destination", "0")]),
-        Some(2)
-    );
 }
 
 // -- unprocessable batches ----------------------------------------------------
@@ -3102,7 +3102,9 @@ fn the_in_flight_queue_is_bounded() {
 #[test]
 fn a_byte_budget_lets_small_batches_run_past_the_batch_floor() {
     let dest = AsyncDestination::new();
-    let src = FakeSource::new([record("{}", 0, 0)]);
+    // Each batch reads more than tracking it costs, so what they read is what binds.
+    let raw = format!("{{\"a\":\"{}\"}}", "x".repeat(TRACKED_BYTES));
+    let src = FakeSource::new([record(&raw, 0, 0)]);
     let mut w = async_worker(&dest, &src);
     tick(&mut w).unwrap();
     let batch = w.reader.commits.bytes();
@@ -3112,37 +3114,56 @@ fn a_byte_budget_lets_small_batches_run_past_the_batch_floor() {
     w.reader.byte_budget = batch * batches + 1;
 
     for i in 1..batches as i64 {
-        src.requeue([record("{}", i, 0)]);
+        src.requeue([record(&raw, i, 0)]);
         tick(&mut w).unwrap();
     }
     assert_eq!(w.reader.commits.depth(), batches, "every batch outstanding");
     assert!(src.committed().is_empty(), "nothing forced out under the budget");
 
-    src.requeue([record("{}", batches as i64, 0)]);
+    src.requeue([record(&raw, batches as i64, 0)]);
     tick(&mut w).unwrap();
     assert!(!src.committed().is_empty(), "at the budget, backpressure flushes");
 }
 
-/// Batches that count no bytes still stop the reader, at `MAX_TRACKED`.
+/// Batches that read nothing still stop the reader, once what tracking them costs fills its byte budget.
 #[test]
-fn batches_of_empty_records_stop_at_the_batch_ceiling() {
+fn batches_of_empty_records_stop_at_what_tracking_them_costs() {
     let dest = AsyncDestination::new();
     let src = FakeSource::new([record("", 0, 0)]);
     let mut w = async_worker(&dest, &src);
     tick(&mut w).unwrap();
     assert_eq!(w.reader.commits.bytes(), 0, "an empty record reads nothing");
-    w.reader.byte_budget = usize::MAX;
+    let batches = MAX_IN_FLIGHT + 4;
+    w.reader.byte_budget = batches * TRACKED_BYTES + 1;
 
-    for i in 1..=MAX_TRACKED as i64 {
+    for i in 1..batches as i64 {
         src.requeue([record("", i, 0)]);
         tick(&mut w).unwrap();
     }
-    assert!(
-        w.reader.commits.depth() <= MAX_TRACKED,
-        "depth {} past the ceiling",
-        w.reader.commits.depth()
-    );
-    assert!(!src.committed().is_empty(), "at the ceiling, backpressure flushes");
+    assert_eq!(w.reader.commits.depth(), batches, "every batch outstanding");
+    assert!(src.committed().is_empty(), "nothing forced out under the budget");
+
+    src.requeue([record("", batches as i64, 0)]);
+    tick(&mut w).unwrap();
+    assert!(!src.committed().is_empty(), "at the budget, backpressure flushes");
+}
+
+/// A busy source's many small batches read on while a destination holds them all, as one finishing a file does: the
+/// byte budget binds, not their number.
+#[test]
+fn many_small_batches_read_on_under_the_byte_budget() {
+    let dest = AsyncDestination::new();
+    let src = FakeSource::new([record("{}", 0, 0)]);
+    let mut w = async_worker(&dest, &src);
+    tick(&mut w).unwrap();
+    w.reader.byte_budget = 64 * 1024 * 1024;
+
+    for i in 1..=2048 {
+        src.requeue([record("{}", i, 0)]);
+        tick(&mut w).unwrap();
+    }
+    assert_eq!(w.reader.commits.depth(), 2049, "every batch outstanding");
+    assert!(src.committed().is_empty(), "nothing forced out under the budget");
 }
 
 /// A refused dispatch keeps the batch, blocks the source, and re-runs it ahead of any poll; the block clears once it is acknowledged.

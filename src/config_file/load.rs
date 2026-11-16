@@ -31,10 +31,10 @@ use crate::plan::config::{
 use crate::plan::parse_call::split_dots_default;
 use crate::plan::topology::{
     AccessKey, Acknowledgement, AfterCommit, ApiRecords, AssumedRole, AzureAccess, AzureCredential, AzureStore,
-    CatalogSignIn, Cloud, ConnectionLimits, DeliverRule, DeltaDestinationConfig, DestinationConfig, DestinationKind,
-    DocIdPolicy, Endpoint, EntraSignIn, Framing, GcsAccess, GcsStore, HttpDestinationConfig, IcebergDestinationConfig,
-    KafkaDestinationConfig, KafkaProps, KafkaService, KafkaSourceConfig, ListPlace, ListStart,
-    LogAnalyticsDestinationConfig, NamedCertificate, NamedSecret, Newlines, ObjectFormat, ObjectQueue,
+    BulkAction, CatalogSignIn, Cloud, ConnectionLimits, DeliverRule, DeltaDestinationConfig, DestinationConfig,
+    DestinationKind, Endpoint, EntraSignIn, Framing, GcsAccess, GcsStore, HttpDestinationConfig,
+    IcebergDestinationConfig, KafkaDestinationConfig, KafkaProps, KafkaService, KafkaSourceConfig, ListPlace,
+    ListStart, LogAnalyticsDestinationConfig, NamedCertificate, NamedSecret, Newlines, ObjectFormat, ObjectQueue,
     ObjectSourceConfig, ObjectsDestinationConfig, OktaSignIn, OtlpDestinationConfig, PrometheusDestinationConfig,
     RemoteWriteVersion, RequestBody, RouteConfig, S3Access, S3Store, SftpAccess, SftpCredential, SftpStore,
     SourceConfig, SourceKind, SplunkHecDestinationConfig, StartPosition, StopPosition, Tls, TopologyConfig, Transport,
@@ -364,7 +364,7 @@ pub(crate) fn from_file_config_at(
 
     let (routes, route_errors) = collect(file.routes.iter().map(|r| to_route(r, &maps, &group)));
     errors.extend(route_errors);
-    let (pipelines, pipeline_errors) = collect(file.pipelines.iter().map(|p| {
+    let (pipelines, pipeline_errors) = collect(file.pipelines.iter().zip(&produces).map(|(p, produces)| {
         let mut call_ids = Vec::new();
         let expanded = expand_calls(
             &p.steps,
@@ -374,7 +374,7 @@ pub(crate) fn from_file_config_at(
             &mut HashSet::new(),
         )
         .map_err(|e| format!("pipeline {:?}: {e}", p.name))?;
-        to_pipeline(p, &expanded, &call_ids, maps.pipelines[&p.id], &maps)
+        to_pipeline(p, &expanded, &call_ids, maps.pipelines[&p.id], produces, &maps)
     }));
     errors.extend(pipeline_errors);
 
@@ -3947,6 +3947,7 @@ fn to_pipeline(
     steps: &[StepDto],
     call_ids: &[String],
     id: usize,
+    produces: &[Arc<Schema>],
     maps: &IdMaps,
 ) -> Result<PipelineConfig, String> {
     let in_pipeline = |e: String| format!("pipeline {:?}: {e}", dto.name);
@@ -3968,6 +3969,7 @@ fn to_pipeline(
             .map(|(table, (source, at))| (table.clone(), to_lookup_source(source, at.as_ref())))
             .collect(),
         grok_patterns: maps.grok_patterns.clone(),
+        produces: produces.to_vec(),
     })
 }
 

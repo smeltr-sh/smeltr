@@ -26,6 +26,7 @@ fn compile_err(body: Vec<Step>) -> Vec<CompileError> {
         step_ids: Vec::new(),
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
+        produces: Vec::new(),
     };
     compile(&p, &SourceMeta::KAFKA).expect_err("expected a compile error")
 }

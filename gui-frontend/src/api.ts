@@ -496,11 +496,9 @@ export function sqlStatement(source: SourceDto): Promise<SqlStatementsResult> {
  * `plan::topology::Signal`. */
 export type OtlpSignal = 'logs' | 'metrics' | 'traces';
 
-/** What happens when the same document reaches Elasticsearch twice.
- * `auto` is plain at-least-once: a re-send after a crash indexes a second
- * copy. The other two key the document on a stable id and pay indexing
- * throughput for it. */
-export type DocIdPolicy = 'auto' | 'dedupe' | 'overwrite';
+/** The bulk action an Elasticsearch destination writes each document with: what a second document with the same
+ * id does. */
+export type BulkAction = 'create' | 'index';
 
 /** A destination's codecs, mirroring `config_file::dto::CompressionDto`. A
  * closed set, so the editor offers a dropdown and no save can refuse one. */
@@ -625,7 +623,8 @@ export type DestinationDto = {
       /** Basic auth, in place of `auth`: `username` and `password` together. */
       username?: string;
       password?: SecretRef;
-      docId?: DocIdPolicy;
+      action?: BulkAction;
+      /** The row field each document's id is read from. Absent is `__destination.id`. */
       idField?: string;
       inFlight?: number;
       maxBulkBytes?: ByteCount;
@@ -1053,9 +1052,6 @@ export type ObjectFormat = 'ndjson' | 'json' | 'parquet' | 'avro' | 'csv' | 'tex
 
 /** What a Kafka, Splunk HEC or HTTP destination writes: the record as JSON, one field's text, or one field's bytes. */
 export type StreamFormat = 'json' | 'text' | 'bytes';
-
-/** `ObjectPrefix::DEFAULT`. */
-export const OBJECT_PREFIX = '%Y/%m/%d/%H/';
 
 /** What each cloud takes as an object's storage class, mirroring `io::objects` (`S3_STORAGE_CLASSES`,
  * `GCS_STORAGE_CLASSES`, `AZURE_ACCESS_TIERS`). The load refuses any other. */
@@ -2267,6 +2263,11 @@ export interface PreviewResult {
   /** One entry per parser step, in run order -- what the field-declaration
    * panel reads to propose fields from a sample. */
   parsers: ParserProposal[];
+  /** Each grok step's fields as the pipeline types them, by step id. Absent when the pipeline did not compile. */
+  parsed_fields?: Record<string, { name: string; type: unknown }[]>;
+  /** The warnings a field's declared type answers: the warning, the field's path, and the type the produced schemas
+   * agree on (`leader::preview::SchemaFix`). */
+  fixes?: { message: string; path: string; type: unknown }[];
   /** The record the pipeline writes. Absent when it did not compile. */
   dictionary?: DictionaryOut;
   /** The answer to `PreviewRequest.afterDot`. Absent where the dot follows no value. */
@@ -2380,28 +2381,6 @@ export async function checkCaptureFilter(
 ): Promise<CaptureFilterCheck | null> {
   const res = await previewPipeline({ config, captureFilter: { text, destination } });
   return (res.ok && res.capture_filter) || null;
-}
-
-/** What a grok pattern captures, which is the set of fields the step declares.
- *
- * Not part of `previewPipeline`: that needs a chosen sample and answers nothing
- * once compilation fails, and both are exactly when the editor needs these
- * names -- a pattern that just gained a capture nothing declares does not
- * compile, and this is the list that fixes it. `ok: false` carries the reason a
- * half-typed pattern will not compile, and the editor keeps the fields it has. */
-export interface GrokCaptures {
-  ok: boolean;
-  errors: ApiError[];
-  captures: string[];
-}
-
-/** `grokPatterns` are the bundle's, which the step's patterns may name. */
-export function grokCaptures(
-  patterns: string[],
-  customPatterns: { name: string; pattern: string }[],
-  grokPatterns: GrokPatternDto[] = [],
-): Promise<GrokCaptures> {
-  return post('/api/preview/grok', { patterns, customPatterns, grokPatterns }, 'quiet');
 }
 
 /** Whether a save would take a line breaker, asked as one is typed. Not `ok` when it would refuse it, with why, in
@@ -2905,6 +2884,9 @@ export interface WarningDto {
   /** When the senders a `sendersBelow` names went below normal: one source raises it once for each
    * reading senders crossed on. Absent on every other condition. */
   crossedMillis?: number;
+  /** An editor said this `sourceRowsBelow` was normal, so the level it reads is
+   * being learned and it ends once it is. Absent on every other condition. */
+  saidNormal?: boolean;
 }
 
 /** What a reader scans before the sentence. */
@@ -4171,6 +4153,27 @@ export type FlowResponseDto = {
   bytesOut: FlowSeriesDto[];
   /** Every source's reading against its normal, whatever window the response is for. */
   normals: FlowNormalDto[];
+  /** Every object's counts over the window, per worker, in the points the series are read in. */
+  totals: FlowTotalDto[];
+};
+
+/** What the Status page totals by (`leader::FlowKind`). */
+export type FlowKind = 'source' | 'pipeline' | 'route' | 'destination';
+
+/** One object's counts over the window, on one worker. Out is what was handed to destinations,
+ * a row sent to two counting twice; a destination's own out is what it delivered. */
+export type FlowTotalDto = {
+  kind: FlowKind;
+  group: string;
+  workerId?: string | null;
+  subjectId: string;
+  /** A route's source and pipeline. */
+  source?: string | null;
+  pipeline?: string | null;
+  rowsIn: number;
+  rowsOut: number;
+  bytesIn: number;
+  bytesOut: number;
 };
 
 /** One source's reading against its normal at the width it is shown at (`throughput::Reading::shown`), in rows
@@ -4225,52 +4228,103 @@ export function getLogs(query: string): Promise<LogsResponseDto> {
   return readJson(`/api/logs?${query}`);
 }
 
-export function getFlow(windowMinutes: number): Promise<FlowResponseDto> {
-  return readJson(`/api/flow?windowMinutes=${windowMinutes}`);
+/** The fleet's flow, or with `only` one object's in and out in place of the fleet's. */
+export function getFlow(
+  windowMinutes: number,
+  only?: { kind: FlowKind; group: string; subject: string },
+): Promise<FlowResponseDto> {
+  const q = new URLSearchParams({ windowMinutes: String(windowMinutes), ...only });
+  return readJson(`/api/flow?${q}`);
 }
 
-/** Lowers the Rows below normal warning that holds for `group`'s `source` to info until it ends. */
-export function lowerSourceRows(
-  group: string,
-  source: string,
-): Promise<{ ok: boolean; errors: ApiError[] }> {
-  return apiJson(inArea(`/sources/${encodeURIComponent(source)}/lower`, group), { method: 'POST' });
-}
+/** One span of a source's past year, or a sender's, and whether its normal learns from it
+ * (`throughput::PastSpan`): a warning only once an editor answered it was normal. A warning's
+ * `fromMillis` is when it began, which names it to `markWarning`, and `markedBy` who answered
+ * what it was: Normal where it is `learned`, else Outage. `holds` on the warning that holds,
+ * which runs until now. */
+export type PastSpan = {
+  fromMillis: number;
+  toMillis: number;
+  learned: boolean;
+  holds?: boolean;
+  markedBy?: string;
+};
 
-/** One span of a source's past year, and whether its normal learns from it (`throughput::PastSpan`). */
-export type PastSpan = { fromMillis: number; toMillis: number; learned: boolean };
+/** One value of one field of a source's records that sends it rows (`senders::Sender`). */
+export type Sender = { field: string; value: string };
+
+/** The path under a source for it, or for one of its `sender`s, and the query naming the sender. */
+function subjectPath(source: string, sender: Sender | undefined, path: string, query = {}): string {
+  const q = new URLSearchParams({ ...(sender ?? {}), ...query });
+  const at = `/sources/${encodeURIComponent(source)}${sender ? '/senders' : ''}/${path}`;
+  return q.size > 0 ? `${at}?${q}` : at;
+}
 
 /** How soon a source, or its senders, warns of a drop against how often a brief dip warns too
  * (`throughput::Preset`). */
 export type Preset = 'fast' | 'sensitive' | 'balanced' | 'quiet';
 
-/** What a source did over the past year that an editor may say was normal or an outage
- * (`throughput::Past`): its Rows below normal warnings that ended, newest first, and its longest
- * quiet spells, longest first; and the preset it is judged at. */
+/** A source's, or one of its senders', past year (`throughput::Past`): its below normal warnings,
+ * newest first, which an editor may say were normal, and its longest quiet spells, longest first
+ * (none for a sender); the preset it is judged at; and, while either is to come, when it is first
+ * judged and when its weekdays are told apart. */
 export type SourcePastResponse = {
   ok: boolean;
   errors: ApiError[];
   warnings: PastSpan[];
   silences: PastSpan[];
   preset: Preset;
+  judgedFromMillis?: number;
+  weekdaysFromMillis?: number;
+  /** How long a source may go without a row before it warns, while its quiet spells judge it. */
+  quietLimitMillis?: number;
 };
 
-export function getSourcePast(group: string, source: string): Promise<SourcePastResponse> {
-  return apiJson(inArea(`/sources/${encodeURIComponent(source)}/past`, group));
-}
-
-/** Says a past span of `group`'s `source` was normal, so its normal learns from it, or an outage,
- * so it does not. */
-export function markSourcePast(
+/** `group`'s `source`'s past year, or its `sender`'s. */
+export function getSourcePast(
   group: string,
   source: string,
-  span: PastSpan,
+  sender?: Sender,
+): Promise<SourcePastResponse> {
+  return apiJson(inArea(subjectPath(source, sender, 'past'), group));
+}
+
+/** Answers the below normal warning of `group`'s `source`, or of its `sender`, that began at
+ * `sinceMillis` was normal, so its normal learns from it, or an outage, so it does not. Either
+ * turns it into info. */
+export function markWarning(
+  group: string,
+  source: string,
+  sinceMillis: number,
   was: 'normal' | 'outage',
+  sender?: Sender,
 ): Promise<{ ok: boolean; errors: ApiError[] }> {
   return apiJson(
-    inArea(`/sources/${encodeURIComponent(source)}/mark`, group),
-    json('POST', { fromMillis: span.fromMillis, toMillis: span.toMillis, was }),
+    inArea(subjectPath(source, sender, 'mark'), group),
+    json('POST', { ...sender, sinceMillis, was }),
   );
+}
+
+/** A source's rows, or a sender's, against its range over a span (`throughput::Chart`): rows per
+ * second in each point, by when it began, and the range it was expected to read. */
+export type SourceChartResponse = {
+  ok: boolean;
+  errors: ApiError[];
+  pointMillis: number;
+  points: [number, number][];
+  expected: ExpectedPointDto[];
+};
+
+/** `group`'s `source`'s chart from `fromMillis` until `toMillis`, or its `sender`'s. */
+export function getSourceChart(
+  group: string,
+  source: string,
+  fromMillis: number,
+  toMillis: number,
+  sender?: Sender,
+): Promise<SourceChartResponse> {
+  const span = { fromMillis: String(fromMillis), toMillis: String(toMillis) };
+  return apiJson(inArea(subjectPath(source, sender, 'chart', span), group));
 }
 
 /** Picks the preset `group`'s `source` is judged at (`rows`), the one its senders are, or both. */
@@ -4303,7 +4357,14 @@ export type SenderNowDto = {
   low: number | null;
   high: number | null;
   below: boolean;
-  loweredBy: string | null;
+  /** When its warning that holds began, which names it to `markWarning`. */
+  sinceMillis: number | null;
+  /** Who answered what its warning that holds was; answered and not `saidNormal`, it was an outage. */
+  markedBy: string | null;
+  /** An editor answered its warning that holds was normal. */
+  saidNormal: boolean;
+  /** How many below normal warnings about it held in the last 30 days. */
+  warned: number;
 };
 
 /** One field of a source and its watched senders, those below normal first (`senders::FieldNow`).
@@ -4328,18 +4389,6 @@ export type SourceSendersResponse = {
 
 export function getSourceSenders(group: string, source: string): Promise<SourceSendersResponse> {
   return apiJson(inArea(`/sources/${encodeURIComponent(source)}/senders`, group));
-}
-
-/** Lowers the warning that holds for one sender of `group`'s `source` to info until it ends. */
-export function lowerSender(
-  group: string,
-  source: string,
-  sender: { field: string; value: string },
-): Promise<{ ok: boolean; errors: ApiError[] }> {
-  return apiJson(
-    inArea(`/sources/${encodeURIComponent(source)}/senders/lower`, group),
-    json('POST', sender),
-  );
 }
 
 /** Sets which of `group`'s `source`'s fields an editor stopped watching, which they added and, once

@@ -61,6 +61,7 @@ fn transform_with(
         step_ids: vec!["parse".to_string()],
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
+        produces: Vec::new(),
     }];
     let mut topology = compile_topology(&routes, &pipelines).unwrap();
     topology.on_exception = OnException::every(answer);
@@ -81,7 +82,6 @@ fn transform_with(
         name: "es".to_string(),
         destination: Box::new(dest.clone()),
         on_reject: Answer::Drop,
-        wants_doc_id: false,
         placement: Some(smeltr::plan::topology::Placement::Topic),
     };
     let transform = Transform::new(

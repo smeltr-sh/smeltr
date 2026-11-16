@@ -341,7 +341,7 @@ log { source(s_src); destination(d_smeltr); };`;
   </p>
   <ul>
     <li>
-      On Kubernetes, add the port to the worker pods:
+      On Kubernetes, add a Service that sends to the port:
       <a href="/docs/enroll-worker/kubernetes#receiver">Expose a receiver</a>.
     </li>
     <li>

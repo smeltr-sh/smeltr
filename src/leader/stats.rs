@@ -30,12 +30,9 @@ use super::series::{RegistryStore, chart_point_ms};
 use super::throughput::{self, ExpectedPoint};
 use super::warnings::{self, SubjectKind, WarningSpan, label, stale_after_ms};
 use super::{
-    BYTES_DELIVERED_METRIC, BYTES_POLLED_METRIC, ROWS_DELIVERED_METRIC, ROWS_IN_METRIC, ROWS_SENT_METRIC,
-    ROWS_UNMATCHED_METRIC, SOURCE_LAG_METRIC,
+    BYTES_DELIVERED_METRIC, BYTES_POLLED_METRIC, ROUTE_MATCHED_METRIC, ROWS_DELIVERED_METRIC, ROWS_IN_METRIC,
+    ROWS_SENT_METRIC, ROWS_UNMATCHED_METRIC, SOURCE_LAG_METRIC,
 };
-
-/// `route_masks`' count of rows each route's own condition matched (`plan::topology`), labeled with the route's id.
-const ROUTE_MATCHED_METRIC: &str = "smeltr_route_matched_total";
 /// `Transform::poll`'s time inside the source's own read, labeled with the source (`runtime.rs`).
 const TICK_POLL_SECONDS_METRIC: &str = "smeltr_tick_poll_seconds_total";
 /// `plan::exec`'s per-step counts, labeled with the pipeline and the step within it.
@@ -69,7 +66,7 @@ pub struct Live<'a> {
     /// What the fleet was told to beat at, which is what says when a report is too old to count.
     pub heartbeat_interval: Duration,
     /// What a source's expected band is learned with.
-    pub learning: throughput::Learning,
+    pub learning: crate::leader::marks::Marks,
 }
 
 /// One bucket of a [`Spread`]: when it started and what it measured.
@@ -382,7 +379,7 @@ pub fn build(
                 routes: route_shares(system, source.id, group, &totals(ROUTE_MATCHED_METRIC)),
                 expected: series_store
                     .map(|store| {
-                        throughput::expected_over(store, group, id, since_ms, now_ms, point_ms, &live.learning)
+                        throughput::expected_over(store, group, id, None, since_ms, now_ms, point_ms, &live.learning)
                     })
                     .transpose()
                     .unwrap_or_else(|e| {
@@ -950,7 +947,7 @@ mod tests {
         Live {
             snapshot: &[],
             heartbeat_interval: BEAT,
-            learning: throughput::Learning::default(),
+            learning: crate::leader::marks::Marks::default(),
         }
     }
 
@@ -1056,7 +1053,7 @@ mod tests {
             Live {
                 snapshot,
                 heartbeat_interval: BEAT,
-                learning: throughput::Learning::default(),
+                learning: crate::leader::marks::Marks::default(),
             },
         )
         .body

@@ -28,7 +28,7 @@ use smeltr::config_file::load_str;
 use smeltr::core::column::DataType;
 use smeltr::io::OwnedRecord;
 use smeltr::io::elastic_mapping::mapping;
-use smeltr::plan::topology::{DestinationKind, DocIdPolicy, ElasticDestinationConfig, HeldSecrets, SecretRef};
+use smeltr::plan::topology::{BulkAction, DestinationKind, ElasticDestinationConfig, HeldSecrets, SecretRef};
 
 use crate::harness::destination::{
     self, Broken, ClientTls, Head, Pki, Reached, connector_secrets, read_request, set_tls, unknown_key_taken,
@@ -78,10 +78,10 @@ const OPTIONS: &[&str] = &[
     "auth.lineBreak",
     "tls.trustedAuthorities",
     "tls.certificate",
-    "docId.auto",
-    "docId.dedupe",
-    "docId.overwrite",
-    "docId.pipeline",
+    "action.create",
+    "action.index",
+    "action.docId",
+    "idField.pipeline",
     "idField",
     "inFlight",
     "maxBulkBytes",
@@ -90,7 +90,6 @@ const OPTIONS: &[&str] = &[
     "stallAfterSecs",
     "row.placement",
     "row.docId",
-    "row.docIdIgnored",
     "row.docIdDuplicate",
     "row.docIdNull",
     "row.docIdEmpty",
@@ -122,7 +121,6 @@ const OPTIONS: &[&str] = &[
     "broken.auth",
     "broken.username",
     "broken.password",
-    "broken.docId",
     "mangled",
 ];
 
@@ -168,7 +166,7 @@ struct Draw {
     auth: Option<String>,
     /// What the leader holds for the credential the destination names: `auth`'s, or `password`'s.
     held: Option<String>,
-    /// A pipeline step setting `__destination.id`, for a policy that wants an id from a row with no `idField`.
+    /// A pipeline step setting `__destination.id`, for a destination with no `idField`.
     sets_id: bool,
     /// The setting broken, if one was. `Some(None)` is a break the save refuses on no one field.
     broken: Option<Option<&'static str>>,
@@ -254,17 +252,26 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, index: &str) -> Draw {
         }
     }
 
-    let policy = *rng.pick(&["auto", "dedupe", "overwrite"]);
-    cov.reach(format!("docId.{policy}"));
-    if policy != "auto" || rng.chance(2) {
-        d.insert("docId".into(), json!(policy));
+    let action = *rng.pick(&["create", "index"]);
+    cov.reach(format!("action.{action}"));
+    if rng.chance(4) {
+        // A config saved before the setting took Elasticsearch's names.
+        cov.reach("action.docId");
+        let old = if action == "index" {
+            "overwrite"
+        } else {
+            *rng.pick(&["auto", "dedupe"])
+        };
+        d.insert("docId".into(), json!(old));
+    } else if action == "index" || rng.chance(2) {
+        d.insert("action".into(), json!(action));
     }
     let mut sets_id = false;
-    if rng.chance(3) || (policy != "auto" && rng.chance(2)) {
+    if rng.chance(3) {
         cov.reach("idField");
         d.insert("idField".into(), json!(rng.pick(&["event.id", "uid", "a.b"])));
-    } else if policy != "auto" {
-        cov.reach("docId.pipeline");
+    } else if rng.chance(2) {
+        cov.reach("idField.pipeline");
         sets_id = true;
     }
 
@@ -420,7 +427,6 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
         "auth",
         "username",
         "password",
-        "docId",
     ]);
     cov.reach(format!("broken.{what}"));
     let d = &mut draw.destination;
@@ -523,13 +529,6 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
                 d.insert("password".into(), json!({"secret": "es-password", "version": 1}));
                 Some("auth")
             }
-        }
-        "docId" => {
-            // A policy that wants an id, and nothing that gives one: no field, and no pipeline setting it.
-            d.insert("docId".into(), json!(rng.pick(&["dedupe", "overwrite"])));
-            d.remove("idField");
-            draw.sets_id = false;
-            None
         }
         other => unreachable!("{other}"),
     }
@@ -656,12 +655,11 @@ fn check_loaded(draw: &Draw, c: &ElasticDestinationConfig, named: &[SecretRef]) 
         None => ClientTls::Trusts,
     });
     expect("tls", format!("{:?}", draw.tls), format!("{tls:?}"));
-    let policy = match s("docId").as_deref() {
-        None | Some("auto") => DocIdPolicy::Auto,
-        Some("dedupe") => DocIdPolicy::Dedupe,
-        _ => DocIdPolicy::Overwrite,
+    let action = match s("action").or_else(|| s("docId")).as_deref() {
+        Some("index" | "overwrite") => BulkAction::Index,
+        _ => BulkAction::Create,
     };
-    expect("docId", format!("{policy:?}"), format!("{:?}", c.doc_id));
+    expect("action", format!("{action:?}"), format!("{:?}", c.action));
     expect("idField", format!("{:?}", s("idField")), format!("{:?}", c.id_field));
     let bulk = drawn_bytes(d, "maxBulkBytes").unwrap_or(5 * MIB);
     expect("maxBulkBytes", bulk.to_string(), c.max_bulk_bytes.to_string());
@@ -715,7 +713,6 @@ impl Sent {
 
 /// What a seed's documents are, and what the cluster does with them.
 struct Rows<'a> {
-    policy: DocIdPolicy,
     default_index: &'a str,
     /// Bytes past which a request is posted early: a batch over it goes in several.
     max_bulk: usize,
@@ -825,21 +822,8 @@ fn one_row(rng: &mut Rng, cov: &mut Reached, rows: &Rows, batch: usize, n: usize
             format!("b{batch}-{k}{}", ["", "\"q", "\\", "é", " "][k % 5])
         }
     });
-    let id = match (rows.policy.wants_doc_id(), &doc_id) {
-        (true, Some(_)) => {
-            cov.reach("row.docId");
-            doc_id.clone()
-        }
-        (true, None) => {
-            cov.reach("row.docIdNull");
-            None
-        }
-        (false, Some(_)) => {
-            cov.reach("row.docIdIgnored");
-            None
-        }
-        (false, None) => None,
-    };
+    cov.reach(if doc_id.is_some() { "row.docId" } else { "row.docIdNull" });
+    let id = doc_id.clone();
     let index = placement.clone().unwrap_or_else(|| rows.default_index.to_string());
     // The cluster refuses an empty id, one past 512 bytes, and an index it cannot name.
     let mut sendable = readable;
@@ -912,7 +896,7 @@ struct Held {
 }
 
 impl Held {
-    fn file(&mut self, policy: DocIdPolicy, index: &str, id: Option<&str>, doc: &[u8]) -> bool {
+    fn file(&mut self, policy: BulkAction, index: &str, id: Option<&str>, doc: &[u8]) -> bool {
         match id {
             None => {
                 self.unnamed.entry(index.to_string()).or_default().push(doc.to_vec());
@@ -920,7 +904,7 @@ impl Held {
             }
             Some(id) => {
                 let key = (index.to_string(), id.to_string());
-                if policy == DocIdPolicy::Dedupe && self.by_id.contains_key(&key) {
+                if policy == BulkAction::Create && self.by_id.contains_key(&key) {
                     return false;
                 }
                 self.by_id.insert(key, doc.to_vec());
@@ -960,7 +944,7 @@ impl Versions {
 
 /// What the cluster holds once `sent` is delivered under `policy`, how many documents it answered a conflict to
 /// because their id was already there, and the versions of each id.
-fn expected(policy: DocIdPolicy, sent: &[Vec<Sent>]) -> (Held, usize, Versions) {
+fn expected(policy: BulkAction, sent: &[Vec<Sent>]) -> (Held, usize, Versions) {
     let mut held = Held::default();
     let mut conflicts = 0;
     let mut versions = Versions::default();
@@ -997,7 +981,6 @@ struct Expect {
     nodes: Option<String>,
     auth: Option<String>,
     action: &'static str,
-    ids: bool,
     max_bulk: usize,
 }
 
@@ -1020,7 +1003,7 @@ struct Answers {
 struct Cluster {
     expect: Expect,
     answers: Answers,
-    policy: DocIdPolicy,
+    policy: BulkAction,
     fates: HashMap<Vec<u8>, Fate>,
     attempts: HashMap<Vec<u8>, u32>,
     held: Held,
@@ -1092,10 +1075,6 @@ impl Cluster {
             }
             let index = meta["_index"].as_str().unwrap_or_default().to_string();
             let id = meta.get("_id").and_then(Value::as_str).map(str::to_string);
-            if id.is_some() && !self.expect.ids {
-                self.wrong
-                    .push(format!("an _id under a policy that names none: {action}"));
-            }
             items.push((index, id, pair[1]));
         }
         let size: usize = items.iter().map(|(_, _, doc)| doc.len()).sum();
@@ -1293,10 +1272,10 @@ fn unwritten(registry: &smeltr::metrics::Metrics) -> u64 {
         .sum()
 }
 
-fn action(policy: DocIdPolicy) -> &'static str {
-    match policy {
-        DocIdPolicy::Overwrite => "index",
-        DocIdPolicy::Auto | DocIdPolicy::Dedupe => "create",
+fn action(action: BulkAction) -> &'static str {
+    match action {
+        BulkAction::Index => "index",
+        BulkAction::Create => "create",
     }
 }
 
@@ -1415,7 +1394,6 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
     // cover once a split sends documents one by one. At 30 seconds every wait a seed can draw fits.
     let throttles = c.stall_after >= Duration::from_secs(30);
     let rows = Rows {
-        policy: c.doc_id,
         default_index: &c.default_index,
         max_bulk: c.max_bulk_bytes,
         placements: &placements,
@@ -1462,12 +1440,11 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
                 or_path: (draw.sniff == Some(true)).then(|| bulk_path(&c.url)),
                 nodes: draw.sniff.filter(|listed| *listed).map(|_| node_list(&c.url, port)),
                 auth: draw.auth.clone(),
-                action: action(c.doc_id),
-                ids: c.doc_id.wants_doc_id(),
+                action: action(c.action),
                 max_bulk: c.max_bulk_bytes,
             },
             answers,
-            policy: c.doc_id,
+            policy: c.action,
             fates,
             ..Cluster::default()
         },
@@ -1501,7 +1478,7 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
     }
     let refused = written.map_err(fail)?;
     destination::check_refused(&sent, &refused, Sent::refused).map_err(fail)?;
-    let (want, conflicts, versions) = expected(c.doc_id, &sent);
+    let (want, conflicts, versions) = expected(c.action, &sent);
     let got = cluster.held.sorted();
     let want = versions.settle(want, &got, <[u8]>::to_vec);
     if got != want {
@@ -1958,7 +1935,6 @@ fn live_seed(seed: u64, url: &str, reached: &mut Reached, pki: &Pki) -> Result<(
     )
     .map_err(|e| fail(format!("does not build: {e:?}")))?;
     let rows = Rows {
-        policy: c.doc_id,
         default_index: &c.default_index,
         max_bulk: c.max_bulk_bytes,
         placements: &placements,
@@ -1977,7 +1953,7 @@ fn live_seed(seed: u64, url: &str, reached: &mut Reached, pki: &Pki) -> Result<(
             .collect();
         return Err(fail(format!("{e}\nrefusing {why:?}\nmapping {m}")));
     }
-    let (want, conflicts, versions) = expected(c.doc_id, &sent);
+    let (want, conflicts, versions) = expected(c.action, &sent);
     let want = canonical_held(want);
     let named: BTreeSet<(String, String)> = want.by_id.keys().cloned().collect();
     let got = read_back(url, made, &named)?;

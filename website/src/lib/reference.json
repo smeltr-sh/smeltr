@@ -3593,7 +3593,7 @@
       "name": "__destination.id",
       "type": "str",
       "setBy": "pipeline",
-      "what": "The Elasticsearch document ID, used when the destination's document ID setting is `dedupe` or `overwrite`. When it is null, the destination's id field names the field that gives it, and with neither the document is sent with no ID."
+      "what": "The Elasticsearch document ID, read when the destination's ID field is left empty. Null means Elasticsearch generates the ID."
     },
     {
       "name": "smeltr.exception",

@@ -334,19 +334,32 @@ destination is back, so it is a warning where the other two are failures.
 A source reading fewer rows than it normally does warns, and one reading more
 raises info. Its rows are judged at four widths: the last 5 minutes, 30 minutes,
 6 hours and 24 hours. At each, the usual window is the same window at the same
-time of day on the last seven days learned, and the range is the usual window
-scaled by how far that width's learned windows strayed from theirs, a week of
-them for the short widths and four weeks for the long, and widened by the
-source's preset. A width judges a source only where its usual window holds ten
-rows, so a busy source is judged at every width and a sparse one at the long
-ones. A source too sparse for any width is judged by the gap: how long it has
-gone without a row, against half again the longest quiet spell it made in the
-past year. A source warns once some width reads below its range for as many
-readings in a row as its preset requires, or once it outlasts the gap, and the
-warning holds until some width judges the source and none reads it below its
-range, or, where only the gap judges it, until the first row after it began that
-ends a quiet spell the gap read below. Rows above normal are judged at 30
-minutes alone.
+time of day on the last seven days learned, or, for a source whose weekdays
+differ, on the newest seven days of its kind within the last four weeks, and the
+range is the usual window scaled by how far that width's learned windows strayed
+from theirs, a week of them for the short widths and four weeks for the long,
+and widened by the source's preset. A width judges a source only where its usual
+window holds ten rows, so a busy source is judged at every width and a sparse
+one at the long ones. A source too sparse for any width is judged by the gap:
+how long it has gone without a row, against half again the longest quiet spell
+it made in the past year. A source warns once some width reads below its range
+for as many readings in a row as its preset requires, or once it outlasts the
+gap, and the warning holds until some width judges the source and none reads it
+below its range, or, where only the gap judges it, until the first row after it
+began that ends a quiet spell the gap read below. Rows above normal are judged
+at 30 minutes alone.
+
+A source whose rows differ by weekday, such as an office's working days against
+its weekend, is judged against days of its own kind. Its days start at its
+quietest hour, so that one day holds one day's traffic in whatever time zone it
+keeps. Its kinds are none, the weekdays split in two, or each weekday its own,
+and a split is kept only where it predicted each of the last four weeks, held
+out in turn, better than no split did. A window that reaches into the day
+before, as a Monday's 24 hours reach into Sunday, is learned only from windows
+on days whose day before was of the same kind as that day before. For an office,
+a Monday learns from Mondays. A source's days are told apart once it has four
+weeks of history, and its kinds are learned again each day. A watched sender's
+days are told apart the same way, from its own rows.
 
 A source's preset sets how soon a drop warns against how often a brief dip does:
 how much wider than its learned spread the range is, and how many readings in a
@@ -377,18 +390,24 @@ was up, so its end is known across a restart and the gap learns a year of quiet
 spells less those that warned. The Status page ranks sources by how far each is
 from the same normal.
 
-An editor in the source's worker group may say any of three things about it.
-Lower turns the warning that is up into info until it ends, and it stays on the
-Issues page for everyone. Reset history forgets what the source read before now,
-so it has no normal until it has enough history again. Normal says a period was
-normal, so it is learned though it warned. Outage says a period was an outage,
-so it is not learned though it did not warn. The source's History tab on the Map
-lists its warnings, including the one that is up, and its longest quiet spells of
-the past year, and each can be marked Normal or Outage. A warning marked Normal
-is learned whole. A window that contains rows marked Normal is learned without
-waiting a width. So marking the warning that is up teaches the level the source
-reads now, and the warning ends once that normal is learned, within the hour.
-The leader keeps each of the three, with who said it.
+An editor in the source's worker group may do any of three things about it.
+Normal and Outage mark what a below-normal warning was. Outage marks a real
+outage: the warning turns into info until it ends, stays on the Issues page for
+everyone, and is not learned. Normal marks it normal: the warning turns into
+info and is learned whole. A warning nobody marked stays a warning, and is not
+learned. Reset history forgets what the source read before now, so it has no
+normal until it has enough history again. The source's History tab on the Map
+charts its rows against its range. It lists the source's warnings of the past
+year, including the one that is up, each opening on the rows around it, and the
+source's longest quiet spells, each shown Normal when it is learned and Outage
+when it is not. It says when a new source is not yet judged, when every day of
+its week is judged alike, and how long the source may go without a row before it
+warns. The warning that is up can be marked from its row on the Issues page
+too. A mark names a warning by when it began, so every page marks the same
+warning. A window that contains rows of a warning marked Normal is learned
+without waiting a width. So marking the warning that is up Normal teaches the
+level the source reads now, and the warning ends once that normal is learned,
+within the hour. The leader keeps each mark, with who made it.
 
 A source's senders are judged as the source is. A sender is one value of one
 field of the source's records, such as a firewall's name, or of its stream key
@@ -432,14 +451,19 @@ one source that cross on one reading raise one warning that names them, and a
 sender that crosses later raises another. The warning says which of its senders
 are back within their range, and ends once all of them are.
 
-An editor in the source's worker group lowers one sender's warning to info, and
-a warning all of whose senders were lowered is info. An editor also stops
-watching a field, or adds one the pick cannot offer, such as a number or a
-nested path. New fields are watched until an editor turns off Watch new fields;
-while it is off, a field that comes later is counted but watched only once an
-editor checks it. The source's Senders tab on the Map lists its fields, what the
-pick read of each, and each watched sender's last day against its range. A field
-first counted since the day's pick is listed the same day, as learning.
+An editor in the source's worker group marks a sender's warning Normal or
+Outage as they do a source's, and a Senders below normal warning is info once
+each sender that is still below normal is marked. The senders of a source learn
+from the time a source warning marked Normal was up, as the source does. An
+editor also stops watching a field, or adds one the pick cannot offer, such as
+a number or a nested path. New fields are watched until an editor turns off
+Watch new fields; while it is off, a field that comes later is counted but
+watched only once an editor checks it. The source's Senders tab on the Map lists
+its fields, what the pick read of each, and each watched sender's last day
+against its range and how many warnings it raised in the last 30 days; a sender
+that is below can be lowered or marked from its row. Each sender opens on its
+own chart and its warnings of the past year, as the History tab shows a source.
+A field first counted since the day's pick is listed the same day, as learning.
 
 ## Upgrades
 

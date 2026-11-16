@@ -97,7 +97,9 @@
   <h2 id="how-it-works">How it works</h2>
   <p>
     Text the format cannot read raises an <a href="#unparsable"><code>Unparsable</code> exception</a
-    >, and a value that does not convert to its type raises <code>UnparsableField</code>.
+    >, and a value that does not convert to its type raises <code>UnparsableField</code>. A field
+    you declare has the type you give it. A field you don't declare takes its type from the schemas
+    your pipeline produces, and arrives unchanged if none of them lists it.
   </p>
   <p>
     A Parser step can have a filter or sit inside an If step's branches. Records it skips keep their
@@ -111,7 +113,7 @@
     <code>{'{"status":200,}'}</code>; it does not support other JSON5 extensions.
   </p>
   <p>
-    Fields you do not declare pass through to the output as they arrived. Nested fields use dots:
+    Fields you do not declare pass through to the output. Nested fields use dots:
     <code>event.dataset</code> is the field <code>dataset</code> inside the object
     <code>event</code>. To declare an object, choose the type <code>object</code> and list its
     fields. A closed object keeps only the fields you list and drops its other fields; turn on
@@ -202,9 +204,12 @@
     pattern.
   </p>
   <p>
-    The captures are the step's fields, each with a type. With several patterns, the first one that
-    matches a record parses it. If none matches, the record has an <code>Unparsable</code> exception.
-    A matched pattern with an absent optional capture leaves that field null.
+    The captures are the step's fields, each with a type. A new capture takes its type from a schema
+    the pipeline produces, or else from its pattern: <code>INT</code> is <code>i64</code>,
+    <code>NUMBER</code> is <code>f64</code>, <code>HTTPDATE</code> is <code>datetime</code>, and
+    most others are <code>str</code>. With several patterns, the first one that matches a record
+    parses it. If none matches, the record has an <code>Unparsable</code> exception. A matched pattern
+    with an absent optional capture leaves that field null.
   </p>
   <p>
     The parser groups each named pattern it inserts, so a choice or a case-insensitive flag applies

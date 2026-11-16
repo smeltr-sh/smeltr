@@ -55,6 +55,7 @@ fn worker(source: &FakeSource, dest: &AsyncDestination) -> Worker {
         step_ids: Vec::new(),
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
+        produces: Vec::new(),
     }];
     let topology = compile_topology(&routes, &pipelines).unwrap();
     let mut w = Worker::new(
@@ -70,7 +71,6 @@ fn worker(source: &FakeSource, dest: &AsyncDestination) -> Worker {
         name: "0".to_string(),
         destination: Box::new(dest.clone()),
         on_reject: Answer::Drop,
-        wants_doc_id: false,
         placement: Some(smeltr::plan::topology::Placement::Topic),
     });
     w
@@ -106,6 +106,7 @@ fn two_lanes_to(
         step_ids: Vec::new(),
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
+        produces: Vec::new(),
     }];
     let topology = Arc::new(compile_topology(&routes, &pipelines).unwrap());
     let ready = Arc::new(Ready::new());
@@ -142,7 +143,6 @@ fn async_target(id: DestId, dest: &AsyncDestination) -> DestinationTarget {
         name: id.to_string(),
         destination: Box::new(dest.clone()),
         on_reject: Answer::Drop,
-        wants_doc_id: false,
         placement: Some(smeltr::plan::topology::Placement::Topic),
     }
 }
@@ -276,7 +276,6 @@ fn a_lane_waiting_on_a_full_destination_leaves_the_pool_to_the_others() {
         name: "0".to_string(),
         destination: Box::new(egress.handle()),
         on_reject: Answer::Drop,
-        wants_doc_id: false,
         placement: Some(smeltr::plan::topology::Placement::Topic),
     };
     let (mut transform, lanes, acks) = two_lanes_to(vec![slow_handle, async_target(1, &fast)], [vec![0], vec![1]]);
@@ -706,6 +705,7 @@ fn pipeline(id: usize, body: &str) -> PipelineConfig {
         step_ids: Vec::new(),
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
+        produces: Vec::new(),
     }
 }
 
