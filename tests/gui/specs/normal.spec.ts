@@ -206,8 +206,14 @@ test('a source that drops below its normal is ranked and warned of, and an edito
 
   // A warning nobody answered stays a warning, with neither answer pressed. Outage turns it into info.
   const was = row.getByRole('group', { name: 'firewall-syslog: the warning that is up' });
-  await expect(was.getByRole('button', { name: 'Outage' })).toHaveAttribute('aria-pressed', 'false');
-  await expect(was.getByRole('button', { name: 'Normal' })).toHaveAttribute('aria-pressed', 'false');
+  await expect(was.getByRole('button', { name: 'Outage' })).toHaveAttribute(
+    'aria-pressed',
+    'false',
+  );
+  await expect(was.getByRole('button', { name: 'Normal' })).toHaveAttribute(
+    'aria-pressed',
+    'false',
+  );
   await was.getByRole('button', { name: 'Outage' }).click();
   await expect(row).toContainText('marked Outage by');
   await expect(was.getByRole('button', { name: 'Outage' })).toHaveAttribute('aria-pressed', 'true');
@@ -322,7 +328,7 @@ test('History lists the quiet spells a sparse source learned, and an editor pick
   await expect(panel.getByRole('link', { name: 'Widen' })).toBeVisible();
 });
 
-test('senders that stop while their source stays within its normal are warned of, and an editor lowers one and edits the fields', async ({
+test('senders that stop while their source stays within its normal are warned of, and an editor marks one and edits the fields', async ({
   admin,
   api,
   fleet,
