@@ -4,7 +4,7 @@
 //! `latest_state`, one row per (worker, thread) upserted every beat and bounded by fleet size; and `series_points`,
 //! append-only counters and gauges aggregated on arrival into fixed buckets, keyed by subject rather than by the
 //! thread that reported them (E2/E6 ask about a source or a destination, not a thread -- per-thread detail is a
-//! health question `latest_state` already answers). A point names its series by id; `series` holds each series'
+//! health question `latest_state` already answers), or by worker for a sample about the worker itself. A point names its series by id; `series` holds each series'
 //! metric and subject once, and loses a series when its last point expires. A third table, `fact_clock`, is the
 //! same shape as `latest_state` and rides along for the same reason: `registry::Registry::observe_facts` needs its
 //! start times to survive a restart too.

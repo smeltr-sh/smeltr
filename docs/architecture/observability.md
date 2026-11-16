@@ -362,8 +362,8 @@ tier's window goes with that tier's points, and a worker the leader forgets
 takes its window with it. An undeclared field whose type changes keeps both
 counts; the newest suggestion is the one served.
 
-The leader keeps each counter and gauge a source, destination or pipeline
-names as a series for thirty days, finer for the recent past and coarser for
+The leader keeps every counter and gauge as a series for thirty days, one per
+worker where it names no source, destination or pipeline, finer for the recent past and coarser for
 the old (`leader::series`). Any one of them can be asked of over a window:
 narrowed by its labels, split by one, and drawn per second or as what each
 minute, hour or day added up to on the reader's clock, and over the same
