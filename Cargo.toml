@@ -217,6 +217,11 @@ apache-avro = { version = "0.22", default-features = false, features = ["snappy"
 # The tests' own reader of Parquet's variant encoding, by other hands than `io::parquet_variant`'s writer.
 parquet-variant = "60"
 
+# build.rs reads `tools/frontends.json`. Both crates are already in the graph, so this adds no dependency.
+[build-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
 # Last: a target table runs to the next header, and anything under it
 # would be declared for one target alone.
 #

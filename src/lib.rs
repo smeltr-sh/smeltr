@@ -4,6 +4,7 @@ pub mod core;
 pub mod cpu_cache;
 pub mod crypto;
 pub mod egress;
+pub mod embedded;
 pub mod enrollment_code;
 pub mod expr;
 pub mod format;
