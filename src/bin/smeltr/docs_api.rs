@@ -34,9 +34,10 @@ struct Heading {
 /// `hits`.
 pub async fn list(Query(query): Query<ListQuery>) -> Response {
     if let Some(q) = query.q {
-        return Envelope::ok(serde_json::json!({ "hits": docs::search(&q) })).into_response();
+        return Envelope::ok(serde_json::json!({ "hits": docs::docs().search(&q) })).into_response();
     }
-    let pages: Vec<Listed> = docs::pages()
+    let pages: Vec<Listed> = docs::docs()
+        .pages()
         .iter()
         .map(|page| Listed {
             path: &page.path,
@@ -77,13 +78,13 @@ struct Read {
 /// `GET /api/docs/page`: one page's opening and its headings, or with `section` one heading's text and what is under
 /// it.
 pub async fn page(Query(query): Query<PageQuery>) -> Response {
-    let Some(text) = docs::read(&query.path, query.section.as_deref()) else {
+    let Some(text) = docs::docs().read(&query.path, query.section.as_deref()) else {
         return refuse(StatusCode::NOT_FOUND, "no such page or section");
     };
     let headings = query
         .section
         .is_none()
-        .then(|| docs::page(&query.path).map(headings).unwrap_or_default());
+        .then(|| docs::docs().page(&query.path).map(headings).unwrap_or_default());
     Envelope::ok(Read {
         path: query.path,
         text,
