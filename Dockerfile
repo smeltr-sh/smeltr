@@ -14,6 +14,16 @@ COPY website/src/lib/foundry/ /src/website/src/lib/foundry/
 COPY website/src/lib/reference.json website/src/lib/code-language.json /src/website/src/lib/
 RUN npm run build
 
+# ---- docs: website/leader-docs, the user docs the AI agent reads, embedded at compile time (build.rs) -------------
+FROM node:26-bookworm-slim AS docs
+WORKDIR /src/website
+COPY website/package.json website/package-lock.json ./
+RUN npm ci
+COPY website/ ./
+# The site's license page shows it.
+COPY COMMERCIAL-LICENSE.md /src/
+RUN npm run build
+
 # ---- builder: the `smeltr` binary ------------------------------------------------------------------------------
 # The same base as the runtime stage, so the binary's glibc floor cannot land above the glibc it runs on. Build
 # against anything newer than RHEL 9's 2.34 and the image builds clean, then dies at startup.
@@ -42,6 +52,7 @@ COPY tools/citations/ tools/citations/
 COPY tools/check-scope/ tools/check-scope/
 COPY .git/ .git/
 COPY --from=frontend /src/gui-frontend/dist gui-frontend/dist
+COPY --from=docs /src/website/leader-docs website/leader-docs
 # The registry and `target` are cache mounts, so a source change recompiles smeltr alone: the vendored C --
 # AWS-LC, librdkafka, krb5, SASL, OpenSSL, SQLite, curl -- turns over only when Cargo.lock does. A cache mount is
 # not part of the image, so the binary is copied out of it here, and the stages below take it from /smeltr.

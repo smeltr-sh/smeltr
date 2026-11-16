@@ -64,8 +64,8 @@ integration website_reference_tests::`.
 Each docs page has a Markdown twin beside it, `/docs/x.md` for `/docs/x`, and
 `/llms.txt` lists them, for language models. `npm run build` writes them from the
 prerendered pages (`scripts/docs-markdown.js`). The leader's AI agent reads the
-same Markdown, from `src/leader/docs.json`: after a docs change run `just
-docs-markdown`, or `just website` fails.
+same Markdown, from `leader-docs/docs.json`, which the build writes too and
+the binary embeds.
 
 Machinery for rendering Markdown into a browsable `/docs` section
 (pages, a sidebar, in-page contents) exists at commit `772b8b4`.

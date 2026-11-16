@@ -55,17 +55,17 @@ need-deny: (need "cargo-deny" "Run: cargo install cargo-deny --locked")
 [private]
 need-docker: (need "docker" "Install Docker from https://docs.docker.com/get-docker")
 
-# Frontend, then an optimized binary embedding it. Quick to rebuild; `dist` builds what you ship.
+# Frontends, then an optimized binary embedding them. Quick to rebuild; `dist` builds what you ship.
 [group("dev")]
-build: need-rust gui
+build: need-rust frontends
     cargo build --release --bin smeltr
 
-# What the GUI tests and screenshots run: the frontend, the demo site and unoptimized binaries embedding them. They
+# What the GUI tests and screenshots run: the frontends, the demo site and unoptimized binaries embedding them. They
 # share `target/debug` with the Rust tests, so the dependencies build once, and a GUI edit rebuilds in less than half
 # of the time `build` takes.
-[doc("Frontend and demo, then unoptimized binaries embedding them: what the GUI tests run.")]
+[doc("Frontends and demo, then unoptimized binaries embedding them: what the GUI tests run.")]
 [group("dev")]
-build-dev: need-rust gui fips-dll
+build-dev: need-rust frontends fips-dll
     npm --prefix gui-frontend run build:demo
     cargo build --bin smeltr --bin smeltr-demo
 
@@ -85,14 +85,14 @@ fips-dll: need-rust
 # The website demo: the GUI over the leader its page plays, in
 # gui-frontend/dist-demo, and the preview service it asks.
 [group("dev")]
-demo: need-rust gui
+demo: need-rust frontends
     npm --prefix gui-frontend run build:demo
     cargo build --release --bin smeltr-demo
 
-# Frontend only -- what to run when build.rs says dist is stale.
+# The GUI and the docs its AI agent reads, each built when stale -- what to run when build.rs says one is stale.
 [group("dev")]
-gui: deps-gui
-    node gui-frontend/build-if-stale.mjs
+frontends: deps-gui deps-website
+    node tools/build-if-stale.mjs gui docs
 
 [private]
 deps-gui: need-node
@@ -174,7 +174,7 @@ sbom image="smeltr:latest": need-docker
 
 [doc("Release archives from a committed branch, and SHA256SUMS.")]
 [windows]
-dist: need-rust gui
+dist: need-rust frontends
     powershell -NoProfile -ExecutionPolicy Bypass -File tools/dist.ps1 "{{version}}"
 
 [private]
@@ -449,12 +449,6 @@ website: need-node
     npm --prefix website run format:check
     npm --prefix website run check
     npm --prefix website run build
-    node website/scripts/docs-markdown.js --check
-
-# The docs as Markdown the leader's AI agent reads, written from the website's build. Run it after a change to the docs.
-docs-markdown: need-node
-    npm --prefix website run build
-    node website/scripts/docs-markdown.js --leader
 
 # `--wait` blocks on tests/live/compose.live.yaml's healthchecks. The fixture topics
 # need four partitions each; an auto-created topic gets one. These recipes
@@ -704,14 +698,14 @@ fmt: need-rust deps-gui deps-website
 run-dev: build-dev
     cargo run --bin smeltr
 
-# Frontend, then an optimized binary, started.
+# Frontends, then an optimized binary, started.
 [unix]
-run: gui
+run: frontends
     cargo run --release --bin smeltr
 
 # Windows loads the AWS-LC FIPS module from a DLL beside the binary (`tools/fips-dll.ps1`).
 [windows]
-run: gui
+run: frontends
     cargo build --release --bin smeltr
     powershell -NoProfile -ExecutionPolicy Bypass -File tools/fips-dll.ps1 "{{ env('CARGO_TARGET_DIR', 'target') }}/release"
     cargo run --release --bin smeltr

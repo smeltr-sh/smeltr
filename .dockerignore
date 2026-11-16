@@ -1,16 +1,13 @@
-# A build needs the Rust source, the frontend source, and the repository that stamps the version. Nothing else
+# A build needs the Rust source, the frontends' sources, and the repository that stamps the version. Nothing else
 # reaches the build context, so nothing else reaches the scanner.
 
 target
 gui-frontend/node_modules
 gui-frontend/dist
-website
-# Except what the GUI builds from: the tokenizer its expression fields color code with, the language reference
-# they suggest from, and the palette and controls it shares with the site.
-!website/src/lib/highlight
-!website/src/lib/foundry
-!website/src/lib/reference.json
-!website/src/lib/code-language.json
+website/node_modules
+website/.svelte-kit
+website/build
+website/leader-docs
 
 # This build's own output. Sending it back as context would grow with every build.
 handoff
@@ -29,3 +26,5 @@ LICENSE*
 # terms it is licensed under and the attribution the licenses ask for with it.
 !LICENSE
 !THIRD-PARTY-NOTICES.md
+# And the website's license page, which the docs build prerenders.
+!COMMERCIAL-LICENSE.md

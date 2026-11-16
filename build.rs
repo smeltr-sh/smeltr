@@ -1,17 +1,57 @@
-//! Bakes `gui-frontend/dist` into the binary, so one file copied to a host serves the GUI.
+//! Bakes the frontend builds into the binary, so one file copied to a host serves the GUI and its AI agent's docs.
 //!
-//! A generated table rather than `rust-embed`: `dist` is a build artifact, absent on a fresh clone, and deliberately
-//! not a dependency of the Rust build, so the missing case has to be handled here either way. When it is missing or
-//! empty, the table holds one `index.html` that says so.
+//! A generated table rather than `rust-embed`: each build's output is absent on a fresh clone, and deliberately not a
+//! dependency of the Rust build, so a missing one is handled here. A missing GUI becomes one `index.html` that says
+//! so; missing docs become no pages.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// A frontend build the binary embeds. `just` runs it before cargo (`tools/build-if-stale.mjs` names the same paths),
+/// so its output is never older than its sources.
+struct Frontend {
+    /// Its directory, from the checkout's root. The other paths are from here.
+    dir: &'static str,
+    /// The directory its build writes.
+    output: &'static str,
+    sources: &'static [&'static str],
+}
+
+impl Frontend {
+    fn path(&self, manifest: &Path, name: &str) -> PathBuf {
+        manifest.join(self.dir).join(name)
+    }
+}
+
+const GUI: Frontend = Frontend {
+    dir: "gui-frontend",
+    output: "dist",
+    sources: &[
+        "src",
+        "public",
+        "index.html",
+        "package.json",
+        "../website/src/lib/highlight",
+        "../website/src/lib/foundry",
+        "../website/src/lib/reference.json",
+        "../website/src/lib/code-language.json",
+    ],
+};
+
+/// The user docs, as `src/leader/docs.rs` reads them. `tools/check-scope` treats every `website/` path this file names
+/// as a GUI input, so these paths are written from `website`.
+const DOCS: Frontend = Frontend {
+    dir: "website",
+    output: "leader-docs",
+    sources: &["src", "scripts", "package.json", "vite.config.ts"],
+};
+
 fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    let dist = manifest.join("gui-frontend/dist");
-    let out = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("embedded_assets.rs");
+    let dist = GUI.path(&manifest, GUI.output);
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let out = out_dir.join("embedded_assets.rs");
 
     // `just check` builds the GUI on its own, beside this build, so its binary embeds the placeholder and says nothing.
     println!("cargo:rerun-if-env-changed=SMELTR_NO_GUI");
@@ -21,24 +61,21 @@ fn main() {
     let no_gui = std::env::var("SMELTR_NO_GUI").is_ok_and(|v| !v.is_empty());
 
     // Vite content-hashes its output names, so watching the directory is what catches a rename. The sources are watched
-    // for the staleness check. `dist` is made empty when absent, since only a path that exists can be watched: the
-    // bundler's first build is then a change to a directory already watched. A build without the GUI watches none of
-    // it, so a GUI edit does not rebuild the crate for the tests and clippy.
-    let _ = std::fs::create_dir(&dist);
+    // for the staleness check. An output is made empty when absent, since only a path that exists can be watched: its
+    // first build is then a change to a directory already watched. A build that leaves out the GUI watches no frontend
+    // path, so a frontend edit does not rebuild the crate for the tests and clippy.
     if !no_gui {
-        for watched in ["dist", "src", "public", "index.html", "package.json"] {
-            watch(&manifest.join("gui-frontend").join(watched));
+        for frontend in [&GUI, &DOCS] {
+            let output = frontend.path(&manifest, frontend.output);
+            let _ = std::fs::create_dir(&output);
+            watch(&output);
+            for source in frontend.sources {
+                watch(&frontend.path(&manifest, source));
+            }
+            warn_if_stale(&manifest, frontend);
         }
-        for watched in [
-            "website/src/lib/highlight",
-            "website/src/lib/foundry",
-            "website/src/lib/reference.json",
-            "website/src/lib/code-language.json",
-        ] {
-            watch(&manifest.join(watched));
-        }
-        warn_if_stale(&manifest, &dist);
     }
+    embed_docs(&manifest, &out_dir, no_gui);
     let edits = uncommitted(&manifest);
     println!("cargo:rustc-env=SMELTR_VERSION={}", compute_version(&manifest, &edits));
     println!("cargo:rustc-env=SMELTR_RELEASE={}", release(&manifest, &edits));
@@ -76,51 +113,66 @@ fn main() {
     std::fs::write(&out, src).expect("write embedded_assets.rs");
 }
 
-/// `dist` older than the frontend sources is an error on a release build and a warning otherwise. `cargo build` does
-/// not run the bundler: that would put node on the path of every `cargo check`, and a script that writes to a path it
-/// watches rebuilds forever. A stale GUI is silent where a missing one announces itself, which is why only staleness is
+/// An output older than its sources is an error on a release build and a warning otherwise. `cargo build` does not run
+/// the bundlers: that would put node on the path of every `cargo check`, and a script that writes to a path it watches
+/// rebuilds forever. A stale build is silent where a missing one announces itself, which is why only staleness is
 /// promoted on release. `SMELTR_ALLOW_STALE_GUI=1` keeps it a warning.
-fn warn_if_stale(manifest: &Path, dist: &Path) {
+fn warn_if_stale(manifest: &Path, frontend: &Frontend) {
     println!("cargo:rerun-if-env-changed=SMELTR_ALLOW_STALE_GUI");
 
-    let Some(built) = newest_mtime(dist) else {
-        return; // nothing built into dist: the empty-table branch already warns
+    let Some(built) = newest_mtime(&frontend.path(manifest, frontend.output)) else {
+        return; // nothing built: the empty branch already warns
     };
-    let sources = [
-        manifest.join("gui-frontend/src"),
-        manifest.join("gui-frontend/public"),
-        manifest.join("gui-frontend/index.html"),
-        manifest.join("gui-frontend/package.json"),
-        manifest.join("website/src/lib/highlight"),
-        manifest.join("website/src/lib/foundry"),
-    ];
-    let Some(edited) = sources.iter().filter_map(|p| newest_mtime(p)).max() else {
+    let Some(edited) = frontend
+        .sources
+        .iter()
+        .filter_map(|p| newest_mtime(&frontend.path(manifest, p)))
+        .max()
+    else {
         return; // no sources to compare against (a packaged source tree)
     };
     if edited <= built {
         return;
     }
 
+    let output = format!("{}/{}", frontend.dir, frontend.output);
     let release = std::env::var("PROFILE").as_deref() == Ok("release");
     let overridden = std::env::var("SMELTR_ALLOW_STALE_GUI").is_ok_and(|v| !v.is_empty());
     if release && !overridden {
         panic!(
-            "gui-frontend/dist is older than gui-frontend's sources, so this release binary \
-             would embed the PREVIOUS frontend build.\n\
+            "{output} is older than its sources, so this release binary would embed the PREVIOUS \
+             build of it.\n\
              \n\
              Build both, in order:    just build\n\
-             Or by hand:              (cd gui-frontend && npm run build) && cargo build --release\n\
              \n\
              Set SMELTR_ALLOW_STALE_GUI=1 to build anyway (profiling, benchmarks -- anything \
-             that does not care about the UI). A debug build only warns."
+             that does not care about the GUI or its docs). A debug build only warns."
         );
     }
     println!(
-        "cargo:warning=gui-frontend/dist is older than gui-frontend's sources, so this binary \
-         will embed the PREVIOUS frontend build. Run `just build-dev`, or `npm run build` in \
-         gui-frontend and build again. (cargo does not run the bundler for you -- see build.rs.) \
-         A release build refuses outright rather than warning."
+        "cargo:warning={output} is older than its sources, so this binary will embed the PREVIOUS \
+         build of it. Run `just build-dev` and build again. (cargo does not run the bundlers for \
+         you -- see build.rs.) A release build refuses outright rather than warning."
     );
+}
+
+/// The docs' one file, or no pages when they were not built.
+fn embed_docs(manifest: &Path, out_dir: &Path, no_gui: bool) {
+    let built = DOCS.path(manifest, DOCS.output).join("docs.json");
+    let json = match std::fs::read_to_string(&built) {
+        Ok(json) if !no_gui => json,
+        _ => {
+            if !no_gui {
+                println!(
+                    "cargo:warning={}/{} is empty or missing, so this binary's AI agent has no docs \
+                     to read. Run `just build-dev` and build again.",
+                    DOCS.dir, DOCS.output
+                );
+            }
+            "[]".to_string()
+        }
+    };
+    std::fs::write(out_dir.join("docs.json"), json).expect("write docs.json");
 }
 
 /// `2026.9.20+main.1244c9e5a0b3`: the compile date as three semver-shaped numbers, and which commit on which
