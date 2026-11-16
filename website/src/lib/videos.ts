@@ -1,3 +1,5 @@
+import beginnerSelfTest from '#lib/self-tests/beginner.json';
+
 /** Each video has one level. Learn lists videos easiest level first. */
 export const levels = ['Beginner', 'Intermediate', 'Advanced'] as const;
 
@@ -44,16 +46,44 @@ export type Video = {
   level: (typeof levels)[number];
   roles: (typeof roles)[number][];
   topics: (typeof topics)[number][];
+  /** A long video's chapters, in order, as YouTube marks them: each starts `start` seconds in. The titles come first,
+   * for the self-test; the starts come with the video. */
+  chapters?: Chapter[];
 };
 
-/** Videos watched in order. The course's page is /learn/{slug}. */
+export type Chapter = { title: string; start?: number };
+
+/** A question with four choices, one of them right. `chapter` is where the course teaches it, counted from 1 in the
+ * course's `parts`; `answer` is the course's own answer, shown once the visitor picks. */
+export type Question = {
+  chapter: number;
+  question: string;
+  choices: string[];
+  right: number;
+  answer: string;
+};
+
+/** Questions a visitor answers after the course. The page scores them in the browser and keeps nothing. */
+export type SelfTest = { questions: Question[] };
+
+/** Videos watched in order: a full course, or else a tutorial. The course's page is /learn/{slug}, and its self-test
+ * /learn/{slug}/self-test. */
 export type Course = {
   title: string;
   slug: string;
   /** The demo has what the course shows, so the course links to it. */
   demo?: true;
+  /** A full course, taken from start to end with a self-test after it. Learn lists full courses under Courses, even
+   * before they are out, and the rest under Tutorials. */
+  full?: true;
+  selfTest?: SelfTest;
+  /** A course with `about` has an overview page at /learn/{slug}, and its video plays at /learn/{slug}/{video}. */
+  about?: About;
   videos: Video[];
 };
+
+/** What a course sets out to do, what a viewer needs to follow along, and the courses that follow it. */
+export type About = { goal: string; needs: string[]; next?: string[] };
 
 /** The video the home page shows. */
 export const walkthrough: Video = {
@@ -67,7 +97,58 @@ export const walkthrough: Video = {
   poster: '/videos/walkthrough-poster.jpg',
 };
 
+/** The full courses that follow Beginner, one for each role. */
+const roleCourses: Course[] = roles.map((role) => ({
+  title: role,
+  slug: role.toLowerCase().replaceAll(' ', '-'),
+  full: true,
+  videos: [],
+}));
+
 const allCourses: Course[] = [
+  {
+    title: 'Beginner',
+    slug: 'beginner',
+    full: true,
+    selfTest: beginnerSelfTest,
+    about: {
+      goal: 'Install smeltr, bring in one real feed, shape it, deliver it, and fix it when it breaks.',
+      needs: [
+        'Two Linux machines with Docker: one for the leader, one for a second worker',
+        'A Linux server whose rsyslog can forward its auth log, with an account that signs in over SSH with a password',
+        'Elasticsearch, with an API key that may add documents to one index',
+      ],
+      next: roleCourses.map((c) => c.slug),
+    },
+    videos: [
+      {
+        title: 'Smeltr Beginner',
+        slug: 'smeltr-beginner',
+        chapters: [
+          { title: 'How smeltr works' },
+          { title: 'Install and enroll' },
+          { title: 'Bring in a syslog feed' },
+          { title: 'Shape the records' },
+          { title: 'Deliver and deploy' },
+          { title: 'Watch it run' },
+          { title: 'When it breaks' },
+        ],
+        level: 'Beginner',
+        roles: ['Security analyst', 'Data analyst', 'Data engineer', 'Administrator'],
+        topics: [
+          'Install',
+          'Docker',
+          'Workers',
+          'Pipelines',
+          'Parsing',
+          'Deploy',
+          'Status',
+          'Exceptions',
+        ],
+      },
+    ],
+  },
+  ...roleCourses,
   {
     title: 'Demo walkthrough',
     slug: 'demo-walkthrough',
@@ -663,11 +744,40 @@ export const released = (course: Course) => course.videos.filter((v) => v.youtub
 /** The courses the site shows: those with a video out. */
 export const courses = allCourses.filter((c) => released(c).length);
 
-/** How many videos the course has and how long the released ones run, as its cards say it. */
+/** The full courses, in order, whether or not they are out. */
+export const fullCourses = allCourses.filter((c) => c.full);
+
+/** The courses with a self-test. Its page is out before its course's video, so the video can show the page's
+ * address. */
+export const selfTested = allCourses.filter((c) => c.selfTest);
+
+/** What a course is watched in: a long video's chapters, or else the course's videos. A self-test's questions name
+ * their chapter by its place here. `href` plays the part, once it is out. */
+export function parts(course: Course): { title: string; href?: string }[] {
+  const [first] = course.videos;
+  if (course.videos.length === 1 && first.chapters) {
+    const watch = first.youtube ? `/learn/${course.slug}/${first.slug}` : undefined;
+    return first.chapters.map((c) => ({
+      title: c.title,
+      href: watch && c.start !== undefined ? `${watch}#t=${c.start}` : undefined,
+    }));
+  }
+  return course.videos.map((v) => ({
+    title: v.title,
+    href: v.youtube ? `/learn/${course.slug}/${v.slug}` : undefined,
+  }));
+}
+
+/** How many videos (or a long video's chapters) the course has and how long the released ones run, as its cards say it. */
 export function courseLength(course: Course): string {
   const out = released(course);
   const soon = course.videos.length - out.length;
   const minutes = out.reduce((sum, v) => sum + (v.minutes ?? 0), 0);
-  const videos = out.length === 1 ? '1 video' : `${out.length} videos`;
+  const chapters = out.length === 1 && out[0].chapters?.length;
+  const videos = chapters
+    ? `${chapters} chapters`
+    : out.length === 1
+      ? '1 video'
+      : `${out.length} videos`;
   return `${videos}${soon ? `, ${soon} coming soon` : ''} · ${minutes} min`;
 }

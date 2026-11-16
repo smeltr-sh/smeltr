@@ -31,11 +31,16 @@ examples stack expressions above results on narrow screens.
 
 Training videos live on YouTube and are listed once, in `src/lib/videos.ts`,
 as courses that the home page and `/learn` read. `/learn` shows a card per
-course, and a course's page plays one video beside the course's list. A video
+course: full courses under Courses, even before they are out, and the rest under
+Tutorials. A course's page plays one video beside the course's list. A course
+with an overview shows it at its own page instead, and plays its video at the
+video's own page, with the video's chapters listed beside it. A video
 shows its poster from `static/videos/` and loads YouTube's player, from
 youtube-nocookie.com, only when the visitor presses play, so a visitor who does
 not watch never contacts YouTube. A video with no YouTube id is coming soon: its
 course lists it, and it has no page yet.
+A course with a self-test also has `/learn/{course}/self-test`: multiple-choice questions on the course, scored in
+the browser, with nothing kept.
 
 The site links the repository in one place, `src/lib/release.ts`, which names
 the repository's owner once and builds the source, download, image and license

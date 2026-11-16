@@ -2,11 +2,18 @@
   import type { Video } from '#lib/videos.ts';
 
   // With `href`, the poster links there instead of playing in place. `onplay` is called when the visitor presses play.
-  let { video, href, onplay }: { video: Video; href?: string; onplay?: () => void } = $props();
+  // With `start`, the video plays at once from that many seconds in: the visitor asked for that place.
+  let {
+    video,
+    href,
+    onplay,
+    start,
+  }: { video: Video; href?: string; onplay?: () => void; start?: number } = $props();
 
   // YouTube's player loads only once the visitor presses play, so a visitor who
   // does not watch never contacts YouTube.
-  let playing = $state(false);
+  let pressed = $state(false);
+  const playing = $derived(pressed || start !== undefined);
 </script>
 
 {#if !video.youtube}
@@ -19,7 +26,9 @@
 {:else if playing}
   <iframe
     class="frame"
-    src="https://www.youtube-nocookie.com/embed/{video.youtube}?autoplay=1"
+    src="https://www.youtube-nocookie.com/embed/{video.youtube}?autoplay=1{start
+      ? `&start=${start}`
+      : ''}"
     title={video.title}
     allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
     allowfullscreen
@@ -29,7 +38,7 @@
     class="frame poster"
     aria-label="Play {video.title}"
     onclick={() => {
-      playing = true;
+      pressed = true;
       onplay?.();
     }}
   >
