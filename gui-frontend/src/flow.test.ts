@@ -1,46 +1,34 @@
 import { describe, expect, it } from 'vitest';
-import type { FlowNormalDto, FlowPointDto, FlowSeriesDto } from './api';
-import {
-  currentRate,
-  denseRates,
-  denseSeries,
-  furthestFromNormal,
-  lastClosedBucket,
-  sumSeries,
-} from './flow';
+import type { FlowNormalDto, SeriesAnswerDto } from './api';
+import { denseAnswer, furthestFromNormal, lastClosedBucket } from './flow';
 
-const HOUR = 60 * 60 * 1000;
-const pt = (bucketMillis: number, value: number): FlowPointDto => ({ bucketMillis, value });
-/** A moment at local hour `h`, `dayOffset` days into January 2024 -- January so no run
- * crosses a DST transition regardless of the machine's timezone. */
-const local = (h: number, dayOffset = 0) => new Date(2024, 0, 1 + dayOffset, h).getTime();
-
-describe('denseSeries', () => {
-  it('fills every expected bucket, marking the ones nothing landed in as a gap', () => {
-    expect(denseSeries([pt(0, 5), pt(20_000, 7)], 10_000, 0, 20_000)).toEqual([5, null, 7]);
+describe('denseAnswer', () => {
+  const answer = (...series: [number, number][][]): SeriesAnswerDto => ({
+    metric: 'm',
+    counter: true,
+    draw: 'perSecond',
+    pointMillis: 10_000,
+    fromMillis: 0,
+    series: series.map((points, i) => ({ name: String(i), points })),
   });
 
-  it('is gaps all the way down with no points at all -- never zero-filled', () => {
-    expect(denseSeries([], 10_000, 0, 20_000)).toEqual([null, null, null]);
+  it('adds every series on each point through the last, a point nothing landed in a gap', () => {
+    expect(
+      denseAnswer(
+        answer(
+          [
+            [0, 5],
+            [20_000, 1],
+          ],
+          [[0, 9]],
+        ),
+        30_000,
+      ),
+    ).toEqual([14, null, 1, null]);
   });
 
-  it('starts at the point the range begins in, which the leader reads whole', () => {
-    expect(denseSeries([pt(0, 3), pt(10_000, 4)], 10_000, 4_000, 16_000)).toEqual([3, 4]);
-  });
-});
-
-describe('denseRates', () => {
-  it("divides each slot by its bucket's width in seconds", () => {
-    expect(denseRates([pt(0, 300), pt(10_000, 50)], 10_000, 0, 10_000)).toEqual([30, 5]);
-  });
-
-  it('a wider bucket holding the same rows is the same rate', () => {
-    expect(denseRates([pt(0, 300)], 10_000, 0, 10_000)[0]).toBe(30);
-    expect(denseRates([pt(0, 1800)], 60_000, 0, 60_000)[0]).toBe(30);
-  });
-
-  it('a gap stays a gap -- there is no rate where there was no bucket', () => {
-    expect(denseRates([pt(0, 300)], 10_000, 0, 20_000)).toEqual([30, null, null]);
+  it('is gaps all the way down with no series at all -- never zero-filled', () => {
+    expect(denseAnswer(answer(), 20_000)).toEqual([null, null, null]);
   });
 });
 
@@ -51,43 +39,6 @@ describe('lastClosedBucket', () => {
 
   it('an instant exactly on a boundary still steps back a whole bucket', () => {
     expect(lastClosedBucket(10_000, 20_000)).toBe(10_000);
-  });
-});
-
-describe('sumSeries', () => {
-  it('adds every subject that reported into a bucket', () => {
-    const series: FlowSeriesDto[] = [
-      { group: 'prod-west', subjectId: 'a', points: [pt(0, 5), pt(10_000, 3)] },
-      { group: 'prod-west', subjectId: 'b', points: [pt(0, 9)] },
-    ];
-    expect(sumSeries(series)).toEqual([pt(0, 14), pt(10_000, 3)]);
-  });
-
-  it('is empty when no subject reported anything', () => {
-    expect(sumSeries([])).toEqual([]);
-  });
-});
-
-describe('currentRate', () => {
-  const bucketMillis = 10_000;
-
-  it('reads the bucket that has just closed', () => {
-    // At 25s the 20s bucket is still filling; the 10s one is whole.
-    expect(currentRate([pt(0, 1), pt(10_000, 40), pt(20_000, 7)], bucketMillis, 25_000)).toBe(4);
-  });
-
-  it('never reads the bucket still filling, whose running total is not a rate', () => {
-    // The only point is the open bucket, a third of the way through. Reading it would say
-    // 0.7 rows/s of a source running at 2.
-    expect(currentRate([pt(20_000, 7)], bucketMillis, 23_000)).toBeNull();
-  });
-
-  it('is null, not 0, where the closed bucket is missing -- a gap is not a stop', () => {
-    expect(currentRate([pt(0, 40)], bucketMillis, 25_000)).toBeNull();
-  });
-
-  it('is null with no points at all', () => {
-    expect(currentRate([], bucketMillis, 25_000)).toBeNull();
   });
 });
 

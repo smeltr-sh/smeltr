@@ -55,6 +55,7 @@
     errorText,
     getClusterStatus,
     getFlow,
+    getSeries,
     listWarnings,
     history as mainHistory,
     restartWorker,
@@ -64,6 +65,7 @@
     type ClusterStatus,
     type FlowKind,
     type FlowResponseDto,
+    type SeriesAnswerDto,
     type WarningDto,
   } from './api';
   import {
@@ -94,14 +96,13 @@
   } from './metrics';
   import {
     DEFAULT_WINDOW_MINUTES,
+    FLOW_METRICS,
     FLOW_WINDOWS,
-    currentRate,
-    denseRates,
-    firstBucket,
+    denseAnswer,
     furthestFromNormal,
     lastClosedBucket,
-    sumSeries,
   } from './flow';
+  import { DEFAULT_VIEW, seriesQuery } from './metricsView';
   import { clockTime, count, shortCommit } from './time';
 
   // The commit a deploy just pointed the fleet at, from the hash: the page follows
@@ -231,8 +232,8 @@
   // -- flow (E2): the window-picked chart --------------------------------
 
   let windowMinutes = $state(DEFAULT_WINDOW_MINUTES);
+  /** The table's totals and the sources' normals. */
   let flow: FlowResponseDto | null = $state(null);
-  let flowFetchedAt = $state(Date.now());
 
   /** What the chart and the table count. */
   let unit: 'rows' | 'bytes' = $state('rows');
@@ -240,38 +241,67 @@
   let kind: FlowKind = $state('source');
   /** The table row the chart is narrowed to, or `null` for everything the selection holds. */
   let picked: { group: string; subjectId: string } | null = $state(null);
-  /** The picked row's own in and out, read beside the fleet's: the page's other panels go on
-   * reading the fleet. */
-  let pickedFlow: FlowResponseDto | null = $state(null);
 
   function fetchFlow() {
-    // Reads `windowMinutes`, `kind` and `picked`, so the effect below re-fetches the moment
-    // any of them changes rather than waiting for the next tick.
-    const only = picked && { kind, group: picked.group, subject: picked.subjectId };
+    // Reads `windowMinutes`, so the effect below re-fetches the moment it changes rather than
+    // waiting for the next tick.
     getFlow(windowMinutes)
-      .then((f) => {
-        flow = f;
-        flowFetchedAt = Date.now();
-      })
+      .then((f) => (flow = f))
       .catch(() => {
-        // Keep showing the last window rather than blanking a working chart over one bad poll.
+        // Keep showing the last window rather than blanking a working table over one bad poll.
       });
-    if (!only) {
-      pickedFlow = null;
-      return;
-    }
-    getFlow(windowMinutes, only)
-      .then((f) => {
-        // A pick changed while this was in flight answers for a row no longer shown.
-        if (picked?.group === only.group && picked.subjectId === only.subject) pickedFlow = f;
+  }
+
+  /** What the chart reads from `GET /api/series`: the picked row's in and out, or the fleet's,
+   * within the selected group or worker. */
+  let chartAsk = $derived.by(() => {
+    const selection: [string, string][] = selectedWorkerId
+      ? [['worker', selectedWorkerId]]
+      : selectedGroupId
+        ? [['group', selectedGroupId]]
+        : [];
+    const filter: [string, string][] = picked
+      ? [...selection, ['group', picked.group], [kind, picked.subjectId]]
+      : selection;
+    return { metrics: FLOW_METRICS[picked ? kind : 'fleet'], filter, selection, windowMinutes };
+  });
+  type FlowCharts = {
+    /** When they were read: the chart ends at the point before the one this falls in. */
+    at: number;
+    rowsIn: SeriesAnswerDto;
+    rowsOut: SeriesAnswerDto;
+    bytesIn: SeriesAnswerDto;
+    bytesOut: SeriesAnswerDto;
+    /** The fleet's rows out within the selection, for the line at the top of the page. */
+    fleetOut: SeriesAnswerDto;
+  };
+  let charts = $state<FlowCharts | null>(null);
+  /** The ask the newest fetch is for: an answer to an older one is for a chart no longer shown. */
+  let asked: typeof chartAsk | null = null;
+
+  function fetchCharts(ask: typeof chartAsk) {
+    asked = ask;
+    // On UTC's clock, as `/api/flow` totals the table, so a row's total is its chart's.
+    const read = (metric: string, filter: [string, string][]) =>
+      getSeries(
+        seriesQuery({ ...DEFAULT_VIEW, metric, filter, windowMinutes: ask.windowMinutes }, 0),
+      );
+    Promise.all([
+      ...ask.metrics.map((metric) => read(metric, ask.filter)),
+      read(FLOW_METRICS.fleet[1], ask.selection),
+    ])
+      .then(([rowsIn, rowsOut, bytesIn, bytesOut, fleetOut]) => {
+        if (asked === ask)
+          charts = { at: Date.now(), rowsIn, rowsOut, bytesIn, bytesOut, fleetOut };
       })
       .catch(() => {});
   }
 
+  // A new window, selection or pick reads the chart at once, paused or not.
+  $effect(() => fetchCharts(chartAsk));
+
   function pick(row: { group: string; subjectId: string } | null) {
     picked = row;
-    pickedFlow = null;
-    if (!autoRefresh) fetchFlow();
   }
 
   function chooseKind(next: FlowKind) {
@@ -279,24 +309,16 @@
     pick(null);
   }
 
-  // `$derived.by`: in the expression form TypeScript narrows `flow` to its `null`
-  // initializer (as `workerRows` below notes for `status`).
-  let fleetOut = $derived.by(() =>
-    flow ? sumSeries(flow.rowsOut.filter((series) => flowMatchesSelection(series))) : [],
-  );
-  let bucketMillis = $derived.by(() => flow?.bucketMillis ?? 0);
-  let windowFrom = $derived(flowFetchedAt - windowMinutes * 60_000);
-  /** Where the chart stops. The bucket covering now is still filling, so its total is
-   * only what has landed so far -- drawn, it is a dip that fills itself in on the next
-   * poll. `currentRate` already refuses to read it; the chart ends at the same bucket so
-   * the two cannot give different answers about the same instant. */
-  let windowTo = $derived(bucketMillis ? lastClosedBucket(bucketMillis, flowFetchedAt) : 0);
+  let pointMillis = $derived(charts?.rowsIn.pointMillis ?? 0);
+  let windowFrom = $derived(charts?.rowsIn.fromMillis ?? 0);
+  /** Where the chart stops. The point covering now is still filling, so its total is only
+   * what has landed so far -- drawn, it is a dip that fills itself in on the next poll. */
+  let windowTo = $derived(charts ? lastClosedBucket(pointMillis, charts.at) : 0);
 
-  /** The fleet line at the top of the page, which answers before the chart is reached. The
-   * flow panel reads its own last slot instead: that is this same closed bucket, off the
-   * grid the pointer moves over. */
+  /** The fleet line at the top of the page, which answers before the chart is reached: the
+   * last point the chart draws. */
   let nowOutRate = $derived(
-    bucketMillis ? currentRate(fleetOut, bucketMillis, flowFetchedAt) : null,
+    charts ? (denseAnswer(charts.fleetOut, windowTo).at(-1) ?? null) : null,
   );
   /** A rate, or `--` where the bucket that would carry it is missing. Not "0 rows/s": a
    * fleet nobody has heard from and a fleet moving nothing are different answers. A rate
@@ -310,23 +332,12 @@
 
   // -- the flow panel's chart and table: the fleet's, or one picked row's, in rows or bytes.
 
-  /** What the chart draws: the picked row's series once they have been read, else the fleet's. */
-  // `$derived.by`, as for `fleetOut` above: the expression form narrows both to `null`.
-  let shown = $derived.by((): FlowResponseDto | null => (picked ? pickedFlow : flow));
-  // Per second, not per bucket: the unit the rate line above the chart is in, and the only
-  // one that holds across the picker -- a point is 10s at sixty minutes and six hours at
-  // thirty days.
-  function chartRates(series: FlowResponseDto['rowsIn'] | undefined): (number | null)[] {
-    if (!series || !bucketMillis) return [];
-    return denseRates(
-      sumSeries(series.filter((s) => flowMatchesSelection(s))),
-      bucketMillis,
-      windowFrom,
-      windowTo,
-    );
-  }
-  let chartIn = $derived(chartRates(unit === 'rows' ? shown?.rowsIn : shown?.bytesIn));
-  let chartOut = $derived(chartRates(unit === 'rows' ? shown?.rowsOut : shown?.bytesOut));
+  // Per second: the unit the rate line above the chart is in, and the only one that holds across
+  // the picker -- a point is 10s at sixty minutes and six hours at thirty days.
+  const chartRates = (answer: SeriesAnswerDto | undefined) =>
+    answer ? denseAnswer(answer, windowTo) : [];
+  let chartIn = $derived(chartRates(unit === 'rows' ? charts?.rowsIn : charts?.bytesIn));
+  let chartOut = $derived(chartRates(unit === 'rows' ? charts?.rowsOut : charts?.bytesOut));
   let hasChartData = $derived(chartIn.some((v) => v !== null) || chartOut.some((v) => v !== null));
   /** Bytes are drawn in the unit the busiest bucket reads best in. */
   let chartScale = $derived(
@@ -410,26 +421,25 @@
    * are one reading and cannot disagree. */
   let readSlot = $derived(hoveredSlot ?? chartIn.length - 1);
   let readAt = $derived(
-    bucketMillis && readSlot >= 0
-      ? clockTime(firstBucket(bucketMillis, windowFrom) + readSlot * bucketMillis)
-      : '--',
+    pointMillis && readSlot >= 0 ? clockTime(windowFrom + readSlot * pointMillis) : '--',
   );
   const readFrom = (dense: (number | null)[]) => (readSlot >= 0 ? (dense[readSlot] ?? null) : null);
 
   // -- furthest from normal (Main storyboard): each source's reading against the normal
   // its warnings read, whatever window the chart shows. A source is in the selection when a
-  // series the selection holds reads it.
+  // total the selection holds counts it.
 
   let normals = $derived.by(() => {
     const read = flow;
     return read === null
       ? []
       : read.normals.filter((n) =>
-          read.rowsIn.some(
-            (series) =>
-              series.group === n.group &&
-              series.subjectId === n.subjectId &&
-              flowMatchesSelection(series),
+          read.totals.some(
+            (t) =>
+              t.kind === 'source' &&
+              t.group === n.group &&
+              t.subjectId === n.subjectId &&
+              flowMatchesSelection(t),
           ),
         );
   });
@@ -502,7 +512,10 @@
   $effect(() => {
     if (!autoRefresh) return;
     fetchFlow();
-    const id = setInterval(fetchFlow, POLL_MS);
+    const id = setInterval(() => {
+      fetchFlow();
+      fetchCharts(chartAsk);
+    }, POLL_MS);
     return () => clearInterval(id);
   });
 
@@ -769,6 +782,7 @@
   function refreshNow() {
     refresh();
     fetchFlow();
+    fetchCharts(chartAsk);
   }
 
   function chooseWindow(minutes: number) {
@@ -1221,7 +1235,7 @@
           />
         </div>
       </div>
-      {#if flow === null || shown === null}
+      {#if charts === null}
         <p class="empty">Loading…</p>
       {:else if !hasChartData}
         <p class="empty">No rows recorded in this window yet.</p>
@@ -1237,7 +1251,7 @@
           unit={chartScale.unit}
           words={chartWords}
           label="{unitWord} per second, in above the line and out below it, over the chosen window"
-          from={clockTime(firstBucket(bucketMillis, windowFrom))}
+          from={clockTime(windowFrom)}
           to={clockTime(windowTo)}
           onhover={(slot) => (hoveredSlot = slot)}
         />
