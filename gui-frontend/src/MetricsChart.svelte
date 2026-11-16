@@ -20,6 +20,7 @@
     label,
     previous = null,
     marks = null,
+    right = null,
   }: {
     series: Drawn[];
     /** Stacked bars of totals rather than lines. */
@@ -37,6 +38,8 @@
     previous?: (number | null)[][] | null;
     /** Deploys and issues, in a strip above the plot; `null` draws no strip. */
     marks?: Mark[] | null;
+    /** The right-hand axis, for the series marked `right`: a second metric in another unit. */
+    right?: { unit: string; format: (value: number) => string } | null;
   } = $props();
 
   const PLOT = 240;
@@ -64,23 +67,47 @@
         )
       : Math.max(
           0,
-          ...[...series.map((s) => s.points), ...(previous ?? [])].flat().map((v) => v ?? 0),
+          ...series
+            .flatMap((s, k) => (s.right ? [] : [s.points, previous?.[k] ?? []]))
+            .flat()
+            .map((v) => v ?? 0),
         ),
+  );
+  let maxR = $derived(
+    Math.max(
+      0,
+      ...series
+        .flatMap((s, k) => (s.right ? [s.points, previous?.[k] ?? []] : []))
+        .flat()
+        .map((v) => v ?? 0),
+    ),
+  );
+  let topR = $derived(axisTop(maxR));
+  let stepR = $derived(axisStep(maxR));
+  let gridR = $derived(
+    right ? axisValues(maxR).map((v) => ({ v, label: axisLabel(v, stepR) })) : [],
+  );
+  let gutterR = $derived(
+    right ? Math.max(...gridR.map((g) => g.label.length), 3) * GLYPH + TICK_GAP : 0,
   );
   let top0 = $derived(marks ? STRIP : 0);
   let top = $derived(axisTop(max));
   let step = $derived(axisStep(max));
   let grid = $derived(axisValues(max).map((v) => ({ v, label: axisLabel(v, step) })));
   let gutter = $derived(Math.max(...grid.map((g) => g.label.length), 3) * GLYPH + TICK_GAP);
-  let plotW = $derived(Math.max(0, width - gutter - 4));
+  let plotW = $derived(Math.max(0, width - gutter - 4 - gutterR));
   const y = (v: number) => PLOT - PAD / 2 - (v / (top || 1)) * (PLOT - PAD);
+  const yR = (v: number) => PLOT - PAD / 2 - (v / (topR || 1)) * (PLOT - PAD);
+  const yOf = (s: Drawn) => (s.right ? yR : y);
   let slotW = $derived(count > 0 ? plotW / count : 0);
   const xLine = (i: number) => gutter + (count > 1 ? (i * plotW) / (count - 1) : plotW / 2);
   const xBar = (i: number) => gutter + i * slotW;
   const tone = (s: Drawn) => toneOf(s.slot);
+  /** Each axis has its own Other. */
+  const key = (s: Drawn) => `${s.right ? 'r' : ''}${s.slot ?? -1}`;
 
   /** A line through `points`, broken where one is missing: a gap is missing history, not zero. */
-  function path(points: (number | null)[]): string {
+  function path(points: (number | null)[], at = y): string {
     let d = '';
     let open = false;
     points.forEach((v, i) => {
@@ -88,7 +115,7 @@
         open = false;
         return;
       }
-      d += `${open ? 'L' : 'M'}${xLine(i).toFixed(1)} ${y(v).toFixed(1)} `;
+      d += `${open ? 'L' : 'M'}${xLine(i).toFixed(1)} ${at(v).toFixed(1)} `;
       open = true;
     });
     return d;
@@ -160,13 +187,19 @@
           class="grid"
           class:zero={g.v === 0}
           x1={gutter}
-          x2={width - 4}
+          x2={gutter + plotW}
           y1={y(g.v)}
           y2={y(g.v)}
         />
         <text class="tick" x={gutter - TICK_GAP} y={y(g.v)}>{g.label}</text>
       {/each}
       <text class="unit" x={gutter + 4} y="10">{unit}</text>
+      {#if right}
+        {#each gridR as g (g.v)}
+          <text class="tick right" x={gutter + plotW + TICK_GAP} y={yR(g.v)}>{g.label}</text>
+        {/each}
+        <text class="unit right-unit" x={gutter + plotW - 4} y="10">{right.unit} →</text>
+      {/if}
       {#if hover !== null && bars}
         <rect class="hover-band" x={xBar(hover)} y="0" width={slotW} height={PLOT} />
       {/if}
@@ -205,7 +238,7 @@
           <path class="before" d={beforeSteps} />
         {/if}
         {#each Array.from({ length: count }, (_, i) => i) as i (i)}
-          {#each series as s, k (s.slot ?? -1)}
+          {#each series as s, k (key(s))}
             {@const below = series.slice(0, k).reduce((a, t) => a + (t.points[i] ?? 0), 0)}
             {@const v = s.points[i] ?? 0}
             {#if v > 0}
@@ -223,21 +256,21 @@
         {/each}
       {:else}
         {#if previous}
-          {#each series as s, k (s.slot ?? -1)}
-            <path class="line before {tone(s)}" d={path(previous[k] ?? [])} />
+          {#each series as s, k (key(s))}
+            <path class="line before {tone(s)}" d={path(previous[k] ?? [], yOf(s))} />
           {/each}
         {/if}
-        {#each series as s (s.slot ?? -1)}
-          <path class="line {tone(s)}" d={path(s.points)} />
+        {#each series as s (key(s))}
+          <path class="line {tone(s)}" d={path(s.points, yOf(s))} />
           {#each lone(s.points) as { i, v } (i)}
-            <circle class="dot {tone(s)}" cx={xLine(i)} cy={y(v)} r="2.5" />
+            <circle class="dot {tone(s)}" cx={xLine(i)} cy={yOf(s)(v)} r="2.5" />
           {/each}
         {/each}
         {#if hoverX !== null}
           <line class="rule" x1={hoverX} x2={hoverX} y1="0" y2={PLOT} />
-          {#each tip as { s, v } (s.slot ?? -1)}
+          {#each tip as { s, v } (key(s))}
             {#if v !== null}
-              <circle class="mark {tone(s)}" cx={hoverX} cy={y(v)} r="4" />
+              <circle class="mark {tone(s)}" cx={hoverX} cy={yOf(s)(v)} r="4" />
             {/if}
           {/each}
         {/if}
@@ -263,7 +296,8 @@
       <div
         class="tip"
         class:wide={previous !== null}
-        style:left="{Math.max(0, Math.min(hoverX + 12, width - (previous ? 340 : 240)))}px"
+        style:left={hoverX > width / 2 ? null : `${hoverX + 12}px`}
+        style:right={hoverX > width / 2 ? `${width - hoverX + 12}px` : null}
       >
         <div class="tip-at mono">{at(hover)}</div>
         {#each marksAt(hover) as m, k (k)}
@@ -274,10 +308,10 @@
             <span></span><span></span><span></span><span>A week before</span>
           </div>
         {/if}
-        {#each tip as { s, v, was } (s.slot ?? -1)}
+        {#each tip as { s, v, was } (key(s))}
           <div class="tip-row" class:compare={previous !== null}>
             <span class="swatch {tone(s)}"></span><span class="mono">{s.name || 'All'}</span><strong
-              >{v === null ? '--' : format(v)}</strong
+              >{v === null ? '--' : s.right && right ? right.format(v) : format(v)}</strong
             >{#if previous}<span class="was">{was === null ? '--' : format(was)}</span>{/if}
           </div>
         {/each}
@@ -319,6 +353,14 @@
   .tick {
     text-anchor: end;
     dominant-baseline: middle;
+  }
+
+  .tick.right {
+    text-anchor: start;
+  }
+
+  .right-unit {
+    text-anchor: end;
   }
 
   .clock {

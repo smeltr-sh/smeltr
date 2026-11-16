@@ -39,6 +39,7 @@
     toneOf,
     unitOf,
     type Mark,
+    type Drawn,
     type MetricsView,
   } from './metricsView';
 
@@ -77,13 +78,46 @@
 
   let metric = $derived(metrics?.find((m) => m.name === view.metric) ?? null);
 
+  /** Which metric each drawn series is of, by its name. */
+  let metricOf = $state(new Map<string, string>());
+  /** Several metrics' answers as one: each series named for its metric, and its split value after it. */
+  function together(answers: SeriesAnswerDto[]): SeriesAnswerDto {
+    if (answers.length === 1) {
+      metricOf = new Map(answers[0].series.map((s) => [s.name, answers[0].metric]));
+      return answers[0];
+    }
+    const of = new Map<string, string>();
+    const series = answers.flatMap((a) =>
+      a.series.map((s) => {
+        const name = s.name ? `${a.metric} · ${s.name}` : a.metric;
+        of.set(name, a.metric);
+        return { ...s, name };
+      }),
+    );
+    metricOf = of;
+    return { ...answers[0], series };
+  }
+
   async function read(asked: MetricsView) {
     readMetrics();
     try {
       const offset = -new Date().getTimezoneOffset();
+      const each = (ago: number) =>
+        Promise.all(
+          [asked.metric ?? '', ...asked.more].map((m) =>
+            // Totals of different metrics stacked would add up to nothing.
+            getSeries(
+              seriesQuery(
+                { ...asked, metric: m, draw: asked.more.length ? 'perSecond' : asked.draw },
+                offset,
+                ago,
+              ),
+            ),
+          ),
+        ).then(together);
       const [got, then, marks] = await Promise.all([
-        getSeries(seriesQuery(asked, offset)),
-        asked.weekBefore ? getSeries(seriesQuery(asked, offset, WEEK_MINUTES)) : null,
+        each(0),
+        asked.weekBefore ? each(WEEK_MINUTES) : null,
         asked.marks ? readMarks(asked.windowMinutes).catch(() => []) : [],
       ]);
       // A slow answer to an older question must not land over the newer one's.
@@ -182,6 +216,12 @@
   // -- the question -------------------------------------------------------------------------------------------------
 
   let picking = $state(false);
+  /** Which metric the open list picks: 0 the first, k the k-th of `more`, or a new one. */
+  let pickingFor = $state<number | 'new'>(0);
+  function pick(at: number | 'new') {
+    picking = !(picking && pickingFor === at);
+    pickingFor = at;
+  }
   let search = $state('');
   /** The metrics, in the website's reference groups, narrowed by `search`. */
   let groups = $derived.by(() => {
@@ -196,6 +236,13 @@
   function choose(m: StoredMetricDto) {
     picking = false;
     search = '';
+    if (pickingFor !== 0) {
+      const more = [...view.more];
+      if (pickingFor === 'new') more.push(m.name);
+      else more[pickingFor - 1] = m.name;
+      go({ more, draw: 'perSecond' });
+      return;
+    }
     // A split or filter by a label the new metric lacks would empty the chart.
     const has = (label: string) => label in m.labels;
     go({
@@ -242,7 +289,38 @@
       : 0,
   );
   let all = $derived(answer ? onGrid(answer, count) : []);
-  let shown = $derived(fold(all, view.top));
+  /** A series in another unit than the first metric's is drawn against the right-hand axis. */
+  const onRight = (name: string) => unitOf(metricOf.get(name) ?? view.metric ?? '') !== unit;
+  let shown = $derived.by(() => {
+    const left = all.filter((s) => !onRight(s.name));
+    const right = all.filter((s) => onRight(s.name));
+    if (!right.length) return fold(all, view.top);
+    // Each axis's busiest are drawn on their own; the colors run on from the left's into the right's.
+    const rank = (d: Drawn[], from: number) =>
+      d.map((s, i) => ({ ...s, slot: s.slot === null ? null : from + i }));
+    const l = rank(fold(left, view.top), 0);
+    const r = rank(fold(right, view.top), l.length).map((s) => ({ ...s, right: true }));
+    return [...l, ...r];
+  });
+  let rightUnit = $derived(
+    shown.find((s) => s.right)
+      ? unitOf(metricOf.get(shown.find((s) => s.right)!.name) ?? '')
+      : null,
+  );
+  let rightScale = $derived(
+    rightUnit === 'bytes'
+      ? byteUnit(
+          Math.max(0, ...shown.filter((s) => s.right).flatMap((s) => s.points.map((v) => v ?? 0))),
+        )
+      : { unit: rightUnit === 'seconds' ? 's' : (rightUnit ?? ''), size: 1 },
+  );
+  function amountIn(u: string | null, value: number): string {
+    if (u === 'bytes') return bytes(value);
+    if (u === 'seconds') return `${value.toFixed(value < 10 ? 2 : 0)} s`;
+    return value >= 100 || Number.isInteger(value)
+      ? Math.round(value).toLocaleString()
+      : value.toFixed(2);
+  }
   let previous = $derived(
     before && view.weekBefore
       ? alongside(shown, laidOn(before, answer!, count, WEEK_MINUTES * MINUTE))
@@ -275,7 +353,7 @@
       0,
       ...(totals
         ? Array.from({ length: count }, (_, i) => shown.reduce((a, s) => a + (s.points[i] ?? 0), 0))
-        : shown.flatMap((s) => s.points.map((v) => v ?? 0))),
+        : shown.filter((s) => !s.right).flatMap((s) => s.points.map((v) => v ?? 0))),
     ),
   );
   let scale = $derived(
@@ -293,13 +371,7 @@
   );
 
   /** `value` in the metric's own unit, plain. */
-  function amount(value: number): string {
-    if (unit === 'bytes') return bytes(value);
-    if (unit === 'seconds') return `${value.toFixed(value < 10 ? 2 : 0)} s`;
-    return value >= 100 || Number.isInteger(value)
-      ? Math.round(value).toLocaleString()
-      : value.toFixed(2);
-  }
+  const amount = (value: number) => amountIn(unit, value);
   const rate = (value: number) => `${amount(value)}/s`;
   /** A point's value as drawn: a rate per second for a counter drawn per second. */
   const drawn = (value: number) => (answer?.counter && !totals ? rate(value) : amount(value));
@@ -346,7 +418,14 @@
       const total = totals ? s.total : s.total * pointSeconds;
       return {
         name: s.name,
-        tone: toneOf(rank < view.top || all.length <= view.top ? rank : null),
+        tone: toneOf(
+          view.more.length
+            ? (shown.find((d) => d.name === s.name)?.slot ?? null)
+            : rank < view.top || all.length <= view.top
+              ? rank
+              : null,
+        ),
+        u: unitOf(metricOf.get(s.name) ?? view.metric ?? ''),
         total,
         average: answer?.counter ? total / Math.max(1, count * pointSeconds) : average(values),
         highest: values.length
@@ -385,9 +464,12 @@
     <div class="over">
       {#if shown.length > 1}
         <ul class="legend">
-          {#each shown as s (s.slot ?? -1)}
+          {#each shown as s (`${s.right ? 'r' : ''}${s.slot ?? -1}`)}
             <li>
-              <span class="swatch {toneOf(s.slot)}"></span><span class="mono">{s.name}</span>
+              <span class="swatch {toneOf(s.slot)}"></span><span class="mono">{s.name}</span
+              >{#if s.right}<span class="dim" title="Right-hand axis" aria-label="Right-hand axis"
+                  >→</span
+                >{/if}
             </li>
           {/each}
         </ul>
@@ -409,14 +491,24 @@
     <MetricsChart
       series={shown.map((s) => ({
         ...s,
-        points: s.points.map((v) => (v === null ? null : v / scale.size)),
+        points: s.points.map((v) =>
+          v === null ? null : v / (s.right ? rightScale.size : scale.size),
+        ),
       }))}
+      right={rightUnit === null
+        ? null
+        : {
+            unit: `${rightScale.unit || 'count'}/s`,
+            format: (v: number) => `${amountIn(rightUnit, v * rightScale.size)}/s`,
+          }}
       bars={totals}
       {ticks}
       unit={axisUnit}
       {at}
       format={(v) => drawn(v * scale.size)}
-      previous={previous?.map((p) => p.map((v) => (v === null ? null : v / scale.size))) ?? null}
+      previous={previous?.map((p, k) =>
+        p.map((v) => (v === null ? null : v / (shown[k]?.right ? rightScale.size : scale.size))),
+      ) ?? null}
       {marks}
       label="{view.metric}{view.by
         ? `, by ${labelName(view.by).toLowerCase()}`
@@ -459,11 +551,30 @@
             type="button"
             class="metric-btn"
             aria-haspopup="listbox"
-            aria-expanded={picking}
-            onclick={() => (picking = !picking)}
+            aria-expanded={picking && pickingFor === 0}
+            onclick={() => pick(0)}
             ><span class="mono">{view.metric}</span><span class="caret" aria-hidden="true">▾</span
             ></button
           >
+          {#each view.more as m, k (k)}
+            <span class="more"
+              ><button
+                type="button"
+                class="metric-btn"
+                aria-haspopup="listbox"
+                aria-expanded={picking && pickingFor === k + 1}
+                onclick={() => pick(k + 1)}
+                ><span class="mono">{m}</span><span class="caret" aria-hidden="true">▾</span
+                ></button
+              ><button
+                type="button"
+                class="drop"
+                aria-label="Remove metric {m}"
+                onclick={() => go({ more: view.more.filter((_, j) => j !== k) })}>×</button
+              ></span
+            >
+          {/each}
+          <button type="button" class="chip add" onclick={() => pick('new')}>+ Metric</button>
           {#if picking}
             <div class="pop">
               <!-- svelte-ignore a11y_autofocus -->
@@ -545,7 +656,7 @@
         {/if}
 
         <div class="controls">
-          {#if metric?.counter ?? true}
+          {#if (metric?.counter ?? true) && !view.more.length}
             <Segmented
               label="Draw"
               options={[
@@ -598,9 +709,9 @@
                     <span class="mono">{r.name || 'All'}</span></td
                   >
                   {#if answer.counter}
-                    <td class="num">{amount(r.total)}</td>
-                    <td class="num">{rate(r.average)}</td>
-                    <td class="num">{rate(r.highest)}</td>
+                    <td class="num">{amountIn(r.u, r.total)}</td>
+                    <td class="num">{amountIn(r.u, r.average)}/s</td>
+                    <td class="num">{amountIn(r.u, r.highest)}/s</td>
                   {:else}
                     <td class="num">{amount(r.now)}</td>
                     <td class="num">{amount(r.average)}</td>
@@ -609,7 +720,7 @@
                 </tr>
               {/each}
             </tbody>
-            {#if answer.counter && rows.length > 1}
+            {#if answer.counter && rows.length > 1 && !view.more.length}
               <tfoot
                 ><tr><td>Total</td><td class="num">{amount(sum)}</td><td></td><td></td></tr></tfoot
               >
@@ -662,6 +773,23 @@
 
   .picker {
     position: relative;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    align-items: center;
+  }
+
+  .more {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .drop {
+    border: 0;
+    background: none;
+    color: var(--dim);
+    cursor: pointer;
+    font-size: 1rem;
   }
 
   .metric-btn {

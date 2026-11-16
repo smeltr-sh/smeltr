@@ -17,6 +17,7 @@ describe('metricsView', () => {
     const view = {
       ...DEFAULT_VIEW,
       metric: 'smeltr_bytes_polled_total',
+      more: ['smeltr_rows_polled_total'],
       filter: [['group', 'east']] as [string, string][],
       by: 'source',
       windowMinutes: 1440,

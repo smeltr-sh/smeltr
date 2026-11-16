@@ -5,6 +5,8 @@ import type { SeriesAnswerDto, SeriesDraw } from './api';
 
 export type MetricsView = {
   metric?: string;
+  /** Further metrics drawn on the same chart, each split and filtered alike. */
+  more: string[];
   filter: [string, string][];
   by: string;
   windowMinutes: number;
@@ -19,6 +21,7 @@ export type MetricsView = {
 
 export const DEFAULT_VIEW: MetricsView = {
   metric: 'smeltr_rows_polled_total',
+  more: [],
   filter: [],
   by: '',
   windowMinutes: 60,
@@ -33,6 +36,7 @@ export function viewFromParams(params: URLSearchParams): MetricsView {
   const top = Number(params.get('top'));
   return {
     metric: params.get('metric') || DEFAULT_VIEW.metric,
+    more: params.getAll('metric').slice(1).filter(Boolean),
     filter: (params.get('filter') ?? '')
       .split(',')
       .map((pair) => pair.split(':'))
@@ -49,6 +53,7 @@ export function viewFromParams(params: URLSearchParams): MetricsView {
 function params(v: MetricsView): URLSearchParams {
   const q = new URLSearchParams();
   if (v.metric) q.set('metric', v.metric);
+  for (const m of v.more) q.append('metric', m);
   if (v.filter.length) q.set('filter', v.filter.map(([k, value]) => `${k}:${value}`).join(','));
   if (v.by) q.set('by', v.by);
   q.set('windowMinutes', String(v.windowMinutes));
@@ -108,6 +113,8 @@ export function toneOf(slot: number | null): string {
 
 export type Drawn = {
   name: string;
+  /** Drawn against the right-hand axis: a metric in another unit than the first. */
+  right?: boolean;
   /** Its rank, which also keys it: a split value may itself be named Other; `null` for the series folded into Other. */
   slot: number | null;
   /** One value per point of the window, `null` where nothing landed. */
