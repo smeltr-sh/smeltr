@@ -1415,10 +1415,11 @@ pub(super) fn resolve_starts(
 ///
 /// A reader must never wait on a broker to report lag, and lag must keep updating while a source is blocked or
 /// backpressured -- the states in which librdkafka's own statistics stop refreshing the high watermark, because a
-/// paused or queue-full partition sends no fetches. So the two broker queries stay, and this thread pays for them.
+/// paused or queue-full partition sends no fetches. The high-watermark query is the one broker call lag still needs,
+/// and this thread pays for it.
 ///
 /// ```text
-///   sampler thread ──(every LAG_SAMPLE_INTERVAL)──► committed_offsets, fetch_watermarks ──► each source's slot
+///   sampler thread ──(every LAG_SAMPLE_INTERVAL)──► position, fetch_watermarks ──► each source's slot
 ///                  ──(every TOPIC_LIST_EVERY, while a source names a pattern)──► the cluster's topics ──► Routes
 ///   reader thread  ──(every step)──► KafkaSource::lag: take its slot's
 /// ```
@@ -1519,14 +1520,14 @@ impl Drop for Sampler {
     }
 }
 
-/// A partition and the offset committed on it.
-type Committed = (String, i32, i64);
+/// A partition and the offset this consumer reads next on it.
+type Position = (String, i32, i64);
 
-/// Every assigned partition's lag against the *committed* offset, not the read position: what durable progress each
-/// source can prove, the same coordinate `commit` writes. A blocked or rebalancing source still has committed offsets
-/// and a broker to ask, so this reports through both -- exactly when lag is worth seeing grow. Each source's lag is
-/// handed to it as soon as its own partitions are measured, so a slow broker behind one source does not hold back the
-/// others. Nothing is handed over when the broker did not answer, or once `stopped` turns true.
+/// Every assigned partition's lag against the offset this consumer reads next: how far reading is behind, whatever
+/// the destinations still hold. A blocked or rebalancing source still has a position and a broker to ask, so this
+/// reports through both -- exactly when lag is worth seeing grow. Each source's lag is handed to it as soon as its own
+/// partitions are measured, so a slow broker behind one source does not hold back the others. Nothing is handed over
+/// when the broker did not answer, or once `stopped` turns true.
 ///
 /// Each failure is said at trace; while they go on, `unmeasured` says the latest at debug every
 /// [`crate::logs::RELOG_EVERY`].
@@ -1539,38 +1540,27 @@ fn measure_lag(
 ) {
     // Each failure is said at trace, and at debug when it starts and every RELOG_EVERY while it goes on.
     let mut failed = |why: String| unmeasured.fail_due(why).is_some();
-    let assignment = match consumer.assignment() {
-        Ok(assignment) => assignment,
+    // Each assigned partition's read position, which the client keeps, so no broker call.
+    let positions = match consumer.position() {
+        Ok(positions) => positions,
         Err(e) => {
-            let due = failed(format!("the assignment could not be read: {e}"));
-            crate::debug_when!(due, name: "lag_unmeasured", target: "sources", group = %routes.group(), error = %e, "the assignment could not be read, so lag is not measured this round");
-            return;
-        }
-    };
-    if assignment.elements().is_empty() {
-        return;
-    }
-    // One batched call for every partition's committed offset.
-    let committed = match consumer.committed_offsets(assignment, LAG_QUERY_TIMEOUT) {
-        Ok(committed) => committed,
-        Err(e) => {
-            let due = failed(format!("the committed offsets could not be read: {e}"));
-            crate::debug_when!(due, name: "lag_unmeasured", target: "sources", group = %routes.group(), error = %e, "the committed offsets could not be read, so lag is not measured this round");
+            let due = failed(format!("the consumer's positions could not be fetched: {e}"));
+            crate::debug_when!(due, name: "lag_unmeasured", target: "sources", group = %routes.group(), error = %e, "the consumer's positions could not be fetched, so lag is not measured this round");
             return;
         }
     };
 
-    // Each source's partitions, with the offset committed on each.
-    let mut by_slot: Vec<(Arc<Slot>, Vec<Committed>)> = Vec::new();
-    for elem in committed.elements() {
-        // No durable offset yet on this partition: nothing to measure it against.
-        let Offset::Offset(committed_offset) = elem.offset() else {
+    // Each source's partitions, with the offset read next on each.
+    let mut by_slot: Vec<(Arc<Slot>, Vec<Position>)> = Vec::new();
+    for elem in positions.elements() {
+        // Nothing read yet on this partition: nothing to measure it against.
+        let Offset::Offset(position) = elem.offset() else {
             continue;
         };
         let Some(slot) = routes.slot_for(elem.topic()) else {
             continue;
         };
-        let partition = (elem.topic().to_string(), elem.partition(), committed_offset);
+        let partition = (elem.topic().to_string(), elem.partition(), position);
         match by_slot.iter_mut().find(|(s, _)| Arc::ptr_eq(s, &slot)) {
             Some((_, partitions)) => partitions.push(partition),
             None => by_slot.push((slot, vec![partition])),
@@ -1580,7 +1570,7 @@ fn measure_lag(
     let mut any_failed = false;
     for (slot, partitions) in by_slot {
         let mut lags = Vec::new();
-        for (topic, partition, committed_offset) in partitions {
+        for (topic, partition, position) in partitions {
             // One query per partition, so a dropping client is not made to wait for all of them.
             if stopped() {
                 return;
@@ -1605,7 +1595,7 @@ fn measure_lag(
                 .unwrap_or_else(|| Arc::from(topic.as_str()));
             lags.push(PartitionLag {
                 partition: TopicPartition::new(topic, partition),
-                lag: (high - committed_offset).max(0),
+                lag: (high - position).max(0),
             });
         }
         if !lags.is_empty() {
