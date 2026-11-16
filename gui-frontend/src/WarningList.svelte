@@ -13,7 +13,7 @@
   import {
     lowerSender,
     lowerSourceRows,
-    markSourcePast,
+    markWarning,
     type ApiError,
     type PastSpan,
     type Sender,
@@ -59,7 +59,7 @@
   }
 
   function mark(span: PastSpan, was: 'normal' | 'outage') {
-    change(() => markSourcePast(group, source, span, was, sender));
+    change(() => markWarning(group, source, span.fromMillis, was, sender));
   }
 
   function lower() {

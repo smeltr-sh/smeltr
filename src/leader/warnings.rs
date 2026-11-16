@@ -230,7 +230,7 @@ pub struct Warning {
     /// do. `None` on every other condition.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub crossed_millis: Option<i64>,
-    /// An editor said the period a [`Condition::SourceRowsBelow`] began in was normal (`marks::Period`), so the level
+    /// An editor said this [`Condition::SourceRowsBelow`] was normal (`marks::Marks::normal`), so the level
     /// it reads is being learned, and it ends once it is. False on every other condition.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub said_normal: bool,
@@ -4560,7 +4560,7 @@ mod tests {
         let readings = [reading_of("s", 0.0)];
         let facts = outside_normal_facts(&readings, &snapshot, INTERVAL);
         let marks = Marks {
-            lowered: vec![crate::leader::marks::Lowered {
+            lowered: vec![crate::leader::marks::Mark {
                 sender: None,
                 group: "g".into(),
                 source: "s".into(),
@@ -4621,7 +4621,7 @@ mod tests {
             })
             .collect();
         let marks = Marks {
-            lowered: vec![crate::leader::marks::Lowered {
+            lowered: vec![crate::leader::marks::Mark {
                 sender: Some(sender("action", "deny")),
                 group: "g".into(),
                 source: "s".into(),

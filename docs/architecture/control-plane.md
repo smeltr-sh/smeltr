@@ -393,21 +393,22 @@ from the same normal.
 An editor in the source's worker group may do any of four things about it.
 Lower turns the warning that is up into info until it ends, and it stays on the
 Issues page for everyone. Reset history forgets what the source read before now,
-so it has no normal until it has enough history again. Normal says a period was
-normal, so it is learned though it warned. Outage says a period was an outage,
-so it is not learned though it did not warn. A warning nobody marked is taken
-for an outage, so Outage is what it shows until an editor says Normal. The
-source's History tab on the Map charts its rows against its range, and lists its
-warnings, including the one that is up, and its longest quiet spells of the past
-year; each opens on the rows around it, and each can be marked Normal or Outage.
-It says when a new source is not yet judged, when every day of its week is
-judged alike, and how long the source may go without a row before it warns.
+so it has no normal until it has enough history again. Normal says a warning
+was normal, so it is learned whole. Outage says it was an outage, so it is not
+learned. A warning nobody marked is taken for an outage, so Outage is what it
+shows until an editor says Normal. The source's History tab on the Map charts
+its rows against its range. It lists the source's warnings of the past year,
+including the one that is up, each opening on the rows around it, and the
+source's longest quiet spells, each shown Normal when it is learned and Outage
+when it is not. It says when a new source is not yet judged, when every day of
+its week is judged alike, and how long the source may go without a row before it
+warns.
 The warning that is up can be marked from its row on the Issues page too, beside
-Lower. A mark takes the place of any mark of the source it overlaps. A warning
-marked Normal is learned whole. A window that contains rows marked Normal is
-learned without waiting a width. So marking the warning that is up teaches the
-level the source reads now, and the warning ends once that normal is learned,
-within the hour. The leader keeps each mark, with who made it.
+Lower. A mark names a warning by when it began, as Lower does, so every page
+marks the same warning. A window that contains rows of a warning marked Normal
+is learned without waiting a width. So marking the warning that is up teaches
+the level the source reads now, and the warning ends once that normal is
+learned, within the hour. The leader keeps each mark, with who made it.
 
 A source's senders are judged as the source is. A sender is one value of one
 field of the source's records, such as a firewall's name, or of its stream key
@@ -453,9 +454,9 @@ are back within their range, and ends once all of them are.
 
 An editor in the source's worker group may do to a sender what they do to a
 source, except Reset history: Lower turns one sender's warning to info, and a
-warning all of whose senders were lowered is info; Normal and Outage mark a
-period of one sender. A period marked for the source is marked for each of its
-senders too, and one marked for a sender is marked for that sender only. An
+warning all of whose senders were lowered is info; Normal and Outage mark one
+sender's warning. The senders of a source learn from the time a source warning
+marked Normal was up, as the source does. An
 editor also stops watching a field, or adds one the pick cannot offer, such as
 a number or a nested path. New fields are watched until an editor turns off
 Watch new fields; while it is off, a field that comes later is counted but

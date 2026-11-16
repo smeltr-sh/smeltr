@@ -34,7 +34,6 @@
     errorText,
     getSourcePast,
     getStats,
-    markSourcePast,
     putSourcePreset,
     type ApiError,
     type DeliverEdge,
@@ -50,7 +49,6 @@
   } from './api';
   import { holds } from './access';
   import { Busy } from './busy.svelte';
-  import Segmented from './Segmented.svelte';
   import { dateTime, lasted } from './time';
   import { untrack, type Snippet } from 'svelte';
   import PencilIcon from './PencilIcon.svelte';
@@ -233,11 +231,6 @@
   };
   const SPELLS_HELP =
     "The source's longest quiet spells of the past year. The longest one learned sets how long the source may go without a row before it warns.";
-  /** What an editor in the source's group may say a span was. */
-  const WAS: { value: 'normal' | 'outage'; label: string }[] = [
-    { value: 'normal', label: 'Normal' },
-    { value: 'outage', label: 'Outage' },
-  ];
 
   function readPast() {
     const asked = { group: node.group, id: node.authorId };
@@ -279,15 +272,6 @@
     });
     readPast();
   });
-
-  function mark(span: PastSpan, was: 'normal' | 'outage') {
-    // One mark at a time, each read back before the next, so the list never shows an older answer last.
-    if (marking.on) return;
-    void marking.run(async () => {
-      await markSourcePast(node.group, node.authorId, span, was);
-      await readPast();
-    });
-  }
 
   /** Reads History again after a change its warnings made, saying what the leader refused. */
   async function pastChanged(errors: ApiError[]) {
@@ -924,15 +908,7 @@
               ><span class="nowrap">{when} &middot;</span>
               <span class="nowrap">{lasted(span.toMillis - span.fromMillis)}</span></span
             >
-            {#if holds(node.group, 'editor')}
-              <Segmented
-                label="{heading}: {when}"
-                options={WAS}
-                bind:value={() => (span.learned ? 'normal' : 'outage'), (was) => mark(span, was)}
-              />
-            {:else}
-              <span class="dim small">{span.learned ? 'Normal' : 'Outage'}</span>
-            {/if}
+            <span class="dim small">{span.learned ? 'Normal' : 'Outage'}</span>
           </li>
         {/each}
       </ul>

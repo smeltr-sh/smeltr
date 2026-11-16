@@ -2884,7 +2884,7 @@ export interface WarningDto {
   /** When the senders a `sendersBelow` names went below normal: one source raises it once for each
    * reading senders crossed on. Absent on every other condition. */
   crossedMillis?: number;
-  /** An editor said the period a `sourceRowsBelow` began in was normal, so the level it reads is
+  /** An editor said this `sourceRowsBelow` was normal, so the level it reads is
    * being learned and it ends once it is. Absent on every other condition. */
   saidNormal?: boolean;
 }
@@ -4246,8 +4246,9 @@ export function lowerSourceRows(
 }
 
 /** One span of a source's past year, or a sender's, and whether its normal learns from it
- * (`throughput::PastSpan`). `holds` on the warning that holds, which runs until now, with who
- * lowered it to info. */
+ * (`throughput::PastSpan`): a warning only once an editor said it was normal. A warning's
+ * `fromMillis` is when it began, which names it to `markWarning`. `holds` on the warning that
+ * holds, which runs until now, with who lowered it to info. */
 export type PastSpan = {
   fromMillis: number;
   toMillis: number;
@@ -4270,10 +4271,10 @@ function subjectPath(source: string, sender: Sender | undefined, path: string, q
  * (`throughput::Preset`). */
 export type Preset = 'fast' | 'sensitive' | 'balanced' | 'quiet';
 
-/** What a source, or one of its senders, did over the past year that an editor may say was normal
- * or an outage (`throughput::Past`): its below normal warnings, newest first, and its longest quiet
- * spells, longest first (none for a sender); the preset it is judged at; and, while either is to
- * come, when it is first judged and when its weekdays are told apart. */
+/** A source's, or one of its senders', past year (`throughput::Past`): its below normal warnings,
+ * newest first, which an editor may say were normal, and its longest quiet spells, longest first
+ * (none for a sender); the preset it is judged at; and, while either is to come, when it is first
+ * judged and when its weekdays are told apart. */
 export type SourcePastResponse = {
   ok: boolean;
   errors: ApiError[];
@@ -4295,32 +4296,19 @@ export function getSourcePast(
   return apiJson(inArea(subjectPath(source, sender, 'past'), group));
 }
 
-/** Says a past span of `group`'s `source`, and so of its senders, was normal, so its normal learns
- * from it, or an outage, so it does not; or of one `sender` only. The span ends no later than now. */
-export function markSourcePast(
+/** Says the below normal warning of `group`'s `source`, or of its `sender`, that began at
+ * `sinceMillis` was normal, so its normal learns from it, or an outage, so it does not. */
+export function markWarning(
   group: string,
   source: string,
-  span: { fromMillis: number; toMillis: number },
+  sinceMillis: number,
   was: 'normal' | 'outage',
   sender?: Sender,
 ): Promise<{ ok: boolean; errors: ApiError[] }> {
   return apiJson(
     inArea(subjectPath(source, sender, 'mark'), group),
-    json('POST', { ...sender, fromMillis: span.fromMillis, toMillis: span.toMillis, was }),
+    json('POST', { ...sender, sinceMillis, was }),
   );
-}
-
-/** Says the warning that holds for `group`'s `source`, or for its `sender`, was normal or an outage,
- * over the leader's own span of it, which ends at the leader's now. */
-export async function markHolding(
-  group: string,
-  source: string,
-  was: 'normal' | 'outage',
-  sender?: Sender,
-): Promise<{ ok: boolean; errors: ApiError[] }> {
-  const past = await getSourcePast(group, source, sender);
-  const span = past.ok ? past.warnings.find((w) => w.holds) : undefined;
-  return span ? markSourcePast(group, source, span, was, sender) : past;
 }
 
 /** A source's rows, or a sender's, against its range over a span (`throughput::Chart`): rows per
@@ -4375,8 +4363,10 @@ export type SenderNowDto = {
   low: number | null;
   high: number | null;
   below: boolean;
+  /** When its warning that holds began, which names it to `markWarning`. */
+  sinceMillis: number | null;
   loweredBy: string | null;
-  /** An editor said the period its warning that holds began in was normal. */
+  /** An editor said its warning that holds was normal. */
   saidNormal: boolean;
   /** How many below normal warnings about it held in the last 30 days. */
   warned: number;

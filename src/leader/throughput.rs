@@ -38,9 +38,8 @@
 //! A past window does not count when it shares a bucket with a stop about the source (`warnings::spans`), or with a
 //! window of its width that ended while a below-normal warning held or waited to be raised. A quiet spell does not
 //! count when it shares a bucket with a stop or with such a warning. An outage at this time of day would otherwise set
-//! the range's low edge there, and a source that dropped would come to call the drop normal. An editor may say a past
-//! period was normal, and it is learned though it warned, or an outage, and it is not learned though it did not warn
-//! (`marks::Period`).
+//! the range's low edge there, and a source that dropped would come to call the drop normal. An editor may say a
+//! below-normal warning was normal, and it is learned whole (`marks::Marks::normal`).
 //!
 //! Rows above normal are learned: more rows are the new normal until shown otherwise.
 //!
@@ -219,12 +218,12 @@ pub struct Band {
 }
 
 /// What a normal is learned and judged with: the sources an editor said to learn again from a time on
-/// ([`marks::Reset`]), the past periods an editor said were normal or an outage ([`marks::Period`]), the sender fields
-/// an editor changed ([`marks::SourceFields`]), and the presets an editor picked ([`marks::Picked`]).
+/// ([`marks::Reset`]), the below-normal warnings an editor said were normal ([`marks::Marks::normal`]), the sender
+/// fields an editor changed ([`marks::SourceFields`]), and the presets an editor picked ([`marks::Picked`]).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Learning {
     pub reset: Vec<marks::Reset>,
-    pub periods: Vec<marks::Period>,
+    pub normal: Vec<marks::Mark>,
     pub fields: Vec<marks::SourceFields>,
     pub presets: Vec<marks::Picked>,
 }
@@ -235,7 +234,7 @@ impl Learning {
         let marks = marks::Marks::read(store);
         Learning {
             reset: marks.reset,
-            periods: marks.periods,
+            normal: marks.normal,
             fields: marks.fields,
             presets: marks.presets,
         }
@@ -253,14 +252,10 @@ impl Learning {
             .any(|f| f.group == group && f.edits.source == source && !f.watches(field))
     }
 
-    /// The periods of `group`'s `source`, or of its `sender`, an editor said `was`, as (from, to). What was said of the
-    /// source is said of each of its senders.
-    fn marked(&self, group: &str, source: &str, sender: Option<&Sender>, was: marks::Was) -> Vec<(i64, i64)> {
-        self.periods
-            .iter()
-            .filter(|p| p.was == was && p.of(group, source, sender))
-            .map(|p| (p.from_millis, p.to_millis))
-            .collect()
+    /// Whether an editor said `group`'s `source`'s below-normal warning, or its `sender`'s, that began at
+    /// `since_millis` was normal.
+    fn said_normal(&self, group: &str, source: &str, sender: Option<&Sender>, since_millis: i64) -> bool {
+        marks::marked_by(&self.normal, group, source, sender, Some(since_millis)).is_some()
     }
 
     /// When `group`'s `source` was last said to learn again from, if it was.
@@ -919,17 +914,16 @@ type Spans = Vec<(i64, Option<i64>)>;
 struct Warned {
     /// Each span its source was blocked, refused, waiting or unreachable.
     stops: Spans,
-    /// When its rows teach its normal nothing: while a stop about it held, unless an editor said that period was
-    /// normal; in any period an editor said was an outage; and before an editor reset its history.
+    /// When its rows teach its normal nothing: while a stop about it held, and before an editor reset its history.
     unlearned: Spans,
-    /// Each below-normal warning about it, from the first reading it may have waited for at any preset
-    /// ([`waited_from`]), less the periods an editor said were normal: its preset may have been another when it was
-    /// raised. One raised in such a period is learned whole, so marking one that still holds teaches the level it reads.
+    /// Each below-normal warning about it an editor did not say was normal, from the first reading it may have waited
+    /// for at any preset ([`waited_from`]): its preset may have been another when it was raised.
     below: Spans,
     /// When a below-normal warning about it that still holds began.
     held_since: Option<i64>,
-    /// Each period an editor said was normal.
-    normal: Vec<(i64, Option<i64>)>,
+    /// Each below-normal warning about it an editor said was normal, as [`Self::below`] would hold it. It is learned
+    /// whole, so marking the one that holds teaches the level it reads.
+    normal: Spans,
 }
 
 impl Warned {
@@ -950,8 +944,8 @@ impl Warned {
     }
 
     /// [`Warned::of`] for each of `senders`, each source's warnings read once. A source's below-normal warnings count
-    /// as stops for its senders, as the source's own stops do. What a sender reads while its source reads too little
-    /// says nothing of the sender.
+    /// as stops for its senders, as the source's own stops do, but for those an editor said were normal. What a sender
+    /// reads while its source reads too little says nothing of the sender.
     fn of_senders<'a>(
         store: &RegistryStore,
         senders: impl IntoIterator<Item = &'a SenderKey>,
@@ -966,7 +960,11 @@ impl Warned {
                 let stops = stops.entry((group, source)).or_insert_with(|| {
                     Warned::held(store, group, source, since_ms)
                         .iter()
-                        .filter(|s| s.condition != Condition::SourceRowsAbove)
+                        .filter(|s| match s.condition {
+                            Condition::SourceRowsAbove => false,
+                            Condition::SourceRowsBelow => !learning.said_normal(group, source, None, s.started_millis),
+                            _ => true,
+                        })
                         .map(|s| (s.started_millis, s.ended_millis))
                         .collect()
                 });
@@ -1013,32 +1011,29 @@ impl Warned {
         below: Vec<warnings::WarningSpan>,
         learning: &Learning,
     ) -> Warned {
-        let below = below.iter();
         let reset_from = learning.reset_from(group, source);
         let reset = reset_from.map(|from| (i64::MIN, Some(from)));
-        let normal = learning.marked(group, source, sender, marks::Was::Normal);
-        let outage = learning.marked(group, source, sender, marks::Was::Outage);
-        Warned {
-            // A reset ends the warning: the normal it was judged against is forgotten.
-            held_since: below
-                .clone()
-                .filter(|s| s.ended_millis.is_none() && reset_from.is_none_or(|from| s.started_millis >= from))
-                .map(|s| s.started_millis)
-                .min(),
-            below: less(
-                below
-                    .filter(|s| !normal.iter().any(|&(from, to)| (from..=to).contains(&s.started_millis)))
-                    .map(|s| (waited_from(s, Preset::longest_wait()), s.ended_millis))
-                    .collect(),
-                &normal,
-            ),
-            unlearned: less(stops.clone(), &normal)
+        // A reset ends the warning: the normal it was judged against is forgotten.
+        let held_since = below
+            .iter()
+            .filter(|s| s.ended_millis.is_none() && reset_from.is_none_or(|from| s.started_millis >= from))
+            .map(|s| s.started_millis)
+            .min();
+        let (normal, below): (Vec<_>, Vec<_>) = below
+            .iter()
+            .partition(|s| learning.said_normal(group, source, sender, s.started_millis));
+        let spans = |warnings: Vec<&warnings::WarningSpan>| -> Spans {
+            warnings
                 .into_iter()
-                .chain(outage.into_iter().map(|(from, to)| (from, Some(to))))
-                .chain(reset)
-                .collect(),
+                .map(|s| (waited_from(s, Preset::longest_wait()), s.ended_millis))
+                .collect()
+        };
+        Warned {
+            held_since,
+            below: spans(below),
+            unlearned: stops.iter().copied().chain(reset).collect(),
             stops,
-            normal: normal.into_iter().map(|(from, to)| (from, Some(to))).collect(),
+            normal: spans(normal),
         }
     }
 
@@ -1049,7 +1044,7 @@ impl Warned {
             || Warned::overlaps(&self.below, ended_ms + width_ms, 2 * width_ms)
     }
 
-    /// Whether the window of `width_ms` that ends at `ended_ms` overlaps a period an editor said was normal.
+    /// Whether the window of `width_ms` that ends at `ended_ms` overlaps a warning an editor said was normal.
     fn said_normal(&self, ended_ms: i64, width_ms: i64) -> bool {
         Warned::overlaps(&self.normal, ended_ms, width_ms)
     }
@@ -1078,12 +1073,12 @@ fn waited_from(warning: &warnings::WarningSpan, wait: i64) -> i64 {
 /// How many of a source's longest quiet spells [`past`] lists.
 const LONGEST_LISTED: usize = 10;
 
-/// What a source, or one of its senders, did over the past year that an editor may say was normal or an outage
-/// ([`marks::Period`]), and the preset it is judged at.
+/// A source's, or one of its senders', below-normal warnings over the past year, which an editor may say were normal
+/// ([`marks::Marks::normal`]), its longest quiet spells, and the preset it is judged at.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Past {
-    /// Its below-normal warnings, newest first: each from the first reading it waited for until it ended, or until now
+    /// Its below-normal warnings, newest first: each from when it began, which names it, until it ended, or until now
     /// while it holds.
     pub warnings: Vec<PastSpan>,
     /// Its longest quiet spells, longest first. None for a sender, which the gap does not judge.
@@ -1116,7 +1111,8 @@ impl Default for Past {
     }
 }
 
-/// One span of [`Past`], and whether its source's normal learns from it.
+/// One span of [`Past`], and whether its source's normal learns from it: a warning only once an editor said it was
+/// normal.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PastSpan {
@@ -1126,7 +1122,7 @@ pub struct PastSpan {
     /// It is the warning that holds, and runs until now.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub holds: bool,
-    /// Who lowered it to info, while it holds (`marks::Lowered`).
+    /// Who lowered it to info, while it holds (`marks::Marks::lowered`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lowered_by: Option<String>,
 }
@@ -1173,8 +1169,11 @@ pub fn past(
             .iter()
             .rev()
             .map(|s| PastSpan {
+                from_millis: s.started_millis,
+                to_millis: s.ended_millis.unwrap_or(now_ms),
+                learned: learning.said_normal(group, source, sender, s.started_millis),
                 holds: s.ended_millis.is_none(),
-                ..span(waited_from(s, preset.wait()), s.ended_millis.unwrap_or(now_ms))
+                lowered_by: None,
             })
             .collect(),
         silences: silences
@@ -1186,20 +1185,6 @@ pub fn past(
         judged_from_millis: ahead(MIN_DAYS as i64 * DAY_MS),
         weekdays_from_millis: ahead(weeks),
         quiet_limit_millis: None,
-    })
-}
-
-/// `spans` less the periods `cut`, each (from, to).
-fn less(spans: Vec<(i64, Option<i64>)>, cut: &[(i64, i64)]) -> Vec<(i64, Option<i64>)> {
-    cut.iter().fold(spans, |spans, &(from, to)| {
-        spans
-            .into_iter()
-            .flat_map(|(started, ended)| {
-                let before = (started < from).then(|| (started, Some(ended.map_or(from, |ended| ended.min(from)))));
-                let after = ended.is_none_or(|ended| ended > to).then(|| (started.max(to), ended));
-                before.into_iter().chain(after)
-            })
-            .collect()
     })
 }
 
@@ -1961,40 +1946,56 @@ mod tests {
         }
     }
 
-    /// What an editor said of the period from `from_ms` to [`END`], of the source or of one `sender`.
-    fn said(sender: Option<Sender>, from_ms: i64, was: marks::Was) -> Learning {
+    /// An editor said the below-normal warning of the source, or of one `sender`, that began at `since_ms` was normal.
+    fn said(sender: Option<Sender>, since_ms: i64) -> Learning {
         Learning {
-            periods: vec![marks::Period {
+            normal: vec![marks::Mark {
                 group: "g".into(),
                 source: "s".into(),
                 sender,
-                from_millis: from_ms,
-                to_millis: END - FIVE,
-                was,
+                since_millis: since_ms,
                 by: "John".into(),
             }],
             ..Learning::default()
         }
     }
 
-    /// A period said of a source is said of its senders; one said of a sender, of that sender only. A sender's
-    /// below-normal warning is not learned until a period over it is said to be normal.
+    /// A sender's below-normal warning is not learned until an editor says it was normal, and a mark names one
+    /// warning of one subject, by when it began.
     #[test]
-    fn a_period_said_of_a_source_is_said_of_its_senders_and_one_of_a_sender_of_it_alone() {
+    fn a_senders_warning_said_normal_is_learned_and_no_other_is() {
         let (store, dropped) = two_senders_dropped();
+        let began = dropped + 6 * FIVE;
         let read = |learning: &Learning| sender_readings_at_end(&store, learning);
         let below = Some(Outside::Below);
         let both = BTreeMap::from([("fw-01".into(), below), ("fw-02".into(), below), ("fw-07".into(), None)]);
         assert_eq!(read(&Learning::default()), both);
-        assert_eq!(read(&said(None, dropped - HOUR, marks::Was::Outage)), both);
+        assert_eq!(read(&said(None, began)), both, "a source's mark is its own");
         assert_eq!(
-            read(&said(None, dropped - HOUR, marks::Was::Normal)),
-            BTreeMap::from([("fw-01".into(), None), ("fw-02".into(), None), ("fw-07".into(), None)])
+            read(&said(Some(fw("fw-01")), began + FIVE)),
+            both,
+            "no warning began then"
         );
         assert_eq!(
-            read(&said(Some(fw("fw-01")), dropped - HOUR, marks::Was::Normal)),
+            read(&said(Some(fw("fw-01")), began)),
             BTreeMap::from([("fw-01".into(), None), ("fw-02".into(), below), ("fw-07".into(), None)])
         );
+    }
+
+    /// A source's below-normal warning is a stop for its senders, unless an editor said it was normal.
+    #[test]
+    fn a_sources_warning_said_normal_is_learned_by_its_senders() {
+        let (store, dropped) = two_senders_dropped();
+        warned(&store, "source_rows_below", dropped, Some(dropped + HOUR));
+        let key = ("g".to_string(), "s".to_string(), fw("fw-07"));
+        let stops = |learning: &Learning| {
+            Warned::of_senders(&store, [&key], dropped - DAY_MS, learning)
+                .remove(&key)
+                .unwrap()
+                .stops
+        };
+        assert_eq!(stops(&Learning::default()), [(dropped, Some(dropped + HOUR))]);
+        assert_eq!(stops(&said(None, dropped)), []);
     }
 
     /// A sender's past is its own warnings, at its source's senders' preset, with no quiet spells: the gap does not
@@ -2004,13 +2005,12 @@ mod tests {
         let (store, dropped) = two_senders_dropped();
         let past_of =
             |sender: &str, learning: &Learning| past(&store, "g", "s", Some(&fw(sender)), END, learning).unwrap();
-        let wait = Presets::default().senders.wait();
         let unmarked = past_of("fw-01", &Learning::default());
         assert_eq!(
             (unmarked.warnings, unmarked.silences, unmarked.preset),
             (
                 vec![PastSpan {
-                    from_millis: dropped + 6 * FIVE - wait * FIVE,
+                    from_millis: dropped + 6 * FIVE,
                     to_millis: END,
                     learned: false,
                     holds: true,
@@ -2021,7 +2021,7 @@ mod tests {
             )
         );
         assert!(past_of("fw-07", &Learning::default()).warnings.is_empty());
-        let marked = said(Some(fw("fw-01")), dropped - HOUR, marks::Was::Normal);
+        let marked = said(Some(fw("fw-01")), dropped + 6 * FIVE);
         assert!(past_of("fw-01", &marked).warnings[0].learned);
         assert!(
             !past_of("fw-02", &marked).warnings[0].learned,
@@ -2470,19 +2470,11 @@ mod tests {
                 .unwrap()
                 .warnings[0]
                 .clone();
-            assert_eq!((held.from_millis, held.to_millis, held.learned), (dropped, END, false));
-            let normal = Learning {
-                periods: vec![marks::Period {
-                    group: "g".into(),
-                    source: "s".into(),
-                    sender: None,
-                    from_millis: held.from_millis,
-                    to_millis: held.to_millis,
-                    was: marks::Was::Normal,
-                    by: "John".into(),
-                }],
-                ..Learning::default()
-            };
+            assert_eq!(
+                (held.from_millis, held.to_millis, held.learned),
+                (dropped + 4 * FIVE, END, false)
+            );
+            let normal = said(None, held.from_millis);
             assert_eq!(reading_at(&store, END, &normal).unwrap().outside, None);
             assert!(
                 past(&store, "g", "s", None, END + HOUR, &normal).unwrap().warnings[0].learned,
@@ -2867,22 +2859,14 @@ mod tests {
             reading_at(store, END, learning).unwrap().gap.unwrap().longest_ms
         };
         assert_eq!(longest(&store, &Learning::default()), 107 * FIVE);
-        let (began, ended) = (long - 3 * HOUR + FIVE, long + 6 * HOUR + FIVE);
-        warned(&store, "source_rows_below", long + 3 * HOUR, Some(ended));
+        warned(
+            &store,
+            "source_rows_below",
+            long + 3 * HOUR,
+            Some(long + 6 * HOUR + FIVE),
+        );
         assert_eq!(longest(&store, &Learning::default()), 35 * FIVE);
-        let normal = Learning {
-            periods: vec![marks::Period {
-                group: "g".into(),
-                source: "s".into(),
-                sender: None,
-                from_millis: began,
-                to_millis: ended,
-                was: marks::Was::Normal,
-                by: "John".into(),
-            }],
-            ..Learning::default()
-        };
-        assert_eq!(longest(&store, &normal), 107 * FIVE);
+        assert_eq!(longest(&store, &said(None, long + 3 * HOUR)), 107 * FIVE);
     }
 
     #[test]
@@ -2972,36 +2956,6 @@ mod tests {
     }
 
     #[test]
-    fn a_period_marked_an_outage_is_not_learned_and_one_marked_normal_is() {
-        let (store, outage) = outage_and_stop();
-        let marked = |was| Learning {
-            periods: vec![marks::Period {
-                group: "g".into(),
-                source: "s".into(),
-                sender: None,
-                from_millis: outage,
-                to_millis: outage + 2 * HOUR,
-                was,
-                by: "John".into(),
-            }],
-            ..Learning::default()
-        };
-        let low = |learning: &Learning| reading_at(&store, END, learning).unwrap().judged[0].band.low;
-        assert_eq!(low(&marked(marks::Was::Outage)), 70.0);
-        warned(&store, "source_unreachable", outage, Some(outage + 2 * HOUR));
-        assert_eq!(low(&marked(marks::Was::Normal)), 0.0);
-    }
-
-    #[test]
-    fn a_span_less_periods_keeps_what_lies_outside_them() {
-        let spans = vec![(10, Some(20)), (30, None)];
-        assert_eq!(less(spans.clone(), &[]), spans);
-        assert_eq!(less(spans.clone(), &[(15, 35)]), [(10, Some(15)), (35, None)]);
-        assert_eq!(less(spans.clone(), &[(0, 20), (40, 50)]), [(30, Some(40)), (50, None)]);
-        assert_eq!(less(spans, &[(12, 14)])[..2], [(10, Some(12)), (14, Some(20))]);
-    }
-
-    #[test]
     fn past_lists_the_warnings_and_the_longest_quiet_spells_with_what_is_learned() {
         let store = sparse(35, END - 12 * HOUR);
         reading(&store);
@@ -3020,9 +2974,9 @@ mod tests {
             [
                 PastSpan {
                     holds: true,
-                    ..span(END - HOUR - 4 * FIVE, END)
+                    ..span(END - HOUR, END)
                 },
-                span(END - 9 * DAY_MS - 4 * FIVE, END - 8 * DAY_MS)
+                span(END - 9 * DAY_MS, END - 8 * DAY_MS)
             ],
             "the warning that holds is listed first, and runs until now"
         );

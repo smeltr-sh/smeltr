@@ -22,7 +22,7 @@
     getSourcePast,
     getSourceSenders,
     lowerSender,
-    markHolding,
+    markWarning,
     putSenderFields,
     putSourcePreset,
     type ApiError,
@@ -140,10 +140,10 @@
     if (errors.length > 0) problem = errorText(errors);
   }
 
-  function mark(sender: Sender, was: 'normal' | 'outage') {
+  function mark(sender: Sender, sinceMillis: number, was: 'normal' | 'outage') {
     if (busy.on) return;
     void busy.run(async () => {
-      const answer = await markHolding(group, source, was, sender);
+      const answer = await markWarning(group, source, sinceMillis, was, sender);
       problem = answer.ok ? '' : errorText(answer.errors);
       await read();
     });
@@ -430,13 +430,14 @@
                               onclick={() => lower(f.field, s)}>Lower to info</Button
                             >
                           {/if}
-                          {#if s.below && editor}
+                          {#if s.sinceMillis !== null && editor}
+                            {@const since = s.sinceMillis}
                             <Segmented
                               label="{f.field} {s.value}: the warning that is up"
                               options={WAS}
                               bind:value={
                                 () => (s.saidNormal ? 'normal' : 'outage'),
-                                (was) => mark({ field: f.field, value: s.value }, was)
+                                (was) => mark({ field: f.field, value: s.value }, since, was)
                               }
                             />
                           {/if}

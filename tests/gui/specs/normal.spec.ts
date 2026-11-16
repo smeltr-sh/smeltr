@@ -246,7 +246,7 @@ test('a source that drops below its normal is ranked and warned of, and an edito
   await shoot(admin, '5-reset');
 });
 
-test('an editor says a quiet spell of a sparse source was an outage, and its normal stops learning it', async ({
+test('History lists the quiet spells a sparse source learned, and an editor picks its preset', async ({
   admin,
   api,
   fleet,
@@ -290,18 +290,9 @@ test('an editor says a quiet spell of a sparse source was an outage, and its nor
   await panel.getByRole('link', { name: 'History' }).click();
   // Eight hours and 55 minutes, in whole hours.
   const spell = panel.getByRole('listitem').filter({ hasText: '8 hours' });
-  await expect(spell.getByRole('button', { name: 'Normal' })).toHaveAttribute(
-    'aria-pressed',
-    'true',
-  );
+  await expect(spell).toContainText('Normal');
+  await expect(spell.getByRole('button')).toHaveCount(0);
   await shoot(admin, '6-history');
-  await spell.getByRole('button', { name: 'Outage' }).click();
-  await expect(spell.getByRole('button', { name: 'Outage' })).toHaveAttribute(
-    'aria-pressed',
-    'true',
-  );
-  expect((await api.get(past)).silences[0].learned).toBe(false);
-  await shoot(admin, '7-outage');
 
   // An editor picks the preset the source is judged at: Balanced until one is picked.
   const preset = panel.getByRole('group', { name: 'Preset', exact: true });
@@ -324,10 +315,7 @@ test('an editor says a quiet spell of a sparse source was an outage, and its nor
   const band = admin.getByRole('region', { name: 'edge', exact: true });
   await panel.getByRole('link', { name: 'Widen' }).click();
   await expect(band).toBeHidden();
-  await expect(spell.getByRole('button', { name: 'Outage' })).toHaveAttribute(
-    'aria-pressed',
-    'true',
-  );
+  await expect(spell).toContainText('Normal');
   await shoot(admin, '8-history-wide');
   await admin.keyboard.press('Escape');
   await expect(band).toBeVisible();

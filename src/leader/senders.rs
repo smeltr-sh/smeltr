@@ -455,9 +455,11 @@ pub struct SenderNow {
     pub low: Option<f64>,
     pub high: Option<f64>,
     pub below: bool,
+    /// When its warning that holds began, which names it to a mark (`marks::Mark`).
+    pub since_millis: Option<i64>,
     /// Who lowered its warning that holds to info.
     pub lowered_by: Option<String>,
-    /// An editor said the period its warning that holds began in was normal ([`warnings::Warning::said_normal`]).
+    /// An editor said its warning that holds was normal ([`warnings::Warning::said_normal`]).
     pub said_normal: bool,
     /// How many below-normal warnings about it held in the last [`RECENT_DAYS`] days.
     pub warned: usize,
@@ -571,6 +573,7 @@ impl Now<'_> {
                     low: shown.map(|(_, band)| band.low),
                     high: shown.map(|(_, band)| band.high),
                     below,
+                    since_millis: holds,
                     lowered_by,
                     said_normal,
                     warned: warned.len(),

@@ -763,14 +763,14 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "POST",
         path: "/api/areas/:area/sources/:id/senders/mark",
-        what: "Say a past period of one sender was normal or an outage, as the source's mark does, for that sender only. Replaces what was said about any period of that sender it overlaps. The area is the source's worker group. No query.",
-        body: "{ field: string, value: string, fromMillis: number, toMillis: number, was: 'normal' | 'outage' }",
+        what: "Say one of a sender's Senders below normal warnings was normal or an outage, as the source's mark does, with the body's field and value naming the sender. The area is the source's worker group. No query.",
+        body: "{ field: string, value: string, sinceMillis: number, was: 'normal' | 'outage' }",
     },
     Route {
         method: "POST",
         path: "/api/areas/:area/sources/:id/mark",
-        what: "Say a past period of the source, and of its senders, was normal, so its normal learns from it though it warned, or an outage, so its normal does not though it did not warn. Replaces what was said about any period of the source it overlaps. The area is the source's worker group. No query.",
-        body: "{ fromMillis: number, toMillis: number, was: 'normal' | 'outage' }",
+        what: "Say one of the source's Rows below normal warnings of the past year was normal, so its normal learns from it, or an outage, which is what a warning nobody marked is taken for. sinceMillis names the warning by when it began: its fromMillis in the source's past. A time no warning of the past year began at is refused. The area is the source's worker group. No query.",
+        body: "{ sinceMillis: number, was: 'normal' | 'outage' }",
     },
     Route {
         method: "PUT",

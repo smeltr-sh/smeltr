@@ -20,7 +20,7 @@
   import {
     listWarnings,
     lowerSourceRows,
-    markHolding,
+    markWarning,
     resetSourceHistory,
     setScope,
     conditionLabel,
@@ -252,13 +252,14 @@
                     disabled={marking.on ? BUSY : ''}
                     onclick={() => resetHistory(warning, group)}>Reset history</Button
                   >
-                  {#if warning.condition === 'sourceRowsBelow'}
+                  {#if warning.condition === 'sourceRowsBelow' && warning.sinceMillis !== null}
+                    {@const since = warning.sinceMillis}
                     <Segmented
                       label="{warning.subjectId}: the warning that is up"
                       options={WAS}
                       bind:value={
                         () => (warning.saidNormal ? 'normal' : 'outage'),
-                        (was) => mark(() => markHolding(group, warning.subjectId, was))
+                        (was) => mark(() => markWarning(group, warning.subjectId, since, was))
                       }
                     />
                   {/if}

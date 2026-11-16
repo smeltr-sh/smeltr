@@ -1,18 +1,18 @@
 //! What an editor said about a source, as marks: lower the warning on its rows that holds to info; reset its history,
-//! so its normal is learned again from now; say a past period of it was normal or an outage (`throughput`); pick the
+//! so its normal is learned again from now; say one of its below-normal warnings was normal (`throughput`); pick the
 //! preset it is judged at, and the one its senders are; and say which of its fields name its senders, and lower a
-//! sender's warning to info (`senders`).
+//! sender's warning to info or say it was normal (`senders`).
 //!
-//! A lowered warning stays on the Issues page for everyone, marked as info, and the views that judge health leave
-//! it out. It is named by when it began, so it stays lowered until it ends, and the next one is a warning again.
-//! Nothing is learned from the time it held.
+//! A mark on a warning names it by when it began ([`Mark`]), so every page that shows the warning marks the same one.
+//! A lowered warning stays on the Issues page for everyone, marked as info, and the views that judge health leave it
+//! out. It stays lowered until it ends, and the next one is a warning again.
 //!
 //! A source whose history was reset learns its normal only from what it read after the reset, so it has none, and
 //! does not warn, until it has [`super::throughput::MIN_DAYS`] days of that.
 //!
-//! A period said to be normal is learned from though it warned, and one said to be an outage is not learned from though
-//! it did not warn. The count widths and the gap learn from the same periods. A period of a source is said of its
-//! senders too; one of a sender is said of that sender only.
+//! A below-normal warning is taken for an outage, so nothing is learned from the time it held, until an editor says
+//! it was normal: then it is learned whole, by the count widths and the gap alike. A source's warning said normal is
+//! learned by its senders too.
 //!
 //! All are kept in one setting, with who said each.
 
@@ -37,27 +37,47 @@ pub const MARKS_KEY: &str = "warnings.source_rows_marks";
 #[serde(rename_all = "camelCase")]
 pub struct Marks {
     #[serde(default)]
-    pub lowered: Vec<Lowered>,
+    pub lowered: Vec<Mark>,
     #[serde(default)]
     pub reset: Vec<Reset>,
-    #[serde(default)]
-    pub periods: Vec<Period>,
+    /// The below-normal warnings an editor said were normal.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub normal: Vec<Mark>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<SourceFields>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub presets: Vec<Picked>,
 }
 
-/// A source's rows warning that began at `since_millis`, or one of its sender's, lowered to info by `by`.
+/// What `by` said of a source's rows warning that began at `since_millis`, or of one of its sender's.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Lowered {
+pub struct Mark {
     pub group: String,
     pub source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sender: Option<Sender>,
     pub since_millis: i64,
     pub by: String,
+}
+
+/// Who marked `group`'s `source`'s rows warning, or its `sender`'s, that began at `since_millis`, among `marks`.
+pub(super) fn marked_by<'a>(
+    marks: &'a [Mark],
+    group: &str,
+    source: &str,
+    sender: Option<&Sender>,
+    since_millis: Option<i64>,
+) -> Option<&'a str> {
+    marks
+        .iter()
+        .find(|m| {
+            m.group == group
+                && m.source == source
+                && m.sender.as_ref() == sender
+                && Some(m.since_millis) == since_millis
+        })
+        .map(|m| m.by.as_str())
 }
 
 /// One source's sender fields as an editor changed them: `edits` as its group's workers are sent them, and which fields
@@ -125,29 +145,7 @@ pub struct Reset {
     pub by: String,
 }
 
-/// A past period of a source, or of one of its senders, an editor said was normal or an outage.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Period {
-    pub group: String,
-    pub source: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sender: Option<Sender>,
-    pub from_millis: i64,
-    pub to_millis: i64,
-    pub was: Was,
-    pub by: String,
-}
-
-impl Period {
-    /// Whether this is said of `group`'s `source`, or of its `sender`: a period of the source is said of its senders
-    /// too.
-    pub fn of(&self, group: &str, source: &str, sender: Option<&Sender>) -> bool {
-        self.group == group && self.source == source && self.sender.as_ref().is_none_or(|of| Some(of) == sender)
-    }
-}
-
-/// What an editor said a past period of a source was.
+/// What an editor said a below-normal warning was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Was {
@@ -176,14 +174,10 @@ impl Marks {
         .unwrap_or_default()
     }
 
-    /// Whether an editor said a period of `group`'s `source`, or of its `sender`, that holds `at_millis` was normal: so
-    /// its warning that began then is learned, and ends once that normal is.
-    pub fn said_normal(&self, group: &str, source: &str, sender: Option<&Sender>, at_millis: Option<i64>) -> bool {
-        at_millis.is_some_and(|at| {
-            self.periods.iter().any(|p| {
-                p.was == Was::Normal && p.of(group, source, sender) && (p.from_millis..=p.to_millis).contains(&at)
-            })
-        })
+    /// Whether an editor said `group`'s `source`'s rows warning, or its `sender`'s, that began at `since_millis` was
+    /// normal: so it is learned, and ends once that normal is.
+    pub fn said_normal(&self, group: &str, source: &str, sender: Option<&Sender>, since_millis: Option<i64>) -> bool {
+        marked_by(&self.normal, group, source, sender, since_millis).is_some()
     }
 
     /// Who lowered `group`'s `source`'s rows warning, or its `sender`'s, that began at `since_millis`, if anyone did.
@@ -194,15 +188,7 @@ impl Marks {
         sender: Option<&Sender>,
         since_millis: Option<i64>,
     ) -> Option<&str> {
-        self.lowered
-            .iter()
-            .find(|l| {
-                l.group == group
-                    && l.source == source
-                    && l.sender.as_ref() == sender
-                    && Some(l.since_millis) == since_millis
-            })
-            .map(|l| l.by.as_str())
+        marked_by(&self.lowered, group, source, sender, since_millis)
     }
 
     /// Picks `picking` for `group`'s `source`, by `by`, keeping the preset it does not name.
@@ -234,6 +220,27 @@ impl Marks {
     }
 }
 
+/// `group`'s `source`'s below-normal warnings, or its `sender`'s, that held at or after `since_ms`.
+fn below(
+    state: &AppState,
+    group: &str,
+    source: &str,
+    sender: Option<&Sender>,
+    since_ms: i64,
+) -> Result<Vec<warnings::WarningSpan>, Refusal> {
+    let Some(store) = state.registry.series() else {
+        return Ok(Vec::new());
+    };
+    let spans = match sender {
+        Some(sender) => warnings::sender_spans(store, group, source, sender, since_ms)?,
+        None => warnings::spans(store, SubjectKind::Source, group, source, since_ms)?,
+    };
+    Ok(spans
+        .into_iter()
+        .filter(|s| matches!(s.condition, Condition::SourceRowsBelow | Condition::SendersBelow))
+        .collect())
+}
+
 /// When `group`'s `source`'s rows warning that holds began, or its `sender`'s, if one holds.
 fn holding_since(
     state: &AppState,
@@ -242,18 +249,9 @@ fn holding_since(
     sender: Option<&Sender>,
     now_ms: i64,
 ) -> Result<Option<i64>, Refusal> {
-    let Some(store) = state.registry.series() else {
-        return Ok(None);
-    };
-    let spans = match sender {
-        Some(sender) => warnings::sender_spans(store, group, source, sender, now_ms)?,
-        None => warnings::spans(store, SubjectKind::Source, group, source, now_ms)?,
-    };
-    Ok(spans
+    Ok(below(state, group, source, sender, now_ms)?
         .into_iter()
-        .find(|s| {
-            s.ended_millis.is_none() && matches!(s.condition, Condition::SourceRowsBelow | Condition::SendersBelow)
-        })
+        .find(|s| s.ended_millis.is_none())
         .map(|s| s.started_millis))
 }
 
@@ -270,6 +268,17 @@ struct Marking {
 }
 
 impl Marking {
+    /// A mark by `actor` on its warning that began at `since_millis`.
+    fn mark(&self, since_millis: i64, actor: &Actor) -> Mark {
+        Mark {
+            group: self.group.clone(),
+            source: self.source.clone(),
+            sender: self.sender.clone(),
+            since_millis,
+            by: actor.display_name.clone(),
+        }
+    }
+
     /// What it names, as a refusal says it.
     fn what(&self) -> String {
         match &self.sender {
@@ -362,13 +371,7 @@ fn lowered(marks: &mut Marks, m: &Marking, since: Option<i64>, actor: &Actor, _:
         .lowered_by(&m.group, &m.source, m.sender.as_ref(), Some(since))
         .is_none()
     {
-        marks.lowered.push(Lowered {
-            group: m.group.clone(),
-            source: m.source.clone(),
-            sender: m.sender.clone(),
-            since_millis: since,
-            by: actor.display_name.clone(),
-        });
+        marks.lowered.push(m.mark(since, actor));
     }
     Ok(())
 }
@@ -509,16 +512,15 @@ pub async fn put_preset(
         .await
 }
 
-/// A past period of a source, and what to mark it.
+/// A below-normal warning of a source, by when it began, and what to mark it.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Marked {
-    pub from_millis: i64,
-    pub to_millis: i64,
+    pub since_millis: i64,
     pub was: Was,
 }
 
-/// A past period of one sender of a source, and what to mark it.
+/// A below-normal warning of one sender of a source, and what to mark it.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SenderMarked {
@@ -528,9 +530,8 @@ pub struct SenderMarked {
     pub marked: Marked,
 }
 
-/// `POST /api/areas/:area/sources/:id/mark`: says a past period of the source, and so of its senders, was normal or an
-/// outage, in place of what was said about any period of the source it overlaps. Refused for a period that is empty
-/// or not over.
+/// `POST /api/areas/:area/sources/:id/mark`: says one of the source's below-normal warnings of the past year was
+/// normal or an outage. Refused when none began then.
 pub async fn mark(
     State(state): State<AppState>,
     actor: Option<axum::Extension<Actor>>,
@@ -543,14 +544,10 @@ pub async fn mark(
         sender: None,
         action: "source-rows-mark",
     };
-    marking
-        .write(state, actor, move |marks, m, _, actor, now_ms| {
-            marks.mark(m, &marked, actor, now_ms)
-        })
-        .await
+    marking.write_mark(state, actor, marked).await
 }
 
-/// `POST /api/areas/:area/sources/:id/senders/mark`: [`mark`] for one sender of the source, and only that sender.
+/// `POST /api/areas/:area/sources/:id/senders/mark`: [`mark`] for one sender of the source.
 pub async fn mark_sender(
     State(state): State<AppState>,
     actor: Option<axum::Extension<Actor>>,
@@ -563,43 +560,44 @@ pub async fn mark_sender(
         sender: Some(sender),
         action: "sender-rows-mark",
     };
-    marking
-        .write(state, actor, move |marks, m, _, actor, now_ms| {
-            marks.mark(m, &marked, actor, now_ms)
+    marking.write_mark(state, actor, marked).await
+}
+
+impl Marking {
+    /// Writes `marked`, once it names one of the warnings of the past year of what this marks.
+    async fn write_mark(self, state: AppState, actor: Option<axum::Extension<Actor>>, marked: Marked) -> Envelope {
+        let read = state.clone();
+        self.write(state, actor, move |marks, m, _, actor, now_ms| {
+            let began = below(&read, &m.group, &m.source, m.sender.as_ref(), now_ms - YEAR_MS)?
+                .iter()
+                .any(|s| s.started_millis == marked.since_millis);
+            if !began {
+                return Err(Refusal::not_found(format!(
+                    "{} in {} has no warning of the past year that began then",
+                    m.what(),
+                    m.group
+                )));
+            }
+            marks.said(m, &marked, actor, now_ms);
+            Ok(())
         })
         .await
+    }
 }
 
 impl Marks {
-    /// Says what `m` names was what `marked` says, by `actor`, in place of what was said about any period of it that
-    /// overlaps: one warning is marked from the Issues page and from History, each with its own end.
-    fn mark(&mut self, m: &Marking, marked: &Marked, actor: &Actor, now_ms: i64) -> Result<(), Refusal> {
-        if marked.from_millis >= marked.to_millis || marked.to_millis > now_ms {
-            return Err(Refusal::invalid(format!(
-                "{} in {}: a period to mark must end after it begins, and must be over",
-                m.what(),
-                m.group
-            )));
+    /// Says what `m` names was what `marked` says, by `actor`: Normal keeps a mark, and Outage, what a warning nobody
+    /// marked is taken for, takes it back.
+    fn said(&mut self, m: &Marking, marked: &Marked, actor: &Actor, now_ms: i64) {
+        // A warning past a year is past what any normal learns from.
+        self.normal.retain(|n| {
+            n.since_millis >= now_ms - YEAR_MS
+                && (&n.group, &n.source, &n.sender, n.since_millis)
+                    != (&m.group, &m.source, &m.sender, marked.since_millis)
+        });
+        if marked.was == Was::Normal {
+            self.normal.push(m.mark(marked.since_millis, actor));
         }
-        // A period past a year is past what any normal learns from.
-        self.periods.retain(|p| {
-            p.to_millis >= now_ms - YEAR_MS
-                && !(p.group == m.group
-                    && p.source == m.source
-                    && p.sender == m.sender
-                    && p.from_millis < marked.to_millis
-                    && marked.from_millis < p.to_millis)
-        });
-        self.periods.push(Period {
-            group: m.group.clone(),
-            source: m.source.clone(),
-            sender: m.sender.clone(),
-            from_millis: marked.from_millis,
-            to_millis: marked.to_millis,
-            was: marked.was,
-            by: actor.display_name.clone(),
-        });
-        Ok(())
     }
 }
 
@@ -716,7 +714,7 @@ mod tests {
     #[test]
     fn a_lowered_warning_is_named_by_when_it_began() {
         let marks = Marks {
-            lowered: vec![Lowered {
+            lowered: vec![Mark {
                 group: "g".into(),
                 source: "s".into(),
                 sender: None,
@@ -802,10 +800,9 @@ mod tests {
         assert_eq!(marks.presets, []);
     }
 
-    /// A mark takes the place of what was said of any period of the same source, or the same sender, it overlaps, and
-    /// of nothing else.
+    /// Normal marks one warning of one subject, and Outage takes the mark back.
     #[test]
-    fn a_mark_replaces_the_marks_it_overlaps_of_the_same_subject() {
+    fn normal_marks_one_warning_and_outage_takes_it_back() {
         let fw = Sender {
             field: "devname".into(),
             value: "fw-01".into(),
@@ -816,56 +813,25 @@ mod tests {
             sender,
             action: "test",
         };
-        let marked = |from_millis, to_millis, was| Marked {
-            from_millis,
-            to_millis,
-            was,
-        };
+        let marked = |since_millis, was| Marked { since_millis, was };
         let now = YEAR_MS;
         let mut marks = Marks::default();
         let john = Actor::system();
-        marks.mark(&of(None), &marked(10, 20, Was::Normal), &john, now).unwrap();
-        marks
-            .mark(&of(Some(fw.clone())), &marked(10, 20, Was::Normal), &john, now)
-            .unwrap();
-        marks.mark(&of(None), &marked(30, 40, Was::Normal), &john, now).unwrap();
-        marks.mark(&of(None), &marked(15, 25, Was::Outage), &john, now).unwrap();
-        let said: Vec<_> = marks
-            .periods
-            .iter()
-            .map(|p| (p.sender.is_some(), p.from_millis, p.was))
-            .collect();
-        assert_eq!(
-            said,
-            [
-                (true, 10, Was::Normal),
-                (false, 30, Was::Normal),
-                (false, 15, Was::Outage)
-            ],
-            "the source's 10..20 is replaced; its sender's and its 30..40 are not"
-        );
-        assert!(marks.said_normal("g", "s", None, Some(30)));
+        marks.said(&of(None), &marked(10, Was::Normal), &john, now);
+        marks.said(&of(Some(fw.clone())), &marked(30, Was::Normal), &john, now);
+        assert!(marks.said_normal("g", "s", None, Some(10)));
+        assert!(!marks.said_normal("g", "s", None, Some(11)), "the next one is not");
         assert!(
-            marks.said_normal("g", "s", Some(&fw), Some(30)),
-            "a source's period is said of its senders"
+            !marks.said_normal("g", "s", Some(&fw), Some(10)),
+            "a sender's warnings are its own"
         );
-        assert!(marks.said_normal("g", "s", Some(&fw), Some(12)));
-        assert!(
-            !marks.said_normal("g", "s", None, Some(12)),
-            "a sender's period is its own"
-        );
-        assert!(!marks.said_normal("g", "s", None, Some(20)), "an outage");
-        assert!(!marks.said_normal("g", "s", None, None));
-        assert!(
-            marks
-                .mark(&of(None), &marked(5, now + 1, Was::Normal), &john, now)
-                .is_err(),
-            "not over"
-        );
-        assert!(
-            marks.mark(&of(None), &marked(5, 5, Was::Normal), &john, now).is_err(),
-            "empty"
-        );
+        assert!(marks.said_normal("g", "s", Some(&fw), Some(30)));
+        assert!(!marks.said_normal("g", "s", None, Some(30)));
+        marks.said(&of(None), &marked(10, Was::Normal), &john, now);
+        assert_eq!(marks.normal.len(), 2, "marked twice, kept once");
+        marks.said(&of(None), &marked(10, Was::Outage), &john, now);
+        assert!(!marks.said_normal("g", "s", None, Some(10)));
+        assert!(marks.said_normal("g", "s", Some(&fw), Some(30)));
     }
 
     #[test]
@@ -880,13 +846,11 @@ mod tests {
                 from_millis: 7,
                 by: "John".into(),
             }],
-            periods: vec![Period {
+            normal: vec![Mark {
                 group: "g".into(),
                 source: "s".into(),
                 sender: None,
-                from_millis: 3,
-                to_millis: 5,
-                was: Was::Outage,
+                since_millis: 3,
                 by: "John".into(),
             }],
             ..Marks::default()
