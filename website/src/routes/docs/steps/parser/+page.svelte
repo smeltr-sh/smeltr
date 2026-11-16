@@ -98,8 +98,8 @@
   <p>
     Text the format cannot read raises an <a href="#unparsable"><code>Unparsable</code> exception</a
     >, and a value that does not convert to its type raises <code>UnparsableField</code>. A field
-    takes its type from the step when you declare it, else from a schema the pipeline produces. A
-    JSON or Key/value field with neither keeps the value it arrived with.
+    you declare has the type you give it. A field you don't declare takes its type from the schemas
+    your pipeline produces, and arrives unchanged if none of them lists it.
   </p>
   <p>
     A Parser step can have a filter or sit inside an If step's branches. Records it skips keep their
@@ -113,8 +113,7 @@
     <code>{'{"status":200,}'}</code>; it does not support other JSON5 extensions.
   </p>
   <p>
-    Fields you do not declare pass through to the output, converted to the type a produced schema
-    gives them where one does. Nested fields use dots:
+    Fields you do not declare pass through to the output. Nested fields use dots:
     <code>event.dataset</code> is the field <code>dataset</code> inside the object
     <code>event</code>. To declare an object, choose the type <code>object</code> and list its
     fields. A closed object keeps only the fields you list and drops its other fields; turn on
