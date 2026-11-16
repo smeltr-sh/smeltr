@@ -11,6 +11,10 @@ export type MetricsView = {
   draw: SeriesDraw;
   /** How many of the busiest series are drawn on their own; the rest add up to Other. */
   top: number;
+  /** Deploys and issues marked on the chart. */
+  marks: boolean;
+  /** The same window a week before, drawn faint behind it. */
+  weekBefore: boolean;
 };
 
 export const DEFAULT_VIEW: MetricsView = {
@@ -20,6 +24,8 @@ export const DEFAULT_VIEW: MetricsView = {
   windowMinutes: 60,
   draw: 'perSecond',
   top: 5,
+  marks: false,
+  weekBefore: false,
 };
 
 export function viewFromParams(params: URLSearchParams): MetricsView {
@@ -35,6 +41,8 @@ export function viewFromParams(params: URLSearchParams): MetricsView {
     windowMinutes: Number.isFinite(minutes) && minutes > 0 ? minutes : DEFAULT_VIEW.windowMinutes,
     draw: params.get('draw') === 'totals' ? 'totals' : 'perSecond',
     top: Number.isInteger(top) && top > 0 ? top : DEFAULT_VIEW.top,
+    marks: params.get('marks') === '1',
+    weekBefore: params.get('weekBefore') === '1',
   };
 }
 
@@ -46,6 +54,8 @@ function params(v: MetricsView): URLSearchParams {
   q.set('windowMinutes', String(v.windowMinutes));
   if (v.draw === 'totals') q.set('draw', 'totals');
   if (v.top !== DEFAULT_VIEW.top) q.set('top', String(v.top));
+  if (v.marks) q.set('marks', '1');
+  if (v.weekBefore) q.set('weekBefore', '1');
   return q;
 }
 
@@ -53,8 +63,12 @@ export function toHash(v: MetricsView): string {
   return `#/status/metrics?${params(v)}`;
 }
 
-/** The query `GET /api/series` takes for `v`, with the reader's clock, so hours and days start where theirs do. */
-export function seriesQuery(v: MetricsView, utcOffsetMinutes: number): string {
+/** A week, in minutes: how far back the comparison line reads. */
+export const WEEK_MINUTES = 7 * 24 * 60;
+
+/** The query `GET /api/series` takes for `v`, with the reader's clock, so hours and days start where theirs do, and
+ * its window ending `agoMinutes` before now. */
+export function seriesQuery(v: MetricsView, utcOffsetMinutes: number, agoMinutes = 0): string {
   const q = new URLSearchParams({
     metric: v.metric ?? '',
     filter: v.filter.map(([k, value]) => `${k}:${value}`).join(','),
@@ -63,6 +77,7 @@ export function seriesQuery(v: MetricsView, utcOffsetMinutes: number): string {
     draw: v.draw,
     utcOffsetMinutes: String(utcOffsetMinutes),
   });
+  if (agoMinutes) q.set('agoMinutes', String(agoMinutes));
   return q.toString();
 }
 
@@ -119,6 +134,27 @@ export function onGrid(answer: SeriesAnswerDto, count: number): Drawn[] {
     .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name))
     .map((s, i) => ({ ...s, slot: i }));
 }
+
+/** What `before` held for each of `shown`, point by point: the series of the same name, and for Other every series
+ * of `before` that is not one of `shown`'s own. `null` where it held nothing. */
+export function alongside(shown: Drawn[], before: Drawn[]): (number | null)[][] {
+  const named = new Set(shown.filter((s) => s.slot !== null).map((s) => s.name));
+  return shown.map((s) => {
+    const from =
+      s.slot === null
+        ? before.filter((b) => !named.has(b.name))
+        : before.filter((b) => b.name === s.name);
+    const count = s.points.length;
+    return Array.from({ length: count }, (_, i) =>
+      from.some((b) => (b.points[i] ?? null) !== null)
+        ? from.reduce((a, b) => a + (b.points[i] ?? 0), 0)
+        : null,
+    );
+  });
+}
+
+/** A deploy on the chart at fractional point `i`, or an issue from `i` until `end`. */
+export type Mark = { i: number; end?: number; kind: 'deploy' | 'issue'; text: string };
 
 /** The `top` busiest of `all` and, when there are more, one Other that adds the rest up. */
 export function fold(all: Drawn[], top: number): Drawn[] {

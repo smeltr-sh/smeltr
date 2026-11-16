@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_VIEW,
+  alongside,
   described,
   fold,
   onGrid,
@@ -39,6 +40,21 @@ describe('metricsView', () => {
       'series-0',
       'series-1',
       'series-other',
+    ]);
+  });
+
+  it('lays the week before beside each series, and adds up Other from what is not drawn on its own', () => {
+    const drawn = (name: string, slot: number | null, points: (number | null)[]) => ({
+      name,
+      slot,
+      points,
+      total: 0,
+    });
+    const shown = [drawn('a', 0, [1, 1]), drawn('Other', null, [1, 1])];
+    const before = [drawn('a', 0, [5, null]), drawn('b', 1, [2, null]), drawn('c', 2, [3, 4])];
+    expect(alongside(shown, before)).toEqual([
+      [5, null],
+      [5, 4],
     ]);
   });
 

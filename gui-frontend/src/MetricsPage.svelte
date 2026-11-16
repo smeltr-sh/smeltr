@@ -8,14 +8,25 @@
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
   import Segmented from './Segmented.svelte';
+  import Toggle from './Toggle.svelte';
   import SortButton from './SortButton.svelte';
   import MetricsChart from './MetricsChart.svelte';
   import { TableSort } from './sort.svelte';
   import { byteUnit, bytes } from './bytes';
   import { FLOW_WINDOWS } from './flow';
   import { clockTime } from './time';
-  import { getSeries, getSeriesMetrics, type SeriesAnswerDto, type StoredMetricDto } from './api';
   import {
+    getLogs,
+    getSeries,
+    getSeriesMetrics,
+    history,
+    type LogRowDto,
+    type SeriesAnswerDto,
+    type StoredMetricDto,
+  } from './api';
+  import {
+    WEEK_MINUTES,
+    alongside,
     described,
     fold,
     onGrid,
@@ -23,6 +34,7 @@
     toHash,
     toneOf,
     unitOf,
+    type Mark,
     type MetricsView,
   } from './metricsView';
 
@@ -38,6 +50,10 @@
 
   let metrics = $state<StoredMetricDto[] | null>(null);
   let answer = $state<SeriesAnswerDto | null>(null);
+  /** The same question a week before, while the view asks for it. */
+  let before = $state<SeriesAnswerDto | null>(null);
+  /** Deploys and issue beginnings since the window's start, at their times, while the view asks for them. */
+  let happened = $state<{ at: number; until?: number; kind: Mark['kind']; text: string }[]>([]);
   let fetchedAt = $state(Date.now());
   let failed = $state<string | null>(null);
 
@@ -53,10 +69,17 @@
   async function read(asked: MetricsView) {
     readMetrics();
     try {
-      const got = await getSeries(seriesQuery(asked, -new Date().getTimezoneOffset()));
+      const offset = -new Date().getTimezoneOffset();
+      const [got, then, marks] = await Promise.all([
+        getSeries(seriesQuery(asked, offset)),
+        asked.weekBefore ? getSeries(seriesQuery(asked, offset, WEEK_MINUTES)) : null,
+        asked.marks ? readMarks(asked.windowMinutes) : [],
+      ]);
       // A slow answer to an older question must not land over the newer one's.
       if (asked === view) {
         answer = got;
+        before = then;
+        happened = marks;
         fetchedAt = Date.now();
         failed = null;
       }
@@ -67,6 +90,77 @@
   $effect(() => {
     read(view);
   });
+
+  /** The deploys on `main` over the last `minutes`, and the issues that held in them, each from when it began until
+   * it cleared or until now. */
+  async function readMarks(minutes: number) {
+    const now = Date.now();
+    const since = now - minutes * MINUTE;
+    const lines = (type: string) =>
+      getLogs(
+        new URLSearchParams({
+          type,
+          typeExact: 'true',
+          sinceMillis: String(since),
+          limit: '1000',
+        }).toString(),
+      );
+    const [main, began, cleared] = await Promise.all([
+      history(200),
+      lines('began'),
+      lines('cleared'),
+    ]);
+    // A cleared line names when its issue began, so an issue that began before the window still shows from its start.
+    const issues = new Map<string, { at: number; until?: number; name: string; group: string }>();
+    const key = (r: LogRowDto, at: number) => `${issueName(r.fields)}|${r.group ?? ''}|${at}`;
+    for (const r of began.rows) {
+      issues.set(key(r, r.atMillis), {
+        at: r.atMillis,
+        name: issueName(r.fields),
+        group: r.group ?? '',
+      });
+    }
+    for (const r of cleared.rows) {
+      const at = Number(field(r.fields, 'began_ms')) || r.atMillis;
+      issues.set(key(r, at), {
+        at,
+        until: r.atMillis,
+        name: issueName(r.fields),
+        group: r.group ?? '',
+      });
+    }
+    const time = (t: number) =>
+      minutes > 24 * 60 ? `${day(t, { weekday: 'short' })} ${clockTime(t)}` : clockTime(t);
+    return [
+      ...[...issues.values()].map((it) => ({
+        at: it.at,
+        until: it.until ?? now,
+        kind: 'issue' as const,
+        text: `▲ ${it.name}${it.group ? `, group ${it.group}` : ''}, ${
+          it.until === undefined
+            ? `since ${time(it.at)}`
+            : `${time(it.at)}–${new Date(it.at).toDateString() === new Date(it.until).toDateString() ? clockTime(it.until) : time(it.until)}`
+        }`,
+      })),
+      ...main.commits
+        .filter((c) => c.deployer && c.time * 1000 >= since)
+        .map((c) => ({
+          at: c.time * 1000,
+          kind: 'deploy' as const,
+          text: `◆ Deployed: ${c.subject}`,
+        })),
+    ];
+  }
+  /** Field `name` of a log line's `fields`, or empty. */
+  function field(fields: unknown[], name: string): string {
+    const found = (fields as [string, { value?: unknown }][]).find(([k]) => k === name);
+    return found?.[1]?.value ? String(found[1].value) : '';
+  }
+  /** An issue's log line's `issue`, and its `subject` where it has one. */
+  function issueName(fields: unknown[]): string {
+    const subject = field(fields, 'subject');
+    return `${field(fields, 'issue') || 'An issue'}${subject ? `: ${subject}` : ''}`;
+  }
   const timer = setInterval(() => read(view), REFRESH_MS);
   onDestroy(() => clearInterval(timer));
 
@@ -138,6 +232,26 @@
   );
   let all = $derived(answer ? onGrid(answer, count) : []);
   let shown = $derived(fold(all, view.top));
+  let previous = $derived(
+    before && view.weekBefore ? alongside(shown, onGrid(before, count)) : null,
+  );
+  let marks = $derived(
+    view.marks && answer
+      ? happened
+          .map((h) => ({
+            i: (h.at - answer!.fromMillis) / answer!.pointMillis,
+            end:
+              h.until === undefined
+                ? undefined
+                : (h.until - answer!.fromMillis) / answer!.pointMillis,
+            kind: h.kind,
+            text: h.text,
+          }))
+          // An issue that began before the window shows from its first point.
+          .map((m) => (m.end !== undefined ? { ...m, i: Math.max(0, m.i) } : m))
+          .filter((m) => m.i >= 0 && m.i < count && (m.end === undefined || m.end >= 0))
+      : null,
+  );
   let unit = $derived(unitOf(view.metric ?? ''));
   let pointSeconds = $derived((answer?.pointMillis ?? 1000) / 1000);
   let largest = $derived(
@@ -325,24 +439,24 @@
           {#each labels as l (l)}<option value={l}>{labelName(l)}</option>{/each}
         </select></label
       >
+      {#if view.by && all.length > 1}
+        <label class="split"
+          ><span class="dim">Top</span>
+          <input
+            class="top"
+            type="number"
+            min="1"
+            step="1"
+            value={view.top}
+            onchange={(e) => {
+              const top = e.currentTarget.valueAsNumber;
+              if (Number.isInteger(top) && top > 0) go({ top });
+            }}
+          /></label
+        >
+      {/if}
 
       <div class="controls">
-        {#if all.length > 1}
-          <label class="split"
-            ><span class="dim">Top</span>
-            <input
-              class="top"
-              type="number"
-              min="1"
-              step="1"
-              value={view.top}
-              onchange={(e) => {
-                const top = e.currentTarget.valueAsNumber;
-                if (Number.isInteger(top) && top > 0) go({ top });
-              }}
-            /></label
-          >
-        {/if}
         {#if metric?.counter ?? true}
           <Segmented
             label="Draw"
@@ -370,15 +484,28 @@
     {:else if all.length === 0}
       <p class="empty">Nothing recorded in this window yet.</p>
     {:else}
-      {#if shown.length > 1}
-        <ul class="legend">
-          {#each shown as s (s.name)}
-            <li>
-              <span class="swatch {toneOf(s.slot)}"></span><span class="mono">{s.name}</span>
-            </li>
-          {/each}
-        </ul>
-      {/if}
+      <div class="over">
+        {#if shown.length > 1}
+          <ul class="legend">
+            {#each shown as s (s.name)}
+              <li>
+                <span class="swatch {toneOf(s.slot)}"></span><span class="mono">{s.name}</span>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+        <div class="switches">
+          <label
+            ><Toggle checked={view.marks} onchange={() => go({ marks: !view.marks })} /> Deploys and issues</label
+          >
+          <label
+            ><Toggle
+              checked={view.weekBefore}
+              onchange={() => go({ weekBefore: !view.weekBefore })}
+            /> A week before</label
+          >
+        </div>
+      </div>
       <MetricsChart
         series={shown.map((s) => ({
           ...s,
@@ -389,6 +516,8 @@
         unit={axisUnit}
         {at}
         format={(v) => drawn(v * scale.size)}
+        previous={previous?.map((p) => p.map((v) => (v === null ? null : v / scale.size))) ?? null}
+        {marks}
         label="{view.metric}{view.by
           ? `, by ${labelName(view.by).toLowerCase()}`
           : ''}, over the chosen window"
@@ -590,11 +719,34 @@
     color: var(--dim);
   }
 
+  .over {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1.5rem;
+    align-items: center;
+    margin: 0 0 0.4rem;
+  }
+
+  .switches {
+    display: flex;
+    gap: 1.2rem;
+    margin-left: auto;
+    color: var(--dim);
+    font-size: var(--text-label);
+  }
+
+  .switches label {
+    display: inline-flex;
+    gap: 0.4rem;
+    align-items: center;
+    cursor: pointer;
+  }
+
   .legend {
     display: flex;
     flex-wrap: wrap;
     gap: 0.3rem 1rem;
-    margin: 0 0 0.4rem;
+    margin: 0;
     padding: 0;
     list-style: none;
     font-size: var(--text-body);

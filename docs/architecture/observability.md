@@ -366,7 +366,8 @@ The leader keeps each counter and gauge a source, destination or pipeline
 names as a series for thirty days, finer for the recent past and coarser for
 the old (`leader::series`). Any one of them can be asked of over a window:
 narrowed by its labels, split by one, and drawn per second or as what each
-minute, hour or day added up to on the reader's clock (`GET /api/series`).
+minute, hour or day added up to on the reader's clock, and over the same
+window a week before (`GET /api/series`).
 The Status page's chart and the Metrics page read it, and the agent links a
 person to the view that answers their question. A reader sees only the groups
 it views.

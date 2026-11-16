@@ -8,7 +8,7 @@
 -->
 <script lang="ts">
   import { axisLabel, axisStep, axisTop, axisValues } from './flowChart';
-  import { toneOf, type Drawn } from './metricsView';
+  import { toneOf, type Drawn, type Mark } from './metricsView';
 
   let {
     series,
@@ -18,6 +18,8 @@
     at,
     format,
     label,
+    previous = null,
+    marks = null,
   }: {
     series: Drawn[];
     /** Stacked bars of totals rather than lines. */
@@ -31,6 +33,10 @@
     format: (value: number) => string;
     /** What the chart shows, for a screen reader. */
     label: string;
+    /** Each series' points a week before, drawn faint behind it; `null` draws none. */
+    previous?: (number | null)[][] | null;
+    /** Deploys and issues, in a strip above the plot; `null` draws no strip. */
+    marks?: Mark[] | null;
   } = $props();
 
   const PLOT = 240;
@@ -39,15 +45,29 @@
   /** A monospace glyph at `--text-micro`, and the gap from the labels to the plot. */
   const GLYPH = 7.5;
   const TICK_GAP = 8;
+  /** The strip above the plot the marks stand in. */
+  const STRIP = 16;
 
   let width = $state(0);
   let count = $derived(Math.max(0, ...series.map((s) => s.points.length)));
   const stacked = (i: number) => series.reduce((a, s) => a + (s.points[i] ?? 0), 0);
+  /** Last week's bars, stacked: one line across their tops. */
+  const stackedBefore = (i: number) =>
+    previous?.some((p) => (p[i] ?? null) !== null)
+      ? previous.reduce((a, p) => a + (p[i] ?? 0), 0)
+      : null;
   let max = $derived(
     bars
-      ? Math.max(0, ...Array.from({ length: count }, (_, i) => stacked(i)))
-      : Math.max(0, ...series.flatMap((s) => s.points.map((v) => v ?? 0))),
+      ? Math.max(
+          0,
+          ...Array.from({ length: count }, (_, i) => Math.max(stacked(i), stackedBefore(i) ?? 0)),
+        )
+      : Math.max(
+          0,
+          ...[...series.map((s) => s.points), ...(previous ?? [])].flat().map((v) => v ?? 0),
+        ),
   );
+  let top0 = $derived(marks ? STRIP : 0);
   let top = $derived(axisTop(max));
   let step = $derived(axisStep(max));
   let grid = $derived(axisValues(max).map((v) => ({ v, label: axisLabel(v, step) })));
@@ -90,19 +110,51 @@
     const i = bars ? Math.floor(x / slotW) : Math.round((x / plotW) * (count - 1));
     hover = i >= 0 && i < count ? i : null;
   }
+  /** The marks in point `i`'s span. */
+  /** How wide a point is, in pixels. */
+  let pointW = $derived(bars ? slotW : count > 1 ? plotW / (count - 1) : plotW);
+  const xAt = (i: number) => (bars ? xBar(0) : xLine(0)) + i * pointW;
+  const markX = (m: Mark) => xAt(m.i);
+  /** The marks the pointer at point `i` is on: an issue it is within, or a deploy within a few pixels, so a deploy
+   * narrower than a point is not missed. */
+  const marksAt = (i: number) => {
+    const reach = Math.max(bars ? 0 : 0.5, 6 / (pointW || 1));
+    const at = bars ? i + 0.5 : i;
+    const half = bars ? 0.5 : 0;
+    return (marks ?? []).filter((m) =>
+      m.end !== undefined
+        ? m.i <= at + half && m.end >= at - half
+        : Math.abs(m.i - at) <= Math.max(reach, half),
+    );
+  };
+  /** Last week's bar tops as one stepped line, broken where it held nothing. */
+  let beforeSteps = $derived.by(() => {
+    let d = '';
+    for (let i = 0; i < count; i++) {
+      const v = stackedBefore(i);
+      if (v !== null) d += `M${xBar(i).toFixed(1)} ${y(v).toFixed(1)} h${slotW.toFixed(1)} `;
+    }
+    return d;
+  });
+
   let hoverX = $derived(hover === null ? null : bars ? xBar(hover) + slotW / 2 : xLine(hover));
   let tip = $derived(
     hover === null
       ? []
       : series
-          .map((s) => ({ s, v: s.points[hover!] ?? null }))
+          .map((s, k) => ({ s, v: s.points[hover!] ?? null, was: previous?.[k]?.[hover!] ?? null }))
           .sort((a, b) => (b.v ?? -1) - (a.v ?? -1)),
   );
 </script>
 
 <div class="metrics-chart" bind:clientWidth={width}>
   {#if plotW > 1}
-    <svg viewBox="0 0 {width} {PLOT + AXIS}" role="img" aria-label={label}>
+    <svg
+      viewBox="0 {-top0} {width} {PLOT + AXIS + top0}"
+      style:height="{PLOT + AXIS + top0}px"
+      role="img"
+      aria-label={label}
+    >
       {#each grid as g (g.v)}
         <line
           class="grid"
@@ -118,7 +170,40 @@
       {#if hover !== null && bars}
         <rect class="hover-band" x={xBar(hover)} y="0" width={slotW} height={PLOT} />
       {/if}
+      {#if marks}
+        {#each marks as m, k (k)}
+          {#if m.end !== undefined}
+            <rect
+              class="span"
+              x={markX(m)}
+              y={-STRIP / 2}
+              width={Math.max(2, xAt(Math.min(m.end, count - 1)) - markX(m))}
+              height={PLOT + STRIP / 2}
+            />
+          {/if}
+          <line class="mark-rule {m.kind}" x1={markX(m)} x2={markX(m)} y1={-STRIP / 2} y2={PLOT} />
+          {#if m.kind === 'deploy'}
+            <rect
+              class="flag deploy"
+              x={markX(m) - 4}
+              y={-STRIP / 2 - 4}
+              width="8"
+              height="8"
+              transform="rotate(45 {markX(m)} {-STRIP / 2})"
+            />
+          {:else}
+            <path
+              class="flag issue"
+              d="M{markX(m) - 5} {-STRIP / 2 + 4} L{markX(m)} {-STRIP / 2 - 5} L{markX(m) +
+                5} {-STRIP / 2 + 4} Z"
+            />
+          {/if}
+        {/each}
+      {/if}
       {#if bars}
+        {#if previous}
+          <path class="before" d={beforeSteps} />
+        {/if}
         {#each Array.from({ length: count }, (_, i) => i) as i (i)}
           {#each series as s, k (s.name)}
             {@const below = series.slice(0, k).reduce((a, t) => a + (t.points[i] ?? 0), 0)}
@@ -137,6 +222,11 @@
           {/each}
         {/each}
       {:else}
+        {#if previous}
+          {#each series as s, k (s.name)}
+            <path class="line before {tone(s)}" d={path(previous[k] ?? [])} />
+          {/each}
+        {/if}
         {#each series as s (s.name)}
           <path class="line {tone(s)}" d={path(s.points)} />
           {#each lone(s.points) as { i, v } (i)}
@@ -162,21 +252,33 @@
         class="surface"
         role="presentation"
         x={gutter}
-        y="0"
+        y={-top0}
         width={plotW}
-        height={PLOT}
+        height={PLOT + top0}
         onpointermove={track}
         onpointerleave={() => (hover = null)}
       />
     </svg>
     {#if hover !== null && hoverX !== null}
-      <div class="tip" style:left="{Math.max(0, Math.min(hoverX + 12, width - 240))}px">
+      <div
+        class="tip"
+        class:wide={previous !== null}
+        style:left="{Math.max(0, Math.min(hoverX + 12, width - (previous ? 340 : 240)))}px"
+      >
         <div class="tip-at mono">{at(hover)}</div>
-        {#each tip as { s, v } (s.name)}
-          <div class="tip-row">
+        {#each marksAt(hover) as m, k (k)}
+          <div class="tip-mark {m.kind}">{m.text}</div>
+        {/each}
+        {#if previous}
+          <div class="tip-row head">
+            <span></span><span></span><span></span><span>A week before</span>
+          </div>
+        {/if}
+        {#each tip as { s, v, was } (s.name)}
+          <div class="tip-row" class:compare={previous !== null}>
             <span class="swatch {tone(s)}"></span><span class="mono">{s.name || 'All'}</span><strong
               >{v === null ? '--' : format(v)}</strong
-            >
+            >{#if previous}<span class="was">{was === null ? '--' : format(was)}</span>{/if}
           </div>
         {/each}
       </div>
@@ -195,7 +297,6 @@
   svg {
     display: block;
     width: 100%;
-    height: 262px;
   }
 
   .grid {
@@ -233,6 +334,42 @@
 
   .dot {
     fill: var(--c);
+  }
+
+  .before {
+    fill: none;
+    stroke: var(--dim);
+    stroke-width: 1.5;
+    stroke-dasharray: 4 3;
+  }
+
+  .line.before {
+    stroke: var(--c);
+    stroke-opacity: 0.45;
+  }
+
+  .mark-rule {
+    stroke: var(--ink);
+    stroke-opacity: 0.35;
+    stroke-dasharray: 2 3;
+  }
+
+  .mark-rule.issue {
+    stroke: var(--warn);
+    stroke-opacity: 0.8;
+  }
+
+  .span {
+    fill: var(--warn);
+    fill-opacity: 0.1;
+  }
+
+  .flag.deploy {
+    fill: var(--ink);
+  }
+
+  .flag.issue {
+    fill: var(--warn);
   }
 
   .rule {
@@ -279,6 +416,10 @@
     pointer-events: none;
   }
 
+  .tip.wide {
+    min-width: 320px;
+  }
+
   .tip-at {
     color: var(--dim);
     margin-bottom: 4px;
@@ -289,6 +430,33 @@
     grid-template-columns: 14px 1fr auto;
     gap: 6px;
     align-items: center;
+  }
+
+  .tip-row.compare {
+    grid-template-columns: 14px 1fr auto auto;
+  }
+
+  .tip-row.head {
+    grid-template-columns: 14px 1fr auto auto;
+    color: var(--dim);
+    font-size: var(--text-micro);
+  }
+
+  .was {
+    color: var(--dim);
+    font-variant-numeric: tabular-nums;
+    min-width: 5rem;
+    text-align: right;
+  }
+
+  .tip-mark {
+    margin-bottom: 4px;
+    padding-left: 8px;
+    border-left: 3px solid var(--ink);
+  }
+
+  .tip-mark.issue {
+    border-left-color: var(--warn);
   }
 
   .tip-row strong {

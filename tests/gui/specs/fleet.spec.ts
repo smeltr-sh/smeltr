@@ -428,6 +428,12 @@ test('the Metrics page charts any stored metric, split by a label, as a rate or 
 
   await panel.getByRole('group', { name: 'Draw' }).getByRole('button', { name: 'Totals' }).click();
   await expect(panel.getByText('rows per minute', { exact: true })).toBeVisible();
+
+  // The deploy that started these workers is marked, and the week before rides in the link too.
+  await panel.getByText('Deploys and issues').click();
+  await expect(panel.locator('rect.flag.deploy')).not.toHaveCount(0);
+  await panel.getByText('A week before').click();
+  await expect(admin).toHaveURL(/marks=1.*weekBefore=1/);
   await expect(table.getByRole('row', { name: /^east\s+[\d,]+\s/ })).toBeVisible();
   await shoot(admin, panel, 'metrics-totals');
 

@@ -46,6 +46,9 @@ pub struct SeriesQuery {
     /// The reader's offset from UTC, east positive: where its hours and days begin.
     #[serde(default)]
     pub utc_offset_minutes: i64,
+    /// How long before now the window ends: a week, for the line a chart compares itself with.
+    #[serde(default)]
+    pub ago_minutes: i64,
 }
 
 fn default_window_minutes() -> i64 {
@@ -141,7 +144,8 @@ pub fn answer(
     let counter = counter.unwrap_or_else(|| query.metric.ends_with("_total"));
     // A gauge's bars would be its highest per bar, which is what its line already draws.
     let draw = if counter { query.draw } else { Draw::PerSecond };
-    let (point_ms, from_ms) = grid(draw, window_minutes, offset_ms, now_ms);
+    let end_ms = now_ms - query.ago_minutes.clamp(0, MAX_WINDOW_MINUTES) * MINUTE_MS;
+    let (point_ms, from_ms) = grid(draw, window_minutes, offset_ms, end_ms);
     let mut splits: BTreeMap<String, BTreeMap<i64, f64>> = BTreeMap::new();
     for (subject_key, points) in store.points_from(&query.metric, counter, point_ms, offset_ms, from_ms)? {
         let Some(labels) = labels_of(&subject_key) else {
@@ -161,7 +165,10 @@ pub fn answer(
                 None => continue,
             }
         };
-        add(splits.entry(name).or_default(), points);
+        add(
+            splits.entry(name).or_default(),
+            points.into_iter().filter(|(at, _)| *at <= end_ms).collect(),
+        );
     }
     let per = |value: f64| match (counter, draw) {
         (true, Draw::PerSecond) => value / (point_ms as f64 / 1000.0),
@@ -279,6 +286,7 @@ mod tests {
             window_minutes: 60,
             draw: Draw::PerSecond,
             utc_offset_minutes: 0,
+            ago_minutes: 0,
         }
     }
 
@@ -394,6 +402,27 @@ mod tests {
         let today = NOON - (17 * HOUR_MS + 30 * 60_000);
         assert_eq!((days.point_millis, days.from_millis), (DAY_MS, today - 6 * DAY_MS));
         assert_eq!(days.series[0].points, [(today, 1660.0)]);
+    }
+
+    /// The line a chart compares itself with: the same window, ended a while before now.
+    #[test]
+    fn a_window_ended_before_now_holds_nothing_after_its_end() {
+        let store = store();
+        store
+            .record_delta(ROWS, &source("east", "a", "e1"), NOON - 3 * HOUR_MS, 1000.0)
+            .unwrap();
+        let earlier = ask(
+            &store,
+            &SeriesQuery {
+                draw: Draw::Totals,
+                window_minutes: 24 * 60,
+                ago_minutes: 120,
+                ..asked(ROWS)
+            },
+            &["east"],
+        );
+        assert_eq!(earlier.from_millis, NOON - 2 * HOUR_MS - 23 * HOUR_MS);
+        assert_eq!(earlier.series[0].points, [(NOON - 3 * HOUR_MS, 1000.0)]);
     }
 
     #[test]
