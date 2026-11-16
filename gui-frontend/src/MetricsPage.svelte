@@ -16,18 +16,22 @@
   import { FLOW_WINDOWS } from './flow';
   import { clockTime } from './time';
   import {
+    conditionLabel,
     getLogs,
     getSeries,
     getSeriesMetrics,
     history,
+    listWarnings,
     type LogRowDto,
     type SeriesAnswerDto,
     type StoredMetricDto,
+    type WarningCondition,
   } from './api';
   import {
     WEEK_MINUTES,
     alongside,
     described,
+    laidOn,
     fold,
     onGrid,
     seriesQuery,
@@ -73,7 +77,7 @@
       const [got, then, marks] = await Promise.all([
         getSeries(seriesQuery(asked, offset)),
         asked.weekBefore ? getSeries(seriesQuery(asked, offset, WEEK_MINUTES)) : null,
-        asked.marks ? readMarks(asked.windowMinutes) : [],
+        asked.marks ? readMarks(asked.windowMinutes).catch(() => []) : [],
       ]);
       // A slow answer to an older question must not land over the newer one's.
       if (asked === view) {
@@ -92,47 +96,47 @@
   });
 
   /** The deploys on `main` over the last `minutes`, and the issues that held in them, each from when it began until
-   * it cleared or until now. */
+   * it cleared or until now. The open ones are on the Issues page, which every viewer reads; the cleared ones are in
+   * the leader's log, which only an administrator does, so another viewer sees the open ones alone. */
   async function readMarks(minutes: number) {
     const now = Date.now();
     const since = now - minutes * MINUTE;
-    const lines = (type: string) =>
+    const [main, open, cleared] = await Promise.all([
+      history(200).catch(() => ({ commits: [] })),
+      listWarnings().catch(() => []),
       getLogs(
         new URLSearchParams({
-          type,
+          type: 'cleared',
           typeExact: 'true',
           sinceMillis: String(since),
           limit: '1000',
         }).toString(),
-      );
-    const [main, began, cleared] = await Promise.all([
-      history(200),
-      lines('began'),
-      lines('cleared'),
+      ).catch(() => ({ rows: [] as LogRowDto[] })),
     ]);
-    // A cleared line names when its issue began, so an issue that began before the window still shows from its start.
-    const issues = new Map<string, { at: number; until?: number; name: string; group: string }>();
-    const key = (r: LogRowDto, at: number) => `${issueName(r.fields)}|${r.group ?? ''}|${at}`;
-    for (const r of began.rows) {
-      issues.set(key(r, r.atMillis), {
-        at: r.atMillis,
-        name: issueName(r.fields),
-        group: r.group ?? '',
-      });
-    }
-    for (const r of cleared.rows) {
-      const at = Number(field(r.fields, 'began_ms')) || r.atMillis;
-      issues.set(key(r, at), {
-        at,
+    const issues: { at: number; until?: number; name: string; group: string }[] = [
+      ...open.flatMap((w) =>
+        w.sinceMillis === null
+          ? []
+          : [
+              {
+                at: w.sinceMillis,
+                name: issueName(w.condition, w.subjectId),
+                group: w.group ?? '',
+              },
+            ],
+      ),
+      // A cleared line names when its issue began, so one that began before the window shows from its start.
+      ...cleared.rows.map((r) => ({
+        at: Number(field(r.fields, 'began_ms')) || r.atMillis,
         until: r.atMillis,
-        name: issueName(r.fields),
-        group: r.group ?? '',
-      });
-    }
+        name: issueName(field(r.fields, 'issue') as WarningCondition, field(r.fields, 'subject')),
+        group: field(r.fields, 'group'),
+      })),
+    ];
     const time = (t: number) =>
       minutes > 24 * 60 ? `${day(t, { weekday: 'short' })} ${clockTime(t)}` : clockTime(t);
     return [
-      ...[...issues.values()].map((it) => ({
+      ...issues.map((it) => ({
         at: it.at,
         until: it.until ?? now,
         kind: 'issue' as const,
@@ -156,10 +160,9 @@
     const found = (fields as [string, { value?: unknown }][]).find(([k]) => k === name);
     return found?.[1]?.value ? String(found[1].value) : '';
   }
-  /** An issue's log line's `issue`, and its `subject` where it has one. */
-  function issueName(fields: unknown[]): string {
-    const subject = field(fields, 'subject');
-    return `${field(fields, 'issue') || 'An issue'}${subject ? `: ${subject}` : ''}`;
+  /** An issue as the Issues page names its condition, and its subject where it has one. */
+  function issueName(condition: WarningCondition, subject: string): string {
+    return `${conditionLabel(condition)}${subject ? `: ${subject}` : ''}`;
   }
   const timer = setInterval(() => read(view), REFRESH_MS);
   onDestroy(() => clearInterval(timer));
@@ -233,7 +236,9 @@
   let all = $derived(answer ? onGrid(answer, count) : []);
   let shown = $derived(fold(all, view.top));
   let previous = $derived(
-    before && view.weekBefore ? alongside(shown, onGrid(before, count)) : null,
+    before && view.weekBefore
+      ? alongside(shown, laidOn(before, answer!, count, WEEK_MINUTES * MINUTE))
+      : null,
   );
   let marks = $derived(
     view.marks && answer

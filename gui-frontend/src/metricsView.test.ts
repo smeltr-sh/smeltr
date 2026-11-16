@@ -4,6 +4,7 @@ import {
   alongside,
   described,
   fold,
+  laidOn,
   onGrid,
   toHash,
   toneOf,
@@ -56,6 +57,25 @@ describe('metricsView', () => {
       [5, null],
       [5, 4],
     ]);
+  });
+
+  it('lays a coarser week before on the grid by time, a bar sharing out its total by width', () => {
+    const answer = {
+      metric: 'm',
+      counter: true,
+      draw: 'totals' as const,
+      pointMillis: 60_000,
+      fromMillis: 1_000_000_000,
+      series: [],
+    };
+    const week = 7 * 24 * 3_600_000;
+    const before = {
+      ...answer,
+      pointMillis: 300_000,
+      fromMillis: answer.fromMillis - week,
+      series: [{ name: 'a', points: [[answer.fromMillis - week, 50]] as [number, number][] }],
+    };
+    expect(laidOn(before, answer, 6, week)[0].points).toEqual([10, 10, 10, 10, 10, null]);
   });
 
   it('lays sparse points on the grid, busiest first, and folds the rest into Other', () => {

@@ -135,6 +135,30 @@ export function onGrid(answer: SeriesAnswerDto, count: number): Drawn[] {
     .map((s, i) => ({ ...s, slot: i }));
 }
 
+/** `before`'s series, asked of a window ending `shiftMs` earlier, laid on `answer`'s grid of `count` points: each
+ * point takes the value of `before`'s point it falls in, a week back. `before` may be coarser, as the store keeps
+ * old buckets wider: a rate holds across widths, and a bar's total is shared out by width. */
+export function laidOn(
+  before: SeriesAnswerDto,
+  answer: SeriesAnswerDto,
+  count: number,
+  shiftMs: number,
+): Drawn[] {
+  const share = answer.draw === 'totals' ? answer.pointMillis / before.pointMillis : 1;
+  return before.series.map((s) => {
+    const at = new Map(s.points);
+    const points = Array.from({ length: count }, (_, i) => {
+      const t = answer.fromMillis + i * answer.pointMillis - shiftMs;
+      const start =
+        before.fromMillis +
+        Math.floor((t - before.fromMillis) / before.pointMillis) * before.pointMillis;
+      const v = at.get(start);
+      return v === undefined ? null : v * share;
+    });
+    return { name: s.name, slot: null, points, total: 0 };
+  });
+}
+
 /** What `before` held for each of `shown`, point by point: the series of the same name, and for Other every series
  * of `before` that is not one of `shown`'s own. `null` where it held nothing. */
 export function alongside(shown: Drawn[], before: Drawn[]): (number | null)[][] {

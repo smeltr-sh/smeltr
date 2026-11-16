@@ -68,6 +68,15 @@ impl Tier {
         }
     }
 
+    /// The finest tier that still holds a bucket `age_ms` old: [`RegistryStore::maintain`] moves each bucket on
+    /// once it is older than its tier keeps.
+    pub fn holding(age_ms: i64) -> Tier {
+        Tier::ALL
+            .into_iter()
+            .find(|tier| tier.retention_ms() >= age_ms)
+            .unwrap_or(Tier::OneHour)
+    }
+
     /// This tier's bucket width.
     pub const fn bucket_ms(self) -> i64 {
         match self {
@@ -1183,17 +1192,19 @@ impl RegistryStore {
         point_ms: i64,
         since_ms: i64,
     ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
-        self.series_at_from(metric, point_ms, 0, since_ms)
+        self.series_at_from(metric, point_ms, 0, since_ms, i64::MAX)
     }
 
     /// [`RegistryStore::series_at`] with each point starting `offset_ms` past the epoch's boundaries: a day that
-    /// starts at a reader's midnight rather than UTC's.
+    /// starts at a reader's midnight rather than UTC's. Buckets from `until_ms` on are left out before they are
+    /// added into a point, so a window ending mid-day ends its last point there too.
     fn series_at_from(
         &self,
         metric: &str,
         point_ms: i64,
         offset_ms: i64,
         since_ms: i64,
+        until_ms: i64,
     ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
         let mut by_subject: BTreeMap<String, SubjectPoints> = BTreeMap::new();
         for (subject_key, points) in self
@@ -1205,6 +1216,7 @@ impl RegistryStore {
             of.extend(
                 points
                     .into_iter()
+                    .filter(|(at, _)| *at < until_ms)
                     .map(|(at, value)| ((at - offset_ms).div_euclid(point_ms) * point_ms + offset_ms, value))
                     .filter(|(at, _)| *at >= since_ms),
             );
@@ -1226,7 +1238,7 @@ impl RegistryStore {
         point_ms: i64,
         since_ms: i64,
     ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
-        self.merged_at(metric, point_ms, 0, since_ms, |sum, value| sum + value)
+        self.merged_at(metric, point_ms, 0, since_ms, i64::MAX, |sum, value| sum + value)
     }
 
     /// [`RegistryStore::sums_since`], asked of the store at most once per ten-second bucket of `now_ms` for each
@@ -1266,11 +1278,12 @@ impl RegistryStore {
         point_ms: i64,
         since_ms: i64,
     ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
-        self.merged_at(metric, point_ms, 0, since_ms, f64::max)
+        self.merged_at(metric, point_ms, 0, since_ms, i64::MAX, f64::max)
     }
 
-    /// Every subject of `metric` with a point at or after `since_ms`, each point `point_ms` wide and starting
-    /// `offset_ms` past the epoch's boundaries, its buckets added for a counter and the highest taken for a gauge.
+    /// Every subject of `metric` with a point from `since_ms` and a bucket before `until_ms`, each point `point_ms`
+    /// wide and starting `offset_ms` past the epoch's boundaries, its buckets added for a counter and the highest
+    /// taken for a gauge.
     pub fn points_from(
         &self,
         metric: &str,
@@ -1278,9 +1291,10 @@ impl RegistryStore {
         point_ms: i64,
         offset_ms: i64,
         since_ms: i64,
+        until_ms: i64,
     ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
         let merge: fn(f64, f64) -> f64 = if counter { |sum, value| sum + value } else { f64::max };
-        self.merged_at(metric, point_ms, offset_ms, since_ms, merge)
+        self.merged_at(metric, point_ms, offset_ms, since_ms, until_ms, merge)
     }
 
     /// Every metric the store holds a series of, each with every subject it has one for and whether it counts.
@@ -1300,10 +1314,11 @@ impl RegistryStore {
         point_ms: i64,
         offset_ms: i64,
         since_ms: i64,
+        until_ms: i64,
         merge: fn(f64, f64) -> f64,
     ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
         Ok(self
-            .series_at_from(metric, point_ms, offset_ms, since_ms)?
+            .series_at_from(metric, point_ms, offset_ms, since_ms, until_ms)?
             .into_iter()
             .map(|(subject_key, points)| {
                 let mut merged: SubjectPoints = Vec::new();

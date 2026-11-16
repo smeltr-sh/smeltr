@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use axum::extract::{Query, State};
 
 use super::envelope::{Envelope, Refusal};
-use super::series::{RegistryStore, SubjectPoints, chart_point_ms};
+use super::series::{RegistryStore, SubjectPoints, Tier, chart_point_ms};
 use super::store::StoreError;
 use super::{AppState, GROUP_LABEL, MAX_WINDOW_MINUTES, access, warnings};
 
@@ -100,16 +100,20 @@ fn parse_filter(filter: &str) -> Result<Vec<(String, String)>, String> {
         .collect()
 }
 
-/// How wide each point is and where the window starts, for `draw` over the last `window_minutes` at `now_ms`. Bars
-/// are a minute wide up to an hour, an hour wide up to a day, a day wide beyond; each starts on the reader's clock.
-fn grid(draw: Draw, window_minutes: i64, offset_ms: i64, now_ms: i64) -> (i64, i64) {
+/// How wide each point is and where the window starts, for `draw` over the `window_minutes` ending at `end_ms`, at
+/// `now_ms`. Bars are a minute wide up to an hour, an hour wide up to a day, a day wide beyond; each starts on the
+/// reader's clock. A point is never finer than the store still keeps the window's oldest bucket, so a window ended a
+/// week ago is read in the five-minute buckets that week is kept in.
+fn grid(draw: Draw, window_minutes: i64, offset_ms: i64, end_ms: i64, now_ms: i64) -> (i64, i64) {
     let window_ms = window_minutes * MINUTE_MS;
     let point_ms = match draw {
         Draw::PerSecond => chart_point_ms(std::time::Duration::from_millis(window_ms as u64)),
         Draw::Totals if window_minutes <= 60 => MINUTE_MS,
         Draw::Totals if window_minutes <= 24 * 60 => HOUR_MS,
         Draw::Totals => DAY_MS,
-    };
+    }
+    .max(Tier::holding(now_ms - (end_ms - window_ms)).bucket_ms());
+    let now_ms = end_ms;
     let start = |at: i64| (at - offset_ms).div_euclid(point_ms) * point_ms + offset_ms;
     let from_ms = match draw {
         // The window's oldest whole point, as `/api/flow` reads it.
@@ -145,9 +149,9 @@ pub fn answer(
     // A gauge's bars would be its highest per bar, which is what its line already draws.
     let draw = if counter { query.draw } else { Draw::PerSecond };
     let end_ms = now_ms - query.ago_minutes.clamp(0, MAX_WINDOW_MINUTES) * MINUTE_MS;
-    let (point_ms, from_ms) = grid(draw, window_minutes, offset_ms, end_ms);
+    let (point_ms, from_ms) = grid(draw, window_minutes, offset_ms, end_ms, now_ms);
     let mut splits: BTreeMap<String, BTreeMap<i64, f64>> = BTreeMap::new();
-    for (subject_key, points) in store.points_from(&query.metric, counter, point_ms, offset_ms, from_ms)? {
+    for (subject_key, points) in store.points_from(&query.metric, counter, point_ms, offset_ms, from_ms, end_ms)? {
         let Some(labels) = labels_of(&subject_key) else {
             continue;
         };
@@ -165,10 +169,7 @@ pub fn answer(
                 None => continue,
             }
         };
-        add(
-            splits.entry(name).or_default(),
-            points.into_iter().filter(|(at, _)| *at <= end_ms).collect(),
-        );
+        add(splits.entry(name).or_default(), points);
     }
     let per = |value: f64| match (counter, draw) {
         (true, Draw::PerSecond) => value / (point_ms as f64 / 1000.0),
@@ -423,6 +424,25 @@ mod tests {
         );
         assert_eq!(earlier.from_millis, NOON - 2 * HOUR_MS - 23 * HOUR_MS);
         assert_eq!(earlier.series[0].points, [(NOON - 3 * HOUR_MS, 1000.0)]);
+
+        // A week back, ten-second buckets are long gone: the hour is read in the five-minute ones that week is kept
+        // in, and its last point holds only what landed before the window's end.
+        let week = 7 * DAY_MS;
+        let key = source("east", "a", "e1");
+        store.record_delta(ROWS, &key, NOON - week - 6 * 60_000, 5.0).unwrap();
+        store.record_delta(ROWS, &key, NOON - week + 60_000, 7.0).unwrap();
+        store.maintain(NOON).unwrap();
+        let week_before = ask(
+            &store,
+            &SeriesQuery {
+                ago_minutes: 7 * 24 * 60,
+                draw: Draw::Totals,
+                ..asked(ROWS)
+            },
+            &["east"],
+        );
+        assert_eq!(week_before.point_millis, 5 * 60_000);
+        assert_eq!(week_before.series[0].points, [(NOON - week - 10 * 60_000, 5.0)]);
     }
 
     #[test]
