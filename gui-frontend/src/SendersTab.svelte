@@ -2,34 +2,55 @@
   A source's senders (`docs/architecture/control-plane.md`): each field of its
   records that may name who sends them, what the pick read of it, and folded under it the senders it
   watches, each against its own normal over the last day. An editor stops watching a field, adds one
-  the pick cannot offer, stops watching fields that come later, and lowers a sender's warning to info.
+  the pick cannot offer, stops watching fields that come later, and lowers a sender's warning to info
+  or says it is normal. A sender opens on its own chart and warnings, as History shows a source.
 -->
 <script lang="ts">
   import Button, { BUSY } from './Button.svelte';
   import ChevronIcon from './ChevronIcon.svelte';
   import Help from './Help.svelte';
   import PresetPicker from './PresetPicker.svelte';
+  import RowsChart from './RowsChart.svelte';
+  import Segmented from './Segmented.svelte';
   import Sparkline from './Sparkline.svelte';
   import StateMark from './StateMark.svelte';
+  import WarningList from './WarningList.svelte';
   import { holds } from './access';
   import {
     errorMessage,
     errorText,
+    getSourcePast,
     getSourceSenders,
     lowerSender,
+    markHolding,
     putSenderFields,
     putSourcePreset,
+    type ApiError,
     type FieldNowDto,
     type Preset,
+    type Sender,
     type SenderNowDto,
+    type SourcePastResponse,
   } from './api';
   import { Busy } from './busy.svelte';
   import { expectedSlots, perSecond, slotTimes } from './focus';
   import { count } from './time';
-  import { untrack } from 'svelte';
+  import { untrack, type Snippet } from 'svelte';
 
-  let { group, source, nowMillis }: { group: string; source: string; nowMillis?: number } =
-    $props();
+  let {
+    group,
+    source,
+    nowMillis,
+    range,
+    picker,
+  }: {
+    group: string;
+    source: string;
+    nowMillis?: number;
+    /** The panel's chart range, which a sender's chart is drawn over, and its picker. */
+    range: { minutes: number; label: string };
+    picker: Snippet;
+  } = $props();
 
   const FIVE_MINUTES = 5 * 60_000;
   const DAY = 24 * 60 * 60_000;
@@ -37,6 +58,12 @@
   const SHOWN = 6;
   const HELP =
     'Fields whose values name who sends this source its rows. Each value that sent steadily for a week is watched, and warns when it sends below its normal.';
+  const WARNINGS_HELP =
+    'Below normal warnings about this sender in the past year. The windows a warning read are not learned unless marked Normal; marking the one that is up Normal teaches the level the sender sends now.';
+  const WAS: { value: 'normal' | 'outage'; label: string }[] = [
+    { value: 'normal', label: 'Normal' },
+    { value: 'outage', label: 'Outage' },
+  ];
 
   let fields = $state<FieldNowDto[] | null>(null);
   let watchesNew = $state(true);
@@ -49,6 +76,14 @@
   const busy = new Busy();
   let editor = $derived(holds(group, 'editor'));
   let times = $derived(slotTimes(FIVE_MINUTES, DAY, nowMillis ?? Date.now()));
+  /** The sender open on its own chart and warnings, and what it did over the past year. */
+  let opened = $state<Sender | null>(null);
+  /** The end of a sender's chart: the end of the five minutes now is in, so it is read again once
+   * a bucket is written rather than on each reading of the map. */
+  let chartEnd = $derived(
+    (Math.floor((nowMillis ?? Date.now()) / FIVE_MINUTES) + 1) * FIVE_MINUTES,
+  );
+  let past = $state<SourcePastResponse | null>(null);
 
   function read() {
     const asked = { group, source };
@@ -71,9 +106,48 @@
     untrack(() => {
       fields = null;
       problem = '';
+      opened = null;
     });
     read();
   });
+
+  function readPast() {
+    const asked = opened;
+    if (!asked) return Promise.resolve();
+    return getSourcePast(group, source, asked)
+      .then((answer) => {
+        if (opened !== asked) return;
+        past = answer.ok ? answer : null;
+        problem = answer.ok ? '' : errorText(answer.errors);
+      })
+      .catch((e) => {
+        if (opened === asked) problem = errorMessage(e);
+      });
+  }
+
+  $effect(() => {
+    if (!opened) return;
+    untrack(() => {
+      past = null;
+      problem = '';
+    });
+    readPast();
+  });
+
+  /** Reads a sender's page again after a change its warnings made, saying what the leader refused. */
+  async function pastChanged(errors: ApiError[]) {
+    await readPast();
+    if (errors.length > 0) problem = errorText(errors);
+  }
+
+  function mark(sender: Sender, was: 'normal' | 'outage') {
+    if (busy.on) return;
+    void busy.run(async () => {
+      const answer = await markHolding(group, source, was, sender);
+      problem = answer.ok ? '' : errorText(answer.errors);
+      await read();
+    });
+  }
 
   type Edited = Pick<FieldNowDto, 'field' | 'checked' | 'added' | 'new'>;
 
@@ -183,139 +257,216 @@
   }
 </script>
 
-<section>
-  {#if preset}
-    <div class="preset">
-      <PresetPicker value={preset} label="Senders' preset" {editor} pick={pickPreset} />
-    </div>
-  {/if}
-  <div class="head">
-    <h3>Fields <Help label="Fields">{HELP}</Help></h3>
-    {#if fields}
-      <label class="small"
-        ><input
-          type="checkbox"
-          checked={watchesNew}
-          disabled={!editor || busy.on}
-          onchange={(e) => watchNew(e.currentTarget.checked)}
-        /> Watch new fields</label
-      >
+{#if opened}
+  {@const sender = opened}
+  <section>
+    <p class="crumb small">
+      <button type="button" class="link-button" onclick={() => (opened = null)}>Senders</button>
+      <span class="dim">/</span>
+      <span class="mono">{sender.field} {sender.value}</span>
+    </p>
+    <h3 class="with-range">
+      <span>Rows per second, over the last {range.label}</span>{@render picker()}
+    </h3>
+    {#if past?.judgedFromMillis !== undefined}
+      <p class="dim small learning">Learning: this sender is judged once it has 3 days of rows.</p>
+    {:else if past?.weekdaysFromMillis !== undefined}
+      <p class="dim small learning">
+        Until it has 4 weeks of rows, every day of the week is judged alike, so a quiet weekend can
+        warn.
+      </p>
     {/if}
-  </div>
-  {#if problem}<p class="problem">{problem}</p>{/if}
-  {#if !fields}
-    {#if !problem}<p class="dim">Reading&hellip;</p>{/if}
-  {:else if fields.length === 0}
-    <p class="dim small">No field of this source's records has been counted yet.</p>
-  {:else}
-    <ul class="fields">
-      {#each fields as f (f.field)}
-        {@const open = isOpen(f)}
-        {@const n = below(f)}
-        <li>
-          <div class="field" class:open>
-            <input
-              type="checkbox"
-              aria-label="Watch {f.field}"
-              checked={f.checked}
-              disabled={!editor || busy.on}
-              onchange={(e) => watch(f.field, e.currentTarget.checked)}
-            />
-            {#if f.senders.length > 0}
-              <button
-                type="button"
-                class="fold"
-                aria-expanded={open}
-                onclick={() => (folded[f.field] = !open)}
-                ><ChevronIcon {open} /> <span class="mono">{f.field}</span></button
-              >
-            {:else}
-              <span class="mono name" class:dim={!f.checked}>{f.field}</span>
-            {/if}
-            <span class="dim">{picked(f)}</span>
-            {#if n > 0}<span class="warn"><StateMark state="warning" /> {n} below</span>{/if}
-            {#if f.added && editor}
-              <Button
-                type="button"
-                class="push"
-                disabled={busy.on ? BUSY : ''}
-                onclick={() => remove(f.field)}>Remove</Button
-              >
-            {/if}
-          </div>
-          {#if open}
-            {@const shown = showAll[f.field] ? f.senders : f.senders.slice(0, SHOWN)}
-            <table class="readings senders">
-              <thead>
-                <tr
-                  ><th>Sender</th><th class="chart-col">Last 24 hours</th><th class="num">Rows/s</th
-                  ><th class="num">Expected</th><th></th></tr
+    <div class="big">
+      <RowsChart
+        {group}
+        {source}
+        {sender}
+        fromMillis={chartEnd - range.minutes * 60_000}
+        toMillis={chartEnd}
+        marks={(past?.warnings ?? []).map((w) => ({
+          from: w.fromMillis,
+          to: w.holds ? null : w.toMillis,
+          label: 'Sender below normal',
+          failed: false,
+        }))}
+        left="{range.label} ago"
+        right="now"
+      />
+    </div>
+  </section>
+  <section class="ruled">
+    <h3>Warnings <Help label="Warnings">{WARNINGS_HELP}</Help></h3>
+    {#if problem}<p class="problem">{problem}</p>{/if}
+    {#if !past}
+      {#if !problem}<p class="dim">Reading&hellip;</p>{/if}
+    {:else}
+      <WarningList
+        {group}
+        {source}
+        {sender}
+        spans={past.warnings}
+        {editor}
+        {busy}
+        changed={pastChanged}
+      />
+    {/if}
+  </section>
+{:else}
+  <section>
+    {#if preset}
+      <div class="preset">
+        <PresetPicker value={preset} label="Senders' preset" {editor} pick={pickPreset} />
+      </div>
+    {/if}
+    <div class="head">
+      <h3>Fields <Help label="Fields">{HELP}</Help></h3>
+      {#if fields}
+        <label class="small"
+          ><input
+            type="checkbox"
+            checked={watchesNew}
+            disabled={!editor || busy.on}
+            onchange={(e) => watchNew(e.currentTarget.checked)}
+          /> Watch new fields</label
+        >
+      {/if}
+    </div>
+    {#if problem}<p class="problem">{problem}</p>{/if}
+    {#if !fields}
+      {#if !problem}<p class="dim">Reading&hellip;</p>{/if}
+    {:else if fields.length === 0}
+      <p class="dim small">No field of this source's records has been counted yet.</p>
+    {:else}
+      <ul class="fields">
+        {#each fields as f (f.field)}
+          {@const open = isOpen(f)}
+          {@const n = below(f)}
+          <li>
+            <div class="field" class:open>
+              <input
+                type="checkbox"
+                aria-label="Watch {f.field}"
+                checked={f.checked}
+                disabled={!editor || busy.on}
+                onchange={(e) => watch(f.field, e.currentTarget.checked)}
+              />
+              {#if f.senders.length > 0}
+                <button
+                  type="button"
+                  class="fold"
+                  aria-expanded={open}
+                  onclick={() => (folded[f.field] = !open)}
+                  ><ChevronIcon {open} /> <span class="mono">{f.field}</span></button
                 >
-              </thead>
-              <tbody>
-                {#each shown as s (s.value)}
-                  <tr>
-                    <td class="mono value"
-                      >{#if s.below}<StateMark state="warning" label="below normal" />{/if}
-                      {s.value}</td
-                    >
-                    <td class="chart-col">
-                      <Sparkline
-                        compact
-                        series={[
-                          {
-                            label: `${s.value} rows/s`,
-                            color: s.below ? 'var(--warn)' : 'var(--ink)',
-                            points: points(s),
-                          },
-                        ]}
-                        band={expectedSlots(s.expected, times)}
-                        {times}
-                      />
-                    </td>
-                    <td class="num mono" class:warn={s.below} data-label="Rows/s"
-                      >{s.now === null ? '—' : perSecond(s.now)}</td
-                    >
-                    <td class="num" data-label="Expected"
-                      >{#if s.low !== null && s.high !== null}{perSecond(s.low)} to {perSecond(
-                          s.high,
-                        )}{/if}</td
-                    >
-                    <td class="num">
-                      {#if s.below && s.loweredBy}
-                        <span class="dim small">Lowered to info by {s.loweredBy}</span>
-                      {:else if s.below && editor}
-                        <Button
+              {:else}
+                <span class="mono name" class:dim={!f.checked}>{f.field}</span>
+              {/if}
+              <span class="dim">{picked(f)}</span>
+              {#if n > 0}<span class="warn"><StateMark state="warning" /> {n} below</span>{/if}
+              {#if f.added && editor}
+                <Button
+                  type="button"
+                  class="push"
+                  disabled={busy.on ? BUSY : ''}
+                  onclick={() => remove(f.field)}>Remove</Button
+                >
+              {/if}
+            </div>
+            {#if open}
+              {@const shown = showAll[f.field] ? f.senders : f.senders.slice(0, SHOWN)}
+              <table class="readings senders">
+                <thead>
+                  <tr
+                    ><th>Sender</th><th class="chart-col">Last 24 hours</th><th class="num"
+                      >Rows/s</th
+                    ><th class="num">Expected</th><th class="num">Warnings</th><th></th></tr
+                  >
+                </thead>
+                <tbody>
+                  {#each shown as s (s.value)}
+                    <tr>
+                      <td class="mono value"
+                        >{#if s.below}<StateMark state="warning" label="below normal" />{/if}
+                        <button
                           type="button"
-                          disabled={busy.on ? BUSY : ''}
-                          onclick={() => lower(f.field, s)}>Lower to info</Button
-                        >
-                      {/if}
-                    </td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-            {#if shown.length < f.senders.length}
-              <p class="more dim small">
-                Showing {shown.length} of {f.senders.length}
-                <Button type="button" onclick={() => (showAll[f.field] = true)}>Show all</Button>
-              </p>
+                          class="link-button mono"
+                          onclick={() => (opened = { field: f.field, value: s.value })}
+                          >{s.value}</button
+                        ></td
+                      >
+                      <td class="chart-col">
+                        <Sparkline
+                          compact
+                          series={[
+                            {
+                              label: `${s.value} rows/s`,
+                              color: s.below ? 'var(--warn)' : 'var(--ink)',
+                              points: points(s),
+                            },
+                          ]}
+                          band={expectedSlots(s.expected, times)}
+                          {times}
+                        />
+                      </td>
+                      <td class="num mono" class:warn={s.below} data-label="Rows/s"
+                        >{s.now === null ? '—' : perSecond(s.now)}</td
+                      >
+                      <td class="num" data-label="Expected"
+                        >{#if s.low !== null && s.high !== null}{perSecond(s.low)} to {perSecond(
+                            s.high,
+                          )}{/if}</td
+                      >
+                      <td class="num" data-label={s.warned === 0 ? undefined : 'Warnings'}
+                        >{s.warned === 0 ? '' : `${s.warned} in 30 days`}</td
+                      >
+                      <td class="num">
+                        <div class="acts">
+                          {#if s.below && s.loweredBy}
+                            <span class="dim small">Lowered to info by {s.loweredBy}</span>
+                          {:else if s.below && editor}
+                            <Button
+                              type="button"
+                              disabled={busy.on ? BUSY : ''}
+                              onclick={() => lower(f.field, s)}>Lower to info</Button
+                            >
+                          {/if}
+                          {#if s.below && editor}
+                            <Segmented
+                              label="{f.field} {s.value}: the warning that is up"
+                              options={WAS}
+                              bind:value={
+                                () => (s.saidNormal ? 'normal' : 'outage'),
+                                (was) => mark({ field: f.field, value: s.value }, was)
+                              }
+                            />
+                          {/if}
+                        </div>
+                      </td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+              {#if shown.length < f.senders.length}
+                <p class="more dim small">
+                  Showing {shown.length} of {f.senders.length}
+                  <Button type="button" onclick={() => (showAll[f.field] = true)}>Show all</Button>
+                </p>
+              {/if}
             {/if}
-          {/if}
-        </li>
-      {/each}
-    </ul>
-  {/if}
-  {#if editor && fields}
-    <form class="add" onsubmit={add}>
-      <input placeholder="Field" aria-label="Field" bind:value={adding} />
-      <Button type="submit" disabled={busy.on ? BUSY : adding.trim() ? '' : 'Name a field first.'}
-        >Add field</Button
-      >
-    </form>
-  {/if}
-</section>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+    {#if editor && fields}
+      <form class="add" onsubmit={add}>
+        <input placeholder="Field" aria-label="Field" bind:value={adding} />
+        <Button type="submit" disabled={busy.on ? BUSY : adding.trim() ? '' : 'Name a field first.'}
+          >Add field</Button
+        >
+      </form>
+    {/if}
+  </section>
+{/if}
 
 <style>
   section {
@@ -335,6 +486,42 @@
     padding-bottom: 0.85rem;
     margin-bottom: 0.85rem;
     border-bottom: 1px solid var(--border);
+  }
+
+  section.ruled {
+    border-top: 1px solid var(--border);
+  }
+
+  .crumb {
+    margin: 0 0 0.7rem;
+  }
+
+  .with-range {
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+  }
+
+  section.ruled h3 {
+    margin-bottom: 0.3rem;
+  }
+
+  .learning {
+    margin: 0 0 0.5rem;
+  }
+
+  @container panel (min-width: 40rem) {
+    .big :global(.sparkline svg) {
+      height: 140px;
+    }
+  }
+
+  .acts {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.5rem;
   }
 
   .head label {

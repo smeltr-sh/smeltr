@@ -14,11 +14,13 @@
   import Collapsible from './Collapsible.svelte';
   import Chips from './Chips.svelte';
   import Button, { BUSY } from './Button.svelte';
+  import Segmented from './Segmented.svelte';
   import { ask } from './Confirm.svelte';
   import { holds } from './access';
   import {
     listWarnings,
     lowerSourceRows,
+    markHolding,
     resetSourceHistory,
     setScope,
     conditionLabel,
@@ -64,6 +66,10 @@
     holds(w.group, 'editor');
 
   const marking = new Busy();
+  const WAS: { value: 'normal' | 'outage'; label: string }[] = [
+    { value: 'normal', label: 'Normal' },
+    { value: 'outage', label: 'Outage' },
+  ];
 
   async function mark(call: () => Promise<unknown>) {
     await marking.run(async () => {
@@ -246,6 +252,16 @@
                     disabled={marking.on ? BUSY : ''}
                     onclick={() => resetHistory(warning, group)}>Reset history</Button
                   >
+                  {#if warning.condition === 'sourceRowsBelow'}
+                    <Segmented
+                      label="{warning.subjectId}: the warning that is up"
+                      options={WAS}
+                      bind:value={
+                        () => (warning.saidNormal ? 'normal' : 'outage'),
+                        (was) => mark(() => markHolding(group, warning.subjectId, was))
+                      }
+                    />
+                  {/if}
                 {/if}
               </span>
             </div>

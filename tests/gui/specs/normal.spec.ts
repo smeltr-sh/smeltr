@@ -204,10 +204,38 @@ test('a source that drops below its normal is ranked and warned of, and an edito
   await expect(row).toBeVisible({ timeout: 60_000 });
   await shoot(admin, '2-issue');
 
+  // A warning nobody marked is taken for an outage until an editor says it is normal.
+  const was = row.getByRole('group', { name: 'firewall-syslog: the warning that is up' });
+  await expect(was.getByRole('button', { name: 'Outage' })).toHaveAttribute('aria-pressed', 'true');
+
   await row.getByRole('button', { name: 'Lower to info' }).click();
   await expect(row).toContainText('lowered to info by');
   await expect(row.getByRole('button', { name: 'Lower to info' })).toHaveCount(0);
   await shoot(admin, '3-lowered');
+
+  // History charts the source against its range and lists the warning that is up, which opens on the rows around it.
+  await goto(
+    admin,
+    leader,
+    '#/map?group=edge&kind=source&id=firewall-syslog&panel=history&range=24h',
+  );
+  const panel = admin.getByRole('complementary', { name: 'firewall-syslog', exact: true });
+  await expect(panel.getByText('Rows per second, over the last 24 hours')).toBeVisible();
+  const up = panel
+    .getByRole('listitem')
+    .filter({ has: admin.getByRole('img', { name: 'up now' }) });
+  await expect(up).toContainText('Lowered to info by');
+  await up.getByRole('button', { expanded: false }).click();
+  await expect(up.getByText('24 hours ago')).toBeVisible({ timeout: 30_000 });
+  await shoot(admin, '3b-history-warning');
+
+  // Said Normal on the Issues page, it is Normal on History too: the source learns the level it reads now.
+  await goto(admin, leader, '#/status/issues');
+  await was.getByRole('button', { name: 'Normal' }).click();
+  await expect(was.getByRole('button', { name: 'Normal' })).toHaveAttribute('aria-pressed', 'true');
+  const past = await api.get('/api/areas/edge/sources/firewall-syslog/past');
+  expect(past.warnings[0]).toMatchObject({ holds: true, learned: true });
+  await shoot(admin, '3c-said-normal');
 
   await row.getByRole('button', { name: 'Reset history' }).click();
   const dialog = admin.getByRole('dialog');
@@ -367,8 +395,43 @@ test('senders that stop while their source stays within its normal are warned of
   await shoot(admin, '11-senders-wide');
 
   const fw01 = senders.filter({ hasText: 'fw-01' });
+  await expect(fw01).toContainText('1 in 30 days');
   await fw01.getByRole('button', { name: 'Lower to info' }).click();
   await expect(fw01).toContainText('Lowered to info by');
+
+  // A sender's warning is marked as a source's is, and only that sender's: fw-07's Normal leaves fw-01 an outage.
+  const fw07 = senders.filter({ hasText: 'fw-07' });
+  const fw07was = fw07.getByRole('group', { name: 'devname fw-07: the warning that is up' });
+  await expect(fw07was.getByRole('button', { name: 'Outage' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await fw07was.getByRole('button', { name: 'Normal' }).click();
+  await expect(fw07was.getByRole('button', { name: 'Normal' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  const sender = (value: string) =>
+    api.get(
+      `/api/areas/edge/sources/fortigate-firewalls/senders/past?field=devname&value=${value}`,
+    );
+  expect((await sender('fw-07')).warnings[0]).toMatchObject({ holds: true, learned: true });
+  expect((await sender('fw-01')).warnings[0]).toMatchObject({ holds: true, learned: false });
+
+  // A sender opens on its own chart and warnings, as History shows a source.
+  await fw01.getByRole('button', { name: 'fw-01' }).click();
+  await expect(panel.getByText('devname fw-01', { exact: true })).toBeVisible();
+  await expect(panel.getByText(/Rows per second, over the last/)).toBeVisible();
+  const warning = panel.getByRole('listitem').filter({ hasText: 'Lowered to info by' });
+  await expect(warning.getByRole('button', { name: 'Outage' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await warning.getByRole('button', { expanded: false }).click();
+  await expect(warning.getByText('24 hours ago')).toBeVisible({ timeout: 30_000 });
+  await shoot(admin, '11b-sender');
+  await panel.getByRole('button', { name: 'Senders', exact: true }).click();
+  await expect(fw01).toBeVisible();
 
   // An editor stops watching a field, and adds one the pick cannot offer, then removes it.
   const field = (name: string) =>

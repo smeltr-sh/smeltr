@@ -2884,6 +2884,9 @@ export interface WarningDto {
   /** When the senders a `sendersBelow` names went below normal: one source raises it once for each
    * reading senders crossed on. Absent on every other condition. */
   crossedMillis?: number;
+  /** An editor said the period a `sourceRowsBelow` began in was normal, so the level it reads is
+   * being learned and it ends once it is. Absent on every other condition. */
+  saidNormal?: boolean;
 }
 
 /** What a reader scans before the sentence. */
@@ -4242,40 +4245,104 @@ export function lowerSourceRows(
   return apiJson(inArea(`/sources/${encodeURIComponent(source)}/lower`, group), { method: 'POST' });
 }
 
-/** One span of a source's past year, and whether its normal learns from it (`throughput::PastSpan`). */
-export type PastSpan = { fromMillis: number; toMillis: number; learned: boolean };
+/** One span of a source's past year, or a sender's, and whether its normal learns from it
+ * (`throughput::PastSpan`). `holds` on the warning that holds, which runs until now, with who
+ * lowered it to info. */
+export type PastSpan = {
+  fromMillis: number;
+  toMillis: number;
+  learned: boolean;
+  holds?: boolean;
+  loweredBy?: string;
+};
+
+/** One value of one field of a source's records that sends it rows (`senders::Sender`). */
+export type Sender = { field: string; value: string };
+
+/** The path under a source for it, or for one of its `sender`s, and the query naming the sender. */
+function subjectPath(source: string, sender: Sender | undefined, path: string, query = {}): string {
+  const q = new URLSearchParams({ ...(sender ?? {}), ...query });
+  const at = `/sources/${encodeURIComponent(source)}${sender ? '/senders' : ''}/${path}`;
+  return q.size > 0 ? `${at}?${q}` : at;
+}
 
 /** How soon a source, or its senders, warns of a drop against how often a brief dip warns too
  * (`throughput::Preset`). */
 export type Preset = 'fast' | 'sensitive' | 'balanced' | 'quiet';
 
-/** What a source did over the past year that an editor may say was normal or an outage
- * (`throughput::Past`): its Rows below normal warnings that ended, newest first, and its longest
- * quiet spells, longest first; and the preset it is judged at. */
+/** What a source, or one of its senders, did over the past year that an editor may say was normal
+ * or an outage (`throughput::Past`): its below normal warnings, newest first, and its longest quiet
+ * spells, longest first (none for a sender); the preset it is judged at; and, while either is to
+ * come, when it is first judged and when its weekdays are told apart. */
 export type SourcePastResponse = {
   ok: boolean;
   errors: ApiError[];
   warnings: PastSpan[];
   silences: PastSpan[];
   preset: Preset;
+  judgedFromMillis?: number;
+  weekdaysFromMillis?: number;
+  /** How long a source may go without a row before it warns, while its quiet spells judge it. */
+  quietLimitMillis?: number;
 };
 
-export function getSourcePast(group: string, source: string): Promise<SourcePastResponse> {
-  return apiJson(inArea(`/sources/${encodeURIComponent(source)}/past`, group));
+/** `group`'s `source`'s past year, or its `sender`'s. */
+export function getSourcePast(
+  group: string,
+  source: string,
+  sender?: Sender,
+): Promise<SourcePastResponse> {
+  return apiJson(inArea(subjectPath(source, sender, 'past'), group));
 }
 
-/** Says a past span of `group`'s `source` was normal, so its normal learns from it, or an outage,
- * so it does not. */
+/** Says a past span of `group`'s `source`, and so of its senders, was normal, so its normal learns
+ * from it, or an outage, so it does not; or of one `sender` only. The span ends no later than now. */
 export function markSourcePast(
   group: string,
   source: string,
-  span: PastSpan,
+  span: { fromMillis: number; toMillis: number },
   was: 'normal' | 'outage',
+  sender?: Sender,
 ): Promise<{ ok: boolean; errors: ApiError[] }> {
   return apiJson(
-    inArea(`/sources/${encodeURIComponent(source)}/mark`, group),
-    json('POST', { fromMillis: span.fromMillis, toMillis: span.toMillis, was }),
+    inArea(subjectPath(source, sender, 'mark'), group),
+    json('POST', { ...sender, fromMillis: span.fromMillis, toMillis: span.toMillis, was }),
   );
+}
+
+/** Says the warning that holds for `group`'s `source`, or for its `sender`, was normal or an outage,
+ * over the leader's own span of it, which ends at the leader's now. */
+export async function markHolding(
+  group: string,
+  source: string,
+  was: 'normal' | 'outage',
+  sender?: Sender,
+): Promise<{ ok: boolean; errors: ApiError[] }> {
+  const past = await getSourcePast(group, source, sender);
+  const span = past.ok ? past.warnings.find((w) => w.holds) : undefined;
+  return span ? markSourcePast(group, source, span, was, sender) : past;
+}
+
+/** A source's rows, or a sender's, against its range over a span (`throughput::Chart`): rows per
+ * second in each point, by when it began, and the range it was expected to read. */
+export type SourceChartResponse = {
+  ok: boolean;
+  errors: ApiError[];
+  pointMillis: number;
+  points: [number, number][];
+  expected: ExpectedPointDto[];
+};
+
+/** `group`'s `source`'s chart from `fromMillis` until `toMillis`, or its `sender`'s. */
+export function getSourceChart(
+  group: string,
+  source: string,
+  fromMillis: number,
+  toMillis: number,
+  sender?: Sender,
+): Promise<SourceChartResponse> {
+  const span = { fromMillis: String(fromMillis), toMillis: String(toMillis) };
+  return apiJson(inArea(subjectPath(source, sender, 'chart', span), group));
 }
 
 /** Picks the preset `group`'s `source` is judged at (`rows`), the one its senders are, or both. */
@@ -4309,6 +4376,10 @@ export type SenderNowDto = {
   high: number | null;
   below: boolean;
   loweredBy: string | null;
+  /** An editor said the period its warning that holds began in was normal. */
+  saidNormal: boolean;
+  /** How many below normal warnings about it held in the last 30 days. */
+  warned: number;
 };
 
 /** One field of a source and its watched senders, those below normal first (`senders::FieldNow`).
