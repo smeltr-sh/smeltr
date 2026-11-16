@@ -56,7 +56,8 @@
     display: flex;
     flex-wrap: wrap;
     align-items: end;
-    gap: 1.4rem;
+    /* Narrower in a narrow container (a map panel), so a source's five tabs keep to one line there. */
+    gap: 1.4rem min(1.4rem, 4cqi);
     border-bottom: 1px solid var(--border);
     margin-bottom: 1.2rem;
   }

@@ -1014,6 +1014,7 @@
 
   .tabs {
     margin: 0.7rem 0 0.2rem;
+    container-type: inline-size;
   }
 
   .small {
