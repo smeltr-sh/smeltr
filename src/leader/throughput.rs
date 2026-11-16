@@ -1546,11 +1546,17 @@ fn swung_over(
             )
         })
         .collect();
+    // No range before the swings learned from reach back [`JUDGED_AFTER_MS`], as `normal` draws none at the wider widths.
+    let reach = swung
+        .keys()
+        .find(|&&ended| !warned.during(ended, width))
+        .map(|&ended| ended - width);
+    let judged_from = reach.map_or(i64::MAX, |reach| reach + JUDGED_AFTER_MS);
     let mut out = Vec::new();
     let mut ended_ms = first + width;
     while ended_ms <= BUCKET.align(now_ms) + width {
         let held = |ended| swung.get(&ended).copied().filter(|_| !warned.during(ended, width));
-        if let Some(band) = swung_band(held, ended_ms, width, across) {
+        if let Some(band) = swung_band(held, ended_ms, width, across).filter(|_| ended_ms - width >= judged_from) {
             out.push(ExpectedPoint {
                 from_millis: ended_ms - width,
                 to_millis: ended_ms,
@@ -2650,11 +2656,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_fine_chart_has_the_range_its_points_swung_in() {
+    /// A store with swings at ten seconds from 4 to 16 and at a minute from 8 to 12, in each bucket from `from` to `END`.
+    fn swung_since(from: i64) -> RegistryStore {
         let store = store_with(0, |_| None);
         let mut swings = Vec::new();
-        let mut at = END - 8 * DAY_MS;
+        let mut at = from;
         while at < END {
             for (width, low, high) in [(10_000, 4.0, 16.0), (60_000, 8.0, 12.0)] {
                 swings.push(Swing {
@@ -2669,12 +2675,29 @@ mod tests {
             at += FIVE;
         }
         store.record_swings(&swings).unwrap();
+        store
+    }
+
+    #[test]
+    fn a_fine_chart_has_the_range_its_points_swung_in() {
+        let store = swung_since(END - 8 * DAY_MS);
         for (width, band) in [(10_000, (4.0, 16.0)), (60_000, (8.0, 12.0))] {
             let points =
                 expected_over(&store, "g", "s", None, END - HOUR, END + 1000, width, &Marks::default()).unwrap();
             assert_eq!(points.len(), 13);
             assert!(points.iter().all(|p| (p.low, p.high) == band), "at {width}: {points:?}");
         }
+    }
+
+    /// As the wider widths, a fine chart has no range until the source's swings reach back a week.
+    #[test]
+    fn a_fine_chart_has_no_range_until_its_swings_reach_back_a_week() {
+        let fine = |store: &RegistryStore| {
+            expected_over(store, "g", "s", None, END - HOUR, END + 1000, 10_000, &Marks::default()).unwrap()
+        };
+        assert_eq!(fine(&swung_since(END - JUDGED_AFTER_MS - HOUR)).len(), 13);
+        let half = fine(&swung_since(END - JUDGED_AFTER_MS - HOUR / 2));
+        assert_eq!(half.first().map(|p| p.from_millis), Some(END - HOUR / 2));
     }
 
     /// Heartbeats slower than ten seconds leave most ten-second slots empty, so no swing is kept at that width.
