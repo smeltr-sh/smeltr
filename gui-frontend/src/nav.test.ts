@@ -720,12 +720,12 @@ describe('what the person signed in is offered', () => {
   it('offers Logs and Admin to an administrator alone', async () => {
     await signInAs({ administrator: false, areas: { shared: 'deployer' } });
     const labels = () => section(parseRoute('#/status'))?.items.map((i) => i.label);
-    expect(labels()).toEqual(['Status', 'Issues']);
+    expect(labels()).toEqual(['Status', 'Issues', 'Metrics']);
     expect(sentFrom(parseRoute('#/status/logs?level=error'))).toBe(TAB_HOME.status);
     expect(sentFrom(parseRoute('#/admin/groups'))).toBe(TAB_HOME.status);
 
     await signInAs({ administrator: true, areas: {} });
-    expect(labels()).toEqual(['Status', 'Issues', 'Logs']);
+    expect(labels()).toEqual(['Status', 'Issues', 'Metrics', 'Logs']);
     expect(sentFrom(parseRoute('#/status/logs'))).toBeNull();
     expect(sentFrom(parseRoute('#/admin/groups'))).toBeNull();
   });

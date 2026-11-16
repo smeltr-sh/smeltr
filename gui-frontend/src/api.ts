@@ -4120,40 +4120,15 @@ export function regenerateEncryptionKey(): Promise<
 
 // -- flow (E2), `src/leader/mod.rs` ----------------------------------------
 //
-// Rows in per source and rows out per destination, over a window the caller
-// chooses -- the leader's own durable series, so it survives a reload.
+// Each object's counts over a window the caller chooses -- the leader's own durable series,
+// so they survive a reload.
 
-/** One bucket of a series. Absent from `points` entirely when nothing
- * landed in it -- a gap, not a zero: an outage reads as no data, not as
- * throughput that dropped to nothing. */
-export type FlowPointDto = { bucketMillis: number; value: number };
-
-/** One worker's source or destination series within a `FlowResponseDto`. Group and
- * worker identity keep independently reported samples separate; older retained
- * series can lack the worker identity. */
-export type FlowSeriesDto = {
-  group: string;
-  workerId?: string | null;
-  subjectId: string;
-  points: FlowPointDto[];
-};
-
-/** `bucketMillis` is how wide each point of the window's chart is
- * (`series::chart_point_ms`). A point is summed from the coarsest tier that fits
- * in it, and its newest buckets from the finer tiers that still hold them. */
+/** The Status page's table over the window: its chart reads the same counters from `getSeries`
+ * (`flow.ts`, `FLOW_METRICS`). */
 export type FlowResponseDto = {
-  bucketMillis: number;
-  rowsIn: FlowSeriesDto[];
-  rowsOut: FlowSeriesDto[];
-  bytesIn: FlowSeriesDto[];
-  /** Payload bytes a destination acknowledged, which is a queue later than the
-   * moment `rowsOut` counts a row. The two part company while a destination
-   * falls behind, so this is the weight of what landed, not of what `rowsOut`
-   * says left. */
-  bytesOut: FlowSeriesDto[];
   /** Every source's reading against its normal, whatever window the response is for. */
   normals: FlowNormalDto[];
-  /** Every object's counts over the window, per worker, in the points the series are read in. */
+  /** Every object's counts over the window, per worker, in the points the chart draws. */
   totals: FlowTotalDto[];
 };
 
@@ -4228,13 +4203,35 @@ export function getLogs(query: string): Promise<LogsResponseDto> {
   return readJson(`/api/logs?${query}`);
 }
 
-/** The fleet's flow, or with `only` one object's in and out in place of the fleet's. */
-export function getFlow(
-  windowMinutes: number,
-  only?: { kind: FlowKind; group: string; subject: string },
-): Promise<FlowResponseDto> {
-  const q = new URLSearchParams({ windowMinutes: String(windowMinutes), ...only });
-  return readJson(`/api/flow?${q}`);
+export function getFlow(windowMinutes: number): Promise<FlowResponseDto> {
+  return readJson(`/api/flow?windowMinutes=${windowMinutes}`);
+}
+
+/** How a counter is drawn: its rate, or what each minute, hour or day added up to (`leader::query::Draw`). */
+export type SeriesDraw = 'perSecond' | 'totals';
+
+/** One series of `GET /api/series`: the subjects whose split label holds `name`, added together. */
+export type SeriesSplitDto = { name: string; points: [number, number][] };
+
+/** `GET /api/series` (`leader::query::SeriesAnswer`). */
+export type SeriesAnswerDto = {
+  metric: string;
+  counter: boolean;
+  draw: SeriesDraw;
+  pointMillis: number;
+  fromMillis: number;
+  series: SeriesSplitDto[];
+};
+
+/** One metric the leader keeps series of, each label with the values they hold (`leader::query::StoredMetric`). */
+export type StoredMetricDto = { name: string; counter: boolean; labels: Record<string, string[]> };
+
+export function getSeries(query: string): Promise<SeriesAnswerDto> {
+  return readJson(`/api/series?${query}`);
+}
+
+export async function getSeriesMetrics(): Promise<StoredMetricDto[]> {
+  return (await readJson<{ metrics: StoredMetricDto[] }>('/api/series/metrics')).metrics;
 }
 
 /** One span of a source's past year, or a sender's, and whether its normal learns from it

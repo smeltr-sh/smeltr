@@ -667,8 +667,8 @@ fn recovered_instant(last_seen_ms: i64, now_ms: i64) -> Instant {
         .unwrap_or_else(Instant::now)
 }
 
-/// The labels that make a sample about a named object rather than about a thread: the three kinds a map draws and a
-/// focus view charts. A sample carrying none of them has no subject to keep a series for.
+/// The labels that make a sample about a named object: the three kinds a map draws and a focus view charts. A sample
+/// carrying none of them is about the worker, and its series is kept per worker.
 const SUBJECT_LABELS: [&str; 3] = ["source", "destination", "pipeline"];
 
 /// Metrics exposed by `GET /api/flow` keep one series per authenticated worker so the dashboard can focus its
@@ -686,18 +686,13 @@ const WORKER_SCOPED_METRICS: [&str; 8] = [
 ];
 
 /// The series' aggregation key for one sample: `group` (the reporting worker's) plus every label but `thread`,
-/// sorted, as canonical JSON. `None` for a sample naming no `source`, `destination` or `pipeline` -- a worker- or
-/// thread-scoped metric, which is a health question `latest_state` already answers (design brief for this work)
-/// rather than something E2/E6 chart over time.
+/// sorted, as canonical JSON.
 ///
 /// `group` is part of the key, not just a label alongside it: a source or destination id is unique only within its
 /// group plus `shared/` (same as a fact's own key, `warnings::scoped_subject`), so without it two groups running a
 /// source of the same id would aggregate into one series -- their samples interleaving into a trend that belongs to
 /// neither.
 fn subject_key(group: &str, labels: &[(String, String)]) -> Option<String> {
-    if !labels.iter().any(|(k, _)| SUBJECT_LABELS.contains(&k.as_str())) {
-        return None;
-    }
     let mut kept: Vec<(&str, &str)> = labels
         .iter()
         .filter(|(k, _)| k != "thread")
@@ -802,8 +797,7 @@ fn persist_heartbeat(
     recorded
 }
 
-/// Each sample `reports` carries that is a series point. A sample naming no subject, a fact carried as text, and a
-/// kind from a newer build are not: `subject_key` says which names no subject.
+/// Each sample `reports` carries that is a series point: all but a fact carried as text and a kind from a newer build.
 fn series_points<'a>(worker_id: &str, reports: &'a [ThreadHeartbeat]) -> Vec<SeriesPoint<'a>> {
     reports
         .iter()
@@ -816,10 +810,12 @@ fn series_points<'a>(worker_id: &str, reports: &'a [ThreadHeartbeat]) -> Vec<Ser
                 MetricValueDto::Text(_) | MetricValueDto::Unknown(_) => return None,
             };
             let mut labels = sample.labels.clone();
-            // Identity comes from authentication, never from a label supplied in the heartbeat. Only flow metrics
-            // need it; warning metrics must continue across worker handoffs as one logical subject series.
+            // Identity comes from authentication, never from a label supplied in the heartbeat. Flow metrics and those
+            // about the worker itself need it; warning metrics must continue across worker handoffs as one logical
+            // subject series.
             labels.retain(|(key, _)| key != "worker");
-            if WORKER_SCOPED_METRICS.contains(&sample.metric.as_str()) {
+            let about_the_worker = !labels.iter().any(|(k, _)| SUBJECT_LABELS.contains(&k.as_str()));
+            if about_the_worker || WORKER_SCOPED_METRICS.contains(&sample.metric.as_str()) {
                 labels.push(("worker".to_string(), worker_id.to_string()));
             }
             Some(SeriesPoint {
@@ -1692,12 +1688,32 @@ mod tests {
         cleanup_registry_db(&path);
     }
 
+    /// A sample naming no subject is about the worker, so it is kept per worker: one worker's memory is not
+    /// another's.
     #[test]
-    fn subject_key_is_none_for_a_worker_scoped_sample_naming_no_subject() {
-        assert_eq!(
-            subject_key("g", &[("thread".to_string(), "reader-0".to_string())]),
-            None
-        );
+    fn a_sample_naming_no_subject_is_kept_per_worker() {
+        let path = temp_registry_path("worker-wide-series");
+        let r = Registry::open(&path).unwrap();
+        let mut deploy = report("deploy", "pool");
+        deploy.metrics = vec![MetricSampleDto {
+            metric: "smeltr_memory_allocated_bytes".to_string(),
+            labels: vec![
+                ("thread".to_string(), "deploy".to_string()),
+                ("worker".to_string(), "spoofed-worker".to_string()),
+            ],
+            value: MetricValueDto::Gauge(4096.0),
+        }];
+        r.record_heartbeat("w1", vec![deploy], WorkerFacts::default(), Window::default(), 12_345)
+            .unwrap();
+
+        let key = subject_key("pool", &[("worker".to_string(), "w1".to_string())]).unwrap();
+        let points = r
+            .series()
+            .unwrap()
+            .points("smeltr_memory_allocated_bytes", &key, series::Tier::TenSeconds)
+            .unwrap();
+        assert_eq!(points, vec![(series::Tier::TenSeconds.align(12_345), 4096.0)]);
+        cleanup_registry_db(&path);
     }
 
     /// A pipeline is a subject too: its per-function counts are what a focus view charts, and before this they were

@@ -126,14 +126,16 @@ pub fn need(method: &Method, path: &str) -> Need {
             Need::Somewhere(Level::Deployer)
         }
 
-        // What the Status and Map pages read, the warnings as Prometheus scrapes them, the area picker, and what a
-        // source or destination form asks of the build. The streams and the warnings are filtered by their handlers
-        // to the groups the caller views.
+        // What the Status, Metrics and Map pages read, the warnings as Prometheus scrapes them, the area picker, and
+        // what a source or destination form asks of the build. The streams, the series and the warnings are filtered
+        // by their handlers to the groups the caller views.
         (Method::GET | Method::HEAD, ["cluster"])
         | (Method::GET | Method::HEAD, ["streams"])
         | (Method::GET | Method::HEAD, ["warnings"])
         | (Method::GET | Method::HEAD, ["metrics"])
         | (Method::GET | Method::HEAD, ["flow"])
+        | (Method::GET | Method::HEAD, ["series"])
+        | (Method::GET | Method::HEAD, ["series", "metrics"])
         | (Method::GET | Method::HEAD, ["map"])
         | (Method::GET | Method::HEAD, ["map", "measurements"])
         | (Method::GET | Method::HEAD, ["worker-groups"])
@@ -521,6 +523,8 @@ mod tests {
             "/api/metrics",
             "/api/streams",
             "/api/flow",
+            "/api/series",
+            "/api/series/metrics",
             "/api/map",
             "/api/map/measurements",
             "/api/worker-groups",
