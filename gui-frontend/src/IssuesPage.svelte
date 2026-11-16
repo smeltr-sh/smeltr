@@ -19,7 +19,6 @@
   import { holds } from './access';
   import {
     listWarnings,
-    lowerSourceRows,
     markWarning,
     resetSourceHistory,
     setScope,
@@ -239,14 +238,6 @@
               <span class="issue-actions">
                 {#if markable(warning) && warning.group !== null}
                   {@const group = warning.group}
-                  {#if warning.severity === 'warning'}
-                    <Button
-                      class="compact"
-                      disabled={marking.on ? BUSY : ''}
-                      onclick={() => mark(() => lowerSourceRows(group, warning.subjectId))}
-                      >Lower to info</Button
-                    >
-                  {/if}
                   <Button
                     class="compact"
                     disabled={marking.on ? BUSY : ''}
@@ -258,7 +249,12 @@
                       label="{warning.subjectId}: the warning that is up"
                       options={WAS}
                       bind:value={
-                        () => (warning.saidNormal ? 'normal' : 'outage'),
+                        () =>
+                          (warning.saidNormal
+                            ? 'normal'
+                            : warning.severity === 'info'
+                              ? 'outage'
+                              : '') as 'normal' | 'outage',
                         (was) => mark(() => markWarning(group, warning.subjectId, since, was))
                       }
                     />

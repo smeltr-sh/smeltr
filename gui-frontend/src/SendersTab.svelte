@@ -21,7 +21,6 @@
     errorText,
     getSourcePast,
     getSourceSenders,
-    lowerSender,
     markWarning,
     putSenderFields,
     putSourcePreset,
@@ -59,7 +58,7 @@
   const HELP =
     'Fields whose values name who sends this source its rows. Each value that sent steadily for a week is watched, and warns when it sends below its normal.';
   const WARNINGS_HELP =
-    'Below normal warnings about this sender in the past year. The windows a warning read are not learned unless marked Normal; marking the one that is up Normal teaches the level the sender sends now.';
+    'Below normal warnings about this sender in the past year. Until it is marked, the one that is up stays a warning. Mark it Outage to turn it into info until it ends, or Normal to turn it into info and learn the level the sender sends now. A warning is learned only if it is marked Normal.';
   const WAS: { value: 'normal' | 'outage'; label: string }[] = [
     { value: 'normal', label: 'Normal' },
     { value: 'outage', label: 'Outage' },
@@ -211,15 +210,6 @@
     if (busy.on) return;
     void busy.run(async () => {
       const answer = await putSourcePreset(group, source, { senders: picked });
-      problem = answer.ok ? '' : errorText(answer.errors);
-      await read();
-    });
-  }
-
-  function lower(field: string, sender: SenderNowDto) {
-    if (busy.on) return;
-    void busy.run(async () => {
-      const answer = await lowerSender(group, source, { field, value: sender.value });
       problem = answer.ok ? '' : errorText(answer.errors);
       await read();
     });
@@ -421,14 +411,8 @@
                       >
                       <td class="num">
                         <div class="acts">
-                          {#if s.below && s.loweredBy}
-                            <span class="dim small">Lowered to info by {s.loweredBy}</span>
-                          {:else if s.below && editor}
-                            <Button
-                              type="button"
-                              disabled={busy.on ? BUSY : ''}
-                              onclick={() => lower(f.field, s)}>Lower to info</Button
-                            >
+                          {#if s.markedBy}
+                            <span class="dim small">Marked by {s.markedBy}</span>
                           {/if}
                           {#if s.sinceMillis !== null && editor}
                             {@const since = s.sinceMillis}
@@ -436,7 +420,9 @@
                               label="{f.field} {s.value}: the warning that is up"
                               options={WAS}
                               bind:value={
-                                () => (s.saidNormal ? 'normal' : 'outage'),
+                                () =>
+                                  (s.saidNormal ? 'normal' : s.markedBy ? 'outage' : '') as
+                                    'normal' | 'outage',
                                 (was) => mark({ field: f.field, value: s.value }, since, was)
                               }
                             />

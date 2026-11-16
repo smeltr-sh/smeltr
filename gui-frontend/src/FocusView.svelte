@@ -222,7 +222,7 @@
       "A route's condition picks rows from its source; each delivery's condition picks which of them go to that destination. Conditions can overlap, so a source's matches can add up past what it read.",
   };
   const WARNINGS_HELP =
-    'Rows below normal warnings of the past year. The windows a warning read are not learned unless marked Normal; marking the one that holds Normal teaches the level the source reads now.';
+    'Rows below normal warnings of the past year. Until it is marked, the one that is up stays a warning. Mark it Outage to turn it into info until it ends, or Normal to turn it into info and learn the level the source reads now. A warning is learned only if it is marked Normal.';
   /** What a source still learning is not judged on yet (`throughput::Past`). */
   const LEARNING = {
     judged: 'Learning: this source is judged once it has 3 days of rows.',

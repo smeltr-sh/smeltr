@@ -708,12 +708,6 @@ pub const CATALOG: &[Route] = &[
     },
     Route {
         method: "POST",
-        path: "/api/areas/:area/sources/:id/lower",
-        what: "Lower the source's Rows below normal warning that holds to info until it ends. The area is the source's worker group. No query.",
-        body: "",
-    },
-    Route {
-        method: "POST",
         path: "/api/areas/:area/sources/:id/reset-history",
         what: "Reset the source's history, so its normal is learned again from now: it has none, and does not warn on rows, for the first 3 days. The area is the source's worker group. No query.",
         body: "",
@@ -743,12 +737,6 @@ pub const CATALOG: &[Route] = &[
         body: "{ unchecked: string[], added: string[], locked: string[] | null }",
     },
     Route {
-        method: "POST",
-        path: "/api/areas/:area/sources/:id/senders/lower",
-        what: "Lower one sender's Senders below normal warning that holds to info until it ends. The area is the source's worker group. No query.",
-        body: "{ field: string, value: string }",
-    },
-    Route {
         method: "GET",
         path: "/api/areas/:area/sources/:id/senders/past",
         what: "One sender's Senders below normal warnings of the past year, newest first, the one still up, each with whether the normal is learned from it, the preset the source's senders are judged at, and when it will first be judged and its weekdays told apart, as the source's answer gives them. The area is the source's worker group. Query: field, value.",
@@ -763,13 +751,13 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "POST",
         path: "/api/areas/:area/sources/:id/senders/mark",
-        what: "Say one of a sender's Senders below normal warnings was normal or an outage, as the source's mark does, with the body's field and value naming the sender. The area is the source's worker group. No query.",
+        what: "Mark one of a sender's Senders below normal warnings Normal or Outage, as the source's mark does, with the body's field and value naming the sender. A Senders below normal warning is info once each sender that is still below normal is marked. The area is the source's worker group. No query.",
         body: "{ field: string, value: string, sinceMillis: number, was: 'normal' | 'outage' }",
     },
     Route {
         method: "POST",
         path: "/api/areas/:area/sources/:id/mark",
-        what: "Say one of the source's Rows below normal warnings of the past year was normal, so its normal learns from it, or an outage, which is what a warning nobody marked is taken for. sinceMillis names the warning by when it began: its fromMillis in the source's past. A time no warning of the past year began at is refused. The area is the source's worker group. No query.",
+        what: "Mark one of the source's Rows below normal warnings of the past year Normal, so its normal learns from it, or Outage, so it does not. Either turns it into info, in place of any mark before. sinceMillis names the warning by when it began: its fromMillis in the source's past. A time no warning of the past year began at is refused. The area is the source's worker group. No query.",
         body: "{ sinceMillis: number, was: 'normal' | 'outage' }",
     },
     Route {

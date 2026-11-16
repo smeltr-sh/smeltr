@@ -1,23 +1,15 @@
 <!--
   The below normal warnings of a source's past year, or of one of its sender's, newest first, the
-  one that holds first of all (`throughput::Past`). Each says whether it was normal or an outage,
-  which an editor changes, and folds open on the rows around it against the range. The one that
-  holds is lowered to info here too.
+  one that holds first of all (`throughput::Past`). Each says what an editor answered it was,
+  Normal or Outage, which an editor changes, and folds open on the rows around it against the
+  range. The one that holds shows neither until someone answers.
 -->
 <script lang="ts">
-  import Button, { BUSY } from './Button.svelte';
   import ChevronIcon from './ChevronIcon.svelte';
   import RowsChart from './RowsChart.svelte';
   import Segmented from './Segmented.svelte';
   import StateMark from './StateMark.svelte';
-  import {
-    lowerSender,
-    lowerSourceRows,
-    markWarning,
-    type ApiError,
-    type PastSpan,
-    type Sender,
-  } from './api';
+  import { markWarning, type ApiError, type PastSpan, type Sender } from './api';
   import type { Busy } from './busy.svelte';
   import { dateTime, lasted } from './time';
 
@@ -62,10 +54,6 @@
     change(() => markWarning(group, source, span.fromMillis, was, sender));
   }
 
-  function lower() {
-    change(() => (sender ? lowerSender(group, source, sender) : lowerSourceRows(group, source)));
-  }
-
   /** The rows around `span`: the last day while it holds, else from 12 hours before it until 12
    * hours after, or until now. */
   function around(span: PastSpan) {
@@ -88,6 +76,7 @@
     {#each spans as span (span.fromMillis)}
       {@const isOpen = open === span.fromMillis}
       {@const when = dateTime(span.fromMillis / 1000)}
+      {@const answer = span.learned ? 'normal' : span.markedBy || !span.holds ? 'outage' : ''}
       <li>
         <div class="row">
           <button
@@ -106,21 +95,17 @@
             >
           </button>
           <span class="acts">
-            {#if span.holds && span.loweredBy}
-              <span class="dim small">Lowered to info by {span.loweredBy}</span>
-            {:else if span.holds && editor}
-              <Button class="compact" type="button" disabled={busy.on ? BUSY : ''} onclick={lower}
-                >Lower to info</Button
-              >
+            {#if span.markedBy}
+              <span class="dim small">Marked by {span.markedBy}</span>
             {/if}
             {#if editor}
               <Segmented
                 label="Warnings: {when}"
                 options={WAS}
-                bind:value={() => (span.learned ? 'normal' : 'outage'), (was) => mark(span, was)}
+                bind:value={() => answer as 'normal' | 'outage', (was) => mark(span, was)}
               />
-            {:else}
-              <span class="dim small">{span.learned ? 'Normal' : 'Outage'}</span>
+            {:else if answer}
+              <span class="dim small">{answer === 'normal' ? 'Normal' : 'Outage'}</span>
             {/if}
           </span>
         </div>

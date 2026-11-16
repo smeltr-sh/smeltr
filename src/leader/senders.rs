@@ -457,9 +457,10 @@ pub struct SenderNow {
     pub below: bool,
     /// When its warning that holds began, which names it to a mark (`marks::Mark`).
     pub since_millis: Option<i64>,
-    /// Who lowered its warning that holds to info.
-    pub lowered_by: Option<String>,
-    /// An editor said its warning that holds was normal ([`warnings::Warning::said_normal`]).
+    /// Who answered what its warning that holds was, if anyone did.
+    pub marked_by: Option<String>,
+    /// An editor answered its warning that holds was normal ([`warnings::Warning::said_normal`]); answered and not
+    /// this, it was an outage.
     pub said_normal: bool,
     /// How many below-normal warnings about it held in the last [`RECENT_DAYS`] days.
     pub warned: usize,
@@ -560,8 +561,9 @@ impl Now<'_> {
                     .find(|s| s.ended_millis.is_none())
                     .map(|s| s.started_millis);
                 let holds = holds.filter(|_| below);
-                let lowered_by = marks.lowered_by(group, source, Some(&key.2), holds).map(str::to_string);
-                let said_normal = marks.said_normal(group, source, Some(&key.2), holds);
+                let answer = marks.answer(group, source, Some(&key.2), holds);
+                let marked_by = answer.map(|a| a.by.clone());
+                let said_normal = answer.is_some_and(|a| a.was == marks::Was::Normal);
                 senders.push(SenderNow {
                     value: key.2.value.clone(),
                     points: of
@@ -574,7 +576,7 @@ impl Now<'_> {
                     high: shown.map(|(_, band)| band.high),
                     below,
                     since_millis: holds,
-                    lowered_by,
+                    marked_by,
                     said_normal,
                     warned: warned.len(),
                 });

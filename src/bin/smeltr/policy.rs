@@ -186,9 +186,9 @@ fn in_area(method: &Method, within: &[&str]) -> Option<Level> {
         )
         | (Method::POST, ["undo"] | ["lookups", "upload"] | ["test-runs"] | ["imports"]) => Level::Editor,
         // What an admin says about a source's rows warning: it changes no configuration and touches no worker.
-        (Method::POST, ["sources", _, "lower" | "reset-history" | "mark"])
+        (Method::POST, ["sources", _, "reset-history" | "mark"])
         | (Method::PUT, ["sources", _, "preset"])
-        | (Method::POST, ["sources", _, "senders", "lower" | "mark"])
+        | (Method::POST, ["sources", _, "senders", "mark"])
         | (Method::PUT, ["sources", _, "senders", "fields"]) => Level::Editor,
 
         // Samples, and what a preview of them shows.
@@ -343,10 +343,8 @@ mod tests {
     #[test]
     fn a_mark_on_a_sources_rows_warning_needs_editor_in_its_area() {
         for path in [
-            "/api/areas/payments/sources/s1/lower",
             "/api/areas/payments/sources/s1/reset-history",
             "/api/areas/payments/sources/s1/mark",
-            "/api/areas/payments/sources/s1/senders/lower",
             "/api/areas/payments/sources/s1/senders/mark",
         ] {
             assert_eq!(need(&Method::POST, path), area("payments", Level::Editor), "{path}");

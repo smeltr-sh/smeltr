@@ -1187,7 +1187,6 @@ async fn setup_leader(
         // Not on `app` below with the rest of the config routes: saving a connector asks the certificate list whether
         // it holds the certificate named.
         .route("/api/areas/:area/sources", put(config_api::put_sources))
-        .route("/api/areas/:area/sources/:id/lower", post(smeltr::leader::marks::lower))
         .route(
             "/api/areas/:area/sources/:id/reset-history",
             post(smeltr::leader::marks::reset_history),
@@ -1202,10 +1201,6 @@ async fn setup_leader(
         .route(
             "/api/areas/:area/sources/:id/senders",
             get(smeltr::leader::senders::get),
-        )
-        .route(
-            "/api/areas/:area/sources/:id/senders/lower",
-            post(smeltr::leader::marks::lower_sender),
         )
         .route(
             "/api/areas/:area/sources/:id/senders/mark",

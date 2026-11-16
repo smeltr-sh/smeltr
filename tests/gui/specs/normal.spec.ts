@@ -158,7 +158,7 @@ async function shoot(page: Page, name: string) {
   await page.emulateMedia({ colorScheme: 'light' });
 }
 
-test('a source that drops below its normal is ranked and warned of, and an editor lowers it or resets its history', async ({
+test('a source that drops below its normal is ranked and warned of, and an editor answers what it was or resets its history', async ({
   admin,
   api,
   fleet,
@@ -204,14 +204,14 @@ test('a source that drops below its normal is ranked and warned of, and an edito
   await expect(row).toBeVisible({ timeout: 60_000 });
   await shoot(admin, '2-issue');
 
-  // A warning nobody marked is taken for an outage until an editor says it is normal.
+  // A warning nobody answered stays a warning, with neither answer pressed. Outage turns it into info.
   const was = row.getByRole('group', { name: 'firewall-syslog: the warning that is up' });
+  await expect(was.getByRole('button', { name: 'Outage' })).toHaveAttribute('aria-pressed', 'false');
+  await expect(was.getByRole('button', { name: 'Normal' })).toHaveAttribute('aria-pressed', 'false');
+  await was.getByRole('button', { name: 'Outage' }).click();
+  await expect(row).toContainText('marked Outage by');
   await expect(was.getByRole('button', { name: 'Outage' })).toHaveAttribute('aria-pressed', 'true');
-
-  await row.getByRole('button', { name: 'Lower to info' }).click();
-  await expect(row).toContainText('lowered to info by');
-  await expect(row.getByRole('button', { name: 'Lower to info' })).toHaveCount(0);
-  await shoot(admin, '3-lowered');
+  await shoot(admin, '3-outage');
 
   // History charts the source against its range and lists the warning that is up, which opens on the rows around it.
   await goto(
@@ -224,7 +224,7 @@ test('a source that drops below its normal is ranked and warned of, and an edito
   const up = panel
     .getByRole('listitem')
     .filter({ has: admin.getByRole('img', { name: 'up now' }) });
-  await expect(up).toContainText('Lowered to info by');
+  await expect(up).toContainText('Marked by');
   await up.getByRole('button', { expanded: false }).click();
   await expect(up.getByText('24 hours ago')).toBeVisible({ timeout: 30_000 });
   await shoot(admin, '3b-history-warning');
@@ -384,15 +384,16 @@ test('senders that stop while their source stays within its normal are warned of
 
   const fw01 = senders.filter({ hasText: 'fw-01' });
   await expect(fw01).toContainText('1 in 30 days');
-  await fw01.getByRole('button', { name: 'Lower to info' }).click();
-  await expect(fw01).toContainText('Lowered to info by');
+  const fw01was = fw01.getByRole('group', { name: 'devname fw-01: the warning that is up' });
+  await fw01was.getByRole('button', { name: 'Outage' }).click();
+  await expect(fw01).toContainText('Marked by');
 
   // A sender's warning is marked as a source's is, and only that sender's: fw-07's Normal leaves fw-01 an outage.
   const fw07 = senders.filter({ hasText: 'fw-07' });
   const fw07was = fw07.getByRole('group', { name: 'devname fw-07: the warning that is up' });
   await expect(fw07was.getByRole('button', { name: 'Outage' })).toHaveAttribute(
     'aria-pressed',
-    'true',
+    'false',
   );
   await fw07was.getByRole('button', { name: 'Normal' }).click();
   await expect(fw07was.getByRole('button', { name: 'Normal' })).toHaveAttribute(
@@ -410,7 +411,7 @@ test('senders that stop while their source stays within its normal are warned of
   await fw01.getByRole('button', { name: 'fw-01' }).click();
   await expect(panel.getByText('devname fw-01', { exact: true })).toBeVisible();
   await expect(panel.getByText(/Rows per second, over the last/)).toBeVisible();
-  const warning = panel.getByRole('listitem').filter({ hasText: 'Lowered to info by' });
+  const warning = panel.getByRole('listitem').filter({ hasText: 'Marked by' });
   await expect(warning.getByRole('button', { name: 'Outage' })).toHaveAttribute(
     'aria-pressed',
     'true',

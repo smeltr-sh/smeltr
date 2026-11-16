@@ -4237,24 +4237,17 @@ export function getFlow(
   return readJson(`/api/flow?${q}`);
 }
 
-/** Lowers the Rows below normal warning that holds for `group`'s `source` to info until it ends. */
-export function lowerSourceRows(
-  group: string,
-  source: string,
-): Promise<{ ok: boolean; errors: ApiError[] }> {
-  return apiJson(inArea(`/sources/${encodeURIComponent(source)}/lower`, group), { method: 'POST' });
-}
-
 /** One span of a source's past year, or a sender's, and whether its normal learns from it
- * (`throughput::PastSpan`): a warning only once an editor said it was normal. A warning's
- * `fromMillis` is when it began, which names it to `markWarning`. `holds` on the warning that
- * holds, which runs until now, with who lowered it to info. */
+ * (`throughput::PastSpan`): a warning only once an editor answered it was normal. A warning's
+ * `fromMillis` is when it began, which names it to `markWarning`, and `markedBy` who answered
+ * what it was: Normal where it is `learned`, else Outage. `holds` on the warning that holds,
+ * which runs until now. */
 export type PastSpan = {
   fromMillis: number;
   toMillis: number;
   learned: boolean;
   holds?: boolean;
-  loweredBy?: string;
+  markedBy?: string;
 };
 
 /** One value of one field of a source's records that sends it rows (`senders::Sender`). */
@@ -4296,8 +4289,9 @@ export function getSourcePast(
   return apiJson(inArea(subjectPath(source, sender, 'past'), group));
 }
 
-/** Says the below normal warning of `group`'s `source`, or of its `sender`, that began at
- * `sinceMillis` was normal, so its normal learns from it, or an outage, so it does not. */
+/** Answers the below normal warning of `group`'s `source`, or of its `sender`, that began at
+ * `sinceMillis` was normal, so its normal learns from it, or an outage, so it does not. Either
+ * turns it into info. */
 export function markWarning(
   group: string,
   source: string,
@@ -4365,8 +4359,9 @@ export type SenderNowDto = {
   below: boolean;
   /** When its warning that holds began, which names it to `markWarning`. */
   sinceMillis: number | null;
-  loweredBy: string | null;
-  /** An editor said its warning that holds was normal. */
+  /** Who answered what its warning that holds was; answered and not `saidNormal`, it was an outage. */
+  markedBy: string | null;
+  /** An editor answered its warning that holds was normal. */
   saidNormal: boolean;
   /** How many below normal warnings about it held in the last 30 days. */
   warned: number;
@@ -4394,18 +4389,6 @@ export type SourceSendersResponse = {
 
 export function getSourceSenders(group: string, source: string): Promise<SourceSendersResponse> {
   return apiJson(inArea(`/sources/${encodeURIComponent(source)}/senders`, group));
-}
-
-/** Lowers the warning that holds for one sender of `group`'s `source` to info until it ends. */
-export function lowerSender(
-  group: string,
-  source: string,
-  sender: { field: string; value: string },
-): Promise<{ ok: boolean; errors: ApiError[] }> {
-  return apiJson(
-    inArea(`/sources/${encodeURIComponent(source)}/senders/lower`, group),
-    json('POST', sender),
-  );
 }
 
 /** Sets which of `group`'s `source`'s fields an editor stopped watching, which they added and, once

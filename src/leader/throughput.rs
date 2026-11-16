@@ -39,7 +39,7 @@
 //! window of its width that ended while a below-normal warning held or waited to be raised. A quiet spell does not
 //! count when it shares a bucket with a stop or with such a warning. An outage at this time of day would otherwise set
 //! the range's low edge there, and a source that dropped would come to call the drop normal. An editor may say a
-//! below-normal warning was normal, and it is learned whole (`marks::Marks::normal`).
+//! below-normal warning was normal, and it is learned whole (`marks::Marks::answers`).
 //!
 //! Rows above normal are learned: more rows are the new normal until shown otherwise.
 //!
@@ -218,12 +218,12 @@ pub struct Band {
 }
 
 /// What a normal is learned and judged with: the sources an editor said to learn again from a time on
-/// ([`marks::Reset`]), the below-normal warnings an editor said were normal ([`marks::Marks::normal`]), the sender
+/// ([`marks::Reset`]), what an editor answered below-normal warnings were ([`marks::Marks::answers`]), the sender
 /// fields an editor changed ([`marks::SourceFields`]), and the presets an editor picked ([`marks::Picked`]).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Learning {
     pub reset: Vec<marks::Reset>,
-    pub normal: Vec<marks::Mark>,
+    pub answers: Vec<marks::Mark>,
     pub fields: Vec<marks::SourceFields>,
     pub presets: Vec<marks::Picked>,
 }
@@ -234,7 +234,7 @@ impl Learning {
         let marks = marks::Marks::read(store);
         Learning {
             reset: marks.reset,
-            normal: marks.normal,
+            answers: marks.answers,
             fields: marks.fields,
             presets: marks.presets,
         }
@@ -255,7 +255,14 @@ impl Learning {
     /// Whether an editor said `group`'s `source`'s below-normal warning, or its `sender`'s, that began at
     /// `since_millis` was normal.
     fn said_normal(&self, group: &str, source: &str, sender: Option<&Sender>, since_millis: i64) -> bool {
-        marks::marked_by(&self.normal, group, source, sender, Some(since_millis)).is_some()
+        self.answer(group, source, sender, since_millis)
+            .is_some_and(|m| m.was == marks::Was::Normal)
+    }
+
+    /// What an editor answered `group`'s `source`'s below-normal warning, or its `sender`'s, that began at
+    /// `since_millis` was.
+    fn answer(&self, group: &str, source: &str, sender: Option<&Sender>, since_millis: i64) -> Option<&marks::Mark> {
+        marks::answer(&self.answers, group, source, sender, Some(since_millis))
     }
 
     /// When `group`'s `source` was last said to learn again from, if it was.
@@ -1074,7 +1081,7 @@ fn waited_from(warning: &warnings::WarningSpan, wait: i64) -> i64 {
 const LONGEST_LISTED: usize = 10;
 
 /// A source's, or one of its senders', below-normal warnings over the past year, which an editor may say were normal
-/// ([`marks::Marks::normal`]), its longest quiet spells, and the preset it is judged at.
+/// ([`marks::Marks::answers`]), its longest quiet spells, and the preset it is judged at.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Past {
@@ -1122,9 +1129,9 @@ pub struct PastSpan {
     /// It is the warning that holds, and runs until now.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub holds: bool,
-    /// Who lowered it to info, while it holds (`marks::Marks::lowered`).
+    /// Who answered what it was, if anyone did: Normal where it is `learned`, else Outage.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub lowered_by: Option<String>,
+    pub marked_by: Option<String>,
 }
 
 /// `group`'s `source`'s [`Past`], or its `sender`'s, as of `now_ms`.
@@ -1144,7 +1151,7 @@ pub fn past(
         to_millis,
         learned: !warned.span_during(to_millis, to_millis - from_millis),
         holds: false,
-        lowered_by: None,
+        marked_by: None,
     };
     let (below, mut silences) = match sender {
         Some(sender) => (warnings::sender_spans(store, group, source, sender, year)?, Vec::new()),
@@ -1173,7 +1180,9 @@ pub fn past(
                 to_millis: s.ended_millis.unwrap_or(now_ms),
                 learned: learning.said_normal(group, source, sender, s.started_millis),
                 holds: s.ended_millis.is_none(),
-                lowered_by: None,
+                marked_by: learning
+                    .answer(group, source, sender, s.started_millis)
+                    .map(|m| m.by.clone()),
             })
             .collect(),
         silences: silences
@@ -1949,11 +1958,12 @@ mod tests {
     /// An editor said the below-normal warning of the source, or of one `sender`, that began at `since_ms` was normal.
     fn said(sender: Option<Sender>, since_ms: i64) -> Learning {
         Learning {
-            normal: vec![marks::Mark {
+            answers: vec![marks::Mark {
                 group: "g".into(),
                 source: "s".into(),
                 sender,
                 since_millis: since_ms,
+                was: marks::Was::Normal,
                 by: "John".into(),
             }],
             ..Learning::default()
@@ -2014,7 +2024,7 @@ mod tests {
                     to_millis: END,
                     learned: false,
                     holds: true,
-                    lowered_by: None,
+                    marked_by: None,
                 }],
                 Vec::new(),
                 Presets::default().senders,
@@ -2022,7 +2032,9 @@ mod tests {
         );
         assert!(past_of("fw-07", &Learning::default()).warnings.is_empty());
         let marked = said(Some(fw("fw-01")), dropped + 6 * FIVE);
-        assert!(past_of("fw-01", &marked).warnings[0].learned);
+        let said = &past_of("fw-01", &marked).warnings[0];
+        assert!(said.learned);
+        assert_eq!(said.marked_by.as_deref(), Some("John"));
         assert!(
             !past_of("fw-02", &marked).warnings[0].learned,
             "a sender's mark is its own"
@@ -2967,7 +2979,7 @@ mod tests {
             to_millis,
             learned: false,
             holds: false,
-            lowered_by: None,
+            marked_by: None,
         };
         assert_eq!(
             past.warnings,

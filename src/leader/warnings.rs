@@ -20,7 +20,7 @@ use crate::heartbeat::{MetricValueDto, ThreadKind};
 use crate::leader::access::{Access, Level};
 use crate::leader::alerts::{self, Channel};
 use crate::leader::deploy_checks::{FailingTest, Findings};
-use crate::leader::marks::Marks;
+use crate::leader::marks::{Mark, Marks, Was};
 use crate::leader::registry::{FactKey, ThreadHealth};
 use crate::leader::senders::Sender;
 use crate::leader::series::{DRIFT_WINDOW, DeclaredField, LoggedType, RegistryStore, Tier};
@@ -230,7 +230,7 @@ pub struct Warning {
     /// do. `None` on every other condition.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub crossed_millis: Option<i64>,
-    /// An editor said this [`Condition::SourceRowsBelow`] was normal (`marks::Marks::normal`), so the level
+    /// An editor answered this [`Condition::SourceRowsBelow`] was normal (`marks::Marks::answers`), so the level
     /// it reads is being learned, and it ends once it is. False on every other condition.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub said_normal: bool,
@@ -2020,7 +2020,7 @@ pub fn outside_normal_facts(
 }
 
 /// A source reading fewer rows than it normally does at this time of day, or more: it is reading, and how much is
-/// off. Fewer is a warning, or info where an admin lowered it (`marks`). More is info.
+/// off. Fewer is a warning, or info once an editor answered what it was (`marks`). More is info.
 pub fn outside_normal_warnings(
     readings: &[throughput::Reading],
     snapshot: &[ThreadHealth],
@@ -2037,10 +2037,11 @@ pub fn outside_normal_warnings(
                 throughput::Outside::Above => Condition::SourceRowsAbove,
             };
             let since_millis = starts.get(&outside_key(r, side)).copied();
-            let lowered_by = marks.lowered_by(&r.group, &r.source, None, since_millis);
-            let said_normal =
-                side == throughput::Outside::Below && marks.said_normal(&r.group, &r.source, None, since_millis);
-            let severity = match lowered_by {
+            let answer = marks
+                .answer(&r.group, &r.source, None, since_millis)
+                .filter(|_| side == throughput::Outside::Below);
+            let said_normal = answer.is_some_and(|a| a.was == Was::Normal);
+            let severity = match answer {
                 Some(_) => Severity::Info,
                 None => SOURCE_SPANS
                     .iter()
@@ -2070,9 +2071,7 @@ pub fn outside_normal_warnings(
                         // Held while no width judges it (`throughput`).
                         (None, None) => "below normal, and cannot be judged now; Reset history ends it".to_string(),
                     },
-                    lowered_by
-                        .map(|by| format!("; lowered to info by {by}"))
-                        .unwrap_or_default(),
+                    answer.map(|a| format!("; {}", answered(a))).unwrap_or_default(),
                 ),
             )
             .said_normal(said_normal)
@@ -2080,9 +2079,18 @@ pub fn outside_normal_warnings(
         .collect()
 }
 
+/// What an editor answered a warning was, and who, as its message says it.
+fn answered(answer: &Mark) -> String {
+    let was = match answer.was {
+        Was::Normal => "Normal",
+        Was::Outage => "Outage",
+    };
+    format!("marked {was} by {}", answer.by)
+}
+
 /// Senders reading fewer rows than they normally do. The senders of a source that went below on one reading are one
 /// warning, and it names how many of the source's senders are below, and which of them came back since. It ends once
-/// every one is back, and it is info once an editor lowered each one still below. `back` gives the senders of a
+/// every one is back, and it is info once an editor answered what each one still below was. `back` gives the senders of a
 /// source whose warning began at a time and have since ended it.
 pub fn senders_below_warnings(
     readings: &[throughput::Reading],
@@ -2109,11 +2117,11 @@ pub fn senders_below_warnings(
     crossings
         .into_iter()
         .map(|((group, source, since), below)| {
-            let lowered: Vec<(&Sender, &str)> = below
+            let answers: Vec<(&Sender, &Mark)> = below
                 .iter()
-                .filter_map(|&s| Some((s, marks.lowered_by(group, source, Some(s), Some(since))?)))
+                .filter_map(|&s| Some((s, marks.answer(group, source, Some(s), Some(since))?)))
                 .collect();
-            let severity = match lowered.len() == below.len() {
+            let severity = match answers.len() == below.len() {
                 true => Severity::Info,
                 false => Severity::Warning,
             };
@@ -2128,8 +2136,8 @@ pub fn senders_below_warnings(
                 let back: Vec<&Sender> = back.iter().collect();
                 message += &format!("; {} {} back", named(&back), if back.len() == 1 { "is" } else { "are" });
             }
-            for (sender, by) in lowered {
-                message += &format!("; {} {} lowered to info by {by}", sender.field, sender.value);
+            for (sender, answer) in answers {
+                message += &format!("; {} {} {}", sender.field, sender.value, answered(answer));
             }
             Warning {
                 crossed_millis: Some(since),
@@ -4555,33 +4563,42 @@ mod tests {
     }
 
     #[test]
-    fn a_lowered_rows_warning_is_info_until_it_ends() {
+    fn an_answered_rows_warning_is_info_until_it_ends() {
         let snapshot = [thread_health_in("g", "w1", "t0", 0, vec![rows_metric("s")])];
         let readings = [reading_of("s", 0.0)];
         let facts = outside_normal_facts(&readings, &snapshot, INTERVAL);
-        let marks = Marks {
-            lowered: vec![crate::leader::marks::Mark {
+        let answered = |was| Marks {
+            answers: vec![Mark {
                 sender: None,
                 group: "g".into(),
                 source: "s".into(),
                 since_millis: NOW - 60_000,
+                was,
                 by: "John".into(),
             }],
             ..Marks::default()
         };
-        let at = |since: i64| -> Warning {
+        let outage = answered(Was::Outage);
+        let at = |since: i64, marks: &Marks| -> Warning {
             let starts: HashMap<FactKey, i64> = facts.iter().map(|k| (k.clone(), since)).collect();
-            outside_normal_warnings(&readings, &snapshot, &starts, &marks, INTERVAL).remove(0)
+            outside_normal_warnings(&readings, &snapshot, &starts, marks, INTERVAL).remove(0)
         };
-        let lowered = at(NOW - 60_000);
-        assert_eq!(lowered.severity, Severity::Info);
+        let marked = at(NOW - 60_000, &outage);
+        assert_eq!((marked.severity, marked.said_normal), (Severity::Info, false));
         assert!(
-            lowered.message.ends_with("lowered to info by John"),
+            marked.message.ends_with("; marked Outage by John"),
             "{}",
-            lowered.message
+            marked.message
+        );
+        let normal = at(NOW - 60_000, &answered(Was::Normal));
+        assert_eq!((normal.severity, normal.said_normal), (Severity::Info, true));
+        assert!(
+            normal.message.ends_with("; marked Normal by John"),
+            "{}",
+            normal.message
         );
         assert_eq!(
-            at(NOW - 30_000).severity,
+            at(NOW - 30_000, &outage).severity,
             Severity::Warning,
             "a warning that began since is a new one"
         );
@@ -4589,7 +4606,7 @@ mod tests {
 
     /// The senders of one source that crossed on one reading are one warning, naming them and how many were judged;
     /// a later crossing is a warning of its own. One that came back is named as back, and a warning whose every
-    /// sender an editor lowered is info.
+    /// sender an editor answered is info.
     #[test]
     fn senders_that_cross_together_are_one_warning() {
         let snapshot = [thread_health_in("g", "w1", "t0", 0, vec![rows_metric("s")])];
@@ -4621,11 +4638,12 @@ mod tests {
             })
             .collect();
         let marks = Marks {
-            lowered: vec![crate::leader::marks::Mark {
+            answers: vec![Mark {
                 sender: Some(sender("action", "deny")),
                 group: "g".into(),
                 source: "s".into(),
                 since_millis: later,
+                was: Was::Outage,
                 by: "John".into(),
             }],
             ..Marks::default()
@@ -4650,7 +4668,7 @@ mod tests {
                 (
                     Some(later),
                     Severity::Info,
-                    "source s: 1 of 4 senders below normal, action deny; action deny lowered to info by John".into()
+                    "source s: 1 of 4 senders below normal, action deny; action deny marked Outage by John".into()
                 ),
             ]
         );
