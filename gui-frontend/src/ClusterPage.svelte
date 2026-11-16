@@ -384,6 +384,17 @@
   /** Only sources' and destinations' rows add up to the selection's: a row goes to every
    * route that matches it, so routes and pipelines can count it more than once. */
   let showsSum = $derived(kind === 'source' || kind === 'destination');
+  const totalsSort = new TableSort<'name' | 'group' | 'source' | 'pipeline' | 'in' | 'out'>();
+  let sortedTableRows = $derived(
+    totalsSort.apply(tableRows, {
+      name: (r) => r.subjectId,
+      group: (r) => r.group,
+      source: (r) => r.source,
+      pipeline: (r) => r.pipeline,
+      in: (r) => r.in,
+      out: (r) => r.out,
+    }),
+  );
   let sumIn = $derived(tableRows.reduce((a, r) => a + r.in, 0));
   let sumOut = $derived(tableRows.reduce((a, r) => a + r.out, 0));
   const amount = (n: number) => (unit === 'rows' ? Math.round(n).toLocaleString() : bytes(n));
@@ -1243,16 +1254,30 @@
           <table>
             <thead
               ><tr
-                ><th>Name</th>
-                <th><WorkerGroupIcon />Worker group</th>
-                {#if kind === 'route'}<th>Source</th><th>Pipeline</th>{/if}
-                <th class="num">{unitWord} {WORDS[kind][0]}</th><th class="num"
-                  >{unitWord} {WORDS[kind][1]}</th
+                ><th aria-sort={totalsSort.aria('name')}
+                  ><SortButton sort={totalsSort} key="name">Name</SortButton></th
+                >
+                <th aria-sort={totalsSort.aria('group')}
+                  ><SortButton sort={totalsSort} key="group"
+                    ><WorkerGroupIcon />Worker group</SortButton
+                  ></th
+                >
+                {#if kind === 'route'}<th aria-sort={totalsSort.aria('source')}
+                    ><SortButton sort={totalsSort} key="source">Source</SortButton></th
+                  ><th aria-sort={totalsSort.aria('pipeline')}
+                    ><SortButton sort={totalsSort} key="pipeline">Pipeline</SortButton></th
+                  >{/if}
+                <th class="num" aria-sort={totalsSort.aria('in')}
+                  ><SortButton sort={totalsSort} key="in">{unitWord} {WORDS[kind][0]}</SortButton
+                  ></th
+                ><th class="num" aria-sort={totalsSort.aria('out')}
+                  ><SortButton sort={totalsSort} key="out">{unitWord} {WORDS[kind][1]}</SortButton
+                  ></th
                 ></tr
               ></thead
             >
             <tbody>
-              {#each tableRows as r (JSON.stringify([r.group, r.subjectId]))}
+              {#each sortedTableRows as r (JSON.stringify([r.group, r.subjectId]))}
                 <tr class:picked-row={isPicked(r)}>
                   <td class="mono"
                     ><button
