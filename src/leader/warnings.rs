@@ -230,9 +230,19 @@ pub struct Warning {
     /// do. `None` on every other condition.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub crossed_millis: Option<i64>,
+    /// An editor said the period a [`Condition::SourceRowsBelow`] began in was normal (`marks::Period`), so the level
+    /// it reads is being learned, and it ends once it is. False on every other condition.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub said_normal: bool,
 }
 
 impl Warning {
+    /// This, with [`Warning::said_normal`] as `said`.
+    pub fn said_normal(mut self, said: bool) -> Self {
+        self.said_normal = said;
+        self
+    }
+
     /// A warning with no `area`, `class` or `type`. A condition that has them sets them on what this returns.
     pub fn new(
         condition: Condition,
@@ -255,6 +265,7 @@ impl Warning {
             r#type: None,
             area: None,
             crossed_millis: None,
+            said_normal: false,
         }
     }
 
@@ -2027,6 +2038,8 @@ pub fn outside_normal_warnings(
             };
             let since_millis = starts.get(&outside_key(r, side)).copied();
             let lowered_by = marks.lowered_by(&r.group, &r.source, None, since_millis);
+            let said_normal =
+                side == throughput::Outside::Below && marks.said_normal(&r.group, &r.source, None, since_millis);
             let severity = match lowered_by {
                 Some(_) => Severity::Info,
                 None => SOURCE_SPANS
@@ -2062,6 +2075,7 @@ pub fn outside_normal_warnings(
                         .unwrap_or_default(),
                 ),
             )
+            .said_normal(said_normal)
         })
         .collect()
 }
@@ -2119,6 +2133,7 @@ pub fn senders_below_warnings(
             }
             Warning {
                 crossed_millis: Some(since),
+                said_normal: false,
                 ..Warning::new(
                     Condition::SendersBelow,
                     SubjectKind::Source,
@@ -5281,6 +5296,7 @@ mod tests {
     fn catalog(condition: Condition, subject_kind: SubjectKind, subject_id: &str, group: &str) -> Warning {
         Warning {
             crossed_millis: None,
+            said_normal: false,
             area: None,
             condition,
             subject_kind,
@@ -6618,6 +6634,7 @@ mod tests {
     fn a_warning_serializes_to_the_wire_spelling() {
         let w = Warning {
             crossed_millis: None,
+            said_normal: false,
             area: None,
             condition: Condition::SourceBlocked,
             subject_kind: SubjectKind::Source,
@@ -7014,6 +7031,7 @@ mod tests {
     fn issue_facts_add_one_for_each_issue_not_on_the_clock() {
         let issue = |condition, subject: &str, group: Option<&str>| Warning {
             crossed_millis: None,
+            said_normal: false,
             condition,
             subject_kind: SubjectKind::Source,
             subject_id: subject.into(),

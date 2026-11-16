@@ -170,8 +170,9 @@ fn in_area(method: &Method, within: &[&str]) -> Option<Level> {
             | ["pipelines", _, "export", "contents"]
             | ["tests"]
             | ["stats"]
-            | ["sources", _, "past"]
+            | ["sources", _, "past" | "chart"]
             | ["sources", _, "senders"]
+            | ["sources", _, "senders", "past" | "chart"]
             | ["lookups", "file" | "mmdb"]
             | [_, _, "connections"],
         ) => Level::Viewer,
@@ -187,7 +188,7 @@ fn in_area(method: &Method, within: &[&str]) -> Option<Level> {
         // What an admin says about a source's rows warning: it changes no configuration and touches no worker.
         (Method::POST, ["sources", _, "lower" | "reset-history" | "mark"])
         | (Method::PUT, ["sources", _, "preset"])
-        | (Method::POST, ["sources", _, "senders", "lower"])
+        | (Method::POST, ["sources", _, "senders", "lower" | "mark"])
         | (Method::PUT, ["sources", _, "senders", "fields"]) => Level::Editor,
 
         // Samples, and what a preview of them shows.
@@ -346,6 +347,7 @@ mod tests {
             "/api/areas/payments/sources/s1/reset-history",
             "/api/areas/payments/sources/s1/mark",
             "/api/areas/payments/sources/s1/senders/lower",
+            "/api/areas/payments/sources/s1/senders/mark",
         ] {
             assert_eq!(need(&Method::POST, path), area("payments", Level::Editor), "{path}");
         }
@@ -355,10 +357,15 @@ mod tests {
         ] {
             assert_eq!(need(&Method::PUT, path), area("payments", Level::Editor), "{path}");
         }
-        assert_eq!(
-            need(&Method::GET, "/api/areas/payments/sources/s1/senders"),
-            area("payments", Level::Viewer)
-        );
+        for path in [
+            "/api/areas/payments/sources/s1/past",
+            "/api/areas/payments/sources/s1/chart",
+            "/api/areas/payments/sources/s1/senders",
+            "/api/areas/payments/sources/s1/senders/past",
+            "/api/areas/payments/sources/s1/senders/chart",
+        ] {
+            assert_eq!(need(&Method::GET, path), area("payments", Level::Viewer), "{path}");
+        }
     }
 
     #[test]

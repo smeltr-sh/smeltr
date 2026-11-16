@@ -1198,6 +1198,7 @@ async fn setup_leader(
             put(smeltr::leader::marks::put_preset),
         )
         .route("/api/areas/:area/sources/:id/past", get(smeltr::leader::marks::past))
+        .route("/api/areas/:area/sources/:id/chart", get(smeltr::leader::marks::chart))
         .route(
             "/api/areas/:area/sources/:id/senders",
             get(smeltr::leader::senders::get),
@@ -1205,6 +1206,18 @@ async fn setup_leader(
         .route(
             "/api/areas/:area/sources/:id/senders/lower",
             post(smeltr::leader::marks::lower_sender),
+        )
+        .route(
+            "/api/areas/:area/sources/:id/senders/mark",
+            post(smeltr::leader::marks::mark_sender),
+        )
+        .route(
+            "/api/areas/:area/sources/:id/senders/past",
+            get(smeltr::leader::marks::past_sender),
+        )
+        .route(
+            "/api/areas/:area/sources/:id/senders/chart",
+            get(smeltr::leader::marks::chart_sender),
         )
         .route(
             "/api/areas/:area/sources/:id/senders/fields",

@@ -390,18 +390,24 @@ was up, so its end is known across a restart and the gap learns a year of quiet
 spells less those that warned. The Status page ranks sources by how far each is
 from the same normal.
 
-An editor in the source's worker group may say any of three things about it.
+An editor in the source's worker group may do any of four things about it.
 Lower turns the warning that is up into info until it ends, and it stays on the
 Issues page for everyone. Reset history forgets what the source read before now,
 so it has no normal until it has enough history again. Normal says a period was
 normal, so it is learned though it warned. Outage says a period was an outage,
-so it is not learned though it did not warn. The source's History tab on the Map
-lists its warnings, including the one that is up, and its longest quiet spells of
-the past year, and each can be marked Normal or Outage. A warning marked Normal
-is learned whole. A window that contains rows marked Normal is learned without
-waiting a width. So marking the warning that is up teaches the level the source
-reads now, and the warning ends once that normal is learned, within the hour.
-The leader keeps each of the three, with who said it.
+so it is not learned though it did not warn. A warning nobody marked is taken
+for an outage, so Outage is what it shows until an editor says Normal. The
+source's History tab on the Map charts its rows against its range, and lists its
+warnings, including the one that is up, and its longest quiet spells of the past
+year; each opens on the rows around it, and each can be marked Normal or Outage.
+It says when a new source is not yet judged, when every day of its week is
+judged alike, and how long the source may go without a row before it warns.
+The warning that is up can be marked from its row on the Issues page too, beside
+Lower. A mark takes the place of any mark of the source it overlaps. A warning
+marked Normal is learned whole. A window that contains rows marked Normal is
+learned without waiting a width. So marking the warning that is up teaches the
+level the source reads now, and the warning ends once that normal is learned,
+within the hour. The leader keeps each mark, with who made it.
 
 A source's senders are judged as the source is. A sender is one value of one
 field of the source's records, such as a firewall's name, or of its stream key
@@ -445,14 +451,20 @@ one source that cross on one reading raise one warning that names them, and a
 sender that crosses later raises another. The warning says which of its senders
 are back within their range, and ends once all of them are.
 
-An editor in the source's worker group lowers one sender's warning to info, and
-a warning all of whose senders were lowered is info. An editor also stops
-watching a field, or adds one the pick cannot offer, such as a number or a
-nested path. New fields are watched until an editor turns off Watch new fields;
-while it is off, a field that comes later is counted but watched only once an
-editor checks it. The source's Senders tab on the Map lists its fields, what the
-pick read of each, and each watched sender's last day against its range. A field
-first counted since the day's pick is listed the same day, as learning.
+An editor in the source's worker group may do to a sender what they do to a
+source, except Reset history: Lower turns one sender's warning to info, and a
+warning all of whose senders were lowered is info; Normal and Outage mark a
+period of one sender. A period marked for the source is marked for each of its
+senders too, and one marked for a sender is marked for that sender only. An
+editor also stops watching a field, or adds one the pick cannot offer, such as
+a number or a nested path. New fields are watched until an editor turns off
+Watch new fields; while it is off, a field that comes later is counted but
+watched only once an editor checks it. The source's Senders tab on the Map lists
+its fields, what the pick read of each, and each watched sender's last day
+against its range and how many warnings it raised in the last 30 days; a sender
+that is below can be lowered or marked from its row. Each sender opens on its
+own chart and its warnings of the past year, as the History tab shows a source.
+A field first counted since the day's pick is listed the same day, as learning.
 
 ## Upgrades
 

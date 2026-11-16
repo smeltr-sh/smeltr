@@ -721,7 +721,13 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/areas/:area/sources/:id/past",
-        what: "The source's Rows below normal warnings that ended in the past year, newest first, and its longest quiet spells of the year, longest first; each with whether its normal learns from it; and the preset it is judged at. The area is the source's worker group. No query.",
+        what: "The source's Rows below normal warnings of the past year, newest first, the one still up, and its longest quiet spells of the year, longest first; each with whether the normal is learned from it; the preset it is judged at; and, while either is to come, when it will first be judged (judgedFromMillis) and when its weekdays will be told apart (weekdaysFromMillis). The area is the source's worker group. No query.",
+        body: "",
+    },
+    Route {
+        method: "GET",
+        path: "/api/areas/:area/sources/:id/chart",
+        what: "The source's rows per second from fromMillis to toMillis, and the range it was expected to read, in points as wide as a chart of that span draws them and no finer than the rows kept then. The area is the source's worker group. Query: fromMillis, toMillis.",
         body: "",
     },
     Route {
@@ -743,9 +749,27 @@ pub const CATALOG: &[Route] = &[
         body: "{ field: string, value: string }",
     },
     Route {
+        method: "GET",
+        path: "/api/areas/:area/sources/:id/senders/past",
+        what: "One sender's Senders below normal warnings of the past year, newest first, the one still up, each with whether the normal is learned from it, the preset the source's senders are judged at, and when it will first be judged and its weekdays told apart, as the source's answer gives them. The area is the source's worker group. Query: field, value.",
+        body: "",
+    },
+    Route {
+        method: "GET",
+        path: "/api/areas/:area/sources/:id/senders/chart",
+        what: "One sender's rows per second from fromMillis to toMillis, and the range it was expected to read, as the source's chart gives them. The area is the source's worker group. Query: field, value, fromMillis, toMillis.",
+        body: "",
+    },
+    Route {
+        method: "POST",
+        path: "/api/areas/:area/sources/:id/senders/mark",
+        what: "Say a past period of one sender was normal or an outage, as the source's mark does, for that sender only. Replaces what was said about any period of that sender it overlaps. The area is the source's worker group. No query.",
+        body: "{ field: string, value: string, fromMillis: number, toMillis: number, was: 'normal' | 'outage' }",
+    },
+    Route {
         method: "POST",
         path: "/api/areas/:area/sources/:id/mark",
-        what: "Say a past period of the source was normal, so its normal learns from it though it warned, or an outage, so its normal does not though it did not warn. Replaces what was said about that same period. The area is the source's worker group. No query.",
+        what: "Say a past period of the source, and of its senders, was normal, so its normal learns from it though it warned, or an outage, so its normal does not though it did not warn. Replaces what was said about any period of the source it overlaps. The area is the source's worker group. No query.",
         body: "{ fromMillis: number, toMillis: number, was: 'normal' | 'outage' }",
     },
     Route {

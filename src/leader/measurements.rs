@@ -666,6 +666,7 @@ mod tests {
     fn warnings_attach_to_their_node() {
         let warning = |condition, subject_kind, id: &str| Warning {
             crossed_millis: None,
+            said_normal: false,
             area: None,
             condition,
             subject_kind,
@@ -713,6 +714,7 @@ mod tests {
     fn a_viewer_reads_only_their_groups() {
         let warning = |group: &str| Warning {
             crossed_millis: None,
+            said_normal: false,
             area: None,
             condition: Condition::WorkerSilent,
             subject_kind: SubjectKind::Worker,
@@ -772,6 +774,7 @@ mod tests {
         .into();
         let warnings = [Warning {
             crossed_millis: None,
+            said_normal: false,
             area: None,
             condition: Condition::SourceBlocked,
             subject_kind: SubjectKind::Source,

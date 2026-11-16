@@ -457,7 +457,14 @@ pub struct SenderNow {
     pub below: bool,
     /// Who lowered its warning that holds to info.
     pub lowered_by: Option<String>,
+    /// An editor said the period its warning that holds began in was normal ([`warnings::Warning::said_normal`]).
+    pub said_normal: bool,
+    /// How many below-normal warnings about it held in the last [`RECENT_DAYS`] days.
+    pub warned: usize,
 }
+
+/// How many days back [`SenderNow::warned`] counts.
+pub const RECENT_DAYS: i64 = 30;
 
 /// `GET /api/areas/:area/sources/:id/senders`: the source's sender fields and their senders.
 pub async fn get(
@@ -544,10 +551,15 @@ impl Now<'_> {
                     .find(|r| r.group == group && r.source == source && r.sender.as_ref() == Some(&key.2));
                 let shown = reading.and_then(Reading::shown).map(throughput::Judged::per_second);
                 let below = reading.is_some_and(|r| r.outside == Some(Outside::Below));
-                let lowered_by = match below {
-                    true => self.lowered_by(&key.2, marks)?,
-                    false => None,
-                };
+                let warned =
+                    warnings::sender_spans(self.store, group, source, &key.2, self.now_ms - RECENT_DAYS * DAY_MS)?;
+                let holds = warned
+                    .iter()
+                    .find(|s| s.ended_millis.is_none())
+                    .map(|s| s.started_millis);
+                let holds = holds.filter(|_| below);
+                let lowered_by = marks.lowered_by(group, source, Some(&key.2), holds).map(str::to_string);
+                let said_normal = marks.said_normal(group, source, Some(&key.2), holds);
                 senders.push(SenderNow {
                     value: key.2.value.clone(),
                     points: of
@@ -560,6 +572,8 @@ impl Now<'_> {
                     high: shown.map(|(_, band)| band.high),
                     below,
                     lowered_by,
+                    said_normal,
+                    warned: warned.len(),
                 });
             }
             senders.sort_by(|a, b| (!a.below, &a.value).cmp(&(!b.below, &b.value)));
@@ -588,17 +602,6 @@ impl Now<'_> {
             watches_new: edited.locked.is_none(),
             preset: marks::presets_of(&marks.presets, group, source).senders,
         })
-    }
-
-    /// Who lowered `sender`'s warning that holds, if anyone did.
-    fn lowered_by(&self, sender: &Sender, marks: &Marks) -> Result<Option<String>, StoreError> {
-        let since = warnings::sender_spans(self.store, self.group, self.source, sender, self.now_ms)?
-            .into_iter()
-            .find(|s| s.ended_millis.is_none())
-            .map(|s| s.started_millis);
-        Ok(marks
-            .lowered_by(self.group, self.source, Some(sender), since)
-            .map(str::to_string))
     }
 }
 

@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::{BUCKET, DAY_MS, MIN_DAYS, NEIGHBORHOOD, Rows, USUAL_DAYS, Warned, Width, quantile};
 
 /// How many weeks the kinds are learned from, each held out in turn, and so how many a grouping must predict.
-const WEEKS: i64 = 4;
+pub(super) const WEEKS: i64 = 4;
 
 /// Days a grouping needs before it is tried: two of each weekday.
 const MIN_GROUPED_DAYS: usize = 14;
@@ -303,7 +303,7 @@ mod tests {
     }
 
     fn nothing_warned() -> Warned {
-        Warned::new("g", "s", Vec::new(), Vec::new(), &Learning::default())
+        Warned::new("g", "s", None, Vec::new(), Vec::new(), &Learning::default())
     }
 
     /// 100 rows a bucket from 06:00 to 20:00 UTC on a working day, a fifth of that at the weekend, and 10 at night.

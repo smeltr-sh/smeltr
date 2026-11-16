@@ -11,12 +11,13 @@
 //! does not warn, until it has [`super::throughput::MIN_DAYS`] days of that.
 //!
 //! A period said to be normal is learned from though it warned, and one said to be an outage is not learned from though
-//! it did not warn. The count widths and the gap learn from the same periods.
+//! it did not warn. The count widths and the gap learn from the same periods. A period of a source is said of its
+//! senders too; one of a sender is said of that sender only.
 //!
 //! All are kept in one setting, with who said each.
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use serde::{Deserialize, Serialize};
 
 use super::AppState;
@@ -124,16 +125,26 @@ pub struct Reset {
     pub by: String,
 }
 
-/// A past period of a source an editor said was normal or an outage.
+/// A past period of a source, or of one of its senders, an editor said was normal or an outage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Period {
     pub group: String,
     pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender: Option<Sender>,
     pub from_millis: i64,
     pub to_millis: i64,
     pub was: Was,
     pub by: String,
+}
+
+impl Period {
+    /// Whether this is said of `group`'s `source`, or of its `sender`: a period of the source is said of its senders
+    /// too.
+    pub fn of(&self, group: &str, source: &str, sender: Option<&Sender>) -> bool {
+        self.group == group && self.source == source && self.sender.as_ref().is_none_or(|of| Some(of) == sender)
+    }
 }
 
 /// What an editor said a past period of a source was.
@@ -163,6 +174,16 @@ impl Marks {
                 .ok()
         })
         .unwrap_or_default()
+    }
+
+    /// Whether an editor said a period of `group`'s `source`, or of its `sender`, that holds `at_millis` was normal: so
+    /// its warning that began then is learned, and ends once that normal is.
+    pub fn said_normal(&self, group: &str, source: &str, sender: Option<&Sender>, at_millis: Option<i64>) -> bool {
+        at_millis.is_some_and(|at| {
+            self.periods.iter().any(|p| {
+                p.was == Was::Normal && p.of(group, source, sender) && (p.from_millis..=p.to_millis).contains(&at)
+            })
+        })
     }
 
     /// Who lowered `group`'s `source`'s rows warning, or its `sender`'s, that began at `since_millis`, if anyone did.
@@ -249,6 +270,14 @@ struct Marking {
 }
 
 impl Marking {
+    /// What it names, as a refusal says it.
+    fn what(&self) -> String {
+        match &self.sender {
+            Some(sender) => format!("sender {} {} of source {}", sender.field, sender.value, self.source),
+            None => format!("source {}", self.source),
+        }
+    }
+
     /// Makes `change` to the stored marks, given when the source's rows warning that holds began, and writes them
     /// with who made it, leaving out every lowered warning that no longer holds. Off the async runtime.
     async fn write(
@@ -323,12 +352,9 @@ pub async fn lower_sender(
 /// Lowers the warning about what `m` marks that began at `since` to info, by `actor`.
 fn lowered(marks: &mut Marks, m: &Marking, since: Option<i64>, actor: &Actor, _: i64) -> Result<(), Refusal> {
     let Some(since) = since else {
-        let what = match &m.sender {
-            Some(sender) => format!("sender {} {} of source {}", sender.field, sender.value, m.source),
-            None => format!("source {}", m.source),
-        };
         return Err(Refusal::not_found(format!(
-            "{what} in {} has no warning to lower",
+            "{} in {} has no warning to lower",
+            m.what(),
             m.group
         )));
     };
@@ -492,8 +518,19 @@ pub struct Marked {
     pub was: Was,
 }
 
-/// `POST /api/areas/:area/sources/:id/mark`: says a past period of the source was normal or an outage, in place of
-/// what was said about that same period. Refused for a period that is empty or not over.
+/// A past period of one sender of a source, and what to mark it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SenderMarked {
+    #[serde(flatten)]
+    pub sender: Sender,
+    #[serde(flatten)]
+    pub marked: Marked,
+}
+
+/// `POST /api/areas/:area/sources/:id/mark`: says a past period of the source, and so of its senders, was normal or an
+/// outage, in place of what was said about any period of the source it overlaps. Refused for a period that is empty
+/// or not over.
 pub async fn mark(
     State(state): State<AppState>,
     actor: Option<axum::Extension<Actor>>,
@@ -508,38 +545,61 @@ pub async fn mark(
     };
     marking
         .write(state, actor, move |marks, m, _, actor, now_ms| {
-            if marked.from_millis >= marked.to_millis || marked.to_millis > now_ms {
-                return Err(Refusal::invalid(format!(
-                    "source {} in {}: a period to mark must end after it begins, and must be over",
-                    m.source, m.group
-                )));
-            }
-            // A period past a year is past what any normal learns from.
-            marks
-                .periods
-                .retain(|p| p.to_millis >= now_ms - YEAR_MS && !p.is(&m.group, &m.source, &marked));
-            marks.periods.push(Period {
-                group: m.group.clone(),
-                source: m.source.clone(),
-                from_millis: marked.from_millis,
-                to_millis: marked.to_millis,
-                was: marked.was,
-                by: actor.display_name.clone(),
-            });
-            Ok(())
+            marks.mark(m, &marked, actor, now_ms)
         })
         .await
 }
 
-impl Period {
-    /// Whether this is `group`'s `source`'s period `marked` names.
-    fn is(&self, group: &str, source: &str, marked: &Marked) -> bool {
-        (
-            self.group.as_str(),
-            self.source.as_str(),
-            self.from_millis,
-            self.to_millis,
-        ) == (group, source, marked.from_millis, marked.to_millis)
+/// `POST /api/areas/:area/sources/:id/senders/mark`: [`mark`] for one sender of the source, and only that sender.
+pub async fn mark_sender(
+    State(state): State<AppState>,
+    actor: Option<axum::Extension<Actor>>,
+    Path((group, source)): Path<(String, String)>,
+    Json(SenderMarked { sender, marked }): Json<SenderMarked>,
+) -> Envelope<Empty> {
+    let marking = Marking {
+        group,
+        source,
+        sender: Some(sender),
+        action: "sender-rows-mark",
+    };
+    marking
+        .write(state, actor, move |marks, m, _, actor, now_ms| {
+            marks.mark(m, &marked, actor, now_ms)
+        })
+        .await
+}
+
+impl Marks {
+    /// Says what `m` names was what `marked` says, by `actor`, in place of what was said about any period of it that
+    /// overlaps: one warning is marked from the Issues page and from History, each with its own end.
+    fn mark(&mut self, m: &Marking, marked: &Marked, actor: &Actor, now_ms: i64) -> Result<(), Refusal> {
+        if marked.from_millis >= marked.to_millis || marked.to_millis > now_ms {
+            return Err(Refusal::invalid(format!(
+                "{} in {}: a period to mark must end after it begins, and must be over",
+                m.what(),
+                m.group
+            )));
+        }
+        // A period past a year is past what any normal learns from.
+        self.periods.retain(|p| {
+            p.to_millis >= now_ms - YEAR_MS
+                && !(p.group == m.group
+                    && p.source == m.source
+                    && p.sender == m.sender
+                    && p.from_millis < marked.to_millis
+                    && marked.from_millis < p.to_millis)
+        });
+        self.periods.push(Period {
+            group: m.group.clone(),
+            source: m.source.clone(),
+            sender: m.sender.clone(),
+            from_millis: marked.from_millis,
+            to_millis: marked.to_millis,
+            was: marked.was,
+            by: actor.display_name.clone(),
+        });
+        Ok(())
     }
 }
 
@@ -549,15 +609,102 @@ pub async fn past(
     State(state): State<AppState>,
     Path((group, source)): Path<(String, String)>,
 ) -> Envelope<throughput::Past> {
+    past_of(state, group, source, None).await
+}
+
+/// `GET /api/areas/:area/sources/:id/senders/past?field=&value=`: [`past`] for one sender of the source.
+pub async fn past_sender(
+    State(state): State<AppState>,
+    Path((group, source)): Path<(String, String)>,
+    Query(sender): Query<Sender>,
+) -> Envelope<throughput::Past> {
+    past_of(state, group, source, Some(sender)).await
+}
+
+/// What [`chart`] and [`chart_sender`] are asked: a span, and for a sender, which.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChartQuery {
+    pub from_millis: i64,
+    pub to_millis: i64,
+}
+
+/// `GET /api/areas/:area/sources/:id/chart?fromMillis=&toMillis=`: the source's rows against its range over a span,
+/// as History draws it around a warning ([`throughput::chart`]).
+pub async fn chart(
+    State(state): State<AppState>,
+    Path((group, source)): Path<(String, String)>,
+    Query(asked): Query<ChartQuery>,
+) -> Envelope<throughput::Chart> {
+    chart_of(state, group, source, None, asked).await
+}
+
+/// `GET /api/areas/:area/sources/:id/senders/chart?field=&value=&fromMillis=&toMillis=`: [`chart`] for one sender of
+/// the source.
+pub async fn chart_sender(
+    State(state): State<AppState>,
+    Path((group, source)): Path<(String, String)>,
+    Query(sender): Query<Sender>,
+    Query(asked): Query<ChartQuery>,
+) -> Envelope<throughput::Chart> {
+    chart_of(state, group, source, Some(sender), asked).await
+}
+
+async fn chart_of(
+    state: AppState,
+    group: String,
+    source: String,
+    sender: Option<Sender>,
+    asked: ChartQuery,
+) -> Envelope<throughput::Chart> {
+    super::blocking_answer(move || {
+        let Some(store) = state.registry.series() else {
+            return Envelope::ok(throughput::Chart::default());
+        };
+        let learning = Learning::read(&state.store);
+        let now_ms = warnings::now_millis();
+        throughput::chart(
+            store,
+            &group,
+            &source,
+            sender.as_ref(),
+            asked.from_millis,
+            asked.to_millis,
+            now_ms,
+            &learning,
+        )
+        .into()
+    })
+    .await
+}
+
+async fn past_of(state: AppState, group: String, source: String, sender: Option<Sender>) -> Envelope<throughput::Past> {
     super::blocking_answer(move || {
         let learning = Learning::read(&state.store);
         let Some(store) = state.registry.series() else {
             return Envelope::ok(throughput::Past {
-                preset: learning.presets_of(&group, &source).rows,
+                preset: learning.presets_of(&group, &source).of(sender.as_ref()),
                 ..throughput::Past::default()
             });
         };
-        throughput::past(store, &group, &source, warnings::now_millis(), &learning).into()
+        let answer = || -> Result<throughput::Past, Refusal> {
+            let now_ms = warnings::now_millis();
+            let mut past = throughput::past(store, &group, &source, sender.as_ref(), now_ms, &learning)?;
+            if sender.is_none() {
+                past.quiet_limit_millis = state
+                    .throughput
+                    .learned()
+                    .and_then(|l| l.quiet_limit_ms(&group, &source));
+            }
+            if let Some(held) = past.warnings.iter_mut().find(|w| w.holds) {
+                let since = holding_since(&state, &group, &source, sender.as_ref(), now_ms)?;
+                held.lowered_by = Marks::read(&state.store)
+                    .lowered_by(&group, &source, sender.as_ref(), since)
+                    .map(str::to_string);
+            }
+            Ok(past)
+        };
+        answer().into()
     })
     .await
 }
@@ -655,6 +802,72 @@ mod tests {
         assert_eq!(marks.presets, []);
     }
 
+    /// A mark takes the place of what was said of any period of the same source, or the same sender, it overlaps, and
+    /// of nothing else.
+    #[test]
+    fn a_mark_replaces_the_marks_it_overlaps_of_the_same_subject() {
+        let fw = Sender {
+            field: "devname".into(),
+            value: "fw-01".into(),
+        };
+        let of = |sender: Option<Sender>| Marking {
+            group: "g".into(),
+            source: "s".into(),
+            sender,
+            action: "test",
+        };
+        let marked = |from_millis, to_millis, was| Marked {
+            from_millis,
+            to_millis,
+            was,
+        };
+        let now = YEAR_MS;
+        let mut marks = Marks::default();
+        let john = Actor::system();
+        marks.mark(&of(None), &marked(10, 20, Was::Normal), &john, now).unwrap();
+        marks
+            .mark(&of(Some(fw.clone())), &marked(10, 20, Was::Normal), &john, now)
+            .unwrap();
+        marks.mark(&of(None), &marked(30, 40, Was::Normal), &john, now).unwrap();
+        marks.mark(&of(None), &marked(15, 25, Was::Outage), &john, now).unwrap();
+        let said: Vec<_> = marks
+            .periods
+            .iter()
+            .map(|p| (p.sender.is_some(), p.from_millis, p.was))
+            .collect();
+        assert_eq!(
+            said,
+            [
+                (true, 10, Was::Normal),
+                (false, 30, Was::Normal),
+                (false, 15, Was::Outage)
+            ],
+            "the source's 10..20 is replaced; its sender's and its 30..40 are not"
+        );
+        assert!(marks.said_normal("g", "s", None, Some(30)));
+        assert!(
+            marks.said_normal("g", "s", Some(&fw), Some(30)),
+            "a source's period is said of its senders"
+        );
+        assert!(marks.said_normal("g", "s", Some(&fw), Some(12)));
+        assert!(
+            !marks.said_normal("g", "s", None, Some(12)),
+            "a sender's period is its own"
+        );
+        assert!(!marks.said_normal("g", "s", None, Some(20)), "an outage");
+        assert!(!marks.said_normal("g", "s", None, None));
+        assert!(
+            marks
+                .mark(&of(None), &marked(5, now + 1, Was::Normal), &john, now)
+                .is_err(),
+            "not over"
+        );
+        assert!(
+            marks.mark(&of(None), &marked(5, 5, Was::Normal), &john, now).is_err(),
+            "empty"
+        );
+    }
+
     #[test]
     fn marks_read_back_as_written_and_unreadable_ones_as_none() {
         let dir = std::env::temp_dir().join(format!("smeltr-marks-{}", std::process::id()));
@@ -670,6 +883,7 @@ mod tests {
             periods: vec![Period {
                 group: "g".into(),
                 source: "s".into(),
+                sender: None,
                 from_millis: 3,
                 to_millis: 5,
                 was: Was::Outage,
