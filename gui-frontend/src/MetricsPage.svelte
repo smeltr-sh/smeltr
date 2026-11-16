@@ -171,7 +171,8 @@
   function issueName(condition: WarningCondition, subject: string): string {
     return `${conditionLabel(condition)}${subject ? `: ${subject}` : ''}`;
   }
-  const timer = setInterval(() => read(view), REFRESH_MS);
+  // A chart in a reply is read once: a long conversation would otherwise keep asking for each of its charts.
+  const timer = inline ? undefined : setInterval(() => read(view), REFRESH_MS);
   onDestroy(() => clearInterval(timer));
 
   function go(next: Partial<MetricsView>) {
