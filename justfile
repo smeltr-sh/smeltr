@@ -65,8 +65,7 @@ build: need-rust frontends
 # of the time `build` takes.
 [doc("Frontends and demo, then unoptimized binaries embedding them: what the GUI tests run.")]
 [group("dev")]
-build-dev: need-rust frontends fips-dll
-    npm --prefix gui-frontend run build:demo
+build-dev: need-rust (frontends "gui" "docs" "demo") fips-dll
     cargo build --bin smeltr --bin smeltr-demo
 
 # Windows loads the AWS-LC FIPS module from a DLL beside each binary, the test binaries in `deps` included
@@ -85,14 +84,14 @@ fips-dll: need-rust
 # The website demo: the GUI over the leader its page plays, in
 # gui-frontend/dist-demo, and the preview service it asks.
 [group("dev")]
-demo: need-rust frontends
-    npm --prefix gui-frontend run build:demo
+demo: need-rust (frontends "gui" "docs" "demo")
     cargo build --release --bin smeltr-demo
 
-# The GUI and the docs its AI agent reads, each built when stale -- what to run when build.rs says one is stale.
+# Builds the frontends `tools/frontends.json` names, or each one the binary embeds when none is named, each only when
+# stale -- what to run when build.rs says one is stale.
 [group("dev")]
-frontends: deps-gui deps-website
-    node tools/build-if-stale.mjs
+frontends *names: deps-gui deps-website
+    node tools/build-if-stale.mjs {{names}}
 
 [private]
 deps-gui: need-node

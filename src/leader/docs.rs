@@ -48,7 +48,7 @@ pub struct Docs(Vec<Page>);
 
 static DOCS: LazyLock<Docs> = LazyLock::new(|| {
     Docs(
-        crate::embedded::file("website", "docs.json").map_or_else(Vec::new, |json| {
+        crate::embedded::file("docs", "docs.json").map_or_else(Vec::new, |json| {
             serde_json::from_slice(json).expect("docs.json is the generator's")
         }),
     )

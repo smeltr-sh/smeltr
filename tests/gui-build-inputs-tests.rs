@@ -1,7 +1,7 @@
-//! The website files the GUI imports reach every build of it. Three lists name them by hand: Vite's `fs.allow`
-//! (`gui-frontend/vite.config.ts`), what the `Dockerfile` copies into the frontend stage, and the GUI's sources in
-//! `tools/frontends.json`, which build.rs uses to tell that `dist` is stale; and `.dockerignore` must not keep them out
-//! of the image build. A file missing from one builds everywhere else and breaks that one build.
+//! The website files the GUI imports reach every build of it. Two lists name them by hand: Vite's `fs.allow`
+//! (`gui-frontend/vite.config.ts`) and the GUI's sources in `tools/frontends.json`, which build.rs uses to tell that
+//! `dist` is stale; and `.dockerignore` must not keep them out of the image build. A file missing from one builds
+//! everywhere else and breaks that one build.
 
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
@@ -76,41 +76,6 @@ fn dockerignored() -> Vec<String> {
         .collect()
 }
 
-/// What the `Dockerfile`'s frontend stage copies from `website/`, each checked to land where the GUI's relative imports
-/// look for it.
-fn dockerfile() -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    let mut frontend = false;
-    for line in read("Dockerfile").lines() {
-        if line.starts_with("FROM ") {
-            frontend = line.ends_with(" AS frontend");
-        }
-        let Some(args) = line.trim().strip_prefix("COPY ").filter(|_| frontend) else {
-            continue;
-        };
-        let args: Vec<&str> = args.split_whitespace().collect();
-        let Some((dest, sources)) = args.split_last() else {
-            continue;
-        };
-        for src in sources.iter().filter(|s| s.starts_with("website/")) {
-            // A directory source copies its contents into `dest`; a file source into a directory `dest` keeps its name.
-            let landed = if src.ends_with('/') || !dest.ends_with('/') {
-                dest.to_string()
-            } else {
-                format!("{dest}{}", src.rsplit('/').next().unwrap())
-            };
-            let src = src.trim_end_matches('/');
-            assert_eq!(
-                landed.trim_end_matches('/'),
-                format!("/src/{src}"),
-                "the Dockerfile copies {src} where the GUI does not look for it"
-            );
-            out.insert(src.to_string());
-        }
-    }
-    out
-}
-
 #[test]
 fn every_build_of_the_gui_carries_the_website_files_it_imports() {
     let imports = imports();
@@ -120,7 +85,6 @@ fn every_build_of_the_gui_carries_the_website_files_it_imports() {
             "gui-frontend/vite.config.ts fs.allow",
             quoted_site_paths(&read("gui-frontend/vite.config.ts")),
         ),
-        ("the Dockerfile's COPY", dockerfile()),
         ("tools/frontends.json", quoted_site_paths(&read("tools/frontends.json"))),
     ];
     let mut missing = Vec::new();

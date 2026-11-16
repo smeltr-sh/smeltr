@@ -25,7 +25,7 @@ fn content_type(path: &str) -> &'static str {
 /// Whether this build carries only the page `gui-frontend/not-built` holds: a real Vite build always emits hashed files
 /// under `assets/`, and this build has none.
 pub fn is_placeholder_only() -> bool {
-    embedded::files("gui-frontend").all(|(path, _)| path == "index.html")
+    embedded::files("gui").all(|(path, _)| path == "index.html")
 }
 
 /// Serves an embedded asset. A path that is plainly not a file falls back
@@ -35,7 +35,7 @@ pub async fn serve(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
 
-    if let Some(bytes) = embedded::file("gui-frontend", path) {
+    if let Some(bytes) = embedded::file("gui", path) {
         return (
             StatusCode::OK,
             [(header::CONTENT_TYPE, content_type(path))],
@@ -49,7 +49,7 @@ pub async fn serve(uri: Uri) -> Response {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     }
 
-    match embedded::file("gui-frontend", "index.html") {
+    match embedded::file("gui", "index.html") {
         Some(bytes) => (
             StatusCode::OK,
             [(header::CONTENT_TYPE, content_type("index.html"))],
@@ -66,7 +66,7 @@ mod tests {
 
     #[test]
     fn there_is_always_an_index() {
-        assert!(embedded::file("gui-frontend", "index.html").is_some());
+        assert!(embedded::file("gui", "index.html").is_some());
     }
 
     #[test]

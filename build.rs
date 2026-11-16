@@ -9,16 +9,23 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// A frontend build the binary embeds, as `tools/frontends.json` names it by its directory. `just` runs it before cargo
-/// (`tools/build-if-stale.mjs`), so its output is never older than its sources.
+/// A frontend build, as `tools/frontends.json` names it. `just` runs it before cargo (`tools/build-if-stale.mjs`), so
+/// its output is never older than its sources.
 #[derive(serde::Deserialize)]
 struct Frontend {
-    /// Its directory, from the checkout's root. The other paths are from here.
     #[serde(skip)]
+    name: String,
+    /// Its directory, from the checkout's root. The other paths are from here.
     dir: String,
     /// The directory its build writes.
     output: String,
     sources: Vec<String>,
+    /// How the binary embeds it; None where the binary does not.
+    embed: Option<Embed>,
+}
+
+#[derive(serde::Deserialize)]
+struct Embed {
     /// What the binary lacks when this frontend was not built.
     missing: String,
     /// A directory the binary holds instead when this frontend was not built.
@@ -39,7 +46,7 @@ fn frontends(manifest: &Path) -> Vec<Frontend> {
     let all: BTreeMap<String, Frontend> =
         serde_json::from_str(&text).expect("tools/frontends.json is not a list of frontends");
     all.into_iter()
-        .map(|(dir, frontend)| Frontend { dir, ..frontend })
+        .map(|(name, frontend)| Frontend { name, ..frontend })
         .collect()
 }
 
@@ -59,7 +66,9 @@ fn main() {
          static FILES: &[(&str, &str, &[u8])] = &[\n",
     );
     for frontend in frontends(&manifest) {
-        embed(&manifest, &frontend, no_gui, &mut src);
+        if let Some(how) = &frontend.embed {
+            embed(&manifest, &frontend, how, no_gui, &mut src);
+        }
     }
     src.push_str("];\n");
     std::fs::write(out_dir.join("embedded.rs"), src).expect("write embedded.rs");
@@ -68,9 +77,9 @@ fn main() {
     println!("cargo:rustc-env=SMELTR_RELEASE={}", release(&manifest, &edits));
 }
 
-/// Adds the frontend's output to `src`'s table as `(dir, path, bytes)`, sorted, or its placeholder when it was not
+/// Adds the frontend's output to `src`'s table as `(name, path, bytes)`, sorted, or its placeholder when it was not
 /// built.
-fn embed(manifest: &Path, frontend: &Frontend, no_gui: bool, src: &mut String) {
+fn embed(manifest: &Path, frontend: &Frontend, how: &Embed, no_gui: bool, src: &mut String) {
     let mut root = frontend.path(manifest, &frontend.output);
     let mut files = Vec::new();
     // Vite content-hashes its output names, so watching the directory is what catches a rename. The sources are watched
@@ -91,10 +100,10 @@ fn embed(manifest: &Path, frontend: &Frontend, no_gui: bool, src: &mut String) {
             println!(
                 "cargo:warning={}/{} is empty or missing, so this binary has no {}. Run \
                  `just build-dev` and build again.",
-                frontend.dir, frontend.output, frontend.missing
+                frontend.dir, frontend.output, how.missing
             );
         }
-        if let Some(placeholder) = &frontend.placeholder {
+        if let Some(placeholder) = &how.placeholder {
             root = frontend.path(manifest, placeholder);
             watch(&root);
             collect(&root, &root, &mut files);
@@ -104,7 +113,7 @@ fn embed(manifest: &Path, frontend: &Frontend, no_gui: bool, src: &mut String) {
     for rel in &files {
         src.push_str(&format!(
             "    ({:?}, {:?}, include_bytes!({:?})),\n",
-            frontend.dir,
+            frontend.name,
             rel.replace('\\', "/"),
             root.join(rel)
         ));

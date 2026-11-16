@@ -4,6 +4,7 @@
 target
 gui-frontend/node_modules
 gui-frontend/dist
+gui-frontend/dist-demo
 website/node_modules
 website/.svelte-kit
 website/build
