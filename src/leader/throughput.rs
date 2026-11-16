@@ -60,11 +60,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use super::marks::Marks;
 use super::senders::{self, Pick, Sender, SenderKey};
 use super::series::{RegistryStore, Silence, SubjectPoints, Swing, Tier, Watch, YEAR_MS};
-use super::store::Store;
 use super::warnings::{self, Condition, SubjectKind, label};
-use super::{AppState, ROWS_IN_METRIC, marks, run_store};
+use super::{AppState, ROWS_IN_METRIC, run_store};
 
 mod week;
 
@@ -217,64 +217,6 @@ pub struct Band {
     pub high: f64,
 }
 
-/// What a normal is learned and judged with: the sources an editor said to learn again from a time on
-/// ([`marks::Reset`]), what an editor answered below-normal warnings were ([`marks::Marks::answers`]), the sender
-/// fields an editor changed ([`marks::SourceFields`]), and the presets an editor picked ([`marks::Picked`]).
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Learning {
-    pub reset: Vec<marks::Reset>,
-    pub answers: Vec<marks::Mark>,
-    pub fields: Vec<marks::SourceFields>,
-    pub presets: Vec<marks::Picked>,
-}
-
-impl Learning {
-    /// The marks as stored.
-    pub fn read(store: &Store) -> Learning {
-        let marks = marks::Marks::read(store);
-        Learning {
-            reset: marks.reset,
-            answers: marks.answers,
-            fields: marks.fields,
-            presets: marks.presets,
-        }
-    }
-
-    /// The presets `group`'s `source`, and its senders, are judged at.
-    pub fn presets_of(&self, group: &str, source: &str) -> Presets {
-        marks::presets_of(&self.presets, group, source)
-    }
-
-    /// Whether `field` of `group`'s `source` is not watched, as an editor left it (`marks::SourceFields::watches`).
-    pub fn unchecked(&self, group: &str, source: &str, field: &str) -> bool {
-        self.fields
-            .iter()
-            .any(|f| f.group == group && f.edits.source == source && !f.watches(field))
-    }
-
-    /// Whether an editor said `group`'s `source`'s below-normal warning, or its `sender`'s, that began at
-    /// `since_millis` was normal.
-    fn said_normal(&self, group: &str, source: &str, sender: Option<&Sender>, since_millis: i64) -> bool {
-        self.answer(group, source, sender, since_millis)
-            .is_some_and(|m| m.was == marks::Was::Normal)
-    }
-
-    /// What an editor answered `group`'s `source`'s below-normal warning, or its `sender`'s, that began at
-    /// `since_millis` was.
-    fn answer(&self, group: &str, source: &str, sender: Option<&Sender>, since_millis: i64) -> Option<&marks::Mark> {
-        marks::answer(&self.answers, group, source, sender, Some(since_millis))
-    }
-
-    /// When `group`'s `source` was last said to learn again from, if it was.
-    fn reset_from(&self, group: &str, source: &str) -> Option<i64> {
-        self.reset
-            .iter()
-            .filter(|r| r.group == group && r.source == source)
-            .map(|r| r.from_millis)
-            .max()
-    }
-}
-
 /// One source's reading at the end of one bucket, or one of its senders'.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reading {
@@ -386,7 +328,7 @@ fn outside(judged: &[Judged], gap: Option<&Gap>, below_held: bool) -> Option<Out
 #[derive(Default)]
 pub struct Readings {
     last: Mutex<Option<Answer>>,
-    learned: Mutex<Option<(i64, Learning, Arc<Learned>)>>,
+    learned: Mutex<Option<(i64, Marks, Arc<Learned>)>>,
     /// The senders picked as of the day it names, read again each day.
     pick: Mutex<Option<Arc<Pick>>>,
     computing: Mutex<()>,
@@ -395,7 +337,7 @@ pub struct Readings {
 /// A source, by its group and id.
 type SourceKey = (String, String);
 
-type Answer = (i64, Learning, Arc<Vec<Reading>>);
+type Answer = (i64, Marks, Arc<Vec<Reading>>);
 
 impl Readings {
     /// Every source with enough history to judge, as of `now_ms`. Waits for every heartbeat sent before
@@ -408,7 +350,7 @@ impl Readings {
         store: &RegistryStore,
         now_ms: i64,
         heartbeat_interval: Duration,
-        learning: &Learning,
+        learning: &Marks,
     ) -> Arc<Vec<Reading>> {
         let ended_ms = ended(now_ms, heartbeat_interval);
         if let Some(fresh) = self.fresh(ended_ms, learning) {
@@ -433,7 +375,7 @@ impl Readings {
     }
 
     /// The answer for the window ending at `ended_ms` learned with `learning`, if that is the one held.
-    fn fresh(&self, ended_ms: i64, learning: &Learning) -> Option<Arc<Vec<Reading>>> {
+    fn fresh(&self, ended_ms: i64, learning: &Marks) -> Option<Arc<Vec<Reading>>> {
         match self.last.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             Some((at, held, readings)) if *at == ended_ms && held == learning => Some(readings.clone()),
             _ => None,
@@ -451,7 +393,7 @@ impl Readings {
 
     /// Every source's normal and gap as of the hour `ended_ms` is in, learned again when that hour or `learning` is
     /// new.
-    fn learned_at(&self, store: &RegistryStore, ended_ms: i64, learning: &Learning) -> Arc<Learned> {
+    fn learned_at(&self, store: &RegistryStore, ended_ms: i64, learning: &Marks) -> Arc<Learned> {
         let as_of = Tier::OneHour.align(ended_ms);
         let mut held = self.learned.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((at, with, learned)) = held.as_ref()
@@ -636,7 +578,7 @@ fn lookback_ms() -> i64 {
 
 /// Every source's normals and gap as of `as_of`, once the quiet spells its rows hold up to then are recorded, and
 /// each watched sender's normals. The senders are picked again when `as_of` is in another day than `pick`'s.
-fn learn(store: &RegistryStore, as_of: i64, learning: &Learning, pick: Option<Arc<Pick>>) -> Learned {
+fn learn(store: &RegistryStore, as_of: i64, learning: &Marks, pick: Option<Arc<Pick>>) -> Learned {
     let oldest = as_of - lookback_ms();
     let buckets = match history(store, BUCKET.and_finer(), BUCKET, oldest) {
         Ok(buckets) => buckets,
@@ -695,7 +637,7 @@ fn sender_normals(
     watched: &[SenderKey],
     oldest: i64,
     as_of: i64,
-    learning: &Learning,
+    learning: &Marks,
 ) -> Result<HashMap<SenderKey, Vec<Normal>>, super::store::StoreError> {
     let mut out = HashMap::new();
     for of_source in watched.chunk_by(|a, b| (&a.0, &a.1) == (&b.0, &b.1)) {
@@ -723,7 +665,7 @@ fn learned(
     of: &BTreeMap<i64, f64>,
     oldest: i64,
     as_of: i64,
-    learning: &Learning,
+    learning: &Marks,
 ) -> Vec<Normal> {
     let rows = Rows::of(of, oldest, as_of);
     let warned = Warned::of(store, &key.0, &key.1, oldest, learning);
@@ -736,7 +678,7 @@ fn learned(
 }
 
 /// [`Readings::at`] without the cache: each source's reading at `ended_ms` against what was `learned`.
-fn compute(store: &RegistryStore, ended_ms: i64, learning: &Learning, learned: &Learned) -> Vec<Reading> {
+fn compute(store: &RegistryStore, ended_ms: i64, learning: &Marks, learned: &Learned) -> Vec<Reading> {
     let widest = WIDTHS.iter().map(|w| w.ms()).max().unwrap_or_default();
     let oldest = ended_ms - (Preset::longest_wait() - 1) * BUCKET.bucket_ms() - widest;
     let buckets = match history(store, BUCKET.and_finer(), BUCKET, oldest) {
@@ -807,7 +749,7 @@ fn sender_readings(
     store: &RegistryStore,
     ended_ms: i64,
     oldest: i64,
-    learning: &Learning,
+    learning: &Marks,
     learned: &Learned,
 ) -> Vec<Reading> {
     let watched: Vec<SenderKey> = learned.senders.keys().cloned().collect();
@@ -936,7 +878,7 @@ struct Warned {
 impl Warned {
     /// `group`'s `source`'s spans since `since_ms`. Warnings the store cannot read are logged and left out: the
     /// normal is then learned from those windows too.
-    fn of(store: &RegistryStore, group: &str, source: &str, since_ms: i64, learning: &Learning) -> Warned {
+    fn of(store: &RegistryStore, group: &str, source: &str, since_ms: i64, learning: &Marks) -> Warned {
         let held = Warned::held(store, group, source, since_ms);
         let stops = held
             .iter()
@@ -957,7 +899,7 @@ impl Warned {
         store: &RegistryStore,
         senders: impl IntoIterator<Item = &'a SenderKey>,
         since_ms: i64,
-        learning: &Learning,
+        learning: &Marks,
     ) -> HashMap<SenderKey, Warned> {
         let mut stops: HashMap<(&str, &str), Spans> = HashMap::new();
         senders
@@ -992,7 +934,7 @@ impl Warned {
         source: &str,
         sender: Option<&Sender>,
         since_ms: i64,
-        learning: &Learning,
+        learning: &Marks,
     ) -> Warned {
         let Some(sender) = sender else {
             return Warned::of(store, group, source, since_ms, learning);
@@ -1016,7 +958,7 @@ impl Warned {
         sender: Option<&Sender>,
         stops: Spans,
         below: Vec<warnings::WarningSpan>,
-        learning: &Learning,
+        learning: &Marks,
     ) -> Warned {
         let reset_from = learning.reset_from(group, source);
         let reset = reset_from.map(|from| (i64::MIN, Some(from)));
@@ -1141,7 +1083,7 @@ pub fn past(
     source: &str,
     sender: Option<&Sender>,
     now_ms: i64,
-    learning: &Learning,
+    learning: &Marks,
 ) -> Result<Past, super::store::StoreError> {
     let year = now_ms - YEAR_MS;
     let warned = Warned::of_subject(store, group, source, sender, year, learning);
@@ -1181,7 +1123,7 @@ pub fn past(
                 learned: learning.said_normal(group, source, sender, s.started_millis),
                 holds: s.ended_millis.is_none(),
                 marked_by: learning
-                    .answer(group, source, sender, s.started_millis)
+                    .answer(group, source, sender, Some(s.started_millis))
                     .map(|m| m.by.clone()),
             })
             .collect(),
@@ -1316,7 +1258,7 @@ fn gaps(
     buckets: &History,
     oldest: i64,
     as_of: i64,
-    learning: &Learning,
+    learning: &Marks,
 ) -> HashMap<SourceKey, GapNormal> {
     let held = match store.watches() {
         Ok(held) => held,
@@ -1435,7 +1377,7 @@ pub fn chart(
     from_ms: i64,
     to_ms: i64,
     now_ms: i64,
-    learning: &Learning,
+    learning: &Marks,
 ) -> Result<Chart, super::store::StoreError> {
     let kept = match now_ms - from_ms <= Tier::FiveMinutes.retention_ms() {
         true => BUCKET.bucket_ms(),
@@ -1496,7 +1438,7 @@ pub fn expected_over(
     since_ms: i64,
     now_ms: i64,
     point_ms: i64,
-    learning: &Learning,
+    learning: &Marks,
 ) -> Result<Vec<ExpectedPoint>, super::store::StoreError> {
     if point_ms < BUCKET.bucket_ms() {
         return match sender {
@@ -1572,7 +1514,7 @@ fn swung_over(
     since_ms: i64,
     now_ms: i64,
     width_ms: i64,
-    learning: &Learning,
+    learning: &Marks,
 ) -> Result<Vec<ExpectedPoint>, super::store::StoreError> {
     let width = BUCKET.bucket_ms();
     let across = NEIGHBORHOOD.as_millis() as i64 / width;
@@ -1743,12 +1685,12 @@ fn quantile(sorted: &[f64], q: f64) -> f64 {
 }
 
 /// Every source's last window against its normal, off the async runtime. The marks are read first
-/// ([`Learning::read`]).
+/// ([`Marks::read`]).
 ///
 /// Without `wait`, a caller holding an earlier answer gets that one at once and the new one is computed behind it:
 /// what a heartbeat asks, which must not wait on a week of history being read.
 pub async fn readings(state: &AppState, now_ms: i64, heartbeat_interval: Duration, wait: bool) -> Arc<Vec<Reading>> {
-    let learning = run_store(state.store.clone(), |s| Ok(Learning::read(s)))
+    let learning = run_store(state.store.clone(), |s| Ok(Marks::read(s)))
         .await
         .unwrap_or_default();
     let cache = state.throughput.clone();
@@ -1770,6 +1712,7 @@ pub async fn readings(state: &AppState, now_ms: i64, heartbeat_interval: Duratio
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::leader::marks;
 
     const FIVE: i64 = 5 * 60 * 1000;
     const HOUR: i64 = 60 * 60 * 1000;
@@ -1792,13 +1735,13 @@ mod tests {
     }
 
     /// The reading at `ended`, against what was learned as of its hour.
-    fn reading_at(store: &RegistryStore, ended: i64, learning: &Learning) -> Option<Reading> {
+    fn reading_at(store: &RegistryStore, ended: i64, learning: &Marks) -> Option<Reading> {
         let learned = learn(store, Tier::OneHour.align(ended), learning, None);
         compute(store, ended, learning, &learned).into_iter().next()
     }
 
     fn reading(store: &RegistryStore) -> Option<Reading> {
-        reading_at(store, END, &Learning::default())
+        reading_at(store, END, &Marks::default())
     }
 
     fn windows(r: &Reading) -> Vec<u64> {
@@ -1824,21 +1767,21 @@ mod tests {
     }
 
     /// What is learned with once an editor picked `preset` for `g`'s `s`, or for its `senders`.
-    fn at_preset(preset: Preset, senders: bool) -> Learning {
+    fn at_preset(preset: Preset, senders: bool) -> Marks {
         let mut presets = Presets::default();
         *if senders {
             &mut presets.senders
         } else {
             &mut presets.rows
         } = preset;
-        Learning {
+        Marks {
             presets: vec![marks::Picked {
                 group: "g".into(),
                 source: "s".into(),
                 presets,
                 by: "John".into(),
             }],
-            ..Learning::default()
+            ..Marks::default()
         }
     }
 
@@ -1862,7 +1805,7 @@ mod tests {
     fn a_source_that_stops_is_below_on_the_last_reading_its_preset_waits_for() {
         let stopped =
             |buckets: i64| store_with(7, move |at| Some(if at >= END - buckets * FIVE { 0.0 } else { 100.0 }));
-        assert_eq!(Learning::default().presets_of("g", "s").rows, Preset::Balanced);
+        assert_eq!(Marks::default().presets_of("g", "s").rows, Preset::Balanced);
         for preset in Preset::ALL {
             let learning = at_preset(preset, false);
             let wait = preset.wait();
@@ -1904,7 +1847,7 @@ mod tests {
     }
 
     /// Each sender's reading at `END`, learned with `learning`, by its value.
-    fn sender_readings_at_end(store: &RegistryStore, learning: &Learning) -> BTreeMap<String, Option<Outside>> {
+    fn sender_readings_at_end(store: &RegistryStore, learning: &Marks) -> BTreeMap<String, Option<Outside>> {
         let learned = learn(store, END, learning, None);
         compute(store, END, learning, &learned)
             .into_iter()
@@ -1920,7 +1863,7 @@ mod tests {
         let store = store_with(7, |at| Some(if stopped(at) { 90.0 } else { 100.0 }));
         send(&store, 7, "fw-01", |at| (!stopped(at)).then_some(10));
         send(&store, 7, "fw-07", |_| Some(90));
-        let read = sender_readings_at_end(&store, &Learning::default());
+        let read = sender_readings_at_end(&store, &Marks::default());
         assert_eq!(read["fw-01"], Some(Outside::Below));
         assert_eq!(read["fw-07"], None);
     }
@@ -1956,8 +1899,8 @@ mod tests {
     }
 
     /// An editor said the below-normal warning of the source, or of one `sender`, that began at `since_ms` was normal.
-    fn said(sender: Option<Sender>, since_ms: i64) -> Learning {
-        Learning {
+    fn said(sender: Option<Sender>, since_ms: i64) -> Marks {
+        Marks {
             answers: vec![marks::Mark {
                 group: "g".into(),
                 source: "s".into(),
@@ -1966,7 +1909,7 @@ mod tests {
                 was: marks::Was::Normal,
                 by: "John".into(),
             }],
-            ..Learning::default()
+            ..Marks::default()
         }
     }
 
@@ -1976,10 +1919,10 @@ mod tests {
     fn a_senders_warning_said_normal_is_learned_and_no_other_is() {
         let (store, dropped) = two_senders_dropped();
         let began = dropped + 6 * FIVE;
-        let read = |learning: &Learning| sender_readings_at_end(&store, learning);
+        let read = |learning: &Marks| sender_readings_at_end(&store, learning);
         let below = Some(Outside::Below);
         let both = BTreeMap::from([("fw-01".into(), below), ("fw-02".into(), below), ("fw-07".into(), None)]);
-        assert_eq!(read(&Learning::default()), both);
+        assert_eq!(read(&Marks::default()), both);
         assert_eq!(read(&said(None, began)), both, "a source's mark is its own");
         assert_eq!(
             read(&said(Some(fw("fw-01")), began + FIVE)),
@@ -1998,13 +1941,13 @@ mod tests {
         let (store, dropped) = two_senders_dropped();
         warned(&store, "source_rows_below", dropped, Some(dropped + HOUR));
         let key = ("g".to_string(), "s".to_string(), fw("fw-07"));
-        let stops = |learning: &Learning| {
+        let stops = |learning: &Marks| {
             Warned::of_senders(&store, [&key], dropped - DAY_MS, learning)
                 .remove(&key)
                 .unwrap()
                 .stops
         };
-        assert_eq!(stops(&Learning::default()), [(dropped, Some(dropped + HOUR))]);
+        assert_eq!(stops(&Marks::default()), [(dropped, Some(dropped + HOUR))]);
         assert_eq!(stops(&said(None, dropped)), []);
     }
 
@@ -2014,8 +1957,8 @@ mod tests {
     fn a_senders_past_lists_its_own_warnings() {
         let (store, dropped) = two_senders_dropped();
         let past_of =
-            |sender: &str, learning: &Learning| past(&store, "g", "s", Some(&fw(sender)), END, learning).unwrap();
-        let unmarked = past_of("fw-01", &Learning::default());
+            |sender: &str, learning: &Marks| past(&store, "g", "s", Some(&fw(sender)), END, learning).unwrap();
+        let unmarked = past_of("fw-01", &Marks::default());
         assert_eq!(
             (unmarked.warnings, unmarked.silences, unmarked.preset),
             (
@@ -2030,7 +1973,7 @@ mod tests {
                 Presets::default().senders,
             )
         );
-        assert!(past_of("fw-07", &Learning::default()).warnings.is_empty());
+        assert!(past_of("fw-07", &Marks::default()).warnings.is_empty());
         let marked = said(Some(fw("fw-01")), dropped + 6 * FIVE);
         let said = &past_of("fw-01", &marked).warnings[0];
         assert!(said.learned);
@@ -2047,16 +1990,16 @@ mod tests {
     fn a_past_says_when_a_new_source_is_judged_and_its_weekdays_told_apart() {
         // Its first row two days before `END`.
         let new = store_with(1, |_| Some(100.0));
-        let learning = |store: &RegistryStore, learning: &Learning| {
+        let learning = |store: &RegistryStore, learning: &Marks| {
             let past = past(store, "g", "s", None, END, learning).unwrap();
             (past.judged_from_millis, past.weekdays_from_millis)
         };
         assert_eq!(
-            learning(&new, &Learning::default()),
+            learning(&new, &Marks::default()),
             (Some(END + DAY_MS), Some(END + 26 * DAY_MS))
         );
         let old = store_with(30, |_| Some(100.0));
-        assert_eq!(learning(&old, &Learning::default()), (None, None));
+        assert_eq!(learning(&old, &Marks::default()), (None, None));
         let reset = reset_at(END - DAY_MS);
         assert_eq!(
             learning(&old, &reset),
@@ -2076,7 +2019,7 @@ mod tests {
             END - HOUR,
             END,
             END,
-            &Learning::default(),
+            &Marks::default(),
         )
         .unwrap();
         assert_eq!(hour.point_millis, FIVE);
@@ -2094,7 +2037,7 @@ mod tests {
             dropped - DAY_MS,
             dropped,
             END,
-            &Learning::default(),
+            &Marks::default(),
         )
         .unwrap();
         assert!(before.points.iter().all(|&(_, rows)| rows == 10.0 / 300.0));
@@ -2108,7 +2051,7 @@ mod tests {
         let store = store_with(7, |at| Some(if stopped(at) { 90.0 } else { 100.0 }));
         send(&store, 7, "fw-01", |at| (!stopped(at)).then_some(10));
         send(&store, 7, "fw-07", |_| Some(90));
-        let below = |learning: &Learning| sender_readings_at_end(&store, learning)["fw-01"] == Some(Outside::Below);
+        let below = |learning: &Marks| sender_readings_at_end(&store, learning)["fw-01"] == Some(Outside::Below);
         assert!(!below(&at_preset(Preset::Fast, false)));
         assert!(below(&at_preset(Preset::Fast, true)));
     }
@@ -2120,7 +2063,7 @@ mod tests {
         let store = store_with(7, |at| Some(if stopped(at) { 0.0 } else { 100.0 }));
         send(&store, 7, "fw-01", |at| (!stopped(at)).then_some(10));
         send(&store, 7, "fw-07", |at| (!stopped(at)).then_some(90));
-        assert_eq!(sender_readings_at_end(&store, &Learning::default()), BTreeMap::new());
+        assert_eq!(sender_readings_at_end(&store, &Marks::default()), BTreeMap::new());
     }
 
     /// A field the pipeline stops delivering, as after a change renames it, leaves its senders unjudged; a field still
@@ -2134,7 +2077,7 @@ mod tests {
         send(&store, 7, "fw-01", |at| (!stopped(at)).then_some(10));
         send(&store, 7, "fw-07", |at| (!stopped(at)).then_some(90));
         assert!(
-            !sender_readings_at_end(&store, &Learning::default())
+            !sender_readings_at_end(&store, &Marks::default())
                 .values()
                 .any(|o| *o == Some(Outside::Below)),
             "no worker counted the field"
@@ -2152,7 +2095,7 @@ mod tests {
         for at in (END - wait * FIVE..=END).step_by(FIVE as usize) {
             store.record_streams("g", &counted, true, None, at).unwrap();
         }
-        let read = sender_readings_at_end(&store, &Learning::default());
+        let read = sender_readings_at_end(&store, &Marks::default());
         assert_eq!(read["fw-01"], Some(Outside::Below));
         assert_eq!(read["fw-07"], Some(Outside::Below));
     }
@@ -2186,7 +2129,7 @@ mod tests {
         // holds a sixth of its rows.
         let ended = END - FIVE;
         let store = store_with(29, |at| Some(if at >= END - 5 * HOUR { 0.0 } else { 1.0 }));
-        let r = reading_at(&store, ended, &Learning::default()).unwrap();
+        let r = reading_at(&store, ended, &Marks::default()).unwrap();
         assert_eq!(windows(&r), [360, 1440]);
         assert_eq!(r.outside, Some(Outside::Below));
         assert_eq!(r.shown().unwrap().window, WIDTHS[2].window);
@@ -2238,7 +2181,7 @@ mod tests {
         let wait = Preset::Balanced.wait();
         let dropped = |at: i64| (thursday - wait * FIVE..thursday).contains(&at);
         let store = store_with(29, |at| Some(if dropped(at) { 20.0 } else { office(at) }));
-        let learning = Learning::default();
+        let learning = Marks::default();
         assert_eq!(
             reading_at(&store, thursday, &learning).unwrap().outside,
             Some(Outside::Below)
@@ -2261,7 +2204,7 @@ mod tests {
         });
         // A field with one value is not watched.
         send(&store, 29, "fw-07", |_| Some(900));
-        let learning = Learning::default();
+        let learning = Marks::default();
         let learned = learn(&store, Tier::OneHour.align(thursday), &learning, None);
         let read: BTreeMap<Option<String>, Option<Outside>> = compute(&store, thursday, &learning, &learned)
             .into_iter()
@@ -2312,7 +2255,7 @@ mod tests {
     fn a_reading_is_reused_until_the_next_bucket() {
         let store = store_with(7, |_| Some(100.0));
         let readings = Readings::default();
-        let none = Learning::default();
+        let none = Marks::default();
         let first = readings.at(&store, END + 60_000, Duration::from_secs(1), &none);
         let again = readings.at(&store, END + 2 * 60_000, Duration::from_secs(1), &none);
         assert!(Arc::ptr_eq(&first, &again));
@@ -2321,15 +2264,15 @@ mod tests {
         assert!(!Arc::ptr_eq(&first, &other));
     }
 
-    fn reset_at(from_millis: i64) -> Learning {
-        Learning {
+    fn reset_at(from_millis: i64) -> Marks {
+        Marks {
             reset: vec![marks::Reset {
                 group: "g".into(),
                 source: "s".into(),
                 from_millis,
                 by: "John".into(),
             }],
-            ..Learning::default()
+            ..Marks::default()
         }
     }
 
@@ -2385,7 +2328,7 @@ mod tests {
 
     /// Whether the normal as of END learns the `width` window that ended at `ended`.
     fn learns(store: &RegistryStore, ended: i64, width: Width) -> bool {
-        let warned = Warned::of(store, "g", "s", END - lookback_ms(), &Learning::default());
+        let warned = Warned::of(store, "g", "s", END - lookback_ms(), &Marks::default());
         !warned.during(ended, width.ms())
     }
 
@@ -2478,10 +2421,7 @@ mod tests {
         for dropped in [END - 6 * HOUR, END - 6 * DAY_MS] {
             let store = store_with(29, |at| Some(if at >= dropped { 30.0 } else { 100.0 }));
             warned(&store, "source_rows_below", dropped + 4 * FIVE, None);
-            let held = past(&store, "g", "s", None, END, &Learning::default())
-                .unwrap()
-                .warnings[0]
-                .clone();
+            let held = past(&store, "g", "s", None, END, &Marks::default()).unwrap().warnings[0].clone();
             assert_eq!(
                 (held.from_millis, held.to_millis, held.learned),
                 (dropped + 4 * FIVE, END, false)
@@ -2540,7 +2480,7 @@ mod tests {
         let key = serde_json::to_string(&[("group", "g"), ("source", "s"), ("worker", "w")]).unwrap();
         let store = store_with(0, |at| (at >= END - HOUR).then_some(100.0));
         let readings = Readings::default();
-        let none = Learning::default();
+        let none = Marks::default();
         assert!(
             readings
                 .at(&store, END + 60_000, Duration::from_secs(1), &none)
@@ -2562,17 +2502,7 @@ mod tests {
     }
 
     fn expected(store: &RegistryStore, since_ms: i64, point_ms: i64) -> Vec<ExpectedPoint> {
-        expected_over(
-            store,
-            "g",
-            "s",
-            None,
-            since_ms,
-            END + 1000,
-            point_ms,
-            &Learning::default(),
-        )
-        .unwrap()
+        expected_over(store, "g", "s", None, since_ms, END + 1000, point_ms, &Marks::default()).unwrap()
     }
 
     #[test]
@@ -2630,7 +2560,7 @@ mod tests {
             END - HOUR,
             END + 1000,
             BUCKET.bucket_ms(),
-            &Learning::default(),
+            &Marks::default(),
         );
         assert_eq!(none.unwrap(), Vec::new());
     }
@@ -2712,17 +2642,8 @@ mod tests {
         }
         store.record_swings(&swings).unwrap();
         for (width, band) in [(10_000, (4.0, 16.0)), (60_000, (8.0, 12.0))] {
-            let points = expected_over(
-                &store,
-                "g",
-                "s",
-                None,
-                END - HOUR,
-                END + 1000,
-                width,
-                &Learning::default(),
-            )
-            .unwrap();
+            let points =
+                expected_over(&store, "g", "s", None, END - HOUR, END + 1000, width, &Marks::default()).unwrap();
             assert_eq!(points.len(), 13);
             assert!(points.iter().all(|p| (p.low, p.high) == band), "at {width}: {points:?}");
         }
@@ -2867,17 +2788,16 @@ mod tests {
                 0.0
             })
         });
-        let longest = |store: &RegistryStore, learning: &Learning| {
-            reading_at(store, END, learning).unwrap().gap.unwrap().longest_ms
-        };
-        assert_eq!(longest(&store, &Learning::default()), 107 * FIVE);
+        let longest =
+            |store: &RegistryStore, learning: &Marks| reading_at(store, END, learning).unwrap().gap.unwrap().longest_ms;
+        assert_eq!(longest(&store, &Marks::default()), 107 * FIVE);
         warned(
             &store,
             "source_rows_below",
             long + 3 * HOUR,
             Some(long + 6 * HOUR + FIVE),
         );
-        assert_eq!(longest(&store, &Learning::default()), 35 * FIVE);
+        assert_eq!(longest(&store, &Marks::default()), 35 * FIVE);
         assert_eq!(longest(&store, &said(None, long + 3 * HOUR)), 107 * FIVE);
     }
 
@@ -2888,14 +2808,12 @@ mod tests {
         warned(&store, "source_rows_below", END - HOUR, None);
         let key = serde_json::to_string(&[("group", "g"), ("source", "s"), ("worker", "w")]).unwrap();
         store.record_delta(ROWS_IN_METRIC, &key, END, 1.0).unwrap();
-        let r = reading_at(&store, END + FIVE, &Learning::default()).unwrap();
+        let r = reading_at(&store, END + FIVE, &Marks::default()).unwrap();
         assert_eq!(r.gap.unwrap().silence_ms, 0);
         assert_eq!(r.outside, None);
         store.record_delta(ROWS_IN_METRIC, &key, END + FIVE, 1.0).unwrap();
         assert_eq!(
-            reading_at(&store, END + 2 * FIVE, &Learning::default())
-                .unwrap()
-                .outside,
+            reading_at(&store, END + 2 * FIVE, &Marks::default()).unwrap().outside,
             None,
             "the warning ends at a later reading, though the source's last row ended no quiet spell"
         );
@@ -2903,7 +2821,7 @@ mod tests {
         // Neither a bucket nobody reported nor a stop's end is a row: the warning holds through each.
         let held = |store: &RegistryStore| {
             warned(store, "source_rows_below", END - HOUR, None);
-            reading_at(store, END, &Learning::default()).unwrap().outside
+            reading_at(store, END, &Marks::default()).unwrap().outside
         };
         let skipped = store_with(35, |at| {
             (at != END - FIVE).then_some(if at % (3 * HOUR) == 0 && at < silent { 1.0 } else { 0.0 })
@@ -2926,10 +2844,7 @@ mod tests {
                 })
             });
             warned(&store, "source_rows_below", END - HOUR, None);
-            let gap = reading_at(&store, END - FIVE, &Learning::default())
-                .unwrap()
-                .gap
-                .unwrap();
+            let gap = reading_at(&store, END - FIVE, &Marks::default()).unwrap().gap.unwrap();
             assert!(
                 gap.below() && gap.edge_ms > DAY_MS,
                 "the source may be quiet longer than a day"
@@ -2940,7 +2855,7 @@ mod tests {
         let read = quiet();
         read.record_delta(ROWS_IN_METRIC, &key, END, 1.0).unwrap();
         assert_eq!(
-            reading_at(&read, END + FIVE, &Learning::default()).unwrap().outside,
+            reading_at(&read, END + FIVE, &Marks::default()).unwrap().outside,
             None,
             "the reading after the row ends it"
         );
@@ -2948,7 +2863,7 @@ mod tests {
         missed.record_delta(ROWS_IN_METRIC, &key, END - FIVE, 1.0).unwrap();
         missed.record_delta(ROWS_IN_METRIC, &key, END, 1.0).unwrap();
         assert_eq!(
-            reading_at(&missed, END + FIVE, &Learning::default()).unwrap().outside,
+            reading_at(&missed, END + FIVE, &Marks::default()).unwrap().outside,
             None,
             "the warning ends at a reading in the next hour, though no reading in the row's hour came after the row"
         );
@@ -2973,7 +2888,7 @@ mod tests {
         reading(&store);
         warned(&store, "source_rows_below", END - 9 * DAY_MS, Some(END - 8 * DAY_MS));
         warned(&store, "source_rows_below", END - HOUR, None);
-        let past = past(&store, "g", "s", None, END, &Learning::default()).unwrap();
+        let past = past(&store, "g", "s", None, END, &Marks::default()).unwrap();
         let span = |from_millis, to_millis| PastSpan {
             from_millis,
             to_millis,

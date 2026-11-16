@@ -419,7 +419,7 @@ mod tests {
         Live {
             snapshot,
             heartbeat_interval: BEAT,
-            learning: crate::leader::throughput::Learning::default(),
+            learning: crate::leader::marks::Marks::default(),
         }
     }
 

@@ -223,7 +223,7 @@ async fn get_map_measurements(
         let live = smeltr::leader::stats::Live {
             snapshot: &snapshot,
             heartbeat_interval: smeltr::startup_config::leader_heartbeat_interval(),
-            learning: smeltr::leader::throughput::Learning::default(),
+            learning: smeltr::leader::marks::Marks::default(),
         };
         Ok(Measurements {
             commit: Some(commit),
@@ -296,7 +296,7 @@ async fn get_stats(
                     let live = smeltr::leader::stats::Live {
                         snapshot: &snapshot,
                         heartbeat_interval: smeltr::startup_config::leader_heartbeat_interval(),
-                        learning: smeltr::leader::throughput::Learning::read(&state.store),
+                        learning: smeltr::leader::marks::Marks::read(&state.store),
                     };
                     smeltr::leader::stats::build(&group, &system, kind, &id, window, state.registry.series(), live)
                 }

@@ -22,7 +22,7 @@ use super::envelope::{Empty, Envelope, Refusal};
 use super::senders::Sender;
 use super::series::YEAR_MS;
 use super::store::{Actor, Store};
-use super::throughput::{self, Learning, Preset, Presets};
+use super::throughput::{self, Preset, Presets};
 use super::warnings::{self, Condition, SubjectKind};
 use crate::heartbeat::SenderFields;
 
@@ -122,14 +122,6 @@ pub struct Picked {
     pub by: String,
 }
 
-/// The presets `group`'s `source`, and its senders, are judged at, as `picked`.
-pub fn presets_of(picked: &[Picked], group: &str, source: &str) -> Presets {
-    picked
-        .iter()
-        .find(|p| p.group == group && p.source == source)
-        .map_or_else(Presets::default, |p| p.presets)
-}
-
 /// A source whose normal `by` said to learn again from `from_millis` on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -187,9 +179,40 @@ impl Marks {
         answer(&self.answers, group, source, sender, since_millis)
     }
 
+    /// Whether an editor answered `group`'s `source`'s below-normal warning, or its `sender`'s, that began at
+    /// `since_millis` was normal.
+    pub fn said_normal(&self, group: &str, source: &str, sender: Option<&Sender>, since_millis: i64) -> bool {
+        self.answer(group, source, sender, Some(since_millis))
+            .is_some_and(|m| m.was == Was::Normal)
+    }
+
+    /// When `group`'s `source` was last said to learn again from, if it was.
+    pub fn reset_from(&self, group: &str, source: &str) -> Option<i64> {
+        self.reset
+            .iter()
+            .filter(|r| r.group == group && r.source == source)
+            .map(|r| r.from_millis)
+            .max()
+    }
+
+    /// The presets `group`'s `source`, and its senders, are judged at.
+    pub fn presets_of(&self, group: &str, source: &str) -> Presets {
+        self.presets
+            .iter()
+            .find(|p| p.group == group && p.source == source)
+            .map_or_else(Presets::default, |p| p.presets)
+    }
+
+    /// Whether `field` of `group`'s `source` is not watched, as an editor left it ([`SourceFields::watches`]).
+    pub fn unchecked(&self, group: &str, source: &str, field: &str) -> bool {
+        self.fields
+            .iter()
+            .any(|f| f.group == group && f.edits.source == source && !f.watches(field))
+    }
+
     /// Picks `picking` for `group`'s `source`, by `by`, keeping the preset it does not name.
     fn pick(&mut self, group: &str, source: &str, picking: Picking, by: &str) {
-        let was = presets_of(&self.presets, group, source);
+        let was = self.presets_of(group, source);
         let presets = Presets {
             rows: picking.rows.unwrap_or(was.rows),
             senders: picking.senders.unwrap_or(was.senders),
@@ -574,7 +597,7 @@ async fn chart_of(
         let Some(store) = state.registry.series() else {
             return Envelope::ok(throughput::Chart::default());
         };
-        let learning = Learning::read(&state.store);
+        let learning = Marks::read(&state.store);
         let now_ms = warnings::now_millis();
         throughput::chart(
             store,
@@ -593,7 +616,7 @@ async fn chart_of(
 
 async fn past_of(state: AppState, group: String, source: String, sender: Option<Sender>) -> Envelope<throughput::Past> {
     super::blocking_answer(move || {
-        let learning = Learning::read(&state.store);
+        let learning = Marks::read(&state.store);
         let Some(store) = state.registry.series() else {
             return Envelope::ok(throughput::Past {
                 preset: learning.presets_of(&group, &source).of(sender.as_ref()),
@@ -726,8 +749,8 @@ mod tests {
             rows: Preset::Quiet,
             senders: Preset::Sensitive,
         };
-        assert_eq!(presets_of(&marks.presets, "g", "s"), expected);
-        assert_eq!(presets_of(&marks.presets, "g", "other"), Presets::default());
+        assert_eq!(marks.presets_of("g", "s"), expected);
+        assert_eq!(marks.presets_of("g", "other"), Presets::default());
         let back = Presets::default();
         marks.pick("g", "s", pick(Some(back.rows), Some(back.senders)), "John");
         assert_eq!(marks.presets, []);

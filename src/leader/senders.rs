@@ -481,7 +481,7 @@ pub async fn get(
         let marks = Marks::read(&state.store);
         let Some(store) = state.registry.series() else {
             return Envelope::ok(SourceSenders {
-                preset: marks::presets_of(&marks.presets, &group, &source).senders,
+                preset: marks.presets_of(&group, &source).senders,
                 ..SourceSenders::default()
             });
         };
@@ -605,7 +605,7 @@ impl Now<'_> {
         Ok(SourceSenders {
             fields,
             watches_new: edited.locked.is_none(),
-            preset: marks::presets_of(&marks.presets, group, source).senders,
+            preset: marks.presets_of(group, source).senders,
         })
     }
 }

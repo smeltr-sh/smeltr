@@ -66,7 +66,7 @@ pub struct Live<'a> {
     /// What the fleet was told to beat at, which is what says when a report is too old to count.
     pub heartbeat_interval: Duration,
     /// What a source's expected band is learned with.
-    pub learning: throughput::Learning,
+    pub learning: crate::leader::marks::Marks,
 }
 
 /// One bucket of a [`Spread`]: when it started and what it measured.
@@ -947,7 +947,7 @@ mod tests {
         Live {
             snapshot: &[],
             heartbeat_interval: BEAT,
-            learning: throughput::Learning::default(),
+            learning: crate::leader::marks::Marks::default(),
         }
     }
 
@@ -1053,7 +1053,7 @@ mod tests {
             Live {
                 snapshot,
                 heartbeat_interval: BEAT,
-                learning: throughput::Learning::default(),
+                learning: crate::leader::marks::Marks::default(),
             },
         )
         .body
