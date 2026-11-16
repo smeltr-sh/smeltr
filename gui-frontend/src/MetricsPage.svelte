@@ -4,7 +4,7 @@
   hash (`metricsView.ts`), so a view is a link, and the agent hands one over.
 -->
 <script lang="ts">
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
   import Segmented from './Segmented.svelte';
@@ -105,7 +105,8 @@
   async function read(asked: MetricsView) {
     // Which labels each metric carries decides which filters it takes, so the first read waits for them.
     const listed = readMetrics();
-    if (metrics === null) await listed;
+    // Untracked: the list arriving must not set the effect that calls this asking again.
+    if (untrack(() => metrics) === null) await listed;
     try {
       const offset = -new Date().getTimezoneOffset();
       const each = (ago: number) =>
