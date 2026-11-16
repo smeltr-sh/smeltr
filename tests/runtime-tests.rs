@@ -22,7 +22,7 @@ use smeltr::plan::topology::{
     CompiledTopology, DeliverRule, RouteConfig, SourceMeta, SourceMetas, compile_topology, compile_topology_with,
 };
 use smeltr::runtime::{
-    DROPPED_REJECTED, DROPPED_UNPROCESSABLE, DestinationTarget, MAX_IN_FLIGHT, MAX_TRACKED, Polled, Reader, Worker,
+    DROPPED_REJECTED, DROPPED_UNPROCESSABLE, DestinationTarget, MAX_IN_FLIGHT, Polled, Reader, TRACKED_BYTES, Worker,
 };
 
 use crate::harness;
@@ -3102,7 +3102,9 @@ fn the_in_flight_queue_is_bounded() {
 #[test]
 fn a_byte_budget_lets_small_batches_run_past_the_batch_floor() {
     let dest = AsyncDestination::new();
-    let src = FakeSource::new([record("{}", 0, 0)]);
+    // Each batch reads more than tracking it costs, so what they read is what binds.
+    let raw = format!("{{\"a\":\"{}\"}}", "x".repeat(TRACKED_BYTES));
+    let src = FakeSource::new([record(&raw, 0, 0)]);
     let mut w = async_worker(&dest, &src);
     tick(&mut w).unwrap();
     let batch = w.reader.commits.bytes();
@@ -3112,37 +3114,56 @@ fn a_byte_budget_lets_small_batches_run_past_the_batch_floor() {
     w.reader.byte_budget = batch * batches + 1;
 
     for i in 1..batches as i64 {
-        src.requeue([record("{}", i, 0)]);
+        src.requeue([record(&raw, i, 0)]);
         tick(&mut w).unwrap();
     }
     assert_eq!(w.reader.commits.depth(), batches, "every batch outstanding");
     assert!(src.committed().is_empty(), "nothing forced out under the budget");
 
-    src.requeue([record("{}", batches as i64, 0)]);
+    src.requeue([record(&raw, batches as i64, 0)]);
     tick(&mut w).unwrap();
     assert!(!src.committed().is_empty(), "at the budget, backpressure flushes");
 }
 
-/// Batches that count no bytes still stop the reader, at `MAX_TRACKED`.
+/// Batches that read nothing still stop the reader, once what tracking them costs fills its byte budget.
 #[test]
-fn batches_of_empty_records_stop_at_the_batch_ceiling() {
+fn batches_of_empty_records_stop_at_what_tracking_them_costs() {
     let dest = AsyncDestination::new();
     let src = FakeSource::new([record("", 0, 0)]);
     let mut w = async_worker(&dest, &src);
     tick(&mut w).unwrap();
     assert_eq!(w.reader.commits.bytes(), 0, "an empty record reads nothing");
-    w.reader.byte_budget = usize::MAX;
+    let batches = MAX_IN_FLIGHT + 4;
+    w.reader.byte_budget = batches * TRACKED_BYTES + 1;
 
-    for i in 1..=MAX_TRACKED as i64 {
+    for i in 1..batches as i64 {
         src.requeue([record("", i, 0)]);
         tick(&mut w).unwrap();
     }
-    assert!(
-        w.reader.commits.depth() <= MAX_TRACKED,
-        "depth {} past the ceiling",
-        w.reader.commits.depth()
-    );
-    assert!(!src.committed().is_empty(), "at the ceiling, backpressure flushes");
+    assert_eq!(w.reader.commits.depth(), batches, "every batch outstanding");
+    assert!(src.committed().is_empty(), "nothing forced out under the budget");
+
+    src.requeue([record("", batches as i64, 0)]);
+    tick(&mut w).unwrap();
+    assert!(!src.committed().is_empty(), "at the budget, backpressure flushes");
+}
+
+/// A busy source's many small batches read on while a destination holds them all, as one finishing a file does: the
+/// byte budget binds, not their number.
+#[test]
+fn many_small_batches_read_on_under_the_byte_budget() {
+    let dest = AsyncDestination::new();
+    let src = FakeSource::new([record("{}", 0, 0)]);
+    let mut w = async_worker(&dest, &src);
+    tick(&mut w).unwrap();
+    w.reader.byte_budget = 64 * 1024 * 1024;
+
+    for i in 1..=2048 {
+        src.requeue([record("{}", i, 0)]);
+        tick(&mut w).unwrap();
+    }
+    assert_eq!(w.reader.commits.depth(), 2049, "every batch outstanding");
+    assert!(src.committed().is_empty(), "nothing forced out under the budget");
 }
 
 /// A refused dispatch keeps the batch, blocks the source, and re-runs it ahead of any poll; the block clears once it is acknowledged.
