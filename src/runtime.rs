@@ -124,10 +124,11 @@ fn unprocessable_block_reason(rows: usize, why: &str) -> String {
 /// rows are bounded by the destination's egress queue.
 pub const MAX_IN_FLIGHT: usize = 4;
 
-/// The most batches a reader may have outstanding, whatever they hold: a batch of empty records counts no bytes against
-/// the budget, and each costs the tracker its own entry. Over eight minutes of half-second polls, past any file
-/// interval.
-pub const MAX_TRACKED: usize = 1024;
+/// What one outstanding batch costs the commit tracker, at most: its entry, its offsets and the destinations it waits
+/// on. Each outstanding batch is charged this much against the reader's byte budget, so batches that read nothing stop
+/// it too. The charge is kept apart from what the batches read: a destination that finishes a file when its buffer
+/// fills must see the reader reach that much.
+pub const TRACKED_BYTES: usize = 1024;
 
 /// A destination a route's `deliver` rules (bit `id` of a row's mask) can send rows to. Carries the per-destination
 /// config `place_rows` needs, because it has the target in hand and not the topology.
@@ -810,11 +811,12 @@ impl Reader {
         self
     }
 
-    /// Whether the outstanding batches stop the reader: past `max_in_flight` of them and past the byte budget, or past
-    /// [`MAX_TRACKED`].
+    /// Whether the outstanding batches stop the reader: past `max_in_flight` of them, and past the byte budget in what
+    /// they read or in what tracking them costs ([`TRACKED_BYTES`]).
     pub fn over_depth(&self) -> bool {
         let depth = self.commits.depth();
-        depth > MAX_TRACKED || (depth > self.max_in_flight && self.commits.bytes() >= self.byte_budget)
+        let budget = self.byte_budget;
+        depth > self.max_in_flight && (self.commits.bytes() >= budget || depth * TRACKED_BYTES >= budget)
     }
 
     /// Have the source copy its records' headers while `wants` answers true: something reads them, or a capture
