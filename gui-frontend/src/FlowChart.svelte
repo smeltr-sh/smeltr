@@ -42,6 +42,7 @@
     from,
     to,
     unit,
+    words,
     label,
     onhover,
   }: {
@@ -54,6 +55,8 @@
     to: string;
     /** What the axis counts, such as `rows/s` or `MiB/s`. */
     unit: string;
+    /** What each half counts, in and out, such as `read` and `delivered`. */
+    words: [string, string];
     /** What the chart shows, for a screen reader. */
     label: string;
     /** Which bucket the pointer is over, by index into `inPoints` and `outPoints`, and
@@ -183,8 +186,8 @@
         {/if}
       {/each}
 
-      <text class="side" x={gutter + 6} y={BASELINE - 7}>in, {unit}</text>
-      <text class="side" x={gutter + 6} y={BASELINE + 15}>out, {unit}</text>
+      <text class="side" x={gutter + 6} y={BASELINE - 7}>{words[0]}, {unit}</text>
+      <text class="side" x={gutter + 6} y={BASELINE + 15}>{words[1]}, {unit}</text>
 
       <text class="clock start" x={gutter} y={PLOT + 15}>{from}</text>
       <text class="clock end" x={width - RIGHT} y={PLOT + 15}>{to}</text>

@@ -347,6 +347,16 @@
     { value: 'route', label: 'Routes', one: 'route' },
     { value: 'destination', label: 'Destinations', one: 'destination' },
   ];
+  /** What each half counts, named for where it is counted (`leader::FlowKind::metrics`). The
+   * fleet's out is what destinations delivered, which only a destination's own series carries. */
+  const WORDS: Record<FlowKind, [string, string]> = {
+    source: ['read', 'sent'],
+    pipeline: ['matched', 'sent'],
+    route: ['matched', 'sent'],
+    destination: ['received', 'delivered'],
+  };
+  const FLEET_WORDS: [string, string] = ['read', 'delivered'];
+  let chartWords = $derived(picked ? WORDS[kind] : FLEET_WORDS);
   type TableRow = {
     group: string;
     subjectId: string;
@@ -1174,12 +1184,11 @@
                 ></span
               >{:else}{selectionLabel}{/if}
             <Help label="{unitWord} in and out"
-              >Above the line, what came in per second; below it, what went out. A source's in is
-              what it read and its out what it sent on. A route's in is what its condition matched;
-              a pipeline's in is what its routes handed it, and each one's out is what it sent on. A
-              destination's in is what it was handed and its out what it delivered. A row goes to
-              every route whose condition matches it, so routes and pipelines can add up to more
-              than their sources read. A gap in a line is missing history, not zero.</Help
+              >Above the line, what came in per second; below it, what went out. A source reads and
+              sends on; a pipeline or route matches and sends on; a destination receives and
+              delivers. A row goes to every route whose condition matches it, so routes and
+              pipelines can add up to more than their sources read, and a row sent to two
+              destinations is sent twice. A gap in a line is missing history, not zero.</Help
             >
           </h2>
         </div>
@@ -1206,13 +1215,14 @@
       {:else}
         <p class="rate">
           <span class="at mono">{readAt}</span>
-          <span>in <strong>{rateOf(readFrom(chartIn))}</strong></span>
-          <span>out <strong>{rateOf(readFrom(chartOut))}</strong></span>
+          <span>{chartWords[0]} <strong>{rateOf(readFrom(chartIn))}</strong></span>
+          <span>{chartWords[1]} <strong>{rateOf(readFrom(chartOut))}</strong></span>
         </p>
         <FlowChart
           inPoints={scaled(chartIn)}
           outPoints={scaled(chartOut)}
           unit={chartScale.unit}
+          words={chartWords}
           label="{unitWord} per second, in above the line and out below it, over the chosen window"
           from={clockTime(firstBucket(bucketMillis, windowFrom))}
           to={clockTime(windowTo)}
@@ -1234,7 +1244,9 @@
                 ><th>Name</th>
                 <th><WorkerGroupIcon />Worker group</th>
                 {#if kind === 'route'}<th>Source</th><th>Pipeline</th>{/if}
-                <th class="num">{unitWord} in</th><th class="num">{unitWord} out</th></tr
+                <th class="num">{unitWord} {WORDS[kind][0]}</th><th class="num"
+                  >{unitWord} {WORDS[kind][1]}</th
+                ></tr
               ></thead
             >
             <tbody>

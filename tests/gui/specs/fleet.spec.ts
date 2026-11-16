@@ -310,17 +310,19 @@ test('rows in and out are charted over the window the engineer picks', async ({
   await goto(admin, leader, '#/status');
   const flow = admin.getByRole('region', { name: /in and out/ });
   await expect(flow.getByRole('heading')).toContainText('whole fleet');
-  await expect(flow.getByText(new RegExp(`^in ${MOVING.source}`))).toBeVisible({ timeout: 40_000 });
+  await expect(flow.getByText(new RegExp(`^read ${MOVING.source}`))).toBeVisible({
+    timeout: 40_000,
+  });
   // Rows are delivered after they are read, so out can reach its first moving bucket a bucket after in.
-  await expect(flow.getByText(new RegExp(`^out ${MOVING.source}`))).toBeVisible({
+  await expect(flow.getByText(new RegExp(`^delivered ${MOVING.source}`))).toBeVisible({
     timeout: 30_000,
   });
 
   const windows = flow.getByRole('group', { name: 'Chart window' });
   await windows.getByRole('button', { name: '15m' }).click();
-  await expect(flow.getByText(new RegExp(`^in ${MOVING.source}`))).toBeVisible();
+  await expect(flow.getByText(new RegExp(`^read ${MOVING.source}`))).toBeVisible();
   await windows.getByRole('button', { name: '60m' }).click();
-  await expect(flow.getByText(new RegExp(`^in ${MOVING.source}`))).toBeVisible();
+  await expect(flow.getByText(new RegExp(`^read ${MOVING.source}`))).toBeVisible();
 
   // Under the chart, each source's rows over the window; one picked narrows the chart to it.
   const table = flow.getByRole('table');
@@ -337,13 +339,16 @@ test('rows in and out are charted over the window the engineer picks', async ({
   await expect(table.getByRole('row', { name: /^Total/ })).toHaveCount(0);
   await table.getByRole('button', { name: 'all' }).first().click();
   await expect(flow.getByRole('heading')).toContainText('route all');
-  await expect(flow.getByText(new RegExp(`^in ${MOVING.source}`))).toBeVisible({ timeout: 30_000 });
+  await expect(flow.getByText(new RegExp(`^matched ${MOVING.source}`))).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(table.getByRole('columnheader', { name: 'Rows matched' })).toBeVisible();
   await shoot(admin, flow, 'flow-route-picked');
   await flow.getByRole('button', { name: 'Show the whole fleet' }).click();
   await expect(flow.getByRole('heading')).toContainText('whole fleet');
   await flow.getByRole('group', { name: 'Count' }).getByRole('button', { name: 'Bytes' }).click();
   await expect(flow.getByRole('heading')).toContainText('Bytes in and out');
-  await expect(flow.getByText(/^in [\d.]+ (B|KiB|MiB)\/s/)).toBeVisible();
+  await expect(flow.getByText(/^read [\d.]+ (B|KiB|MiB)\/s/)).toBeVisible();
   await shoot(admin, flow, 'flow-bytes-routes');
   await flow.getByRole('group', { name: 'Count' }).getByRole('button', { name: 'Rows' }).click();
 
@@ -351,7 +356,9 @@ test('rows in and out are charted over the window the engineer picks', async ({
   await admin.getByRole('button', { name: /^east\s*1 worker/ }).click();
   await expect(flow.getByRole('heading')).toContainText('group east');
   // The fleet moving says nothing of one group. A reading moves a 10s bucket at a time, and the map polls once a bucket.
-  await expect(flow.getByText(new RegExp(`^in ${MOVING.source}`))).toBeVisible({ timeout: 30_000 });
+  await expect(flow.getByText(new RegExp(`^read ${MOVING.source}`))).toBeVisible({
+    timeout: 30_000,
+  });
 
   // Per source and per destination, on the map.
   await admin.getByRole('link', { name: 'Map' }).click();
