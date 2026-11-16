@@ -65,6 +65,9 @@ checks leave out.
 A dependency change also needs `just notices`: nothing else keeps
 `THIRD-PARTY-NOTICES.md` current.
 
+A change to a page under `website/src/routes/docs/` also needs `just docs-markdown`, and the `src/leader/docs.json`
+it writes goes in the same commit: `just check-all` refuses a stale one.
+
 `just check` runs what the files changed since origin/main can break, as `tools/check-scope` decides: a document,
 the citation checks; the GUI or the site, their own checks; a Rust file, the tests of its module and of the
 integration modules that use it. It can miss a test, and anything it cannot place runs `just check-all`, which is every
