@@ -3,7 +3,7 @@
 // (`gui-frontend/src/demo/parts.js`, which the demo finds them by), under `recorded/` beside it.
 import fs from 'node:fs';
 import path from 'node:path';
-import { partFile } from '../../gui-frontend/src/demo/parts.js';
+import { SERIES_PART, partFile } from '../../gui-frontend/src/demo/parts.js';
 
 export const STATS = /^\/api\/areas\/[^/]+\/stats$/;
 /** The answers the fleet moves in, read again over a minute so the demo moves as the fleet did. */
@@ -34,7 +34,7 @@ function shown(value) {
 }
 
 /** Writes `recording` to `out` and its parts beside it, replacing the parts an earlier one wrote. */
-export async function write(out, { recordedAt, answers, moving, movingAt, captures }) {
+export async function write(out, { recordedAt, answers, moving, movingAt, captures, series }) {
   const dir = path.join(path.dirname(out), 'recorded');
   fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(dir);
@@ -46,6 +46,7 @@ export async function write(out, { recordedAt, answers, moving, movingAt, captur
     else every[key] = answer;
   }
   for (const [key, pool] of Object.entries(captures)) await part(key, pool);
+  await part(SERIES_PART, series);
   fs.writeFileSync(out, shown({ recordedAt, answers: every, moving, movingAt }));
   return fs.readdirSync(dir).length;
 }
