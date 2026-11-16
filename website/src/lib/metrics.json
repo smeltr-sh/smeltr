@@ -53,7 +53,7 @@
     "name": "smeltr_source_lag",
     "kind": "gauge",
     "labels": ["source", "topic", "partition"],
-    "what": "What the source has yet to finish. Kafka: records in the partition past the group's committed offset. SQS and Azure Storage Queue: messages on the queue, held ones included, as partition 0 of a topic named for the queue."
+    "what": "What the source has yet to finish. Kafka: records in the partition past what the source has read. SQS and Azure Storage Queue: messages on the queue, held ones included, as partition 0 of a topic named for the queue."
   },
   {
     "group": "Sources",

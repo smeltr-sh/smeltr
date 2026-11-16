@@ -640,12 +640,11 @@ fn live_commit_resumes_from_committed_offset_not_from_the_start() {
     }
 }
 
-/// `lag` samples against the *committed* offset, so a durable lag of exactly one exists once one of two produced
-/// records is read and committed: the broker's high watermark is 2 (the next offset it will assign), the committed
-/// offset is 1 (the next one this group will read), and their difference is what a chart shows.
+/// `lag` samples against the offset the source reads next, whatever it has committed: the broker's high watermark is 2
+/// (the next offset it will assign), and lag is the records past what was read.
 #[test]
-fn live_lag_reports_the_committed_offsets_distance_from_the_watermark() {
-    let Some(brokers) = live_brokers("live_lag_reports_the_committed_offsets_distance_from_the_watermark") else {
+fn live_lag_reports_the_read_positions_distance_from_the_watermark() {
+    let Some(brokers) = live_brokers("live_lag_reports_the_read_positions_distance_from_the_watermark") else {
         return;
     };
     let topic = unique("lag");
@@ -700,7 +699,11 @@ fn live_lag_reports_the_committed_offsets_distance_from_the_watermark() {
     let sample = &samples[0];
     assert_eq!(sample.partition.topic.as_ref(), topic);
     assert_eq!(sample.partition.partition, 0);
-    assert_eq!(sample.lag, 1, "one record committed, one still unread");
+    assert_eq!(
+        sample.lag,
+        2 - records.len() as i64,
+        "one record committed, lag counts from what was read"
+    );
 }
 
 #[test]
