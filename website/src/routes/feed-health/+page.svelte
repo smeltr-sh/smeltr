@@ -32,8 +32,8 @@
     <ProductScreenshot
       source="feed-health-volume"
       height={2200}
-      crop={{ x: 2150, y: 470, width: 690, height: 1410 }}
-      alt="The Map's panel for the fortigate-firewalls source: Rows below normal, input 0 rows a second, expected 227 to 756. Its 24-hour chart runs inside the expected band through the day, then drops to nothing twice."
+      crop={{ x: 2150, y: 470, width: 690, height: 1300 }}
+      alt="The Map's panel for the fortigate-firewalls source: Rows below normal, input 0 rows a second, expected 233 to 757. Its 24-hour chart runs inside the expected band through the day, then drops to nothing twice."
       caption="Over the last 24 hours the source reads within its band, until the relay stops, twice."
     />
     <p>
@@ -50,7 +50,7 @@
         width: 1440,
         crop: { x: 472, y: 956, width: 920, height: 388 },
       }}
-      alt="The Issues page: Rows below normal, for the fortigate-firewalls source, which read 0 rows in 5 minutes where 68,071 to 226,804 is normal at this time of day."
+      alt="The Issues page: Rows below normal, for the fortigate-firewalls source, which read 0 rows in 5 minutes where 70,006 to 227,110 is normal at this time of day. Beside it are Reset history and a Normal and Outage switch."
       caption="The Issues page names the source, what it read and what is normal."
     />
     <p>
@@ -60,22 +60,23 @@
       History tab.
     </p>
     <p>
-      Smeltr starts warning once a source has three days of history. A source too sparse for its
-      rows to be counted, such as an audit log that writes a few rows a day, is watched for four
-      weeks instead, then warns once it goes half again as long without a row as its longest quiet
-      spell of the past year.
+      Smeltr starts warning once a source has a week of history. A source too sparse for its rows to
+      be counted, such as an audit log that writes a few rows a day, is watched for four weeks
+      instead, then warns once it goes half again as long without a row as its longest quiet spell
+      of the past year.
     </p>
     <p>
       Each source's History tab lists its warnings and longest quiet spells of the past year. A
-      warning, and a quiet spell during one, is not learned unless an editor marks it Normal. Any
-      other quiet spell is learned unless an editor marks it Outage:
+      warning stays a warning until an editor marks it, there or on the Issues page. Marked Outage,
+      it turns into info until it ends, and is not learned. Marked Normal, it turns into info, and
+      the source's normal learns from it. A warning nobody marked is not learned either:
     </p>
     <ProductScreenshot
       source="feed-health-history"
       height={2200}
-      crop={{ x: 2150, y: 470, width: 690, height: 1560 }}
-      alt="The Map's panel for the fortigate-firewalls source, History tab, at the Balanced preset. Warnings: Nov 15, 04:05, for 20 minutes, and Nov 15, 03:25, for 40 minutes. Longest quiet spells: Nov 15, 03:30, for 15 minutes, inside the older warning. Each row has a Normal and Outage switch, set to Outage."
-      caption="A warning lasts until no width reads the source below normal, so it outlasts the quiet spell inside it. None of the three is learned."
+      crop={{ x: 2150, y: 470, width: 690, height: 1680 }}
+      alt="The Map's panel for the fortigate-firewalls source, History tab, at the Balanced preset. Warnings: Nov 16, 15:05, just raised, with its Normal and Outage switch unset; and Nov 16, 14:10, for 24 minutes, marked Outage by Priya Raman."
+      caption="Priya marked the first warning Outage. The second has just begun and waits for an answer. Neither is learned."
     />
   </section>
   <section aria-labelledby="senders-heading">
@@ -90,8 +91,8 @@
     <p>
       The source's Senders tab lists the fields that can name its senders and, for each watched
       sender, its last day against its range. Senders start at the Quiet preset, since each sender
-      warns on its own. An editor picks another preset there, lowers a sender's warning to info,
-      stops watching a field, or adds a field to watch.
+      warns on its own. An editor picks another preset there, marks a sender's warning Normal or
+      Outage, stops watching a field, or adds a field to watch.
     </p>
   </section>
   <section aria-labelledby="drift-heading">
