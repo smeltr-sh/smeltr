@@ -285,6 +285,22 @@ for (const key of Object.keys(answers)) {
 }
 // The demo's visitor signs nothing: a session's token is the staged fleet's alone.
 delete answers['/api/auth/session'].body.csrf;
+// A picked answer stands still and is moved to the visitor's now from when the recording was written, so it is read
+// again last: one read while the pages were reached would end that long before now.
+const still = Object.keys(answers).filter(picked);
+const reread = await api.evaluate(
+  (keys) =>
+    Promise.all(
+      keys.map((u) =>
+        fetch(u, { headers: { accept: 'application/json' } }).then(async (r) => ({
+          status: r.status,
+          body: await r.json(),
+        })),
+      ),
+    ),
+  still,
+);
+still.forEach((k, j) => (answers[k] = reread[j]));
 // What every recorded time is relative to: the demo moves them to the visitor's now.
 const recordedAt = Date.now();
 const parts = await write(out, { recordedAt, answers, moving, movingAt, captures });
