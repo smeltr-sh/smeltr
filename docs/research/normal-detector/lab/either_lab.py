@@ -15,7 +15,7 @@ from multiprocessing import Pool
 
 import numpy as np
 
-from extend_lab import HORIZON, HORIZONS, below_cut, make, part_path
+from extend_lab import HORIZON, HORIZONS, below_cut, log_shifts, make, part_path, placed, shift_of
 from multi_lab import first_hit
 from quiet_lab import STEP, Quiet
 from real_logs import load_logs
@@ -29,12 +29,15 @@ if os.environ.get("SHIPPED"):  # the band at Balanced, as smeltr ships it
 MARGIN = 1.5
 
 
-def stop_delays(b, lab, judge_from):
-    d = make(b, BAND, judge_from, (2, (0.0,), HORIZON))
-    held_b = d.run()
+def stop_delays(b, lab, judge_from, shift=0):
+    """With `shift`, the band runs on the series placed `shift` buckets after UTC midnight, as the shipped replay
+    places it (extend_lab.placed); the silence rule has no time of day and runs on the series as it is."""
+    bb = placed(b, lab, shift)[0] if shift else b
+    d = make(bb, BAND, judge_from + shift, (2, (0.0,), HORIZON))
+    held_b = d.run()[shift:]
     judged_b = np.zeros(len(b), bool)
     for w in d.widths:
-        judged_b |= ~np.isnan(d.low[w])
+        judged_b |= ~np.isnan(d.low[w][shift:])
     q = Quiet(b, judge_from, MARGIN)
     q.learned &= ~lab
     held_q = q.run()
@@ -45,11 +48,12 @@ def stop_delays(b, lab, judge_from):
     judged = judged_b | judged_q
     clean = judged & ~lab
     idx = np.arange(len(b))
-    sample = clean & (idx % 2 == 0) & ~held & ~np.roll(held, 1)
+    sample = clean & ((idx + shift) % 2 == 0) & ~held & ~np.roll(held, 1)  # the band learned its cuts on even placed buckets
     sample[len(b) - HORIZON :] = False
     t0 = np.where(sample)[0]
     # the band's delay on a stop at each sampled bucket
-    agree = np.logical_or.reduce([below_cut(d, b, sample, w, 0.0, HORIZON) for w in d.widths])
+    at = np.concatenate([np.zeros(shift, bool), sample])
+    agree = np.logical_or.reduce([below_cut(d, bb, at, w, 0.0, HORIZON) for w in d.widths])
     t_band = first_hit(agree, BAND["k"])
     # the silence rule's delay
     run_before = np.zeros(len(b), int)
@@ -75,25 +79,26 @@ def stop_delays(b, lab, judge_from):
 
 
 def job(args):
-    dataset, series, seed, b, lab = args
+    dataset, series, seed, b, lab, shift = args
     judge_from = 28 * DAY if len(b) >= 35 * DAY else 7 * DAY
-    return dict(dataset=dataset, series=series, seed=seed, result=stop_delays(b, lab, judge_from))
+    shift = shift if BAND.get("utc") else 0
+    return dict(dataset=dataset, series=series, seed=seed, result=stop_delays(b, lab, judge_from, shift))
 
 
 def main(root, out_path):
     part_dir = out_path + ".parts"
     os.makedirs(part_dir, exist_ok=True)
     labels = with_added(json.load(open(os.path.join(root, "labels.json"))))
-    jobs = [("modeled", name, seed, modeled(name, seed), np.zeros(56 * DAY, bool)) for name in MODELED for seed in (1, 2, 3)]
+    jobs = [("modeled", name, seed, modeled(name, seed), np.zeros(56 * DAY, bool), shift_of("modeled", name)) for name in MODELED for seed in (1, 2, 3)]
     for name in NAB:
         b, lab = nab_series(root, name, labels)
-        jobs.append(("nab", name, 0, b, lab))
-    for name, b, lab in load_logs("real"):
-        jobs.append(("logs", name, 0, b, lab))
+        jobs.append(("nab", name, 0, b, lab, shift_of("nab", name)))
+    for (name, b, lab), sh in zip(load_logs("real"), log_shifts("real")):
+        jobs.append(("logs", name, 0, b, lab, sh))
     for name, rate in {"12 rows an hour": 1.0, "4 rows an hour": 1 / 3, "1 row an hour": 1 / 12, "1 row a day": 1 / 288}.items():
         for seed in (1, 2):
             rng = np.random.default_rng(seed)
-            jobs.append(("sparse", name, seed, rng.poisson(rate, 84 * S).astype(float), np.zeros(84 * S, bool)))
+            jobs.append(("sparse", name, seed, rng.poisson(rate, 84 * S).astype(float), np.zeros(84 * S, bool), 0))
     order = [(j[0], j[1], j[2]) for j in jobs]
     todo = [j for j in jobs if not os.path.exists(part_path(part_dir, f"{j[0]}-{j[1]}", j[2]))]
     with Pool(4) as pool:

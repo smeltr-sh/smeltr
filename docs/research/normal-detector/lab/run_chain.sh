@@ -14,5 +14,6 @@ step shipped_sparse.json env SHIPPED=1 python3 sparse_lab.py shipped_sparse.json
 step shipped_sparse_history.json env SHIPPED=1 python3 sparse_lab.py shipped_sparse_history.json history
 step shipped_either.json env SHIPPED=1 python3 either_lab.py nab shipped_either.json
 step shipped_values_logs.json env SHIPPED=1 python3 values_logs.py real/ shipped_values_logs.json
+step one_path.json python3 one_path.py
 step discover.json env SHIPPED=1 python3 discover_lab.py discover.json
 echo done > shipped.done

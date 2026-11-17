@@ -436,30 +436,42 @@ class Extended(Design):
         return head, tail
 
     def matched_tab(self, i, w, of, kd):
-        """(None, None, pair): pair[gt, gy, s] the median of the learned windows of width w ending at time of day s, and
-        within 30 minutes of it as the usual takes them in, on the newest kd days of kind gt whose day before was of kind
-        gy, in the 28 days before bucket i. Days start at self.off."""
-        days = 28
-        a = i - days * S
-        lo = a - w + 1
-        x = np.where(self.L[max(lo, 0) : i], self.b[max(lo, 0) : i], np.nan)
-        if lo < 0:
-            x = np.concatenate([np.full(-lo, np.nan), x])
-        sw = np.convolve(x, np.ones(w), "valid").reshape(days, S)  # sw[d, j] ends at bucket a + d S + j
-        ends = a + np.arange(days * S)
-        day = ((ends - self.off) // S).reshape(days, S)
-        today = self.kind(of, ends).reshape(days, S)
-        yesterday = self.kind(of, ends - S).reshape(days, S)
+        """(None, None, pair): pair[gt, gy, p] the usual window of width w ending at place p of a day, as smeltr's
+        Weekly::learn reads it from the windows learned before bucket i: the median of the windows within 30 minutes of
+        p on the newest kd days of the last 28 that have one there, days of kind gt and, where the window reaches into
+        the day before, whose day before was of kind gy. Where fewer than USUAL_MIN_DAYS days have one, it is NaN and
+        the window is not judged. Days start at self.off."""
+        today = (i + self.lag(w) - self.off) // S  # the day smeltr learns on: windows end lag(w) buckets before it
+        first = today - 28
+        D = today - first + 1
+        lo = first * S + self.off - NB  # the first window end a neighborhood reaches
+        hi = (today + 1) * S + self.off + NB
+        a = lo - w + 1
+        x = np.full(hi - a, np.nan)
+        s, z = max(a, 0), min(hi, i)
+        if z > s:
+            x[s - a : z - a] = np.where(self.L[s:z], self.b[s:z], np.nan)
+        sw = np.convolve(x, np.ones(w), "valid")  # sw[j]: the window ending at bucket lo + j
+        # near[d, p, k]: the window ending k - NB buckets from place p of day first + d; one past a day's end counts
+        # for the day it is near, as in smeltr
+        idx = (np.arange(D)[:, None, None] * S + np.arange(S)[None, :, None] + np.arange(2 * NB + 1)[None, None, :])
+        near = sw[idx]
+        has = ~np.isnan(near).all(axis=2)  # (D, S)
+        days = np.arange(first, today + 1)
+        kind_t, kind_y = of[days % 7, 0], of[(days - 1) % 7, 0]
+        cross = np.arange(S) + 1 < w  # the window reaches into the day before
         G = int(of.max()) + 1
         pair = np.full((G, G, S), np.nan)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             for gt, gy in {(int(of[d, 0]), int(of[(d - 1) % 7, 0])) for d in range(7)}:
-                mine = (today == gt) & (yesterday == gy)
-                if kd:
-                    mine &= np.isin(day, np.unique(day[mine])[-kd:])
-                stack = np.stack([np.roll(np.where(mine, sw, np.nan), -k, axis=1) for k in range(-NB, NB + 1)])
-                pair[gt, gy, (a - self.off + np.arange(S)) % S] = np.nanmedian(stack.reshape(-1, S), axis=0)  # by place in the day
+                elig = (kind_t == gt)[:, None] & (~cross[None, :] | (kind_y == gy)[:, None])
+                sel = elig & has
+                newest = np.cumsum(sel[::-1], axis=0)[::-1] <= kd
+                keep = sel & newest
+                vals = np.where(keep[:, :, None], near, np.nan).transpose(0, 2, 1).reshape(-1, S)
+                med = np.nanmedian(vals, axis=0)
+                pair[gt, gy] = np.where(keep.sum(axis=0) >= USUAL_MIN_DAYS, med, np.nan)
         return None, None, pair
 
     def split_typical(self, w, ends, profw):
@@ -470,9 +482,11 @@ class Extended(Design):
         p = (ends - self.off) % S
         today = self.kind(self.of, ends)
         yesterday = self.kind(self.of, ends - p - 1)
+        if self.matched:  # smeltr's usual for every window, crossing or not; NaN is not judged
+            return self.split_tab[w][2][today, yesterday, p]
         t = profw[today, ends % S].astype(float)
         cross = w > p + 1
-        if self.pairs or self.matched:
+        if self.pairs:
             parts = self.split_tab[w][2][today, yesterday, p]
         else:
             head, tail = self.split_tab[w][:2]
@@ -514,12 +528,15 @@ class Extended(Design):
             self.cs_learned = np.concatenate([[0.0], np.cumsum(np.where(self.L, np.nan_to_num(self.b), 0.0))])
         of = self.day_kinds(i) if self.wtyp else None
         self.of = np.zeros((7, 24), int) if of is None else of
-        one = self.wtyp and self.split and self.onekind and of is None
+        one = self.wtyp and self.split and (self.onekind or self.matched) and of is None
         use, kd = (self.of, DAYS) if one else (of, None)
         self.split_tab = {}
         for w in self.widths:
             iw = i - self.lag(w)
-            prof[w] = self.window_profile(iw, w, use, kd) if self.wtyp else self.profile(iw)
+            if self.wtyp and self.matched and use is not None:
+                prof[w] = None  # every window's usual is read from the matched table
+            else:
+                prof[w] = self.window_profile(iw, w, use, kd) if self.wtyp else self.profile(iw)
             days = self.history if w * STEP_MIN <= 30 or not self.longhistory else self.longhistory
             a = max(iw - days * S, 0)
             x = np.where(self.L[a:iw], self.b[a:iw], np.nan)
@@ -692,6 +709,7 @@ def make(b, c, judge_from, grid=None):
         d.evenparts = c.get("evenparts", False)
         d.wholeparts = c.get("wholeparts", False)
         d.pairs = c.get("pairs", False)
+        d.matched = c.get("matched", False)
         d.judged_after = c.get("judged_after", 0)
     d.learn = c.get("learn", "width")
     d.grid = grid if c.get("cut", True) else None
@@ -733,6 +751,7 @@ def judge(b, lab, c, judge_from, sample_every=2):
 BALANCED = dict(widths=(1, 6, 72, 288), k=4, margin=0.3, longhistory=28, minrows=10, wtyp=True, kgroups=(2, 7), minweeks=4)
 FORMS = {"none": dict(daykind=None), "A": dict(daykind="predictive"), "B": dict(daykind="exhaustive"),
          "C": dict(daykind="quietest"), "H": dict(daykind="hourly")}
+USUAL_MIN_DAYS = 3  # smeltr's: days a usual window needs before its time of day is judged
 UTC_SHIFT = 5 * 12  # buckets: a US East source's local midnight is 5 am UTC
 
 
