@@ -1891,6 +1891,11 @@
     min-width: 0;
   }
 
+  /* A type picker takes the type column a declared field's row gives it (FieldRow), not the whole row. */
+  .row-pair > :global(.type-picker) {
+    flex: 0 1 8.2rem;
+  }
+
   /* An assignment's target is almost always shorter than its expression, so
      it stops growing at 220px of a wide row and the expression (flex: 1 via
      ValidatedField's .field-wrap) takes the rest. A narrow row splits evenly:
