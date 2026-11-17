@@ -173,7 +173,7 @@ cases! {
         [r#"{"a": "x"}"#], Rows(&[("{}", Some(r#"_raw.a is "x", which could not parse as i64 in a"#))]);
     a_scalar_where_an_object_is_declared_names_its_key_and_value: "a: {b: i64}; Object.assign($, json(_raw))",
         [r#"{"a": 5}"#], Rows(&[("{}", Some(r#"_raw.a is 5, which could not parse as {b: i64} in a"#))]);
-    a_parser_may_not_declare_a_bound_name: "a: i64 = 7; a: i64; Object.assign($, json(_raw))",
+    a_parser_may_not_declare_a_bound_name_another_type: "a: i64 = 7; a: str; Object.assign($, json(_raw))",
         [r#"{"b": 1}"#], Error(&["`a`"]);
     a_parser_declares_a_nested_path: "s.port: i64; Object.assign($, json(_raw))",
         [r#"{"s": {"ip": "1.2.3.4", "port": "443"}}"#], Rows(&[(r#"{"s": {"ip": "1.2.3.4", "port": 443}}"#, None)]);
@@ -195,8 +195,8 @@ cases! {
         ["{}"], Error(&["`y`"]);
     a_typed_assignment_changes_a_type: r#"y: array<str>; y: str = "x";"#,
         ["{}"], Rows(&[(r#"{"y": "x"}"#, None)]);
-    restating_a_bound_names_type_is_a_compile_error: "x = 1; x: i64;",
-        ["{}"], Error(&["`x`"]);
+    restating_a_bound_names_type_does_nothing: "x = 1; x: i64;",
+        ["{}"], Rows(&[(r#"{"x": 1}"#, None)]);
     declaring_a_bound_name_another_type_names_the_conversion: "x = 1; x: str;",
         ["{}"], Error(&["`x`", "`x: str = x as str`"]);
     declaring_a_bound_leaf_names_the_conversion: "o = {a: 1}; o.a: str;",

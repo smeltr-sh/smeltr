@@ -4564,6 +4564,31 @@ mod tests {
             .unwrap_or_else(|e| panic!("expected the inlined pipeline to compile: {e:?}"));
     }
 
+    /// A called pipeline declares the field it reads, so it compiles on its own; inlined after the caller's parser,
+    /// the declaration restates the caller's type.
+    #[test]
+    fn a_called_pipeline_declares_what_its_caller_writes() {
+        let json = r#"{
+          "version": 1,
+          "pipelines": [
+            { "id": "main", "name": "main", "steps": [
+              { "id": "parse", "type": "parser", "input": "_raw", "kind": { "type": "json" },
+                "declared": [ { "name": "source.ip", "type": "str" } ] },
+              { "id": "c", "type": "call", "pipeline": "helper" }
+            ] },
+            { "id": "helper", "name": "helper", "steps": [
+              { "id": "reads", "type": "code", "body": "source.ip: str;" },
+              { "id": "h-eval", "type": "eval", "assignments": [ { "target": "seen", "expr": "source.ip" } ] }
+            ] }
+          ]
+        }"#;
+        let system = load_str(json).unwrap();
+        for p in &system.pipelines {
+            crate::plan::compile::compile(p, &crate::plan::topology::SourceMeta::KAFKA)
+                .unwrap_or_else(|e| panic!("{} should compile: {e:?}", p.name));
+        }
+    }
+
     #[test]
     fn a_call_step_inlines_the_callee_pipelines_steps() {
         let json = two_pipeline_json(r#"{ "id": "c", "type": "call", "pipeline": "helper" }"#);

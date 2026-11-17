@@ -2711,20 +2711,18 @@ fn a_computed_key_reads_the_record_after_a_json_parse() {
     assert!(e.contains("`$` is the record"), "{e}");
 }
 
-/// A bound object has its value's type, open or closed: a declaration of it is a compile error that states that type,
-/// and names the typed assignment where the declared type differs.
+/// A bound object has its value's type, open or closed: a declaration of another type is a compile error that states
+/// that type and names the typed assignment; one of that type restates it and does nothing.
 #[test]
-fn a_declaration_of_a_bound_object_is_a_compile_error() {
-    for (body, want) in [
-        (
-            "m: {a: i64};",
-            "`m` is already {a: i64, ...}; to change the type of `m` to {a: i64}, write `m: {a: i64} = m as {a: i64}`",
-        ),
-        ("m: {a: i64, ...};", "`m` is already {a: i64, ...}"),
-        ("m: {a: i64} = m; m: {a: i64};", "`m` is already {a: i64}"),
-    ] {
-        let e = err(vec![code(0, &json("m: {a: i64, ...};")), code(1, body)]);
-        assert!(e.contains(want), "{body}: {e}");
+fn a_declaration_of_a_bound_object_states_its_type() {
+    let e = err(vec![code(0, &json("m: {a: i64, ...};")), code(1, "m: {a: i64};")]);
+    let want =
+        "`m` is already {a: i64, ...}; to change the type of `m` to {a: i64}, write `m: {a: i64} = m as {a: i64}`";
+    assert!(e.contains(want), "{e}");
+    for body in ["m: {a: i64, ...};", "m: {a: i64} = m as {a: i64}; m: {a: i64};"] {
+        let plan = ok(vec![code(0, &json("m: {a: i64, ...};")), code(1, body)]);
+        let rows = run(&plan, &[r#"{"m":{"a":1}}"#]);
+        assert_eq!(rows[0]["m"]["a"], 1, "{body}: {}", rows[0]);
     }
 }
 
@@ -5872,14 +5870,20 @@ fn a_declaration_coerces_the_record() {
 }
 
 /// A declaration states a name's type once, before anything binds it: the name is null, of that type, until a value is
-/// assigned. On a bound name, a path under one, or a key an open object may hold, it is a compile error that names the
-/// typed assignment, where one gives the name the declared type.
+/// assigned. On a bound name of that type it restates the type and does nothing, so a called pipeline may declare
+/// what its caller writes. Of another type, on a path under a bound name, or on a key an open object may hold, it is a
+/// compile error that names the typed assignment, where one gives the name the declared type.
 #[test]
 fn a_declaration_states_a_type_once() {
     let plan = ok(vec![code(0, "n: i64; out = n + 1;")]);
     assert_eq!(cols(&run(&plan, &["{}"]), &["out"]), rows![[null]]);
+    let plan = ok(vec![code(0, &json("s: str;")), code(1, r#"s: str; out = s + "!";"#)]);
+    assert_eq!(cols(&run(&plan, &[r#"{"s":"hi"}"#]), &["out"]), rows![["hi!"]]);
     for (body, want) in [
-        ("x = 1; x: i64;", "`x` is already i64"),
+        (
+            "x = 1; x: str;",
+            "`x` is already i64; to change the type of `x` to str, write `x: str = x as str`",
+        ),
         (
             "o = {b: 1}; o.a: str;",
             "`o` is already {b: i64}; to change the type of `o` to {b: i64, a: str}, write `o: {b: i64, a: str} = o as {b: i64, a: str}`",
