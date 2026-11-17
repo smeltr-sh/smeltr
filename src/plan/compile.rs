@@ -1724,7 +1724,9 @@ impl Compiler<'_> {
     }
 
     /// `name: type;` states a name's type once, before anything binds it. A name already bound has its value's type,
-    /// and so does a path under it and a key an open object on its way may hold: `name: type = name` converts it. Any
+    /// and so does a path under it and a key an open object on its way may hold: `name: type = name` converts it. A
+    /// declaration of the type a bound name holds restates it and does nothing, so a called pipeline may declare the
+    /// fields it reads, which its caller binds. Any
     /// other name is a record key, which its parser declares. So a declaration in code is a compile error until a
     /// spread in code fills what it declares.
     fn declare(&mut self, name: &str, to: &DataType, id: FunctionId) {
@@ -1742,7 +1744,11 @@ impl Compiler<'_> {
         } else if name == tree::ROOT {
             "`$` is the record, which its parsers type".to_string()
         } else if let Some(node) = self.syms.node(name) {
-            self.already(name, node_type(&self.syms, node), to)
+            let held = node_type(&self.syms, node);
+            if held == *to {
+                return;
+            }
+            self.already(name, held, to)
         } else if let Some((above, slot)) = self.syms.leaf_above(name) {
             match self.syms.type_of(slot) {
                 // `q.a: str` names `q: {a: str, ...}`.
@@ -1794,9 +1800,6 @@ impl Compiler<'_> {
     /// Why `name`, bound and `held`, takes no declaration: `name: to = name as to` changes its type to `to`.
     fn already(&self, name: &str, held: DataType, to: &DataType) -> String {
         let (held_s, to_s) = (held.spell(), to.spell());
-        if held == *to {
-            return format!("`{name}` is already {held_s}");
-        }
         format!(
             "`{name}` is already {held_s}; to change the type of `{name}` to {to_s}, write `{name}: {to_s} = {name} as {to_s}`"
         )

@@ -192,7 +192,9 @@ push(out, x * 2); }` makes `out` an `array<i64>`. A write whose type cannot blen
 with the writes before it is a compile error: `[]` is an array, so `let l =
 []; l = "s";` is refused. With no write after it to give one, the first write names the
 type: `x: i64 = null`, `xs: array<str> = []`. A
-declaration after it is a compile error, as is one of a path under it or of a
+declaration after it of the type it holds restates it and does nothing, so a
+pipeline another calls may declare the fields its caller writes. One of
+another type is a compile error, as is one of a path under it or of a
 key an open object may hold: after `x = $.v`, `x: i64;`, `x.a: str;` and,
 after a JSON parse, `k: str;` each name the conversion instead. A later
 assignment keeps the type and converts nothing: an `i64` widens to `f64`,
