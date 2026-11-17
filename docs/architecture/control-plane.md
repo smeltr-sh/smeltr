@@ -332,22 +332,26 @@ destination not taking records. The last releases on its own once the
 destination is back, so it is a warning where the other two are failures.
 
 A source reading fewer rows than it normally does warns, and one reading more
-raises info. Its rows are judged at four widths: the last 5 minutes, 30 minutes,
-6 hours and 24 hours. At each, the usual window is the same window at the same
-time of day on the last seven days learned, or, for a source whose weekdays
-differ, on the newest seven days of its kind within the last four weeks, and the
-range is the usual window scaled by how far that width's learned windows strayed
-from theirs, a week of them for the short widths and four weeks for the long,
-and widened by the source's preset. A width judges a source only where its usual
-window holds ten rows, so a busy source is judged at every width and a sparse
-one at the long ones. A source too sparse for any width is judged by the gap:
-how long it has gone without a row, against half again the longest quiet spell
-it made in the past year. A source warns once some width reads below its range
-for as many readings in a row as its preset requires, or once it outlasts the
-gap, and the warning holds until some width judges the source and none reads it
-below its range, or, where only the gap judges it, until the first row after it
-began that ends a quiet spell the gap read below. Rows above normal are judged
-at 30 minutes alone.
+raises info. Its rows are judged at four widths, the last 5 minutes, 30 minutes,
+6 hours and 24 hours, and at a fifth, the gap. At each of the four, the usual
+window is the same window near the same time of day on the newest seven days of
+the source's kind that have one, within the last four weeks; a source whose
+weekdays do not differ has one kind. A time of day with fewer than three such
+days has no usual window and is not judged there. The range is the usual window
+scaled by how far that width's learned windows strayed from theirs, a week of
+them for the short widths and four weeks for the long, and widened by the
+source's preset. A width judges a source only where its usual window holds ten
+rows, so a busy source is judged at every width and a sparse one at the long
+ones. The gap judges every source that has been watched four weeks and has had a
+quiet spell, whatever its widths do: how long the source has gone without a row,
+against half again the longest quiet spell it made in the past year, or, until a
+year has been watched, the longest so far plus what a year would likely add. A
+source too sparse for any width is judged by the gap alone. A source warns once
+some width reads below its range for as many readings in a row as its preset
+requires, or once its silence passes that limit, and the warning holds until
+some width judges the source and none reads it below its range, or, where only
+the gap judges it, until the first row after it began that ends a quiet spell
+the gap read below. Rows above normal are judged at 30 minutes alone.
 
 A source whose rows differ by weekday, such as an office's working days against
 its weekend, is judged against days of its own kind. Its days start at its
@@ -375,21 +379,22 @@ leader keeps the pick with who made it. A pick applies from the next reading, to
 everything already learned. The gap is the same at every preset.
 
 What a below-normal warning read, and the time a stop held, are not learned, so
-an outage does not widen the normal. Nor is a window learned until a whole width
-has passed since it ended: a warning that rises in that time leaves the window
-unlearned. So a drop that takes its width to show is judged against the normal
-before it, and is not taught to that normal while it unfolds. Days not learned
-are passed over, not counted, so a lasting drop is still judged against the days
-before it. It keeps warning until the source reads inside its range again or an
-editor says otherwise. A window with more rows is learned, so more rows become
-the new normal. A source with too little history has no normal yet. A source
-that is held, unreachable or on a silent worker is not judged, because a warning
-that names the cause is already up. After that warning ends, the source is not
-judged at a width while that width's window still contains the stop and the
-catch-up after it. The leader keeps for a year when each warning about a source
-was up, so its end is known across a restart and the gap learns a year of quiet
-spells less those that warned. The Status page ranks sources by how far each is
-from the same normal.
+an outage does not widen the normal. Nor is a window learned until its width,
+and then the readings in a row its preset waits for, have passed since it ended:
+a warning that rises in that time leaves the window unlearned. So a drop that
+takes its width to show is judged against the normal before it, and is not
+taught to that normal while it unfolds. Days not learned are passed over, not
+counted, so a lasting drop is still judged against the days before it. It keeps
+warning until the source reads inside its range again or an editor says
+otherwise. A window with more rows is learned, so more rows become the new
+normal. A source with too little history has no normal yet. A source that is
+held, unreachable or on a silent worker is not judged, because a warning that
+names the cause is already up. After that warning ends, the source is not judged
+at a width while that width's window still contains the stop and the catch-up
+after it. The leader keeps for a year when each warning about a source was up,
+so its end is known across a restart and the gap learns a year of quiet spells
+less those that warned. The Status page ranks sources by how far each is from
+the same normal.
 
 An editor in the source's worker group may do any of three things about it.
 Normal and Outage mark what a below-normal warning was. Outage marks a real
