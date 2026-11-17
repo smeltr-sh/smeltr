@@ -13,6 +13,7 @@ halving; the total's own band (part 1) is judged alongside to show what it sees.
 """
 
 import json
+import os
 import sys
 from multiprocessing import Pool
 
@@ -23,7 +24,9 @@ from run_all import DAY
 
 DAYS = 56
 JUDGE = 28 * DAY
-SAMPLE = 0.5  # share of rows the tally sees: one batch per 1.5 s heartbeat interval, batches about every 0.75 s
+# The share of rows the tally sees. The alternatives of Section 6.8 were replayed on one batch per 1.5 s heartbeat
+# interval, batches about every 0.75 s; smeltr counts senders on every batch (SHIPPED=1).
+SAMPLE = 1.0 if os.environ.get("SHIPPED") else 0.5
 HORIZON = 72
 
 

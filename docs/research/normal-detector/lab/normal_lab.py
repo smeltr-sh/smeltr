@@ -10,9 +10,11 @@ A series is rows read per 5-minute bucket, index 0 at midnight, NaN where nothin
 Each candidate changes only how the band is set from the learned windows (`band_*`).
 """
 
+import os
+
 import numpy as np
 
-STEP_MIN = 5
+STEP_MIN = int(os.environ.get("LAB_STEP_MIN", "5"))  # minutes a bucket; minute_lab.py replays at 1
 S = 24 * 60 // STEP_MIN  # steps a day
 WIN = 30 // STEP_MIN  # buckets a window
 NB = 30 // STEP_MIN  # the neighborhood: steps either side of the same time of day

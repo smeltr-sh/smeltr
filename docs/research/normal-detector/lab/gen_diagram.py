@@ -5,13 +5,13 @@ W=760; X0=24; LAB=118; CW=108; GW=172; TOP=92; RH=58
 cols=[X0+LAB+i*CW for i in range(4)]; gx=X0+LAB+4*CW; right=gx+GW
 rows=[
  ("Statistic", [((0,4),["rows in the window,","S_w(t)"]),((4,5),["empty buckets since","the last row, g(t)"])]),
- ("Typical level", [((0,4),["median of the same window at this","time of day over the past 7 days;","the reading is the ratio to it"]),((4,5),["none: all spells pooled,","the trade measured in 6.8"])]),
+ ("Typical level", [((0,4),["median of the same window at this time of day","on the newest 7 days of its kind of day;","the reading is the ratio to it"]),((4,5),["none: all spells pooled,","the trade measured in 6.8"])]),
  ("History", [((0,2),["7 days of windows"]),((2,4),["28 days of windows"]),((4,5),["a year of","completed spells"])]),
  ("Quantile", [((0,2),["0.05% of the ratios: between","the 2nd and 3rd lowest of 2,000"]),((2,4),["0.05% of the ratios: between","the 5th and 6th lowest of 8,000"]),((4,5),["the maximum; in the first","year, plus an allowance"])]),
- ("Margin", [((0,4),["20% below it"]),((4,5),["50% beyond it"])]),
- ("Wait", [((0,4),["4 readings in a row"]),((4,5),["1 reading"])]),
- ("Judged where", [((0,4),["the typical window holds 10 rows"]),((4,5),["28 days watched and","a spell completed"])]),
- ("Not learned", [((0,4),["the buckets under a count alarm, one set for the four"]),((4,5),["the spells under","a gap alarm"])]),
+ ("Margin", [((0,4),["by preset: 20%, 30% or 50% below it"]),((4,5),["50% beyond it"])]),
+ ("Wait", [((0,4),["by preset: 1, 3, 4 or 6 readings in a row"]),((4,5),["1 reading"])]),
+ ("Judged where", [((0,4),["the typical window holds 10 rows,","once the rows reach back a week"]),((4,5),["28 days watched and","a spell completed"])]),
+ ("Not learned", [((0,4),["the buckets under a count alarm, one set for the four;","a window until w + k buckets after it ends"]),((4,5),["the spells under","a gap alarm"])]),
  ("Alarm ends", [((0,4),["on a reading inside the band"]),((4,5),["at the first row"])]),
  ("Alarm", [((0,5),["whichever width fires first"])]),
 ]

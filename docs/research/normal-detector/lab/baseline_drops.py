@@ -12,7 +12,7 @@ from multiprocessing import Pool
 import numpy as np
 
 from normal_lab import CANDIDATES, Run, score
-from run_all import DAY, MODELED, NAB, modeled, nab_series
+from run_all import DAY, MODELED, NAB, modeled, nab_series, with_added
 
 DROPS = (0.0, 0.1, 0.3, 0.5)
 
@@ -28,7 +28,7 @@ def job(args):
 
 
 def main(root, out_path):
-    labels = json.load(open(os.path.join(root, "labels.json")))
+    labels = with_added(json.load(open(os.path.join(root, "labels.json"))))
     jobs = [("modeled", name, seed, modeled(name, seed), np.zeros(56 * DAY, bool)) for name in MODELED for seed in (1, 2, 3)]
     for name in NAB:
         b, lab = nab_series(root, name, labels)
