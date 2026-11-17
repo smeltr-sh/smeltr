@@ -28,7 +28,13 @@
   import ValidatedField from './ValidatedField.svelte';
   import JsonEditPage from './JsonEditPage.svelte';
   import { RESOURCES_TABS } from './nav';
-  import { sharedConfig, putGrokPatterns, type GrokPatternDto } from './api';
+  import {
+    currentScope,
+    SHARED_SCOPE,
+    sharedConfig,
+    putGrokPatterns,
+    type GrokPatternDto,
+  } from './api';
   import CrossButton from './CrossButton.svelte';
   import { count } from './time';
   import {
@@ -47,6 +53,7 @@
   let patterns: GrokPatternDto[] = $state([]);
   /** What `shared/` declares, which this group's grok may name as well. Never saved from here. */
   let sharedPatterns: GrokPatternDto[] = $state([]);
+  const inShared = currentScope() === SHARED_SCOPE;
   const validation = provideValidation('grokPatterns');
   const editor = new SectionEditor<GrokPatternDto[]>('grok', {
     get: () => patterns,
@@ -125,7 +132,8 @@
   <SectionShell>
     <PageHeader title="Grok patterns">
       {#snippet help()}
-        A named pattern any grok step in this group can use as <code>%{'{'}NAME{'}'}</code>.
+        A named pattern any grok step in {inShared ? 'any worker group' : 'this group'} can use as
+        <code>%{'{'}NAME{'}'}</code>.
       {/snippet}
     </PageHeader>
     <SecondaryTabs tabs={RESOURCES_TABS} active="#/build/grok" ariaLabel="Resources" />
@@ -246,7 +254,13 @@
             </ValidationItem>
           {/each}
           {#if patterns.length === 0}
-            <tr><td colspan="3" class="dim">No grok patterns of this group's own yet.</td></tr>
+            <tr
+              ><td colspan="3" class="dim">
+                {inShared
+                  ? 'No shared grok patterns yet.'
+                  : "No grok patterns of this group's own yet."}
+              </td></tr
+            >
           {/if}
 
           {#if !narrowing.ids}<tr class="band"><th colspan="3">built-in</th></tr>{/if}
