@@ -334,8 +334,9 @@ impl Schema {
     /// Where a record may break the schema: each field whose type the schema's does not hold, a key only the fields
     /// under it name holding anything but an object among them, and each field the schema requires or recommends that
     /// the record lacks, in the schema's order. A field the schema does not name keeps it, as does one whose type only
-    /// the row knows. A field is lacking where the object it sits in is there and does not declare it: an open object
-    /// may carry the key, but the pipeline has not shown that it does.
+    /// the row knows. A recommended field is lacking where the object it sits in is there and does not declare it, a
+    /// required one wherever no object above it that the schema names is absent: an open object may carry the key, but
+    /// the pipeline has not shown that it does.
     pub fn check(&self, record: &DataType) -> Vec<Finding> {
         let shape = Shape::of(record);
         let declared: HashSet<&str> = self.fields.iter().map(|f| f.path.as_str()).collect();
@@ -377,12 +378,23 @@ impl Schema {
                     }
                 }
                 None => {
-                    let misfit = match f.requirement {
-                        Requirement::Required => Misfit::Missing,
-                        Requirement::Recommended => Misfit::Recommended,
+                    let (misfit, lacking) = match f.requirement {
+                        // Asked for wherever no object above it that the schema names is absent: ECS names no `event`,
+                        // so a row without one lacks `event.kind`, while OCSF asks for an object's attributes only
+                        // where the object it names is there.
+                        Requirement::Required => (
+                            Misfit::Missing,
+                            (1..keys.len()).all(|n| match shape.at.get(&keys[..n]) {
+                                Some(_) => shape.object_at(&keys[..n]).is_some(),
+                                None => !declared.contains(keys[..n].join(".").as_str()),
+                            }),
+                        ),
+                        Requirement::Recommended => {
+                            (Misfit::Recommended, shape.object_at(&keys[..keys.len() - 1]).is_some())
+                        }
                         Requirement::Optional => continue,
                     };
-                    if shape.object_at(&keys[..keys.len() - 1]).is_some() {
+                    if lacking {
                         out.push(Finding {
                             keys,
                             schema: self.id.clone(),
@@ -1002,6 +1014,32 @@ mod tests {
             opened.iter().any(|f| f.path() == "metadata.product"),
             "an open object has not shown it holds the field: {opened:?}"
         );
+    }
+
+    #[test]
+    fn a_required_field_under_an_object_the_schema_does_not_name_is_missing_where_the_object_is_not() {
+        let event = declared(
+            "event",
+            "Event",
+            vec![
+                row("event.kind", "str", true),
+                row("event.category", "str", false),
+                row("actor", "{...}", false),
+                row("actor.user", "str", true),
+            ],
+        );
+        let found = |record: &DataType| event.check(record).iter().map(Finding::path).collect::<Vec<_>>();
+        assert_eq!(
+            found(&st(&[])),
+            ["event.kind"],
+            "`actor` is named and optional, so `actor.user` is asked for only within it"
+        );
+        assert_eq!(
+            found(&st(&[("event", DataType::Str)])),
+            ["event"],
+            "a key holding no object is its own misfit"
+        );
+        assert_eq!(found(&st(&[("actor", st(&[]))])), ["event.kind", "actor.user"]);
     }
 
     #[test]
