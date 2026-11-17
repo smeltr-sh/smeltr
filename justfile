@@ -747,5 +747,5 @@ demo-fixtures: build
 # regeneration.
 # Regenerate THIRD-PARTY-NOTICES.md.
 [group("dev")]
-notices: need-rust (need "cargo-about" "Run: cargo install cargo-about --locked")
+notices: need-rust (need "cargo-about" "Run: cargo install cargo-about --locked --features cli")
     cargo about generate -c tools/notices/about.toml tools/notices/about.hbs -o THIRD-PARTY-NOTICES.md
