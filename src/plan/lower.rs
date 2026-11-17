@@ -281,9 +281,10 @@ pub fn lookup(
 
 /// `Object.assign(into, parse)`, each field declared under `into` before it where the name does not hold its type,
 /// and a formatted `datetime` read by the parse's `formats`. Fields under an object nothing holds yet declare it once,
-/// open, with all of them; so does an `into` nothing holds. A key the record may hold converts after a `dynamic` parse,
-/// which lays it as it finds it, and before any other, whose fields are typed by what the name holds; a formatted one is
-/// read as text and converted after.
+/// open, with all of them; so does an `into` nothing holds. Below a name something holds, where a declaration is
+/// refused, each is written null at its type instead, as an assignment there may be. A key the record may hold converts
+/// after a `dynamic` parse, which lays it as it finds it, and before any other, whose fields are typed by what the name
+/// holds; a formatted one is read as text and converted after.
 fn declare_around<'f>(
     into: &str,
     fields: impl Iterator<Item = (&'f str, DataType, Option<&'f TimeSource>)>,
@@ -295,6 +296,18 @@ fn declare_around<'f>(
     let mut objects: Vec<(&str, Vec<(String, DataType)>)> = Vec::new();
     let mut formats = Vec::new();
     let open = || DataType::Struct(Vec::new(), true);
+    let declare =
+        |name: &str, ty: DataType| match tree::ancestors(name).any(|above| matches!(held(above), Held::Bound(_))) {
+            true => Stmt::Assign {
+                target: name.to_string(),
+                value: declared(name, Some(ty), null()),
+                typed: true,
+            },
+            false => Stmt::Declare {
+                name: name.to_string(),
+                ty,
+            },
+        };
     // `Object.assign` merges into an object a name holds, so `into` is made one first. Its own entry comes before the
     // fields under it, which `nest` lays inside it.
     match held(into) {
@@ -335,10 +348,7 @@ fn declare_around<'f>(
                             None => objects.push((top, vec![(below, ty.clone())])),
                         }
                     }
-                    None => lowered.body.push(Stmt::Declare {
-                        name: name.to_string(),
-                        ty: ty.clone(),
-                    }),
+                    None => lowered.body.push(declare(name, ty.clone())),
                 }
             }
             // `name: T = name`: the record's key, converted.
@@ -375,8 +385,7 @@ fn declare_around<'f>(
         for (path, leaf) in fields {
             nest(&mut ty, &path, leaf);
         }
-        let name = name.to_string();
-        Stmt::Declare { name, ty }
+        declare(name, ty)
     });
     lowered.body.splice(0..0, objects);
     lowered.body.push(Stmt::Assign {

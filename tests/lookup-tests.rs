@@ -13,7 +13,10 @@ use smeltr::core::batch::Batch;
 use smeltr::core::column::{Column, DataType};
 use smeltr::core::error::ExceptionKind;
 use smeltr::plan::compile::{Plan, compile};
-use smeltr::plan::config::{CompileError, LookupAt, LookupFile, LookupSource, PipelineConfig, Step};
+use smeltr::plan::config::{
+    CompileError, FunctionKind, LookupAt, LookupFile, LookupOutput, LookupSource, MatchKind, Multiplicity,
+    PipelineConfig, Step,
+};
 
 use smeltr::plan::topology::SourceMeta;
 
@@ -260,6 +263,41 @@ fn multiple_outputs_land_in_their_own_fields() {
         parsed(&rows[0]),
         parsed(br#"{"_raw":"","client_ip":"10.0.0.1","geo":{"city":"Springfield","country":"US"}}"#)
     );
+    b.reclaim(&mut env.pool);
+    std::fs::remove_file(path).unwrap();
+}
+
+/// A Lookup step's output may lie under an object a parser closed, as an Eval's write there may.
+#[test]
+fn a_lookup_step_writes_under_a_closed_object() {
+    let path = temp_lookup_file("ip,country\n10.0.0.1,US\n");
+    let lookup = func(
+        1,
+        FunctionKind::Lookup {
+            input: "destination.ip".into(),
+            table: "geo".into(),
+            match_kind: MatchKind::Exact,
+            multiplicity: Multiplicity::Best,
+            key_column: "ip".into(),
+            outputs: vec![LookupOutput {
+                source: "country".into(),
+                field: "destination.geo.country".into(),
+                default: None,
+                ty: DataType::Str,
+                time_source: None,
+            }],
+        },
+    );
+    let plan = compile_ok_with(
+        vec![code(0, r#"destination: {ip: str} = {ip: "10.0.0.1"};"#), lookup],
+        &[("geo", csv(&path))],
+    );
+    let mut env = Env::new();
+    let mut b = Batch::new(&plan.slot_layout, 1, 0);
+    seed_raw_empty(&mut env, &mut b, 1);
+
+    let rows = env.run_json(&plan, &mut b);
+    assert_eq!(rows[0]["destination"]["geo"]["country"], "US", "{}", rows[0]);
     b.reclaim(&mut env.pool);
     std::fs::remove_file(path).unwrap();
 }
