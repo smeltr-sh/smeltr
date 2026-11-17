@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, tick, unmount } from 'svelte';
 import PipelineEditor from './PipelineEditor.svelte';
 import { setBranch, setScope, SHARED_SCOPE, type ApiError, type PipelineDto } from './api';
-import { dropAll, hold } from './edits';
+import { dropAll, hold, listHeld } from './edits';
 import { load, signedOut } from './session';
 import { bareError, errors } from './errors.svelte';
 
@@ -202,6 +202,15 @@ describe('pipeline identity in the mounted editor', () => {
     await save();
     expect(writes[0]).toEqual({ id: 'legacy-id', name: 'Renamed in JSON', steps: [] });
     expect(pipelines.size).toBe(1);
+  });
+});
+
+describe('a pipeline the scope does not hold', () => {
+  it('holds no unsaved work for it', async () => {
+    editor = mount(PipelineEditor, { target, props: { id: 'gone', showJson: false } });
+    await vi.waitFor(() => expect(target.textContent).not.toContain('Loading…'));
+    await tick();
+    expect(listHeld()).toEqual([]);
   });
 });
 

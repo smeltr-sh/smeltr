@@ -193,7 +193,7 @@
   // yet been set for the id now in the URL, which would otherwise read as
   // dirty -- backward, and specifically for a pipeline nothing has
   // touched yet.
-  let isDirty = $derived(!loading && editSignature !== savedSignature);
+  let isDirty = $derived(!loading && !loadFailed && editSignature !== savedSignature);
   // A brand new pipeline that nothing has touched yet is not dirty (its
   // edit and saved signatures already match), but it has never been
   // written either -- an empty pipeline is a real, useful pass-through
@@ -263,7 +263,8 @@
   // to the id that save wrote, so that save drops the record it saved under by
   // hand. The label is the name box, since the key holds an id.
   $effect(() => {
-    if (loading || moved) return;
+    // A pipeline that did not load holds only the defaults, nothing of the person's.
+    if (loading || loadFailed || moved) return;
     hold(FILE, {
       ...snapshotFor(pipelineName, steps, produces),
       baseline: savedSignature,
