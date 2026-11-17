@@ -259,11 +259,10 @@
       <span>Rows per second, over the last {range.label}</span>{@render picker()}
     </h3>
     {#if past?.judgedFromMillis !== undefined}
-      <p class="dim small learning">Learning: this sender is judged once it has 3 days of rows.</p>
+      <p class="dim small learning">Learning: this sender is judged once it has a week of rows.</p>
     {:else if past?.weekdaysFromMillis !== undefined}
       <p class="dim small learning">
-        Until it has 4 weeks of rows, every day of the week is judged alike, so a quiet weekend can
-        warn.
+        Until it has 4 weeks of rows, every day of the week is judged alike.
       </p>
     {/if}
     <div class="big">

@@ -9,7 +9,7 @@
 //! source's warning answered Normal is learned by its senders too.
 //!
 //! A source whose history was reset learns its normal only from what it read after the reset, so it has none, and
-//! does not warn, until it has [`super::throughput::MIN_DAYS`] days of that.
+//! does not warn, until it has [`super::throughput::JUDGED_AFTER_MS`] of that.
 //!
 //! All are kept in one setting, with who said each.
 

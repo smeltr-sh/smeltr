@@ -80,7 +80,7 @@
   async function resetHistory(w: WarningDto, group: string) {
     const ok = await ask({
       title: 'reset history',
-      body: `${w.subjectId} forgets its history and learns its normal again from now. Until it has 3 days of rows, it raises neither Rows below normal nor Rows above normal.`,
+      body: `${w.subjectId} forgets its history and learns its normal again from now. Until it has a week of rows, it raises neither Rows below normal nor Rows above normal.`,
       action: 'Reset history',
     });
     if (ok) await mark(() => resetSourceHistory(group, w.subjectId));
