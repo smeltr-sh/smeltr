@@ -258,6 +258,7 @@ pub fn destination(
             config.storage_class.as_deref(),
         ),
         parts_in_flight: config.in_flight,
+        encoders: crate::startup_config::worker_thread_limit(),
     };
     Ok(FileDestination::new(
         cloud_name(&config.cloud),

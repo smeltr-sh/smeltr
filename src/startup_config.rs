@@ -472,8 +472,9 @@ pub fn worker_state_dir() -> PathBuf {
         .into()
 }
 
-/// Threads in the transform pool, and nothing else: ingest is one reader per source, egress one thread per
-/// destination. Defaults to the core count, which is what transform is bound by -- it is the only CPU-bound stage.
+/// Threads in the transform pool, and the most encoder threads one file destination starts. Ingest is one reader
+/// per source and egress one thread per destination, and a file destination's writer is one more. Defaults to the
+/// core count, which is what transform and encoding are bound by.
 ///
 /// 0 is the default too, so the example file can show a value that changes nothing: a pool of zero would be a
 /// worker that runs no pipeline.

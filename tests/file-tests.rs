@@ -199,6 +199,7 @@ fn config(schema: &Schema, partitioner: Arc<dyn Partitioner>) -> FileConfig {
         stall_after: Duration::from_secs(30),
         attributes: Attributes::new(),
         parts_in_flight: 4,
+        encoders: 1,
     }
 }
 
@@ -825,8 +826,15 @@ fn the_configured_attributes_reach_every_uploaded_file() {
 /// Each row's value as a line, buffered whole until taken.
 struct Lines;
 
+/// `Lines`, each write taking `SLOW_WRITE`, so the writer finds its encoders behind.
+struct SlowLines;
+
+const SLOW_WRITE: Duration = Duration::from_millis(200);
+
 #[derive(Default)]
 struct LineEncoder {
+    /// How long each write takes.
+    pause: Duration,
     buffered: Vec<u8>,
     taken: usize,
     rows: u64,
@@ -842,8 +850,22 @@ impl FileFormat for Lines {
     }
 }
 
+impl FileFormat for SlowLines {
+    fn admit(&self, row: &OwnedRecord, partition: &Partition) -> Result<FileRow, String> {
+        Lines.admit(row, partition)
+    }
+
+    fn open(&self, _partition: &Partition) -> Box<dyn FileEncoder> {
+        Box::new(LineEncoder {
+            pause: SLOW_WRITE,
+            ..LineEncoder::default()
+        })
+    }
+}
+
 impl FileEncoder for LineEncoder {
     fn write(&mut self, rows: &[FileRow]) {
+        std::thread::sleep(self.pause);
         for row in rows {
             let FileRow::Line(line) = row else {
                 panic!("Lines admits only lines")
@@ -962,4 +984,52 @@ fn a_compressed_file_is_finished_by_its_written_size() {
     let commits = t.commits();
     assert_eq!(commits[0].len(), 1, "one file: {:?}", commits[0]);
     assert_eq!(commits[0][0].record_count, lines.len() as u64);
+}
+
+/// Batches that come faster than one encoder writes them start more, each writing its own file, and the commit
+/// carries every row once.
+#[test]
+fn an_encoder_behind_starts_another_and_the_commit_carries_every_file() {
+    let schema = raw_schema();
+    let mut c = config(&schema, Arc::new(Unpartitioned));
+    c.format = Arc::new(SlowLines);
+    c.commit_interval = LONG;
+    c.buffer_bytes = 1024 * 1024 * 1024;
+    c.encoders = 3;
+    let mut t = table(c, &[]);
+    // Each batch is more than a poll's worth, so the encoder it goes to is behind until it has written it.
+    let mut sent = Vec::new();
+    for batch in 0..6 {
+        let texts: Vec<String> = (0..5)
+            .map(|i| format!("{batch}-{i}-{}", "x".repeat(1024 * 1024)))
+            .collect();
+        let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+        assert!(t.deliver(batch, &rows(&schema, &texts)).is_empty());
+        sent.extend(texts.iter().map(|text| text.to_string()));
+    }
+    t.d.flush().unwrap();
+    assert_eq!(t.completed(6), (0..6).collect::<Vec<_>>());
+
+    let commits = t.commits();
+    assert_eq!(commits.len(), 1, "one commit: {commits:?}");
+    assert_eq!(commits[0].len(), 3, "a file from each encoder");
+    let mut landed = Vec::new();
+    for file in &commits[0] {
+        let store = t.store.clone();
+        let location = Path::from(file.path.as_str());
+        let bytes = t
+            .runtime
+            .block_on(async move { store.get(&location).await.unwrap().bytes().await })
+            .unwrap();
+        let lines: Vec<String> = bytes
+            .split(|b| *b == b'\n')
+            .filter(|l| !l.is_empty())
+            .map(|l| String::from_utf8(l.to_vec()).unwrap())
+            .collect();
+        assert_eq!(file.record_count, lines.len() as u64);
+        landed.extend(lines);
+    }
+    landed.sort();
+    sent.sort();
+    assert!(landed == sent, "every row lands once");
 }
