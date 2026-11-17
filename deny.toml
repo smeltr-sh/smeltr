@@ -13,6 +13,10 @@ ignore = [
     # 2026-10-09: the Marvin timing attack on `rsa`, through russh's RSA host and user keys for SFTP. No fixed
     # release exists. Recovering a key needs many timed decryptions; an SSH client only signs, once per sign-in.
     { id = "RUSTSEC-2023-0071", reason = "no fixed rsa release; SFTP's RSA keys need it" },
+    # 2026-11-17: chrono is unmaintained, and humantime with it. Neither has a bug filed, and smeltr uses neither
+    # itself: arrow, parquet, object_store and russh-sftp bring them. Each entry leaves once those move off chrono.
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; arrow, parquet, object_store and russh-sftp need it" },
+    { id = "RUSTSEC-2026-0542", reason = "humantime unmaintained with chrono; object_store needs it" },
 ]
 
 [licenses]
