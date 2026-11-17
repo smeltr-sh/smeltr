@@ -312,6 +312,15 @@ impl<'r> Shape<'r> {
         }
     }
 
+    /// Whether a field at `keys` the record lacks is asked for: each key above it the record holds is an object, and
+    /// none it lacks is one the field is asked for only `within`.
+    fn asks(&self, keys: &[String], within: impl Fn(&[String]) -> bool) -> bool {
+        (1..keys.len()).all(|n| match self.at.get(&keys[..n]) {
+            Some(_) => self.object_at(&keys[..n]).is_some(),
+            None => !within(&keys[..n]),
+        })
+    }
+
     /// The object at `keys`, where the record has one: the root, or a field holding an object or an array of them.
     fn object_at(&self, keys: &[String]) -> Option<&'r DataType> {
         if keys.is_empty() {
@@ -334,8 +343,9 @@ impl Schema {
     /// Where a record may break the schema: each field whose type the schema's does not hold, a key only the fields
     /// under it name holding anything but an object among them, and each field the schema requires or recommends that
     /// the record lacks, in the schema's order. A field the schema does not name keeps it, as does one whose type only
-    /// the row knows. A field is lacking where the object it sits in is there and does not declare it: an open object
-    /// may carry the key, but the pipeline has not shown that it does.
+    /// the row knows. A field is lacking where the objects it is asked for within are there and do not declare it: a
+    /// required one is asked for within the objects the schema names, a recommended one within every object above it.
+    /// An open object may carry the key, but the pipeline has not shown that it does.
     pub fn check(&self, record: &DataType) -> Vec<Finding> {
         let shape = Shape::of(record);
         let declared: HashSet<&str> = self.fields.iter().map(|f| f.path.as_str()).collect();
@@ -382,7 +392,13 @@ impl Schema {
                         Requirement::Recommended => Misfit::Recommended,
                         Requirement::Optional => continue,
                     };
-                    if shape.object_at(&keys[..keys.len() - 1]).is_some() {
+                    // A required field is asked for only within the objects the schema names (OCSF's attributes),
+                    // so ECS's `event.kind` is asked of a row with no `event`; a recommended one only within
+                    // objects the row has.
+                    let within = |at: &[String]| {
+                        f.requirement == Requirement::Recommended || declared.contains(at.join(".").as_str())
+                    };
+                    if shape.asks(&keys, within) {
                         out.push(Finding {
                             keys,
                             schema: self.id.clone(),
@@ -1002,6 +1018,34 @@ mod tests {
             opened.iter().any(|f| f.path() == "metadata.product"),
             "an open object has not shown it holds the field: {opened:?}"
         );
+    }
+
+    #[test]
+    fn a_required_field_under_an_object_the_schema_does_not_name_is_missing_where_the_object_is_not() {
+        let event = declared(
+            "event",
+            "Event",
+            vec![
+                row("event.kind", "str", true),
+                recommended("event.outcome", "str"),
+                row("actor", "{...}", false),
+                row("actor.user", "str", true),
+            ],
+        );
+        let found = |record: &DataType| event.check(record).iter().map(Finding::path).collect::<Vec<_>>();
+        assert_eq!(
+            found(&st(&[])),
+            ["event.kind"],
+            "`event.outcome` is only recommended, and `actor` is named and optional, so neither field under them is \
+             asked for"
+        );
+        assert_eq!(found(&st(&[("event", st(&[]))])), ["event.kind", "event.outcome"]);
+        assert_eq!(
+            found(&st(&[("event", DataType::Str)])),
+            ["event"],
+            "a key holding no object is its own misfit"
+        );
+        assert_eq!(found(&st(&[("actor", st(&[]))])), ["event.kind", "actor.user"]);
     }
 
     #[test]
