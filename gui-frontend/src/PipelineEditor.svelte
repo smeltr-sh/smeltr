@@ -288,6 +288,7 @@
   // What a `call` step may target (a self-call is a cycle).
   let otherPipelines = $derived([...sharedPipelines, ...ownPipelines]);
   let pipelineIds = $derived(otherPipelines.map((p) => p.id));
+  let sharedPipelineIds = $derived(new Set(sharedPipelines.map((p) => p.id)));
   let pipelineNames = $derived(Object.fromEntries(otherPipelines.map((p) => [p.id, p.name])));
   let lookupTables = $derived([...sharedLookupTables, ...ownLookupTables]);
   let grokPatterns = $derived([...sharedGrokPatterns, ...ownGrokPatterns]);
@@ -1622,6 +1623,7 @@
             {warningsByStep}
             {pipelineIds}
             {pipelineNames}
+            {sharedPipelineIds}
             {lookupTables}
             {grokPatterns}
             parsedFields={lastGoodResult?.parsed_fields}

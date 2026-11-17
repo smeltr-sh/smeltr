@@ -234,4 +234,21 @@ describe('a group pipeline drawing on shared', () => {
     await tick();
     expect(target.textContent).not.toContain('unknown lookup table');
   });
+
+  it("marks the shared pipelines a Call step's picker offers", async () => {
+    setScope('west');
+    sharedConfig = { pipelines: [{ id: 'enrich', name: 'Enrich', steps: [] }], lookupTables: [] };
+    pipelines.set('local', { id: 'local', name: 'Local', steps: [] });
+    pipelines.set('audit', {
+      id: 'audit',
+      name: 'Audit',
+      steps: [{ id: 'call-enrich', type: 'call', pipeline: 'enrich' }],
+    } as PipelineDto);
+    await open('audit');
+    target.querySelector<HTMLButtonElement>('#step-call-enrich .expander')!.click();
+    const offered = () =>
+      [...target.querySelectorAll('select option')].map((o) => o.textContent?.trim());
+    await vi.waitFor(() => expect(offered()).toContain('Enrich \u2014 shared'));
+    expect(offered()).toContain('Local');
+  });
 });
