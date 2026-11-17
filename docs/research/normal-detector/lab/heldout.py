@@ -2,9 +2,10 @@
 
     python3 heldout.py extend_grid.json
 
-The pick is the setting with the fewest false alarms among those detecting the most drops within an hour, by the
-K x lambda rule at K x lambda = 30 (a drop a quarter, a miss worth 100 false alarms): minimize F + 30 x M over the
-mean of stops, drops to a tenth and drops to 30%.
+The cost of a setting is F + 30 x M (Section 5.2): F false alarms a month, M the share missed within the hour, the
+mean over stops, drops to a tenth and drops to 30%. The pick is the quietest setting whose cost is within TIE of the
+least, since a difference under TIE is less than a point of the share missed or half an alarm a month. A series with
+no scored drop (its whole judged span labeled) counts for neither.
 """
 
 import json
@@ -13,6 +14,7 @@ import sys
 import numpy as np
 
 KL = 30
+TIE = 0.5
 
 
 def table(results, series_filter):
@@ -20,14 +22,20 @@ def table(results, series_filter):
     cfgs = rs[0]["configs"]
     out = []
     for i, c in enumerate(cfgs):
-        F = np.mean([r["configs"][i]["false"] for r in rs if r["configs"][i]["false"] is not None])
-        R = np.mean([[r["configs"][i][f"by60_{f}"] for f in ("0.0", "0.1", "0.3")] for r in rs])
+        F = np.mean([r["configs"][i]["false"] for r in rs if scored(r["configs"][i]["false"])])
+        R = np.mean([[r["configs"][i][f"by60_{f}"] for f in ("0.0", "0.1", "0.3")] for r in rs
+                     if all(scored(r["configs"][i][f"by60_{f}"]) for f in ("0.0", "0.1", "0.3"))])
         out.append(dict(margin=c["margin"], k=c["k"], false=F, detected=R, cost=F + KL * (1 - R)))
     return out
 
 
+def scored(v):
+    return v is not None and not np.isnan(v)
+
+
 def pick(tab):
-    return min(tab, key=lambda c: c["cost"])
+    least = min(c["cost"] for c in tab)
+    return min((c for c in tab if c["cost"] < least + TIE), key=lambda c: c["false"])
 
 
 def main(path):

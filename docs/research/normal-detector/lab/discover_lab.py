@@ -19,7 +19,7 @@ import numpy as np
 
 from normal_lab import S
 from run_all import DAY
-from share_lab import senders
+from share_lab import SAMPLE, senders
 from silence_lab import runs_of_zero
 
 CAP = 256
@@ -68,7 +68,7 @@ def field_counts(rng, total, kind):
     raise ValueError(kind)
 
 
-def qualifies(counts, sample=0.5, rng=None):
+def qualifies(counts, sample=SAMPLE, rng=None):
     """(qualifies, values, longest silence in buckets over the week, as seen by the tally)."""
     seen = rng.binomial(counts.astype(int), sample)
     present = (seen[:, :JUDGE].sum(1) > 0)

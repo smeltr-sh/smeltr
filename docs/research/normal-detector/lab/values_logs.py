@@ -17,6 +17,8 @@ from extend_lab import judge
 from real_logs import S, load_logs
 
 CONFIG = dict(widths=(1, 6, 72, 288), k=4, margin=0.2, longhistory=28, minrows=10, wtyp=True)
+if os.environ.get("SHIPPED"):  # at Quiet, the preset smeltr judges senders at
+    CONFIG = extend_lab.AT["Quiet"]
 
 
 def longest_zero_run(c):

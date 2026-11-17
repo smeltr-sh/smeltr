@@ -15,18 +15,22 @@ from multiprocessing import Pool
 
 import numpy as np
 
-from extend_lab import HORIZON, HORIZONS, below_over, make, part_path
+from extend_lab import HORIZON, HORIZONS, below_cut, make, part_path
 from multi_lab import first_hit
 from quiet_lab import STEP, Quiet
 from real_logs import load_logs
-from run_all import DAY, MODELED, NAB, S, modeled, nab_series
+from run_all import DAY, MODELED, NAB, S, modeled, nab_series, with_added
 
 BAND = dict(widths=(1, 6, 72, 288), k=4, margin=0.2, longhistory=28, minrows=10, wtyp=True)
+if os.environ.get("SHIPPED"):  # the band at Balanced, as smeltr ships it
+    from extend_lab import AT
+
+    BAND = AT["Balanced"]
 MARGIN = 1.5
 
 
 def stop_delays(b, lab, judge_from):
-    d = make(b, BAND, judge_from)
+    d = make(b, BAND, judge_from, (2, (0.0,), HORIZON))
     held_b = d.run()
     judged_b = np.zeros(len(b), bool)
     for w in d.widths:
@@ -45,7 +49,7 @@ def stop_delays(b, lab, judge_from):
     sample[len(b) - HORIZON :] = False
     t0 = np.where(sample)[0]
     # the band's delay on a stop at each sampled bucket
-    agree = np.logical_or.reduce([below_over(b, d.low[w], sample, w, 0.0, HORIZON) for w in d.widths])
+    agree = np.logical_or.reduce([below_cut(d, b, sample, w, 0.0, HORIZON) for w in d.widths])
     t_band = first_hit(agree, BAND["k"])
     # the silence rule's delay
     run_before = np.zeros(len(b), int)
@@ -79,7 +83,7 @@ def job(args):
 def main(root, out_path):
     part_dir = out_path + ".parts"
     os.makedirs(part_dir, exist_ok=True)
-    labels = json.load(open(os.path.join(root, "labels.json")))
+    labels = with_added(json.load(open(os.path.join(root, "labels.json"))))
     jobs = [("modeled", name, seed, modeled(name, seed), np.zeros(56 * DAY, bool)) for name in MODELED for seed in (1, 2, 3)]
     for name in NAB:
         b, lab = nab_series(root, name, labels)
