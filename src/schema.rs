@@ -312,6 +312,15 @@ impl<'r> Shape<'r> {
         }
     }
 
+    /// Whether a field at `keys` the record lacks is asked for: each key above it the record holds is an object, and
+    /// none it lacks is one the field is asked for only `within`.
+    fn asks(&self, keys: &[String], within: impl Fn(&[String]) -> bool) -> bool {
+        (1..keys.len()).all(|n| match self.at.get(&keys[..n]) {
+            Some(_) => self.object_at(&keys[..n]).is_some(),
+            None => !within(&keys[..n]),
+        })
+    }
+
     /// The object at `keys`, where the record has one: the root, or a field holding an object or an array of them.
     fn object_at(&self, keys: &[String]) -> Option<&'r DataType> {
         if keys.is_empty() {
@@ -334,9 +343,9 @@ impl Schema {
     /// Where a record may break the schema: each field whose type the schema's does not hold, a key only the fields
     /// under it name holding anything but an object among them, and each field the schema requires or recommends that
     /// the record lacks, in the schema's order. A field the schema does not name keeps it, as does one whose type only
-    /// the row knows. A recommended field is lacking where the object it sits in is there and does not declare it, a
-    /// required one wherever no object above it that the schema names is absent: an open object may carry the key, but
-    /// the pipeline has not shown that it does.
+    /// the row knows. A field is lacking where the objects it is asked for within are there and do not declare it: a
+    /// required one is asked for within the objects the schema names, a recommended one within every object above it.
+    /// An open object may carry the key, but the pipeline has not shown that it does.
     pub fn check(&self, record: &DataType) -> Vec<Finding> {
         let shape = Shape::of(record);
         let declared: HashSet<&str> = self.fields.iter().map(|f| f.path.as_str()).collect();
@@ -378,23 +387,18 @@ impl Schema {
                     }
                 }
                 None => {
-                    let (misfit, lacking) = match f.requirement {
-                        // Asked for wherever no object above it that the schema names is absent: ECS names no `event`,
-                        // so a row without one lacks `event.kind`, while OCSF asks for an object's attributes only
-                        // where the object it names is there.
-                        Requirement::Required => (
-                            Misfit::Missing,
-                            (1..keys.len()).all(|n| match shape.at.get(&keys[..n]) {
-                                Some(_) => shape.object_at(&keys[..n]).is_some(),
-                                None => !declared.contains(keys[..n].join(".").as_str()),
-                            }),
-                        ),
-                        Requirement::Recommended => {
-                            (Misfit::Recommended, shape.object_at(&keys[..keys.len() - 1]).is_some())
-                        }
+                    let misfit = match f.requirement {
+                        Requirement::Required => Misfit::Missing,
+                        Requirement::Recommended => Misfit::Recommended,
                         Requirement::Optional => continue,
                     };
-                    if lacking {
+                    // A required field is asked for only within the objects the schema names (OCSF's attributes),
+                    // so ECS's `event.kind` is asked of a row with no `event`; a recommended one only within
+                    // objects the row has.
+                    let within = |at: &[String]| {
+                        f.requirement == Requirement::Recommended || declared.contains(at.join(".").as_str())
+                    };
+                    if shape.asks(&keys, within) {
                         out.push(Finding {
                             keys,
                             schema: self.id.clone(),
@@ -1023,7 +1027,7 @@ mod tests {
             "Event",
             vec![
                 row("event.kind", "str", true),
-                row("event.category", "str", false),
+                recommended("event.outcome", "str"),
                 row("actor", "{...}", false),
                 row("actor.user", "str", true),
             ],
@@ -1032,8 +1036,10 @@ mod tests {
         assert_eq!(
             found(&st(&[])),
             ["event.kind"],
-            "`actor` is named and optional, so `actor.user` is asked for only within it"
+            "`event.outcome` is only recommended, and `actor` is named and optional, so neither field under them is \
+             asked for"
         );
+        assert_eq!(found(&st(&[("event", st(&[]))])), ["event.kind", "event.outcome"]);
         assert_eq!(
             found(&st(&[("event", DataType::Str)])),
             ["event"],
