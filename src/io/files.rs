@@ -1189,8 +1189,8 @@ impl Encoder {
         Ok(())
     }
 
-    /// Closes every open file, their uploads landing side by side. A file whose upload failed is left out of
-    /// `closed`, and so is every file when the uploads do not answer within `stall_after`.
+    /// Closes every open file, their uploads landing side by side. A file whose upload failed, or did not answer within
+    /// `stall_after`, is left out of `closed`.
     fn close_all(&mut self) -> Result<(), String> {
         let mut sealed = Vec::new();
         let mut landing = Vec::new();
@@ -1200,8 +1200,15 @@ impl Encoder {
             sealed.push(closed);
             landing.push(upload.landing());
         }
-        let all = async { Ok::<_, String>(futures_util::future::join_all(landing).await) };
-        let landed = wait(&self.shared.runtime, self.shared.config.stall_after, all)?;
+        // Each upload waits up to `stall_after` on its own, so the ones that landed are kept when another does not answer.
+        let after = self.shared.config.stall_after;
+        let timed = (landing.into_iter()).map(|l| async move { tokio::time::timeout(after, l).await });
+        let landed = (self
+            .shared
+            .runtime
+            .block_on(futures_util::future::join_all(timed))
+            .into_iter())
+        .map(|landed| landed.unwrap_or_else(|_| Err(format!("no answer within {after:?}"))));
         let mut failed = None;
         for (closed, landed) in sealed.into_iter().zip(landed) {
             match landed {
