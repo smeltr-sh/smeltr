@@ -1106,9 +1106,22 @@ impl Smeltr {
 
 impl Drop for Smeltr {
     fn drop(&mut self) {
+        // The runtime leads a group of its own: left alone, it drains on into the next row. Found before the leader
+        // dies, which would leave it nobody's child; killed after, so the leader starts no other.
+        let runtime = self.runtime();
         // SAFETY: signals the process group `start` made, which holds only this leader and what it started.
         unsafe { libc::kill(-(self.process.id() as i32), libc::SIGKILL) };
         let _ = self.process.wait();
+        if let Some(runtime) = runtime {
+            // SAFETY: signals the group the runtime leads, which holds only it and what it started.
+            unsafe { libc::kill(-(runtime as i32), libc::SIGKILL) };
+            // Gone, or dead and waiting on whoever reaps orphans here.
+            while std::fs::read_to_string(format!("/proc/{runtime}/stat"))
+                .is_ok_and(|stat| stat.rsplit(')').next().and_then(|r| r.split_whitespace().next()) != Some("Z"))
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
         // Kept after a failure: its console says why.
         if !std::thread::panicking() {
             let _ = std::fs::remove_dir_all(&self.data_dir);
