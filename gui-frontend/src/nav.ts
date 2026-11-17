@@ -10,6 +10,7 @@
 import { untrack } from 'svelte';
 import { isAdministrator } from './access';
 import { session } from './session';
+import { viewFromParams, type MetricsView } from './metricsView';
 import { SHARED_SCOPE, type MapNodeKind } from './api';
 
 /** `me` is what belongs to the person signed in, reached from their name chip rather than a tab of its own. */
@@ -46,6 +47,8 @@ export type Route =
   // Every condition the leader holds right now, grouped by what kind of
   // condition it is. A row clears the moment its fact does.
   | { tab: 'status'; page: 'issues' }
+  // Any stored counter or gauge, narrowed, split and drawn as its hash says (`metricsView.ts`).
+  | { tab: 'status'; page: 'metrics'; view: MetricsView }
   // What the fleet's workers have said, newest first. Every filter lives
   // in the hash so a view worth showing someone is a link (design doc,
   // Observability).
@@ -260,6 +263,7 @@ const SECTIONS: Partial<Record<Tab, SectionItem[]>> = {
   status: [
     { label: 'Status', hash: '#/status' },
     { label: 'Issues', hash: '#/status/issues' },
+    { label: 'Metrics', hash: '#/status/metrics' },
     { label: 'Logs', hash: '#/status/logs' },
   ],
   build: [
@@ -339,6 +343,7 @@ export const ACCOUNTS_TABS: SectionItem[] = ACCOUNTS_SECTIONS.map((s) => ({
 const SECTION_OF: Record<Route['page'], string | null> = {
   status: 'Status',
   issues: 'Issues',
+  metrics: 'Metrics',
   logs: 'Logs',
   graph: null,
   sources: 'Sources',
@@ -470,6 +475,13 @@ export function parseRoute(hash: string): Route {
     }
     case 'status': {
       if (parts[1] === 'issues') return { tab: 'status', page: 'issues' };
+      if (parts[1] === 'metrics') {
+        return {
+          tab: 'status',
+          page: 'metrics',
+          view: viewFromParams(new URLSearchParams(search)),
+        };
+      }
       if (parts[1] !== 'logs') {
         const deploying = new URLSearchParams(search).get('deploying') || undefined;
         return { tab: 'status', page: 'status', ...(deploying ? { deploying } : {}) };

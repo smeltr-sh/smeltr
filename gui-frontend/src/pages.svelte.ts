@@ -7,6 +7,7 @@ const LOAD = {
   status: () => import('./ClusterPage.svelte'),
   issues: () => import('./IssuesPage.svelte'),
   logs: () => import('./LogsPage.svelte'),
+  metrics: () => import('./MetricsPage.svelte'),
   graph: () => import('./MapPage.svelte'),
   sources: () => import('./SourcesPage.svelte'),
   destinations: () => import('./DestinationsPage.svelte'),

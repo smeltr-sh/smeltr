@@ -384,6 +384,79 @@ test('rows in and out are charted over the window the engineer picks', async ({
   });
 });
 
+test('the Metrics page charts any stored metric, split by a label, as a rate or in totals', async ({
+  admin,
+  api,
+  fleet,
+  leader,
+  sink,
+}) => {
+  const es = await sink();
+  await deploy(api, 'metrics', ['east', 'west'], {
+    east: metricsTo(es.url),
+    west: metricsTo(es.url),
+  });
+  await fleet.startWorker(leader, api, 'east', 'east-1');
+  await fleet.startWorker(leader, api, 'west', 'west-1');
+
+  await goto(
+    admin,
+    leader,
+    '#/status/metrics?metric=smeltr_rows_polled_total&by=group&windowMinutes=15',
+  );
+  const panel = admin.getByRole('region', { name: 'Metric' });
+  const table = panel.getByRole('table');
+  // A reading lands a ten-second bucket at a time, and the page asks again as often.
+  await expect(table.getByRole('row', { name: /^east\b/ })).toBeVisible({ timeout: 30_000 });
+  await expect(table.getByRole('row', { name: /^west\b/ })).toBeVisible();
+  await expect(panel.getByText('rows/s', { exact: true })).toBeVisible();
+  await shoot(admin, panel, 'metrics-by-group');
+
+  // However many the reader asks for are drawn on their own, and the rest add up to Other.
+  await panel.getByRole('spinbutton', { name: 'Top' }).fill('1');
+  await panel.getByRole('spinbutton', { name: 'Top' }).press('Enter');
+  await expect(admin).toHaveURL(/top=1\b/);
+  await expect(panel.getByRole('listitem').filter({ hasText: /^Other$/ })).toBeVisible();
+  await shoot(admin, panel, 'metrics-top-1');
+
+  // Narrowed to one group, the other's row goes, and the view is in the address to hand on.
+  await panel.getByRole('button', { name: '+ Filter' }).click();
+  await panel.getByRole('combobox', { name: 'Filter by' }).selectOption('group');
+  await panel.getByRole('combobox', { name: 'Filter value' }).selectOption('east');
+  await expect(table.getByRole('row', { name: /^west\b/ })).toHaveCount(0);
+  await expect(admin).toHaveURL(/filter=group%3Aeast/);
+
+  await panel.getByRole('group', { name: 'Draw' }).getByRole('button', { name: 'Totals' }).click();
+  await expect(panel.getByText('rows per minute', { exact: true })).toBeVisible();
+
+  // The deploy that started these workers is marked, and the week before rides in the link too.
+  await panel.getByText('Deploys and issues').click();
+  await expect(panel.locator('rect.flag.deploy')).not.toHaveCount(0);
+  await panel.getByText('A week before').click();
+  await expect(admin).toHaveURL(/marks=1.*weekBefore=1/);
+  await expect(table.getByRole('row', { name: /^east\s+[\d,]+\s/ })).toBeVisible();
+  await shoot(admin, panel, 'metrics-totals');
+
+  // Another metric, picked by what it counts; a gauge has no totals.
+  await panel.getByRole('button', { name: /smeltr_rows_polled_total/ }).click();
+  await panel.getByPlaceholder('Search metrics').fill('bytes of those');
+  await panel.getByRole('option', { name: /smeltr_bytes_polled_total/ }).click();
+  await expect(admin).toHaveURL(/metric=smeltr_bytes_polled_total/);
+  await expect(panel.getByText(/^(B|KiB|MiB) per minute$/)).toBeVisible();
+
+  // A second metric in another unit is drawn per second against an axis of its own, and leaves as it came.
+  await panel.getByRole('button', { name: '+ Metric' }).click();
+  await panel.getByPlaceholder('Search metrics').fill('smeltr_rows_polled_total');
+  await panel.getByRole('option', { name: /smeltr_rows_polled_total/ }).click();
+  await expect(admin).toHaveURL(/metric=smeltr_bytes_polled_total&metric=smeltr_rows_polled_total/);
+  await expect(panel.getByLabel('Right-hand axis')).toBeVisible({ timeout: 30_000 });
+  await expect(panel.getByRole('group', { name: 'Draw' })).toHaveCount(0);
+  await expect(table.getByRole('row', { name: /^smeltr_rows_polled_total\b/ })).toBeVisible();
+  await shoot(admin, panel, 'metrics-two-units');
+  await panel.getByRole('button', { name: 'Remove metric smeltr_rows_polled_total' }).click();
+  await expect(admin).not.toHaveURL(/metric=smeltr_rows_polled_total/);
+});
+
 test('a source blocked by rows no route takes says which, since when, why and what to do', async ({
   admin,
   api,

@@ -17,6 +17,13 @@ export default defineConfig({
         fallback: '404.html',
         strict: true,
       }),
+      prerender: {
+        // A chapter's link starts its video at `#t=<seconds>` (the media fragment), which the page reads rather
+        // than an element's id.
+        handleMissingId: ({ id, message }) => {
+          if (!/^t=\d+$/.test(id)) throw new Error(message);
+        },
+      },
     }),
   ],
 });

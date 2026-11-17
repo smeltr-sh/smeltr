@@ -14,6 +14,18 @@ describe('renderMarkdown', () => {
     expect(html).toContain('<pre><code class="language-json">{&quot;a&quot;: 1}\n</code></pre>');
   });
 
+  it('makes a slot for the chart of a Metrics link that stands alone in its paragraph', () => {
+    const link = '#/status/metrics?metric=m&by=source';
+    expect(renderMarkdown(`Look:\n\n[Rows by source](${link})`)).toBe(
+      `<p>Look:</p>\n<div class="chart-slot" data-chart="${link.replace('&', '&amp;')}"><a href="${link.replace('&', '&amp;')}">Rows by source</a></div>\n`,
+    );
+    expect(renderMarkdown(`- [a](${link})\n- [b](${link})`).match(/data-chart/g)).toHaveLength(2);
+    expect(renderMarkdown(`1. [a](${link})`)).toContain('data-chart');
+    expect(renderMarkdown(`See [rows](${link}) here`)).not.toContain('data-chart');
+    expect(renderMarkdown(`[a](${link}) [b](${link})`)).not.toContain('data-chart');
+    expect(renderMarkdown('[issues](#/status/issues)')).not.toContain('data-chart');
+  });
+
   it('keeps the lines an answer was written in', () => {
     expect(renderMarkdown('one\ntwo')).toBe('<p>one<br>\ntwo</p>\n');
   });

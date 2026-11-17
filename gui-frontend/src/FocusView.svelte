@@ -225,9 +225,8 @@
     'Rows below normal warnings of the past year. Until it is marked, the one that is up stays a warning. Mark it Outage to turn it into info until it ends, or Normal to turn it into info and learn the level the source reads now. A warning is learned only if it is marked Normal.';
   /** What a source still learning is not judged on yet (`throughput::Past`). */
   const LEARNING = {
-    judged: 'Learning: this source is judged once it has 3 days of rows.',
-    weekdays:
-      'Until it has 4 weeks of rows, every day of the week is judged alike, so a quiet weekend can warn.',
+    judged: 'Learning: this source is judged once it has a week of rows.',
+    weekdays: 'Until it has 4 weeks of rows, every day of the week is judged alike.',
   };
   const SPELLS_HELP =
     "The source's longest quiet spells of the past year. The longest one learned sets how long the source may go without a row before it warns.";

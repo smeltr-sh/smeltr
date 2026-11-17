@@ -9,6 +9,7 @@
 // have staged the fleet first.
 import { chromium } from 'playwright';
 import fs from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { reachable } from './reach.mjs';
@@ -29,6 +30,37 @@ export function keyOf(url) {
   const u = new URL(url, BASE);
   const q = [...u.searchParams.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   return u.pathname + (q.length ? '?' + new URLSearchParams(q) : '');
+}
+
+/** Every subject's points in the leader's series store at `file` (`series_points`), as `series.ts` reads them: per
+ * tier, each bucket's start as the gap from the one before it, which keeps a regular series to small numbers. */
+function stored(file) {
+  const db = new DatabaseSync(file, { readOnly: true });
+  const rows = db
+    .prepare(
+      'SELECT s.id, s.metric, s.labels_json AS key, s.kind, p.tier, p.bucket_ms AS at, p.value ' +
+        'FROM series s JOIN series_points p ON p.series_id = s.id ORDER BY s.id, p.tier, p.bucket_ms',
+    )
+    .all();
+  db.close();
+  const out = [];
+  let subject, tier, last;
+  for (const row of rows) {
+    if (subject?.id !== row.id) {
+      subject = { id: row.id, metric: row.metric, key: row.key, counter: row.kind === 'counter', tiers: [] };
+      out.push(subject);
+      tier = undefined;
+    }
+    if (tier?.[0] !== row.tier) {
+      tier = [row.tier, [], []];
+      subject.tiers.push(tier);
+      last = 0;
+    }
+    tier[1].push(Number(row.at) - last);
+    tier[2].push(row.value);
+    last = Number(row.at);
+  }
+  return out.map(({ id, ...s }) => s);
 }
 
 /** The branch the capture pools are saved on: the recorder's, not the fleet's. */
@@ -229,7 +261,11 @@ const capture = (group, what, branch) =>
         await new Promise((r) => setTimeout(r, 1000));
         const { capture } = await fetch(`/api/captures/${started.session}`).then((r) => r.json());
         if (!capture.done) continue;
-        const { batches } = await fetch(`/api/captures/${started.session}/records`).then((r) => r.json());
+        // The demo's leader keeps a pool as one batch of the rows it held, each with the worker that sent it.
+        const { columns, records } = await fetch(`/api/captures/${started.session}/records`).then(
+          (r) => r.json(),
+        );
+        const batches = [{ columns, rows: records }];
         if (batches.every((b) => !b.rows.length)) {
           await send('DELETE', `/api/captures/${started.session}`);
           return { batches };
@@ -281,8 +317,63 @@ for (const key of Object.keys(answers)) {
 }
 // The demo's visitor signs nothing: a session's token is the staged fleet's alone.
 delete answers['/api/auth/session'].body.csrf;
+// The demo's leader answers the series reads itself, from every point the leader stored (`series.ts`), so a visitor
+// can ask what nobody recorded. One read of each shape the GUI made is asked again, beside the points, for
+// `series.test.ts` to hold those answers to the leader's.
+const askedSeries = Object.keys(answers).filter((k) => new URL(k, BASE).pathname.startsWith('/api/series'));
+const shapes = new Map();
+for (const key of askedSeries) {
+  const url = new URL(key, BASE);
+  const q = url.searchParams;
+  const shape = [url.pathname, !!q.get('filter'), !!q.get('by')]
+    .concat(['windowMinutes', 'draw', 'agoMinutes', 'utcOffsetMinutes'].map((n) => q.get(n)))
+    .join('|');
+  if (!shapes.has(shape)) shapes.set(shape, key);
+}
+// And the shapes only the Metrics page's own pickers ask: a split, a gauge, the reader's clock and a week before.
+for (const q of [
+  'metric=smeltr_rows_polled_total&by=source&draw=perSecond&windowMinutes=60',
+  'metric=smeltr_rows_polled_total&by=worker&filter=group:network&draw=totals&windowMinutes=1440&utcOffsetMinutes=-300',
+  'metric=smeltr_rows_polled_total&draw=totals&windowMinutes=10080&utcOffsetMinutes=330',
+  'metric=smeltr_rows_polled_total&draw=perSecond&windowMinutes=60&agoMinutes=10080',
+  'metric=smeltr_source_lag&by=source&windowMinutes=10080',
+])
+  shapes.set(q, `/api/series?${q}`);
+const checks = await api.evaluate(
+  (keys) =>
+    Promise.all(
+      keys.map(async (key) => {
+        const askedAt = Date.now();
+        const body = await fetch(key, { headers: { accept: 'application/json' } }).then((r) => r.json());
+        return { key, askedAt, body };
+      }),
+    ),
+  [...shapes.values()],
+);
+const series = {
+  series: stored(path.join(DIR, 'state', 'leader', 'smeltr-leader-data', 'registry.db')),
+  checks,
+};
+for (const key of askedSeries) delete answers[key];
+console.log(`${series.series.length} series stored, ${checks.length} answers to check them by`);
+// A picked answer stands still and is moved to the visitor's now from when the recording was written, so it is read
+// again last: one read while the pages were reached would end that long before now.
+const still = Object.keys(answers).filter(pickedWindow);
+const reread = await api.evaluate(
+  (keys) =>
+    Promise.all(
+      keys.map((u) =>
+        fetch(u, { headers: { accept: 'application/json' } }).then(async (r) => ({
+          status: r.status,
+          body: await r.json(),
+        })),
+      ),
+    ),
+  still,
+);
+still.forEach((k, j) => (answers[k] = reread[j]));
 // What every recorded time is relative to: the demo moves them to the visitor's now.
 const recordedAt = Date.now();
-const parts = await write(out, { recordedAt, answers, moving, movingAt, captures });
+const parts = await write(out, { recordedAt, answers, moving, movingAt, captures, series });
 console.log(`${Object.keys(answers).length} answers written to ${out}, ${parts} parts beside it`);
 await browser.close();

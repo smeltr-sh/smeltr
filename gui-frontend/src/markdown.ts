@@ -20,6 +20,27 @@ md.renderer.rules.link_open = (tokens, idx, options, _env, self) => {
   return self.renderToken(tokens, idx, options);
 };
 
+/** Where a reply's link to a Metrics view stands alone in its paragraph, the agent is showing that chart: the
+ * paragraph becomes a slot (`data-chart`, the link's hash) that `Markdown.svelte` draws the chart in, above the
+ * link. */
+const CHART_LINK = '#/status/metrics';
+md.core.ruler.push('chart_slots', (state) => {
+  const tokens = state.tokens;
+  for (let i = 0; i + 2 < tokens.length; i++) {
+    const [open, inline, close] = [tokens[i], tokens[i + 1], tokens[i + 2]];
+    if (open.type !== 'paragraph_open' || inline.type !== 'inline') continue;
+    const parts = (inline.children ?? []).filter((t) => !(t.type === 'text' && !t.content.trim()));
+    const href = parts[0]?.type === 'link_open' ? String(parts[0].attrGet('href') ?? '') : '';
+    if (!href.startsWith(CHART_LINK) || parts.at(-1)?.type !== 'link_close') continue;
+    if (parts.slice(1, -1).some((t) => t.type === 'link_open')) continue;
+    open.tag = close.tag = 'div';
+    // A tight list's item hides its paragraph's tags, which would drop the slot.
+    open.hidden = close.hidden = false;
+    open.attrSet('class', 'chart-slot');
+    open.attrSet('data-chart', href);
+  }
+});
+
 /** The HTML for `text`. Half-written Markdown renders too: an open code fence runs to the end. */
 export function renderMarkdown(text: string): string {
   return md.render(text);

@@ -17,6 +17,10 @@
 //! empty has a low edge of zero, which no reading is below. So a source that reads every few seconds is judged at every
 //! width, and one that reads a few rows an hour only at the long ones.
 //!
+//! Two waits keep a source from being judged on too little. The source as a whole waits until its rows reach back
+//! [`JUDGED_AFTER_MS`], a week, so every weekday has been learned once before any can warn. Each time of day then waits
+//! until its usual window has [`USUAL_MIN_DAYS`] days of its kind learned there, so one odd day is not all it knows.
+//!
 //! A source too sparse for any of them still has a normal in time per row, and a fifth width, the gap, judges it there:
 //! how long it has gone without a row, against the longest quiet spell it made in the past year ([`Gap`]). A quiet
 //! spell is a run of buckets with no rows, each reported by a worker, between two with rows (`series::Silence`). The
@@ -117,12 +121,16 @@ pub const WIDTHS: [Width; 4] = [
 /// How many days a time of day's usual window is learned from: the newest with a learned window near it.
 const USUAL_DAYS: i64 = 7;
 
+/// The fewest days a time of day's usual window is learned from. With fewer, that time of day is not judged.
+const USUAL_MIN_DAYS: usize = 3;
+
+/// How far back a source's rows must reach, from its first or from a reset, before it is judged at all: a week, so each
+/// weekday is learned once before one can warn. Judged sooner, a new source's first quiet weekend is set against its
+/// weekdays, warns, and so is never learned.
+pub const JUDGED_AFTER_MS: i64 = 7 * DAY_MS;
+
 /// How far either side of the same time of day a past window may end and still count as the same time of day.
 const NEIGHBORHOOD: Duration = Duration::from_secs(30 * 60);
-
-/// Days with a window at a time of day the source ran for throughout, before it is judged at that time of day.
-/// Fewer, and one odd day is most of what it knows.
-pub const MIN_DAYS: usize = 3;
 
 /// The share of past ratios each side of the range leaves out: one in two thousand.
 const TAIL: f64 = 0.0005;
@@ -492,6 +500,12 @@ fn normal(rows: &Rows, warned: &Warned, as_of: i64, width: Width, preset: Preset
             Some((i, sum))
         })
         .collect();
+    if learned
+        .last()
+        .is_none_or(|&(i, _)| i * step + width.ms() < JUDGED_AFTER_MS)
+    {
+        return None;
+    }
     let usual = Weekly::learn(as_of, width, &learned, *week);
     let mut ratios: Vec<f64> = learned
         .iter()
@@ -1033,8 +1047,8 @@ pub struct Past {
     /// Its longest quiet spells, longest first. None for a sender, which the gap does not judge.
     pub silences: Vec<PastSpan>,
     pub preset: Preset,
-    /// When it will have [`MIN_DAYS`] days of rows since its first or since its history was reset, and so be judged,
-    /// while that is still to come.
+    /// When its rows will reach back [`JUDGED_AFTER_MS`] from its first or from its history's reset, and so it will be
+    /// judged, while that is still to come.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub judged_from_millis: Option<i64>,
     /// When it will have the weeks of rows its weekdays are told apart from ([`Week`]), while that is still to come:
@@ -1133,7 +1147,7 @@ pub fn past(
             .map(|(ended, length)| span(ended - length, ended))
             .collect(),
         preset,
-        judged_from_millis: ahead(MIN_DAYS as i64 * DAY_MS),
+        judged_from_millis: ahead(JUDGED_AFTER_MS),
         weekdays_from_millis: ahead(weeks),
         quiet_limit_millis: None,
     })
@@ -1535,11 +1549,17 @@ fn swung_over(
             )
         })
         .collect();
+    // No range before the swings learned from reach back [`JUDGED_AFTER_MS`], as `normal` draws none at the wider widths.
+    let reach = swung
+        .keys()
+        .find(|&&ended| !warned.during(ended, width))
+        .map(|&ended| ended - width);
+    let judged_from = reach.map_or(i64::MAX, |reach| reach + JUDGED_AFTER_MS);
     let mut out = Vec::new();
     let mut ended_ms = first + width;
     while ended_ms <= BUCKET.align(now_ms) + width {
         let held = |ended| swung.get(&ended).copied().filter(|_| !warned.during(ended, width));
-        if let Some(band) = swung_band(held, ended_ms, width, across) {
+        if let Some(band) = swung_band(held, ended_ms, width, across).filter(|_| ended_ms - width >= judged_from) {
             out.push(ExpectedPoint {
                 from_millis: ended_ms - width,
                 to_millis: ended_ms,
@@ -1553,8 +1573,8 @@ fn swung_over(
 }
 
 /// The range of `held` at `ended_ms` on each past day, `across` steps of `step_ms` either side, or `None` while fewer
-/// than [`MIN_DAYS`] days have one. `held` is one past bucket's swing, its low and high rate ([`swing`]), if it is
-/// known. The range cuts a [`TAIL`] from the bottom of the lows and from the top of the highs.
+/// than [`USUAL_MIN_DAYS`] days have one. `held` is one past bucket's swing, its low and high rate ([`swing`]), if it
+/// is known. The range cuts a [`TAIL`] from the bottom of the lows and from the top of the highs.
 fn swung_band(held: impl Fn(i64) -> Option<Band>, ended_ms: i64, step_ms: i64, across: i64) -> Option<Band> {
     let (mut lows, mut highs) = (Vec::new(), Vec::new());
     let mut days = HashSet::new();
@@ -1567,7 +1587,7 @@ fn swung_band(held: impl Fn(i64) -> Option<Band>, ended_ms: i64, step_ms: i64, a
             }
         }
     }
-    if days.len() < MIN_DAYS {
+    if days.len() < USUAL_MIN_DAYS {
         return None;
     }
     lows.sort_by(f64::total_cmp);
@@ -1984,7 +2004,7 @@ mod tests {
         );
     }
 
-    /// A source is judged once it has three days of rows, and its weekdays told apart once it has four weeks: a past
+    /// A source is judged once its rows reach back a week, and its weekdays told apart once it has four weeks: a past
     /// answer says when, while either is to come, from its first row or from when its history was reset.
     #[test]
     fn a_past_says_when_a_new_source_is_judged_and_its_weekdays_told_apart() {
@@ -1996,14 +2016,14 @@ mod tests {
         };
         assert_eq!(
             learning(&new, &Marks::default()),
-            (Some(END + DAY_MS), Some(END + 26 * DAY_MS))
+            (Some(END + 5 * DAY_MS), Some(END + 26 * DAY_MS))
         );
         let old = store_with(30, |_| Some(100.0));
         assert_eq!(learning(&old, &Marks::default()), (None, None));
         let reset = reset_at(END - DAY_MS);
         assert_eq!(
             learning(&old, &reset),
-            (Some(END + 2 * DAY_MS), Some(END + 27 * DAY_MS))
+            (Some(END + 6 * DAY_MS), Some(END + 27 * DAY_MS))
         );
     }
 
@@ -2217,13 +2237,26 @@ mod tests {
         );
     }
 
+    /// A row an hour from this time of day, a week back: the source's rows reach back far enough to be judged, and
+    /// it counts as no day at this time of day.
+    fn a_week_back(at: i64) -> bool {
+        at == END - JUDGED_AFTER_MS - HOUR
+    }
+
     /// Days are counted per time of day: the windows in the half hour after a midnight are that midnight's day.
     #[test]
     fn too_few_days_are_not_judged() {
-        let days = MIN_DAYS as i64 - 1;
+        let days = USUAL_MIN_DAYS as i64 - 1;
+        let since = |start: i64| move |at: i64| (at >= start || a_week_back(at)).then_some(100.0);
+        assert_eq!(reading(&store_with(7, since(END - days * DAY_MS + 6 * FIVE))), None);
+        assert!(reading(&store_with(7, since(END - days * DAY_MS + 5 * FIVE))).is_some());
+    }
+
+    #[test]
+    fn a_source_is_judged_once_its_rows_reach_back_a_week() {
         let since = |start: i64| move |at: i64| (at >= start).then_some(100.0);
-        assert_eq!(reading(&store_with(days, since(END - days * DAY_MS + 6 * FIVE))), None);
-        assert!(reading(&store_with(days, since(END - days * DAY_MS + 5 * FIVE))).is_some());
+        assert_eq!(reading(&store_with(7, since(END - JUDGED_AFTER_MS + FIVE))), None);
+        assert!(reading(&store_with(7, since(END - JUDGED_AFTER_MS))).is_some());
     }
 
     #[test]
@@ -2277,10 +2310,10 @@ mod tests {
     }
 
     #[test]
-    fn a_source_whose_history_was_reset_has_no_normal_until_it_has_days_of_what_came_after() {
+    fn a_source_whose_history_was_reset_has_no_normal_until_what_came_after_reaches_back_a_week() {
         let store = store_with(7, |_| Some(100.0));
-        assert_eq!(reading_at(&store, END, &reset_at(END - DAY_MS)), None);
-        assert!(reading_at(&store, END, &reset_at(END - 4 * DAY_MS)).is_some());
+        assert_eq!(reading_at(&store, END, &reset_at(END - JUDGED_AFTER_MS + FIVE)), None);
+        assert!(reading_at(&store, END, &reset_at(END - JUDGED_AFTER_MS)).is_some());
     }
 
     /// `entry` held for the source from `started` until `ended`, or still.
@@ -2469,9 +2502,13 @@ mod tests {
     fn two_days_either_side_of_the_hour_are_two_days() {
         // Read only around this time of day on the days before, and in the bucket judged now.
         let near = |at: i64, days: i64| (1..=days).any(|d| (at - (END - d * DAY_MS)).abs() <= HOUR / 2);
-        let store = store_with(7, move |at| (near(at, 2) || at == END - FIVE).then_some(100.0));
+        let store = store_with(7, move |at| {
+            (near(at, 2) || at == END - FIVE || a_week_back(at)).then_some(100.0)
+        });
         assert_eq!(reading(&store), None);
-        let store = store_with(7, move |at| (near(at, 3) || at == END - FIVE).then_some(100.0));
+        let store = store_with(7, move |at| {
+            (near(at, 3) || at == END - FIVE || a_week_back(at)).then_some(100.0)
+        });
         assert!(reading(&store).is_some());
     }
 
@@ -2517,14 +2554,14 @@ mod tests {
         }
     }
 
-    /// The first days of a week's chart have fewer than [`MIN_DAYS`] days of history before them.
+    /// The first days of a week's chart come before its rows reach back [`JUDGED_AFTER_MS`].
     #[test]
     fn a_long_chart_has_its_widest_widths_range_each_point_and_none_where_history_is_short() {
         let store = store_with(7, |_| Some(100.0));
         for (point, width) in [(HOUR, 30 * 60), (6 * HOUR, 6 * 60 * 60)] {
             let points = expected(&store, END - 7 * DAY_MS, point);
             let first = points.first().unwrap().from_millis;
-            assert!((END - 6 * DAY_MS - HOUR..END - 4 * DAY_MS).contains(&first), "{first}");
+            assert!((END - DAY_MS - point..=END - DAY_MS).contains(&first), "{first}");
             assert_eq!(points.last().unwrap().from_millis, END);
             assert!(points.windows(2).all(|w| w[0].to_millis == w[1].from_millis));
             // A hundred rows in each five minutes.
@@ -2622,11 +2659,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_fine_chart_has_the_range_its_points_swung_in() {
+    /// A store with swings at ten seconds from 4 to 16 and at a minute from 8 to 12, in each bucket from `from` to `END`.
+    fn swung_since(from: i64) -> RegistryStore {
         let store = store_with(0, |_| None);
         let mut swings = Vec::new();
-        let mut at = END - 8 * DAY_MS;
+        let mut at = from;
         while at < END {
             for (width, low, high) in [(10_000, 4.0, 16.0), (60_000, 8.0, 12.0)] {
                 swings.push(Swing {
@@ -2641,12 +2678,29 @@ mod tests {
             at += FIVE;
         }
         store.record_swings(&swings).unwrap();
+        store
+    }
+
+    #[test]
+    fn a_fine_chart_has_the_range_its_points_swung_in() {
+        let store = swung_since(END - 8 * DAY_MS);
         for (width, band) in [(10_000, (4.0, 16.0)), (60_000, (8.0, 12.0))] {
             let points =
                 expected_over(&store, "g", "s", None, END - HOUR, END + 1000, width, &Marks::default()).unwrap();
             assert_eq!(points.len(), 13);
             assert!(points.iter().all(|p| (p.low, p.high) == band), "at {width}: {points:?}");
         }
+    }
+
+    /// As the wider widths, a fine chart has no range until the source's swings reach back a week.
+    #[test]
+    fn a_fine_chart_has_no_range_until_its_swings_reach_back_a_week() {
+        let fine = |store: &RegistryStore| {
+            expected_over(store, "g", "s", None, END - HOUR, END + 1000, 10_000, &Marks::default()).unwrap()
+        };
+        assert_eq!(fine(&swung_since(END - JUDGED_AFTER_MS - HOUR)).len(), 13);
+        let half = fine(&swung_since(END - JUDGED_AFTER_MS - HOUR / 2));
+        assert_eq!(half.first().map(|p| p.from_millis), Some(END - HOUR / 2));
     }
 
     /// Heartbeats slower than ten seconds leave most ten-second slots empty, so no swing is kept at that width.

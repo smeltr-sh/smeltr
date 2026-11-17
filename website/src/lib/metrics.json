@@ -507,8 +507,8 @@
     "group": "Logs",
     "name": "smeltr_logs_written_total",
     "kind": "counter",
-    "labels": ["process", "site"],
-    "what": "Log events written since the process started, by the `site` that wrote them."
+    "labels": ["process", "class", "type"],
+    "what": "Log events written since the process started, by the `type` of line and, where it has one, the `class` of work it was said in."
   },
   {
     "group": "Logs",

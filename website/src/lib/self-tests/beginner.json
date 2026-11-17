@@ -93,14 +93,14 @@
     },
     {
       "chapter": 4,
-      "question": "Why declare the time as a datetime?",
+      "question": "Why does it matter that the time is a datetime, not text?",
       "choices": [
         "So smeltr sorts the records by time",
         "So smeltr reads it into one standard form",
         "So smeltr drops lines older than a day",
         "So the line keeps its original text"
       ],
-      "answer": "So smeltr reads it into one standard form, ISO 8601, and fills in the year and time zone the line left out.",
+      "answer": "A datetime has one standard form, ISO 8601, with the year and time zone the line left out filled in.",
       "right": 1
     },
     {

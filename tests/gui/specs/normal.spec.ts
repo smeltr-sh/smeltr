@@ -170,9 +170,15 @@ test('a source that drops below its normal is ranked and warned of, and an edito
   await deploy(api, es.url, ['firewall-syslog', 'nginx-access', 'linux-auth']);
   await fleet.startWorker(leader, api, 'edge', 'edge-1');
   await expect
-    .poll(async () => (await api.get('/api/flow?windowMinutes=5')).rowsIn.length, {
-      timeout: 60_000,
-    })
+    .poll(
+      async () =>
+        (await api.get('/api/flow?windowMinutes=5')).totals.filter(
+          (t: { kind: string }) => t.kind === 'source',
+        ).length,
+      {
+        timeout: 60_000,
+      },
+    )
     .toBe(3);
 
   // About 30 rows a second for a week, then about 5 for the last half hour: long enough for the leader's four
@@ -264,9 +270,15 @@ test('History lists the quiet spells a sparse source learned, and an editor pick
   await deploy(api, es.url, ['audit-log']);
   await fleet.startWorker(leader, api, 'edge', 'edge-1');
   await expect
-    .poll(async () => (await api.get('/api/flow?windowMinutes=5')).rowsIn.length, {
-      timeout: 60_000,
-    })
+    .poll(
+      async () =>
+        (await api.get('/api/flow?windowMinutes=5')).totals.filter(
+          (t: { kind: string }) => t.kind === 'source',
+        ).length,
+      {
+        timeout: 60_000,
+      },
+    )
     .toBe(1);
 
   // A row every three hours for four weeks, but for one quiet spell of nine hours two weeks ago.
@@ -340,9 +352,15 @@ test('senders that stop while their source stays within its normal are warned of
   await deploy(api, es.url, ['fortigate-firewalls']);
   await fleet.startWorker(leader, api, 'edge', 'edge-1');
   await expect
-    .poll(async () => (await api.get('/api/flow?windowMinutes=5')).rowsIn.length, {
-      timeout: 60_000,
-    })
+    .poll(
+      async () =>
+        (await api.get('/api/flow?windowMinutes=5')).totals.filter(
+          (t: { kind: string }) => t.kind === 'source',
+        ).length,
+      {
+        timeout: 60_000,
+      },
+    )
     .toBe(1);
 
   // Ten firewalls of about 3 rows a second each for a week, then two of them stop for the last 45 minutes, longer

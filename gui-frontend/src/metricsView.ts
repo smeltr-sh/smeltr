@@ -1,0 +1,232 @@
+// What the Metrics page asks (`leader::query`), as it rides in the hash: a view worth showing someone is a link, and
+// the agent links one.
+import catalog from '../../website/src/lib/metrics.json';
+import type { SeriesAnswerDto, SeriesDraw } from './api';
+
+export type MetricsView = {
+  /** Drawn on one chart, each split and filtered alike; at least one. */
+  metrics: string[];
+  filter: [string, string][];
+  by: string;
+  windowMinutes: number;
+  draw: SeriesDraw;
+  /** How many of the busiest series are drawn on their own; the rest add up to Other. */
+  top: number;
+  /** Deploys and issues marked on the chart. */
+  marks: boolean;
+  /** The same window a week before, drawn faint behind it. */
+  weekBefore: boolean;
+};
+
+export const DEFAULT_VIEW: MetricsView = {
+  metrics: ['smeltr_rows_polled_total'],
+  filter: [],
+  by: '',
+  windowMinutes: 60,
+  draw: 'perSecond',
+  top: 5,
+  marks: false,
+  weekBefore: false,
+};
+
+export function viewFromParams(params: URLSearchParams): MetricsView {
+  const minutes = Number(params.get('windowMinutes'));
+  const top = Number(params.get('top'));
+  const named = [...new Set(params.getAll('metric').filter(Boolean))];
+  return {
+    metrics: named.length ? named : DEFAULT_VIEW.metrics,
+    filter: (params.get('filter') ?? '')
+      .split(',')
+      .map((pair) => pair.split(':'))
+      .filter((pair): pair is [string, string] => pair.length === 2 && pair[0] !== ''),
+    by: params.get('by') ?? '',
+    windowMinutes: Number.isFinite(minutes) && minutes > 0 ? minutes : DEFAULT_VIEW.windowMinutes,
+    draw: params.get('draw') === 'totals' ? 'totals' : 'perSecond',
+    top: Number.isInteger(top) && top > 0 ? top : DEFAULT_VIEW.top,
+    marks: params.get('marks') === '1',
+    weekBefore: params.get('weekBefore') === '1',
+  };
+}
+
+function params(v: MetricsView): URLSearchParams {
+  const q = new URLSearchParams();
+  for (const m of v.metrics) q.append('metric', m);
+  if (v.filter.length) q.set('filter', v.filter.map(([k, value]) => `${k}:${value}`).join(','));
+  if (v.by) q.set('by', v.by);
+  q.set('windowMinutes', String(v.windowMinutes));
+  if (v.draw === 'totals') q.set('draw', 'totals');
+  if (v.top !== DEFAULT_VIEW.top) q.set('top', String(v.top));
+  if (v.marks) q.set('marks', '1');
+  if (v.weekBefore) q.set('weekBefore', '1');
+  return q;
+}
+
+export function toHash(v: MetricsView): string {
+  return `#/status/metrics?${params(v)}`;
+}
+
+/** The filters that narrow a metric carrying `labels`: those by worker group, which every series has, or by a label
+ * it carries. A filter by a label only another metric drawn beside it carries would leave it with nothing. Not yet
+ * knowing its labels, it takes them all. */
+export function filtersFor(
+  filter: [string, string][],
+  labels: Record<string, unknown> | undefined,
+): [string, string][] {
+  return filter.filter(([label]) => !labels || label === 'group' || label in labels);
+}
+
+/** Whether `next` may be drawn beside `others`: not one of them, of their kind (counters and gauges are read
+ * differently), and with them in no more than two units, one for each axis. */
+export function fitsBeside(
+  next: { name: string; counter: boolean },
+  others: { name: string; counter: boolean }[],
+): boolean {
+  if (others.some((o) => o.name === next.name)) return false;
+  if (others.length && others[0].counter !== next.counter) return false;
+  return new Set([...others, next].map((m) => unitOf(m.name))).size <= 2;
+}
+
+/** A week, in minutes: how far back the comparison line reads. */
+export const WEEK_MINUTES = 7 * 24 * 60;
+
+/** The query `GET /api/series` takes for `metric` as `v` draws it: with the filters whose label it carries
+ * (`labels`; all of them while those are unknown), the reader's clock, so hours and days start where theirs do, and
+ * its window ending `agoMinutes` before now. Beside other metrics it is drawn per second: totals of different
+ * metrics stacked would add up to nothing. */
+export function seriesQuery(
+  v: MetricsView,
+  metric: string,
+  utcOffsetMinutes: number,
+  agoMinutes = 0,
+  labels?: Record<string, unknown>,
+): string {
+  const q = new URLSearchParams({
+    metric,
+    filter: filtersFor(v.filter, labels)
+      .map(([k, value]) => `${k}:${value}`)
+      .join(','),
+    by: v.by,
+    windowMinutes: String(v.windowMinutes),
+    draw: v.metrics.length > 1 ? 'perSecond' : v.draw,
+    utcOffsetMinutes: String(utcOffsetMinutes),
+  });
+  if (agoMinutes) q.set('agoMinutes', String(agoMinutes));
+  return q.toString();
+}
+
+/** What the website's metrics reference says of `name`: its group and what it counts. A name listed twice, with
+ * different labels, takes the entry whose labels `labels` holds. */
+export function described(name: string, labels: string[] = []): { group: string; what: string } {
+  const entries = catalog.filter((m) => m.name === name);
+  const fits = entries.find((m) => m.labels.every((l) => labels.includes(l))) ?? entries[0];
+  return fits ? { group: fits.group, what: fits.what } : { group: 'Other', what: '' };
+}
+
+/** What `name` counts in, by what its name says. */
+export function unitOf(name: string): 'bytes' | 'seconds' | 'rows' | '' {
+  if (name.includes('bytes')) return 'bytes';
+  if (name.includes('seconds')) return 'seconds';
+  if (name.includes('rows')) return 'rows';
+  return '';
+}
+
+/** The categorical palette's colors, `--series-0` on (`App.svelte`). */
+const PALETTE = 7;
+
+/** The color class of the series at `slot`: past the palette the colors come round again, and the legend and the
+ * table, which name each series, tell two of one color apart. */
+export function toneOf(slot: number | null): string {
+  return slot === null ? 'series-other' : `series-${slot % PALETTE}`;
+}
+
+export type Drawn = {
+  name: string;
+  /** Drawn against the right-hand axis: a metric in another unit than the first. */
+  right?: boolean;
+  /** Its rank, which also keys it: a split value may itself be named Other; `null` for the series folded into Other. */
+  slot: number | null;
+  /** One value per point of the window, `null` where nothing landed. */
+  points: (number | null)[];
+  total: number;
+};
+
+/** `answer`'s series laid on one grid of `count` points, every one, busiest first. */
+export function onGrid(answer: SeriesAnswerDto, count: number): Drawn[] {
+  return answer.series
+    .map((s) => {
+      const points: (number | null)[] = Array(count).fill(null);
+      for (const [at, value] of s.points) {
+        const i = Math.round((at - answer.fromMillis) / answer.pointMillis);
+        if (i >= 0 && i < count) points[i] = value;
+      }
+      return {
+        name: s.name,
+        slot: null,
+        points,
+        total: points.reduce<number>((a, v) => a + (v ?? 0), 0),
+      };
+    })
+    .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name))
+    .map((s, i) => ({ ...s, slot: i }));
+}
+
+/** `before`'s series, asked of a window ending `shiftMs` earlier, laid on `answer`'s grid of `count` points: each
+ * point takes the value of `before`'s point it falls in, a week back. `before` may be coarser, as the store keeps
+ * old buckets wider: a rate holds across widths, and a bar's total is shared out by width. */
+export function laidOn(
+  before: SeriesAnswerDto,
+  answer: SeriesAnswerDto,
+  count: number,
+  shiftMs: number,
+): Drawn[] {
+  const share = answer.draw === 'totals' ? answer.pointMillis / before.pointMillis : 1;
+  return before.series.map((s) => {
+    const at = new Map(s.points);
+    const points = Array.from({ length: count }, (_, i) => {
+      const t = answer.fromMillis + i * answer.pointMillis - shiftMs;
+      const start =
+        before.fromMillis +
+        Math.floor((t - before.fromMillis) / before.pointMillis) * before.pointMillis;
+      const v = at.get(start);
+      return v === undefined ? null : v * share;
+    });
+    return { name: s.name, slot: null, points, total: 0 };
+  });
+}
+
+/** What `before` held for each of `shown`, point by point: the series of the same name, and for Other every series
+ * of `before` that is not one of `shown`'s own. `null` where it held nothing. */
+export function alongside(shown: Drawn[], before: Drawn[]): (number | null)[][] {
+  const named = new Set(shown.filter((s) => s.slot !== null).map((s) => s.name));
+  return shown.map((s) => {
+    const from =
+      s.slot === null
+        ? before.filter((b) => !named.has(b.name))
+        : before.filter((b) => b.name === s.name);
+    const count = s.points.length;
+    return Array.from({ length: count }, (_, i) =>
+      from.some((b) => (b.points[i] ?? null) !== null)
+        ? from.reduce((a, b) => a + (b.points[i] ?? 0), 0)
+        : null,
+    );
+  });
+}
+
+/** A deploy on the chart at fractional point `i`, or an issue from `i` until `end`. */
+export type Mark = { i: number; end?: number; kind: 'deploy' | 'issue'; text: string };
+
+/** The `top` busiest of `all` and, when there are more, one Other that adds the rest up. */
+export function fold(all: Drawn[], top: number): Drawn[] {
+  if (all.length <= top) return all;
+  const rest = all.slice(top);
+  const count = rest[0].points.length;
+  const points = Array.from({ length: count }, (_, i) =>
+    rest.some((s) => s.points[i] !== null)
+      ? rest.reduce((a, s) => a + (s.points[i] ?? 0), 0)
+      : null,
+  );
+  return [
+    ...all.slice(0, top),
+    { name: 'Other', slot: null, points, total: rest.reduce((a, s) => a + s.total, 0) },
+  ];
+}
