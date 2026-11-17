@@ -124,6 +124,7 @@ const allCourses: Course[] = [
       {
         title: 'Smeltr Beginner',
         slug: 'smeltr-beginner',
+        youtube: 'rB9eaaMGJLg',
         minutes: 53,
         poster: '/videos/smeltr-beginner-poster.jpg',
         chapters: [
