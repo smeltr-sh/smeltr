@@ -288,7 +288,7 @@ fn speed() {
     println!("\n{}", markdown(&table));
 }
 
-/// Every live container kept off the transform core, each given back the CPUs it had when dropped: the live tests
+/// Every live container kept off the transform cores, each given back the CPUs it had when dropped: the live tests
 /// share these services.
 struct Pinned(Vec<(String, String)>);
 
@@ -306,7 +306,7 @@ impl Pinned {
         for (id, _) in &pinned.0 {
             assert!(
                 cpuset(id, &cores.rest_list()),
-                "could not keep container {id} off the transform core"
+                "could not keep container {id} off the transform cores"
             );
         }
         pinned
@@ -630,7 +630,6 @@ fn set_affinity(tid: i32, cpus: &[usize]) {
     }
 }
 
-/// CPU seconds of `/proc/{path}/stat`'s process or thread, or 0 once it is gone.
 /// Seconds `cpus` have been idle, together, from `/proc/stat`.
 fn idle(cpus: &[usize]) -> f64 {
     // SAFETY: `sysconf` reads a constant.
@@ -649,6 +648,7 @@ fn idle(cpus: &[usize]) -> f64 {
     ticks as f64 / tick
 }
 
+/// CPU seconds of `/proc/{path}/stat`'s process or thread, or 0 once it is gone.
 fn stat_cpu(path: &str) -> f64 {
     // SAFETY: `sysconf` reads a constant.
     let tick = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
