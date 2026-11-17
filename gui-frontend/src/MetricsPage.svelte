@@ -213,7 +213,7 @@
     return `${conditionLabel(condition)}${subject ? `: ${subject}` : ''}`;
   }
   // A chart in a reply is read once: a long conversation would otherwise keep asking for each of its charts.
-  const timer = inline ? undefined : setInterval(() => read(view), REFRESH_MS);
+  const timer = untrack(() => inline) ? undefined : setInterval(() => read(view), REFRESH_MS);
   onDestroy(() => clearInterval(timer));
 
   function go(next: Partial<MetricsView>) {
@@ -341,6 +341,7 @@
       format: (v: number) => `${amountIn(u, v * scale.size)}${rated ? '/s' : ''}`,
     };
   }
+  let unit = $derived(unitOf(view.metrics[0]));
   let leftAxis = $derived(
     axisOf(
       unit,
@@ -356,7 +357,7 @@
     before && view.weekBefore
       ? // Each axis's Other adds up only what that axis left out.
         [false, true].flatMap((right) => {
-          const laid = laidOn(before, answer!, count, WEEK_MINUTES * MINUTE);
+          const laid = laidOn(before!, answer!, count, WEEK_MINUTES * MINUTE);
           return alongside(
             shown.filter((s) => !!s.right === right),
             laid.filter((b) => onRight(b.name) === right),
@@ -381,7 +382,6 @@
           .filter((m) => m.i >= 0 && m.i < count && (m.end === undefined || m.end >= 0))
       : null,
   );
-  let unit = $derived(unitOf(view.metrics[0]));
   let windowLabel = $derived(
     FLOW_WINDOWS.find((w) => w.minutes === view.windowMinutes)?.label ?? `${view.windowMinutes}m`,
   );

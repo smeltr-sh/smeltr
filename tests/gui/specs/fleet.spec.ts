@@ -449,7 +449,7 @@ test('the Metrics page charts any stored metric, split by a label, as a rate or 
   await panel.getByPlaceholder('Search metrics').fill('smeltr_rows_polled_total');
   await panel.getByRole('option', { name: /smeltr_rows_polled_total/ }).click();
   await expect(admin).toHaveURL(/metric=smeltr_bytes_polled_total&metric=smeltr_rows_polled_total/);
-  await expect(panel.getByLabel('Right-hand axis')).toBeVisible({ timeout: 30_000 });
+  await expect(panel.getByLabel('Right-hand axis').first()).toBeVisible({ timeout: 30_000 });
   await expect(panel.getByRole('group', { name: 'Draw' })).toHaveCount(0);
   await expect(table.getByRole('row', { name: /^smeltr_rows_polled_total\b/ })).toBeVisible();
   await shoot(admin, panel, 'metrics-two-units');
