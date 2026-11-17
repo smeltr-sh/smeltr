@@ -14,7 +14,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{BUCKET, DAY_MS, MIN_DAYS, NEIGHBORHOOD, Rows, USUAL_DAYS, Warned, Width, quantile};
+use super::{BUCKET, DAY_MS, NEIGHBORHOOD, Rows, USUAL_DAYS, USUAL_MIN_DAYS, Warned, Width, quantile};
 
 /// How many weeks the kinds are learned from, each held out in turn, and so how many a grouping must predict.
 pub(super) const WEEKS: i64 = 4;
@@ -232,8 +232,8 @@ pub(super) struct Weekly {
 impl Weekly {
     /// `width`'s usual windows by `week` as of `as_of`, from its `learned` windows (how many buckets before `as_of`
     /// each ended, and its rows). Each is the median of the windows within [`NEIGHBORHOOD`] of its time on the newest
-    /// [`USUAL_DAYS`] days in the last [`WEEKS`] weeks that have one, and None where fewer than [`MIN_DAYS`] days have
-    /// one.
+    /// [`USUAL_DAYS`] days in the last [`WEEKS`] weeks that have one, and None where fewer than [`USUAL_MIN_DAYS`] days
+    /// have one.
     pub(super) fn learn(as_of: i64, width: Width, learned: &[(i64, f64)], week: Week) -> Weekly {
         let step = BUCKET.bucket_ms();
         let per_day = DAY_MS / step;
@@ -266,7 +266,7 @@ impl Weekly {
                 found += usize::from(sums.len() > had);
             }
             sums.sort_by(f64::total_cmp);
-            (found >= MIN_DAYS).then(|| quantile(&sums, 0.5))
+            (found >= USUAL_MIN_DAYS).then(|| quantile(&sums, 0.5))
         };
         let usual = (0..7)
             .map(|weekday| (week.kinds[weekday] as usize, week.kinds[(weekday + 6) % 7] as usize))

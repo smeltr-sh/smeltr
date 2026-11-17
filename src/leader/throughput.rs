@@ -17,6 +17,10 @@
 //! empty has a low edge of zero, which no reading is below. So a source that reads every few seconds is judged at every
 //! width, and one that reads a few rows an hour only at the long ones.
 //!
+//! Two waits keep a source from being judged on too little. The source as a whole waits until its rows reach back
+//! [`JUDGED_AFTER_MS`], a week, so every weekday has been learned once before any can warn. Each time of day then waits
+//! until its usual window has [`USUAL_MIN_DAYS`] days of its kind learned there, so one odd day is not all it knows.
+//!
 //! A source too sparse for any of them still has a normal in time per row, and a fifth width, the gap, judges it there:
 //! how long it has gone without a row, against the longest quiet spell it made in the past year ([`Gap`]). A quiet
 //! spell is a run of buckets with no rows, each reported by a worker, between two with rows (`series::Silence`). The
@@ -117,17 +121,16 @@ pub const WIDTHS: [Width; 4] = [
 /// How many days a time of day's usual window is learned from: the newest with a learned window near it.
 const USUAL_DAYS: i64 = 7;
 
+/// The fewest days a time of day's usual window is learned from. With fewer, that time of day is not judged.
+const USUAL_MIN_DAYS: usize = 3;
+
+/// How far back a source's rows must reach, from its first or from a reset, before it is judged at all: a week, so each
+/// weekday is learned once before one can warn. Judged sooner, a new source's first quiet weekend is set against its
+/// weekdays, warns, and so is never learned.
+pub const JUDGED_AFTER_MS: i64 = 7 * DAY_MS;
+
 /// How far either side of the same time of day a past window may end and still count as the same time of day.
 const NEIGHBORHOOD: Duration = Duration::from_secs(30 * 60);
-
-/// Days with a window at a time of day the source ran for throughout, before it is judged at that time of day.
-/// Fewer, and one odd day is most of what it knows.
-pub const MIN_DAYS: usize = 3;
-
-/// How far back a source's rows reach, from its first or from a reset, before it is judged: a week, so each weekday is
-/// learned once before one can warn. Judged sooner, a new source's first quiet weekend is set against its weekdays,
-/// warns, and so is never learned.
-pub const JUDGED_AFTER_MS: i64 = 7 * DAY_MS;
 
 /// The share of past ratios each side of the range leaves out: one in two thousand.
 const TAIL: f64 = 0.0005;
@@ -1570,8 +1573,8 @@ fn swung_over(
 }
 
 /// The range of `held` at `ended_ms` on each past day, `across` steps of `step_ms` either side, or `None` while fewer
-/// than [`MIN_DAYS`] days have one. `held` is one past bucket's swing, its low and high rate ([`swing`]), if it is
-/// known. The range cuts a [`TAIL`] from the bottom of the lows and from the top of the highs.
+/// than [`USUAL_MIN_DAYS`] days have one. `held` is one past bucket's swing, its low and high rate ([`swing`]), if it
+/// is known. The range cuts a [`TAIL`] from the bottom of the lows and from the top of the highs.
 fn swung_band(held: impl Fn(i64) -> Option<Band>, ended_ms: i64, step_ms: i64, across: i64) -> Option<Band> {
     let (mut lows, mut highs) = (Vec::new(), Vec::new());
     let mut days = HashSet::new();
@@ -1584,7 +1587,7 @@ fn swung_band(held: impl Fn(i64) -> Option<Band>, ended_ms: i64, step_ms: i64, a
             }
         }
     }
-    if days.len() < MIN_DAYS {
+    if days.len() < USUAL_MIN_DAYS {
         return None;
     }
     lows.sort_by(f64::total_cmp);
@@ -2243,7 +2246,7 @@ mod tests {
     /// Days are counted per time of day: the windows in the half hour after a midnight are that midnight's day.
     #[test]
     fn too_few_days_are_not_judged() {
-        let days = MIN_DAYS as i64 - 1;
+        let days = USUAL_MIN_DAYS as i64 - 1;
         let since = |start: i64| move |at: i64| (at >= start || a_week_back(at)).then_some(100.0);
         assert_eq!(reading(&store_with(7, since(END - days * DAY_MS + 6 * FIVE))), None);
         assert!(reading(&store_with(7, since(END - days * DAY_MS + 5 * FIVE))).is_some());
