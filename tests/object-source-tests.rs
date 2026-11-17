@@ -380,6 +380,46 @@ fn a_message_is_deleted_once_every_record_of_every_object_is_committed() {
     assert_eq!(s.deleted(), ["m"]);
 }
 
+/// Objects are fetched side by side ahead of the one being read, so a store's round trips overlap rather than add up.
+#[test]
+fn objects_are_fetched_ahead_of_the_one_read() {
+    use object_store::throttle::{ThrottleConfig, ThrottledStore};
+    let s = Setup::new();
+    let keys: Vec<String> = (0..8).map(|i| format!("{i}")).collect();
+    for key in &keys {
+        s.put(key, format!("{key}\n").as_bytes());
+    }
+    s.announce("m", &keys.iter().map(String::as_str).collect::<Vec<_>>());
+    let call = Duration::from_millis(300);
+    let config = ThrottleConfig {
+        wait_get_per_call: call,
+        ..ThrottleConfig::default()
+    };
+    let store: Arc<dyn ObjectStore> = Arc::new(ThrottledStore::new(s.store.clone(), config));
+    let mut source = ObjectSource::new(
+        Arc::new(s.queue.clone()),
+        Box::new(move |_: &str| Ok(store.clone())),
+        s.runtime.clone(),
+        Framing::Lines,
+        HOUR,
+        smeltr::io::object_source::MAX_RECORD_BYTES,
+    )
+    .unwrap();
+    let started = Instant::now();
+    let mut records = Vec::new();
+    while records.len() < keys.len() && started.elapsed() < WAIT {
+        records.extend(source.poll_batch(1000, 1 << 20, WAIT).unwrap());
+    }
+    assert_eq!(raw(&records), keys);
+    // Read one after another, each object's HEAD and GET take 16 calls.
+    let serial = call * 2 * keys.len() as u32;
+    assert!(
+        started.elapsed() < serial / 2,
+        "{:?} reading what takes {serial:?} serially",
+        started.elapsed()
+    );
+}
+
 #[test]
 fn an_unreadable_object_leaves_its_message_on_the_queue() {
     let s = Setup::new();

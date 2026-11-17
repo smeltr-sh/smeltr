@@ -13,7 +13,8 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -32,6 +33,14 @@ const CHUNK: u64 = 8 * 1024 * 1024;
 
 /// The most of an object's bytes one push hands its framer.
 const READ_AHEAD: usize = 64 * 1024;
+
+/// How many objects are fetched and decompressed ahead of the one being read, each on a thread of its own, so round
+/// trips and decompression overlap the reader's framing and each other.
+const AHEAD: usize = 8;
+
+/// How many blocks of [`READ_AHEAD`] bytes an object fetched ahead holds decompressed before its fetch waits for the
+/// reader. Together with [`CHUNK`] and [`AHEAD`], it bounds a source's memory.
+const QUEUED: usize = 64;
 
 /// How long one GET may take before the object counts as unreadable.
 const GET_TIMEOUT: Duration = Duration::from_secs(60);
@@ -290,7 +299,7 @@ struct ReadOf {
 /// The object being read now.
 struct Current {
     partition: i32,
-    lines: Box<dyn BufRead + Send>,
+    lines: Fetched,
     /// A record read but not handed out: it did not fit the last batch.
     held_back: Option<Vec<u8>>,
     /// Cuts what is read into records.
@@ -338,8 +347,10 @@ pub struct ObjectSource {
     /// Messages finished since the last [`Source::take_finished`].
     messages_finished: u64,
     next_message: u64,
-    /// Objects received and not yet started, with the message that named each.
+    /// Objects received and not yet fetched, with the message that named each.
     waiting: VecDeque<(u64, ObjectRef)>,
+    /// Objects being fetched, in the order they are read, with the message that named each.
+    ahead: VecDeque<(u64, ObjectRef, Fetched)>,
     current: Option<Current>,
     reads: HashMap<i32, ReadOf>,
     next_partition: i32,
@@ -402,6 +413,7 @@ impl ObjectSource {
             messages_finished: 0,
             next_message: 0,
             waiting: VecDeque::new(),
+            ahead: VecDeque::new(),
             current: None,
             reads: HashMap::new(),
             next_partition: 0,
@@ -530,46 +542,61 @@ impl ObjectSource {
         Ok(())
     }
 
-    /// Opens the next waiting object as `current`. One that cannot be opened gives up its message.
-    fn open_next(&mut self) -> bool {
-        while let Some((message, object)) = self.waiting.pop_front() {
+    /// Starts fetching waiting objects until [`AHEAD`] are being fetched. One whose fetch cannot be started gives up
+    /// its message; one whose fetch fails is unreadable when its turn comes.
+    fn fetch_ahead(&mut self) {
+        while self.ahead.len() < AHEAD
+            && let Some((message, object)) = self.waiting.pop_front()
+        {
             if !lock(&self.held).contains_key(&message) {
                 continue;
             }
-            match self.open_object(&object) {
-                Ok(lines) => {
-                    let partition = self.next_partition;
-                    self.next_partition = self.next_partition.wrapping_add(1);
-                    self.reads.insert(
-                        partition,
-                        ReadOf {
-                            message,
-                            topic: Arc::from(format!("{}/{}", object.bucket, object.key)),
-                            records: 0,
-                            ended: false,
-                            committed: -1,
-                        },
-                    );
-                    self.current = Some(Current {
-                        partition,
-                        lines,
-                        held_back: None,
-                        framer: Framer::refusing(self.framing.clone(), self.max_record as usize),
-                        frames: Messages::default(),
-                        failed: None,
-                        framed: false,
-                        container: None,
-                        values: VecDeque::new(),
-                    });
-                    return true;
-                }
+            match self.start_fetch(&object) {
+                Ok(fetched) => self.ahead.push_back((message, object, fetched)),
                 Err(why) => self.give_up(message, &object.bucket, &object.key, &why),
             }
+        }
+    }
+
+    /// Opens the next object fetched as `current`.
+    fn open_next(&mut self) -> bool {
+        self.fetch_ahead();
+        while let Some((message, object, lines)) = self.ahead.pop_front() {
+            self.fetch_ahead();
+            // Its message was given up meanwhile: dropping `lines` ends its fetch.
+            if !lock(&self.held).contains_key(&message) {
+                continue;
+            }
+            let partition = self.next_partition;
+            self.next_partition = self.next_partition.wrapping_add(1);
+            self.reads.insert(
+                partition,
+                ReadOf {
+                    message,
+                    topic: Arc::from(format!("{}/{}", object.bucket, object.key)),
+                    records: 0,
+                    ended: false,
+                    committed: -1,
+                },
+            );
+            self.current = Some(Current {
+                partition,
+                lines,
+                held_back: None,
+                framer: Framer::refusing(self.framing.clone(), self.max_record as usize),
+                frames: Messages::default(),
+                failed: None,
+                framed: false,
+                container: None,
+                values: VecDeque::new(),
+            });
+            return true;
         }
         false
     }
 
-    fn open_object(&mut self, object: &ObjectRef) -> Result<Box<dyn BufRead + Send>, String> {
+    /// Starts fetching `object` on a thread of its own.
+    fn start_fetch(&mut self, object: &ObjectRef) -> Result<Fetched, String> {
         let store = match self.built.get(&object.bucket) {
             Some(store) => store.clone(),
             None => {
@@ -579,38 +606,19 @@ impl ObjectSource {
             }
         };
         let path = Path::parse(&object.key).map_err(|e| format!("the key is no path the store can read: {e}"))?;
-        let head = GetOptions {
-            head: true,
-            version: object.version.clone(),
-            ..GetOptions::default()
-        };
-        let meta = within(&self.runtime, GET_TIMEOUT, store.get_opts(&path, head))?
-            .map_err(|e| e.to_string())?
-            .meta;
-        let mut raw = Ranges {
-            store,
-            runtime: self.runtime.clone(),
-            path,
-            e_tag: meta.e_tag,
-            version: object.version.clone(),
-            at: 0,
-            size: meta.size,
-            chunk: Vec::new(),
+        let (tx, blocks) = std::sync::mpsc::sync_channel(QUEUED);
+        let queued = Arc::new(AtomicU64::new(0));
+        let (runtime, version, counted) = (self.runtime.clone(), object.version.clone(), queued.clone());
+        std::thread::Builder::new()
+            .name("object-source-fetch".to_string())
+            .spawn(move || fetch(store, runtime, path, version, &tx, &counted))
+            .map_err(|e| format!("could not start its fetch: {e}"))?;
+        Ok(Fetched {
+            blocks,
+            queued,
+            block: Vec::new(),
             taken: 0,
-        };
-        let magic = raw.fill_buf().map_err(|e| e.to_string())?;
-        Ok(if magic.starts_with(&[0x1f, 0x8b]) {
-            Box::new(BufReader::new(flate2::bufread::MultiGzDecoder::new(raw)))
-        } else if magic.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
-            Box::new(BufReader::new(
-                zstd::stream::read::Decoder::with_buffer(raw).map_err(|e| e.to_string())?,
-            ))
-        } else if magic.starts_with(&[0x04, 0x22, 0x4d, 0x18]) {
-            Box::new(BufReader::new(lz4_flex::frame::FrameDecoder::new(raw)))
-        } else if magic.starts_with(b"\xff\x06\x00\x00sNaPpY") {
-            Box::new(BufReader::new(snap::read::FrameDecoder::new(raw)))
-        } else {
-            Box::new(raw)
+            ended: false,
         })
     }
 
@@ -821,12 +829,12 @@ fn next_value(current: &mut Current, avro: &mut AvroReader, max_record: u64) -> 
             Some(container) => container,
             None if current.lines.fill_buf().map_err(|e| e.to_string())?.is_empty() => return Ok(None),
             None => {
-                let container = Container::open(&mut *current.lines)?;
+                let container = Container::open(&mut current.lines)?;
                 avro.tell(id, container.schema.clone());
                 current.container.insert(container)
             }
         };
-        match container.block(&mut *current.lines, max_record)? {
+        match container.block(&mut current.lines, max_record)? {
             Some(values) => current.values.extend(values),
             None => return Ok(None),
         }
@@ -846,6 +854,10 @@ impl Source for ObjectSource {
             // Held messages are kept, and extended meanwhile; nothing new is read, not even the rest of an object.
             std::thread::sleep(timeout);
             return Ok(Vec::new());
+        }
+        // Receive again before the waiting objects run out, so the next ones arrive while these are fetched and read.
+        if self.waiting.len() + self.ahead.len() < AHEAD {
+            self.receive(Duration::ZERO, true)?;
         }
         let mut out = crate::io::RecordChunkBuilder::new();
         let mut bytes = 0;
@@ -926,13 +938,19 @@ impl Source for ObjectSource {
         self.receive_error.clone()
     }
 
-    /// What the object being read holds outside its reader: the record held back, and what its framer read and has not
-    /// yet handed out.
+    /// What the objects hold outside their readers: for the one being read, the record held back, what its framer read
+    /// and has not yet handed out, and what its fetch has queued; for each fetched ahead, what its fetch has queued.
     fn held_bytes(&self) -> Option<u64> {
         let held = self.current.as_ref().map_or(0, |c| {
-            c.held_back.as_ref().map_or(0, Vec::len) + c.framer.uncut() + c.frames.untaken()
+            (c.held_back.as_ref().map_or(0, Vec::len) + c.framer.uncut() + c.frames.untaken()) as u64
+                + c.lines.queued.load(Ordering::Relaxed)
         });
-        Some(held as u64)
+        let ahead: u64 = self
+            .ahead
+            .iter()
+            .map(|(_, _, f)| f.queued.load(Ordering::Relaxed))
+            .sum();
+        Some(held + ahead)
     }
 
     /// The queue's depth, as its sampler last measured it. Never a call to the queue on this thread.
@@ -955,6 +973,132 @@ impl Source for ObjectSource {
     fn resume(&mut self, from: Progress) -> Result<(), IoError> {
         self.queue.resume(from)
     }
+}
+
+/// Reads the object at `path` to its end, decompressed, into `tx` in blocks of up to [`READ_AHEAD`] bytes, counting in
+/// `queued` the bytes sent and not yet taken. An empty block is its end; an error, why it is unreadable. Ends early
+/// once the receiver of `tx` is dropped.
+fn fetch(
+    store: Arc<dyn ObjectStore>,
+    runtime: Arc<tokio::runtime::Runtime>,
+    path: Path,
+    version: Option<String>,
+    tx: &SyncSender<Result<Vec<u8>, String>>,
+    queued: &AtomicU64,
+) {
+    let mut lines = match open_object(store, runtime, path, version) {
+        Ok(lines) => lines,
+        Err(why) => {
+            let _ = tx.send(Err(why));
+            return;
+        }
+    };
+    loop {
+        let block = match lines.fill_buf() {
+            Ok(ready) => ready[..ready.len().min(READ_AHEAD)].to_vec(),
+            Err(e) => {
+                let _ = tx.send(Err(e.to_string()));
+                return;
+            }
+        };
+        lines.consume(block.len());
+        let end = block.is_empty();
+        queued.fetch_add(block.len() as u64, Ordering::Relaxed);
+        if tx.send(Ok(block)).is_err() || end {
+            return;
+        }
+    }
+}
+
+/// The object at `path`, read at the version named and the ETag its head returned, decompressed as its first bytes
+/// say.
+fn open_object(
+    store: Arc<dyn ObjectStore>,
+    runtime: Arc<tokio::runtime::Runtime>,
+    path: Path,
+    version: Option<String>,
+) -> Result<Box<dyn BufRead + Send>, String> {
+    let head = GetOptions {
+        head: true,
+        version: version.clone(),
+        ..GetOptions::default()
+    };
+    let meta = within(&runtime, GET_TIMEOUT, store.get_opts(&path, head))?
+        .map_err(|e| e.to_string())?
+        .meta;
+    let mut raw = Ranges {
+        store,
+        runtime,
+        path,
+        e_tag: meta.e_tag,
+        version,
+        at: 0,
+        size: meta.size,
+        chunk: Vec::new(),
+        taken: 0,
+    };
+    let magic = raw.fill_buf().map_err(|e| e.to_string())?;
+    Ok(if magic.starts_with(&[0x1f, 0x8b]) {
+        Box::new(BufReader::new(flate2::bufread::MultiGzDecoder::new(raw)))
+    } else if magic.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
+        Box::new(BufReader::new(
+            zstd::stream::read::Decoder::with_buffer(raw).map_err(|e| e.to_string())?,
+        ))
+    } else if magic.starts_with(&[0x04, 0x22, 0x4d, 0x18]) {
+        Box::new(BufReader::new(lz4_flex::frame::FrameDecoder::new(raw)))
+    } else if magic.starts_with(b"\xff\x06\x00\x00sNaPpY") {
+        Box::new(BufReader::new(snap::read::FrameDecoder::new(raw)))
+    } else {
+        Box::new(raw)
+    })
+}
+
+/// An object as its fetch sends it, decompressed.
+struct Fetched {
+    blocks: Receiver<Result<Vec<u8>, String>>,
+    /// The bytes sent and not yet taken.
+    queued: Arc<AtomicU64>,
+    block: Vec<u8>,
+    taken: usize,
+    /// Its end block is taken.
+    ended: bool,
+}
+
+impl BufRead for Fetched {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        if self.taken == self.block.len() && !self.ended {
+            // A fetch gone without sending its end panicked: what it sent is not the whole object.
+            let block = self
+                .blocks
+                .recv()
+                .unwrap_or_else(|_| Err("its fetch stopped before the end of the object".to_string()))
+                .map_err(std::io::Error::other)?;
+            self.queued.fetch_sub(block.len() as u64, Ordering::Relaxed);
+            self.ended = block.is_empty();
+            self.block = block;
+            self.taken = 0;
+        }
+        Ok(&self.block[self.taken..])
+    }
+
+    fn consume(&mut self, amount: usize) {
+        self.taken += amount;
+    }
+}
+
+impl Read for Fetched {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        read_buffered(self, out)
+    }
+}
+
+/// [`Read::read`] for a reader whose [`BufRead`] is its own.
+fn read_buffered(from: &mut impl BufRead, out: &mut [u8]) -> std::io::Result<usize> {
+    let ready = from.fill_buf()?;
+    let n = ready.len().min(out.len());
+    out[..n].copy_from_slice(&ready[..n]);
+    from.consume(n);
+    Ok(n)
 }
 
 /// What `call` answers on `runtime`, or why it gave none within `limit`.
@@ -985,11 +1129,7 @@ struct Ranges {
 
 impl Read for Ranges {
     fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
-        let ready = self.fill_buf()?;
-        let n = ready.len().min(out.len());
-        out[..n].copy_from_slice(&ready[..n]);
-        self.consume(n);
-        Ok(n)
+        read_buffered(self, out)
     }
 }
 
