@@ -13,8 +13,8 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -34,8 +34,9 @@ const CHUNK: u64 = 8 * 1024 * 1024;
 /// The most of an object's bytes one push hands its framer.
 const READ_AHEAD: usize = 64 * 1024;
 
-/// How many objects are fetched and decompressed ahead of the one being read, each on a thread of its own, so round
-/// trips and decompression overlap the reader's framing and each other.
+/// The most objects fetched and decompressed ahead of the one being read, each on a thread of its own, so round trips
+/// and decompression overlap the reader's framing and each other. A source starts with one and fetches more only while
+/// its reader waits for the next object (`ObjectSource::ahead_target`).
 const AHEAD: usize = 8;
 
 /// How many blocks of [`READ_AHEAD`] bytes an object fetched ahead holds decompressed before its fetch waits for the
@@ -351,6 +352,9 @@ pub struct ObjectSource {
     waiting: VecDeque<(u64, ObjectRef)>,
     /// Objects being fetched, in the order they are read, with the message that named each.
     ahead: VecDeque<(u64, ObjectRef, Fetched)>,
+    /// How many objects to fetch ahead, from 1 to [`AHEAD`]. When an object is opened it doubles if that object had
+    /// nothing ready for the reader, and falls by one if its fetch had to wait for the reader.
+    ahead_target: usize,
     current: Option<Current>,
     reads: HashMap<i32, ReadOf>,
     next_partition: i32,
@@ -414,6 +418,7 @@ impl ObjectSource {
             next_message: 0,
             waiting: VecDeque::new(),
             ahead: VecDeque::new(),
+            ahead_target: 1,
             current: None,
             reads: HashMap::new(),
             next_partition: 0,
@@ -542,10 +547,10 @@ impl ObjectSource {
         Ok(())
     }
 
-    /// Starts fetching waiting objects until [`AHEAD`] are being fetched. One whose fetch cannot be started gives up
-    /// its message; one whose fetch fails is unreadable when its turn comes.
+    /// Starts fetching waiting objects until `ahead_target` are being fetched. One whose fetch cannot be started gives
+    /// up its message; one whose fetch fails is unreadable when its turn comes.
     fn fetch_ahead(&mut self) {
-        while self.ahead.len() < AHEAD
+        while self.ahead.len() < self.ahead_target
             && let Some((message, object)) = self.waiting.pop_front()
         {
             if !lock(&self.held).contains_key(&message) {
@@ -562,6 +567,13 @@ impl ObjectSource {
     fn open_next(&mut self) -> bool {
         self.fetch_ahead();
         while let Some((message, object, lines)) = self.ahead.pop_front() {
+            self.ahead_target = if lines.shared.stalled.load(Ordering::Relaxed) {
+                self.ahead_target.saturating_sub(1).max(1)
+            } else if lines.shared.queued.load(Ordering::Relaxed) == 0 {
+                (self.ahead_target * 2).min(AHEAD)
+            } else {
+                self.ahead_target
+            };
             self.fetch_ahead();
             // Its message was given up meanwhile: dropping `lines` ends its fetch.
             if !lock(&self.held).contains_key(&message) {
@@ -607,15 +619,15 @@ impl ObjectSource {
         };
         let path = Path::parse(&object.key).map_err(|e| format!("the key is no path the store can read: {e}"))?;
         let (tx, blocks) = std::sync::mpsc::sync_channel(QUEUED);
-        let queued = Arc::new(AtomicU64::new(0));
-        let (runtime, version, counted) = (self.runtime.clone(), object.version.clone(), queued.clone());
+        let shared = Arc::new(Shared::default());
+        let (runtime, version, counted) = (self.runtime.clone(), object.version.clone(), shared.clone());
         std::thread::Builder::new()
             .name("object-source-fetch".to_string())
             .spawn(move || fetch(store, runtime, path, version, &tx, &counted))
             .map_err(|e| format!("could not start its fetch: {e}"))?;
         Ok(Fetched {
             blocks,
-            queued,
+            shared,
             block: Vec::new(),
             taken: 0,
             ended: false,
@@ -943,12 +955,12 @@ impl Source for ObjectSource {
     fn held_bytes(&self) -> Option<u64> {
         let held = self.current.as_ref().map_or(0, |c| {
             (c.held_back.as_ref().map_or(0, Vec::len) + c.framer.uncut() + c.frames.untaken()) as u64
-                + c.lines.queued.load(Ordering::Relaxed)
+                + c.lines.shared.queued.load(Ordering::Relaxed)
         });
         let ahead: u64 = self
             .ahead
             .iter()
-            .map(|(_, _, f)| f.queued.load(Ordering::Relaxed))
+            .map(|(_, _, f)| f.shared.queued.load(Ordering::Relaxed))
             .sum();
         Some(held + ahead)
     }
@@ -976,15 +988,15 @@ impl Source for ObjectSource {
 }
 
 /// Reads the object at `path` to its end, decompressed, into `tx` in blocks of up to [`READ_AHEAD`] bytes, counting in
-/// `queued` the bytes sent and not yet taken. An empty block is its end; an error, why it is unreadable. Ends early
-/// once the receiver of `tx` is dropped.
+/// `shared` the bytes sent and not yet taken and whether it waited for the reader. An empty block is its end; an error,
+/// why it is unreadable. Ends early once the receiver of `tx` is dropped.
 fn fetch(
     store: Arc<dyn ObjectStore>,
     runtime: Arc<tokio::runtime::Runtime>,
     path: Path,
     version: Option<String>,
     tx: &SyncSender<Result<Vec<u8>, String>>,
-    queued: &AtomicU64,
+    shared: &Shared,
 ) {
     let mut lines = match open_object(store, runtime, path, version) {
         Ok(lines) => lines,
@@ -1003,8 +1015,15 @@ fn fetch(
         };
         lines.consume(block.len());
         let end = block.is_empty();
-        queued.fetch_add(block.len() as u64, Ordering::Relaxed);
-        if tx.send(Ok(block)).is_err() || end {
+        shared.queued.fetch_add(block.len() as u64, Ordering::Relaxed);
+        let sent = match tx.try_send(Ok(block)) {
+            Err(TrySendError::Full(block)) => {
+                shared.stalled.store(true, Ordering::Relaxed);
+                tx.send(block).is_ok()
+            }
+            sent => sent.is_ok(),
+        };
+        if !sent || end {
             return;
         }
     }
@@ -1053,11 +1072,19 @@ fn open_object(
     })
 }
 
+/// What an object's fetch records for its reader.
+#[derive(Default)]
+struct Shared {
+    /// The bytes sent and not yet taken.
+    queued: AtomicU64,
+    /// The fetch found the queue full and waited for the reader to take a block.
+    stalled: AtomicBool,
+}
+
 /// An object as its fetch sends it, decompressed.
 struct Fetched {
     blocks: Receiver<Result<Vec<u8>, String>>,
-    /// The bytes sent and not yet taken.
-    queued: Arc<AtomicU64>,
+    shared: Arc<Shared>,
     block: Vec<u8>,
     taken: usize,
     /// Its end block is taken.
@@ -1073,7 +1100,7 @@ impl BufRead for Fetched {
                 .recv()
                 .unwrap_or_else(|_| Err("its fetch stopped before the end of the object".to_string()))
                 .map_err(std::io::Error::other)?;
-            self.queued.fetch_sub(block.len() as u64, Ordering::Relaxed);
+            self.shared.queued.fetch_sub(block.len() as u64, Ordering::Relaxed);
             self.ended = block.is_empty();
             self.block = block;
             self.taken = 0;

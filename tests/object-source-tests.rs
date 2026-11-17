@@ -420,6 +420,25 @@ fn objects_are_fetched_ahead_of_the_one_read() {
     );
 }
 
+/// A reader that never waits does not have more objects fetched for it: what a source holds stays near what one
+/// object's fetch queues.
+#[test]
+fn a_reader_that_keeps_up_has_no_more_fetched_for_it() {
+    let s = Setup::new();
+    let line = format!("{}\n", "x".repeat(1023));
+    let keys: Vec<String> = (0..8).map(|i| format!("{i}")).collect();
+    for key in &keys {
+        s.put(key, line.repeat(5 * 1024).as_bytes());
+    }
+    s.announce("m", &keys.iter().map(String::as_str).collect::<Vec<_>>());
+    let mut source = s.source(Framing::Lines, HOUR);
+    assert_eq!(source.poll_batch(1, 1 << 20, WAIT).unwrap().len(), 1);
+    std::thread::sleep(Duration::from_millis(500));
+    let held = source.held_bytes().unwrap();
+    // Each fetch queues about 4 MB: the one read and the two its first wait asked for, not all eight.
+    assert!(held < 16 << 20, "{held} bytes held");
+}
+
 #[test]
 fn an_unreadable_object_leaves_its_message_on_the_queue() {
     let s = Setup::new();
