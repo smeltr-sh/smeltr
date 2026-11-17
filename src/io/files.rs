@@ -1192,23 +1192,21 @@ impl Encoder {
     /// Closes every open file, their uploads landing side by side. A file whose upload failed, or did not answer within
     /// `stall_after`, is left out of `closed`.
     fn close_all(&mut self) -> Result<(), String> {
-        let mut sealed = Vec::new();
-        let mut landing = Vec::new();
-        // The files behind one that fails to seal are dropped, which aborts their uploads.
-        for (_, file) in std::mem::take(&mut self.open) {
-            let (closed, upload) = seal(file)?;
-            sealed.push(closed);
-            landing.push(upload.landing());
-        }
-        // Each upload waits up to `stall_after` on its own, so the ones that landed are kept when another does not answer.
+        // Every file is sealed before any starts to land, so a seal that fails drops every upload of this close, which
+        // aborts it.
+        let sealed: Vec<_> = std::mem::take(&mut self.open)
+            .into_values()
+            .map(seal)
+            .collect::<Result<_, _>>()?;
+        let (sealed, uploads): (Vec<_>, Vec<_>) = sealed.into_iter().unzip();
+        // Each upload waits up to `stall_after` on its own, so the ones that landed are kept when another does not
+        // answer.
         let after = self.shared.config.stall_after;
-        let timed = (landing.into_iter()).map(|l| async move { tokio::time::timeout(after, l).await });
-        let landed = (self
-            .shared
-            .runtime
-            .block_on(futures_util::future::join_all(timed))
-            .into_iter())
-        .map(|landed| landed.unwrap_or_else(|_| Err(format!("no answer within {after:?}"))));
+        let landing = uploads.into_iter().map(|upload| async move {
+            let landed = tokio::time::timeout(after, upload.landing()).await;
+            landed.unwrap_or_else(|_| Err(format!("no answer within {after:?}")))
+        });
+        let landed = self.shared.runtime.block_on(futures_util::future::join_all(landing));
         let mut failed = None;
         for (closed, landed) in sealed.into_iter().zip(landed) {
             match landed {
