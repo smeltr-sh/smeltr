@@ -109,7 +109,7 @@ The +1 keeps a time of day that is usually empty from dividing by zero and gives
 h_w(t) = (1 + \delta)\,\big[(M_w(t) + 1)\, q_w^+(t) - 1\big].
 ```
 
-The default setting uses δ = 0.2 (Section 2.7). The quantiles are refreshed hourly with the profile. A width is judged only once three days of its history hold learned buckets; before that it has no band.
+The default setting uses δ = 0.2 (Section 2.7). The quantiles are refreshed hourly with the profile. A width is judged only once its learned windows reach back a week, so every weekday has been learned once before any reading can fall below its band; before that it has no band. The replay needs only three days of learned windows, but scores from day 8 or day 29 (Section 3), by which time every series but five has a week behind it. Those five short series begin with up to 18 empty hours, so a week's wait holds their judging back by as much. It changes none of their false alarms, and moves their catch shares by up to five points, because the drops injected in those hours are no longer scored.
 
 ### 2.3 Five widths, each where the source fills it
 
