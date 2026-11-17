@@ -46,8 +46,12 @@
     toggle();
   }
 
+  let asked = 0;
+  /** Looks again; a look that answers after a later one was asked is stale. */
   async function refresh() {
-    world = await look(currentBranch(), sawStatus(location.hash, store));
+    const mine = ++asked;
+    const seen = await look(currentBranch(), sawStatus(location.hash, store));
+    if (mine === asked) world = seen;
   }
 
   let ringed: Element | null = null;
