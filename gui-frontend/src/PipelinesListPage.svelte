@@ -162,7 +162,9 @@
         <tbody>
           {#if sortedSharedPipelines.length > 0}
             <tr class="bandrow"
-              ><td colspan="3">from shared/ &mdash; every worker group runs these</td></tr
+              ><td colspan="3"
+                >from shared/ &mdash; every worker group can call or route to these</td
+              ></tr
             >
             {#each sortedSharedPipelines as p (p.id)}
               <tr class="fromshared">
