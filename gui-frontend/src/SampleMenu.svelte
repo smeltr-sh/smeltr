@@ -134,7 +134,8 @@
             aria-selected={s.id === selected}
             onclick={() => {
               open = false;
-              onpick(s.id);
+              // The sample already chosen is chosen: picking it again keeps what it shows.
+              if (s.id !== selected) onpick(s.id);
             }}
           >
             <span class="name ellipsis">
