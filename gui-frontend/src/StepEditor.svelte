@@ -87,6 +87,7 @@
     warningsByStep = new Map(),
     pipelineIds = [],
     pipelineNames = {},
+    sharedPipelineIds = new Set(),
     lookupTables = [],
     grokPatterns = [],
     parsedFields,
@@ -109,6 +110,8 @@
     warningsByStep?: Map<Step, PreviewError[]>;
     pipelineIds?: string[];
     pipelineNames?: Record<string, string>;
+    /** The pipelines among `pipelineIds` that `shared/` declares, marked so where a Call picks one. */
+    sharedPipelineIds?: Set<string>;
     lookupTables?: LookupTableDto[];
     /** The bundle's grok patterns, `shared/`'s and the scope's own, which a grok step may name. */
     grokPatterns?: GrokPatternDto[];
@@ -597,6 +600,7 @@
           {warningsByStep}
           {pipelineIds}
           {pipelineNames}
+          {sharedPipelineIds}
           {lookupTables}
           {grokPatterns}
           {parsedFields}
@@ -621,6 +625,7 @@
           {warningsByStep}
           {pipelineIds}
           {pipelineNames}
+          {sharedPipelineIds}
           {lookupTables}
           {grokPatterns}
           {parsedFields}
@@ -1492,7 +1497,11 @@
               <select bind:value={step.pipeline}>
                 <option value="">(choose a pipeline)</option>
                 {#each pipelineIds as p}
-                  <option value={p}>{pipelineNames[p] || p}</option>
+                  <option value={p}
+                    >{pipelineNames[p] || p}{sharedPipelineIds.has(p)
+                      ? ' \u2014 shared'
+                      : ''}</option
+                  >
                 {/each}
               </select>
             </Field>
