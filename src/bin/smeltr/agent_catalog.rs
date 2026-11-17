@@ -483,7 +483,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/series",
-        what: "One stored metric over a window, as points per series. Query: metric, filter (label:value, comma-separated), by (the label to split by; none adds all into one), windowMinutes (default 60, max 30 days), draw (perSecond|totals: a counter's rate, or what each minute, hour or day added up to), utcOffsetMinutes, agoMinutes (the window ends this long before now). To show the person a chart, link `#/status/metrics` with the same query; add top=N for how many series to draw on their own, marks=1 for deploys and issues, weekBefore=1 for the same window a week before.",
+        what: "One stored metric over a window, as points per series. Query: metric, filter (label:value, comma-separated), by (the label to split by; none adds all into one), windowMinutes (default 60, max 30 days), draw (perSecond|totals: a counter's rate, or what each minute, hour or day added up to), utcOffsetMinutes, agoMinutes (the window ends this long before now). To show the person a chart, link `#/status/metrics` with the same query, on a line of its own: the reply then draws that chart above the link; repeat metric= to draw several metrics on one chart; add top=N for how many series to draw on their own, marks=1 for deploys and issues, weekBefore=1 for the same window a week before.",
         body: "",
     },
     Route {

@@ -4,7 +4,8 @@ import catalog from '../../website/src/lib/metrics.json';
 import type { SeriesAnswerDto, SeriesDraw } from './api';
 
 export type MetricsView = {
-  metric?: string;
+  /** Drawn on one chart, each split and filtered alike; at least one. */
+  metrics: string[];
   filter: [string, string][];
   by: string;
   windowMinutes: number;
@@ -18,7 +19,7 @@ export type MetricsView = {
 };
 
 export const DEFAULT_VIEW: MetricsView = {
-  metric: 'smeltr_rows_polled_total',
+  metrics: ['smeltr_rows_polled_total'],
   filter: [],
   by: '',
   windowMinutes: 60,
@@ -31,8 +32,9 @@ export const DEFAULT_VIEW: MetricsView = {
 export function viewFromParams(params: URLSearchParams): MetricsView {
   const minutes = Number(params.get('windowMinutes'));
   const top = Number(params.get('top'));
+  const named = [...new Set(params.getAll('metric').filter(Boolean))];
   return {
-    metric: params.get('metric') || DEFAULT_VIEW.metric,
+    metrics: named.length ? named : DEFAULT_VIEW.metrics,
     filter: (params.get('filter') ?? '')
       .split(',')
       .map((pair) => pair.split(':'))
@@ -48,7 +50,7 @@ export function viewFromParams(params: URLSearchParams): MetricsView {
 
 function params(v: MetricsView): URLSearchParams {
   const q = new URLSearchParams();
-  if (v.metric) q.set('metric', v.metric);
+  for (const m of v.metrics) q.append('metric', m);
   if (v.filter.length) q.set('filter', v.filter.map(([k, value]) => `${k}:${value}`).join(','));
   if (v.by) q.set('by', v.by);
   q.set('windowMinutes', String(v.windowMinutes));
@@ -63,18 +65,49 @@ export function toHash(v: MetricsView): string {
   return `#/status/metrics?${params(v)}`;
 }
 
+/** The filters that narrow a metric carrying `labels`: those by worker group, which every series has, or by a label
+ * it carries. A filter by a label only another metric drawn beside it carries would leave it with nothing. Not yet
+ * knowing its labels, it takes them all. */
+export function filtersFor(
+  filter: [string, string][],
+  labels: Record<string, unknown> | undefined,
+): [string, string][] {
+  return filter.filter(([label]) => !labels || label === 'group' || label in labels);
+}
+
+/** Whether `next` may be drawn beside `others`: not one of them, of their kind (counters and gauges are read
+ * differently), and with them in no more than two units, one for each axis. */
+export function fitsBeside(
+  next: { name: string; counter: boolean },
+  others: { name: string; counter: boolean }[],
+): boolean {
+  if (others.some((o) => o.name === next.name)) return false;
+  if (others.length && others[0].counter !== next.counter) return false;
+  return new Set([...others, next].map((m) => unitOf(m.name))).size <= 2;
+}
+
 /** A week, in minutes: how far back the comparison line reads. */
 export const WEEK_MINUTES = 7 * 24 * 60;
 
-/** The query `GET /api/series` takes for `v`, with the reader's clock, so hours and days start where theirs do, and
- * its window ending `agoMinutes` before now. */
-export function seriesQuery(v: MetricsView, utcOffsetMinutes: number, agoMinutes = 0): string {
+/** The query `GET /api/series` takes for `metric` as `v` draws it: with the filters whose label it carries
+ * (`labels`; all of them while those are unknown), the reader's clock, so hours and days start where theirs do, and
+ * its window ending `agoMinutes` before now. Beside other metrics it is drawn per second: totals of different
+ * metrics stacked would add up to nothing. */
+export function seriesQuery(
+  v: MetricsView,
+  metric: string,
+  utcOffsetMinutes: number,
+  agoMinutes = 0,
+  labels?: Record<string, unknown>,
+): string {
   const q = new URLSearchParams({
-    metric: v.metric ?? '',
-    filter: v.filter.map(([k, value]) => `${k}:${value}`).join(','),
+    metric,
+    filter: filtersFor(v.filter, labels)
+      .map(([k, value]) => `${k}:${value}`)
+      .join(','),
     by: v.by,
     windowMinutes: String(v.windowMinutes),
-    draw: v.draw,
+    draw: v.metrics.length > 1 ? 'perSecond' : v.draw,
     utcOffsetMinutes: String(utcOffsetMinutes),
   });
   if (agoMinutes) q.set('agoMinutes', String(agoMinutes));
@@ -108,6 +141,8 @@ export function toneOf(slot: number | null): string {
 
 export type Drawn = {
   name: string;
+  /** Drawn against the right-hand axis: a metric in another unit than the first. */
+  right?: boolean;
   /** Its rank, which also keys it: a split value may itself be named Other; `null` for the series folded into Other. */
   slot: number | null;
   /** One value per point of the window, `null` where nothing landed. */

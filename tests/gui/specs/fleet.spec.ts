@@ -443,6 +443,18 @@ test('the Metrics page charts any stored metric, split by a label, as a rate or 
   await panel.getByRole('option', { name: /smeltr_bytes_polled_total/ }).click();
   await expect(admin).toHaveURL(/metric=smeltr_bytes_polled_total/);
   await expect(panel.getByText(/^(B|KiB|MiB) per minute$/)).toBeVisible();
+
+  // A second metric in another unit is drawn per second against an axis of its own, and leaves as it came.
+  await panel.getByRole('button', { name: '+ Metric' }).click();
+  await panel.getByPlaceholder('Search metrics').fill('smeltr_rows_polled_total');
+  await panel.getByRole('option', { name: /smeltr_rows_polled_total/ }).click();
+  await expect(admin).toHaveURL(/metric=smeltr_bytes_polled_total&metric=smeltr_rows_polled_total/);
+  await expect(panel.getByLabel('Right-hand axis')).toBeVisible({ timeout: 30_000 });
+  await expect(panel.getByRole('group', { name: 'Draw' })).toHaveCount(0);
+  await expect(table.getByRole('row', { name: /^smeltr_rows_polled_total\b/ })).toBeVisible();
+  await shoot(admin, panel, 'metrics-two-units');
+  await panel.getByRole('button', { name: 'Remove metric smeltr_rows_polled_total' }).click();
+  await expect(admin).not.toHaveURL(/metric=smeltr_rows_polled_total/);
 });
 
 test('a source blocked by rows no route takes says which, since when, why and what to do', async ({

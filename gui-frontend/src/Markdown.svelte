@@ -1,14 +1,45 @@
 <!--
   Markdown the agent wrote, rendered: its paragraphs, lists, code, tables and links, in the face around it.
-  `renderMarkdown` decides what is safe to show.
+  `renderMarkdown` decides what is safe to show. With `charts`, a link to a Metrics view that stands alone in its
+  paragraph shows that chart above it, read with the viewer's own access.
 -->
 <script lang="ts">
+  import { mount, unmount } from 'svelte';
   import { renderMarkdown } from './markdown';
+  import { viewFromParams } from './metricsView';
 
-  let { text }: { text: string } = $props();
+  let { text, charts = false }: { text: string; charts?: boolean } = $props();
+  let body = $state<HTMLElement>();
+  let html = $derived(renderMarkdown(text));
+
+  $effect(() => {
+    void html;
+    if (!charts || !body) return;
+    const slots = [...body.querySelectorAll<HTMLElement>('[data-chart]')];
+    if (!slots.length) return;
+    let gone = false;
+    const mounted: Record<string, unknown>[] = [];
+    void import('./MetricsPage.svelte').then(({ default: MetricsPage }) => {
+      if (gone) return;
+      for (const slot of slots) {
+        const query = (slot.dataset.chart ?? '').split('?')[1] ?? '';
+        mounted.push(
+          mount(MetricsPage, {
+            target: slot,
+            anchor: slot.firstChild ?? undefined,
+            props: { view: viewFromParams(new URLSearchParams(query)), inline: true },
+          }),
+        );
+      }
+    });
+    return () => {
+      gone = true;
+      for (const m of mounted) void unmount(m);
+    };
+  });
 </script>
 
-<div class="markdown">{@html renderMarkdown(text)}</div>
+<div class="markdown" bind:this={body}>{@html html}</div>
 
 <style>
   /* Wherever it sits, it fills the room it is given, and keeps its own white space: the HTML's line breaks are
@@ -27,7 +58,7 @@
   .markdown > :global(:last-child) {
     margin-bottom: 0;
   }
-  .markdown :global(:is(p, ul, ol, pre, blockquote, table)) {
+  .markdown :global(:is(p, ul, ol, pre, blockquote, table, .chart-slot)) {
     margin: 0 0 0.6em;
   }
   .markdown :global(:is(ul, ol)) {

@@ -4,7 +4,7 @@
   hash (`metricsView.ts`), so a view is a link, and the agent hands one over.
 -->
 <script lang="ts">
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
   import Segmented from './Segmented.svelte';
@@ -29,6 +29,7 @@
   } from './api';
   import {
     WEEK_MINUTES,
+    fitsBeside,
     alongside,
     described,
     laidOn,
@@ -39,10 +40,18 @@
     toneOf,
     unitOf,
     type Mark,
+    type Drawn,
     type MetricsView,
   } from './metricsView';
 
-  let { view }: { view: MetricsView } = $props();
+  let {
+    view,
+    inline = false,
+  }: {
+    view: MetricsView;
+    /** The chart alone, as the agent shows it in a reply: no page around it, nothing to change, no table. */
+    inline?: boolean;
+  } = $props();
 
   const GROUP = 'group';
   const WORKER = 'worker';
@@ -62,21 +71,60 @@
   let failed = $state<string | null>(null);
 
   /** The list grows as workers report metrics they had not before, so it is read with every answer. */
-  function readMetrics() {
-    getSeriesMetrics()
+  function readMetrics(): Promise<unknown> {
+    return getSeriesMetrics()
       .then((m) => (metrics = m))
       .catch((e: Error) => (failed = e.message));
   }
 
-  let metric = $derived(metrics?.find((m) => m.name === view.metric) ?? null);
+  const stored = (name: string) => metrics?.find((m) => m.name === name);
+  /** The first metric, whose unit is the left axis's, and whose labels the filters and the split offer. */
+  let metric = $derived(stored(view.metrics[0]) ?? null);
+
+  /** The metrics `v` draws: its first, and each after it that fits beside those kept before it, so a link that asks
+   * for a third unit or a gauge beside counters draws what can be drawn. */
+  function drawnOf(v: MetricsView): string[] {
+    const kept: { name: string; counter: boolean }[] = [];
+    for (const name of v.metrics) {
+      const m = kept.length ? stored(name) : (stored(name) ?? { name, counter: true });
+      if (m && fitsBeside(m, kept)) kept.push(m);
+    }
+    return kept.map((m) => m.name);
+  }
+  let charted = $derived(drawnOf(view));
+
+  /** Which metric each drawn series is of, by its name. */
+  let metricOf = $state(new Map<string, string>());
+  /** The metrics' answers as one: beside another, each series is named for its metric, and its split value after it. */
+  function together(answers: SeriesAnswerDto[]): SeriesAnswerDto {
+    const of = new Map<string, string>();
+    const series = answers.flatMap((a) =>
+      a.series.map((s) => {
+        const name = answers.length === 1 ? s.name : s.name ? `${a.metric} · ${s.name}` : a.metric;
+        of.set(name, a.metric);
+        return { ...s, name };
+      }),
+    );
+    metricOf = of;
+    return { ...answers[0], series };
+  }
 
   async function read(asked: MetricsView) {
-    readMetrics();
+    // Which labels each metric carries decides which filters it takes, so the first read waits for them.
+    const listed = readMetrics();
+    // Untracked: the list arriving must not set the effect that calls this asking again.
+    if (untrack(() => metrics) === null) await listed;
     try {
       const offset = -new Date().getTimezoneOffset();
+      const each = (ago: number) =>
+        Promise.all(
+          drawnOf(asked).map((m) =>
+            getSeries(seriesQuery(asked, m, offset, ago, stored(m)?.labels)),
+          ),
+        ).then(together);
       const [got, then, marks] = await Promise.all([
-        getSeries(seriesQuery(asked, offset)),
-        asked.weekBefore ? getSeries(seriesQuery(asked, offset, WEEK_MINUTES)) : null,
+        each(0),
+        asked.weekBefore ? each(WEEK_MINUTES) : null,
         asked.marks ? readMarks(asked.windowMinutes).catch(() => []) : [],
       ]);
       // A slow answer to an older question must not land over the newer one's.
@@ -164,7 +212,8 @@
   function issueName(condition: WarningCondition, subject: string): string {
     return `${conditionLabel(condition)}${subject ? `: ${subject}` : ''}`;
   }
-  const timer = setInterval(() => read(view), REFRESH_MS);
+  // A chart in a reply is read once: a long conversation would otherwise keep asking for each of its charts.
+  const timer = inline ? undefined : setInterval(() => read(view), REFRESH_MS);
   onDestroy(() => clearInterval(timer));
 
   function go(next: Partial<MetricsView>) {
@@ -174,11 +223,20 @@
   // -- the question -------------------------------------------------------------------------------------------------
 
   let picking = $state(false);
+  /** Which of the view's metrics the open list picks, or `metrics.length` for one more. */
+  let pickingFor = $state(0);
+  function pick(at: number) {
+    picking = !(picking && pickingFor === at);
+    pickingFor = at;
+  }
   let search = $state('');
   /** The metrics, in the website's reference groups, narrowed by `search`. */
   let groups = $derived.by(() => {
     const by = new Map<string, { m: StoredMetricDto; what: string }[]>();
+    // Beside others, the list offers only the metrics that fit beside them.
+    const others = view.metrics.filter((_, i) => i !== pickingFor).flatMap((n) => stored(n) ?? []);
     for (const m of metrics ?? []) {
+      if (!fitsBeside(m, others)) continue;
       const { group, what } = described(m.name, Object.keys(m.labels));
       if (search && !`${m.name} ${what}`.toLowerCase().includes(search.toLowerCase())) continue;
       by.set(group, [...(by.get(group) ?? []), { m, what }]);
@@ -188,10 +246,15 @@
   function choose(m: StoredMetricDto) {
     picking = false;
     search = '';
-    // A split or filter by a label the new metric lacks would empty the chart.
-    const has = (label: string) => label in m.labels;
+    const names =
+      pickingFor === view.metrics.length
+        ? [...view.metrics, m.name]
+        : view.metrics.with(pickingFor, m.name);
+    const chosen = names.flatMap((n) => (n === m.name ? [m] : (stored(n) ?? [])));
+    // A split or filter by a label none of the metrics carries would empty the chart.
+    const has = (label: string) => label === GROUP || chosen.some((c) => label in c.labels);
     go({
-      metric: m.name,
+      metrics: names,
       by: has(view.by) ? view.by : '',
       filter: view.filter.filter(([label]) => has(label)),
       draw: m.counter ? view.draw : 'perSecond',
@@ -234,10 +297,71 @@
       : 0,
   );
   let all = $derived(answer ? onGrid(answer, count) : []);
-  let shown = $derived(fold(all, view.top));
+  /** A series in another unit than the first metric's is drawn against the right-hand axis. */
+  const onRight = (name: string) => unitOf(metricOf.get(name) ?? '') !== unit;
+  let shown = $derived.by(() => {
+    const left = all.filter((s) => !onRight(s.name));
+    const right = all.filter((s) => onRight(s.name));
+    if (!right.length) return fold(all, view.top);
+    // Each axis's busiest are drawn on their own; the colors run on from the left's into the right's.
+    const rank = (d: Drawn[], from: number) =>
+      d.map((s, i) => ({ ...s, slot: s.slot === null ? null : from + i }));
+    const l = rank(fold(left, view.top), 0);
+    const r = rank(fold(right, view.top), l.length).map((s) => ({ ...s, right: true }));
+    return [...l, ...r];
+  });
+  /** `value` in unit `u`, plain. */
+  function amountIn(u: string, value: number): string {
+    if (u === 'bytes') return bytes(value);
+    if (u === 'seconds') return `${value.toFixed(value < 10 ? 2 : 0)} s`;
+    return value >= 100 || Number.isInteger(value)
+      ? Math.round(value).toLocaleString()
+      : value.toFixed(2);
+  }
+  /** The axis `series` are drawn against, in unit `u`: what a drawn value is divided by, what the axis is labelled,
+   * and how a drawn value reads. */
+  function axisOf(u: string, series: Drawn[]) {
+    const peak = Math.max(
+      0,
+      ...(totals
+        ? Array.from({ length: count }, (_, i) =>
+            series.reduce((a, s) => a + (s.points[i] ?? 0), 0),
+          )
+        : series.flatMap((s) => s.points.map((v) => v ?? 0))),
+    );
+    const scale = u === 'bytes' ? byteUnit(peak) : { unit: u === 'seconds' ? 's' : u, size: 1 };
+    const rated = answer?.counter && !totals;
+    return {
+      size: scale.size,
+      label: !answer?.counter
+        ? scale.unit
+        : totals
+          ? `${scale.unit || 'count'} per ${barWord}`
+          : `${scale.unit || 'count'}/s`,
+      format: (v: number) => `${amountIn(u, v * scale.size)}${rated ? '/s' : ''}`,
+    };
+  }
+  let leftAxis = $derived(
+    axisOf(
+      unit,
+      shown.filter((s) => !s.right),
+    ),
+  );
+  let rightAxis = $derived.by(() => {
+    const right = shown.filter((s) => s.right);
+    return right.length ? axisOf(unitOf(metricOf.get(right[0].name) ?? ''), right) : null;
+  });
+  const sizeOf = (s: Drawn | undefined) => (s?.right ? rightAxis!.size : leftAxis.size);
   let previous = $derived(
     before && view.weekBefore
-      ? alongside(shown, laidOn(before, answer!, count, WEEK_MINUTES * MINUTE))
+      ? // Each axis's Other adds up only what that axis left out.
+        [false, true].flatMap((right) => {
+          const laid = laidOn(before, answer!, count, WEEK_MINUTES * MINUTE);
+          return alongside(
+            shown.filter((s) => !!s.right === right),
+            laid.filter((b) => onRight(b.name) === right),
+          );
+        })
       : null,
   );
   let marks = $derived(
@@ -257,42 +381,14 @@
           .filter((m) => m.i >= 0 && m.i < count && (m.end === undefined || m.end >= 0))
       : null,
   );
-  let unit = $derived(unitOf(view.metric ?? ''));
+  let unit = $derived(unitOf(view.metrics[0]));
+  let windowLabel = $derived(
+    FLOW_WINDOWS.find((w) => w.minutes === view.windowMinutes)?.label ?? `${view.windowMinutes}m`,
+  );
   let pointSeconds = $derived((answer?.pointMillis ?? 1000) / 1000);
-  let largest = $derived(
-    Math.max(
-      0,
-      ...(totals
-        ? Array.from({ length: count }, (_, i) => shown.reduce((a, s) => a + (s.points[i] ?? 0), 0))
-        : shown.flatMap((s) => s.points.map((v) => v ?? 0))),
-    ),
-  );
-  let scale = $derived(
-    unit === 'bytes' ? byteUnit(largest) : { unit: unit === 'seconds' ? 's' : unit, size: 1 },
-  );
   let barWord = $derived(
     answer?.pointMillis === MINUTE ? 'minute' : answer?.pointMillis === HOUR ? 'hour' : 'day',
   );
-  let axisUnit = $derived(
-    !answer?.counter
-      ? scale.unit
-      : totals
-        ? `${scale.unit || 'count'} per ${barWord}`
-        : `${scale.unit || 'count'}/s`,
-  );
-
-  /** `value` in the metric's own unit, plain. */
-  function amount(value: number): string {
-    if (unit === 'bytes') return bytes(value);
-    if (unit === 'seconds') return `${value.toFixed(value < 10 ? 2 : 0)} s`;
-    return value >= 100 || Number.isInteger(value)
-      ? Math.round(value).toLocaleString()
-      : value.toFixed(2);
-  }
-  const rate = (value: number) => `${amount(value)}/s`;
-  /** A point's value as drawn: a rate per second for a counter drawn per second. */
-  const drawn = (value: number) => (answer?.counter && !totals ? rate(value) : amount(value));
-
   const startOf = (i: number) => (answer?.fromMillis ?? 0) + i * (answer?.pointMillis ?? 0);
   const day = (t: number, o: Intl.DateTimeFormatOptions) =>
     new Date(t).toLocaleDateString('en-GB', o);
@@ -330,12 +426,14 @@
 
   /** Each series' row: a counter's total and its rate, or a gauge's latest, average and highest. */
   let rows = $derived(
-    all.map((s, rank) => {
+    all.map((s) => {
       const values = s.points.filter((v): v is number => v !== null);
       const total = totals ? s.total : s.total * pointSeconds;
       return {
         name: s.name,
-        tone: toneOf(rank < view.top || all.length <= view.top ? rank : null),
+        // A series folded into Other has no slot of its own, so it takes Other's tone.
+        tone: toneOf(shown.find((d) => d.name === s.name)?.slot ?? null),
+        u: unitOf(metricOf.get(s.name) ?? ''),
         total,
         average: answer?.counter ? total / Math.max(1, count * pointSeconds) : average(values),
         highest: values.length
@@ -349,156 +447,44 @@
     return values.length ? values.reduce((a, v) => a + v, 0) / values.length : 0;
   }
   const sort = new TableSort<'name' | 'total' | 'now' | 'average' | 'highest'>();
-  let sorted = $derived(
-    sort.apply(rows, {
+  let sorted = $derived.by(() => {
+    const all = sort.apply(rows, {
       name: (r) => r.name,
       total: (r) => r.total,
       now: (r) => r.now,
       average: (r) => r.average,
       highest: (r) => r.highest,
-    }),
-  );
+    });
+    // Each metric's rows are sorted among themselves: different metrics' units need not compare.
+    return charted.flatMap((m) => all.filter((r) => metricOf.get(r.name) === m));
+  });
   let sum = $derived(rows.reduce((a, r) => a + r.total, 0));
 </script>
 
-<SectionShell>
-  <PageHeader title="Metrics">
-    {#snippet help()}
-      Every counter and gauge the workers report, kept for 30 days. Pick one, filter it, and split
-      it by one label.
-    {/snippet}
-  </PageHeader>
-
-  <section class="panel" aria-label="Metric">
-    <div class="ask">
-      <div class="picker">
-        <button
-          type="button"
-          class="metric-btn"
-          aria-haspopup="listbox"
-          aria-expanded={picking}
-          onclick={() => (picking = !picking)}
-          ><span class="mono">{view.metric}</span><span class="caret" aria-hidden="true">▾</span
-          ></button
-        >
-        {#if picking}
-          <div class="pop">
-            <!-- svelte-ignore a11y_autofocus -->
-            <input class="search" placeholder="Search metrics" bind:value={search} autofocus />
-            <div role="listbox" aria-label="Metric">
-              {#each groups as [group, items] (group)}
-                <div class="pop-group">{group}</div>
-                {#each items as { m, what } (m.name)}
-                  <button
-                    type="button"
-                    role="option"
-                    aria-selected={m.name === view.metric}
-                    class="pop-item"
-                    onclick={() => choose(m)}
-                    ><span class="mono">{m.name}</span><span class="what">{what}</span></button
-                  >
-                {/each}
-              {/each}
-            </div>
-          </div>
-        {/if}
-      </div>
-
-      <div class="chips">
-        {#each view.filter as [label, value], i (label + value)}
-          <span class="chip"
-            ><span class="dim">{labelName(label).toLowerCase()}</span>
-            <span class="mono">{value}</span><button
-              type="button"
-              aria-label="Remove filter {labelName(label).toLowerCase()} {value}"
-              onclick={() => go({ filter: view.filter.filter((_, j) => j !== i) })}>×</button
-            ></span
-          >
-        {/each}
-        {#if adding && metric}
-          <span class="chip adding">
-            <select aria-label="Filter by" bind:value={addLabel}>
-              {#each labels as l (l)}<option value={l}>{labelName(l)}</option>{/each}
-            </select>
-            <select aria-label="Filter value" onchange={(e) => addFilter(e.currentTarget.value)}>
-              <option value="">Value</option>
-              {#each metric.labels[addLabel] ?? [] as v (v)}<option value={v}>{v}</option>{/each}
-            </select>
-          </span>
-        {:else if metric}
-          <button
-            type="button"
-            class="chip add"
-            onclick={() => {
-              adding = true;
-              addLabel = labels[0] ?? GROUP;
-            }}>+ Filter</button
-          >
-        {/if}
-      </div>
-
-      <label class="split"
-        ><span class="dim">Split by</span>
-        <select value={view.by} onchange={(e) => go({ by: e.currentTarget.value })}>
-          <option value="">None</option>
-          {#each labels as l (l)}<option value={l}>{labelName(l)}</option>{/each}
-        </select></label
-      >
-      {#if view.by && all.length > 1}
-        <label class="split"
-          ><span class="dim">Top</span>
-          <input
-            class="top"
-            type="number"
-            min="1"
-            step="1"
-            value={view.top}
-            onchange={(e) => {
-              const top = e.currentTarget.valueAsNumber;
-              if (Number.isInteger(top) && top > 0) go({ top });
-            }}
-          /></label
-        >
+{#snippet answered()}
+  {#if failed}
+    <p class="empty">{failed}</p>
+  {:else if metrics !== null && metrics.length === 0}
+    <p class="empty">No metrics recorded yet.</p>
+  {:else if answer === null}
+    <p class="empty">Loading…</p>
+  {:else if all.length === 0}
+    <p class="empty">Nothing recorded in this window yet.</p>
+  {:else}
+    <div class="over">
+      {#if shown.length > 1}
+        <ul class="legend">
+          {#each shown as s (`${s.right ? 'r' : ''}${s.slot ?? -1}`)}
+            <li>
+              <span class="swatch {toneOf(s.slot)}"></span><span class="mono">{s.name}</span
+              >{#if s.right}<span class="dim" title="Right-hand axis" aria-label="Right-hand axis"
+                  >→</span
+                >{/if}
+            </li>
+          {/each}
+        </ul>
       {/if}
-
-      <div class="controls">
-        {#if metric?.counter ?? true}
-          <Segmented
-            label="Draw"
-            options={[
-              { value: 'perSecond', label: 'Per second' },
-              { value: 'totals', label: 'Totals' },
-            ]}
-            bind:value={() => view.draw, (v) => go({ draw: v })}
-          />
-        {/if}
-        <Segmented
-          label="Chart window"
-          options={FLOW_WINDOWS.map((w) => ({ value: String(w.minutes), label: w.label }))}
-          bind:value={() => String(view.windowMinutes), (v) => go({ windowMinutes: Number(v) })}
-        />
-      </div>
-    </div>
-
-    {#if failed}
-      <p class="empty">{failed}</p>
-    {:else if metrics !== null && metrics.length === 0}
-      <p class="empty">No metrics recorded yet.</p>
-    {:else if answer === null}
-      <p class="empty">Loading…</p>
-    {:else if all.length === 0}
-      <p class="empty">Nothing recorded in this window yet.</p>
-    {:else}
-      <div class="over">
-        {#if shown.length > 1}
-          <ul class="legend">
-            {#each shown as s (s.slot ?? -1)}
-              <li>
-                <span class="swatch {toneOf(s.slot)}"></span><span class="mono">{s.name}</span>
-              </li>
-            {/each}
-          </ul>
-        {/if}
+      {#if !inline}
         <div class="switches">
           <label
             ><Toggle checked={view.marks} onchange={() => go({ marks: !view.marks })} /> Deploys and issues</label
@@ -510,79 +496,255 @@
             /> A week before</label
           >
         </div>
-      </div>
-      <MetricsChart
-        series={shown.map((s) => ({
-          ...s,
-          points: s.points.map((v) => (v === null ? null : v / scale.size)),
-        }))}
-        bars={totals}
-        {ticks}
-        unit={axisUnit}
-        {at}
-        format={(v) => drawn(v * scale.size)}
-        previous={previous?.map((p) => p.map((v) => (v === null ? null : v / scale.size))) ?? null}
-        {marks}
-        label="{view.metric}{view.by
-          ? `, by ${labelName(view.by).toLowerCase()}`
-          : ''}, over the chosen window"
-      />
+      {/if}
+    </div>
+    <MetricsChart
+      series={shown.map((s) => ({
+        ...s,
+        points: s.points.map((v) => (v === null ? null : v / sizeOf(s))),
+      }))}
+      right={rightAxis && { unit: rightAxis.label, format: rightAxis.format }}
+      bars={totals}
+      {ticks}
+      unit={leftAxis.label}
+      {at}
+      format={leftAxis.format}
+      previous={previous?.map((p, k) => p.map((v) => (v === null ? null : v / sizeOf(shown[k])))) ??
+        null}
+      {marks}
+      label="{view.metrics.join(', ')}{view.by
+        ? `, by ${labelName(view.by).toLowerCase()}`
+        : ''}, over the chosen window"
+    />
+  {/if}
+{/snippet}
 
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th aria-sort={sort.aria('name')}
-                ><SortButton {sort} key="name">{view.by ? labelName(view.by) : ''}</SortButton></th
-              >
-              {#if answer.counter}
-                <th class="num" aria-sort={sort.aria('total')}
-                  ><SortButton {sort} key="total">Total</SortButton></th
-                >
-              {:else}
-                <th class="num" aria-sort={sort.aria('now')}
-                  ><SortButton {sort} key="now">Now</SortButton></th
-                >
-              {/if}
-              <th class="num" aria-sort={sort.aria('average')}
-                ><SortButton {sort} key="average">Average</SortButton></th
-              >
-              <th class="num" aria-sort={sort.aria('highest')}
-                ><SortButton {sort} key="highest">Highest</SortButton></th
-              >
-            </tr>
-          </thead>
-          <tbody>
-            {#each sorted as r (r.name)}
-              <tr>
-                <td
-                  ><span class="swatch {r.tone}"></span>
-                  <span class="mono">{r.name || 'All'}</span></td
-                >
-                {#if answer.counter}
-                  <td class="num">{amount(r.total)}</td>
-                  <td class="num">{rate(r.average)}</td>
-                  <td class="num">{rate(r.highest)}</td>
-                {:else}
-                  <td class="num">{amount(r.now)}</td>
-                  <td class="num">{amount(r.average)}</td>
-                  <td class="num">{amount(r.highest)}</td>
-                {/if}
-              </tr>
-            {/each}
-          </tbody>
-          {#if answer.counter && rows.length > 1}
-            <tfoot
-              ><tr><td>Total</td><td class="num">{amount(sum)}</td><td></td><td></td></tr></tfoot
+{#if inline}
+  <figure class="inline" aria-label="Metric">
+    <figcaption>
+      <span class="mono">{view.metrics.join(', ')}</span>
+      {#each view.filter as [label, value] (label + value)}
+        <span class="chip"
+          ><span class="dim">{labelName(label).toLowerCase()}</span>
+          <span class="mono">{value}</span></span
+        >
+      {/each}
+      <span class="dim"
+        >{view.by ? `by ${labelName(view.by).toLowerCase()} · ` : ''}{windowLabel}{totals
+          ? ' · totals'
+          : ''}{view.weekBefore ? ' · dashed: a week before' : ''}</span
+      >
+    </figcaption>
+    {@render answered()}
+  </figure>
+{:else}
+  <SectionShell>
+    <PageHeader title="Metrics">
+      {#snippet help()}
+        Every counter and gauge the workers report, kept for 30 days. Pick one, filter it, and split
+        it by one label.
+      {/snippet}
+    </PageHeader>
+
+    <section class="panel" aria-label="Metric">
+      <div class="ask">
+        <div class="picker">
+          {#each view.metrics as m, k (k)}
+            <span class="pick"
+              ><button
+                type="button"
+                class="metric-btn"
+                aria-haspopup="listbox"
+                aria-expanded={picking && pickingFor === k}
+                onclick={() => pick(k)}
+                ><span class="mono">{m}</span><span class="caret" aria-hidden="true">▾</span
+                ></button
+              >{#if view.metrics.length > 1}<button
+                  type="button"
+                  class="drop"
+                  aria-label="Remove metric {m}"
+                  onclick={() => go({ metrics: view.metrics.filter((_, j) => j !== k) })}>×</button
+                >{/if}</span
+            >
+          {/each}
+          <button type="button" class="chip add" onclick={() => pick(view.metrics.length)}
+            >+ Metric</button
+          >
+          {#if picking}
+            <div class="pop">
+              <!-- svelte-ignore a11y_autofocus -->
+              <input class="search" placeholder="Search metrics" bind:value={search} autofocus />
+              <div role="listbox" aria-label="Metric">
+                {#each groups as [group, items] (group)}
+                  <div class="pop-group">{group}</div>
+                  {#each items as { m, what } (m.name)}
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={m.name === view.metrics[pickingFor]}
+                      class="pop-item"
+                      onclick={() => choose(m)}
+                      ><span class="mono">{m.name}</span><span class="what">{what}</span></button
+                    >
+                  {/each}
+                {/each}
+              </div>
+            </div>
+          {/if}
+        </div>
+
+        <div class="chips">
+          {#each view.filter as [label, value], i (label + value)}
+            <span class="chip"
+              ><span class="dim">{labelName(label).toLowerCase()}</span>
+              <span class="mono">{value}</span><button
+                type="button"
+                aria-label="Remove filter {labelName(label).toLowerCase()} {value}"
+                onclick={() => go({ filter: view.filter.filter((_, j) => j !== i) })}>×</button
+              ></span
+            >
+          {/each}
+          {#if adding && metric}
+            <span class="chip adding">
+              <select aria-label="Filter by" bind:value={addLabel}>
+                {#each labels as l (l)}<option value={l}>{labelName(l)}</option>{/each}
+              </select>
+              <select aria-label="Filter value" onchange={(e) => addFilter(e.currentTarget.value)}>
+                <option value="">Value</option>
+                {#each metric.labels[addLabel] ?? [] as v (v)}<option value={v}>{v}</option>{/each}
+              </select>
+            </span>
+          {:else if metric}
+            <button
+              type="button"
+              class="chip add"
+              onclick={() => {
+                adding = true;
+                addLabel = labels[0] ?? GROUP;
+              }}>+ Filter</button
             >
           {/if}
-        </table>
+        </div>
+
+        <label class="split"
+          ><span class="dim">Split by</span>
+          <select value={view.by} onchange={(e) => go({ by: e.currentTarget.value })}>
+            <option value="">None</option>
+            {#each labels as l (l)}<option value={l}>{labelName(l)}</option>{/each}
+          </select></label
+        >
+        {#if view.by && all.length > 1}
+          <label class="split"
+            ><span class="dim">Top</span>
+            <input
+              class="top"
+              type="number"
+              min="1"
+              step="1"
+              value={view.top}
+              onchange={(e) => {
+                const top = e.currentTarget.valueAsNumber;
+                if (Number.isInteger(top) && top > 0) go({ top });
+              }}
+            /></label
+          >
+        {/if}
+
+        <div class="controls">
+          {#if (metric?.counter ?? true) && view.metrics.length === 1}
+            <Segmented
+              label="Draw"
+              options={[
+                { value: 'perSecond', label: 'Per second' },
+                { value: 'totals', label: 'Totals' },
+              ]}
+              bind:value={() => view.draw, (v) => go({ draw: v })}
+            />
+          {/if}
+          <Segmented
+            label="Chart window"
+            options={FLOW_WINDOWS.map((w) => ({ value: String(w.minutes), label: w.label }))}
+            bind:value={() => String(view.windowMinutes), (v) => go({ windowMinutes: Number(v) })}
+          />
+        </div>
       </div>
-    {/if}
-  </section>
-</SectionShell>
+
+      {@render answered()}
+      {#if answer !== null && all.length > 0}
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th aria-sort={sort.aria('name')}
+                  ><SortButton {sort} key="name">{view.by ? labelName(view.by) : ''}</SortButton
+                  ></th
+                >
+                {#if answer.counter}
+                  <th class="num" aria-sort={sort.aria('total')}
+                    ><SortButton {sort} key="total">Total</SortButton></th
+                  >
+                {:else}
+                  <th class="num" aria-sort={sort.aria('now')}
+                    ><SortButton {sort} key="now">Now</SortButton></th
+                  >
+                {/if}
+                <th class="num" aria-sort={sort.aria('average')}
+                  ><SortButton {sort} key="average">Average</SortButton></th
+                >
+                <th class="num" aria-sort={sort.aria('highest')}
+                  ><SortButton {sort} key="highest">Highest</SortButton></th
+                >
+              </tr>
+            </thead>
+            <tbody>
+              {#each sorted as r (r.name)}
+                <tr>
+                  <td
+                    ><span class="swatch {r.tone}"></span>
+                    <span class="mono">{r.name || 'All'}</span></td
+                  >
+                  {#if answer.counter}
+                    <td class="num">{amountIn(r.u, r.total)}</td>
+                    <td class="num">{amountIn(r.u, r.average)}/s</td>
+                    <td class="num">{amountIn(r.u, r.highest)}/s</td>
+                  {:else}
+                    <td class="num">{amountIn(r.u, r.now)}</td>
+                    <td class="num">{amountIn(r.u, r.average)}</td>
+                    <td class="num">{amountIn(r.u, r.highest)}</td>
+                  {/if}
+                </tr>
+              {/each}
+            </tbody>
+            {#if answer.counter && rows.length > 1 && charted.length === 1}
+              <tfoot
+                ><tr><td>Total</td><td class="num">{amountIn(unit, sum)}</td><td></td><td></td></tr
+                ></tfoot
+              >
+            {/if}
+          </table>
+        </div>
+      {/if}
+    </section>
+  </SectionShell>
+{/if}
 
 <style>
+  .inline {
+    margin: 0.4em 0;
+    padding: 0.6rem 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    background: var(--panel);
+  }
+  .inline figcaption {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.3rem 0.6rem;
+    margin-bottom: 0.5rem;
+    font-size: var(--text-note);
+  }
+
   .panel {
     border: 1px solid var(--border);
     border-radius: var(--radius-card);
@@ -607,6 +769,23 @@
 
   .picker {
     position: relative;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    align-items: center;
+  }
+
+  .pick {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .drop {
+    border: 0;
+    background: none;
+    color: var(--dim);
+    cursor: pointer;
+    font-size: 1rem;
   }
 
   .metric-btn {
