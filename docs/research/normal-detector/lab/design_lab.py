@@ -26,7 +26,7 @@ from normal_lab import DAYS, NB, S, STEP_MIN
 from run_all import DAY, MODELED, NAB, modeled, nab_series
 
 TAIL = 0.0005
-REFRESH = 12  # buckets between band refreshes: hourly
+REFRESH = 60 // STEP_MIN  # buckets between band refreshes: hourly
 
 
 class Design:
