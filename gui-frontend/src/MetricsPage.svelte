@@ -111,7 +111,10 @@
       : v;
 
   /** The metrics' answers as one: beside another, each series is named for its metric, and its split value after it. */
-  function together(answers: SeriesAnswerDto[], by: string): SeriesAnswerDto {
+  function together(
+    answers: SeriesAnswerDto[],
+    by: string,
+  ): [SeriesAnswerDto, Map<string, string>] {
     const of = new Map<string, string>();
     const series = answers.flatMap((a) =>
       a.series.map((s) => {
@@ -121,8 +124,7 @@
         return { ...s, name };
       }),
     );
-    metricOf = of;
-    return { ...answers[0], series };
+    return [{ ...answers[0], series }, of];
   }
 
   async function read(asked: MetricsView) {
@@ -145,8 +147,10 @@
       ]);
       // A slow answer to an older question must not land over the newer one's.
       if (asked === view) {
-        answer = got;
-        before = then;
+        answer = got[0];
+        // A series only last week has a metric too; this week's names win.
+        metricOf = new Map([...(then?.[1] ?? []), ...got[1]]);
+        before = then?.[0] ?? null;
         happened = marks;
         fetchedAt = Date.now();
         failed = null;
