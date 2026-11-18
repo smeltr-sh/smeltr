@@ -71,7 +71,7 @@ pub(super) fn check_store_name<A: AccessDto>(store: &A::Store, what: &str, error
     } else if !fits(name) {
         errors.at(noun).push(format!(
             "{what} has the {noun} {name:?}, which is not a valid {noun} name; name the {noun} alone, with no {scheme} \
-             or path, and check it against the cloud's naming rules"
+             or path"
         ));
     }
 }
