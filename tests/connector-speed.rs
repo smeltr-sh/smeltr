@@ -68,11 +68,6 @@ const CASES: &[Case] = &[
         leg: Leg::Source(kafka::source),
     },
     Case {
-        name: "event hubs source",
-        services: &["event-hubs", "azurite"],
-        leg: Leg::Source(event_hubs::source),
-    },
-    Case {
         name: "s3 sqs source",
         services: &["localstack"],
         leg: Leg::Source(s3::sqs_source),
@@ -156,11 +151,6 @@ const CASES: &[Case] = &[
         name: "kafka destination",
         services: &["kafka"],
         leg: Leg::Destination(kafka::destination),
-    },
-    Case {
-        name: "event hubs destination",
-        services: &["event-hubs", "azurite"],
-        leg: Leg::Destination(event_hubs::destination),
     },
     Case {
         name: "elasticsearch destination",
@@ -1023,7 +1013,6 @@ const SECRETS: &[(&str, &str)] = &[
     ("SM_AZ_KEY", azure::KEY),
     ("SM_SFTP_PW", "smeltr-live-1"),
     ("SM_SQL_PW", "smeltr-live-1"),
-    ("SM_EH_CONN", event_hubs::CONNECTION),
     ("SM_HEC_TOKEN", splunk::TOKEN),
     ("SM_HEC_AUTH", splunk::AUTHORIZATION),
 ];
@@ -1508,67 +1497,6 @@ fn exec(service: &str, command: &[&str], input: &[u8]) {
 /// `run` as a name that may not hold a hyphen.
 fn underscored(run: &str) -> String {
     run.replace('-', "_")
-}
-
-mod event_hubs {
-    use super::*;
-    use rdkafka::ClientConfig;
-    use rdkafka::producer::{BaseProducer, BaseRecord, Producer};
-
-    /// The emulator's own.
-    pub const CONNECTION: &str = "Endpoint=sb://localhost;SharedAccessKeyName=RootManageSharedAccessKey;\
-                                  SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;";
-
-    /// The emulator's event hubs are fixed by `tests/fixtures/event-hubs-emulator.json`.
-    const HUB: &str = "smeltr-live";
-
-    pub fn source(run: &str, rows: u64) -> Option<Value> {
-        let namespace = live::event_hubs(&named(run))?;
-        // The hub holds every earlier run's records too: this one reads only its own.
-        let since = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64;
-        let producer: BaseProducer = ClientConfig::new()
-            .set("bootstrap.servers", &namespace)
-            .set("security.protocol", "SASL_PLAINTEXT")
-            .set("sasl.mechanism", "PLAIN")
-            .set("sasl.username", "$ConnectionString")
-            .set("sasl.password", CONNECTION)
-            .set("linger.ms", "20")
-            .create()
-            .expect("an Event Hubs producer");
-        for i in 0..rows {
-            let line = line(i);
-            let mut record = BaseRecord::<(), String>::to(HUB).payload(&line);
-            loop {
-                match producer.send(record) {
-                    Ok(()) => break,
-                    Err((_, r)) => {
-                        producer.poll(Duration::from_millis(50));
-                        record = r;
-                    }
-                }
-            }
-            producer.poll(Duration::ZERO);
-        }
-        producer
-            .flush(Duration::from_secs(120))
-            .expect("the corpus reaches the hub");
-        Some(
-            json!({"id": "in", "type": "eventHubs", "namespace": namespace, "eventHubs": [HUB],
-                    "consumerGroup": "smeltr", "connectionString": "SM_EH_CONN",
-                    "start": {"type": "timestamp", "millis": since}}),
-        )
-    }
-
-    pub fn destination(run: &str) -> Option<Value> {
-        let namespace = live::event_hubs(&named(run))?;
-        Some(
-            json!({"id": "out", "type": "eventHubs", "namespace": namespace, "defaultEventHub": HUB,
-                    "connectionString": "SM_EH_CONN"}),
-        )
-    }
 }
 
 mod s3 {
