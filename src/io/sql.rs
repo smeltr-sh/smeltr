@@ -176,18 +176,26 @@ pub struct Poll<'a> {
     /// The columns of the result that order it: the incrementing or updated at column, then the columns that tell
     /// apart rows with the same value in it. Empty for a mode with no position, or a Run before one is chosen.
     pub position: &'a [String],
-    /// Whether a row was sent, so the poll reads past the last one. Without one it reads from [`Bind::Start`] when
-    /// `start` is set, else from the beginning.
-    pub after: bool,
-    /// Whether, before any row was sent, the poll reads the position's first column at or past the value the source
-    /// starts from. At, so a row sharing it is read: a duplicate, never a loss.
-    pub start: bool,
+    /// Where in the position the poll reads from.
+    pub from: ReadFrom,
     /// How long to wait for late commits. Only for a position whose first column is a time.
     pub settle_secs: Option<u32>,
     /// The most rows the poll returns.
     pub batch: u32,
     /// The record's fields, each with its declared type: a `:last.<column>` takes its field's type.
     pub fields: &'a [(String, DataType)],
+}
+
+/// Where in [`Poll::position`] a poll reads from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadFrom {
+    /// Every row the query returns.
+    Beginning,
+    /// Rows whose first position column is at or past [`Bind::Start`], while no row has been sent. At, so a row
+    /// sharing it is read: a duplicate, never a loss.
+    Start,
+    /// Rows past the last one sent.
+    LastRow,
 }
 
 /// What fills one placeholder of a [`Statement`].
@@ -234,11 +242,13 @@ pub fn statement(query: &Query, poll: &Poll<'_>) -> Statement {
 
     let mut conditions = Vec::new();
     if !poll.position.is_empty() {
-        if poll.after {
-            conditions.push(past_position(dialect, poll.position, &column, &mut binds));
-        } else if poll.start {
-            let first = column(&poll.position[0]);
-            conditions.push(format!("{first} >= {}", binds.bind(Bind::Start)));
+        match poll.from {
+            ReadFrom::Beginning => {}
+            ReadFrom::Start => {
+                let first = column(&poll.position[0]);
+                conditions.push(format!("{first} >= {}", binds.bind(Bind::Start)));
+            }
+            ReadFrom::LastRow => conditions.push(past_position(dialect, poll.position, &column, &mut binds)),
         }
         if let Some(secs) = poll.settle_secs {
             conditions.push(settled(dialect, &column(&poll.position[0]), secs));
@@ -694,11 +704,10 @@ mod tests {
         columns.iter().map(|c| c.to_string()).collect()
     }
 
-    fn poll(position: &[String], after: bool, settle_secs: Option<u32>) -> Poll<'_> {
+    fn poll(position: &[String], from: ReadFrom, settle_secs: Option<u32>) -> Poll<'_> {
         Poll {
             position,
-            after,
-            start: false,
+            from,
             settle_secs,
             batch: 5000,
             fields: &[],
@@ -714,8 +723,7 @@ mod tests {
         let none = position(&[]);
         let run = Poll {
             position: &none,
-            after: false,
-            start: false,
+            from: ReadFrom::Beginning,
             settle_secs: None,
             batch: 20,
             fields: &[],
@@ -738,7 +746,7 @@ mod tests {
     #[test]
     fn the_first_poll_from_the_beginning_orders_and_waits_but_tests_no_position() {
         let p = position(&["occurred_at", "event_id"]);
-        let s = sql(Dialect::Postgres, EVENTS, &poll(&p, false, Some(30)));
+        let s = sql(Dialect::Postgres, EVENTS, &poll(&p, ReadFrom::Beginning, Some(30)));
         assert_eq!(
             s.sql,
             format!(
@@ -752,8 +760,7 @@ mod tests {
     #[test]
     fn the_first_poll_from_a_start_reads_the_first_column_at_or_past_it() {
         let p = position(&["occurred_at", "event_id"]);
-        let mut from = poll(&p, false, Some(30));
-        from.start = true;
+        let mut from = poll(&p, ReadFrom::Start, Some(30));
         let s = sql(Dialect::Postgres, EVENTS, &from);
         assert_eq!(
             s.sql,
@@ -767,7 +774,7 @@ mod tests {
         let s = sql(Dialect::SqlServer, EVENTS, &from);
         assert!(s.sql.contains("WHERE q.[occurred_at] >= @P1\n"), "{}", s.sql);
         // Once a row is sent, the poll reads past it, wherever the source started.
-        from.after = true;
+        from.from = ReadFrom::LastRow;
         assert_eq!(
             sql(Dialect::Postgres, EVENTS, &from).binds,
             [Bind::Position(0), Bind::Position(1)]
@@ -798,7 +805,7 @@ mod tests {
     #[test]
     fn postgres_compares_the_position_as_a_row() {
         let p = position(&["occurred_at", "event_id"]);
-        let s = sql(Dialect::Postgres, EVENTS, &poll(&p, true, Some(30)));
+        let s = sql(Dialect::Postgres, EVENTS, &poll(&p, ReadFrom::LastRow, Some(30)));
         assert_eq!(
             s.sql,
             format!(
@@ -813,7 +820,7 @@ mod tests {
     #[test]
     fn sql_server_spells_the_position_out_and_numbers_each_value_once() {
         let p = position(&["occurred_at", "event_id"]);
-        let s = sql(Dialect::SqlServer, EVENTS, &poll(&p, true, Some(30)));
+        let s = sql(Dialect::SqlServer, EVENTS, &poll(&p, ReadFrom::LastRow, Some(30)));
         assert_eq!(
             s.sql,
             format!(
@@ -829,7 +836,7 @@ mod tests {
     #[test]
     fn mysql_binds_a_value_once_for_each_place_it_stands() {
         let p = position(&["recorded_at", "device_id", "metric"]);
-        let s = sql(Dialect::MySql, EVENTS, &poll(&p, true, None));
+        let s = sql(Dialect::MySql, EVENTS, &poll(&p, ReadFrom::LastRow, None));
         assert_eq!(
             s.sql,
             format!(
@@ -854,17 +861,17 @@ mod tests {
     fn a_unique_position_is_one_comparison() {
         let p = position(&["audit_id"]);
         assert!(
-            sql(Dialect::Postgres, EVENTS, &poll(&p, true, None))
+            sql(Dialect::Postgres, EVENTS, &poll(&p, ReadFrom::LastRow, None))
                 .sql
                 .contains("WHERE q.\"audit_id\" > $1\n")
         );
         assert!(
-            sql(Dialect::SqlServer, EVENTS, &poll(&p, true, None))
+            sql(Dialect::SqlServer, EVENTS, &poll(&p, ReadFrom::LastRow, None))
                 .sql
                 .contains("WHERE q.[audit_id] > @P1\n")
         );
         assert!(
-            sql(Dialect::MySql, EVENTS, &poll(&p, true, None))
+            sql(Dialect::MySql, EVENTS, &poll(&p, ReadFrom::LastRow, None))
                 .sql
                 .contains("WHERE q.`audit_id` > ?\n")
         );
@@ -882,7 +889,7 @@ mod tests {
         let query = "SELECT date_trunc('hour', occurred_at) AS hour, count(*) AS n FROM auth.events\n\
                      WHERE occurred_at >= :last.hour + interval '1 hour' AND batch > :last.batch GROUP BY 1";
         let p = position(&["hour"]);
-        let s = sql(Dialect::Postgres, query, &poll(&p, true, Some(3600)));
+        let s = sql(Dialect::Postgres, query, &poll(&p, ReadFrom::LastRow, Some(3600)));
         assert_eq!(
             s.sql,
             "SELECT * FROM (\nSELECT date_trunc('hour', occurred_at) AS hour, count(*) AS n FROM auth.events\n\
@@ -900,7 +907,7 @@ mod tests {
     fn last_used_twice_is_bound_once_where_placeholders_are_numbered() {
         let query = "SELECT * FROM t WHERE (:last.x IS NULL OR x > :last.x)";
         let none = position(&[]);
-        let run = poll(&none, false, None);
+        let run = poll(&none, ReadFrom::Beginning, None);
         assert_eq!(sql(Dialect::Postgres, query, &run).binds, [Bind::Last("x".into())]);
         assert!(
             sql(Dialect::Postgres, query, &run)
@@ -925,7 +932,7 @@ mod tests {
         ];
         let run = Poll {
             fields: &fields,
-            ..poll(&none, false, None)
+            ..poll(&none, ReadFrom::Beginning, None)
         };
         assert!(
             sql(Dialect::Postgres, query, &run)
@@ -981,7 +988,7 @@ mod tests {
 
     #[test]
     fn a_final_semicolon_and_what_follows_it_are_dropped() {
-        let s = sql(Dialect::Postgres, "SELECT 1 ; -- done\n", &poll(&[], false, None));
+        let s = sql(Dialect::Postgres, "SELECT 1 ; -- done\n", &poll(&[], ReadFrom::Beginning, None));
         assert_eq!(s.sql, "SELECT * FROM (\nSELECT 1\n) AS q\nLIMIT 5000");
         assert_eq!(
             Query::parse("SELECT 1; DELETE FROM t", Dialect::Postgres),
@@ -992,7 +999,7 @@ mod tests {
 
     #[test]
     fn a_comment_ending_the_query_cannot_swallow_the_statement() {
-        let s = sql(Dialect::Postgres, "SELECT 1 -- trailing", &poll(&[], false, None));
+        let s = sql(Dialect::Postgres, "SELECT 1 -- trailing", &poll(&[], ReadFrom::Beginning, None));
         assert_eq!(s.sql, "SELECT * FROM (\nSELECT 1 -- trailing\n) AS q\nLIMIT 5000");
     }
 
@@ -1210,7 +1217,7 @@ mod tests {
         let s = sql(
             Dialect::Postgres,
             "SELECT 'café' AS name, größe FROM t",
-            &poll(&[], false, None),
+            &poll(&[], ReadFrom::Beginning, None),
         );
         assert_eq!(
             s.sql,

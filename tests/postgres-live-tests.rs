@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use smeltr::core::column::DataType;
 use smeltr::io::postgres::{PostgresConnection, PostgresDriver};
-use smeltr::io::sql::{Dialect, Poll, Query, Statement};
+use smeltr::io::sql::{Dialect, Poll, Query, ReadFrom, Statement};
 use smeltr::io::sql_source::Encrypted;
 use smeltr::io::sql_source::{Driver, Mode, Position, SqlSource, SqlSourceConfig, Start, Verdict};
 use smeltr::io::trust::Side;
@@ -490,8 +490,7 @@ fn plain_statement(query: &str) -> Statement {
         &Query::parse(query, Dialect::Postgres).expect("a query"),
         &Poll {
             position: &[],
-            after: false,
-            start: false,
+            from: ReadFrom::Beginning,
             settle_secs: None,
             batch: 1000,
             fields: &[],
