@@ -74,8 +74,9 @@
     <code>reader-N</code> for a source, <code>transform-N</code> for a pipeline thread,
     <code>egress-N</code> for a destination, <code>deploy</code> for the deployment as a whole, and
     <code>capture</code> for a sample capture. The <code>source</code>, <code>destination</code>,
-    <code>route</code>, <code>pipeline</code> and <code>function</code> labels hold the names they have
-    in the deployment.
+    <code>pipeline</code> and <code>function</code> labels hold the names they have in the
+    deployment. A route's metrics carry its id in <code>route</code> and its name in
+    <code>route_name</code>.
   </p>
   <div class="table-scroll">
     <table class="metrics">
