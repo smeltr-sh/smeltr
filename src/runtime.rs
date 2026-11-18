@@ -1788,6 +1788,7 @@ impl Transform {
             tracing::trace!(
                 name: "route_ran", target: "pipelines",
                 route = %self.topology.routes[route_idx].id,
+                route_name = %self.topology.routes[route_idx].name,
                 rows = docs.rows.len(),
                 dropped,
                 no_rule,
@@ -3228,7 +3229,7 @@ fn run_and_serialize(
     }
     let tag_slot = plan.tag_slot();
     let at = RaisedIn {
-        route: Some(&route.id),
+        route: Some((&route.id, &route.name)),
         pipeline: &plan.name,
     };
     batch.put(tag_slot, tag_column(&marked, at, rows, pool), pool);
@@ -3575,7 +3576,10 @@ fn copy_for_captures(
                 let doc_id = r.doc_id_for(tap.dest).map(str::to_string);
                 let placement = tap.placement.and_then(|p| r.placements[p as usize].clone());
                 let mut sent = finished.row(batch, row, object);
-                crate::worker::capture::place(&mut sent, [placement, doc_id, Some(route.id.clone())]);
+                crate::worker::capture::place(
+                    &mut sent,
+                    [placement, doc_id, Some(route.id.clone()), Some(route.name.clone())],
+                );
                 bytes += sent.1.size();
                 copied.push(sent);
             }
@@ -4328,6 +4332,7 @@ mod tests {
             doc(&rows[1]),
             serde_json::json!({"name": "b", "smeltr": {"exception": {
                 "route": "all",
+                "routeName": "orders → next (1)",
                 "pipeline": "next",
                 "exceptions": [{"kind": "UnparsableField", "message": "id is \"forty\", which could not parse as i64"}],
             }}}),

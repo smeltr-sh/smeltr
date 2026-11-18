@@ -2204,7 +2204,7 @@ fn a_route_preview_reports_each_routes_exceptions_and_answer() {
     assert_eq!(doc.destinations, vec![audit]);
     assert_eq!(
         doc.document,
-        r#"{"smeltr":{"exception":{"route":"catch-all","pipeline":"audit everything","exceptions":[{"step":"parse","kind":"UnparsableField","message":"_raw.total is \"many\", which could not parse as i64 in total"}]}},"_raw":"{\"total\":\"many\"}"}"#,
+        r#"{"smeltr":{"exception":{"route":"catch-all","routeName":"orders → audit everything","pipeline":"audit everything","exceptions":[{"step":"parse","kind":"UnparsableField","message":"_raw.total is \"many\", which could not parse as i64 in total"}]}},"_raw":"{\"total\":\"many\"}"}"#,
         "the record, saying where it failed"
     );
 }

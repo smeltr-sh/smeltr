@@ -1848,6 +1848,7 @@ fn a_delivered_row_reaches_its_target_and_not_the_deliver_rules() {
                     row["smeltr"]["exception"],
                     serde_json::json!({
                         "route": "r",
+                        "routeName": "r",
                         "pipeline": "pipeline-0",
                         "exceptions": [{
                             "step": "ratio",

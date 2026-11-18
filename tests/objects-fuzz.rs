@@ -808,7 +808,7 @@ fn avro_rows(body: &[u8]) -> Result<Vec<Vec<u8>>, String> {
 }
 
 /// The leaves of `PARQUET_PIPELINE`'s record, as a CSV file's header names them.
-const CSV_HEADER: &str = "_raw,msg,n,smeltr.exception.route,smeltr.exception.pipeline,smeltr.exception.exceptions,rest";
+const CSV_HEADER: &str = "_raw,msg,n,smeltr.exception.route,smeltr.exception.routeName,smeltr.exception.pipeline,smeltr.exception.exceptions,rest";
 
 /// A CSV file's rows after its header, each split by smeltr's own CSV reader (`csv_scan`) and printed as Avro's are
 /// (`avro_rows`) but every cell quoted: `name: "value", ` for a cell, `name: null, ` for an empty one.
