@@ -926,8 +926,7 @@ mod tests {
             &query,
             &super::super::sql::Poll {
                 position: &position,
-                after: true,
-                start: false,
+                from: super::super::sql::ReadFrom::LastRow,
                 settle_secs: None,
                 batch: 500,
                 fields: &[],

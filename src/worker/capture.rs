@@ -1562,7 +1562,7 @@ fn run_sql_capture_on<D: crate::io::sql_source::Driver + 'static>(
     query: crate::io::sql::Query,
     place: String,
 ) {
-    use crate::io::sql::Poll;
+    use crate::io::sql::{Poll, ReadFrom};
     use crate::io::sql_source::{Mode, SqlSource, SqlSourceConfig};
     let invitation = &cold.admitted.invitation;
     let dto = &cold.config;
@@ -1582,8 +1582,7 @@ fn run_sql_capture_on<D: crate::io::sql_source::Driver + 'static>(
         &query,
         &Poll {
             position: &[],
-            after: false,
-            start: false,
+            from: ReadFrom::Beginning,
             settle_secs: None,
             batch: wanted,
             fields: &typed,
