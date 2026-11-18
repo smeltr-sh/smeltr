@@ -988,7 +988,11 @@ mod tests {
 
     #[test]
     fn a_final_semicolon_and_what_follows_it_are_dropped() {
-        let s = sql(Dialect::Postgres, "SELECT 1 ; -- done\n", &poll(&[], ReadFrom::Beginning, None));
+        let s = sql(
+            Dialect::Postgres,
+            "SELECT 1 ; -- done\n",
+            &poll(&[], ReadFrom::Beginning, None),
+        );
         assert_eq!(s.sql, "SELECT * FROM (\nSELECT 1\n) AS q\nLIMIT 5000");
         assert_eq!(
             Query::parse("SELECT 1; DELETE FROM t", Dialect::Postgres),
@@ -999,7 +1003,11 @@ mod tests {
 
     #[test]
     fn a_comment_ending_the_query_cannot_swallow_the_statement() {
-        let s = sql(Dialect::Postgres, "SELECT 1 -- trailing", &poll(&[], ReadFrom::Beginning, None));
+        let s = sql(
+            Dialect::Postgres,
+            "SELECT 1 -- trailing",
+            &poll(&[], ReadFrom::Beginning, None),
+        );
         assert_eq!(s.sql, "SELECT * FROM (\nSELECT 1 -- trailing\n) AS q\nLIMIT 5000");
     }
 
