@@ -373,10 +373,13 @@ Sensitive and Balanced wait longer; Quiet waits longest and warns on the fewest.
 Each is a point the detector was measured at
 (`docs/research/normal-detector/paper.md`), so an editor picks one of four
 measured trade-offs, never a value in between. A stop reads below every range,
-so the wait alone sets how soon one is seen. A source is at Balanced until an
+so the wait alone sets how soon one is seen. Off is a fifth pick, and it never
+warns: the source is judged as at Balanced, so its range is still drawn and what
+it reads is still learned. A source is at Balanced until an
 editor in its worker group picks another on its History tab on the Map, and the
 leader keeps the pick with who made it. A pick applies from the next reading, to
-everything already learned. The gap is the same at every preset.
+everything already learned. The gap is the same at every preset, and at Off it
+too never warns.
 
 What a below-normal warning read, and the time a stop held, are not learned, so
 an outage does not widen the normal. Nor is a window learned until its width,
