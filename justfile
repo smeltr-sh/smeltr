@@ -284,7 +284,7 @@ cut-release release force="": (has-notes release) (record-release if release =~ 
     git add tests/fixtures/releases
     git commit -m "Release {{release}}"
     git tag -a "v{{release}}" -m "Release {{release}}"
-    @echo "Nothing is pushed yet. Start the release workflow with: git push --atomic origin $(git branch --show-current) v{{release}}"
+    @echo Nothing is pushed yet. Start the release workflow with: git push --atomic origin {{ `git branch --show-current` }} v{{release}}
 
 # A release candidate: the latest commit of main or a release branch, tagged `v<candidate>`, with nothing recorded
 # or committed, and the tag pushed. Its build is started by hand on GitHub, on that tag: a draft pre-release with its
@@ -292,7 +292,7 @@ cut-release release force="": (has-notes release) (record-release if release =~ 
 [doc("Tag a release candidate and push the tag.")]
 cut-rc candidate: clean-release-branch
     {{ if candidate =~ '^[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$' { "" } else { error('a release candidate is named major.minor.patch-rcN, like 1.0.0-rc1') } }}
-    git merge-base --is-ancestor HEAD "origin/$(git branch --show-current)"
+    git merge-base --is-ancestor HEAD origin/{{ `git branch --show-current` }}
     git tag -a "v{{candidate}}" -m "Release candidate {{candidate}}"
     git push origin "v{{candidate}}"
     @echo Start its build at https://github.com/smeltr-sh/smeltr/actions/workflows/release.yml: choose Run workflow, then the tag v{{candidate}}
