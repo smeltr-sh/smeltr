@@ -146,25 +146,16 @@ pub fn pipelines_touched(before: &FileConfig, after: &FileConfig) -> Impact {
     pipelines.retain(|id, _| after.pipelines.iter().any(|p| &p.id == id));
     routes.retain(|id, _| after.routes.iter().any(|r| &r.id == id));
 
-    let pipeline_names: BTreeMap<String, String> = (before.pipelines.iter())
-        .chain(&after.pipelines)
-        .map(|p| (p.id.clone(), p.name.clone()))
-        .collect();
-    let ends: Vec<_> = after.routes.iter().map(|r| (&r.source, &r.pipeline)).collect();
-    let route_names = (after.routes.iter().enumerate())
-        .map(|(at, r)| {
-            let pipeline = pipeline_names
-                .get(&r.pipeline)
-                .filter(|n| !n.is_empty())
-                .unwrap_or(&r.pipeline);
-            (r.id.clone(), super::route_name(&ends, at, &r.source, pipeline))
-        })
-        .collect();
     Impact {
         pipelines: into_reached(pipelines),
         routes: into_reached(routes),
-        pipeline_names,
-        route_names,
+        pipeline_names: before
+            .pipelines
+            .iter()
+            .chain(&after.pipelines)
+            .map(|p| (p.id.clone(), p.name.clone()))
+            .collect(),
+        route_names: after.route_names(),
     }
 }
 
