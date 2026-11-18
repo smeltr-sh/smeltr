@@ -49,6 +49,8 @@ use super::dto::*;
 
 pub(super) mod destination;
 pub(super) mod source;
+mod stores;
+use stores::*;
 
 /// Structural resolution only: every reference resolves, every id is unique, every bound holds. Expression text
 /// passes through verbatim and is never compiled here, so a pipeline whose expressions don't compile still loads —
@@ -1221,27 +1223,6 @@ fn check_visibility(visibility: VisibilitySecs, max: u64, what: &str, errors: &m
     }
 }
 
-/// Refuses a name S3 would not give a bucket: 3 to 63 lowercase letters, digits, dots and hyphens, starting and
-/// ending with a letter or digit. The usual mistake it catches is a URL or an `s3://` path in place of the name.
-fn check_bucket_name(bucket: &str, what: &str, errors: &mut ItemErrors<'_>) {
-    let edge = |c: Option<char>| c.is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
-    let plausible = (3..=63).contains(&bucket.len())
-        && bucket
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-')
-        && edge(bucket.chars().next())
-        && edge(bucket.chars().last());
-    if bucket.trim().is_empty() {
-        errors.at("bucket").push(format!("{what} names no bucket"));
-    } else if !plausible {
-        errors.at("bucket").push(format!(
-            "{what} has the bucket {bucket:?}, which is not a bucket's name. A name is 3 to 63 lowercase letters, \
-             digits, dots and hyphens, starting and ending with a letter or digit; name the bucket alone, with no \
-             s3:// or path"
-        ));
-    }
-}
-
 /// Refuses a listing source's poll and after-commit settings that would stall it or read an object twice.
 fn check_listing(listing: &ListingDto, what: &str, errors: &mut ItemErrors<'_>) {
     let ListingDto {
@@ -1377,27 +1358,6 @@ fn check_endpoint(endpoint: Option<&str>, field: &'static str, what: &str, error
     }
 }
 
-/// Refuses an Azure access block that cannot sign a request as written. `what` names the connector.
-fn check_azure_access(a: &AzureAccessDto, what: &str, errors: &mut ItemErrors<'_>) {
-    let blank = |v: &str| v.trim().is_empty();
-    if blank(&a.account) {
-        errors.at("account").push(format!("{what} names no account"));
-    }
-    let others: Vec<&'static str> = [
-        (a.access_key.is_some(), "accessKey"),
-        (a.sas_token.is_some(), "sasToken"),
-    ]
-    .into_iter()
-    .filter_map(|(named, field)| named.then_some(field))
-    .collect();
-    check_entra_sign_in(&a.entra(), &others, &["accessKey", "sasToken"], what, errors);
-    if a.endpoint.as_deref().is_some_and(blank) {
-        errors
-            .at("endpoint")
-            .push(format!("{what} has an empty endpoint; name one, or leave it out"));
-    }
-}
-
 /// Refuses an SFTP access block that cannot reach or sign in to its server as written. `what` names the connector.
 fn check_sftp_access(a: &SftpAccessDto, what: &str, errors: &mut ItemErrors<'_>) {
     if a.host.trim().is_empty() {
@@ -1422,39 +1382,6 @@ fn check_sftp_access(a: &SftpAccessDto, what: &str, errors: &mut ItemErrors<'_>)
             "{what} has a hostKey that is not a public key as OpenSSH writes it (\"ssh-ed25519 AAAA…\"): {e}. \
              Copy the server's line from its known_hosts entry or from ssh-keyscan, without the host name"
         ));
-    }
-}
-
-/// Refuses an S3 access block that cannot sign a request as written. `what` names the connector.
-fn check_s3_access(a: &S3AccessDto, what: &str, errors: &mut ItemErrors<'_>) {
-    if a.access_key_id.is_some() != a.secret_access_key.is_some() {
-        let missing = if a.access_key_id.is_none() {
-            "accessKeyId"
-        } else {
-            "secretAccessKey"
-        };
-        errors.at(missing).push(format!(
-            "{what} names half an access key. Name both accessKeyId and secretAccessKey, or neither to use the \
-             host's credentials"
-        ));
-    }
-    if (a.external_id.is_some() || a.auth_endpoint.is_some()) && a.role_arn.is_none() {
-        errors.at("roleArn").push(format!(
-            "{what} has an externalId or authEndpoint and no roleArn; both serve assuming a role"
-        ));
-    }
-    for (field, value) in [
-        ("region", &a.region),
-        ("endpoint", &a.endpoint),
-        ("authEndpoint", &a.auth_endpoint),
-        ("roleArn", &a.role_arn),
-        ("externalId", &a.external_id),
-    ] {
-        if value.as_deref().is_some_and(|v| v.trim().is_empty()) {
-            errors
-                .at(field)
-                .push(format!("{what} has an empty {field}; name one, or leave it out"));
-        }
     }
 }
 

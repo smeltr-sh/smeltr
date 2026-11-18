@@ -202,7 +202,7 @@ impl DestinationSpec for IcebergDestinationDto {
             }
         }
         if !access.is_empty() {
-            check_s3_access(access, &what, errors);
+            access.check(&what, errors);
         }
         check_file_interval(*file_interval_secs, &what, "committed", errors);
     }

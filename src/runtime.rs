@@ -4095,12 +4095,12 @@ mod tests {
         };
         let iceberg = r#"{ "id": "out", "type": "iceberg", "catalog": "https://catalog.example/api",
                            "namespace": "logs", "table": "t" }"#;
-        let objects = r#"{ "id": "out", "type": "s3", "bucket": "b", "format": "parquet" }"#;
+        let objects = r#"{ "id": "out", "type": "s3", "bucket": "logs", "format": "parquet" }"#;
         assert_eq!(columnar(iceberg), [true]);
         let delta = r#"{ "id": "out", "type": "delta", "location": "s3://lake/t" }"#;
         assert_eq!(columnar(delta), [true]);
         assert_eq!(columnar(objects), [false]);
-        let native = r#"{ "id": "out", "type": "s3", "bucket": "b", "format": "parquet", "variant": "native" }"#;
+        let native = r#"{ "id": "out", "type": "s3", "bucket": "logs", "format": "parquet", "variant": "native" }"#;
         assert_eq!(columnar(native), [true]);
     }
 

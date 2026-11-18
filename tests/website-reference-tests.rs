@@ -1416,20 +1416,49 @@ struct ConnectorReference {
 fn dto_keys(enum_name: &str) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
     let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config_file");
     let mut text = std::fs::read_to_string(config.join("dto.rs")).unwrap();
+    text.push_str(&std::fs::read_to_string(config.join("load/stores.rs")).unwrap());
     for kinds in ["load/source", "load/destination"] {
         for file in std::fs::read_dir(config.join(kinds)).unwrap() {
             text.push_str(&std::fs::read_to_string(file.unwrap().path()).unwrap());
         }
     }
-    let body = |head: &str| -> Vec<&str> {
-        // A unit struct, such as `NoUnknownKeys`, has no fields and so no keys.
-        if text.contains(&head.replace(" {", ";")) {
+    // `pub type S3ListSourceDto = ObjectSourceDto<BucketDto, S3AccessDto, ListingDto>;`
+    let alias = regex::Regex::new(r"(?m)^pub type (\w+) = (\w+)<(.+)>;$").unwrap();
+    let body = |head: &str| -> Vec<String> {
+        // A unit or empty struct, such as `NoUnknownKeys`, has no fields and so no keys.
+        if text.contains(&head.replace(" {", ";")) || text.contains(&head.replace(" {", " {}")) {
             return Vec::new();
         }
-        let start = text
-            .find(head)
+        let lines = |head: &str| -> Option<Vec<String>> {
+            let start = text.find(head)?;
+            Some(
+                text[start..]
+                    .lines()
+                    .skip(1)
+                    .take_while(|l| *l != "}")
+                    .map(str::to_string)
+                    .collect(),
+            )
+        };
+        if let Some(lines) = lines(head) {
+            return lines;
+        }
+        // A generic struct under an alias: its fields, with each type parameter read as the alias names it.
+        let name = head.trim_start_matches("pub struct ").trim_end_matches(" {");
+        let c = (alias.captures_iter(&text).find(|c| &c[1] == name))
             .unwrap_or_else(|| panic!("no `{head}` in the config DTOs"));
-        text[start..].lines().skip(1).take_while(|l| *l != "}").collect()
+        let generic = format!("pub struct {}<", &c[2]);
+        let start = text
+            .find(&generic)
+            .unwrap_or_else(|| panic!("no `{generic}` in the config DTOs"));
+        let params = text[start + generic.len()..].split('>').next().unwrap();
+        let args: std::collections::BTreeMap<String, String> = (params.split(',').map(|p| format!(": {},", p.trim())))
+            .zip(c[3].split(',').map(|a| format!(": {},", a.trim())))
+            .collect();
+        let lines = lines(&format!("{generic}{params}> {{")).unwrap();
+        (lines.into_iter())
+            .map(|l| args.iter().fold(l, |l, (param, arg)| l.replace(param, arg)))
+            .collect()
     };
     let camel = |snake: &str| -> String {
         let mut out = String::new();
@@ -1483,8 +1512,8 @@ fn dto_keys(enum_name: &str) -> std::collections::BTreeMap<String, std::collecti
         }
         out
     }
-    let owned = |head: &str| body(head).into_iter().map(str::to_string).collect::<Vec<_>>();
     let lines = body(&format!("pub enum {enum_name} {{"));
+    let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
     let variant = regex::Regex::new(r"^    (\w+) \{(.*)$").unwrap();
     // `Postgres(SqlSourceDto),`: the struct's own fields, under the variant's tag.
     let newtype = regex::Regex::new(r"^    (\w+)\((\w+)\),$").unwrap();
@@ -1500,9 +1529,9 @@ fn dto_keys(enum_name: &str) -> std::collections::BTreeMap<String, std::collecti
             let tag = (attrs.filter_map(|l| rename.captures(l)).next())
                 .map(|r| r[1].to_string())
                 .unwrap_or_else(|| c[1][..1].to_lowercase() + &c[1][1..]);
-            let lines = owned(&format!("pub struct {} {{", &c[2]));
+            let lines = body(&format!("pub struct {} {{", &c[2]));
             let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
-            out.insert(tag, keys(&lines, 4, &field, &rename, &camel, &owned));
+            out.insert(tag, keys(&lines, 4, &field, &rename, &camel, &body));
             i += 1;
             continue;
         }
@@ -1515,7 +1544,7 @@ fn dto_keys(enum_name: &str) -> std::collections::BTreeMap<String, std::collecti
         let inline = c[2].trim().trim_end_matches(',').trim_end_matches('}').trim();
         let fields = if inline.is_empty() {
             let end = (i..lines.len()).find(|&j| lines[j].starts_with("    },")).unwrap();
-            let fields = keys(&lines[i + 1..end], 8, &field, &rename, &camel, &owned);
+            let fields = keys(&lines[i + 1..end], 8, &field, &rename, &camel, &body);
             i = end;
             fields
         } else {

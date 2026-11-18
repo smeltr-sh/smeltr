@@ -383,7 +383,12 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
             } else {
                 "bucket"
             };
-            set(key, json!(rng.pick(&["", "  "])));
+            let bad: &[&str] = match draw.store {
+                Store::S3 => &["", "  ", "s3://logs", "Logs", "logs_eu"],
+                Store::Gcs => &["", "  ", "gs://logs", "Logs", "logs/in"],
+                _ => &["", "  ", "https://acme.blob.core.windows.net/logs", "Logs", "lo--gs"],
+            };
+            set(key, json!(rng.pick(bad)));
             Some(key)
         }
         "s3.kmsKeyId" => {
