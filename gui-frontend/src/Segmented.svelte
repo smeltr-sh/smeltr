@@ -45,7 +45,7 @@
     border: 0;
     border-radius: 0;
     background: none;
-    padding: 0.25rem 0.8rem;
+    padding: 0.25rem 0.65rem;
     font-size: var(--text-label);
     font-weight: 500;
     color: var(--dim);

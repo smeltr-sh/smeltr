@@ -1192,7 +1192,7 @@ const pickPreset: Move = {
     const { page, leader, rng, world } = j;
     const source = rng.pick(routed(world));
     const senders = rng.below(2) === 1;
-    const preset = rng.pick(['fast', 'sensitive', 'balanced', 'quiet'] as const);
+    const preset = rng.pick(['fast', 'sensitive', 'balanced', 'quiet', 'off'] as const);
     const name = preset[0].toUpperCase() + preset.slice(1);
     // The journey's sources run in `default`, so that is where the map marks them.
     const card = page.locator(`a.node[title="${source}"][href*="group=default"]`);

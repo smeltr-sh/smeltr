@@ -4260,7 +4260,7 @@ function subjectPath(source: string, sender: Sender | undefined, path: string, q
 
 /** How soon a source, or its senders, warns of a drop against how often a brief dip warns too
  * (`throughput::Preset`). */
-export type Preset = 'fast' | 'sensitive' | 'balanced' | 'quiet';
+export type Preset = 'fast' | 'sensitive' | 'balanced' | 'quiet' | 'off';
 
 /** A source's, or one of its senders', past year (`throughput::Past`): its below normal warnings,
  * newest first, which an editor may say were normal, and its longest quiet spells, longest first
