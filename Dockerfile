@@ -51,10 +51,12 @@ COPY --from=frontends /src/website/leader-docs website/leader-docs
 # The registry and `target` are cache mounts, so a source change recompiles smeltr alone: the vendored C --
 # AWS-LC, librdkafka, krb5, SASL, OpenSSL, SQLite, curl -- turns over only when Cargo.lock does. A cache mount is
 # not part of the image, so the binary is copied out of it here, and the stages below take it from /smeltr.
+# The vendored C is written for C17, and Wolfi's GCC defaults to C23. krb5 1.19, which krb5-src vendors, also
+# promotes warnings to errors, and Wolfi's glibc raises one of them; WARN_CFLAGS stops the promotion.
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
     --mount=type=cache,target=/src/target \
-    cargo auditable build --locked --profile dist --bin smeltr \
+    CFLAGS=-std=gnu17 WARN_CFLAGS=-Wall cargo auditable build --locked --profile dist --bin smeltr \
     && strip target/dist/smeltr \
     && cp target/dist/smeltr /smeltr
 
