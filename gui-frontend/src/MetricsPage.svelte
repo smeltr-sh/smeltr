@@ -57,6 +57,8 @@
 
   const GROUP = 'group';
   const WORKER = 'worker';
+  /** A route's name beside its id: the page names a route by its id already (`valueName`), history before it too. */
+  const ROUTE_NAME = 'route_name';
   const MINUTE = 60_000;
   const HOUR = 60 * MINUTE;
   const DAY = 24 * HOUR;
@@ -284,7 +286,7 @@
   let labels = $derived(
     metric
       ? [
-          ...Object.keys(metric.labels).filter((l) => l !== GROUP && l !== WORKER),
+          ...Object.keys(metric.labels).filter((l) => ![GROUP, WORKER, ROUTE_NAME].includes(l)),
           GROUP,
           ...(WORKER in metric.labels ? [WORKER] : []),
         ]

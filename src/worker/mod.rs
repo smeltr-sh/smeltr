@@ -1455,6 +1455,9 @@ fn deploy(
                     .unwrap_or_default()
             })
             .collect(),
+        routes: (system.topology.routes.iter())
+            .map(|r| (r.id.clone(), r.name.clone()))
+            .collect(),
     });
     let shared = Shared {
         ready: ready.clone(),
@@ -6098,6 +6101,7 @@ mod tests {
                 sources: vec!["orders-west".to_string()],
                 destinations: Vec::new(),
                 pipelines: vec!["orders-normalize".to_string()],
+                routes: Default::default(),
                 steps: vec![vec![
                     "parse".to_string(),
                     "enrich".to_string(),
