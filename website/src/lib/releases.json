@@ -92,7 +92,6 @@
       {
         "title": "Security",
         "items": [
-          "The image is now built from Wolfi's packages instead of Red Hat UBI. It has no shell or package manager, and its STIG report uses DISA's General Purpose OS SRG instead of the RHEL 9 STIG.",
           "SQLite 3.54.1 (RUSTSEC-2026-0459), zlib in libz-sys 1.1.33 (RUSTSEC-2026-0544) and russh 0.65.1 (CVE-2026-128087, CVE-2026-128088)."
         ]
       }
