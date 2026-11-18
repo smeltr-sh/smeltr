@@ -147,7 +147,9 @@
       ]);
       // A slow answer to an older question must not land over the newer one's.
       if (asked === view) {
-        [answer, metricOf] = got;
+        answer = got[0];
+        // A series only last week has a metric too; this week's names win.
+        metricOf = new Map([...(then?.[1] ?? []), ...got[1]]);
         before = then?.[0] ?? null;
         happened = marks;
         fetchedAt = Date.now();
