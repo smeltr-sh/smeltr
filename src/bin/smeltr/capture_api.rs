@@ -31,9 +31,6 @@ pub struct StartedCapture {
     max_bytes: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     deadline_secs: Option<u64>,
-    /// The leader-stored credentials it lent its workers, as `name vN`. Only the audit row reads it.
-    #[serde(skip)]
-    lent: Vec<String>,
 }
 
 /// Open a capture of a source or at a destination. Answers immediately with its id: workers pick the invitation up
@@ -74,13 +71,13 @@ pub async fn start_capture(
         .as_ref()
         .map(config_file::SourceDto::dials)
         .unwrap_or_default();
-    let started = open_capture(state, request, actor.id.clone(), config).await;
     // A capture reads live records out of a group, so who opened one, and on what, is recorded.
-    if started.status.is_success() {
-        let what = with_lent(what, &started.lent, &dials);
+    let started = open_capture(state, request, actor.id.clone(), config).await;
+    if let Ok((_, lent)) = &started {
+        let what = with_lent(what, lent, &dials);
         accounts::record_async(store, &actor, "capture-start", &what, "ok").await;
     }
-    started.into_response()
+    Envelope::from(started.map(|(started, _)| started)).into_response()
 }
 
 /// `what` with the leader-stored credentials a capture lent its workers, and where its source sends them. This is
@@ -128,28 +125,29 @@ fn runs(data_dir: &std::path::Path, commit: &str, group: &str, source: &config_f
     })
 }
 
-/// `owner` holds the capture in place of any other they held (`Captures::open`).
+/// `owner` holds the capture in place of any other they held (`Captures::open`). Returns the capture and, beside
+/// it, the leader-stored credentials it lent its workers, as `name vN`, for the audit row to name.
 async fn open_capture(
     state: AppState,
     request: CaptureRequest,
     owner: String,
     config: Option<String>,
-) -> Envelope<StartedCapture> {
+) -> Result<(StartedCapture, Vec<String>), Refusal> {
     if !takes_its_start(&request) {
-        return Envelope::refused(Refusal::invalid(
+        return Err(Refusal::invalid(
             "only a Kafka or Event Hubs source's capture takes a start",
         ));
     }
     if let Some(why) = not_as_sent(&request) {
-        return Envelope::refused(Refusal::invalid(why));
+        return Err(Refusal::invalid(why));
     }
     let source = match (&request.source, &request.destination) {
         (Some(source), None) => source.clone(),
         (None, Some(destination)) => {
             let destination = destination.clone();
-            return start_destination_capture(&state, request, owner, &destination, config);
+            return start_destination_capture(&state, request, owner, &destination, config).map(|s| (s, Vec::new()));
         }
-        _ => return Envelope::refused(Refusal::invalid("a capture names one source or one destination")),
+        _ => return Err(Refusal::invalid("a capture names one source or one destination")),
     };
     // The same check a save runs (`config_file::validate`), because this source travels to workers exactly as a
     // saved one does. Without it a credential written as a literal -- which `validate_kafka_props` refuses on the
@@ -179,7 +177,7 @@ async fn open_capture(
         }
     }
     if !invalid.is_empty() {
-        return Envelope::refused(Refusal::invalid(
+        return Err(Refusal::invalid(
             invalid.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "),
         ));
     }
@@ -195,7 +193,7 @@ async fn open_capture(
             smeltr::worker::capture::Filter::compile(Some(filter), source.kind.meta(), &source.id).map(|_| ())
         };
         if let Err(e) = compiled {
-            return Envelope::refused(Refusal::invalid(e));
+            return Err(Refusal::invalid(e));
         }
     }
 
@@ -211,7 +209,7 @@ async fn open_capture(
     let store = state.store.clone();
     let granted = match blocking(move || lent(&store, &one_source)).await {
         Ok(v) => v,
-        Err(e) => return Envelope::refused(Refusal::internal(e)),
+        Err(e) => return Err(Refusal::internal(e)),
     };
     let lent = granted.iter().map(|d| format!("{} v{}", d.name, d.version)).collect();
     let invitation = state.captures.open(
@@ -222,13 +220,13 @@ async fn open_capture(
         granted,
         Opened { owner, config },
     );
-    Envelope::ok(StartedCapture {
+    let started = StartedCapture {
         session: Some(session),
         max_matches: Some(invitation.max_matches),
         max_bytes: Some(invitation.max_bytes),
         deadline_secs: Some(invitation.deadline_secs),
-        lent,
-    })
+    };
+    Ok((started, lent))
 }
 
 /// Open a capture at a deployed destination. It carries no configuration and no credentials: a worker reads only
@@ -240,16 +238,16 @@ fn start_destination_capture(
     owner: String,
     destination: &str,
     config: Option<String>,
-) -> Envelope<StartedCapture> {
+) -> Result<StartedCapture, Refusal> {
     if destination.is_empty() {
-        return Envelope::refused(Refusal::invalid("a capture at a destination names it"));
+        return Err(Refusal::invalid("a capture at a destination names it"));
     }
     // Only its syntax can be checked here: what it reads is each route's output, which the workers' deployment
     // compiles. A filter a route's output does not resolve ends the capture there, saying which route.
     if let Some(filter) = request.filter.as_deref()
         && let Err(e) = smeltr::plan::compile::parse(filter, None)
     {
-        return Envelope::refused(Refusal::invalid(e.to_string()));
+        return Err(Refusal::invalid(e.to_string()));
     }
     let (expected, holding) = waits_for(state, &request.group, None, Some(destination));
     let session = format!("{:016x}", rand_session());
@@ -261,12 +259,11 @@ fn start_destination_capture(
         Vec::new(),
         Opened { owner, config },
     );
-    Envelope::ok(StartedCapture {
+    Ok(StartedCapture {
         session: Some(session),
         max_matches: Some(invitation.max_matches),
         max_bytes: Some(invitation.max_bytes),
         deadline_secs: Some(invitation.deadline_secs),
-        lent: Vec::new(),
     })
 }
 
