@@ -74,10 +74,13 @@
   let fetchedAt = $state(Date.now());
   let failed = $state<string | null>(null);
 
-  /** The list grows as workers report metrics they had not before, so it is read with every answer. */
+  /** The list grows as workers report metrics they had not before, so it is read with every answer. It is set only
+   * when it changed: the effect that reads it asks again when it is set. */
   function readMetrics(): Promise<unknown> {
     return getSeriesMetrics()
-      .then((m) => (metrics = m))
+      .then((m) => {
+        if (JSON.stringify(m) !== JSON.stringify(metrics)) metrics = m;
+      })
       .catch((e: Error) => (failed = e.message));
   }
 
