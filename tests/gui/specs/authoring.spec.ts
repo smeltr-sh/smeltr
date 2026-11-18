@@ -185,6 +185,7 @@ test('A1: a viewer captures a deployed source from the map and downloads it', as
   await first.ctx.dispose();
 
   const viewer = await (await browser.newContext({ ignoreHTTPSErrors: true })).newPage();
+  await viewer.addInitScript(() => localStorage.setItem('smeltr-scope', 'shared'));
   await viewer.goto(leader.url);
   await signInThroughGui(viewer, 'vera', 'vera-chosen-password');
   await expect(viewer.getByRole('button', { name: 'Sign in' })).toHaveCount(0);

@@ -1456,6 +1456,11 @@ function loadScope(): string {
 
 let scope = loadScope();
 
+/** Whether this browser has a scope stored, rather than starting on `shared`. */
+export function scopeStored(): boolean {
+  return Boolean(stored(SCOPE_KEY));
+}
+
 export function currentScope(): string {
   return scope;
 }

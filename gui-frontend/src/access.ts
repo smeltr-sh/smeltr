@@ -5,7 +5,7 @@
 // here, and a shared component (`Field`, `ObjectList`) asks `editable()` rather than each page
 // deciding for itself.
 
-import { SHARED_SCOPE, currentScope, setScope } from './api';
+import { SHARED_SCOPE, currentScope, scopeStored, setScope } from './api';
 import { parseRoute, showsScope } from './nav';
 import { session, type AccessDto, type AccessLevel } from './session';
 
@@ -92,11 +92,12 @@ export function editable(): boolean {
   return !showsScope(parseRoute(location.hash)) || canEdit();
 }
 
-/** Moves a remembered scope the person no longer holds to the first one they do, before any page
- * reads with it. */
+/** Before any page reads with it, puts a person in their own first group when this browser has no scope stored
+ * or the stored one is no longer held. `shared` is their first only when it is all they hold. */
 export function settleScope(): void {
   const held = heldAreas();
-  if (held.length > 0 && !held.includes(currentScope())) setScope(held[0]);
+  const own = held.find((a) => a !== SHARED_SCOPE) ?? held[0];
+  if (own && (!scopeStored() || !held.includes(currentScope()))) setScope(own);
 }
 
 /** Why a control is disabled for a person whose roles do not let them change what it changes. */
