@@ -26,9 +26,9 @@ builder)
     chroot "$root" /usr/bin/busybox --install -s
     ;;
 image)
-    # git serves the leader's config repository through `git http-backend`, and libcurl carries its push to a host,
-    # which is HTTPS only (src/leader/remote.rs). The CA bundle verifies the TLS at the far end. A worker fetches
-    # in-process through gix and spawns no git. Wolfi packages `git http-backend` in git-daemon.
+    # git serves the leader's config repository through `git http-backend`, which Wolfi packages in git-daemon. The
+    # leader reaches a host in-process (src/leader/remote.rs), and a worker fetches through gix, so no git goes to the
+    # network. git's package needs a libcurl all the same, and this one is named so the choice does not move.
     packages git git-daemon libcurl-openssl4
     # The bundle's digest as the package installed it, which the STIG's trust-store check compares the bundle to.
     (cd "$root/etc/ssl/certs" && sha256sum ca-certificates.crt >.ca-certificates.crt.sha256)

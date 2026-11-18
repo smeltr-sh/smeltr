@@ -3359,7 +3359,7 @@ fn git_runs(program: &str) -> Result<(), String> {
 
 // -- pushing to the host ----------------------------------------------------
 //
-// `gix` cannot push, so a push runs the `git` binary, which the leader already needs to serve workers.
+// The leader speaks git's push protocol itself (`remote::push`); what it sends the host is packed here.
 
 /// What the host made of a push.
 #[derive(Debug, PartialEq, Eq)]
@@ -3369,88 +3369,72 @@ pub enum Pushed {
     Refused,
 }
 
-/// `git` aimed at the host at `url` on behalf of this leader: no credential but `authorization`, no prompt, and no
-/// redirect, which would carry the header to wherever the host pointed. The header travels in the environment, never
-/// in argv, where every process on this host could read it.
-fn git_to_host(repo_path: &Path, authorization: Option<&str>) -> Command {
-    let mut cmd = Command::new("git");
-    cmd.arg("--git-dir").arg(repo_path).args([
-        "-c",
-        "credential.helper=",
-        "-c",
-        "http.followRedirects=false",
-        // A host that stops sending must not hold the push for good.
-        "-c",
-        "http.lowSpeedLimit=1024",
-        "-c",
-        "http.lowSpeedTime=60",
-    ]);
-    cmd.env("GIT_TERMINAL_PROMPT", "0");
-    // `check_url` admits only http(s), but git would follow any transport it is handed, and libcurl carries a dozen
-    // more protocols. This keeps both to the two a host is reached over.
-    cmd.env("GIT_ALLOW_PROTOCOL", "http:https");
-    if let Some(authorization) = authorization {
-        cmd.env("GIT_CONFIG_COUNT", "1")
-            .env("GIT_CONFIG_KEY_0", "http.extraHeader")
-            .env("GIT_CONFIG_VALUE_0", format!("Authorization: {authorization}"));
-    }
-    cmd
+/// A pack of what `tip` reaches and no commit of `haves` does: what a host holding `haves` lacks to take `tip`. A have
+/// this repository does not hold, or that is not a commit, tells nothing here and is passed over.
+pub fn pack_for_push(repo_path: &Path, tip: &str, haves: &[&str]) -> Result<Vec<u8>, GitError> {
+    let failed = |e: &dyn std::fmt::Display| GitError::failed(format!("packing {tip} for the host: {e}"));
+    let repo = open(repo_path)?;
+    let tip = resolve(&repo, tip)?;
+    let hidden: Vec<gix::ObjectId> = haves
+        .iter()
+        .filter_map(|have| gix::ObjectId::from_hex(have.as_bytes()).ok())
+        .filter(|id| repo.find_object(*id).is_ok_and(|o| o.kind == gix::object::Kind::Commit))
+        .collect();
+    let commits: Vec<gix::ObjectId> = repo
+        .rev_walk([tip])
+        .with_hidden(hidden)
+        .all()
+        .map_err(|e| failed(&e))?
+        .map(|info| info.map(|info| info.id).map_err(|e| failed(&e)))
+        .collect::<Result<_, _>>()?;
+    pack_of(
+        repo_path,
+        repo.object_hash(),
+        commits,
+        gix_pack::data::output::count::objects::ObjectExpansion::TreeAdditionsComparedToAncestor,
+    )
+    .map_err(|e| failed(&e))
 }
 
-/// Push `new` to `branch` on the host at `url`, or delete it there for `None`, but only while the host's branch is at
-/// `lease` -- `None` for "only while it does not exist". The lease is what keeps a push from overwriting work someone
-/// else pushed to the same branch.
-pub fn push(
+/// One pack of `commits` and the objects `expansion` reaches from them, written in memory: a configuration
+/// repository holds its files and the pointers to lookup files, never their bytes.
+pub fn pack_of(
     repo_path: &Path,
-    url: &str,
-    authorization: Option<&str>,
-    branch: &str,
-    new: Option<&str>,
-    lease: Option<&str>,
-) -> Result<Pushed, GitError> {
-    check_branch_name(branch)?;
-    for commit in new.iter().chain(lease.iter()) {
-        check_commit_id(commit)?;
+    hash: gix::hash::Kind,
+    commits: Vec<gix::ObjectId>,
+    expansion: gix_pack::data::output::count::objects::ObjectExpansion,
+) -> Result<Vec<u8>, String> {
+    use gix_pack::data::output;
+    let mut odb = gix::odb::at(repo_path.join("objects"), hash).map_err(|e| e.to_string())?;
+    // A merge reads from the packs it replaces, which must stay readable until it is done.
+    odb.prevent_pack_unload();
+    odb.ignore_replacements = true;
+    let (counts, _) = output::count::objects(
+        odb.clone(),
+        Box::new(commits.into_iter().map(Ok)),
+        &gix::progress::Discard,
+        &std::sync::atomic::AtomicBool::new(false),
+        output::count::objects::Options {
+            input_object_expansion: expansion,
+            ..Default::default()
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    let entries = u32::try_from(counts.len()).map_err(|e| e.to_string())?;
+    let chunks = output::entry::iter_from_counts(counts, odb, Box::new(gix::progress::Discard), Default::default())
+        .map_err(|e| e.to_string())?;
+    // In order: the threads finish chunks in any order, and a delta names its base by its place in the pack.
+    let mut bytes = output::bytes::FromEntriesIter::new(
+        gix::parallel::InOrderIter::from(chunks),
+        Vec::new(),
+        entries,
+        gix_pack::data::Version::V2,
+        hash,
+    );
+    for written in bytes.by_ref() {
+        written.map_err(|e| e.to_string())?;
     }
-    let lease = format!("--force-with-lease=refs/heads/{branch}:{}", lease.unwrap_or(""));
-    let refspec = format!("{}:refs/heads/{branch}", new.unwrap_or(""));
-    let output = git_to_host(repo_path, authorization)
-        .args(["push", "--porcelain", "--no-verify", &lease, url, &refspec])
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| GitError::failed(format!("spawning git push: {e}")))?;
-    if output.status.success() {
-        return Ok(Pushed::Done);
-    }
-    // `--porcelain` says per ref what became of it; `!` is refused, and "stale info" is the lease.
-    let said = String::from_utf8_lossy(&output.stdout);
-    if said
-        .lines()
-        .any(|line| line.starts_with('!') && line.contains("(stale info)"))
-    {
-        return Ok(Pushed::Refused);
-    }
-    let why = said
-        .lines()
-        .find(|line| line.starts_with('!'))
-        .map(str::to_string)
-        .unwrap_or_else(|| String::from_utf8_lossy(&output.stderr).trim().to_string());
-    // A host says why it refused on `remote:` lines -- a protected branch, say -- which the ref's line does not carry.
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let host_said: Vec<&str> = stderr
-        .lines()
-        .filter_map(|line| line.strip_prefix("remote:"))
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect();
-    let why = if host_said.is_empty() {
-        why
-    } else {
-        format!("{why}: {}", host_said.join(" "))
-    };
-    Err(GitError::failed(format!(
-        "pushing {branch} to {url} did not work: {why}"
-    )))
+    Ok(bytes.into_write())
 }
 
 /// The loose objects past which a repository is packed: git's own `gc.auto` default.
@@ -3511,31 +3495,6 @@ pub fn pack(repo_path: &Path) -> Result<(), GitError> {
         "git gc did not work: {}",
         String::from_utf8_lossy(&output.stderr).trim()
     )))
-}
-
-/// Where `branch` is on the host at `url`, or `None` when the host has no such branch.
-pub fn host_branch(
-    repo_path: &Path,
-    url: &str,
-    authorization: Option<&str>,
-    branch: &str,
-) -> Result<Option<String>, GitError> {
-    check_branch_name(branch)?;
-    let output = git_to_host(repo_path, authorization)
-        .args(["ls-remote", url, &format!("refs/heads/{branch}")])
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| GitError::failed(format!("spawning git ls-remote: {e}")))?;
-    if !output.status.success() {
-        return Err(GitError::failed(format!(
-            "asking {url} where {branch} is did not work: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .split_whitespace()
-        .next()
-        .map(str::to_string))
 }
 
 /// Every branch the leader knows the host to have, `main` among them, and where.

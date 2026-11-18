@@ -27,10 +27,10 @@ COPY tools/release/wolfi-root.sh /wolfi-root.sh
 RUN sh /wolfi-root.sh builder /builder && sh /wolfi-root.sh image /rootfs
 
 # ---- fips: OpenSSL's FIPS provider, for what the image's OpenSSL does ---------------------------------------------
-# smeltr's own cryptography is AWS-LC's FIPS module, inside the binary. The image's OpenSSL serves git's HTTPS push,
-# and Wolfi's carries no validated provider, so this builds OpenSSL's: 3.1.2 is the release CMVP certificate #4985
-# validates (FIPS 140-3), and its security policy requires building exactly that source. OpenSSL's 3.x and 4.x
-# libraries load it. `fipsinstall` runs the module's self-tests and writes the MAC the module checks on each load;
+# smeltr's cryptography is AWS-LC's FIPS module, inside the binary, and nothing in the image uses OpenSSL. git's
+# package brings it all the same, and a scan of the image checks it runs FIPS only. Wolfi's carries no validated
+# provider, so this builds OpenSSL's: 3.1.2 is the release CMVP certificate #4985 validates (FIPS 140-3), and its
+# security policy requires building exactly that source. OpenSSL's 3.x and 4.x libraries load it. `fipsinstall` runs the module's self-tests and writes the MAC the module checks on each load;
 # `module` names the one copy for both OpenSSL libraries in the image, whose own module directories differ.
 FROM scratch AS fips
 COPY --from=wolfi /builder /

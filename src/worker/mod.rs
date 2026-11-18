@@ -781,38 +781,14 @@ fn merge_packs(repo_dir: &Path) -> Result<(), String> {
         .collect::<Result<_, _>>()?;
 
     let hash = repo.object_hash();
-    let mut odb = gix::odb::at(repo_dir.join("objects"), hash).map_err(|e| failed(&e))?;
-    // The packs this reads from are the ones it replaces, and must stay readable until it is done.
-    odb.prevent_pack_unload();
-    odb.ignore_replacements = true;
-    let interrupt = std::sync::atomic::AtomicBool::new(false);
-    let (counts, _) = output::count::objects(
-        odb.clone(),
-        Box::new(commits.into_iter().map(Ok)),
-        &gix::progress::Discard,
-        &interrupt,
-        output::count::objects::Options {
-            input_object_expansion: output::count::objects::ObjectExpansion::TreeContents,
-            ..Default::default()
-        },
+    let pack = crate::leader::git::pack_of(
+        repo_dir,
+        hash,
+        commits,
+        output::count::objects::ObjectExpansion::TreeContents,
     )
     .map_err(|e| failed(&e))?;
-    let entries = u32::try_from(counts.len()).map_err(|e| failed(&e))?;
-    let chunks = output::entry::iter_from_counts(counts, odb, Box::new(gix::progress::Discard), Default::default())
-        .map_err(|e| failed(&e))?;
-    // In memory: a clone holds configuration and the pointers to lookup files, never their bytes.
-    // In order: the threads finish chunks in any order, and a delta names its base by its place in the pack.
-    let mut bytes = output::bytes::FromEntriesIter::new(
-        gix::parallel::InOrderIter::from(chunks),
-        Vec::new(),
-        entries,
-        gix_pack::data::Version::V2,
-        hash,
-    );
-    for written in bytes.by_ref() {
-        written.map_err(|e| failed(&e))?;
-    }
-    let pack = bytes.into_write();
+    let interrupt = std::sync::atomic::AtomicBool::new(false);
 
     let dir = repo_dir.join("objects/pack");
     let old = packs_in(&dir)?;

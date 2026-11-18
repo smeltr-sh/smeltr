@@ -618,6 +618,269 @@ fn internal(ip: std::net::IpAddr) -> bool {
     }
 }
 
+// -- git's push protocol -----------------------------------------------------
+//
+// gix fetches but cannot push, so the leader speaks git's smart HTTP push itself, over the same client its LFS
+// requests take: the host's TLS is the leader's own (AWS-LC), and no `git` process reaches the network. The protocol
+// is git's v0, which every host's receive-pack speaks: refs and options advertised, one command and a pack posted,
+// and a status per ref answered.
+//
+// ```mermaid
+// sequenceDiagram
+//   leader->>host: GET info/refs?service=git-receive-pack
+//   host-->>leader: refs, options
+//   leader->>host: POST git-receive-pack: old new ref, then the pack
+//   host-->>leader: unpack ok, ok ref (or ng ref why)
+// ```
+
+/// The id git writes for a ref that does not exist.
+const NO_COMMIT: &str = "0000000000000000000000000000000000000000";
+
+/// How much of a host's answer is read: an advertisement lists every ref, and a configuration repository has few.
+const ANSWER_LIMIT: u64 = 64 << 20;
+
+/// What a host's service advertises: its refs, by full name, and the options it takes.
+struct Advertised {
+    refs: std::collections::HashMap<String, String>,
+    options: Vec<String>,
+}
+
+/// Where `branch` is on the host, or `None` when the host has no such branch.
+pub fn host_branch(remote: &Remote, branch: &str) -> Result<Option<String>, String> {
+    git::check_branch_name(branch).map_err(|e| e.message)?;
+    let host = advertised(remote, "git-upload-pack")?;
+    Ok(host.refs.get(&format!("refs/heads/{branch}")).cloned())
+}
+
+/// Push `new` to `branch` on the host, or delete it there for `None`, but only while the host's branch is at `lease`
+/// -- `None` for "only while it does not exist". The lease is what keeps a push from overwriting work someone else
+/// pushed to the same branch.
+pub fn push(
+    repo: &Path,
+    remote: &Remote,
+    branch: &str,
+    new: Option<&str>,
+    lease: Option<&str>,
+) -> Result<git::Pushed, String> {
+    git::check_branch_name(branch).map_err(|e| e.message)?;
+    for commit in new.iter().chain(lease.iter()) {
+        git::check_commit_id(commit).map_err(|e| e.message)?;
+    }
+    let failed = |why: &dyn std::fmt::Display| format!("pushing {branch} to {} did not work: {why}", remote.url);
+    let reference = format!("refs/heads/{branch}");
+    let host = advertised(remote, "git-receive-pack")?;
+    let at = host.refs.get(&reference).map(String::as_str);
+    if at != lease {
+        return Ok(git::Pushed::Refused);
+    }
+    if at == new {
+        return Ok(git::Pushed::Done);
+    }
+    let offered = |option: &str| host.options.iter().any(|o| o == option);
+    if host
+        .options
+        .iter()
+        .any(|o| o.starts_with("object-format=") && o != "object-format=sha1")
+    {
+        return Err(failed(&"the host's repository is not SHA-1, which this leader's is"));
+    }
+    if new.is_none() && !offered("delete-refs") {
+        return Err(failed(&"the host does not take deleting a branch"));
+    }
+    // Only what the host offered may be asked for. Without side-band its messages are lost, not its answer.
+    let options: Vec<&str> = ["report-status", "side-band-64k", "quiet"]
+        .into_iter()
+        .filter(|o| offered(o))
+        .chain(["agent=smeltr"])
+        .collect();
+    if !options.contains(&"report-status") {
+        return Err(failed(&"the host does not say what it made of a push"));
+    }
+    let command = format!(
+        "{} {} {reference}\0{}",
+        at.unwrap_or(NO_COMMIT),
+        new.unwrap_or(NO_COMMIT),
+        options.join(" ")
+    );
+    let mut body = pkt_line(command.as_bytes());
+    body.extend_from_slice(b"0000");
+    if let Some(new) = new {
+        let haves: Vec<&str> = host.refs.values().map(String::as_str).collect();
+        body.extend(git::pack_for_push(repo, new, &haves).map_err(|e| e.message)?);
+    }
+
+    let url = format!("{}/git-receive-pack", remote.url.trim_end_matches('/'));
+    let mut request = agent(remote, &url, DOWNLOAD_BUDGET, false)
+        .post(&url)
+        .header("Content-Type", "application/x-git-receive-pack-request")
+        .header("Accept", "application/x-git-receive-pack-result");
+    if let Some(auth) = remote.authorization() {
+        request = request.header("Authorization", auth);
+    }
+    let mut answer = request
+        .send(&body[..])
+        .map_err(|e| failed(&refused(remote, &e, "push to")))?;
+    let answer = answer
+        .body_mut()
+        .with_config()
+        .limit(ANSWER_LIMIT)
+        .read_to_vec()
+        .map_err(|e| failed(&e))?;
+    let (status, host_said) = report(&answer, options.contains(&"side-band-64k")).map_err(|e| failed(&e))?;
+    let ok = status.first().map(String::as_str) == Some("unpack ok")
+        && status.iter().any(|line| *line == format!("ok {reference}"));
+    if ok {
+        return Ok(git::Pushed::Done);
+    }
+    // The host says why on its own lines -- a protected branch, say -- which the status does not carry.
+    let why = status
+        .iter()
+        .find(|line| line.starts_with("ng ") || (line.starts_with("unpack ") && *line != "unpack ok"))
+        .cloned()
+        .unwrap_or_else(|| "the host did not say it took the branch".to_string());
+    Err(failed(&match host_said.is_empty() {
+        true => why,
+        false => format!("{why}: {}", host_said.join(" ")),
+    }))
+}
+
+/// What the host's `service` advertises at the remote's URL. Redirects are not followed: one would carry the token to
+/// wherever the host pointed.
+fn advertised(remote: &Remote, service: &str) -> Result<Advertised, String> {
+    let url = format!("{}/info/refs?service={service}", remote.url.trim_end_matches('/'));
+    let failed = |why: &dyn std::fmt::Display| format!("asking {} what it holds did not work: {why}", remote.url);
+    let mut request = agent(remote, &url, FETCH_BUDGET, false).get(&url);
+    if let Some(auth) = remote.authorization() {
+        request = request.header("Authorization", auth);
+    }
+    let what = if service == "git-receive-pack" {
+        "push to"
+    } else {
+        "read"
+    };
+    let mut answer = request.call().map_err(|e| failed(&refused(remote, &e, what)))?;
+    let smart = answer
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|t| t == format!("application/x-{service}-advertisement"));
+    if !smart {
+        return Err(failed(&"it is not a git host: it did not answer git's smart HTTP"));
+    }
+    let body = answer
+        .body_mut()
+        .with_config()
+        .limit(ANSWER_LIMIT)
+        .read_to_vec()
+        .map_err(|e| failed(&e))?;
+    // `# service=...`, a flush, then a ref per line, the first carrying the options after a NUL.
+    let (_, rest) = pkt_lines(&body).map_err(|e| failed(&e))?;
+    let (lines, _) = pkt_lines(rest).map_err(|e| failed(&e))?;
+    let mut host = Advertised {
+        refs: Default::default(),
+        options: Vec::new(),
+    };
+    for (i, line) in lines.iter().enumerate() {
+        let line = String::from_utf8_lossy(line);
+        let line = line.trim_end_matches('\n');
+        if let Some(error) = line.strip_prefix("ERR ") {
+            return Err(failed(&format!("the host says {error}")));
+        }
+        let (named, options) = line.split_once('\0').unwrap_or((line, ""));
+        if i == 0 {
+            host.options = options
+                .split(' ')
+                .filter(|o| !o.is_empty())
+                .map(str::to_string)
+                .collect();
+        }
+        let (id, name) = named
+            .split_once(' ')
+            .ok_or_else(|| failed(&format!("a ref line {named:?}")))?;
+        // An empty repository advertises its options on a ref by this name, and a tag its target by `^{}`.
+        if name != "capabilities^{}" && !name.ends_with("^{}") {
+            host.refs.insert(name.to_string(), id.to_string());
+        }
+    }
+    Ok(host)
+}
+
+/// What an admin can act on when the host refused a request to `what` the repository.
+fn refused(remote: &Remote, e: &ureq::Error, what: &str) -> String {
+    match (e, remote.token.is_some()) {
+        (ureq::Error::StatusCode(401), false) => {
+            format!("401 Unauthorized. Set a token that can {what} this repository, and check the URL")
+        }
+        (ureq::Error::StatusCode(401), true) => {
+            format!("401 Unauthorized. Check that the token can {what} this repository, and check the URL")
+        }
+        (ureq::Error::StatusCode(403), _) => {
+            format!("403 Forbidden. Check that the token can {what} this repository")
+        }
+        _ => e.to_string(),
+    }
+}
+
+/// `payload` as one pkt-line: its length, in four hex digits counting themselves, then the bytes.
+fn pkt_line(payload: &[u8]) -> Vec<u8> {
+    let mut line = format!("{:04x}", payload.len() + 4).into_bytes();
+    line.extend_from_slice(payload);
+    line
+}
+
+/// The pkt-lines of `bytes` up to the first flush, and what follows that flush. Bytes that end before one are a
+/// section on their own.
+fn pkt_lines(mut bytes: &[u8]) -> Result<(Vec<&[u8]>, &[u8]), String> {
+    let mut lines = Vec::new();
+    while !bytes.is_empty() {
+        let length = bytes
+            .get(..4)
+            .and_then(|hex| std::str::from_utf8(hex).ok())
+            .and_then(|hex| usize::from_str_radix(hex, 16).ok())
+            .ok_or("a pkt-line without its length")?;
+        if length == 0 {
+            return Ok((lines, &bytes[4..]));
+        }
+        let line = bytes
+            .get(4..length)
+            .filter(|_| length >= 4)
+            .ok_or_else(|| format!("a pkt-line of {length} bytes in {} left", bytes.len()))?;
+        lines.push(line);
+        bytes = &bytes[length..];
+    }
+    Ok((lines, bytes))
+}
+
+/// The status lines a host answered a push with, and what it said besides on its message band. With `side_band`,
+/// the status arrives in band 1, messages in band 2, and a fatal error in band 3.
+fn report(answer: &[u8], side_band: bool) -> Result<(Vec<String>, Vec<String>), String> {
+    let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).trim_end_matches('\n').to_string();
+    let mut said = Vec::new();
+    let status_bytes;
+    let status_lines = if side_band {
+        let mut data = Vec::new();
+        for line in pkt_lines(answer)?.0 {
+            match line.split_first() {
+                Some((1, rest)) => data.extend_from_slice(rest),
+                Some((2, rest)) => said.extend(
+                    String::from_utf8_lossy(rest)
+                        .split(['\n', '\r'])
+                        .map(str::trim)
+                        .filter(|l| !l.is_empty())
+                        .map(str::to_string),
+                ),
+                Some((3, rest)) => return Err(format!("the host says {}", text(rest))),
+                _ => return Err("a side-band line without its band".to_string()),
+            }
+        }
+        status_bytes = data;
+        pkt_lines(&status_bytes)?.0
+    } else {
+        pkt_lines(answer)?.0
+    };
+    Ok((status_lines.into_iter().map(text).collect(), said))
+}
+
 // -- syncing on a timer and on demand -----------------------------------------
 
 /// The leader's syncs: one at a time, and what the last one found.
@@ -850,9 +1113,9 @@ pub fn push_all(
             }
             // Refused only once the host has said where its branch is: that is what an overwrite leases on.
             Ok(git::Pushed::Refused) => {
-                let failure = match git::host_branch(repo, &remote.url, remote.authorization().as_deref(), branch) {
+                let failure = match host_branch(remote, branch) {
                     Ok(host_tip) => failed(refused_push(branch), true, host_tip),
-                    Err(e) => failed(not_pushed(e.message), false, None),
+                    Err(e) => failed(not_pushed(e), false, None),
                 };
                 still.insert(branch.clone(), failure);
             }
@@ -898,8 +1161,7 @@ fn push_branch(
     if let Some(tip) = tip {
         upload_lookup_files(repo, tip, branch, remote)?;
     }
-    let pushed =
-        git::push(repo, &remote.url, remote.authorization().as_deref(), branch, tip, lease).map_err(|e| e.message)?;
+    let pushed = push(repo, remote, branch, tip, lease)?;
     if pushed == git::Pushed::Done {
         git::record_host_branch(repo, branch, tip).map_err(|e| e.message)?;
     }
@@ -945,9 +1207,9 @@ pub async fn overwrite(
             .map_err(Refusal::internal)?
         {
             git::Pushed::Done => Ok(None),
-            git::Pushed::Refused => git::host_branch(&repo, &remote.url, remote.authorization().as_deref(), &name)
+            git::Pushed::Refused => host_branch(&remote, &name)
                 .map(|host_tip| Some((request.tip, host_tip)))
-                .map_err(Refusal::from),
+                .map_err(Refusal::internal),
         }
     })
     .await
@@ -1752,6 +2014,37 @@ mod tests {
         assert!(!git::host_branches(&repo).unwrap().contains_key("al/fix"));
     }
 
+    /// A branch at a commit the host already holds needs no objects, and the host takes the empty pack it is sent.
+    #[test]
+    fn a_branch_at_a_commit_the_host_holds_is_pushed_with_no_objects() {
+        let host = Host::start("push-held-host");
+        let repo = following(&host, "push-held");
+        let main = git::main_head(&repo).unwrap();
+        assert_eq!(
+            push(&repo, &host.remote(), "al/same", Some(&main), None),
+            Ok(git::Pushed::Done)
+        );
+        assert_eq!(git::branch_tip(&host.repo, "al/same"), Some(main));
+    }
+
+    /// The host's status and its own messages, each on its band, and a ref it would not take.
+    #[test]
+    fn a_push_s_answer_is_read_by_band() {
+        let band = |n: u8, payload: &[u8]| pkt_line(&[&[n][..], payload].concat());
+        let status = [
+            pkt_line(b"unpack ok\n"),
+            pkt_line(b"ng refs/heads/main pre-receive hook declined\n"),
+            b"0000".to_vec(),
+        ]
+        .concat();
+        let answer = [band(2, b"main is protected\n"), band(1, &status), b"0000".to_vec()].concat();
+        let (lines, said) = report(&answer, true).unwrap();
+        assert_eq!(lines, ["unpack ok", "ng refs/heads/main pre-receive hook declined"]);
+        assert_eq!(said, ["main is protected"]);
+        let fatal = [band(3, b"out of disk\n"), b"0000".to_vec()].concat();
+        assert_eq!(report(&fatal, true), Err("the host says out of disk".to_string()));
+    }
+
     const MORE: (&str, &[u8]) = (
         "groups/standalone/pipelines/more.json",
         br#"{"id":"more","name":"more","steps":[]}"#,
@@ -2113,6 +2406,20 @@ mod tests {
         let (_, why) = sync(&repo, roots(), &remote).unwrap_err();
         assert!(
             why.ends_with("401 Unauthorized. Set a token that can read this repository, and check the URL"),
+            "{why}"
+        );
+    }
+
+    #[test]
+    fn a_push_the_host_will_not_authorize_says_what_the_token_needs() {
+        let host = Host::start("push-token-host");
+        let repo = following(&host, "push-token");
+        let main = git::main_head(&repo).unwrap();
+        let mut remote = host.remote();
+        remote.token = Some("wrong".to_string());
+        let why = push(&repo, &remote, "al/x", Some(&main), None).unwrap_err();
+        assert!(
+            why.ends_with("401 Unauthorized. Check that the token can push to this repository, and check the URL"),
             "{why}"
         );
     }
