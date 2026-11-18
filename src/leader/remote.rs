@@ -640,6 +640,7 @@ const NO_COMMIT: &str = "0000000000000000000000000000000000000000";
 const ANSWER_LIMIT: u64 = 64 << 20;
 
 /// What a host's service advertises: its refs, by full name, and the options it takes.
+#[derive(Debug, PartialEq)]
 struct Advertised {
     refs: std::collections::HashMap<String, String>,
     options: Vec<String>,
@@ -773,9 +774,14 @@ fn advertised(remote: &Remote, service: &str) -> Result<Advertised, String> {
         .limit(ANSWER_LIMIT)
         .read_to_vec()
         .map_err(|e| failed(&e))?;
-    // `# service=...`, a flush, then a ref per line, the first carrying the options after a NUL.
-    let (_, rest) = pkt_lines(&body).map_err(|e| failed(&e))?;
-    let (lines, _) = pkt_lines(rest).map_err(|e| failed(&e))?;
+    advertisement(&body).map_err(|e| failed(&e))
+}
+
+/// The refs and options of an advertisement's body: `# service=...`, a flush, then a ref per line, the first carrying
+/// the options after a NUL.
+fn advertisement(body: &[u8]) -> Result<Advertised, String> {
+    let (_, rest) = pkt_lines(body)?;
+    let (lines, _) = pkt_lines(rest)?;
     let mut host = Advertised {
         refs: Default::default(),
         options: Vec::new(),
@@ -784,7 +790,7 @@ fn advertised(remote: &Remote, service: &str) -> Result<Advertised, String> {
         let line = String::from_utf8_lossy(line);
         let line = line.trim_end_matches('\n');
         if let Some(error) = line.strip_prefix("ERR ") {
-            return Err(failed(&format!("the host says {error}")));
+            return Err(format!("the host says {error}"));
         }
         let (named, options) = line.split_once('\0').unwrap_or((line, ""));
         if i == 0 {
@@ -794,9 +800,7 @@ fn advertised(remote: &Remote, service: &str) -> Result<Advertised, String> {
                 .map(str::to_string)
                 .collect();
         }
-        let (id, name) = named
-            .split_once(' ')
-            .ok_or_else(|| failed(&format!("a ref line {named:?}")))?;
+        let (id, name) = named.split_once(' ').ok_or_else(|| format!("a ref line {named:?}"))?;
         // An empty repository advertises its options on a ref by this name, and a tag its target by `^{}`.
         if name != "capabilities^{}" && !name.ends_with("^{}") {
             host.refs.insert(name.to_string(), id.to_string());
@@ -2043,6 +2047,433 @@ mod tests {
         assert_eq!(said, ["main is protected"]);
         let fatal = [band(3, b"out of disk\n"), b"0000".to_vec()].concat();
         assert_eq!(report(&fatal, true), Err("the host says out of disk".to_string()));
+    }
+
+    /// A host's answers as a well-formed host sends them read back as sent, however its pkt-lines and bands split
+    /// them; and whatever a host answers instead is read or refused, never panicked on.
+    #[test]
+    fn push_answer_fuzz() {
+        use crate::fuzz::{Coverage, Rng, run};
+        let mut coverage = Coverage::new([
+            "advertisement",
+            "advertisement-empty-repository",
+            "advertisement-peeled-tag",
+            "advertisement-err",
+            "report",
+            "report-side-band",
+            "report-split-status",
+            "report-messages",
+            "report-fatal",
+            "mutant-truncated",
+            "mutant-byte",
+            "mutant-inserted",
+            "mutant-length",
+            "mutant-read",
+            "mutant-refused",
+        ]);
+        let id = |rng: &mut Rng| -> String { (0..40).map(|_| *rng.pick(&b"0123456789abcdef"[..]) as char).collect() };
+        let newline = |rng: &mut Rng, line: &str| match rng.chance(2) {
+            true => format!("{line}\n"),
+            false => line.to_string(),
+        };
+        run(0..2000, |seed| {
+            let mut rng = Rng::seeded(seed);
+
+            // An advertisement: the service, a flush, the refs with the options on the first, a flush.
+            let options: Vec<String> = [
+                "report-status",
+                "side-band-64k",
+                "quiet",
+                "delete-refs",
+                "ofs-delta",
+                "atomic",
+                "object-format=sha1",
+                "agent=git/2.52.0",
+            ]
+            .into_iter()
+            .filter(|_| rng.chance(2))
+            .map(str::to_string)
+            .collect();
+            let mut refs = HashMap::new();
+            let mut lines = Vec::new();
+            for _ in 0..rng.below(5) {
+                let (name, at) = (format!("refs/heads/b{}", rng.below(8)), id(&mut rng));
+                if let std::collections::hash_map::Entry::Vacant(free) = refs.entry(name) {
+                    lines.push(format!("{at} {}", free.key()));
+                    free.insert(at);
+                }
+                if rng.chance(4) {
+                    coverage.reach("advertisement-peeled-tag");
+                    let (tag, at) = (format!("refs/tags/t{}", rng.below(8)), id(&mut rng));
+                    if let std::collections::hash_map::Entry::Vacant(free) = refs.entry(tag) {
+                        lines.push(format!("{at} {}", free.key()));
+                        lines.push(format!("{} {}^{{}}", id(&mut rng), free.key()));
+                        free.insert(at);
+                    }
+                }
+            }
+            if lines.is_empty() {
+                coverage.reach("advertisement-empty-repository");
+                lines.push(format!("{NO_COMMIT} capabilities^{{}}"));
+            }
+            lines[0] = format!("{}\0{}", lines[0], options.join(" "));
+            let err = rng.chance(8);
+            if err {
+                coverage.reach("advertisement-err");
+                lines.insert(rng.below(lines.len() + 1), "ERR no such repository".to_string());
+            }
+            let mut body = pkt_line(newline(&mut rng, "# service=git-receive-pack").as_bytes());
+            body.extend_from_slice(b"0000");
+            for line in &lines {
+                body.extend(pkt_line(newline(&mut rng, line).as_bytes()));
+            }
+            body.extend_from_slice(b"0000");
+            let read = advertisement(&body);
+            if err {
+                // An error before the first ref takes the options' place, and is read as the error all the same.
+                if read != Err("the host says no such repository".to_string()) {
+                    return Err(format!("{read:?} for an ERR line in {body:?}"));
+                }
+            } else {
+                coverage.reach("advertisement");
+                if read != Ok(Advertised { refs, options }) {
+                    return Err(format!("{read:?} read from {body:?}"));
+                }
+            }
+            mutant(&mut rng, &mut coverage, &body, |bytes| advertisement(bytes).map(drop))?;
+
+            // A push's report: the status, and with side-band the host's messages beside it.
+            let mut status = vec![match rng.chance(4) {
+                true => "unpack index-pack abnormal exit".to_string(),
+                false => "unpack ok".to_string(),
+            }];
+            for _ in 0..rng.below(4) {
+                let reference = format!("refs/heads/b{}", rng.below(8));
+                status.push(match rng.chance(2) {
+                    true => format!("ok {reference}"),
+                    false => format!("ng {reference} pre-receive hook declined"),
+                });
+            }
+            let mut stream: Vec<u8> = status
+                .iter()
+                .flat_map(|l| pkt_line(newline(&mut rng, l).as_bytes()))
+                .collect();
+            stream.extend_from_slice(b"0000");
+            let side_band = rng.chance(2);
+            let (answer, said, fatal) = if side_band {
+                coverage.reach("report-side-band");
+                let band = |n: u8, payload: &[u8]| pkt_line(&[&[n][..], payload].concat());
+                let mut said = Vec::new();
+                let mut answer = Vec::new();
+                let mut rest = &stream[..];
+                // The status in pieces of any size, the host's messages between them.
+                while !rest.is_empty() {
+                    if rng.chance(3) {
+                        coverage.reach("report-messages");
+                        let message = format!("message {}", rng.below(100));
+                        answer.extend(band(2, format!("{message}\n").as_bytes()));
+                        said.push(message);
+                    }
+                    let piece = 1 + rng.below(rest.len());
+                    if piece < rest.len() {
+                        coverage.reach("report-split-status");
+                    }
+                    answer.extend(band(1, &rest[..piece]));
+                    rest = &rest[piece..];
+                }
+                let fatal = rng.chance(8);
+                if fatal {
+                    coverage.reach("report-fatal");
+                    answer.extend(band(3, b"out of disk\n"));
+                }
+                answer.extend_from_slice(b"0000");
+                (answer, said, fatal)
+            } else {
+                (stream, Vec::new(), false)
+            };
+            let read = report(&answer, side_band);
+            let expected = match fatal {
+                true => Err("the host says out of disk".to_string()),
+                false => Ok((status, said)),
+            };
+            if read != expected {
+                return Err(format!("{read:?} read from {answer:?}, not {expected:?}"));
+            }
+            coverage.reach("report");
+            mutant(&mut rng, &mut coverage, &answer, |bytes| {
+                report(bytes, side_band).map(drop)
+            })
+        });
+        coverage.assert_complete();
+    }
+
+    /// `bytes` changed one way, which `read` must read or refuse, not panic on.
+    fn mutant(
+        rng: &mut crate::fuzz::Rng,
+        coverage: &mut crate::fuzz::Coverage,
+        bytes: &[u8],
+        read: impl Fn(&[u8]) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let mut changed = bytes.to_vec();
+        match rng.below(4) {
+            0 => {
+                coverage.reach("mutant-truncated");
+                changed.truncate(rng.below(bytes.len()));
+            }
+            1 => {
+                coverage.reach("mutant-byte");
+                let at = rng.below(bytes.len());
+                changed[at] = rng.next_u64() as u8;
+            }
+            2 => {
+                coverage.reach("mutant-inserted");
+                let at = rng.below(bytes.len() + 1);
+                let junk: Vec<u8> = (0..1 + rng.below(8)).map(|_| rng.next_u64() as u8).collect();
+                changed.splice(at..at, junk);
+            }
+            _ => {
+                // A length git would never write: too short to count itself, past the end, or not hex.
+                coverage.reach("mutant-length");
+                let at = rng.below(bytes.len() + 1);
+                let length = *rng.pick(&["0001", "0002", "0003", "ffff", "zz00", "-001"]);
+                changed.splice(at..at, length.bytes());
+            }
+        }
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| read(&changed)))
+            .map_err(|_| format!("panicked reading {changed:?}"))?;
+        coverage.reach(match outcome {
+            Ok(()) => "mutant-read",
+            Err(_) => "mutant-refused",
+        });
+        Ok(())
+    }
+
+    /// Pushes to a git host, by moves: saves of every shape, pushes forward, back and of commits the host already
+    /// holds, deletions, the host's branch moving under the leader, and leases right and wrong. After each push the
+    /// host's branch is where the push put it, or where it was when the lease did not hold, and at the end the host's
+    /// repository holds every object its branches need.
+    #[test]
+    fn push_fuzz() {
+        use crate::fuzz::{Coverage, Rng, run};
+        const BRANCHES: [&str; 3] = ["al/a", "al/b", "bo/c"];
+        let mut coverage = Coverage::new([
+            "save-on-new-branch",
+            "save-file",
+            "save-same-bytes-elsewhere",
+            "save-deleted-file",
+            "save-large-file",
+            "push-new-branch",
+            "push-forward",
+            "push-not-forward",
+            "push-held",
+            "push-already-there",
+            "delete",
+            "delete-absent",
+            "host-moved",
+            "refused-host-moved",
+            "refused-wrong-lease",
+            "overwrite",
+            "read-branch",
+        ]);
+        run(0..12, |seed| {
+            let mut rng = Rng::seeded(seed);
+            let host = Host::start(&format!("push-fuzz-host-{seed}"));
+            let repo = following(&host, &format!("push-fuzz-{seed}"));
+            let remote = host.remote();
+            let main = git::main_head(&repo).unwrap();
+            // The leader's commits on each branch, oldest first; where it believes the host's branch is; and bytes
+            // it has saved, to save again elsewhere.
+            let mut saved: HashMap<&str, Vec<String>> = HashMap::new();
+            let mut believed: HashMap<&str, String> = HashMap::new();
+            let mut contents: Vec<Vec<u8>> = Vec::new();
+            for _ in 0..24 {
+                let branch = *rng.pick(&BRANCHES);
+                let truth = git::branch_tip(&host.repo, branch);
+                let lease = believed.get(branch).cloned();
+                // Push `new` under `lease`: the host takes it exactly when its branch is at the lease.
+                let pushing = |new: Option<&str>, lease: Option<&str>| -> Result<git::Pushed, String> {
+                    let before = git::branch_tip(&host.repo, branch);
+                    let pushed = push(&repo, &remote, branch, new, lease)?;
+                    git::forget_advertisement();
+                    let after = git::branch_tip(&host.repo, branch);
+                    let expected = match lease == before.as_deref() {
+                        true => (git::Pushed::Done, new.map(str::to_string)),
+                        false => (git::Pushed::Refused, before.clone()),
+                    };
+                    if (&pushed, &after) != (&expected.0, &expected.1) {
+                        return Err(format!(
+                            "pushing {new:?} to {branch} at {before:?} under {lease:?} answered {pushed:?} and left \
+                             it at {after:?}"
+                        ));
+                    }
+                    Ok(pushed)
+                };
+                match rng.below(7) {
+                    0 | 1 => {
+                        let tip = git::branch_tip(&repo, branch);
+                        if tip.is_none() {
+                            coverage.reach("save-on-new-branch");
+                        }
+                        let mut edits = Vec::new();
+                        for _ in 0..1 + rng.below(4) {
+                            let path = match rng.chance(4) {
+                                true => format!("groups/g{}/system.json", rng.below(3)),
+                                false => format!("groups/g{}/pipelines/p{}.json", rng.below(3), rng.below(4)),
+                            };
+                            let content = match rng.below(6) {
+                                0 => {
+                                    coverage.reach("save-deleted-file");
+                                    None
+                                }
+                                1 if !contents.is_empty() => {
+                                    coverage.reach("save-same-bytes-elsewhere");
+                                    Some(rng.pick(&contents).clone())
+                                }
+                                2 => {
+                                    coverage.reach("save-large-file");
+                                    Some((0..256 << 10).map(|_| rng.next_u64() as u8).collect())
+                                }
+                                _ => {
+                                    coverage.reach("save-file");
+                                    Some(format!("{{\"n\":{}}}", rng.next_u64()).into_bytes())
+                                }
+                            };
+                            contents.extend(content.clone());
+                            edits.push(git::FileEdit { path, content });
+                        }
+                        let parent = tip.clone().unwrap_or_else(|| main.clone());
+                        let committed =
+                            git::commit_edits(&repo, branch, &parent, tip.as_deref(), &edits, "save", &Actor::system())
+                                .map_err(|e| e.message)?;
+                        if let git::Committed::At(commit) = committed {
+                            saved.entry(branch).or_default().push(commit);
+                        }
+                    }
+                    2 => {
+                        let Some(new) = git::branch_tip(&repo, branch) else {
+                            continue;
+                        };
+                        let history = saved.get(branch).map(Vec::as_slice).unwrap_or_default();
+                        let place = |commit: &str| history.iter().position(|c| c == commit);
+                        if lease != truth {
+                            coverage.reach("refused-host-moved");
+                        } else if truth.as_deref() == Some(new.as_str()) {
+                            coverage.reach("push-already-there");
+                        } else if truth.is_none() {
+                            coverage.reach("push-new-branch");
+                        } else if place(truth.as_deref().unwrap()) < place(&new) {
+                            coverage.reach("push-forward");
+                        } else {
+                            coverage.reach("push-not-forward");
+                        }
+                        match pushing(Some(&new), lease.as_deref())? {
+                            git::Pushed::Done => {
+                                believed.insert(branch, new);
+                            }
+                            // The admin overwrites: the lease is where the host says its branch is now.
+                            git::Pushed::Refused if rng.chance(2) => {
+                                coverage.reach("overwrite");
+                                let at = host_branch(&remote, branch)?;
+                                if at != truth {
+                                    return Err(format!("the host's {branch} read as {at:?}, not {truth:?}"));
+                                }
+                                pushing(Some(&new), at.as_deref())?;
+                                believed.insert(branch, new);
+                            }
+                            git::Pushed::Refused => {}
+                        }
+                    }
+                    3 => {
+                        // A commit the host already holds, or one of this branch's own from before its tip.
+                        let history = saved.get(branch).cloned().unwrap_or_default();
+                        let new = match history.len() > 1 && rng.chance(2) {
+                            true => {
+                                coverage.reach("push-not-forward");
+                                history[rng.below(history.len() - 1)].clone()
+                            }
+                            false => {
+                                coverage.reach("push-held");
+                                main.clone()
+                            }
+                        };
+                        if pushing(Some(&new), lease.as_deref())? == git::Pushed::Done {
+                            believed.insert(branch, new);
+                        } else {
+                            coverage.reach("refused-host-moved");
+                        }
+                    }
+                    4 => {
+                        coverage.reach(match truth {
+                            Some(_) => "delete",
+                            None => "delete-absent",
+                        });
+                        if pushing(None, lease.as_deref())? == git::Pushed::Done {
+                            believed.remove(branch);
+                        } else {
+                            coverage.reach("refused-host-moved");
+                        }
+                    }
+                    5 => {
+                        // Someone else pushes to the branch.
+                        coverage.reach("host-moved");
+                        let parent = truth.clone().unwrap_or_else(|| git::main_head(&host.repo).unwrap());
+                        let edit = git::FileEdit {
+                            path: format!("groups/g{}/system.json", rng.below(3)),
+                            content: Some(format!("{{\"theirs\":{}}}", rng.next_u64()).into_bytes()),
+                        };
+                        let committed = git::commit_edits(
+                            &host.repo,
+                            branch,
+                            &parent,
+                            truth.as_deref(),
+                            &[edit],
+                            "theirs",
+                            &Actor::system(),
+                        )
+                        .map_err(|e| e.message)?;
+                        if !matches!(committed, git::Committed::At(_)) {
+                            return Err(format!("the host's own commit to {branch} did not land"));
+                        }
+                        git::forget_advertisement();
+                    }
+                    _ => {
+                        // A lease the host's branch is not at.
+                        coverage.reach("refused-wrong-lease");
+                        let wrong = match truth.as_deref() {
+                            None => Some(main.as_str()),
+                            Some(at) if at != main && rng.chance(2) => Some(main.as_str()),
+                            Some(_) => None,
+                        };
+                        let new = git::branch_tip(&repo, branch).unwrap_or_else(|| main.clone());
+                        if pushing(Some(&new), wrong)? != git::Pushed::Refused {
+                            return Err(format!("a push to {branch} under the wrong lease {wrong:?} landed"));
+                        }
+                    }
+                }
+                if rng.chance(3) {
+                    coverage.reach("read-branch");
+                    let at = host_branch(&remote, branch)?;
+                    let truth = git::branch_tip(&host.repo, branch);
+                    if at != truth {
+                        return Err(format!("the host's {branch} read as {at:?}, not {truth:?}"));
+                    }
+                }
+            }
+            let fsck = std::process::Command::new("git")
+                .arg("--git-dir")
+                .arg(&host.repo)
+                .args(["fsck", "--strict", "--no-dangling"])
+                .output()
+                .map_err(|e| e.to_string())?;
+            match fsck.status.success() {
+                true => Ok(()),
+                false => Err(format!(
+                    "the host's repository is not whole: {}",
+                    String::from_utf8_lossy(&fsck.stderr)
+                )),
+            }
+        });
+        coverage.assert_complete();
     }
 
     const MORE: (&str, &[u8]) = (
