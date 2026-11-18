@@ -31,7 +31,7 @@ pub struct StartedCapture {
     max_bytes: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     deadline_secs: Option<u64>,
-    /// The leader-stored credentials it lent its workers, as `name vN`, for the audit row and not the caller.
+    /// The leader-stored credentials it lent its workers, as `name vN`. Only the audit row reads it.
     #[serde(skip)]
     lent: Vec<String>,
 }
