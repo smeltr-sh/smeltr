@@ -1062,9 +1062,7 @@ const MAX_METADATA_BYTES: u64 = 64 * 1024 * 1024;
 
 /// A new snapshot's id: random, positive, as Iceberg's own writers make them.
 fn snapshot_id() -> i64 {
-    let bytes: [u8; 8] = crate::leader::auth::random_bytes(8)
-        .try_into()
-        .expect("asked for 8 bytes");
+    let bytes: [u8; 8] = crate::crypto::random_bytes(8).try_into().expect("asked for 8 bytes");
     (i64::from_le_bytes(bytes) & i64::MAX).max(1)
 }
 
