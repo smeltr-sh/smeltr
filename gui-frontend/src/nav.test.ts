@@ -6,6 +6,7 @@ import {
   exitOf,
   movedTo,
   parseRoute,
+  relockHash,
   section,
   sentFrom,
   newPipelineHash,
@@ -225,6 +226,16 @@ describe('parseRoute', () => {
       relock: 'orders normal hour',
     });
     expect(parseRoute('#/build/tests/relock')).toEqual({ tab: 'build', page: 'samples' });
+  });
+
+  it('carries a test to lock again to the editor or the routes run, on its sample', () => {
+    for (const [pipeline, page] of [
+      ['orders', 'pipeline'],
+      [undefined, 'routes'],
+    ] as const) {
+      const route = parseRoute(relockHash('keep id', 'orders sample', pipeline));
+      expect(route).toMatchObject({ page, relock: { test: 'keep id', sample: 'orders sample' } });
+    }
   });
 
   it('names a re-lock in the trail', () => {

@@ -30,6 +30,7 @@
     type SampleRecordDto,
   } from './api';
   import { nameOf } from './exceptions';
+  import type { Relock } from './nav';
 
   let {
     /** The whole bundle as the editor has it, unsaved edits included. */
@@ -39,10 +40,13 @@
     dirty,
     /** The sources the routes may read, the group's own and `shared/`'s. */
     sources,
+    /** A test to lock again: its sample runs first, and locking hands the choice to its lock page. */
+    relock,
   }: {
     config: FileConfigDto | null;
     dirty: boolean;
     sources: string[];
+    relock?: Relock;
   } = $props();
 
   const choices = new SampleChoices((e) => (error = unreported(e)));
@@ -62,7 +66,7 @@
   // destination is opened, so there is no reason to wait for a click.
   $effect(() => {
     if (selected || !choices.first || !config) return;
-    selected = choices.first;
+    selected = relock?.sample ?? choices.first;
     if (choices.sourceOf(selected)) untrack(run);
   });
   let grid = $state<RecordsGrid | undefined>();
@@ -88,7 +92,9 @@
     const { rows, fields } = grid?.onScreen() ?? { rows: [], fields: [] };
     chooseLock(
       { fields, rows: rows.map((r) => records.get(r.key) ?? -1).filter((r) => r >= 0) },
-      `#/build/tests/lock-e2e/${encodeURIComponent(ran)}`,
+      relock
+        ? `#/build/tests/relock/${encodeURIComponent(relock.test)}`
+        : `#/build/tests/lock-e2e/${encodeURIComponent(ran)}`,
     );
   }
 
@@ -340,7 +346,9 @@
     </Button>
     {#if editable()}
       <span class="grow"></span>
-      <Button type="button" onclick={goLockTest} disabled={lockBlocked}>Lock this as a test</Button>
+      <Button type="button" onclick={goLockTest} disabled={lockBlocked}
+        >{relock ? 'Lock this test again' : 'Lock this as a test'}</Button
+      >
     {/if}
   </div>
 

@@ -40,7 +40,7 @@
   } from './api';
   import { count } from './time';
   import { formatDiffValue } from './diff';
-  import { announcePipelineNames } from './nav';
+  import { announcePipelineNames, relockHash } from './nav';
   import { editable } from './access';
   import { nameOf, pipelineNamesAt } from './pipelineNames';
   import { names } from './names.svelte';
@@ -72,8 +72,8 @@
   let atMicros = $state(0);
   /** What the leader's run holds of the fields and rows to lock: what this screen shows, and what locking stores. */
   let locked = $state<Locked>({ rowsIn: 0, fields: [], rows: [] });
-  /** The fields and rows to lock: the locked test's own when locking again, else what was on screen. */
-  let choice = $state<LockChoice | null>(relock ? null : lockChoice());
+  /** The fields and rows to lock: what was on screen where Lock this as a test (or this test again) was pressed. */
+  let choice = $state<LockChoice | null>(lockChoice());
   let previewOk = $state(true);
   let previewErrors = $state<ApiError[]>([]);
 
@@ -118,12 +118,10 @@
           );
         pipeline = testRes.test.pipeline;
         sample = testRes.test.sample;
+        // Its fields and rows are chosen again where a fresh lock's are: a renamed field is one it does not have.
+        if (!choice) return location.replace(relockHash(relock, sample, pipeline));
         name = testRes.test.name;
         lockedAt = testRes.test.lockedAt;
-        choice = {
-          fields: testRes.test.fields,
-          rows: [...new Set(testRes.test.rows.map((o) => o.row))],
-        };
       }
       const sampleRes = await getSample(sample);
       pipelineName = pipeline
@@ -170,7 +168,8 @@
     await saving.run(async () => {
       const res = await putTest(relock ?? name.trim(), lockOf(true));
       if (res.ok) {
-        if (relock) history.back();
+        // Back past the editor the choice was made in, to where Lock again was pressed.
+        if (relock) history.go(-2);
         else location.hash = '#/build';
       } else if (res.conflict) {
         conflict = res.conflict;

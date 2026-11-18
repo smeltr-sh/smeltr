@@ -124,7 +124,13 @@
   import { SampleChoices, recordsOf } from './sampleChoices.svelte';
   import PencilIcon from './PencilIcon.svelte';
   import { freeName, mintPipelineId } from './ids';
-  import { announcePipelineNames, newPipelineHash, withPipeline, type Making } from './nav';
+  import {
+    announcePipelineNames,
+    newPipelineHash,
+    withPipeline,
+    type Making,
+    type Relock,
+  } from './nav';
   import { ago } from './time';
   import { NOT_IN_DEMO, editable, mayCapture } from './access';
 
@@ -134,6 +140,7 @@
     sample = '',
     for: making,
     back,
+    relock,
   }: {
     id: string;
     showJson?: boolean;
@@ -142,6 +149,8 @@
     for?: Making;
     /** Where Save returns to, told the pipeline saved. */
     back?: string;
+    /** A test of this pipeline to lock again, on `sample`: locking hands the choice to its lock page. */
+    relock?: Relock;
   } = $props();
 
   const readOnly = !editable();
@@ -1051,7 +1060,9 @@
   function goLockTest(choice: LockChoice) {
     chooseLock(
       choice,
-      `#/build/tests/lock/${encodeURIComponent(loadedId)}/${encodeURIComponent(selectedSample)}`,
+      relock
+        ? `#/build/tests/relock/${encodeURIComponent(relock.test)}`
+        : `#/build/tests/lock/${encodeURIComponent(loadedId)}/${encodeURIComponent(selectedSample)}`,
     );
   }
 
@@ -1707,6 +1718,7 @@
         declared={{ before: sampleDeclared, after: runDeclared }}
         {lockBlocked}
         onlock={readOnly ? undefined : goLockTest}
+        relocking={!!relock}
         onsaveoutput={readOnly ? undefined : (rows) => (savingOutput = rows)}
         saveinput={!readOnly && choices.held && heldSession(selectedSample) === choices.held.session
           ? { records: heldCount(choices.held), onsave: () => (savingInput = true) }
