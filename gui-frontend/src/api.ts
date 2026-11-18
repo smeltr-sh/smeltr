@@ -4471,6 +4471,8 @@ export type MapNode = {
 export type RouteEdge = {
   group: string;
   route: string;
+  /** What a person reads: the route's `routeName`. */
+  name: string;
   condition?: string;
   source: string;
   pipeline: string;

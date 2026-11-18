@@ -357,6 +357,9 @@ impl MetricsHandle {
 /// The label `MetricsHandle` stamps on everything it writes.
 pub const THREAD_LABEL: &str = "thread";
 
+/// The label that names a route beside its `route` label, its id (`Subjects::resolve`).
+pub const ROUTE_NAME_LABEL: &str = "route_name";
+
 /// Config for the smeltr metrics source (`plan::topology::SourceKind::Metrics`).
 #[derive(Clone, Copy, Debug)]
 pub struct MetricsSourceConfig {
@@ -394,13 +397,18 @@ pub struct Subjects {
     pub destinations: Vec<String>,
     pub pipelines: Vec<String>,
     pub steps: Vec<Vec<String>>,
+    /// Each route's `RouteConfig::name` by its id.
+    #[serde(default)]
+    pub routes: std::collections::HashMap<String, String>,
 }
 
 impl Subjects {
     /// Rewrite every `source`/`destination`/`pipeline`/`function` label from its positional id to the author's
     /// name. A `function` resolves through its own pipeline's steps, so `pipeline` is read while still positional
     /// and rewritten last. A capture's thread labels by name already, since its source may be in no deployment.
-    pub fn resolve<K: AsRef<str>>(&self, labels: &mut [(K, String)]) {
+    ///
+    /// A `route` label keeps the route's id, which outlives a rename, and gains [`ROUTE_NAME_LABEL`] beside it.
+    pub fn resolve<K: AsRef<str> + From<&'static str>>(&self, labels: &mut Vec<(K, String)>) {
         if labels
             .iter()
             .any(|(k, v)| k.as_ref() == THREAD_LABEL && v == crate::worker::capture::CAPTURE_LABEL)
@@ -427,6 +435,11 @@ impl Subjects {
             if key.as_ref() == "pipeline" {
                 *value = resolve_subject(&self.pipelines, value);
             }
+        }
+        let named = labels.iter().any(|(k, _)| k.as_ref() == ROUTE_NAME_LABEL);
+        let route = labels.iter().find(|(k, _)| k.as_ref() == "route");
+        if let Some(name) = route.and_then(|(_, id)| self.routes.get(id)).filter(|_| !named) {
+            labels.push((ROUTE_NAME_LABEL.into(), name.clone()));
         }
     }
 }
@@ -880,11 +893,12 @@ mod tests {
         assert_eq!(parsed["value"], 12);
     }
 
-    /// A record names its subjects as the author did. A `function` resolves through its own pipeline's steps, and a
-    /// capture's labels are names already.
+    /// A record names its subjects as the author did. A `function` resolves through its own pipeline's steps, a route
+    /// keeps its id and gains its name, and a capture's labels are names already.
     #[test]
     fn metrics_source_labels_its_subjects_by_name() {
         let m = std::sync::Arc::new(Metrics::new());
+        m.incr("smeltr_route_out_total", &[("route", "r-1")], 1);
         m.incr(
             "smeltr_function_calls_total",
             &[("pipeline", "1"), ("function", "0")],
@@ -901,6 +915,7 @@ mod tests {
             destinations: vec!["search".to_string()],
             pipelines: vec!["audit".to_string(), "orders".to_string()],
             steps: vec![vec!["a".to_string()], vec!["parse".to_string()]],
+            routes: [("r-1".to_string(), "orders \u{2192} audit".to_string())].into(),
         };
         let mut src = MetricsSource::new(m, MetricsSourceConfig { bucket: Duration::ZERO })
             .with_subjects(std::sync::Arc::new(subjects));
@@ -916,6 +931,11 @@ mod tests {
         assert_eq!(
             (&calls["pipeline"], &calls["function"]),
             (&"orders".into(), &"parse".into())
+        );
+        let out = rows.iter().find(|r| r["metric"] == "smeltr_route_out_total").unwrap();
+        assert_eq!(
+            (&out["route"], &out["route_name"]),
+            (&"r-1".into(), &"orders \u{2192} audit".into())
         );
         let sent = rows.iter().find(|r| r["metric"] == "smeltr_rows_sent_total").unwrap();
         assert_eq!(sent["destination"], "search");

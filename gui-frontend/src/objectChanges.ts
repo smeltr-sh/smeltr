@@ -642,20 +642,21 @@ function recordCells(record: SampleDto['records'][number], sourced: boolean): st
     : [recordLine(record)];
 }
 
-/** "via route → destinations": where an end-to-end outcome went; empty for a pipeline test's. */
-export function sentText(o: Outcome): string {
-  return o.sent ? `via ${o.sent.route} → ${o.sent.destinations.join(', ')}` : '';
+/** "via route → destinations": where an end-to-end outcome went, its route named by `routeName`; empty for a
+ * pipeline test's. */
+export function sentText(o: Outcome, routeName = (id: string) => id): string {
+  return o.sent ? `via ${routeName(o.sent.route)} → ${o.sent.destinations.join(', ')}` : '';
 }
 
 /** `act "deny", severity "critical"`: one checked row's outcome as a line, `dropped` when it made no
  * document, and where an end-to-end one went. */
-export function outcomeText(o: Outcome): string {
+export function outcomeText(o: Outcome, routeName = (id: string) => id): string {
   const values = o.values
     ? Object.entries(o.values)
         .map(([field, value]) => `${field} ${JSON.stringify(value)}`)
         .join(', ')
     : 'dropped';
-  return [values, sentText(o)].filter((part) => part !== '').join(' ');
+  return [values, sentText(o, routeName)].filter((part) => part !== '').join(' ');
 }
 
 /** "dst, src on 5 rows": what a test checks. */
@@ -666,7 +667,11 @@ export function checksOf(t: { fields: string[]; rows: number }): string {
 /** A changed sample or test file as a card: its fields, and its records or
  * checked rows as rows. Git, not the two reads, says how the file
  * changed, so one that stopped or started reading still has its card. */
-export function fileChange(scope: string, file: FileSides): ObjectChange {
+export function fileChange(
+  scope: string,
+  file: FileSides,
+  routeName = (id: string) => id,
+): ObjectChange {
   const status: Status =
     file.status === 'A' ? 'added' : file.status === 'D' ? 'removed' : 'changed';
   const change: ObjectChange = {
@@ -703,7 +708,7 @@ export function fileChange(scope: string, file: FileSides): ObjectChange {
     change.fields = diffObjects(fieldsOf(file.before), fieldsOf(file.after));
     change.headers = ['checks'];
     const lines = (t: TestDto | undefined) =>
-      (t?.rows ?? []).map((o) => [`row ${o.row}: ${outcomeText(o)}`]);
+      (t?.rows ?? []).map((o) => [`row ${o.row}: ${outcomeText(o, routeName)}`]);
     change.rows = compareRows(lines(file.before), lines(file.after));
   }
   change.fields = change.fields.filter((f) => f.kind !== 'unchanged');
@@ -819,7 +824,8 @@ export function objectChanges(pairs: ScopePair[]): ObjectChange[] {
     for (const kind of [SAMPLES, TESTS]) {
       const files = (pair.files ?? []).filter((f) => f.kind === kind);
       files.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-      for (const file of files) out.push(fileChange(scope, file));
+      for (const file of files)
+        out.push(fileChange(scope, file, (id) => changedRouteName(pair, id) ?? id));
     }
     out.push(...lookupCards);
   }

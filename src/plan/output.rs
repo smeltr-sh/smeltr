@@ -189,7 +189,8 @@ pub struct RowException {
 /// on its own has no route.
 #[derive(Clone, Copy, Debug)]
 pub struct RaisedIn<'a> {
-    pub route: Option<&'a str>,
+    /// The route's id and its name.
+    pub route: Option<(&'a str, &'a str)>,
     pub pipeline: &'a str,
 }
 
@@ -206,6 +207,7 @@ pub fn tag_type() -> DataType {
     DataType::Struct(
         vec![
             ("route".to_string(), DataType::Str),
+            ("routeName".to_string(), DataType::Str),
             ("pipeline".to_string(), DataType::Str),
             ("exceptions".to_string(), DataType::Array(Box::new(exception))),
         ],
@@ -231,9 +233,10 @@ pub fn tag_column(
         value.clear();
         let object = variant::begin_object(&mut value);
         let mut entries = 0;
-        if let Some(route) = at.route {
-            put(&mut value, "route", route);
-            entries += 1;
+        if let Some((id, name)) = at.route {
+            put(&mut value, "route", id);
+            put(&mut value, "routeName", name);
+            entries += 2;
         }
         put(&mut value, "pipeline", at.pipeline);
         variant::put_key(&mut value, "exceptions");
