@@ -330,7 +330,7 @@ impl Committer for ObjectsCommitter {
 
 /// A new object's id: `ID_BYTES` random bytes as lowercase hex.
 pub fn object_id() -> String {
-    crate::leader::auth::random_bytes(ID_BYTES)
+    crate::crypto::random_bytes(ID_BYTES)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()

@@ -161,7 +161,7 @@ impl<T: Transport> Transport for Collector<T> {
 
 /// A fresh GUID.
 fn channel() -> String {
-    let hex: String = crate::leader::auth::random_bytes(16)
+    let hex: String = crate::crypto::random_bytes(16)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
