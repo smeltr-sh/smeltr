@@ -14,23 +14,26 @@ COPY tools/frontends.json tools/build-if-stale.mjs tools/
 COPY COMMERCIAL-LICENSE.md ./
 RUN node tools/build-if-stale.mjs
 
+# ---- wolfi: the builder's and the image's filesystems, from Wolfi's packages -------------------------------------
+# Wolfi is a glibc distribution built for containers, whose packages follow upstream within days, so an image
+# carries what its sources have fixed. Alpine's apk installs Wolfi's packages into roots of their own
+# (tools/release/wolfi-root.sh), and nothing of Alpine is copied out. The binary's glibc floor is the builder's
+# glibc: the image's root resolves after it, and Wolfi's glibc only moves forward and keeps its old symbol
+# versions, so the image never carries an older one.
+FROM alpine:3.23@sha256:469c9ea410b9215eaee7976ba6c0639039b444be8e5d638f7abbada189971eb2 AS wolfi
+ADD --checksum=sha256:f0031424cf46f7db780ce63a45f0fd6aa6f85f601e6bb3b7a91fe3d4d5b7d2cc \
+    https://packages.wolfi.dev/os/wolfi-signing.rsa.pub /etc/apk/keys/wolfi-signing.rsa.pub
+COPY tools/release/wolfi-root.sh /wolfi-root.sh
+RUN sh /wolfi-root.sh builder /builder && sh /wolfi-root.sh image /rootfs
+
 # ---- builder: the `smeltr` binary ------------------------------------------------------------------------------
-# The same base as the runtime stage, so the binary's glibc floor cannot land above the glibc it runs on. Build
-# against anything newer than RHEL 9's 2.34 and the image builds clean, then dies at startup.
-#
-# Every native dependency is vendored here. AWS-LC's FIPS module refuses to configure without cmake, Go and
-# perl. clang-devel is zstd-sys's bindgen. krb5 and Cyrus SASL want diffutils. build.rs reads the version with
-# git. Rust ships no RPM, so rustup fetches it -- the one step that needs the internet.
-FROM registry.access.redhat.com/ubi9/ubi:9.8 AS builder
-RUN dnf install -y \
-    gcc gcc-c++ make cmake pkgconf-pkg-config clang-devel golang \
-    perl perl-FindBin perl-IPC-Cmd perl-Data-Dumper \
-    libcurl-devel git diffutils \
-    && dnf clean all && rm -rf /var/cache/dnf
+# Rust comes from rustup, as the checks get it, so the image builds with the toolchain they test.
+FROM scratch AS builder
+COPY --from=wolfi /builder /
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --profile minimal --default-toolchain stable
 ENV PATH="/root/.cargo/bin:${PATH}"
-# `cargo auditable` writes the crate graph into the binary, so Trivy and the SBOM list its crates, not only ubi-micro's
+# `cargo auditable` writes the crate graph into the binary, so Trivy and the SBOM list its crates, not only the image's
 # packages. The record is a loadable section, which `strip` keeps. It names crates, so a vendored C library shows as
 # its sys crate's version, and advisories reach it only through RUSTSEC; the weekly check lists those libraries.
 RUN --mount=type=cache,target=/root/.cargo/registry \
@@ -64,65 +67,24 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
 FROM scratch AS export
 COPY --from=builder /smeltr /smeltr
 COPY tools/release/Dockerfile.handoff /Dockerfile
+COPY tools/release/wolfi-root.sh /wolfi-root.sh
 COPY compose.yaml /compose.yaml
 COPY THIRD-PARTY-NOTICES.md /THIRD-PARTY-NOTICES.md
 COPY LICENSE /LICENSE
-COPY UBI-EULA.txt /UBI-EULA.txt
 
 # ---- runtime ------------------------------------------------------------------------------------------------
-# UBI9 micro carries no package manager, so a full UBI9 installs into a copy of it, and the image starts from
-# that copy alone. The binary links nothing but glibc, so git is the whole surface: it serves the leader's config
-# repository through `git http-backend`, and libcurl carries its push to a host, which is HTTPS only
-# (src/leader/remote.rs). git-core goes in without its package's requirements, which bring ssh, a pager, PAM and
-# util-linux that nothing here runs; libcurl is what its binaries link. ca-certificates verifies the TLS at the far
-# end. A worker fetches in-process through gix and spawns no git.
-FROM registry.access.redhat.com/ubi9/ubi-micro:9.8 AS micro
-FROM registry.access.redhat.com/ubi9/ubi:9.8 AS rootfs
-COPY --from=micro / /rootfs
-# The builder's own useradd writes the account, so the image needs no shadow-utils, whose gpasswd, newgrp and chage
-# are the only setuid files it would carry. Without them nothing in the image can gain privilege.
-# A fixed number, not a name: a kubelet enforcing runAsNonRoot cannot read this image's passwd file. A pod
-# mounting a volume here needs `fsGroup: 1000`.
-RUN dnf install -y --installroot=/rootfs --releasever=9 --setopt=install_weak_deps=False --nodocs \
-      ca-certificates libcurl \
-    && dnf download --destdir=/tmp --releasever=9 git-core \
-    && rpm --root /rootfs -i --nodeps --excludedocs /tmp/git-core-*.rpm \
-    && dnf upgrade -y --installroot=/rootfs --releasever=9 --nodocs \
-    && dnf --installroot=/rootfs clean all \
-    && groupadd --root /rootfs --gid 1000 smeltr \
-    && useradd --root /rootfs --uid 1000 --gid 1000 --create-home --home-dir /var/lib/smeltr \
-         --shell /sbin/nologin smeltr \
-    && rpm --root /rootfs -e --nodeps shadow-utils \
-    && test -z "$(find /rootfs -xdev -perm /6000 -type f)"
-
-# DISA's RHEL 9 STIG, as far as it reaches into an image (`just stig` reports the rest). Each line is the fix the
-# STIG profile in ComplianceAsCode gives, with its values. The crypto policy is generated here, by the same
-# crypto-policies the image carries, since the image has no python to run update-crypto-policies. What is left
-# fails because it belongs to the host or the runtime: partitions, /dev/shm's mount options, resolv.conf.
-RUN dnf upgrade -y crypto-policies \
-    && test "$(rpm -q crypto-policies)" = "$(rpm --root /rootfs -q crypto-policies)" \
-    && printf 'cipher@SSH=AES-256-GCM AES-256-CTR AES-128-GCM AES-128-CTR\nmac@SSH=HMAC-SHA2-256 HMAC-SHA2-512\n' \
-      > /etc/crypto-policies/policies/modules/STIG.pmod \
-    && update-crypto-policies --set FIPS:STIG \
-    && cp -a /etc/crypto-policies/. /rootfs/etc/crypto-policies/ \
-    && sed -i -E 's/^([^#]*\bumask)[[:space:]]+[[:digit:]]+/\1 077/g' /rootfs/etc/bashrc \
-    && echo 'umask 077' >> /rootfs/etc/profile \
-    && find /rootfs/root -maxdepth 1 -name '.*' -type f -exec chmod u-s,g-wxs,o= {} +
-
+# The image is the Wolfi root alone, with no shell and no package manager. `Dockerfile.handoff` builds the same.
 FROM scratch
-COPY --from=rootfs /rootfs /
+COPY --from=wolfi /rootfs /
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 COPY --from=builder /smeltr /usr/local/bin/smeltr
-# The UBI EULA rides in every image built on UBI: its section 2 asks for that.
-COPY LICENSE THIRD-PARTY-NOTICES.md UBI-EULA.txt /usr/share/doc/smeltr/
+COPY LICENSE THIRD-PARTY-NOTICES.md /usr/share/doc/smeltr/
 
-# The image starts from scratch, so it carries only these labels. They name smeltr, not Red Hat, so the published
-# image does not read as theirs or as endorsed by them (UBI-EULA.txt, section 2).
 ARG VERSION=""
 LABEL org.opencontainers.image.title="smeltr" \
       org.opencontainers.image.description="Smeltr leader and worker" \
       org.opencontainers.image.vendor="John Pavlik" \
-      org.opencontainers.image.licenses="BUSL-1.1 AND LicenseRef-scancode-rh-ubi-eula-2019" \
+      org.opencontainers.image.licenses="BUSL-1.1" \
       org.opencontainers.image.version="${VERSION}" \
       name="smeltr" \
       summary="Smeltr leader and worker" \

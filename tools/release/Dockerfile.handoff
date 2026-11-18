@@ -1,68 +1,34 @@
 # The final image, from a binary already compiled. `Dockerfile`'s export stage writes the folder this belongs to:
-# this file, named `Dockerfile`, with `smeltr`, `compose.yaml`, `LICENSE`, `THIRD-PARTY-NOTICES.md` and
-# `UBI-EULA.txt` beside it.
+# this file, named `Dockerfile`, with `smeltr`, `wolfi-root.sh`, `compose.yaml`, `LICENSE` and
+# `THIRD-PARTY-NOTICES.md` beside it.
 # Nothing compiles here.
 #
-# The binary and this base must be the same UBI9, since the base it was compiled on sets its glibc floor. A newer
-# UBI9 is safe, because glibc keeps its old symbol versions. An older one fails at container start, not at build.
-# UBI9 micro carries no package manager, so a full UBI9 installs into a copy of it, and the image starts from
-# that copy alone. The binary links nothing but glibc, so git is the whole surface: it serves the leader's config
-# repository through `git http-backend`, and libcurl carries its push to a host, which is HTTPS only
-# (src/leader/remote.rs). git-core goes in without its package's requirements, which bring ssh, a pager, PAM and
-# util-linux that nothing here runs; libcurl is what its binaries link. ca-certificates verifies the TLS at the far
-# end. A worker fetches in-process through gix and spawns no git.
-FROM registry.access.redhat.com/ubi9/ubi-micro:9.8 AS micro
-FROM registry.access.redhat.com/ubi9/ubi:9.8 AS rootfs
-COPY --from=micro / /rootfs
-# The builder's own useradd writes the account, so the image needs no shadow-utils, whose gpasswd, newgrp and chage
-# are the only setuid files it would carry. Without them nothing in the image can gain privilege.
-# A fixed number, not a name: a kubelet enforcing runAsNonRoot cannot read this image's passwd file. A pod
-# mounting a volume here needs `fsGroup: 1000`.
-RUN dnf install -y --installroot=/rootfs --releasever=9 --setopt=install_weak_deps=False --nodocs \
-      ca-certificates libcurl \
-    && dnf download --destdir=/tmp --releasever=9 git-core \
-    && rpm --root /rootfs -i --nodeps --excludedocs /tmp/git-core-*.rpm \
-    && dnf upgrade -y --installroot=/rootfs --releasever=9 --nodocs \
-    && dnf --installroot=/rootfs clean all \
-    && groupadd --root /rootfs --gid 1000 smeltr \
-    && useradd --root /rootfs --uid 1000 --gid 1000 --create-home --home-dir /var/lib/smeltr \
-         --shell /sbin/nologin smeltr \
-    && rpm --root /rootfs -e --nodeps shadow-utils \
-    && test -z "$(find /rootfs -xdev -perm /6000 -type f)"
-
-# DISA's RHEL 9 STIG, as far as it reaches into an image (`just stig` reports the rest). Each line is the fix the
-# STIG profile in ComplianceAsCode gives, with its values. The crypto policy is generated here, by the same
-# crypto-policies the image carries, since the image has no python to run update-crypto-policies. What is left
-# fails because it belongs to the host or the runtime: partitions, /dev/shm's mount options, resolv.conf.
-RUN dnf upgrade -y crypto-policies \
-    && test "$(rpm -q crypto-policies)" = "$(rpm --root /rootfs -q crypto-policies)" \
-    && printf 'cipher@SSH=AES-256-GCM AES-256-CTR AES-128-GCM AES-128-CTR\nmac@SSH=HMAC-SHA2-256 HMAC-SHA2-512\n' \
-      > /etc/crypto-policies/policies/modules/STIG.pmod \
-    && update-crypto-policies --set FIPS:STIG \
-    && cp -a /etc/crypto-policies/. /rootfs/etc/crypto-policies/ \
-    && sed -i -E 's/^([^#]*\bumask)[[:space:]]+[[:digit:]]+/\1 077/g' /rootfs/etc/bashrc \
-    && echo 'umask 077' >> /rootfs/etc/profile \
-    && find /rootfs/root -maxdepth 1 -name '.*' -type f -exec chmod u-s,g-wxs,o= {} +
+# The image is a root of Wolfi's packages (wolfi-root.sh) with the binary added, as `Dockerfile` builds it. Wolfi's
+# glibc only moves forward and keeps its old symbol versions, so a root resolved after the binary was compiled
+# carries the glibc it was compiled against or a newer one. Building needs packages.wolfi.dev.
+FROM alpine:3.23@sha256:469c9ea410b9215eaee7976ba6c0639039b444be8e5d638f7abbada189971eb2 AS wolfi
+ADD --checksum=sha256:f0031424cf46f7db780ce63a45f0fd6aa6f85f601e6bb3b7a91fe3d4d5b7d2cc \
+    https://packages.wolfi.dev/os/wolfi-signing.rsa.pub /etc/apk/keys/wolfi-signing.rsa.pub
+COPY wolfi-root.sh /wolfi-root.sh
+RUN sh /wolfi-root.sh image /rootfs
 
 FROM scratch
-COPY --from=rootfs /rootfs /
+COPY --from=wolfi /rootfs /
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # The mode is set here rather than carried: the binary travels as a loose file, and an archive can drop its
 # execute bit. No `# syntax=` directive above, which would send BuildKit to Docker Hub for a frontend image an
 # air-gapped site cannot reach.
 COPY --chmod=0755 smeltr /usr/local/bin/smeltr
-# The UBI EULA rides in every image built on UBI: its section 2 asks for that.
-COPY LICENSE THIRD-PARTY-NOTICES.md UBI-EULA.txt /usr/share/doc/smeltr/
+COPY LICENSE THIRD-PARTY-NOTICES.md /usr/share/doc/smeltr/
 
-# The image starts from scratch, so it carries only these labels. They name smeltr, not Red Hat, so the published
-# image does not read as theirs or as endorsed by them (UBI-EULA.txt, section 2).
+# The image starts from scratch, so it carries only these labels.
 # `just dist` passes the release as VERSION; a build here without `--build-arg VERSION=<release>` leaves it blank.
 ARG VERSION=""
 LABEL org.opencontainers.image.title="smeltr" \
       org.opencontainers.image.description="Smeltr leader and worker" \
       org.opencontainers.image.vendor="John Pavlik" \
-      org.opencontainers.image.licenses="BUSL-1.1 AND LicenseRef-scancode-rh-ubi-eula-2019" \
+      org.opencontainers.image.licenses="BUSL-1.1" \
       org.opencontainers.image.version="${VERSION}" \
       name="smeltr" \
       summary="Smeltr leader and worker" \
