@@ -146,6 +146,8 @@ pub enum Preset {
     Sensitive,
     Balanced,
     Quiet,
+    /// Judged as at Balanced, so its range is drawn and it is ranked, but it never warns or informs.
+    Off,
 }
 
 /// The preset a source is judged at, and the one its senders are.
@@ -178,6 +180,7 @@ impl Default for Presets {
 }
 
 impl Preset {
+    /// The presets that warn.
     const ALL: [Preset; 4] = [Preset::Fast, Preset::Sensitive, Preset::Balanced, Preset::Quiet];
 
     /// How much wider than the ratios the range is, as a share of each edge.
@@ -185,7 +188,7 @@ impl Preset {
         match self {
             Preset::Fast | Preset::Quiet => 0.5,
             Preset::Sensitive => 0.2,
-            Preset::Balanced => 0.3,
+            Preset::Balanced | Preset::Off => 0.3,
         }
     }
 
@@ -194,9 +197,14 @@ impl Preset {
         match self {
             Preset::Fast => 1,
             Preset::Sensitive => 3,
-            Preset::Balanced => 4,
+            Preset::Balanced | Preset::Off => 4,
             Preset::Quiet => 6,
         }
+    }
+
+    /// Whether a reading outside the range at this preset warns, or informs.
+    fn warns(self) -> bool {
+        self != Preset::Off
     }
 
     /// The most readings any preset waits.
@@ -728,7 +736,8 @@ fn compute(store: &RegistryStore, ended_ms: i64, learning: &Marks, learned: &Lea
                     let ended = normal.ended_below(normal.watch, of, &warned, ended_ms);
                     ended.max(normal.ended_below_ms).is_some_and(|ended| ended > since)
                 });
-            let outside = outside(&judged, gap.as_ref(), warned.held_since.is_some() && !quiet_back);
+            let outside = outside(&judged, gap.as_ref(), warned.held_since.is_some() && !quiet_back)
+                .filter(|_| learning.presets_of(&key.0, &key.1).rows.warns());
             let (group, source) = key.clone();
             (!judged.is_empty() || gap.is_some() || outside.is_some()).then_some(Reading {
                 group,
@@ -781,7 +790,8 @@ fn sender_readings(
                 .iter()
                 .filter_map(|normal| judge(&rows, warned, normal, ended_ms))
                 .collect();
-            let outside = outside(&judged, None, warned.held_since.is_some()).filter(|o| *o == Outside::Below);
+            let outside = outside(&judged, None, warned.held_since.is_some())
+                .filter(|o| *o == Outside::Below && learning.presets_of(&key.0, &key.1).senders.warns());
             let (group, source, sender) = key;
             (!judged.is_empty() || outside.is_some()).then_some(Reading {
                 group,
@@ -1837,6 +1847,17 @@ mod tests {
         }
     }
 
+    /// At Off a stop is judged as at Balanced, so it reads below its range, but it never warns.
+    #[test]
+    fn a_source_at_off_is_judged_but_never_warns() {
+        let stopped = store_with(7, |at| Some(if at >= END - 12 * FIVE { 0.0 } else { 100.0 }));
+        let r = reading_at(&stopped, END, &at_preset(Preset::Off, false)).unwrap();
+        let balanced = reading_at(&stopped, END, &at_preset(Preset::Balanced, false)).unwrap();
+        assert_eq!(balanced.outside, Some(Outside::Below));
+        assert_eq!(r.judged, balanced.judged);
+        assert_eq!(r.outside, None);
+    }
+
     /// `rows(bucket)` sent by the `devname` `value` of `g`'s `s`, in each bucket [`store_with`] reads its rows in.
     fn send(store: &RegistryStore, days: i64, value: &str, rows: impl Fn(i64) -> Option<u64>) {
         use crate::heartbeat::{SenderCounts, SenderRows, StreamReport};
@@ -1952,6 +1973,19 @@ mod tests {
         assert_eq!(
             read(&said(Some(fw("fw-01")), began)),
             BTreeMap::from([("fw-01".into(), None), ("fw-02".into(), below), ("fw-07".into(), None)])
+        );
+    }
+
+    /// Senders at Off are judged but never warn, and their source's preset is its own.
+    #[test]
+    fn senders_at_off_never_warn() {
+        let (store, _) = two_senders_dropped();
+        let read = sender_readings_at_end(&store, &at_preset(Preset::Off, true));
+        assert!(read.values().all(Option::is_none), "{read:?}");
+        assert_eq!(read.len(), 3, "each is still judged");
+        assert_eq!(
+            reading_at(&store, END, &at_preset(Preset::Off, true)).map(|r| r.outside),
+            reading_at(&store, END, &Marks::default()).map(|r| r.outside)
         );
     }
 
