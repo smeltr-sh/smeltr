@@ -14,6 +14,9 @@
   export const LOADING = 'Wait for the page to finish loading.';
   export const FIRST_PAGE = 'This is the first page.';
   export const LAST_PAGE = 'This is the last page.';
+  /** Why Lock this test again is off on another sample than the test's own, `sample` by name. */
+  export const ownSample = (sample: string) =>
+    `A test runs over its own sample. Choose the sample ${sample} to lock this test again.`;
 </script>
 
 <script lang="ts">

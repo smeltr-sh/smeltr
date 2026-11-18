@@ -10,7 +10,7 @@
   holds, else on the sample this pipeline last ran over in this browser.
 -->
 <script lang="ts">
-  import Button, { BUSY, INCOMPLETE, SAVE_FIRST } from './Button.svelte';
+  import Button, { BUSY, INCOMPLETE, SAVE_FIRST, ownSample } from './Button.svelte';
   import StateMark from './StateMark.svelte';
   import ExportDialog from './ExportDialog.svelte';
   import InlineError from './InlineError.svelte';
@@ -127,6 +127,7 @@
   import {
     announcePipelineNames,
     newPipelineHash,
+    relockChosenHash,
     withPipeline,
     type Making,
     type Relock,
@@ -1035,13 +1036,15 @@
   // Locking a test needs a saved pipeline to attach it to, a saved sample to
   // name, and a run that actually produced the output being locked. The lock
   // page runs the saved pipeline, so an unsaved edit would lock what is not on
-  // screen.
+  // screen. A test locked again runs over its own sample.
   let lockBlocked = $derived(
     isDirty
       ? SAVE_FIRST
-      : loadedId !== '' && selectedSample !== '' && !heldSession(selectedSample) && result?.ok
-        ? ''
-        : INCOMPLETE,
+      : relock && selectedSample !== relock.sample
+        ? ownSample(choices.name(relock.sample))
+        : loadedId !== '' && selectedSample !== '' && !heldSession(selectedSample) && result?.ok
+          ? ''
+          : INCOMPLETE,
   );
 
   /** The output rows `rows` names, as a sample holds them. It re-runs the steps the grid ran, at the instant it ran
@@ -1061,7 +1064,7 @@
     chooseLock(
       choice,
       relock
-        ? `#/build/tests/relock/${encodeURIComponent(relock.test)}`
+        ? relockChosenHash(relock.test)
         : `#/build/tests/lock/${encodeURIComponent(loadedId)}/${encodeURIComponent(selectedSample)}`,
     );
   }

@@ -67,8 +67,7 @@
   let sampleSource = $state('');
   let sampleRecords = $state<string[]>([]);
 
-  /** What `now()` reads: the instant this screen first ran, or, when locking again, the instant the locked
-   * test was locked. */
+  /** What `now()` reads: the instant this screen first ran. A test locked again is locked anew, at this instant too. */
   let atMicros = $state(0);
   /** What the leader's run holds of the fields and rows to lock: what this screen shows, and what locking stores. */
   let locked = $state<Locked>({ rowsIn: 0, fields: [], rows: [] });
@@ -108,7 +107,6 @@
     loadFailed = false;
     loadError = '';
     try {
-      let lockedAt: number | null = null;
       if (relock) {
         const testRes = await getTest(relock);
         if (!testRes.test)
@@ -121,7 +119,6 @@
         // Its fields and rows are chosen again where a fresh lock's are: a renamed field is one it does not have.
         if (!choice) return location.replace(relockHash(relock, sample, pipeline));
         name = testRes.test.name;
-        lockedAt = testRes.test.lockedAt;
       }
       const sampleRes = await getSample(sample);
       pipelineName = pipeline
@@ -137,7 +134,7 @@
       sampleSource = sampleRes.sample.source ?? '';
       sampleRecords = sampleRes.sample.records.map((r) => recordLine(r));
 
-      atMicros = lockedAt ?? Date.now() * 1000;
+      atMicros = Date.now() * 1000;
       const res = await previewLock(lockOf(false));
       previewOk = res.ok;
       previewErrors = res.errors;

@@ -556,6 +556,11 @@ test('a test locked again after a rename chooses its fields in the editor, as a 
     name: 'orders',
     records: [{ _raw: '{"id":2}' }],
   });
+  await api.put(`/api/areas/shared/samples/returns-sample${on}`, {
+    id: 'returns-sample',
+    name: 'returns',
+    records: [{ _raw: '{"id":3}' }, { _raw: '{"id":4}' }],
+  });
   await api.put(`/api/areas/shared/tests/orders-keep-id${on}`, {
     name: 'orders keep their id',
     pipeline: 'orders',
@@ -578,13 +583,35 @@ test('a test locked again after a rename chooses its fields in the editor, as a 
   // The editor, on the test's sample: the renamed field is on screen to lock.
   await expect(admin.getByText(/on 1 row on screen/)).toBeVisible({ timeout: 30_000 });
   await expect(admin.getByRole('columnheader', { name: /order_id/ })).toBeVisible();
-  await admin.getByRole('button', { name: 'Lock this test again' }).click();
+  // The test runs over its own sample, so it is locked again only on that one.
+  const relock = admin.getByRole('button', { name: 'Lock this test again' });
+  const choose = async (sample: string) => {
+    await admin.getByRole('button', { name: 'Choose a sample' }).click();
+    await admin
+      .getByRole('listbox', { name: 'Samples' })
+      .getByRole('option', { name: sample })
+      .click();
+  };
+  await choose('returns');
+  await expect(relock).toHaveAccessibleDescription(
+    'A test runs over its own sample. Choose the sample orders to lock this test again.',
+  );
+  await expect(admin.getByText(/on 2 rows on screen/)).toBeVisible({ timeout: 30_000 });
+  await choose('orders');
+  await expect(admin.getByText(/on 1 row on screen/)).toBeVisible({ timeout: 30_000 });
+  await expect(relock).toBeEnabled();
+  await relock.click();
   await expect(admin.getByRole('heading', { name: 'Lock this test again' })).toBeVisible();
   await admin.getByRole('button', { name: 'Lock the test' }).click();
   await expect(admin).toHaveURL(/#\/changes\/review\/renamed/);
   const { test } = await api.get(`/api/areas/shared/tests/orders-keep-id${on}`);
   expect(test.fields).toContain('order_id');
   expect(test.fields).not.toContain('id');
+  // Locked anew, at the instant it was locked again.
+  expect(test.lockedAt).toBeGreaterThan(0);
+  // A later Lock again chooses again: the choice just made was for that lock alone.
+  await goto(admin, leader, '#/build/tests/relock/orders-keep-id');
+  await expect(admin).toHaveURL(/#\/build\/pipelines\/orders\/for\/orders-sample\?relock=/);
 });
 
 test('History shows who changed what, who deployed it, and when', async ({

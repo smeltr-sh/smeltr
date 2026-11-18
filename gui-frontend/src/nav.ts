@@ -164,7 +164,6 @@ export type Route =
  * new pipeline starts out producing the schemas they accept. */
 export type Making = { source: string; condition?: string; group?: string; to?: string[] };
 
-/** The Routes page, opening a new route that takes `make`. Save returns to `back`. */
 /** A failing test being locked again (`relockHash`): its id, and the sample it runs over. */
 export type Relock = { test: string; sample: string };
 
@@ -177,12 +176,19 @@ export function relockHash(test: string, sample: string, pipeline?: string): str
     : `#/build/routes/sample?sample=${encodeURIComponent(sample)}&${relock}`;
 }
 
+/** The lock page test `test` is locked again on, once its fields and rows are chosen. It is not the address the
+ * test's Lock again opens, so a choice handed to it is never found by a later Lock again. */
+export function relockChosenHash(test: string): string {
+  return `#/build/tests/relock/${encodeURIComponent(test)}?chosen`;
+}
+
 /** The test `params` lock again on `sample`, if they name one. */
 function relockFrom(params: URLSearchParams, sample: string | null): { relock?: Relock } {
   const test = params.get('relock');
   return test && sample ? { relock: { test, sample } } : {};
 }
 
+/** The Routes page, opening a new route that takes `make`. Save returns to `back`. */
 export function newRouteHash(make: Making, back?: string): string {
   const q = new URLSearchParams({ new: make.source });
   if (make.condition) q.set('condition', make.condition);
