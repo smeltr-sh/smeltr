@@ -340,6 +340,24 @@ fn by_metric(resources: Nested<(Arc<Family>, DataPoint)>) -> Nested<Metric> {
         .collect()
 }
 
+/// Opens `c` as a live destination, named `name` in its log lines and counting into `metrics` as destination `id`.
+pub fn open(
+    c: &OtlpDestinationConfig,
+    id: crate::core::id::DestId,
+    name: &str,
+    metrics: crate::metrics::MetricsHandle,
+    secrets: &crate::plan::topology::HeldSecrets,
+) -> Result<Box<dyn crate::io::Destination>, IoError> {
+    use crate::io::{http, http_post};
+    let credentials = http::credential_headers("otlp destination", &c.http.credentials, secrets)?;
+    let config = http::agent_config(c.http.tls.as_ref(), secrets)?;
+    let make = || http_post::transport_as(&c.http, super::Encoding::Protobuf.content_type(), &credentials, &config);
+    let protocol = Otlp::new(c).with_unwritten(Unwritten::new(metrics.clone(), id, name));
+    Ok(Box::new(http_post::destination_of(
+        protocol, &c.http, make, name, metrics, id,
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
