@@ -1,5 +1,5 @@
-# A pushed release tag (`v1.2.0`) builds that commit's release archives and image, and puts them on a draft
-# Release to publish by hand. `just cut-release` makes the tag; nothing here records, commits or tags. A
+# A pushed release tag (`v1.2.0`) builds that commit's release archives and image, and publishes them as its
+# Release. `just cut-release` makes the tag; nothing here records, commits or tags. A
 # pre-release tag (`v1.2.0-rc1`) is a trial, run by hand on its tag from the Actions tab or with
 # `gh workflow run release.yml --ref v1.2.0-rc1 -f windows=false`: it needs no fixtures, drafts a pre-release,
 # and pushes only its own image tag. Without Windows, the image is out as soon as Linux is built.
@@ -113,7 +113,7 @@ jobs:
           path: |
             smeltr-windows.zip
 
-  # Nothing is published until every archive is built: the image and the draft go out together.
+  # Nothing is published until every archive is built: the image and the Release go out together.
   publish:
     needs: [linux, windows]
     # A pre-release run without Windows skips that job, and a skipped need would skip this one too.
@@ -177,7 +177,7 @@ jobs:
         run: |
           cosign sign --yes "$REF"
           cosign attest --yes --type cyclonedx --predicate linux/smeltr-sbom.cdx.json "$REF"
-      - name: Draft the Release
+      - name: Publish the Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           WINDOWS: ${{ needs.windows.result }}
@@ -188,13 +188,13 @@ jobs:
           # A release's notes are its page on smeltr.sh, as Markdown; a pre-release has none.
           prerelease= notes= latest=
           case "$GITHUB_REF_NAME" in
-            *-*) prerelease=--prerelease ;;
+            *-*) prerelease='--prerelease --draft' ;;
             *) notes=$(node repo/website/scripts/release-notes.js "${GITHUB_REF_NAME#v}") ;;
           esac
           assets=(linux/smeltr-linux.tar.gz)
           if [ "$WINDOWS" = success ]; then assets+=(windows/smeltr-windows.zip); fi
           # A patch to an older line is not the release GitHub shows as latest.
           if [ -n "$OLDER" ]; then latest=--latest=false; fi
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag $prerelease $latest \
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag $prerelease $latest \
             --title "${GITHUB_REF_NAME#v}" --notes "$notes" \
             "${assets[@]}" smeltr-extras.zip
