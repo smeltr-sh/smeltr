@@ -665,7 +665,6 @@ bench-log:
 [env("AZURE_TEST_ENDPOINT", "http://127.0.0.1:10000/devstoreaccount1")]
 [env("AZURE_QUEUE_TEST_ENDPOINT", "http://127.0.0.1:10001/devstoreaccount1")]
 [env("PUBSUB_TEST_ENDPOINT", "http://127.0.0.1:8085")]
-[env("EVENT_HUBS_TEST_BROKERS", "localhost:9092")]
 [env("SFTP_TEST_HOST", "127.0.0.1:2222")]
 [env("POSTGRES_TEST_HOST", "127.0.0.1:15432")]
 [env("MYSQL_TEST_HOST", "127.0.0.1:13306")]

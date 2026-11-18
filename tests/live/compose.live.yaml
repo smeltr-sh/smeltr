@@ -141,6 +141,10 @@ services:
       # Queue URLs on localhost: the default names a host under localstack.cloud, which resolves only with public DNS.
       LOCALSTACK_HOST: localhost:4566
       SQS_ENDPOINT_STRATEGY: "off"
+    # LocalStack holds a temporary file per upload in flight: Docker's default of 1024 refuses puts once file
+    # destinations write in parallel.
+    ulimits:
+      nofile: 16384
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health || exit 1"]
       interval: 5s
