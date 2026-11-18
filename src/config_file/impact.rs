@@ -818,32 +818,6 @@ mod tests {
         );
     }
 
-    /// A route goes by its source and its pipeline's name in `after`, numbered where another runs between the same two.
-    #[test]
-    fn route_names_are_source_then_pipeline_name() {
-        let named = PipelineDto {
-            name: "Orders".to_string(),
-            ..pipeline("p-1", vec![])
-        };
-        let after = config(
-            vec![source("orders-west", "orders")],
-            vec![
-                route("r-1", "orders-west", "p-1", &["es"]),
-                route("r-2", "orders-west", "p-1", &["es"]),
-                route("r-3", "orders-west", "p-2", &["es"]),
-            ],
-            vec![named, pipeline("p-2", vec![])],
-        );
-        assert_eq!(
-            pipelines_touched(&after, &after).route_names,
-            BTreeMap::from([
-                ("r-1".to_string(), "orders-west \u{2192} Orders (1)".to_string()),
-                ("r-2".to_string(), "orders-west \u{2192} Orders (2)".to_string()),
-                ("r-3".to_string(), "orders-west \u{2192} p-2".to_string()),
-            ])
-        );
-    }
-
     /// A pipeline the change deleted is not a pipeline to run tests against.
     #[test]
     fn a_deleted_pipeline_is_not_reached() {

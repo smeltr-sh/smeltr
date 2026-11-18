@@ -1,43 +1,27 @@
 // @vitest-environment happy-dom
-import { afterEach, describe, expect, it } from 'vitest';
+import { expect, it } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import ChangeTests from './ChangeTests.svelte';
 
-let shown: ReturnType<typeof mount> | undefined;
-
-afterEach(async () => {
-  if (shown) await unmount(shown);
-  shown = undefined;
-  document.body.innerHTML = '';
-});
-
-describe('a reached route', () => {
-  it('goes by its name, or by its id where the leader names none', () => {
-    const target = document.body.appendChild(document.createElement('div'));
-    shown = mount(ChangeTests, {
-      target,
-      props: {
-        branch: 'b',
-        touchedByScope: [
-          {
-            area: 'firewalls',
-            pipelines: [],
-            routes: [
-              { id: 'route-cuqg6cce', reasons: [{ type: 'sourceChanged', source: 'fortigate' }] },
-              { id: 'route-unnamed', reasons: [{ type: 'edited' }] },
-            ],
-            routeNames: { 'route-cuqg6cce': 'fortigate → fortigate' },
-          },
-        ],
-        testResults: [],
-        testSummaryByKey: new Map(),
-        testsLoading: false,
-        testsError: '',
-        pipelineName: (_scope: string, id: string) => id,
-      },
-    });
-    flushSync();
-    const titles = [...target.querySelectorAll('.pipeline-id')].map((e) => e.textContent);
-    expect(titles).toEqual(['fortigate → fortigate', 'route-unnamed']);
+it('titles a reached route by its name, or its id where the leader names none', async () => {
+  const target = document.body.appendChild(document.createElement('div'));
+  const routes = ['r-1', 'r-2'].map((id) => ({ id, reasons: [{ type: 'edited' as const }] }));
+  const shown = mount(ChangeTests, {
+    target,
+    props: {
+      branch: 'b',
+      touchedByScope: [
+        { area: 'g', pipelines: [], routes, routeNames: { 'r-1': 'fortigate \u2192 fortigate' } },
+      ],
+      testResults: [],
+      testSummaryByKey: new Map(),
+      testsLoading: false,
+      testsError: '',
+      pipelineName: (_scope: string, id: string) => id,
+    },
   });
+  flushSync();
+  const titles = [...target.querySelectorAll('.pipeline-id')].map((e) => e.textContent);
+  expect(titles).toEqual(['fortigate \u2192 fortigate', 'r-2']);
+  await unmount(shown);
 });
