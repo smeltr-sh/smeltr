@@ -10,7 +10,7 @@
   holds, else on the sample this pipeline last ran over in this browser.
 -->
 <script lang="ts">
-  import Button, { BUSY, INCOMPLETE, SAVE_FIRST, ownSample } from './Button.svelte';
+  import Button, { BUSY, INCOMPLETE, SAVE_FIRST } from './Button.svelte';
   import StateMark from './StateMark.svelte';
   import ExportDialog from './ExportDialog.svelte';
   import InlineError from './InlineError.svelte';
@@ -1033,18 +1033,19 @@
     }
   }
 
+  /** Lock locks `relock` again while it is on the test's own sample; on another it locks a new test there. */
+  let relocking = $derived(!!relock && selectedSample === relock.sample);
+
   // Locking a test needs a saved pipeline to attach it to, a saved sample to
   // name, and a run that actually produced the output being locked. The lock
   // page runs the saved pipeline, so an unsaved edit would lock what is not on
-  // screen. A test locked again runs over its own sample.
+  // screen.
   let lockBlocked = $derived(
     isDirty
       ? SAVE_FIRST
-      : relock && selectedSample !== relock.sample
-        ? ownSample(choices.name(relock.sample))
-        : loadedId !== '' && selectedSample !== '' && !heldSession(selectedSample) && result?.ok
-          ? ''
-          : INCOMPLETE,
+      : loadedId !== '' && selectedSample !== '' && !heldSession(selectedSample) && result?.ok
+        ? ''
+        : INCOMPLETE,
   );
 
   /** The output rows `rows` names, as a sample holds them. It re-runs the steps the grid ran, at the instant it ran
@@ -1063,8 +1064,8 @@
   function goLockTest(choice: LockChoice) {
     chooseLock(
       choice,
-      relock
-        ? relockChosenHash(relock.test)
+      relocking
+        ? relockChosenHash(relock!.test)
         : `#/build/tests/lock/${encodeURIComponent(loadedId)}/${encodeURIComponent(selectedSample)}`,
     );
   }
@@ -1721,7 +1722,7 @@
         declared={{ before: sampleDeclared, after: runDeclared }}
         {lockBlocked}
         onlock={readOnly ? undefined : goLockTest}
-        relocking={!!relock}
+        {relocking}
         onsaveoutput={readOnly ? undefined : (rows) => (savingOutput = rows)}
         saveinput={!readOnly && choices.held && heldSession(selectedSample) === choices.held.session
           ? { records: heldCount(choices.held), onsave: () => (savingInput = true) }

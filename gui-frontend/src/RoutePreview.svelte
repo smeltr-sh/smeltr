@@ -10,7 +10,7 @@
   record made on each route, beside the record as the sample holds it.
 -->
 <script lang="ts">
-  import Button, { BUSY, LOADING, ownSample } from './Button.svelte';
+  import Button, { BUSY, LOADING } from './Button.svelte';
   import RecordsGrid, { type FindChip, type GridRow, type LeadColumn } from './RecordsGrid.svelte';
   import { untrack } from 'svelte';
   import { unreported } from './errors.svelte';
@@ -70,23 +70,23 @@
     if (choices.sourceOf(selected)) untrack(run);
   });
   let grid = $state<RecordsGrid | undefined>();
+  /** Lock locks `relock` again while it is on the test's own sample; on another it locks a new test there. */
+  let relocking = $derived(!!relock && selected === relock.sample);
 
   /** Why Lock this as a test is off, or `''` when it is on. A test runs the routes as saved over a saved sample, so it
    * locks a run of exactly those. */
   let lockBlocked = $derived(
-    relock && selected !== relock.sample
-      ? ownSample(choices.name(relock.sample))
-      : heldSession(selected)
-        ? 'A test locks a saved sample. Save your records as a sample first: Save input as sample, in the pipeline editor.'
-        : !named
-          ? 'A test locks a sample that names its source. Choose one that does.'
-          : dirty
-            ? 'Save your route changes first.'
-            : !result || ran !== selected
-              ? 'Choose a sample and run it without errors first.'
-              : ranOn !== JSON.stringify(config)
-                ? 'The routes changed since this run. Run it again.'
-                : '',
+    heldSession(selected)
+      ? 'A test locks a saved sample. Save your records as a sample first: Save input as sample, in the pipeline editor.'
+      : !named
+        ? 'A test locks a sample that names its source. Choose one that does.'
+        : dirty
+          ? 'Save your route changes first.'
+          : !result || ran !== selected
+            ? 'Choose a sample and run it without errors first.'
+            : ranOn !== JSON.stringify(config)
+              ? 'The routes changed since this run. Run it again.'
+              : '',
   );
 
   /** Locks the fields and records on screen: a record's rows share its number. */
@@ -94,7 +94,9 @@
     const { rows, fields } = grid?.onScreen() ?? { rows: [], fields: [] };
     chooseLock(
       { fields, rows: rows.map((r) => records.get(r.key) ?? -1).filter((r) => r >= 0) },
-      relock ? relockChosenHash(relock.test) : `#/build/tests/lock-e2e/${encodeURIComponent(ran)}`,
+      relocking
+        ? relockChosenHash(relock!.test)
+        : `#/build/tests/lock-e2e/${encodeURIComponent(ran)}`,
     );
   }
 
@@ -347,7 +349,7 @@
     {#if editable()}
       <span class="grow"></span>
       <Button type="button" onclick={goLockTest} disabled={lockBlocked}
-        >{relock ? 'Lock this test again' : 'Lock this as a test'}</Button
+        >{relocking ? 'Lock this test again' : 'Lock this as a test'}</Button
       >
     {/if}
   </div>

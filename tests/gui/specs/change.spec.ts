@@ -583,7 +583,7 @@ test('a test locked again after a rename chooses its fields in the editor, as a 
   // The editor, on the test's sample: the renamed field is on screen to lock.
   await expect(admin.getByText(/on 1 row on screen/)).toBeVisible({ timeout: 30_000 });
   await expect(admin.getByRole('columnheader', { name: /order_id/ })).toBeVisible();
-  // The test runs over its own sample, so it is locked again only on that one.
+  // The test runs over its own sample, so it is locked again only on that one: on another, Lock makes a new test.
   const relock = admin.getByRole('button', { name: 'Lock this test again' });
   const choose = async (sample: string) => {
     await admin.getByRole('button', { name: 'Choose a sample' }).click();
@@ -593,10 +593,9 @@ test('a test locked again after a rename chooses its fields in the editor, as a 
       .click();
   };
   await choose('returns');
-  await expect(relock).toHaveAccessibleDescription(
-    'A test runs over its own sample. Choose the sample orders to lock this test again.',
-  );
   await expect(admin.getByText(/on 2 rows on screen/)).toBeVisible({ timeout: 30_000 });
+  await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeEnabled();
+  await expect(relock).toHaveCount(0);
   await choose('orders');
   await expect(admin.getByText(/on 1 row on screen/)).toBeVisible({ timeout: 30_000 });
   await expect(relock).toBeEnabled();
