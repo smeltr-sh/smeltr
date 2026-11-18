@@ -2573,6 +2573,8 @@ export type TestResult = {
   name: string;
   /** Absent for an end-to-end test, which names no pipeline. */
   pipeline?: string;
+  /** The sample it runs over; absent when the test itself could not be read. */
+  sample?: string;
   /** Which area this ran in, same reason `TestSummary.area` carries one. */
   area: string;
   /** Absent when the run could not happen at all. */

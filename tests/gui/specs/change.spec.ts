@@ -533,6 +533,83 @@ test('a review shows what each test checks, and a failing one says which row and
   await expect(line).toHaveText(/id:\s*expected\s*2,\s*got\s*1/);
 });
 
+test('a test locked again after a rename chooses its fields in the editor, as a fresh lock does', async ({
+  admin,
+  api,
+  leader,
+}) => {
+  const on = '?branch=renamed';
+  const parse = {
+    type: 'parser',
+    id: 'body',
+    input: '_raw',
+    kind: { type: 'json' },
+    declared: [{ name: 'id', type: 'i64' }],
+  };
+  await api.put(`/api/areas/shared/pipelines/orders${on}`, {
+    id: 'orders',
+    name: 'orders',
+    steps: [parse],
+  });
+  await api.put(`/api/areas/shared/samples/orders-sample${on}`, {
+    id: 'orders-sample',
+    name: 'orders',
+    records: [{ _raw: '{"id":2}' }],
+  });
+  await api.put(`/api/areas/shared/samples/returns-sample${on}`, {
+    id: 'returns-sample',
+    name: 'returns',
+    records: [{ _raw: '{"id":3}' }, { _raw: '{"id":4}' }],
+  });
+  await api.put(`/api/areas/shared/tests/orders-keep-id${on}`, {
+    name: 'orders keep their id',
+    pipeline: 'orders',
+    sample: 'orders-sample',
+    lockedAt: 0,
+    fields: ['id'],
+    rows: [0],
+  });
+  // `id` becomes `order_id`, so the test's `id` is absent on every row.
+  await api.put(`/api/areas/shared/pipelines/orders${on}`, {
+    id: 'orders',
+    name: 'orders',
+    steps: [parse, { type: 'code', id: 'rename', body: 'order_id = id; id = null;' }],
+  });
+  await api.openChange('renamed', 'Rename the order id');
+
+  await goto(admin, leader, '#/changes/review/renamed');
+  await admin.getByRole('tab', { name: /^Tests/ }).click();
+  await admin.getByRole('button', { name: 'Lock again' }).click({ timeout: 30_000 });
+  // The editor, on the test's sample: the renamed field is on screen to lock.
+  await expect(admin.getByText(/on 1 row on screen/)).toBeVisible({ timeout: 30_000 });
+  await expect(admin.getByRole('columnheader', { name: /order_id/ })).toBeVisible();
+  // The test runs over its own sample, so it is locked again only on that one: on another, Lock makes a new test.
+  const relock = admin.getByRole('button', { name: 'Lock this test again' });
+  const choose = async (sample: string) => {
+    await admin.getByRole('button', { name: 'Choose a sample' }).click();
+    await admin
+      .getByRole('listbox', { name: 'Samples' })
+      .getByRole('option', { name: sample })
+      .click();
+  };
+  await choose('returns');
+  await expect(admin.getByText(/on 2 rows on screen/)).toBeVisible({ timeout: 30_000 });
+  await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeEnabled();
+  await expect(relock).toHaveCount(0);
+  await choose('orders');
+  await expect(admin.getByText(/on 1 row on screen/)).toBeVisible({ timeout: 30_000 });
+  await expect(relock).toBeEnabled();
+  await relock.click();
+  await expect(admin.getByRole('heading', { name: 'Lock this test again' })).toBeVisible();
+  await admin.getByRole('button', { name: 'Lock the test' }).click();
+  await expect(admin).toHaveURL(/#\/changes\/review\/renamed/);
+  const { test } = await api.get(`/api/areas/shared/tests/orders-keep-id${on}`);
+  expect(test.fields).toContain('order_id');
+  expect(test.fields).not.toContain('id');
+  // Locked anew, at the instant it was locked again.
+  expect(test.lockedAt).toBeGreaterThan(0);
+});
+
 test('History shows who changed what, who deployed it, and when', async ({
   admin,
   api,

@@ -18,6 +18,7 @@
   import Help from './Help.svelte';
   import { names } from './names.svelte';
   import { openOnBranch } from './unsavedGuard';
+  import { relockHash } from './nav';
 
   let {
     branch,
@@ -148,7 +149,7 @@
 
   /** Lock a failing test again, on the change's branch and in the scope that holds it. */
   function relock(t: TestResult) {
-    void openOnBranch(branch, t.area, `#/build/tests/relock/${encodeURIComponent(t.id)}`);
+    if (t.sample) void openOnBranch(branch, t.area, relockHash(t.id, t.sample, t.pipeline));
   }
 
   /** "held 3 records when locked, now 4": the sample itself changed under the test. */

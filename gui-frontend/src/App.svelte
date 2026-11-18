@@ -681,6 +681,7 @@
           chose={route.chose}
           group={route.group}
           back={route.back}
+          relock={route.relock}
         />
       {/if}
     {:else if route.page === 'pipeline'}
@@ -692,6 +693,7 @@
           sample={route.sample}
           for={route.for}
           back={route.back}
+          relock={route.relock}
         />
       {/if}
     {:else if route.page === 'lock-test'}

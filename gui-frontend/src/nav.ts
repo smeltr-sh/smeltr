@@ -118,6 +118,7 @@ export type Route =
       chose?: { route: string; pipeline: string };
       group?: string;
       back?: string;
+      relock?: Relock;
     }
   // `sample`, carried the same way, is what the editor previews against on
   // load instead of defaulting to the first sample in the library.
@@ -131,6 +132,7 @@ export type Route =
       sample?: string;
       for?: Making;
       back?: string;
+      relock?: Relock;
     }
   // `pipeline` absent locks an end-to-end test instead: the sample routed
   // by its source, not one pipeline's output.
@@ -161,6 +163,24 @@ export type Route =
  * showed the source, which a capture of a shared one needs. `to` is the destinations the route already delivers to. A
  * new pipeline starts out producing the schemas they accept. */
 export type Making = { source: string; condition?: string; group?: string; to?: string[] };
+
+/** A failing test being locked again (`relockHash`): its id, and the sample it runs over. */
+export type Relock = { test: string; sample: string };
+
+/** Where test `test` is locked again, on its sample: its pipeline's editor, or for an end-to-end test the routes
+ * run over the sample. The fields and rows are chosen there, as for a fresh lock, and handed to its lock page. */
+export function relockHash(test: string, sample: string, pipeline?: string): string {
+  const relock = `relock=${encodeURIComponent(test)}`;
+  return pipeline
+    ? `#/build/pipelines/${encodeURIComponent(pipeline)}/for/${encodeURIComponent(sample)}?${relock}`
+    : `#/build/routes/sample?sample=${encodeURIComponent(sample)}&${relock}`;
+}
+
+/** The test `params` lock again on `sample`, if they name one. */
+function relockFrom(params: URLSearchParams, sample: string | null): { relock?: Relock } {
+  const test = params.get('relock');
+  return test && sample ? { relock: { test, sample } } : {};
+}
 
 /** The Routes page, opening a new route that takes `make`. Save returns to `back`. */
 export function newRouteHash(make: Making, back?: string): string {
@@ -553,6 +573,7 @@ export function parseRoute(hash: string): Route {
           ...(route && pipeline ? { chose: { route, pipeline } } : {}),
           ...(params.get('group') ? { group: params.get('group')! } : {}),
           ...backFrom(params),
+          ...relockFrom(params, params.get('sample')),
         };
       }
       // The pipeline (or, for an end-to-end lock, nothing) and the sample
@@ -582,12 +603,14 @@ export function parseRoute(hash: string): Route {
         // so a pipeline actually named `for`, opened with a sample, still
         // reads as that pipeline rather than as the list route.
         if (parts[3] === 'for' && parts[4]) {
+          const sample = decodeURIComponent(parts[4]);
           return {
             tab: 'build',
             page: 'pipeline',
             id: decodeURIComponent(parts[2]),
             json: false,
-            sample: decodeURIComponent(parts[4]),
+            sample,
+            ...relockFrom(new URLSearchParams(search), sample),
           };
         }
         // List carrying a sample, no id: `for/<sample>`. `json` stays
