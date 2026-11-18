@@ -203,7 +203,7 @@ impl Preset {
     }
 
     /// Whether a reading outside the range at this preset warns, or informs.
-    fn warns(self) -> bool {
+    pub(crate) fn warns(self) -> bool {
         self != Preset::Off
     }
 

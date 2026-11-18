@@ -626,7 +626,8 @@ async fn past_of(state: AppState, group: String, source: String, sender: Option<
         let answer = || -> Result<throughput::Past, Refusal> {
             let now_ms = warnings::now_millis();
             let mut past = throughput::past(store, &group, &source, sender.as_ref(), now_ms, &learning)?;
-            if sender.is_none() {
+            // At Off the gap never warns, so there is no limit to show.
+            if sender.is_none() && learning.presets_of(&group, &source).rows.warns() {
                 past.quiet_limit_millis = state
                     .throughput
                     .learned()
