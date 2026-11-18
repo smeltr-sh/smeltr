@@ -248,7 +248,7 @@ fn speed() {
     let _bare = BareAfter;
     let _pinned = Pinned::off(&cores);
     let rows = rows();
-    let mut table: Vec<(&str, Link, Option<Measured>)> = Vec::new();
+    let mut table: Vec<(&str, Link, Row)> = Vec::new();
     // Each order once, so a host that slows as it warms costs both links alike.
     let forward: Vec<Link> = passes.to_vec();
     let backward: Vec<Link> = passes.iter().rev().copied().collect();
@@ -268,7 +268,8 @@ fn speed() {
                         std::process::id()
                     );
                     let at = cores.with(n);
-                    let m = match case.leg {
+                    // A row that fails is a row of the table, and the rows after it still run.
+                    let timed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match case.leg {
                         Leg::Source(seed) => seed(&run, rows).map(|decl| time_source(&run, decl, rows, case, &at)),
                         Leg::Destination(declare) => {
                             declare(&run).map(|decl| time_destination(&run, decl, rows, case, &at))
@@ -276,16 +277,50 @@ fn speed() {
                         Leg::Receiver(declare, ref sending) => {
                             Some(time_receiver(&run, declare, sending, rows, link, &at))
                         }
+                    }));
+                    let row = match timed {
+                        Ok(Some(m)) => {
+                            println!("{:<24} {:<6} {n}t {}", case.name, link.label(), m.row());
+                            Row::Measured(m)
+                        }
+                        Ok(None) => Row::Skipped,
+                        Err(panic) => Row::Failed(n, panic_message(&panic)),
                     };
-                    if let Some(m) = &m {
-                        println!("{:<24} {:<6} {n}t {}", case.name, link.label(), m.row());
-                    }
-                    table.push((case.name, link, m));
+                    table.push((case.name, link, row));
                 }
             }
         }
     }
     println!("\n{}", markdown(&table));
+    let failed = table.iter().filter(|(_, _, r)| matches!(r, Row::Failed(..))).count();
+    assert_eq!(failed, 0, "{failed} rows failed; the table says which and why");
+}
+
+/// One row of the table.
+enum Row {
+    Measured(Measured),
+    /// Its service is not running.
+    Skipped,
+    /// At this many transform threads, and why.
+    Failed(usize, String),
+}
+
+impl Row {
+    fn measured(&self) -> Option<&Measured> {
+        match self {
+            Row::Measured(m) => Some(m),
+            _ => None,
+        }
+    }
+}
+
+/// What a panic said, as `panic!` formats it.
+fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
+    panic
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
+        .unwrap_or_default()
 }
 
 /// Every live container kept off the transform cores, each given back the CPUs it had when dropped: the live tests
@@ -416,7 +451,7 @@ impl Measured {
     }
 }
 
-fn markdown(table: &[(&str, Link, Option<Measured>)]) -> String {
+fn markdown(table: &[(&str, Link, Row)]) -> String {
     let mut out = String::from(
         "| Connector | Link | Threads | rows/s | Per thread | MB/s | Transform | Busiest other thread | Peer | Rest | Bound by |\n\
          |---|---|---:|---:|---:|---:|---:|---|---:|---:|---|\n",
@@ -426,18 +461,21 @@ fn markdown(table: &[(&str, Link, Option<Measured>)]) -> String {
     let mean = |name: &str, link: Link, threads: usize| {
         let speeds: Vec<f64> = table
             .iter()
-            .filter_map(|(n, l, m)| m.as_ref().filter(|m| *n == name && *l == link && m.threads == threads))
+            .filter_map(|(n, l, r)| {
+                r.measured()
+                    .filter(|m| *n == name && *l == link && m.threads == threads)
+            })
             .map(Measured::rows_per_sec)
             .collect();
         speeds.iter().sum::<f64>() / speeds.len() as f64
     };
-    for (name, link, m) in table {
-        match m {
-            Some(m) => {
+    for (name, link, row) in table {
+        match row {
+            Row::Measured(m) => {
                 let (t, b, p) = m.shares();
                 let fewest = table
                     .iter()
-                    .filter_map(|(n, l, m)| m.as_ref().filter(|_| n == name && l == link))
+                    .filter_map(|(n, l, r)| r.measured().filter(|_| n == name && l == link))
                     .map(|m| m.threads)
                     .min()
                     .unwrap();
@@ -457,9 +495,15 @@ fn markdown(table: &[(&str, Link, Option<Measured>)]) -> String {
                     m.bound()
                 ));
             }
-            None => out.push_str(&format!(
+            Row::Skipped => out.push_str(&format!(
                 "| {name} | {} | | skipped: no service | | | | | | | |\n",
                 link.label()
+            )),
+            // One line, so a reason with a pipe or a newline keeps the table's shape.
+            Row::Failed(threads, reason) => out.push_str(&format!(
+                "| {name} | {} | {threads} | failed: {} | | | | | | | |\n",
+                link.label(),
+                reason.replace('|', "/").replace('\n', " ")
             )),
         }
     }
@@ -540,7 +584,12 @@ fn containers_cpu(ids: &[String]) -> f64 {
             }
             let v1 = format!("/sys/fs/cgroup/cpuacct/docker/{id}/cpuacct.usage");
             let nsec: f64 = std::fs::read_to_string(&v1)
-                .unwrap_or_else(|_| panic!("no cgroup for container {id} at {v2} or {v1}"))
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "no cgroup for container {id} at {v2} or {v1}. Docker Desktop runs containers in a VM of its \
+                         own, out of this host's sight: use Docker Engine on this host"
+                    )
+                })
                 .trim()
                 .parse()
                 .unwrap();
