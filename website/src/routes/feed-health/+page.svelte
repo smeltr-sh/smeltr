@@ -56,8 +56,9 @@
     <p>
       How soon depends on the source's preset, which trades how soon a drop warns against how often
       a brief dip warns too. A stop warns in about 5 minutes at Fast, 15 at Sensitive, 20 at
-      Balanced and 30 at Quiet. A source starts at Balanced, and an editor picks another on its
-      History tab.
+      Balanced and 30 at Quiet. At Off a stop never warns, but the source's range is still drawn and
+      what it reads is still learned, so a lasting drop becomes its normal. A source starts at
+      Balanced, and an editor picks another on its History tab.
     </p>
     <p>
       Smeltr starts warning once a source has a week of history. A source too sparse for its rows to
