@@ -64,19 +64,14 @@ impl StoreNameDto for ContainerDto {
 
 /// Refuses a store name its cloud does not allow.
 pub(super) fn check_store_name<A: AccessDto>(store: &A::Store, what: &str, errors: &mut ItemErrors<'_>) {
-    let NameRule {
-        noun,
-        scheme,
-        rule,
-        fits,
-    } = A::NAME;
+    let NameRule { noun, scheme, fits } = A::NAME;
     let name = store.name();
     if name.is_empty() {
         errors.at(noun).push(format!("{what} names no {noun}"));
     } else if !fits(name) {
         errors.at(noun).push(format!(
-            "{what} has the {noun} {name:?}, which is not a {noun}'s name. A name is {rule}; name the {noun} alone, \
-             with no {scheme} or path"
+            "{what} has the {noun} {name:?}, which is not a valid {noun} name; name the {noun} alone, with no {scheme} \
+             or path, and check it against the cloud's naming rules"
         ));
     }
 }
@@ -88,8 +83,6 @@ pub(super) struct NameRule {
     noun: &'static str,
     /// How a path into one starts, the mistake the message names.
     scheme: &'static str,
-    /// `fits`, said for the reader.
-    rule: &'static str,
     fits: fn(&str) -> bool,
 }
 
@@ -142,7 +135,6 @@ impl AccessDto for S3AccessDto {
     const NAME: NameRule = NameRule {
         noun: "bucket",
         scheme: "s3://",
-        rule: "3 to 63 lowercase letters, digits, dots and hyphens, starting and ending with a letter or digit",
         fits: |name| (3..=63).contains(&name.len()) && plain_name(name, &['.', '-']),
     };
     const STORAGE_CLASSES: &'static [&'static str] = crate::io::objects::S3_STORAGE_CLASSES;
@@ -221,8 +213,6 @@ impl AccessDto for GcsAccessDto {
     const NAME: NameRule = NameRule {
         noun: "bucket",
         scheme: "gs://",
-        rule: "3 to 63 characters, or up to 222 when it has dots, at most 63 between them, of lowercase letters, \
-               digits, dots, hyphens and underscores, starting and ending with a letter or digit",
         fits: |name| {
             let max = if name.contains('.') { 222 } else { 63 };
             (3..=max).contains(&name.len())
@@ -273,8 +263,6 @@ impl AccessDto for AzureAccessDto {
     const NAME: NameRule = NameRule {
         noun: "container",
         scheme: "https://",
-        rule: "3 to 63 lowercase letters, digits and hyphens, starting and ending with a letter or digit, with no \
-               two hyphens together, or is one of $logs, $web and $root",
         fits: |name| {
             matches!(name, "$logs" | "$web" | "$root")
                 || ((3..=63).contains(&name.len()) && plain_name(name, &['-']) && !name.contains("--"))

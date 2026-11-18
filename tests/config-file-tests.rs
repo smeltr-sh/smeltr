@@ -3588,14 +3588,14 @@ fn an_s3_list_source_with_a_bucket_name_s3_would_not_give_is_refused() {
         "acme_logs",
     ] {
         let e = refusal(&s3_list_config("").replace("acme-logs", bad));
-        assert!(e.contains("which is not a bucket's name"), "{bad}: {e}");
+        assert!(e.contains("which is not a valid bucket name"), "{bad}: {e}");
     }
     for good in ["abc", "acme.logs-2", &"a".repeat(63)] {
         let e = refusal(&s3_list_config("").replace("acme-logs", good));
         assert!(e.is_empty(), "{good}: {e}");
     }
     let e = refusal(&s3_list_config("").replace("acme-logs", &"a".repeat(64)));
-    assert!(e.contains("which is not a bucket's name"), "{e}");
+    assert!(e.contains("which is not a valid bucket name"), "{e}");
 }
 
 #[test]
@@ -3902,7 +3902,7 @@ fn each_cloud_holds_a_store_name_to_its_own_rule() {
             let list = format!(r#"{{"version":1,"sources":[{{"id":"l",{source}{named}}}]}}"#);
             let store = store_config(destination, &named);
             for json in [list, store] {
-                let refused = refused_at(&json, field, &format!("which is not a {field}'s name"));
+                let refused = refused_at(&json, field, &format!("which is not a valid {field} name"));
                 assert_eq!(refused, bad.contains(name), "{name:?}: {}", refusal(&json));
             }
         }
