@@ -64,6 +64,10 @@ pub(super) trait SourceSpec {
     /// Every address this source reaches over HTTP, by the field naming it. Empty from a kind that is not reached
     /// over HTTP.
     fn urls(&self) -> Vec<(&'static str, &str)>;
+    /// Every address this source connects out to, over HTTP or not. Empty from a kind that only listens.
+    fn dials(&self) -> Vec<String> {
+        self.urls().into_iter().map(|(_, url)| url.to_string()).collect()
+    }
     /// The TLS this source connects out or serves under. `None` from a kind that speaks none.
     fn tls(&self) -> Option<TlsDto>;
     /// The registry a stream's Avro payloads name their schemas in.
@@ -227,6 +231,11 @@ impl SourceDto {
     /// over HTTP.
     pub fn urls(&self) -> Vec<(&'static str, &str)> {
         self.kind.spec().urls()
+    }
+
+    /// Every address this source connects out to, over HTTP or not. Empty from a kind that only listens.
+    pub fn dials(&self) -> Vec<String> {
+        self.kind.spec().dials()
     }
 
     /// The TLS this source connects out or serves under. `None` from a kind that speaks none.

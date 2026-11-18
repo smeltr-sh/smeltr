@@ -68,6 +68,10 @@ impl SourceSpec for SftpSourceDto {
         Vec::new()
     }
 
+    fn dials(&self) -> Vec<String> {
+        vec![format!("{}:{}", self.access.host, self.access.port)]
+    }
+
     fn tls(&self) -> Option<TlsDto> {
         None
     }

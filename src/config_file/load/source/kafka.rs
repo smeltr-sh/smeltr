@@ -121,6 +121,12 @@ impl SourceSpec for KafkaSourceDto {
         self.schema_registry.iter().map(SchemaRegistryDto::url).collect()
     }
 
+    fn dials(&self) -> Vec<String> {
+        std::iter::once(self.brokers.clone())
+            .chain(self.urls().into_iter().map(|(_, url)| url.to_string()))
+            .collect()
+    }
+
     fn tls(&self) -> Option<TlsDto> {
         Some(self.tls.clone())
     }

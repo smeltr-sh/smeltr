@@ -139,6 +139,12 @@ impl SourceSpec for EventHubsSourceDto {
             .collect()
     }
 
+    fn dials(&self) -> Vec<String> {
+        std::iter::once(event_hubs_brokers(&self.namespace))
+            .chain(self.urls().into_iter().map(|(_, url)| url.to_string()))
+            .collect()
+    }
+
     fn tls(&self) -> Option<TlsDto> {
         None
     }
