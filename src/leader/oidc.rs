@@ -248,7 +248,7 @@ fn s256(verifier: &str) -> String {
 
 /// 256 random bits, base64url: a state or a nonce.
 pub fn random_token() -> String {
-    B64URL.encode(crate::leader::auth::random_bytes(32))
+    B64URL.encode(crate::crypto::random_bytes(32))
 }
 
 /// Where the browser is sent to sign in.
