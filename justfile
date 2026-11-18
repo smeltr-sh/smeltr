@@ -182,24 +182,31 @@ committed:
     changes=$(git status --porcelain) && test -z "$changes" \
       || { echo "dist builds a commit: commit or stash what is uncommitted" >&2; exit 1; }
 
-# A checkout of a release tag, as CI makes one, is detached: it counts as `main` when the tag is on it. Main itself
-# must hold everything origin/main does, so a stale checkout cannot release an old commit.
+# A release is cut from main, or a patch from its release branch (`release/1.2`). The branch must hold everything its
+# origin copy does, so a stale checkout cannot release an old commit. A release branch takes only its own minor
+# version's releases.
 [private]
 [unix]
-clean-main:
-    changes=$(git status --porcelain) && test -z "$changes" \
-      && { test "$(git branch --show-current)" = main \
-        || { test -n "$(git tag --points-at HEAD --list 'v[0-9]*')" && git merge-base --is-ancestor HEAD origin/main; }; } \
-      || { echo "a release builds from main, or a release tag on it, with nothing uncommitted" >&2; exit 1; }
-    test "$(git branch --show-current)" != main || git fetch -q origin main \
-      || { echo "could not fetch origin/main: check your connection before cutting a release" >&2; exit 1; }
-    test "$(git branch --show-current)" != main || git merge-base --is-ancestor origin/main HEAD \
-      || { echo "main is behind origin/main: pull before cutting a release" >&2; exit 1; }
+clean-release-branch version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    test -z "$(git status --porcelain)" || { echo "a release builds with nothing uncommitted" >&2; exit 1; }
+    branch=$(git branch --show-current)
+    case "$branch" in
+      main) ;;
+      release/*) [[ "{{version}}" == "${branch#release/}".* ]] \
+        || { echo "$branch cuts only ${branch#release/}.x, not {{version}}" >&2; exit 1; } ;;
+      *) echo "a release builds from main or a release/ branch, not ${branch:-a detached checkout}" >&2; exit 1 ;;
+    esac
+    git fetch -q origin "$branch" \
+      || { echo "could not fetch origin/$branch: push the branch, or check your connection" >&2; exit 1; }
+    git merge-base --is-ancestor "origin/$branch" HEAD \
+      || { echo "$branch is behind origin/$branch: pull before cutting a release" >&2; exit 1; }
 
 [private]
 [windows]
-clean-main:
-    powershell -NoProfile -Command "$changes = @(git status --porcelain); if ($LASTEXITCODE -ne 0) { exit 1 }; $branch = git branch --show-current; if ($LASTEXITCODE -ne 0 -or $branch -ne 'main' -or $changes.Count -gt 0) { [Console]::Error.WriteLine('a release builds from main with nothing uncommitted'); exit 1 }; git fetch -q origin main; if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine('could not fetch origin/main: check your connection before cutting a release'); exit 1 }; git merge-base --is-ancestor origin/main HEAD; if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine('main is behind origin/main: pull before cutting a release'); exit 1 }"
+clean-release-branch version:
+    powershell -NoProfile -Command "$changes = @(git status --porcelain); if ($LASTEXITCODE -ne 0) { exit 1 }; $branch = git branch --show-current; if ($LASTEXITCODE -ne 0 -or -not ($branch -eq 'main' -or $branch -like 'release/*') -or $changes.Count -gt 0) { [Console]::Error.WriteLine('a release builds from main or a release/ branch with nothing uncommitted'); exit 1 }; if ($branch -like 'release/*' -and -not '{{version}}'.StartsWith($branch.Substring(8) + '.')) { [Console]::Error.WriteLine(\"$branch cuts only $($branch.Substring(8)).x, not {{version}}\"); exit 1 }; git fetch -q origin $branch; if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine(\"could not fetch origin/${branch}: push the branch, or check your connection\"); exit 1 }; git merge-base --is-ancestor origin/$branch HEAD; if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine(\"$branch is behind origin/${branch}: pull before cutting a release\"); exit 1 }"
 
 # The check before every push; nothing else runs one. `tools/check-scope` picks the checks the files changed since
 # origin/main can break, down to the Rust tests of the modules they touch, and runs them side by side. It can miss a
@@ -265,7 +272,7 @@ check-package package: need-nextest stable
     cargo nextest run -p {{package}}
 
 # A release: its fixtures recorded and committed, and that commit tagged `v<release>`. Nothing leaves
-# this machine: `git push --atomic origin main v<release>` starts the release workflow. Semver: a major release
+# this machine: `git push --atomic origin <branch> v<release>` starts the release workflow. Semver: a major release
 # raises the upgrade floor or ships a breaking store step, a minor one adds features and additive steps
 # only, a patch fixes and adds no step. `just cut-release <release> force` does not check the semver rule above.
 [doc("Record a release, commit it and tag it.")]
@@ -273,15 +280,15 @@ cut-release release force="": (has-notes release) (record-release if release =~ 
     git add tests/fixtures/releases
     git commit -m "Release {{release}}"
     git tag -a "v{{release}}" -m "Release {{release}}"
-    @echo Nothing is pushed yet. Start the release workflow with: git push --atomic origin main v{{release}}
+    @echo Nothing is pushed yet. Start the release workflow with: git push --atomic origin {{ `git branch --show-current` }} v{{release}}
 
-# A release candidate: main's latest commit tagged `v<candidate>`, with nothing recorded or committed, and the tag
-# pushed. Its build is started by hand on GitHub, on that tag: a draft pre-release with its own image tag, and
-# Windows only when asked.
+# A release candidate: the latest commit of main or a release branch, tagged `v<candidate>`, with nothing recorded
+# or committed, and the tag pushed. Its build is started by hand on GitHub, on that tag: a draft pre-release with its
+# own image tag, and Windows only when asked.
 [doc("Tag a release candidate and push the tag.")]
-cut-rc candidate: clean-main
+cut-rc candidate: (clean-release-branch candidate)
     {{ if candidate =~ '^[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$' { "" } else { error('a release candidate is named major.minor.patch-rcN, like 1.0.0-rc1') } }}
-    git merge-base --is-ancestor HEAD origin/main
+    git merge-base --is-ancestor HEAD origin/{{ `git branch --show-current` }}
     git tag -a "v{{candidate}}" -m "Release candidate {{candidate}}"
     git push origin "v{{candidate}}"
     @echo Start its build at https://github.com/smeltr-sh/smeltr/actions/workflows/release.yml: choose Run workflow, then the tag v{{candidate}}
@@ -300,7 +307,7 @@ has-notes release: need-node
 # Run from the commit being released, once. Every later build must start on
 # what this one leaves and still read what it sends (`src/releases.rs`).
 [private]
-record-release $SMELTR_RECORD_RELEASE $SMELTR_RECORD_FORCE="": need-rust need-nextest clean-main
+record-release $SMELTR_RECORD_RELEASE $SMELTR_RECORD_FORCE="": need-rust need-nextest (clean-release-branch SMELTR_RECORD_RELEASE)
     cargo nextest run --lib --run-ignored only -E "test(=releases::record_release)"
 
 # The checks build with the newest stable, so they see its new lints.
