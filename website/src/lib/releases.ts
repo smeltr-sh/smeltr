@@ -32,6 +32,24 @@ export function codeRuns(note: string): { text: string; code: boolean }[] {
   return note.split('`').map((text, i) => ({ text, code: i % 2 === 1 }));
 }
 
+/** The day `release` shipped, written out as a reader says it: "November 18, 2026". */
+export function shippedOn(release: Release): string {
+  return new Date(`${release.date}T00:00:00Z`).toLocaleDateString('en-US', {
+    timeZone: 'UTC',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+/** The anchor a heading of a release page links to. */
+export function anchor(...titles: string[]): string {
+  return titles
+    .join(' ')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-');
+}
+
 /** A release's major, minor and patch: `just cut-release` names every release so. */
 function parts(release: Release): number[] {
   return release.version.split('.').map(Number);
