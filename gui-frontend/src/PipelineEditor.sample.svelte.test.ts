@@ -14,6 +14,10 @@ let ranOver: (string | null)[];
 /** The route, as App hands it to the one editor it keeps across a change of pipeline. */
 const route = $state<{ id: string; sample?: string }>({ id: 'a' });
 
+// happy-dom has no popovers, which the sample menu opens in.
+HTMLElement.prototype.showPopover ??= function () {};
+HTMLElement.prototype.hidePopover ??= function () {};
+
 beforeEach(async () => {
   setBranch('pipeline-sample-test');
   dropAll();
@@ -123,5 +127,32 @@ describe('the sample a pipeline opens on', () => {
     await vi.waitFor(() => expect(target.querySelector('#pipeline-name')).not.toBeNull());
     await vi.advanceTimersByTimeAsync(600);
     expect(ranOver.filter((s) => s !== null)).toEqual([]);
+  });
+
+  it('keeps its output when the sample already shown is picked again', async () => {
+    vi.useFakeTimers();
+    Object.assign(route, { id: 'a', sample: 's1' });
+    editor = mount(PipelineEditor, {
+      target,
+      props: {
+        get id() {
+          return route.id;
+        },
+        get sample() {
+          return route.sample;
+        },
+      },
+    });
+    await lastRan('s1');
+    const chip = () => target.querySelector<HTMLButtonElement>('[aria-label="Choose a sample"]')!;
+    await vi.waitFor(() => expect(chip().textContent).toContain('0 records'));
+
+    chip().click();
+    await vi.waitFor(() =>
+      expect(target.querySelector('[role="option"][aria-selected="true"]')).not.toBeNull(),
+    );
+    target.querySelector<HTMLButtonElement>('[role="option"][aria-selected="true"]')!.click();
+    await vi.advanceTimersByTimeAsync(RECOMPUTE_MS * 2);
+    expect(chip().textContent).toContain('0 records');
   });
 });

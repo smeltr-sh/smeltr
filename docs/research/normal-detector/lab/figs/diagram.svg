@@ -16,8 +16,8 @@
 <text x='660' y='132' text-anchor='middle' font-size='11.5' fill='#5d6168'>the last row, g(t)</text>
 <text x='24' y='183' font-weight='600' fill='#1d1f22'>Typical level</text>
 <rect x='145' y='153' width='426' height='52' rx='6' fill='#1f5a8a' fill-opacity='0.1' stroke='#1f5a8a' stroke-width='1.5'/>
-<text x='358' y='169' text-anchor='middle' font-size='11.5' fill='#1d1f22'>median of the same window at this</text>
-<text x='358' y='183' text-anchor='middle' font-size='11.5' fill='#1d1f22'>time of day over the past 7 days;</text>
+<text x='358' y='169' text-anchor='middle' font-size='11.5' fill='#1d1f22'>median of the same window at this time of day</text>
+<text x='358' y='183' text-anchor='middle' font-size='11.5' fill='#1d1f22'>on the newest 7 days of its kind of day;</text>
 <text x='358' y='197' text-anchor='middle' font-size='11.5' fill='#1d1f22'>the reading is the ratio to it</text>
 <rect x='577' y='153' width='166' height='52' rx='6' fill='#1f5a8a' fill-opacity='0' stroke='#9a9a9a' stroke-width='1.1'/>
 <text x='660' y='176' text-anchor='middle' font-size='11.5' fill='#5d6168'>none: all spells pooled,</text>
@@ -42,23 +42,25 @@
 <text x='660' y='306' text-anchor='middle' font-size='11.5' fill='#5d6168'>year, plus an allowance</text>
 <text x='24' y='357' font-weight='600' fill='#1d1f22'>Margin</text>
 <rect x='145' y='327' width='426' height='52' rx='6' fill='#1f5a8a' fill-opacity='0.1' stroke='#1f5a8a' stroke-width='1.5'/>
-<text x='358' y='357' text-anchor='middle' font-size='11.5' fill='#1d1f22'>20% below it</text>
+<text x='358' y='357' text-anchor='middle' font-size='11.5' fill='#1d1f22'>by preset: 20%, 30% or 50% below it</text>
 <rect x='577' y='327' width='166' height='52' rx='6' fill='#1f5a8a' fill-opacity='0' stroke='#9a9a9a' stroke-width='1.1'/>
 <text x='660' y='357' text-anchor='middle' font-size='11.5' fill='#5d6168'>50% beyond it</text>
 <text x='24' y='415' font-weight='600' fill='#1d1f22'>Wait</text>
 <rect x='145' y='385' width='426' height='52' rx='6' fill='#1f5a8a' fill-opacity='0.1' stroke='#1f5a8a' stroke-width='1.5'/>
-<text x='358' y='415' text-anchor='middle' font-size='11.5' fill='#1d1f22'>4 readings in a row</text>
+<text x='358' y='415' text-anchor='middle' font-size='11.5' fill='#1d1f22'>by preset: 1, 3, 4 or 6 readings in a row</text>
 <rect x='577' y='385' width='166' height='52' rx='6' fill='#1f5a8a' fill-opacity='0' stroke='#9a9a9a' stroke-width='1.1'/>
 <text x='660' y='415' text-anchor='middle' font-size='11.5' fill='#5d6168'>1 reading</text>
 <text x='24' y='473' font-weight='600' fill='#1d1f22'>Judged where</text>
 <rect x='145' y='443' width='426' height='52' rx='6' fill='#1f5a8a' fill-opacity='0.1' stroke='#1f5a8a' stroke-width='1.5'/>
-<text x='358' y='473' text-anchor='middle' font-size='11.5' fill='#1d1f22'>the typical window holds 10 rows</text>
+<text x='358' y='466' text-anchor='middle' font-size='11.5' fill='#1d1f22'>the typical window holds 10 rows,</text>
+<text x='358' y='480' text-anchor='middle' font-size='11.5' fill='#1d1f22'>once the rows reach back a week</text>
 <rect x='577' y='443' width='166' height='52' rx='6' fill='#1f5a8a' fill-opacity='0' stroke='#9a9a9a' stroke-width='1.1'/>
 <text x='660' y='466' text-anchor='middle' font-size='11.5' fill='#5d6168'>28 days watched and</text>
 <text x='660' y='480' text-anchor='middle' font-size='11.5' fill='#5d6168'>a spell completed</text>
 <text x='24' y='531' font-weight='600' fill='#1d1f22'>Not learned</text>
 <rect x='145' y='501' width='426' height='52' rx='6' fill='#1f5a8a' fill-opacity='0.1' stroke='#1f5a8a' stroke-width='1.5'/>
-<text x='358' y='531' text-anchor='middle' font-size='11.5' fill='#1d1f22'>the buckets under a count alarm, one set for the four</text>
+<text x='358' y='524' text-anchor='middle' font-size='11.5' fill='#1d1f22'>the buckets under a count alarm, one set for the four;</text>
+<text x='358' y='538' text-anchor='middle' font-size='11.5' fill='#1d1f22'>a window until w + k buckets after it ends</text>
 <rect x='577' y='501' width='166' height='52' rx='6' fill='#1f5a8a' fill-opacity='0' stroke='#9a9a9a' stroke-width='1.1'/>
 <text x='660' y='524' text-anchor='middle' font-size='11.5' fill='#5d6168'>the spells under</text>
 <text x='660' y='538' text-anchor='middle' font-size='11.5' fill='#5d6168'>a gap alarm</text>

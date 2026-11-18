@@ -19,6 +19,9 @@ DAY = S
 
 
 # ---- modeled feeds -------------------------------------------------------------------------------------------------
+NOISY_FROM = 126  # the day "daily, steady then noisy" turns noisy
+
+
 def modeled(name, seed, days=56):
     """Rows per 5-minute bucket: a level, a shape over the day and week, and noise that drifts (AR(1) in log space,
     about 50 minutes of memory), drawn as Poisson counts."""
@@ -28,20 +31,45 @@ def modeled(name, seed, days=56):
     hour = (t % 1) * 24
     daily = 1 + 0.7 * np.sin(2 * np.pi * (hour - 9) / 24)
     weekday = (np.floor(t) % 7) < 5
+    wd = np.floor(t) % 7  # 0 is Monday
+    noon_low = (np.isin(wd, (1, 3)) & (hour >= 12)) | (np.isin(wd, (2, 4)) & (hour < 12))  # Tue and Thu noon to noon
+    # Each day's own level, log-normal with sigma 0.15, drawn apart from the noise so the other shapes are unchanged.
+    day_level = np.exp(np.random.default_rng(500 + seed).normal(-0.15**2 / 2, 0.15, days))[np.floor(t).astype(int)]
+    # Office: machine traffic around the clock, plus a workday bump from 7:00 to 19:00 a fifth as big on Sat and Sun.
+    bump = np.where((hour >= 7) & (hour < 19), np.sin(np.pi * (hour - 7) / 12), 0.0)
+    office = 0.4 + bump * np.where(weekday, 1.0, 0.2)
+    # Nightlife: the daily curve on a clock that falls 2 hours behind over Friday evening (18:00 to midnight) and
+    # catches up over Sunday afternoon (12:00 to 18:00): Friday and Saturday nights run late, Saturday and Sunday
+    # mornings start late.
+    p = t % 7
+    behind = 2 * np.minimum(np.clip((p - 4.75) / 0.25, 0, 1), np.clip((6.75 - p) / 0.25, 0, 1))
+    nightlife = 1 + 0.7 * np.sin(2 * np.pi * (hour - behind - 9) / 24)
     spec = {
         "steady": (200.0, np.ones(n), 0.1),
         "variable": (200.0, np.ones(n), 0.6),
         "daily": (200.0, daily, 0.3),
         "thin daily": (3.0, 1 + 0.95 * np.sin(2 * np.pi * (hour - 9) / 24), 0.3),
         "weekday/weekend": (200.0, daily * np.where(weekday, 1.0, 0.2), 0.3),
+        "Tue/Thu noon to noon": (200.0, daily * np.where(noon_low, 0.2, 1.0), 0.3),
+        "weekday/weekend, day levels": (200.0, daily * np.where(weekday, 1.0, 0.2) * day_level, 0.3),
         "steady, falling 3%/day": (200.0, 0.97**t, 0.1),
         "variable, falling 3%/day": (200.0, 0.97**t, 0.3),
+        "daily, growing 0.5%/day": (200.0, daily * 1.005**t, 0.3),
+        "office week": (200.0, office, 0.3),
+        "nightlife week": (200.0, nightlife, 0.3),
+        # steady noise until day NOISY_FROM, then four times as much
+        "daily, steady then noisy": (200.0, daily, np.where(t < NOISY_FROM, 0.1, 0.4)),
     }[name]
     level, shape, sigma = spec
     rho = 0.9
     e = np.empty(n)
-    e[0] = rng.normal(0, sigma)
-    xi = rng.normal(0, sigma * np.sqrt(1 - rho**2), n)
+    if np.ndim(sigma):  # the noise changes over time: the same draws, scaled per bucket
+        z0, z = rng.normal(0, 1), rng.normal(0, 1, n)
+        e[0] = sigma[0] * z0
+        xi = sigma * np.sqrt(1 - rho**2) * z
+    else:
+        e[0] = rng.normal(0, sigma)
+        xi = rng.normal(0, sigma * np.sqrt(1 - rho**2), n)
     for k in range(1, n):
         e[k] = rho * e[k - 1] + xi[k]
     lam = level * shape * np.exp(e - sigma**2 / 2)
@@ -68,6 +96,20 @@ NAB = [
     "realAWSCloudwatch/ec2_network_in_257a54",
     "realAWSCloudwatch/ec2_network_in_5abac7",
 ]
+
+
+# Collapses the archive does not label, labeled here after the alarms of the detector as written found them (Section 3):
+# EC2 257a54 falls to a third of its level as its labeled spike ends and stays there to the end of the series, and ELB's
+# requests read under their usual level in every quarter of a day from day 9 to noon on day 11.
+ADDED_LABELS = {
+    "realAWSCloudwatch/ec2_network_in_257a54.csv": [["2014-04-16 09:29:00.000000", "2014-04-24 00:09:00.000000"]],
+    "realAWSCloudwatch/elb_request_count_8c0756.csv": [["2014-04-19 00:00:00.000000", "2014-04-21 12:00:00.000000"]],
+}
+
+
+def with_added(labels):
+    """The archive's labels and the collapses it does not label."""
+    return {k: labels.get(k, []) + ADDED_LABELS.get(k, []) for k in labels.keys() | ADDED_LABELS.keys()}
 
 
 def parse(ts):

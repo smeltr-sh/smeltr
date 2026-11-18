@@ -733,6 +733,7 @@ fn a_pipeline_maps_as_it_compiled_and_as_its_sample_shows() {
         "_raw": { "type": "keyword", "ignore_above": 1024 },
         "smeltr": { "properties": { "exception": { "properties": {
             "route": { "type": "keyword", "ignore_above": 1024 },
+            "routeName": { "type": "keyword", "ignore_above": 1024 },
             "pipeline": { "type": "keyword", "ignore_above": 1024 },
             "exceptions": { "properties": {
                 "step": { "type": "keyword", "ignore_above": 1024 },

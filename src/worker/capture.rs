@@ -1286,7 +1286,7 @@ fn finished_row(
 fn held_row(record: &crate::io::OwnedRecord, why: &str) -> (Vec<CaptureColumn>, CapturedRow) {
     let object = serde_json::from_slice(&record.value)
         .unwrap_or_else(|_| crate::io::raw_object(String::from_utf8_lossy(&record.value)));
-    let destination = [record.placement.clone(), record.doc_id.clone(), None];
+    let destination = [record.placement.clone(), record.doc_id.clone(), None, None];
     let mut sent = finished_row(object, &[], &[], Vec::new());
     place(&mut sent, destination);
     let (mut columns, mut row) = sent;
@@ -2746,6 +2746,7 @@ mod tests {
             Some("orders-2026".to_string()),
             Some("d1".to_string()),
             Some(route.to_string()),
+            Some(format!("{route} name")),
         ];
         let mut sent = finished_row(object(v), &columns(written), &[], Vec::new());
         place(&mut sent, destination);
@@ -2785,6 +2786,7 @@ mod tests {
                 serde_json::json!("orders-2026"),
                 serde_json::json!("d1"),
                 serde_json::json!("audit"),
+                serde_json::json!("audit name"),
             ]
         );
     }

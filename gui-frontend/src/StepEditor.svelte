@@ -87,6 +87,7 @@
     warningsByStep = new Map(),
     pipelineIds = [],
     pipelineNames = {},
+    sharedPipelineIds = new Set(),
     lookupTables = [],
     grokPatterns = [],
     parsedFields,
@@ -109,6 +110,8 @@
     warningsByStep?: Map<Step, PreviewError[]>;
     pipelineIds?: string[];
     pipelineNames?: Record<string, string>;
+    /** The pipelines among `pipelineIds` that `shared/` declares, marked so where a Call picks one. */
+    sharedPipelineIds?: Set<string>;
     lookupTables?: LookupTableDto[];
     /** The bundle's grok patterns, `shared/`'s and the scope's own, which a grok step may name. */
     grokPatterns?: GrokPatternDto[];
@@ -597,6 +600,7 @@
           {warningsByStep}
           {pipelineIds}
           {pipelineNames}
+          {sharedPipelineIds}
           {lookupTables}
           {grokPatterns}
           {parsedFields}
@@ -621,6 +625,7 @@
           {warningsByStep}
           {pipelineIds}
           {pipelineNames}
+          {sharedPipelineIds}
           {lookupTables}
           {grokPatterns}
           {parsedFields}
@@ -1492,7 +1497,11 @@
               <select bind:value={step.pipeline}>
                 <option value="">(choose a pipeline)</option>
                 {#each pipelineIds as p}
-                  <option value={p}>{pipelineNames[p] || p}</option>
+                  <option value={p}
+                    >{pipelineNames[p] || p}{sharedPipelineIds.has(p)
+                      ? ' \u2014 shared'
+                      : ''}</option
+                  >
                 {/each}
               </select>
             </Field>
@@ -1889,6 +1898,11 @@
   .row-pair input {
     flex: 1;
     min-width: 0;
+  }
+
+  /* A type picker takes the type column a declared field's row gives it (FieldRow), not the whole row. */
+  .row-pair > :global(.type-picker) {
+    flex: 0 1 8.2rem;
   }
 
   /* An assignment's target is almost always shorter than its expression, so

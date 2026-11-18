@@ -157,14 +157,12 @@
   /** `shared/`'s bundle, whose routes this group runs too. Never saved from here: the page writes its own scope. */
   let shared = $state<FileConfigDto | null>(null);
   let sharedRoutes = $derived(shared?.routes ?? []);
-  let refusals = $derived([
-    ...unchosen(routes),
-    ...problems(
-      exceptions,
-      bundleRoutes({ routes, pipelines: loadedConfig?.pipelines ?? [] }, shared),
-      destinations,
-    ),
-  ]);
+  let bundled = $derived(
+    bundleRoutes({ routes, pipelines: loadedConfig?.pipelines ?? [] }, shared),
+  );
+  /** Each route's `routeName`, by id. */
+  let routeNames = $derived(new Map(bundled.map((r) => [r.id, r.name])));
+  let refusals = $derived([...unchosen(routes), ...problems(exceptions, bundled, destinations)]);
   // This page writes two files (`edits.ts`): the routes, and the manifest's
   // answers. The manifest write lands first and can land alone, so a
   // half-landed save keeps what is still unsaved rather than dropping all.
@@ -621,12 +619,12 @@
             {#each card.routes as route (route.id)}
               {#if card.routes.length > 1}
                 <span class="branch-name" class:unchosen={!route.pipeline}
-                  >{pipelineLabel(route.pipeline)}</span
+                  >{route.pipeline ? routeNames.get(route.id) : pipelineLabel(route.pipeline)}</span
                 >
               {/if}
               <ExceptionsFold
                 bind:value={route.exceptions}
-                name={route.id}
+                name={routeNames.get(route.id) ?? route.id}
                 rows={ROUTE_ROWS}
                 beneath={groupAnswers}
                 targets={destinationIds}

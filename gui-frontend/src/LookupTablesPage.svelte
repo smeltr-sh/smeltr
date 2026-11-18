@@ -36,6 +36,8 @@
   import { RESOURCES_TABS } from './nav';
   import { columnStats, parseCsv, serializeCsv, stepsReading } from './lookups';
   import {
+    currentScope,
+    SHARED_SCOPE,
     sharedConfig,
     getLookupFile,
     getLookupMmdb,
@@ -62,6 +64,7 @@
   /** `shared/`'s own, which this group looks up too. A table's file is named relative to the bundle that
    * declares it, so a shared one's file lives in `shared/` -- which is where it is changed. */
   let sharedTables: LookupTableDto[] = $state([]);
+  const inShared = currentScope() === SHARED_SCOPE;
   /** This bundle's pipelines, for which steps read a table. */
   let pipelines: PipelineDto[] = $state([]);
   /** A CSV table's rows, read from its file: keyed by the table itself, since its id is editable
@@ -388,13 +391,15 @@
 
     <div class="layout lookups">
       <aside class="list">
-        <div class="band">this group</div>
+        <div class="band">{inShared ? 'shared/' : 'this group'}</div>
         {#each tables as t, i (i)}
           <button type="button" class="item" class:on={i === sel} onclick={() => (sel = i)}>
             {@render item(t, JSON.stringify(t) !== JSON.stringify(savedTables[i]) || rowsEdited(t))}
           </button>
         {/each}
-        {#if tables.length === 0}<p class="dim item">No tables of this group's own yet.</p>{/if}
+        {#if tables.length === 0}<p class="dim item">
+            {inShared ? 'No shared tables yet.' : "No tables of this group's own yet."}
+          </p>{/if}
         {#if sharedTables.length > 0}
           <div class="band">from shared/</div>
           {#each sharedTables as t (t.id)}

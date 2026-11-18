@@ -70,7 +70,7 @@ then drop, then tag, then ignore. A row with several deliver answers goes to
 each destination they name, once. A row with an exception not ignored gets
 the tag field, whatever its answer; under drop and block it is not sent, so
 the tag reaches a destination only on a tagged or delivered row. The tag
-says where the row failed and why: the route, the pipeline, and each of its
+says where the row failed and why: the route by its id and its name, the pipeline, and each of its
 exceptions not ignored, in the order they happened, with the step
 that raised it, its kind and its message. One raised reading the record names
 no step. The field is `smeltr.exception` unless the group names another, and a

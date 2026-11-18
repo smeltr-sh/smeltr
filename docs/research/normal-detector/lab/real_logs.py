@@ -21,13 +21,13 @@ S = 288
 MONTHS = {m: i for i, m in enumerate("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(), 1)}
 
 
-def bucketize(times, fields, start=None, end=None):
-    """times: epoch seconds; fields: {name: list of values aligned with times}."""
+def bucketize(times, fields, start=None, end=None, step=300):
+    """times: epoch seconds; fields: {name: list of values aligned with times}; step: seconds a bucket."""
     t = np.asarray(times, float)
     start = start if start is not None else np.floor(t.min() / 300) * 300
     end = end if end is not None else np.ceil(t.max() / 300) * 300
-    n = int((end - start) // 300)
-    idx = ((t - start) // 300).astype(int)
+    n = int((end - start) // step)
+    idx = ((t - start) // step).astype(int)
     ok = (idx >= 0) & (idx < n)
     counts = np.bincount(idx[ok], minlength=n).astype(float)
     out = {"start": dt.datetime.fromtimestamp(start, dt.timezone.utc).isoformat(), "counts": counts.tolist(), "fields": {}}
@@ -150,22 +150,28 @@ def load_logs(folder):
     for path in sorted(glob.glob(os.path.join(folder, "*.json"))):
         d = json.load(open(path))
         b = np.array(d["counts"], float)
-        lab = np.zeros(len(b), bool)
-        if np.median(b) >= 10:
-            z = b == 0
-            i = 0
-            while i < len(b):
-                if z[i]:
-                    j = i
-                    while j < len(b) and z[j]:
-                        j += 1
-                    if j - i >= 24:
-                        lab[i:j] = True
-                    i = j
-                else:
-                    i += 1
-        out.append((d["name"], b, lab))
+        out.append((d["name"], b, outages(b)))
     return out
+
+
+def outages(b):
+    """The incident mask of 5-minute counts b: runs of two hours or more without a line, where lines usually come in
+    every bucket."""
+    lab = np.zeros(len(b), bool)
+    if np.median(b) >= 10:
+        z = b == 0
+        i = 0
+        while i < len(b):
+            if z[i]:
+                j = i
+                while j < len(b) and z[j]:
+                    j += 1
+                if j - i >= 24:
+                    lab[i:j] = True
+                i = j
+            else:
+                i += 1
+    return lab
 
 
 def main(fetch, out):

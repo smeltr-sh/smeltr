@@ -111,15 +111,18 @@ Review shows the findings a change adds, not those main already had where the
 branch left it, field by field: a finding that names several fields names only
 those the change adds.
 The record's type is held to the table path by path: a field whose type only
-the row knows keeps any, an object keeps any object type, a key the table names
-only by the fields under it is an object all the same, and a required or
-recommended field is lacking where the object it sits in is there and does not
-declare it, so a standard's recommended fields inside an object are asked for
-only where a row has that object. A field several schemas name is a misfit
-only where every one of them says so, a field one requires is missing only
-where every schema the pipeline produces requires it, and a field is
-recommended where every one of them requires or recommends it. A route delivering to a destination whose accepts names
-none of what its pipeline produces is a finding of the same kind.
+the row knows keeps any, an object keeps any object type, and a key the table
+names only by the fields under it is an object all the same. A required field
+is lacking wherever no object above it that the table names is absent, so ECS's
+`event.kind` is asked of a row with no `event`, while an OCSF attribute is asked
+for only where the object the table names for it is there. A recommended field
+is lacking only where the object it sits in is there and does not declare it,
+so a standard's recommended fields inside an object are asked for only where a
+row has that object. A field several schemas name is a misfit only where every
+one of them says so, a field one requires is missing only where every schema
+the pipeline produces requires it, and a field is recommended where every one
+of them requires or recommends it. A route delivering to a destination whose
+accepts names none of what its pipeline produces is a finding of the same kind.
 
 ## Groups and `shared/`
 

@@ -1334,9 +1334,14 @@ test('A2: a sample is picked from the Sample menu, its output searched by keywor
   await search.fill('total > 15');
   await expect(admin.getByText('ƒ expression')).toBeVisible();
   await expect(admin.getByText('2 of 3 rows')).toBeVisible();
-  // One that does not compile to a Bool is a keyword.
+  // One that parses but is refused is searched for as text, and says why.
+  await search.fill('nope > 1');
+  await expect(admin.getByText('keyword', { exact: true })).toBeVisible();
+  await expect(admin.getByRole('alert')).toContainText('Searched as text.');
+  // One that does not parse is a keyword, and nothing more.
   await search.fill('total +');
   await expect(admin.getByText('keyword', { exact: true })).toBeVisible();
+  await expect(admin.getByRole('alert')).toBeHidden();
   // Read as an expression on asking, it keeps no rows and says why, until it is fixed.
   await admin.getByRole('button', { name: 'keyword', exact: true }).click();
   await expect(admin.getByRole('alert')).toBeVisible();

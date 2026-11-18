@@ -63,7 +63,13 @@ function node(
 }
 
 function route(source: string, pipeline: string, group = 'g1'): RouteEdge {
-  return { group, route: `${source}->${pipeline}`, source, pipeline };
+  return {
+    group,
+    route: `${source}->${pipeline}`,
+    name: `${source} → ${pipeline}`,
+    source,
+    pipeline,
+  };
 }
 
 /** A delivery rule of route `route`, when a test follows a route end to end; otherwise one of
@@ -571,7 +577,13 @@ describe('mapEdges', () => {
   it('collapses two routes between the same source and pipeline into one line that names both', () => {
     const lines = edges([
       route('orders-west', 'normalize'),
-      { group: 'g1', route: 'r2', source: 'orders-west', pipeline: 'normalize' },
+      {
+        group: 'g1',
+        route: 'r2',
+        name: 'orders-west → normalize (2)',
+        source: 'orders-west',
+        pipeline: 'normalize',
+      },
     ]);
     expect(lines).toEqual([
       {

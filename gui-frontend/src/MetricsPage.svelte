@@ -15,6 +15,7 @@
   import { byteUnit, bytes } from './bytes';
   import { FLOW_WINDOWS } from './flow';
   import { clockTime } from './time';
+  import { names } from './names.svelte';
   import {
     conditionLabel,
     getLogs,
@@ -22,6 +23,7 @@
     getSeriesMetrics,
     history,
     listWarnings,
+    MAIN_BRANCH,
     type LogRowDto,
     type SeriesAnswerDto,
     type StoredMetricDto,
@@ -55,6 +57,8 @@
 
   const GROUP = 'group';
   const WORKER = 'worker';
+  /** A route's name beside its id: the page names a route by its id already (`valueName`), history before it too. */
+  const ROUTE_NAME = 'route_name';
   const MINUTE = 60_000;
   const HOUR = 60 * MINUTE;
   const DAY = 24 * HOUR;
@@ -95,12 +99,21 @@
 
   /** Which metric each drawn series is of, by its name. */
   let metricOf = $state(new Map<string, string>());
+  /** What a person reads for `label`'s value `v`: a route's or a pipeline's name in a group that reports it, else `v`. */
+  const valueName = (label: string, v: string) =>
+    label === 'route' || label === 'pipeline'
+      ? ((metric?.labels[GROUP] ?? [])
+          .map((g) => names.of(MAIN_BRANCH, g, `${label}s`, v))
+          .find((n) => n !== v) ?? v)
+      : v;
+
   /** The metrics' answers as one: beside another, each series is named for its metric, and its split value after it. */
-  function together(answers: SeriesAnswerDto[]): SeriesAnswerDto {
+  function together(answers: SeriesAnswerDto[], by: string): SeriesAnswerDto {
     const of = new Map<string, string>();
     const series = answers.flatMap((a) =>
       a.series.map((s) => {
-        const name = answers.length === 1 ? s.name : s.name ? `${a.metric} · ${s.name}` : a.metric;
+        const value = valueName(by, s.name);
+        const name = answers.length === 1 ? value : value ? `${a.metric} · ${value}` : a.metric;
         of.set(name, a.metric);
         return { ...s, name };
       }),
@@ -121,7 +134,7 @@
           drawnOf(asked).map((m) =>
             getSeries(seriesQuery(asked, m, offset, ago, stored(m)?.labels)),
           ),
-        ).then(together);
+        ).then((answers) => together(answers, asked.by));
       const [got, then, marks] = await Promise.all([
         each(0),
         asked.weekBefore ? each(WEEK_MINUTES) : null,
@@ -140,6 +153,8 @@
     }
   }
   $effect(() => {
+    // Asked again once the split's names are read: a series is named as it is read.
+    for (const v of metric?.labels[view.by] ?? []) valueName(view.by, v);
     read(view);
   });
 
@@ -271,7 +286,7 @@
   let labels = $derived(
     metric
       ? [
-          ...Object.keys(metric.labels).filter((l) => l !== GROUP && l !== WORKER),
+          ...Object.keys(metric.labels).filter((l) => ![GROUP, WORKER, ROUTE_NAME].includes(l)),
           GROUP,
           ...(WORKER in metric.labels ? [WORKER] : []),
         ]
@@ -597,9 +612,12 @@
           {#each view.filter as [label, value], i (label + value)}
             <span class="chip"
               ><span class="dim">{labelName(label).toLowerCase()}</span>
-              <span class="mono">{value}</span><button
+              <span class="mono">{valueName(label, value)}</span><button
                 type="button"
-                aria-label="Remove filter {labelName(label).toLowerCase()} {value}"
+                aria-label="Remove filter {labelName(label).toLowerCase()} {valueName(
+                  label,
+                  value,
+                )}"
                 onclick={() => go({ filter: view.filter.filter((_, j) => j !== i) })}>×</button
               ></span
             >
@@ -611,7 +629,9 @@
               </select>
               <select aria-label="Filter value" onchange={(e) => addFilter(e.currentTarget.value)}>
                 <option value="">Value</option>
-                {#each metric.labels[addLabel] ?? [] as v (v)}<option value={v}>{v}</option>{/each}
+                {#each metric.labels[addLabel] ?? [] as v (v)}<option value={v}
+                    >{valueName(addLabel, v)}</option
+                  >{/each}
               </select>
             </span>
           {:else if metric}

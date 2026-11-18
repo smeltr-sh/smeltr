@@ -1021,7 +1021,8 @@ fn a_capture_at_a_blocking_destination_sees_its_held_rows_once() {
             "a",
             "__destination.placement",
             "__destination.id",
-            "__destination.route"
+            "__destination.route",
+            "__destination.routeName"
         ]
     );
     let [row] = &batch.rows[..] else {
@@ -1034,6 +1035,7 @@ fn a_capture_at_a_blocking_destination_sees_its_held_rows_once() {
             serde_json::json!(1),
             serde_json::Value::Null,
             serde_json::json!("id-1"),
+            serde_json::Value::Null,
             serde_json::Value::Null
         ]
     );

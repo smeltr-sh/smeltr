@@ -2896,6 +2896,8 @@ pub struct RouteConfig {
     /// The author's id (`RouteDto::id`). A route has no positional id the way a source or destination does; this is
     /// what names its edge on the map and what a diff tells an edit from a delete-and-insert by.
     pub id: String,
+    /// How every screen and message names the route (`config_file::route_name`).
+    pub name: String,
     pub source: SourceId,
     /// `None` matches every row of its source.
     pub cond: Option<String>,
@@ -3213,8 +3215,7 @@ pub struct CompiledRoute {
     /// `RouteConfig::id`, carried through compiling so a caller holding only the compiled form can still name the
     /// route -- the map, and route preview's own report of which route a row matched.
     pub id: String,
-    /// How messages name the route (`LoadedSystem::route_name`). Its id until `LoadedSystem::compile_topology` names
-    /// it: a caller compiling routes without the sources and pipelines they name has nothing else to call it.
+    /// `RouteConfig::name`.
     pub name: String,
     pub source: SourceId,
     pub cond: Option<Ir>,
@@ -3339,7 +3340,7 @@ fn compile_route(r: &RouteConfig, meta: &SourceMeta) -> Result<CompiledRoute, Co
     let compiled_patterns = crate::plan::compile::compile_patterns(&res.patterns)?;
     Ok(CompiledRoute {
         id: r.id.clone(),
-        name: r.id.clone(),
+        name: r.name.clone(),
         source: r.source,
         cond,
         // Filled in by `compile_topology`, which has the pipeline a `when` must resolve against.
@@ -4593,6 +4594,7 @@ mod tests {
     fn route(source: SourceId, cond: Option<&str>, pipeline: usize) -> RouteConfig {
         RouteConfig {
             id: format!("route-{source}-{pipeline}"),
+            name: format!("route-{source}-{pipeline}"),
             source,
             cond: cond.map(|s| s.to_string()),
             pipeline,

@@ -105,6 +105,7 @@ fn deliver_to(destinations: &[DestId]) -> Vec<DeliverRule> {
 fn route_cfg(cond: Option<&str>, pipeline: usize, deliver: Vec<DeliverRule>) -> RouteConfig {
     RouteConfig {
         id: "r".to_string(),
+        name: "r".to_string(),
         source: 0,
         cond: cond.map(str::to_string),
         pipeline,
@@ -1847,6 +1848,7 @@ fn a_delivered_row_reaches_its_target_and_not_the_deliver_rules() {
                     row["smeltr"]["exception"],
                     serde_json::json!({
                         "route": "r",
+                        "routeName": "r",
                         "pipeline": "pipeline-0",
                         "exceptions": [{
                             "step": "ratio",

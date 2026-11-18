@@ -17,6 +17,8 @@ from extend_lab import judge
 from real_logs import S, load_logs
 
 CONFIG = dict(widths=(1, 6, 72, 288), k=4, margin=0.2, longhistory=28, minrows=10, wtyp=True)
+if os.environ.get("SHIPPED"):  # at Quiet, the preset smeltr judges senders at
+    CONFIG = extend_lab.AT["Quiet"]
 
 
 def longest_zero_run(c):
@@ -28,8 +30,9 @@ def longest_zero_run(c):
 
 
 def job(args):
-    name, field, value, b, lab, judge_from = args
-    out = judge(b, lab, CONFIG, judge_from, sample_every=4)
+    name, field, value, b, lab, judge_from, shift = args
+    bb, ll = extend_lab.placed(b, lab, shift) if CONFIG.get("utc") else (b, lab)  # as the shipped replay places a log
+    out = judge(bb, ll, CONFIG, judge_from, sample_every=4)
     out.update(series=name, field=field, value=value, rows_per_bucket=float(np.median(b[judge_from:])))
     return out
 
@@ -37,7 +40,7 @@ def job(args):
 def main(folder, out_path):
     masks = {name: lab for name, _, lab in load_logs(folder)}
     jobs, fields = [], []
-    for path in sorted(glob.glob(os.path.join(folder, "*.json"))):
+    for path, shift in zip(sorted(glob.glob(os.path.join(folder, "*.json"))), extend_lab.log_shifts(folder)):
         d = json.load(open(path))
         n = len(d["counts"])
         judge_from = 28 * S if n >= 35 * S else 7 * S
@@ -47,7 +50,7 @@ def main(folder, out_path):
             watched = [v for v, s in silences.items() if s <= 12]
             fields.append(dict(series=d["name"], field=field, values=len(per), field_watched=len(per) <= 256 and len(watched) == len(per), values_watched=len(watched)))
             for v in watched:
-                jobs.append((d["name"], field, v, np.array(per[v], float), masks[d["name"]], judge_from))
+                jobs.append((d["name"], field, v, np.array(per[v], float), masks[d["name"]], judge_from, shift))
     with Pool(4) as pool:
         results = list(pool.imap_unordered(job, jobs))
     json.dump(dict(fields=fields, values=results), open(out_path, "w"), indent=0)

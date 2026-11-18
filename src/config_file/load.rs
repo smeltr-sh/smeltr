@@ -362,7 +362,8 @@ pub(crate) fn from_file_config_at(
         d.on_reject = own.answer(&ExceptionKind::Refused).clone();
     }
 
-    let (routes, route_errors) = collect(file.routes.iter().map(|r| to_route(r, &maps, &group)));
+    let names = file.route_names();
+    let (routes, route_errors) = collect(file.routes.iter().map(|r| to_route(r, &names[&r.id], &maps, &group)));
     errors.extend(route_errors);
     let (pipelines, pipeline_errors) = collect(file.pipelines.iter().zip(&produces).map(|(p, produces)| {
         let mut call_ids = Vec::new();
@@ -433,8 +434,8 @@ fn impossible_answers_of(system: &super::LoadedSystem) -> Vec<String> {
     let topology = &system.topology;
     let group = &topology.on_exception;
     let mut errors = impossible_answers("the worker group", group, None, Layer::Group);
-    for (at, r) in topology.routes.iter().enumerate() {
-        let what = format!("route {}", system.route_name(at));
+    for r in &topology.routes {
+        let what = format!("route {}", r.name);
         errors.extend(impossible_answers(&what, &r.on_exception, Some(group), Layer::Route));
     }
     for d in &topology.destinations {
@@ -3750,37 +3751,38 @@ fn refusal_cycles(destinations: &[DestinationConfig]) -> Vec<String> {
     errors
 }
 
-/// Looks up the `kind` (source or pipeline) that `route` names, `id`, in `known`. The editor leaves a new route's source
-/// and pipeline empty until they are chosen, so an empty one is reported as not chosen, not as naming something gone.
+/// Looks up the `kind` (source or pipeline) that `route` names, `id`, in `known`.
 fn route_names<T: Copy>(route: &str, kind: &str, id: &str, known: &HashMap<String, T>) -> Result<T, String> {
-    if id.is_empty() {
-        return Err(format!("route {route:?} names no {kind}"));
-    }
     known
         .get(id)
         .copied()
-        .ok_or_else(|| format!("route {route:?} references unknown {kind} {id:?}"))
+        .ok_or_else(|| format!("route {route} references unknown {kind} {id:?}"))
 }
 
-fn to_route(dto: &RouteDto, maps: &IdMaps, group: &OnException) -> Result<RouteConfig, String> {
-    let source = route_names(&dto.id, "source", &dto.source, &maps.sources)?;
-    let pipeline = route_names(&dto.id, "pipeline", &dto.pipeline, &maps.pipelines)?;
+fn to_route(dto: &RouteDto, name: &str, maps: &IdMaps, group: &OnException) -> Result<RouteConfig, String> {
+    // The editor leaves a new route's ends empty until they are chosen, and its name has no such end to show, so
+    // these read as the routes page says them (`unchosen`).
+    if dto.source.is_empty() {
+        return Err("a route names no source".into());
+    }
+    if dto.pipeline.is_empty() {
+        return Err(format!("a route from {} names no pipeline", dto.source));
+    }
+    let source = route_names(name, "source", &dto.source, &maps.sources)?;
+    let pipeline = route_names(name, "pipeline", &dto.pipeline, &maps.pipelines)?;
     let deliver = dto
         .deliver
         .iter()
         .map(|rule| {
-            let to = rule
-                .to
-                .iter()
-                .map(|d| {
-                    maps.destinations.get(d).copied().ok_or_else(|| {
-                        format!(
-                            "route {:?}'s deliver rule references unknown destination {:?}",
-                            dto.id, d
-                        )
+            let to =
+                rule.to
+                    .iter()
+                    .map(|d| {
+                        maps.destinations.get(d).copied().ok_or_else(|| {
+                            format!("the deliver rule of route {name} references unknown destination {d:?}")
+                        })
                     })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+                    .collect::<Result<Vec<_>, _>>()?;
             Ok(DeliverRule {
                 when: rule.when.clone(),
                 to,
@@ -3790,11 +3792,12 @@ fn to_route(dto: &RouteDto, maps: &IdMaps, group: &OnException) -> Result<RouteC
 
     let mut on_exception = group.clone();
     if let Some(layer) = &dto.on_exception {
-        lay_answers(&mut on_exception, layer, Layer::Route, maps).map_err(|e| format!("route {:?}'s {e}", dto.id))?;
+        lay_answers(&mut on_exception, layer, Layer::Route, maps).map_err(|e| format!("route {name}'s {e}"))?;
     }
 
     Ok(RouteConfig {
         id: dto.id.clone(),
+        name: name.to_string(),
         deliver,
         source,
         cond: dto.condition.clone(),

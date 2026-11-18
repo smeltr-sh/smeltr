@@ -620,7 +620,16 @@ fn a_parquet_object_holds_the_records_columns() {
     assert_eq!(
         columns,
         [
-            "_raw", "msg", "n", "route", "pipeline", "step", "kind", "message", "rest"
+            "_raw",
+            "msg",
+            "n",
+            "route",
+            "routeName",
+            "pipeline",
+            "step",
+            "kind",
+            "message",
+            "rest"
         ]
     );
     let rows: Vec<String> = file
@@ -785,10 +794,11 @@ fn a_csv_object_holds_the_records_leaves() {
     assert_eq!(
         lines,
         [
-            "_raw,f,msg,n,o.a,o.rest,tags,v,smeltr.exception.route,smeltr.exception.pipeline,\
+            "_raw,f,msg,n,o.a,o.rest,tags,v,smeltr.exception.route,smeltr.exception.routeName,\
+             smeltr.exception.pipeline,\
              smeltr.exception.exceptions,rest",
-            r#""{""n"":1,""msg"":""a, \""b\"""",""f"":2,""v"":{""x"":1},""tags"":[""p"",""q""],""o"":{""a"":5,""z"":""y""},""extra"":true}",2.0,"a, ""b""",1,5,"{""z"":""y""}","[""p"",""q""]","{""x"":1}",,,,"{""extra"":true}""#,
-            r#""{""n"":2,""msg"":""""}",,"",2,,,,,,,,"#,
+            r#""{""n"":1,""msg"":""a, \""b\"""",""f"":2,""v"":{""x"":1},""tags"":[""p"",""q""],""o"":{""a"":5,""z"":""y""},""extra"":true}",2.0,"a, ""b""",1,5,"{""z"":""y""}","[""p"",""q""]","{""x"":1}",,,,,"{""extra"":true}""#,
+            r#""{""n"":2,""msg"":""""}",,"",2,,,,,,,,,"#,
         ]
     );
 }

@@ -44,7 +44,7 @@
   import Sparkline from './Sparkline.svelte';
   import StateMark from './StateMark.svelte';
   import { severityState, type State } from './stateGlyphs';
-  import { pipelineNamesAt, type PipelineNames } from './pipelineNames';
+  import { names } from './names.svelte';
   import { byteUnit, bytes } from './bytes';
   import SortButton from './SortButton.svelte';
   import FoldAllButton from './FoldAllButton.svelte';
@@ -182,18 +182,6 @@
     }),
   );
 
-  /** Each deployed group's pipeline names on `main`, which is what its workers run, `shared/`'s
-   * included. A group absent here has not answered yet. */
-  let namesByGroup: Record<string, PipelineNames> = $state({});
-  /** Per group, the ids it was read for: once when it is first seen, and again for a pipeline it
-   * did not name, which was deployed since. */
-  const namesReadFor = new Map<string, Set<string>>();
-  function readNames(group: string, forId = '') {
-    const readFor = namesReadFor.get(group) ?? new Set<string>();
-    if (readFor.has(forId)) return;
-    namesReadFor.set(group, readFor.add(forId));
-    pipelineNamesAt(MAIN_BRANCH, group).then((names) => (namesByGroup[group] = names));
-  }
   /** The groups whose threads reported errors for each pipeline id over the window. */
   let erroredGroups = $derived.by(() => {
     const groups = new Map<string, Set<string>>();
@@ -206,18 +194,18 @@
         }
     return groups;
   });
-  $effect(() => {
-    for (const [id, groups] of erroredGroups)
-      for (const g of groups) readNames(g, g in namesByGroup && !namesByGroup[g][id] ? id : '');
-  });
-  /** A pipeline by the name a group that ran it gives it. */
+  /** A pipeline by the name a group that ran it gives it on `main`, which is what its workers run. */
   function pipelineName(id: string): string {
-    for (const g of erroredGroups.get(id) ?? []) {
-      const name = namesByGroup[g]?.[id];
-      if (name) return name;
-    }
-    return id;
+    const named = [...(erroredGroups.get(id) ?? [])].map((g) =>
+      names.of(MAIN_BRANCH, g, 'pipelines', id),
+    );
+    return named.find((n) => n !== id) ?? id;
   }
+  /** What a person calls a row's pipeline or route: its name in its group on `main`. */
+  const nameOf = (r: { group: string; subjectId: string }) =>
+    kind === 'route' || kind === 'pipeline'
+      ? names.of(MAIN_BRANCH, r.group, `${kind}s`, r.subjectId)
+      : r.subjectId;
 
   let erroredSeries = $derived(
     history.map((point) =>
@@ -398,7 +386,7 @@
   const totalsSort = new TableSort<'name' | 'group' | 'source' | 'pipeline' | 'in' | 'out'>();
   let sortedTableRows = $derived(
     totalsSort.apply(tableRows, {
-      name: (r) => r.subjectId,
+      name: nameOf,
       group: (r) => r.group,
       source: (r) => r.source,
       pipeline: (r) => r.pipeline,
@@ -1201,8 +1189,8 @@
                 : `${selectionLabel}, `}{KINDS.find((k) => k.value === kind)?.one}
               <span class="picked mono"
                 >{selectionLabel === 'whole fleet'
-                  ? `${picked.subjectId} (${picked.group})`
-                  : picked.subjectId}<button
+                  ? `${nameOf(picked)} (${picked.group})`
+                  : nameOf(picked)}<button
                   type="button"
                   aria-label={selectionLabel === 'whole fleet'
                     ? 'Show the whole fleet'
@@ -1298,12 +1286,14 @@
                       type="button"
                       class="pick"
                       aria-pressed={isPicked(r)}
-                      onclick={() => pick(isPicked(r) ? null : r)}>{r.subjectId}</button
+                      onclick={() => pick(isPicked(r) ? null : r)}>{nameOf(r)}</button
                     ></td
                   >
                   <td>{r.group}</td>
                   {#if kind === 'route'}<td class="mono">{r.source ?? ''}</td><td class="mono"
-                      >{r.pipeline ?? ''}</td
+                      >{r.pipeline
+                        ? names.of(MAIN_BRANCH, r.group, 'pipelines', r.pipeline)
+                        : ''}</td
                     >{/if}
                   <td class="num">{amount(r.in)}</td><td class="num">{amount(r.out)}</td>
                 </tr>

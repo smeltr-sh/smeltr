@@ -16,6 +16,7 @@
   import { count } from './time';
   import { checksOf, outcomeText, sentText, testsCovering } from './objectChanges';
   import Help from './Help.svelte';
+  import { names } from './names.svelte';
   import { openOnBranch } from './unsavedGuard';
 
   let {
@@ -42,6 +43,9 @@
     /** What a reader calls pipeline `id` of `scope`. */
     pipelineName: (scope: string, id: string) => string;
   } = $props();
+
+  /** What a reader calls route `id` of `scope`: its name on the branch. */
+  const routeName = (scope: string, id: string) => names.of(branch, scope, 'routes', id);
 
   /** Every route `t` covers, per its summary -- empty for a pipeline test. */
   function routesOf(t: TestResult): string[] {
@@ -159,12 +163,17 @@
     return s ? checksOf(s) : null;
   }
 
-  function failInfo(v: Verdict): FailInfo | null {
+  function failInfo(v: Verdict, scope: string): FailInfo | null {
+    const named = (id: string) => routeName(scope, id);
     const d = v.firstDifference;
     if (!d) return null;
     const headline = `Row ${d.row} differs from what the test locks.`;
     const { expected, actual } = d;
-    if (expected?.values && actual?.values && sentText(expected) === sentText(actual)) {
+    if (
+      expected?.values &&
+      actual?.values &&
+      sentText(expected, named) === sentText(actual, named)
+    ) {
       return {
         headline,
         note: null,
@@ -187,8 +196,8 @@
       headline,
       note,
       entries: [],
-      expectedLine: expected ? outcomeText(expected) : null,
-      actualLine: actual ? outcomeText(actual) : null,
+      expectedLine: expected ? outcomeText(expected, named) : null,
+      actualLine: actual ? outcomeText(actual, named) : null,
     };
   }
 </script>
@@ -230,7 +239,7 @@
             {:else if group.kind === 'changed'}
               <span class="pipeline-id">Sample or lock changed</span>
             {:else}
-              <span class="mono pipeline-id">{group.id}</span>
+              <span class="pipeline-id">{routeName(group.scope, group.id)}</span>
             {/if}
             <span class="dim mono scope-tag">{group.scope}</span>
             {#if group.tests.length === 0}
@@ -259,7 +268,9 @@
             <div class="test-line">
               <span>{t.name}</span>
               {#if routes.length > 0}
-                <span class="dim mono route-tag">via {routes.join(', ')}</span>
+                <span class="dim mono route-tag"
+                  >via {routes.map((r) => routeName(t.area, r)).join(', ')}</span
+                >
               {/if}
               {#if t.error}
                 <span class="dim could-not-run"
@@ -275,7 +286,7 @@
             {@const checks = checksText(t)}
             {#if checks}<div class="dim checks-line">Checks {checks}</div>{/if}
             {#if t.verdict && !t.verdict.passed}
-              {@const info = failInfo(t.verdict)}
+              {@const info = failInfo(t.verdict, t.area)}
               {@const rowsIn = rowsInText(t.verdict)}
               {#if rowsIn || info}
                 <div class="fail-card">

@@ -42,6 +42,7 @@ fn code(id: FunctionId, body: &str) -> Step {
 fn worker(source: &FakeSource, dest: &AsyncDestination) -> Worker {
     let routes = vec![RouteConfig {
         id: "r".to_string(),
+        name: "r".to_string(),
         source: 0,
         cond: None,
         pipeline: 0,
@@ -92,6 +93,7 @@ fn two_lanes_to(
         .into_iter()
         .map(|source| RouteConfig {
             id: format!("route-{source}"),
+            name: format!("route-{source}"),
             source,
             cond: None,
             pipeline: 0,
@@ -673,6 +675,7 @@ fn capturing(dest: &AsyncDestination, captures: &Arc<smeltr::worker::capture::Ca
         captures,
         RouteConfig {
             id: "orders".to_string(),
+            name: "orders".to_string(),
             source: 0,
             cond: None,
             pipeline: 0,
@@ -803,7 +806,7 @@ fn a_destination_filter_a_route_cannot_read_ends_the_capture() {
 
     let report = captures.finished("w1").remove(0);
     assert!(
-        matches!(&report.finished, Some(smeltr::heartbeat::CaptureEnd::Failed(why)) if why.contains("\"orders\"")),
+        matches!(&report.finished, Some(smeltr::heartbeat::CaptureEnd::Failed(why)) if why.contains("on route orders:")),
         "{report:?}"
     );
 }
@@ -817,6 +820,7 @@ fn a_destination_filter_reads_the_routes_it_compiles_on() {
     captures.admit(&[at_destination(Some("doubled > 2"))]);
     let route = |id: &str, pipeline| RouteConfig {
         id: id.to_string(),
+        name: id.to_string(),
         source: 0,
         cond: None,
         pipeline,
@@ -964,6 +968,7 @@ fn a_capture_of_a_blocked_source_is_shown_the_records_that_blocked() {
     let captures = Arc::new(smeltr::worker::capture::Captures::default());
     let route = RouteConfig {
         id: "orders".to_string(),
+        name: "orders".to_string(),
         source: 0,
         cond: None,
         pipeline: 0,
@@ -995,6 +1000,7 @@ fn a_capture_of_a_source_blocked_on_unmatched_records_is_shown_them() {
     let captures = Arc::new(smeltr::worker::capture::Captures::default());
     let route = RouteConfig {
         id: "orders".to_string(),
+        name: "orders".to_string(),
         source: 0,
         cond: Some("__source.offset == 0".to_string()),
         pipeline: 0,

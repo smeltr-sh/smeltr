@@ -193,7 +193,7 @@
   // yet been set for the id now in the URL, which would otherwise read as
   // dirty -- backward, and specifically for a pipeline nothing has
   // touched yet.
-  let isDirty = $derived(!loading && editSignature !== savedSignature);
+  let isDirty = $derived(!loading && !loadFailed && editSignature !== savedSignature);
   // A brand new pipeline that nothing has touched yet is not dirty (its
   // edit and saved signatures already match), but it has never been
   // written either -- an empty pipeline is a real, useful pass-through
@@ -263,7 +263,8 @@
   // to the id that save wrote, so that save drops the record it saved under by
   // hand. The label is the name box, since the key holds an id.
   $effect(() => {
-    if (loading || moved) return;
+    // A pipeline that did not load holds only the defaults, nothing of the person's.
+    if (loading || loadFailed || moved) return;
     hold(FILE, {
       ...snapshotFor(pipelineName, steps, produces),
       baseline: savedSignature,
@@ -288,6 +289,7 @@
   // What a `call` step may target (a self-call is a cycle).
   let otherPipelines = $derived([...sharedPipelines, ...ownPipelines]);
   let pipelineIds = $derived(otherPipelines.map((p) => p.id));
+  let sharedPipelineIds = $derived(new Set(sharedPipelines.map((p) => p.id)));
   let pipelineNames = $derived(Object.fromEntries(otherPipelines.map((p) => [p.id, p.name])));
   let lookupTables = $derived([...sharedLookupTables, ...ownLookupTables]);
   let grokPatterns = $derived([...sharedGrokPatterns, ...ownGrokPatterns]);
@@ -1622,6 +1624,7 @@
             {warningsByStep}
             {pipelineIds}
             {pipelineNames}
+            {sharedPipelineIds}
             {lookupTables}
             {grokPatterns}
             parsedFields={lastGoodResult?.parsed_fields}

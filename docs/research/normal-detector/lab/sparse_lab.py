@@ -5,6 +5,7 @@
 """
 
 import json
+import os
 import sys
 from multiprocessing import Pool
 
@@ -23,6 +24,10 @@ CONFIGS = [dict(widths=(1, 6), k=4, margin=0.2, minrows=10, wtyp=True), dict(wid
 
 HISTORY = [dict(widths=(1, 6, 72, 288), k=4, margin=0.2, minrows=10, wtyp=True, history=7), dict(widths=(1, 6, 72, 288), k=4, margin=0.2, minrows=10, wtyp=True, history=28),
            dict(widths=(1, 6, 72, 288, 2016), k=4, margin=0.2, minrows=10, wtyp=True, history=28)]
+if os.environ.get("SHIPPED"):  # the same at Balanced, as smeltr ships it
+    B = extend_lab.AT["Balanced"]
+    CONFIGS = [dict(B, widths=(1, 6)), B, dict(B, longhistory=0)]
+    HISTORY = [dict(B, longhistory=0, history=7), dict(B, longhistory=0, history=28), dict(B, longhistory=0, history=28, widths=(1, 6, 72, 288, 2016))]
 
 
 def job(args):

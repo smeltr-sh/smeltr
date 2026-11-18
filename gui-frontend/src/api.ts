@@ -2178,7 +2178,8 @@ export interface PreviewRequest {
   /** Unix microseconds. Omitted reads the wall clock. */
   atMicros?: number;
   /** A Bool over the pipeline's output: only the rows it is true for come back.
-   * One that does not compile fails at the `filter` stage. */
+   * One that does not parse fails at the `filterParse` stage, and one that parses but does not compile at the
+   * `filter` stage. */
   filter?: string;
   /** Say which steps changed each row's fields and dropped it. The leader
    * runs the pipeline once more per step for it. */
@@ -4471,6 +4472,8 @@ export type MapNode = {
 export type RouteEdge = {
   group: string;
   route: string;
+  /** What a person reads: the route's `routeName`. */
+  name: string;
   condition?: string;
   source: string;
   pipeline: string;

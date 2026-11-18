@@ -73,7 +73,8 @@ fn idle(value: MetricValue) -> bool {
 }
 
 /// What `subjects` renames `labels` to, as the design says: a positional id it holds becomes the author's name, a
-/// function by its own pipeline's steps, and, where `capture_exempt`, a capture's labels stay as they are.
+/// function by its own pipeline's steps, a route it names gains its name beside its id, and, where `capture_exempt`,
+/// a capture's labels stay as they are.
 fn resolved(
     subjects: &Subjects,
     labels: &[(&'static str, String)],
@@ -99,6 +100,12 @@ fn resolved(
             };
             (*k, name.unwrap_or_else(|| v.clone()))
         })
+        .chain(
+            (labels.iter())
+                .find(|(k, _)| *k == "route")
+                .and_then(|(_, id)| subjects.routes.get(id))
+                .map(|name| (ROUTE_NAME_LABEL, name.clone())),
+        )
         .collect()
 }
 
@@ -218,6 +225,7 @@ fn every_poll_carries_what_its_source_owes_moved_samples_first_within_its_batch(
             "a heartbeat reading a retired series afresh",
             "a label renamed by its subjects",
             "a function renamed through its pipeline",
+            "a route named beside its id",
             "a capture's labels left as they are",
             "a label naming no subject",
             "a source with no subjects",
@@ -244,6 +252,9 @@ fn every_poll_carries_what_its_source_owes_moved_samples_first_within_its_batch(
             destinations: vec!["dest-a".into()],
             pipelines: vec!["pipe-a".into(), "pipe-b".into(), "pipe-c".into()],
             steps: vec![vec!["parse".into()], vec![], vec!["enrich".into(), "drop".into()]],
+            routes: [("orders", "orders \u{2192} audit"), ("9", "web \u{2192} audit (2)")]
+                .map(|(id, name)| (id.to_string(), name.to_string()))
+                .into(),
         });
         let mut values: HashMap<MetricKey, MetricValue> = HashMap::new();
         let mut mirrored: HashMap<MetricKey, MetricValue> = HashMap::new();
@@ -551,6 +562,9 @@ fn every_poll_carries_what_its_source_owes_moved_samples_first_within_its_batch(
                                     };
                                     if labels != key.labels {
                                         cov.reach("a label renamed by its subjects");
+                                    }
+                                    if value_of(&labels, ROUTE_NAME_LABEL).is_some() {
+                                        cov.reach("a route named beside its id");
                                     }
                                     if value_of(&labels, "function") != value_of(&key.labels, "function") {
                                         cov.reach("a function renamed through its pipeline");

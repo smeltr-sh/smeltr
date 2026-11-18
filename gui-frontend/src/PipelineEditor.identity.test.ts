@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, tick, unmount } from 'svelte';
 import PipelineEditor from './PipelineEditor.svelte';
 import { setBranch, setScope, SHARED_SCOPE, type ApiError, type PipelineDto } from './api';
-import { dropAll, hold } from './edits';
+import { dropAll, hold, listHeld } from './edits';
 import { load, signedOut } from './session';
 import { bareError, errors } from './errors.svelte';
 
@@ -205,6 +205,15 @@ describe('pipeline identity in the mounted editor', () => {
   });
 });
 
+describe('a pipeline the scope does not hold', () => {
+  it('holds no unsaved work for it', async () => {
+    editor = mount(PipelineEditor, { target, props: { id: 'gone', showJson: false } });
+    await vi.waitFor(() => expect(target.textContent).not.toContain('Loading…'));
+    await tick();
+    expect(listHeld()).toEqual([]);
+  });
+});
+
 describe('a group pipeline drawing on shared', () => {
   it('offers shared pipelines and tables, and reads no shared table as unknown', async () => {
     setScope('west');
@@ -233,5 +242,22 @@ describe('a group pipeline drawing on shared', () => {
     );
     await tick();
     expect(target.textContent).not.toContain('unknown lookup table');
+  });
+
+  it("marks the shared pipelines a Call step's picker offers", async () => {
+    setScope('west');
+    sharedConfig = { pipelines: [{ id: 'enrich', name: 'Enrich', steps: [] }], lookupTables: [] };
+    pipelines.set('local', { id: 'local', name: 'Local', steps: [] });
+    pipelines.set('audit', {
+      id: 'audit',
+      name: 'Audit',
+      steps: [{ id: 'call-enrich', type: 'call', pipeline: 'enrich' }],
+    } as PipelineDto);
+    await open('audit');
+    target.querySelector<HTMLButtonElement>('#step-call-enrich .expander')!.click();
+    const offered = () =>
+      [...target.querySelectorAll('select option')].map((o) => o.textContent?.trim());
+    await vi.waitFor(() => expect(offered()).toContain('Enrich \u2014 shared'));
+    expect(offered()).toContain('Local');
   });
 });
