@@ -184,10 +184,11 @@ committed:
 
 # A release is cut from main, or a patch from its release branch (`release/1.2`). The branch must hold everything its
 # origin copy does, so a stale checkout cannot release an old commit. A detached checkout of a release tag, as CI
-# makes one, counts when the tag is on one of those branches.
+# makes one, counts when the tag is on one of those branches. A release branch takes only its own minor version's
+# releases.
 [private]
 [unix]
-clean-release-branch:
+clean-release-branch version:
     #!/usr/bin/env bash
     set -euo pipefail
     test -z "$(git status --porcelain)" || { echo "a release builds with nothing uncommitted" >&2; exit 1; }
@@ -199,7 +200,9 @@ clean-release-branch:
       exit 0
     fi
     case "$branch" in
-      main | release/*) ;;
+      main) ;;
+      release/*) [[ "{{version}}" == "${branch#release/}".* ]] \
+        || { echo "$branch cuts only ${branch#release/}.x, not {{version}}" >&2; exit 1; } ;;
       *) echo "a release builds from main or a release/ branch, not $branch" >&2; exit 1 ;;
     esac
     git fetch -q origin "$branch" \
@@ -209,8 +212,8 @@ clean-release-branch:
 
 [private]
 [windows]
-clean-release-branch:
-    powershell -NoProfile -Command "$changes = @(git status --porcelain); if ($LASTEXITCODE -ne 0) { exit 1 }; $branch = git branch --show-current; if ($LASTEXITCODE -ne 0 -or -not ($branch -eq 'main' -or $branch -like 'release/*') -or $changes.Count -gt 0) { [Console]::Error.WriteLine('a release builds from main or a release/ branch with nothing uncommitted'); exit 1 }; git fetch -q origin $branch; if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine(\"could not fetch origin/${branch}: push the branch, or check your connection\"); exit 1 }; git merge-base --is-ancestor origin/$branch HEAD; if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine(\"$branch is behind origin/${branch}: pull before cutting a release\"); exit 1 }"
+clean-release-branch version:
+    powershell -NoProfile -Command "$changes = @(git status --porcelain); if ($LASTEXITCODE -ne 0) { exit 1 }; $branch = git branch --show-current; if ($LASTEXITCODE -ne 0 -or -not ($branch -eq 'main' -or $branch -like 'release/*') -or $changes.Count -gt 0) { [Console]::Error.WriteLine('a release builds from main or a release/ branch with nothing uncommitted'); exit 1 }; if ($branch -like 'release/*' -and -not '{{version}}'.StartsWith($branch.Substring(8) + '.')) { [Console]::Error.WriteLine(\"$branch cuts only $($branch.Substring(8)).x, not {{version}}\"); exit 1 }; git fetch -q origin $branch; if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine(\"could not fetch origin/${branch}: push the branch, or check your connection\"); exit 1 }; git merge-base --is-ancestor origin/$branch HEAD; if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine(\"$branch is behind origin/${branch}: pull before cutting a release\"); exit 1 }"
 
 # The check before every push; nothing else runs one. `tools/check-scope` picks the checks the files changed since
 # origin/main can break, down to the Rust tests of the modules they touch, and runs them side by side. It can miss a
@@ -290,7 +293,7 @@ cut-release release force="": (has-notes release) (record-release if release =~ 
 # or committed, and the tag pushed. Its build is started by hand on GitHub, on that tag: a draft pre-release with its
 # own image tag, and Windows only when asked.
 [doc("Tag a release candidate and push the tag.")]
-cut-rc candidate: clean-release-branch
+cut-rc candidate: (clean-release-branch candidate)
     {{ if candidate =~ '^[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$' { "" } else { error('a release candidate is named major.minor.patch-rcN, like 1.0.0-rc1') } }}
     git merge-base --is-ancestor HEAD origin/{{ `git branch --show-current` }}
     git tag -a "v{{candidate}}" -m "Release candidate {{candidate}}"
@@ -311,7 +314,7 @@ has-notes release: need-node
 # Run from the commit being released, once. Every later build must start on
 # what this one leaves and still read what it sends (`src/releases.rs`).
 [private]
-record-release $SMELTR_RECORD_RELEASE $SMELTR_RECORD_FORCE="": need-rust need-nextest clean-release-branch
+record-release $SMELTR_RECORD_RELEASE $SMELTR_RECORD_FORCE="": need-rust need-nextest (clean-release-branch SMELTR_RECORD_RELEASE)
     cargo nextest run --lib --run-ignored only -E "test(=releases::record_release)"
 
 # The checks build with the newest stable, so they see its new lints.
