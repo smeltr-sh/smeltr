@@ -43,6 +43,11 @@
     pipelineName: (scope: string, id: string) => string;
   } = $props();
 
+  /** What a reader calls route `id` of `scope`: its name, or its id where the leader names none. */
+  function routeName(scope: string, id: string): string {
+    return touchedByScope.find((si) => si.area === scope)?.routeNames?.[id] || id;
+  }
+
   /** Every route `t` covers, per its summary -- empty for a pipeline test. */
   function routesOf(t: TestResult): string[] {
     return testSummaryByKey.get(scopedKey(t.area, t.id))?.routes ?? [];
@@ -230,7 +235,7 @@
             {:else if group.kind === 'changed'}
               <span class="pipeline-id">Sample or lock changed</span>
             {:else}
-              <span class="mono pipeline-id">{group.id}</span>
+              <span class="pipeline-id">{routeName(group.scope, group.id)}</span>
             {/if}
             <span class="dim mono scope-tag">{group.scope}</span>
             {#if group.tests.length === 0}

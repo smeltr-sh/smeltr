@@ -30,6 +30,9 @@ pub struct Impact {
     /// The name of every pipeline in `before` or `after`, by id, `after`'s where both hold it. A person sees a
     /// pipeline by name, and a `Reason::Calls` may name one the change deleted, which only `before` still holds.
     pub pipeline_names: BTreeMap<String, String>,
+    /// The name of every route in `after`, by id: a route's id is minted, so a person sees it by its name
+    /// ([`super::route_name`]).
+    pub route_names: BTreeMap<String, String>,
 }
 
 /// One pipeline or route a change reaches, and every reason it was: reached by two paths at once, it keeps both.
@@ -143,15 +146,25 @@ pub fn pipelines_touched(before: &FileConfig, after: &FileConfig) -> Impact {
     pipelines.retain(|id, _| after.pipelines.iter().any(|p| &p.id == id));
     routes.retain(|id, _| after.routes.iter().any(|r| &r.id == id));
 
+    let pipeline_names: BTreeMap<String, String> = (before.pipelines.iter())
+        .chain(&after.pipelines)
+        .map(|p| (p.id.clone(), p.name.clone()))
+        .collect();
+    let ends: Vec<_> = after.routes.iter().map(|r| (&r.source, &r.pipeline)).collect();
+    let route_names = (after.routes.iter().enumerate())
+        .map(|(at, r)| {
+            let pipeline = pipeline_names
+                .get(&r.pipeline)
+                .filter(|n| !n.is_empty())
+                .unwrap_or(&r.pipeline);
+            (r.id.clone(), super::route_name(&ends, at, &r.source, pipeline))
+        })
+        .collect();
     Impact {
         pipelines: into_reached(pipelines),
         routes: into_reached(routes),
-        pipeline_names: before
-            .pipelines
-            .iter()
-            .chain(&after.pipelines)
-            .map(|p| (p.id.clone(), p.name.clone()))
-            .collect(),
+        pipeline_names,
+        route_names,
     }
 }
 
@@ -810,6 +823,32 @@ mod tests {
             BTreeMap::from([
                 ("p-1".to_string(), "Orders v2".to_string()),
                 ("p-2".to_string(), "Enrich".to_string()),
+            ])
+        );
+    }
+
+    /// A route goes by its source and its pipeline's name in `after`, numbered where another runs between the same two.
+    #[test]
+    fn route_names_are_source_then_pipeline_name() {
+        let named = PipelineDto {
+            name: "Orders".to_string(),
+            ..pipeline("p-1", vec![])
+        };
+        let after = config(
+            vec![source("orders-west", "orders")],
+            vec![
+                route("r-1", "orders-west", "p-1", &["es"]),
+                route("r-2", "orders-west", "p-1", &["es"]),
+                route("r-3", "orders-west", "p-2", &["es"]),
+            ],
+            vec![named, pipeline("p-2", vec![])],
+        );
+        assert_eq!(
+            pipelines_touched(&after, &after).route_names,
+            BTreeMap::from([
+                ("r-1".to_string(), "orders-west \u{2192} Orders (1)".to_string()),
+                ("r-2".to_string(), "orders-west \u{2192} Orders (2)".to_string()),
+                ("r-3".to_string(), "orders-west \u{2192} p-2".to_string()),
             ])
         );
     }

@@ -397,6 +397,7 @@ fn run_in(
             pipelines: Vec::new(),
             routes: Vec::new(),
             pipeline_names: Default::default(),
+            route_names: Default::default(),
         }
     };
     let touched_pipeline_ids: HashSet<&str> = impact.pipelines.iter().map(|r| r.id.as_str()).collect();
@@ -556,6 +557,7 @@ mod tests {
                 ],
             }],
             pipeline_names: [("orders-normalize".to_string(), "Orders".to_string())].into(),
+            route_names: [("orders".to_string(), "orders-west \u{2192} Orders".to_string())].into(),
         };
         assert_eq!(
             serde_json::to_value(&touched).unwrap(),
@@ -576,6 +578,7 @@ mod tests {
                     ],
                 }],
                 "pipelineNames": {"orders-normalize": "Orders"},
+                "routeNames": {"orders": "orders-west \u{2192} Orders"},
             })
         );
     }
