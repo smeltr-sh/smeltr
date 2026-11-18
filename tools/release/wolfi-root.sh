@@ -22,6 +22,8 @@ builder)
     # AWS-LC's FIPS module refuses to configure without cmake, Go and perl. clang is zstd-sys's bindgen. krb5 and
     # Cyrus SASL want diffutils. build.rs reads the version with git. curl fetches rustup.
     packages bash busybox build-base linux-headers pkgconf cmake go perl clang-22 curl curl-dev git diffutils
+    # sh, sed, grep and the rest are busybox applets, whose links Wolfi's package trigger would make.
+    chroot "$root" /usr/bin/busybox --install -s
     ;;
 image)
     # git serves the leader's config repository through `git http-backend`, and libcurl carries its push to a host,
