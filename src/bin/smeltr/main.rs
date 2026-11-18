@@ -2973,13 +2973,20 @@ mod tests {
         assert_eq!(kept, [1]);
     }
 
-    /// A filter that does not compile to a Bool fails at its own stage, so the editor can tell it from the pipeline's.
+    /// A filter that does not compile to a Bool fails at its own stage, so the editor can tell it from the pipeline's,
+    /// and one that does not parse at another, so the find box can tell an expression from text that only looks like one.
     #[test]
     fn a_preview_filter_that_does_not_compile_fails_at_its_own_stage() {
-        for filter in ["x ==", "x"] {
+        for (filter, stage) in [
+            ("x", "filter"),
+            ("x == 1", "filter"),
+            ("x ==", "filterParse"),
+            (r#"subtype="virus""#, "filterParse"),
+            ("srcip=1.2.3.4", "filterParse"),
+        ] {
             let previewed = filtered("x = _raw;", r#"[{"_raw":"a"}]"#, filter);
             assert!(!previewed.succeeded(), "{filter}");
-            assert_eq!(previewed.stage, Some("filter"), "{filter}: {:?}", previewed.errors);
+            assert_eq!(previewed.stage, Some(stage), "{filter}: {:?}", previewed.errors);
         }
     }
 
