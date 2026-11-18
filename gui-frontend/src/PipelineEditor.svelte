@@ -127,7 +127,6 @@
   import {
     announcePipelineNames,
     newPipelineHash,
-    relockChosenHash,
     withPipeline,
     type Making,
     type Relock,
@@ -1065,7 +1064,7 @@
     chooseLock(
       choice,
       relocking
-        ? relockChosenHash(relock!.test)
+        ? `#/build/tests/relock/${encodeURIComponent(relock!.test)}`
         : `#/build/tests/lock/${encodeURIComponent(loadedId)}/${encodeURIComponent(selectedSample)}`,
     );
   }

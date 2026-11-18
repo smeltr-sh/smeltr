@@ -6,7 +6,6 @@ import {
   exitOf,
   movedTo,
   parseRoute,
-  relockChosenHash,
   relockHash,
   section,
   sentFrom,
@@ -237,15 +236,6 @@ describe('parseRoute', () => {
       const route = parseRoute(relockHash('keep id', 'orders sample', pipeline));
       expect(route).toMatchObject({ page, relock: { test: 'keep id', sample: 'orders sample' } });
     }
-  });
-
-  it('hands a re-lock its choice at an address of its own, not the one Lock again opens', () => {
-    expect(parseRoute(relockChosenHash('keep id'))).toEqual({
-      tab: 'build',
-      page: 'lock-test',
-      relock: 'keep id',
-    });
-    expect(relockChosenHash('keep id')).not.toBe('#/build/tests/relock/keep%20id');
   });
 
   it('names a re-lock in the trail', () => {

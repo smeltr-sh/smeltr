@@ -176,12 +176,6 @@ export function relockHash(test: string, sample: string, pipeline?: string): str
     : `#/build/routes/sample?sample=${encodeURIComponent(sample)}&${relock}`;
 }
 
-/** The lock page test `test` is locked again on, once its fields and rows are chosen. It is not the address the
- * test's Lock again opens, so a choice handed to it is never found by a later Lock again. */
-export function relockChosenHash(test: string): string {
-  return `#/build/tests/relock/${encodeURIComponent(test)}?chosen`;
-}
-
 /** The test `params` lock again on `sample`, if they name one. */
 function relockFrom(params: URLSearchParams, sample: string | null): { relock?: Relock } {
   const test = params.get('relock');

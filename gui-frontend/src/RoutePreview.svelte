@@ -30,7 +30,7 @@
     type SampleRecordDto,
   } from './api';
   import { nameOf } from './exceptions';
-  import { relockChosenHash, type Relock } from './nav';
+  import type { Relock } from './nav';
 
   let {
     /** The whole bundle as the editor has it, unsaved edits included. */
@@ -95,7 +95,7 @@
     chooseLock(
       { fields, rows: rows.map((r) => records.get(r.key) ?? -1).filter((r) => r >= 0) },
       relocking
-        ? relockChosenHash(relock!.test)
+        ? `#/build/tests/relock/${encodeURIComponent(relock!.test)}`
         : `#/build/tests/lock-e2e/${encodeURIComponent(ran)}`,
     );
   }

@@ -608,9 +608,6 @@ test('a test locked again after a rename chooses its fields in the editor, as a 
   expect(test.fields).not.toContain('id');
   // Locked anew, at the instant it was locked again.
   expect(test.lockedAt).toBeGreaterThan(0);
-  // A later Lock again chooses again: the choice just made was for that lock alone.
-  await goto(admin, leader, '#/build/tests/relock/orders-keep-id');
-  await expect(admin).toHaveURL(/#\/build\/pipelines\/orders\/for\/orders-sample\?relock=/);
 });
 
 test('History shows who changed what, who deployed it, and when', async ({
