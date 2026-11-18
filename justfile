@@ -183,9 +183,8 @@ committed:
       || { echo "dist builds a commit: commit or stash what is uncommitted" >&2; exit 1; }
 
 # A release is cut from main, or a patch from its release branch (`release/1.2`). The branch must hold everything its
-# origin copy does, so a stale checkout cannot release an old commit. A detached checkout of a release tag, as CI
-# makes one, counts when the tag is on one of those branches. A release branch takes only its own minor version's
-# releases.
+# origin copy does, so a stale checkout cannot release an old commit. A release branch takes only its own minor
+# version's releases.
 [private]
 [unix]
 clean-release-branch version:
@@ -193,17 +192,11 @@ clean-release-branch version:
     set -euo pipefail
     test -z "$(git status --porcelain)" || { echo "a release builds with nothing uncommitted" >&2; exit 1; }
     branch=$(git branch --show-current)
-    if [ -z "$branch" ]; then
-      test -n "$(git tag --points-at HEAD --list 'v[0-9]*')" \
-        && git branch -r --contains HEAD --format='%(refname:short)' | grep -qE '^origin/(main|release/.+)$' \
-        || { echo "a release builds from main or a release/ branch, or a release tag on one" >&2; exit 1; }
-      exit 0
-    fi
     case "$branch" in
       main) ;;
       release/*) [[ "{{version}}" == "${branch#release/}".* ]] \
         || { echo "$branch cuts only ${branch#release/}.x, not {{version}}" >&2; exit 1; } ;;
-      *) echo "a release builds from main or a release/ branch, not $branch" >&2; exit 1 ;;
+      *) echo "a release builds from main or a release/ branch, not ${branch:-a detached checkout}" >&2; exit 1 ;;
     esac
     git fetch -q origin "$branch" \
       || { echo "could not fetch origin/$branch: push the branch, or check your connection" >&2; exit 1; }
