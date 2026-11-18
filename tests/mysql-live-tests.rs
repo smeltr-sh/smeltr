@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use mysql_async::prelude::Queryable as _;
 use smeltr::core::column::DataType;
 use smeltr::io::mysql::{MySqlConnection, MySqlDriver};
-use smeltr::io::sql::{Dialect, Poll, Query, Statement};
+use smeltr::io::sql::{Dialect, Poll, Query, ReadFrom, Statement};
 use smeltr::io::sql_source::{Driver, Encrypted, Mode, Position, SqlSource, SqlSourceConfig, Start, Verdict};
 use smeltr::io::values::Value;
 use smeltr::io::{CommitMap, Progress, RecordObject, Source, SourceRecord, TopicPartition};
@@ -208,8 +208,7 @@ fn plain_statement(query: &str) -> Statement {
         &Query::parse(query, Dialect::MySql).expect("a query"),
         &Poll {
             position: &[],
-            after: false,
-            start: false,
+            from: ReadFrom::Beginning,
             settle_secs: None,
             batch: 1000,
             fields: &[],

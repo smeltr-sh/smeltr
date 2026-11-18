@@ -5,7 +5,7 @@
 use axum::Json;
 
 use smeltr::config_file::SourceDto;
-use smeltr::io::sql::{Bind, Query, Refused, Statement};
+use smeltr::io::sql::{Bind, Query, ReadFrom, Refused, Statement};
 use smeltr::io::sql_source::{Mode, SqlSourceConfig, Start};
 use smeltr::leader::envelope::{Envelope, Refusal};
 use smeltr::plan::topology::SourceKind;
@@ -107,12 +107,12 @@ fn statements(source: SourceDto) -> Result<Shown, String> {
         },
         None => return Err("only an SQL source runs a statement".to_string()),
     };
-    let start = match &config.mode {
-        Mode::Incrementing(p) | Mode::UpdatedAt(p) => p.start != Start::Beginning,
-        Mode::Comparing { .. } | Mode::EveryPoll => false,
+    let from = match &config.mode {
+        Mode::Incrementing(p) | Mode::UpdatedAt(p) if p.start != Start::Beginning => ReadFrom::Start,
+        Mode::Incrementing(_) | Mode::UpdatedAt(_) | Mode::Comparing { .. } | Mode::EveryPoll => ReadFrom::Beginning,
     };
-    let first = shown(&config, config.statement(false, start));
-    let later = (!config.position().is_empty()).then(|| shown(&config, config.statement(true, false)));
+    let first = shown(&config, config.statement(from));
+    let later = (!config.position().is_empty()).then(|| shown(&config, config.statement(ReadFrom::LastRow)));
     // A mode that reads past the last row is run from the beginning; one that reads the whole result, only its first
     // rows (`worker::capture::run_sql_capture`).
     let run = match &config.mode {
@@ -130,7 +130,7 @@ fn statements(source: SourceDto) -> Result<Shown, String> {
             ..config.clone()
         },
     };
-    let run = shown(&run, run.statement(false, false));
+    let run = shown(&run, run.statement(ReadFrom::Beginning));
     Ok(Shown {
         first,
         later,

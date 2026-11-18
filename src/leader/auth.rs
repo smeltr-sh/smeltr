@@ -5,21 +5,9 @@
 //! password is verified, is `accounts`: a token is 256 random bits and a password is not, so they are hashed by
 //! different functions for different reasons.
 
-use aws_lc_rs::rand::SecureRandom;
-
 /// 32 bytes of OS-backed randomness, hex-encoded. The shape of both an enrollment code and a token.
 pub fn generate_secret() -> String {
-    hex_encode(&random_bytes(32))
-}
-
-/// `n` bytes from the OS. Every unpredictable value in the leader comes from here: tokens, account ids, generated
-/// passwords and session material, so there is one answer to where the randomness came from.
-pub fn random_bytes(n: usize) -> Vec<u8> {
-    let mut bytes = vec![0u8; n];
-    aws_lc_rs::rand::SystemRandom::new()
-        .fill(&mut bytes)
-        .expect("the OS random number generator");
-    bytes
+    hex_encode(&crate::crypto::random_bytes(32))
 }
 
 /// SHA-256 of `secret`, hex-encoded: the stored form.
