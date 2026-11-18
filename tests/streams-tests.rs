@@ -36,6 +36,7 @@ fn transform_answering(streams: &Arc<Streams>, answer: Answer) -> (Transform, Ar
 fn route(id: &str, cond: Option<&str>) -> RouteConfig {
     RouteConfig {
         id: id.to_string(),
+        name: id.to_string(),
         source: 0,
         cond: cond.map(str::to_string),
         pipeline: 0,

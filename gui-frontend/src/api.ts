@@ -2624,8 +2624,6 @@ export type Impact = {
   pipelines: Reached[];
   routes: Reached[];
   pipelineNames?: Record<string, string>;
-  /** Every route on the change's side, by id, to its name (`routeName`); a leader that predates it omits it. */
-  routeNames?: Record<string, string>;
 };
 
 /** One area's `Impact`, tagged with the area -- `Reached.id` is unique only within an area, the same
@@ -4473,6 +4471,8 @@ export type MapNode = {
 export type RouteEdge = {
   group: string;
   route: string;
+  /** What a person reads: the route's `routeName`. */
+  name: string;
   condition?: string;
   source: string;
   pipeline: string;

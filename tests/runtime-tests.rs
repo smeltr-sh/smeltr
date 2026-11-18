@@ -105,6 +105,7 @@ fn deliver_to(destinations: &[DestId]) -> Vec<DeliverRule> {
 fn route_cfg(cond: Option<&str>, pipeline: usize, deliver: Vec<DeliverRule>) -> RouteConfig {
     RouteConfig {
         id: "r".to_string(),
+        name: "r".to_string(),
         source: 0,
         cond: cond.map(str::to_string),
         pipeline,

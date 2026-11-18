@@ -165,6 +165,8 @@ pub struct RouteEdge {
     pub group: String,
     /// `RouteConfig::id`.
     pub route: String,
+    /// `RouteConfig::name`.
+    pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub condition: Option<String>,
     pub source: String,
@@ -539,6 +541,7 @@ fn build_group_graph(
         graph.routes.push(RouteEdge {
             group: group.to_string(),
             route: r.id.clone(),
+            name: r.name.clone(),
             condition: r.cond.clone(),
             source: source.name.clone(),
             pipeline: pipeline.clone(),

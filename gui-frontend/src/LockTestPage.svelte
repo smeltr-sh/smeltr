@@ -43,6 +43,7 @@
   import { announcePipelineNames } from './nav';
   import { editable } from './access';
   import { nameOf, pipelineNamesAt } from './pipelineNames';
+  import { names } from './names.svelte';
 
   // `pipeline` absent is an end-to-end lock: the sample routed by its
   // source (the route preview) rather than run through one pipeline.
@@ -304,7 +305,9 @@
                   <tr class="sent">
                     <td></td>
                     <td class="mono dim" colspan={Math.max(fields.length, 1)}>
-                      via {o.sent.route} &rarr; {o.sent.destinations.join(', ')}
+                      via {names.of(currentBranch(), currentScope(), 'routes', o.sent.route)} &rarr; {o.sent.destinations.join(
+                        ', ',
+                      )}
                     </td>
                   </tr>
                 {/if}

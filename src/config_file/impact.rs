@@ -30,9 +30,6 @@ pub struct Impact {
     /// The name of every pipeline in `before` or `after`, by id, `after`'s where both hold it. A person sees a
     /// pipeline by name, and a `Reason::Calls` may name one the change deleted, which only `before` still holds.
     pub pipeline_names: BTreeMap<String, String>,
-    /// The name of every route in `after`, by id: a route's id is minted, so a person sees it by its name
-    /// ([`super::route_name`]).
-    pub route_names: BTreeMap<String, String>,
 }
 
 /// One pipeline or route a change reaches, and every reason it was: reached by two paths at once, it keeps both.
@@ -155,7 +152,6 @@ pub fn pipelines_touched(before: &FileConfig, after: &FileConfig) -> Impact {
             .chain(&after.pipelines)
             .map(|p| (p.id.clone(), p.name.clone()))
             .collect(),
-        route_names: after.route_names(),
     }
 }
 

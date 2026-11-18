@@ -151,16 +151,12 @@ impl LoadedSystem {
     /// Compile every pipeline and route. Expression errors surface here, as a `CompileError` naming the function.
     pub fn compile_topology(&self) -> Result<CompiledTopology, Vec<CompileError>> {
         let metas = self.topology.sources.iter().map(|s| (s.id, s.kind.meta())).collect();
-        let compiled = crate::plan::topology::compile_topology_with(
+        let mut compiled = crate::plan::topology::compile_topology_with(
             &self.topology.routes,
             &self.pipelines,
             self.topology.on_exception.clone(),
             &metas,
         )?;
-        let mut compiled = compiled;
-        for (at, route) in compiled.routes.iter_mut().enumerate() {
-            route.name = self.route_name(at);
-        }
         let named: std::collections::HashMap<DestId, Vec<DestId>> = self
             .topology
             .destinations
@@ -200,7 +196,7 @@ impl LoadedSystem {
     pub fn to_validation_error(&self, e: CompileError) -> load::ValidationError {
         // A route's error is about its condition, or about one of its rules' `when`.
         let route = e.route.and_then(|i| self.topology.routes.get(i));
-        let name = || e.route.map_or_else(String::new, |at| self.route_name(at));
+        let name = || route.map_or_else(String::new, |r| r.name.clone());
         // The message names its route, as every item's does: the error bar shows it alone. The screen shows no
         // route's id: a route is the line from its source to its pipeline, and a rule the condition on the line
         // on to its destinations, unnumbered. So the message names them by those.
@@ -240,24 +236,9 @@ impl LoadedSystem {
         }
     }
 
-    /// Every route's [`Self::route_name`], in the order they run.
+    /// Every route's name, in the order they run.
     pub fn route_names(&self) -> Vec<String> {
-        (0..self.topology.routes.len()).map(|at| self.route_name(at)).collect()
-    }
-
-    /// Route `at` by [`route_name`].
-    pub fn route_name(&self, at: usize) -> String {
-        let routes = &self.topology.routes;
-        let r = &routes[at];
-        let source = (self.topology.sources.iter())
-            .find(|s| s.id == r.source)
-            .map_or("", |s| &s.name);
-        let pipeline = match self.pipelines.iter().find(|p| p.id == r.pipeline) {
-            Some(p) if !p.name.is_empty() => &p.name,
-            _ => self.pipeline_ids.get(r.pipeline).map_or("", String::as_str),
-        };
-        let ends: Vec<_> = routes.iter().map(|o| (o.source, o.pipeline)).collect();
-        route_name(&ends, at, source, pipeline)
+        self.topology.routes.iter().map(|r| r.name.clone()).collect()
     }
 
     /// The author's id for `id`, a destination the loaded system has.

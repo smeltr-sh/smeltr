@@ -1849,7 +1849,7 @@ impl Transform {
                 for (idx, compiled) in compiled {
                     let filter = compiled.map_or_else(
                         |e| {
-                            errors.push(format!("on route {:?}: {e}", topology.routes[idx].id));
+                            errors.push(format!("on route {}: {e}", topology.routes[idx].name));
                             RouteFilter::Skips
                         },
                         RouteFilter::Keeps,
