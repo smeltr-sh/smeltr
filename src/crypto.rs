@@ -44,6 +44,18 @@ pub fn offered() -> (Vec<String>, Vec<String>) {
     )
 }
 
+/// `n` bytes nobody can guess, from AWS-LC's generator. Use it for every token, id, salt and nonce. It panics when
+/// the operating system has no randomness to give.
+pub fn random_bytes(n: usize) -> Vec<u8> {
+    use aws_lc_rs::rand::SecureRandom;
+
+    let mut bytes = vec![0u8; n];
+    aws_lc_rs::rand::SystemRandom::new()
+        .fill(&mut bytes)
+        .expect("the OS random number generator");
+    bytes
+}
+
 #[cfg(test)]
 mod tests {
     /// Everything offered is inside the boundary, which is what `fips()` reports.

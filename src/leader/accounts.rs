@@ -83,13 +83,13 @@ const SALT_BYTES: usize = 16;
 
 /// A PHC string carrying the salt and the parameters it was written with.
 ///
-/// The salt comes from [`auth::random_bytes`] rather than the hashing crate's own generator, so every
+/// The salt comes from [`crate::crypto::random_bytes`] rather than the hashing crate's own generator, so every
 /// unpredictable value in the leader has one source.
 ///
 /// Expensive by construction -- tens of milliseconds and [`MEMORY_KIB`] of memory. Never call it on a thread that
 /// serves requests or while holding the store's mutex.
 pub fn hash_password(password: &str) -> Result<String, StoreError> {
-    let salt = auth::random_bytes(SALT_BYTES);
+    let salt = crate::crypto::random_bytes(SALT_BYTES);
     argon2()
         .hash_password_with_salt(password.as_bytes(), &salt)
         .map(|hash| hash.to_string())
@@ -138,7 +138,7 @@ const ALPHABET: &[u8] = b"0123456789abcdefghjkmnpqrstvwxyz";
 /// Hyphens are separators rather than password material, and they count toward [`MIN_PASSWORD_LEN`] like any
 /// other character, which is why the generated form is comfortably longer than the floor.
 pub fn generate_password() -> String {
-    let raw = auth::random_bytes(20);
+    let raw = crate::crypto::random_bytes(20);
     let mut out = String::with_capacity(23);
     for (i, byte) in raw.iter().enumerate() {
         if i > 0 && i % 5 == 0 {
@@ -465,7 +465,7 @@ mod tests {
 
     fn cheap_hash(password: &str) -> String {
         cheap()
-            .hash_password_with_salt(password.as_bytes(), &auth::random_bytes(SALT_BYTES))
+            .hash_password_with_salt(password.as_bytes(), &crate::crypto::random_bytes(SALT_BYTES))
             .unwrap()
             .to_string()
     }
