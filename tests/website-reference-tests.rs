@@ -1416,8 +1416,8 @@ struct ConnectorReference {
 fn dto_keys(enum_name: &str) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
     let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config_file");
     let mut text = std::fs::read_to_string(config.join("dto.rs")).unwrap();
-    text.push_str(&std::fs::read_to_string(config.join("load/stores.rs")).unwrap());
-    for kinds in ["load/source", "load/destination"] {
+    text.push_str(&std::fs::read_to_string(config.join("load/clouds.rs")).unwrap());
+    for kinds in ["load/source", "load/destination", "load/clouds"] {
         for file in std::fs::read_dir(config.join(kinds)).unwrap() {
             text.push_str(&std::fs::read_to_string(file.unwrap().path()).unwrap());
         }

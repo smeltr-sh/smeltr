@@ -47,10 +47,10 @@ use super::CURRENT_VERSION;
 use super::bytes;
 use super::dto::*;
 
+mod clouds;
 pub(super) mod destination;
 pub(super) mod source;
-mod stores;
-use stores::*;
+use clouds::*;
 
 /// Structural resolution only: every reference resolves, every id is unique, every bound holds. Expression text
 /// passes through verbatim and is never compiled here, so a pipeline whose expressions don't compile still loads —
