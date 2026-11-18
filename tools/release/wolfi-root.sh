@@ -28,8 +28,10 @@ builder)
 image)
     # git serves the leader's config repository through `git http-backend`, and libcurl carries its push to a host,
     # which is HTTPS only (src/leader/remote.rs). The CA bundle verifies the TLS at the far end. A worker fetches
-    # in-process through gix and spawns no git.
-    packages git libcurl-openssl4
+    # in-process through gix and spawns no git. Wolfi packages `git http-backend` in git-daemon.
+    packages git git-daemon libcurl-openssl4
+    # The bundle's digest as the package installed it, which the STIG's trust-store check compares the bundle to.
+    (cd "$root/etc/ssl/certs" && sha256sum ca-certificates.crt >.ca-certificates.crt.sha256)
     # A fixed number, not a name: a kubelet enforcing runAsNonRoot cannot read this image's passwd file. A pod
     # mounting a volume here needs `fsGroup: 1000`.
     echo 'smeltr:x:1000:1000:smeltr:/var/lib/smeltr:/sbin/nologin' >>"$root/etc/passwd"

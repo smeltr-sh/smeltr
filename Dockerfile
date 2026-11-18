@@ -26,6 +26,26 @@ ADD --checksum=sha256:f0031424cf46f7db780ce63a45f0fd6aa6f85f601e6bb3b7a91fe3d4d5
 COPY tools/release/wolfi-root.sh /wolfi-root.sh
 RUN sh /wolfi-root.sh builder /builder && sh /wolfi-root.sh image /rootfs
 
+# ---- fips: OpenSSL's FIPS provider, for what the image's OpenSSL does ---------------------------------------------
+# smeltr's own cryptography is AWS-LC's FIPS module, inside the binary. The image's OpenSSL serves git's HTTPS push,
+# and Wolfi's carries no validated provider, so this builds OpenSSL's: 3.1.2 is the release CMVP certificate #4985
+# validates (FIPS 140-3), and its security policy requires building exactly that source. OpenSSL's 3.x and 4.x
+# libraries load it. `fipsinstall` runs the module's self-tests and writes the MAC the module checks on each load;
+# `module` names the one copy for both OpenSSL libraries in the image, whose own module directories differ.
+FROM scratch AS fips
+COPY --from=wolfi /builder /
+ADD --checksum=sha256:a0ce69b8b97ea6a35b96875235aa453b966ba3cba8af2de23657d8b6767d6539 \
+    https://github.com/openssl/openssl/releases/download/openssl-3.1.2/openssl-3.1.2.tar.gz /openssl.tar.gz
+WORKDIR /openssl
+RUN tar -xzf /openssl.tar.gz --strip-components 1 \
+    && ./Configure enable-fips \
+    && make -j"$(nproc)" \
+    && mkdir /fips \
+    && cp providers/fips.so /fips/ \
+    && cp LICENSE.txt /fips/openssl-LICENSE.txt \
+    && LD_LIBRARY_PATH=. apps/openssl fipsinstall -module /fips/fips.so -out /fips/fipsmodule.cnf \
+    && echo 'module = /usr/lib/ossl-modules/fips.so' >>/fips/fipsmodule.cnf
+
 # ---- builder: the `smeltr` binary ------------------------------------------------------------------------------
 # Rust comes from rustup, as the checks get it, so the image builds with the toolchain they test.
 FROM scratch AS builder
@@ -70,6 +90,8 @@ FROM scratch AS export
 COPY --from=builder /smeltr /smeltr
 COPY tools/release/Dockerfile.handoff /Dockerfile
 COPY tools/release/wolfi-root.sh /wolfi-root.sh
+COPY tools/release/openssl.cnf /openssl.cnf
+COPY --from=fips /fips/ /
 COPY compose.yaml /compose.yaml
 COPY THIRD-PARTY-NOTICES.md /THIRD-PARTY-NOTICES.md
 COPY LICENSE /LICENSE
@@ -78,9 +100,14 @@ COPY LICENSE /LICENSE
 # The image is the Wolfi root alone, with no shell and no package manager. `Dockerfile.handoff` builds the same.
 FROM scratch
 COPY --from=wolfi /rootfs /
-ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+COPY --from=fips /fips/fips.so /usr/lib/ossl-modules/fips.so
+COPY --from=fips /fips/fipsmodule.cnf /etc/ssl/fipsmodule.cnf
+COPY tools/release/openssl.cnf /etc/ssl/openssl.cnf
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 COPY --from=builder /smeltr /usr/local/bin/smeltr
 COPY LICENSE THIRD-PARTY-NOTICES.md /usr/share/doc/smeltr/
+COPY --from=fips /fips/openssl-LICENSE.txt /usr/share/doc/smeltr/
 
 ARG VERSION=""
 LABEL org.opencontainers.image.title="smeltr" \
