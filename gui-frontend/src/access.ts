@@ -84,6 +84,12 @@ export function heldAreas(): string[] {
   return areas.length === 0 ? [] : [SHARED_SCOPE, ...areas.filter((a) => a !== SHARED_SCOPE)];
 }
 
+/** Whether the person is an administrator or an editor in some area, which the leader requires to list the secrets
+ * and certificates a form picks from. */
+export function editsSomewhere(): boolean {
+  return isAdministrator() || heldAreas().some((a) => holds(a, 'editor'));
+}
+
 /** Whether the page on screen may be changed. Only an authoring page names a scope; everywhere
  * else the leader's own refusals are the rule. Read where a component mounts: a scope switch
  * mounts every authoring page afresh. */

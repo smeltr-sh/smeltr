@@ -9,6 +9,12 @@ vi.mock('./Confirm.svelte', () => ({ ask }));
 
 import CertificatesSettings from './CertificatesSettings.svelte';
 
+// Signed in as someone who may list certificates.
+vi.mock('./access', async (actual) => ({
+  ...(await actual<object>()),
+  editsSomewhere: () => true,
+}));
+
 let page: ReturnType<typeof mount> | undefined;
 let target: HTMLDivElement;
 let posts: string[];

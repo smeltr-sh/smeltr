@@ -29,6 +29,7 @@
     type KafkaFacts,
     getMapMeasurements,
   } from './api';
+  import { editsSomewhere } from './access';
   import { holdings, sourceReadings } from './mapTerms';
   import NewSource from './NewSource.svelte';
   import ObjectList from './ObjectList.svelte';
@@ -87,7 +88,7 @@
   /** What this leader's build can select, for the security section, and the secret catalog. */
   let kafka: KafkaFacts = $state(NO_KAFKA_FACTS);
   let secrets: SecretDto[] = $state([]);
-  void fieldCatalogs().then((c) => ({ secrets, kafka } = c));
+  void fieldCatalogs(editsSomewhere()).then((c) => ({ secrets, kafka } = c));
 
   /** Each source's current readings, by id, for the worker holding a listing source: this scope's group's, or under
    * `shared/`, which runs in every group, each group's. Best-effort: a page without readings still edits. */

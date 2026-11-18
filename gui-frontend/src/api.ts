@@ -5592,13 +5592,15 @@ export interface KafkaFacts {
   tlsProps: Set<string>;
 }
 
-/** What a source's or destination's form picks from: the secret catalog, so a credential can be pointed at one
- * the leader holds, and what this leader's build can do with a Kafka client. A failure offers none rather than
- * failing the form: a variable can still be named, no mechanism is offered that the save would refuse, and a
- * property the form lets through is still refused by the save. */
-export async function fieldCatalogs(): Promise<{ secrets: SecretDto[]; kafka: KafkaFacts }> {
+/** What a source's or destination's form picks from: the secret catalog when `withSecrets`, so a credential can be
+ * pointed at one the leader holds, and what this leader's build can do with a Kafka client. A failure offers none
+ * rather than failing the form: a variable can still be named, no mechanism is offered that the save would refuse,
+ * and a property the form lets through is still refused by the save. */
+export async function fieldCatalogs(
+  withSecrets: boolean,
+): Promise<{ secrets: SecretDto[]; kafka: KafkaFacts }> {
   const [secrets, kafka] = await Promise.all([
-    listSecrets('quiet').catch((): SecretDto[] => []),
+    withSecrets ? listSecrets('quiet').catch((): SecretDto[] => []) : [],
     getSystemInfo()
       .then((info) => ({
         mechanisms: info.saslMechanisms ?? [],

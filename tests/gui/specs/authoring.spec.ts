@@ -4,7 +4,17 @@
 // test is not about.
 //
 // A fresh browser edits branch `work` in the `shared` scope, which is where `api` arranges things too.
-import { test, expect, goto, signedIn, signInThroughGui, type Api, type Leader } from '../fleet';
+import {
+  test,
+  expect,
+  goto,
+  settled,
+  signedIn,
+  signInThroughGui,
+  watchRequests,
+  type Api,
+  type Leader,
+} from '../fleet';
 import type { Page } from '@playwright/test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -225,11 +235,15 @@ test('A1: a viewer captures a deployed source from the map and downloads it', as
   await viewer.getByRole('searchbox', { name: 'Find a sample' }).fill('own-metrics');
   await expect(viewer.getByRole('option', { name: /Your records/ })).toBeVisible();
 
-  // Routes asks for the secrets a form may name, which a viewer may not read; they are left out, unsaid.
-  const asked = viewer.waitForResponse((r) => r.url().includes('/api/secrets'));
+  // A viewer picks no secret, so Routes does not ask for the secrets a form may name.
+  const asked: string[] = [];
+  viewer.on('request', (r) => {
+    if (r.url().includes('/api/secrets')) asked.push(r.url());
+  });
+  watchRequests(viewer);
   await goto(viewer, leader, '#/build/routes');
-  expect((await asked).status()).toBe(403);
-  await expect(viewer.getByText('this needs editor in at least one area')).toHaveCount(0);
+  await settled(viewer);
+  expect(asked).toEqual([]);
 
   // Route a sample offers it too, first, and routes its records. No route takes own-metrics.
   await goto(viewer, leader, '#/build/routes/sample');
