@@ -3,7 +3,8 @@
   with an operator or a call in it is tried as an expression (`PreviewRequest.filter`); one that compiles to a Bool
   keeps the rows it is true for, and anything else stays a keyword, so a bare word like `slow` is searched for rather
   than read as a field. The mode beside the text says which it is, and a click reads it the other way; asked for, an
-  expression that does not compile keeps no rows and says why.
+  expression that does not compile keeps no rows and says why. Guessed, one that parses but does not compile is
+  searched for and says why too, since it was most likely meant as an expression.
 
   The expressions it was last left with are offered again, after whatever the caller offers.
 -->
@@ -18,6 +19,9 @@
     | { kind: 'expression'; rows: Set<number> }
     /** An expression that cannot run now (`paused`): it keeps every row until it can. */
     | { kind: 'paused' };
+
+  /** Why an expression does not compile, as the leader says it, and whether the text was searched for instead. */
+  export type FindRefusal = { why: string; searched: boolean };
 </script>
 
 <script lang="ts" generics="T extends { section?: string }">
@@ -30,7 +34,7 @@
   let {
     query = $bindable(''),
     filter = $bindable({ kind: 'none' }),
-    error = $bindable(''),
+    error = $bindable(null),
     evaluate,
     paused = false,
     remember,
@@ -45,8 +49,8 @@
     query?: string;
     /** Out: what the text keeps. */
     filter?: FindFilter;
-    /** Out: why an expression asked for does not compile. */
-    error?: string;
+    /** Out: why an expression does not compile, where it was asked for or parses (`FindError`). */
+    error?: FindRefusal | null;
     /** Runs the expression; a new one runs it again. Without one, the text is a keyword. */
     evaluate: ((expression: string) => Promise<PreviewResult>) | null;
     /** An expression waits rather than runs. */
@@ -79,7 +83,7 @@
 
   $effect(() => {
     const [q, as, run, wait] = [query.trim(), readAs, evaluate, paused];
-    error = '';
+    error = null;
     if (!q) {
       filter = { kind: 'none' };
       return;
@@ -93,10 +97,11 @@
       filter = { kind: 'paused' };
       return;
     }
-    // Asked for, an expression that does not compile keeps no rows and says why; guessed, it stays a keyword.
-    const failed = (why: string) => {
+    // Asked for, an expression that does not compile keeps no rows and says why; guessed, it stays a keyword, and
+    // says why where it parses (`PreviewRequest.filter`).
+    const failed = (why: string, parsed = false) => {
       filter = as === 'expression' ? { kind: 'expression', rows: new Set() } : keyword;
-      error = as === 'expression' ? why : '';
+      error = as === 'expression' || parsed ? { why, searched: as !== 'expression' } : null;
     };
     // Until it answers, the rows an expression kept stay; with none, the text is searched for.
     if (untrack(() => filter.kind) !== 'expression') filter = keyword;
@@ -106,7 +111,7 @@
         const res = await run(q);
         if (!current) return;
         if (res.ok) filter = { kind: 'expression', rows: new Set(res.rows.map((r) => r.row)) };
-        else failed(previewFailure(res));
+        else failed(previewFailure(res), res.stage === 'filter');
       } catch (e) {
         if (current) failed(String(e));
       }

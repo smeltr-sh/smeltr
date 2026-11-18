@@ -923,7 +923,15 @@ pub fn run_preview(
         Some(src) => {
             match plan::topology::output_condition(src, "a preview filter", &plan, &on_exception.tag_field, &meta) {
                 Ok((ir, patterns)) => Some(RowFilter { ir, patterns }),
-                Err(e) => return Preview::failed("filter", vec![ApiError::new(e.to_string())], pipeline_names),
+                Err(e) => {
+                    // Text that does not parse is no expression, so the find box searches for it as written.
+                    let stage = if plan::compile::parse(src, None).is_ok() {
+                        "filter"
+                    } else {
+                        "filterParse"
+                    };
+                    return Preview::failed(stage, vec![ApiError::new(e.to_string())], pipeline_names);
+                }
             }
         }
     };
