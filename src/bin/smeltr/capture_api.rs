@@ -1179,6 +1179,15 @@ mod tests {
         assert_eq!(postgres, ["db:5432"], "the kind's own port where it names none");
         let sftp = dials(r#"{"id":"s","type":"sftp","host":"h","hostKey":"k","username":"u","password":"P"}"#);
         assert_eq!(sftp, ["h:22"]);
+        let azure = dials(r#"{"id":"s","type":"azureBlobList","account":"acct","container":"c"}"#);
+        assert_eq!(
+            azure,
+            [
+                "https://acct.blob.core.windows.net",
+                "https://acct.dfs.core.windows.net"
+            ],
+            "the account's own storage services, which the default endpoint leaves unnamed"
+        );
         assert!(dials(r#"{"id":"s","type":"metrics","bucketSeconds":5}"#).is_empty());
 
         let what = || "payments: source s as deployed".to_string();

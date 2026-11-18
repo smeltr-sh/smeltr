@@ -102,6 +102,12 @@ impl SourceSpec for AzureBlobQueueSourceDto {
             .collect()
     }
 
+    fn dials(&self) -> Vec<String> {
+        std::iter::once(self.queue_url.clone())
+            .chain(azure_dials(&self.access))
+            .collect()
+    }
+
     fn tls(&self) -> Option<TlsDto> {
         Some(self.tls.clone())
     }
