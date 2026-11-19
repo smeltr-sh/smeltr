@@ -1,20 +1,20 @@
 [
   {
     "version": "1.2.1",
-    "summary": "Kafka over Kerberos works in the image, and alert email takes six SMTP fixes.",
+    "summary": "Kafka over Kerberos works in the image, and alert email gets six SMTP security fixes.",
     "fixes": [
       {
         "title": "Sources and destinations",
         "items": [
-          "A Kafka source or destination that signs in over Kerberos (GSSAPI) gets its ticket from the keytab itself, so it works in the image, which has no `kinit`. Smeltr renews the ticket while the source or destination runs. One worker signs in as one Kerberos principal at a time. With no keytab, it uses the ticket `KRB5CCNAME` names.",
-          "A Kafka source or destination may no longer set `sasl.kerberos.min.time.before.relogin`, since Smeltr renews the ticket itself."
+          "A Kafka source or destination that signs in over Kerberos (GSSAPI) gets its ticket from the keytab itself, so it works in the image, which has no `kinit`. Smeltr renews the ticket while the source or destination runs. One worker signs in as one Kerberos principal. With no keytab set, Smeltr uses the ticket `KRB5CCNAME` names.",
+          "A Kafka source or destination that sets `sasl.kerberos.min.time.before.relogin` is refused when it is saved or deployed: Smeltr renews the ticket itself."
         ]
       },
       {
         "title": "Security",
         "items": [
-          "Alert email takes lettre 0.11.24, which fixes six SMTP advisories (RUSTSEC-2026-0560 to 0565).",
-          "The image takes the krb5-libs that fixes 14 high and 5 medium CVEs."
+          "Alert email now uses lettre 0.11.24, the SMTP library, which fixes six advisories (RUSTSEC-2026-0560 to 0565).",
+          "The image includes the krb5-libs package that fixes 14 high and 5 medium CVEs."
         ]
       }
     ]
