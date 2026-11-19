@@ -272,11 +272,12 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, only: Option<Kind>) ->
             draw_visibility(rng, cov, 600, &mut d);
         }
         Kind::S3List => {
-            d.insert("bucket".into(), json!(rng.pick(&["logs", "logs-2024", "a.b.c", "abc"])));
+            let bucket = *rng.pick(&["logs", "logs-2024", "a.b.c", "abc"]);
+            d.insert("bucket".into(), json!(padded(rng, cov, "bucket.padded", bucket)));
             draw_listing(rng, cov, &mut d);
         }
         Kind::GcsList => {
-            let bucket = *rng.pick(&["logs", "logs_eu"]);
+            let bucket = *rng.pick(&["logs", "logs_eu", "a.b.c"]);
             d.insert("bucket".into(), json!(padded(rng, cov, "bucket.padded", bucket)));
             draw_listing(rng, cov, &mut d);
         }
@@ -598,18 +599,24 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
             Some("pubsubEndpoint")
         }
         "bucket" => {
-            if kind == Kind::AzureBlobList {
-                set("container", json!(rng.pick(&["", "  "])));
-                Some("container")
-            } else {
-                let bad: &[&str] = if kind == Kind::S3List {
-                    &["", "s3://logs", "ab", "Logs", "-logs", "logs/in"]
-                } else {
-                    &["", "  "]
-                };
-                set("bucket", json!(rng.pick(bad)));
-                Some("bucket")
-            }
+            let (key, bad): (&str, &[&str]) = match kind {
+                Kind::S3List => ("bucket", &["", "  ", "s3://logs", "ab", "Logs", "-logs", "logs/in"]),
+                Kind::GcsList => ("bucket", &["", "  ", "gs://logs", "ab", "Logs", "logs_", "logs/in"]),
+                _ => (
+                    "container",
+                    &[
+                        "",
+                        "  ",
+                        "https://acme.blob.core.windows.net/logs",
+                        "ab",
+                        "Logs",
+                        "lo--gs",
+                        "logs_eu",
+                    ],
+                ),
+            };
+            set(key, json!(rng.pick(bad)));
+            Some(key)
         }
         "prefix" => {
             set("prefix", json!("/in/"));

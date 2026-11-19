@@ -1,38 +1,45 @@
-//! Every kind of source: its struct, and what it answers about itself (`SourceSpec`), one file each.
+//! Every kind of source: its struct, and what it answers about itself (`SourceSpec`), one file each. The object
+//! sources share one generic struct, in `objects`.
 
 use super::*;
 
-mod azure_blob_list;
-mod azure_blob_queue;
 mod elastic_receiver;
 mod event_hubs;
-mod gcs_list;
-mod gcs_pub_sub;
 mod hec_receiver;
 mod http_api;
 mod http_receiver;
 mod kafka;
 mod logs;
 mod metrics;
+mod objects;
 mod okta_logs;
 mod otlp_receiver;
 mod prometheus_receiver;
 mod s2s_receiver;
-mod s3_list;
-mod s3_sqs;
 mod sftp;
 mod socket_receiver;
 mod sql;
 mod syslog_receiver;
 
 pub use self::{
-    azure_blob_list::AzureBlobListSourceDto, azure_blob_queue::AzureBlobQueueSourceDto,
-    elastic_receiver::ElasticReceiverSourceDto, event_hubs::EventHubsSourceDto, gcs_list::GcsListSourceDto,
-    gcs_pub_sub::GcsPubSubSourceDto, hec_receiver::HecReceiverSourceDto, http_api::HttpApiSourceDto,
-    http_receiver::HttpReceiverSourceDto, kafka::KafkaSourceDto, logs::LogsSourceDto, metrics::MetricsSourceDto,
-    okta_logs::OktaLogsSourceDto, otlp_receiver::OtlpReceiverSourceDto,
-    prometheus_receiver::PrometheusReceiverSourceDto, s2s_receiver::S2sReceiverSourceDto, s3_list::S3ListSourceDto,
-    s3_sqs::S3SqsSourceDto, sftp::SftpSourceDto, socket_receiver::SocketReceiverSourceDto,
+    elastic_receiver::ElasticReceiverSourceDto,
+    event_hubs::EventHubsSourceDto,
+    hec_receiver::HecReceiverSourceDto,
+    http_api::HttpApiSourceDto,
+    http_receiver::HttpReceiverSourceDto,
+    kafka::KafkaSourceDto,
+    logs::LogsSourceDto,
+    metrics::MetricsSourceDto,
+    objects::{
+        AzureBlobListSourceDto, AzureBlobQueueSourceDto, GcsListSourceDto, GcsPubSubSourceDto, S3ListSourceDto,
+        S3SqsSourceDto,
+    },
+    okta_logs::OktaLogsSourceDto,
+    otlp_receiver::OtlpReceiverSourceDto,
+    prometheus_receiver::PrometheusReceiverSourceDto,
+    s2s_receiver::S2sReceiverSourceDto,
+    sftp::SftpSourceDto,
+    socket_receiver::SocketReceiverSourceDto,
     syslog_receiver::SyslogReceiverSourceDto,
 };
 

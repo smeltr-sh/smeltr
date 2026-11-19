@@ -573,7 +573,7 @@ mod tests {
               ],
               "destinations": [
                 { "id": "es", "type": "elasticsearch", "url": "http://es:9200", "defaultIndex": "i" },
-                { "id": "lake", "type": "s3", "bucket": "b", "format": "parquet" },
+                { "id": "lake", "type": "s3", "bucket": "logs", "format": "parquet" },
                 { "id": "out", "type": "kafka", "brokers": "b1:9092", "defaultTopic": "t", "bufferBytes": 8388608 }
               ]
             }"#,
@@ -599,7 +599,7 @@ mod tests {
         let open_files = |extra: &str| {
             let topology = crate::config_file::load_str(&format!(
                 r#"{{ "version": 1, "destinations": [
-                     {{ "id": "lake", "type": "s3", "bucket": "b", "format": "parquet"{extra} }} ] }}"#
+                     {{ "id": "lake", "type": "s3", "bucket": "logs", "format": "parquet"{extra} }} ] }}"#
             ))
             .expect("the bundle loads")
             .topology;
@@ -871,7 +871,7 @@ mod tests {
                 0 => format!(
                     r#"{{ "id": "es{i}", "type": "elasticsearch", "url": "http://es:9200", "defaultIndex": "i" }}"#
                 ),
-                1 => format!(r#"{{ "id": "lake{i}", "type": "s3", "bucket": "b", "format": "parquet" }}"#),
+                1 => format!(r#"{{ "id": "lake{i}", "type": "s3", "bucket": "logs", "format": "parquet" }}"#),
                 _ => format!(r#"{{ "id": "out{i}", "type": "kafka", "brokers": "b1:9092", "defaultTopic": "t" }}"#),
             })
             .collect();

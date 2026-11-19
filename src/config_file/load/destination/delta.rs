@@ -1,3 +1,4 @@
+use super::super::clouds::AccessDto;
 use super::super::*;
 use super::DestinationSpec;
 use serde::{Deserialize, Serialize};
@@ -81,7 +82,7 @@ impl DestinationSpec for DeltaDestinationDto {
         );
         check_file_limits(id, *in_flight, *buffer_bytes, errors);
         let what = format!("destination {id:?}");
-        check_s3_access(access, &what, errors);
+        access.check(&what, errors);
         match (location, unity_catalog) {
             (Some(_), Some(_)) => errors.at("location").push(format!(
                 "{what} names both a location and a unityCatalog table. Name the table's root in S3 as location, or its \

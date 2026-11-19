@@ -714,28 +714,6 @@ impl S3AccessDto {
             && access_key_id.is_none()
             && secret_access_key.is_none()
     }
-
-    pub fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
-        let id = self.access_key_id.iter().map(|r| ("accessKeyId", r));
-        id.chain(self.secret_access_key.iter().map(|r| ("secretAccessKey", r)))
-            .collect()
-    }
-
-    /// `secrets`, for the leader to move one onto a new version.
-    pub fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto> {
-        [&mut self.access_key_id, &mut self.secret_access_key]
-            .into_iter()
-            .flatten()
-            .collect()
-    }
-
-    /// The storage service, and where credentials are obtained when that is configured apart, by the field naming
-    /// each.
-    pub fn urls(&self) -> Vec<(&'static str, &str)> {
-        std::iter::once(("endpoint", self.endpoint.as_deref().unwrap_or(S3_ENDPOINT)))
-            .chain(self.auth_endpoint.as_deref().map(|u| ("authEndpoint", u)))
-            .collect()
-    }
 }
 
 /// Where Google Cloud is reached and how its requests are signed. Flattened into the GCS destination and the
@@ -749,25 +727,6 @@ pub struct GcsAccessDto {
     /// A service account's JSON key. Absent takes the host's Application Default Credentials.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_account_key: Option<SecretRefDto>,
-}
-
-impl GcsAccessDto {
-    pub fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
-        self.service_account_key
-            .iter()
-            .map(|r| ("serviceAccountKey", r))
-            .collect()
-    }
-
-    /// `secrets`, for the leader to move one onto a new version.
-    pub fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto> {
-        self.service_account_key.iter_mut().collect()
-    }
-
-    /// The storage service, by the field naming it.
-    pub fn urls(&self) -> Vec<(&'static str, &str)> {
-        vec![("endpoint", self.endpoint.as_deref().unwrap_or(GCS_ENDPOINT))]
-    }
 }
 
 /// Where an Azure storage account is reached and how its requests are signed. Flattened into the Azure Blob
@@ -810,33 +769,6 @@ impl AzureAccessDto {
             auth_endpoint: self.auth_endpoint.clone(),
             managed_identity_client_id: self.managed_identity_client_id.clone(),
         }
-    }
-
-    pub fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
-        [
-            ("accessKey", &self.access_key),
-            ("sasToken", &self.sas_token),
-            ("clientSecret", &self.client_secret),
-        ]
-        .into_iter()
-        .filter_map(|(field, r)| Some((field, r.as_ref()?)))
-        .collect()
-    }
-
-    /// `secrets`, for the leader to move one onto a new version.
-    pub fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto> {
-        [&mut self.access_key, &mut self.sas_token, &mut self.client_secret]
-            .into_iter()
-            .flatten()
-            .collect()
-    }
-
-    /// The storage service, and where credentials are obtained when that is configured apart, by the field naming
-    /// each.
-    pub fn urls(&self) -> Vec<(&'static str, &str)> {
-        std::iter::once(("endpoint", self.endpoint.as_deref().unwrap_or(AZURE_ENDPOINT)))
-            .chain(self.auth_endpoint.as_deref().map(|u| ("authEndpoint", u)))
-            .collect()
     }
 }
 

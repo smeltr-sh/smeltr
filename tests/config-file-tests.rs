@@ -3588,14 +3588,14 @@ fn an_s3_list_source_with_a_bucket_name_s3_would_not_give_is_refused() {
         "acme_logs",
     ] {
         let e = refusal(&s3_list_config("").replace("acme-logs", bad));
-        assert!(e.contains("which is not a bucket's name"), "{bad}: {e}");
+        assert!(e.contains("which is not a valid bucket name"), "{bad}: {e}");
     }
     for good in ["abc", "acme.logs-2", &"a".repeat(63)] {
         let e = refusal(&s3_list_config("").replace("acme-logs", good));
         assert!(e.is_empty(), "{good}: {e}");
     }
     let e = refusal(&s3_list_config("").replace("acme-logs", &"a".repeat(64)));
-    assert!(e.contains("which is not a bucket's name"), "{e}");
+    assert!(e.contains("which is not a valid bucket name"), "{e}");
 }
 
 #[test]
@@ -3842,6 +3842,71 @@ fn a_gcs_list_source_with_no_bucket_is_refused() {
     )
     .unwrap_err();
     assert!(e.to_string().contains("missing field `bucket`"), "{e}");
+}
+
+/// Each cloud holds a bucket's or container's name to its own rule, the same on a listing source and a destination,
+/// and reads it without the spaces around it.
+#[test]
+fn each_cloud_holds_a_store_name_to_its_own_rule() {
+    /// One cloud's store kinds, and the names its rule takes and refuses.
+    struct Cloud {
+        /// The listing source's kind and fields but its name.
+        source: &'static str,
+        /// The destination's kind and fields but its name.
+        destination: &'static str,
+        field: &'static str,
+        good: &'static [&'static str],
+        bad: &'static [&'static str],
+    }
+    let clouds = [
+        Cloud {
+            source: r#""type":"s3List""#,
+            destination: r#""type":"s3""#,
+            field: "bucket",
+            good: &["logs", "a.b-c", " logs "],
+            bad: &["s3://logs", "logs/in", "Logs", "ab", "logs_eu", "-logs"],
+        },
+        Cloud {
+            source: r#""type":"gcsList""#,
+            destination: r#""type":"gcs""#,
+            field: "bucket",
+            good: &["logs", "logs_eu", "a.b-c", " logs "],
+            bad: &["gs://logs", "logs/in", "Logs", "ab", "logs_"],
+        },
+        Cloud {
+            source: r#""type":"azureBlobList","account":"acme""#,
+            destination: r#""type":"azureBlob","account":"acme""#,
+            field: "container",
+            good: &["logs", "logs-2024", "$logs", "$web", " logs "],
+            bad: &[
+                "https://acme.blob.core.windows.net/logs",
+                "logs/in",
+                "Logs",
+                "ab",
+                "lo--gs",
+                "logs_eu",
+                "$other",
+            ],
+        },
+    ];
+    for Cloud {
+        source,
+        destination,
+        field,
+        good,
+        bad,
+    } in clouds
+    {
+        for name in good.iter().chain(bad) {
+            let named = format!(r#","{field}":"{name}""#);
+            let list = format!(r#"{{"version":1,"sources":[{{"id":"l",{source}{named}}}]}}"#);
+            let store = store_config(destination, &named);
+            for json in [list, store] {
+                let refused = refused_at(&json, field, &format!("which is not a valid {field} name"));
+                assert_eq!(refused, bad.contains(name), "{name:?}: {}", refusal(&json));
+            }
+        }
+    }
 }
 
 /// A Listing/Azure Blob source needs only its account and container, and takes the listing defaults an `s3List`
@@ -4437,7 +4502,7 @@ fn a_gcs_pubsub_source_over_plain_http_loads() {
 #[test]
 fn a_parquet_destination_writes_each_routes_own_record() {
     use smeltr::core::column::DataType;
-    let s3 = r#"{"id":"lake","type":"s3","bucket":"b","format":"parquet"}"#;
+    let s3 = r#"{"id":"lake","type":"s3","bucket":"logs","format":"parquet"}"#;
     let pipeline = |id: &str, field: &str, expr: &str| {
         format!(
             r#"{{"id":"{id}","name":"{id}","steps":[{{"id":"e","type":"eval","assignments":[{{"target":"{field}","expr":"{expr}"}}]}}]}}"#
@@ -4475,7 +4540,7 @@ fn a_parquet_destination_writes_each_routes_own_record() {
 /// An open object's unclaimed fields are its `rest` column, so it cannot also name a field `rest`.
 #[test]
 fn a_parquet_record_naming_rest_beside_unclaimed_fields_does_not_compile() {
-    let s3 = r#"{"id":"lake","type":"s3","bucket":"b","format":"parquet"}"#;
+    let s3 = r#"{"id":"lake","type":"s3","bucket":"logs","format":"parquet"}"#;
     let pipeline = r#"{"id":"p","name":"p","steps":[
         {"id":"e","type":"eval","assignments":[{"target":"rest","expr":"1"}]},
         {"id":"j","type":"code","body":"Object.assign($, json(_raw));"}]}"#;
@@ -4494,7 +4559,7 @@ fn a_parquet_record_naming_rest_beside_unclaimed_fields_does_not_compile() {
 #[test]
 fn a_parquet_tag_column_takes_what_the_pipeline_writes_there_too() {
     use smeltr::core::column::DataType;
-    let s3 = r#"{"id":"lake","type":"s3","bucket":"b","format":"parquet"}"#;
+    let s3 = r#"{"id":"lake","type":"s3","bucket":"logs","format":"parquet"}"#;
     let pipeline = r#"{"id":"p","name":"p","steps":[
         {"id":"e","type":"eval","assignments":[{"target":"smeltr.exception","expr":"1"}]}]}"#;
     let json = cfg(
@@ -4529,7 +4594,7 @@ fn a_parquet_destination_only_the_group_answer_reaches_writes_raw() {
     use smeltr::core::column::DataType;
     let json = r#"{"version":1,
         "sources":[{"id":"s","type":"kafka","brokers":"b:9092","topics":["t"],"groupId":"g"}],
-        "destinations":[{"id":"lake","type":"s3","bucket":"b","format":"parquet"}],
+        "destinations":[{"id":"lake","type":"s3","bucket":"logs","format":"parquet"}],
         "pipelines":[],
         "routes":[],
         "exceptions":{"kinds":{"Unmatched":{"deliver":["lake"]}}}}"#;
