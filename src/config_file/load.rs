@@ -1043,6 +1043,7 @@ fn to_framing(dto: &FramingSettingsDto) -> Framing {
             .as_deref()
             .and_then(to_line_breaker)
             .map_or(Framing::Lines, Framing::LineBreaker),
+        FramingDto::Syslog => Framing::Syslog(dto.line_breaker.as_deref().and_then(to_line_breaker)),
         FramingDto::Object => Framing::Object,
         FramingDto::EscapedLines => Framing::EscapedLines,
         // Validation refused a length prefix or a fixed size that is absent or out of range.
@@ -1962,12 +1963,12 @@ fn check_encoding(encoding: &EncodingLabel, id: &str, errors: &mut ItemErrors<'_
 fn check_framing(dto: &FramingSettingsDto, id: &str, max: u64, unit: &str, errors: &mut ItemErrors<'_>) {
     let what = format!("source {id:?}");
     if let Some(line_breaker) = &dto.line_breaker {
-        if dto.framing == FramingDto::Lines {
+        if let FramingDto::Lines | FramingDto::Syslog = dto.framing {
             check_line_breaker(&what, line_breaker, errors.at("lineBreaker"));
         } else {
-            errors
-                .at("lineBreaker")
-                .push(format!("{what} sets lineBreaker, which only lines framing reads"));
+            errors.at("lineBreaker").push(format!(
+                "{what} sets lineBreaker, which only lines and syslog framing read"
+            ));
         }
     }
     match (dto.framing, dto.length_prefix) {
@@ -2908,9 +2909,10 @@ fn check_connection_limits(what: &str, connections: &ConnectionLimitsDto, tcp: b
     }
 }
 
-/// A syslog receiver as [`check_receiver`] holds any, with the networks it admits senders from in place of tokens,
-/// as syslog carries none. Over UDP it serves no TLS, so only its networks can admit a sender.
-fn check_syslog_receiver(
+/// Checks a socket receiver as [`check_receiver`] checks any receiver, except that the networks it admits senders
+/// from stand in for tokens, since its senders present none. Over UDP it serves no TLS, so only its networks can admit
+/// a sender.
+fn check_socket_receiver(
     what: &str,
     listener: &ReceiverSettingsDto,
     tls: &ServedTlsDto,

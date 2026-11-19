@@ -896,7 +896,7 @@ test('A1: a receiver is captured as sent, warned of, and downloaded', async ({
 }) => {
   const port = await freePort();
   await api.put(`/api/areas/shared/sources${ON}`, [
-    { id: 'firewall', type: 'syslogReceiver', port, allowFrom: ['127.0.0.1'] },
+    { id: 'firewall', type: 'socketReceiver', framing: 'syslog', port, allowFrom: ['127.0.0.1'] },
   ]);
   await fleet.startWorker(leader, api, 'default', 'w1');
 
@@ -2804,7 +2804,13 @@ test('A10: S2S and syslog receivers show as receivers, and a syslog receiver edi
   };
   await api.put(`/api/areas/shared/sources${ON}`, [
     s2s,
-    { id: 'firewalls', type: 'syslogReceiver', port: 6514, allowFrom: ['10.0.0.0/8'] },
+    {
+      id: 'firewalls',
+      type: 'socketReceiver',
+      framing: 'syslog',
+      port: 6514,
+      allowFrom: ['10.0.0.0/8'],
+    },
   ]);
 
   await goto(admin, leader, '#/build/sources');
@@ -2846,7 +2852,7 @@ test('A10: S2S and syslog receivers show as receivers, and a syslog receiver edi
     fullPage: true,
   });
   await admin.keyboard.press('Escape');
-  // UDP frames nothing, so choosing it drops the line breaker with the certificate.
+  // Over UDP a datagram is a message, so choosing UDP drops the line breaker along with the certificate.
   await admin.getByRole('combobox', { name: /^transport/ }).selectOption('udp');
   await expect(certificate).toBeHidden();
   await expect(lineBreaker).toBeHidden();
@@ -2859,7 +2865,8 @@ test('A10: S2S and syslog receivers show as receivers, and a syslog receiver edi
     s2s,
     {
       id: 'firewalls',
-      type: 'syslogReceiver',
+      type: 'socketReceiver',
+      framing: 'syslog',
       port: 6514,
       allowFrom: ['10.0.0.0/8', '192.168.0.0/16'],
       transport: 'udp',

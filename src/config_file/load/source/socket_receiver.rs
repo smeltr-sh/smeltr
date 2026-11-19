@@ -40,8 +40,8 @@ impl ReceiverKindDto for SocketReceiverDto {
     ) {
         check_encoding(&self.encoding, &s.id, errors);
         match self.transport {
-            Transport::Udp if framing.is_set() => errors.at("framing").push(format!(
-                "{what} sets a framing, which only TCP reads: over UDP a datagram is a record"
+            Transport::Udp if !framing.reads_datagrams() => errors.at("framing").push(format!(
+                "{what} sets a framing that only TCP reads: over UDP a datagram is a record"
             )),
             Transport::Udp => {}
             // A receiver keeps a message to its largest request.

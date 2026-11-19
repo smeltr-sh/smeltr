@@ -20,7 +20,6 @@ mod s2s_receiver;
 mod sftp;
 mod socket_receiver;
 mod sql;
-mod syslog_receiver;
 
 pub use self::{
     elastic_receiver::ElasticReceiverSourceDto,
@@ -41,7 +40,6 @@ pub use self::{
     s2s_receiver::S2sReceiverSourceDto,
     sftp::SftpSourceDto,
     socket_receiver::SocketReceiverSourceDto,
-    syslog_receiver::SyslogReceiverSourceDto,
 };
 
 /// What one kind of source answers about itself. Each kind implements it in its own file, beside its struct.
@@ -95,7 +93,7 @@ pub(super) trait SourceSpec {
     fn receiver_port(&self) -> Option<u16> {
         None
     }
-    /// The transport a receiver's senders use: TCP, except for a syslog or socket receiver given UDP.
+    /// The transport a receiver's senders use: TCP, except for a socket receiver given UDP.
     fn receiver_transport(&self) -> Transport {
         Transport::Tcp
     }
@@ -123,7 +121,6 @@ impl SourceKindDto {
             SourceKindDto::OtlpReceiver(k) => k,
             SourceKindDto::PrometheusReceiver(k) => k,
             SourceKindDto::ElasticReceiver(k) => k,
-            SourceKindDto::SyslogReceiver(k) => k,
             SourceKindDto::SocketReceiver(k) => k,
             SourceKindDto::Postgres(k) | SourceKindDto::MySql(k) => k,
         }
@@ -150,7 +147,6 @@ impl SourceKindDto {
             SourceKindDto::OtlpReceiver(k) => k,
             SourceKindDto::PrometheusReceiver(k) => k,
             SourceKindDto::ElasticReceiver(k) => k,
-            SourceKindDto::SyslogReceiver(k) => k,
             SourceKindDto::SocketReceiver(k) => k,
             SourceKindDto::Postgres(k) | SourceKindDto::MySql(k) => k,
         }
@@ -171,7 +167,7 @@ impl SourceKindDto {
         self.spec().receiver_port()
     }
 
-    /// The transport a receiver's senders use: TCP, except for a syslog or socket receiver given UDP.
+    /// The transport a receiver's senders use: TCP, except for a socket receiver given UDP.
     pub fn receiver_transport(&self) -> Transport {
         self.spec().receiver_transport()
     }

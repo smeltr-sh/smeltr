@@ -469,7 +469,7 @@ const ACCESS_LOG = [
 /** A new pipeline for a route from `web`, opened at `hash`, on pasted access-log lines in place of a capture. */
 async function makePipeline(admin: Page, leader: Leader, api: Api, hash: string) {
   await api.put(`${SHARED}/sources${ON}`, [
-    { id: 'web', type: 'syslogReceiver', port: 6514, allowFrom: ['10.0.0.0/8'] },
+    { id: 'web', type: 'socketReceiver', framing: 'syslog', port: 6514, allowFrom: ['10.0.0.0/8'] },
   ]);
   await goto(admin, leader, hash);
   await admin.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click();
@@ -549,7 +549,7 @@ test("a new pipeline's CSV columns take a produced schema's types over the sampl
     { id: 'tally', fields: [{ field: 'code', type: 'str' }] },
   ]);
   await api.put(`${SHARED}/sources${ON}`, [
-    { id: 'web', type: 'syslogReceiver', port: 6514, allowFrom: ['10.0.0.0/8'] },
+    { id: 'web', type: 'socketReceiver', framing: 'syslog', port: 6514, allowFrom: ['10.0.0.0/8'] },
   ]);
   await api.put(`${SHARED}/destinations${ON}`, [
     {

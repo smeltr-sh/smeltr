@@ -207,7 +207,8 @@ test("a worker's detail names where each receiver it runs listens", async ({
   const bundle = metricsTo(es.url);
   bundle.sources!.push({
     id: 'firewalls',
-    type: 'syslogReceiver',
+    type: 'socketReceiver',
+    framing: 'syslog',
     port,
     transport: 'udp',
     allowFrom: ['127.0.0.0/8'],

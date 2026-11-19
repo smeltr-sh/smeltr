@@ -4067,7 +4067,7 @@ mod tests {
         };
         let raw = RawBundle {
             file: FileConfig {
-                version: 1,
+                version: smeltr::config_file::CURRENT_VERSION,
                 sources: vec![],
                 destinations: vec![],
                 pipelines: vec![

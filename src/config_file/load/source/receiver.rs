@@ -69,7 +69,7 @@ impl<Kind: ReceiverKindDto> SourceSpec for ReceiverSourceDto<Kind, Kind::Framing
         let what = format!("source {:?}", s.id);
         let transport = kind.transport();
         match kind.allow_from() {
-            Some(networks) => check_syslog_receiver(&what, listener, tls, networks, transport, errors),
+            Some(networks) => check_socket_receiver(&what, listener, tls, networks, transport, errors),
             None => {
                 let names: Vec<&String> = kind.tokens().into_iter().map(|(name, _)| name).collect();
                 check_receiver(&what, listener, tls, &names, errors);

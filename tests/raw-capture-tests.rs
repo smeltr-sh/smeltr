@@ -69,7 +69,7 @@ impl Kept {
 
 fn syslog(listen: SocketAddr, transport: Transport, allow_from: &[&str], tls: Option<Tls>) -> ReceiverConfig {
     ReceiverConfig {
-        receiver: Receiver::Syslog(SocketReceiverConfig {
+        receiver: Receiver::Socket(SocketReceiverConfig {
             framing: smeltr::io::framing::Framing::Syslog(None),
             allow_from: allow_from.iter().map(|n| n.parse().unwrap()).collect(),
             transport,

@@ -344,32 +344,19 @@ export type SourceDto =
         sourcetypes?: Record<string, Sourcetype>;
       })
   | (ReceiverSettings &
-      ConnectionLimits & {
-        id: string;
-        type: 'syslogReceiver';
-        /** The networks a sender may connect from, as CIDR blocks such as `10.0.0.0/8`. Syslog carries no token,
-         * so this admits a sender, unless the receiver names authorities a sender's certificate must chain to. */
-        allowFrom?: string[];
-        /** As a Kafka source's. */
-        encoding?: string;
-        /** What senders send over. Absent is `tcp`. Over `udp` each datagram is a message, served without TLS, so it
-         * takes no certificate or authorities and only `allowFrom` admits a sender. */
-        transport?: 'tcp' | 'udp';
-        /** Where a message over TCP ends, as an object source's `lineBreaker`. Absent, at a newline. A message that
-         * starts with a digit 1 to 9 is framed by octet counting, whatever this says. */
-        lineBreaker?: string;
-      })
-  | (ReceiverSettings &
       ConnectionLimits &
       FramingSettings & {
         id: string;
         type: 'socketReceiver';
-        /** As a syslog receiver's: nothing it receives carries a token. */
+        /** The networks a sender may connect from, as CIDR blocks such as `10.0.0.0/8`. Nothing it receives carries a
+         * token, so the receiver needs these, authorities a sender's certificate must chain to, fingerprints it must
+         * match, or a combination; with networks and a certificate check, a sender must connect from a listed network
+         * and present a certificate that passes. */
         allowFrom?: string[];
         /** As a Kafka source's. */
         encoding?: string;
-        /** What senders send over. Absent is `tcp`. Over `udp` each datagram is a record, served without TLS
-         * and cut by no framing. */
+        /** The transport senders use. Absent is `tcp`. Over `udp` each datagram is a record, served without TLS, and
+         * takes no framing but `syslog`. */
         transport?: 'tcp' | 'udp';
       })
   | (SqlConnection & { type: 'postgres' })
@@ -981,10 +968,10 @@ export interface ListingSettings extends ReadFormat, FramingSettings {
 
 /** How a stream's bytes become records, an object source's objects or what a socket receiver's senders send over
  * TCP: one per line, the whole stream as one, one per line unescaped as a `bytes` object destination wrote it, one
- * per message or record that says its own length, or one per so many bytes. `lines` alone takes the source's
- * `lineBreaker`, a regex whose first capture group is where a record ends, the group dropped, as Splunk's
- * `LINE_BREAKER`; absent, a record ends at a line end. */
-export type Framing = 'lines' | 'object' | 'escapedLines' | 'lengthPrefix' | 'fixed';
+ * per message or record that says its own length, one per so many bytes, or one per syslog message (RFC 6587).
+ * `lines` and `syslog` take the source's `lineBreaker`, a regex whose first capture group is where a record ends,
+ * the group dropped, as Splunk's `LINE_BREAKER`; absent, a record ends at a line end. */
+export type Framing = 'lines' | 'object' | 'escapedLines' | 'lengthPrefix' | 'fixed' | 'syslog';
 
 /** Mirrors `config_file::dto::FramingSettingsDto`. */
 export interface FramingSettings {

@@ -31,7 +31,7 @@ use super::dto::{
     DestinationDto, FileConfig, GrokPatternDto, LookupTableDto, PipelineDto, RouteDto, SchemaDto, SourceDto,
 };
 use super::load::{BundleAt, LoadError};
-use super::{CURRENT_VERSION, LoadedSystem};
+use super::{CURRENT_VERSION, LoadedSystem, upgrade};
 
 /// `system.json`. A key it does not know fails the load, as in every DTO, so a misspelled or retired key cannot run the
 /// default in its place. The key is caught here rather than refused by serde, so the GUI's read keeps the fields it
@@ -267,6 +267,29 @@ fn read_optional_array<T: DeserializeOwned>(files: &mut dyn FileSet, path: &str)
     }
 }
 
+/// `sources.json`, brought from the bundle's version to the current one. A bundle with no manifest, as `shared/`,
+/// names no version, so its sources take every step.
+fn read_sources(files: &mut dyn FileSet, version: Option<u32>) -> Result<Vec<SourceDto>, BundleError> {
+    const PATH: &str = "sources.json";
+    let Some(bytes) = files.read(PATH).map_err(|e| io_err(PATH, e))? else {
+        return Ok(Vec::new());
+    };
+    sources_at(version, &bytes).map_err(|source| BundleError::Json {
+        path: PATH.to_string(),
+        source,
+    })
+}
+
+/// A current bundle's sources parse as they are, so an error keeps its line and column.
+fn sources_at(version: Option<u32>, bytes: &[u8]) -> Result<Vec<SourceDto>, serde_json::Error> {
+    if version == Some(CURRENT_VERSION) {
+        return serde_json::from_slice(bytes);
+    }
+    let mut sources: Vec<serde_json::Value> = serde_json::from_slice(bytes)?;
+    upgrade::sources(version.unwrap_or(0), &mut sources);
+    serde_json::from_value(serde_json::Value::Array(sources))
+}
+
 /// One bundle's files, parsed and not yet validated. Split out from [`load_bundle_from`] so two of them can be merged
 /// before anything checks the whole.
 struct Parts {
@@ -292,7 +315,7 @@ fn read_parts(files: &mut dyn FileSet, at: &str) -> Result<Parts, BundleError> {
         None => None,
     };
     if let Some(m) = &manifest
-        && m.version != CURRENT_VERSION
+        && !upgrade::reads(m.version)
     {
         return Err(BundleError::UnsupportedVersion {
             path: named("system.json"),
@@ -315,9 +338,10 @@ fn read_parts(files: &mut dyn FileSet, at: &str) -> Result<Parts, BundleError> {
         schemas.push(read_per_file(files, "schema", &path, named, |s: &SchemaDto| &s.id)?);
     }
 
+    let sources = read_sources(files, manifest.as_ref().map(|m| m.version)).map_err(|e| at_path(e, at))?;
     Ok(Parts {
         manifest,
-        sources: read_optional_array(files, "sources.json").map_err(|e| at_path(e, at))?,
+        sources,
         destinations: read_optional_array(files, "destinations.json").map_err(|e| at_path(e, at))?,
         routes: read_optional_array(files, "routes.json").map_err(|e| at_path(e, at))?,
         lookup_tables: read_optional_array(files, "lookup-tables.json").map_err(|e| at_path(e, at))?,
@@ -354,7 +378,8 @@ fn assemble_at(
     declared_at: &crate::config_file::DeclaredAt,
 ) -> Result<LoadedSystem, BundleError> {
     let file = FileConfig {
-        version: manifest.version,
+        // `read_parts` refused a version this build does not read, and brought the sources of any other to this one.
+        version: CURRENT_VERSION,
         on_exception: manifest.on_exception,
         name: manifest.name,
         sources: parts.sources,
@@ -669,10 +694,12 @@ pub fn read_raw_from(files: &mut dyn FileSet) -> RawBundle {
     // and so can one of a version this build does not read, which is otherwise the one problem validation reports.
     let mut on_exception = None;
     let mut name = None;
+    let mut written_at = None;
     let version = match files.read("system.json") {
         Ok(Some(bytes)) => match serde_json::from_slice::<Manifest>(&bytes) {
             Ok(m) => {
-                if m.version != CURRENT_VERSION {
+                written_at = Some(m.version);
+                if !upgrade::reads(m.version) {
                     let unsupported = LoadError::UnsupportedVersion(m.version).to_string();
                     unreadable.push(("system.json".to_string(), unsupported));
                 }
@@ -695,7 +722,17 @@ pub fn read_raw_from(files: &mut dyn FileSet) -> RawBundle {
         }
     };
 
-    let sources = read_array_lenient(files, "sources.json", &mut unreadable);
+    let sources = match files.read("sources.json") {
+        Ok(Some(bytes)) => sources_at(written_at, &bytes).unwrap_or_else(|e| {
+            unreadable.push(("sources.json".to_string(), format!("invalid JSON: {e}")));
+            Vec::new()
+        }),
+        Ok(None) => Vec::new(),
+        Err(e) => {
+            unreadable.push(("sources.json".to_string(), e.to_string()));
+            Vec::new()
+        }
+    };
     let destinations = read_array_lenient(files, "destinations.json", &mut unreadable);
     let routes = read_array_lenient(files, "routes.json", &mut unreadable);
     let lookup_tables = read_array_lenient(files, "lookup-tables.json", &mut unreadable);
@@ -827,7 +864,8 @@ fn to_json_bytes<T: Serialize>(v: &T) -> Vec<u8> {
 /// this too, so the manifest has one writer.
 pub fn manifest_bytes(file: &FileConfig) -> Vec<u8> {
     to_json_bytes(&Manifest {
-        version: file.version,
+        // Its other files are written as this build's types write them, whatever version they were read at.
+        version: CURRENT_VERSION,
         on_exception: file.on_exception.clone(),
         name: file.name.clone(),
         unknown: BTreeMap::new(),
@@ -1207,6 +1245,32 @@ mod tests {
                 .starts_with("system.json: unsupported config version 99"),
             "{err}"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A version 1 bundle's sources load as this version's, in the strict read and the lenient one, and write back at
+    /// this version.
+    #[test]
+    fn a_version_1_bundle_loads_as_the_current_version() {
+        let dir = temp_dir("version-1");
+        std::fs::write(dir.join("system.json"), br#"{"version":1}"#).unwrap();
+        std::fs::write(
+            dir.join("sources.json"),
+            br#"[{"id":"fw","type":"syslogReceiver","port":6514,"allowFrom":["10.0.0.0/8"]}]"#,
+        )
+        .unwrap();
+        let is_syslog = |s: &SourceDto| {
+            matches!(&s.kind, super::super::dto::SourceKindDto::SocketReceiver(r)
+                if r.framing.framing == super::super::dto::FramingDto::Syslog)
+        };
+        let system = load_bundle_dir(&dir).unwrap();
+        assert_eq!(system.topology.sources.len(), 1);
+        let raw = read_raw_from(&mut DirFileSet { root: &dir });
+        assert!(raw.unreadable.is_empty(), "{:?}", raw.unreadable);
+        assert!(is_syslog(&raw.file.sources[0]), "{:?}", raw.file.sources[0]);
+        assert_eq!(raw.file.version, CURRENT_VERSION);
+        let written: serde_json::Value = serde_json::from_slice(&manifest_bytes(&raw.file)).unwrap();
+        assert_eq!(written["version"], CURRENT_VERSION);
         std::fs::remove_dir_all(&dir).ok();
     }
 
