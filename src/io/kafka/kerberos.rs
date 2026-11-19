@@ -148,9 +148,8 @@ mod imp {
             if let Some(why) = conflict(&current, &identity) {
                 return Err(IoError::transient(why));
             }
-            if *current == identity {
-                return Ok(Some(Held { _identity: current }));
-            }
+            // The same principal's ticket is already held and renewed, whichever keytab it came from.
+            return Ok(Some(Held { _identity: current }));
         }
         // Got before the client exists, so its first sign-in finds a ticket, as librdkafka's first `kinit` did.
         acquire(&identity).map_err(IoError::transient)?;
