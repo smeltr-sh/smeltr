@@ -1,4 +1,4 @@
-use super::super::*;
+use super::super::shared::*;
 use super::{SourceSpec, check_intake};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

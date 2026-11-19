@@ -4,7 +4,7 @@
 //! A source or destination flattens the name and the access side by side, never one inside the other: serde reads a
 //! flattened block inside a flattened block without marking its keys taken (see `NoUnknownKeys`).
 
-use super::*;
+use super::shared::*;
 use serde::{Deserialize, Serialize};
 
 mod azure;

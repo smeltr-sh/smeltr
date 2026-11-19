@@ -1,4 +1,4 @@
-use super::super::*;
+use super::super::shared::*;
 use super::DestinationSpec;
 use serde::{Deserialize, Serialize};
 
