@@ -1,7 +1,7 @@
 //! Every kind of source: its struct, and what it answers about itself (`SourceSpec`), one file each. The object
 //! sources share one generic struct, in `objects`, and the receivers another, in `receiver`.
 
-use super::*;
+use super::shared::*;
 
 mod elastic_receiver;
 mod event_hubs;

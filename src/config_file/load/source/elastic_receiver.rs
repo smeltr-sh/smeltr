@@ -1,4 +1,4 @@
-use super::super::*;
+use super::super::shared::*;
 use super::receiver::{NoFramingDto, ReceiverKindDto, ReceiverSourceDto};
 use crate::plan::topology::Receiver;
 use serde::{Deserialize, Serialize};
