@@ -1,3 +1,7 @@
+use super::super::clouds::{
+    AccessDto, AnnouncedDto, BucketDto, ContainerDto, PubSubDto, QueueDto, SqsDto, StorageQueueDto, StoreNameDto,
+    check_store_name,
+};
 use super::super::*;
 use super::SourceSpec;
 use serde::{Deserialize, Serialize};

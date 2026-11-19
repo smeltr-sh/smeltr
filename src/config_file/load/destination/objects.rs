@@ -1,3 +1,6 @@
+use super::super::clouds::{
+    AccessDto, BucketDto, ContainerDto, DefaultEncryptionDto, EncryptionDto, KmsKeyDto, StoreNameDto, check_store_name,
+};
 use super::super::*;
 use super::DestinationSpec;
 use serde::{Deserialize, Serialize};
