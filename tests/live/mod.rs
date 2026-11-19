@@ -29,6 +29,11 @@ pub fn s3(test_name: &str) -> Option<String> {
     service(test_name, "S3_TEST_ENDPOINT", "an S3 emulator (`just live-up`)")
 }
 
+/// The address of SeaweedFS's S3, or `None` to skip this test.
+pub fn seaweedfs(test_name: &str) -> Option<String> {
+    service(test_name, "SEAWEEDFS_TEST_ENDPOINT", "SeaweedFS's S3 (`just live-up`)")
+}
+
 /// The base URL of a live Iceberg REST catalog keeping its tables in the S3 emulator, or `None` to skip this test.
 pub fn iceberg(test_name: &str) -> Option<String> {
     service(
