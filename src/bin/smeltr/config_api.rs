@@ -962,8 +962,8 @@ fn refuse_broken_merge(writing: &Writing, edits: &[git::FileEdit]) -> Result<(),
 impl Writing {
     /// One save: read the branch's commit, apply `mutate`, validate, and swap the branch onto the result with the
     /// files staged. The swap is a compare-and-swap on the commit that was read, so a writer who lost a race is
-    /// refused rather than overwriting the winner, and no lock is held. It spawns git, which is why every caller runs
-    /// it through `blocking`.
+    /// refused rather than overwriting the winner, and no lock is held. It reads and writes git's files, which is why every
+    /// caller runs it through `blocking`.
     pub(crate) fn save(
         &self,
         touches: Touches,
@@ -1129,7 +1129,7 @@ pub(crate) fn read_status<T>(unreadable: &[T]) -> StatusCode {
     }
 }
 
-/// Every save runs off the async executor: it spawns git, and it holds a lock while it does.
+/// Every save runs off the async executor: it reads and writes git's files, and it holds a lock while it does.
 pub(crate) async fn blocking_save(f: impl FnOnce() -> Envelope<Save> + Send + 'static) -> Envelope<Save> {
     blocking_answer(f).await
 }
@@ -1477,7 +1477,7 @@ pub struct LookupFileQuery {
     at: Option<String>,
 }
 
-/// Runs `read` off the executor, since it spawns git, and answers its fields or why not.
+/// Runs `read` off the executor, since it reads git's files, and answers its fields or why not.
 async fn lookup_read(
     area: String,
     q: LookupFileQuery,

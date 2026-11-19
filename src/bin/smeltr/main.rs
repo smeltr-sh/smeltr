@@ -2081,12 +2081,6 @@ async fn run_leader() {
         );
     }
 
-    // Without git the leader would start and serve nothing a worker can deploy, so it is refused before the bind
-    // for the same reason the bind comes first: a refused start leaves nothing behind.
-    if let Err(e) = smeltr::leader::git::check_git_runs() {
-        eprintln!("smeltr: refusing to start -- {e}");
-        std::process::exit(1);
-    }
     // Read before the bind, which a refusal must not hide behind.
     smeltr::startup_config::leader_heartbeat_interval();
 

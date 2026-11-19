@@ -792,42 +792,13 @@ fn merge_packs(repo_dir: &Path) -> Result<(), String> {
         output::count::objects::ObjectExpansion::TreeContents,
     )
     .map_err(|e| failed(&e))?;
-    let interrupt = std::sync::atomic::AtomicBool::new(false);
-
     let dir = repo_dir.join("objects/pack");
-    let old = packs_in(&dir)?;
-    let written = gix_pack::Bundle::write_to_directory(
-        &mut pack.as_slice(),
-        Some(&dir),
-        &mut gix::progress::Discard,
-        &interrupt,
-        None::<gix::objs::find::Never>,
-        hash,
-        Default::default(),
-    )
-    .map_err(|e| failed(&e))?;
-    if let Some(keep) = &written.keep_path {
-        std::fs::remove_file(keep).map_err(|e| failed(&e))?;
-    }
-    let kept = written.data_path.ok_or_else(|| failed(&"no pack was written"))?;
+    let old = crate::leader::git::packs_in(&dir)?;
+    let kept = crate::leader::git::store_pack(&dir, hash, &pack).map_err(|e| failed(&e))?;
     for old in old.iter().filter(|p| **p != kept) {
-        // The index first: a pack without one is not looked in, and an index without its pack would be. A pack the
-        // runtime still maps cannot go on Windows, and goes with the next merge.
-        let _ = std::fs::remove_file(old.with_extension("idx"))
-            .and_then(|()| std::fs::remove_file(old))
-            .map(|()| std::fs::remove_file(old.with_extension("rev")));
+        crate::leader::git::remove_pack(old);
     }
     Ok(())
-}
-
-/// The `.pack` files in `dir`.
-fn packs_in(dir: &Path) -> Result<Vec<PathBuf>, String> {
-    let entries = std::fs::read_dir(dir).map_err(|e| format!("reading {}: {e}", dir.display()))?;
-    Ok(entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "pack"))
-        .collect())
 }
 
 /// Hold `commit` against garbage collection for as long as the deployment built from it runs.

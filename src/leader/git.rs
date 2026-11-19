@@ -6,13 +6,12 @@
 //! Served to workers by `upload_pack`, git's own protocol from this process. Read-only: a push is refused by the
 //! server itself.
 //!
-//! Nothing is ever checked out: reads and writes go through the object database in this process (`gix`), and only
-//! packing the repository and stamping its version still spawn git. A read is of a commit, a save
+//! Nothing is ever checked out, and nothing spawns git: reads, writes and packing go through the object database in
+//! this process (`gix`). A read is of a commit, a save
 //! builds its tree in memory, and every ref moves by compare-and-swap on what the caller read -- so writers cannot
 //! interleave and none of them holds a lock.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -3179,34 +3178,6 @@ fn blob_paths(changes: &[gix::object::tree::diff::ChangeDetached]) -> Vec<String
         .collect()
 }
 
-/// Whether `git` runs here: `Err` says what a leader without it cannot do and what failed. Checked once at startup,
-/// because packing the repository and stamping its version spawn it, and each would otherwise fail later with an
-/// error that names none of that.
-pub fn check_git_runs() -> Result<(), String> {
-    git_runs("git")
-}
-
-fn git_runs(program: &str) -> Result<(), String> {
-    let needed = |why: String| {
-        format!(
-            "the leader runs git to pack its configuration repository, and `{program} --version` {why}. Install git \
-             and put it on this process's PATH -- for a service, the PATH of the account it runs as"
-        )
-    };
-    let mut cmd = Command::new(program);
-    cmd.arg("--version");
-    match crate::process::output_within(&mut cmd, Duration::from_secs(10)) {
-        Ok(crate::process::Outcome::Exited(out)) if out.status.success() => Ok(()),
-        Ok(crate::process::Outcome::Exited(out)) => Err(needed(format!(
-            "failed ({}): {}",
-            out.status,
-            String::from_utf8_lossy(&out.stderr).trim()
-        ))),
-        Ok(crate::process::Outcome::Killed(_)) => Err(needed("did not answer within ten seconds".to_string())),
-        Err(e) => Err(needed(format!("could not run: {e}"))),
-    }
-}
-
 // -- pushing to the host ----------------------------------------------------
 //
 // The leader speaks git's push protocol itself (`remote::push`); what it sends the host is packed here.
@@ -3317,38 +3288,213 @@ pub fn object_files(repo_path: &Path) -> (usize, usize) {
     (loose, count(&objects.join("pack"), &|n| n.ends_with(".idx")))
 }
 
-/// Pack the objects gix writes loose, and merge packs, once [`LOOSE_LIMIT`] or [`PACK_LIMIT`] is passed. What no ref
-/// reaches is dropped once git's own `gc.pruneExpire` has passed: a marker holds the commit it names as a parent.
+/// How long what no ref reaches is kept: git's own `gc.pruneExpire`. A save writes its objects before its ref moves,
+/// and a fetch its pack, so what is younger than this may be about to be reached.
+const PRUNE_AFTER: Duration = Duration::from_secs(14 * 24 * 3600);
+
+/// Pack the objects gix writes loose, and merge packs, once [`LOOSE_LIMIT`] or [`PACK_LIMIT`] is passed.
+///
+/// Everything a ref reaches is written as one pack. What no ref reaches and was written within [`PRUNE_AFTER`] is
+/// written as a second, dated by the newest of it, so it still expires; the rest goes. A marker holds the commit it
+/// names as a parent, so what a marker names is kept with it. The new packs are written before anything is removed,
+/// and a pack whose index is not there yet -- a fetch still writing it -- or that git was told to keep is left alone.
 pub fn pack(repo_path: &Path) -> Result<(), GitError> {
     let (loose, packs) = object_files(repo_path);
     if loose <= LOOSE_LIMIT && packs <= PACK_LIMIT {
         return Ok(());
     }
+    repack(repo_path)
+}
+
+/// [`pack`], whatever the limits.
+fn repack(repo_path: &Path) -> Result<(), GitError> {
+    use gix_pack::data::output::count::objects::ObjectExpansion;
     let _pass = tracing::trace_span!(target: "git", "a background pass", task = "pack the git store").entered();
-    // Not `gc --auto`: the limits are counted here, the same way a worker counts its packs. A cruft pack is where
-    // `gc` keeps what no ref reaches until it expires, rather than loose, and before git 2.40 it has to be asked for.
-    let output = Command::new("git")
-        .arg("--git-dir")
-        .arg(repo_path)
-        .args([
-            "-c",
-            "gc.cruftPacks=true",
-            // Refs are gix's to write, and packing them would hold their lock against a save.
-            "-c",
-            "gc.packRefs=false",
-            "gc",
-            "--quiet",
-        ])
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| GitError::failed(format!("spawning git gc: {e}")))?;
-    if output.status.success() {
-        return Ok(());
+    let failed = |e: &dyn std::fmt::Display| GitError::failed(format!("packing {}: {e}", repo_path.display()));
+    let repo = open(repo_path)?;
+    let hash = repo.object_hash();
+
+    // What is here before anything is written: each pack, when it was written and what it holds, and each loose
+    // object.
+    let dir = repo_path.join("objects/pack");
+    let mut before = Vec::new();
+    for pack in packs_in(&dir).map_err(|e| failed(&e))? {
+        if pack.with_extension("keep").exists() {
+            continue;
+        }
+        let Ok(index) = gix_pack::index::File::at(pack.with_extension("idx"), hash) else {
+            continue;
+        };
+        let written = modified(&pack).map_err(|e| failed(&e))?;
+        before.push((pack, written, index.iter().map(|e| e.oid).collect::<Vec<_>>()));
     }
-    Err(GitError::failed(format!(
-        "git gc did not work: {}",
-        String::from_utf8_lossy(&output.stderr).trim()
-    )))
+    let loose = loose_objects(repo_path).map_err(|e| failed(&e))?;
+
+    // Everything a ref reaches: the commits, and any annotated tag on the way to one.
+    let (mut commits, mut tags) = (Vec::new(), Vec::new());
+    for reference in repo
+        .references()
+        .map_err(|e| failed(&e))?
+        .all()
+        .map_err(|e| failed(&e))?
+    {
+        let reference = reference.map_err(|e| failed(&e))?;
+        let Some(mut id) = reference.target().try_id().map(ToOwned::to_owned) else {
+            continue;
+        };
+        loop {
+            let object = repo.find_object(id).map_err(|e| failed(&e))?;
+            match object.kind {
+                gix::object::Kind::Commit => break commits.push(id),
+                gix::object::Kind::Tag => {
+                    tags.push(id);
+                    id = object.into_tag().target_id().map_err(|e| failed(&e))?.detach();
+                }
+                kind => {
+                    let name = reference.name().as_bstr();
+                    return Err(failed(&format!("{name} names a {kind}, which nothing here writes")));
+                }
+            }
+        }
+    }
+    let history: Vec<gix::ObjectId> = repo
+        .rev_walk(commits)
+        .all()
+        .map_err(|e| failed(&e))?
+        .map(|info| info.map(|info| info.id).map_err(|e| failed(&e)))
+        .collect::<Result<_, _>>()?;
+    let mut kept = vec![
+        store_pack(
+            &dir,
+            hash,
+            &pack_of(repo_path, hash, history, ObjectExpansion::TreeContents).map_err(|e| failed(&e))?,
+        )
+        .map_err(|e| failed(&e))?,
+    ];
+    if !tags.is_empty() {
+        kept.push(
+            store_pack(
+                &dir,
+                hash,
+                &pack_of(repo_path, hash, tags, ObjectExpansion::AsIs).map_err(|e| failed(&e))?,
+            )
+            .map_err(|e| failed(&e))?,
+        );
+    }
+    let mut reached = std::collections::HashSet::new();
+    for pack in &kept {
+        let index = gix_pack::index::File::at(pack.with_extension("idx"), hash).map_err(|e| failed(&e))?;
+        reached.extend(index.iter().map(|e| e.oid));
+    }
+
+    // What nothing reaches and is young enough to keep.
+    let now = std::time::SystemTime::now();
+    let young = |written: std::time::SystemTime| now.duration_since(written).map_or(true, |age| age < PRUNE_AFTER);
+    let (mut unreached, mut newest) = (std::collections::BTreeSet::new(), None);
+    let sources = before
+        .iter()
+        .flat_map(|(_, written, ids)| ids.iter().map(move |id| (*id, *written)));
+    for (id, written) in sources.chain(loose.iter().map(|(_, id, written)| (*id, *written))) {
+        if !reached.contains(&id) && young(written) {
+            unreached.insert(id);
+            newest = newest.max(Some(written));
+        }
+    }
+    if let Some(newest) = newest {
+        let pack =
+            pack_of(repo_path, hash, unreached.into_iter().collect(), ObjectExpansion::AsIs).map_err(|e| failed(&e))?;
+        let pack = store_pack(&dir, hash, &pack).map_err(|e| failed(&e))?;
+        for file in [pack.clone(), pack.with_extension("idx")] {
+            set_modified(&file, newest).map_err(|e| failed(&e))?;
+        }
+        kept.push(pack);
+    }
+
+    for (pack, _, _) in before.iter().filter(|(pack, _, _)| !kept.contains(pack)) {
+        remove_pack(pack);
+    }
+    for (path, _, _) in &loose {
+        let _ = std::fs::remove_file(path);
+    }
+    Ok(())
+}
+
+/// When `path` was last written.
+fn modified(path: &Path) -> Result<std::time::SystemTime, String> {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .map_err(|e| format!("reading {}: {e}", path.display()))
+}
+
+/// Date `path` as written at `at`. gix writes packs read-only: their owner may date a read-only handle, and Windows
+/// needs a writable one.
+fn set_modified(path: &Path, at: std::time::SystemTime) -> Result<(), String> {
+    std::fs::File::options()
+        .read(true)
+        .write(cfg!(windows))
+        .open(path)
+        .and_then(|file| file.set_modified(at))
+        .map_err(|e| format!("dating {}: {e}", path.display()))
+}
+
+/// Each loose object: its file, its id and when it was written.
+fn loose_objects(repo_path: &Path) -> Result<Vec<(PathBuf, gix::ObjectId, std::time::SystemTime)>, String> {
+    let mut out = Vec::new();
+    for fan_out in std::fs::read_dir(repo_path.join("objects"))
+        .map_err(|e| e.to_string())?
+        .flatten()
+    {
+        let prefix = fan_out.file_name().to_string_lossy().into_owned();
+        if prefix.len() != 2 || !fan_out.path().is_dir() {
+            continue;
+        }
+        for object in std::fs::read_dir(fan_out.path()).map_err(|e| e.to_string())?.flatten() {
+            let rest = object.file_name().to_string_lossy().into_owned();
+            // A file gix is still writing has a temporary name, and is not an object yet.
+            let Ok(id) = gix::ObjectId::from_hex(format!("{prefix}{rest}").as_bytes()) else {
+                continue;
+            };
+            out.push((object.path(), id, modified(&object.path())?));
+        }
+    }
+    Ok(out)
+}
+
+/// Write `pack` into `dir` with its index, and answer where the pack is.
+pub fn store_pack(dir: &Path, hash: gix::hash::Kind, pack: &[u8]) -> Result<PathBuf, String> {
+    let written = gix_pack::Bundle::write_to_directory(
+        &mut &pack[..],
+        Some(dir),
+        &mut gix::progress::Discard,
+        &std::sync::atomic::AtomicBool::new(false),
+        None::<gix::objs::find::Never>,
+        hash,
+        Default::default(),
+    )
+    .map_err(|e| e.to_string())?;
+    if let Some(keep) = &written.keep_path {
+        std::fs::remove_file(keep).map_err(|e| e.to_string())?;
+    }
+    written.data_path.ok_or_else(|| "no pack was written".to_string())
+}
+
+/// Remove a pack. The index first: a pack without one is not looked in, and an index without its pack would be. A
+/// pack still mapped cannot go on Windows, and goes with the next pass.
+pub fn remove_pack(pack: &Path) {
+    let _ = std::fs::remove_file(pack.with_extension("idx")).and_then(|()| std::fs::remove_file(pack));
+    for extension in ["rev", "bitmap", "mtimes"] {
+        let _ = std::fs::remove_file(pack.with_extension(extension));
+    }
+}
+
+/// The `.pack` files in `dir`.
+pub fn packs_in(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("reading {}: {e}", dir.display()))?;
+    Ok(entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "pack"))
+        .collect())
 }
 
 /// Every branch the leader knows the host to have, `main` among them, and where.
@@ -3479,21 +3625,8 @@ mod tests {
         assert_eq!(code.matches(call).count(), 1, "only edit_refs calls {call}");
     }
 
-    #[test]
-    fn git_runs_here() {
-        super::git_runs("git").expect("the git these tests use runs");
-    }
-
-    /// What an operator reads when the leader refuses to start: the cause, and what to do about it.
-    #[test]
-    fn a_missing_git_says_what_the_leader_needs_it_for() {
-        let e = super::git_runs("smeltr-no-such-git").unwrap_err();
-        assert!(e.contains("pack its configuration repository"), "{e}");
-        assert!(e.contains("`smeltr-no-such-git --version` could not run"), "{e}");
-        assert!(e.contains("PATH"), "{e}");
-    }
-
     use super::*;
+    use std::process::Command;
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("smeltr-git-test-{name}-{}", std::process::id()));
@@ -3567,6 +3700,171 @@ mod tests {
         );
         assert!(main_head(&repo).is_some(), "and so does what a ref reaches");
         std::fs::remove_dir_all(&data).ok();
+    }
+
+    /// Packing by moves: saves of small and large files, branches deleted and named again only by a marker, objects
+    /// nothing reaches written now or long ago, an annotated tag, a fetch's pack and one still being written. After
+    /// each pass the repository is whole, nothing is loose, what nothing reaches stays exactly while it is young, and
+    /// a pack without its index is left alone.
+    #[test]
+    fn pack_fuzz() {
+        use crate::fuzz::{Coverage, Rng, run};
+        let mut coverage = Coverage::new([
+            "save",
+            "save-large",
+            "delete-branch",
+            "marker",
+            "unreached-young",
+            "unreached-old",
+            "tag",
+            "fetched-pack",
+            "pack-being-written",
+            "repack",
+            "repack-twice",
+        ]);
+        run(0..16, |seed| {
+            let mut rng = Rng::seeded(seed);
+            let data = temp_dir(&format!("pack-fuzz-{seed}"));
+            let repo = repo_path(&data);
+            init_bare_repo(&repo).unwrap();
+            ensure_main_commit(&repo).unwrap();
+            let actor = Actor::system();
+            let weeks_ago = std::time::SystemTime::now() - 3 * PRUNE_AFTER / 2;
+            // Objects nothing reaches, and whether each is still young.
+            let mut unreached: Vec<(gix::ObjectId, bool)> = Vec::new();
+            let mut being_written = Vec::new();
+            let mut packed_once = false;
+            for step in 0..24 {
+                let branch = *rng.pick(&["al/a", "al/b", "bo/c"]);
+                match rng.below(9) {
+                    0 | 1 => {
+                        let large = rng.chance(4);
+                        coverage.reach(if large { "save-large" } else { "save" });
+                        let bytes: Vec<u8> = match large {
+                            true => (0..64 << 10).map(|_| rng.next_u64() as u8).collect(),
+                            false => format!("{{\"n\":{}}}", rng.next_u64()).into_bytes(),
+                        };
+                        let tip = branch_tip(&repo, branch);
+                        let parent = tip.clone().unwrap_or_else(|| main_head(&repo).unwrap());
+                        let edit = FileEdit {
+                            path: format!("groups/g{}/pipelines/p{}.json", rng.below(3), rng.below(3)),
+                            content: Some(bytes),
+                        };
+                        commit_edits(&repo, branch, &parent, tip.as_deref(), &[edit], "save", &actor).unwrap();
+                    }
+                    2 => {
+                        if let Some(at) = branch_tip(&repo, branch) {
+                            coverage.reach("delete-branch");
+                            delete_ref(&open(&repo).unwrap(), &format!("refs/heads/{branch}"), None).unwrap();
+                            if rng.chance(2) {
+                                coverage.reach("marker");
+                                let trailers = [(AT_TRAILER, at)];
+                                let name = format!("kept-{step}");
+                                write_marker(&repo, &name, "a comment", MarkerKind::Comment, &trailers, None, &actor)
+                                    .unwrap();
+                            }
+                        }
+                    }
+                    3 => {
+                        coverage.reach("unreached-young");
+                        let id = open(&repo)
+                            .unwrap()
+                            .write_blob(format!("orphan {seed} {step}"))
+                            .unwrap()
+                            .detach();
+                        unreached.push((id, true));
+                    }
+                    4 => {
+                        // Everything here was written long ago.
+                        coverage.reach("unreached-old");
+                        for file in object_files_in(&repo) {
+                            set_modified(&file, weeks_ago).unwrap();
+                        }
+                        for (_, young) in &mut unreached {
+                            *young = false;
+                        }
+                    }
+                    5 => {
+                        if let Some(head) = main_head(&repo) {
+                            coverage.reach("tag");
+                            let handle = open(&repo).unwrap();
+                            let tagger = gix::actor::Signature {
+                                name: "t".into(),
+                                email: "t@example.com".into(),
+                                time: gix::date::Time::now_utc(),
+                            };
+                            handle
+                                .tag(
+                                    format!("t{step}"),
+                                    gix::ObjectId::from_hex(head.as_bytes()).unwrap(),
+                                    gix::object::Kind::Commit,
+                                    Some(tagger.to_ref(&mut gix::date::parse::TimeBuf::default())),
+                                    "a tag",
+                                    gix::refs::transaction::PreviousValue::Any,
+                                )
+                                .unwrap();
+                        }
+                    }
+                    6 => {
+                        if let Some(tip) = branch_tip(&repo, branch) {
+                            coverage.reach("fetched-pack");
+                            let pack = pack_reaching(&repo, &[&tip], &[]).unwrap();
+                            store_pack(&repo.join("objects/pack"), gix::hash::Kind::Sha1, &pack).unwrap();
+                        }
+                    }
+                    7 => {
+                        coverage.reach("pack-being-written");
+                        let path = repo.join(format!("objects/pack/pack-{:040x}.pack", rng.next_u64()));
+                        std::fs::write(&path, b"PACK, not yet indexed").unwrap();
+                        being_written.push(path);
+                    }
+                    _ => {
+                        coverage.reach(if packed_once { "repack-twice" } else { "repack" });
+                        packed_once = true;
+                        repack(&repo).map_err(|e| e.message)?;
+                        let (loose, _) = object_files(&repo);
+                        if loose != 0 {
+                            return Err(format!("{loose} objects are still loose"));
+                        }
+                        let fsck = std::process::Command::new("git")
+                            .arg("--git-dir")
+                            .arg(&repo)
+                            .args(["fsck", "--strict", "--no-dangling"])
+                            .output()
+                            .unwrap();
+                        if !fsck.status.success() {
+                            return Err(format!("not whole: {}", String::from_utf8_lossy(&fsck.stderr)));
+                        }
+                        let handle = open(&repo).unwrap();
+                        for (id, young) in &unreached {
+                            if handle.find_object(*id).is_ok() != *young {
+                                return Err(format!("{id}, young: {young}, was kept: {}", !young));
+                            }
+                        }
+                        unreached.retain(|(_, young)| *young);
+                        if let Some(gone) = being_written.iter().find(|p| !p.exists()) {
+                            return Err(format!("{} was removed while being written", gone.display()));
+                        }
+                    }
+                }
+            }
+            std::fs::remove_dir_all(&data).ok();
+            Ok(())
+        });
+        coverage.assert_complete();
+    }
+
+    /// Every file of the object store: loose objects and packs.
+    fn object_files_in(repo: &Path) -> Vec<PathBuf> {
+        let mut files: Vec<PathBuf> = loose_objects(repo)
+            .unwrap()
+            .into_iter()
+            .map(|(path, _, _)| path)
+            .collect();
+        for pack in packs_in(&repo.join("objects/pack")).unwrap() {
+            files.extend([pack.with_extension("idx"), pack].into_iter().filter(|p| p.exists()));
+        }
+        files
     }
 
     /// A leader stopped while it created the repository left `HEAD` and no `config` beside it. The next start builds

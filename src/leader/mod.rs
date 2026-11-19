@@ -580,7 +580,7 @@ async fn capture_report(
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
-/// `f` on the blocking pool: where a handler spawns git, reads the store or compiles, none of which belongs on the
+/// `f` on the blocking pool: where a handler reads git or the store, or compiles, none of which belongs on the
 /// async executor. A panic in `f` is the error it answers with, never a request left hanging.
 pub async fn blocking<T, E>(f: impl FnOnce() -> Result<T, E> + Send + 'static) -> Result<T, E>
 where
