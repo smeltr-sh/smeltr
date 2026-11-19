@@ -73,6 +73,10 @@ impl SourceSpec for AzureBlobListSourceDto {
         self.access.urls()
     }
 
+    fn dials(&self) -> Vec<String> {
+        azure_dials(&self.access)
+    }
+
     fn tls(&self) -> Option<TlsDto> {
         Some(self.tls.clone())
     }

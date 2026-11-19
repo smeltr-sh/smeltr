@@ -82,6 +82,10 @@ impl SourceSpec for SqlSourceDto {
         Vec::new()
     }
 
+    fn dials(&self) -> Vec<String> {
+        vec![format!("{}:{}", self.host, self.port(self.kind))]
+    }
+
     fn tls(&self) -> Option<TlsDto> {
         Some(self.tls.clone())
     }
