@@ -2,17 +2,17 @@ use super::super::*;
 use super::DestinationSpec;
 use serde::{Deserialize, Serialize};
 
-/// A destination that writes objects to the store `S`, reached and signed as `A` says and encrypted as `E` says, one
-/// open file per prefix.
+/// A destination that writes objects to `Store`, reached and signed as `Access` says and encrypted as `Encryption`
+/// says, one open file per prefix.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ObjectDestinationDto<S, A, E> {
+pub struct ObjectDestinationDto<Store, Access, Encryption> {
     #[serde(flatten)]
-    pub store: S,
+    pub store: Store,
     #[serde(flatten)]
-    pub encryption: E,
+    pub encryption: Encryption,
     #[serde(flatten)]
-    pub access: A,
+    pub access: Access,
     #[serde(flatten)]
     pub objects: ObjectSettingsDto,
     #[serde(flatten)]
@@ -27,13 +27,13 @@ pub type S3DestinationDto = ObjectDestinationDto<BucketDto, S3AccessDto, KmsKeyD
 pub type GcsDestinationDto = ObjectDestinationDto<BucketDto, GcsAccessDto, DefaultEncryptionDto>;
 pub type AzureBlobDestinationDto = ObjectDestinationDto<ContainerDto, AzureAccessDto, DefaultEncryptionDto>;
 
-impl<A: AccessDto> DestinationSpec for ObjectDestinationDto<A::Store, A, A::Encryption> {
+impl<Access: AccessDto> DestinationSpec for ObjectDestinationDto<Access::Store, Access, Access::Encryption> {
     fn check(&self, d: &DestinationDto, errors: &mut ItemErrors<'_>) {
         let what = format!("destination {:?}", d.id);
         let urls = self.urls();
         check_objects(&d.id, &self.objects, urls[0].1, &self.tls, errors);
-        check_storage_class(&d.id, &self.cloud, A::STORAGE_CLASSES, errors);
-        check_store_name::<A>(&self.store, &what, errors);
+        check_storage_class(&d.id, &self.cloud, Access::STORAGE_CLASSES, errors);
+        check_store_name::<Access>(&self.store, &what, errors);
         self.access.check(&what, errors);
         self.encryption.check(&what, errors);
     }

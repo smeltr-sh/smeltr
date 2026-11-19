@@ -73,8 +73,8 @@ impl StoreNameDto for ContainerDto {
 }
 
 /// Refuses a store name its cloud does not allow.
-pub(super) fn check_store_name<A: AccessDto>(store: &A::Store, what: &str, errors: &mut ItemErrors<'_>) {
-    let NameRule { noun, scheme, fits } = A::NAME;
+pub(super) fn check_store_name<Access: AccessDto>(store: &Access::Store, what: &str, errors: &mut ItemErrors<'_>) {
+    let NameRule { noun, scheme, fits } = Access::NAME;
     let name = store.name();
     if name.is_empty() {
         errors.at(noun).push(format!("{what} names no {noun}"));
@@ -124,14 +124,14 @@ impl EncryptionDto for DefaultEncryptionDto {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AnnouncedDto {}
 
-/// What announces an object source's objects in the store `S`, reached and signed as `A` says.
-pub(super) trait QueueDto<S, A> {
+/// What announces an object source's objects in `Store`, reached and signed as `Access` says.
+pub(super) trait QueueDto<Store, Access> {
     /// Whether the queue is read by one worker of the group at a time.
     const SINGLE_WORKER: bool = false;
     fn meta(&self) -> SourceMeta;
     /// Refuses a queue that cannot be read as written. `what` names the source.
-    fn check(&self, store: &S, what: &str, errors: &mut ItemErrors<'_>);
-    fn queue(&self, store: &S, access: &A) -> ObjectQueue;
+    fn check(&self, store: &Store, what: &str, errors: &mut ItemErrors<'_>);
+    fn queue(&self, store: &Store, access: &Access) -> ObjectQueue;
     /// How long a received message stays hidden from every other worker.
     fn visibility(&self) -> VisibilitySecs {
         VisibilitySecs::default()

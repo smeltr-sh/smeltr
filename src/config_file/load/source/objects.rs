@@ -2,15 +2,15 @@ use super::super::*;
 use super::SourceSpec;
 use serde::{Deserialize, Serialize};
 
-/// A source that reads objects as `Q` announces them, from the store `S` or from each one a message names, reached
-/// and signed as `A` says.
+/// A source that reads objects as `Queue` announces them, from `Store` or from each store a message names, reached and
+/// signed as `Access` says.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ObjectSourceDto<S, A, Q> {
+pub struct ObjectSourceDto<Store, Access, Queue> {
     #[serde(flatten)]
-    pub store: S,
+    pub store: Store,
     #[serde(flatten)]
-    pub access: A,
+    pub access: Access,
     #[serde(flatten)]
     pub tls: TlsDto,
     #[serde(flatten)]
@@ -21,7 +21,7 @@ pub struct ObjectSourceDto<S, A, Q> {
     #[serde(default, skip_serializing_if = "EncodingLabel::is_default")]
     pub encoding: EncodingLabel,
     #[serde(flatten)]
-    pub queue: Q,
+    pub queue: Queue,
     #[serde(flatten, default)]
     pub unknown: NoUnknownKeys,
 }
@@ -33,7 +33,7 @@ pub type S3SqsSourceDto = ObjectSourceDto<AnnouncedDto, S3AccessDto, SqsDto>;
 pub type GcsPubSubSourceDto = ObjectSourceDto<AnnouncedDto, GcsAccessDto, PubSubDto>;
 pub type AzureBlobQueueSourceDto = ObjectSourceDto<AnnouncedDto, AzureAccessDto, StorageQueueDto>;
 
-impl<S, A: AccessDto, Q: QueueDto<S, A>> SourceSpec for ObjectSourceDto<S, A, Q> {
+impl<Store, Access: AccessDto, Queue: QueueDto<Store, Access>> SourceSpec for ObjectSourceDto<Store, Access, Queue> {
     fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
         let what = format!("source {:?}", s.id);
         check_tls_reaches(&self.tls, &s.urls(), &what, errors);
@@ -79,7 +79,7 @@ impl<S, A: AccessDto, Q: QueueDto<S, A>> SourceSpec for ObjectSourceDto<S, A, Q>
     }
 
     fn single_worker(&self) -> bool {
-        Q::SINGLE_WORKER
+        Queue::SINGLE_WORKER
     }
 
     fn encoding(&self) -> Encoding {
@@ -95,20 +95,20 @@ impl<S, A: AccessDto, Q: QueueDto<S, A>> SourceSpec for ObjectSourceDto<S, A, Q>
 
 /// A listing of one store. A listed object is not hidden from other workers, so it takes the visibility timeout the
 /// queue kinds default to.
-impl<A: AccessDto> QueueDto<A::Store, A> for ListingDto {
+impl<Access: AccessDto> QueueDto<Access::Store, Access> for ListingDto {
     // Nothing divides a listing across a group.
     const SINGLE_WORKER: bool = true;
 
     fn meta(&self) -> SourceMeta {
-        A::LIST_META
+        Access::LIST_META
     }
 
-    fn check(&self, store: &A::Store, what: &str, errors: &mut ItemErrors<'_>) {
-        check_store_name::<A>(store, what, errors);
+    fn check(&self, store: &Access::Store, what: &str, errors: &mut ItemErrors<'_>) {
+        check_store_name::<Access>(store, what, errors);
         check_listing(self, what, errors);
     }
 
-    fn queue(&self, store: &A::Store, access: &A) -> ObjectQueue {
+    fn queue(&self, store: &Access::Store, access: &Access) -> ObjectQueue {
         to_list(access.place(store.name()), self)
     }
 
