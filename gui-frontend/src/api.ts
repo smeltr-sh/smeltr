@@ -3309,7 +3309,7 @@ export function pastedElements(text: string): unknown[] | null {
   }
 }
 
-// -- Cluster status (`src/bin/smeltr/cluster.rs`, served by the leader) ----
+// -- the fleet's workers (`src/leader/mod.rs`, served by the leader) --------
 
 export type PartitionRef = { topic: string; partition: number };
 
@@ -3404,20 +3404,22 @@ export type ThreadHealth = {
   metrics: MetricSampleDto[];
 };
 
-export type GroupHealth = {
-  groupId: string;
-  /** The pool: what `thread_limit` sizes, and the only one an operator sets. */
-  transformThreads: number;
-  readers: number;
-  egressThreads: number;
-};
-
-export type ClusterHealth = {
+export type Health = {
   threads: ThreadHealth[];
-  groups: GroupHealth[];
   /** How long a worker may go without a heartbeat before it is silent: the leader's own `workerSilent` window. */
   silentAfterMs: number;
 };
+
+/** Each worker thread's last heartbeat, in the groups the person views. */
+export function getHealth(): Promise<Health> {
+  return readJson('/api/health');
+}
+
+/** The groups the fleet runs that the person views. */
+export async function liveGroups(): Promise<WorkerGroupDto[]> {
+  const { groups } = await readJson<{ groups: WorkerGroupDto[] }>('/api/worker-groups?deployed=true');
+  return groups;
+}
 
 /** A worker group as the repository holds it (`worker_groups_api::WorkerGroupOut`):
  * exists whether or not any thread reports into it. What it runs is not
@@ -3456,22 +3458,6 @@ export type WorkerCredentialDto = {
   /** What it has been asked and has not yet taken. */
   asked?: DirectiveAction;
 };
-
-export type ClusterStatus = {
-  /** Set when the leader's store could not be read. `health` is in-memory
-   * and still present; `workerGroups`/`workers` are `null`, never `[]`, so
-   * an unreadable roster does not render as an empty one. */
-  error: string | null;
-  health: ClusterHealth | null;
-  /** The commit every group runs. */
-  deployedCommit: string | null;
-  workerGroups: WorkerGroupDto[] | null;
-  workers: WorkerCredentialDto[] | null;
-};
-
-export function getClusterStatus(): Promise<ClusterStatus> {
-  return readJson('/api/cluster');
-}
 
 // -- fleet management (`src/leader/mod.rs`, worker groups via
 //    `src/bin/smeltr/worker_groups_api.rs`) --------------------------------
