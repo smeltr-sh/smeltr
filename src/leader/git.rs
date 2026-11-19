@@ -3400,6 +3400,16 @@ fn repack(repo_path: &Path) -> Result<(), GitError> {
             newest = newest.max(Some(written));
         }
     }
+    // And whatever those reach, however old, as git's cruft pack keeps it: a young commit keeps its history and its
+    // unchanged files.
+    let mut walk: Vec<gix::ObjectId> = unreached.iter().copied().collect();
+    while let Some(id) = walk.pop() {
+        for link in links(&repo, id).map_err(|e| failed(&e))? {
+            if !reached.contains(&link) && unreached.insert(link) {
+                walk.push(link);
+            }
+        }
+    }
     if let Some(newest) = newest {
         let pack =
             pack_of(repo_path, hash, unreached.into_iter().collect(), ObjectExpansion::AsIs).map_err(|e| failed(&e))?;
@@ -3417,6 +3427,32 @@ fn repack(repo_path: &Path) -> Result<(), GitError> {
         let _ = std::fs::remove_file(path);
     }
     Ok(())
+}
+
+/// The objects `id` names: a commit's tree and parents, a tree's entries, a tag's target. An object no longer here
+/// names nothing.
+fn links(repo: &gix::Repository, id: gix::ObjectId) -> Result<Vec<gix::ObjectId>, String> {
+    let Ok(object) = repo.find_object(id) else {
+        return Ok(Vec::new());
+    };
+    Ok(match object.kind {
+        gix::object::Kind::Commit => {
+            let commit = object.into_commit();
+            let mut links = vec![commit.tree_id().map_err(|e| e.to_string())?.detach()];
+            links.extend(commit.parent_ids().map(|p| p.detach()));
+            links
+        }
+        // A submodule's commit lives in another repository.
+        gix::object::Kind::Tree => object
+            .into_tree()
+            .iter()
+            .filter_map(Result::ok)
+            .filter(|entry| !entry.mode().is_commit())
+            .map(|entry| entry.oid().to_owned())
+            .collect(),
+        gix::object::Kind::Tag => vec![object.into_tag().target_id().map_err(|e| e.to_string())?.detach()],
+        gix::object::Kind::Blob => Vec::new(),
+    })
 }
 
 /// When `path` was last written.
@@ -3716,6 +3752,7 @@ mod tests {
             "marker",
             "unreached-young",
             "unreached-old",
+            "delete-young-on-old",
             "tag",
             "fetched-pack",
             "pack-being-written",
@@ -3734,6 +3771,8 @@ mod tests {
             let mut unreached: Vec<(gix::ObjectId, bool)> = Vec::new();
             let mut being_written = Vec::new();
             let mut packed_once = false;
+            // Branches saved to since everything was aged: their tips are young, their history old.
+            let mut young_on_old = std::collections::HashSet::new();
             for step in 0..24 {
                 let branch = *rng.pick(&["al/a", "al/b", "bo/c"]);
                 match rng.below(9) {
@@ -3751,10 +3790,14 @@ mod tests {
                             content: Some(bytes),
                         };
                         commit_edits(&repo, branch, &parent, tip.as_deref(), &[edit], "save", &actor).unwrap();
+                        young_on_old.insert(branch);
                     }
                     2 => {
                         if let Some(at) = branch_tip(&repo, branch) {
-                            coverage.reach("delete-branch");
+                            coverage.reach(match young_on_old.remove(branch) {
+                                true => "delete-young-on-old",
+                                false => "delete-branch",
+                            });
                             delete_ref(&open(&repo).unwrap(), &format!("refs/heads/{branch}"), None).unwrap();
                             if rng.chance(2) {
                                 coverage.reach("marker");
@@ -3783,6 +3826,7 @@ mod tests {
                         for (_, young) in &mut unreached {
                             *young = false;
                         }
+                        young_on_old.clear();
                     }
                     5 => {
                         if let Some(head) = main_head(&repo) {
@@ -3836,6 +3880,20 @@ mod tests {
                             return Err(format!("not whole: {}", String::from_utf8_lossy(&fsck.stderr)));
                         }
                         let handle = open(&repo).unwrap();
+                        for pack in packs_in(&repo.join("objects/pack")).unwrap() {
+                            let Ok(index) =
+                                gix_pack::index::File::at(pack.with_extension("idx"), gix::hash::Kind::Sha1)
+                            else {
+                                continue;
+                            };
+                            for entry in index.iter() {
+                                for link in links(&handle, entry.oid).unwrap() {
+                                    if handle.find_object(link).is_err() {
+                                        return Err(format!("{} names {link}, which is gone", entry.oid));
+                                    }
+                                }
+                            }
+                        }
                         for (id, young) in &unreached {
                             if handle.find_object(*id).is_ok() != *young {
                                 return Err(format!("{id}, young: {young}, was kept: {}", !young));
