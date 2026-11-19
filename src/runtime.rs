@@ -3354,8 +3354,8 @@ fn run_and_serialize(
     }
 }
 
-/// The batch `plan` makes of `ingest`'s records: filled with what the plan, the destinations' id fields and any
-/// capture read of the source, then run over the rows `mask` selects.
+/// The batch `plan` makes of `ingest`'s records. It holds the source fields that the plan, a destination's id field
+/// or a capture reads, and the plan has run over the rows `mask` selects.
 fn run_plan(
     plan: &Plan,
     ingest: &mut Ingest<'_>,
@@ -3403,7 +3403,8 @@ fn run_plan(
     batch
 }
 
-/// The block that the `blocked` rows of `batch` whose answer is block make, each record with its first exception.
+/// The rows of `batch` whose answer is block, as a block: each record with its first exception. `blocked` is how many
+/// there are.
 fn marked_block(
     plan: &Plan,
     batch: &Batch,
@@ -3444,7 +3445,7 @@ fn marked_block(
 
 /// What a set of destinations reaches, counting the DLQs down a chain from each.
 struct Reached {
-    /// What a row bound for the set is read as.
+    /// The forms a row bound for the set is read in: JSON, columns, text.
     reads: Reads,
     /// Each of `Egress::id_fields` whose destination the set reaches. A chosen destination's DLQ counts:
     /// `offer_salvage` sends there after the columns are gone, so a row's identity is read while it is placed.
@@ -3497,7 +3498,8 @@ impl Placed {
         u32::try_from(i).expect("distinct destination sets in one route run fit a u32")
     }
 
-    /// Places `row` of the batch as `out`.
+    /// Adds `out`, made of batch row `row`, and notes `row` for each later pass that wants it: the column cut, a
+    /// capture's copy and the sender count.
     fn push(&mut self, out: SerializedRow, row: usize, columns: bool, watched: bool, counted: bool) {
         if columns {
             self.cut.push((self.out.len(), row));
