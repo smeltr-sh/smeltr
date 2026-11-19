@@ -2016,6 +2016,9 @@ fn every_startup_example_is_read() {
         }),
         ("worker.runtime.thread_limit", || c::worker_thread_limit().to_string()),
         ("worker.runtime.memory", || format!("{:?}", c::worker_memory_bytes())),
+        ("worker.runtime.exit_after_blocked_secs", || {
+            format!("{:?}", c::worker_exit_after_blocked_secs())
+        }),
         ("worker.heartbeat.stop_after_unreachable_secs", || {
             format!("{:?}", c::worker_stop_after_unreachable_secs())
         }),
@@ -2182,6 +2185,10 @@ fn the_startup_settings_match_the_engine() {
                 .map(|n| n.to_string()),
         ),
         ("worker.runtime.memory", c::worker_memory_bytes().map(|n| n.to_string())),
+        (
+            "worker.runtime.exit_after_blocked_secs",
+            c::worker_exit_after_blocked_secs().map(|n| n.to_string()),
+        ),
         (
             "worker.heartbeat.stop_after_unreachable_secs",
             c::worker_stop_after_unreachable_secs().map(|n| n.to_string()),

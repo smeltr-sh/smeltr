@@ -207,6 +207,13 @@
       "what": "The memory the worker may use. It sizes its working memory and every buffer left on auto to fit. The rest is left to what runs beside it, such as a leader in the same process."
     },
     {
+      "key": "worker.runtime.exit_after_blocked_secs",
+      "env": "SMELTR_WORKER_EXIT_AFTER_BLOCKED_SECS",
+      "default": "`600`",
+      "examples": ["120", "-1"],
+      "what": "Seconds a worker waits when it cannot confirm that a deployment it stopped is gone. After that it exits, so that Kubernetes, systemd or Docker ends what is left and starts the worker again. At -1 it never exits and keeps reporting that it is blocked. A worker in the leader's own process never exits."
+    },
+    {
       "key": "worker.heartbeat.stop_after_unreachable_secs",
       "env": "SMELTR_WORKER_STOP_AFTER_UNREACHABLE_SECS",
       "default": "unset",

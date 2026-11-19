@@ -161,6 +161,7 @@ const DEFAULT_WORKER_STATE_DIR: &str = "smeltr-worker-data";
 /// How often a worker beats until its leader's first answer says otherwise, and the leader's when it is not set.
 pub const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(DEFAULT_HEARTBEAT_INTERVAL_MS);
 const DEFAULT_HEARTBEAT_INTERVAL_MS: u64 = 1500;
+const DEFAULT_WORKER_EXIT_AFTER_BLOCKED_SECS: u64 = 600;
 const DEFAULT_WORKER_METRICS_ENDPOINT_PORT: NonZeroU16 = NonZeroU16::new(9464).expect("9464 is not zero");
 const DEFAULT_OIDC_REFRESH_INTERVAL_MS: u64 = 5 * 60 * 1000;
 /// Where a certificate authority connects for an HTTP-01 challenge (`leader::acme`): port 80, as RFC 8555 fixes it.
@@ -499,7 +500,7 @@ pub fn worker_thread_limit() -> usize {
 /// first successful heartbeat -- the exact situation a leader-supplied policy could never cover.
 pub fn worker_stop_after_unreachable_secs() -> Option<u64> {
     env("SMELTR_WORKER_STOP_AFTER_UNREACHABLE_SECS").and_then(|v| {
-        stop_after_unreachable_secs(&v).unwrap_or_else(|| {
+        secs_or_never(&v).unwrap_or_else(|| {
             refuse(
                 "SMELTR_WORKER_STOP_AFTER_UNREACHABLE_SECS",
                 &v,
@@ -509,8 +510,23 @@ pub fn worker_stop_after_unreachable_secs() -> Option<u64> {
     })
 }
 
-/// What [`worker_stop_after_unreachable_secs`] reads `raw` as: `Some(None)` for `-1`, `None` for anything it refuses.
-fn stop_after_unreachable_secs(raw: &str) -> Option<Option<u64>> {
+/// How long a worker may hold a runtime it cannot confirm dead before it exits, so that whatever runs the worker
+/// ends what is left of the runtime and starts the worker again. `None`, set as `-1`, means never exit over it.
+pub fn worker_exit_after_blocked_secs() -> Option<u64> {
+    let Some(v) = env("SMELTR_WORKER_EXIT_AFTER_BLOCKED_SECS") else {
+        return Some(DEFAULT_WORKER_EXIT_AFTER_BLOCKED_SECS);
+    };
+    secs_or_never(&v).unwrap_or_else(|| {
+        refuse(
+            "SMELTR_WORKER_EXIT_AFTER_BLOCKED_SECS",
+            &v,
+            "a count of seconds, or -1 to never exit",
+        )
+    })
+}
+
+/// Reads `raw` as a count of seconds: `Some(None)` for `-1` (never), `None` for a value that is neither.
+fn secs_or_never(raw: &str) -> Option<Option<u64>> {
     match raw.trim() {
         "-1" => Some(None),
         secs => secs.parse().ok().map(Some),
@@ -883,6 +899,7 @@ mod tests {
             format!("port = {DEFAULT_WORKER_METRICS_ENDPOINT_PORT}"),
             "thread_limit = 0 ".to_string(),
             "stop_after_unreachable_secs = -1 ".to_string(),
+            format!("exit_after_blocked_secs = {DEFAULT_WORKER_EXIT_AFTER_BLOCKED_SECS} "),
         ] {
             // Each of its lines, on lines one after another.
             let parts: Vec<&str> = shown.lines().collect();
@@ -895,11 +912,11 @@ mod tests {
 
     #[test]
     fn minus_one_never_stops_a_worker_and_other_negatives_are_refused() {
-        assert_eq!(stop_after_unreachable_secs("-1"), Some(None));
-        assert_eq!(stop_after_unreachable_secs(" 0 "), Some(Some(0)));
-        assert_eq!(stop_after_unreachable_secs("300"), Some(Some(300)));
-        assert_eq!(stop_after_unreachable_secs("-2"), None);
-        assert_eq!(stop_after_unreachable_secs("5m"), None);
+        assert_eq!(secs_or_never("-1"), Some(None));
+        assert_eq!(secs_or_never(" 0 "), Some(Some(0)));
+        assert_eq!(secs_or_never("300"), Some(Some(300)));
+        assert_eq!(secs_or_never("-2"), None);
+        assert_eq!(secs_or_never("5m"), None);
     }
 
     #[test]
