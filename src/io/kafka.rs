@@ -28,8 +28,10 @@ use crate::plan::topology::{HeldSecrets, KafkaDestinationConfig, KafkaProps, Kaf
 
 mod client;
 mod entra;
+mod kerberos;
 
 pub use client::Clients;
+pub use kerberos::cache_in_memory;
 
 /// Budget for one metadata call to the broker.
 const SETUP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -168,6 +170,7 @@ pub fn total_partitions(config: &KafkaSourceConfig, secrets: &HeldSecrets) -> Op
     apply_client_config(&mut client_config, &config.props, config.tls.as_ref(), secrets).ok()?;
     // A throwaway consumer for one metadata call, not a `KafkaSource`: nothing here reads its connectivity health
     // back.
+    let _ticket = kerberos::hold(&client_config).ok()?;
     let consumer: BaseConsumer = client_config.create().ok()?;
     entra::sign_in_unpolled(consumer.client(), client_config.get("sasl.oauthbearer.config"));
     let mut total = 0;
@@ -287,6 +290,10 @@ fn apply_client_config_on(
         config.set("https.ca.pem", super::trust::pem(None)?);
     }
     apply_props(config, props, secrets)?;
+    // smeltr gets the Kerberos ticket itself (`kerberos`), so librdkafka runs no `kinit`, which needs a shell.
+    if kerberos::selected(config) {
+        config.set("sasl.kerberos.min.time.before.relogin", "0");
+    }
     if let Some(workload) = workload {
         // librdkafka's own sign-in steps aside, so it asks the client's context for each token.
         config
@@ -1230,6 +1237,8 @@ pub struct KafkaDestination {
     /// What `held` stays under: the producer's share of `bufferBytes`, or of the most its queue may hold when the
     /// worker sizes this destination. The egress queue in front of it is what paces it; this is the backstop.
     budget: usize,
+    /// The Kerberos ticket the producer signs in with, renewed while this lives. Last, so it outlives the producer.
+    _ticket: Option<kerberos::Held>,
 }
 
 /// Bytes one consumer fetch may carry: half of `fetchBytes`, so a fetch always lands with room behind it.
@@ -1331,6 +1340,8 @@ impl KafkaDestination {
         // Broker-enforced throttling and the producer queue's depth are reported nowhere else; see `publish_stats`.
         producer_config.set("statistics.interval.ms", STATS_INTERVAL.as_millis().to_string());
         apply_client_config(&mut producer_config, &config.props, config.tls.as_ref(), secrets)?;
+        // Before `message_ceiling`, whose client signs in too.
+        let ticket = kerberos::hold(&producer_config)?;
         // `batch.size`, `linger.ms` and `max.in.flight.requests.per.connection` stay at librdkafka's own unless the
         // operator sets them. Pacing bounds what is in flight through `produce`, and measures its round trip from
         // handover to delivery report, so a longer linger would wait inside the round trip it measures. A record may
@@ -1372,6 +1383,7 @@ impl KafkaDestination {
             avro,
             held,
             budget: config.producer_bytes(),
+            _ticket: ticket,
         })
     }
 }
