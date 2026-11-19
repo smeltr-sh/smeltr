@@ -3417,7 +3417,9 @@ export function getHealth(): Promise<Health> {
 
 /** The groups the fleet runs that the person views. */
 export async function liveGroups(): Promise<WorkerGroupDto[]> {
-  const { groups } = await readJson<{ groups: WorkerGroupDto[] }>('/api/worker-groups?deployed=true');
+  const { groups } = await readJson<{ groups: WorkerGroupDto[] }>(
+    '/api/worker-groups?deployed=true',
+  );
   return groups;
 }
 
