@@ -4049,8 +4049,8 @@ impl Supervisor {
         tracing::error!(
             name: "exiting_blocked", target: "processes",
             limit = ?self.config.exit_after_blocked_secs,
-            "this worker's runtime has not been confirmed dead for longer than exit_after_blocked_secs, so the \
-             worker is exiting for whatever runs it to end what is left and start it again"
+            "a deployment this worker stopped has not been confirmed gone for longer than exit_after_blocked_secs, so \
+             the worker is exiting, for whatever runs it to end what is left and start it again"
         );
         // The runtime is not this thread's to end again, so the notice goes out at once.
         self.exit_to(Exit::Notice);

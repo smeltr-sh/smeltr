@@ -525,7 +525,7 @@ pub fn worker_exit_after_blocked_secs() -> Option<u64> {
     })
 }
 
-/// A count of seconds as `raw` gives it: `Some(None)` for `-1`, `None` for anything refused.
+/// Reads `raw` as a count of seconds: `Some(None)` for `-1` (never), `None` for a value that is neither.
 fn secs_or_never(raw: &str) -> Option<Option<u64>> {
     match raw.trim() {
         "-1" => Some(None),
