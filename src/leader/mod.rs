@@ -6,8 +6,12 @@
 //! keeps a worker from talking to a spoofed leader. Neither needs external PKI. A revoked credential blocks future
 //! heartbeats and fetches; it never reaches into a running process.
 //!
-//! Operator access to the admin routes is the binary's concern (`src/bin/smeltr/admin_auth.rs`), which is why
+//! Operator access to the admin routes is the binary's concern (`src/bin/smeltr/gate.rs`), which is why
 //! [`admin_router`] is handed out separately: [`compose`] puts whatever gate the caller chose over that half only.
+//!
+//! A handler lives with what it reads. One that reads only [`AppState`] is in this module and routed by
+//! [`admin_router`], so a test reaches it through [`router`]. One that also reads the caller's account or the
+//! configuration files is in the binary (`src/bin/smeltr/*_api.rs`), which adds its route to [`admin_router`].
 //!
 //! Durable state (worker credentials, enrollment codes, a group's color) is behind `Store`. A worker group exists
 //! exactly when `main` holds a file under `groups/<id>/`; its identity, name and configuration are all in the one git
@@ -4026,6 +4030,19 @@ pub fn admin_router() -> Router<AppState> {
         .route("/api/settings/alerts/test", post(alerts::post_test))
         .route("/api/settings/git-remote/sync", post(remote::post_sync))
         .route("/api/branches/:name/overwrite", post(remote::overwrite))
+        .route("/api/areas/:area/sources/:id/reset-history", post(marks::reset_history))
+        .route("/api/areas/:area/sources/:id/mark", post(marks::mark))
+        .route("/api/areas/:area/sources/:id/preset", put(marks::put_preset))
+        .route("/api/areas/:area/sources/:id/past", get(marks::past))
+        .route("/api/areas/:area/sources/:id/chart", get(marks::chart))
+        .route("/api/areas/:area/sources/:id/senders", get(senders::get))
+        .route("/api/areas/:area/sources/:id/senders/mark", post(marks::mark_sender))
+        .route("/api/areas/:area/sources/:id/senders/past", get(marks::past_sender))
+        .route("/api/areas/:area/sources/:id/senders/chart", get(marks::chart_sender))
+        .route(
+            "/api/areas/:area/sources/:id/senders/fields",
+            put(marks::put_sender_fields),
+        )
         .route("/api/secrets", get(list_secrets).post(create_secret))
         .route("/api/secrets/:name", delete(delete_secret))
         .route("/api/secrets/:name/versions", post(store_secret_value))
