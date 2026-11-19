@@ -22,9 +22,9 @@
     reads; configuration changes go through the Smeltr UI.
   </p>
   <p>
-    Install Git on the leader host: it uses <code>git http-backend</code> to serve the repository.
-    Workers use a built-in Git client and do not need a separate Git installation. Preserve each
-    worker's state directory so its local repository and cached configuration survive restarts. See
+    The leader and the workers carry their own Git, so neither host needs a Git installation.
+    Preserve each worker's state directory so its local repository and cached configuration survive
+    restarts. See
     <a href="/docs/install-leader/binary">leader installation</a>
     and
     <a href="/docs/enroll-worker/host">worker enrollment</a>.
