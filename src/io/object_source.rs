@@ -13,9 +13,9 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use object_store::path::Path;
@@ -43,9 +43,10 @@ const READ_AHEAD: usize = 64 * 1024;
 /// while its reader waits for the next object (`ObjectSource::ahead_target`).
 const AHEAD: usize = 8;
 
-/// How many chunks of records, each cut from up to [`READ_AHEAD`] bytes, an object fetched ahead holds before its
-/// fetch waits for the reader. Together with [`CHUNK`] and [`AHEAD`], it bounds a source's memory.
-const QUEUED: usize = 64;
+/// The bytes of records an object fetched ahead holds before its fetch waits for the reader. It always holds at least
+/// one chunk, so a record longer than this still passes. Together with [`CHUNK`] and [`AHEAD`], it bounds a source's
+/// memory.
+const QUEUED: u64 = 4 * 1024 * 1024;
 
 /// How long one GET may take before the object counts as unreadable.
 const GET_TIMEOUT: Duration = Duration::from_secs(60);
@@ -580,7 +581,7 @@ impl ObjectSource {
         while let Some((message, object, fetched)) = self.ahead.pop_front() {
             self.ahead_target = if fetched.shared.stalled.load(Ordering::Relaxed) {
                 self.ahead_target.saturating_sub(1).max(1)
-            } else if fetched.shared.queued.load(Ordering::Relaxed) == 0 {
+            } else if fetched.shared.queued() == 0 {
                 (self.ahead_target * 2).min(AHEAD)
             } else {
                 self.ahead_target
@@ -628,7 +629,7 @@ impl ObjectSource {
             Some(_) => Cutting::Avro(partition as u32, self.max_record),
             None => Cutting::Frames(Framer::refusing(self.framing.clone(), self.max_record as usize)),
         };
-        let (tx, blocks) = std::sync::mpsc::sync_channel(QUEUED);
+        let (tx, blocks) = std::sync::mpsc::channel();
         let shared = Arc::new(Shared::default());
         let (runtime, version, counted) = (self.runtime.clone(), object.version.clone(), shared.clone());
         std::thread::Builder::new()
@@ -902,13 +903,9 @@ impl Source for ObjectSource {
     /// and what its fetch has queued; for each fetched ahead, what its fetch has queued.
     fn held_bytes(&self) -> Option<u64> {
         let held = self.current.as_ref().map_or(0, |c| {
-            c.rows.as_ref().map_or(0, ChunkRows::untaken) as u64 + c.fetched.shared.queued.load(Ordering::Relaxed)
+            c.rows.as_ref().map_or(0, ChunkRows::untaken) as u64 + c.fetched.shared.queued()
         });
-        let ahead: u64 = self
-            .ahead
-            .iter()
-            .map(|(_, _, f)| f.shared.queued.load(Ordering::Relaxed))
-            .sum();
+        let ahead: u64 = self.ahead.iter().map(|(_, _, f)| f.shared.queued()).sum();
         Some(held + ahead)
     }
 
@@ -962,21 +959,21 @@ fn fetch(
     path: Path,
     version: Option<String>,
     cutting: Cutting,
-    tx: &SyncSender<Result<Fetch, String>>,
+    tx: &Sender<Result<Fetch, String>>,
     shared: &Shared,
 ) {
     let send = |fetch: Fetch| -> Result<(), String> {
         if let Fetch::Rows(_, size) = &fetch {
-            shared.queued.fetch_add(*size as u64, Ordering::Relaxed);
-        }
-        let sent = match tx.try_send(Ok(fetch)) {
-            Err(TrySendError::Full(fetch)) => {
+            let mut waiting = shared.waiting();
+            if waiting.bytes >= QUEUED {
                 shared.stalled.store(true, Ordering::Relaxed);
-                tx.send(fetch).is_ok()
             }
-            sent => sent.is_ok(),
-        };
-        sent.then_some(()).ok_or_else(|| READER_GONE.to_string())
+            while waiting.bytes >= QUEUED && !waiting.gone {
+                waiting = shared.taken.wait(waiting).unwrap_or_else(PoisonError::into_inner);
+            }
+            waiting.bytes += *size as u64;
+        }
+        tx.send(Ok(fetch)).map_err(|_| READER_GONE.to_string())
     };
     let cut = open_object(store, runtime, path, version).and_then(|mut lines| match cutting {
         Cutting::Frames(framer) => frames(&mut *lines, framer, &send),
@@ -1099,13 +1096,33 @@ fn open_object(
     })
 }
 
-/// What an object's fetch records for its reader.
+/// What an object's fetch and its reader share.
 #[derive(Default)]
 struct Shared {
-    /// The bytes sent and not yet taken.
-    queued: AtomicU64,
-    /// The fetch found the queue full and waited for the reader to take a chunk.
+    waiting: Mutex<Waiting>,
+    /// Told when the reader takes a chunk or is gone.
+    taken: Condvar,
+    /// The fetch found [`QUEUED`] bytes waiting and waited for the reader to take some.
     stalled: AtomicBool,
+}
+
+#[derive(Default)]
+struct Waiting {
+    /// The bytes of records sent and not yet taken.
+    bytes: u64,
+    /// The reader is dropped, so nothing more is taken.
+    gone: bool,
+}
+
+impl Shared {
+    fn waiting(&self) -> MutexGuard<'_, Waiting> {
+        self.waiting.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The bytes of records sent and not yet taken.
+    fn queued(&self) -> u64 {
+        self.waiting().bytes
+    }
 }
 
 /// An object as its fetch sends it, cut into records.
@@ -1125,9 +1142,18 @@ impl Fetched {
             .recv()
             .unwrap_or_else(|_| Err("its fetch stopped before the end of the object".to_string()))?;
         if let Fetch::Rows(_, size) = &fetch {
-            self.shared.queued.fetch_sub(*size as u64, Ordering::Relaxed);
+            self.shared.waiting().bytes -= *size as u64;
+            self.shared.taken.notify_one();
         }
         Ok(fetch)
+    }
+}
+
+impl Drop for Fetched {
+    /// Lets a fetch waiting for room end.
+    fn drop(&mut self) {
+        self.shared.waiting().gone = true;
+        self.shared.taken.notify_one();
     }
 }
 
