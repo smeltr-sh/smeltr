@@ -1,4 +1,4 @@
-use super::super::*;
+use super::super::shared::*;
 use super::receiver::{ReceiverKindDto, ReceiverSourceDto};
 use crate::plan::topology::{Receiver, SocketReceiverConfig};
 use serde::{Deserialize, Serialize};

@@ -1,4 +1,4 @@
-use super::super::*;
+use super::super::shared::*;
 use super::SourceSpec;
 use crate::plan::topology::Receiver;
 use serde::{Deserialize, Serialize};
