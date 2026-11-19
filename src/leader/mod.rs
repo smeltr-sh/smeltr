@@ -79,7 +79,10 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 
-use crate::heartbeat::{HeartbeatRequest, HeartbeatResponse, ThreadKind};
+use crate::heartbeat::{
+    CaptureInvitation, HeartbeatRequest, HeartbeatResponse, Hold, SecretDelivery, SenderFields, ThreadHeartbeat,
+    ThreadKind,
+};
 use envelope::{Empty, Envelope, Refusal};
 use registry::{FactKey, Registry, ThreadHealth, WorkerFacts};
 use store::{Issued, Kept, Spend, Store, StoreError};
@@ -336,7 +339,7 @@ async fn heartbeat(
     Extension(AuthenticatedWorker(worker_id)): Extension<AuthenticatedWorker>,
     Extension(kind): Extension<store::WorkerKind>,
     Json(mut req): Json<HeartbeatRequest>,
-) -> Result<Json<HeartbeatResponse>, (axum::http::StatusCode, String)> {
+) -> Result<Json<HeartbeatResponse>, Refused> {
     if req.worker_id != worker_id {
         return Err((
             axum::http::StatusCode::FORBIDDEN,
@@ -363,10 +366,8 @@ async fn heartbeat(
         stopping = req.stopping,
         "a worker's heartbeat arrived"
     );
-    // Kept for the answer's line: the id itself moves into the blocking work below.
-    let answering = worker_id.clone();
     let threads = std::mem::take(&mut req.threads);
-    let reported_group = threads.first().map(|t| t.group_id.clone());
+    let group_id = threads.first().map(|t| t.group_id.clone()).unwrap_or_default();
     let stopping = req.stopping;
     let directive = state.directives.heard(
         &worker_id,
@@ -374,130 +375,11 @@ async fn heartbeat(
         req.took.as_deref(),
         stopping,
     );
-    // One blocking hop for both, and off the runtime's threads: each is a write transaction behind the registry's
-    // one connection lock, and a fleet all beating at once would otherwise park every async thread the leader has.
-    // Logs first and separately committed -- what a worker had to say about a deployment it is about to describe is
-    // worth having even if describing it fails. The rest of the beat -- its state, and its window's points and
-    // streams -- is one transaction.
-    {
-        let registry = state.registry.clone();
-        let worker = worker_id.clone();
-        let events = std::mem::take(&mut req.logs);
-        let streams = req.streams.take();
-        let seq = req.streams_window;
-        let boot_id = req.boot_id;
-        // Empty from a worker too old to state one, which is stored as no group rather than as a group named "".
-        let group = Some(req.group_id.clone()).filter(|g| !g.is_empty());
-        let facts = WorkerFacts::of(&req, now_ms);
-        let data_dir = state.data_dir.clone();
-        // Kept by worker rather than by thread, so a worker running nothing still counts toward a rotation. Set
-        // before the blocking hop, because the answer below is built from it.
-        state
-            .registry
-            .record_authority(&worker_id, req.authority_fingerprints.clone(), req.takes_authority);
-        let recorded = tokio::task::spawn_blocking(move || {
-            registry.record_logs(&worker, boot_id, group.as_deref(), &events);
-            let repo = git::repo_path(&data_dir);
-            let deployed = git::deployed(&repo);
-            let config = |group_id: &str, commit: &str| Some(git::content_id(&repo, commit, group_id).ok()?.key());
-            let held = group
-                .as_deref()
-                .zip(deployed.as_deref())
-                .and_then(|(group_id, deployed)| config(group_id, deployed));
-            // A worker too old to state its group reports under none, and its streams go unrecorded.
-            let streams = streams
-                .as_ref()
-                .zip(group.as_deref())
-                .map(|(report, group_id)| series::Streams {
-                    group_id,
-                    report,
-                    // A worker that names no commit, or a leader with nothing deployed, cannot tell a rollout apart,
-                    // so the report counts as the deployed one.
-                    deployed: match (&facts.commit, &deployed) {
-                        (Some(running), Some(deployed)) => {
-                            held.is_some() && (running == deployed || config(group_id, running) == held)
-                        }
-                        _ => true,
-                    },
-                    config: held.as_deref(),
-                });
-            let window = series::Window { boot_id, seq, streams };
-            registry.record_heartbeat(&worker, threads, facts, window, now_ms)
-        })
-        .await;
-        // Said rather than swallowed: this is what updates the live view as well as the durable one, so a worker
-        // whose report never landed reads as silent on `/api/health` while still being answered here.
-        match recorded {
-            Err(e) => tracing::warn!(
-                name: "not_recorded", target: "heartbeats",
-                subject = %worker_id,
-                error = %e,
-                "a heartbeat could not be recorded, so this worker's threads stay as they were until the next one"
-            ),
-            // Refused, so the worker sends the window again rather than count it as recorded.
-            Ok(Err(e)) => {
-                return Err((
-                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                    format!("could not record this heartbeat: {e}"),
-                ));
-            }
-            Ok(Ok(())) => {}
-        }
-    }
-    // Before the forgetting below, so a stopping ephemeral worker's last progress lands and the worker is not
-    // heard again after it. A beat whose progress may not have landed is refused, so the worker sends it again
-    // rather than count it as recorded.
-    let holds = {
-        let registry = state.registry.clone();
-        let (worker, group) = (worker_id.clone(), req.group_id.clone());
-        let runs = std::mem::take(&mut req.single_worker);
-        let progress = std::mem::take(&mut req.progress);
-        let clock = holds::Clock::at(state.registry.up_for());
-        let settled = run_store(state.store.clone(), move |store| {
-            let beat = holds::Beat {
-                worker: &worker,
-                group: &group,
-                runs,
-                progress,
-                stopping,
-            };
-            registry.holds.beat(store, beat, clock)
-        })
-        .await;
-        settled.map_err(|e| {
-            (
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                format!("could not record which single-worker sources this worker holds: {e}"),
-            )
-        })?
-    };
-    let heartbeat_interval = crate::startup_config::leader_heartbeat_interval();
-    let group_id = reported_group.unwrap_or_default();
-    let data_dir = state.data_dir.clone();
-    let entitlements = state.entitlements.clone();
-    let for_group = group_id.clone();
-    // One blocking hop for all: each reads the repository or the store, and none belongs on the async runtime's
-    // threads. A certificate is entitled at its newest version, resolved on every beat so that a new version
-    // reaches the fleet on the next one.
-    let store = state.store.clone();
-    let (pointer, entitled, sender_fields) = tokio::task::spawn_blocking(move || {
-        (
-            deployed_pointer(&data_dir),
-            at_newest(
-                &entitled(&data_dir, &entitlements, &for_group),
-                // Unreadable, a beat entitles no certificate and the next one tries again.
-                &certificate_versions(&store).unwrap_or_else(|e| {
-                    if let Some(error) = relog(&CERTIFICATES_UNREADABLE, e) {
-                        tracing::warn!(name: "unreadable", target: "certificates", subject = %for_group, error, "the certificate versions could not be read, so this heartbeat is answered with none");
-                    }
-                    Default::default()
-                }),
-            ),
-            marks::Marks::read(&store).sender_fields(&for_group),
-        )
-    })
-    .await
-    .unwrap_or_default();
+    record(&state, &mut req, threads, now_ms).await?;
+    // Before the worker is forgotten below, so a stopping ephemeral worker's last progress lands, and settling its
+    // holds does not bring back a worker already forgotten.
+    let holds = settle_holds(&state, &mut req).await?;
+    let (pointer, entitled, sender_fields) = entitled_now(&state, &group_id).await;
     // The one moment a replaced authority can reach a worker: it asks, over a connection its own token
     // authenticates and its current authority verified.
     let authority = authority_to_hand(&state.data_dir, &req.authority_fingerprints, req.takes_authority);
@@ -507,30 +389,11 @@ async fn heartbeat(
     if stopping && kind == store::WorkerKind::Ephemeral {
         forget::forget(&state, &worker_id).await;
     }
-    // The whole of what this worker should run: it lets go of a session still filling that this leaves out
-    // (`Captures::invitations_for`). On the blocking pool, because `holder` waits on any beat in progress, which
-    // holds the holds lock across its store writes; an async thread parked on that would stall every handler.
-    let (captures_for, secrets) = tokio::task::spawn_blocking(move || {
-        let captures_for = state.captures.invitations_for(&worker_id, &group_id, |source| {
-            state.registry.holds.holder(&group_id, source)
-        });
-        let secrets = state
-            .store
-            .secrets_for_delivery(&entitled, &req.secret_versions)
-            .unwrap_or_else(|e| {
-                if let Some(error) = relog(&SECRETS_NOT_DELIVERED, e.to_string()) {
-                    tracing::warn!(name: "not_delivered", target: "secrets", subject = %worker_id, group = %group_id, error, "the secrets a worker is entitled to could not be read, so this heartbeat delivers none");
-                }
-                Default::default()
-            });
-        (captures_for, secrets)
-    })
-    .await
-    .unwrap_or_default();
+    let (captures_for, secrets) = to_run(&state, &worker_id, group_id, entitled, &mut req).await;
 
     tracing::trace!(
         name: "answered", target: "heartbeats",
-        worker = %answering,
+        worker = %worker_id,
         holds = holds.len(),
         deployed = pointer.as_deref(),
         directive = directive.as_ref().map(|d| format!("{:?} {}", d.action, d.id)),
@@ -551,8 +414,175 @@ async fn heartbeat(
         // Whole on every answer, so a worker that missed a change has it on its next beat.
         log_levels: state.log_levels.get(),
         sender_fields,
-        heartbeat_interval_ms: Some(heartbeat_interval.as_millis() as u64),
+        heartbeat_interval_ms: Some(crate::startup_config::leader_heartbeat_interval().as_millis() as u64),
     }))
+}
+
+/// Why a heartbeat is refused: the status, and a sentence the worker logs.
+type Refused = (axum::http::StatusCode, String);
+
+/// Records what the beat reports: its logs, then its state and its window's points and streams. Refused when the
+/// state did not land, so the worker sends the window again.
+async fn record(
+    state: &AppState,
+    req: &mut HeartbeatRequest,
+    threads: Vec<ThreadHeartbeat>,
+    now_ms: i64,
+) -> Result<(), Refused> {
+    let worker_id = req.worker_id.clone();
+    // One blocking hop for both, and off the runtime's threads: each is a write transaction behind the registry's
+    // one connection lock, and a fleet all beating at once would otherwise park every async thread the leader has.
+    // Logs first and separately committed -- what a worker had to say about a deployment it is about to describe is
+    // worth having even if describing it fails. The rest of the beat -- its state, and its window's points and
+    // streams -- is one transaction.
+    let registry = state.registry.clone();
+    let worker = worker_id.clone();
+    let events = std::mem::take(&mut req.logs);
+    let streams = req.streams.take();
+    let seq = req.streams_window;
+    let boot_id = req.boot_id;
+    // Empty from a worker too old to state one, which is stored as no group rather than as a group named "".
+    let group = Some(req.group_id.clone()).filter(|g| !g.is_empty());
+    let facts = WorkerFacts::of(req, now_ms);
+    let data_dir = state.data_dir.clone();
+    // Kept by worker rather than by thread, so a worker running nothing still counts toward a rotation. Set
+    // before the hop to the blocking pool below, because the answer is built from it.
+    state
+        .registry
+        .record_authority(&worker_id, req.authority_fingerprints.clone(), req.takes_authority);
+    let recorded = tokio::task::spawn_blocking(move || {
+        registry.record_logs(&worker, boot_id, group.as_deref(), &events);
+        let repo = git::repo_path(&data_dir);
+        let deployed = git::deployed(&repo);
+        let config = |group_id: &str, commit: &str| Some(git::content_id(&repo, commit, group_id).ok()?.key());
+        let held = group
+            .as_deref()
+            .zip(deployed.as_deref())
+            .and_then(|(group_id, deployed)| config(group_id, deployed));
+        // A worker too old to state its group reports under none, and its streams go unrecorded.
+        let streams = streams
+            .as_ref()
+            .zip(group.as_deref())
+            .map(|(report, group_id)| series::Streams {
+                group_id,
+                report,
+                // A worker that names no commit, or a leader with nothing deployed, cannot tell a rollout apart,
+                // so the report counts as the deployed one.
+                deployed: match (&facts.commit, &deployed) {
+                    (Some(running), Some(deployed)) => {
+                        held.is_some() && (running == deployed || config(group_id, running) == held)
+                    }
+                    _ => true,
+                },
+                config: held.as_deref(),
+            });
+        let window = series::Window { boot_id, seq, streams };
+        registry.record_heartbeat(&worker, threads, facts, window, now_ms)
+    })
+    .await;
+    // Said rather than swallowed: this is what updates the live view as well as the durable one, so a worker
+    // whose report never landed reads as silent on `/api/health` while still being answered here.
+    match recorded {
+        Err(e) => tracing::warn!(
+            name: "not_recorded", target: "heartbeats",
+            subject = %worker_id,
+            error = %e,
+            "a heartbeat could not be recorded, so this worker's threads stay as they were until the next one"
+        ),
+        // Refused, so the worker sends the window again rather than count it as recorded.
+        Ok(Err(e)) => {
+            return Err((
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                format!("could not record this heartbeat: {e}"),
+            ));
+        }
+        Ok(Ok(())) => {}
+    }
+    Ok(())
+}
+
+/// Settles which single-worker sources this worker holds, and lands its progress on them. Refused when the progress
+/// may not have landed, so the worker sends it again rather than count it as recorded.
+async fn settle_holds(state: &AppState, req: &mut HeartbeatRequest) -> Result<Vec<Hold>, Refused> {
+    let registry = state.registry.clone();
+    let (worker, group, stopping) = (req.worker_id.clone(), req.group_id.clone(), req.stopping);
+    let runs = std::mem::take(&mut req.single_worker);
+    let progress = std::mem::take(&mut req.progress);
+    let clock = holds::Clock::at(state.registry.up_for());
+    let settled = run_store(state.store.clone(), move |store| {
+        let beat = holds::Beat {
+            worker: &worker,
+            group: &group,
+            runs,
+            progress,
+            stopping,
+        };
+        registry.holds.beat(store, beat, clock)
+    })
+    .await;
+    settled.map_err(|e| {
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            format!("could not record which single-worker sources this worker holds: {e}"),
+        )
+    })
+}
+
+/// What is deployed, the secrets and certificates `group_id` is entitled to, and its senders' fields. A certificate
+/// is entitled at its newest version, resolved on every beat so that a new version reaches the fleet on the next one.
+async fn entitled_now(state: &AppState, group_id: &str) -> (Option<String>, Vec<SecretAt>, Vec<SenderFields>) {
+    let data_dir = state.data_dir.clone();
+    let entitlements = state.entitlements.clone();
+    let for_group = group_id.to_string();
+    let store = state.store.clone();
+    // One blocking hop for all: each reads the repository or the store, and none belongs on the async runtime's
+    // threads.
+    tokio::task::spawn_blocking(move || {
+        (
+            deployed_pointer(&data_dir),
+            at_newest(
+                &entitled(&data_dir, &entitlements, &for_group),
+                // Unreadable, a beat entitles no certificate and the next one tries again.
+                &certificate_versions(&store).unwrap_or_else(|e| {
+                    if let Some(error) = relog(&CERTIFICATES_UNREADABLE, e) {
+                        tracing::warn!(name: "unreadable", target: "certificates", subject = %for_group, error, "the certificate versions could not be read, so this heartbeat is answered with none");
+                    }
+                    Default::default()
+                }),
+            ),
+            marks::Marks::read(&store).sender_fields(&for_group),
+        )
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// Every capture this worker should run, and the secrets it is `entitled` to and does not hold. The worker lets go of
+/// a session still filling that these invitations leave out (`Captures::invitations_for`).
+async fn to_run(
+    state: &AppState,
+    worker_id: &str,
+    group_id: String,
+    entitled: Vec<SecretAt>,
+    req: &mut HeartbeatRequest,
+) -> (Vec<CaptureInvitation>, Vec<SecretDelivery>) {
+    let (captures, registry, store) = (state.captures.clone(), state.registry.clone(), state.store.clone());
+    let worker_id = worker_id.to_string();
+    let held = std::mem::take(&mut req.secret_versions);
+    // On the blocking pool, because `holder` waits on any beat in progress, which holds the holds lock across its
+    // store writes; an async thread parked on that would stall every handler.
+    tokio::task::spawn_blocking(move || {
+        let captures_for = captures.invitations_for(&worker_id, &group_id, |source| registry.holds.holder(&group_id, source));
+        let secrets = store.secrets_for_delivery(&entitled, &held).unwrap_or_else(|e| {
+            if let Some(error) = relog(&SECRETS_NOT_DELIVERED, e.to_string()) {
+                tracing::warn!(name: "not_delivered", target: "secrets", subject = %worker_id, group = %group_id, error, "the secrets a worker is entitled to could not be read, so this heartbeat delivers none");
+            }
+            Default::default()
+        });
+        (captures_for, secrets)
+    })
+    .await
+    .unwrap_or_default()
 }
 
 // -- capture --------------------------------------------------------------
