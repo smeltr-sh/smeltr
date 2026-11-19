@@ -1,6 +1,9 @@
 //! S3: how it is reached and signed, how its buckets are named, and its SQS queue.
 
-use super::*;
+use super::super::{ItemErrors, blank, check_queue, to_s3_access};
+use super::{AccessDto, AnnouncedDto, BucketDto, EncryptionDto, NameRule, QueueDto, plain_name};
+use crate::config_file::dto::{S3_ENDPOINT, S3AccessDto, SecretRefDto, VisibilitySecs};
+use crate::plan::topology::{Cloud, ListPlace, ObjectQueue, S3Store, SourceMeta};
 use serde::{Deserialize, Serialize};
 
 /// The KMS key an S3 destination's objects are encrypted under.

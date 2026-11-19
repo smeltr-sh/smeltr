@@ -1,6 +1,9 @@
 //! Cloud Storage: how it is reached and signed, how its buckets are named, and its Pub/Sub subscription.
 
-use super::*;
+use super::super::{ACK_DEADLINE_MAX, ItemErrors, check_endpoint, check_subscription, check_visibility, to_gcs_access};
+use super::{AccessDto, AnnouncedDto, BucketDto, DefaultEncryptionDto, NameRule, QueueDto, plain_name};
+use crate::config_file::dto::{GCS_ENDPOINT, GcsAccessDto, PUBSUB_ENDPOINT, SecretRefDto, VisibilitySecs};
+use crate::plan::topology::{Cloud, GcsStore, ListPlace, ObjectQueue, SourceMeta};
 use serde::{Deserialize, Serialize};
 
 impl AccessDto for GcsAccessDto {

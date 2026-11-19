@@ -1,6 +1,9 @@
 //! Azure Blob Storage: how it is reached and signed, how its containers are named, and its Storage queue.
 
-use super::*;
+use super::super::{ItemErrors, QUEUE_NAME_MAX, azure_dials, blank, check_entra_sign_in, check_queue, to_azure_access};
+use super::{AccessDto, AnnouncedDto, ContainerDto, DefaultEncryptionDto, NameRule, QueueDto, plain_name};
+use crate::config_file::dto::{AZURE_ENDPOINT, AzureAccessDto, MaxDeliveries, SecretRefDto, VisibilitySecs};
+use crate::plan::topology::{AzureStore, Cloud, ListPlace, ObjectQueue, SourceMeta};
 use serde::{Deserialize, Serialize};
 
 impl AccessDto for AzureAccessDto {
