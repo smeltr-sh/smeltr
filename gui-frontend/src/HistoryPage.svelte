@@ -16,7 +16,10 @@
   import PageHeader from './PageHeader.svelte';
   import { ask } from './Confirm.svelte';
   import Help from './Help.svelte';
+  import { holdsSomewhere } from './access';
 
+  // Only a deployer somewhere may deploy a commit; the leader judges which areas it changes.
+  const deploys = holdsSomewhere('deployer');
   const START_LIMIT = 50;
   const MORE_LIMIT = 200;
 
@@ -135,15 +138,15 @@
         {ago(held.since)}. The {held.behind} commit{held.behind === 1 ? '' : 's'} on main since then
         {held.behind === 1 ? 'is' : 'are'} not deployed.
       </span>
-      <Locked refusedInDemo>
-        <Button
-          class="compact"
-          onclick={() => rollback(held!.head, true)}
-          disabled={rollingBack !== null ? BUSY : ''}
-        >
-          {rollingBack === held.head ? 'Releasing…' : 'Release'}
-        </Button>
-      </Locked>
+      {#if deploys}<Locked refusedInDemo>
+          <Button
+            class="compact"
+            onclick={() => rollback(held!.head, true)}
+            disabled={rollingBack !== null ? BUSY : ''}
+          >
+            {rollingBack === held.head ? 'Releasing…' : 'Release'}
+          </Button>
+        </Locked>{/if}
     </div>
   {/if}
 
@@ -202,7 +205,7 @@
               </td>
               <td class="dim nowrap">{ago(c.time)}</td>
               <td class="right nowrap">
-                {#if c.commit !== deployed}
+                {#if deploys && c.commit !== deployed}
                   <Locked refusedInDemo
                     ><Button
                       class="compact"
