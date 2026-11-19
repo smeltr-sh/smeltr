@@ -258,6 +258,8 @@ mod imp {
         // SAFETY: a live context; krb5 writes the cache handle, closed below.
         let mut code = unsafe { krb5_cc_default(context, &mut cache) };
         if code == 0 {
+            // Between these two calls the cache is empty for a moment, and a sign-in then fails and is retried, as
+            // under `kinit`. The krb5 linked here (1.19) has no one-step replace for a memory cache.
             // SAFETY: the cache, principal and credentials above, all live.
             code = unsafe { krb5_cc_initialize(context, cache, client) };
             if code == 0 {
