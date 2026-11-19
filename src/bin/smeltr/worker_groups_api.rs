@@ -119,9 +119,8 @@ fn list_groups_in(
     store: &smeltr::leader::store::Store,
 ) -> Result<Vec<WorkerGroupOut>, String> {
     let repo = repo_at(data_dir)?;
-    let deployed = git::deployed(&repo).ok_or("nothing has been deployed")?;
     let branch_commit = resolve_branch_commit(&repo, branch)?;
-    list_branch_groups_at(&repo, &deployed, &branch_commit, store)
+    list_branch_groups_at(&repo, git::deployed(&repo).as_deref(), &branch_commit, store)
 }
 
 /// The branch listing for commits already resolved, so a caller that also hands the branch commit back to its
@@ -130,16 +129,20 @@ fn list_groups_in(
 /// write on it could silently miss a change the second read already saw.
 fn list_branch_groups_at(
     repo: &Path,
-    deployed_commit: &str,
+    deployed_commit: Option<&str>,
     branch_commit: &str,
     store: &smeltr::leader::store::Store,
 ) -> Result<Vec<WorkerGroupOut>, String> {
     let hues = store.group_hues().map_err(|e| e.to_string())?;
 
-    let deployed_ids: BTreeSet<String> = tree::groups_at(repo, deployed_commit)
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .collect();
+    // With nothing deployed, no group on the branch is deployed.
+    let deployed_ids: BTreeSet<String> = match deployed_commit {
+        Some(commit) => tree::groups_at(repo, commit)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .collect(),
+        None => BTreeSet::new(),
+    };
     // The branch's own tree. Nothing outside it. Union in `deployed_ids` and a group this branch deleted would keep
     // showing, through the fleet's still-live, unrelated copy. It would look just like an id the branch never touched.
     let branch_ids: BTreeSet<String> = tree::groups_at(repo, branch_commit)
@@ -172,10 +175,10 @@ pub async fn list_worker_groups(
     let store = state.store.clone();
     let listed = blocking(move || {
         let repo = repo_at(&leader_data_dir()).map_err(Refusal::internal)?;
-        let deployed = git::deployed(&repo).ok_or_else(|| Refusal::conflict("nothing has been deployed"))?;
+        let deployed = git::deployed(&repo);
         let branch_commit = resolve_branch_commit(&repo, &branch).map_err(Refusal::internal)?;
-        let groups =
-            list_branch_groups_at(&repo, &deployed, &branch_commit, store.as_ref()).map_err(Refusal::internal)?;
+        let groups = list_branch_groups_at(&repo, deployed.as_deref(), &branch_commit, store.as_ref())
+            .map_err(Refusal::internal)?;
         // Best-effort: `shared`'s hue is a courtesy on top of the listing, and a store hiccup here should not
         // fail a request the groups half of which already succeeded.
         let shared_hue = store
@@ -201,45 +204,6 @@ fn held(groups: Vec<WorkerGroupOut>, access: &Access) -> Vec<WorkerGroupOut> {
         .into_iter()
         .filter(|g| access.allows(&g.id, Level::Viewer))
         .collect()
-}
-
-/// What the binary's in-process Cluster page shows: every group the fleet runs, live rather than pending.
-pub async fn worker_groups_snapshot(state: &AppState) -> Result<Vec<WorkerGroupOut>, String> {
-    let data_dir = state.data_dir.clone();
-    let store = state.store.clone();
-    blocking(move || {
-        let repo = git::repo_path(&data_dir);
-        if !git::repo_ready(&repo) {
-            return Ok(Vec::new());
-        }
-        let Some(deployed) = git::deployed(&repo) else {
-            return Ok(Vec::new());
-        };
-        list_groups_at(&repo, &deployed, store.as_ref())
-    })
-    .await
-}
-
-fn list_groups_at(
-    repo: &Path,
-    commit: &str,
-    store: &smeltr::leader::store::Store,
-) -> Result<Vec<WorkerGroupOut>, String> {
-    let hues = store.group_hues().map_err(|e| e.to_string())?;
-    tree::groups_at(repo, commit).map_err(|e| e.to_string()).map(|ids| {
-        ids.into_iter()
-            .map(|id| {
-                let manifest = group_manifest_at(repo, commit, &id);
-                let name = manifest.and_then(|m| m.name).unwrap_or_else(|| id.clone());
-                WorkerGroupOut {
-                    hue: hues.get(&id).copied(),
-                    id,
-                    name,
-                    deployed: true,
-                }
-            })
-            .collect()
-    })
 }
 
 // -- POST /api/worker-groups ------------------------------------------------

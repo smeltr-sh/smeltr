@@ -11,7 +11,8 @@ import {
   currentScope,
   discardCapture,
   errorMessage,
-  getClusterStatus,
+  getHealth,
+  liveGroups,
   SHARED_SCOPE,
   startCapture,
   stopCapture,
@@ -20,20 +21,17 @@ import {
 
 /** The group a capture of the source being edited asks: its scope's own. Under `shared/` the source runs in every
  * group, so it asks the first that has a worker heard from lately, else the first, and `set` takes it once the
- * cluster answers. */
+ * fleet answers. */
 export function groupToAsk(set: (group: string) => void) {
   const scope = currentScope();
   if (scope !== SHARED_SCOPE) {
     set(scope);
     return;
   }
-  getClusterStatus()
-    .then((c) => {
-      const groups = c.workerGroups ?? [];
+  Promise.all([liveGroups(), getHealth()])
+    .then(([groups, health]) => {
       const live = (id: string) =>
-        c.health?.threads.some(
-          (t) => t.groupId === id && t.lastSeenMillisAgo <= c.health!.silentAfterMs,
-        );
+        health.threads.some((t) => t.groupId === id && t.lastSeenMillisAgo <= health.silentAfterMs);
       set((groups.find((g) => live(g.id)) ?? groups[0])?.id ?? '');
     })
     .catch(() => {});

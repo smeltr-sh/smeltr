@@ -1,7 +1,7 @@
 <!--
-  Cluster status (`gui-design.md`, "Worker health status"), polled from
-  `/api/cluster` (`src/bin/smeltr/cluster.rs`), which the leader serves
-  in-process. Nothing here is edited.
+  Cluster status (`gui-design.md`, "Worker health status"), polled from the
+  heartbeats (`/api/health`), the roster (`/api/workers`) and the groups the
+  fleet runs (`/api/worker-groups`). Nothing here is edited.
 
   The Workers table is one row per worker with its threads folded away:
   a worker runs a reader per source, a transform pool sized by cores and
@@ -53,7 +53,9 @@
   import { TableSort } from './sort.svelte';
   import {
     errorText,
-    getClusterStatus,
+    getHealth,
+    listWorkers,
+    liveGroups,
     getFlow,
     getSeries,
     listWarnings,
@@ -61,8 +63,9 @@
     restartWorker,
     conditionLabel,
     MAIN_BRANCH,
-    type ClusterHealth,
-    type ClusterStatus,
+    type Health,
+    type WorkerCredentialDto,
+    type WorkerGroupDto,
     type FlowKind,
     type FlowResponseDto,
     type SeriesAnswerDto,
@@ -111,7 +114,14 @@
   // A panel is a region named by its heading.
   const uid = $props.id();
 
-  let status: ClusterStatus | null = $state(null);
+  /** The fleet as the last poll read it. A roster or group list that could not be read is `null`, not empty: the
+   * error bar says why, and an unread roster must not render as no workers. */
+  type Fleet = {
+    health: Health;
+    workers: WorkerCredentialDto[] | null;
+    workerGroups: WorkerGroupDto[] | null;
+  };
+  let status: Fleet | null = $state(null);
   let loading = $state(true);
   // The status page begins live. Pausing stops every existing poll without changing their cadence.
   let autoRefresh = $state(true);
@@ -127,14 +137,14 @@
   // and out now read the leader's own series (`flow.ts`), which survives
   // a reload.
   const MAX_HISTORY = 150; // ~5 minutes at POLL_MS
-  type HistoryPoint = { at: number; threads: ClusterHealth['threads'] };
+  type HistoryPoint = { at: number; threads: Health['threads'] };
   let history: HistoryPoint[] = $state([]);
 
   // Totals per label combination, accumulated over the same window as the
   // chart: the sparkline shows the trend, this says which pipeline it
   // belongs to.
 
-  function recordHistory(health: ClusterHealth) {
+  function recordHistory(health: Health) {
     history.push({ at: Date.now(), threads: health.threads });
     if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
   }
@@ -155,7 +165,7 @@
     if (selectedGroupId) return series.group === selectedGroupId;
     return true;
   }
-  function threadsForSelection(threads: ClusterHealth['threads']) {
+  function threadsForSelection(threads: Health['threads']) {
     if (selectedWorkerId) return threads.filter((thread) => thread.workerId === selectedWorkerId);
     if (selectedGroupId) return threads.filter((thread) => thread.groupId === selectedGroupId);
     return threads;
@@ -461,11 +471,12 @@
   }
 
   function refresh() {
-    getClusterStatus()
-      .then((s) => {
-        status = s;
+    const read = <T,>(p: Promise<T>) => p.catch(() => null);
+    Promise.all([getHealth(), read(listWorkers()), read(liveGroups())])
+      .then(([health, workers, workerGroups]) => {
+        status = { health, workers, workerGroups };
         now = Date.now();
-        if (s.health) recordHistory(s.health);
+        recordHistory(health);
       })
       .catch(reported)
       .finally(() => {
@@ -608,7 +619,7 @@
     worker: 'the worker itself',
   };
 
-  let silentSeconds = $derived.by(() => (status?.health?.silentAfterMs ?? 0) / 1000);
+  let silentSeconds = $derived.by(() => (status?.health.silentAfterMs ?? 0) / 1000);
 
   const STATUS_LABEL: Record<WorkerStatus, string> = {
     revoked: 'Revoked',
@@ -623,8 +634,8 @@
   let workerRows = $derived.by(() =>
     rollupWorkers(
       status?.workers ?? null,
-      status?.health?.threads ?? [],
-      status?.health?.silentAfterMs ?? 0,
+      status?.health.threads ?? [],
+      status?.health.silentAfterMs ?? 0,
     ),
   );
   const EXPANDED_GROUPS_KEY = 'smeltr-status-expanded-groups';
@@ -868,12 +879,6 @@
           </div>
         </Panel>
       </div>
-    {/if}
-
-    {#if status.error}
-      <InlineError>
-        Couldn't read the leader's store: {status.error}. The roster is unavailable.
-      </InlineError>
     {/if}
 
     <section class="fleet-shell" class:has-detail={selectedWorker !== null}>

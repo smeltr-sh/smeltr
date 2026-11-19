@@ -248,7 +248,6 @@ const OPERATOR_ROUTES: &[&str] = &[
     "/api/logs",
     "/api/workers",
     "/api/secrets",
-    "/api/cluster",
     "/api/map",
     "/api/map/measurements",
     "/api/areas/shared/stats",
@@ -282,12 +281,12 @@ fn every_operator_route_refuses_an_anonymous_caller() {
 #[test]
 fn a_refusal_is_json_rather_than_the_apps_html() {
     let leader = start("json");
-    let response = ureq::get(format!("{}/api/health", leader.base)).call();
+    let response = ureq::get(format!("{}/api/accounts", leader.base)).call();
     let Err(ureq::Error::StatusCode(401)) = response else {
         panic!("expected a 401");
     };
     // Fetched again to read the body, since `StatusCode` does not carry one.
-    let response = ureq::get(format!("{}/api/health", leader.base))
+    let response = ureq::get(format!("{}/api/accounts", leader.base))
         .config()
         .http_status_as_error(false)
         .build()
@@ -334,10 +333,10 @@ fn the_bootstrap_password_signs_in_and_must_be_changed_first() {
 
     // A session that must change its password reads its own status and nothing else.
     let status = status_of(
-        ureq::get(format!("{}/api/health", leader.base))
+        ureq::get(format!("{}/api/accounts", leader.base))
             .header("cookie", &session.cookie)
             .call(),
-        "health",
+        "accounts",
     );
     assert_eq!(status, 403, "a must-change session loaded the fleet");
 
@@ -382,7 +381,7 @@ fn choosing_a_password_opens_the_rest_of_the_api() {
     // still be a must-change one and answer 403, so 401 is the session gone.
     for (which, session) in [("the one that asked", &first), ("another", &elsewhere)] {
         assert_eq!(
-            leader.get_as(session, "/api/health").0,
+            leader.get_as(session, "/api/accounts").0,
             401,
             "{which} survived the change"
         );
@@ -390,10 +389,10 @@ fn choosing_a_password_opens_the_rest_of_the_api() {
 
     let second = leader.sign_in("admin", chosen);
     let status = status_of(
-        ureq::get(format!("{}/api/health", leader.base))
+        ureq::get(format!("{}/api/accounts", leader.base))
             .header("cookie", &second.cookie)
             .call(),
-        "health",
+        "accounts",
     );
     assert_eq!(status, 200, "a signed-in account could not read the fleet");
 }
@@ -572,10 +571,10 @@ fn a_human_cookie_does_not_open_a_worker_route() {
 fn a_bearer_token_is_not_a_session() {
     let leader = start("bearer");
     let status = status_of(
-        ureq::get(format!("{}/api/health", leader.base))
+        ureq::get(format!("{}/api/accounts", leader.base))
             .header("authorization", "Bearer whatever-it-used-to-be")
             .call(),
-        "health",
+        "accounts",
     );
     assert_eq!(status, 401);
 }
@@ -608,10 +607,10 @@ fn signing_out_ends_the_session() {
     );
     assert_eq!(status, 200);
     let after = status_of(
-        ureq::get(format!("{}/api/health", leader.base))
+        ureq::get(format!("{}/api/accounts", leader.base))
             .header("cookie", &session.cookie)
             .call(),
-        "health",
+        "accounts",
     );
     assert_eq!(after, 401);
 }
@@ -930,7 +929,7 @@ fn an_administrator_creates_an_account_that_can_then_sign_in() {
 
     // The new account signs in, and has to choose a password before it can do anything.
     let theirs = leader.sign_in("dana", temporary);
-    let (status, _) = leader.get_as(&theirs, "/api/health");
+    let (status, _) = leader.get_as(&theirs, "/api/accounts");
     assert_eq!(
         status, 403,
         "a new account reached the fleet before choosing a password"
@@ -1578,7 +1577,7 @@ fn disabling_an_account_ends_its_session_at_once() {
     );
     let theirs = leader.sign_in("dana", chosen);
     assert_eq!(
-        leader.get_as(&theirs, "/api/health").0,
+        leader.get_as(&theirs, "/api/accounts").0,
         200,
         "they could not use the API"
     );
@@ -1589,7 +1588,7 @@ fn disabling_an_account_ends_its_session_at_once() {
         serde_json::json!({ "enabled": false }),
     );
     assert_eq!(
-        leader.get_as(&theirs, "/api/health").0,
+        leader.get_as(&theirs, "/api/accounts").0,
         401,
         "a disabled account kept its session"
     );
@@ -1600,7 +1599,11 @@ fn disabling_an_account_ends_its_session_at_once() {
         &format!("/api/accounts/{id}"),
         serde_json::json!({ "enabled": true }),
     );
-    assert_eq!(leader.get_as(&theirs, "/api/health").0, 401, "an old session came back");
+    assert_eq!(
+        leader.get_as(&theirs, "/api/accounts").0,
+        401,
+        "an old session came back"
+    );
 }
 
 /// Revoking ends every session an account holds without touching its password, so they sign in again with what
@@ -1619,7 +1622,7 @@ fn revoking_sessions_ends_them_and_leaves_the_password_alone() {
     );
     assert_eq!(status, 200);
     assert_eq!(
-        leader.get_as(&op.session, "/api/health").0,
+        leader.get_as(&op.session, "/api/accounts").0,
         401,
         "the revoked session still worked"
     );
@@ -1649,7 +1652,7 @@ fn resetting_a_password_ends_the_sessions_and_requires_a_new_choice() {
     assert_eq!(reset["username"], "dana");
     // A session that survived would still be a must-change one and answer 403, so 401 is the session gone.
     assert_eq!(
-        leader.get_as(&before, "/api/health").0,
+        leader.get_as(&before, "/api/accounts").0,
         401,
         "a session outlived the reset"
     );
@@ -1667,7 +1670,7 @@ fn resetting_a_password_ends_the_sessions_and_requires_a_new_choice() {
 fn every_answer_carries_the_browser_hardening_headers() {
     let leader = start("hardening");
     let op = operator(&leader);
-    for path in ["/", "/api/auth/session", "/api/health", "/api/no-such-route"] {
+    for path in ["/", "/api/auth/session", "/api/accounts", "/api/no-such-route"] {
         let response = ureq::get(format!("{}{path}", leader.base))
             .header("cookie", &op.session.cookie)
             .config()
@@ -1880,7 +1883,7 @@ fn only_a_required_change_skips_the_current_password() {
     );
     assert_eq!(status, 422);
     assert_eq!(
-        leader.get_as(&session, "/api/health").0,
+        leader.get_as(&session, "/api/accounts").0,
         200,
         "the session was not kept"
     );
@@ -2365,7 +2368,7 @@ fn a_revoked_key_and_a_disabled_accounts_keys_are_refused() {
     let (first, first_id) = key_for(&leader, &op, &id);
     let (second, _) = key_for(&leader, &op, &id);
 
-    let (status, _) = with_key(&leader, &"0".repeat(64), "GET", "/api/health", None);
+    let (status, _) = with_key(&leader, &"0".repeat(64), "GET", "/api/accounts", None);
     assert_eq!(status, 401, "a key never made");
 
     assert_eq!(
@@ -2376,9 +2379,9 @@ fn a_revoked_key_and_a_disabled_accounts_keys_are_refused() {
         leader.delete_as(&op, &format!("/api/accounts/{id}/keys/{first_id}")),
         404
     );
-    let (status, _) = with_key(&leader, &first, "GET", "/api/health", None);
+    let (status, _) = with_key(&leader, &first, "GET", "/api/accounts", None);
     assert_eq!(status, 403, "a revoked key");
-    let (status, _) = with_key(&leader, &second, "GET", "/api/health", None);
+    let (status, _) = with_key(&leader, &second, "GET", "/api/accounts", None);
     assert_eq!(status, 200, "revoking one key revoked another");
 
     let (status, body) = leader.patch_as(
@@ -2387,7 +2390,7 @@ fn a_revoked_key_and_a_disabled_accounts_keys_are_refused() {
         serde_json::json!({ "enabled": false }),
     );
     assert_eq!(status, 200, "{body}");
-    let (status, _) = with_key(&leader, &second, "GET", "/api/health", None);
+    let (status, _) = with_key(&leader, &second, "GET", "/api/accounts", None);
     assert_eq!(status, 403, "a disabled account's key");
     let (status, body) = leader.patch_as(
         &op,
@@ -2396,7 +2399,7 @@ fn a_revoked_key_and_a_disabled_accounts_keys_are_refused() {
     );
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["keys"], serde_json::json!([]), "enabling brought keys back");
-    let (status, _) = with_key(&leader, &second, "GET", "/api/health", None);
+    let (status, _) = with_key(&leader, &second, "GET", "/api/accounts", None);
     assert_eq!(status, 403, "enabling brought a key back");
 
     let (_, events) = leader.get_as(&op.session, "/api/security-events");
@@ -2460,11 +2463,11 @@ fn a_key_and_a_session_together_are_refused() {
     let id = key_account(&leader, &op, serde_json::json!({ "displayName": "exporter" }));
     let (key, _) = key_for(&leader, &op, &id);
     let status = status_of(
-        ureq::get(format!("{}/api/health", leader.base))
+        ureq::get(format!("{}/api/accounts", leader.base))
             .header("cookie", &op.session.cookie)
             .header("authorization", format!("Bearer {key}"))
             .call(),
-        "health",
+        "accounts",
     );
     assert_eq!(status, 400);
 }
@@ -2611,7 +2614,7 @@ fn a_key_is_made_to_expire_in_days_and_only_for_a_key_account() {
         86_400_000
     );
     let key = created["key"].as_str().unwrap();
-    assert_eq!(with_key(&leader, key, "GET", "/api/health", None).0, 200);
+    assert_eq!(with_key(&leader, key, "GET", "/api/accounts", None).0, 200);
     let (_, roster) = leader.get_as(&op.session, "/api/accounts");
     assert_eq!(roster["accounts"][1]["keys"][0]["expiresAt"], created["expiresAt"]);
 
@@ -3014,7 +3017,7 @@ fn a_provider_sign_in_ends_in_a_session_like_a_password_one() {
         cookie: cookie.expect("a session cookie"),
         csrf: String::new(),
     };
-    assert_eq!(leader.get_as(&session, "/api/health").0, 200);
+    assert_eq!(leader.get_as(&session, "/api/accounts").0, 200);
     let (_, me) = leader.get_as(&session, "/api/auth/session");
     assert_eq!(me["authSource"], "oidc", "{me}");
     assert_eq!(me["displayName"], "Ada Lovelace", "{me}");
@@ -3064,7 +3067,7 @@ fn a_provider_sign_in_ends_in_a_session_like_a_password_one() {
         serde_json::json!({ "enabled": false }),
     );
     assert_eq!(status, 200, "{body}");
-    assert_eq!(leader.get_as(&session, "/api/health").0, 401);
+    assert_eq!(leader.get_as(&session, "/api/accounts").0, 401);
     assert_eq!(oidc_sign_in(&leader), ("/?oidc=refused".to_string(), None));
 
     // Enabled again, it signs in afresh, and the session disabling ended stays ended.
@@ -3077,7 +3080,7 @@ fn a_provider_sign_in_ends_in_a_session_like_a_password_one() {
     let (ended, again) = oidc_sign_in(&leader);
     assert_eq!(ended, "/");
     assert!(again.is_some());
-    assert_eq!(leader.get_as(&session, "/api/health").0, 401);
+    assert_eq!(leader.get_as(&session, "/api/accounts").0, 401);
 
     // Every refusal is on the record, and so is what the settings change touched.
     let (_, events) = leader.get_as(&op.session, "/api/security-events");
