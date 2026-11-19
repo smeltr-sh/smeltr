@@ -369,6 +369,47 @@ impl RecordChunkBuilder {
     }
 }
 
+/// The rows of a chunk cut where its records arrived, which its source's reader hands out in order.
+pub(crate) struct ChunkRows {
+    chunk: Arc<RecordChunk>,
+    at: usize,
+}
+
+impl ChunkRows {
+    pub(crate) fn new(chunk: RecordChunk) -> ChunkRows {
+        ChunkRows {
+            chunk: Arc::new(chunk),
+            at: 0,
+        }
+    }
+
+    /// The row taken next.
+    pub(crate) fn at(&self) -> usize {
+        self.at
+    }
+
+    pub(crate) fn is_done(&self) -> bool {
+        self.at == self.chunk.len()
+    }
+
+    /// What the next row holds.
+    pub(crate) fn next_size(&self) -> usize {
+        self.chunk.row_size(self.at)
+    }
+
+    /// What the rows not yet taken hold.
+    pub(crate) fn untaken(&self) -> usize {
+        (self.at..self.chunk.len()).map(|row| self.chunk.row_size(row)).sum()
+    }
+
+    /// Takes the next row.
+    pub(crate) fn take(&mut self) -> (Arc<RecordChunk>, u32) {
+        let row = self.at as u32;
+        self.at += 1;
+        (self.chunk.clone(), row)
+    }
+}
+
 /// One poll's rows of a source whose data arrives already in typed columns: a column per field the source declares,
 /// in declaration order, and each value that could not be read as its field's type. Lives as long as any record that
 /// points into it.

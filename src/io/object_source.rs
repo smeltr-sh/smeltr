@@ -22,9 +22,13 @@ use object_store::path::Path;
 use object_store::{GetOptions, GetRange, ObjectStore};
 
 use crate::io::avro::AvroReader;
+use crate::io::avro::Parsed;
 use crate::io::avro::container::Container;
 use crate::io::framing::{Framer, Messages};
-use crate::io::{CommitMap, IoError, PartitionLag, Progress, Source, SourceRecord, TopicPartition};
+use crate::io::{
+    ChunkRows, CommitMap, IoError, PartitionLag, Progress, RecordChunk, RecordChunkBuilder, Source, SourceRecord,
+    TopicPartition,
+};
 use crate::logs::Relog;
 use crate::plan::topology::{AfterCommit, Framing, HeldSecrets, ListPlace, ObjectQueue, ObjectSourceConfig};
 
@@ -34,13 +38,13 @@ const CHUNK: u64 = 8 * 1024 * 1024;
 /// The most of an object's bytes one push hands its framer.
 const READ_AHEAD: usize = 64 * 1024;
 
-/// The most objects fetched and decompressed ahead of the one being read, each on a thread of its own, so round trips
-/// and decompression overlap the reader's framing and each other. A source starts with one and fetches more only while
-/// its reader waits for the next object (`ObjectSource::ahead_target`).
+/// The most objects fetched, decompressed and cut ahead of the one being read, each on a thread of its own, so round
+/// trips, decompression and framing overlap the reader and each other. A source starts with one and fetches more only
+/// while its reader waits for the next object (`ObjectSource::ahead_target`).
 const AHEAD: usize = 8;
 
-/// How many blocks of [`READ_AHEAD`] bytes an object fetched ahead holds decompressed before its fetch waits for the
-/// reader. Together with [`CHUNK`] and [`AHEAD`], it bounds a source's memory.
+/// How many chunks of records, each cut from up to [`READ_AHEAD`] bytes, an object fetched ahead holds before its
+/// fetch waits for the reader. Together with [`CHUNK`] and [`AHEAD`], it bounds a source's memory.
 const QUEUED: usize = 64;
 
 /// How long one GET may take before the object counts as unreadable.
@@ -300,21 +304,28 @@ struct ReadOf {
 /// The object being read now.
 struct Current {
     partition: i32,
-    lines: Fetched,
-    /// A record read but not handed out: it did not fit the last batch.
-    held_back: Option<Vec<u8>>,
-    /// Cuts what is read into records.
-    framer: Framer,
-    /// Records cut and not yet handed out.
-    frames: Messages,
-    /// Why the object is unreadable, once the records before it are handed out.
-    failed: Option<String>,
-    /// The object has no more bytes to come, and `framer` has cut its last.
-    framed: bool,
-    /// Its header, once read, where it is an Avro container file.
-    container: Option<Container>,
-    /// The values of its block read last and not yet handed out, each framed with the object's own schema id.
-    values: VecDeque<Vec<u8>>,
+    fetched: Fetched,
+    /// The rows of the chunk its fetch sent last.
+    rows: Option<ChunkRows>,
+}
+
+impl Current {
+    /// Whether a row is ready in `rows`, waiting on the fetch for one; `false` at the end of the object. A schema the
+    /// fetch sends is told to `avro`.
+    fn ready(&mut self, avro: &mut Option<AvroReader>) -> Result<bool, String> {
+        while self.rows.as_ref().is_none_or(ChunkRows::is_done) {
+            match self.fetched.recv()? {
+                Fetch::Rows(chunk, _) => self.rows = Some(ChunkRows::new(chunk)),
+                Fetch::Schema(schema) => {
+                    if let Some(avro) = avro {
+                        avro.tell(self.partition as u32, schema);
+                    }
+                }
+                Fetch::End => return Ok(false),
+            }
+        }
+        Ok(true)
+    }
 }
 
 /// A receive under way, the time it started and where its answer arrives.
@@ -566,21 +577,20 @@ impl ObjectSource {
     /// Opens the next object fetched as `current`.
     fn open_next(&mut self) -> bool {
         self.fetch_ahead();
-        while let Some((message, object, lines)) = self.ahead.pop_front() {
-            self.ahead_target = if lines.shared.stalled.load(Ordering::Relaxed) {
+        while let Some((message, object, fetched)) = self.ahead.pop_front() {
+            self.ahead_target = if fetched.shared.stalled.load(Ordering::Relaxed) {
                 self.ahead_target.saturating_sub(1).max(1)
-            } else if lines.shared.queued.load(Ordering::Relaxed) == 0 {
+            } else if fetched.shared.queued.load(Ordering::Relaxed) == 0 {
                 (self.ahead_target * 2).min(AHEAD)
             } else {
                 self.ahead_target
             };
             self.fetch_ahead();
-            // Its message was given up meanwhile: dropping `lines` ends its fetch.
+            // Its message was given up meanwhile: dropping `fetched` ends its fetch.
             if !lock(&self.held).contains_key(&message) {
                 continue;
             }
-            let partition = self.next_partition;
-            self.next_partition = self.next_partition.wrapping_add(1);
+            let partition = fetched.partition;
             self.reads.insert(
                 partition,
                 ReadOf {
@@ -593,21 +603,15 @@ impl ObjectSource {
             );
             self.current = Some(Current {
                 partition,
-                lines,
-                held_back: None,
-                framer: Framer::refusing(self.framing.clone(), self.max_record as usize),
-                frames: Messages::default(),
-                failed: None,
-                framed: false,
-                container: None,
-                values: VecDeque::new(),
+                fetched,
+                rows: None,
             });
             return true;
         }
         false
     }
 
-    /// Starts fetching `object` on a thread of its own.
+    /// Starts fetching `object` on a thread of its own, which also cuts it into records, as the next partition.
     fn start_fetch(&mut self, object: &ObjectRef) -> Result<Fetched, String> {
         let store = match self.built.get(&object.bucket) {
             Some(store) => store.clone(),
@@ -618,19 +622,23 @@ impl ObjectSource {
             }
         };
         let path = Path::parse(&object.key).map_err(|e| format!("the key is no path the store can read: {e}"))?;
+        let partition = self.next_partition;
+        self.next_partition = self.next_partition.wrapping_add(1);
+        let cutting = match self.avro {
+            Some(_) => Cutting::Avro(partition as u32, self.max_record),
+            None => Cutting::Frames(Framer::refusing(self.framing.clone(), self.max_record as usize)),
+        };
         let (tx, blocks) = std::sync::mpsc::sync_channel(QUEUED);
         let shared = Arc::new(Shared::default());
         let (runtime, version, counted) = (self.runtime.clone(), object.version.clone(), shared.clone());
         std::thread::Builder::new()
             .name("object-source-fetch".to_string())
-            .spawn(move || fetch(store, runtime, path, version, &tx, &counted))
+            .spawn(move || fetch(store, runtime, path, version, cutting, &tx, &counted))
             .map_err(|e| format!("could not start its fetch: {e}"))?;
         Ok(Fetched {
             blocks,
             shared,
-            block: Vec::new(),
-            taken: 0,
-            ended: false,
+            partition,
         })
     }
 
@@ -646,18 +654,6 @@ impl ObjectSource {
             "an object could not be read; its message is left on the queue"
         );
         lock(&self.held).remove(&message);
-    }
-
-    /// The next record of `current`, or `None` at its end.
-    fn next_record(&mut self) -> Result<Option<Vec<u8>>, String> {
-        let current = self.current.as_mut().expect("a current object");
-        if let Some(record) = current.held_back.take() {
-            return Ok(Some(record));
-        }
-        if let Some(avro) = &mut self.avro {
-            return next_value(current, avro, self.max_record);
-        }
-        next_frame(current)
     }
 
     /// Ends `current`: read to the end, so done once committed up to its last record.
@@ -794,65 +790,6 @@ fn lock(held: &Mutex<HashMap<u64, Held>>) -> MutexGuard<'_, HashMap<u64, Held>> 
     held.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The next record of `current` its framer cuts, or `None` at the end of the object. A record the framer refuses, one
-/// over the longest, makes the object unreadable once the records before it are handed out.
-fn next_frame(current: &mut Current) -> Result<Option<Vec<u8>>, String> {
-    loop {
-        if let Some(record) = current.frames.next() {
-            return Ok(Some(record));
-        }
-        if let Some(why) = current.failed.take() {
-            return Err(why);
-        }
-        if current.framed {
-            return Ok(None);
-        }
-        let ready = current.lines.fill_buf().map_err(|e| e.to_string())?;
-        let mut frames = Messages::default();
-        let cut = match ready.len().min(READ_AHEAD) {
-            0 => {
-                current.framed = true;
-                current.framer.finish(&mut frames)
-            }
-            n => {
-                current.framer.push(&ready[..n]);
-                current.lines.consume(n);
-                current.framer.cut(&mut frames).map(|()| 0)
-            }
-        };
-        current.failed = match cut {
-            Err(malformed) => Some(format!("{}, at byte {}", malformed.what, malformed.at)),
-            Ok(partial) if partial > 0 => Some(format!("it ends partway through a record, {partial} bytes of it")),
-            Ok(_) => None,
-        };
-        current.frames = frames;
-    }
-}
-
-/// The next value of `current`, an Avro container file, framed with its partition as the schema's id. The header is
-/// read at the first, and its schema told to `avro`. `None` past its last block; an empty object has none.
-fn next_value(current: &mut Current, avro: &mut AvroReader, max_record: u64) -> Result<Option<Vec<u8>>, String> {
-    let id = current.partition as u32;
-    loop {
-        if let Some(value) = current.values.pop_front() {
-            return Ok(Some(crate::io::avro::frame(id, &value)));
-        }
-        let container = match &current.container {
-            Some(container) => container,
-            None if current.lines.fill_buf().map_err(|e| e.to_string())?.is_empty() => return Ok(None),
-            None => {
-                let container = Container::open(&mut current.lines)?;
-                avro.tell(id, container.schema.clone());
-                current.container.insert(container)
-            }
-        };
-        match container.block(&mut current.lines, max_record)? {
-            Some(values) => current.values.extend(values),
-            None => return Ok(None),
-        }
-    }
-}
-
 impl Source for ObjectSource {
     fn poll_batch(
         &mut self,
@@ -871,29 +808,41 @@ impl Source for ObjectSource {
         if self.waiting.len() + self.ahead.len() < AHEAD {
             self.receive(Duration::ZERO, true)?;
         }
-        let mut out = crate::io::RecordChunkBuilder::new();
+        let mut records = Vec::new();
         let mut bytes = 0;
-        while out.len() < max_rows && (out.is_empty() || Instant::now() < deadline) {
+        while records.len() < max_rows && (records.is_empty() || Instant::now() < deadline) {
             if self.current.is_none() && !self.open_next() {
-                if !out.is_empty() || !self.waiting.is_empty() || Instant::now() >= deadline {
+                if !records.is_empty() || !self.waiting.is_empty() || Instant::now() >= deadline {
                     break;
                 }
                 self.receive(deadline.saturating_duration_since(Instant::now()), true)?;
                 continue;
             }
-            match self.next_record() {
-                Ok(Some(record)) => {
-                    if !out.is_empty() && bytes + record.len() > max_bytes {
-                        self.current.as_mut().expect("current").held_back = Some(record);
+            let current = self.current.as_mut().expect("current");
+            match current.ready(&mut self.avro) {
+                Ok(true) => {
+                    let rows = current.rows.as_mut().expect("a row ready");
+                    let size = rows.next_size();
+                    if !records.is_empty() && bytes + size > max_bytes {
                         break;
                     }
-                    let partition = self.current.as_ref().expect("current").partition;
-                    let read = self.reads.get_mut(&partition).expect("a read per current object");
-                    bytes += record.len();
-                    out.push(&record, read.records, partition, read.topic.clone(), None);
+                    let read = self
+                        .reads
+                        .get_mut(&current.partition)
+                        .expect("a read per current object");
+                    let (chunk, row) = rows.take();
+                    records.push(SourceRecord {
+                        chunk,
+                        row,
+                        offset: read.records,
+                        partition: current.partition,
+                        topic: read.topic.clone(),
+                        headers: None,
+                    });
                     read.records += 1;
+                    bytes += size;
                 }
-                Ok(None) => self.end_current(),
+                Ok(false) => self.end_current(),
                 Err(why) => {
                     let partition = self.current.take().expect("current").partition;
                     self.ended.push(partition);
@@ -904,7 +853,6 @@ impl Source for ObjectSource {
                 }
             }
         }
-        let records = out.finish();
         let Some(avro) = &mut self.avro else {
             return Ok(records);
         };
@@ -950,12 +898,11 @@ impl Source for ObjectSource {
         self.receive_error.clone()
     }
 
-    /// What the objects hold outside their readers: for the one being read, the record held back, what its framer read
-    /// and has not yet handed out, and what its fetch has queued; for each fetched ahead, what its fetch has queued.
+    /// What the objects hold outside their readers: for the one being read, the rows its reader has not yet handed out
+    /// and what its fetch has queued; for each fetched ahead, what its fetch has queued.
     fn held_bytes(&self) -> Option<u64> {
         let held = self.current.as_ref().map_or(0, |c| {
-            (c.held_back.as_ref().map_or(0, Vec::len) + c.framer.uncut() + c.frames.untaken()) as u64
-                + c.lines.shared.queued.load(Ordering::Relaxed)
+            c.rows.as_ref().map_or(0, ChunkRows::untaken) as u64 + c.fetched.shared.queued.load(Ordering::Relaxed)
         });
         let ahead: u64 = self
             .ahead
@@ -987,46 +934,126 @@ impl Source for ObjectSource {
     }
 }
 
-/// Reads the object at `path` to its end, decompressed, into `tx` in blocks of up to [`READ_AHEAD`] bytes, counting in
-/// `shared` the bytes sent and not yet taken and whether it waited for the reader. An empty block is its end; an error,
-/// why it is unreadable. Ends early once the receiver of `tx` is dropped.
+/// What a fetch sends its reader, in order: an object's records, cut.
+enum Fetch {
+    /// Its next records, and what they hold.
+    Rows(RecordChunk, usize),
+    /// Its schema, before its first value, where it is an Avro container file.
+    Schema(Arc<Parsed>),
+    End,
+}
+
+/// How a fetch cuts an object into records.
+enum Cutting {
+    Frames(Framer),
+    /// As an Avro container file: each value framed with this schema id, none longer than this many bytes.
+    Avro(u32, u64),
+}
+
+/// Why a fetch stops early: its reader is gone.
+const READER_GONE: &str = "its reader is gone";
+
+/// Reads the object at `path` to its end, decompressed, cuts it as `cutting` says and sends it into `tx`, counting in
+/// `shared` the bytes sent and not yet taken and whether it waited for the reader. An error, after the records before
+/// it, says why it is unreadable. Ends early once the receiver of `tx` is dropped.
 fn fetch(
     store: Arc<dyn ObjectStore>,
     runtime: Arc<tokio::runtime::Runtime>,
     path: Path,
     version: Option<String>,
-    tx: &SyncSender<Result<Vec<u8>, String>>,
+    cutting: Cutting,
+    tx: &SyncSender<Result<Fetch, String>>,
     shared: &Shared,
 ) {
-    let mut lines = match open_object(store, runtime, path, version) {
-        Ok(lines) => lines,
-        Err(why) => {
-            let _ = tx.send(Err(why));
-            return;
+    let send = |fetch: Fetch| -> Result<(), String> {
+        if let Fetch::Rows(_, size) = &fetch {
+            shared.queued.fetch_add(*size as u64, Ordering::Relaxed);
         }
-    };
-    loop {
-        let block = match lines.fill_buf() {
-            Ok(ready) => ready[..ready.len().min(READ_AHEAD)].to_vec(),
-            Err(e) => {
-                let _ = tx.send(Err(e.to_string()));
-                return;
-            }
-        };
-        lines.consume(block.len());
-        let end = block.is_empty();
-        shared.queued.fetch_add(block.len() as u64, Ordering::Relaxed);
-        let sent = match tx.try_send(Ok(block)) {
-            Err(TrySendError::Full(block)) => {
+        let sent = match tx.try_send(Ok(fetch)) {
+            Err(TrySendError::Full(fetch)) => {
                 shared.stalled.store(true, Ordering::Relaxed);
-                tx.send(block).is_ok()
+                tx.send(fetch).is_ok()
             }
             sent => sent.is_ok(),
         };
-        if !sent || end {
-            return;
+        sent.then_some(()).ok_or_else(|| READER_GONE.to_string())
+    };
+    let cut = open_object(store, runtime, path, version).and_then(|mut lines| match cutting {
+        Cutting::Frames(framer) => frames(&mut *lines, framer, &send),
+        Cutting::Avro(id, max_record) => values(&mut *lines, id, max_record, &send),
+    });
+    match cut {
+        Ok(()) => drop(send(Fetch::End)),
+        Err(why) if why == READER_GONE => {}
+        Err(why) => drop(tx.send(Err(why))),
+    }
+}
+
+/// Cuts `lines` into records with `framer`, sending each block's as it is cut. Err says why the object is unreadable:
+/// a record the framer refuses, one over the longest, or one the object ends partway through.
+fn frames(
+    lines: &mut dyn BufRead,
+    mut framer: Framer,
+    send: &impl Fn(Fetch) -> Result<(), String>,
+) -> Result<(), String> {
+    let nowhere: Arc<str> = Arc::from("");
+    loop {
+        let ready = lines.fill_buf().map_err(|e| e.to_string())?;
+        let n = ready.len().min(READ_AHEAD);
+        let mut frames = Messages::default();
+        let cut = match n {
+            0 => framer.finish(&mut frames),
+            n => {
+                framer.push(&ready[..n]);
+                lines.consume(n);
+                framer.cut(&mut frames).map(|()| 0)
+            }
+        };
+        let mut out = RecordChunkBuilder::new();
+        frames.each(|record| out.push(record, 0, 0, nowhere.clone(), None));
+        send_rows(out, send)?;
+        match cut {
+            Err(malformed) => return Err(format!("{}, at byte {}", malformed.what, malformed.at)),
+            Ok(partial) if partial > 0 => {
+                return Err(format!("it ends partway through a record, {partial} bytes of it"));
+            }
+            Ok(_) if n == 0 => return Ok(()),
+            Ok(_) => {}
         }
     }
+}
+
+/// Reads `lines` as an Avro container file, sending its schema and then each block's values framed with `id`. An
+/// empty object has none.
+fn values(
+    lines: &mut dyn BufRead,
+    id: u32,
+    max_record: u64,
+    send: &impl Fn(Fetch) -> Result<(), String>,
+) -> Result<(), String> {
+    if lines.fill_buf().map_err(|e| e.to_string())?.is_empty() {
+        return Ok(());
+    }
+    let container = Container::open(lines)?;
+    send(Fetch::Schema(container.schema.clone()))?;
+    let nowhere: Arc<str> = Arc::from("");
+    while let Some(values) = container.block(lines, max_record)? {
+        let mut out = RecordChunkBuilder::new();
+        for value in values {
+            out.push(&crate::io::avro::frame(id, &value), 0, 0, nowhere.clone(), None);
+        }
+        send_rows(out, send)?;
+    }
+    Ok(())
+}
+
+/// Sends the records pushed to `out` as one chunk, if there are any.
+fn send_rows(out: RecordChunkBuilder, send: &impl Fn(Fetch) -> Result<(), String>) -> Result<(), String> {
+    if out.is_empty() {
+        return Ok(());
+    }
+    let size = out.size();
+    send(Fetch::Rows(out.into_chunk(), size))
 }
 
 /// The object at `path`, read at the version named and the ETag its head returned, decompressed as its first bytes
@@ -1077,45 +1104,30 @@ fn open_object(
 struct Shared {
     /// The bytes sent and not yet taken.
     queued: AtomicU64,
-    /// The fetch found the queue full and waited for the reader to take a block.
+    /// The fetch found the queue full and waited for the reader to take a chunk.
     stalled: AtomicBool,
 }
 
-/// An object as its fetch sends it, decompressed.
+/// An object as its fetch sends it, cut into records.
 struct Fetched {
-    blocks: Receiver<Result<Vec<u8>, String>>,
+    blocks: Receiver<Result<Fetch, String>>,
     shared: Arc<Shared>,
-    block: Vec<u8>,
-    taken: usize,
-    /// Its end block is taken.
-    ended: bool,
+    /// The partition its records are read as.
+    partition: i32,
 }
 
-impl BufRead for Fetched {
-    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
-        if self.taken == self.block.len() && !self.ended {
-            // A fetch gone without sending its end panicked: what it sent is not the whole object.
-            let block = self
-                .blocks
-                .recv()
-                .unwrap_or_else(|_| Err("its fetch stopped before the end of the object".to_string()))
-                .map_err(std::io::Error::other)?;
-            self.shared.queued.fetch_sub(block.len() as u64, Ordering::Relaxed);
-            self.ended = block.is_empty();
-            self.block = block;
-            self.taken = 0;
+impl Fetched {
+    /// What its fetch sent next, waiting for it. Err says why the object is unreadable.
+    fn recv(&self) -> Result<Fetch, String> {
+        // A fetch gone without sending its end panicked: what it sent is not the whole object.
+        let fetch = self
+            .blocks
+            .recv()
+            .unwrap_or_else(|_| Err("its fetch stopped before the end of the object".to_string()))?;
+        if let Fetch::Rows(_, size) = &fetch {
+            self.shared.queued.fetch_sub(*size as u64, Ordering::Relaxed);
         }
-        Ok(&self.block[self.taken..])
-    }
-
-    fn consume(&mut self, amount: usize) {
-        self.taken += amount;
-    }
-}
-
-impl Read for Fetched {
-    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
-        read_buffered(self, out)
+        Ok(fetch)
     }
 }
 
