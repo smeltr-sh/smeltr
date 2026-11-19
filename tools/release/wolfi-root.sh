@@ -26,10 +26,9 @@ builder)
     chroot "$root" /usr/bin/busybox --install -s
     ;;
 image)
-    # git serves the leader's config repository through `git http-backend`, which Wolfi packages in git-daemon. The
-    # leader reaches a host in-process (src/leader/remote.rs), and a worker fetches through gix, so no git goes to the
-    # network. git's package needs a libcurl all the same, and this one is named so the choice does not move.
-    packages git git-daemon libcurl-openssl4
+    # The binary links only glibc and the libgcc glibc brings. The leader serves, packs and pushes its repository
+    # in-process, and its cryptography is inside it.
+    packages
     # The bundle's digest as the package installed it, which the STIG's trust-store check compares the bundle to.
     (cd "$root/etc/ssl/certs" && sha256sum ca-certificates.crt >.ca-certificates.crt.sha256)
     # A fixed number, not a name: a kubelet enforcing runAsNonRoot cannot read this image's passwd file. A pod

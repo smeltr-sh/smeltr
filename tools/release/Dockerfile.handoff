@@ -1,7 +1,6 @@
 # The final image, from a binary already compiled. `Dockerfile`'s export stage writes the folder this belongs to:
-# this file, named `Dockerfile`, with `smeltr`, `wolfi-root.sh`, OpenSSL's FIPS provider (`fips.so`,
-# `fipsmodule.cnf`, `openssl.cnf`, `openssl-LICENSE.txt`), `compose.yaml`, `LICENSE` and `THIRD-PARTY-NOTICES.md`
-# beside it.
+# this file, named `Dockerfile`, with `smeltr`, `wolfi-root.sh`, `compose.yaml`, `LICENSE` and
+# `THIRD-PARTY-NOTICES.md` beside it.
 # Nothing compiles here.
 #
 # The image is a root of Wolfi's packages (wolfi-root.sh) with the binary added, as `Dockerfile` builds it. Wolfi's
@@ -15,8 +14,6 @@ RUN sh /wolfi-root.sh image /rootfs
 
 FROM scratch
 COPY --from=wolfi /rootfs /
-COPY fips.so /usr/lib/ossl-modules/fips.so
-COPY fipsmodule.cnf openssl.cnf /etc/ssl/
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 
@@ -24,7 +21,7 @@ ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
 # execute bit. No `# syntax=` directive above, which would send BuildKit to Docker Hub for a frontend image an
 # air-gapped site cannot reach.
 COPY --chmod=0755 smeltr /usr/local/bin/smeltr
-COPY LICENSE THIRD-PARTY-NOTICES.md openssl-LICENSE.txt /usr/share/doc/smeltr/
+COPY LICENSE THIRD-PARTY-NOTICES.md /usr/share/doc/smeltr/
 
 # The image starts from scratch, so it carries only these labels.
 # `just dist` passes the release as VERSION; a build here without `--build-arg VERSION=<release>` leaves it blank.
