@@ -84,10 +84,11 @@ export function heldAreas(): string[] {
   return areas.length === 0 ? [] : [SHARED_SCOPE, ...areas.filter((a) => a !== SHARED_SCOPE)];
 }
 
-/** Whether the person is an administrator or an editor in some area, which the leader requires to list the secrets
- * and certificates a form picks from. */
-export function editsSomewhere(): boolean {
-  return isAdministrator() || heldAreas().some((a) => holds(a, 'editor'));
+/** Whether the person is an administrator or holds `level` in some area. The leader lists the secrets and
+ * certificates a form picks from to an editor somewhere, and deploys a commit of `main` for a deployer in each area
+ * it changes. */
+export function holdsSomewhere(level: AccessLevel): boolean {
+  return isAdministrator() || heldAreas().some((a) => holds(a, level));
 }
 
 /** Whether the page on screen may be changed. Only an authoring page names a scope; everywhere
