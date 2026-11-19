@@ -1442,13 +1442,19 @@ const FILE_SECS: u64 = 5;
 const FILE_ROWS: u64 = 5_000;
 
 /// The corpus as files of lines, each named for its place in it.
-fn files(rows: u64) -> Vec<(String, String)> {
+fn files(rows: u64) -> Vec<(String, Vec<u8>)> {
+    let gzip = std::env::var_os("CONNECTOR_GZIP").is_some();
     (0..rows.div_ceil(FILE_ROWS))
         .map(|f| {
-            let lines = (f * FILE_ROWS..((f + 1) * FILE_ROWS).min(rows))
+            let lines: String = (f * FILE_ROWS..((f + 1) * FILE_ROWS).min(rows))
                 .map(|i| line(i) + "\n")
                 .collect();
-            (format!("{f:06}.ndjson"), lines)
+            if !gzip {
+                return (format!("{f:06}.ndjson"), lines.into_bytes());
+            }
+            let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            std::io::Write::write_all(&mut gz, lines.as_bytes()).unwrap();
+            (format!("{f:06}.ndjson.gz"), gz.finish().unwrap())
         })
         .collect()
 }
@@ -1520,9 +1526,9 @@ mod s3 {
         assert!(status < 300 || status == 409, "bucket {bucket}: {status} {text}");
     }
 
-    fn put(at: &str, bucket: &str, files: &[(String, String)]) {
+    fn put(at: &str, bucket: &str, files: &[(String, Vec<u8>)]) {
         for (key, body) in files {
-            ok("PUT", &format!("{at}/{bucket}/{key}"), &[], body.as_bytes());
+            ok("PUT", &format!("{at}/{bucket}/{key}"), &[], body.as_slice());
         }
     }
 
@@ -1619,13 +1625,13 @@ mod gcs {
         );
     }
 
-    fn put(at: &str, bucket: &str, files: &[(String, String)]) {
+    fn put(at: &str, bucket: &str, files: &[(String, Vec<u8>)]) {
         for (key, body) in files {
             ok(
                 "POST",
                 &format!("{at}/upload/storage/v1/b/{bucket}/o?uploadType=media&name={key}"),
                 &[("content-type", "application/x-ndjson")],
-                body.as_bytes(),
+                body.as_slice(),
             );
         }
     }
@@ -1703,13 +1709,13 @@ mod azure {
         );
     }
 
-    fn put(at: &str, container: &str, files: &[(String, String)]) {
+    fn put(at: &str, container: &str, files: &[(String, Vec<u8>)]) {
         for (key, body) in files {
             ok(
                 "PUT",
                 &format!("{at}/{container}/{key}?{SAS}"),
                 &[("x-ms-blob-type", "BlockBlob")],
-                body.as_bytes(),
+                body.as_slice(),
             );
         }
     }
@@ -1806,7 +1812,7 @@ mod sftp {
             exec(
                 "sftp",
                 &["sh", "-c", &format!("cat > {path} && chown 1001 {path}")],
-                body.as_bytes(),
+                body.as_slice(),
             );
         }
         decl["pollIntervalSecs"] = json!(1);
