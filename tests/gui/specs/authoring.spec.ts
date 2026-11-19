@@ -2052,6 +2052,8 @@ test('A11: a test locking a whole float and a long integer passes at once', asyn
   const lock = admin.getByRole('button', { name: 'Lock this as a test' });
   await expect(lock).toBeEnabled({ timeout: 15_000 });
   await lock.click();
+  // Until the lock page is up, 'Name' would find the editor's "pipeline name" box.
+  await expect(admin.getByRole('heading', { name: 'Lock this as a test' })).toBeVisible();
   await admin.getByRole('textbox', { name: 'Name' }).fill('orders keep their numbers');
   await expect(admin.getByRole('columnheader', { name: 'whole' })).toBeVisible();
   await admin.screenshot({ path: test.info().outputPath('lock-numbers.png') });

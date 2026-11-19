@@ -127,9 +127,10 @@ pub fn need(method: &Method, path: &str) -> Need {
         }
 
         // What the Status, Metrics and Map pages read, the warnings as Prometheus scrapes them, the area picker, and
-        // what a source or destination form asks of the build. The streams, the series and the warnings are filtered
-        // by their handlers to the groups the caller views.
+        // what a source or destination form asks of the build. The streams, the series, the warnings and the logs are
+        // filtered by their handlers to the groups the caller views.
         (Method::GET | Method::HEAD, ["cluster"])
+        | (Method::GET | Method::HEAD, ["logs"])
         | (Method::GET | Method::HEAD, ["streams"])
         | (Method::GET | Method::HEAD, ["warnings"])
         | (Method::GET | Method::HEAD, ["metrics"])
@@ -284,7 +285,6 @@ mod tests {
             (Method::GET, "/api/workers"),
             (Method::POST, "/api/workers/w1/restart"),
             (Method::GET, "/api/enrollment-codes"),
-            (Method::GET, "/api/logs"),
             (Method::GET, "/api/health"),
             (Method::POST, "/api/worker-groups"),
             (Method::PUT, "/api/worker-groups/payments"),
@@ -517,11 +517,12 @@ mod tests {
     }
 
     #[test]
-    fn what_status_and_map_read_needs_viewer_somewhere() {
+    fn what_status_map_and_logs_read_needs_viewer_somewhere() {
         for path in [
             "/api/cluster",
             "/api/warnings",
             "/api/metrics",
+            "/api/logs",
             "/api/streams",
             "/api/flow",
             "/api/series",

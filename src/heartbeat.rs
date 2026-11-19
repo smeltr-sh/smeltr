@@ -142,6 +142,14 @@ impl From<&crate::logs::Event> for LogDto {
 }
 
 impl LogDto {
+    /// The group its `group` field names, if it names one.
+    pub fn named_group(&self) -> Option<&str> {
+        self.fields.iter().find_map(|(name, value)| match value {
+            FieldValueDto::Str(group) if name == "group" && !group.is_empty() => Some(group.as_str()),
+            _ => None,
+        })
+    }
+
     /// Its class and type, read from `site` when a build before lines had types sent it, split at its first dot as
     /// the logs store's step that split each stored site does.
     pub fn class_and_type(&self) -> (Option<&str>, &str) {

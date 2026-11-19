@@ -78,6 +78,11 @@ const CASES: &[Case] = &[
         leg: Leg::Source(s3::list_source),
     },
     Case {
+        name: "s3 list source on seaweedfs",
+        services: &["seaweedfs"],
+        leg: Leg::Source(s3::seaweedfs_list_source),
+    },
+    Case {
         name: "gcs list source",
         services: &["fake-gcs"],
         leg: Leg::Source(gcs::list_source),
@@ -1533,13 +1538,21 @@ mod s3 {
     }
 
     pub fn list_source(run: &str, rows: u64) -> Option<Value> {
-        let at = live::s3(&named(run))?;
-        bucket(&at, run);
-        put(&at, run, &files(rows));
-        Some(with_keys(
+        Some(listed(&live::s3(&named(run))?, run, rows))
+    }
+
+    pub fn seaweedfs_list_source(run: &str, rows: u64) -> Option<Value> {
+        Some(listed(&live::seaweedfs(&named(run))?, run, rows))
+    }
+
+    /// An `s3List` source reading the bucket at `at`, which holds the corpus.
+    fn listed(at: &str, run: &str, rows: u64) -> Value {
+        bucket(at, run);
+        put(at, run, &files(rows));
+        with_keys(
             json!({"id": "in", "type": "s3List", "bucket": run, "pollIntervalSecs": 1}),
-            &at,
-        ))
+            at,
+        )
     }
 
     pub fn sqs_source(run: &str, rows: u64) -> Option<Value> {
