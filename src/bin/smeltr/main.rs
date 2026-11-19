@@ -1013,6 +1013,7 @@ fn start_worker(
     let thread_limit = cfg::worker_thread_limit();
     let memory = smeltr::worker::memory_to_fit();
     let stop_after_unreachable_secs = cfg::worker_stop_after_unreachable_secs();
+    let exit_after_blocked_secs = cfg::worker_exit_after_blocked_secs();
     let leader_trust_public = cfg::leader_trust_public();
     let metrics_endpoint = smeltr::worker::metrics_endpoint::open().unwrap_or_else(|e| {
         eprintln!("smeltr: refusing to start -- {e}");
@@ -1032,6 +1033,7 @@ fn start_worker(
         state_dir,
         enrollment_code,
         stop_after_unreachable_secs,
+        exit_after_blocked_secs,
         in_leader,
         metrics_endpoint,
     });
@@ -1316,6 +1318,8 @@ struct WorkerStorageFileConfig {
 struct WorkerRuntimeFileConfig {
     thread_limit: Option<usize>,
     memory: Option<String>,
+    // -1 is never, as for `stop_after_unreachable_secs`.
+    exit_after_blocked_secs: Option<i64>,
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -1750,6 +1754,10 @@ fn load_and_apply_config_file() {
     backfill_env("SMELTR_WORKER_STATE_DIR", file.worker.storage.state_dir);
     backfill_env("SMELTR_WORKER_THREAD_LIMIT", file.worker.runtime.thread_limit);
     backfill_env("SMELTR_WORKER_MEMORY", file.worker.runtime.memory);
+    backfill_env(
+        "SMELTR_WORKER_EXIT_AFTER_BLOCKED_SECS",
+        file.worker.runtime.exit_after_blocked_secs,
+    );
     backfill_env(
         "SMELTR_WORKER_STOP_AFTER_UNREACHABLE_SECS",
         file.worker.heartbeat.stop_after_unreachable_secs,

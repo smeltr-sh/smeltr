@@ -71,6 +71,8 @@ pub struct WorkerConfig {
     /// never. Known at startup, unlike a directive from the leader -- which is what lets this worker enforce it
     /// before its first successful heartbeat, the exact situation the setting exists for.
     pub stop_after_unreachable_secs: Option<u64>,
+    /// How long this worker may hold a runtime it cannot confirm dead before it exits. `None` means never.
+    pub exit_after_blocked_secs: Option<u64>,
     /// Whether this worker runs inside its leader's own process, where exiting would end the leader too. Such a
     /// worker restarts when asked and is never asked to shut down.
     pub in_leader: bool,
@@ -2469,6 +2471,10 @@ const ENROLL_AGAIN_EVERY: Duration = Duration::from_secs(60);
 /// temporary failure: a supervisor that restarts only a service that failed restarts this one too.
 const ENROLLED_AGAIN_EXIT: i32 = 75;
 
+/// What a worker blocked for too long exits with: a failure, so a supervisor that restarts only a service that
+/// failed restarts this one.
+const BLOCKED_EXIT: i32 = 75;
+
 /// The worker this process runs, once it runs one. What a signal ends before the process does.
 static RUNNING: std::sync::OnceLock<Arc<Supervisor>> = std::sync::OnceLock::new();
 
@@ -2881,6 +2887,8 @@ struct Schedule {
     /// The commit the last runtime that started was built from, and what it was built of. A commit that will
     /// not start is answered by starting this again, so it does not cost the deployment that was working.
     last_good: Option<(String, ContentId)>,
+    /// Since when the slot has been blocked.
+    blocked_since: Option<Instant>,
 }
 
 impl Schedule {
@@ -3867,6 +3875,7 @@ impl Supervisor {
             slot = self.retire_exited(slot, &mut s);
             slot = self.stop_for_outage(slot, &mut s);
             slot = self.restart_if_asked(slot, &mut s);
+            self.exit_if_blocked_too_long(&slot, &mut s);
 
             // Stopped for an outage stays stopped for the outage. Nothing is started while this holds, however
             // new the target, because what the setting is about is not processing without a leader to answer to.
@@ -4022,6 +4031,32 @@ impl Supervisor {
             s.retry_at = None;
         }
         slot
+    }
+
+    /// Exits the process once the slot has been blocked for longer than this worker is set to wait. Whatever runs
+    /// the worker then ends what is left of the runtime, which this process could not, and starts the worker again.
+    fn exit_if_blocked_too_long(&self, slot: &Slot, s: &mut Schedule) {
+        if !matches!(slot, Slot::Blocked { .. }) {
+            s.blocked_since = None;
+            return;
+        }
+        let since = *s.blocked_since.get_or_insert_with(Instant::now);
+        let limit = self.config.exit_after_blocked_secs.map(Duration::from_secs);
+        // Exiting would end the leader too, as a shutdown would.
+        if self.config.in_leader || limit.is_none_or(|limit| since.elapsed() < limit) {
+            return;
+        }
+        tracing::error!(
+            name: "exiting_blocked", target: "processes",
+            limit = ?self.config.exit_after_blocked_secs,
+            "this worker's runtime has not been confirmed dead for longer than exit_after_blocked_secs, so the \
+             worker is exiting for whatever runs it to end what is left and start it again"
+        );
+        // The runtime is not this thread's to end again, so the notice goes out at once.
+        self.exit_to(Exit::Notice);
+        self.exit_reaches(Exit::Told, NOTICE_BUDGET);
+        crate::logs::stop();
+        std::process::exit(BLOCKED_EXIT);
     }
 
     /// Restarts the deployment when asked: by an operator, or by a certificate the deployment presents arriving at a
@@ -6496,6 +6531,7 @@ mod tests {
                 state_dir,
                 enrollment_code: None,
                 stop_after_unreachable_secs: None,
+                exit_after_blocked_secs: None,
                 in_leader: false,
                 metrics_endpoint: None,
             },
@@ -8757,6 +8793,7 @@ mod tests {
             state_dir: dir.to_path_buf(),
             enrollment_code: None,
             stop_after_unreachable_secs: None,
+            exit_after_blocked_secs: None,
             in_leader: false,
             metrics_endpoint: None,
         }
