@@ -472,6 +472,8 @@ async function makePipeline(admin: Page, leader: Leader, api: Api, hash: string)
     { id: 'web', type: 'syslogReceiver', port: 6514, allowFrom: ['10.0.0.0/8'] },
   ]);
   await goto(admin, leader, hash);
+  // The dialog grows when its targets arrive, which would move Cancel from under the click.
+  await expect(admin.getByRole('dialog').getByLabel('Capture target')).toBeVisible();
   await admin.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click();
   await admin.getByRole('button', { name: 'Choose a sample' }).click();
   await admin.getByRole('button', { name: 'Add sample' }).click();
@@ -561,6 +563,8 @@ test("a new pipeline's CSV columns take a produced schema's types over the sampl
     },
   ]);
   await goto(admin, leader, '#/build/pipelines/new?source=web&to=search');
+  // The dialog grows when its targets arrive, which would move Cancel from under the click.
+  await expect(admin.getByRole('dialog').getByLabel('Capture target')).toBeVisible();
   await admin.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click();
   await expect(admin.locator('.produces').getByRole('link', { name: 'tally' })).toBeVisible();
   await admin.getByRole('button', { name: 'Choose a sample' }).click();
