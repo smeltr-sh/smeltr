@@ -30,6 +30,9 @@ use crate::config_api::{self, Save, UNNAMED_BRANCH, Writing, blocking_save};
 #[derive(serde::Deserialize, Default)]
 pub struct WorkerGroupQuery {
     branch: Option<String>,
+    /// When true, the listing is of the groups the fleet runs, read at the deployed commit rather than on the branch.
+    #[serde(default)]
+    deployed: bool,
 }
 
 impl WorkerGroupQuery {
@@ -110,17 +113,40 @@ fn resolve_branch_commit(repo: &Path, branch: &str) -> Result<String, String> {
     }
 }
 
-/// `list_branch_groups_at` for a branch by name, resolving its own commits -- what every test here wants; the
-/// real endpoint resolves commits itself so it can also return the exact one it read from.
+/// `listed` for a branch by name -- what every test here wants.
 #[cfg(test)]
 fn list_groups_in(
     data_dir: &Path,
     branch: &str,
     store: &smeltr::leader::store::Store,
 ) -> Result<Vec<WorkerGroupOut>, String> {
-    let repo = repo_at(data_dir)?;
-    let branch_commit = resolve_branch_commit(&repo, branch)?;
-    list_branch_groups_at(&repo, git::deployed(&repo).as_deref(), &branch_commit, store)
+    let q = WorkerGroupQuery {
+        branch: Some(branch.to_string()),
+        deployed: false,
+    };
+    listed(&repo_at(data_dir)?, &q, store).map(|(groups, _)| groups)
+}
+
+/// The groups `q` asks for, and the commit they were read at: the deployed commit's, or the branch's. With nothing
+/// deployed, the fleet runs no group.
+fn listed(
+    repo: &Path,
+    q: &WorkerGroupQuery,
+    store: &smeltr::leader::store::Store,
+) -> Result<(Vec<WorkerGroupOut>, Option<String>), String> {
+    let deployed = git::deployed(repo);
+    let commit = if q.deployed {
+        deployed.clone()
+    } else {
+        Some(resolve_branch_commit(repo, q.name())?)
+    };
+    match commit {
+        Some(commit) => Ok((
+            list_branch_groups_at(repo, deployed.as_deref(), &commit, store)?,
+            Some(commit),
+        )),
+        None => Ok((Vec::new(), None)),
+    }
 }
 
 /// The branch listing for commits already resolved, so a caller that also hands the branch commit back to its
@@ -171,28 +197,24 @@ pub async fn list_worker_groups(
     Extension(access): Extension<Access>,
     Query(q): Query<WorkerGroupQuery>,
 ) -> Envelope<WorkerGroups> {
-    let branch = q.name().to_string();
     let store = state.store.clone();
-    let listed = blocking(move || {
+    let answer = blocking(move || {
         let repo = repo_at(&leader_data_dir()).map_err(Refusal::internal)?;
-        let deployed = git::deployed(&repo);
-        let branch_commit = resolve_branch_commit(&repo, &branch).map_err(Refusal::internal)?;
-        let groups = list_branch_groups_at(&repo, deployed.as_deref(), &branch_commit, store.as_ref())
-            .map_err(Refusal::internal)?;
+        let (groups, commit) = listed(&repo, &q, store.as_ref()).map_err(Refusal::internal)?;
         // Best-effort: `shared`'s hue is a courtesy on top of the listing, and a store hiccup here should not
         // fail a request the groups half of which already succeeded.
         let shared_hue = store
             .group_hues()
             .ok()
             .and_then(|m| m.get(config_file::SHARED_DIR).copied());
-        Ok::<_, Refusal>((groups, branch_commit, shared_hue))
+        Ok::<_, Refusal>((groups, commit, shared_hue))
     })
     .await;
-    match listed {
+    match answer {
         Ok((groups, commit, shared_hue)) => Envelope::ok(WorkerGroups {
             groups: held(groups, &access),
             shared_hue,
-            commit: Some(commit),
+            commit,
         }),
         Err(e) => Envelope::refused(e),
     }
@@ -837,6 +859,45 @@ mod tests {
         )
         .unwrap();
         git::deploy_commit(data_dir, &git::main_head(&repo).unwrap(), &Actor::system()).unwrap();
+    }
+
+    #[test]
+    fn the_deployed_listing_keeps_a_group_main_has_since_deleted() {
+        let data = temp_dir("deployed-after-rollback");
+        let store = test_store("deployed-after-rollback");
+        deploy_to_main(&data, "west", "West");
+        let repo = repo_at(&data).unwrap();
+        let parent = git::main_head(&repo).unwrap();
+        let removal = git::FileEdit {
+            path: "groups/west/system.json".to_string(),
+            content: None,
+        };
+        git::commit_edits(
+            &repo,
+            git::MAIN_BRANCH,
+            &parent,
+            Some(&parent),
+            &[removal],
+            "delete",
+            &Actor::system(),
+        )
+        .unwrap();
+
+        let q = WorkerGroupQuery {
+            branch: None,
+            deployed: true,
+        };
+        let (groups, commit) = listed(&repo, &q, &store).unwrap();
+        assert_eq!(commit.as_deref(), Some(parent.as_str()));
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            (groups[0].id.as_str(), groups[0].name.as_str(), groups[0].deployed),
+            ("west", "West", true)
+        );
+        assert!(
+            list_groups_in(&data, git::MAIN_BRANCH, &store).unwrap().is_empty(),
+            "main no longer holds it"
+        );
     }
 
     #[test]

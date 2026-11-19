@@ -521,7 +521,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/worker-groups",
-        what: "Worker groups on a branch (live or pending), the hue for shared, and the commit. Query: branch.",
+        what: "Worker groups on a branch (live or pending), the hue for shared, and the commit. Query: branch, or deployed=true for the groups the fleet runs.",
         body: "",
     },
     Route {
