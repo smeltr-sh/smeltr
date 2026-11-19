@@ -69,10 +69,10 @@ pipeline quietly running at two versions.
 **Architecture:** control plane (bundle distribution).
 
 Workers pull and the leader never pushes. A worker clones the repository
-and fetches `main`; the leader serves it with `git http-backend`, git's
-own server, behind the same worker credential everything else uses.
-Read-only is the server's own doing — `http.receivepack` is false —
-rather than a route that happens not to exist.
+and fetches `main`; the leader serves it in git's protocol v2 from its own
+process, behind the same worker credential everything else uses.
+Read-only is the server's own doing — it answers no push — rather than a
+route that happens not to exist.
 
 A worker holds the whole repository. The cluster is the security
 boundary, so an enrolled worker is trusted with every group's

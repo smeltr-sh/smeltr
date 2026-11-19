@@ -69,7 +69,7 @@ its own group's subtree merged with `shared/`. Each answer also names the commit
 pointer is at, as a cue: a worker that has fetched that commit already does not fetch
 again, and one whose beat went unanswered fetches on its own schedule. A commit that moves nothing the
 worker runs is not a redeploy. The leader answers that fetch with git's
-protocol, and a lookup file by its SHA-256 from its lookup store, and nothing
+protocol v2 from its own process, and a lookup file by its SHA-256 from its lookup store, and nothing
 else: no path a worker sends returns a file git keeps to itself or one beside
 the repository, such as the secret store or the key of the leader's own authority.
 

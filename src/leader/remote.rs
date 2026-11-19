@@ -22,6 +22,7 @@ use axum::extract::State;
 use crate::lookup::store::{self, Pointer};
 
 use super::envelope::{Envelope, Refusal};
+use super::pkt_line::{Packet, line as pkt_line};
 use super::store::{Actor, SecretSave, Store, StoreError};
 use super::{AppState, git, run_store, tree};
 
@@ -707,7 +708,7 @@ pub fn push(
     body.extend_from_slice(b"0000");
     if let Some(new) = new {
         let haves: Vec<&str> = host.refs.values().map(String::as_str).collect();
-        body.extend(git::pack_for_push(repo, new, &haves).map_err(|e| e.message)?);
+        body.extend(git::pack_reaching(repo, &[new], &haves).map_err(|e| e.message)?);
     }
 
     let url = format!("{}/git-receive-pack", remote.url.trim_end_matches('/'));
@@ -825,32 +826,18 @@ fn refused(remote: &Remote, e: &ureq::Error, what: &str) -> String {
     }
 }
 
-/// `payload` as one pkt-line: its length, in four hex digits counting themselves, then the bytes.
-fn pkt_line(payload: &[u8]) -> Vec<u8> {
-    let mut line = format!("{:04x}", payload.len() + 4).into_bytes();
-    line.extend_from_slice(payload);
-    line
-}
-
 /// The pkt-lines of `bytes` up to the first flush, and what follows that flush. Bytes that end before one are a
-/// section on their own.
+/// section on their own. git's v0, which a push speaks, has no other marker.
 fn pkt_lines(mut bytes: &[u8]) -> Result<(Vec<&[u8]>, &[u8]), String> {
     let mut lines = Vec::new();
     while !bytes.is_empty() {
-        let length = bytes
-            .get(..4)
-            .and_then(|hex| std::str::from_utf8(hex).ok())
-            .and_then(|hex| usize::from_str_radix(hex, 16).ok())
-            .ok_or("a pkt-line without its length")?;
-        if length == 0 {
-            return Ok((lines, &bytes[4..]));
+        let (packet, rest) = super::pkt_line::next(bytes)?;
+        match packet {
+            Packet::Data(line) => lines.push(line),
+            Packet::Flush => return Ok((lines, rest)),
+            other => return Err(format!("a {other:?} packet, which git's v0 does not send")),
         }
-        let line = bytes
-            .get(4..length)
-            .filter(|_| length >= 4)
-            .ok_or_else(|| format!("a pkt-line of {length} bytes in {} left", bytes.len()))?;
-        lines.push(line);
-        bytes = &bytes[length..];
+        bytes = rest;
     }
     Ok((lines, bytes))
 }
@@ -1626,20 +1613,19 @@ mod tests {
                                     .get("content-type")
                                     .and_then(|v| v.to_str().ok())
                                     .map(str::to_string);
-                                let cgi = git::http_backend_receiving(
+                                let (status, headers, body) = git_http_backend(
                                     &served,
                                     &path,
                                     method.as_str(),
                                     &query.unwrap_or_default(),
                                     content_type.as_deref(),
                                     &body,
-                                )
-                                .unwrap();
-                                let mut response = axum::http::Response::builder().status(cgi.status);
-                                for (name, value) in &cgi.headers {
+                                );
+                                let mut response = axum::http::Response::builder().status(status);
+                                for (name, value) in &headers {
                                     response = response.header(name, value);
                                 }
-                                response.body(axum::body::Body::from(cgi.body)).unwrap()
+                                response.body(axum::body::Body::from(body)).unwrap()
                             },
                         ),
                     );
@@ -1689,9 +1675,59 @@ mod tests {
             else {
                 panic!("the host commit did not land")
             };
-            git::forget_advertisement();
             commit
         }
+    }
+
+    /// git's own `http-backend`, taking pushes, as a git host runs it: its status, headers and body.
+    fn git_http_backend(
+        repo: &Path,
+        path: &str,
+        method: &str,
+        query: &str,
+        content_type: Option<&str>,
+        body: &[u8],
+    ) -> (u16, Vec<(String, String)>, Vec<u8>) {
+        use std::io::Write;
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(["-c", "http.receivepack=true", "http-backend"])
+            .env("GIT_PROJECT_ROOT", repo.parent().unwrap())
+            .env("GIT_HTTP_EXPORT_ALL", "1")
+            .env(
+                "PATH_INFO",
+                format!("/{}/{path}", repo.file_name().unwrap().to_string_lossy()),
+            )
+            .env("REQUEST_METHOD", method)
+            .env("QUERY_STRING", query)
+            .env("CONTENT_LENGTH", body.len().to_string())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped());
+        if let Some(content_type) = content_type {
+            cmd.env("CONTENT_TYPE", content_type);
+        }
+        let mut child = cmd.spawn().unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        let body = body.to_vec();
+        // On its own thread: the backend can fill its stdout before it has read all of stdin.
+        let writer = std::thread::spawn(move || stdin.write_all(&body));
+        let out = child.wait_with_output().unwrap().stdout;
+        let _ = writer.join();
+        let split = out.windows(4).position(|w| w == b"\r\n\r\n").map(|i| (i, i + 4));
+        let (head, start) = split
+            .or_else(|| out.windows(2).position(|w| w == b"\n\n").map(|i| (i, i + 2)))
+            .expect("http-backend writes its headers");
+        let mut status = 200;
+        let mut headers = Vec::new();
+        for line in String::from_utf8_lossy(&out[..head]).lines() {
+            let Some((name, value)) = line.split_once(':') else {
+                continue;
+            };
+            match name.trim().eq_ignore_ascii_case("status") {
+                true => status = value.trim()[..3].parse().unwrap(),
+                false => headers.push((name.trim().to_string(), value.trim().to_string())),
+            }
+        }
+        (status, headers, out[start..].to_vec())
     }
 
     const LOADS: [(&str, &[u8]); 3] = [
@@ -1805,7 +1841,6 @@ mod tests {
                 "force",
             )
             .unwrap();
-        git::forget_advertisement();
         assert_eq!(sync(&repo, roots(), &host.remote()), Ok(Some(first.clone())));
         assert_eq!(git::main_head(&repo).as_deref(), Some(first.as_str()));
     }
@@ -2294,7 +2329,6 @@ mod tests {
                 let pushing = |new: Option<&str>, lease: Option<&str>| -> Result<git::Pushed, String> {
                     let before = git::branch_tip(&host.repo, branch);
                     let pushed = push(&repo, &remote, branch, new, lease)?;
-                    git::forget_advertisement();
                     let after = git::branch_tip(&host.repo, branch);
                     let expected = match lease == before.as_deref() {
                         true => (git::Pushed::Done, new.map(str::to_string)),
@@ -2434,7 +2468,6 @@ mod tests {
                         if !matches!(committed, git::Committed::At(_)) {
                             return Err(format!("the host's own commit to {branch} did not land"));
                         }
-                        git::forget_advertisement();
                     }
                     _ => {
                         // A lease the host's branch is not at.

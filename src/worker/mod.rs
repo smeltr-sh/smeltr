@@ -538,11 +538,10 @@ fn enroll(
 // -- git: fetch a group's deployed bundle -----------------------------------
 //
 // In-process, through `gix`, the way the leader's own reads and writes already are (`leader/git.rs`): nothing here
-// spawns git. Only the leader's serving half still does (`git http-backend`), so this is still a real git client
-// talking to a real git server.
+// spawns git. The leader answers in-process too (`leader::upload_pack`), in git's protocol v2.
 
 /// How long a fetch against the leader may take before it counts as stalled. A fetch that changes nothing is
-/// answered from the leader's cached ref advertisement, so this bounds a stalled exchange rather than ordinary
+/// answered from the leader's ref listing alone, so this bounds a stalled exchange rather than ordinary
 /// work. There is no process to kill here, so the budget is spent as curl's own stall detection: a transfer stuck
 /// at zero bytes/second for this long is aborted from inside the request rather than by a wall clock this code
 /// would otherwise have to enforce itself.
@@ -606,7 +605,12 @@ fn set_ref(repo: &gix::Repository, name: &str, commit: &str) -> Result<(), Strin
 ///
 /// The clone is the leader's whole repository. The cluster is the security boundary, so an enrolled worker is trusted
 /// with all of it (design doc, Security).
-fn fetch_deployed(repo_dir: &Path, leader_url: &str, token: &str, git_roots: &Path) -> Result<String, String> {
+pub(crate) fn fetch_deployed(
+    repo_dir: &Path,
+    leader_url: &str,
+    token: &str,
+    git_roots: &Path,
+) -> Result<String, String> {
     let budget = if is_bare_clone(repo_dir) {
         GIT_BUDGET
     } else {
@@ -5279,8 +5283,8 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A real leader, enrolled with and fetched from the way a worker does: `gix` and curl on this side, a real
-    /// `git http-backend` CGI process on the leader's, and a lookup file from its store. This is the whole path but
+    /// A real leader, enrolled with and fetched from the way a worker does: `gix` and curl on this side, the
+    /// leader's own git server on the other (`leader::upload_pack`), and a lookup file from its store. This is the whole path but
     /// the network hop, which is `127.0.0.1`.
     #[test]
     fn a_worker_s_fetch_lands_the_commit_a_leader_deployed() {

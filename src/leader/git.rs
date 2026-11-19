@@ -3,18 +3,18 @@
 //! the commit [`DEPLOYED_REF`] names, a commit in `main`'s history, and what one group runs is its own subtree of that
 //! commit merged with `shared/`.
 //!
-//! Served by `git http-backend`, so a worker's `git fetch` is an unmodified git client. Read-only: a push is refused
-//! by the server itself.
+//! Served to workers by `upload_pack`, git's own protocol from this process. Read-only: a push is refused by the
+//! server itself.
 //!
-//! Nothing is ever checked out, and nothing spawns git: reads and writes go through the object database in this
-//! process (`gix`), and serving the repository is the one thing that still does. A read is of a commit, a save
+//! Nothing is ever checked out: reads and writes go through the object database in this process (`gix`), and only
+//! packing the repository and stamping its version still spawn git. A read is of a commit, a save
 //! builds its tree in memory, and every ref moves by compare-and-swap on what the caller read -- so writers cannot
 //! interleave and none of them holds a lock.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::envelope::ErrorKind;
 use super::store::Actor;
@@ -817,7 +817,7 @@ fn edit_refs(repo: &gix::Repository, edits: Vec<gix::refs::transaction::RefEdit>
             }
         }
     }
-    forget_advertisement();
+    super::upload_pack::forget_listing();
     Ok(())
 }
 
@@ -2255,7 +2255,7 @@ pub const HOST_REFS: &str = "refs/remotes/origin/";
 /// Where the `main` of the remote this leader follows lands when fetched (`leader::remote`).
 pub const FETCHED_MAIN_REF: &str = "refs/remotes/origin/main";
 
-/// The commit the fleet runs. Served to workers, so it sits outside the namespace `http_backend` hides.
+/// The commit the fleet runs. Served to workers (`upload_pack`), alone of the leader's own refs.
 pub const DEPLOYED_REF: &str = "refs/smeltr/deployed";
 
 /// One marker per move of [`DEPLOYED_REF`], newest last. Hidden from workers: it is the leader's bookkeeping.
@@ -3179,159 +3179,9 @@ fn blob_paths(changes: &[gix::object::tree::diff::ChangeDetached]) -> Vec<String
         .collect()
 }
 
-/// What `git http-backend` answered with: a CGI response, already parsed into the parts an HTTP response needs.
-#[derive(Clone)]
-pub struct CgiResponse {
-    pub status: u16,
-    pub headers: Vec<(String, String)>,
-    pub body: Vec<u8>,
-}
-
-/// Serve one git HTTP request through `git http-backend`, git's own server for the smart protocol.
-///
-/// Framing the protocol by hand -- a service announcement, pkt-lines, `upload-pack --stateless-rpc` -- is a second
-/// implementation of something git already ships, and it only ever covered the shapes we happened to exercise.
-/// `http-backend` is the one every other git host runs, so protocol v2 and every negotiation a real client attempts
-/// are somebody else's to get right.
-///
-/// Read-only by construction: `http.receivepack` is set false, so a push is refused here rather than relying on a
-/// route not existing.
-/// How long a ref advertisement is served from memory before git is asked again.
-///
-/// Every worker asks on every heartbeat, and a fetch that changes nothing is *only* this request -- the client reads
-/// the advertisement, sees it already holds that commit, and stops. Answering each one by spawning `http-backend`
-/// and `upload-pack` costs the leader far more than the few hundred bytes it produces, and the bytes are the same
-/// for every worker until a ref moves. A window shorter than the heartbeat keeps a deploy as prompt as it was while
-/// making the cost of a fleet asking independent of its size.
-const ADVERTISEMENT_TTL: Duration = Duration::from_secs(1);
-
-/// The last ref advertisement: which repository it describes, when it was made, and the bytes. A leader serves one
-/// repository, but the path is held so the answer for one can never be given for another.
-static ADVERTISEMENT: Mutex<Option<(PathBuf, Instant, CgiResponse)>> = Mutex::new(None);
-
-/// Whether this request is the ref advertisement, whose answer depends on the repository's refs and nothing about
-/// the caller.
-fn is_advertisement(path_info: &str, method: &str, query: &str) -> bool {
-    method == "GET" && path_info.ends_with("info/refs") && query.contains("service=git-upload-pack")
-}
-
-/// Drop the cached advertisement, so the next asker is answered from the repository. Called where the leader moves
-/// a ref itself; the TTL covers every other way one moves.
-pub(crate) fn forget_advertisement() {
-    *ADVERTISEMENT.lock().unwrap_or_else(|e| e.into_inner()) = None;
-}
-
-pub fn http_backend(
-    repo_path: &Path,
-    path_info: &str,
-    method: &str,
-    query: &str,
-    content_type: Option<&str>,
-    body: &[u8],
-) -> Result<CgiResponse, GitError> {
-    backend(repo_path, path_info, method, query, content_type, body, false)
-}
-
-/// [`http_backend`] taking pushes too: a git host, for the tests of pushing to one.
-#[cfg(test)]
-pub fn http_backend_receiving(
-    repo_path: &Path,
-    path_info: &str,
-    method: &str,
-    query: &str,
-    content_type: Option<&str>,
-    body: &[u8],
-) -> Result<CgiResponse, GitError> {
-    backend(repo_path, path_info, method, query, content_type, body, true)
-}
-
-fn backend(
-    repo_path: &Path,
-    path_info: &str,
-    method: &str,
-    query: &str,
-    content_type: Option<&str>,
-    body: &[u8],
-    receive: bool,
-) -> Result<CgiResponse, GitError> {
-    let cacheable = !receive && is_advertisement(path_info, method, query);
-    if cacheable {
-        let cached = ADVERTISEMENT.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((cached_repo, made, response)) = cached.as_ref()
-            && cached_repo == repo_path
-            && made.elapsed() < ADVERTISEMENT_TTL
-        {
-            tracing::trace!(name: "served", target: "git", %path_info, method, push = receive, cached = true, "the leader's repository answered a git request");
-            return Ok(response.clone());
-        }
-    }
-
-    let (project_root, repo_name) = match (repo_path.parent(), repo_path.file_name()) {
-        (Some(root), Some(name)) => (root, name),
-        _ => {
-            return Err(GitError::failed(format!(
-                "{} is not a repository path",
-                repo_path.display()
-            )));
-        }
-    };
-
-    let mut cmd = Command::new("git");
-    cmd.args([
-        "-c",
-        if receive {
-            "http.receivepack=true"
-        } else {
-            "http.receivepack=false"
-        },
-        // `refs/smeltr/` is the leader's own bookkeeping, change markers and the deploy log among it. A worker
-        // fetches `DEPLOYED_REF` and nothing else there, so it alone is served.
-        "-c",
-        "transfer.hideRefs=refs/smeltr",
-        "-c",
-        "transfer.hideRefs=!refs/smeltr/deployed",
-        // What the leader fetched from a remote it follows: `main` is what came of it.
-        "-c",
-        "transfer.hideRefs=refs/remotes",
-        "http-backend",
-    ])
-    .env("GIT_PROJECT_ROOT", project_root)
-    // The one repository this leader serves is the only thing under the project root, so there is nothing an
-    // export marker per repository would distinguish.
-    .env("GIT_HTTP_EXPORT_ALL", "1")
-    .env(
-        "PATH_INFO",
-        format!("/{}/{}", repo_name.to_string_lossy(), path_info.trim_start_matches('/')),
-    )
-    .env("REQUEST_METHOD", method)
-    .env("QUERY_STRING", query)
-    .env("CONTENT_LENGTH", body.len().to_string());
-    if let Some(ct) = content_type {
-        cmd.env("CONTENT_TYPE", ct);
-    }
-
-    let out = run(cmd, &["http-backend"], body)?;
-    let response = parse_cgi(&out)?;
-    tracing::trace!(
-        name: "served", target: "git",
-        %path_info,
-        method,
-        status = response.status,
-        bytes = response.body.len(),
-        push = receive,
-        cached = false,
-        "the leader's repository answered a git request"
-    );
-    if cacheable {
-        *ADVERTISEMENT.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some((repo_path.to_path_buf(), Instant::now(), response.clone()));
-    }
-    Ok(response)
-}
-
 /// Whether `git` runs here: `Err` says what a leader without it cannot do and what failed. Checked once at startup,
-/// because serving workers, stamping a new repository and pushing to a host all spawn it, and each would otherwise
-/// fail later with an error that names none of that.
+/// because packing the repository and stamping its version spawn it, and each would otherwise fail later with an
+/// error that names none of that.
 pub fn check_git_runs() -> Result<(), String> {
     git_runs("git")
 }
@@ -3339,7 +3189,7 @@ pub fn check_git_runs() -> Result<(), String> {
 fn git_runs(program: &str) -> Result<(), String> {
     let needed = |why: String| {
         format!(
-            "the leader runs git to serve its configuration to workers, and `{program} --version` {why}. Install git \
+            "the leader runs git to pack its configuration repository, and `{program} --version` {why}. Install git \
              and put it on this process's PATH -- for a service, the PATH of the account it runs as"
         )
     };
@@ -3369,19 +3219,23 @@ pub enum Pushed {
     Refused,
 }
 
-/// A pack of what `tip` reaches and no commit of `haves` does: what a host holding `haves` lacks to take `tip`. A have
-/// this repository does not hold, or that is not a commit, tells nothing here and is passed over.
-pub fn pack_for_push(repo_path: &Path, tip: &str, haves: &[&str]) -> Result<Vec<u8>, GitError> {
-    let failed = |e: &dyn std::fmt::Display| GitError::failed(format!("packing {tip} for the host: {e}"));
+/// A pack of what `tips` reach and no commit of `haves` does: what a holder of `haves` lacks to take `tips` -- a git
+/// host the leader pushes to, or a worker fetching from it. A have this repository does not hold, or that is not a
+/// commit, tells nothing here and is passed over.
+pub fn pack_reaching(repo_path: &Path, tips: &[&str], haves: &[&str]) -> Result<Vec<u8>, GitError> {
+    let failed = |e: &dyn std::fmt::Display| GitError::failed(format!("packing {}: {e}", tips.join(", ")));
     let repo = open(repo_path)?;
-    let tip = resolve(&repo, tip)?;
+    let tips = tips
+        .iter()
+        .map(|tip| resolve(&repo, tip))
+        .collect::<Result<Vec<_>, _>>()?;
     let hidden: Vec<gix::ObjectId> = haves
         .iter()
         .filter_map(|have| gix::ObjectId::from_hex(have.as_bytes()).ok())
         .filter(|id| repo.find_object(*id).is_ok_and(|o| o.kind == gix::object::Kind::Commit))
         .collect();
     let commits: Vec<gix::ObjectId> = repo
-        .rev_walk([tip])
+        .rev_walk(tips)
         .with_hidden(hidden)
         .all()
         .map_err(|e| failed(&e))?
@@ -3564,94 +3418,6 @@ pub fn forget_host(repo_path: &Path) -> Result<(), GitError> {
     Ok(())
 }
 
-/// Split a CGI response into headers and body. `Status:` is the response code, defaulting to 200 when the script
-/// does not set one, as CGI requires.
-fn parse_cgi(out: &[u8]) -> Result<CgiResponse, GitError> {
-    let split = out
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .map(|i| (i, i + 4))
-        .or_else(|| out.windows(2).position(|w| w == b"\n\n").map(|i| (i, i + 2)));
-    let Some((head_end, body_start)) = split else {
-        return Err(GitError::failed("git http-backend wrote no header block"));
-    };
-
-    let mut status = 200;
-    let mut headers = Vec::new();
-    for line in String::from_utf8_lossy(&out[..head_end]).lines() {
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        let (name, value) = (name.trim(), value.trim());
-        if name.eq_ignore_ascii_case("status") {
-            status = value
-                .split_whitespace()
-                .next()
-                .and_then(|c| c.parse().ok())
-                .unwrap_or(200);
-        } else {
-            headers.push((name.to_string(), value.to_string()));
-        }
-    }
-    Ok(CgiResponse {
-        status,
-        headers,
-        body: out[body_start..].to_vec(),
-    })
-}
-
-/// `args` as an error may repeat them. A worker authenticates its fetch by passing its bearer token as a `-c
-/// http.extraHeader` argument, so the command line holds a credential -- and an error naming the command line
-/// would carry it to the console, to the leader's store, onto the Logs screen and out through any logs source
-/// the bundle declares. The design doc's secrets boundary is that a credential is named, never carried.
-pub(crate) fn redacted(args: &[&str]) -> Vec<String> {
-    args.iter()
-        .map(|arg| match arg.split_once("Authorization:") {
-            Some((before, _)) => format!("{before}Authorization: <redacted>"),
-            None => (*arg).to_string(),
-        })
-        .collect()
-}
-
-fn run(mut cmd: Command, args: &[&str], stdin_body: &[u8]) -> Result<Vec<u8>, GitError> {
-    let args = &redacted(args);
-    let mut child = cmd
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| GitError::failed(format!("spawning git {args:?}: {e}")))?;
-
-    // stdin is written on its own thread: `upload-pack` can fill its stdout pipe before this process finishes writing
-    // stdin.
-    let mut stdin = child.stdin.take().expect("stdin was piped");
-    let body = stdin_body.to_vec();
-    let writer = std::thread::spawn(move || {
-        use std::io::Write;
-        let _ = stdin.write_all(&body);
-    });
-
-    let output = child
-        .wait_with_output()
-        .map_err(|e| GitError::failed(format!("running git {args:?}: {e}")))?;
-    let _ = writer.join();
-
-    tracing::trace!(
-        name: "ran", target: "git",
-        args = ?args,
-        code = output.status.code(),
-        out_bytes = output.stdout.len(),
-        "the leader ran git"
-    );
-    if !output.status.success() {
-        return Err(GitError::failed(format!(
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )));
-    }
-    Ok(output.stdout)
-}
-
 /// The commit `branch` points at. `None` when there is no such branch.
 pub fn branch_tip(repo_path: &Path, branch: &str) -> Option<String> {
     check_branch_name(branch).ok()?;
@@ -3713,30 +3479,6 @@ mod tests {
         assert_eq!(code.matches(call).count(), 1, "only edit_refs calls {call}");
     }
 
-    /// A worker's fetch carries its bearer token on the command line, so an error naming that command line would
-    /// put a live credential on the Logs screen and in every store behind it.
-    #[test]
-    fn an_error_never_repeats_the_credential_the_command_line_carried() {
-        let args = [
-            "-c",
-            "http.extraHeader=Authorization: Bearer 2fe9aa93f719235eaba13a06e5d5013170fdbb50",
-            "-c",
-            "http.sslCAInfo=/tmp/leader-ca.pem",
-            "fetch",
-        ];
-        let said = format!("{:?}", super::redacted(&args));
-        assert!(!said.contains("2fe9aa93"), "the token is gone: {said}");
-        assert!(
-            said.contains("Authorization: <redacted>"),
-            "and it is visibly gone: {said}"
-        );
-        // Everything that is not a credential still reads, or the message stops being worth having.
-        assert!(
-            said.contains("http.sslCAInfo=/tmp/leader-ca.pem") && said.contains("fetch"),
-            "{said}"
-        );
-    }
-
     #[test]
     fn git_runs_here() {
         super::git_runs("git").expect("the git these tests use runs");
@@ -3746,7 +3488,7 @@ mod tests {
     #[test]
     fn a_missing_git_says_what_the_leader_needs_it_for() {
         let e = super::git_runs("smeltr-no-such-git").unwrap_err();
-        assert!(e.contains("serve its configuration to workers"), "{e}");
+        assert!(e.contains("pack its configuration repository"), "{e}");
         assert!(e.contains("`smeltr-no-such-git --version` could not run"), "{e}");
         assert!(e.contains("PATH"), "{e}");
     }
@@ -4076,79 +3818,6 @@ mod tests {
         let read = read_blobs(&repo, &commit, &["sources.json".to_string()]).unwrap();
         assert_eq!(read[0], None);
         std::fs::remove_dir_all(repo.parent().unwrap()).ok();
-    }
-
-    #[test]
-    fn info_refs_advertises_the_pushed_branch() {
-        let bare = repo_with_one_commit("advertise");
-        let served = http_backend(&bare, "info/refs", "GET", "service=git-upload-pack", None, &[]).unwrap();
-        assert_eq!(served.status, 200);
-        assert!(
-            served
-                .headers
-                .iter()
-                .any(|(n, v)| n.eq_ignore_ascii_case("content-type")
-                    && v == "application/x-git-upload-pack-advertisement"),
-            "{:?}",
-            served.headers
-        );
-        let text = String::from_utf8_lossy(&served.body);
-        assert!(text.contains("# service=git-upload-pack"), "{text}");
-        assert!(text.contains("refs/heads/main"), "{text}");
-    }
-
-    #[test]
-    fn info_refs_on_an_empty_repo_still_responds_without_erroring() {
-        let dir = temp_dir("advertise-empty");
-        init_bare_repo(&dir).unwrap();
-        let served = http_backend(&dir, "info/refs", "GET", "service=git-upload-pack", None, &[]).unwrap();
-        assert_eq!(served.status, 200);
-        assert!(String::from_utf8_lossy(&served.body).contains("# service=git-upload-pack"));
-    }
-
-    /// Read-only is a property of the server, not of which routes happen to exist.
-    #[test]
-    fn a_push_is_refused_by_the_server_itself() {
-        let bare = repo_with_one_commit("no-push");
-        let served = http_backend(&bare, "info/refs", "GET", "service=git-receive-pack", None, &[]).unwrap();
-        assert_ne!(served.status, 200, "receive-pack must not be advertised");
-
-        let served = http_backend(
-            &bare,
-            "git-receive-pack",
-            "POST",
-            "",
-            Some("application/x-git-receive-pack-request"),
-            b"0000",
-        )
-        .unwrap();
-        assert_ne!(served.status, 200, "a push must not be served");
-    }
-
-    /// The leader hands every path under `/api/worker/repo/` to this and keeps no list of its own, so this is the whole guard
-    /// on that route. A path a worker picks must never read a file git does not serve: not the repository's own
-    /// config, and not what sits beside the repository in the data directory.
-    #[test]
-    fn a_path_a_worker_picks_never_reads_a_file_git_does_not_serve() {
-        let data = temp_dir("not-git-to-serve");
-        let repo = repo_path(&data);
-        init_bare_repo(&repo).unwrap();
-        ensure_main_commit(&repo).unwrap();
-
-        let secret = "not-for-any-worker";
-        git_ok(&["config", "--file", "config", "smeltr.marker", secret], &repo);
-        std::fs::write(data.join("leader.db"), secret).unwrap();
-        std::fs::create_dir_all(data.join("tls")).unwrap();
-        std::fs::write(data.join("tls").join("ca-key.pem"), secret).unwrap();
-
-        for path in ["config", "../../leader.db", "../../tls/ca-key.pem"] {
-            // An error is a refusal too: the route answers it with a bare 500.
-            if let Ok(served) = http_backend(&repo, path, "GET", "", None, &[]) {
-                assert_ne!(served.status, 200, "{path} was served");
-                assert!(!String::from_utf8_lossy(&served.body).contains(secret), "{path} leaked");
-            }
-        }
-        std::fs::remove_dir_all(&data).ok();
     }
 
     // -- saving -------------------------------------------------------------
@@ -6500,17 +6169,6 @@ mod tests {
         assert_eq!(hold(&repo).unwrap(), None);
     }
 
-    /// Workers are served the pointer and nothing of the leader's bookkeeping beside it.
-    #[test]
-    fn the_deployed_pointer_is_advertised_and_the_deploy_log_is_not() {
-        let data = data_with_branch("advertised", "one");
-        let repo = repo_path(&data);
-        let res = http_backend(&repo, "info/refs", "GET", "service=git-upload-pack", None, &[]).unwrap();
-        let text = String::from_utf8_lossy(&res.body);
-        assert!(text.contains(DEPLOYED_REF), "{text}");
-        assert!(!text.contains(DEPLOY_LOG_REF), "{text}");
-    }
-
     #[test]
     fn only_a_commit_main_has_run_can_be_deployed_again() {
         let data = data_with_branch("rollback-unknown", "work");
@@ -6568,53 +6226,6 @@ mod tests {
         let entries = log(&repo_path(&data), "work", 1).unwrap();
         assert_eq!(entries[0].subject, "before\u{1f}after");
         assert_eq!(entries[0].body, "and a body");
-    }
-
-    // -- the ref advertisement --------------------------------------------
-
-    fn advertise(repo: &Path) -> String {
-        let served = http_backend(repo, "info/refs", "GET", "service=git-upload-pack", None, &[])
-            .expect("the advertisement is served");
-        String::from_utf8_lossy(&served.body).into_owned()
-    }
-
-    /// A deploy is a ref moving. The window must not hold a worker back from one the leader made itself.
-    #[test]
-    fn moving_a_ref_is_advertised_at_once() {
-        let data = data_with_branch("advertise-moved", "work");
-        let repo = repo_path(&data);
-        forget_advertisement();
-
-        let before = advertise(&repo);
-        let deployed = save(&data, MAIN_BRANCH, &[("destinations.json", "[]")], "a deploy");
-
-        let after = advertise(&repo);
-        assert_ne!(after, before);
-        assert!(after.contains(&deployed), "the new commit is advertised: {after}");
-    }
-
-    /// One leader serves one repository, but a cached answer for one must never be given for another.
-    #[test]
-    fn an_advertisement_is_not_reused_across_repositories() {
-        let one = data_with_branch("advertise-repo-one", "work");
-        let two = data_with_branch("advertise-repo-two", "work");
-        // Two repositories built the same way in the same second hold the same commits: same tree, same author,
-        // same timestamp, so the same hashes. Give this one a commit of its own, or the two advertisements are
-        // equal whether the cache is keyed by repository or not.
-        save(
-            &two,
-            "work",
-            &[("destinations.json", "[]")],
-            "a commit the other repository does not have",
-        );
-        forget_advertisement();
-
-        let first = advertise(&repo_path(&one));
-        let second = advertise(&repo_path(&two));
-        assert_ne!(
-            first, second,
-            "the second repository is not answered with the first's refs"
-        );
     }
 
     /// Deciding what to write and writing it are one operation: a marker built against a chain that has since moved
