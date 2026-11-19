@@ -1088,7 +1088,7 @@ enum Rest {
     /// rows; from row `at` on. `filed` is what each row is filed under, where its protocol files records.
     Chunk {
         chunk: Arc<RecordChunk>,
-        filed: Vec<hec::Filed>,
+        filed: Vec<Arc<hec::Filed>>,
         at: usize,
     },
     /// Its typed rows, cut as they are taken, the next cut ahead so the last one is known when it is taken.
@@ -1124,24 +1124,24 @@ impl Rest {
             Cutter::Records(records) => records.each(push),
             Cutter::Filed(records, under) => records.each(|record| {
                 push(record);
-                filed.push((*under).clone());
+                filed.push(under.clone());
             }),
             Cutter::Events(mut events) => {
                 while let Some((record, under)) = events.next_record() {
                     push(&record);
-                    filed.push(under);
+                    filed.push(Arc::new(under));
                 }
             }
             Cutter::Documents(mut documents) => {
                 while let Some((record, under)) = documents.next_record() {
                     push(&record);
-                    filed.push(under);
+                    filed.push(Arc::new(under));
                 }
             }
             Cutter::Each(cuts) => {
                 for i in 0..cuts.len() {
                     push(cuts.record(i));
-                    filed.push(cuts.filed(i).map(|under| (**under).clone()).unwrap_or_default());
+                    filed.push(cuts.filed(i).cloned().unwrap_or_default());
                 }
             }
             Cutter::Messages(messages) => messages.each(push),
@@ -1154,8 +1154,12 @@ impl Rest {
         if out.is_empty() {
             return None;
         }
-        // Counted as a poll counts its records: their bytes and what each is filed under.
-        let size = out.size() + filed.iter().map(filed_size).sum::<usize>();
+        // Their bytes, and what they are filed under, counted once for each run of records that shares it.
+        let shared = filed
+            .iter()
+            .enumerate()
+            .filter(|(i, under)| *i == 0 || !Arc::ptr_eq(under, &filed[i - 1]));
+        let size = out.size() + shared.map(|(_, under)| filed_size(under)).sum::<usize>();
         let chunk = Arc::new(out.into_chunk());
         Some((Rest::Chunk { chunk, filed, at: 0 }, size))
     }
@@ -1164,7 +1168,9 @@ impl Rest {
     /// that needs it as rows copies it to each, so a poll is bounded by what its rows hold so copied.
     fn next_size(&self) -> usize {
         match self {
-            Rest::Chunk { chunk, filed, at } => chunk.row_size(*at) + filed.get(*at).map_or(0, filed_size),
+            Rest::Chunk { chunk, filed, at } => {
+                chunk.row_size(*at) + filed.get(*at).map_or(0, |under| filed_size(under))
+            }
             Rest::Rows { next, .. } => {
                 let next = next.as_ref().expect("a request in the inbox has a record left");
                 next.row.size() + next.filed.as_deref().map_or(0, filed_size)
@@ -1188,7 +1194,7 @@ impl Rest {
         match self {
             Rest::Chunk { chunk, filed, at } => {
                 let row = *at as u32;
-                let under = filed.get_mut(*at).map(|under| Arc::new(std::mem::take(under)));
+                let under = filed.get(*at).cloned();
                 *at += 1;
                 (Payload::Chunk(chunk.clone(), row), under, *at == chunk.len())
             }
@@ -3883,6 +3889,20 @@ mod tests {
             Admitted::Later(_)
         ));
         assert_eq!(shared.take(10, 2000, Duration::ZERO).len(), 1);
+    }
+
+    /// The lines of one request share what its query files them under, so the inbox holds it once.
+    #[test]
+    fn an_inbox_holds_what_a_requests_lines_share_once() {
+        let shared = Shared::default();
+        let filed = vec![("host".to_string(), vec![b'h'; 1000])];
+        let lines = Records::lines(b"a\nb\nc\n".to_vec());
+        let charge = Charge::new(&shared.holdings);
+        assert!(matches!(
+            shared.admit(Cutter::Filed(lines, Arc::new(filed)), 6, remote(), None, charge),
+            Admitted::Later(_)
+        ));
+        assert!(shared.state.lock().unwrap().queued_bytes.total() < 1100);
     }
 
     /// A poll's rows are one chunk, which carries what they are filed under for them all.
