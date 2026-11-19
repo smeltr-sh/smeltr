@@ -340,7 +340,7 @@ fn outside(judged: &[Judged], gap: Option<&Gap>, below_held: bool) -> Option<Out
 
 /// The last answer, what it was computed for, and the normal it was judged against. A new five-minute bucket or a
 /// new mark is a new question, and a new hour or a new mark a new normal. One caller computes a new answer at a
-/// time; the rest read the last meanwhile.
+/// time; the rest wait for it.
 #[derive(Default)]
 pub struct Readings {
     last: Mutex<Option<Answer>>,
@@ -359,8 +359,8 @@ impl Readings {
     /// Every source with enough history to judge, as of `now_ms`. Waits for every heartbeat sent before
     /// `now_ms - heartbeat_interval` to land in the window it judges.
     ///
-    /// While another caller computes the new answer, this returns the last one rather than wait for it. Only a
-    /// caller with no answer at all to fall back on waits.
+    /// While another caller computes the new answer, this waits for it: a catalog given the last answer would be
+    /// newer than the one given the new answer, and would end every issue the new answer had just started.
     pub fn at(
         &self,
         store: &RegistryStore,
@@ -372,13 +372,7 @@ impl Readings {
         if let Some(fresh) = self.fresh(ended_ms, learning) {
             return fresh;
         }
-        let _computing = match self.computing.try_lock() {
-            Ok(guard) => guard,
-            Err(_) => match self.last() {
-                Some(last) => return last,
-                None => self.computing.lock().unwrap_or_else(|e| e.into_inner()),
-            },
-        };
+        let _computing = self.computing.lock().unwrap_or_else(|e| e.into_inner());
         // Whoever held the lock before may have just computed this very answer.
         if let Some(fresh) = self.fresh(ended_ms, learning) {
             return fresh;
@@ -2329,6 +2323,22 @@ mod tests {
         let reset = reset_at(END - 30 * DAY_MS);
         let other = readings.at(&store, END + 2 * 60_000, Duration::from_secs(1), &reset);
         assert!(!Arc::ptr_eq(&first, &other));
+    }
+
+    #[test]
+    fn a_reading_asked_while_another_is_computed_waits_for_it() {
+        let store = store_with(7, |_| Some(100.0));
+        let readings = Readings::default();
+        let none = Marks::default();
+        let old = readings.at(&store, END + 60_000, Duration::from_secs(1), &none);
+        let computing = readings.computing.lock().unwrap();
+        std::thread::scope(|s| {
+            let asked = s.spawn(|| readings.at(&store, END + FIVE + 60_000, Duration::from_secs(1), &none));
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(!asked.is_finished());
+            drop(computing);
+            assert!(!Arc::ptr_eq(&asked.join().unwrap(), &old));
+        });
     }
 
     fn reset_at(from_millis: i64) -> Marks {
