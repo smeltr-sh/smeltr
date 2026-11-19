@@ -3,7 +3,7 @@
 import { test, expect } from '@playwright/test';
 import { Coverage, replaying, seeds } from '../fuzz';
 import { reached } from '../run';
-import { ACTIONS, DEFAULT_SEEDS, THEMES, VIEWPORTS, WHO } from '../gui-fuzz';
+import { ACTIONS, DEFAULT_SEEDS, HELD_IN, THEMES, VIEWPORTS, WHO } from '../gui-fuzz';
 
 test('the gui fuzzer reached every option', () => {
   test.skip(replaying(), 'one seed replayed is not expected to reach them all');
@@ -12,6 +12,7 @@ test('the gui fuzzer reached every option', () => {
   expect(runs.length, 'a seed left no record').toBe(seeds(DEFAULT_SEEDS).length);
   const coverage = new Coverage([
     ...WHO.map((w) => `who:${w}`),
+    ...HELD_IN.map((h) => `held-in:${h}`),
     ...THEMES.map((t) => `theme:${t}`),
     ...Object.keys(VIEWPORTS).map((v) => `viewport:${v}`),
     ...ACTIONS.map((a) => `action:${a}`),

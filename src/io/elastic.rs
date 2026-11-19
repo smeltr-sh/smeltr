@@ -4,10 +4,13 @@
 //! `es_rejected_execution_exception`, a circuit breaker) is re-sent alone; a permanent one (a mapping conflict, a
 //! malformed document) is a rejection.
 
-use super::http::{HttpTransport, Outcome, Protocol, Response, Unwritten, push_json_string};
-use super::{IoError, OwnedRecord};
+use super::elastic_nodes::{Nodes, Sniffing};
+use super::http::{self, HttpTransport, Outcome, Protocol, Response, Transport, Unwritten, push_json_string};
+use super::{Destination, IoError, OwnedRecord};
+use crate::core::id::DestId;
 use crate::format::json_scan::{Malformed, Next, Reader};
-use crate::plan::topology::BulkAction;
+use crate::metrics::MetricsHandle;
+use crate::plan::topology::{BulkAction, ElasticDestinationConfig, HeldSecrets};
 
 /// One document waiting to be indexed, kept until the cluster confirms it. The bulk body is rebuilt from these on every
 /// attempt, because a retry must contain only the documents that failed.
@@ -355,6 +358,69 @@ pub fn transport(url: &str, auth: Option<String>, config: &ureq::config::Config)
     let headers = auth.map(|a| ("Authorization".to_string(), a)).into_iter().collect();
     // The Bulk API rejects `application/json`.
     HttpTransport::new(url, "application/x-ndjson", headers, config)
+}
+
+/// Opens `c` as a live destination, named `name` in its log lines and counting into `metrics` as destination `id`.
+pub fn open(
+    c: &ElasticDestinationConfig,
+    id: DestId,
+    name: &str,
+    metrics: MetricsHandle,
+    secrets: &HeldSecrets,
+) -> Result<Box<dyn Destination>, IoError> {
+    // A credential this worker cannot obtain is an error, never a silent unauthenticated connection.
+    let auth = match (&c.auth, &c.basic) {
+        (Some(reference), _) => Some(authorization(http::credential(
+            "elasticsearch destination",
+            "auth",
+            reference,
+            secrets,
+        )?)),
+        (None, Some((user, password))) => Some(http::basic(
+            "elasticsearch destination",
+            "password",
+            user,
+            password,
+            secrets,
+        )?),
+        (None, None) => None,
+    };
+    // What this destination presents and trusts, resolved once: every transport below shares it, so an
+    // certificate is parsed once rather than once per sender.
+    let config = http::agent_config(c.tls.as_ref(), secrets)?;
+    let protocol = Elastic::new(c.default_index.clone())
+        .with_action(c.action)
+        .with_unwritten(Unwritten::new(metrics.clone(), id, name));
+    let make = || transport(&c.url, auth.clone(), &config);
+    Ok(match &c.sniff {
+        Some(sniff) => {
+            let nodes = Nodes::new(&c.url, sniff, auth.clone(), &config, name.to_string());
+            sending(|| Sniffing::new(nodes.clone(), make()), protocol, c, id, name, metrics)
+        }
+        None => sending(make, protocol, c, id, name, metrics),
+    })
+}
+
+/// The destination speaking `protocol` over the transports `make` makes, each with its own connection: one for the
+/// requests it posts on its own thread, and one for each sender, as many as the buffer affords requests in flight.
+/// Delivery starts with `in_flight` senders; the rest are parked until it earns them. Building one does no I/O, so an
+/// unearned sender costs a thread and no connection.
+fn sending<T: Transport + 'static>(
+    make: impl Fn() -> T,
+    protocol: Elastic,
+    c: &ElasticDestinationConfig,
+    id: DestId,
+    name: &str,
+    metrics: MetricsHandle,
+) -> Box<dyn Destination> {
+    Box::new(
+        http::HttpDestination::new(make(), protocol)
+            .with_subject(name)
+            .with_metrics(metrics, id)
+            .with_max_request_bytes(c.max_bulk_bytes)
+            .with_stall_after(c.stall_after)
+            .with_senders_from(make, c.max_in_flight(), c.in_flight),
+    )
 }
 
 #[cfg(test)]

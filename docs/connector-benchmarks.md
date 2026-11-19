@@ -26,7 +26,7 @@ flowchart LR
   Everything else, the worker's other threads, the harness and every container, shares the remaining cores. The
   transform pool is one thread (`SMELTR_WORKER_THREAD_LIMIT=1`).
 - **A source row** seeds its service before the worker starts, then reads it into a sink on this host. Object
-  sources read files of 5,000 lines.
+  sources read files of 5,000 lines, gzipped when `CONNECTOR_GZIP` is set.
 - **A receiver row** sends from this host through a relay container. The relay's link is shaped, so the traffic
   crosses the link once each way, and the worker delivers to a sink on this host.
 - **A destination row** sends to an HTTP receiver on this host, which answers each request once the destination has

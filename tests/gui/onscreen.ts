@@ -22,8 +22,11 @@ export function listen(page: Page, leader: Leader, problems: string[]) {
     if (refused && m.location().url.startsWith(`${leader.url}/api/`)) return;
     problems.push(`console error: ${m.text()}`);
   });
+  // The GUI offers only what the person may do, so a 403 to something it asked for means it offered what it should
+  // not have.
   page.on('response', (r) => {
-    if (r.url().startsWith(leader.url) && r.status() >= 500)
+    const refused = r.status() === 403 && r.url().startsWith(`${leader.url}/api/`);
+    if (r.url().startsWith(leader.url) && (r.status() >= 500 || refused))
       problems.push(`${r.request().method()} ${new URL(r.url()).pathname} -> ${r.status()}`);
   });
 }

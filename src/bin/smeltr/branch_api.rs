@@ -1120,21 +1120,27 @@ pub async fn deploy_commit(
     )
 }
 
-/// What `access` lacks to deploy `commit` of `main`'s history, as a refusal's sentence. Moving the fleet to
-/// another commit moves every group at once, whatever that commit changed, so it needs deployer in shared and in
-/// every group on `main` or at `commit`: a group only `commit` has is one it starts again.
+/// What `access` lacks to deploy `commit` of `main`'s history, as a refusal's sentence. Every group moves to
+/// `commit` at once, but only an area whose files differ between what the fleet runs and `commit` changes, so it
+/// needs deployer in each such area, as approving a change does. A group only `commit` holds differs, since
+/// deploying starts it again. With nothing deployed yet, every area `commit` holds differs.
 fn lacking_for_fleet(access: &Access, data_dir: &Path, commit: &str) -> Result<Option<String>, Refusal> {
     if access.is_administrator() {
         return Ok(None);
     }
     git::check_commit_id(commit)?;
     let repo = repo_at(data_dir)?;
-    let mut groups: BTreeSet<String> = tree::groups_at(&repo, git::MAIN_BRANCH)?.into_iter().collect();
-    groups.extend(tree::groups_at(&repo, commit)?);
-    Ok(std::iter::once(config_file::SHARED_DIR.to_string())
-        .chain(groups)
-        .find(|area| !access.allows(area, Level::Deployer))
-        .map(|area| format!("deploying a commit moves every worker group, and this needs deployer in {area}")))
+    let Some(running) = git::deployed(&repo) else {
+        return Ok(std::iter::once(config_file::SHARED_DIR.to_string())
+            .chain(tree::groups_at(&repo, commit)?)
+            .find(|area| !access.allows(area, Level::Deployer))
+            .map(|area| format!("deploying a commit moves every worker group, and this needs deployer in {area}")));
+    };
+    Ok(lacking_in(
+        access,
+        &git::changed_between(&repo, &running, commit)?,
+        Level::Deployer,
+    ))
 }
 
 fn would_not_load(commit: &str, broken: Vec<(String, String)>) -> Envelope<BranchMutation> {
@@ -1679,19 +1685,22 @@ mod tests {
         assert!(sees_all(&Access::Administrator, paths(&["README.md"])));
     }
 
-    /// Deploying a commit from history moves every group, so it needs deployer in shared and in each of them.
+    /// `main`'s head, deployed.
+    fn deploy_head(data: &Path) -> String {
+        let head = git::main_head(&repo_at(data).unwrap()).unwrap();
+        git::deploy_commit(data, &head, &Actor::system()).unwrap();
+        head
+    }
+
+    /// With nothing deployed, deploying a commit starts every area it holds.
     #[test]
-    fn deploying_a_commit_needs_deployer_across_the_fleet() {
+    fn a_first_deploy_needs_deployer_in_every_area_the_commit_holds() {
         let data = temp_dir("lacking-fleet");
         seed_main(&data, &["west", "east"]);
         let head = git::main_head(&repo_at(&data).unwrap()).unwrap();
         let most = holding(&[("shared", Level::Deployer), ("west", Level::Deployer)]);
-        assert!(
-            lacking_for_fleet(&most, &data, &head)
-                .unwrap()
-                .unwrap()
-                .contains("east")
-        );
+        let lacking = lacking_for_fleet(&most, &data, &head).unwrap().unwrap();
+        assert!(lacking.contains("east"), "{lacking}");
         let all = holding(&[
             ("shared", Level::Deployer),
             ("west", Level::Deployer),
@@ -1701,11 +1710,32 @@ mod tests {
         assert_eq!(lacking_for_fleet(&Access::Administrator, &data, &head).unwrap(), None);
     }
 
+    /// A rollback is judged by what it changes: a team can roll back a change to its own area, and cannot roll back
+    /// one to another team's (W7).
+    #[test]
+    fn rolling_back_needs_deployer_in_the_areas_it_changes() {
+        let data = temp_dir("lacking-rollback");
+        seed_main(&data, &["west", "east"]);
+        let target = deploy_head(&data);
+        save(&data, git::MAIN_BRANCH, &[("groups/west/x.json", b"1")], "west");
+        deploy_head(&data);
+        let west = holding(&[("west", Level::Deployer)]);
+        let east = holding(&[("east", Level::Deployer)]);
+        assert_eq!(lacking_for_fleet(&west, &data, &target).unwrap(), None);
+        let lacking = lacking_for_fleet(&east, &data, &target).unwrap().unwrap();
+        assert!(lacking.contains("west"), "{lacking}");
+
+        save(&data, git::MAIN_BRANCH, &[("groups/east/x.json", b"1")], "east");
+        deploy_head(&data);
+        let lacking = lacking_for_fleet(&west, &data, &target).unwrap().unwrap();
+        assert!(lacking.contains("east"), "{lacking}");
+    }
+
     /// Rolling back to a commit that still has a group `main` has since removed starts that group again, so it is
     /// judged too.
     #[test]
     fn rolling_back_needs_deployer_in_the_groups_the_target_has() {
-        let data = temp_dir("lacking-rollback");
+        let data = temp_dir("lacking-removed");
         seed_main(&data, &["west", "east"]);
         let repo = repo_at(&data).unwrap();
         let target = git::main_head(&repo).unwrap();
@@ -1723,9 +1753,8 @@ mod tests {
             &Actor::system(),
         )
         .unwrap();
-        let head = git::main_head(&repo).unwrap();
+        deploy_head(&data);
         let west = holding(&[("shared", Level::Deployer), ("west", Level::Deployer)]);
-        assert_eq!(lacking_for_fleet(&west, &data, &head).unwrap(), None);
         let lacking = lacking_for_fleet(&west, &data, &target).unwrap().unwrap();
         assert!(lacking.contains("east"), "{lacking}");
     }

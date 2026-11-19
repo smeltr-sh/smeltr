@@ -37,7 +37,7 @@
   import RoutePreview from './RoutePreview.svelte';
   import ExceptionMatrix from './ExceptionMatrix.svelte';
   import Locked from './Locked.svelte';
-  import { editable } from './access';
+  import { editable, holdsSomewhere } from './access';
   import NewDestination from './NewDestination.svelte';
   import NewSource from './NewSource.svelte';
   import ExceptionsFold from './ExceptionsFold.svelte';
@@ -253,7 +253,7 @@
     manifestEditor.loading = false;
   }
   void load().then(arrive);
-  void fieldCatalogs().then((c) => ({ secrets, kafka } = c));
+  void fieldCatalogs(holdsSomewhere('editor')).then((c) => ({ secrets, kafka } = c));
 
   /** A new route starts on a source no route reads yet, so it opens a card of its own; once every source has one, it
    * starts with no source. */
