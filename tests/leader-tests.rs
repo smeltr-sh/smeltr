@@ -731,41 +731,6 @@ fn a_second_commit_moves_what_a_worker_fetches() {
 #[derive(serde::Deserialize)]
 struct HealthResponse {
     threads: Vec<serde_json::Value>,
-    groups: Vec<GroupHealthOut>,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GroupHealthOut {
-    group_id: String,
-    transform_threads: usize,
-    readers: usize,
-    egress_threads: usize,
-}
-
-#[test]
-fn health_rolls_up_threads_by_their_current_group() {
-    let base = start_leader();
-    let w1 = enroll_worker(&base, "w1");
-    let w2 = enroll_worker(&base, "w2");
-    heartbeat_one_thread(&base, &w1, "w1", "t0", "pool");
-    heartbeat_one_thread(&base, &w1, "w1", "t1", "pool");
-    heartbeat_one_thread(&base, &w2, "w2", "t0", "prod-orders");
-
-    let health: HealthResponse = ureq::get(format!("{base}/api/health"))
-        .call()
-        .expect("request succeeds")
-        .body_mut()
-        .read_json()
-        .expect("valid JSON response");
-
-    assert_eq!(health.threads.len(), 3);
-    let pool = health.groups.iter().find(|g| g.group_id == "pool").unwrap();
-    assert_eq!(pool.readers, 2);
-    assert_eq!(pool.transform_threads, 0, "these fixtures report readers only");
-    assert_eq!(pool.egress_threads, 0);
-    let dedicated = health.groups.iter().find(|g| g.group_id == "prod-orders").unwrap();
-    assert_eq!(dedicated.readers, 1);
 }
 
 // -- worker authentication ---------------------------------------------

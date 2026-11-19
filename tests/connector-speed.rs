@@ -2107,6 +2107,6 @@ mod receivers {
     }
 
     pub fn syslog(port: u16) -> Value {
-        json!({"id": "in", "type": "syslogReceiver", "port": port, "allowFrom": ["0.0.0.0/0"]})
+        json!({"id": "in", "type": "socketReceiver", "framing": "syslog", "port": port, "allowFrom": ["0.0.0.0/0"]})
     }
 }

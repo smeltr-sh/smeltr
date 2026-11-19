@@ -8,7 +8,7 @@ import { SERIES_PART, partFile } from '../../gui-frontend/src/demo/parts.js';
 export const STATS = /^\/api\/areas\/[^/]+\/stats$/;
 /** The answers the fleet moves in, read again over a minute so the demo moves as the fleet did. */
 export const LIVE =
-  /^\/api\/(map\/measurements|areas\/[^/?]+\/stats|flow|cluster|workers|warnings|streams)\b/;
+  /^\/api\/(map\/measurements|areas\/[^/?]+\/stats|flow|health|workers|warnings|streams)\b/;
 /** The windows each chart opens on (`DEFAULT_CHART_RANGE` in `map.ts`, `DEFAULT_WINDOW_MINUTES` in `flow.ts`). */
 const OPENS_ON = [
   [STATS, '10'],

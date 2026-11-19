@@ -46,8 +46,8 @@ EOF`;
   </p>
   <p>
     Every worker in the group listens on its port, and a sender, or a balancer in front of the
-    workers, picks one. Add workers to take more. For syslog, take the
-    <a href="/docs/sources/syslog-receiver">syslog receiver</a> instead.
+    workers, picks one. Add workers to take more. For syslog, set its <code>framing</code> to
+    <code>syslog</code>, as the <a href="/docs/sources/syslog-receiver">syslog receiver</a> page shows.
   </p>
 
   <h2 id="example">Example</h2>
@@ -81,8 +81,8 @@ EOF`;
 
   <h2 id="framing">Where a message ends</h2>
   <p>
-    Over TCP, <code>framing</code> says where one message ends and the next starts. Over UDP each datagram
-    is one message, and the leader refuses a framing.
+    Over TCP, <code>framing</code> says where one message ends and the next starts. Over UDP each
+    datagram is one message, and the leader refuses any framing but <code>syslog</code>.
   </p>
   <ul>
     <li>
@@ -105,6 +105,12 @@ EOF`;
     <li>
       <strong><code>escapedLines</code></strong>: one message per line, unescaped as a destination
       with format <code>bytes</code> and newlines <code>escape</code> wrote it.
+    </li>
+    <li>
+      <strong><code>syslog</code></strong>: syslog's own framing (RFC 6587). A message that starts
+      with a digit 1 to 9 is counted by the length before it, and any other ends at a line end, or
+      where <code>lineBreaker</code> cuts it. See the
+      <a href="/docs/sources/syslog-receiver">syslog receiver</a>.
     </li>
   </ul>
   <p>Two messages as <code>lengthPrefix</code> with <code>bytes</code> 2 reads them, in hex:</p>
