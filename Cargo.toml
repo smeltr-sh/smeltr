@@ -73,8 +73,6 @@ rdkafka = { version = "0.39", features = ["cmake-build", "ssl-vendored", "libz-s
 # `bring_current` and drags in the attribute stack whether or not we want it. `blocking-http-transport-curl-rustls`
 # is the worker's fetch: the `reqwest` backend is `gix-transport`'s own experimental one and does not carry a
 # custom certificate authority, which a worker fetching from a leader that signs its own certificate must have.
-# Serving the repository stays on system git (leader/git.rs) -- framing the smart-HTTP protocol by hand is a
-# second implementation of something git already ships.
 gix = { version = "0.90", default-features = false, features = [
     "sha1",
     "merge",
