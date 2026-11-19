@@ -140,7 +140,8 @@
   },
   "syslogReceiverSource": {
     "id": "network-syslog",
-    "type": "syslogReceiver",
+    "type": "socketReceiver",
+    "framing": "syslog",
     "port": 6514,
     "allowFrom": ["10.20.0.0/16", "192.168.1.20"],
     "certificate": "syslog-tls"
