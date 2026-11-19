@@ -23,6 +23,7 @@
   import { shortCommit } from './time';
   import { ask } from './Confirm.svelte';
   import Help from './Help.svelte';
+  import { isAdministrator } from './access';
 
   let { branch, onoverwritten }: { branch: BranchDto; onoverwritten: () => void } = $props();
 
@@ -77,9 +78,12 @@
       >
       <span class="mono dim">ours {shortCommit(branch.head)}</span>
       <span class="mono dim">host {push.hostTip ? shortCommit(push.hostTip) : '—'}</span>
-      <Button type="button" class="compact" disabled={busy ? BUSY : ''} onclick={overwrite}>
-        {busy ? 'Overwriting…' : 'Overwrite remote'}
-      </Button>
+      <!-- It drops commits someone else pushed to the host, which only an administrator may do. -->
+      {#if isAdministrator()}
+        <Button type="button" class="compact" disabled={busy ? BUSY : ''} onclick={overwrite}>
+          {busy ? 'Overwriting…' : 'Overwrite remote'}
+        </Button>
+      {/if}
     {/if}
     <InlineError message={error} inline />
   </span>

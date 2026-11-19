@@ -6,7 +6,7 @@ import CertificatePicker from './CertificatePicker.svelte';
 // Signed in as someone who may list certificates.
 vi.mock('./access', async (actual) => ({
   ...(await actual<object>()),
-  editsSomewhere: () => true,
+  holdsSomewhere: () => true,
 }));
 
 const listed = (name: string, forServers: boolean, forClients: boolean) => ({
