@@ -4251,7 +4251,7 @@ impl Supervisor {
                 }
             }
             Begun::Refused(vacant) => {
-                self.forget_runtime();
+                self.retired(&inbox);
                 self.presenting.lock().unwrap().clear();
                 // Nothing runs, so nothing may look as if it listens: a sender is refused at once rather than
                 // left waiting in a queue nobody takes from. The retry binds again.
