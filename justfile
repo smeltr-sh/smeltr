@@ -583,10 +583,13 @@ check-live: live-up check-all
 kerberos-up:
     ./tests/kerberos/up.sh
 
-# The Kerberos tests, against a KDC and broker started fresh.
+# The Kerberos tests, against a KDC and broker started fresh. A `kinit` that only records it ran comes first on PATH,
+# and the credential cache is the in-memory one `main` sets, so the ticket the tests sign in with is one smeltr got
+# itself.
 [group("dev")]
 check-kerberos: kerberos-up
-    set -a && . /tmp/krb/env && set +a && SMELTR_LIVE_TESTS=required cargo test --test integration kerberos_tests::
+    rm -f /tmp/krb/kinit-ran
+    set -a && . /tmp/krb/env && set +a && PATH="$PWD/tests/kerberos/no-kinit:$PATH" KRB5CCNAME=MEMORY:smeltr SMELTR_KINIT_RAN=/tmp/krb/kinit-ran SMELTR_LIVE_TESTS=required cargo test --test integration kerberos_tests::
 
 # Reads a real Okta org's System Log, by API token and as a service app with
 # DPoP: the one check of what Okta itself takes. `check-live` runs it too;
