@@ -1,6 +1,7 @@
 [
   {
     "version": "1.2.1",
+    "date": "2026-11-19",
     "summary": "Kafka over Kerberos works in the image, and alert email gets six SMTP security fixes.",
     "fixes": [
       {
