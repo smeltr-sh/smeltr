@@ -1951,8 +1951,12 @@ mod logs_query_tests {
     }
 }
 
+/// One page of the log, of the rows the caller may read: an administrator every row, anyone else the rows filed under
+/// a group they view (`series::RegistryStore::record_logs`). A row filed under no group is the leader's own, about
+/// the whole fleet: its accounts, secrets and sign-ins among them.
 async fn get_logs(
     State(state): State<AppState>,
+    axum::Extension(access): axum::Extension<access::Access>,
     Query(query): Query<LogsQuery>,
 ) -> Result<Envelope<LogsResponse>, Refusal> {
     let limit = query.limit.unwrap_or(LOGS_PAGE).clamp(1, LOGS_PAGE_MAX);
@@ -1974,11 +1978,17 @@ async fn get_logs(
         let Some(store) = registry.series() else {
             return Ok(Vec::new());
         };
+        let viewed = access.viewed();
         store.logs(
             &series::LogFilter {
                 levels: &levels,
                 worker_id: query.worker.as_deref(),
                 group_id: query.group.as_deref(),
+                filed: match &viewed {
+                    _ if access.is_administrator() => series::Filed::Any,
+                    None => series::Filed::InAGroup,
+                    Some(groups) => series::Filed::In(groups),
+                },
                 class: query.class.as_deref(),
                 r#type: query.r#type.as_deref(),
                 type_exact: query.type_exact,
@@ -5349,7 +5359,70 @@ mod logs_endpoint_tests {
     }
 
     async fn get(state: &AppState, query: LogsQuery) -> LogsResponse {
-        get_logs(State(state.clone()), Query(query)).await.unwrap().body
+        read_as(state, access::Access::Administrator, query).await
+    }
+
+    async fn read_as(state: &AppState, access: access::Access, query: LogsQuery) -> LogsResponse {
+        get_logs(State(state.clone()), axum::Extension(access), Query(query))
+            .await
+            .unwrap()
+            .body
+    }
+
+    /// A line of the leader's own, naming `group` in its `group` field as an issue's line does.
+    fn about(seq: u64, group: &str) -> crate::heartbeat::LogDto {
+        let mut line = said(seq, "info", ("status", "cleared"), "an issue cleared");
+        line.fields = vec![(
+            "group".to_string(),
+            crate::heartbeat::FieldValueDto::Str(group.to_string()),
+        )];
+        line
+    }
+
+    #[tokio::test]
+    async fn a_viewer_reads_the_lines_filed_under_the_groups_they_view() {
+        let state = state();
+        state.registry.record_logs(
+            "w-1",
+            7,
+            Some("west"),
+            &[said(0, "info", ("processes", "started"), "west")],
+        );
+        state.registry.record_logs(
+            "w-2",
+            7,
+            Some("east"),
+            &[said(0, "info", ("processes", "started"), "east")],
+        );
+        let leader = [
+            about(0, "east"),
+            said(1, "warn", ("accounts", "sign_in_refused"), "the fleet's own"),
+        ];
+        state.registry.record_logs(LEADER_LOGS, 1, None, &leader);
+        let messages = |answer: LogsResponse| -> Vec<String> { answer.rows.into_iter().map(|r| r.message).collect() };
+
+        let east = access::Access::Areas([("east".to_string(), access::Level::Viewer)].into());
+        assert_eq!(
+            messages(read_as(&state, east.clone(), LogsQuery::default()).await),
+            ["an issue cleared", "east"],
+            "the worker's line, and the leader's line naming east, filed under it"
+        );
+        assert_eq!(
+            messages(get(&state, LogsQuery::default()).await).len(),
+            4,
+            "an administrator reads every line"
+        );
+        let agent = access::Access::Administrator.for_agent(access::AgentPermissions::default());
+        assert_eq!(
+            messages(read_as(&state, agent, LogsQuery::default()).await),
+            ["an issue cleared", "east", "west"],
+            "an administrator's agent reads every group, not the fleet's own lines"
+        );
+        let shared = access::Access::Areas([("shared".to_string(), access::Level::Deployer)].into());
+        assert!(
+            read_as(&state, shared, LogsQuery::default()).await.rows.is_empty(),
+            "no group, no lines"
+        );
     }
 
     #[tokio::test]
