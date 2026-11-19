@@ -1441,7 +1441,7 @@ const FILE_SECS: u64 = 5;
 /// Records in each file an object source reads: a log file's worth.
 const FILE_ROWS: u64 = 5_000;
 
-/// The corpus as files of lines, each named for its place in it.
+/// The corpus as files of lines, each named for its place in it, and gzipped when `CONNECTOR_GZIP` is set.
 fn files(rows: u64) -> Vec<(String, Vec<u8>)> {
     let gzip = std::env::var_os("CONNECTOR_GZIP").is_some();
     (0..rows.div_ceil(FILE_ROWS))
