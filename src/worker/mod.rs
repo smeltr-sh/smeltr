@@ -3907,7 +3907,7 @@ impl Supervisor {
         }
     }
 
-    /// Ends the runtime `s` holds, if it holds one. False when the end could not be confirmed, which blocks.
+    /// Ends the runtime `s` holds, if it holds one. False when the end could not be confirmed: the deployer is then blocked.
     fn stop(&self, s: &mut Schedule) -> bool {
         if let Some(mut handle) = s.running.take()
             && self.end(&mut handle, &s.inbox).is_err()
@@ -3925,14 +3925,14 @@ impl Supervisor {
         true
     }
 
-    /// The target is what this worker runs, so nothing of it is left to report or to back off from.
+    /// Records that the target is what this worker runs, so no failure of it is left to report or to back off from.
     fn succeeded(&self, s: &mut Schedule) {
         self.note_failure(None);
         s.failures = 0;
         s.refused_since = None;
     }
 
-    /// Reports `commit` as what the running runtime represents, and holds it in the repository.
+    /// Reports `commit` as what the running runtime represents, and holds it against garbage collection.
     fn represent(&self, s: &mut Schedule, commit: &str) {
         *self.commit.lock().unwrap() = Some(commit.to_string());
         self.succeeded(s);
@@ -4133,7 +4133,7 @@ impl Supervisor {
         }
     }
 
-    /// Starts `target` in the place `stop` left empty, and the last commit that started when `target` will not.
+    /// Starts `target` in the place `stop` left empty. When `target` will not start, starts the last commit that started.
     fn start(&self, s: &mut Schedule, target: &Target, arriving: ContentId, validated: Validated) {
         s.incarnation += 1;
         s.inbox = Arc::new(child::RuntimeInbox::default());
