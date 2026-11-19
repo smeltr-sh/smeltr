@@ -151,6 +151,19 @@ services:
       timeout: 10s
       retries: 30
 
+  # A second S3, for `just connector-speed`: SeaweedFS's master, volume, filer and S3 in one process on every core,
+  # where LocalStack serves S3 from about one. With no identities configured it takes any request, signed or not.
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.52
+    command: server -s3 -dir=/data -ip.bind=0.0.0.0
+    ports:
+      - "8333:8333"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8333/healthz || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
   # An Iceberg REST catalog: Apache Iceberg's own test fixture, keeping its tables in LocalStack's S3 under the bucket
   # iceberg-live, which the test makes. Its catalog is a SQLite file in the container, so a new container starts
   # empty. In memory, each connection the catalog reopens after a failed commit would see an empty database. Its
