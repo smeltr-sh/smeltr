@@ -3389,7 +3389,7 @@ fn a_bad_line_breaker_is_refused() {
     }
     for framing in ["object", "escapedLines"] {
         let json = s3_sqs_config(&format!(r#","framing":"{framing}","lineBreaker":"(\\n)""#));
-        let why = r#"source "q" sets lineBreaker, which only lines framing reads"#;
+        let why = r#"source "q" sets lineBreaker, which only lines and syslog framing read"#;
         assert!(refused_at(&json, "lineBreaker", why), "{framing}: {}", refusal(&json));
     }
     for unread in [r#","framing":"multiline""#, r#","eventStart":"^x""#, r#","maxLines":5"#] {
@@ -5868,7 +5868,7 @@ fn a_hec_receiver_takes_a_line_breaker_by_sourcetype() {
 fn a_minimal_syslog_receiver_loads() {
     use smeltr::plan::topology::{Receiver, SourceKind, SourceMeta};
 
-    let json = r#"{"version":1,"sources":[{"id":"syslog","type":"syslogReceiver","port":1514,
+    let json = r#"{"version":1,"sources":[{"id":"syslog","type":"socketReceiver","framing":"syslog","port":1514,
         "allowFrom":["10.0.0.0/8","192.0.2.7"]}]}"#;
     assert!(refusal(json).is_empty(), "{}", refusal(json));
     let system = load_str(json).expect("must load");
@@ -5877,14 +5877,14 @@ fn a_minimal_syslog_receiver_loads() {
     let SourceKind::Receiver(r) = kind else {
         panic!("expected a receiver, got {kind:?}")
     };
-    let Receiver::Syslog(syslog) = &r.receiver else {
+    let Receiver::Socket(syslog) = &r.receiver else {
         panic!("expected syslog, got {:?}", r.receiver)
     };
     let networks: Vec<String> = syslog.allow_from.iter().map(|n| n.to_string()).collect();
     assert_eq!(networks, ["10.0.0.0/8", "192.0.2.7/32"]);
     assert_eq!(r.listen, "[::]:1514".parse().unwrap());
     assert!(r.tokens.is_empty() && r.tls.is_none());
-    assert_eq!(kind.meta(), SourceMeta::SYSLOG_RECEIVER.with_encoding(kind.encoding()));
+    assert_eq!(kind.meta(), SourceMeta::SOCKET_RECEIVER.with_encoding(kind.encoding()));
     assert_eq!(
         kind.listens().map(|l| (l.transport, l.address)),
         Some((smeltr::plan::topology::Transport::Tcp, r.listen))
@@ -5901,7 +5901,9 @@ fn a_minimal_syslog_receiver_loads() {
 #[test]
 fn a_syslog_receiver_admits_by_network_or_certificate() {
     let syslog = |extra: &str| {
-        format!(r#"{{"version":1,"sources":[{{"id":"syslog","type":"syslogReceiver","port":1514{extra}}}]}}"#)
+        format!(
+            r#"{{"version":1,"sources":[{{"id":"syslog","type":"socketReceiver","framing":"syslog","port":1514{extra}}}]}}"#
+        )
     };
     assert!(refused_at(
         &syslog(""),
@@ -5925,13 +5927,13 @@ fn a_syslog_receiver_admits_by_network_or_certificate() {
     );
     let vouched = s2s_receiver_config(S2S_TLS).replace(
         r#""type":"s2sReceiver","port":9997"#,
-        r#""type":"syslogReceiver","port":6514"#,
+        r#""type":"socketReceiver","framing":"syslog","port":6514"#,
     );
     assert_eq!(refusal(&vouched), "", "mutual TLS admits without allowFrom");
     let json = format!(
         r#"{{"version":1,"sources":[
             {{"id":"forwarders","type":"s2sReceiver","port":1514{S2S_TOKEN}}},
-            {{"id":"syslog","type":"syslogReceiver","port":1514,"allowFrom":["10.0.0.0/8"]}}]}}"#
+            {{"id":"syslog","type":"socketReceiver","framing":"syslog","port":1514,"allowFrom":["10.0.0.0/8"]}}]}}"#
     );
     let e = refusal(&json);
     assert!(
@@ -5948,7 +5950,7 @@ fn a_syslog_receiver_takes_a_line_breaker_over_tcp() {
 
     let syslog = |extra: &str| {
         format!(
-            r#"{{"version":1,"sources":[{{"id":"syslog","type":"syslogReceiver","port":1514,
+            r#"{{"version":1,"sources":[{{"id":"syslog","type":"socketReceiver","framing":"syslog","port":1514,
             "allowFrom":["10.0.0.0/8"]{extra}}}]}}"#
         )
     };
@@ -5958,7 +5960,7 @@ fn a_syslog_receiver_takes_a_line_breaker_over_tcp() {
     let SourceKind::Receiver(r) = &system.topology.sources[0].kind else {
         panic!("a receiver")
     };
-    let Receiver::Syslog(syslog_config) = &r.receiver else {
+    let Receiver::Socket(syslog_config) = &r.receiver else {
         panic!("a syslog receiver")
     };
     let smeltr::io::framing::Framing::Syslog(line_breaker) = &syslog_config.framing else {
@@ -5971,8 +5973,8 @@ fn a_syslog_receiver_takes_a_line_breaker_over_tcp() {
 
     assert!(refused_at(
         &syslog(r#","transport":"udp","lineBreaker":"(\\x00)""#),
-        "lineBreaker",
-        r#"source "syslog" sets lineBreaker, which only TCP reads"#
+        "framing",
+        r#"source "syslog" sets a framing that only TCP reads"#
     ));
     assert!(refused_at(
         &syslog(r#","lineBreaker":"\\x00""#),
@@ -6035,7 +6037,7 @@ fn a_socket_receiver_takes_a_framing_over_tcp() {
     assert!(refused_at(
         &socket(r#","transport":"udp","framing":"fixed","fixedBytes":16"#),
         "framing",
-        r#"source "raw" sets a framing, which only TCP reads"#
+        r#"source "raw" sets a framing that only TCP reads"#
     ));
     assert!(refused_at(
         &socket(r#","framing":"lengthPrefix""#),
@@ -6075,7 +6077,7 @@ fn a_syslog_receiver_declares_its_encoding() {
     use smeltr::format::encoding::Encoding;
     let syslog = |extra: &str| {
         format!(
-            r#"{{"version":1,"sources":[{{"id":"syslog","type":"syslogReceiver","port":1514,
+            r#"{{"version":1,"sources":[{{"id":"syslog","type":"socketReceiver","framing":"syslog","port":1514,
             "allowFrom":["10.0.0.0/8"]{extra}}}]}}"#
         )
     };
@@ -6097,7 +6099,7 @@ fn a_syslog_receiver_declares_its_encoding() {
 fn a_syslog_receiver_takes_udp() {
     use smeltr::plan::topology::{Receiver, SourceKind, Transport};
 
-    let json = r#"{"version":1,"sources":[{"id":"syslog","type":"syslogReceiver","port":514,
+    let json = r#"{"version":1,"sources":[{"id":"syslog","type":"socketReceiver","framing":"syslog","port":514,
         "allowFrom":["10.0.0.0/8"],"transport":"udp"}]}"#;
     assert!(refusal(json).is_empty(), "{}", refusal(json));
     let system = load_str(json).expect("must load");
@@ -6106,7 +6108,7 @@ fn a_syslog_receiver_takes_udp() {
     let SourceKind::Receiver(r) = kind else {
         panic!("expected a receiver, got {kind:?}")
     };
-    let Receiver::Syslog(syslog) = &r.receiver else {
+    let Receiver::Socket(syslog) = &r.receiver else {
         panic!("expected syslog, got {:?}", r.receiver)
     };
     assert_eq!(syslog.transport, Transport::Udp);
@@ -6136,7 +6138,7 @@ fn a_udp_syslog_receiver_admits_only_by_network() {
     let vouched = |extra: &str| {
         s2s_receiver_config(&format!(r#"{S2S_TLS},"transport":"udp"{extra}"#)).replace(
             r#""type":"s2sReceiver","port":9997"#,
-            r#""type":"syslogReceiver","port":6514"#,
+            r#""type":"socketReceiver","framing":"syslog","port":6514"#,
         )
     };
     assert!(refused_at(&vouched(""), "certificate", "takes UDP"));
@@ -6161,8 +6163,8 @@ fn syslog_receivers_share_a_port_only_across_transports() {
     let two = |first: &str, second: &str| {
         format!(
             r#"{{"version":1,"sources":[
-            {{"id":"a","type":"syslogReceiver","port":514,"allowFrom":["10.0.0.0/8"]{first}}},
-            {{"id":"b","type":"syslogReceiver","port":514,"allowFrom":["10.0.0.0/8"]{second}}}]}}"#
+            {{"id":"a","type":"socketReceiver","framing":"syslog","port":514,"allowFrom":["10.0.0.0/8"]{first}}},
+            {{"id":"b","type":"socketReceiver","framing":"syslog","port":514,"allowFrom":["10.0.0.0/8"]{second}}}]}}"#
         )
     };
     let across = two("", r#","transport":"udp""#);
@@ -6186,7 +6188,7 @@ fn a_receiver_below_2048_bytes_is_refused() {
     let json = |bytes: u64| {
         format!(
             r#"{{"version":1,"sources":[
-                {{"id":"a","type":"syslogReceiver","port":514,"allowFrom":["10.0.0.0/8"],"maxRequestBytes":{bytes}}}]}}"#
+                {{"id":"a","type":"socketReceiver","framing":"syslog","port":514,"allowFrom":["10.0.0.0/8"],"maxRequestBytes":{bytes}}}]}}"#
         )
     };
     assert!(refusal(&json(2048)).is_empty(), "{}", refusal(&json(2048)));
@@ -6645,7 +6647,7 @@ fn an_http_api_source_with_a_muddled_sign_in_is_refused() {
 /// networks.
 fn syslog_tls_config(extra: &str) -> String {
     format!(
-        r#"{{"version":1,"sources":[{{"id":"a","type":"syslogReceiver","port":6514,"certificate":"served"{extra}}}]}}"#
+        r#"{{"version":1,"sources":[{{"id":"a","type":"socketReceiver","framing":"syslog","port":6514,"certificate":"served"{extra}}}]}}"#
     )
 }
 

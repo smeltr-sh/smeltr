@@ -1,4 +1,4 @@
-import type { SourceDto } from './api';
+import type { SourceType } from './sources';
 import type { CatalogKind } from './TypeCatalog.svelte';
 
 /** How a group shares the reading of a source: what adding workers does for it. */
@@ -48,7 +48,7 @@ export const SOURCE_KINDS: CatalogKind<SourceKind>[] = [
 ];
 
 /** The kind of every source type. */
-export const SOURCE_KIND: Record<SourceDto['type'], SourceKind> = {
+export const SOURCE_KIND: Record<SourceType, SourceKind> = {
   kafka: 'pullAll',
   eventHubs: 'pullAll',
   s3Sqs: 'pullAll',

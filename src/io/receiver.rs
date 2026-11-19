@@ -81,7 +81,7 @@ pub const SOCKETS_ENV: &str = "SMELTR_RECEIVER_SOCKETS";
 pub fn reserve(config: &ReceiverConfig) -> usize {
     match config.receiver {
         Receiver::Otlp(_) | Receiver::Prometheus | Receiver::Elastic => INBOX_BYTES,
-        Receiver::S2s(_) | Receiver::Syslog(_) | Receiver::Socket(_) => config.max_request_bytes + STREAM_STEP,
+        Receiver::S2s(_) | Receiver::Socket(_) => config.max_request_bytes + STREAM_STEP,
         Receiver::Http(_) | Receiver::Hec(_) => config.max_request_bytes,
     }
 }
@@ -109,7 +109,6 @@ pub fn open(
         | Receiver::Otlp(_)
         | Receiver::Prometheus
         | Receiver::S2s(_)
-        | Receiver::Syslog(_)
         | Receiver::Socket(_)
         | Receiver::Elastic => false,
     };
@@ -148,7 +147,7 @@ pub fn open(
     }
     let shared = shared();
     let runtime = receiver_runtime()?;
-    if let Receiver::Syslog(datagrams) | Receiver::Socket(datagrams) = &config.receiver
+    if let Receiver::Socket(datagrams) = &config.receiver
         && datagrams.transport == Transport::Udp
     {
         let socket = std::net::UdpSocket::from(bound(config.listens())?);
@@ -175,7 +174,7 @@ pub fn open(
         }));
     }
     let listener = TcpListener::from(bound(config.listens())?);
-    if let Receiver::S2s(_) | Receiver::Syslog(_) | Receiver::Socket(_) = &config.receiver {
+    if let Receiver::S2s(_) | Receiver::Socket(_) = &config.receiver {
         let tls = match &config.tls {
             Some(tls) => Some(server_tls(tls, secrets)?),
             None => None,
@@ -194,7 +193,7 @@ pub fn open(
                 let limits = config.connections;
                 runtime.spawn(serve_streams(listener, Vec::new(), limits, tls, shared.clone(), handle))
             }
-            Receiver::Syslog(socket) | Receiver::Socket(socket) => {
+            Receiver::Socket(socket) => {
                 let handler = Arc::new(socket_receiver::Handler::new(socket, config.max_request_bytes));
                 let handle = move |connection| handler.clone().serve(connection);
                 let allow_from = socket.allow_from.clone();
@@ -212,7 +211,7 @@ pub fn open(
     let speaks = match &config.receiver {
         Receiver::Http(http) => Speaks::Http(http.records.clone()),
         Receiver::Hec(hec) => Speaks::Hec(hec.sourcetypes.clone()),
-        Receiver::S2s(_) | Receiver::Otlp(_) | Receiver::Syslog(_) | Receiver::Socket(_) => {
+        Receiver::S2s(_) | Receiver::Otlp(_) | Receiver::Socket(_) => {
             unreachable!("served above")
         }
         Receiver::Prometheus => Speaks::Prometheus,
@@ -261,7 +260,7 @@ pub fn open(
             .route("/services/collector/ack/1.0", post(hec_ack))
             .route(hec::HEALTH_PATH, get(health))
             .route("/services/collector/health/1.0", get(health)),
-        Receiver::S2s(_) | Receiver::Otlp(_) | Receiver::Syslog(_) | Receiver::Socket(_) => {
+        Receiver::S2s(_) | Receiver::Otlp(_) | Receiver::Socket(_) => {
             unreachable!("served above")
         }
         Receiver::Prometheus => axum::Router::new()
@@ -322,7 +321,7 @@ pub fn open_raw(config: &ReceiverConfig, secrets: &HeldSecrets) -> Result<Box<dy
     // `from_std` registers the socket with the runtime it is called in.
     let _entered = runtime.enter();
     let allow_from = match &config.receiver {
-        Receiver::Syslog(socket) | Receiver::Socket(socket) => socket.allow_from.clone(),
+        Receiver::Socket(socket) => socket.allow_from.clone(),
         Receiver::Http(_)
         | Receiver::Hec(_)
         | Receiver::Otlp(_)

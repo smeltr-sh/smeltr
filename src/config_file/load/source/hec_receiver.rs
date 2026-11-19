@@ -1,17 +1,14 @@
 use super::super::shared::*;
-use super::SourceSpec;
+use super::receiver::{NoFramingDto, ReceiverKindDto, ReceiverSourceDto};
+use crate::plan::topology::{HecReceiverConfig, Receiver};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub type HecReceiverSourceDto = ReceiverSourceDto<HecReceiverDto, NoFramingDto>;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HecReceiverSourceDto {
-    #[serde(flatten)]
-    pub listener: ReceiverSettingsDto,
-    #[serde(flatten)]
-    pub connections: ConnectionLimitsDto,
-    #[serde(flatten)]
-    pub tls: ServedTlsDto,
+pub struct HecReceiverDto {
     /// Whether a request is answered only once every destination has its records, rather than as soon as it is
     /// received.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -24,67 +21,38 @@ pub struct HecReceiverSourceDto {
     /// here is an event per line.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sourcetypes: BTreeMap<String, SourcetypeDto>,
-    #[serde(flatten, default)]
-    pub unknown: NoUnknownKeys,
 }
 
-impl SourceSpec for HecReceiverSourceDto {
-    fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
-        let what = format!("source {:?}", s.id);
-        check_receiver(&what, &self.listener, &self.tls, &self.tokens, errors);
-        check_connection_limits(&what, &self.connections, true, errors);
+impl ReceiverKindDto for HecReceiverDto {
+    type Framing = NoFramingDto;
+
+    fn meta(&self) -> SourceMeta {
+        SourceMeta::HEC_RECEIVER
+    }
+
+    fn check(&self, s: &SourceDto, _: &str, _: &ReceiverSettingsDto, _: &NoFramingDto, errors: &mut ItemErrors<'_>) {
         check_sourcetypes(&s.id, &self.sourcetypes, errors);
     }
 
-    fn to_kind(&self, of: &str) -> SourceKind {
-        let Self {
-            unknown: _,
-            listener,
-            connections,
-            tls,
-            tokens,
-            sourcetypes,
-            answer_after_delivery,
-        } = self;
-        receiver_config(
-            crate::plan::topology::Receiver::Hec(crate::plan::topology::HecReceiverConfig {
-                acknowledging: tokens
-                    .iter()
-                    .filter(|(_, t)| t.acknowledgement)
-                    .map(|(name, _)| name.clone())
-                    .collect(),
-                sourcetypes: to_line_breakers(sourcetypes),
-            }),
-            *answer_after_delivery,
-            listener,
-            tls,
-            tokens.iter().map(|(name, t)| (name, &t.token)),
-            to_connection_limits(connections),
-            of,
-        )
+    fn receiver(&self, _: &NoFramingDto) -> Receiver {
+        Receiver::Hec(HecReceiverConfig {
+            acknowledging: (self.tokens.iter())
+                .filter(|(_, t)| t.acknowledgement)
+                .map(|(name, _)| name.clone())
+                .collect(),
+            sourcetypes: to_line_breakers(&self.sourcetypes),
+        })
     }
 
-    fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
-        self.tokens.values().map(|t| ("tokens", &t.token)).collect()
+    fn answer_after_delivery(&self) -> bool {
+        self.answer_after_delivery
     }
 
-    fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto> {
+    fn tokens(&self) -> Vec<(&String, &SecretRefDto)> {
+        self.tokens.iter().map(|(name, t)| (name, &t.token)).collect()
+    }
+
+    fn tokens_mut(&mut self) -> Vec<&mut SecretRefDto> {
         self.tokens.values_mut().map(|t| &mut t.token).collect()
-    }
-
-    fn urls(&self) -> Vec<(&'static str, &str)> {
-        Vec::new()
-    }
-
-    fn tls(&self) -> Option<TlsDto> {
-        Some(self.tls.tls())
-    }
-
-    fn receiver_port(&self) -> Option<u16> {
-        Some(self.listener.port)
-    }
-
-    fn declared_meta(&self) -> SourceMeta {
-        SourceMeta::HEC_RECEIVER
     }
 }

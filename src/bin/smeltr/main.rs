@@ -3,7 +3,7 @@
 //! with neither refuses to start; one with both runs a leader and a worker that reports to it.
 //!
 //! The leader serves everything on one port: the admin and worker API (`smeltr::leader`), the GUI and its config API,
-//! the preview and capture endpoints, and the Cluster page (`cluster.rs`).
+//! and the preview and capture endpoints.
 
 use std::collections::HashMap;
 
@@ -23,7 +23,6 @@ mod branch_api;
 mod capture_api;
 mod certificates_api;
 mod chat_api;
-mod cluster;
 mod config_api;
 mod docs_api;
 mod export_api;
@@ -1145,8 +1144,7 @@ async fn setup_leader(
         spawn_embedded_worker(store, &data_dir, leader_url, leader_ca_pem, authority_dir);
     }
 
-    let admin_and_cluster = smeltr::leader::admin_router()
-        .route("/api/cluster", get(cluster::cluster_status))
+    let stateful_routes = smeltr::leader::admin_router()
         .route("/api/map", get(get_map))
         .route("/api/map/measurements", get(get_map_measurements))
         .route("/api/areas/:area/stats", get(get_stats))
@@ -1244,7 +1242,7 @@ async fn setup_leader(
         )
         .layer(axum::extract::DefaultBodyLimit::max(PEOPLE_BODY_LIMIT))
         .route_layer(axum::middleware::from_fn_with_state(auth, gate::require_principal));
-    let routes = smeltr::leader::compose(state.clone(), admin_and_cluster);
+    let routes = smeltr::leader::compose(state.clone(), stateful_routes);
 
     LeaderSetup {
         routes,
@@ -2248,7 +2246,7 @@ async fn run_leader() {
         .route("/api/preview/format", post(format))
         .route("/api/areas/:area/lookups/file", get(config_api::get_lookup_file))
         .route("/api/areas/:area/lookups/mmdb", get(config_api::get_lookup_mmdb))
-        // GET/POST `/api/worker-groups` and PUT `/api/worker-groups/:id/hue` are on `admin_and_cluster` instead:
+        // GET/POST `/api/worker-groups` and PUT `/api/worker-groups/:id/hue` are on `stateful_routes` instead:
         // both need `State<AppState>`, which only that router carries.
         .route(
             "/api/worker-groups/:id",
@@ -2260,7 +2258,7 @@ async fn run_leader() {
         .route("/api/branches/:name/threads/:id", post(branch_api::resolve_thread))
         .route("/api/branches/:name/reviews", post(branch_api::review_change))
         .route("/api/branches/:name/timeline", get(branch_api::change_timeline))
-        // `/api/branches/:name/deploy` and `/api/main/deploy` are on `admin_and_cluster` instead: both wait their turn
+        // `/api/branches/:name/deploy` and `/api/main/deploy` are on `stateful_routes` instead: both wait their turn
         // with the remote's syncs, which needs `State<AppState>`.
         .route("/api/branches/:name/bring-current", post(branch_api::bring_current))
         .route("/api/main/history", get(branch_api::history))
@@ -4067,7 +4065,7 @@ mod tests {
         };
         let raw = RawBundle {
             file: FileConfig {
-                version: 1,
+                version: smeltr::config_file::CURRENT_VERSION,
                 sources: vec![],
                 destinations: vec![],
                 pipelines: vec![

@@ -146,8 +146,9 @@ pub struct MapNode {
     /// The system behind a source or destination; `None` for a pipeline.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system: Option<System>,
-    /// A source's or destination's `type`, as its config names it; `None` for a pipeline. Its card is labeled by it,
-    /// as the Sources and Destinations pages label it. Several types share one `system`, so `system` alone cannot.
+    /// A source's or destination's type, as the Sources and Destinations pages name it: the `type` its config names,
+    /// or `syslogReceiver` for a socket receiver that frames syslog. `None` for a pipeline. Its card is labeled by it.
+    /// Several types share one `system`, so `system` alone cannot label it.
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub config_type: Option<String>,
     /// Declared in `shared/` rather than in this group's own subtree -- still one running thing per group that
@@ -448,7 +449,11 @@ impl ConfigTypes {
     fn of(file: &config_file::FileConfig) -> ConfigTypes {
         // The tag serde writes is the `type` the config was read with.
         fn tag(kind: impl Serialize) -> Option<String> {
-            Some(serde_json::to_value(kind).ok()?["type"].as_str()?.to_string())
+            let kind = serde_json::to_value(kind).ok()?;
+            if kind["type"] == "socketReceiver" && kind["framing"] == "syslog" {
+                return Some("syslogReceiver".to_string());
+            }
+            Some(kind["type"].as_str()?.to_string())
         }
         ConfigTypes {
             sources: file
@@ -842,6 +847,36 @@ mod tests {
         let lake = map.nodes.iter().find(|n| n.author_id == "lake").unwrap();
         assert_eq!(lake.system, Some(System::Delta));
         assert_eq!(serde_json::to_value(System::Delta).unwrap(), "delta");
+    }
+
+    #[test]
+    fn a_socket_receiver_framing_syslog_is_drawn_as_a_syslog_receiver() {
+        let receiver = |id: &str, port: u16, framing: &str| -> SourceDto {
+            serde_json::from_value(serde_json::json!({
+                "id": id, "type": "socketReceiver", "port": port, "framing": framing, "allowFrom": ["10.0.0.0/8"]}))
+            .unwrap()
+        };
+        let file = config(
+            vec![receiver("syslog", 6514, "syslog"), receiver("lines", 6515, "lines")],
+            vec![destination("es-prod")],
+            vec![
+                route("r1", "syslog", "normalize", &["es-prod"]),
+                route("r2", "lines", "normalize", &["es-prod"]),
+            ],
+            vec![pipeline("normalize", "Normalize", vec![])],
+        );
+        let map = build_fleet(vec![group_bundle("ingest-1", file)]);
+
+        let type_of = |id: &str| {
+            map.nodes
+                .iter()
+                .find(|n| n.author_id == id)
+                .unwrap()
+                .config_type
+                .clone()
+        };
+        assert_eq!(type_of("syslog").as_deref(), Some("syslogReceiver"));
+        assert_eq!(type_of("lines").as_deref(), Some("socketReceiver"));
     }
 
     /// A small bundle's edges, checked by the author ids on their two ends -- not by any positional id, since that

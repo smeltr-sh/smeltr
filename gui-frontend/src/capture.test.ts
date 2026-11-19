@@ -187,7 +187,12 @@ describe('captureRequest', () => {
   });
 
   it('captures a receiver as sent with no filter, since there is no record yet to read', () => {
-    const source = { id: 'sys', type: 'syslogReceiver', port: 1514 } as SourceDto;
+    const source = {
+      id: 'sys',
+      type: 'socketReceiver',
+      port: 1514,
+      framing: 'syslog',
+    } as SourceDto;
     expect(captureRequest({ source }, { ...ask, raw: true })).toEqual({
       group: 'east',
       source,

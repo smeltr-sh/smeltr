@@ -1253,7 +1253,7 @@ const rollBack: Move = {
     await expect
       .poll(
         async () => {
-          const rows: Row[] = (await api.get('/api/cluster')).health.threads;
+          const rows: Row[] = (await api.get('/api/health')).threads;
           return heartbeating(world).every((w) =>
             rows.some(
               (t) =>
@@ -2500,12 +2500,12 @@ async function deployReached(j: Journey) {
   await expect
     .poll(
       async () => {
-        const c = await api.get('/api/cluster');
-        return c.health.threads.some(
+        const { deployed } = await api.get('/api/main/history?limit=1');
+        return (await api.get('/api/health')).threads.some(
           (t: { workerId: string; groupId: string; commit: string }) =>
             t.groupId === 'default' &&
             heartbeating(j.world).includes(t.workerId) &&
-            t.commit === c.deployedCommit,
+            t.commit === deployed,
         );
       },
       { timeout: 60_000 },
@@ -2868,8 +2868,7 @@ const addKeyAccount: Move = {
     expect(made).toMatchObject({ authSource: 'key', roles: access, keys: [{ label: 'journey' }] });
     const [held] = made.keys!;
     expect(held.expiresAt).toBe(days === null ? null : held.createdAt + days * DAY_MILLIS);
-    // The health of the fleet is the administrator's alone; a role reads no more than shared.
-    expect(await withKey(leader, key, 'GET', '/api/health')).toBe(administrator ? 200 : 403);
+    // The accounts are the administrator's alone; a role reads no more than shared.
     expect(await withKey(leader, key, 'GET', '/api/accounts')).toBe(administrator ? 200 : 403);
     const lasts = days === null ? 'never expires' : `expires in ${days} days`;
     return `add key account ${name}, ${said(access)}, with a key that ${lasts}`;
@@ -2903,7 +2902,7 @@ const revokeKey: Move = {
       .get('/api/accounts')
       .then((a) => a.accounts);
     expect(accounts.find((a) => a.displayName === name)?.keys).toEqual([]);
-    expect(await withKey(leader, key, 'GET', '/api/health')).toBe(403);
+    expect(await withKey(leader, key, 'GET', '/api/accounts')).toBe(403);
     return `revoke ${name}'s key`;
   },
 };

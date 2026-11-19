@@ -42,7 +42,7 @@
     removeWorker,
     getWorkerSettings,
     putWorkerSettings,
-    getClusterStatus,
+    getHealth,
     currentBranch,
     leaveScope,
     errorText,
@@ -82,25 +82,22 @@
   let silentAfterMs = $state(0);
   let workerSettings = $state<WorkerSettingsDto | null>(null);
   let loading = $state(true);
-  /** The leader's store could not be read: an answer, with the rest of the cluster beside it. */
-  let storeError = $state('');
 
   async function load() {
     loading = true;
     try {
-      const [g, c, cluster, outstanding, settings] = await Promise.all([
+      const [g, c, health, outstanding, settings] = await Promise.all([
         listWorkerGroups(true),
         listWorkers(),
-        getClusterStatus(),
+        getHealth(),
         listEnrollmentCodes(),
         getWorkerSettings(),
       ]);
       groups = g.groups;
       sharedHue = g.ok ? (g.sharedHue ?? null) : null;
       credentials = c;
-      threads = cluster.health?.threads ?? [];
-      silentAfterMs = cluster.health?.silentAfterMs ?? 0;
-      storeError = cluster.error ?? '';
+      threads = health.threads;
+      silentAfterMs = health.silentAfterMs;
       codes = outstanding.codes;
       if (settings.settings) adoptWorkerSettings(settings.settings);
     } catch (e) {
@@ -664,8 +661,6 @@
       {/if}
     </div>
   {/if}
-
-  <InlineError message={storeError} />
 
   {#if page === 'workers' && section === 'workers'}
     <section>

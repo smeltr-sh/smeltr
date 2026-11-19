@@ -81,7 +81,6 @@ use axum::routing::{delete, get, post, put};
 
 use crate::heartbeat::{
     CaptureInvitation, HeartbeatRequest, HeartbeatResponse, Hold, SecretDelivery, SenderFields, ThreadHeartbeat,
-    ThreadKind,
 };
 use envelope::{Empty, Envelope, Refusal};
 use registry::{FactKey, Registry, ThreadHealth, WorkerFacts};
@@ -1018,54 +1017,22 @@ pub fn build_name(commit: &str, release: Option<&str>) -> String {
 
 // -- worker health status --------------------------------------------------
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GroupHealth {
-    pub group_id: String,
-    /// The pool: what `thread_limit` sizes, and the only one an operator sets.
-    pub transform_threads: usize,
-    /// One per source, set by how many sources the group's bundle declares.
-    pub readers: usize,
-    /// One per destination, set by how many the group delivers to.
-    pub egress_threads: usize,
-}
+/// What `GET /api/health` serves: each worker thread's last heartbeat.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HealthResponse {
     pub threads: Vec<ThreadHealth>,
-    pub groups: Vec<GroupHealth>,
     /// How long a worker may go without a heartbeat before it is silent: the window `workerSilent` is raised on, so
     /// a page counting silent workers agrees with it.
     pub silent_after_ms: u64,
 }
 
-/// What `GET /api/health` serves, for the binary's in-process Cluster page.
-pub fn health_snapshot(state: &AppState) -> HealthResponse {
-    let snapshot = state.registry.snapshot();
-
-    // Counted per kind, because each stage's size comes from something the others cannot influence (design doc,
-    // Runtime stages). `Worker` is
-    // the process itself, not a thread; a worker older than the pool reports no kind at all, and counts against nothing
-    // rather than being guessed at.
-    let mut groups: std::collections::BTreeMap<String, GroupHealth> = std::collections::BTreeMap::new();
-    for t in &snapshot {
-        let g = groups.entry(t.report.group_id.clone()).or_insert_with(|| GroupHealth {
-            group_id: t.report.group_id.clone(),
-            transform_threads: 0,
-            readers: 0,
-            egress_threads: 0,
-        });
-        match t.report.kind {
-            Some(ThreadKind::Transform) => g.transform_threads += 1,
-            Some(ThreadKind::Reader) => g.readers += 1,
-            Some(ThreadKind::Egress) => g.egress_threads += 1,
-            Some(ThreadKind::Worker) | None => {}
-        }
-    }
-
+/// The threads heartbeating in the groups `access` views.
+fn health_snapshot(state: &AppState, access: &access::Access) -> HealthResponse {
+    let mut threads = state.registry.snapshot();
+    threads.retain(|t| access.allows(&t.report.group_id, access::Level::Viewer));
     HealthResponse {
-        threads: snapshot,
-        groups: groups.into_values().collect(),
+        threads,
         silent_after_ms: heartbeat_window().as_millis() as u64,
     }
 }
@@ -1094,8 +1061,13 @@ pub struct SystemInfo {
     pub kafka_tls_props: &'static [&'static str],
 }
 
-async fn health(State(state): State<AppState>) -> Envelope<HealthResponse> {
-    Envelope::ok(health_snapshot(&state))
+/// The gate lets in anyone who views some area, and the registry holds the whole fleet's threads, so this keeps
+/// only those in the groups `access` views.
+async fn health(
+    State(state): State<AppState>,
+    Extension(access): Extension<access::Access>,
+) -> Envelope<HealthResponse> {
+    Envelope::ok(health_snapshot(&state, &access))
 }
 
 async fn system_info(State(state): State<AppState>) -> Envelope<SystemInfo> {
@@ -1123,12 +1095,6 @@ pub async fn warnings_snapshot(state: &AppState) -> Result<Vec<warnings::Warning
 /// What `GET /api/warnings?info=true`, `GET /api/metrics` and the alert channels are given: the fixed catalog (design
 /// doc, Control plane), info entries and all, derived fresh from the registry and the worker roster on every call --
 /// there is no warning table, so this is the only place the answer lives.
-///
-/// A route of its own rather than a field on [`HealthResponse`]: the "enrolled, never heartbeating" entry needs the
-/// worker roster, which lives in `Store` and so must be read on the blocking pool ([`run_store`]) -- and
-/// [`health_snapshot`] is also called synchronously from the in-process Cluster page, which a store read would
-/// block. The GUI pages that show warnings already poll `/api/health` on a timer; this rides the same timer as a
-/// second, independently-cheap fetch rather than reshaping the first.
 pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreError> {
     let now_ms = warnings::now_millis();
     let heartbeat_interval = crate::startup_config::leader_heartbeat_interval();
@@ -3700,11 +3666,24 @@ pub async fn worker_credentials_snapshot(state: &AppState) -> Result<Vec<WorkerO
         .collect())
 }
 
-async fn list_workers(State(state): State<AppState>) -> Result<Envelope<WorkerList>, Refusal> {
-    worker_credentials_snapshot(&state)
+/// The roster of the workers `access` may see. A worker is the caller's when one of its threads heartbeats in a
+/// group they view; one that has never heartbeated has named no group, and only an administrator sees it.
+async fn list_workers(
+    State(state): State<AppState>,
+    Extension(access): Extension<access::Access>,
+) -> Result<Envelope<WorkerList>, Refusal> {
+    let mut workers = worker_credentials_snapshot(&state)
         .await
-        .map(|workers| Envelope::ok(WorkerList { workers }))
-        .map_err(|e| Refusal::internal(e.to_string()))
+        .map_err(|e| Refusal::internal(e.to_string()))?;
+    if !access.is_administrator() {
+        let theirs: std::collections::HashSet<String> = health_snapshot(&state, &access)
+            .threads
+            .into_iter()
+            .map(|t| t.worker_id)
+            .collect();
+        workers.retain(|w| theirs.contains(&w.worker_id));
+    }
+    Ok(Envelope::ok(WorkerList { workers }))
 }
 
 #[derive(serde::Serialize)]
@@ -5125,6 +5104,69 @@ mod warnings_endpoint_tests {
                 .is_err_and(|e| e.starts_with("could not read which workers are enrolled: ")),
             "{read:?}"
         );
+    }
+
+    /// `worker`'s one thread, heartbeating in `group`.
+    fn heard_from(state: &AppState, worker: &str, group: &str) {
+        state
+            .registry
+            .record_heartbeat(
+                worker,
+                vec![ThreadHeartbeat {
+                    thread_id: "reader-1".to_string(),
+                    group_id: group.to_string(),
+                    kind: Some(ThreadKind::Reader),
+                    partitions_owned: vec![],
+                    metrics: vec![],
+                }],
+                WorkerFacts::default(),
+                series::Window::default(),
+                0,
+            )
+            .unwrap();
+    }
+
+    /// Two groups' workers, and one that has never heartbeated: a viewer of one group sees its worker alone, in the
+    /// heartbeats and in the roster, and an administrator sees all three.
+    #[tokio::test]
+    async fn a_viewer_sees_only_the_workers_of_the_groups_they_view() {
+        let state = state("workers-by-group");
+        for worker in ["w-pay", "w-search", "w-new"] {
+            run_store(state.store.clone(), move |s| {
+                s.store_worker_credential(worker, &format!("hash-{worker}"))
+            })
+            .await
+            .unwrap();
+        }
+        heard_from(&state, "w-pay", "payments");
+        heard_from(&state, "w-search", "search");
+        let payments = access::Access::Areas([("payments".to_string(), access::Level::Viewer)].into());
+
+        let threads = health(State(state.clone()), Extension(payments.clone()))
+            .await
+            .body
+            .threads;
+        assert_eq!(
+            threads.iter().map(|t| t.worker_id.as_str()).collect::<Vec<_>>(),
+            ["w-pay"]
+        );
+        let ids = |access| {
+            let state = state.clone();
+            async move {
+                let mut ids: Vec<String> = list_workers(State(state), Extension(access))
+                    .await
+                    .unwrap()
+                    .body
+                    .workers
+                    .into_iter()
+                    .map(|w| w.worker_id)
+                    .collect();
+                ids.sort();
+                ids
+            }
+        };
+        assert_eq!(ids(payments).await, ["w-pay"]);
+        assert_eq!(ids(access::Access::Administrator).await, ["w-new", "w-pay", "w-search"]);
     }
 
     #[tokio::test]

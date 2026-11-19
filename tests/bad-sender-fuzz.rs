@@ -63,7 +63,7 @@ impl Kind {
             Kind::Prometheus => Receiver::Prometheus,
             Kind::Elastic => Receiver::Elastic,
             Kind::S2s => Receiver::S2s(S2sReceiverConfig::default()),
-            Kind::Syslog => Receiver::Syslog(SocketReceiverConfig {
+            Kind::Syslog => Receiver::Socket(SocketReceiverConfig {
                 framing: Framing::Syslog(None),
                 ..Default::default()
             }),
@@ -480,7 +480,7 @@ fn misbehaving_senders_never_get_a_record_invented_lost_or_taken_twice() {
         let token = kind.tokens().then(|| format!("tok{:x}", rng.next_u64()));
         let token = token.as_deref();
         let mut receiver_settings = kind.receiver();
-        if let (true, Receiver::Syslog(socket) | Receiver::Socket(socket)) = (networks, &mut receiver_settings) {
+        if let (true, Receiver::Socket(socket)) = (networks, &mut receiver_settings) {
             socket.allow_from = vec![
                 format!("{FROM}/32").parse().unwrap(),
                 format!("{OTHER}/32").parse().unwrap(),

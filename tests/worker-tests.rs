@@ -431,7 +431,7 @@ fn standalone_leader_runs_its_own_embedded_worker() {
     // window where the file the loop above waits for is there and a connection is still refused. The sibling
     // standalone test polls for the same reason.
     let deadline = Instant::now() + Duration::from_secs(20);
-    while Instant::now() < deadline && agent.get(format!("{base}/api/cluster")).call().is_err() {
+    while Instant::now() < deadline && agent.get(format!("{base}/api/health")).call().is_err() {
         std::thread::sleep(Duration::from_millis(100));
     }
 
@@ -884,21 +884,21 @@ fn standalone_enrolls_its_own_worker() {
     // leader bootstrapped itself with, having chosen a password of its own first.
     let session = operator_session(&agent, &base, &console);
 
-    // Poll: the embedded worker's enrollment happens during startup,
-    // concurrently with the server beginning to listen. `workerGroups`
-    // stays empty throughout -- nobody has deployed a change for
-    // "standalone" -- so enrollment is the one signal to wait on.
+    let read = |path: &str| -> Option<serde_json::Value> {
+        let mut resp = agent
+            .get(format!("{base}{path}"))
+            .header("cookie", &session)
+            .call()
+            .ok()?;
+        resp.body_mut().read_json::<serde_json::Value>().ok()
+    };
+    // Poll: the embedded worker's enrollment happens during startup, concurrently with the server beginning to
+    // listen, so enrollment is the one signal to wait on.
     let mut ready = None;
     let deadline = Instant::now() + Duration::from_secs(20);
     while Instant::now() < deadline {
-        if let Ok(mut resp) = agent
-            .get(format!("{base}/api/cluster"))
-            .header("cookie", &session)
-            .call()
-            && let Ok(parsed) = resp.body_mut().read_json::<serde_json::Value>()
-            && parsed["workers"].as_array().is_some_and(|w| !w.is_empty())
-        {
-            ready = Some(parsed);
+        if read("/api/workers").is_some_and(|w| w["workers"].as_array().is_some_and(|w| !w.is_empty())) {
+            ready = read("/api/worker-groups?branch=main");
             break;
         }
         std::thread::sleep(Duration::from_millis(200));
@@ -912,7 +912,7 @@ fn standalone_enrolls_its_own_worker() {
     let ready = ready.expect("the standalone process should enroll its embedded worker");
     // A fresh install is a fleet that runs: the group its worker was told to serve is on `main` before any change is
     // deployed, so the first thing this leader reports is not a warning about itself (design doc, Control plane).
-    let groups = ready["workerGroups"].as_array().expect("workerGroups is a list");
+    let groups = ready["groups"].as_array().expect("groups is a list");
     assert_eq!(groups.len(), 1, "one seeded group and nothing else: {ready}");
     assert_eq!(groups[0]["id"], "standalone", "the group the worker named: {ready}");
     assert_eq!(groups[0]["deployed"], true, "seeded onto main, not pending: {ready}");
@@ -968,22 +968,23 @@ fn a_worker_discovers_main_and_reports_the_commit_it_deployed() {
     let mut last_seen = serde_json::Value::Null;
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
-        if let Ok(mut resp) = agent
-            .get(format!("{base}/api/cluster"))
-            .header("cookie", &session)
-            .call()
-            && let Ok(parsed) = resp.body_mut().read_json::<serde_json::Value>()
-        {
+        let read = |path: &str| -> Option<serde_json::Value> {
+            let mut resp = agent
+                .get(format!("{base}{path}"))
+                .header("cookie", &session)
+                .call()
+                .ok()?;
+            resp.body_mut().read_json::<serde_json::Value>().ok()
+        };
+        if let Some(parsed) = read("/api/health") {
             last_seen = parsed.clone();
-            let commit = parsed["health"]["threads"]
+            let commit = parsed["threads"]
                 .as_array()
                 .and_then(|threads| threads.iter().find_map(|t| t["commit"].as_str()))
                 .map(str::to_string);
             if let Some(commit) = commit {
-                reported = Some((
-                    commit,
-                    parsed["deployedCommit"].as_str().unwrap_or_default().to_string(),
-                ));
+                let deployed = read("/api/main/history?limit=1").unwrap_or_default();
+                reported = Some((commit, deployed["deployed"].as_str().unwrap_or_default().to_string()));
                 break;
             }
         }
@@ -993,7 +994,7 @@ fn a_worker_discovers_main_and_reports_the_commit_it_deployed() {
     let _ = leader.kill();
     let _ = leader.wait();
     if reported.is_none() {
-        eprintln!("last /api/cluster: {last_seen:#}");
+        eprintln!("last /api/health: {last_seen:#}");
         eprintln!("smeltr standalone console:\n{}", console.lock().unwrap());
     }
     let (commit, deployed) = reported.expect("the worker should fetch main and report the commit it deployed");
@@ -1237,12 +1238,12 @@ impl Standalone {
     fn worker(&self) -> Option<serde_json::Value> {
         let mut resp = self
             .agent
-            .get(format!("{}/api/cluster", self.base))
+            .get(format!("{}/api/health", self.base))
             .header("cookie", &self.session)
             .call()
             .ok()?;
         let parsed: serde_json::Value = resp.body_mut().read_json().ok()?;
-        parsed["health"]["threads"]
+        parsed["threads"]
             .as_array()?
             .iter()
             .find(|t| t["supervising"]["incarnation"].is_u64())

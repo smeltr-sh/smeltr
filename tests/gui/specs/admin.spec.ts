@@ -419,7 +419,13 @@ test('a receiver names a certificate from the list, and replacing the certificat
     privateKey: pki.privateKey,
   });
   await api.put('/api/areas/shared/sources?branch=work', [
-    { id: 'firewalls', type: 'syslogReceiver', port: 6514, allowFrom: ['10.0.0.0/8'] },
+    {
+      id: 'firewalls',
+      type: 'socketReceiver',
+      framing: 'syslog',
+      port: 6514,
+      allowFrom: ['10.0.0.0/8'],
+    },
   ]);
   const sources = async () => (await api.get('/api/areas/shared?branch=work')).config.sources;
 
@@ -437,7 +443,8 @@ test('a receiver names a certificate from the list, and replacing the certificat
   await expect.poll(sources).toEqual([
     {
       id: 'firewalls',
-      type: 'syslogReceiver',
+      type: 'socketReceiver',
+      framing: 'syslog',
       port: 6514,
       allowFrom: ['10.0.0.0/8'],
       certificate: 'receiver-tls',
