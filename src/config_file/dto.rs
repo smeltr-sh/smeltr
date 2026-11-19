@@ -10,8 +10,9 @@ pub use super::load::destination::{
 pub use super::load::source::{
     AzureBlobListSourceDto, AzureBlobQueueSourceDto, ElasticReceiverSourceDto, EventHubsSourceDto, GcsListSourceDto,
     GcsPubSubSourceDto, HecReceiverSourceDto, HttpApiSourceDto, HttpReceiverSourceDto, KafkaSourceDto, LogsSourceDto,
-    MetricsSourceDto, OktaLogsSourceDto, OtlpReceiverSourceDto, PrometheusReceiverSourceDto, S2sReceiverSourceDto,
-    S3ListSourceDto, S3SqsSourceDto, SftpSourceDto, SocketReceiverSourceDto, SyslogReceiverSourceDto,
+    MetricsSourceDto, OktaLogsSourceDto, OtlpReceiverDto, OtlpReceiverSourceDto, PrometheusReceiverSourceDto,
+    S2sReceiverSourceDto, S3ListSourceDto, S3SqsSourceDto, SftpSourceDto, SocketReceiverSourceDto,
+    SyslogReceiverSourceDto,
 };
 use std::collections::BTreeMap;
 

@@ -1,5 +1,5 @@
 //! Every kind of source: its struct, and what it answers about itself (`SourceSpec`), one file each. The object
-//! sources share one generic struct, in `objects`.
+//! sources share one generic struct, in `objects`, and the receivers another, in `receiver`.
 
 use super::*;
 
@@ -15,6 +15,7 @@ mod objects;
 mod okta_logs;
 mod otlp_receiver;
 mod prometheus_receiver;
+mod receiver;
 mod s2s_receiver;
 mod sftp;
 mod socket_receiver;
@@ -35,7 +36,7 @@ pub use self::{
         S3SqsSourceDto,
     },
     okta_logs::OktaLogsSourceDto,
-    otlp_receiver::OtlpReceiverSourceDto,
+    otlp_receiver::{OtlpReceiverDto, OtlpReceiverSourceDto},
     prometheus_receiver::PrometheusReceiverSourceDto,
     s2s_receiver::S2sReceiverSourceDto,
     sftp::SftpSourceDto,
@@ -94,25 +95,10 @@ pub(super) trait SourceSpec {
     fn receiver_port(&self) -> Option<u16> {
         None
     }
-    /// What a receiver's senders send over. TCP for every kind but a syslog receiver given UDP.
+    /// The transport a receiver's senders use: TCP, except for a syslog or socket receiver given UDP.
     fn receiver_transport(&self) -> Transport {
         Transport::Tcp
     }
-}
-
-/// The checks the OTLP, Prometheus and Elasticsearch receivers share: where they listen, what they serve and who
-/// may send.
-fn check_intake(
-    s: &SourceDto,
-    listener: &ReceiverSettingsDto,
-    connections: &ConnectionLimitsDto,
-    tls: &ServedTlsDto,
-    tokens: &BTreeMap<String, SecretRefDto>,
-    errors: &mut ItemErrors<'_>,
-) {
-    let what = format!("source {:?}", s.id);
-    check_receiver(&what, listener, tls, tokens, errors);
-    check_connection_limits(&what, connections, true, errors);
 }
 
 impl SourceKindDto {
@@ -185,7 +171,7 @@ impl SourceKindDto {
         self.spec().receiver_port()
     }
 
-    /// What a receiver's senders send over. TCP for every kind but a syslog receiver given UDP.
+    /// The transport a receiver's senders use: TCP, except for a syslog or socket receiver given UDP.
     pub fn receiver_transport(&self) -> Transport {
         self.spec().receiver_transport()
     }

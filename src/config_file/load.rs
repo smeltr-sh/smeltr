@@ -2838,11 +2838,11 @@ fn check_records_at(what: &str, records: ApiRecordsDto, records_at: &Option<Stri
 /// What a receiver must be before it can listen: a port, an address that is one, a certificate to serve, and someone
 /// it admits. With no token, authorities or sender fingerprints to admit a sender by, anyone who can reach the port
 /// could send.
-fn check_receiver<T>(
+fn check_receiver(
     what: &str,
     listener: &ReceiverSettingsDto,
     tls: &ServedTlsDto,
-    tokens: &BTreeMap<String, T>,
+    tokens: &[&String],
     errors: &mut ItemErrors<'_>,
 ) {
     let vouches = check_listener(what, listener, tls, errors);
@@ -2852,7 +2852,7 @@ fn check_receiver<T>(
              must chain to, or fingerprints of the certificates it admits"
         ));
     }
-    for name in tokens.keys() {
+    for name in tokens {
         if name.trim().is_empty() {
             errors
                 .at("tokens")
@@ -3021,12 +3021,12 @@ fn check_receiver_ports(file: &FileConfig, attributed: &mut Vec<ValidationError>
                 ),
                 SourceKindDto::OtlpReceiver(OtlpReceiverSourceDto {
                     tls,
-                    signal,
+                    kind: OtlpReceiverDto { signal, .. },
                     connections,
                     ..
                 }),
             ) => {
-                let same = |o: &SourceDto| matches!(&o.kind, SourceKindDto::OtlpReceiver(OtlpReceiverSourceDto { signal: other, .. }) if other == signal);
+                let same = |o: &SourceDto| matches!(&o.kind, SourceKindDto::OtlpReceiver(OtlpReceiverSourceDto { kind: OtlpReceiverDto { signal: other, .. }, .. }) if other == signal);
                 if let Some(taken) = on_port.iter().find(|o| same(o)) {
                     Some(format!(
                         "source {:?} takes {} on port {port}, which source {:?} already does; an export of \
