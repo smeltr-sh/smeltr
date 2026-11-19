@@ -235,11 +235,16 @@ pub(super) const SFTP_MIN_STALL_AFTER: u64 = 15;
 /// after smeltr's.
 pub const RESERVED_KAFKA_PROPS: &[(&str, &str)] = &[
     ("bootstrap.servers", "set from the `brokers` field"),
-    // librdkafka runs it through system() on every worker, at client start and on each ticket refresh; its default
-    // already uses the keytab and principal a bundle names, and a bundle may not carry a shell command.
+    // librdkafka would run it through system() on every worker. A bundle may not carry a shell command, and smeltr gets
+    // the ticket itself from the keytab and principal a bundle names.
     (
         "sasl.kerberos.kinit.cmd",
         "it runs a shell command on every worker, and a config may not carry one",
+    ),
+    // At 0 librdkafka runs no `kinit`; smeltr gets and renews the ticket from the keytab itself (`io::kafka::kerberos`).
+    (
+        "sasl.kerberos.min.time.before.relogin",
+        "smeltr renews the Kerberos ticket itself, from the keytab",
     ),
     (
         "metadata.broker.list",

@@ -1846,6 +1846,7 @@ fn start() {
     // Before any thread, as setting the environment needs; every HTTP client reads it when it builds a request.
     let own = smeltr::startup_config::leader_enabled().then(|| reached_at(&smeltr::startup_config::gui_bind()));
     smeltr::startup_config::never_proxy_this_host(own);
+    smeltr::io::kafka::cache_in_memory();
 
     // A runtime is neither role: it is one deployment, started by the worker that supervises it and ended when
     // that worker says so. A role is configuration here rather than an argument, so this is one more setting and
