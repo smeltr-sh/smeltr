@@ -1,7 +1,7 @@
 //! What occupies a worker: nothing, a runtime, or a runtime whose end could not be confirmed.
 //!
 //! A [`Vacant`] is made only here, at startup and by an ending that was confirmed, and starting a runtime takes it.
-//! So no runtime starts beside one that may still be consuming.
+//! So no runtime starts beside one that may still be reading its sources.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,7 +45,7 @@ impl Vacant {
         Vacant(())
     }
 
-    /// Starts a runtime here. An `Err` is no process started, so the vacancy comes back with it.
+    /// Starts a runtime here. An `Err` means no process started, so the vacancy comes back with it.
     pub(super) fn start(
         self,
         spec: child::StartSpec,
@@ -73,7 +73,7 @@ impl Slot {
     }
 }
 
-/// Ends `handle` and confirms it. An `Err` is an ending that could not be confirmed, so the runtime comes back.
+/// Ends `handle` and confirms it. An `Err` means the end could not be confirmed, so the runtime comes back.
 pub(super) fn end(
     mut handle: RuntimeHandle,
     graceful: Duration,

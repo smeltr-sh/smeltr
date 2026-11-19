@@ -3920,7 +3920,7 @@ impl Supervisor {
     }
 
     /// Takes everything the runtime that has just stopped still had to say, including what it committed during its
-    /// drain, before the inbox it said it into is let go.
+    /// drain, before its inbox is dropped.
     fn retired(&self, inbox: &child::RuntimeInbox) {
         self.absorb(inbox);
         self.drain_captured(inbox);
