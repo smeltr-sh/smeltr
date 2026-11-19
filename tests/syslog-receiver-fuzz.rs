@@ -112,7 +112,7 @@ fn admits(settings: &Settings) -> bool {
 }
 
 fn open(settings: &Settings, pki: &Pki) -> Box<dyn Source> {
-    let syslog = Receiver::Syslog(SocketReceiverConfig {
+    let syslog = Receiver::Socket(SocketReceiverConfig {
         allow_from: settings.allow_from.iter().map(|n| n.parse().unwrap()).collect(),
         transport: settings.transport,
         framing: Framing::Syslog(
@@ -541,11 +541,11 @@ fn datagram(rng: &mut Rng, n: usize, max: usize, label: &mut String) -> (Vec<u8>
 
 /// The records' bytes, or why one is not filed as from `remote`, by a syslog receiver.
 fn read_back(records: &[SourceRecord], remote: &str) -> Result<Vec<Vec<u8>>, String> {
-    let objects = SourceMeta::SYSLOG_RECEIVER.objects(records, Some("syslog"));
+    let objects = SourceMeta::SOCKET_RECEIVER.objects(records, Some("syslog"));
     (records.iter().zip(objects))
         .map(|(r, object)| {
             let text = |key: &str| object.get(key).and_then(Value::as_str).map(str::to_string);
-            if text("remote").as_deref() != Some(remote) || text("type").as_deref() != Some("syslogReceiver") {
+            if text("remote").as_deref() != Some(remote) || text("type").as_deref() != Some("socketReceiver") {
                 return Err(format!("a record filed as from another: {object:?}"));
             }
             Ok(r.bytes().unwrap().to_vec())

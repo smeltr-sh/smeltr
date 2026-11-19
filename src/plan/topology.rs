@@ -559,14 +559,6 @@ impl SourceMeta {
         encoding: Encoding::Auto,
     };
 
-    /// What a syslog receiver's record carries: a message, and its sender's address.
-    pub const SYSLOG_RECEIVER: SourceMeta = SourceMeta {
-        kind: "syslogReceiver",
-        record: PAYLOAD_RECORD,
-        source: RECEIVER_FIELDS,
-        encoding: Encoding::Auto,
-    };
-
     /// What a socket receiver carries: a message's bytes, and its sender's address.
     pub const SOCKET_RECEIVER: SourceMeta = SourceMeta {
         kind: "socketReceiver",
@@ -641,7 +633,6 @@ impl SourceMeta {
             SourceMeta::S2S_RECEIVER,
             SourceMeta::OTLP_LOGS,
             SourceMeta::prometheus_receiver(),
-            SourceMeta::SYSLOG_RECEIVER,
             SourceMeta::SOCKET_RECEIVER,
             SourceMeta::ELASTIC_RECEIVER,
         ]
@@ -1274,7 +1265,6 @@ impl SourceKind {
                 Receiver::S2s(_) => SourceMeta::S2S_RECEIVER,
                 Receiver::Otlp(signal) => SourceMeta::otlp(signal),
                 Receiver::Prometheus => SourceMeta::prometheus_receiver(),
-                Receiver::Syslog(_) => SourceMeta::SYSLOG_RECEIVER,
                 Receiver::Socket(_) => SourceMeta::SOCKET_RECEIVER,
                 Receiver::Elastic => SourceMeta::ELASTIC_RECEIVER,
             },
@@ -1288,7 +1278,7 @@ impl SourceKind {
             SourceKind::Kafka(k) => k.encoding,
             SourceKind::Objects(o) => o.encoding,
             SourceKind::Receiver(ReceiverConfig {
-                receiver: Receiver::Syslog(s) | Receiver::Socket(s),
+                receiver: Receiver::Socket(s),
                 ..
             }) => s.encoding,
             // An API answers in JSON, which is UTF-8, and so does what is sent to any other receiver.
@@ -2198,11 +2188,8 @@ pub enum Receiver {
     Prometheus,
     /// Splunk-to-Splunk, as a Splunk forwarder sends to an indexer over TCP.
     S2s(S2sReceiverConfig),
-    /// Syslog: over TCP a message per record, framed by octet count or ended by a newline; over UDP a datagram per
-    /// record. Its framing is `Framing::Syslog`.
-    Syslog(SocketReceiverConfig),
-    /// Bytes of no protocol of its own: over TCP a message per record, cut by its framing; over UDP a datagram per
-    /// record.
+    /// Bytes over TCP, cut into records by its framing, as `Framing::Syslog` cuts syslog's messages; or over UDP, a
+    /// datagram per record.
     Socket(SocketReceiverConfig),
     /// Elasticsearch's `_bulk` API, as Beats, Fluent Bit and other Elasticsearch clients send it: a document per
     /// `index` or `create` action.
@@ -2210,10 +2197,10 @@ pub enum Receiver {
 }
 
 impl ReceiverConfig {
-    /// What it listens on. Every receiver but a syslog receiver given UDP takes connections over TCP.
+    /// What it listens on. Every receiver but a socket receiver given UDP takes connections over TCP.
     pub fn listens(&self) -> Listen {
         let transport = match &self.receiver {
-            Receiver::Syslog(socket) | Receiver::Socket(socket) => socket.transport,
+            Receiver::Socket(socket) => socket.transport,
             Receiver::Http(_)
             | Receiver::Hec(_)
             | Receiver::Otlp(_)

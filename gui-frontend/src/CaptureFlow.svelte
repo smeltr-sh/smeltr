@@ -50,7 +50,7 @@
     currentBranch,
     currentScope,
     SHARED_SCOPE,
-    getClusterStatus,
+    liveGroups,
     saveCapture,
     errorText,
     MAX_SAMPLE_RECORDS,
@@ -181,9 +181,8 @@
 
   async function loadGroups() {
     try {
-      const cluster = await getClusterStatus();
       // A group's own sources and destinations run only in that group.
-      groups = (cluster.workerGroups ?? []).filter((g) => scope === SHARED_SCOPE || g.id === scope);
+      groups = (await liveGroups()).filter((g) => scope === SHARED_SCOPE || g.id === scope);
       if (!groups.some((g) => g.id === group)) group = groups[0]?.id ?? '';
     } catch (e) {
       reported(e);

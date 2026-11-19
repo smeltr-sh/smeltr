@@ -184,7 +184,7 @@ export const sources: Connection[] = [
   },
   {
     id: 'syslogReceiver',
-    type: 'syslogReceiver',
+    type: 'socketReceiver',
     name: 'Syslog receiver',
     summary: 'Take what syslog senders send over TCP or TLS to a port every worker listens on.',
     category: 'Push, all workers',

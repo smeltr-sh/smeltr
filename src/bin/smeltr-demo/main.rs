@@ -812,7 +812,7 @@ mod tests {
     #[tokio::test]
     async fn a_diff_is_what_the_branch_s_files_changed_from_main_s() {
         let scope = |sources: serde_json::Value| serde_json::json!({"config": {"version": 1, "sources": sources}, "samples": [], "tests": []});
-        let source = serde_json::json!({"id": "fw", "type": "syslogReceiver", "port": 5514});
+        let source = serde_json::json!({"id": "fw", "type": "socketReceiver", "framing": "syslog", "port": 5514});
         let body = |path: Option<&str>| {
             serde_json::from_value(serde_json::json!({
                 "base": {"shared": scope(serde_json::json!([])), "network": scope(serde_json::json!([]))},
@@ -897,7 +897,7 @@ mod tests {
     #[tokio::test]
     async fn a_capture_filter_keeps_what_it_selects() {
         let body = serde_json::json!({
-            "shared": {"version": 1, "sources": [{"id": "fw", "type": "syslogReceiver", "port": 1514}]},
+            "shared": {"version": 1, "sources": [{"id": "fw", "type": "socketReceiver", "framing": "syslog", "port": 1514}]},
             "source": "fw",
             "filter": "_raw != \"allow tcp\"",
             "sample": sample(serde_json::json!([{"_raw": "allow tcp"}, {"_raw": "deny udp"}, {"_raw": "deny tcp"}])),
@@ -939,7 +939,7 @@ mod tests {
         let body = serde_json::json!({
             "shared": {"version": 1},
             "groups": [{"id": "network", "config": {"version": 1, "sources": [
-                {"id": "firewalls", "type": "syslogReceiver", "port": 5514}]}}],
+                {"id": "firewalls", "type": "socketReceiver", "framing": "syslog", "port": 5514}]}}],
         });
         let answer = map(State(service("map")), Json(serde_json::from_value(body).unwrap())).await;
         let answer = answer.to_json();
@@ -953,7 +953,7 @@ mod tests {
             "shared": {"version": 1, "pipelines": [{"id": "normalize", "name": "n", "steps": []}]},
             "groups": [
                 {"id": "edge", "config": {"version": 1,
-                    "sources": [{"id": "fw", "type": "syslogReceiver", "port": 5514}],
+                    "sources": [{"id": "fw", "type": "socketReceiver", "framing": "syslog", "port": 5514}],
                     "routes": [{"id": "r", "source": "fw", "pipeline": "normalize", "deliver": []}]}},
                 {"id": "core", "config": {"version": 1}},
             ],

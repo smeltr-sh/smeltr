@@ -803,7 +803,7 @@ mod tests {
     #[test]
     fn only_a_receiver_is_captured_as_sent_and_without_a_filter() {
         let ask = |json: serde_json::Value| -> CaptureRequest { serde_json::from_value(json).unwrap() };
-        let syslog = serde_json::json!({"id":"s","type":"syslogReceiver","port":1514,"allowFrom":["10.0.0.0/8"]});
+        let syslog = serde_json::json!({"id":"s","type":"socketReceiver","framing":"syslog","port":1514,"allowFrom":["10.0.0.0/8"]});
         let metrics = serde_json::json!({"id":"s","type":"metrics","bucketSeconds":5});
 
         assert_eq!(

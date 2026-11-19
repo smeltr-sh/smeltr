@@ -1043,6 +1043,7 @@ fn to_framing(dto: &FramingSettingsDto) -> Framing {
             .as_deref()
             .and_then(to_line_breaker)
             .map_or(Framing::Lines, Framing::LineBreaker),
+        FramingDto::Syslog => Framing::Syslog(dto.line_breaker.as_deref().and_then(to_line_breaker)),
         FramingDto::Object => Framing::Object,
         FramingDto::EscapedLines => Framing::EscapedLines,
         // Validation refused a length prefix or a fixed size that is absent or out of range.
@@ -1962,12 +1963,12 @@ fn check_encoding(encoding: &EncodingLabel, id: &str, errors: &mut ItemErrors<'_
 fn check_framing(dto: &FramingSettingsDto, id: &str, max: u64, unit: &str, errors: &mut ItemErrors<'_>) {
     let what = format!("source {id:?}");
     if let Some(line_breaker) = &dto.line_breaker {
-        if dto.framing == FramingDto::Lines {
+        if let FramingDto::Lines | FramingDto::Syslog = dto.framing {
             check_line_breaker(&what, line_breaker, errors.at("lineBreaker"));
         } else {
-            errors
-                .at("lineBreaker")
-                .push(format!("{what} sets lineBreaker, which only lines framing reads"));
+            errors.at("lineBreaker").push(format!(
+                "{what} sets lineBreaker, which only lines and syslog framing read"
+            ));
         }
     }
     match (dto.framing, dto.length_prefix) {
@@ -2838,11 +2839,11 @@ fn check_records_at(what: &str, records: ApiRecordsDto, records_at: &Option<Stri
 /// What a receiver must be before it can listen: a port, an address that is one, a certificate to serve, and someone
 /// it admits. With no token, authorities or sender fingerprints to admit a sender by, anyone who can reach the port
 /// could send.
-fn check_receiver<T>(
+fn check_receiver(
     what: &str,
     listener: &ReceiverSettingsDto,
     tls: &ServedTlsDto,
-    tokens: &BTreeMap<String, T>,
+    tokens: &[&String],
     errors: &mut ItemErrors<'_>,
 ) {
     let vouches = check_listener(what, listener, tls, errors);
@@ -2852,7 +2853,7 @@ fn check_receiver<T>(
              must chain to, or fingerprints of the certificates it admits"
         ));
     }
-    for name in tokens.keys() {
+    for name in tokens {
         if name.trim().is_empty() {
             errors
                 .at("tokens")
@@ -2908,9 +2909,10 @@ fn check_connection_limits(what: &str, connections: &ConnectionLimitsDto, tcp: b
     }
 }
 
-/// A syslog receiver as [`check_receiver`] holds any, with the networks it admits senders from in place of tokens,
-/// as syslog carries none. Over UDP it serves no TLS, so only its networks can admit a sender.
-fn check_syslog_receiver(
+/// Checks a socket receiver as [`check_receiver`] checks any receiver, except that the networks it admits senders
+/// from stand in for tokens, since its senders present none. Over UDP it serves no TLS, so only its networks can admit
+/// a sender.
+fn check_socket_receiver(
     what: &str,
     listener: &ReceiverSettingsDto,
     tls: &ServedTlsDto,
@@ -3021,12 +3023,12 @@ fn check_receiver_ports(file: &FileConfig, attributed: &mut Vec<ValidationError>
                 ),
                 SourceKindDto::OtlpReceiver(OtlpReceiverSourceDto {
                     tls,
-                    signal,
+                    kind: OtlpReceiverDto { signal, .. },
                     connections,
                     ..
                 }),
             ) => {
-                let same = |o: &SourceDto| matches!(&o.kind, SourceKindDto::OtlpReceiver(OtlpReceiverSourceDto { signal: other, .. }) if other == signal);
+                let same = |o: &SourceDto| matches!(&o.kind, SourceKindDto::OtlpReceiver(OtlpReceiverSourceDto { kind: OtlpReceiverDto { signal: other, .. }, .. }) if other == signal);
                 if let Some(taken) = on_port.iter().find(|o| same(o)) {
                     Some(format!(
                         "source {:?} takes {} on port {port}, which source {:?} already does; an export of \
