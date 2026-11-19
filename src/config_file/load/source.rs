@@ -1,5 +1,5 @@
 //! Every kind of source: its struct, and what it answers about itself (`SourceSpec`), one file each. The object
-//! sources share one generic struct, in `objects`.
+//! sources share one generic struct, in `objects`, and the receivers another, in `receiver`.
 
 use super::*;
 
@@ -15,11 +15,11 @@ mod objects;
 mod okta_logs;
 mod otlp_receiver;
 mod prometheus_receiver;
+mod receiver;
 mod s2s_receiver;
 mod sftp;
 mod socket_receiver;
 mod sql;
-mod syslog_receiver;
 
 pub use self::{
     elastic_receiver::ElasticReceiverSourceDto,
@@ -35,12 +35,11 @@ pub use self::{
         S3SqsSourceDto,
     },
     okta_logs::OktaLogsSourceDto,
-    otlp_receiver::OtlpReceiverSourceDto,
+    otlp_receiver::{OtlpReceiverDto, OtlpReceiverSourceDto},
     prometheus_receiver::PrometheusReceiverSourceDto,
     s2s_receiver::S2sReceiverSourceDto,
     sftp::SftpSourceDto,
     socket_receiver::SocketReceiverSourceDto,
-    syslog_receiver::SyslogReceiverSourceDto,
 };
 
 /// What one kind of source answers about itself. Each kind implements it in its own file, beside its struct.
@@ -94,25 +93,10 @@ pub(super) trait SourceSpec {
     fn receiver_port(&self) -> Option<u16> {
         None
     }
-    /// What a receiver's senders send over. TCP for every kind but a syslog receiver given UDP.
+    /// The transport a receiver's senders use: TCP, except for a socket receiver given UDP.
     fn receiver_transport(&self) -> Transport {
         Transport::Tcp
     }
-}
-
-/// The checks the OTLP, Prometheus and Elasticsearch receivers share: where they listen, what they serve and who
-/// may send.
-fn check_intake(
-    s: &SourceDto,
-    listener: &ReceiverSettingsDto,
-    connections: &ConnectionLimitsDto,
-    tls: &ServedTlsDto,
-    tokens: &BTreeMap<String, SecretRefDto>,
-    errors: &mut ItemErrors<'_>,
-) {
-    let what = format!("source {:?}", s.id);
-    check_receiver(&what, listener, tls, tokens, errors);
-    check_connection_limits(&what, connections, true, errors);
 }
 
 impl SourceKindDto {
@@ -137,7 +121,6 @@ impl SourceKindDto {
             SourceKindDto::OtlpReceiver(k) => k,
             SourceKindDto::PrometheusReceiver(k) => k,
             SourceKindDto::ElasticReceiver(k) => k,
-            SourceKindDto::SyslogReceiver(k) => k,
             SourceKindDto::SocketReceiver(k) => k,
             SourceKindDto::Postgres(k) | SourceKindDto::MySql(k) => k,
         }
@@ -164,7 +147,6 @@ impl SourceKindDto {
             SourceKindDto::OtlpReceiver(k) => k,
             SourceKindDto::PrometheusReceiver(k) => k,
             SourceKindDto::ElasticReceiver(k) => k,
-            SourceKindDto::SyslogReceiver(k) => k,
             SourceKindDto::SocketReceiver(k) => k,
             SourceKindDto::Postgres(k) | SourceKindDto::MySql(k) => k,
         }
@@ -185,7 +167,7 @@ impl SourceKindDto {
         self.spec().receiver_port()
     }
 
-    /// What a receiver's senders send over. TCP for every kind but a syslog receiver given UDP.
+    /// The transport a receiver's senders use: TCP, except for a socket receiver given UDP.
     pub fn receiver_transport(&self) -> Transport {
         self.spec().receiver_transport()
     }

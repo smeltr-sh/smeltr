@@ -60,6 +60,7 @@
     type ObjectSource,
     type ReceiverSource,
     type StreamSource,
+    typeOf,
   } from './sources';
 
   let {
@@ -137,19 +138,16 @@
         (s.maxConnections !== undefined ||
           s.maxConnectionsPerSender !== undefined ||
           s.idleTimeoutSecs !== undefined)) ||
-      ((s.type === 'syslogReceiver' || s.type === 'socketReceiver') &&
-        (s.encoding ?? 'auto') !== 'auto') ||
-      (s.type === 'syslogReceiver' && s.lineBreaker !== undefined) ||
+      (s.type === 'socketReceiver' && (s.encoding ?? 'auto') !== 'auto') ||
       (s.type === 'hecReceiver' && s.sourcetypes !== undefined)
     );
   }
 
   /** Whether `s`'s senders connect over TCP, so it holds their connections to its connection limits. */
   function overTcp(s: ReceiverSource): boolean {
-    return !((s.type === 'syslogReceiver' || s.type === 'socketReceiver') && s.transport === 'udp');
+    return !(s.type === 'socketReceiver' && s.transport === 'udp');
   }
 
-  type SyslogReceiver = Extract<SourceDto, { type: 'syslogReceiver' }>;
   type SocketReceiver = Extract<SourceDto, { type: 'socketReceiver' }>;
 
   /** How an Okta source signs in: as a service app or with an API token. */
@@ -259,10 +257,8 @@
   }
 </script>
 
-<!-- A stream, object, syslog or socket source's encoding: each names a label the same way. -->
-{#snippet encodingField(
-  source: StreamSource | ObjectSource | ListingSource | SocketReceiver | SyslogReceiver,
-)}
+<!-- A stream, object or socket source's encoding: each names a label the same way. -->
+{#snippet encodingField(source: StreamSource | ObjectSource | ListingSource | SocketReceiver)}
   <!-- Avro's strings are UTF-8: the load refuses an encoding beside it. -->
   {#if !('format' in source && source.format === 'avro')}
     <Field optional field="encoding" label="encoding">
@@ -300,7 +296,9 @@
       <code>escapedLines</code>: one record per line, unescaped as a destination with format
       <code>bytes</code> and newlines <code>escape</code> wrote it.<br />
       <code>lengthPrefix</code>: one record per message, each carrying its own length.<br />
-      <code>fixed</code>: one record per so many bytes.
+      <code>fixed</code>: one record per so many bytes.<br />
+      <code>syslog</code>: one record per syslog message, counted by the length before it or ended
+      by a line end, as syslog senders send it.
     {/snippet}
     <select
       value={source.framing ?? 'lines'}
@@ -311,9 +309,10 @@
       <option value="escapedLines">escapedLines</option>
       <option value="lengthPrefix">lengthPrefix</option>
       <option value="fixed">fixed</option>
+      <option value="syslog">syslog</option>
     </select>
   </Field>
-  {#if (source.framing ?? 'lines') === 'lines'}
+  {#if (source.framing ?? 'lines') === 'lines' || source.framing === 'syslog'}
     <Nested>
       <LineBreakerField value={source.lineBreaker} onchange={(v) => (source.lineBreaker = v)} />
     </Nested>
@@ -1031,10 +1030,10 @@
       </select>
     </Field>
   {/if}
-  {#if source.type === 'syslogReceiver' || source.type === 'socketReceiver'}
+  {#if source.type === 'socketReceiver'}
     <Field field="transport" label="transport">
       {#snippet help()}
-        What senders send over. Over UDP each datagram is one {source.type === 'syslogReceiver'
+        What senders send over. Over UDP each datagram is one {typeOf(source) === 'syslogReceiver'
           ? 'message'
           : 'record'}, without TLS. A UDP sender can't be slowed, so datagrams that arrive while the
         receiver can't take them are dropped.
@@ -1042,10 +1041,11 @@
       <select
         value={source.transport ?? 'tcp'}
         onchange={(e) => {
-          if (source.type !== 'syslogReceiver' && source.type !== 'socketReceiver') return;
+          if (source.type !== 'socketReceiver') return;
           const v = e.currentTarget.value as 'tcp' | 'udp';
           source.transport = v === 'tcp' ? undefined : v;
-          // The load refuses TLS settings and a framing under UDP, which serves no TLS and frames nothing.
+          // The load refuses TLS settings under UDP, which serves no TLS, and any framing but syslog's, which reads a
+          // datagram as one message.
           if (v === 'udp') {
             source.certificate = undefined;
             source.trustedAuthorities = undefined;
@@ -1054,8 +1054,8 @@
             source.maxConnections = undefined;
             source.maxConnectionsPerSender = undefined;
             source.idleTimeoutSecs = undefined;
+            if (source.framing !== 'syslog') setFraming(source, 'lines');
             delete source.lineBreaker;
-            if (source.type === 'socketReceiver') setFraming(source, 'lines');
           }
         }}
       >
@@ -1084,14 +1084,14 @@
       />
     </Field>
   {/if}
-  {#if source.type === 'syslogReceiver' || source.type === 'socketReceiver'}
+  {#if source.type === 'socketReceiver'}
     <Field optional field="allowFrom" label="allow from">
       {#snippet help()}
         {#if source.transport === 'udp'}
           The networks a sender may send from, each a CIDR block. Over UDP only these networks admit
           a sender, and a UDP sender's address can be spoofed.
         {:else}
-          The networks a sender may connect from, each a CIDR block. {source.type ===
+          The networks a sender may connect from, each a CIDR block. {typeOf(source) ===
           'syslogReceiver'
             ? 'Syslog carries'
             : 'What it receives carries'} no token, so the receiver needs these networks, trusted authorities,
@@ -1101,12 +1101,9 @@
       {/snippet}
       <TokenListInput
         bind:values={
-          () =>
-            ((source.type === 'syslogReceiver' || source.type === 'socketReceiver') &&
-              source.allowFrom) ||
-            [],
+          () => (source.type === 'socketReceiver' && source.allowFrom) || [],
           (cidrs) => {
-            if (source.type !== 'syslogReceiver' && source.type !== 'socketReceiver') return;
+            if (source.type !== 'socketReceiver') return;
             if (cidrs.length > 0) source.allowFrom = cidrs;
             else delete source.allowFrom;
           }
@@ -1183,7 +1180,7 @@
     {/if}
   {/if}
   <Advanced label="Advanced" modified={receiverModified(source)}>
-    {#if !((source.type === 'syslogReceiver' || source.type === 'socketReceiver') && source.transport === 'udp')}
+    {#if overTcp(source)}
       <TlsFields value={source} farEnd="sender" />
     {/if}
     {#if source.type === 'hecReceiver'}
@@ -1197,15 +1194,13 @@
     <Field
       optional
       field="maxRequestBytes"
-      label={source.type === 'syslogReceiver' || source.type === 'socketReceiver'
-        ? 'message size'
-        : 'request size'}
+      label={source.type === 'socketReceiver' ? 'message size' : 'request size'}
     >
       {#snippet help()}
         {#if source.type === 's2sReceiver'}
           The largest frame it reads, and the most one record holds, at most
           {exactBytes(LIMITS.receiverRequestBytes.max)}.
-        {:else if source.type === 'syslogReceiver' || source.type === 'socketReceiver'}
+        {:else if source.type === 'socketReceiver'}
           The largest message it keeps, at most {exactBytes(LIMITS.receiverRequestBytes.max)}. A
           larger one is cut to this size.
         {:else}
@@ -1219,7 +1214,7 @@
         onchange={(n) => (source.maxRequestBytes = n)}
       />
     </Field>
-    {#if source.type !== 's2sReceiver' && source.type !== 'syslogReceiver' && source.type !== 'socketReceiver'}
+    {#if source.type !== 's2sReceiver' && source.type !== 'socketReceiver'}
       <Field field="answerAfterDelivery" label="answer after delivery">
         {#snippet help()}
           <p>
@@ -1248,17 +1243,6 @@
     {/if}
     {#if source.type === 'socketReceiver'}
       {@render encodingField(source)}
-    {/if}
-    {#if source.type === 'syslogReceiver'}
-      {@render encodingField(source)}
-      {#if source.transport !== 'udp'}
-        <LineBreakerField
-          value={source.lineBreaker}
-          onchange={(v) => {
-            if (source.type === 'syslogReceiver') source.lineBreaker = v;
-          }}
-        />
-      {/if}
     {/if}
   </Advanced>
 {/snippet}

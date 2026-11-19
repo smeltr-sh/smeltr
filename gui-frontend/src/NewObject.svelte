@@ -21,6 +21,7 @@
     kinds,
     blank,
     typeLabel,
+    typeOf = (o) => o.type,
     ready = () => true,
     fields,
     from,
@@ -39,6 +40,8 @@
     blank: (type: T, taken: string[]) => O;
     /** A type, in the title as `new <label> <noun>`. A label that names the noun itself is the title alone. */
     typeLabel: (type: T) => string;
+    /** The type a draft is labelled by, when it is not the draft's own. */
+    typeOf?: (draft: O) => T;
     /** Whether a draft with a good id can be added. */
     ready?: (draft: O) => boolean;
     /** The draft's fields, under its id. */
@@ -80,7 +83,7 @@
 
 <Dialog
   {open}
-  title={draft ? `new ${heading(typeLabel(draft.type))}` : `add ${noun}`}
+  title={draft ? `new ${heading(typeLabel(typeOf(draft)))}` : `add ${noun}`}
   wide
   {oncancel}
   onback={from ? undefined : draft ? () => (draft = null) : kind ? () => (kind = null) : undefined}

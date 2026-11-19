@@ -6324,7 +6324,7 @@ mod tests {
         write(
             &dir,
             "groups/g/sources.json",
-            r#"[{"id":"syslog","type":"syslogReceiver","port":1514,"allowFrom":["10.0.0.0/8"],"certificate":"rx"}]"#,
+            r#"[{"id":"syslog","type":"socketReceiver","framing":"syslog","port":1514,"allowFrom":["10.0.0.0/8"],"certificate":"rx"}]"#,
         );
         let head = commit(&dir, "a receiver serving rx");
         supervisor.repo_dir = dir;

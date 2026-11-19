@@ -10,7 +10,7 @@ import { suggestId } from './ids';
 export function setFraming(d: FramingSettings, framing: Framing) {
   if (framing === 'lines') delete d.framing;
   else d.framing = framing;
-  if (framing !== 'lines') delete d.lineBreaker;
+  if (framing !== 'lines' && framing !== 'syslog') delete d.lineBreaker;
   if (framing === 'lengthPrefix') d.lengthPrefix ??= { bytes: 4 };
   else delete d.lengthPrefix;
   if (framing === 'fixed') d.fixedBytes ??= 64;
@@ -50,7 +50,7 @@ export const LISTING_STORE: Record<ListingSource['type'], ObjectStore> = {
   azureBlobList: 'azureBlob',
   sftp: 'sftp',
 };
-function isListingType(type: SourceDto['type']): type is ListingSource['type'] {
+function isListingType(type: SourceType): type is ListingSource['type'] {
   return type in LISTING_STORE;
 }
 export function isListing(s: SourceDto): s is ListingSource {
@@ -78,7 +78,7 @@ const API_LABELS: Record<ApiSource['type'], string> = {
   httpApi: 'HTTP API',
   oktaLogs: 'Okta System Log',
 };
-function isApiType(type: SourceDto['type']): type is ApiSource['type'] {
+function isApiType(type: SourceType): type is ApiSource['type'] {
   return type in API_LABELS;
 }
 /** A source senders connect to: every worker of its group listens on its port. */
@@ -90,14 +90,20 @@ export type ReceiverSource = Extract<
       | 'hecReceiver'
       | 's2sReceiver'
       | 'otlpReceiver'
-      | 'syslogReceiver'
       | 'socketReceiver'
       | 'prometheusReceiver'
       | 'elasticReceiver';
   }
 >;
+/** A source's type as the admin knows it: its own, or `syslogReceiver` for a socket receiver that frames syslog,
+ * since an admin looks for a syslog source by that name. */
+export type SourceType = SourceDto['type'] | 'syslogReceiver';
+export function typeOf(s: SourceDto): SourceType {
+  return s.type === 'socketReceiver' && s.framing === 'syslog' ? 'syslogReceiver' : s.type;
+}
+type ReceiverType = ReceiverSource['type'] | 'syslogReceiver';
 /** A receiver is named for what its senders speak. The map draws every one as HTTP, as the leader's map does. */
-const RECEIVER_LABELS: Record<ReceiverSource['type'], string> = {
+const RECEIVER_LABELS: Record<ReceiverType, string> = {
   httpReceiver: 'HTTP receiver',
   hecReceiver: 'HEC receiver',
   s2sReceiver: 'S2S receiver',
@@ -108,31 +114,30 @@ const RECEIVER_LABELS: Record<ReceiverSource['type'], string> = {
   elasticReceiver: 'Elasticsearch receiver',
 };
 /** The paths a receiver serves besides its health check, as its row says them. One not reached over HTTP has
- * none; a syslog receiver over UDP says its transport there, as its port is not the TCP port of that number. */
+ * none; a socket receiver over UDP says its transport there, as its port is not the TCP port of that number. */
 const RECEIVER_PATHS: Record<ReceiverSource['type'], (s: ReceiverSource) => string> = {
   httpReceiver: (s) => (s.type === 'httpReceiver' ? (s.path ?? '/') : '/'),
   hecReceiver: () => '/services/collector',
   s2sReceiver: () => '',
   otlpReceiver: (s) => `/v1/${(s.type === 'otlpReceiver' && s.signal) || 'logs'}`,
-  syslogReceiver: (s) => (s.type === 'syslogReceiver' && s.transport === 'udp' ? '/udp' : ''),
   socketReceiver: (s) => (s.type === 'socketReceiver' && s.transport === 'udp' ? '/udp' : ''),
   prometheusReceiver: () => '/api/v1/write',
   elasticReceiver: () => '/_bulk',
 };
-function isReceiverType(type: SourceDto['type']): type is ReceiverSource['type'] {
+function isReceiverType(type: SourceType): type is ReceiverType {
   return type in RECEIVER_LABELS;
 }
 export function isReceiver(s: SourceDto): s is ReceiverSource {
   return isReceiverType(s.type);
 }
 /** A source type's name, as its row, the add dialog and the catalog say it. */
-export function typeLabel(type: SourceDto['type']): string {
+export function typeLabel(type: SourceType): string {
   if (isListingType(type)) return LISTING_LABELS[type];
   if (isReceiverType(type)) return RECEIVER_LABELS[type];
   return isApiType(type) ? API_LABELS[type] : SYSTEM_LABELS[type];
 }
 /** The system the map draws a source type as. */
-function systemOf(type: SourceDto['type']): MapSystem {
+function systemOf(type: SourceType): MapSystem {
   if (isListingType(type)) return LISTING_STORE[type];
   return isApiType(type) || isReceiverType(type) ? 'http' : type;
 }
@@ -165,7 +170,7 @@ export function reads(s: SourceDto): string {
 }
 
 /** Every type a source may be, with the category the add dialog lists it under. */
-export const SOURCE_TYPES: CatalogType<SourceDto['type'], SourceKind>[] = (
+export const SOURCE_TYPES: CatalogType<SourceType, SourceKind>[] = (
   [
     ['kafka', 'Streams'],
     ['eventHubs', 'Streams'],
@@ -200,7 +205,7 @@ export const SOURCE_TYPES: CatalogType<SourceDto['type'], SourceKind>[] = (
 }));
 
 /** A new source of `type`, named after it and clear of every id in `taken`. */
-export function blankSource(type: SourceDto['type'], taken: string[]): SourceDto {
+export function blankSource(type: SourceType, taken: string[]): SourceDto {
   const id = suggestId(type, taken);
   if (type === 'kafka') return { id, type, brokers: '', topics: [] };
   if (type === 'eventHubs')
@@ -229,7 +234,8 @@ export function blankSource(type: SourceDto['type'], taken: string[]): SourceDto
   if (type === 'hecReceiver') return { id, type, port: 8088 };
   if (type === 's2sReceiver') return { id, type, port: 9997 };
   if (type === 'otlpReceiver') return { id, type, port: 4318 };
-  if (type === 'syslogReceiver') return { id, type, port: 6514 };
+  if (type === 'syslogReceiver')
+    return { id, type: 'socketReceiver', port: 6514, framing: 'syslog' };
   if (type === 'socketReceiver') return { id, type, port: 9000 };
   if (type === 'prometheusReceiver') return { id, type, port: 9090 };
   if (type === 'elasticReceiver') return { id, type, port: 9200 };
