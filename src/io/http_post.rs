@@ -17,7 +17,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use super::http::{HttpDestination, HttpTransport, Outcome, Protocol, Response, push_json_string};
 use super::{IoError, OwnedRecord, Payload};
 use crate::format::bytes_text::BytesForm;
-use crate::plan::topology::{Compression, HttpDestinationConfig, RequestBody};
+use crate::plan::topology::{
+    Compression, HeldSecrets, HttpDestinationConfig, LogAnalyticsDestinationConfig, RequestBody,
+};
 
 /// One row as its request carries it.
 #[derive(Clone, Debug)]
@@ -61,7 +63,39 @@ impl Post {
     }
 }
 
-/// The destination posting to `config`'s URL: as `name` in what it says of itself and as `subject` in its lines,
+/// Opens `c` as a live destination, named `name` in its log lines and counting into `metrics` as destination `id`.
+pub fn open(
+    c: &HttpDestinationConfig,
+    id: crate::core::id::DestId,
+    name: &str,
+    metrics: crate::metrics::MetricsHandle,
+    secrets: &HeldSecrets,
+) -> Result<Box<dyn super::Destination>, IoError> {
+    let credentials = super::http::credential_headers("http destination", &c.credentials, secrets)?;
+    let config = super::http::agent_config(c.tls.as_ref(), secrets)?;
+    let make = || transport(c, &credentials, &config);
+    Ok(Box::new(destination(c, make, "http", name, metrics, id)))
+}
+
+/// [`open`] for Log Analytics: the same posts, each with an Entra access token.
+pub fn open_log_analytics(
+    c: &LogAnalyticsDestinationConfig,
+    id: crate::core::id::DestId,
+    name: &str,
+    metrics: crate::metrics::MetricsHandle,
+    secrets: &HeldSecrets,
+) -> Result<Box<dyn super::Destination>, IoError> {
+    let what = "Log Analytics destination";
+    let resource = super::entra::monitor_resource(&c.http.url);
+    let sign_in: super::http::SharedSignIn = Arc::new(std::sync::Mutex::new(Box::new(super::entra::Entra::new(
+        &c.sign_in, resource, secrets, what,
+    )?)));
+    let config = super::http::agent_config(c.http.tls.as_ref(), secrets)?;
+    let make = || transport(&c.http, &[], &config).signed_in(sign_in.clone());
+    Ok(Box::new(destination(&c.http, make, "logAnalytics", name, metrics, id)))
+}
+
+/// The destination posting to `config`'s URL: as `name` in what it says of itself and as `subject` in its log lines,
 /// over the transports `make` makes ([`transport`], signed in where the service asks), counting into `metrics` as
 /// destination `id`.
 pub fn destination(

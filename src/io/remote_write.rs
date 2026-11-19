@@ -230,6 +230,27 @@ pub fn transport(
     HttpTransport::new(&config.url, content_type, headers, agent).without_redirects()
 }
 
+/// Opens `c` as a live destination, named `name` in its log lines and counting into `metrics` as destination `id`.
+pub fn open(
+    c: &PrometheusDestinationConfig,
+    id: crate::core::id::DestId,
+    name: &str,
+    metrics: crate::metrics::MetricsHandle,
+    secrets: &crate::plan::topology::HeldSecrets,
+) -> Result<Box<dyn super::Destination>, IoError> {
+    let credentials = super::http::credential_headers("prometheus destination", &c.credentials, secrets)?;
+    let config = super::http::agent_config(c.tls.as_ref(), secrets)?;
+    let protocol = RemoteWrite::new(c).with_unwritten(Unwritten::new(metrics.clone(), id, name));
+    // No senders: every request goes from this thread, so one lands before the next is sent.
+    Ok(Box::new(
+        super::http::HttpDestination::new(transport(c, &credentials, &config), protocol)
+            .with_subject(name)
+            .with_metrics(metrics, id)
+            .with_max_request_bytes(c.max_request_bytes)
+            .with_stall_after(c.stall_after),
+    ))
+}
+
 /// A JSON value as the row writes it, read when it is used.
 #[derive(Clone, Copy)]
 struct Json<'d>(&'d str);
