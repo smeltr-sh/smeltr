@@ -34,9 +34,16 @@ const DEFAULT_PRINCIPAL: &str = "kafkaclient";
 
 /// Whether `config` signs in over GSSAPI.
 pub(super) fn selected(config: &ClientConfig) -> bool {
-    ["sasl.mechanism", "sasl.mechanisms"]
-        .iter()
-        .any(|key| config.get(key).is_some_and(|v| v.eq_ignore_ascii_case("GSSAPI")))
+    selects(|key| config.get(key))
+}
+
+/// Whether a client whose properties `get` reads signs in over GSSAPI: when it names it, or under a SASL protocol that
+/// names no mechanism, since GSSAPI is librdkafka's default.
+pub(super) fn selects<'a>(get: impl Fn(&str) -> Option<&'a str>) -> bool {
+    match get("sasl.mechanism").or_else(|| get("sasl.mechanisms")) {
+        Some(mechanism) => mechanism.eq_ignore_ascii_case("GSSAPI"),
+        None => get("security.protocol").is_some_and(|p| p.to_ascii_uppercase().starts_with("SASL")),
+    }
 }
 
 /// The principal and keytab `config` signs in with, when it names a keytab.
@@ -324,6 +331,8 @@ mod tests {
         assert!(selected(&unnamed));
         assert_eq!(identity(&unnamed).unwrap().principal, DEFAULT_PRINCIPAL);
         assert_eq!(identity(&config(&[("sasl.mechanism", "GSSAPI")])), None);
+        assert!(selected(&config(&[("security.protocol", "sasl_ssl")])));
+        assert!(!selected(&config(&[("security.protocol", "SSL")])));
         assert!(!selected(&config(&[
             ("sasl.mechanism", "PLAIN"),
             ("sasl.kerberos.keytab", "/k")
