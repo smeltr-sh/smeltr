@@ -35,6 +35,10 @@ pub(super) trait AccessDto {
     /// The storage service, and where credentials are obtained when that is configured apart, by the field naming
     /// each. The service comes first.
     fn urls(&self) -> Vec<(&'static str, &str)>;
+    /// Every address a client of it connects out to, over HTTP or not.
+    fn dials(&self) -> Vec<String> {
+        self.urls().into_iter().map(|(_, url)| url.to_string()).collect()
+    }
     fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)>;
     /// `secrets`, for the leader to move one onto a new version.
     fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto>;

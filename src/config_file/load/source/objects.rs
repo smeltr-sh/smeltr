@@ -66,6 +66,13 @@ impl<Store, Access: AccessDto, Queue: QueueDto<Store, Access>> SourceSpec for Ob
         self.queue.url().into_iter().chain(self.access.urls()).collect()
     }
 
+    fn dials(&self) -> Vec<String> {
+        (self.queue.url().map(|(_, url)| url.to_string()))
+            .into_iter()
+            .chain(self.access.dials())
+            .collect()
+    }
+
     fn tls(&self) -> Option<TlsDto> {
         Some(self.tls.clone())
     }

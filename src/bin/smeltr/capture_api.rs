@@ -66,14 +66,28 @@ pub async fn start_capture(
     .await
     .unwrap_or_else(|_| (None, captured(&state.data_dir, &request, None)));
     let store = state.store.clone();
-    let response = open_capture(state, request, actor.id.clone(), config)
-        .await
-        .into_response();
+    let dials = request
+        .source
+        .as_ref()
+        .map(config_file::SourceDto::dials)
+        .unwrap_or_default();
     // A capture reads live records out of a group, so who opened one, and on what, is recorded.
-    if response.status().is_success() {
+    let started = open_capture(state, request, actor.id.clone(), config).await;
+    if let Ok((_, lent)) = &started {
+        let what = with_lent(what, lent, &dials);
         accounts::record_async(store, &actor, "capture-start", &what, "ok").await;
     }
-    response
+    Envelope::from(started.map(|(started, _)| started)).into_response()
+}
+
+/// `what` with the leader-stored credentials a capture lent its workers, and where its source sends them. This is
+/// the one way a credential reaches a worker without a commit naming it, so the audit row names it.
+fn with_lent(what: String, lent: &[String], dials: &[String]) -> String {
+    match (lent, dials) {
+        ([], _) => what,
+        (_, []) => format!("{what}; lent {}", lent.join(", ")),
+        _ => format!("{what}; lent {} to {}", lent.join(", "), dials.join(", ")),
+    }
 }
 
 /// What a capture-start's audit row names: its group, then what its workers were asked to read. A destination, and a
@@ -111,28 +125,29 @@ fn runs(data_dir: &std::path::Path, commit: &str, group: &str, source: &config_f
     })
 }
 
-/// `owner` holds the capture in place of any other they held (`Captures::open`).
+/// `owner` holds the capture in place of any other they held (`Captures::open`). Returns the capture and, beside
+/// it, the leader-stored credentials it lent its workers, as `name vN`, for the audit row to name.
 async fn open_capture(
     state: AppState,
     request: CaptureRequest,
     owner: String,
     config: Option<String>,
-) -> Envelope<StartedCapture> {
+) -> Result<(StartedCapture, Vec<String>), Refusal> {
     if !takes_its_start(&request) {
-        return Envelope::refused(Refusal::invalid(
+        return Err(Refusal::invalid(
             "only a Kafka or Event Hubs source's capture takes a start",
         ));
     }
     if let Some(why) = not_as_sent(&request) {
-        return Envelope::refused(Refusal::invalid(why));
+        return Err(Refusal::invalid(why));
     }
     let source = match (&request.source, &request.destination) {
         (Some(source), None) => source.clone(),
         (None, Some(destination)) => {
             let destination = destination.clone();
-            return start_destination_capture(&state, request, owner, &destination, config);
+            return start_destination_capture(&state, request, owner, &destination, config).map(|s| (s, Vec::new()));
         }
-        _ => return Envelope::refused(Refusal::invalid("a capture names one source or one destination")),
+        _ => return Err(Refusal::invalid("a capture names one source or one destination")),
     };
     // The same check a save runs (`config_file::validate`), because this source travels to workers exactly as a
     // saved one does. Without it a credential written as a literal -- which `validate_kafka_props` refuses on the
@@ -162,7 +177,7 @@ async fn open_capture(
         }
     }
     if !invalid.is_empty() {
-        return Envelope::refused(Refusal::invalid(
+        return Err(Refusal::invalid(
             invalid.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "),
         ));
     }
@@ -178,7 +193,7 @@ async fn open_capture(
             smeltr::worker::capture::Filter::compile(Some(filter), source.kind.meta(), &source.id).map(|_| ())
         };
         if let Err(e) = compiled {
-            return Envelope::refused(Refusal::invalid(e));
+            return Err(Refusal::invalid(e));
         }
     }
 
@@ -194,18 +209,9 @@ async fn open_capture(
     let store = state.store.clone();
     let granted = match blocking(move || lent(&store, &one_source)).await {
         Ok(v) => v,
-        Err(e) => return Envelope::refused(Refusal::internal(e)),
+        Err(e) => return Err(Refusal::internal(e)),
     };
-    if !granted.is_empty() {
-        let named: Vec<String> = granted.iter().map(|d| format!("{} v{}", d.name, d.version)).collect();
-        tracing::info!(
-            name: "secrets_granted", target: "captures",
-            subject = %session,
-            group = %request.group,
-            secrets = %named.join(", "),
-            "a capture carries credentials to its workers"
-        );
-    }
+    let lent = granted.iter().map(|d| format!("{} v{}", d.name, d.version)).collect();
     let invitation = state.captures.open(
         session.clone(),
         request,
@@ -214,12 +220,13 @@ async fn open_capture(
         granted,
         Opened { owner, config },
     );
-    Envelope::ok(StartedCapture {
+    let started = StartedCapture {
         session: Some(session),
         max_matches: Some(invitation.max_matches),
         max_bytes: Some(invitation.max_bytes),
         deadline_secs: Some(invitation.deadline_secs),
-    })
+    };
+    Ok((started, lent))
 }
 
 /// Open a capture at a deployed destination. It carries no configuration and no credentials: a worker reads only
@@ -231,16 +238,16 @@ fn start_destination_capture(
     owner: String,
     destination: &str,
     config: Option<String>,
-) -> Envelope<StartedCapture> {
+) -> Result<StartedCapture, Refusal> {
     if destination.is_empty() {
-        return Envelope::refused(Refusal::invalid("a capture at a destination names it"));
+        return Err(Refusal::invalid("a capture at a destination names it"));
     }
     // Only its syntax can be checked here: what it reads is each route's output, which the workers' deployment
     // compiles. A filter a route's output does not resolve ends the capture there, saying which route.
     if let Some(filter) = request.filter.as_deref()
         && let Err(e) = smeltr::plan::compile::parse(filter, None)
     {
-        return Envelope::refused(Refusal::invalid(e.to_string()));
+        return Err(Refusal::invalid(e.to_string()));
     }
     let (expected, holding) = waits_for(state, &request.group, None, Some(destination));
     let session = format!("{:016x}", rand_session());
@@ -252,7 +259,7 @@ fn start_destination_capture(
         Vec::new(),
         Opened { owner, config },
     );
-    Envelope::ok(StartedCapture {
+    Ok(StartedCapture {
         session: Some(session),
         max_matches: Some(invitation.max_matches),
         max_bytes: Some(invitation.max_bytes),
@@ -1145,5 +1152,51 @@ mod tests {
         let at = request_for(None, Some("search"));
         assert_eq!(captured(&data, &at, Some(&commit)), "payments: destination search");
         std::fs::remove_dir_all(&data).ok();
+    }
+
+    /// The audit row names each credential a capture lent and every address its source connects out to, whatever
+    /// the source speaks, so a credential sent somewhere new is on the record beside who sent it.
+    #[test]
+    fn the_audit_says_what_a_capture_lent_and_where() {
+        let dials = |json: &str| serde_json::from_str::<config_file::SourceDto>(json).unwrap().dials();
+        let kafka = dials(
+            r#"{"id":"s","type":"kafka","brokers":"b1:9092,b2:9092","topics":["t"],"groupId":"g",
+                "credentials":{"sasl.password":{"secret":"kafka-cred","version":4}}}"#,
+        );
+        assert_eq!(kafka, ["b1:9092,b2:9092"]);
+        let hubs = dials(
+            r#"{"id":"s","type":"eventHubs","namespace":"acme","eventHubs":["l"],"consumerGroup":"g",
+                "connectionString":"C"}"#,
+        );
+        assert_eq!(hubs, ["acme.servicebus.windows.net:9093"]);
+        let postgres = dials(
+            r#"{"id":"s","type":"postgres","host":"db","database":"d","user":"u","query":"SELECT 1",
+                "mode":{"type":"everyPoll"},"fields":[]}"#,
+        );
+        assert_eq!(postgres, ["db:5432"], "the kind's own port where it names none");
+        let sftp = dials(r#"{"id":"s","type":"sftp","host":"h","hostKey":"k","username":"u","password":"P"}"#);
+        assert_eq!(sftp, ["h:22"]);
+        let azure = dials(r#"{"id":"s","type":"azureBlobList","account":"acct","container":"c"}"#);
+        assert_eq!(
+            azure,
+            [
+                "https://acct.blob.core.windows.net",
+                "https://acct.dfs.core.windows.net"
+            ],
+            "the account's own storage services, which the default endpoint leaves unnamed"
+        );
+        assert!(dials(r#"{"id":"s","type":"metrics","bucketSeconds":5}"#).is_empty());
+
+        let what = || "payments: source s as deployed".to_string();
+        let lent = ["kafka-cred v4".to_string(), "ca v2".to_string()];
+        assert_eq!(with_lent(what(), &[], &kafka), what(), "nothing lent, nothing added");
+        assert_eq!(
+            with_lent(what(), &lent, &kafka),
+            "payments: source s as deployed; lent kafka-cred v4, ca v2 to b1:9092,b2:9092"
+        );
+        assert_eq!(
+            with_lent(what(), &lent, &[]),
+            "payments: source s as deployed; lent kafka-cred v4, ca v2"
+        );
     }
 }

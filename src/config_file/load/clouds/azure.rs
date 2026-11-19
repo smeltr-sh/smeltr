@@ -56,6 +56,10 @@ impl AccessDto for AzureAccessDto {
             .collect()
     }
 
+    fn dials(&self) -> Vec<String> {
+        azure_dials(self)
+    }
+
     fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
         [
             ("accessKey", &self.access_key),

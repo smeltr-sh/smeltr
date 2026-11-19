@@ -1125,6 +1125,15 @@ fn to_gcs_access(dto: &GcsAccessDto) -> GcsAccess {
     }
 }
 
+/// Every address a client of this account connects out to: the account's own storage services, which a default
+/// endpoint leaves unnamed, and where it signs in.
+fn azure_dials(dto: &AzureAccessDto) -> Vec<String> {
+    crate::io::storage_queue::blob_services(&to_azure_access(dto))
+        .into_iter()
+        .chain(dto.auth_endpoint.clone())
+        .collect()
+}
+
 fn to_azure_access(dto: &AzureAccessDto) -> AzureAccess {
     AzureAccess {
         account: dto.account.clone(),
