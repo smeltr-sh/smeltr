@@ -213,11 +213,8 @@ pub fn validate_literal_props(props: &KafkaProps, what: &str, errors: &mut Vec<S
     // `compression.type` names the codecs it has -- but `sasl.mechanisms` is a plain string it accepts whatever it
     // links, choosing a provider only when a client is built. Asking here keeps the promise the rest of this function
     // makes.
-    let selects_gssapi = props
-        .literal
-        .iter()
-        .any(|(k, v)| matches!(k.as_str(), "sasl.mechanism" | "sasl.mechanisms") && v == "GSSAPI");
-    if selects_gssapi && !supports_gssapi() {
+    let literal = |key: &str| props.literal.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+    if kerberos::selects(literal) && !supports_gssapi() {
         errors.push(format!(
             "{what} sets SASL GSSAPI (Kerberos), which this build does not carry"
         ));
