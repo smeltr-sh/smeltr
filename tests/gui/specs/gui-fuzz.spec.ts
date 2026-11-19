@@ -22,7 +22,16 @@ import {
   type Leader,
 } from '../fleet';
 import { Rng, seeds } from '../fuzz';
-import { ACTIONS, DEFAULT_SEEDS, THEMES, VIEWPORTS, WHO, type Action, type Who } from '../gui-fuzz';
+import {
+  ACTIONS,
+  DEFAULT_SEEDS,
+  HELD_IN,
+  THEMES,
+  VIEWPORTS,
+  WHO,
+  type Action,
+  type Who,
+} from '../gui-fuzz';
 import { CLIENT_ID, CLIENT_SECRET, Provider } from '../oidc';
 import { CLICKABLE, TYPEABLE, listen, onScreen, screen } from '../onscreen';
 import { recordReached } from '../run';
@@ -61,6 +70,8 @@ const TEXT = [
 ];
 
 const PROVIDER_GROUP = 'smeltr-people';
+/** The worker group every leader starts with. */
+const GROUP = 'default';
 const ROLE_OF: Partial<Record<Who, string>> = {
   viewer: 'viewer',
   editor: 'editor',
@@ -81,8 +92,8 @@ type Walk = {
   signIns: number;
 };
 
-/** Configures `leader` to sign people in through `provider`, with a role giving its group `level` in `shared`. */
-async function offerSso(api: Api, provider: Provider, level: string) {
+/** Configures `leader` to sign people in through `provider`, with a group whose role gives `level` in `area`. */
+async function offerSso(api: Api, provider: Provider, level: string, area: string) {
   await api.put('/api/settings/oidc', {
     enabled: true,
     issuer: provider.base,
@@ -91,7 +102,7 @@ async function offerSso(api: Api, provider: Provider, level: string) {
   });
   await api.put(`/api/roles/${PROVIDER_GROUP}`, {
     groups: [PROVIDER_GROUP],
-    areas: { shared: level },
+    areas: { [area]: level },
   });
 }
 
@@ -320,7 +331,9 @@ async function walk(seed: number, browser: Browser, leader: Leader, api: Api | n
         email: `${who}@example.com`,
         groups: [PROVIDER_GROUP],
       });
-      await offerSso(api!, provider, ROLE_OF[who]!);
+      const heldIn = rng.pick(HELD_IN);
+      reached.add(`held-in:${heldIn}`);
+      await offerSso(api!, provider, ROLE_OF[who]!, heldIn === 'group' ? GROUP : 'shared');
     }
     await context.addInitScript((t) => {
       // `about:blank`, between loads, has no storage.

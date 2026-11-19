@@ -3,6 +3,12 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { flushSync, mount, tick, unmount } from 'svelte';
 import CertificatePicker from './CertificatePicker.svelte';
 
+// Signed in as someone who may list certificates.
+vi.mock('./access', async (actual) => ({
+  ...(await actual<object>()),
+  editsSomewhere: () => true,
+}));
+
 const listed = (name: string, forServers: boolean, forClients: boolean) => ({
   name,
   description: '',

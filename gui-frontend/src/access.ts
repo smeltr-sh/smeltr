@@ -5,7 +5,7 @@
 // here, and a shared component (`Field`, `ObjectList`) asks `editable()` rather than each page
 // deciding for itself.
 
-import { SHARED_SCOPE, currentScope, setScope } from './api';
+import { SHARED_SCOPE, currentScope, scopeStored, setScope } from './api';
 import { parseRoute, showsScope } from './nav';
 import { session, type AccessDto, type AccessLevel } from './session';
 
@@ -84,6 +84,12 @@ export function heldAreas(): string[] {
   return areas.length === 0 ? [] : [SHARED_SCOPE, ...areas.filter((a) => a !== SHARED_SCOPE)];
 }
 
+/** Whether the person is an administrator or an editor in some area, which the leader requires to list the secrets
+ * and certificates a form picks from. */
+export function editsSomewhere(): boolean {
+  return isAdministrator() || heldAreas().some((a) => holds(a, 'editor'));
+}
+
 /** Whether the page on screen may be changed. Only an authoring page names a scope; everywhere
  * else the leader's own refusals are the rule. Read where a component mounts: a scope switch
  * mounts every authoring page afresh. */
@@ -92,11 +98,12 @@ export function editable(): boolean {
   return !showsScope(parseRoute(location.hash)) || canEdit();
 }
 
-/** Moves a remembered scope the person no longer holds to the first one they do, before any page
- * reads with it. */
+/** Before any page reads with it, puts a person in their own first group when this browser has no scope stored
+ * or the stored one is no longer held. `shared` is their first only when it is all they hold. */
 export function settleScope(): void {
   const held = heldAreas();
-  if (held.length > 0 && !held.includes(currentScope())) setScope(held[0]);
+  const own = held.find((a) => a !== SHARED_SCOPE) ?? held[0];
+  if (own && (!scopeStored() || !held.includes(currentScope()))) setScope(own);
 }
 
 /** Why a control is disabled for a person whose roles do not let them change what it changes. */

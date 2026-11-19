@@ -653,13 +653,15 @@
           {/if}
         </div>
 
-        <label class="split"
-          ><span class="dim">Split by</span>
-          <select value={view.by} onchange={(e) => go({ by: e.currentTarget.value })}>
-            <option value="">None</option>
-            {#each labels as l (l)}<option value={l}>{labelName(l)}</option>{/each}
-          </select></label
-        >
+        {#if labels.length > 0}
+          <label class="split"
+            ><span class="dim">Split by</span>
+            <select value={view.by} onchange={(e) => go({ by: e.currentTarget.value })}>
+              <option value="">None</option>
+              {#each labels as l (l)}<option value={l}>{labelName(l)}</option>{/each}
+            </select></label
+          >
+        {/if}
         {#if view.by && all.length > 1}
           <label class="split"
             ><span class="dim">Top</span>
