@@ -667,6 +667,7 @@ bench-log:
 [env("SPLUNK_TEST_API", "http://localhost:8089")]
 [env("SPLUNK_TEST_AUTH", "admin:smeltr-live-1")]
 [env("S3_TEST_ENDPOINT", "http://localhost:4566")]
+[env("SEAWEEDFS_TEST_ENDPOINT", "http://localhost:8333")]
 [env("ICEBERG_TEST_CATALOG", "http://localhost:8181")]
 [env("GCS_TEST_ENDPOINT", "http://localhost:4443")]
 [env("AZURE_TEST_ENDPOINT", "http://127.0.0.1:10000/devstoreaccount1")]

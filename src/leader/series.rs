@@ -775,6 +775,17 @@ pub struct LoggedType {
     pub first_ms: i64,
 }
 
+/// Which rows a read of the logs table may answer with, by the group each is filed under.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub enum Filed<'a> {
+    #[default]
+    Any,
+    /// Only rows filed under some group.
+    InAGroup,
+    /// Only rows filed under one of these groups.
+    In(&'a [String]),
+}
+
 /// What to narrow a read of the logs table by. Every field is optional and absent means "any", so the
 /// default asks for the newest of everything.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -784,6 +795,7 @@ pub struct LogFilter<'a> {
     pub levels: &'a [String],
     pub worker_id: Option<&'a str>,
     pub group_id: Option<&'a str>,
+    pub filed: Filed<'a>,
     pub class: Option<&'a str>,
     /// Matched anywhere in the type, the same as `message_contains` is against the message, or whole when
     /// `type_exact`: a type that names one line can be part of another's.
@@ -1447,7 +1459,8 @@ impl RegistryStore {
     }
 
     /// Record what one worker said about itself. Best-effort like the series: a heartbeat must not fail because
-    /// the leader could not write down what it carried.
+    /// the leader could not write down what it carried. Each line is filed under `group_id`, the group that said it,
+    /// or, where none did, under the group its own `group` field names: that group's viewers read it.
     pub fn record_logs(
         &self,
         worker_id: &str,
@@ -1488,7 +1501,7 @@ impl RegistryStore {
                     event.site,
                     event.message,
                     fields,
-                    group_id,
+                    group_id.or_else(|| event.named_group()),
                 ])?;
             }
         }
@@ -1521,6 +1534,17 @@ impl RegistryStore {
             sql.push_str(&format!(" AND level IN ({holes})"));
             for level in filter.levels {
                 args.push(Box::new(level.clone()));
+            }
+        }
+        match filter.filed {
+            Filed::Any => {}
+            Filed::InAGroup => sql.push_str(" AND group_id IS NOT NULL"),
+            Filed::In(groups) => {
+                let holes = std::iter::repeat_n("?", groups.len()).collect::<Vec<_>>().join(", ");
+                sql.push_str(&format!(" AND group_id IN ({holes})"));
+                for group in groups {
+                    args.push(Box::new(group.clone()));
+                }
             }
         }
         for (column, value) in [

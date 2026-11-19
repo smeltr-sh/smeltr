@@ -331,7 +331,8 @@ async function walk(seed: number, browser: Browser, leader: Leader, api: Api | n
         email: `${who}@example.com`,
         groups: [PROVIDER_GROUP],
       });
-      const heldIn = rng.pick(HELD_IN);
+      // Taken in turn, as `who` is, so the default seeds hold both.
+      const heldIn = HELD_IN[seed % HELD_IN.length];
       reached.add(`held-in:${heldIn}`);
       await offerSso(api!, provider, ROLE_OF[who]!, heldIn === 'group' ? GROUP : 'shared');
     }

@@ -166,8 +166,8 @@
   });
 
   /** The deploys on `main` over the last `minutes`, and the issues that held in them, each from when it began until
-   * it cleared or until now. The open ones are on the Issues page, which every viewer reads; the cleared ones are in
-   * the leader's log, which only an administrator does, so another viewer sees the open ones alone. */
+   * it cleared or until now. The open ones are on the Issues page; the cleared ones are in the log. Both show only
+   * the groups the person views. */
   async function readMarks(minutes: number) {
     const now = Date.now();
     const since = now - minutes * MINUTE;

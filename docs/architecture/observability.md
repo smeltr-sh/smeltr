@@ -124,6 +124,14 @@ Outside any span it has no class, since nothing says which part of Smeltr it
 is about, and the default level applies to it. A library says no type of its
 own, so its line's type is the library's name (`ureq`, `librdkafka`).
 
+### Who reads a line
+
+The leader files each line under a group: a worker's under the worker's
+group, and one of its own under the group its `group` field names. Anyone who
+views a group reads the lines filed under it. A line filed under no group is
+the leader's own about the whole fleet, its accounts, secrets and sign-ins
+among them, and only an administrator reads it.
+
 ### Which lines are kept
 
 The leader holds the levels for the whole fleet: a default, and overrides.

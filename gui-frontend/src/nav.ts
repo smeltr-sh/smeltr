@@ -8,7 +8,7 @@
 // itself.
 
 import { untrack } from 'svelte';
-import { isAdministrator } from './access';
+import { isAdministrator, viewsAGroup } from './access';
 import { session } from './session';
 import { viewFromParams, type MetricsView } from './metricsView';
 import { SHARED_SCOPE, type MapNodeKind } from './api';
@@ -265,9 +265,9 @@ export function tabHome(tab: Tab): string {
 }
 
 /** Where the person signed in is sent instead of `route`, a page every read of which the leader
- * would refuse them, or `null` to stay. Admin and the fleet's logs are administrators' alone. */
+ * would refuse them, or `null` to stay. Admin is administrators' alone, and each person reads the logs of the groups they view. */
 export function sentFrom(route: Route): string | null {
-  if ((route.tab === 'admin' || route.page === 'logs') && !isAdministrator()) {
+  if ((route.tab === 'admin' && !isAdministrator()) || (route.page === 'logs' && !viewsAGroup())) {
     return TAB_HOME.status;
   }
   // The agent's screens wait for AI agents to be turned on (Admin -> System -> AI agents).
@@ -391,9 +391,9 @@ const SECTION_OF: Record<Route['page'], string | null> = {
 };
 
 /** The section nav a page shows to the person signed in, or null where the tab has one page.
- * Logs are administrators' alone. */
+ * Each person reads the logs of the groups they view. */
 export function section(route: Route): { items: SectionItem[]; here: string } | null {
-  const items = SECTIONS[route.tab]?.filter((i) => i.label !== 'Logs' || isAdministrator());
+  const items = SECTIONS[route.tab]?.filter((i) => i.label !== 'Logs' || viewsAGroup());
   const here = SECTION_OF[route.page];
   return items && here ? { items, here } : null;
 }
