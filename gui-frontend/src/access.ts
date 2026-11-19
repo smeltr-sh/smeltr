@@ -72,8 +72,13 @@ export function mayCapture(at?: {
   scope: string;
   group: string;
 }): boolean {
-  if (at?.group === '') return isAdministrator() || heldAreas().some((a) => a !== SHARED_SCOPE);
+  if (at?.group === '') return viewsAGroup();
   return holds(at?.group ?? currentScope(), 'viewer');
+}
+
+/** Whether the person views some group: an administrator views them all. */
+export function viewsAGroup(): boolean {
+  return isAdministrator() || heldAreas().some((a) => a !== SHARED_SCOPE);
 }
 
 /** The areas a person who is not an administrator holds, `shared` first. Empty for an
