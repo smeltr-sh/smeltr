@@ -123,6 +123,14 @@ impl Messages {
 }
 
 impl Messages {
+    /// Each frame not yet taken, handed to `each` in order.
+    pub(super) fn each(self, mut each: impl FnMut(&[u8])) {
+        for i in self.taken..self.ends.len() {
+            let start = i.checked_sub(1).map_or(0, |before| self.ends[before] as usize);
+            each(&self.bytes[start..self.ends[i] as usize]);
+        }
+    }
+
     /// The bytes of its frames not yet taken.
     pub(super) fn untaken(&self) -> usize {
         let taken = match self.taken {

@@ -92,7 +92,10 @@ holds what its reader has not taken in an inbox, and counts everything it
 holds against one ceiling: the inbox, the bodies it is reading, and what each
 connection of a streaming protocol holds between requests. A full or blocked
 receiver answers a new request busy at once; a streaming connection stops
-reading instead, and its sender's window fills.
+reading instead, and its sender's window fills. A request's records are cut
+on the handler thread that received it, before it reaches the inbox, so the
+reader only hands them out and a busy receiver's senders cut theirs side by
+side.
 
 ## Transform
 
