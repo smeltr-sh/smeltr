@@ -460,33 +460,37 @@ the hashing that stores an enrollment secret, the randomness behind every
 unpredictable value and the sealing of a stored secret all go through AWS-LC.
 There is one answer to which implementation performed a given operation.
 
-### Kafka's is separate
+### Kafka's TLS is librdkafka's, over the same module
 
-librdkafka carries its own TLS and SASL over its own OpenSSL, and the Kerberos
-and SASL libraries beside it rest on that same one. A connector's TLS is one
-shape wherever it is used, so which module enforces it follows the destination
-rather than anything an operator writes:
+librdkafka speaks Kafka's TLS and SASL itself, through AWS-LC's OpenSSL API, so
+its cryptography is the same module's. What it offers is its own: librdkafka's
+defaults, which reach past the module's validation (ChaCha20, X25519, TLS 1.0
+and 1.1, SHA-1 signatures). Kerberos sits beside both, on MIT krb5's own
+cryptography:
 
 ```text
                    +---------------- AWS-LC ---------------+
   leader  --TLS----|  a connector's TLS, the leader's      |
   git     --TLS----|  authority, enrollment secrets,       |
   Elastic --TLS----|  sealed values                        |
+  Kafka   --TLS----|  the same TLS, and SCRAM, offered as  |
+                   |  librdkafka offers it                 |
                    +---------------------------------------+
-                   +-------- librdkafka's OpenSSL ---------+
-  Kafka   --TLS----|  the same TLS, and SASL               |
+                   +------------ MIT krb5 -----------------+
+  Kafka   --GSSAPI-|  Kerberos tickets                     |
                    +---------------------------------------+
 ```
 
 ### Every build links AWS-LC's validated module, and offers only what its validation covers
 
 Both are settled when the binary is built, so a deployment is eligible to
-claim the module without being configured for it, and nothing it offers falls
-outside the claim. There is one algorithm set and no way to select another.
+claim the module without being configured for it, and nothing rustls offers
+falls outside the claim. There is one algorithm set and no way to select
+another.
 
-A claim reaches as far as AWS-LC does. It stops at Kafka's transport, and a
-deployment that must hold that traffic inside the boundary terminates its TLS
-outside smeltr.
+A claim reaches as far as that set does. It stops at Kafka's transport, whose
+set is librdkafka's, and at Kerberos. A deployment that must hold that traffic
+inside the boundary terminates its TLS outside smeltr.
 
 ## Seams
 
