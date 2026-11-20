@@ -153,6 +153,8 @@ pub struct FactSpan {
     pub started_ms: i64,
     /// None while it still holds.
     pub ended_ms: Option<i64>,
+    /// Why it began, as [`RegistryStore::keep_reasons`] kept it.
+    pub reason: Option<String>,
 }
 
 /// One subject's points, oldest first: bucket start (epoch milliseconds) and value. What
@@ -517,6 +519,10 @@ pub(crate) const STEPS: &[&str] = &[
          PRIMARY KEY (day_ms, group_id, source, field, value)
      ) WITHOUT ROWID;
      CREATE INDEX sender_values_by_value ON sender_values (group_id, source, field, value, day_ms);",
+    // 16 -- why a warning began, as the warning keeps it (`throughput::Reason`): what was read against which range, kept
+    // with its start and its end. A warning no reason was kept for has none.
+    "ALTER TABLE fact_clock ADD COLUMN reason TEXT;
+     ALTER TABLE fact_history ADD COLUMN reason TEXT;",
 ];
 
 /// Gives each log a build before lines had types wrote, before step 12 or after a rollback to it, its class and
@@ -930,8 +936,8 @@ impl RegistryStore {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         for (entry, subject) in removed {
             conn.execute(
-                "INSERT OR IGNORE INTO fact_history (entry, subject, started_ms, ended_ms) \
-                 SELECT entry, subject, started_ms, ?3 FROM fact_clock WHERE entry = ?1 AND subject = ?2",
+                "INSERT OR IGNORE INTO fact_history (entry, subject, started_ms, ended_ms, reason) \
+                 SELECT entry, subject, started_ms, ?3, reason FROM fact_clock WHERE entry = ?1 AND subject = ?2",
                 params![entry, subject, now_ms],
             )?;
             conn.execute(
@@ -944,6 +950,18 @@ impl RegistryStore {
                 "INSERT OR IGNORE INTO fact_clock (entry, subject, started_ms) VALUES (?1, ?2, ?3)",
                 params![entry, subject, now_ms],
             )?;
+        }
+        Ok(())
+    }
+
+    /// Keeps why each of `reasons`' facts began: (entry, subject, reason). A fact keeps the first reason given while it
+    /// holds, as of the reading that began it or the first after; one not active yet is given its reason on a later call.
+    pub fn keep_reasons(&self, reasons: &[(String, String, String)]) -> Result<(), StoreError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut keep = conn
+            .prepare_cached("UPDATE fact_clock SET reason = ?3 WHERE entry = ?1 AND subject = ?2 AND reason IS NULL")?;
+        for (entry, subject, reason) in reasons {
+            keep.execute(params![entry, subject, reason])?;
         }
         Ok(())
     }
@@ -966,16 +984,18 @@ impl RegistryStore {
                 entry: r.get(0)?,
                 started_ms: r.get(1)?,
                 ended_ms: r.get(2)?,
+                reason: r.get(3)?,
             })
         };
         let mut out = Vec::new();
         let mut ended = conn.prepare_cached(
-            "SELECT entry, started_ms, ended_ms FROM fact_history WHERE subject = ?1 AND ended_ms >= ?2",
+            "SELECT entry, started_ms, ended_ms, reason FROM fact_history WHERE subject = ?1 AND ended_ms >= ?2",
         )?;
         for row in ended.query_map(params![subject, since_ms], span)? {
             out.push(row?);
         }
-        let mut active = conn.prepare_cached("SELECT entry, started_ms, NULL FROM fact_clock WHERE subject = ?1")?;
+        let mut active =
+            conn.prepare_cached("SELECT entry, started_ms, NULL, reason FROM fact_clock WHERE subject = ?1")?;
         for row in active.query_map(params![subject], span)? {
             out.push(row?);
         }
@@ -4143,6 +4163,7 @@ mod tests {
             entry: "destination_refusing".to_string(),
             started_ms,
             ended_ms,
+            reason: None,
         };
         assert_eq!(
             store.fact_spans(&["destination_refusing"], "7", 0).unwrap(),
@@ -4167,6 +4188,29 @@ mod tests {
             vec![span(3_000, None)],
             "past the last tier, an ended span is gone; an active one stays"
         );
+    }
+
+    /// A fact keeps the first reason given while it holds, and takes it into its history when it ends.
+    #[test]
+    fn a_fact_keeps_the_reason_it_began_for() {
+        let store = memory_store();
+        let fact = || vec![("source_rows_below".to_string(), "7".to_string())];
+        let reason = |r: &str| [("source_rows_below".to_string(), "7".to_string(), r.to_string())];
+        store.keep_reasons(&reason("before")).unwrap();
+        store.sync_fact_clock(&[], &fact(), 1_000).unwrap();
+        store.keep_reasons(&reason("first")).unwrap();
+        store.keep_reasons(&reason("second")).unwrap();
+        let reasons = |store: &RegistryStore| -> Vec<Option<String>> {
+            let spans = store.fact_spans(&["source_rows_below"], "7", 0).unwrap();
+            spans.into_iter().map(|s| s.reason).collect()
+        };
+        assert_eq!(
+            reasons(&store),
+            [Some("first".to_string())],
+            "kept once, while it holds"
+        );
+        store.sync_fact_clock(&fact(), &[], 2_000).unwrap();
+        assert_eq!(reasons(&store), [Some("first".to_string())], "and when it ended");
     }
 
     #[test]
