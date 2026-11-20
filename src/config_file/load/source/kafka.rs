@@ -1,4 +1,4 @@
-use super::super::*;
+use super::super::shared::*;
 use super::SourceSpec;
 use serde::{Deserialize, Serialize};
 
@@ -119,6 +119,12 @@ impl SourceSpec for KafkaSourceDto {
 
     fn urls(&self) -> Vec<(&'static str, &str)> {
         self.schema_registry.iter().map(SchemaRegistryDto::url).collect()
+    }
+
+    fn dials(&self) -> Vec<String> {
+        std::iter::once(self.brokers.clone())
+            .chain(self.urls().into_iter().map(|(_, url)| url.to_string()))
+            .collect()
     }
 
     fn tls(&self) -> Option<TlsDto> {

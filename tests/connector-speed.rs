@@ -17,7 +17,9 @@
 //!
 //! The worker is the shipped binary, a leader with its worker inside, deployed through its repository as an
 //! administrator deploys. It runs one transform thread, alone on the first core with that core's sibling left idle;
-//! everything else, the harness and the services included, shares the cores that remain.
+//! everything else, the harness and the services included, shares the cores that remain. `CONNECTOR_THREADS=1,2,3`
+//! runs each row at each count of transform threads, each on a core of its own, so a row that stops gaining shows
+//! what keeps the worker from its cores; the cores left to everything else are those the largest count leaves.
 #![cfg(target_os = "linux")]
 
 mod live;
@@ -66,11 +68,6 @@ const CASES: &[Case] = &[
         leg: Leg::Source(kafka::source),
     },
     Case {
-        name: "event hubs source",
-        services: &["event-hubs", "azurite"],
-        leg: Leg::Source(event_hubs::source),
-    },
-    Case {
         name: "s3 sqs source",
         services: &["localstack"],
         leg: Leg::Source(s3::sqs_source),
@@ -79,6 +76,11 @@ const CASES: &[Case] = &[
         name: "s3 list source",
         services: &["localstack"],
         leg: Leg::Source(s3::list_source),
+    },
+    Case {
+        name: "s3 list source on seaweedfs",
+        services: &["seaweedfs"],
+        leg: Leg::Source(s3::seaweedfs_list_source),
     },
     Case {
         name: "gcs list source",
@@ -156,11 +158,6 @@ const CASES: &[Case] = &[
         leg: Leg::Destination(kafka::destination),
     },
     Case {
-        name: "event hubs destination",
-        services: &["event-hubs", "azurite"],
-        leg: Leg::Destination(event_hubs::destination),
-    },
-    Case {
         name: "elasticsearch destination",
         services: &["elasticsearch"],
         leg: Leg::Destination(elastic::destination),
@@ -229,7 +226,8 @@ fn line(i: u64) -> String {
 #[test]
 #[ignore = "run by `just connector-speed`"]
 fn speed() {
-    let cores = Cores::of_this_host();
+    let counts = thread_counts();
+    let cores = Cores::of_this_host(*counts.iter().max().unwrap());
     cores.confine(0);
     let only = std::env::var("CONNECTOR").ok();
     let cases: Vec<&Case> = CASES
@@ -245,40 +243,82 @@ fn speed() {
     let _bare = BareAfter;
     let _pinned = Pinned::off(&cores);
     let rows = rows();
-    let mut table: Vec<(&str, Link, Option<Measured>)> = Vec::new();
+    let mut table: Vec<(&str, Link, Row)> = Vec::new();
     // Each order once, so a host that slows as it warms costs both links alike.
     let forward: Vec<Link> = passes.to_vec();
     let backward: Vec<Link> = passes.iter().rev().copied().collect();
     for (round, order) in [forward, backward].into_iter().enumerate() {
+        let threads: Vec<usize> = match round {
+            0 => counts.clone(),
+            _ => counts.iter().rev().copied().collect(),
+        };
         for case in &cases {
             for &link in &order {
                 link.apply();
-                let run = format!(
-                    "cs-{}-{}-{round}-{}",
-                    case.name.replace(' ', "-"),
-                    link.label(),
-                    std::process::id()
-                );
-                let m = match case.leg {
-                    Leg::Source(seed) => seed(&run, rows).map(|decl| time_source(&run, decl, rows, case, &cores)),
-                    Leg::Destination(declare) => {
-                        declare(&run).map(|decl| time_destination(&run, decl, rows, case, &cores))
-                    }
-                    Leg::Receiver(declare, ref sending) => {
-                        Some(time_receiver(&run, declare, sending, rows, link, &cores))
-                    }
-                };
-                if let Some(m) = &m {
-                    println!("{:<24} {:<6} {}", case.name, link.label(), m.row());
+                for &n in &threads {
+                    let run = format!(
+                        "cs-{}-{}-{n}t-{round}-{}",
+                        case.name.replace(' ', "-"),
+                        link.label(),
+                        std::process::id()
+                    );
+                    let at = cores.with(n);
+                    // A row that fails is a row of the table, and the rows after it still run.
+                    let timed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match case.leg {
+                        Leg::Source(seed) => seed(&run, rows).map(|decl| time_source(&run, decl, rows, case, &at)),
+                        Leg::Destination(declare) => {
+                            declare(&run).map(|decl| time_destination(&run, decl, rows, case, &at))
+                        }
+                        Leg::Receiver(declare, ref sending) => {
+                            Some(time_receiver(&run, declare, sending, rows, link, &at))
+                        }
+                    }));
+                    let row = match timed {
+                        Ok(Some(m)) => {
+                            println!("{:<24} {:<6} {n}t {}", case.name, link.label(), m.row());
+                            Row::Measured(m)
+                        }
+                        Ok(None) => Row::Skipped,
+                        Err(panic) => Row::Failed(n, panic_message(&panic)),
+                    };
+                    table.push((case.name, link, row));
                 }
-                table.push((case.name, link, m));
             }
         }
     }
     println!("\n{}", markdown(&table));
+    let failed = table.iter().filter(|(_, _, r)| matches!(r, Row::Failed(..))).count();
+    assert_eq!(failed, 0, "{failed} rows failed; the table says which and why");
 }
 
-/// Every live container kept off the transform core, each given back the CPUs it had when dropped: the live tests
+/// One row of the table.
+enum Row {
+    Measured(Measured),
+    /// Its service is not running.
+    Skipped,
+    /// At this many transform threads, and why.
+    Failed(usize, String),
+}
+
+impl Row {
+    fn measured(&self) -> Option<&Measured> {
+        match self {
+            Row::Measured(m) => Some(m),
+            _ => None,
+        }
+    }
+}
+
+/// What a panic said, as `panic!` formats it.
+fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
+    panic
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
+        .unwrap_or_default()
+}
+
+/// Every live container kept off the transform cores, each given back the CPUs it had when dropped: the live tests
 /// share these services.
 struct Pinned(Vec<(String, String)>);
 
@@ -296,7 +336,7 @@ impl Pinned {
         for (id, _) in &pinned.0 {
             assert!(
                 cpuset(id, &cores.rest_list()),
-                "could not keep container {id} off the transform core"
+                "could not keep container {id} off the transform cores"
             );
         }
         pinned
@@ -341,12 +381,17 @@ struct Measured {
     rows: u64,
     bytes: u64,
     wall: Duration,
-    /// CPU seconds of the transform thread.
+    /// Transform threads the worker ran.
+    threads: usize,
+    /// CPU seconds of the transform threads, together.
     transform: f64,
     /// The worker's busiest other thread, and its CPU seconds.
     busiest: (String, f64),
     /// CPU seconds of the peer's processes.
     peer: f64,
+    /// How busy the cores everything but the transform shares were, the harness's own work included: near 100%, the
+    /// host, not the worker, set the row's speed.
+    rest: f64,
 }
 
 impl Measured {
@@ -358,14 +403,18 @@ impl Measured {
         self.bytes as f64 / self.wall.as_secs_f64() / 1e6
     }
 
-    /// A share of one core, for each of the transform thread, the busiest other thread and the peer.
+    /// A share of one core, for each of a transform thread on average, the busiest other thread and the peer.
     fn shares(&self) -> (f64, f64, f64) {
         let w = self.wall.as_secs_f64();
-        (self.transform / w, self.busiest.1 / w, self.peer / w)
+        (
+            self.transform / w / self.threads as f64,
+            self.busiest.1 / w,
+            self.peer / w,
+        )
     }
 
-    /// What saturated: a thread of the worker, or the peer, at nine tenths of a core or more. Neither is `waits`: the
-    /// row waits on round trips, polls or acknowledgements.
+    /// What saturated: the transform threads, another thread of the worker, or the peer, at nine tenths of a core
+    /// each or more. Neither is `waits`: the row waits on round trips, polls, acknowledgements or a lock.
     fn bound(&self) -> String {
         let (t, b, p) = self.shares();
         if t >= 0.9 {
@@ -374,6 +423,8 @@ impl Measured {
             self.busiest.0.clone()
         } else if p >= 0.9 {
             "peer".into()
+        } else if self.rest >= 0.9 {
+            "host".into()
         } else {
             "waits".into()
         }
@@ -382,42 +433,72 @@ impl Measured {
     fn row(&self) -> String {
         let (t, b, p) = self.shares();
         format!(
-            "{:>9.0} rows/s {:>7.1} MB/s  transform {:>4.0}%  {} {:>4.0}%  peer {:>4.0}%  bound: {}",
+            "{:>9.0} rows/s {:>7.1} MB/s  transform {:>4.0}%  {} {:>4.0}%  peer {:>4.0}%  rest {:>4.0}%  bound: {}",
             self.rows_per_sec(),
             self.mb_per_sec(),
             t * 100.0,
             self.busiest.0,
             b * 100.0,
             p * 100.0,
+            self.rest * 100.0,
             self.bound()
         )
     }
 }
 
-fn markdown(table: &[(&str, Link, Option<Measured>)]) -> String {
+fn markdown(table: &[(&str, Link, Row)]) -> String {
     let mut out = String::from(
-        "| Connector | Link | rows/s | MB/s | Transform | Busiest other thread | Peer | Bound by |\n\
-         |---|---|---:|---:|---:|---|---:|---|\n",
+        "| Connector | Link | Threads | rows/s | Per thread | MB/s | Transform | Busiest other thread | Peer | Rest | Bound by |\n\
+         |---|---|---:|---:|---:|---:|---:|---|---:|---:|---|\n",
     );
-    for (name, link, m) in table {
-        match m {
-            Some(m) => {
+    // A row's speed per thread against its fewest threads', on the same link, both rounds averaged: 100% is a
+    // worker that gains all of each core it is given.
+    let mean = |name: &str, link: Link, threads: usize| {
+        let speeds: Vec<f64> = table
+            .iter()
+            .filter_map(|(n, l, r)| {
+                r.measured()
+                    .filter(|m| *n == name && *l == link && m.threads == threads)
+            })
+            .map(Measured::rows_per_sec)
+            .collect();
+        speeds.iter().sum::<f64>() / speeds.len() as f64
+    };
+    for (name, link, row) in table {
+        match row {
+            Row::Measured(m) => {
                 let (t, b, p) = m.shares();
+                let fewest = table
+                    .iter()
+                    .filter_map(|(n, l, r)| r.measured().filter(|_| n == name && l == link))
+                    .map(|m| m.threads)
+                    .min()
+                    .unwrap();
+                let per_thread = m.rows_per_sec() / m.threads as f64 / (mean(name, *link, fewest) / fewest as f64);
                 out.push_str(&format!(
-                    "| {name} | {} | {:.0} | {:.1} | {:.0}% | {} {:.0}% | {:.0}% | {} |\n",
+                    "| {name} | {} | {} | {:.0} | {:.0}% | {:.1} | {:.0}% | {} {:.0}% | {:.0}% | {:.0}% | {} |\n",
                     link.label(),
+                    m.threads,
                     m.rows_per_sec(),
+                    per_thread * 100.0,
                     m.mb_per_sec(),
                     t * 100.0,
                     m.busiest.0,
                     b * 100.0,
                     p * 100.0,
+                    m.rest * 100.0,
                     m.bound()
                 ));
             }
-            None => out.push_str(&format!(
-                "| {name} | {} | skipped: no service | | | | | |\n",
+            Row::Skipped => out.push_str(&format!(
+                "| {name} | {} | | skipped: no service | | | | | | | |\n",
                 link.label()
+            )),
+            // One line, so a reason with a pipe or a newline keeps the table's shape.
+            Row::Failed(threads, reason) => out.push_str(&format!(
+                "| {name} | {} | {threads} | failed: {} | | | | | | | |\n",
+                link.label(),
+                reason.replace('|', "/").replace('\n', " ")
             )),
         }
     }
@@ -498,7 +579,12 @@ fn containers_cpu(ids: &[String]) -> f64 {
             }
             let v1 = format!("/sys/fs/cgroup/cpuacct/docker/{id}/cpuacct.usage");
             let nsec: f64 = std::fs::read_to_string(&v1)
-                .unwrap_or_else(|_| panic!("no cgroup for container {id} at {v2} or {v1}"))
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "no cgroup for container {id} at {v2} or {v1}. Docker Desktop runs containers in a VM of its \
+                         own, out of this host's sight: use Docker Engine on this host"
+                    )
+                })
                 .trim()
                 .parse()
                 .unwrap();
@@ -507,24 +593,48 @@ fn containers_cpu(ids: &[String]) -> f64 {
         .sum()
 }
 
-/// The transform core, its siblings left idle, and the cores everything else shares.
+/// Transform threads each row runs at, from `CONNECTOR_THREADS`.
+fn thread_counts() -> Vec<usize> {
+    std::env::var("CONNECTOR_THREADS").map_or(vec![1], |t| {
+        t.split(',')
+            .map(|n| n.trim().parse().expect("CONNECTOR_THREADS is a list of numbers"))
+            .collect()
+    })
+}
+
+/// The transform cores, one thread on each with its siblings left idle, and the cores everything else shares.
+#[derive(Clone)]
 struct Cores {
-    transform: usize,
+    transform: Vec<usize>,
     rest: Vec<usize>,
 }
 
 impl Cores {
-    fn of_this_host() -> Cores {
-        let online = cpu_list(&std::fs::read_to_string("/sys/devices/system/cpu/online").expect("online CPUs"));
-        let transform = online[0];
-        let siblings = std::fs::read_to_string(format!(
-            "/sys/devices/system/cpu/cpu{transform}/topology/thread_siblings_list"
-        ))
-        .map(|s| cpu_list(&s))
-        .unwrap_or_else(|_| vec![transform]);
-        let rest: Vec<usize> = online.into_iter().filter(|c| !siblings.contains(c)).collect();
-        assert!(!rest.is_empty(), "one core leaves nothing for the rest");
+    /// `threads` transform cores, the first that are online.
+    fn of_this_host(threads: usize) -> Cores {
+        let mut rest = cpu_list(&std::fs::read_to_string("/sys/devices/system/cpu/online").expect("online CPUs"));
+        let mut transform = Vec::new();
+        while transform.len() < threads && !rest.is_empty() {
+            let core = rest[0];
+            let siblings = std::fs::read_to_string(format!(
+                "/sys/devices/system/cpu/cpu{core}/topology/thread_siblings_list"
+            ))
+            .map(|s| cpu_list(&s))
+            .unwrap_or_else(|_| vec![core]);
+            rest.retain(|c| !siblings.contains(c) && *c != core);
+            transform.push(core);
+        }
+        assert_eq!(transform.len(), threads, "this host has fewer than {threads} cores");
+        assert!(!rest.is_empty(), "{threads} transform cores leave nothing for the rest");
         Cores { transform, rest }
+    }
+
+    /// The first `threads` of the transform cores, the rest as they are.
+    fn with(&self, threads: usize) -> Cores {
+        Cores {
+            transform: self.transform[..threads].to_vec(),
+            rest: self.rest.clone(),
+        }
     }
 
     fn rest_list(&self) -> String {
@@ -562,6 +672,24 @@ fn set_affinity(tid: i32, cpus: &[usize]) {
             "pin thread {tid} to {cpus:?}"
         );
     }
+}
+
+/// Seconds `cpus` have been idle, together, from `/proc/stat`.
+fn idle(cpus: &[usize]) -> f64 {
+    // SAFETY: `sysconf` reads a constant.
+    let tick = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
+    let stat = std::fs::read_to_string("/proc/stat").expect("/proc/stat");
+    let ticks: u64 = stat
+        .lines()
+        .filter_map(|l| {
+            let mut fields = l.split(' ');
+            let cpu: usize = fields.next()?.strip_prefix("cpu")?.parse().ok()?;
+            // idle and iowait, the 4th and 5th.
+            cpus.contains(&cpu)
+                .then(|| fields.skip(3).take(2).map(|t| t.parse::<u64>().unwrap()).sum::<u64>())
+        })
+        .sum();
+    ticks as f64 / tick
 }
 
 /// CPU seconds of `/proc/{path}/stat`'s process or thread, or 0 once it is gone.
@@ -605,6 +733,9 @@ struct Usage {
     at: Instant,
     threads: Vec<(i32, String, f64)>,
     peer: f64,
+    /// Seconds the cores everything but the transform shares have been idle, together.
+    rest_idle: f64,
+    rest_cores: usize,
 }
 
 impl Usage {
@@ -613,6 +744,8 @@ impl Usage {
             at: Instant::now(),
             threads: worker.runtime().map(threads).unwrap_or_default(),
             peer: containers_cpu(peer),
+            rest_idle: idle(&worker.rest),
+            rest_cores: worker.rest.len(),
         }
     }
 
@@ -624,6 +757,7 @@ impl Usage {
             .filter(|t| t.1 == TRANSFORM_THREAD)
             .map(|t| used(t.0, t.2))
             .sum();
+        let threads = self.threads.iter().filter(|t| t.1 == TRANSFORM_THREAD).count();
         let busiest = self
             .threads
             .iter()
@@ -635,9 +769,12 @@ impl Usage {
             rows,
             bytes,
             wall: self.at - before.at,
+            threads,
             transform,
             busiest,
             peer: self.peer - before.peer,
+            rest: 1.0
+                - (self.rest_idle - before.rest_idle) / (self.at - before.at).as_secs_f64() / self.rest_cores as f64,
         }
     }
 }
@@ -665,7 +802,7 @@ fn wait_for(what: &str, want: u64, count: impl Fn() -> u64, mut each: impl FnMut
 /// Reads what `decl` seeded and delivers it to a sink on this host.
 fn time_source(run: &str, decl: Value, rows: u64, case: &Case, cores: &Cores) -> Measured {
     let sink = Sink::start();
-    let worker = Smeltr::start(run);
+    let worker = Smeltr::start(run, cores);
     worker.deploy(
         decl,
         json!({"id": "out", "type": "http", "url": format!("http://127.0.0.1:{}/", sink.port)}),
@@ -692,7 +829,7 @@ const FILE_SENDERS: usize = 1024;
 fn time_destination(run: &str, decl: Value, rows: u64, case: &Case, cores: &Cores) -> Measured {
     let files = decl.get("fileIntervalSecs").is_some();
     let port = free_port();
-    let worker = Smeltr::start(run);
+    let worker = Smeltr::start(run, cores);
     worker.deploy(receivers::http(port), decl);
     worker.wait_for_receiver(run, port);
     let peer = containers(case.services);
@@ -751,7 +888,7 @@ fn time_commits(run: &str, worker: &Smeltr, peer: &[String], sender: &Sender) ->
 fn time_receiver(run: &str, declare: Receiver, sending: &Sending, rows: u64, link: Link, cores: &Cores) -> Measured {
     let sink = Sink::start();
     let port = free_port();
-    let worker = Smeltr::start(run);
+    let worker = Smeltr::start(run, cores);
     worker.deploy(
         declare(port),
         json!({"id": "out", "type": "http", "url": format!("http://127.0.0.1:{}/", sink.port)}),
@@ -881,7 +1018,6 @@ const SECRETS: &[(&str, &str)] = &[
     ("SM_AZ_KEY", azure::KEY),
     ("SM_SFTP_PW", "smeltr-live-1"),
     ("SM_SQL_PW", "smeltr-live-1"),
-    ("SM_EH_CONN", event_hubs::CONNECTION),
     ("SM_HEC_TOKEN", splunk::TOKEN),
     ("SM_HEC_AUTH", splunk::AUTHORIZATION),
 ];
@@ -894,10 +1030,12 @@ const RECEIVER_TOKEN: &str = "connector-speed";
 struct Smeltr {
     process: Child,
     data_dir: PathBuf,
+    /// The cores everything but the transform shares.
+    rest: Vec<usize>,
 }
 
 impl Smeltr {
-    fn start(run: &str) -> Smeltr {
+    fn start(run: &str, cores: &Cores) -> Smeltr {
         use std::os::unix::process::CommandExt;
         let data_dir = repo().join("target/connector-speed").join(run);
         let _ = std::fs::remove_dir_all(&data_dir);
@@ -909,7 +1047,7 @@ impl Smeltr {
             .env("SMELTR_LEADER_DATA_DIR", &data_dir)
             .env("SMELTR_GUI_BIND", "127.0.0.1")
             .env("SMELTR_GUI_PORT", free_port().to_string())
-            .env("SMELTR_WORKER_THREAD_LIMIT", "1")
+            .env("SMELTR_WORKER_THREAD_LIMIT", cores.transform.len().to_string())
             .env("SMELTR_WORKER_HEARTBEAT_INTERVAL_MS", "500")
             .envs(SECRETS.iter().copied())
             // A `smeltr.toml` in the directory it starts in would configure it.
@@ -925,7 +1063,11 @@ impl Smeltr {
             assert!(Instant::now() < deadline, "{run}: the leader never started");
             std::thread::sleep(Duration::from_millis(100));
         }
-        Smeltr { process, data_dir }
+        Smeltr {
+            process,
+            data_dir,
+            rest: cores.rest.clone(),
+        }
     }
 
     /// Deploys `source` routed unchanged to `destination`, as approving a change does.
@@ -995,22 +1137,34 @@ impl Smeltr {
         })
     }
 
-    /// Puts the transform thread alone on its core, once it runs.
+    /// Puts each transform thread alone on a core of its own, once they run.
     fn pin(&self, cores: &Cores) {
         let Some(pid) = self.runtime() else { return };
-        for (tid, name, _) in threads(pid) {
-            if name == TRANSFORM_THREAD {
-                set_affinity(tid, &[cores.transform]);
-            }
+        let transform = threads(pid).into_iter().filter(|t| t.1 == TRANSFORM_THREAD);
+        for ((tid, _, _), &core) in transform.zip(&cores.transform) {
+            set_affinity(tid, &[core]);
         }
     }
 }
 
 impl Drop for Smeltr {
     fn drop(&mut self) {
+        // The runtime leads a group of its own: left alone, it drains on into the next row. Found before the leader
+        // dies, which would leave it nobody's child; killed after, so the leader starts no other.
+        let runtime = self.runtime();
         // SAFETY: signals the process group `start` made, which holds only this leader and what it started.
         unsafe { libc::kill(-(self.process.id() as i32), libc::SIGKILL) };
         let _ = self.process.wait();
+        if let Some(runtime) = runtime {
+            // SAFETY: signals the group the runtime leads, which holds only it and what it started.
+            unsafe { libc::kill(-(runtime as i32), libc::SIGKILL) };
+            // Gone, or dead and waiting on whoever reaps orphans here.
+            while std::fs::read_to_string(format!("/proc/{runtime}/stat"))
+                .is_ok_and(|stat| stat.rsplit(')').next().and_then(|r| r.split_whitespace().next()) != Some("Z"))
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
         // Kept after a failure: its console says why.
         if !std::thread::panicking() {
             let _ = std::fs::remove_dir_all(&self.data_dir);
@@ -1292,14 +1446,20 @@ const FILE_SECS: u64 = 5;
 /// Records in each file an object source reads: a log file's worth.
 const FILE_ROWS: u64 = 5_000;
 
-/// The corpus as files of lines, each named for its place in it.
-fn files(rows: u64) -> Vec<(String, String)> {
+/// The corpus as files of lines, each named for its place in it, and gzipped when `CONNECTOR_GZIP` is set.
+fn files(rows: u64) -> Vec<(String, Vec<u8>)> {
+    let gzip = std::env::var_os("CONNECTOR_GZIP").is_some();
     (0..rows.div_ceil(FILE_ROWS))
         .map(|f| {
-            let lines = (f * FILE_ROWS..((f + 1) * FILE_ROWS).min(rows))
+            let lines: String = (f * FILE_ROWS..((f + 1) * FILE_ROWS).min(rows))
                 .map(|i| line(i) + "\n")
                 .collect();
-            (format!("{f:06}.ndjson"), lines)
+            if !gzip {
+                return (format!("{f:06}.ndjson"), lines.into_bytes());
+            }
+            let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            std::io::Write::write_all(&mut gz, lines.as_bytes()).unwrap();
+            (format!("{f:06}.ndjson.gz"), gz.finish().unwrap())
         })
         .collect()
 }
@@ -1350,67 +1510,6 @@ fn underscored(run: &str) -> String {
     run.replace('-', "_")
 }
 
-mod event_hubs {
-    use super::*;
-    use rdkafka::ClientConfig;
-    use rdkafka::producer::{BaseProducer, BaseRecord, Producer};
-
-    /// The emulator's own.
-    pub const CONNECTION: &str = "Endpoint=sb://localhost;SharedAccessKeyName=RootManageSharedAccessKey;\
-                                  SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;";
-
-    /// The emulator's event hubs are fixed by `tests/fixtures/event-hubs-emulator.json`.
-    const HUB: &str = "smeltr-live";
-
-    pub fn source(run: &str, rows: u64) -> Option<Value> {
-        let namespace = live::event_hubs(&named(run))?;
-        // The hub holds every earlier run's records too: this one reads only its own.
-        let since = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64;
-        let producer: BaseProducer = ClientConfig::new()
-            .set("bootstrap.servers", &namespace)
-            .set("security.protocol", "SASL_PLAINTEXT")
-            .set("sasl.mechanism", "PLAIN")
-            .set("sasl.username", "$ConnectionString")
-            .set("sasl.password", CONNECTION)
-            .set("linger.ms", "20")
-            .create()
-            .expect("an Event Hubs producer");
-        for i in 0..rows {
-            let line = line(i);
-            let mut record = BaseRecord::<(), String>::to(HUB).payload(&line);
-            loop {
-                match producer.send(record) {
-                    Ok(()) => break,
-                    Err((_, r)) => {
-                        producer.poll(Duration::from_millis(50));
-                        record = r;
-                    }
-                }
-            }
-            producer.poll(Duration::ZERO);
-        }
-        producer
-            .flush(Duration::from_secs(120))
-            .expect("the corpus reaches the hub");
-        Some(
-            json!({"id": "in", "type": "eventHubs", "namespace": namespace, "eventHubs": [HUB],
-                    "consumerGroup": "smeltr", "connectionString": "SM_EH_CONN",
-                    "start": {"type": "timestamp", "millis": since}}),
-        )
-    }
-
-    pub fn destination(run: &str) -> Option<Value> {
-        let namespace = live::event_hubs(&named(run))?;
-        Some(
-            json!({"id": "out", "type": "eventHubs", "namespace": namespace, "defaultEventHub": HUB,
-                    "connectionString": "SM_EH_CONN"}),
-        )
-    }
-}
-
 mod s3 {
     use super::*;
 
@@ -1432,20 +1531,28 @@ mod s3 {
         assert!(status < 300 || status == 409, "bucket {bucket}: {status} {text}");
     }
 
-    fn put(at: &str, bucket: &str, files: &[(String, String)]) {
+    fn put(at: &str, bucket: &str, files: &[(String, Vec<u8>)]) {
         for (key, body) in files {
-            ok("PUT", &format!("{at}/{bucket}/{key}"), &[], body.as_bytes());
+            ok("PUT", &format!("{at}/{bucket}/{key}"), &[], body.as_slice());
         }
     }
 
     pub fn list_source(run: &str, rows: u64) -> Option<Value> {
-        let at = live::s3(&named(run))?;
-        bucket(&at, run);
-        put(&at, run, &files(rows));
-        Some(with_keys(
+        Some(listed(&live::s3(&named(run))?, run, rows))
+    }
+
+    pub fn seaweedfs_list_source(run: &str, rows: u64) -> Option<Value> {
+        Some(listed(&live::seaweedfs(&named(run))?, run, rows))
+    }
+
+    /// An `s3List` source reading the bucket at `at`, which holds the corpus.
+    fn listed(at: &str, run: &str, rows: u64) -> Value {
+        bucket(at, run);
+        put(at, run, &files(rows));
+        with_keys(
             json!({"id": "in", "type": "s3List", "bucket": run, "pollIntervalSecs": 1}),
-            &at,
-        ))
+            at,
+        )
     }
 
     pub fn sqs_source(run: &str, rows: u64) -> Option<Value> {
@@ -1531,13 +1638,13 @@ mod gcs {
         );
     }
 
-    fn put(at: &str, bucket: &str, files: &[(String, String)]) {
+    fn put(at: &str, bucket: &str, files: &[(String, Vec<u8>)]) {
         for (key, body) in files {
             ok(
                 "POST",
                 &format!("{at}/upload/storage/v1/b/{bucket}/o?uploadType=media&name={key}"),
                 &[("content-type", "application/x-ndjson")],
-                body.as_bytes(),
+                body.as_slice(),
             );
         }
     }
@@ -1615,13 +1722,13 @@ mod azure {
         );
     }
 
-    fn put(at: &str, container: &str, files: &[(String, String)]) {
+    fn put(at: &str, container: &str, files: &[(String, Vec<u8>)]) {
         for (key, body) in files {
             ok(
                 "PUT",
                 &format!("{at}/{container}/{key}?{SAS}"),
                 &[("x-ms-blob-type", "BlockBlob")],
-                body.as_bytes(),
+                body.as_slice(),
             );
         }
     }
@@ -1718,7 +1825,7 @@ mod sftp {
             exec(
                 "sftp",
                 &["sh", "-c", &format!("cat > {path} && chown 1001 {path}")],
-                body.as_bytes(),
+                body.as_slice(),
             );
         }
         decl["pollIntervalSecs"] = json!(1);
@@ -2000,6 +2107,6 @@ mod receivers {
     }
 
     pub fn syslog(port: u16) -> Value {
-        json!({"id": "in", "type": "syslogReceiver", "port": port, "allowFrom": ["0.0.0.0/0"]})
+        json!({"id": "in", "type": "socketReceiver", "framing": "syslog", "port": port, "allowFrom": ["0.0.0.0/0"]})
     }
 }

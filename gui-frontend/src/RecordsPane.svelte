@@ -52,6 +52,7 @@
     declared,
     lockBlocked,
     onlock,
+    relocking = false,
     onsaveoutput,
     saveinput,
     onjump,
@@ -88,6 +89,8 @@
     /** Locks the fields and rows on screen as a test, by `PreviewRow.row`; absent where the pipeline is read
      * only. */
     onlock?: (choice: LockChoice) => void;
+    /** Locking replaces a test rather than making one. */
+    relocking?: boolean;
     /** Saves the output rows on screen as a sample, by `PreviewRow.row`; absent where no sample may be saved. */
     onsaveoutput?: (rows: Set<number>) => void;
     /** The input's record count and its save action, given while the input is a capture not saved yet. The output's
@@ -315,7 +318,7 @@
           onclick={() => onlock({ fields: shown, rows: kept.map((r) => r.key) })}
           disabled={pause ? 'Resume to lock: a test checks the pipeline’s output.' : lockBlocked}
         >
-          Lock this as a test
+          {relocking ? 'Lock this test again' : 'Lock this as a test'}
         </Button>
       {/if}
     {/snippet}

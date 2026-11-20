@@ -111,6 +111,7 @@ fn counter(registry: &Metrics, name: &str) -> u64 {
 fn catch_all(pipeline_id: usize) -> RouteConfig {
     RouteConfig {
         id: format!("route-{pipeline_id}"),
+        name: format!("route-{pipeline_id}"),
         source: 0,
         cond: None,
         pipeline: pipeline_id,
@@ -277,6 +278,7 @@ fn a_later_routes_refusal_does_not_re_send_an_earlier_routes_rows() {
     let routes = vec![
         RouteConfig {
             id: "route-0".to_string(),
+            name: "route-0".to_string(),
             source: 0,
             cond: None,
             pipeline: 0,
@@ -285,6 +287,7 @@ fn a_later_routes_refusal_does_not_re_send_an_earlier_routes_rows() {
         },
         RouteConfig {
             id: "route-1".to_string(),
+            name: "route-1".to_string(),
             source: 0,
             cond: None,
             pipeline: 1,

@@ -1909,9 +1909,22 @@ fn undo_in(
     let Some((same, name)) = found else {
         return missing();
     };
+    // A route has no name of its own: it goes by its `route_name`, on the side that still holds it.
+    let name = match section {
+        Section::Routes => (file.route_names().remove(id))
+            .or_else(|| was.route_names().remove(id))
+            .unwrap_or(name),
+        _ => name,
+    };
+    // Messages quote an id or a name; a route's name reads as the phrase it is, as load messages give it.
+    let shown = if matches!(section, Section::Routes) {
+        name.clone()
+    } else {
+        format!("{name:?}")
+    };
     if same {
         return Envelope::refused(Refusal::conflict(format!(
-            "{} {name:?} is as it was where {branch:?} left {}: there is nothing to undo",
+            "{} {shown} is as it was where {branch:?} left {}: there is nothing to undo",
             section.noun(),
             git::MAIN_BRANCH
         )));
@@ -2607,7 +2620,7 @@ mod tests {
             produces: vec![],
         };
         let file = FileConfig {
-            version: 1,
+            version: config_file::CURRENT_VERSION,
             on_exception: None,
             name: None,
             sources: vec![],
@@ -3099,7 +3112,7 @@ mod tests {
             produces: vec![],
         };
         let file = FileConfig {
-            version: 1,
+            version: config_file::CURRENT_VERSION,
             on_exception: None,
             name: None,
             sources: vec![],

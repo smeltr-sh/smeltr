@@ -1286,7 +1286,7 @@ fn finished_row(
 fn held_row(record: &crate::io::OwnedRecord, why: &str) -> (Vec<CaptureColumn>, CapturedRow) {
     let object = serde_json::from_slice(&record.value)
         .unwrap_or_else(|_| crate::io::raw_object(String::from_utf8_lossy(&record.value)));
-    let destination = [record.placement.clone(), record.doc_id.clone(), None];
+    let destination = [record.placement.clone(), record.doc_id.clone(), None, None];
     let mut sent = finished_row(object, &[], &[], Vec::new());
     place(&mut sent, destination);
     let (mut columns, mut row) = sent;
@@ -1562,7 +1562,7 @@ fn run_sql_capture_on<D: crate::io::sql_source::Driver + 'static>(
     query: crate::io::sql::Query,
     place: String,
 ) {
-    use crate::io::sql::Poll;
+    use crate::io::sql::{Poll, ReadFrom};
     use crate::io::sql_source::{Mode, SqlSource, SqlSourceConfig};
     let invitation = &cold.admitted.invitation;
     let dto = &cold.config;
@@ -1582,8 +1582,7 @@ fn run_sql_capture_on<D: crate::io::sql_source::Driver + 'static>(
         &query,
         &Poll {
             position: &[],
-            after: false,
-            start: false,
+            from: ReadFrom::Beginning,
             settle_secs: None,
             batch: wanted,
             fields: &typed,
@@ -2089,7 +2088,7 @@ mod tests {
 
     fn syslog_receiver(port: u16) -> SourceDto {
         serde_json::from_value(
-            serde_json::json!({"id": "sys", "type": "syslogReceiver", "port": port, "allowFrom": ["127.0.0.1"]}),
+            serde_json::json!({"id": "sys", "type": "socketReceiver", "framing": "syslog", "port": port, "allowFrom": ["127.0.0.1"]}),
         )
         .unwrap()
     }
@@ -2746,6 +2745,7 @@ mod tests {
             Some("orders-2026".to_string()),
             Some("d1".to_string()),
             Some(route.to_string()),
+            Some(format!("{route} name")),
         ];
         let mut sent = finished_row(object(v), &columns(written), &[], Vec::new());
         place(&mut sent, destination);
@@ -2785,6 +2785,7 @@ mod tests {
                 serde_json::json!("orders-2026"),
                 serde_json::json!("d1"),
                 serde_json::json!("audit"),
+                serde_json::json!("audit name"),
             ]
         );
     }

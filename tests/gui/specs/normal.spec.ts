@@ -328,6 +328,14 @@ test('History lists the quiet spells a sparse source learned, and an editor pick
   await expect(admin.getByText('brief dips almost never do')).toBeVisible();
   await shoot(admin, '7b-preset-help');
   await admin.keyboard.press('Escape');
+  // At Off the source never warns, so no quiet spell has a limit to show.
+  const limit = panel.getByText(/^Warns after .* without a row\.$/);
+  await expect(limit).toBeVisible();
+  await preset.getByRole('button', { name: 'Off' }).click();
+  await expect(preset.getByRole('button', { name: 'Off' })).toHaveAttribute('aria-pressed', 'true');
+  expect((await api.get(past)).preset).toBe('off');
+  await expect(limit).toBeHidden();
+  await shoot(admin, '7c-off');
 
   // Widened, the panel takes the map's place on the same tab; Escape gives the map back.
   const band = admin.getByRole('region', { name: 'edge', exact: true });

@@ -207,7 +207,8 @@ test("a worker's detail names where each receiver it runs listens", async ({
   const bundle = metricsTo(es.url);
   bundle.sources!.push({
     id: 'firewalls',
-    type: 'syslogReceiver',
+    type: 'socketReceiver',
+    framing: 'syslog',
     port,
     transport: 'udp',
     allowFrom: ['127.0.0.0/8'],
@@ -351,7 +352,7 @@ test('rows in and out are charted over the window the engineer picks', async ({
   ).toBeVisible();
   await expect(table.getByRole('row', { name: /^Total/ })).toHaveCount(0);
   await table.getByRole('button', { name: 'all' }).first().click();
-  await expect(flow.getByRole('heading')).toContainText(/route all \((east|west)\)/);
+  await expect(flow.getByRole('heading')).toContainText(/route own-metrics → pass \((east|west)\)/);
   await expect(flow.getByText(new RegExp(`^matched ${MOVING.source}`))).toBeVisible({
     timeout: 30_000,
   });

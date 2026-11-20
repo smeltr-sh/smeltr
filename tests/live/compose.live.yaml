@@ -141,10 +141,27 @@ services:
       # Queue URLs on localhost: the default names a host under localstack.cloud, which resolves only with public DNS.
       LOCALSTACK_HOST: localhost:4566
       SQS_ENDPOINT_STRATEGY: "off"
+    # LocalStack holds a temporary file per upload in flight: Docker's default of 1024 refuses puts once file
+    # destinations write in parallel.
+    ulimits:
+      nofile: 16384
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health || exit 1"]
       interval: 5s
       timeout: 10s
+      retries: 30
+
+  # A second S3, for `just connector-speed`: SeaweedFS's master, volume, filer and S3 in one process on every core,
+  # where LocalStack serves S3 from about one. With no identities configured it takes any request, signed or not.
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.52
+    command: server -s3 -dir=/data -ip.bind=0.0.0.0
+    ports:
+      - "8333:8333"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8333/healthz || exit 1"]
+      interval: 2s
+      timeout: 5s
       retries: 30
 
   # An Iceberg REST catalog: Apache Iceberg's own test fixture, keeping its tables in LocalStack's S3 under the bucket

@@ -1,7 +1,7 @@
 <!--
-  Cluster status (`gui-design.md`, "Worker health status"), polled from
-  `/api/cluster` (`src/bin/smeltr/cluster.rs`), which the leader serves
-  in-process. Nothing here is edited.
+  Cluster status (`gui-design.md`, "Worker health status"), polled from the
+  heartbeats (`/api/health`), the roster (`/api/workers`) and the groups the
+  fleet runs (`/api/worker-groups`). Nothing here is edited.
 
   The Workers table is one row per worker with its threads folded away:
   a worker runs a reader per source, a transform pool sized by cores and
@@ -44,7 +44,7 @@
   import Sparkline from './Sparkline.svelte';
   import StateMark from './StateMark.svelte';
   import { severityState, type State } from './stateGlyphs';
-  import { pipelineNamesAt, type PipelineNames } from './pipelineNames';
+  import { names } from './names.svelte';
   import { byteUnit, bytes } from './bytes';
   import SortButton from './SortButton.svelte';
   import FoldAllButton from './FoldAllButton.svelte';
@@ -53,7 +53,9 @@
   import { TableSort } from './sort.svelte';
   import {
     errorText,
-    getClusterStatus,
+    getHealth,
+    listWorkers,
+    liveGroups,
     getFlow,
     getSeries,
     listWarnings,
@@ -61,8 +63,9 @@
     restartWorker,
     conditionLabel,
     MAIN_BRANCH,
-    type ClusterHealth,
-    type ClusterStatus,
+    type Health,
+    type WorkerCredentialDto,
+    type WorkerGroupDto,
     type FlowKind,
     type FlowResponseDto,
     type SeriesAnswerDto,
@@ -111,7 +114,14 @@
   // A panel is a region named by its heading.
   const uid = $props.id();
 
-  let status: ClusterStatus | null = $state(null);
+  /** The fleet as the last poll read it. A roster or group list that could not be read is `null`, not empty: the
+   * error bar says why, and an unread roster must not render as no workers. */
+  type Fleet = {
+    health: Health;
+    workers: WorkerCredentialDto[] | null;
+    workerGroups: WorkerGroupDto[] | null;
+  };
+  let status: Fleet | null = $state(null);
   let loading = $state(true);
   // The status page begins live. Pausing stops every existing poll without changing their cadence.
   let autoRefresh = $state(true);
@@ -127,14 +137,14 @@
   // and out now read the leader's own series (`flow.ts`), which survives
   // a reload.
   const MAX_HISTORY = 150; // ~5 minutes at POLL_MS
-  type HistoryPoint = { at: number; threads: ClusterHealth['threads'] };
+  type HistoryPoint = { at: number; threads: Health['threads'] };
   let history: HistoryPoint[] = $state([]);
 
   // Totals per label combination, accumulated over the same window as the
   // chart: the sparkline shows the trend, this says which pipeline it
   // belongs to.
 
-  function recordHistory(health: ClusterHealth) {
+  function recordHistory(health: Health) {
     history.push({ at: Date.now(), threads: health.threads });
     if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
   }
@@ -155,7 +165,7 @@
     if (selectedGroupId) return series.group === selectedGroupId;
     return true;
   }
-  function threadsForSelection(threads: ClusterHealth['threads']) {
+  function threadsForSelection(threads: Health['threads']) {
     if (selectedWorkerId) return threads.filter((thread) => thread.workerId === selectedWorkerId);
     if (selectedGroupId) return threads.filter((thread) => thread.groupId === selectedGroupId);
     return threads;
@@ -182,18 +192,6 @@
     }),
   );
 
-  /** Each deployed group's pipeline names on `main`, which is what its workers run, `shared/`'s
-   * included. A group absent here has not answered yet. */
-  let namesByGroup: Record<string, PipelineNames> = $state({});
-  /** Per group, the ids it was read for: once when it is first seen, and again for a pipeline it
-   * did not name, which was deployed since. */
-  const namesReadFor = new Map<string, Set<string>>();
-  function readNames(group: string, forId = '') {
-    const readFor = namesReadFor.get(group) ?? new Set<string>();
-    if (readFor.has(forId)) return;
-    namesReadFor.set(group, readFor.add(forId));
-    pipelineNamesAt(MAIN_BRANCH, group).then((names) => (namesByGroup[group] = names));
-  }
   /** The groups whose threads reported errors for each pipeline id over the window. */
   let erroredGroups = $derived.by(() => {
     const groups = new Map<string, Set<string>>();
@@ -206,18 +204,18 @@
         }
     return groups;
   });
-  $effect(() => {
-    for (const [id, groups] of erroredGroups)
-      for (const g of groups) readNames(g, g in namesByGroup && !namesByGroup[g][id] ? id : '');
-  });
-  /** A pipeline by the name a group that ran it gives it. */
+  /** A pipeline by the name a group that ran it gives it on `main`, which is what its workers run. */
   function pipelineName(id: string): string {
-    for (const g of erroredGroups.get(id) ?? []) {
-      const name = namesByGroup[g]?.[id];
-      if (name) return name;
-    }
-    return id;
+    const named = [...(erroredGroups.get(id) ?? [])].map((g) =>
+      names.of(MAIN_BRANCH, g, 'pipelines', id),
+    );
+    return named.find((n) => n !== id) ?? id;
   }
+  /** What a person calls a row's pipeline or route: its name in its group on `main`. */
+  const nameOf = (r: { group: string; subjectId: string }) =>
+    kind === 'route' || kind === 'pipeline'
+      ? names.of(MAIN_BRANCH, r.group, `${kind}s`, r.subjectId)
+      : r.subjectId;
 
   let erroredSeries = $derived(
     history.map((point) =>
@@ -398,7 +396,7 @@
   const totalsSort = new TableSort<'name' | 'group' | 'source' | 'pipeline' | 'in' | 'out'>();
   let sortedTableRows = $derived(
     totalsSort.apply(tableRows, {
-      name: (r) => r.subjectId,
+      name: nameOf,
       group: (r) => r.group,
       source: (r) => r.source,
       pipeline: (r) => r.pipeline,
@@ -473,11 +471,12 @@
   }
 
   function refresh() {
-    getClusterStatus()
-      .then((s) => {
-        status = s;
+    const read = <T,>(p: Promise<T>) => p.catch(() => null);
+    Promise.all([getHealth(), read(listWorkers()), read(liveGroups())])
+      .then(([health, workers, workerGroups]) => {
+        status = { health, workers, workerGroups };
         now = Date.now();
-        if (s.health) recordHistory(s.health);
+        recordHistory(health);
       })
       .catch(reported)
       .finally(() => {
@@ -620,7 +619,7 @@
     worker: 'the worker itself',
   };
 
-  let silentSeconds = $derived.by(() => (status?.health?.silentAfterMs ?? 0) / 1000);
+  let silentSeconds = $derived.by(() => (status?.health.silentAfterMs ?? 0) / 1000);
 
   const STATUS_LABEL: Record<WorkerStatus, string> = {
     revoked: 'Revoked',
@@ -635,8 +634,8 @@
   let workerRows = $derived.by(() =>
     rollupWorkers(
       status?.workers ?? null,
-      status?.health?.threads ?? [],
-      status?.health?.silentAfterMs ?? 0,
+      status?.health.threads ?? [],
+      status?.health.silentAfterMs ?? 0,
     ),
   );
   const EXPANDED_GROUPS_KEY = 'smeltr-status-expanded-groups';
@@ -880,12 +879,6 @@
           </div>
         </Panel>
       </div>
-    {/if}
-
-    {#if status.error}
-      <InlineError>
-        Couldn't read the leader's store: {status.error}. The roster is unavailable.
-      </InlineError>
     {/if}
 
     <section class="fleet-shell" class:has-detail={selectedWorker !== null}>
@@ -1201,8 +1194,8 @@
                 : `${selectionLabel}, `}{KINDS.find((k) => k.value === kind)?.one}
               <span class="picked mono"
                 >{selectionLabel === 'whole fleet'
-                  ? `${picked.subjectId} (${picked.group})`
-                  : picked.subjectId}<button
+                  ? `${nameOf(picked)} (${picked.group})`
+                  : nameOf(picked)}<button
                   type="button"
                   aria-label={selectionLabel === 'whole fleet'
                     ? 'Show the whole fleet'
@@ -1298,12 +1291,14 @@
                       type="button"
                       class="pick"
                       aria-pressed={isPicked(r)}
-                      onclick={() => pick(isPicked(r) ? null : r)}>{r.subjectId}</button
+                      onclick={() => pick(isPicked(r) ? null : r)}>{nameOf(r)}</button
                     ></td
                   >
                   <td>{r.group}</td>
                   {#if kind === 'route'}<td class="mono">{r.source ?? ''}</td><td class="mono"
-                      >{r.pipeline ?? ''}</td
+                      >{r.pipeline
+                        ? names.of(MAIN_BRANCH, r.group, 'pipelines', r.pipeline)
+                        : ''}</td
                     >{/if}
                   <td class="num">{amount(r.in)}</td><td class="num">{amount(r.out)}</td>
                 </tr>

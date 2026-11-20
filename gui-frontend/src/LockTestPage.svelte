@@ -40,9 +40,10 @@
   } from './api';
   import { count } from './time';
   import { formatDiffValue } from './diff';
-  import { announcePipelineNames } from './nav';
+  import { announcePipelineNames, relockHash } from './nav';
   import { editable } from './access';
   import { nameOf, pipelineNamesAt } from './pipelineNames';
+  import { names } from './names.svelte';
 
   // `pipeline` absent is an end-to-end lock: the sample routed by its
   // source (the route preview) rather than run through one pipeline.
@@ -66,13 +67,12 @@
   let sampleSource = $state('');
   let sampleRecords = $state<string[]>([]);
 
-  /** What `now()` reads: the instant this screen first ran, or, when locking again, the instant the locked
-   * test was locked. */
+  /** What `now()` reads: the instant this screen first ran. A test locked again is locked anew, at this instant too. */
   let atMicros = $state(0);
   /** What the leader's run holds of the fields and rows to lock: what this screen shows, and what locking stores. */
   let locked = $state<Locked>({ rowsIn: 0, fields: [], rows: [] });
-  /** The fields and rows to lock: the locked test's own when locking again, else what was on screen. */
-  let choice = $state<LockChoice | null>(relock ? null : lockChoice());
+  /** The fields and rows to lock: what was on screen where Lock this as a test (or this test again) was pressed. */
+  let choice = $state<LockChoice | null>(lockChoice());
   let previewOk = $state(true);
   let previewErrors = $state<ApiError[]>([]);
 
@@ -107,7 +107,6 @@
     loadFailed = false;
     loadError = '';
     try {
-      let lockedAt: number | null = null;
       if (relock) {
         const testRes = await getTest(relock);
         if (!testRes.test)
@@ -117,12 +116,9 @@
           );
         pipeline = testRes.test.pipeline;
         sample = testRes.test.sample;
+        // Its fields and rows are chosen again where a fresh lock's are: a renamed field is one it does not have.
+        if (!choice) return location.replace(relockHash(relock, sample, pipeline));
         name = testRes.test.name;
-        lockedAt = testRes.test.lockedAt;
-        choice = {
-          fields: testRes.test.fields,
-          rows: [...new Set(testRes.test.rows.map((o) => o.row))],
-        };
       }
       const sampleRes = await getSample(sample);
       pipelineName = pipeline
@@ -138,7 +134,7 @@
       sampleSource = sampleRes.sample.source ?? '';
       sampleRecords = sampleRes.sample.records.map((r) => recordLine(r));
 
-      atMicros = lockedAt ?? Date.now() * 1000;
+      atMicros = Date.now() * 1000;
       const res = await previewLock(lockOf(false));
       previewOk = res.ok;
       previewErrors = res.errors;
@@ -169,7 +165,8 @@
     await saving.run(async () => {
       const res = await putTest(relock ?? name.trim(), lockOf(true));
       if (res.ok) {
-        if (relock) history.back();
+        // Back past the editor the choice was made in, to where Lock again was pressed.
+        if (relock) history.go(-2);
         else location.hash = '#/build';
       } else if (res.conflict) {
         conflict = res.conflict;
@@ -304,7 +301,9 @@
                   <tr class="sent">
                     <td></td>
                     <td class="mono dim" colspan={Math.max(fields.length, 1)}>
-                      via {o.sent.route} &rarr; {o.sent.destinations.join(', ')}
+                      via {names.of(currentBranch(), currentScope(), 'routes', o.sent.route)} &rarr; {o.sent.destinations.join(
+                        ', ',
+                      )}
                     </td>
                   </tr>
                 {/if}

@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use super::pacer::Pacer;
 use super::reads::Reads;
-use super::sql::{Bind, Dialect, Poll, Query, Statement};
+use super::sql::{Bind, Dialect, Poll, Query, ReadFrom, Statement};
 use super::values::{Value, column, spell, stored, unbuilt};
 use super::{CommitMap, IoError, Progress, RecordChunk, Source, SourceRecord};
 use crate::core::column::DataType;
@@ -320,14 +320,13 @@ pub struct SqlSourceConfig {
 }
 
 impl SqlSourceConfig {
-    /// The statement a poll runs: past the last row sent when `after`, else from the value the source starts from
-    /// when `start`, else from the beginning. Only a position mode reads past a row or from a start.
-    pub fn statement(&self, after: bool, start: bool) -> Statement {
-        self.statement_reading(after, start, false)
+    /// The statement a poll reading `from` runs. Only a position mode reads from anywhere but the beginning.
+    pub fn statement(&self, from: ReadFrom) -> Statement {
+        self.statement_reading(from, false)
     }
 
     /// [`Self::statement`], reading twice the batch when `wide`.
-    fn statement_reading(&self, after: bool, start: bool, wide: bool) -> Statement {
+    fn statement_reading(&self, from: ReadFrom, wide: bool) -> Statement {
         let (settle_secs, batch) = match &self.mode {
             Mode::Incrementing(p) | Mode::UpdatedAt(p) => (p.settle_secs, self.batch * if wide { 2 } else { 1 }),
             // One more than the most a poll may read, so a result over the limit is seen to be.
@@ -338,8 +337,7 @@ impl SqlSourceConfig {
             &self.query,
             &Poll {
                 position: self.position(),
-                after,
-                start,
+                from,
                 settle_secs,
                 batch,
                 fields: &self.fields,
@@ -457,11 +455,12 @@ impl<D: Driver + 'static> SqlSource<D> {
 
     /// The statement this source's next poll runs, and the values it binds. Run shows exactly this.
     pub fn next_statement(&self) -> (Statement, Vec<Value>) {
-        let statement = self.config.statement_reading(
-            self.cursor.is_some(),
-            self.cursor.is_none() && self.from.is_some(),
-            self.wide,
-        );
+        let from = match (&self.cursor, &self.from) {
+            (Some(_), _) => ReadFrom::LastRow,
+            (None, Some(_)) => ReadFrom::Start,
+            (None, None) => ReadFrom::Beginning,
+        };
+        let statement = self.config.statement_reading(from, self.wide);
         let values = self.values(&statement.binds, self.config.position().first());
         (statement, values)
     }

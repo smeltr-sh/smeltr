@@ -785,7 +785,7 @@
             {#each routes as r (r.route)}
               {@const matched = routeShares.get(r.route)}
               <tr>
-                <td class="mono">{r.route}</td>
+                <td class="mono">{r.name}</td>
                 <td class="mono" data-label="Source">{r.source}</td>
                 <td class="mono condition-cell whole"
                   >{#if r.condition}if {r.condition}{/if}</td
@@ -1046,7 +1046,7 @@
   }
 
   @container panel (min-width: 40rem) {
-    .charts :global(.sparkline svg) {
+    .charts :global(.sparkline > svg) {
       height: 140px;
     }
   }

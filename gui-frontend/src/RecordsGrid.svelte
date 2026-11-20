@@ -56,7 +56,8 @@
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { store, storedJson } from './stored';
   import RecordFields from './RecordFields.svelte';
-  import FindBox, { type FindFilter } from './FindBox.svelte';
+  import FindBox, { type FindFilter, type FindRefusal } from './FindBox.svelte';
+  import FindError from './FindError.svelte';
   import RemovableChip from './RemovableChip.svelte';
   import FieldsMenu from './FieldsMenu.svelte';
   import ChipPicker from './ChipPicker.svelte';
@@ -66,7 +67,6 @@
   import FoldAllButton from './FoldAllButton.svelte';
   import { TableSort } from './sort.svelte';
   import { formatDiffValue } from './diff';
-  import InlineError from './InlineError.svelte';
   import { RECOMMENDED_NAMED } from './schemas';
   import ShowAll from './ShowAll.svelte';
   import {
@@ -542,7 +542,7 @@
 
   let outputQuery = $state('');
   let find = $state<FindFilter>({ kind: 'none' });
-  let findError = $state('');
+  let findError = $state<FindRefusal | null>(null);
 
   function matches(i: number): boolean {
     const row = rows?.[i];
@@ -657,7 +657,7 @@
       </FindBox>
     </div>
   {/if}
-  <InlineError message={findError} />
+  <FindError refusal={findError} />
   {@render above?.()}
   {#if chosen}
     <div class="output-actions">

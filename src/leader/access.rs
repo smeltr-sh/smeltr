@@ -187,6 +187,16 @@ impl Access {
         self.level(area).is_some_and(|held| held >= need)
     }
 
+    /// The areas `self` reads, or `None` when it reads every one.
+    pub fn viewed(&self) -> Option<Vec<String>> {
+        match self {
+            Access::Administrator => None,
+            Access::Areas(areas) => Some(areas.keys().cloned().collect()),
+            // An agent reads every area its person reads: its permissions cap its level there, not which areas.
+            Access::Agent { held, .. } => held.viewed(),
+        }
+    }
+
     /// Whether `need` is held in at least one area.
     pub fn somewhere(&self, need: Level) -> bool {
         match self {

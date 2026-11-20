@@ -217,8 +217,8 @@ fn record_release() {
         Ok("force") => Vec::new(),
         _ => new_steps(),
     };
-    if let Some(previous) = released().last()
-        && let Err(why) = bump_allowed(previous, &release, &steps)
+    if let Some(previous) = newest_released()
+        && let Err(why) = bump_allowed(&previous, &release, &steps)
     {
         panic!("{why}");
     }
@@ -327,12 +327,7 @@ fn new_steps() -> Vec<NewStep> {
 /// of one major take deployments from each other (`version::compatible`) and an older one could not open the
 /// store; any step needs at least a new minor.
 fn bump_allowed(previous: &str, release: &str, steps: &[NewStep]) -> Result<(), String> {
-    let parse = |name: &str| -> Option<(u64, u64, u64)> {
-        let mut parts = name.split('.').map(|n| n.parse::<u64>().ok());
-        let parsed = (parts.next()??, parts.next()??, parts.next()??);
-        parts.next().is_none().then_some(parsed)
-    };
-    let (Some(from), Some(to)) = (parse(previous), parse(release)) else {
+    let (Some(from), Some(to)) = (version(previous), version(release)) else {
         return Err(format!("{previous} and {release} are not both major.minor.patch"));
     };
     if to <= from {
@@ -383,7 +378,7 @@ fn a_release_is_named_for_the_steps_it_adds() {
 #[test]
 #[ignore = "run by `just breaking-steps`, at the end of `just check`"]
 fn breaking_steps() {
-    let Some(previous) = released().pop() else {
+    let Some(previous) = newest_released() else {
         return;
     };
     let breaking: Vec<NewStep> = new_steps().into_iter().filter(|s| !s.additive).collect();
@@ -433,7 +428,31 @@ fn a_step_is_described_by_its_own_comment() {
     assert_eq!(describe(&step("leader.db", last + 1)), None);
 }
 
-/// The releases recorded so far, oldest first.
+/// A release's major, minor and patch, or `None` for a name that is not `major.minor.patch`.
+fn version(name: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = name.split('.').map(|n| n.parse::<u64>().ok());
+    let parsed = (parts.next()??, parts.next()??, parts.next()??);
+    parts.next().is_none().then_some(parsed)
+}
+
+/// The highest release recorded, which the next one is checked against. A patch cut on a release branch and merged
+/// back to main is recorded after releases higher than it, so the last one recorded is not always the highest.
+fn newest_released() -> Option<String> {
+    newest(released())
+}
+
+fn newest(releases: Vec<String>) -> Option<String> {
+    releases.into_iter().max_by_key(|name| version(name))
+}
+
+#[test]
+fn a_patch_merged_back_after_a_higher_release_is_not_the_newest() {
+    let recorded = ["1.0.0", "1.2.0", "1.3.0", "1.2.1"].map(String::from).to_vec();
+    assert_eq!(newest(recorded).as_deref(), Some("1.3.0"));
+    assert_eq!(newest(Vec::new()), None);
+}
+
+/// The releases recorded so far, in the order they were recorded.
 fn released() -> Vec<String> {
     std::fs::read_to_string(releases_dir().join("releases.txt"))
         .unwrap_or_default()

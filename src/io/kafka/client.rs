@@ -320,6 +320,8 @@ pub(super) struct Client {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     sampler: Option<Sampler>,
+    /// The Kerberos ticket the consumer signs in with, renewed while this lives. Last, so it outlives the consumer.
+    _ticket: Option<super::kerberos::Held>,
 }
 
 impl Client {
@@ -333,6 +335,7 @@ impl Client {
             brokers: config.brokers.clone(),
             ..RoutesInner::default()
         }));
+        let ticket = super::kerberos::hold(client_config)?;
         let consumer: Arc<BaseConsumer<Routes>> = Arc::new(client_config.create_with_context(routes.clone())?);
         let stop = Arc::new(AtomicBool::new(false));
         let sampler = Sampler::start(Arc::clone(&consumer), routes.clone(), clients.clone());
@@ -349,6 +352,7 @@ impl Client {
             stop,
             thread: Some(thread),
             sampler: Some(sampler),
+            _ticket: ticket,
         }))
     }
 

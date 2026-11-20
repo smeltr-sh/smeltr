@@ -146,6 +146,8 @@ pub enum Preset {
     Sensitive,
     Balanced,
     Quiet,
+    /// Judged as at Balanced, so its range is drawn and it is ranked, but it never warns or informs.
+    Off,
 }
 
 /// The preset a source is judged at, and the one its senders are.
@@ -178,6 +180,7 @@ impl Default for Presets {
 }
 
 impl Preset {
+    /// The presets that warn.
     const ALL: [Preset; 4] = [Preset::Fast, Preset::Sensitive, Preset::Balanced, Preset::Quiet];
 
     /// How much wider than the ratios the range is, as a share of each edge.
@@ -185,7 +188,7 @@ impl Preset {
         match self {
             Preset::Fast | Preset::Quiet => 0.5,
             Preset::Sensitive => 0.2,
-            Preset::Balanced => 0.3,
+            Preset::Balanced | Preset::Off => 0.3,
         }
     }
 
@@ -194,9 +197,14 @@ impl Preset {
         match self {
             Preset::Fast => 1,
             Preset::Sensitive => 3,
-            Preset::Balanced => 4,
+            Preset::Balanced | Preset::Off => 4,
             Preset::Quiet => 6,
         }
+    }
+
+    /// Whether a reading outside the range at this preset warns, or informs.
+    pub(crate) fn warns(self) -> bool {
+        self != Preset::Off
     }
 
     /// The most readings any preset waits.
@@ -332,7 +340,7 @@ fn outside(judged: &[Judged], gap: Option<&Gap>, below_held: bool) -> Option<Out
 
 /// The last answer, what it was computed for, and the normal it was judged against. A new five-minute bucket or a
 /// new mark is a new question, and a new hour or a new mark a new normal. One caller computes a new answer at a
-/// time; the rest read the last meanwhile.
+/// time; the rest wait for it.
 #[derive(Default)]
 pub struct Readings {
     last: Mutex<Option<Answer>>,
@@ -351,8 +359,8 @@ impl Readings {
     /// Every source with enough history to judge, as of `now_ms`. Waits for every heartbeat sent before
     /// `now_ms - heartbeat_interval` to land in the window it judges.
     ///
-    /// While another caller computes the new answer, this returns the last one rather than wait for it. Only a
-    /// caller with no answer at all to fall back on waits.
+    /// While another caller computes the new answer, this waits for it: a catalog given the last answer would be
+    /// newer than the one given the new answer, and would end every issue the new answer had just started.
     pub fn at(
         &self,
         store: &RegistryStore,
@@ -364,13 +372,7 @@ impl Readings {
         if let Some(fresh) = self.fresh(ended_ms, learning) {
             return fresh;
         }
-        let _computing = match self.computing.try_lock() {
-            Ok(guard) => guard,
-            Err(_) => match self.last() {
-                Some(last) => return last,
-                None => self.computing.lock().unwrap_or_else(|e| e.into_inner()),
-            },
-        };
+        let _computing = self.computing.lock().unwrap_or_else(|e| e.into_inner());
         // Whoever held the lock before may have just computed this very answer.
         if let Some(fresh) = self.fresh(ended_ms, learning) {
             return fresh;
@@ -728,7 +730,8 @@ fn compute(store: &RegistryStore, ended_ms: i64, learning: &Marks, learned: &Lea
                     let ended = normal.ended_below(normal.watch, of, &warned, ended_ms);
                     ended.max(normal.ended_below_ms).is_some_and(|ended| ended > since)
                 });
-            let outside = outside(&judged, gap.as_ref(), warned.held_since.is_some() && !quiet_back);
+            let outside = outside(&judged, gap.as_ref(), warned.held_since.is_some() && !quiet_back)
+                .filter(|_| learning.presets_of(&key.0, &key.1).rows.warns());
             let (group, source) = key.clone();
             (!judged.is_empty() || gap.is_some() || outside.is_some()).then_some(Reading {
                 group,
@@ -781,7 +784,8 @@ fn sender_readings(
                 .iter()
                 .filter_map(|normal| judge(&rows, warned, normal, ended_ms))
                 .collect();
-            let outside = outside(&judged, None, warned.held_since.is_some()).filter(|o| *o == Outside::Below);
+            let outside = outside(&judged, None, warned.held_since.is_some())
+                .filter(|o| *o == Outside::Below && learning.presets_of(&key.0, &key.1).senders.warns());
             let (group, source, sender) = key;
             (!judged.is_empty() || outside.is_some()).then_some(Reading {
                 group,
@@ -1837,6 +1841,17 @@ mod tests {
         }
     }
 
+    /// At Off a stop is judged as at Balanced, so it reads below its range, but it never warns.
+    #[test]
+    fn a_source_at_off_is_judged_but_never_warns() {
+        let stopped = store_with(7, |at| Some(if at >= END - 12 * FIVE { 0.0 } else { 100.0 }));
+        let r = reading_at(&stopped, END, &at_preset(Preset::Off, false)).unwrap();
+        let balanced = reading_at(&stopped, END, &at_preset(Preset::Balanced, false)).unwrap();
+        assert_eq!(balanced.outside, Some(Outside::Below));
+        assert_eq!(r.judged, balanced.judged);
+        assert_eq!(r.outside, None);
+    }
+
     /// `rows(bucket)` sent by the `devname` `value` of `g`'s `s`, in each bucket [`store_with`] reads its rows in.
     fn send(store: &RegistryStore, days: i64, value: &str, rows: impl Fn(i64) -> Option<u64>) {
         use crate::heartbeat::{SenderCounts, SenderRows, StreamReport};
@@ -1952,6 +1967,19 @@ mod tests {
         assert_eq!(
             read(&said(Some(fw("fw-01")), began)),
             BTreeMap::from([("fw-01".into(), None), ("fw-02".into(), below), ("fw-07".into(), None)])
+        );
+    }
+
+    /// Senders at Off are judged but never warn, and their source's preset is its own.
+    #[test]
+    fn senders_at_off_never_warn() {
+        let (store, _) = two_senders_dropped();
+        let read = sender_readings_at_end(&store, &at_preset(Preset::Off, true));
+        assert!(read.values().all(Option::is_none), "{read:?}");
+        assert_eq!(read.len(), 3, "each is still judged");
+        assert_eq!(
+            reading_at(&store, END, &at_preset(Preset::Off, true)).map(|r| r.outside),
+            reading_at(&store, END, &Marks::default()).map(|r| r.outside)
         );
     }
 
@@ -2295,6 +2323,22 @@ mod tests {
         let reset = reset_at(END - 30 * DAY_MS);
         let other = readings.at(&store, END + 2 * 60_000, Duration::from_secs(1), &reset);
         assert!(!Arc::ptr_eq(&first, &other));
+    }
+
+    #[test]
+    fn a_reading_asked_while_another_is_computed_waits_for_it() {
+        let store = store_with(7, |_| Some(100.0));
+        let readings = Readings::default();
+        let none = Marks::default();
+        let old = readings.at(&store, END + 60_000, Duration::from_secs(1), &none);
+        let computing = readings.computing.lock().unwrap();
+        std::thread::scope(|s| {
+            let asked = s.spawn(|| readings.at(&store, END + FIVE + 60_000, Duration::from_secs(1), &none));
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(!asked.is_finished());
+            drop(computing);
+            assert!(!Arc::ptr_eq(&asked.join().unwrap(), &old));
+        });
     }
 
     fn reset_at(from_millis: i64) -> Marks {

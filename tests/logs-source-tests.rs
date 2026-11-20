@@ -25,6 +25,7 @@ fn a_worker_around_a_logs_source_ships_this_process_s_own_logs_as_json_rows() {
 
     let routes = vec![RouteConfig {
         id: "r".to_string(),
+        name: "r".to_string(),
         source: 9,
         cond: None,
         pipeline: 0,

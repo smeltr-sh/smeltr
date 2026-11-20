@@ -50,7 +50,7 @@
     currentBranch,
     currentScope,
     SHARED_SCOPE,
-    getClusterStatus,
+    liveGroups,
     saveCapture,
     errorText,
     MAX_SAMPLE_RECORDS,
@@ -110,6 +110,8 @@
   let busy = $state(false);
 
   let sources: SourceDto[] = $state(edited ? [edited.source] : []);
+  /** Whether the targets have been read, so an empty list means there are none. */
+  let read = $state(!!edited);
   let destinations: DestinationDto[] = $state([]);
   /** The picked target, as `targetKey` writes it. */
   let selected = $state(
@@ -172,14 +174,15 @@
       }
     } catch (e) {
       reported(e);
+    } finally {
+      read = true;
     }
   }
 
   async function loadGroups() {
     try {
-      const cluster = await getClusterStatus();
       // A group's own sources and destinations run only in that group.
-      groups = (cluster.workerGroups ?? []).filter((g) => scope === SHARED_SCOPE || g.id === scope);
+      groups = (await liveGroups()).filter((g) => scope === SHARED_SCOPE || g.id === scope);
       if (!groups.some((g) => g.id === group)) group = groups[0]?.id ?? '';
     } catch (e) {
       reported(e);
@@ -370,7 +373,9 @@
   onsubmit={() => void begin()}
 >
   <div class="form-body">
-    {#if sources.length === 0 && destinations.length === 0}
+    {#if !read}
+      <p class="dim">Loading&hellip;</p>
+    {:else if sources.length === 0 && destinations.length === 0}
       <p class="dim">No sources are configured yet.</p>
     {:else}
       <Field

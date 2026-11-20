@@ -1,27 +1,33 @@
-//! Every kind of destination: its struct, and what it answers about itself (`DestinationSpec`), one file each.
+//! Every kind of destination: its struct, and what it answers about itself (`DestinationSpec`), one file each. The
+//! object destinations share one generic struct, in `objects`.
 
-use super::*;
+use super::shared::*;
 
-mod azure_blob;
 mod delta;
 mod elasticsearch;
 mod event_hubs;
-mod gcs;
 mod http;
 mod iceberg;
 mod kafka;
 mod log_analytics;
+mod objects;
 mod otlp;
 mod prometheus;
-mod s3;
 mod sftp;
 mod splunk_hec;
 
 pub use self::{
-    azure_blob::AzureBlobDestinationDto, delta::DeltaDestinationDto, elasticsearch::ElasticsearchDestinationDto,
-    event_hubs::EventHubsDestinationDto, gcs::GcsDestinationDto, http::HttpDestinationDto,
-    iceberg::IcebergDestinationDto, kafka::KafkaDestinationDto, log_analytics::LogAnalyticsDestinationDto,
-    otlp::OtlpDestinationDto, prometheus::PrometheusDestinationDto, s3::S3DestinationDto, sftp::SftpDestinationDto,
+    delta::DeltaDestinationDto,
+    elasticsearch::ElasticsearchDestinationDto,
+    event_hubs::EventHubsDestinationDto,
+    http::HttpDestinationDto,
+    iceberg::IcebergDestinationDto,
+    kafka::KafkaDestinationDto,
+    log_analytics::LogAnalyticsDestinationDto,
+    objects::{AzureBlobDestinationDto, GcsDestinationDto, S3DestinationDto},
+    otlp::OtlpDestinationDto,
+    prometheus::PrometheusDestinationDto,
+    sftp::SftpDestinationDto,
     splunk_hec::SplunkHecDestinationDto,
 };
 

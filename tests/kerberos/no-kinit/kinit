@@ -1,0 +1,5 @@
+#!/bin/sh
+# Ahead of the real kinit on the tests' PATH: smeltr gets its Kerberos ticket itself, and a run of this says something
+# spawned kinit, as librdkafka does unless smeltr turns it off.
+touch "${SMELTR_KINIT_RAN:?}"
+exit 1

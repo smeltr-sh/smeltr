@@ -300,9 +300,14 @@
     font-family: var(--font-body);
   }
 
+  /* A row off screen holds the height it will have, so rows drawn as they scroll in move nothing below them. */
   .fields tbody tr {
     content-visibility: auto;
     contain-intrinsic-size: auto 1.6rem;
+  }
+
+  .fields.editable tbody tr {
+    contain-intrinsic-size: auto 2.65rem;
   }
 
   .more {

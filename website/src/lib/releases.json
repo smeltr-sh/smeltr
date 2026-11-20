@@ -1,5 +1,124 @@
 [
   {
+    "version": "1.2.1",
+    "date": "2026-11-19",
+    "summary": "Kafka over Kerberos works in the image, and alert email gets six SMTP security fixes.",
+    "fixes": [
+      {
+        "title": "Sources and destinations",
+        "items": [
+          "A Kafka source or destination that signs in over Kerberos (GSSAPI) gets its ticket from the keytab itself, so it works in the image, which has no `kinit`. Smeltr renews the ticket while the source or destination runs. One worker signs in as one Kerberos principal. With no keytab set, Smeltr uses the ticket `KRB5CCNAME` names.",
+          "A Kafka source or destination that sets `sasl.kerberos.min.time.before.relogin` is refused when it is saved or deployed: Smeltr renews the ticket itself."
+        ]
+      },
+      {
+        "title": "Security",
+        "items": [
+          "Alert email now uses lettre 0.11.24, the SMTP library, which fixes six advisories (RUSTSEC-2026-0560 to 0565).",
+          "The image includes the krb5-libs package that fixes 14 high and 5 medium CVEs."
+        ]
+      }
+    ]
+  },
+  {
+    "version": "1.2.0",
+    "date": "2026-11-18",
+    "summary": "Know when one sender goes quiet, chart any metric, and type parsed fields by one rule.",
+    "highlights": [
+      {
+        "title": "Know when one sender goes quiet",
+        "text": "Each sender behind a source, such as each firewall behind one syslog relay, is judged against a normal of its own. When senders fall below their normals, the source warns and names them.",
+        "href": "/feed-health#senders-heading"
+      },
+      {
+        "title": "Pick how soon a source warns",
+        "text": "An editor picks a preset for each source, and one for its senders: Fast, Sensitive, Balanced, Quiet or Off. Fast, Sensitive, Balanced and Quiet each trade how soon a drop warns against how many false warnings it brings. Off never warns, and learns what it reads as normal. Senders start at Quiet.",
+        "href": "/feed-health"
+      },
+      {
+        "title": "Chart any metric",
+        "text": "Status › Metrics charts any stored metric, narrowed by its labels and split by one of them, over any span. The agent can draw the same charts in its answers.",
+        "href": "/docs/logs-metrics#metrics"
+      },
+      {
+        "title": "Lock only what a test is about",
+        "text": "Lock this as a test locks the fields and rows the editor shows, so a test fails only when what it checks changes.",
+        "href": "/docs/steps"
+      }
+    ],
+    "features": [
+      {
+        "title": "Build pipelines",
+        "items": [
+          "The sample menu lists the capture the leader holds beside the saved samples, marked \"not saved\". Route a sample can route it too.",
+          "Duplicate a source or destination from its row's menu.",
+          "The change review page shows a changed step one part per line, and a change to a route's delivery says which destinations it gained or lost.",
+          "A destination setting a row can override carries a mark after its label. An Elasticsearch destination's ID field names the field each document's ID is read from, and wins over the pipeline's `__destination.id`."
+        ]
+      },
+      {
+        "title": "Smeltr language",
+        "items": [
+          "A grok capture nothing declares takes its pattern's type: INT and POSINT give i64, NUMBER gives f64, and HTTPDATE, SYSLOGTIMESTAMP and TIMESTAMP_ISO8601 give datetime. A parsed field you don't declare takes its type from the schemas your pipeline produces. A field you declare keeps your type. A pipeline that read these fields as strings now reads numbers and datetimes.",
+          "A dotted field in an object type is a path: `{a.b: i64}` is `{a: {b: i64}}`. A quoted name stays one key.",
+          "`parseTime` reads more ISO 8601 forms, such as a comma before the fraction and the basic format `20231114T221305Z`, and `%y` reads a two-digit year. Auto-detect never guesses a two-digit year."
+        ]
+      },
+      {
+        "title": "Run a fleet",
+        "items": [
+          "A source is judged at four widths, from five minutes to a day, and by how long its quiet spells usually last. A source whose weekdays differ is judged against days of its kind.",
+          "A new source is judged at the four widths once its rows reach back a week, and each time of day once it has three days of its kind there. By its quiet spells it is judged once it has been watched four weeks.",
+          "The Status page totals each source, pipeline, route and destination under its chart, sorted by any column.",
+          "A source reading above its normal is info, not a warning.",
+          "The Map can widen an object's panel across the page.",
+          "Every page names a route by its source and pipeline, not its id. Where a route leaves smeltr, its id stays and its name goes beside it: an exception's `routeName`, a capture's `__destination.routeName`, and the `route_name` label on every metric with a `route` label."
+        ]
+      }
+    ],
+    "fixes": [
+      {
+        "title": "Build pipelines",
+        "items": [
+          "Rows a Drop step drops take no later step, so they no longer raise exceptions or show in the preview.",
+          "A new route starts with no pipeline and no destination, and Save waits until its source and pipeline are chosen.",
+          "Lock this as a test waits until the pipeline's edits are saved.",
+          "Lock again on a failing test opens the test's sample in the pipeline editor, or in Route a sample for an end-to-end test, where you choose the fields and rows to lock, as for a new lock. A test whose fields were renamed no longer locks the old names as absent.",
+          "A new pipeline takes a name no other pipeline has.",
+          "Export, Import and a Call step show pipelines by name, not by id.",
+          "A datetime format with no specifier is refused.",
+          "A Lookup or parser step can write under an object an earlier step holds."
+        ]
+      },
+      {
+        "title": "Sources",
+        "items": [
+          "Kafka lag counts from the read position, so a destination holding a file open no longer shows as lag climbing.",
+          "A busy source behind an object store destination keeps reading while the destination's file is open.",
+          "A metrics source no longer loses counts at a batch's cap or across a redeploy."
+        ]
+      },
+      {
+        "title": "Run a fleet",
+        "items": [
+          "Status counts rows out when a destination acknowledges them, so a destination that is down no longer looks like it keeps up.",
+          "Each route's and pipeline's rows are counted once per batch, however often the batch is retried.",
+          "A deploy no longer waits out the full 30-second drain when a destination holds a batch.",
+          "A host name that does not resolve is named in the exception.",
+          "The leader's own worker reaches its leader by the certificate's name on any port, and a browser on the host can sign in at the published port.",
+          "A failed update check is logged at info and raises no issue.",
+          "A viewer's pages, and an editor's review form, no longer show permission exceptions."
+        ]
+      },
+      {
+        "title": "Security",
+        "items": [
+          "SQLite 3.54.1 (RUSTSEC-2026-0459), zlib in libz-sys 1.1.33 (RUSTSEC-2026-0544) and russh 0.65.1 (CVE-2026-128087, CVE-2026-128088)."
+        ]
+      }
+    ]
+  },
+  {
     "version": "1.1.0",
     "date": "2026-11-08",
     "summary": "The second release: more capabilities, and fixes for the bugs found since 1.0.",

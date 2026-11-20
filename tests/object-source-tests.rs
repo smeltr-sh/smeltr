@@ -380,6 +380,65 @@ fn a_message_is_deleted_once_every_record_of_every_object_is_committed() {
     assert_eq!(s.deleted(), ["m"]);
 }
 
+/// Objects are fetched side by side ahead of the one being read, so a store's round trips overlap rather than add up.
+#[test]
+fn objects_are_fetched_ahead_of_the_one_read() {
+    use object_store::throttle::{ThrottleConfig, ThrottledStore};
+    let s = Setup::new();
+    let keys: Vec<String> = (0..8).map(|i| format!("{i}")).collect();
+    for key in &keys {
+        s.put(key, format!("{key}\n").as_bytes());
+    }
+    s.announce("m", &keys.iter().map(String::as_str).collect::<Vec<_>>());
+    let call = Duration::from_millis(300);
+    let config = ThrottleConfig {
+        wait_get_per_call: call,
+        ..ThrottleConfig::default()
+    };
+    let store: Arc<dyn ObjectStore> = Arc::new(ThrottledStore::new(s.store.clone(), config));
+    let mut source = ObjectSource::new(
+        Arc::new(s.queue.clone()),
+        Box::new(move |_: &str| Ok(store.clone())),
+        s.runtime.clone(),
+        Framing::Lines,
+        HOUR,
+        smeltr::io::object_source::MAX_RECORD_BYTES,
+    )
+    .unwrap();
+    let started = Instant::now();
+    let mut records = Vec::new();
+    while records.len() < keys.len() && started.elapsed() < WAIT {
+        records.extend(source.poll_batch(1000, 1 << 20, WAIT).unwrap());
+    }
+    assert_eq!(raw(&records), keys);
+    // Read one after another, each object's HEAD and GET take 16 calls.
+    let serial = call * 2 * keys.len() as u32;
+    assert!(
+        started.elapsed() < serial / 2,
+        "{:?} reading what takes {serial:?} serially",
+        started.elapsed()
+    );
+}
+
+/// A reader that never waits does not have more objects fetched for it: what a source holds stays near what one
+/// object's fetch queues.
+#[test]
+fn a_reader_that_keeps_up_has_no_more_fetched_for_it() {
+    let s = Setup::new();
+    let line = format!("{}\n", "x".repeat(1023));
+    let keys: Vec<String> = (0..8).map(|i| format!("{i}")).collect();
+    for key in &keys {
+        s.put(key, line.repeat(5 * 1024).as_bytes());
+    }
+    s.announce("m", &keys.iter().map(String::as_str).collect::<Vec<_>>());
+    let mut source = s.source(Framing::Lines, HOUR);
+    assert_eq!(source.poll_batch(1, 1 << 20, WAIT).unwrap().len(), 1);
+    std::thread::sleep(Duration::from_millis(500));
+    let held = source.held_bytes().unwrap();
+    // Each fetch queues about 4 MB: the one read and the two its first wait asked for, not all eight.
+    assert!(held < 16 << 20, "{held} bytes held");
+}
+
 #[test]
 fn an_unreadable_object_leaves_its_message_on_the_queue() {
     let s = Setup::new();

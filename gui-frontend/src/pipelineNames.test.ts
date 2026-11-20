@@ -6,11 +6,13 @@ vi.mock('./api', () => ({
   configAt: async (_branch: string, scope: string) => {
     const b = bundles[scope];
     if (b instanceof Error) throw b;
-    return { config: { pipelines: b ?? [] } };
+    const routes =
+      scope === 'west' ? [{ id: 'r-1', source: 'in', pipeline: 'p-2', condition: null }] : [];
+    return { config: { pipelines: b ?? [], routes } };
   },
 }));
 
-const { nameOf, pipelineNamesAt } = await import('./pipelineNames');
+const { nameOf, namesAt, pipelineNamesAt } = await import('./pipelineNames');
 
 describe("a scope's pipeline names", () => {
   it("names a group's own pipelines and shared's, its own winning", async () => {
@@ -20,6 +22,7 @@ describe("a scope's pipeline names", () => {
     ];
     bundles.west = [{ id: 'p-1', name: 'West one' }];
     expect(await pipelineNamesAt('work', 'west')).toEqual({ 'p-1': 'West one', 'p-2': 'Enrich' });
+    expect((await namesAt('work', 'west')).routes).toEqual({ 'r-1': 'in \u2192 Enrich' });
   });
 
   it('names what it can read when one bundle cannot be read', async () => {

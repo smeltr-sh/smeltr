@@ -1,4 +1,4 @@
-use super::super::*;
+use super::super::shared::*;
 use super::SourceSpec;
 use serde::{Deserialize, Serialize};
 
@@ -136,6 +136,12 @@ impl SourceSpec for EventHubsSourceDto {
         } = self;
         (sign_in.urls().into_iter())
             .chain(schema_registry.iter().map(SchemaRegistryDto::url))
+            .collect()
+    }
+
+    fn dials(&self) -> Vec<String> {
+        std::iter::once(event_hubs_brokers(&self.namespace))
+            .chain(self.urls().into_iter().map(|(_, url)| url.to_string()))
             .collect()
     }
 

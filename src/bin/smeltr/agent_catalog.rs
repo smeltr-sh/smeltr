@@ -443,13 +443,7 @@ pub const CATALOG: &[Route] = &[
         what: "Run the tests of every area the branch's change touches and report each result; nothing is written. No query.",
         body: "{ ids?: string[] (empty = all), touched?: boolean (narrow to what the change reaches) }",
     },
-    // -- cluster and workers --
-    Route {
-        method: "GET",
-        path: "/api/cluster",
-        what: "The cluster page: deployed commit, worker groups, workers, health, filtered to the caller. No query.",
-        body: "",
-    },
+    // -- workers and the map --
     Route {
         method: "GET",
         path: "/api/map",
@@ -508,13 +502,13 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/logs",
-        what: "One page of fleet log rows. Query: level (comma-separated), worker, group, class, type (part of one), typeExact (true matches type whole), service, q, sinceMillis, untilMillis, limit, before, after.",
+        what: "One page of fleet log rows the caller may read: an administrator every row, anyone else those of the groups they view. Query: level (comma-separated), worker, group, class, type (part of one), typeExact (true matches type whole), service, q, sinceMillis, untilMillis, limit, before, after.",
         body: "",
     },
     Route {
         method: "GET",
         path: "/api/health",
-        what: "Leader health snapshot; also sweeps forgotten ephemeral workers. No query.",
+        what: "Each worker thread's last heartbeat, as `threads`, in the groups the caller views, and `silentAfterMs`, how long a worker may go unheard before it is silent. No query.",
         body: "",
     },
     Route {
@@ -527,7 +521,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/worker-groups",
-        what: "Worker groups on a branch (live or pending), the hue for shared, and the commit. Query: branch.",
+        what: "Worker groups on a branch (live or pending), the hue for shared, and the commit. Query: branch, or deployed=true for the groups the fleet runs.",
         body: "",
     },
     Route {
@@ -557,7 +551,7 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/workers",
-        what: "The worker roster and credentials, as `workers`. No query.",
+        what: "The worker roster, as `workers`: every worker for an administrator, and for anyone else those heartbeating in a group they view. No query.",
         body: "",
     },
     Route {

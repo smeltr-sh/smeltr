@@ -142,6 +142,14 @@ impl From<&crate::logs::Event> for LogDto {
 }
 
 impl LogDto {
+    /// The group its `group` field names, if it names one.
+    pub fn named_group(&self) -> Option<&str> {
+        self.fields.iter().find_map(|(name, value)| match value {
+            FieldValueDto::Str(group) if name == "group" && !group.is_empty() => Some(group.as_str()),
+            _ => None,
+        })
+    }
+
     /// Its class and type, read from `site` when a build before lines had types sent it, split at its first dot as
     /// the logs store's step that split each stored site does.
     pub fn class_and_type(&self) -> (Option<&str>, &str) {
@@ -1321,8 +1329,13 @@ pub struct CapturedRow {
 }
 
 /// The columns a destination batch adds after the route's fields, in this order: the topic, index or key prefix the
-/// row chose there; its document id there; and the route that made it.
-pub const DESTINATION_COLUMNS: [&str; 3] = ["__destination.placement", "__destination.id", "__destination.route"];
+/// row chose there; its document id there; and the route that made it, by its id and by its name.
+pub const DESTINATION_COLUMNS: [&str; 4] = [
+    "__destination.placement",
+    "__destination.id",
+    "__destination.route",
+    "__destination.routeName",
+];
 
 impl CaptureBatch {
     pub fn new(columns: Vec<CaptureColumn>) -> CaptureBatch {

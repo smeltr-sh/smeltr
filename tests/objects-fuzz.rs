@@ -383,7 +383,12 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
             } else {
                 "bucket"
             };
-            set(key, json!(rng.pick(&["", "  "])));
+            let bad: &[&str] = match draw.store {
+                Store::S3 => &["", "  ", "s3://logs", "Logs", "logs_eu"],
+                Store::Gcs => &["", "  ", "gs://logs", "Logs", "logs/in"],
+                _ => &["", "  ", "https://acme.blob.core.windows.net/logs", "Logs", "lo--gs"],
+            };
+            set(key, json!(rng.pick(bad)));
             Some(key)
         }
         "s3.kmsKeyId" => {
@@ -808,7 +813,7 @@ fn avro_rows(body: &[u8]) -> Result<Vec<Vec<u8>>, String> {
 }
 
 /// The leaves of `PARQUET_PIPELINE`'s record, as a CSV file's header names them.
-const CSV_HEADER: &str = "_raw,msg,n,smeltr.exception.route,smeltr.exception.pipeline,smeltr.exception.exceptions,rest";
+const CSV_HEADER: &str = "_raw,msg,n,smeltr.exception.route,smeltr.exception.routeName,smeltr.exception.pipeline,smeltr.exception.exceptions,rest";
 
 /// A CSV file's rows after its header, each split by smeltr's own CSV reader (`csv_scan`) and printed as Avro's are
 /// (`avro_rows`) but every cell quoted: `name: "value", ` for a cell, `name: null, ` for an empty one.

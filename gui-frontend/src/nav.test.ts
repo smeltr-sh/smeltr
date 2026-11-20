@@ -6,6 +6,7 @@ import {
   exitOf,
   movedTo,
   parseRoute,
+  relockHash,
   section,
   sentFrom,
   newPipelineHash,
@@ -225,6 +226,16 @@ describe('parseRoute', () => {
       relock: 'orders normal hour',
     });
     expect(parseRoute('#/build/tests/relock')).toEqual({ tab: 'build', page: 'samples' });
+  });
+
+  it('carries a test to lock again to the editor or the routes run, on its sample', () => {
+    for (const [pipeline, page] of [
+      ['orders', 'pipeline'],
+      [undefined, 'routes'],
+    ] as const) {
+      const route = parseRoute(relockHash('keep id', 'orders sample', pipeline));
+      expect(route).toMatchObject({ page, relock: { test: 'keep id', sample: 'orders sample' } });
+    }
   });
 
   it('names a re-lock in the trail', () => {
@@ -717,11 +728,16 @@ describe('what the person signed in is offered', () => {
     });
   });
 
-  it('offers Logs and Admin to an administrator alone', async () => {
+  it('offers Logs to whoever views a group, and Admin to an administrator alone', async () => {
     await signInAs({ administrator: false, areas: { shared: 'deployer' } });
     const labels = () => section(parseRoute('#/status'))?.items.map((i) => i.label);
     expect(labels()).toEqual(['Status', 'Issues', 'Metrics']);
     expect(sentFrom(parseRoute('#/status/logs?level=error'))).toBe(TAB_HOME.status);
+    expect(sentFrom(parseRoute('#/admin/groups'))).toBe(TAB_HOME.status);
+
+    await signInAs({ administrator: false, areas: { payments: 'viewer' } });
+    expect(labels()).toEqual(['Status', 'Issues', 'Metrics', 'Logs']);
+    expect(sentFrom(parseRoute('#/status/logs?level=error'))).toBeNull();
     expect(sentFrom(parseRoute('#/admin/groups'))).toBe(TAB_HOME.status);
 
     await signInAs({ administrator: true, areas: {} });

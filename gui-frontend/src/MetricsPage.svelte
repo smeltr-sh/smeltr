@@ -15,6 +15,7 @@
   import { byteUnit, bytes } from './bytes';
   import { FLOW_WINDOWS } from './flow';
   import { clockTime } from './time';
+  import { names } from './names.svelte';
   import {
     conditionLabel,
     getLogs,
@@ -22,6 +23,7 @@
     getSeriesMetrics,
     history,
     listWarnings,
+    MAIN_BRANCH,
     type LogRowDto,
     type SeriesAnswerDto,
     type StoredMetricDto,
@@ -55,6 +57,8 @@
 
   const GROUP = 'group';
   const WORKER = 'worker';
+  /** A route's name beside its id: the page names a route by its id already (`valueName`), history before it too. */
+  const ROUTE_NAME = 'route_name';
   const MINUTE = 60_000;
   const HOUR = 60 * MINUTE;
   const DAY = 24 * HOUR;
@@ -70,10 +74,13 @@
   let fetchedAt = $state(Date.now());
   let failed = $state<string | null>(null);
 
-  /** The list grows as workers report metrics they had not before, so it is read with every answer. */
+  /** The list grows as workers report metrics they had not before, so it is read with every answer. It is set only
+   * when it changed: the effect that reads it asks again when it is set. */
   function readMetrics(): Promise<unknown> {
     return getSeriesMetrics()
-      .then((m) => (metrics = m))
+      .then((m) => {
+        if (JSON.stringify(m) !== JSON.stringify(metrics)) metrics = m;
+      })
       .catch((e: Error) => (failed = e.message));
   }
 
@@ -95,18 +102,29 @@
 
   /** Which metric each drawn series is of, by its name. */
   let metricOf = $state(new Map<string, string>());
+  /** What a person reads for `label`'s value `v`: a route's or a pipeline's name in a group that reports it, else `v`. */
+  const valueName = (label: string, v: string) =>
+    label === 'route' || label === 'pipeline'
+      ? ((metric?.labels[GROUP] ?? [])
+          .map((g) => names.of(MAIN_BRANCH, g, `${label}s`, v))
+          .find((n) => n !== v) ?? v)
+      : v;
+
   /** The metrics' answers as one: beside another, each series is named for its metric, and its split value after it. */
-  function together(answers: SeriesAnswerDto[]): SeriesAnswerDto {
+  function together(
+    answers: SeriesAnswerDto[],
+    by: string,
+  ): [SeriesAnswerDto, Map<string, string>] {
     const of = new Map<string, string>();
     const series = answers.flatMap((a) =>
       a.series.map((s) => {
-        const name = answers.length === 1 ? s.name : s.name ? `${a.metric} · ${s.name}` : a.metric;
+        const value = valueName(by, s.name);
+        const name = answers.length === 1 ? value : value ? `${a.metric} · ${value}` : a.metric;
         of.set(name, a.metric);
         return { ...s, name };
       }),
     );
-    metricOf = of;
-    return { ...answers[0], series };
+    return [{ ...answers[0], series }, of];
   }
 
   async function read(asked: MetricsView) {
@@ -121,7 +139,7 @@
           drawnOf(asked).map((m) =>
             getSeries(seriesQuery(asked, m, offset, ago, stored(m)?.labels)),
           ),
-        ).then(together);
+        ).then((answers) => together(answers, asked.by));
       const [got, then, marks] = await Promise.all([
         each(0),
         asked.weekBefore ? each(WEEK_MINUTES) : null,
@@ -129,8 +147,10 @@
       ]);
       // A slow answer to an older question must not land over the newer one's.
       if (asked === view) {
-        answer = got;
-        before = then;
+        answer = got[0];
+        // A series only last week has a metric too; this week's names win.
+        metricOf = new Map([...(then?.[1] ?? []), ...got[1]]);
+        before = then?.[0] ?? null;
         happened = marks;
         fetchedAt = Date.now();
         failed = null;
@@ -140,12 +160,14 @@
     }
   }
   $effect(() => {
+    // Asked again once the split's names are read: a series is named as it is read.
+    for (const v of metric?.labels[view.by] ?? []) valueName(view.by, v);
     read(view);
   });
 
   /** The deploys on `main` over the last `minutes`, and the issues that held in them, each from when it began until
-   * it cleared or until now. The open ones are on the Issues page, which every viewer reads; the cleared ones are in
-   * the leader's log, which only an administrator does, so another viewer sees the open ones alone. */
+   * it cleared or until now. The open ones are on the Issues page; the cleared ones are in the log. Both show only
+   * the groups the person views. */
   async function readMarks(minutes: number) {
     const now = Date.now();
     const since = now - minutes * MINUTE;
@@ -271,7 +293,7 @@
   let labels = $derived(
     metric
       ? [
-          ...Object.keys(metric.labels).filter((l) => l !== GROUP && l !== WORKER),
+          ...Object.keys(metric.labels).filter((l) => ![GROUP, WORKER, ROUTE_NAME].includes(l)),
           GROUP,
           ...(WORKER in metric.labels ? [WORKER] : []),
         ]
@@ -597,9 +619,12 @@
           {#each view.filter as [label, value], i (label + value)}
             <span class="chip"
               ><span class="dim">{labelName(label).toLowerCase()}</span>
-              <span class="mono">{value}</span><button
+              <span class="mono">{valueName(label, value)}</span><button
                 type="button"
-                aria-label="Remove filter {labelName(label).toLowerCase()} {value}"
+                aria-label="Remove filter {labelName(label).toLowerCase()} {valueName(
+                  label,
+                  value,
+                )}"
                 onclick={() => go({ filter: view.filter.filter((_, j) => j !== i) })}>×</button
               ></span
             >
@@ -611,7 +636,9 @@
               </select>
               <select aria-label="Filter value" onchange={(e) => addFilter(e.currentTarget.value)}>
                 <option value="">Value</option>
-                {#each metric.labels[addLabel] ?? [] as v (v)}<option value={v}>{v}</option>{/each}
+                {#each metric.labels[addLabel] ?? [] as v (v)}<option value={v}
+                    >{valueName(addLabel, v)}</option
+                  >{/each}
               </select>
             </span>
           {:else if metric}
@@ -626,13 +653,15 @@
           {/if}
         </div>
 
-        <label class="split"
-          ><span class="dim">Split by</span>
-          <select value={view.by} onchange={(e) => go({ by: e.currentTarget.value })}>
-            <option value="">None</option>
-            {#each labels as l (l)}<option value={l}>{labelName(l)}</option>{/each}
-          </select></label
-        >
+        {#if labels.length > 0}
+          <label class="split"
+            ><span class="dim">Split by</span>
+            <select value={view.by} onchange={(e) => go({ by: e.currentTarget.value })}>
+              <option value="">None</option>
+              {#each labels as l (l)}<option value={l}>{labelName(l)}</option>{/each}
+            </select></label
+          >
+        {/if}
         {#if view.by && all.length > 1}
           <label class="split"
             ><span class="dim">Top</span>

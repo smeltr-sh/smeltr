@@ -3,9 +3,9 @@
 //! `io::kafka`'s unit tests establish that this build reports
 //! `sasl_gssapi` and that the config surface agrees with it. Neither can
 //! reach what actually breaks: whether librdkafka selects a provider,
-//! reads the keytab, runs `kinit`, and completes the handshake. A build
-//! that failed to link Cyrus passes every other test in the suite and
-//! fails here.
+//! gets a ticket from the keytab without spawning `kinit`, and completes
+//! the handshake. A build that failed to link Cyrus passes every other
+//! test in the suite and fails here.
 //!
 //! `tests/kerberos/up.sh` provides the services. Under
 //! `SMELTR_LIVE_TESTS=required` a missing one fails rather than skips --
@@ -23,7 +23,7 @@ use std::time::Duration;
 
 /// Every SASL property a Kerberized source needs, as an operator would
 /// write them: passthrough properties on the source, not something smeltr
-/// sets. `sasl.kerberos.kinit.cmd` is reserved, so the default is used.
+/// sets. smeltr gets the ticket from the keytab itself.
 fn gssapi_props(keytab: &str) -> KafkaProps {
     KafkaProps {
         literal: vec![
@@ -86,6 +86,20 @@ fn a_gssapi_source_authenticates_through_the_paths_deploy_uses() {
         "counting partitions needs an authenticated metadata request"
     );
     KafkaSource::new(&config, &Default::default()).expect("open a Kerberized source");
+
+    // `just check-kerberos` puts a `kinit` that records it ran first on PATH, and starts the cache empty: the image
+    // has no `kinit` and no shell, so the ticket must be smeltr's own.
+    let Some(ran) = live::service(
+        name,
+        "SMELTR_KINIT_RAN",
+        "the marker a spawned kinit leaves (`just check-kerberos`)",
+    ) else {
+        return;
+    };
+    assert!(
+        !std::path::Path::new(&ran).exists(),
+        "something ran kinit, which the image does not carry"
+    );
 }
 
 /// The other direction, as far as a plaintext client can take it: the

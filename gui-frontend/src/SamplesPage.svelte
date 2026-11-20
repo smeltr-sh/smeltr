@@ -21,7 +21,7 @@
   import { checksOf } from './objectChanges';
   import { dateTime } from './time';
   import { editable } from './access';
-  import { nameOf, pipelineNamesAt, type PipelineNames } from './pipelineNames';
+  import { names } from './names.svelte';
   import {
     listSamples,
     deleteSample,
@@ -59,8 +59,7 @@
   let results: Record<string, TestResult> = $state({});
   const deletingTest = new Busy();
 
-  let pipelineNames: PipelineNames = $state({});
-  pipelineNamesAt(currentBranch(), currentScope()).then((names) => (pipelineNames = names));
+  const pipelineName = (id: string) => names.of(currentBranch(), currentScope(), 'pipelines', id);
 
   const sampleSort = new TableSort<'name' | 'source' | 'records' | 'captured'>();
   let sortedSamples = $derived(
@@ -81,7 +80,7 @@
   let sortedTests = $derived(
     testSort.apply(tests, {
       name: (t) => t.name,
-      pipelines: (t) => t.pipelines.map((id) => nameOf(pipelineNames, id)).join(', '),
+      pipelines: (t) => t.pipelines.map(pipelineName).join(', '),
       sample: sampleNameOf,
       checks: checksOf,
     }),
@@ -314,9 +313,7 @@
             {#each sortedTests as t (t.id)}
               <tr>
                 <td><strong>{t.name}</strong></td>
-                <td class="mono dim"
-                  >{t.pipelines.map((id) => nameOf(pipelineNames, id)).join(', ') || '—'}</td
-                >
+                <td class="mono dim">{t.pipelines.map(pipelineName).join(', ') || '—'}</td>
                 <td class="mono dim">{sampleNameOf(t)}</td>
                 <td class="mono">{checksOf(t)}</td>
                 <td>

@@ -61,6 +61,7 @@
 
 [worker.runtime]
 # thread_limit = 0                   # SMELTR_WORKER_THREAD_LIMIT, threads running pipelines; 0 is the core count
+# exit_after_blocked_secs = 600      # SMELTR_WORKER_EXIT_AFTER_BLOCKED_SECS, exit after this long unable to confirm a stopped deployment is gone; -1 never exits
 
 [worker.heartbeat]
 # stop_after_unreachable_secs = -1   # SMELTR_WORKER_STOP_AFTER_UNREACHABLE_SECS, stop pipelines after this long without the leader; -1 never stops

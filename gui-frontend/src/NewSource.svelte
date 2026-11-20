@@ -5,7 +5,7 @@
   import NewObject from './NewObject.svelte';
   import SourceFields from './SourceFields.svelte';
   import { SOURCE_KINDS } from './sourceKinds';
-  import { SOURCE_TYPES, blankSource, isSql, typeLabel } from './sources';
+  import { SOURCE_TYPES, blankSource, isSql, typeLabel, typeOf } from './sources';
   import type { KafkaFacts, SecretDto, SourceDto } from './api';
 
   let {
@@ -47,6 +47,7 @@
   kinds={SOURCE_KINDS}
   blank={blankSource}
   {typeLabel}
+  {typeOf}
   {ready}
   {from}
   {onadd}

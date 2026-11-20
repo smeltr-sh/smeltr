@@ -1,4 +1,4 @@
-use super::super::*;
+use super::super::shared::*;
 use super::SourceSpec;
 use serde::{Deserialize, Serialize};
 
@@ -66,6 +66,10 @@ impl SourceSpec for SftpSourceDto {
 
     fn urls(&self) -> Vec<(&'static str, &str)> {
         Vec::new()
+    }
+
+    fn dials(&self) -> Vec<String> {
+        vec![format!("{}:{}", self.access.host, self.access.port)]
     }
 
     fn tls(&self) -> Option<TlsDto> {

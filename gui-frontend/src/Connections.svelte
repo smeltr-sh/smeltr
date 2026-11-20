@@ -6,6 +6,7 @@
 <script lang="ts">
   import Collapsible from './Collapsible.svelte';
   import {
+    currentBranch,
     getConnections,
     setScope,
     type Connected,
@@ -13,6 +14,7 @@
     type ConnectionsResponse,
   } from './api';
   import { SHOWN, listHash, mapHash, objectHash, rows, summary, type Row } from './connections';
+  import { names } from './names.svelte';
 
   let { kind, id }: { kind: ConnectionKind; id: string } = $props();
 
@@ -69,7 +71,10 @@
             {#if i > 0}<span class="dim">{', '}</span>{/if}<a
               class="link name"
               href={objectHash(o)}
-              onclick={into(o.area, objectHash(o))}>{o.id}</a
+              onclick={into(o.area, objectHash(o))}
+              >{o.kind === 'route' || o.kind === 'pipeline'
+                ? names.of(currentBranch(), o.area, `${o.kind}s`, o.id)
+                : o.id}</a
             >
           {/each}
           {#each rest(row) as more (more.scope)}

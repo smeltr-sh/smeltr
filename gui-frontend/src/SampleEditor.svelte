@@ -16,8 +16,8 @@
   import Clamped from './Clamped.svelte';
   import ShowAll, { SHOWN } from './ShowAll.svelte';
   import { SvelteSet } from 'svelte/reactivity';
-  import FindBox, { type FindFilter } from './FindBox.svelte';
-  import InlineError from './InlineError.svelte';
+  import FindBox, { type FindFilter, type FindRefusal } from './FindBox.svelte';
+  import FindError from './FindError.svelte';
   import {
     getSample,
     previewPipeline,
@@ -64,7 +64,7 @@
   let find = $state<FindFilter>({ kind: 'none' });
   /** How many records the sample holds as saved. */
   let saved = $state(0);
-  let findError = $state('');
+  let findError = $state<FindRefusal | null>(null);
   let showAll = $state(false);
   let pasted = $state('');
   const saving = new Busy();
@@ -215,7 +215,7 @@
           onclick={() => keepTicked(false)}>Remove selected</Button
         >
       </div>
-      <InlineError message={findError} />
+      <FindError refusal={findError} />
       {#if find.kind === 'paused'}
         <p class="dim">
           Not applied: an expression filters the saved sample, and you have unsaved changes.
