@@ -41,7 +41,7 @@ use crate::store_access::{
     compare_gcs, compare_s3, compare_sftp, connector_secrets, draw_access, held, refusals, text, uint,
 };
 
-const SEEDS: u64 = 700;
+const SEEDS: u64 = 1000;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Kind {
@@ -121,6 +121,8 @@ const OPTIONS: &[&str] = &[
     "framing.lineBreaker",
     "framing.lengthPrefix",
     "framing.fixed",
+    "framing.syslog",
+    "syslog.octetCounted",
     "lengthPrefix.offset",
     "lengthPrefix.little",
     "lengthPrefix.message",
@@ -399,6 +401,7 @@ fn draw_framing(rng: &mut Rng, cov: &mut Reached, d: &mut Map<String, Value>) {
         "lineBreaker",
         "lengthPrefix",
         "fixed",
+        "syslog",
     ]);
     cov.reach(format!("framing.{framing}"));
     match framing {
@@ -841,6 +844,7 @@ fn expected_framing(d: &Map<String, Value>) -> Framing {
             })
         }
         (Some("fixed"), _) => Framing::Fixed(d["fixedBytes"].as_u64().expect("a drawn size") as usize),
+        (Some("syslog"), _) => Framing::Syslog(None),
         (_, Some(pattern)) => Framing::LineBreaker(LineBreaker(regex::bytes::Regex::new(&pattern).unwrap())),
         _ => Framing::Lines,
     }
@@ -1134,7 +1138,23 @@ fn body(rng: &mut Rng, cov: &mut Reached, framing: &Framing) -> (Vec<u8>, Vec<Ve
                 .collect();
             (frames.concat(), frames)
         }
-        Framing::Syslog(_) => unreachable!("an object source draws no syslog framing"),
+        Framing::Syslog(_) => {
+            let mut bytes = Vec::new();
+            let mut messages = Vec::new();
+            for _ in 0..n {
+                let message = format!("<{}>syslog {}", rng.below(192), rng.below(1_000_000)).into_bytes();
+                if rng.chance(2) {
+                    cov.reach("syslog.octetCounted");
+                    bytes.extend(format!("{} ", message.len()).into_bytes());
+                    bytes.extend(&message);
+                } else {
+                    bytes.extend(&message);
+                    bytes.push(b'\n');
+                }
+                messages.push(message);
+            }
+            (bytes, messages)
+        }
     }
 }
 

@@ -149,7 +149,7 @@ describe('DemoLeader', () => {
       return new Response(JSON.stringify({ ok: true, errors: [] }));
     });
     const leader = demoLeader(recording(), () => RECORDED);
-    const sources = [{ id: 'syslog', type: 'syslogReceiver', port: 5514 }];
+    const sources = [{ id: 'syslog', type: 'socketReceiver', framing: 'syslog', port: 5514 }];
     const saved = await leader.answer(
       'PUT',
       at('/api/areas/network/sources?branch=mine'),
@@ -323,7 +323,7 @@ describe('DemoLeader', () => {
   it("answers a visitor's branch read at its own commit or at main's", async () => {
     vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ ok: true, errors: [] })));
     const leader = demoLeader(recording(), () => RECORDED);
-    const sources = [{ id: 'syslog', type: 'syslogReceiver', port: 5514 }];
+    const sources = [{ id: 'syslog', type: 'socketReceiver', framing: 'syslog', port: 5514 }];
     const saved = await leader.answer(
       'PUT',
       at('/api/areas/network/sources?branch=mine'),

@@ -2088,7 +2088,7 @@ mod tests {
 
     fn syslog_receiver(port: u16) -> SourceDto {
         serde_json::from_value(
-            serde_json::json!({"id": "sys", "type": "syslogReceiver", "port": port, "allowFrom": ["127.0.0.1"]}),
+            serde_json::json!({"id": "sys", "type": "socketReceiver", "framing": "syslog", "port": port, "allowFrom": ["127.0.0.1"]}),
         )
         .unwrap()
     }

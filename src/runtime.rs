@@ -3127,63 +3127,18 @@ impl RouteColumns<'_> {
 /// route's.
 fn run_and_serialize(
     plan: &Plan,
-    ingest: Ingest<'_>,
+    mut ingest: Ingest<'_>,
     mask: Column,
     pool: &mut BufferPool,
     errors: &mut ErrorSink,
     metrics: &MetricsHandle,
     egress: Egress<'_>,
 ) -> Serialized {
-    let Ingest {
-        records,
-        raw,
-        meta,
-        source,
-        now_micros,
-        tally,
-        senders,
-    } = ingest;
     let route = egress.route;
-    let id_fields = egress.id_fields;
-    let deliver = &route.deliver;
-    let rows = records.len();
+    let now_micros = ingest.now_micros;
     let on_exception = &route.on_exception;
-    let mut batch = Batch::new(&plan.delivery_layout(), rows, 0);
-    let mut origin = Column::alloc(pool, &DataType::I64, rows);
-    for (row, at) in origin.i64_mut().unwrap().values.iter_mut().enumerate() {
-        *at = row as i64;
-    }
-    batch.put(plan.origin_slot(), origin, pool);
-    // `reads_meta` covers the pipeline and its route's delivery rules. A destination's `id_field` reads the same batch
-    // and is configured on the worker, not in the plan, so it is unioned in here.
-    let fields = meta.source_fields();
-    // A capture shows every `__source` field, and its filter, compiled after the plan, may read any of them: neither
-    // is in `reads_meta`, so while one is open here every field is filled.
-    let watched = !egress.taps.is_empty();
-    let wanted =
-        |i: usize| watched || plan.reads_meta[i] || egress.id_fields.iter().any(|(_, field)| field == fields[i].0);
-    let noted = meta.ingest(&mut batch, records, &raw.text, source, wanted, pool);
-
     let err_start = errors.len();
-    {
-        let mut ctx = Ctx::at(pool, errors, now_micros);
-        ctx.fields = tally;
-        // Ingest's repairs, inside this route's window so a repaired row is marked wherever it goes and an `Unroll`
-        // remaps it with the rest.
-        for (row, kind) in &raw.notes {
-            let raw = ctx
-                .errors
-                .raise(*row as usize, INGEST_FUNCTION, Some(SLOT_RAW), kind.clone());
-            raw.read = vec![Read::new(Some((SLOT_RAW, String::new())), None)];
-        }
-        for (row, slot, kind, value) in noted {
-            let at = ctx.errors.raise(row as usize, INGEST_FUNCTION, Some(slot), kind);
-            if value.is_some() {
-                at.read = vec![Read::new(Some((slot, String::new())), value)];
-            }
-        }
-        exec::run_scoped(plan, &mut batch, mask, &mut ctx, Some(metrics));
-    }
+    let mut batch = run_plan(plan, &mut ingest, mask, pool, errors, metrics, &egress);
     // `Op::Unroll` may have replaced the batch with a larger one.
     let rows = batch.rows();
     let slot_names = plan.slot_names();
@@ -3198,34 +3153,7 @@ fn run_and_serialize(
 
     let blocked = rows_answered(|a| *a == Answer::Block);
     if blocked > 0 {
-        let exception = |a: &crate::core::error::Exception| {
-            let what = a.message(&slot_names);
-            match plan.step_ids.get(a.function as usize) {
-                Some(step) => format!("at step {step}: {what}"),
-                None => format!("with: {what}"),
-            }
-        };
-        let blocking = entries.iter().filter(|a| {
-            answers.get(a.row as usize) == Some(&Answer::Block) && *on_exception.answer(&a.kind) == Answer::Block
-        });
-        let first = blocking.clone().next().map(exception).unwrap_or_default();
-        // By record, not row: an `Unroll` may have made several rows of one record, and a capture shows records.
-        let origin = batch.peek(plan.origin_slot()).i64().unwrap().values;
-        let mut by_record: std::collections::BTreeMap<usize, String> = std::collections::BTreeMap::new();
-        for a in blocking {
-            by_record
-                .entry(origin[a.row as usize] as usize)
-                .or_insert_with(|| exception(a));
-        }
-        let records = by_record.into_iter().collect();
-        let blocked = Blocked {
-            rows: blocked,
-            cause: Cause::Marked {
-                pipeline: plan.name.clone(),
-                first,
-            },
-            records,
-        };
+        let blocked = marked_block(plan, &batch, entries, &answers, on_exception, blocked);
         batch.reclaim(pool);
         return Serialized::blocked(blocked, answers, raised);
     }
@@ -3237,8 +3165,7 @@ fn run_and_serialize(
     batch.put(tag_slot, tag_column(&marked, at, rows, pool), pool);
 
     // One vectorized evaluation per rule, over the finished batch.
-    let rule_masks: Vec<Option<Column>> = deliver
-        .iter()
+    let rule_masks: Vec<Option<Column>> = (route.deliver.iter())
         .map(|rule| {
             rule.when.as_ref().map(|ir| {
                 let mut ctx = Ctx::at(pool, errors, now_micros);
@@ -3249,7 +3176,7 @@ fn run_and_serialize(
         .collect();
     // Rules are additive; a null condition does not match.
     let rules_take = |row: usize, into: &mut Vec<DestId>| {
-        for (rule, matched) in deliver.iter().zip(&rule_masks) {
+        for (rule, matched) in route.deliver.iter().zip(&rule_masks) {
             let hit = match matched {
                 Some(m) => match m.bool() {
                     Ok(b) => b.validity.is_valid(row) && bits::get_row(b.values, row),
@@ -3264,6 +3191,7 @@ fn run_and_serialize(
     };
     let live = batch.peek(plan.live_slot).bool().unwrap();
     let is_live = |row: usize| live.validity.is_valid(row) && bits::get_row(live.values, row);
+    let origin = batch.peek(plan.origin_slot()).i64().unwrap().values;
     // A row no rule takes meets the route's `Unmatched` answer. Under block nothing of the run is sent, so that is
     // decided before any row is written.
     let unmatched = on_exception.answer(&ExceptionKind::Unmatched);
@@ -3278,16 +3206,16 @@ fn run_and_serialize(
             })
             .collect();
         if !declined.is_empty() {
-            let origin = batch.peek(plan.origin_slot()).i64().unwrap().values;
             // By record, as a marked row's block is.
             let records: std::collections::BTreeSet<usize> = declined.iter().map(|&row| origin[row] as usize).collect();
-            let records = records.into_iter().map(|r| (r, DECLINED_MESSAGE.to_string())).collect();
             let blocked = Blocked {
                 rows: declined.len(),
                 cause: Cause::Declined {
                     route: route.name.clone(),
                 },
-                records,
+                records: (records.into_iter())
+                    .map(|r| (r, DECLINED_MESSAGE.to_string()))
+                    .collect(),
             };
             for m in rule_masks.into_iter().flatten() {
                 m.reclaim(pool);
@@ -3303,173 +3231,88 @@ fn run_and_serialize(
         RecordView::new(&plan.tree, |slot| batch.peek(slot)).with_field(&on_exception.tag_field, batch.peek(tag_slot));
     let plain = RecordView::new(&plan.tree, |slot| batch.peek(slot));
 
-    // A destination whose `id_field` names nothing this pipeline produces is not an error: the same destination may be
-    // fed by several routes.
-    let doc_id_slot = plan.id_out_slot;
-    let origin = batch.peek(plan.origin_slot()).i64().unwrap().values;
-
-    let mut out = Vec::new();
-    let mut sets: Vec<Vec<DestId>> = Vec::new();
-    // Interned: rows of one route share a handful of sets, usually one. The last set is tried first because
-    // consecutive rows almost always match the same rules.
-    let mut intern = |set: &[DestId]| {
-        let i = match sets.iter().rposition(|s| *s == set) {
-            Some(i) => i,
-            None => {
-                sets.push(set.to_vec());
-                sets.len() - 1
-            }
-        };
-        u32::try_from(i).expect("distinct destination sets in one route run fit a u32")
-    };
-    // What each interned set reads a row as, by its index in `sets`.
-    let mut reads: Vec<Reads> = Vec::new();
-    let mut reads_of = |set: u32, dests: &[DestId]| {
-        if reads.len() == set as usize {
-            reads.push(match egress.columns {
-                Some(c) => c.reads(dests, egress.dlq_of),
-                None => Reads {
-                    json: true,
-                    columns: false,
-                    text: false,
-                },
-            });
-        }
-        reads[set as usize]
-    };
-    let mut scratch: Vec<DestId> = Vec::new();
+    let fields = egress.columns.map_or(&[][..], |c| c.fields);
+    let (watched, counted) = (!egress.taps.is_empty(), ingest.senders.is_some());
+    let mut placed = Placed::default();
+    let mut dests: Vec<DestId> = Vec::new();
     let (mut no_rule, mut no_rule_dropped) = (0u64, 0u64);
     // Every document is written here first, then copied out at its own length. The buffer keeps its capacity across
     // the batch, so the growth series is paid once. The copies live on in `Serialized`, so each is sized to the row
     // it holds; a buffer sized from a neighbor would make every row carry the largest row's size.
     let mut doc: Vec<u8> = Vec::new();
-    // Each row bound for columns, by its place in `out`: cut into one chunk once every row is placed.
-    let mut cut: Vec<(usize, usize)> = Vec::new();
-    // Each row of `out`'s row in the batch, while a capture is copying them.
-    let mut batch_row: Vec<usize> = Vec::new();
-    // Each row delivered, while senders are counted.
-    let mut delivered: Vec<usize> = Vec::new();
     for row in 0..rows {
         if !is_live(row) || answers[row] == Answer::Drop {
             continue;
         }
-        let serializer = tag_or_not(&tagged, &plain, &marked, row);
-        // Written once, at the first set that reads it as JSON.
-        let mut written = false;
-        let mut document = |reads: Reads, doc: &mut Vec<u8>| {
-            if !reads.json {
-                return Vec::new();
-            }
-            if !written {
-                serializer.write_row(row, doc);
-                written = true;
-            }
-            doc.as_slice().to_vec()
-        };
-        let origin = origin[row] as u32;
-        let fields = egress.columns.map_or(&[][..], |c| c.fields);
-        let texts = |reads: Reads| match reads.text {
-            true => fields.iter().map(|f| serializer.text(f, row)).collect(),
-            false => Vec::new(),
-        };
+        dests.clear();
         // A delivered row goes where its answer says, and to none of the rules'.
+        let by_rules = !matches!(answers[row], Answer::Deliver(_));
         if let Answer::Deliver(targets) = &answers[row] {
-            scratch.clear();
-            scratch.extend_from_slice(targets);
-            scratch.sort_unstable();
-            let set = intern(&scratch);
-            let reads = reads_of(set, &scratch);
-            if reads.columns {
-                cut.push((out.len(), row));
+            dests.extend_from_slice(targets);
+            dests.sort_unstable();
+        } else {
+            rules_take(row, &mut dests);
+            if dests.is_empty() {
+                no_rule += 1;
+                // Block returned above, and `Unmatched` is never ignored or tagged (`config_file::load`).
+                let Answer::Deliver(targets) = unmatched else {
+                    no_rule_dropped += 1;
+                    continue;
+                };
+                dests.extend_from_slice(targets);
             }
-            out.push(SerializedRow {
-                bytes: document(reads, &mut doc),
-                texts: texts(reads),
-                set,
-                placements: Default::default(),
-                doc_id: None,
-                doc_id_by_dest: Vec::new(),
-                origin,
-                columns: None,
-            });
-            if !egress.taps.is_empty() {
-                batch_row.push(row);
-            }
-            if senders.is_some() {
-                delivered.push(row);
-            }
-            continue;
+            dests.sort_unstable();
+            dests.dedup();
         }
-        scratch.clear();
-        rules_take(row, &mut scratch);
-        if scratch.is_empty() {
-            no_rule += 1;
-            // Block returned above, and `Unmatched` is never ignored or tagged (`config_file::load`).
-            let Answer::Deliver(targets) = unmatched else {
-                no_rule_dropped += 1;
-                continue;
-            };
-            scratch.extend_from_slice(targets);
-        }
-        scratch.sort_unstable();
-        scratch.dedup();
-        let set = intern(&scratch);
-        let placements = plan
-            .placement_slots
-            .map(|slot| slot.and_then(|slot| read_text(&batch, slot, row)));
-        let doc_id = doc_id_slot.and_then(|slot| read_text(&batch, slot, row));
-        // A chosen destination's DLQ counts as reachable: `offer_salvage` sends there after the columns are gone, so this
-        // is the only moment its identity can be read.
-        let chosen = &scratch;
-        let doc_id_by_dest: Vec<(DestId, Option<String>)> = id_fields
-            .iter()
-            .filter(|(dest, _)| {
-                chosen.contains(dest)
-                    || chosen
-                        .iter()
-                        .any(|c| egress.dlq_of.get(c).is_some_and(|dlqs| dlqs.contains(dest)))
-            })
-            .map(|(dest, name)| (*dest, serializer.text(name, row)))
-            .collect();
-        let reads = reads_of(set, &scratch);
-        if reads.columns {
-            cut.push((out.len(), row));
-        }
-        out.push(SerializedRow {
-            bytes: document(reads, &mut doc),
-            texts: texts(reads),
+        let set = placed.set(&dests, &egress);
+        let serializer = tag_or_not(&tagged, &plain, &marked, row);
+        let Reached { reads, id_fields } = &placed.reached[set as usize];
+        let mut out = SerializedRow {
+            bytes: Vec::new(),
+            texts: Vec::new(),
             set,
-            placements,
-            doc_id,
-            doc_id_by_dest,
-            origin,
+            placements: Default::default(),
+            doc_id: None,
+            doc_id_by_dest: Vec::new(),
+            origin: origin[row] as u32,
             columns: None,
-        });
-        if !egress.taps.is_empty() {
-            batch_row.push(row);
+        };
+        if by_rules {
+            out.placements = plan
+                .placement_slots
+                .map(|slot| slot.and_then(|slot| read_text(&batch, slot, row)));
+            out.doc_id = plan.id_out_slot.and_then(|slot| read_text(&batch, slot, row));
+            out.doc_id_by_dest = (id_fields.iter())
+                .map(|(dest, name)| (*dest, serializer.text(name, row)))
+                .collect();
         }
-        if senders.is_some() {
-            delivered.push(row);
+        if reads.json {
+            serializer.write_row(row, &mut doc);
+            out.bytes = doc.as_slice().to_vec();
         }
+        if reads.text {
+            out.texts = fields.iter().map(|f| serializer.text(f, row)).collect();
+        }
+        placed.push(out, row, reads.columns, watched, counted);
     }
-    if let Some(Senders { tally, fields, first }) = senders {
+    if let Some(Senders { tally, fields, first }) = ingest.senders {
         let record = |row: usize| first + origin[row] as usize;
         for field in fields {
             match field.slot {
-                Some(slot) => tally.count_column(&field.name, batch.peek(slot), &delivered, record),
+                Some(slot) => tally.count_column(&field.name, batch.peek(slot), &placed.delivered, record),
                 None => tally.count_rows(
                     &field.name,
-                    delivered.iter().map(|&row| (record(row), plain.text(&field.name, row))),
+                    (placed.delivered.iter()).map(|&row| (record(row), plain.text(&field.name, row))),
                 ),
             }
         }
     }
     if let Some(schema) = egress.columns.and_then(|c| c.schema)
-        && !cut.is_empty()
+        && !placed.cut.is_empty()
     {
         // The tagged rows first, then the rest, each part read through its own view.
         let (on_tagged, on_plain): (Vec<_>, Vec<_>) =
-            cut.iter().partition(|(_, row)| marked.contains_key(&(*row as u32)));
+            (placed.cut.iter()).partition(|(_, row)| marked.contains_key(&(*row as u32)));
         let tagged_rows: Vec<u32> = on_tagged.iter().map(|&&(_, row)| row as u32).collect();
         let plain_rows: Vec<u32> = on_plain.iter().map(|&&(_, row)| row as u32).collect();
         let chunk = Arc::new(Chunk::cut(
@@ -3479,7 +3322,7 @@ fn run_and_serialize(
             pool,
         ));
         for (place, &(at, _)) in on_tagged.into_iter().chain(on_plain).enumerate() {
-            out[at].columns = Some(Columns {
+            placed.out[at].columns = Some(Columns {
                 chunk: chunk.clone(),
                 row: place as u32,
             });
@@ -3491,11 +3334,7 @@ fn run_and_serialize(
         route,
         egress.taps,
         &batch,
-        Rows {
-            out: &out,
-            sets: &sets,
-            batch_row: &batch_row,
-        },
+        &placed,
         |row, doc| tag_or_not(&tagged, &plain, &marked, row).write_row(row, doc),
         now_micros,
     );
@@ -3505,8 +3344,8 @@ fn run_and_serialize(
     }
     batch.reclaim(pool);
     Serialized {
-        rows: out,
-        sets,
+        rows: placed.out,
+        sets: placed.sets,
         blocking: None,
         dropped: rows_answered(|a| *a == Answer::Drop) as u64,
         no_rule,
@@ -3517,12 +3356,164 @@ fn run_and_serialize(
     }
 }
 
-/// A route run's rows, as `run_and_serialize` placed them.
-struct Rows<'a> {
-    out: &'a [SerializedRow],
-    sets: &'a [Vec<DestId>],
-    /// Each of `out`'s row in the batch.
-    batch_row: &'a [usize],
+/// The batch `plan` makes of `ingest`'s records. It holds the source fields that the plan, a destination's id field
+/// or a capture reads, and the plan has run over the rows `mask` selects.
+fn run_plan(
+    plan: &Plan,
+    ingest: &mut Ingest<'_>,
+    mask: Column,
+    pool: &mut BufferPool,
+    errors: &mut ErrorSink,
+    metrics: &MetricsHandle,
+    egress: &Egress<'_>,
+) -> Batch {
+    let (records, raw, meta) = (ingest.records, ingest.raw, ingest.meta);
+    let rows = records.len();
+    let mut batch = Batch::new(&plan.delivery_layout(), rows, 0);
+    let mut origin = Column::alloc(pool, &DataType::I64, rows);
+    for (row, at) in origin.i64_mut().unwrap().values.iter_mut().enumerate() {
+        *at = row as i64;
+    }
+    batch.put(plan.origin_slot(), origin, pool);
+    // `reads_meta` covers the pipeline and its route's delivery rules. A destination's `id_field` reads the same batch
+    // and is configured on the worker, not in the plan, so it is unioned in here.
+    let fields = meta.source_fields();
+    // A capture shows every `__source` field, and its filter, compiled after the plan, may read any of them: neither
+    // is in `reads_meta`, so while one is open here every field is filled.
+    let watched = !egress.taps.is_empty();
+    let wanted =
+        |i: usize| watched || plan.reads_meta[i] || egress.id_fields.iter().any(|(_, field)| field == fields[i].0);
+    let noted = meta.ingest(&mut batch, records, &raw.text, ingest.source, wanted, pool);
+
+    let mut ctx = Ctx::at(pool, errors, ingest.now_micros);
+    ctx.fields = ingest.tally.take();
+    // Ingest's repairs, inside this route's window so a repaired row is marked wherever it goes and an `Unroll`
+    // remaps it with the rest.
+    for (row, kind) in &raw.notes {
+        let raw = ctx
+            .errors
+            .raise(*row as usize, INGEST_FUNCTION, Some(SLOT_RAW), kind.clone());
+        raw.read = vec![Read::new(Some((SLOT_RAW, String::new())), None)];
+    }
+    for (row, slot, kind, value) in noted {
+        let at = ctx.errors.raise(row as usize, INGEST_FUNCTION, Some(slot), kind);
+        if value.is_some() {
+            at.read = vec![Read::new(Some((slot, String::new())), value)];
+        }
+    }
+    exec::run_scoped(plan, &mut batch, mask, &mut ctx, Some(metrics));
+    batch
+}
+
+/// The rows of `batch` whose answer is block, as a block: each record with its first exception. `blocked` is how many
+/// there are.
+fn marked_block(
+    plan: &Plan,
+    batch: &Batch,
+    entries: &[crate::core::error::Exception],
+    answers: &[Answer],
+    on_exception: &crate::plan::config::OnException,
+    blocked: usize,
+) -> Blocked {
+    let slot_names = plan.slot_names();
+    let exception = |a: &crate::core::error::Exception| {
+        let what = a.message(&slot_names);
+        match plan.step_ids.get(a.function as usize) {
+            Some(step) => format!("at step {step}: {what}"),
+            None => format!("with: {what}"),
+        }
+    };
+    let blocking = entries.iter().filter(|a| {
+        answers.get(a.row as usize) == Some(&Answer::Block) && *on_exception.answer(&a.kind) == Answer::Block
+    });
+    let first = blocking.clone().next().map(exception).unwrap_or_default();
+    // By record, not row: an `Unroll` may have made several rows of one record, and a capture shows records.
+    let origin = batch.peek(plan.origin_slot()).i64().unwrap().values;
+    let mut by_record: std::collections::BTreeMap<usize, String> = std::collections::BTreeMap::new();
+    for a in blocking {
+        by_record
+            .entry(origin[a.row as usize] as usize)
+            .or_insert_with(|| exception(a));
+    }
+    Blocked {
+        rows: blocked,
+        cause: Cause::Marked {
+            pipeline: plan.name.clone(),
+            first,
+        },
+        records: by_record.into_iter().collect(),
+    }
+}
+
+/// What a set of destinations reaches, counting the DLQs down a chain from each.
+struct Reached {
+    /// The forms a row bound for the set is read in: JSON, columns, text.
+    reads: Reads,
+    /// Each of `Egress::id_fields` whose destination the set reaches. A chosen destination's DLQ counts:
+    /// `offer_salvage` sends there after the columns are gone, so a row's identity is read while it is placed.
+    id_fields: Vec<(DestId, String)>,
+}
+
+/// A route run's rows, as `run_and_serialize` places them.
+#[derive(Default)]
+struct Placed {
+    out: Vec<SerializedRow>,
+    /// Interned: rows of one route share a handful of sets, usually one.
+    sets: Vec<Vec<DestId>>,
+    /// What each of `sets` reaches, worked out once when the set is first seen.
+    reached: Vec<Reached>,
+    /// Each row bound for columns, by its place in `out`: cut into one chunk once every row is placed.
+    cut: Vec<(usize, usize)>,
+    /// Each of `out`'s row in the batch, while a capture is copying them.
+    batch_row: Vec<usize>,
+    /// Each row delivered, while senders are counted.
+    delivered: Vec<usize>,
+}
+
+impl Placed {
+    /// The index of `dests` in `sets`. The last set is tried first because consecutive rows almost always match the
+    /// same rules.
+    fn set(&mut self, dests: &[DestId], egress: &Egress<'_>) -> u32 {
+        let i = self.sets.iter().rposition(|s| *s == dests).unwrap_or_else(|| {
+            let reaches = |dest: &DestId| {
+                dests.contains(dest) || (dests.iter()).any(|c| egress.dlq_of.get(c).is_some_and(|d| d.contains(dest)))
+            };
+            self.reached.push(Reached {
+                reads: match egress.columns {
+                    Some(c) => c.reads(dests, egress.dlq_of),
+                    None => Reads {
+                        json: true,
+                        columns: false,
+                        text: false,
+                    },
+                },
+                // A destination whose `id_field` names nothing this pipeline produces is not an error: the same
+                // destination may be fed by several routes.
+                id_fields: (egress.id_fields.iter())
+                    .filter(|(dest, _)| reaches(dest))
+                    .cloned()
+                    .collect(),
+            });
+            self.sets.push(dests.to_vec());
+            self.sets.len() - 1
+        });
+        u32::try_from(i).expect("distinct destination sets in one route run fit a u32")
+    }
+
+    /// Adds `out`, made of batch row `row`, and notes `row` for each later pass that wants it: the column cut, a
+    /// capture's copy and the sender count.
+    fn push(&mut self, out: SerializedRow, row: usize, columns: bool, watched: bool, counted: bool) {
+        if columns {
+            self.cut.push((self.out.len(), row));
+        }
+        self.out.push(out);
+        if watched {
+            self.batch_row.push(row);
+        }
+        if counted {
+            self.delivered.push(row);
+        }
+    }
 }
 
 /// What each of `taps` keeps of a route run: the rows bound for its destination that its filter matches, up to what it
@@ -3538,7 +3529,7 @@ fn copy_for_captures(
     route: &CompiledRoute,
     taps: &[RouteTap],
     batch: &Batch,
-    rows: Rows<'_>,
+    rows: &Placed,
     write: impl Fn(usize, &mut Vec<u8>),
     now_micros: i64,
 ) -> Vec<Vec<(Vec<crate::heartbeat::CaptureColumn>, crate::heartbeat::CapturedRow)>> {

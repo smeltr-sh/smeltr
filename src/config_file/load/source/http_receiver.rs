@@ -1,17 +1,14 @@
-use super::super::*;
-use super::SourceSpec;
+use super::super::shared::*;
+use super::receiver::{NoFramingDto, ReceiverKindDto, ReceiverSourceDto};
+use crate::plan::topology::{HttpReceiverConfig, Receiver};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub type HttpReceiverSourceDto = ReceiverSourceDto<HttpReceiverDto, NoFramingDto>;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HttpReceiverSourceDto {
-    #[serde(flatten)]
-    pub listener: ReceiverSettingsDto,
-    #[serde(flatten)]
-    pub connections: ConnectionLimitsDto,
-    #[serde(flatten)]
-    pub tls: ServedTlsDto,
+pub struct HttpReceiverDto {
     /// Whether a request is answered only once every destination has its records, rather than as soon as it is
     /// received.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -28,26 +25,23 @@ pub struct HttpReceiverSourceDto {
     /// The JSON pointer to the array `"array"` reads, such as `/events`. Absent is a body that is the array.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub records_at: Option<String>,
-    #[serde(flatten, default)]
-    pub unknown: NoUnknownKeys,
 }
 
-impl SourceSpec for HttpReceiverSourceDto {
-    fn check(&self, s: &SourceDto, errors: &mut ItemErrors<'_>) {
+impl ReceiverKindDto for HttpReceiverDto {
+    type Framing = NoFramingDto;
+
+    fn meta(&self) -> SourceMeta {
+        SourceMeta::HTTP_RECEIVER
+    }
+
+    fn check(&self, _: &SourceDto, what: &str, _: &ReceiverSettingsDto, _: &NoFramingDto, errors: &mut ItemErrors<'_>) {
         let Self {
-            listener,
-            connections,
-            tls,
             path,
-            tokens,
             records,
             records_at,
             ..
         } = self;
-        let what = format!("source {:?}", s.id);
-        check_receiver(&what, listener, tls, tokens, errors);
-        check_connection_limits(&what, connections, true, errors);
-        check_records_at(&what, *records, records_at, errors);
+        check_records_at(what, *records, records_at, errors);
         if !path.starts_with('/') || path.contains(['?', '#', ':', '*']) || path.chars().any(char::is_whitespace) {
             errors.at("path").push(format!(
                 "{what} takes requests at {path:?}; a path starts with / and holds no ?, #, :, * or space"
@@ -60,58 +54,27 @@ impl SourceSpec for HttpReceiverSourceDto {
         }
     }
 
-    fn to_kind(&self, of: &str) -> SourceKind {
-        let Self {
-            unknown: _,
-            listener,
-            connections,
-            tls,
-            path,
-            tokens,
-            records,
-            records_at,
-            answer_after_delivery,
-        } = self;
-        receiver_config(
-            crate::plan::topology::Receiver::Http(crate::plan::topology::HttpReceiverConfig {
-                path: path.clone(),
-                records: match records {
-                    ApiRecordsDto::Body => ApiRecords::Body,
-                    ApiRecordsDto::Lines => ApiRecords::Lines,
-                    ApiRecordsDto::Array => ApiRecords::Array(records_at.clone().unwrap_or_default()),
-                },
-            }),
-            *answer_after_delivery,
-            listener,
-            tls,
-            tokens.iter(),
-            to_connection_limits(connections),
-            of,
-        )
+    fn receiver(&self, _: &NoFramingDto) -> Receiver {
+        Receiver::Http(HttpReceiverConfig {
+            path: self.path.clone(),
+            records: match self.records {
+                ApiRecordsDto::Body => ApiRecords::Body,
+                ApiRecordsDto::Lines => ApiRecords::Lines,
+                ApiRecordsDto::Array => ApiRecords::Array(self.records_at.clone().unwrap_or_default()),
+            },
+        })
     }
 
-    fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
-        self.tokens.values().map(|r| ("tokens", r)).collect()
+    fn answer_after_delivery(&self) -> bool {
+        self.answer_after_delivery
     }
 
-    fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto> {
+    fn tokens(&self) -> Vec<(&String, &SecretRefDto)> {
+        self.tokens.iter().collect()
+    }
+
+    fn tokens_mut(&mut self) -> Vec<&mut SecretRefDto> {
         self.tokens.values_mut().collect()
-    }
-
-    fn urls(&self) -> Vec<(&'static str, &str)> {
-        Vec::new()
-    }
-
-    fn tls(&self) -> Option<TlsDto> {
-        Some(self.tls.tls())
-    }
-
-    fn receiver_port(&self) -> Option<u16> {
-        Some(self.listener.port)
-    }
-
-    fn declared_meta(&self) -> SourceMeta {
-        SourceMeta::HTTP_RECEIVER
     }
 }
 

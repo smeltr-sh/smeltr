@@ -3,7 +3,7 @@
 //! with neither refuses to start; one with both runs a leader and a worker that reports to it.
 //!
 //! The leader serves everything on one port: the admin and worker API (`smeltr::leader`), the GUI and its config API,
-//! the preview and capture endpoints, and the Cluster page (`cluster.rs`).
+//! and the preview and capture endpoints.
 
 use std::collections::HashMap;
 
@@ -23,7 +23,6 @@ mod branch_api;
 mod capture_api;
 mod certificates_api;
 mod chat_api;
-mod cluster;
 mod config_api;
 mod docs_api;
 mod export_api;
@@ -1013,6 +1012,7 @@ fn start_worker(
     let thread_limit = cfg::worker_thread_limit();
     let memory = smeltr::worker::memory_to_fit();
     let stop_after_unreachable_secs = cfg::worker_stop_after_unreachable_secs();
+    let exit_after_blocked_secs = cfg::worker_exit_after_blocked_secs();
     let leader_trust_public = cfg::leader_trust_public();
     let metrics_endpoint = smeltr::worker::metrics_endpoint::open().unwrap_or_else(|e| {
         eprintln!("smeltr: refusing to start -- {e}");
@@ -1032,6 +1032,7 @@ fn start_worker(
         state_dir,
         enrollment_code,
         stop_after_unreachable_secs,
+        exit_after_blocked_secs,
         in_leader,
         metrics_endpoint,
     });
@@ -1145,8 +1146,7 @@ async fn setup_leader(
         spawn_embedded_worker(store, &data_dir, leader_url, leader_ca_pem, authority_dir);
     }
 
-    let admin_and_cluster = smeltr::leader::admin_router()
-        .route("/api/cluster", get(cluster::cluster_status))
+    let stateful_routes = smeltr::leader::admin_router()
         .route("/api/map", get(get_map))
         .route("/api/map/measurements", get(get_map_measurements))
         .route("/api/areas/:area/stats", get(get_stats))
@@ -1187,37 +1187,6 @@ async fn setup_leader(
         // Not on `app` below with the rest of the config routes: saving a connector asks the certificate list whether
         // it holds the certificate named.
         .route("/api/areas/:area/sources", put(config_api::put_sources))
-        .route(
-            "/api/areas/:area/sources/:id/reset-history",
-            post(smeltr::leader::marks::reset_history),
-        )
-        .route("/api/areas/:area/sources/:id/mark", post(smeltr::leader::marks::mark))
-        .route(
-            "/api/areas/:area/sources/:id/preset",
-            put(smeltr::leader::marks::put_preset),
-        )
-        .route("/api/areas/:area/sources/:id/past", get(smeltr::leader::marks::past))
-        .route("/api/areas/:area/sources/:id/chart", get(smeltr::leader::marks::chart))
-        .route(
-            "/api/areas/:area/sources/:id/senders",
-            get(smeltr::leader::senders::get),
-        )
-        .route(
-            "/api/areas/:area/sources/:id/senders/mark",
-            post(smeltr::leader::marks::mark_sender),
-        )
-        .route(
-            "/api/areas/:area/sources/:id/senders/past",
-            get(smeltr::leader::marks::past_sender),
-        )
-        .route(
-            "/api/areas/:area/sources/:id/senders/chart",
-            get(smeltr::leader::marks::chart_sender),
-        )
-        .route(
-            "/api/areas/:area/sources/:id/senders/fields",
-            put(smeltr::leader::marks::put_sender_fields),
-        )
         .route("/api/areas/:area/destinations", put(config_api::put_destinations))
         // Not on `app` below with the rest of the samples routes: the capture a sample is made from is held in
         // `State<AppState>`.
@@ -1244,7 +1213,7 @@ async fn setup_leader(
         )
         .layer(axum::extract::DefaultBodyLimit::max(PEOPLE_BODY_LIMIT))
         .route_layer(axum::middleware::from_fn_with_state(auth, gate::require_principal));
-    let routes = smeltr::leader::compose(state.clone(), admin_and_cluster);
+    let routes = smeltr::leader::compose(state.clone(), stateful_routes);
 
     LeaderSetup {
         routes,
@@ -1316,6 +1285,8 @@ struct WorkerStorageFileConfig {
 struct WorkerRuntimeFileConfig {
     thread_limit: Option<usize>,
     memory: Option<String>,
+    // -1 is never, as for `stop_after_unreachable_secs`.
+    exit_after_blocked_secs: Option<i64>,
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -1751,6 +1722,10 @@ fn load_and_apply_config_file() {
     backfill_env("SMELTR_WORKER_THREAD_LIMIT", file.worker.runtime.thread_limit);
     backfill_env("SMELTR_WORKER_MEMORY", file.worker.runtime.memory);
     backfill_env(
+        "SMELTR_WORKER_EXIT_AFTER_BLOCKED_SECS",
+        file.worker.runtime.exit_after_blocked_secs,
+    );
+    backfill_env(
         "SMELTR_WORKER_STOP_AFTER_UNREACHABLE_SECS",
         file.worker.heartbeat.stop_after_unreachable_secs,
     );
@@ -1879,6 +1854,7 @@ fn start() {
     // Before any thread, as setting the environment needs; every HTTP client reads it when it builds a request.
     let own = smeltr::startup_config::leader_enabled().then(|| reached_at(&smeltr::startup_config::gui_bind()));
     smeltr::startup_config::never_proxy_this_host(own);
+    smeltr::io::kafka::cache_in_memory();
 
     // A runtime is neither role: it is one deployment, started by the worker that supervises it and ended when
     // that worker says so. A role is configuration here rather than an argument, so this is one more setting and
@@ -2248,7 +2224,7 @@ async fn run_leader() {
         .route("/api/preview/format", post(format))
         .route("/api/areas/:area/lookups/file", get(config_api::get_lookup_file))
         .route("/api/areas/:area/lookups/mmdb", get(config_api::get_lookup_mmdb))
-        // GET/POST `/api/worker-groups` and PUT `/api/worker-groups/:id/hue` are on `admin_and_cluster` instead:
+        // GET/POST `/api/worker-groups` and PUT `/api/worker-groups/:id/hue` are on `stateful_routes` instead:
         // both need `State<AppState>`, which only that router carries.
         .route(
             "/api/worker-groups/:id",
@@ -2260,7 +2236,7 @@ async fn run_leader() {
         .route("/api/branches/:name/threads/:id", post(branch_api::resolve_thread))
         .route("/api/branches/:name/reviews", post(branch_api::review_change))
         .route("/api/branches/:name/timeline", get(branch_api::change_timeline))
-        // `/api/branches/:name/deploy` and `/api/main/deploy` are on `admin_and_cluster` instead: both wait their turn
+        // `/api/branches/:name/deploy` and `/api/main/deploy` are on `stateful_routes` instead: both wait their turn
         // with the remote's syncs, which needs `State<AppState>`.
         .route("/api/branches/:name/bring-current", post(branch_api::bring_current))
         .route("/api/main/history", get(branch_api::history))
@@ -4067,7 +4043,7 @@ mod tests {
         };
         let raw = RawBundle {
             file: FileConfig {
-                version: 1,
+                version: smeltr::config_file::CURRENT_VERSION,
                 sources: vec![],
                 destinations: vec![],
                 pipelines: vec![

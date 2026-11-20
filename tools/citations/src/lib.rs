@@ -41,6 +41,10 @@ const NOT_DEFINED_HERE: &[(&str, &str)] = &[
         "the rdkafka crate's other producer, which smeltr does not use",
     ),
     ("sasl_gssapi", "a librdkafka `builtin.features` value"),
+    (
+        "krb5_creds",
+        "MIT krb5's credentials struct, which the Kafka Kerberos code allocates room for",
+    ),
     // The operating system's own calls.
     (
         "setpgid",

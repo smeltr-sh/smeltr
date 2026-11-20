@@ -1,7 +1,7 @@
 //! Every kind of destination: its struct, and what it answers about itself (`DestinationSpec`), one file each. The
 //! object destinations share one generic struct, in `objects`.
 
-use super::*;
+use super::shared::*;
 
 mod delta;
 mod elasticsearch;
