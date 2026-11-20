@@ -23,7 +23,7 @@ use crate::leader::deploy_checks::{FailingTest, Findings};
 use crate::leader::marks::{Mark, Marks, Was};
 use crate::leader::registry::{FactKey, ThreadHealth};
 use crate::leader::senders::Sender;
-use crate::leader::series::{DRIFT_WINDOW, DeclaredField, LoggedType, RegistryStore, Tier};
+use crate::leader::series::{DRIFT_WINDOW, DeclaredField, FactSpan, LoggedType, RegistryStore, Tier};
 use crate::leader::store::{KeyStanding, Unopenable, WorkerCredentialRecord};
 use crate::leader::throughput;
 
@@ -2019,6 +2019,23 @@ pub fn outside_normal_facts(
         .collect()
 }
 
+/// Why each below-normal fact [`outside_normal_facts`] gives began, as (entry, subject, reason) for the fact clock to
+/// keep (`RegistryStore::keep_reasons`).
+pub fn below_reasons(
+    readings: &[throughput::Reading],
+    snapshot: &[ThreadHealth],
+    heartbeat_interval: Duration,
+) -> Vec<(String, String, String)> {
+    outside_normal(readings, snapshot, heartbeat_interval)
+        .into_iter()
+        .filter_map(|(r, side)| {
+            let reason = serde_json::to_string(&r.reason()?).ok()?;
+            let (entry, subject) = outside_key(r, side).into_parts();
+            Some((entry, subject, reason))
+        })
+        .collect()
+}
+
 /// A source reading fewer rows than it normally does at this time of day, or more: it is reading, and how much is
 /// off. Fewer is a warning, or info once an editor answered what it was (`marks`). More is info.
 pub fn outside_normal_warnings(
@@ -2237,6 +2254,9 @@ pub struct WarningSpan {
     /// `None` while it still holds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ended_millis: Option<i64>,
+    /// Why a below-normal warning began, where it kept why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<throughput::Reason>,
 }
 
 /// The warnings a source's chart marks, by the fact each is kept under.
@@ -2276,8 +2296,14 @@ pub fn sender_spans(
             severity: Severity::Warning,
             started_millis: span.started_ms,
             ended_millis: span.ended_ms,
+            reason: reason(&span),
         })
         .collect())
+}
+
+/// Why `span`'s warning began, as it kept it.
+fn reason(span: &FactSpan) -> Option<throughput::Reason> {
+    serde_json::from_str(span.reason.as_deref()?).ok()
 }
 
 /// Every warning about `group`'s source or destination `id` that held at any time since `since_ms`, oldest first.
@@ -2304,6 +2330,7 @@ pub fn spans(
                 severity: *severity,
                 started_millis: span.started_ms,
                 ended_millis: span.ended_ms,
+                reason: reason(&span),
             })
         })
         .collect())
@@ -4533,12 +4560,14 @@ mod tests {
                     severity: Severity::Failed,
                     started_millis: NOW - 30 * 60_000,
                     ended_millis: Some(NOW - 20 * 60_000),
+                    reason: None,
                 },
                 WarningSpan {
                     condition: Condition::SourceRowsBelow,
                     severity: Severity::Warning,
                     started_millis: NOW - 10 * 60_000,
                     ended_millis: None,
+                    reason: None,
                 },
             ]
         );

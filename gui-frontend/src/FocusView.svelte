@@ -32,6 +32,7 @@
     conditionLabel,
     errorMessage,
     errorText,
+    getSourceChart,
     getSourcePast,
     getStats,
     putSourcePreset,
@@ -43,6 +44,7 @@
     type PipelineStatsDto,
     type Preset,
     type RouteEdge,
+    type SourceChartResponse,
     type SourcePastResponse,
     type SpreadDto,
     type StatsResponse,
@@ -310,6 +312,7 @@
       to: w.endedMillis ?? null,
       label: conditionLabel(w.condition),
       failed: w.severity === 'failed',
+      reason: w.reason,
     })),
     // Some warnings keep no history, so the chart can mark them only while they hold.
     ...(reading?.warnings ?? [])
@@ -324,6 +327,37 @@
         failed: w.severity === 'failed',
       })),
   ]);
+
+  /** The width of the warning under the pointer on a source's rows chart, and that width's rate and
+   * range over the chart, to draw over it. */
+  let warnedWidth = $state<number | null>(null);
+  let overlay = $state<SourceChartResponse | null>(null);
+  $effect(() => {
+    const window = warnedWidth;
+    const [from, to] = [rateTimes[0], rateTimes[rateTimes.length - 1]];
+    if (window === null || node.kind !== 'source' || from === undefined) {
+      overlay = null;
+      return;
+    }
+    let current = true;
+    getSourceChart(
+      node.group,
+      node.authorId,
+      from,
+      to + (answer?.bucketMillis ?? 0),
+      undefined,
+      window,
+    )
+      .then((got) => {
+        if (current) overlay = got.ok ? got : null;
+      })
+      .catch(() => {
+        if (current) overlay = null;
+      });
+    return () => {
+      current = false;
+    };
+  });
 
   /** The overview's figure. A pipeline has no reading of its own, so its figure is the last
    * finished bucket of its spread. */
@@ -938,7 +972,16 @@
   band?: ReturnType<typeof expectedSlots>,
 )}
   {#if points.some((p) => p !== null)}
-    <Sparkline series={[{ label, color: 'var(--ink)', points }]} {band} times={rateTimes} {marks} />
+    <Sparkline
+      series={[{ label, color: 'var(--ink)', points }]}
+      {band}
+      times={rateTimes}
+      {marks}
+      overlay={label === 'rows/s' ? overlay : null}
+      onmark={label === 'rows/s'
+        ? (m) => (warnedWidth = m?.reason?.kind === 'width' ? m.reason.windowMillis : null)
+        : undefined}
+    />
     <div class="axis mono dim" aria-hidden="true">
       <span>{chart.label} ago</span><span>now</span>
     </div>
