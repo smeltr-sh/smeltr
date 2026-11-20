@@ -408,6 +408,9 @@ impl Broker {
                 "KAFKA_AUTO_CREATE_TOPICS_ENABLE=false",
             ])
             .args(["-e", &format!("KAFKA_NUM_PARTITIONS={}", partitions())])
+            // A deleted output topic frees its tmpfs at once rather than a minute later, by when the next run's
+            // output would fill it.
+            .args(["-e", "KAFKA_LOG_SEGMENT_DELETE_DELAY_MS=0"])
             .arg("apache/kafka:4.4.0");
         let broker = Broker {
             container: Container::run(docker, run),
