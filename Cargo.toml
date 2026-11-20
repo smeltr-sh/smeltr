@@ -61,12 +61,14 @@ tokio-util = { version = "0.7", features = ["io"] }
 socket2 = "0.6"
 
 # `cmake-build` vendors librdkafka, so a build needs a C toolchain and
-# nothing preinstalled. `ssl-vendored` is what makes `security.protocol=SSL`
-# and SASL work at all, with a vendored OpenSSL that does not get the
-# host's security updates; `ssl` swaps in the system one. `zstd` offers
-# the Zstd codec and costs libclang at build time (`zstd-sys` runs bindgen,
-# and its `bindgen` feature cannot be turned off from here).
-rdkafka = { version = "0.39", features = ["cmake-build", "ssl-vendored", "libz-static", "curl-static", "zstd"] }
+# nothing preinstalled. `ssl` is what makes `security.protocol=SSL` and
+# SCRAM and OAUTHBEARER work at all. `zstd` offers the Zstd codec and costs
+# libclang at build time (`zstd-sys` runs bindgen, and its `bindgen`
+# feature cannot be turned off from here).
+rdkafka = { version = "0.39", features = ["cmake-build", "ssl", "libz-static", "curl-static", "zstd"] }
+# What `ssl` builds librdkafka against: AWS-LC's FIPS module, the one `aws-lc-rs` links below, through its
+# OpenSSL API. So Kafka's cryptography is the same module's as everything else's, and no OpenSSL is built.
+openssl-sys = { version = "0.9.118", features = ["aws-lc-fips"] }
 
 # Git, in-process, for both tiers' halves that do not have to run system git. `parallel` is what makes
 # `Repository` `Send`, so it is a correctness requirement rather than a speed one; `merge` reaches
@@ -348,3 +350,9 @@ opt-level = 3
 inherits = "release"
 lto = "fat"
 codegen-units = 1
+
+# rdkafka-sys 4.10.0 with one change to its build.rs, on smeltr-sh's fork: over AWS-LC, `openssl-sys` names
+# AWS-LC's headers but no root, so librdkafka's CMake found the build host's OpenSSL headers and the link failed.
+# The change hands CMake AWS-LC's headers. Drop this once an rdkafka-sys release does the same.
+[patch.crates-io]
+rdkafka-sys = { git = "https://github.com/smeltr-sh/rust-rdkafka", rev = "0d424190733fb1f659927dcb9a1d39df34f97cf1" }

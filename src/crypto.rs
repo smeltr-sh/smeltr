@@ -2,8 +2,8 @@
 //!
 //! One provider, installed once at startup, taken from there by everything that opens a connection: the leader's
 //! server, a worker's heartbeat, the Elasticsearch transport and the git fetch inside curl. Kafka is not among
-//! them -- librdkafka carries its own TLS over its own OpenSSL, which the design document's Cryptography section
-//! states and this module cannot reach.
+//! them -- librdkafka speaks its own TLS, over the same AWS-LC module but with its own set of suites and groups,
+//! which the design document's Cryptography section states and this module cannot reach.
 //!
 //! Every suite and group in it sits inside the linked module's validation boundary, because `rustls`'s `fips`
 //! feature leaves nothing else to offer. There is one set, so nothing selects between sets and no deployment
