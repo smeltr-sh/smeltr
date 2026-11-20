@@ -4,7 +4,17 @@
 // test is not about.
 //
 // A fresh browser edits branch `work` in the `shared` scope, which is where `api` arranges things too.
-import { test, expect, goto, signedIn, signInThroughGui, type Api, type Leader } from '../fleet';
+import {
+  test,
+  expect,
+  goto,
+  settled,
+  signedIn,
+  signInThroughGui,
+  watchRequests,
+  type Api,
+  type Leader,
+} from '../fleet';
 import type { Page } from '@playwright/test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -185,6 +195,7 @@ test('A1: a viewer captures a deployed source from the map and downloads it', as
   await first.ctx.dispose();
 
   const viewer = await (await browser.newContext({ ignoreHTTPSErrors: true })).newPage();
+  await viewer.addInitScript(() => localStorage.setItem('smeltr-scope', 'shared'));
   await viewer.goto(leader.url);
   await signInThroughGui(viewer, 'vera', 'vera-chosen-password');
   await expect(viewer.getByRole('button', { name: 'Sign in' })).toHaveCount(0);
@@ -224,11 +235,15 @@ test('A1: a viewer captures a deployed source from the map and downloads it', as
   await viewer.getByRole('searchbox', { name: 'Find a sample' }).fill('own-metrics');
   await expect(viewer.getByRole('option', { name: /Your records/ })).toBeVisible();
 
-  // Routes asks for the secrets a form may name, which a viewer may not read; they are left out, unsaid.
-  const asked = viewer.waitForResponse((r) => r.url().includes('/api/secrets'));
+  // A viewer picks no secret, so Routes does not ask for the secrets a form may name.
+  const asked: string[] = [];
+  viewer.on('request', (r) => {
+    if (r.url().includes('/api/secrets')) asked.push(r.url());
+  });
+  watchRequests(viewer);
   await goto(viewer, leader, '#/build/routes');
-  expect((await asked).status()).toBe(403);
-  await expect(viewer.getByText('this needs editor in at least one area')).toHaveCount(0);
+  await settled(viewer);
+  expect(asked).toEqual([]);
 
   // Route a sample offers it too, first, and routes its records. No route takes own-metrics.
   await goto(viewer, leader, '#/build/routes/sample');
@@ -881,7 +896,7 @@ test('A1: a receiver is captured as sent, warned of, and downloaded', async ({
 }) => {
   const port = await freePort();
   await api.put(`/api/areas/shared/sources${ON}`, [
-    { id: 'firewall', type: 'syslogReceiver', port, allowFrom: ['127.0.0.1'] },
+    { id: 'firewall', type: 'socketReceiver', framing: 'syslog', port, allowFrom: ['127.0.0.1'] },
   ]);
   await fleet.startWorker(leader, api, 'default', 'w1');
 
@@ -2037,6 +2052,8 @@ test('A11: a test locking a whole float and a long integer passes at once', asyn
   const lock = admin.getByRole('button', { name: 'Lock this as a test' });
   await expect(lock).toBeEnabled({ timeout: 15_000 });
   await lock.click();
+  // Until the lock page is up, 'Name' would find the editor's "pipeline name" box.
+  await expect(admin.getByRole('heading', { name: 'Lock this as a test' })).toBeVisible();
   await admin.getByRole('textbox', { name: 'Name' }).fill('orders keep their numbers');
   await expect(admin.getByRole('columnheader', { name: 'whole' })).toBeVisible();
   await admin.screenshot({ path: test.info().outputPath('lock-numbers.png') });
@@ -2789,7 +2806,13 @@ test('A10: S2S and syslog receivers show as receivers, and a syslog receiver edi
   };
   await api.put(`/api/areas/shared/sources${ON}`, [
     s2s,
-    { id: 'firewalls', type: 'syslogReceiver', port: 6514, allowFrom: ['10.0.0.0/8'] },
+    {
+      id: 'firewalls',
+      type: 'socketReceiver',
+      framing: 'syslog',
+      port: 6514,
+      allowFrom: ['10.0.0.0/8'],
+    },
   ]);
 
   await goto(admin, leader, '#/build/sources');
@@ -2831,7 +2854,7 @@ test('A10: S2S and syslog receivers show as receivers, and a syslog receiver edi
     fullPage: true,
   });
   await admin.keyboard.press('Escape');
-  // UDP frames nothing, so choosing it drops the line breaker with the certificate.
+  // Over UDP a datagram is a message, so choosing UDP drops the line breaker along with the certificate.
   await admin.getByRole('combobox', { name: /^transport/ }).selectOption('udp');
   await expect(certificate).toBeHidden();
   await expect(lineBreaker).toBeHidden();
@@ -2844,7 +2867,8 @@ test('A10: S2S and syslog receivers show as receivers, and a syslog receiver edi
     s2s,
     {
       id: 'firewalls',
-      type: 'syslogReceiver',
+      type: 'socketReceiver',
+      framing: 'syslog',
       port: 6514,
       allowFrom: ['10.0.0.0/8', '192.168.0.0/16'],
       transport: 'udp',

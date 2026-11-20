@@ -11,6 +11,8 @@ export const WHO = [
   'deployer',
 ] as const;
 export type Who = (typeof WHO)[number];
+/** Where a viewer, editor or deployer holds their level: `shared`, or one worker group, as a team does. */
+export const HELD_IN = ['shared', 'group'] as const;
 export const THEMES = ['light', 'dark'] as const;
 export const VIEWPORTS = {
   wide: { width: 1440, height: 900 },

@@ -29,11 +29,20 @@
     type KafkaFacts,
     getMapMeasurements,
   } from './api';
+  import { holdsSomewhere } from './access';
   import { holdings, sourceReadings } from './mapTerms';
   import NewSource from './NewSource.svelte';
   import ObjectList from './ObjectList.svelte';
   import { SOURCE_KIND } from './sourceKinds';
-  import { isSql, isStream, reads, typeLabel, type StreamSource } from './sources';
+  import {
+    isSql,
+    isStream,
+    reads,
+    typeLabel,
+    typeOf,
+    type SourceType,
+    type StreamSource,
+  } from './sources';
 
   // `focus` is a source's own way in from the map (design doc "The map"): which card to land
   // on and highlight, set from the route rather than chosen on this page.
@@ -87,7 +96,7 @@
   /** What this leader's build can select, for the security section, and the secret catalog. */
   let kafka: KafkaFacts = $state(NO_KAFKA_FACTS);
   let secrets: SecretDto[] = $state([]);
-  void fieldCatalogs().then((c) => ({ secrets, kafka } = c));
+  void fieldCatalogs(holdsSomewhere('editor')).then((c) => ({ secrets, kafka } = c));
 
   /** Each source's current readings, by id, for the worker holding a listing source: this scope's group's, or under
    * `shared/`, which runs in every group, each group's. Best-effort: a page without readings still edits. */
@@ -166,8 +175,8 @@
         noun="source"
         {validation}
         idOf={(s) => s.id}
-        typeOf={(s) => s.type}
-        typeLabel={(t) => typeLabel(t as SourceDto['type'])}
+        {typeOf}
+        typeLabel={(t) => typeLabel(t as SourceType)}
         columns={[
           { key: 'reads', label: 'reads', value: reads },
           {
@@ -217,7 +226,7 @@
             <Field required field="id" label="id">
               <input type="text" bind:value={source.id} />
             </Field>
-            <Field label="type"><span class="fixed">{typeLabel(source.type)}</span></Field>
+            <Field label="type"><span class="fixed">{typeLabel(typeOf(source))}</span></Field>
           </div>
           <SourceFields
             {source}

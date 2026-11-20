@@ -43,7 +43,7 @@ fn open(
     secrets: &HeldSecrets,
 ) -> Box<dyn Source> {
     let config = ReceiverConfig {
-        receiver: Receiver::Syslog(SocketReceiverConfig {
+        receiver: Receiver::Socket(SocketReceiverConfig {
             allow_from: allow_from.iter().map(|n| n.parse().unwrap()).collect(),
             transport,
             framing: Framing::Syslog(None),

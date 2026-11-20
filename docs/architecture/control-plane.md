@@ -506,8 +506,12 @@ flowchart TD
 - **A build is its commit.** The date in the version changes on every rebuild
   and does not count. A build with uncommitted edits to its sources is its
   commit and those edits. A build that cannot read its commit fails to build.
-- **A release is a tag on `main`.** `v1.2.0`, semver. A build from that commit
-  with no edits carries the release name.
+- **A release is a tag on `main`, or a patch on the release branch of its
+  minor version.** `v1.2.0`, semver. A patch to a minor version that `main`
+  has moved past, such as 1.2.1, is cut from `release/1.2`, made from `v1.2.0`
+  when the patch is needed, and is merged back to `main` so its notes and
+  fixtures are kept there too. A build from the tagged commit with no edits
+  carries the release name.
 - **Releases of one major work together.** A worker takes deployments from a
   leader of its own major, in either direction. Any other pair, a pre-release
   or a build that is not a release included, must be one commit. Within a

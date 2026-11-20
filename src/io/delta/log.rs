@@ -1020,7 +1020,7 @@ pub fn now_ms() -> i64 {
 
 /// A random UUID, version 4, as text.
 pub fn uuid() -> String {
-    let mut b = crate::leader::auth::random_bytes(16);
+    let mut b = crate::crypto::random_bytes(16);
     b[6] = (b[6] & 0x0f) | 0x40;
     b[8] = (b[8] & 0x3f) | 0x80;
     let hex: String = b.iter().map(|b| format!("{b:02x}")).collect();

@@ -344,32 +344,19 @@ export type SourceDto =
         sourcetypes?: Record<string, Sourcetype>;
       })
   | (ReceiverSettings &
-      ConnectionLimits & {
-        id: string;
-        type: 'syslogReceiver';
-        /** The networks a sender may connect from, as CIDR blocks such as `10.0.0.0/8`. Syslog carries no token,
-         * so this admits a sender, unless the receiver names authorities a sender's certificate must chain to. */
-        allowFrom?: string[];
-        /** As a Kafka source's. */
-        encoding?: string;
-        /** What senders send over. Absent is `tcp`. Over `udp` each datagram is a message, served without TLS, so it
-         * takes no certificate or authorities and only `allowFrom` admits a sender. */
-        transport?: 'tcp' | 'udp';
-        /** Where a message over TCP ends, as an object source's `lineBreaker`. Absent, at a newline. A message that
-         * starts with a digit 1 to 9 is framed by octet counting, whatever this says. */
-        lineBreaker?: string;
-      })
-  | (ReceiverSettings &
       ConnectionLimits &
       FramingSettings & {
         id: string;
         type: 'socketReceiver';
-        /** As a syslog receiver's: nothing it receives carries a token. */
+        /** The networks a sender may connect from, as CIDR blocks such as `10.0.0.0/8`. Nothing it receives carries a
+         * token, so the receiver needs these, authorities a sender's certificate must chain to, fingerprints it must
+         * match, or a combination; with networks and a certificate check, a sender must connect from a listed network
+         * and present a certificate that passes. */
         allowFrom?: string[];
         /** As a Kafka source's. */
         encoding?: string;
-        /** What senders send over. Absent is `tcp`. Over `udp` each datagram is a record, served without TLS
-         * and cut by no framing. */
+        /** The transport senders use. Absent is `tcp`. Over `udp` each datagram is a record, served without TLS, and
+         * takes no framing but `syslog`. */
         transport?: 'tcp' | 'udp';
       })
   | (SqlConnection & { type: 'postgres' })
@@ -981,10 +968,10 @@ export interface ListingSettings extends ReadFormat, FramingSettings {
 
 /** How a stream's bytes become records, an object source's objects or what a socket receiver's senders send over
  * TCP: one per line, the whole stream as one, one per line unescaped as a `bytes` object destination wrote it, one
- * per message or record that says its own length, or one per so many bytes. `lines` alone takes the source's
- * `lineBreaker`, a regex whose first capture group is where a record ends, the group dropped, as Splunk's
- * `LINE_BREAKER`; absent, a record ends at a line end. */
-export type Framing = 'lines' | 'object' | 'escapedLines' | 'lengthPrefix' | 'fixed';
+ * per message or record that says its own length, one per so many bytes, or one per syslog message (RFC 6587).
+ * `lines` and `syslog` take the source's `lineBreaker`, a regex whose first capture group is where a record ends,
+ * the group dropped, as Splunk's `LINE_BREAKER`; absent, a record ends at a line end. */
+export type Framing = 'lines' | 'object' | 'escapedLines' | 'lengthPrefix' | 'fixed' | 'syslog';
 
 /** Mirrors `config_file::dto::FramingSettingsDto`. */
 export interface FramingSettings {
@@ -1455,6 +1442,11 @@ function loadScope(): string {
 }
 
 let scope = loadScope();
+
+/** Whether this browser has a scope stored, rather than starting on `shared`. */
+export function scopeStored(): boolean {
+  return Boolean(stored(SCOPE_KEY));
+}
 
 export function currentScope(): string {
   return scope;
@@ -3304,7 +3296,7 @@ export function pastedElements(text: string): unknown[] | null {
   }
 }
 
-// -- Cluster status (`src/bin/smeltr/cluster.rs`, served by the leader) ----
+// -- the fleet's workers (`src/leader/mod.rs`, served by the leader) --------
 
 export type PartitionRef = { topic: string; partition: number };
 
@@ -3399,20 +3391,24 @@ export type ThreadHealth = {
   metrics: MetricSampleDto[];
 };
 
-export type GroupHealth = {
-  groupId: string;
-  /** The pool: what `thread_limit` sizes, and the only one an operator sets. */
-  transformThreads: number;
-  readers: number;
-  egressThreads: number;
-};
-
-export type ClusterHealth = {
+export type Health = {
   threads: ThreadHealth[];
-  groups: GroupHealth[];
   /** How long a worker may go without a heartbeat before it is silent: the leader's own `workerSilent` window. */
   silentAfterMs: number;
 };
+
+/** Each worker thread's last heartbeat, in the groups the person views. */
+export function getHealth(): Promise<Health> {
+  return readJson('/api/health');
+}
+
+/** The groups the fleet runs that the person views. */
+export async function liveGroups(): Promise<WorkerGroupDto[]> {
+  const { groups } = await readJson<{ groups: WorkerGroupDto[] }>(
+    '/api/worker-groups?deployed=true',
+  );
+  return groups;
+}
 
 /** A worker group as the repository holds it (`worker_groups_api::WorkerGroupOut`):
  * exists whether or not any thread reports into it. What it runs is not
@@ -3451,22 +3447,6 @@ export type WorkerCredentialDto = {
   /** What it has been asked and has not yet taken. */
   asked?: DirectiveAction;
 };
-
-export type ClusterStatus = {
-  /** Set when the leader's store could not be read. `health` is in-memory
-   * and still present; `workerGroups`/`workers` are `null`, never `[]`, so
-   * an unreadable roster does not render as an empty one. */
-  error: string | null;
-  health: ClusterHealth | null;
-  /** The commit every group runs. */
-  deployedCommit: string | null;
-  workerGroups: WorkerGroupDto[] | null;
-  workers: WorkerCredentialDto[] | null;
-};
-
-export function getClusterStatus(): Promise<ClusterStatus> {
-  return readJson('/api/cluster');
-}
 
 // -- fleet management (`src/leader/mod.rs`, worker groups via
 //    `src/bin/smeltr/worker_groups_api.rs`) --------------------------------
@@ -5587,13 +5567,15 @@ export interface KafkaFacts {
   tlsProps: Set<string>;
 }
 
-/** What a source's or destination's form picks from: the secret catalog, so a credential can be pointed at one
- * the leader holds, and what this leader's build can do with a Kafka client. A failure offers none rather than
- * failing the form: a variable can still be named, no mechanism is offered that the save would refuse, and a
- * property the form lets through is still refused by the save. */
-export async function fieldCatalogs(): Promise<{ secrets: SecretDto[]; kafka: KafkaFacts }> {
+/** What a source's or destination's form picks from: the secret catalog when `withSecrets`, so a credential can be
+ * pointed at one the leader holds, and what this leader's build can do with a Kafka client. A failure offers none
+ * rather than failing the form: a variable can still be named, no mechanism is offered that the save would refuse,
+ * and a property the form lets through is still refused by the save. */
+export async function fieldCatalogs(
+  withSecrets: boolean,
+): Promise<{ secrets: SecretDto[]; kafka: KafkaFacts }> {
   const [secrets, kafka] = await Promise.all([
-    listSecrets('quiet').catch((): SecretDto[] => []),
+    withSecrets ? listSecrets('quiet').catch((): SecretDto[] => []) : [],
     getSystemInfo()
       .then((info) => ({
         mechanisms: info.saslMechanisms ?? [],

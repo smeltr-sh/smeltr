@@ -8,6 +8,7 @@
   import Field from './Field.svelte';
   import { reported } from './errors.svelte';
   import { listCertificates, type CertificateDto } from './api';
+  import { holdsSomewhere } from './access';
   import { expiry } from './time';
 
   let {
@@ -38,9 +39,10 @@
 
   /** `undefined` until the list arrives, so a name it does not hold is not offered as missing before then. */
   let certificates: CertificateDto[] | undefined = $state();
-  listCertificates()
-    .then((listed) => (certificates = listed))
-    .catch(reported);
+  if (holdsSomewhere('editor'))
+    listCertificates()
+      .then((listed) => (certificates = listed))
+      .catch(reported);
 
   const usable = (c: CertificateDto) => (usableAs === 'server' ? c.forServers : c.forClients);
   const offered = $derived(certificates?.filter(usable));

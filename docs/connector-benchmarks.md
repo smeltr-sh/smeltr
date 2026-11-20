@@ -26,7 +26,7 @@ flowchart LR
   Everything else, the worker's other threads, the harness and every container, shares the remaining cores. The
   transform pool is one thread (`SMELTR_WORKER_THREAD_LIMIT=1`).
 - **A source row** seeds its service before the worker starts, then reads it into a sink on this host. Object
-  sources read files of 5,000 lines.
+  sources read files of 5,000 lines, gzipped when `CONNECTOR_GZIP` is set.
 - **A receiver row** sends from this host through a relay container. The relay's link is shaped, so the traffic
   crosses the link once each way, and the worker delivers to a sink on this host.
 - **A destination row** sends to an HTTP receiver on this host, which answers each request once the destination has
@@ -63,7 +63,9 @@ rather than measuring a perfect network.
 - **A file destination** answers a file's rows when it closes the file, so the end of a row waits up to 5 seconds
   after the last record. That makes its rate a floor, closer to the truth the more records the row moves.
 - **A peer that saturates** measures the emulator, not the connector. The services are single-node test fixtures,
-  so a `peer` row says how fast the fixture goes, not how fast the connector can.
+  so a `peer` row says how fast the fixture goes, not how fast the connector can. LocalStack serves S3 from about
+  one core (its S3 rows peaked near 130% of one on a 12-core host), so `s3 list source on seaweedfs` reads the same
+  files from SeaweedFS, which serves S3 on every core.
 
 ## Not covered
 

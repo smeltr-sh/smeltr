@@ -40,10 +40,10 @@
       /><b>Sensitive</b>: a stop warns in about 15 minutes. The narrowest range, so it sees the
       smallest drops; brief dips warn often.<br /><b>Balanced</b>: a stop warns in about 20 minutes.
       A narrow range; brief dips seldom warn.<br /><b>Quiet</b>: a stop warns in about 30 minutes. A
-      wide range, so only a deep drop warns; brief dips almost never do.<br /><b>Off</b>: a stop never
-      warns. The range is still drawn, and what is read is learned as normal, so a lasting drop becomes
-      the normal.<br />A source starts at
-      Balanced and its senders at Quiet, since each sender warns on its own.</Help
+      wide range, so only a deep drop warns; brief dips almost never do.<br /><b>Off</b>: a stop
+      never warns. The range is still drawn, and what is read is learned as normal, so a lasting
+      drop becomes the normal.<br />A source starts at Balanced and its senders at Quiet, since each
+      sender warns on its own.</Help
     >
   </h3>
   {#if editor}

@@ -1,4 +1,4 @@
-use super::super::*;
+use super::super::shared::*;
 use super::SourceSpec;
 
 /// A `postgres` and a `mysql` source are one struct, told apart by its `kind`.
@@ -80,6 +80,10 @@ impl SourceSpec for SqlSourceDto {
 
     fn urls(&self) -> Vec<(&'static str, &str)> {
         Vec::new()
+    }
+
+    fn dials(&self) -> Vec<String> {
+        vec![format!("{}:{}", self.host, self.port(self.kind))]
     }
 
     fn tls(&self) -> Option<TlsDto> {

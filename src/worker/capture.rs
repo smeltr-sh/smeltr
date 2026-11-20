@@ -1562,7 +1562,7 @@ fn run_sql_capture_on<D: crate::io::sql_source::Driver + 'static>(
     query: crate::io::sql::Query,
     place: String,
 ) {
-    use crate::io::sql::Poll;
+    use crate::io::sql::{Poll, ReadFrom};
     use crate::io::sql_source::{Mode, SqlSource, SqlSourceConfig};
     let invitation = &cold.admitted.invitation;
     let dto = &cold.config;
@@ -1582,8 +1582,7 @@ fn run_sql_capture_on<D: crate::io::sql_source::Driver + 'static>(
         &query,
         &Poll {
             position: &[],
-            after: false,
-            start: false,
+            from: ReadFrom::Beginning,
             settle_secs: None,
             batch: wanted,
             fields: &typed,
@@ -2089,7 +2088,7 @@ mod tests {
 
     fn syslog_receiver(port: u16) -> SourceDto {
         serde_json::from_value(
-            serde_json::json!({"id": "sys", "type": "syslogReceiver", "port": port, "allowFrom": ["127.0.0.1"]}),
+            serde_json::json!({"id": "sys", "type": "socketReceiver", "framing": "syslog", "port": port, "allowFrom": ["127.0.0.1"]}),
         )
         .unwrap()
     }

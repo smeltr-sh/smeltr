@@ -26,6 +26,7 @@ pub mod capture;
 pub mod child;
 pub mod held;
 mod memory;
+mod slot;
 // What the sizing guide states of how a deployment is sized (`website/src/lib/worker-sizing.json`).
 pub use memory::{BASELINE_BYTES, COLUMNAR_BYTES_PER_THREAD, LEAST_BATCH_BYTES, LEAST_COLUMNAR_BYTES, SENDER_BYTES};
 pub mod metrics_endpoint;
@@ -39,6 +40,7 @@ use crate::heartbeat::{self, HeartbeatClient, HeartbeatRequest, PartitionRef, Th
 use crate::leader::git::{ContentId, content_id};
 use crate::metrics::{Metrics, MetricsHandle};
 use crate::runtime::{DestinationTarget, Lane, Reader, Transform};
+use slot::{Exited, Slot, Vacant};
 
 /// Everything a worker needs before it can talk to a leader. Plain fields; the binary reads them from the environment.
 pub struct WorkerConfig {
@@ -69,6 +71,8 @@ pub struct WorkerConfig {
     /// never. Known at startup, unlike a directive from the leader -- which is what lets this worker enforce it
     /// before its first successful heartbeat, the exact situation the setting exists for.
     pub stop_after_unreachable_secs: Option<u64>,
+    /// How long this worker may hold a runtime it cannot confirm dead before it exits. `None` means never.
+    pub exit_after_blocked_secs: Option<u64>,
     /// Whether this worker runs inside its leader's own process, where exiting would end the leader too. Such a
     /// worker restarts when asked and is never asked to shut down.
     pub in_leader: bool,
@@ -2418,6 +2422,10 @@ const ENROLL_AGAIN_EVERY: Duration = Duration::from_secs(60);
 /// temporary failure: a supervisor that restarts only a service that failed restarts this one too.
 const ENROLLED_AGAIN_EXIT: i32 = 75;
 
+/// What a worker blocked for too long exits with: a failure, so a supervisor that restarts only a service that
+/// failed restarts this one.
+const BLOCKED_EXIT: i32 = 75;
+
 /// The worker this process runs, once it runs one. What a signal ends before the process does.
 static RUNNING: std::sync::OnceLock<Arc<Supervisor>> = std::sync::OnceLock::new();
 
@@ -2810,9 +2818,36 @@ enum Begun {
     /// It is running, and has said so.
     Started(child::RuntimeHandle),
     /// It will not run, and nothing of the attempt is left behind.
-    Refused,
+    Refused(Vacant),
     /// The attempt would not end. Nothing may take its place until it does.
     Unconfirmed(child::RuntimeHandle),
+}
+
+/// What the deployer holds from one pass to the next.
+#[derive(Default)]
+struct Schedule {
+    /// The observation this thread last attempted, and when it may attempt that one again. A newer
+    /// observation is always a reason to act; the same one only once its retry has come.
+    acted: Option<u64>,
+    retry_at: Option<Instant>,
+    failures: u32,
+    /// When this target was first refused. A commit can name a secret version a moment before the version reaches
+    /// this worker, so a refusal is only worth a warning once it has lasted.
+    refused_since: Option<Instant>,
+    incarnation: u64,
+    /// The commit the last runtime that started was built from, and what it was built of. A commit that will
+    /// not start is answered by starting this again, so it does not cost the deployment that was working.
+    last_good: Option<(String, ContentId)>,
+    /// Since when the slot has been blocked.
+    blocked_since: Option<Instant>,
+}
+
+impl Schedule {
+    /// Counts a failure of the target, and sets when it is tried again.
+    fn back_off(&mut self) {
+        self.failures = self.failures.saturating_add(1);
+        self.retry_at = Some(Instant::now() + backoff(self.failures));
+    }
 }
 
 /// A commit discovery has seen, and which observation saw it.
@@ -3776,171 +3811,22 @@ impl Supervisor {
     // -- the deployment schedule -----------------------------------------------
 
     fn deploy_forever(&self) -> ! {
-        let mut running: Option<child::RuntimeHandle> = None;
-        let mut inbox = Arc::new(child::RuntimeInbox::default());
-        // The observation this thread last attempted, and when it may attempt that one again. A newer
-        // observation is always a reason to act; the same one only once its retry has come.
-        let mut acted: Option<u64> = None;
-        let mut retry_at: Option<Instant> = None;
-        let mut failures: u32 = 0;
-        // When this target was first refused. A commit can name a secret version a moment before the version reaches
-        // this worker, so a refusal is only worth a warning once it has lasted.
-        let mut refused_since: Option<Instant> = None;
-        let mut incarnation: u64 = 0;
-        // What the running runtime was built from. A later commit whose group subtree and `shared/` are both
-        // unchanged runs the same configuration, so it is a commit to represent rather than one to restart for.
-        let mut content: Option<ContentId> = None;
-        // The commit the last runtime that started was built from, and what it was built of. A commit that will
-        // not start is answered by starting this again, so it does not cost the deployment that was working.
-        let mut last_good: Option<(String, ContentId)> = None;
-        // A runtime whose exit this worker could not confirm. It may still be holding a source, so nothing takes
-        // its place; saying so and going on heartbeating is all that is left until an operator has seen to it.
-        let mut blocked = false;
+        let mut s = Schedule::default();
+        let mut slot = Slot::Vacant(Vacant::at_startup());
         loop {
-            self.absorb(&inbox);
-            self.drain_captured(&inbox);
+            if let Some(inbox) = slot.inbox() {
+                self.absorb(inbox);
+                self.drain_captured(inbox);
+            }
             // Before any invitation is forwarded: a runtime about to be stopped for good is handed nothing more.
             if self.exiting() {
-                self.end_for_exit(running, &inbox, blocked);
+                self.end_for_exit(slot);
             }
-            let wedged = self.route_invitations(running.as_mut())
-                || self.mirror_to(running.as_mut())
-                || self.route_holds(running.as_mut())
-                || self.route_backlog(running.as_mut())
-                || self.route_log_levels(running.as_mut())
-                || self.route_sender_fields(running.as_mut());
-
-            // A control pipe that has stopped taking frames: every capture forwarded to it from here on fails
-            // the same way. `send_within`'s caller owes the tree a kill, and this is where that is paid -- the
-            // tree may still be running, and ending it is what lets a replacement take its place.
-            if wedged && let Some(mut handle) = running.take() {
-                tracing::warn!(
-                    name: "unresponsive", target: "processes",
-                    subject = %handle.commit,
-                    "a runtime stopped taking frames on its control pipe, so it is being ended"
-                );
-                match self.end(&mut handle, &inbox) {
-                    Ok(()) => {
-                        self.absorb(&inbox);
-                        self.drain_captured(&inbox);
-                        content = None;
-                        self.forget_runtime();
-                        failures = failures.saturating_add(1);
-                        retry_at = Some(Instant::now() + backoff(failures));
-                    }
-                    Err(()) => {
-                        blocked = true;
-                        running = Some(handle);
-                    }
-                }
-            }
-
-            // A runtime that ended on its own. Confirmed dead is retired like any other ending; unconfirmed is
-            // not -- a descendant may still be consuming, so it blocks deployment the same as a kill this worker
-            // could not confirm, rather than being read as still running.
-            if let Some(mut handle) = running.take() {
-                match handle.exited() {
-                    child::Exit::Running => running = Some(handle),
-                    child::Exit::Unconfirmed => {
-                        if !blocked {
-                            tracing::error!(
-                                name: "exit_unconfirmed", target: "processes",
-                                subject = %handle.commit,
-                                "the runtime ended but something it started may still be reading, so this worker deploys nothing until it is gone"
-                            );
-                        }
-                        blocked = true;
-                        running = Some(handle);
-                    }
-                    child::Exit::Confirmed(exit) => {
-                        tracing::warn!(
-                            name: "exited", target: "processes",
-                            subject = %handle.commit,
-                            %exit,
-                            "the runtime ended on its own, so this worker is running nothing"
-                        );
-                        content = None;
-                        blocked = false;
-                        self.absorb(&inbox);
-                        self.drain_captured(&inbox);
-                        self.forget_runtime();
-                        failures = failures.saturating_add(1);
-                        retry_at = Some(Instant::now() + backoff(failures));
-                    }
-                }
-            }
-
-            if self.take_offline_stop()
-                && let Some(mut handle) = running.take()
-            {
-                tracing::warn!(
-                    name: "stopped_unreachable", target: "processes",
-                    limit = ?self.config.stop_after_unreachable_secs,
-                    "stopping the deployment: the leader has been unreachable for longer than this worker's \
-                     stop_after_unreachable_secs"
-                );
-                match self.end(&mut handle, &inbox) {
-                    Ok(()) => {
-                        self.absorb(&inbox);
-                        self.drain_captured(&inbox);
-                        content = None;
-                        self.forget_runtime();
-                        // The target is worth acting on again, but not until the leader is back: the gate below
-                        // is what holds it, rather than this forgetting that it was ever deployed.
-                        acted = None;
-                        retry_at = None;
-                    }
-                    Err(()) => {
-                        blocked = true;
-                        running = Some(handle);
-                    }
-                }
-            }
-
-            // Asked by an operator, or by a certificate the deployment presents arriving at a new version. The same
-            // target starts again below, in a fresh runtime.
-            if self.restart_due.swap(false, Ordering::Relaxed) {
-                if blocked {
-                    tracing::warn!(
-                        name: "restart_blocked", target: "processes",
-                        "a restart was asked for, but this worker's runtime could not be confirmed dead, so nothing \
-                         restarts"
-                    );
-                }
-                // A restart starts the same commit with the certificates held now, so it is checked against them
-                // before anything stops: a new version it would refuse leaves running what runs.
-                let refused = match running.as_ref().filter(|_| !blocked) {
-                    Some(handle) => unpanicked(|| self.validate(&handle.commit)).err(),
-                    None => None,
-                };
-                if let Some(why) = refused {
-                    tracing::warn!(
-                        name: "restart_refused", target: "processes",
-                        error = %why,
-                        "this worker keeps running as it was, because restarting with the certificates it holds now would fail"
-                    );
-                    self.note_failure(Some(&why));
-                } else {
-                    if !blocked && let Some(mut handle) = running.take() {
-                        tracing::info!(name: "restarting", target: "processes", subject = %handle.commit, "restarting the deployment");
-                        self.phase("stopping");
-                        match self.end(&mut handle, &inbox) {
-                            Ok(()) => {
-                                self.absorb(&inbox);
-                                self.drain_captured(&inbox);
-                                content = None;
-                                self.forget_runtime();
-                            }
-                            Err(()) => {
-                                blocked = true;
-                                running = Some(handle);
-                            }
-                        }
-                    }
-                    acted = None;
-                    retry_at = None;
-                }
-            }
+            slot = self.end_wedged(slot, &mut s);
+            slot = self.retire_exited(slot, &mut s);
+            slot = self.stop_for_outage(slot, &mut s);
+            slot = self.restart_if_asked(slot, &mut s);
+            self.exit_if_blocked_too_long(&slot, &mut s);
 
             // Stopped for an outage stays stopped for the outage. Nothing is started while this holds, however
             // new the target, because what the setting is about is not processing without a leader to answer to.
@@ -3950,232 +3836,421 @@ impl Supervisor {
                 continue;
             }
 
-            self.phase(match (blocked, running.is_some()) {
-                (true, _) => "blocked",
-                (false, true) => "running",
-                (false, false) => "idle",
+            self.phase(match slot {
+                Slot::Blocked { .. } => "blocked",
+                Slot::Running { .. } => "running",
+                Slot::Vacant(_) => "idle",
             });
 
-            let Some(target) = self.next_target(acted, retry_at) else {
+            let Some(target) = self.next_target(s.acted, s.retry_at) else {
                 continue;
             };
-            if acted != Some(target.generation) {
+            if s.acted != Some(target.generation) {
                 // A different observation than the one this backoff was counted against: whatever made the
                 // last target fail says nothing about this one, so it gets a first attempt rather than
                 // inheriting how far the last one had backed off.
-                failures = 0;
-                refused_since = None;
+                s.failures = 0;
+                s.refused_since = None;
             }
-            acted = Some(target.generation);
-            retry_at = None;
+            s.acted = Some(target.generation);
+            s.retry_at = None;
 
-            // A newer target is not what unblocks this: what blocks it is a process that may still be consuming,
-            // and starting a second one beside it is the thing that must not happen.
-            if blocked {
-                continue;
+            slot = match slot {
+                // A newer target is not what unblocks this: what blocks it is a process that may still be
+                // consuming, and starting a second one beside it is the thing that must not happen.
+                blocked @ Slot::Blocked { .. } => blocked,
+                slot => self.attempt(slot, &mut s, &target),
+            };
+        }
+    }
+
+    /// Ends what `slot` holds. The slot comes back vacant, or blocked when the end could not be confirmed.
+    fn stop(&self, slot: Slot) -> Slot {
+        let (handle, inbox) = match slot {
+            Slot::Vacant(_) => return slot,
+            Slot::Running { handle, inbox, .. } | Slot::Blocked { handle, inbox } => (handle, inbox),
+        };
+        match self.end(handle, &inbox) {
+            Ok(vacant) => {
+                self.retired(&inbox);
+                Slot::Vacant(vacant)
             }
+            Err(handle) => Slot::Blocked { handle, inbox },
+        }
+    }
 
-            if running.as_ref().is_some_and(|h| h.commit == target.commit) {
-                // Already running exactly this. Said again because an unrelated commit may have moved what this
-                // worker reports since, and rolling back to what is running is not being behind -- nor is it a
-                // failure to go on reporting, or one to go on backing off from.
-                *self.commit.lock().unwrap() = Some(target.commit.clone());
-                self.note_failure(None);
-                failures = 0;
-                refused_since = None;
-                hold_running(&self.repo_dir, &target.commit);
-                continue;
+    /// Takes everything the runtime that has just stopped still had to say, including what it committed during its
+    /// drain, before its inbox is dropped.
+    fn retired(&self, inbox: &child::RuntimeInbox) {
+        self.absorb(inbox);
+        self.drain_captured(inbox);
+        self.forget_runtime();
+    }
+
+    /// Records that the target is what this worker runs, so no failure of it is left to report or to back off from.
+    fn succeeded(&self, s: &mut Schedule) {
+        self.note_failure(None);
+        s.failures = 0;
+        s.refused_since = None;
+    }
+
+    /// Reports `commit` as what the running runtime represents, and holds it against garbage collection.
+    fn represent(&self, s: &mut Schedule, commit: &str) {
+        *self.commit.lock().unwrap() = Some(commit.to_string());
+        self.succeeded(s);
+        hold_running(&self.repo_dir, commit);
+    }
+
+    /// Hands the runtime what is waiting for it, and ends one that has stopped taking it.
+    fn end_wedged(&self, mut slot: Slot, s: &mut Schedule) -> Slot {
+        let wedged = self.route_invitations(slot.handle_mut())
+            || self.mirror_to(slot.handle_mut())
+            || self.route_holds(slot.handle_mut())
+            || self.route_backlog(slot.handle_mut())
+            || self.route_log_levels(slot.handle_mut())
+            || self.route_sender_fields(slot.handle_mut());
+
+        // A control pipe that has stopped taking frames: every capture forwarded to it from here on fails
+        // the same way. `send_within`'s caller owes the tree a kill, and this is where that is paid -- the
+        // tree may still be running, and ending it is what lets a replacement take its place.
+        if wedged && let Some(handle) = slot.handle_mut() {
+            tracing::warn!(
+                name: "unresponsive", target: "processes",
+                subject = %handle.commit,
+                "a runtime stopped taking frames on its control pipe, so it is being ended"
+            );
+            slot = self.stop(slot);
+            if matches!(slot, Slot::Vacant(_)) {
+                s.back_off();
             }
+        }
+        slot
+    }
 
-            let arriving = match unpanicked(|| content_id(&self.repo_dir, &target.commit, &self.config.group_id)) {
-                Ok(arriving) => arriving,
-                Err(why) => {
+    /// Retires a runtime that ended on its own. Confirmed dead is retired like any other ending; unconfirmed is
+    /// not -- a descendant may still be consuming, so it blocks deployment the same as a kill this worker
+    /// could not confirm, rather than being read as still running.
+    fn retire_exited(&self, slot: Slot, s: &mut Schedule) -> Slot {
+        let (handle, inbox, content) = match slot {
+            Slot::Vacant(_) => return slot,
+            Slot::Running { handle, inbox, content } => (handle, inbox, Some(content)),
+            Slot::Blocked { handle, inbox } => (handle, inbox, None),
+        };
+        match (slot::exited(handle), content) {
+            (Exited::Running(handle), Some(content)) => Slot::Running { handle, inbox, content },
+            (Exited::Running(handle), None) => Slot::Blocked { handle, inbox },
+            (Exited::Unconfirmed(handle), content) => {
+                if content.is_some() {
+                    tracing::error!(
+                        name: "exit_unconfirmed", target: "processes",
+                        subject = %handle.commit,
+                        "the runtime ended but something it started may still be reading, so this worker deploys nothing until it is gone"
+                    );
+                }
+                Slot::Blocked { handle, inbox }
+            }
+            (Exited::Confirmed { vacant, commit, exit }, _) => {
+                tracing::warn!(
+                    name: "exited", target: "processes",
+                    subject = %commit,
+                    %exit,
+                    "the runtime ended on its own, so this worker is running nothing"
+                );
+                self.retired(&inbox);
+                s.back_off();
+                Slot::Vacant(vacant)
+            }
+        }
+    }
+
+    /// Stops the deployment when the leader has been unreachable for longer than this worker is set to run without it.
+    fn stop_for_outage(&self, slot: Slot, s: &mut Schedule) -> Slot {
+        if !self.take_offline_stop() || matches!(slot, Slot::Vacant(_)) {
+            return slot;
+        }
+        tracing::warn!(
+            name: "stopped_unreachable", target: "processes",
+            limit = ?self.config.stop_after_unreachable_secs,
+            "stopping the deployment: the leader has been unreachable for longer than this worker's \
+             stop_after_unreachable_secs"
+        );
+        let slot = self.stop(slot);
+        if matches!(slot, Slot::Vacant(_)) {
+            // The target is worth acting on again, but not until the leader is back: the gate in
+            // `deploy_forever` is what holds it, rather than this forgetting that it was ever deployed.
+            s.acted = None;
+            s.retry_at = None;
+        }
+        slot
+    }
+
+    /// Exits the process once the slot has been blocked for longer than this worker is set to wait. Whatever runs
+    /// the worker then ends what is left of the runtime, which this process could not, and starts the worker again.
+    fn exit_if_blocked_too_long(&self, slot: &Slot, s: &mut Schedule) {
+        if !matches!(slot, Slot::Blocked { .. }) {
+            s.blocked_since = None;
+            return;
+        }
+        let since = *s.blocked_since.get_or_insert_with(Instant::now);
+        let limit = self.config.exit_after_blocked_secs.map(Duration::from_secs);
+        // Exiting would end the leader too, as a shutdown would.
+        if self.config.in_leader || limit.is_none_or(|limit| since.elapsed() < limit) {
+            return;
+        }
+        tracing::error!(
+            name: "exiting_blocked", target: "processes",
+            limit = ?self.config.exit_after_blocked_secs,
+            "a deployment this worker stopped has not been confirmed gone for longer than exit_after_blocked_secs, so \
+             the worker is exiting, for whatever runs it to end what is left and start it again"
+        );
+        // The runtime is not this thread's to end again, so the notice goes out at once.
+        self.exit_to(Exit::Notice);
+        self.exit_reaches(Exit::Told, NOTICE_BUDGET);
+        crate::logs::stop();
+        std::process::exit(BLOCKED_EXIT);
+    }
+
+    /// Restarts the deployment when asked: by an operator, or by a certificate the deployment presents arriving at a
+    /// new version. The same target starts again in a fresh runtime.
+    fn restart_if_asked(&self, mut slot: Slot, s: &mut Schedule) -> Slot {
+        if !self.restart_due.swap(false, Ordering::Relaxed) {
+            return slot;
+        }
+        if matches!(slot, Slot::Blocked { .. }) {
+            tracing::warn!(
+                name: "restart_blocked", target: "processes",
+                "a restart was asked for, but this worker's runtime could not be confirmed dead, so nothing \
+                 restarts"
+            );
+        }
+        if let Slot::Running { handle, .. } = &slot {
+            // A restart starts the same commit with the certificates held now, so it is checked against them
+            // before anything stops: a new version it would refuse leaves running what runs.
+            if let Err(why) = unpanicked(|| self.validate(&handle.commit)) {
+                tracing::warn!(
+                    name: "restart_refused", target: "processes",
+                    error = %why,
+                    "this worker keeps running as it was, because restarting with the certificates it holds now would fail"
+                );
+                self.note_failure(Some(&why));
+                return slot;
+            }
+            tracing::info!(name: "restarting", target: "processes", subject = %handle.commit, "restarting the deployment");
+            self.phase("stopping");
+            slot = self.stop(slot);
+        }
+        s.acted = None;
+        s.retry_at = None;
+        slot
+    }
+
+    /// Acts on `target`: represents it when what runs already holds it, and otherwise checks it, ends what runs and
+    /// starts it.
+    fn attempt(&self, slot: Slot, s: &mut Schedule, target: &Target) -> Slot {
+        if let Slot::Running { handle, .. } = &slot
+            && handle.commit == target.commit
+        {
+            // Already running exactly this. Said again because an unrelated commit may have moved what this
+            // worker reports since, and rolling back to what is running is not being behind -- nor is it a
+            // failure to go on reporting, or one to go on backing off from.
+            self.represent(s, &target.commit);
+            return slot;
+        }
+
+        let arriving = match unpanicked(|| content_id(&self.repo_dir, &target.commit, &self.config.group_id)) {
+            Ok(arriving) => arriving,
+            Err(why) => {
+                tracing::warn!(
+                    name: "commit_unreadable", target: "deploy",
+                    subject = %target.commit,
+                    error = %why,
+                    "a commit could not be read, so this worker keeps running what it has"
+                );
+                self.note_failure(Some(&why));
+                s.back_off();
+                return slot;
+            }
+        };
+        if let Slot::Running { content, .. } = &slot
+            && *content == arriving
+        {
+            // Same configuration under a new commit: what this worker represents moves, and nothing restarts.
+            tracing::debug!(name: "commit_represented", target: "deploy", subject = %target.commit, "a new commit holds what this worker already runs, so nothing restarts");
+            s.last_good = Some((target.commit.clone(), arriving));
+            self.represent(s, &target.commit);
+            return slot;
+        }
+
+        // Every refusal comes before anything stops (design doc, Control plane). The runtime loads this
+        // commit again in its own process, but that is past the teardown; this is the copy that decides
+        // whether there is one, so a commit that will not load never costs a deployment that was working.
+        let validated = match unpanicked(|| self.validate(&target.commit)) {
+            Ok(validated) => validated,
+            Err(why) => {
+                let since = *s.refused_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= REFUSAL_WARN_AFTER {
                     tracing::warn!(
-                        name: "commit_unreadable", target: "deploy",
+                        name: "commit_refused", target: "deploy",
                         subject = %target.commit,
                         error = %why,
-                        "a commit could not be read, so this worker keeps running what it has"
+                        "a commit was fetched but will not run, so this worker keeps running what it has"
                     );
-                    self.note_failure(Some(&why));
-                    failures = failures.saturating_add(1);
-                    retry_at = Some(Instant::now() + backoff(failures));
-                    continue;
+                } else {
+                    tracing::debug!(
+                        name: "commit_refused", target: "deploy",
+                        subject = %target.commit,
+                        error = %why,
+                        "a commit was fetched but will not run yet, so this worker keeps running what it has \
+                         and tries again"
+                    );
                 }
-            };
-            if running.is_some() && content.as_ref() == Some(&arriving) {
-                // Same configuration under a new commit: what this worker represents moves, and nothing restarts.
-                tracing::debug!(name: "commit_represented", target: "deploy", subject = %target.commit, "a new commit holds what this worker already runs, so nothing restarts");
-                *self.commit.lock().unwrap() = Some(target.commit.clone());
-                last_good = Some((target.commit.clone(), arriving));
-                self.note_failure(None);
-                failures = 0;
-                refused_since = None;
-                hold_running(&self.repo_dir, &target.commit);
-                continue;
+                self.note_failure(Some(&why));
+                s.back_off();
+                return slot;
             }
+        };
 
-            // Every refusal comes before anything stops (design doc, Control plane). The runtime loads this
-            // commit again in its own process, but that is past the teardown; this is the copy that decides
-            // whether there is one, so a commit that will not load never costs a deployment that was working.
-            let validated = match unpanicked(|| self.validate(&target.commit)) {
-                Ok(validated) => validated,
-                Err(why) => {
-                    let since = *refused_since.get_or_insert_with(Instant::now);
-                    if since.elapsed() >= REFUSAL_WARN_AFTER {
-                        tracing::warn!(
-                            name: "commit_refused", target: "deploy",
-                            subject = %target.commit,
-                            error = %why,
-                            "a commit was fetched but will not run, so this worker keeps running what it has"
-                        );
-                    } else {
-                        tracing::debug!(
-                            name: "commit_refused", target: "deploy",
-                            subject = %target.commit,
-                            error = %why,
-                            "a commit was fetched but will not run yet, so this worker keeps running what it has \
-                             and tries again"
-                        );
-                    }
-                    self.note_failure(Some(&why));
-                    failures = failures.saturating_add(1);
-                    retry_at = Some(Instant::now() + backoff(failures));
-                    continue;
-                }
-            };
-
-            // Nothing may start while something might still be consuming, so the old runtime is confirmed dead
-            // before the new one is asked to exist.
-            if let Some(mut handle) = running.take() {
-                self.phase("stopping");
-                if self.end(&mut handle, &inbox).is_err() {
-                    self.note_failure(Some(
-                        "a runtime could not be confirmed dead, so nothing will start in its place",
-                    ));
-                    blocked = true;
-                    running = Some(handle);
-                    continue;
-                }
-            }
-            // Everything the runtime that has just stopped still had to say, including what it committed during
-            // its drain, before the inbox it said it into is let go.
-            self.absorb(&inbox);
-            self.drain_captured(&inbox);
-            self.forget_runtime();
-
+        // Nothing may start while something might still be consuming, so the old runtime is confirmed dead
+        // before the new one is asked to exist.
+        if matches!(slot, Slot::Running { .. }) {
+            self.phase("stopping");
+        }
+        match self.stop(slot) {
             // A process asked to end while the old runtime stopped starts nothing it would only stop again.
-            if self.exiting() {
-                continue;
+            Slot::Vacant(vacant) if self.exiting() => Slot::Vacant(vacant),
+            Slot::Vacant(vacant) => self.start(vacant, s, target, arriving, validated),
+            held => {
+                self.note_failure(Some(
+                    "a runtime could not be confirmed dead, so nothing will start in its place",
+                ));
+                held
             }
-            incarnation += 1;
-            inbox = Arc::new(child::RuntimeInbox::default());
-            let mut begun = self.begin(&target, &validated, incarnation, &inbox);
-            let mut started = (target.commit.clone(), arriving, validated);
-            let mut restored = false;
-            if matches!(begun, Begun::Refused)
-                && let Some((was, was_content)) = last_good.clone().filter(|(was, _)| *was != target.commit)
-                && !self.exiting()
-            {
-                // Once, and only for a commit that started here before. What the leader is told is still why the
-                // target did not start, since the target is what this worker is not running.
-                let why = self.supervising.lock().unwrap().failure.clone();
-                tracing::warn!(
-                    name: "restoring", target: "deploy",
-                    subject = %was,
-                    refused = %target.commit,
-                    "a commit would not start, so this worker starts again the one it ran before"
-                );
-                self.absorb(&inbox);
-                self.drain_captured(&inbox);
-                self.forget_runtime();
-                match unpanicked(|| self.validate(&was)) {
-                    Ok(again) => {
-                        incarnation += 1;
-                        inbox = Arc::new(child::RuntimeInbox::default());
-                        let restoring = Target {
-                            generation: target.generation,
-                            commit: was.clone(),
-                        };
-                        begun = self.begin(&restoring, &again, incarnation, &inbox);
-                        started = (was, was_content, again);
-                        restored = true;
-                    }
-                    Err(e) => tracing::warn!(
-                        name: "restore_refused", target: "deploy",
+        }
+    }
+
+    /// Starts `target` in `vacant`. When `target` will not start, starts the last commit that started.
+    fn start(
+        &self,
+        vacant: Vacant,
+        s: &mut Schedule,
+        target: &Target,
+        arriving: ContentId,
+        validated: Validated,
+    ) -> Slot {
+        s.incarnation += 1;
+        let mut inbox = Arc::new(child::RuntimeInbox::default());
+        let mut begun = self.begin(vacant, target, &validated, s.incarnation, &inbox);
+        let mut started = (target.commit.clone(), arriving, validated);
+        let mut restored = false;
+        if let Begun::Refused(vacant) = begun {
+            let last_good = s
+                .last_good
+                .clone()
+                .filter(|(was, _)| *was != target.commit && !self.exiting());
+            begun = match last_good {
+                None => Begun::Refused(vacant),
+                Some((was, was_content)) => {
+                    // Once, and only for a commit that started here before. What the leader is told is still why
+                    // the target did not start, since the target is what this worker is not running.
+                    let why = self.supervising.lock().unwrap().failure.clone();
+                    tracing::warn!(
+                        name: "restoring", target: "deploy",
                         subject = %was,
-                        error = %e,
-                        "the commit this worker ran before will not run either, so it is running nothing"
-                    ),
+                        refused = %target.commit,
+                        "a commit would not start, so this worker starts again the one it ran before"
+                    );
+                    self.retired(&inbox);
+                    let begun = match unpanicked(|| self.validate(&was)) {
+                        Ok(again) => {
+                            s.incarnation += 1;
+                            inbox = Arc::new(child::RuntimeInbox::default());
+                            let restoring = Target {
+                                generation: target.generation,
+                                commit: was.clone(),
+                            };
+                            let begun = self.begin(vacant, &restoring, &again, s.incarnation, &inbox);
+                            started = (was, was_content, again);
+                            restored = true;
+                            begun
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                name: "restore_refused", target: "deploy",
+                                subject = %was,
+                                error = %e,
+                                "the commit this worker ran before will not run either, so it is running nothing"
+                            );
+                            Begun::Refused(vacant)
+                        }
+                    };
+                    self.note_failure(why.as_deref());
+                    begun
                 }
-                self.note_failure(why.as_deref());
+            };
+        }
+        let (commit, arriving, validated) = started;
+        match begun {
+            Begun::Started(handle) => {
+                tracing::info!(name: "deployed", target: "deploy", subject = %commit, incarnation = s.incarnation, restored, "the runtime is running the commit");
+                // What this process itself may have opened a capture against, it no longer may. Its sources
+                // are all it needs: this process's own registry labels no subject.
+                self.captures.set_deployed(&Arc::new(crate::metrics::Subjects {
+                    sources: validated.sources.clone(),
+                    ..Default::default()
+                }));
+                {
+                    let mut supervising = self.supervising.lock().unwrap();
+                    supervising.incarnation = Some(s.incarnation);
+                    supervising.listens = validated.listening.clone();
+                }
+                // It holds nothing yet. Its first turn tells it what the leader holds here, each ledger
+                // fetched afresh: the last runtime's reports have moved them since.
+                self.holds.lock().unwrap().restarted();
+                self.log_levels.restarted();
+                self.sender_fields.restarted();
+                s.last_good = Some((commit.clone(), arriving.clone()));
+                *self.commit.lock().unwrap() = Some(commit.clone());
+                hold_running(&self.repo_dir, &commit);
+                // What the runtime that started names and nothing else: a version it does not quote is of no
+                // further use here, and a worker that kept everything it had ever been sent would hold a
+                // growing pile of dead credentials.
+                self.secrets
+                    .lock()
+                    .unwrap()
+                    .keep_only(&validated.named, &validated.presented);
+                // The runtime it replaced is gone, so nothing maps a file this one does not name.
+                crate::lookup::store::keep_only(&self.repo_dir, &validated.lookup_files);
+                // Nor listens on an address this one does not.
+                self.receiver_sockets.lock().unwrap().keep_only(&validated.listens);
+                if restored {
+                    // The target is not retried on a timer: a commit that would not start fails the same way
+                    // next time, and each try would stop the deployment that works. A new target or a restart
+                    // is what tries again.
+                    s.failures = s.failures.saturating_add(1);
+                } else {
+                    self.succeeded(s);
+                }
+                Slot::Running {
+                    handle,
+                    inbox,
+                    content: arriving,
+                }
             }
-            let (commit, arriving, validated) = started;
-            match begun {
-                Begun::Started(handle) => {
-                    tracing::info!(name: "deployed", target: "deploy", subject = %commit, incarnation, restored, "the runtime is running the commit");
-                    // What this process itself may have opened a capture against, it no longer may. Its sources
-                    // are all it needs: this process's own registry labels no subject.
-                    self.captures.set_deployed(&Arc::new(crate::metrics::Subjects {
-                        sources: validated.sources.clone(),
-                        ..Default::default()
-                    }));
-                    {
-                        let mut supervising = self.supervising.lock().unwrap();
-                        supervising.incarnation = Some(incarnation);
-                        supervising.listens = validated.listening.clone();
-                    }
-                    // It holds nothing yet. Its first turn tells it what the leader holds here, each ledger
-                    // fetched afresh: the last runtime's reports have moved them since.
-                    self.holds.lock().unwrap().restarted();
-                    self.log_levels.restarted();
-                    self.sender_fields.restarted();
-                    running = Some(handle);
-                    content = Some(arriving.clone());
-                    last_good = Some((commit.clone(), arriving));
-                    *self.commit.lock().unwrap() = Some(commit.clone());
-                    hold_running(&self.repo_dir, &commit);
-                    // What the runtime that started names and nothing else: a version it does not quote is of no
-                    // further use here, and a worker that kept everything it had ever been sent would hold a
-                    // growing pile of dead credentials.
-                    self.secrets
-                        .lock()
-                        .unwrap()
-                        .keep_only(&validated.named, &validated.presented);
-                    // The runtime it replaced is gone, so nothing maps a file this one does not name.
-                    crate::lookup::store::keep_only(&self.repo_dir, &validated.lookup_files);
-                    // Nor listens on an address this one does not.
-                    self.receiver_sockets.lock().unwrap().keep_only(&validated.listens);
-                    if restored {
-                        // The target is not retried on a timer: a commit that would not start fails the same way
-                        // next time, and each try would stop the deployment that works. A new target or a restart
-                        // is what tries again.
-                        failures = failures.saturating_add(1);
-                    } else {
-                        self.note_failure(None);
-                        failures = 0;
-                        refused_since = None;
-                    }
-                }
-                Begun::Refused => {
-                    running = None;
-                    content = None;
-                    self.forget_runtime();
-                    self.presenting.lock().unwrap().clear();
-                    // Nothing runs, so nothing may look as if it listens: a sender is refused at once rather than
-                    // left waiting in a queue nobody takes from. The retry binds again.
-                    self.receiver_sockets.lock().unwrap().keep_only(&[]);
-                    failures = failures.saturating_add(1);
-                    // The same target again once the backoff has run: a broker that was not up and a secret that
-                    // had not arrived are both answered by asking again, not by waiting for another deploy.
-                    retry_at = Some(Instant::now() + backoff(failures));
-                    tracing::debug!(name: "retry_scheduled", target: "deploy", subject = %target.commit, failures, retry_in_secs = backoff(failures).as_secs(), "the deploy is tried again after a backoff");
-                }
-                Begun::Unconfirmed(handle) => {
-                    content = None;
-                    self.forget_runtime();
-                    blocked = true;
-                    running = Some(handle);
-                }
+            Begun::Refused(vacant) => {
+                self.retired(&inbox);
+                self.presenting.lock().unwrap().clear();
+                // Nothing runs, so nothing may look as if it listens: a sender is refused at once rather than
+                // left waiting in a queue nobody takes from. The retry binds again.
+                self.receiver_sockets.lock().unwrap().keep_only(&[]);
+                // The same target again once the backoff has run: a broker that was not up and a secret that
+                // had not arrived are both answered by asking again, not by waiting for another deploy.
+                s.back_off();
+                tracing::debug!(name: "retry_scheduled", target: "deploy", subject = %target.commit, failures = s.failures, retry_in_secs = backoff(s.failures).as_secs(), "the deploy is tried again after a backoff");
+                Slot::Vacant(vacant)
+            }
+            Begun::Unconfirmed(handle) => {
+                self.forget_runtime();
+                Slot::Blocked { handle, inbox }
             }
         }
     }
@@ -4184,6 +4259,7 @@ impl Supervisor {
     /// not a deployment that runs, so what is waited for is readiness and never liveness.
     fn begin(
         &self,
+        vacant: Vacant,
         target: &Target,
         validated: &Validated,
         incarnation: u64,
@@ -4220,11 +4296,11 @@ impl Supervisor {
         let mut sockets = self.receiver_sockets.lock().unwrap();
         sockets.hold(&validated.listens);
         // Only what this target serves: a socket a runtime adopts stays open for its life.
-        let started = child::RuntimeHandle::start(spec, inbox, &sockets, &validated.listens);
+        let started = vacant.start(spec, inbox, &sockets, &validated.listens);
         drop(sockets);
         let handle = match started {
             Ok(h) => h,
-            Err(e) => {
+            Err((vacant, e)) => {
                 tracing::warn!(
                     name: "not_started", target: "processes",
                     subject = %target.commit,
@@ -4232,7 +4308,7 @@ impl Supervisor {
                     "could not start a runtime process, so this worker is running nothing"
                 );
                 self.note_failure(Some(&format!("could not start a runtime process: {e}")));
-                return Begun::Refused;
+                return Begun::Refused(vacant);
             }
         };
         let deadline = Instant::now() + STARTUP_BUDGET;
@@ -4273,30 +4349,27 @@ impl Supervisor {
 
     /// End an attempt that will not run. A startup that cannot be confirmed dead blocks exactly as a running
     /// deployment that cannot be does: it may still be holding a source, whatever it said about itself.
-    fn ended(&self, mut handle: child::RuntimeHandle, inbox: &child::RuntimeInbox) -> Begun {
-        match self.end(&mut handle, inbox) {
-            Ok(()) => Begun::Refused,
-            Err(()) => Begun::Unconfirmed(handle),
+    fn ended(&self, handle: child::RuntimeHandle, inbox: &child::RuntimeInbox) -> Begun {
+        match self.end(handle, inbox) {
+            Ok(vacant) => Begun::Refused(vacant),
+            Err(handle) => Begun::Unconfirmed(handle),
         }
     }
 
     /// End a runtime and confirm it. `Err` is a process the operating system would not confirm dead, which is the
     /// one state this worker cannot deploy out of: it says so and keeps heartbeating.
-    fn end(&self, handle: &mut child::RuntimeHandle, inbox: &child::RuntimeInbox) -> Result<(), ()> {
-        match handle.stop(GRACEFUL_STOP_BUDGET, HARD_STOP_BUDGET, inbox) {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                tracing::error!(
-                    name: "unkillable", target: "processes",
-                    subject = %handle.commit,
-                    error = %e,
-                    "a runtime could not be confirmed dead, so nothing will be started in its place until it is: \
-                     this needs an operator, since a replacement beside a reader that may still be consuming is \
-                     two consumers on one source"
-                );
-                Err(())
-            }
-        }
+    fn end(&self, handle: child::RuntimeHandle, inbox: &child::RuntimeInbox) -> Result<Vacant, child::RuntimeHandle> {
+        slot::end(handle, GRACEFUL_STOP_BUDGET, HARD_STOP_BUDGET, inbox).map_err(|(handle, e)| {
+            tracing::error!(
+                name: "unkillable", target: "processes",
+                subject = %handle.commit,
+                error = %e,
+                "a runtime could not be confirmed dead, so nothing will be started in its place until it is: \
+                 this needs an operator, since a replacement beside a reader that may still be consuming is \
+                 two consumers on one source"
+            );
+            handle
+        })
     }
 
     /// Take what the runtime has said since this was last called, and hold it for the heartbeat. Its counts and
@@ -4417,21 +4490,20 @@ impl Supervisor {
         }
     }
 
-    /// The deployer's half of [`Self::stop_for_exit`]: end `running` the way a redeploy ends it, then start
+    /// The deployer's half of [`Self::stop_for_exit`]: end what `slot` holds the way a redeploy ends it, then start
     /// nothing more. Never returns; the thread that asked ends the process.
     ///
-    /// `blocked` is a runtime whose kill already went unconfirmed. Asking it again buys nothing, so it is left for
+    /// A blocked runtime is one whose kill already went unconfirmed. Asking it again buys nothing, so it is left for
     /// the process's own end, held here rather than dropped: a drop is one more kill, on the way out of a process
     /// that is ending anyway.
-    fn end_for_exit(&self, mut running: Option<child::RuntimeHandle>, inbox: &child::RuntimeInbox, blocked: bool) -> ! {
-        if !blocked && let Some(handle) = running.as_mut() {
-            self.phase("stopping");
-            if self.end(handle, inbox).is_ok() {
-                self.absorb(inbox);
-                self.drain_captured(inbox);
-                self.forget_runtime();
+    fn end_for_exit(&self, slot: Slot) -> ! {
+        let _held = match slot {
+            running @ Slot::Running { .. } => {
+                self.phase("stopping");
+                self.stop(running)
             }
-        }
+            slot => slot,
+        };
         self.phase("stopped");
         tracing::info!(
             name: "stopped_for_exit", target: "processes",
@@ -6275,7 +6347,7 @@ mod tests {
         write(
             &dir,
             "groups/g/sources.json",
-            r#"[{"id":"syslog","type":"syslogReceiver","port":1514,"allowFrom":["10.0.0.0/8"],"certificate":"rx"}]"#,
+            r#"[{"id":"syslog","type":"socketReceiver","framing":"syslog","port":1514,"allowFrom":["10.0.0.0/8"],"certificate":"rx"}]"#,
         );
         let head = commit(&dir, "a receiver serving rx");
         supervisor.repo_dir = dir;
@@ -6410,6 +6482,7 @@ mod tests {
                 state_dir,
                 enrollment_code: None,
                 stop_after_unreachable_secs: None,
+                exit_after_blocked_secs: None,
                 in_leader: false,
                 metrics_endpoint: None,
             },
@@ -8671,6 +8744,7 @@ mod tests {
             state_dir: dir.to_path_buf(),
             enrollment_code: None,
             stop_after_unreachable_secs: None,
+            exit_after_blocked_secs: None,
             in_leader: false,
             metrics_endpoint: None,
         }

@@ -26,7 +26,8 @@
   import Help from './Help.svelte';
   import {
     getLogs,
-    getClusterStatus,
+    listWorkers,
+    liveGroups,
     type LogRowDto,
     type WorkerCredentialDto,
     type WorkerGroupDto,
@@ -77,10 +78,10 @@
    * row could carry is here once it has loaded. */
   let workers: WorkerCredentialDto[] = $state([]);
   let groups: WorkerGroupDto[] = $state([]);
-  getClusterStatus()
-    .then((status) => {
-      workers = [...(status.workers ?? [])].sort((a, b) => a.workerId.localeCompare(b.workerId));
-      groups = [...(status.workerGroups ?? [])].sort((a, b) => a.name.localeCompare(b.name));
+  Promise.all([listWorkers(), liveGroups()])
+    .then(([known, live]) => {
+      workers = known.toSorted((a, b) => a.workerId.localeCompare(b.workerId));
+      groups = live.toSorted((a, b) => a.name.localeCompare(b.name));
     })
     .catch(() => {
       // The picker degrades to "any worker"/"any group" plus whatever the
@@ -97,7 +98,7 @@
   );
 
   /** The same gap `groupOptions` closes, but reached differently: `workers`
-   * starts empty and fills once `getClusterStatus` answers, so a routed
+   * starts empty and fills once `listWorkers` answers, so a routed
    * `?worker=` opened before then -- or a roster read that fails outright --
    * would otherwise have no matching `<option>`. With none selected, the
    * browser silently picks the first (`""`), and the next `fromForm` read

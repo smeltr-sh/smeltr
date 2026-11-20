@@ -10,8 +10,8 @@ pub use super::load::destination::{
 pub use super::load::source::{
     AzureBlobListSourceDto, AzureBlobQueueSourceDto, ElasticReceiverSourceDto, EventHubsSourceDto, GcsListSourceDto,
     GcsPubSubSourceDto, HecReceiverSourceDto, HttpApiSourceDto, HttpReceiverSourceDto, KafkaSourceDto, LogsSourceDto,
-    MetricsSourceDto, OktaLogsSourceDto, OtlpReceiverSourceDto, PrometheusReceiverSourceDto, S2sReceiverSourceDto,
-    S3ListSourceDto, S3SqsSourceDto, SftpSourceDto, SocketReceiverSourceDto, SyslogReceiverSourceDto,
+    MetricsSourceDto, OktaLogsSourceDto, OtlpReceiverDto, OtlpReceiverSourceDto, PrometheusReceiverSourceDto,
+    S2sReceiverSourceDto, S3ListSourceDto, S3SqsSourceDto, SftpSourceDto, SocketReceiverSourceDto,
 };
 use std::collections::BTreeMap;
 
@@ -149,8 +149,9 @@ impl KafkaPropsDto {
     }
 }
 
+/// A whole file, at the current version: one of an older version is brought to it as it is read (`upgrade`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, remote = "Self")]
 pub struct FileConfig {
     pub version: u32,
     #[serde(default)]
@@ -174,6 +175,20 @@ pub struct FileConfig {
     /// A group's display name. Absent means show the id instead -- a rendering choice, not a default made up here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+}
+
+impl Serialize for FileConfig {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        FileConfig::serialize(self, s)
+    }
+}
+
+impl<'de> Deserialize<'de> for FileConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let mut file = serde_json::Value::deserialize(d)?;
+        super::upgrade::file(&mut file);
+        FileConfig::deserialize(file).map_err(serde::de::Error::custom)
+    }
 }
 
 /// `plan::config::Answer`: `"ignore"`, `"tag"`, `"drop"`, `"block"`, or
@@ -354,15 +369,11 @@ pub enum SourceKindDto {
     /// `/{index}/_bulk`, one record per document. Every worker of the group listens; a request is answered as
     /// `answerAfterDelivery` says.
     ElasticReceiver(ElasticReceiverSourceDto),
-    /// What syslog senders send to `port`, as RFC 5424 or RFC 3164 messages: over TCP framed by octet count or ended
-    /// by a newline (RFC 6587), under TLS (RFC 5425) when it names a certificate; over UDP one to a datagram (RFC 5426).
-    /// Every worker of the group listens, and each message is one record. Syslog has no acknowledgement, so delivery
-    /// is best-effort. A full receiver stops reading TCP, so the sender's window fills, and drops UDP datagrams.
-    SyslogReceiver(SyslogReceiverSourceDto),
-    /// What senders send to `port` in a protocol smeltr has no receiver for: over TCP cut into records by its
-    /// framing, under TLS when it names a certificate; over UDP a datagram to a record. Every worker of the group
-    /// listens. Nothing is acknowledged, so delivery is best-effort. A full receiver stops reading TCP, so the
-    /// sender's window fills, and drops UDP datagrams.
+    /// What senders send to `port`: over TCP cut into records by its framing, under TLS when it names a certificate;
+    /// over UDP a datagram to a record. Syslog senders' RFC 5424 and RFC 3164 messages take `syslog` framing (RFC
+    /// 6587), TLS (RFC 5425) and UDP (RFC 5426) as they come. Every worker of the group listens. No record is
+    /// acknowledged to the sender, so delivery is best-effort. A full receiver stops reading TCP, which fills the
+    /// sender's window, and drops UDP datagrams.
     SocketReceiver(SocketReceiverSourceDto),
 }
 
@@ -714,28 +725,6 @@ impl S3AccessDto {
             && access_key_id.is_none()
             && secret_access_key.is_none()
     }
-
-    pub fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
-        let id = self.access_key_id.iter().map(|r| ("accessKeyId", r));
-        id.chain(self.secret_access_key.iter().map(|r| ("secretAccessKey", r)))
-            .collect()
-    }
-
-    /// `secrets`, for the leader to move one onto a new version.
-    pub fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto> {
-        [&mut self.access_key_id, &mut self.secret_access_key]
-            .into_iter()
-            .flatten()
-            .collect()
-    }
-
-    /// The storage service, and where credentials are obtained when that is configured apart, by the field naming
-    /// each.
-    pub fn urls(&self) -> Vec<(&'static str, &str)> {
-        std::iter::once(("endpoint", self.endpoint.as_deref().unwrap_or(S3_ENDPOINT)))
-            .chain(self.auth_endpoint.as_deref().map(|u| ("authEndpoint", u)))
-            .collect()
-    }
 }
 
 /// Where Google Cloud is reached and how its requests are signed. Flattened into the GCS destination and the
@@ -749,25 +738,6 @@ pub struct GcsAccessDto {
     /// A service account's JSON key. Absent takes the host's Application Default Credentials.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_account_key: Option<SecretRefDto>,
-}
-
-impl GcsAccessDto {
-    pub fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
-        self.service_account_key
-            .iter()
-            .map(|r| ("serviceAccountKey", r))
-            .collect()
-    }
-
-    /// `secrets`, for the leader to move one onto a new version.
-    pub fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto> {
-        self.service_account_key.iter_mut().collect()
-    }
-
-    /// The storage service, by the field naming it.
-    pub fn urls(&self) -> Vec<(&'static str, &str)> {
-        vec![("endpoint", self.endpoint.as_deref().unwrap_or(GCS_ENDPOINT))]
-    }
 }
 
 /// Where an Azure storage account is reached and how its requests are signed. Flattened into the Azure Blob
@@ -810,33 +780,6 @@ impl AzureAccessDto {
             auth_endpoint: self.auth_endpoint.clone(),
             managed_identity_client_id: self.managed_identity_client_id.clone(),
         }
-    }
-
-    pub fn secrets(&self) -> Vec<(&'static str, &SecretRefDto)> {
-        [
-            ("accessKey", &self.access_key),
-            ("sasToken", &self.sas_token),
-            ("clientSecret", &self.client_secret),
-        ]
-        .into_iter()
-        .filter_map(|(field, r)| Some((field, r.as_ref()?)))
-        .collect()
-    }
-
-    /// `secrets`, for the leader to move one onto a new version.
-    pub fn secrets_mut(&mut self) -> Vec<&mut SecretRefDto> {
-        [&mut self.access_key, &mut self.sas_token, &mut self.client_secret]
-            .into_iter()
-            .flatten()
-            .collect()
-    }
-
-    /// The storage service, and where credentials are obtained when that is configured apart, by the field naming
-    /// each.
-    pub fn urls(&self) -> Vec<(&'static str, &str)> {
-        std::iter::once(("endpoint", self.endpoint.as_deref().unwrap_or(AZURE_ENDPOINT)))
-            .chain(self.auth_endpoint.as_deref().map(|u| ("authEndpoint", u)))
-            .collect()
     }
 }
 
@@ -957,8 +900,8 @@ pub struct ListingDto {
 pub struct FramingSettingsDto {
     #[serde(default, skip_serializing_if = "FramingDto::is_default")]
     pub framing: FramingDto,
-    /// `"lines"` only: a pattern whose first capture group is where an event ends, the group dropped, as Splunk's
-    /// `LINE_BREAKER`. Without one, an event ends at a line end.
+    /// `"lines"` and `"syslog"` only: a pattern whose first capture group is where an event ends, the group dropped, as
+    /// Splunk's `LINE_BREAKER`. Without one, an event ends at a line end.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line_breaker: Option<String>,
     /// `"lengthPrefix"` only, and required there: where each message's or record's length is and what it counts.
@@ -1026,6 +969,17 @@ impl FramingSettingsDto {
             || self.length_prefix.is_some()
             || self.fixed_bytes.is_some()
     }
+
+    /// Whether it reads a datagram whole, as one record: the default does, and so does syslog with nothing else set,
+    /// whose message over UDP is a datagram (RFC 5426).
+    pub fn reads_datagrams(&self) -> bool {
+        match self.framing {
+            FramingDto::Syslog => {
+                self.line_breaker.is_none() && self.length_prefix.is_none() && self.fixed_bytes.is_none()
+            }
+            _ => !self.is_set(),
+        }
+    }
 }
 
 /// What an object's bytes become.
@@ -1043,6 +997,9 @@ pub enum FramingDto {
     LengthPrefix,
     /// One record per `fixedBytes` bytes.
     Fixed,
+    /// One record per syslog message (RFC 6587): one that starts with a digit 1 to 9 is counted by the length before
+    /// it, and any other ends at a line end, or where `lineBreaker` breaks it. A sender may mix them.
+    Syslog,
 }
 
 impl FramingDto {

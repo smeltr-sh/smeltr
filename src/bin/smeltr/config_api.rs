@@ -2620,7 +2620,7 @@ mod tests {
             produces: vec![],
         };
         let file = FileConfig {
-            version: 1,
+            version: config_file::CURRENT_VERSION,
             on_exception: None,
             name: None,
             sources: vec![],
@@ -3112,7 +3112,7 @@ mod tests {
             produces: vec![],
         };
         let file = FileConfig {
-            version: 1,
+            version: config_file::CURRENT_VERSION,
             on_exception: None,
             name: None,
             sources: vec![],

@@ -207,6 +207,22 @@ fn key_of(prefix: &str, id: &str, extension: &str) -> String {
     format!("{prefix}{id}.{extension}")
 }
 
+/// Opens `c` as a live destination, named `name` in its log lines, on an object store client and a runtime that it
+/// owns. `secrets` holds the credentials the client signs with. `records` is what each route writes, which the
+/// formats that write columns need.
+pub fn open(
+    c: &ObjectsDestinationConfig,
+    name: &str,
+    records: Option<&Records>,
+    secrets: &HeldSecrets,
+) -> Result<Box<dyn super::Destination>, IoError> {
+    let runtime = runtime()?;
+    let store = store(c, secrets, &runtime)?;
+    Ok(Box::new(
+        destination(c, name, records, store, runtime).map_err(IoError::transient)?,
+    ))
+}
+
 /// An object store destination: the file destination writing `config`'s files into `store`, whose requests run on
 /// `runtime`. `records` is what a Parquet, Avro or CSV destination writes, route by route (`CompiledTopology::records`); a row from
 /// a route not in it is refused. The line formats write every route's rows alike and do not read it.
@@ -314,7 +330,7 @@ impl Committer for ObjectsCommitter {
 
 /// A new object's id: `ID_BYTES` random bytes as lowercase hex.
 pub fn object_id() -> String {
-    crate::leader::auth::random_bytes(ID_BYTES)
+    crate::crypto::random_bytes(ID_BYTES)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()

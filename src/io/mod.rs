@@ -107,15 +107,15 @@ pub fn build_source(
     }
 }
 
+/// Leave to spawn one more sender: see [`Destination::lend_senders`].
+pub type Lend = Box<dyn FnMut() -> bool + Send>;
+
 /// Opens `kind` as a live destination. `records` is what it writes, route by route, which only a Parquet destination
 /// needs (`CompiledTopology::records`). Every kind is compiled into every build, so any binary can run any bundle.
 ///
 /// `metrics` reaches a transport that reports on itself: librdkafka's statistics arrive on its own thread, and an HTTP
 /// destination's senders each run on one, not on the egress thread that owns this client. What an Elasticsearch or
 /// Prometheus store says it did not write is in its answer, which only the protocol reads.
-/// Leave to spawn one more sender: see [`Destination::lend_senders`].
-pub type Lend = Box<dyn FnMut() -> bool + Send>;
-
 pub fn build_destination(
     kind: &crate::plan::topology::DestinationKind,
     id: crate::core::id::DestId,
@@ -127,126 +127,13 @@ pub fn build_destination(
     use crate::plan::topology::DestinationKind;
     match kind {
         DestinationKind::Kafka(c) => Ok(Box::new(kafka::KafkaDestination::new(c, id, metrics, secrets)?)),
-        DestinationKind::Elasticsearch(c) => {
-            // A credential this worker cannot obtain is an error, never a silent unauthenticated connection.
-            let auth = match (&c.auth, &c.basic) {
-                (Some(reference), _) => Some(elastic::authorization(http::credential(
-                    "elasticsearch destination",
-                    "auth",
-                    reference,
-                    secrets,
-                )?)),
-                (None, Some((user, password))) => Some(http::basic(
-                    "elasticsearch destination",
-                    "password",
-                    user,
-                    password,
-                    secrets,
-                )?),
-                (None, None) => None,
-            };
-            // What this destination presents and trusts, resolved once: every transport below shares it, so an
-            // certificate is parsed once rather than once per sender.
-            let config = http::agent_config(c.tls.as_ref(), secrets)?;
-            let protocol = elastic::Elastic::new(c.default_index.clone())
-                .with_action(c.action)
-                .with_unwritten(http::Unwritten::new(metrics.clone(), id, name));
-            // One transport per request the buffer affords, each with its own connection, and one more for the
-            // destination's own. The loop starts at `in_flight` and climbs; the senders above it are parked until it
-            // earns them. Building one does no I/O, so an unearned sender costs a thread and no connection.
-            if let Some(sniff) = &c.sniff {
-                let nodes = elastic_nodes::Nodes::new(&c.url, sniff, auth.clone(), &config, name.to_string());
-                let make =
-                    || elastic_nodes::Sniffing::new(nodes.clone(), elastic::transport(&c.url, auth.clone(), &config));
-                return Ok(Box::new(
-                    http::HttpDestination::new(make(), protocol)
-                        .with_subject(name)
-                        .with_metrics(metrics, id)
-                        .with_max_request_bytes(c.max_bulk_bytes)
-                        .with_stall_after(c.stall_after)
-                        .with_senders_from(make, c.max_in_flight(), c.in_flight),
-                ));
-            }
-            let make = || elastic::transport(&c.url, auth.clone(), &config);
-            Ok(Box::new(
-                http::HttpDestination::new(make(), protocol)
-                    .with_subject(name)
-                    .with_metrics(metrics, id)
-                    .with_max_request_bytes(c.max_bulk_bytes)
-                    .with_stall_after(c.stall_after)
-                    .with_senders_from(make, c.max_in_flight(), c.in_flight),
-            ))
-        }
-        DestinationKind::SplunkHec(c) => {
-            let token = http::credential("splunk destination", "token", &c.token, secrets)?;
-            let config = http::agent_config(c.tls.as_ref(), secrets)?;
-            // One transport per sender, as Elasticsearch's, and each with its own channel: Splunk tracks
-            // acknowledgements per channel.
-            let make = || splunk::transport(c, &token, &config);
-            Ok(Box::new(
-                http::HttpDestination::new(make(), splunk::Hec::new(c))
-                    .with_subject(name)
-                    .with_metrics(metrics, id)
-                    .with_max_request_bytes(c.max_request_bytes)
-                    .with_stall_after(c.stall_after)
-                    .with_senders_from(make, c.max_in_flight(), c.in_flight),
-            ))
-        }
-        DestinationKind::Http(c) => {
-            let credentials = http::credential_headers("http destination", &c.credentials, secrets)?;
-            let config = http::agent_config(c.tls.as_ref(), secrets)?;
-            let make = || http_post::transport(c, &credentials, &config);
-            Ok(Box::new(http_post::destination(c, make, "http", name, metrics, id)))
-        }
-        DestinationKind::LogAnalytics(c) => {
-            let what = "Log Analytics destination";
-            let resource = entra::monitor_resource(&c.http.url);
-            let sign_in: http::SharedSignIn = Arc::new(std::sync::Mutex::new(Box::new(entra::Entra::new(
-                &c.sign_in, resource, secrets, what,
-            )?)));
-            let config = http::agent_config(c.http.tls.as_ref(), secrets)?;
-            let make = || http_post::transport(&c.http, &[], &config).signed_in(sign_in.clone());
-            Ok(Box::new(http_post::destination(
-                &c.http,
-                make,
-                "logAnalytics",
-                name,
-                metrics,
-                id,
-            )))
-        }
-        DestinationKind::Otlp(c) => {
-            let credentials = http::credential_headers("otlp destination", &c.http.credentials, secrets)?;
-            let config = http::agent_config(c.http.tls.as_ref(), secrets)?;
-            let make =
-                || http_post::transport_as(&c.http, otlp::Encoding::Protobuf.content_type(), &credentials, &config);
-            let protocol = otlp::export::Otlp::new(c).with_unwritten(http::Unwritten::new(metrics.clone(), id, name));
-            Ok(Box::new(http_post::destination_of(
-                protocol, &c.http, make, name, metrics, id,
-            )))
-        }
-        DestinationKind::Prometheus(c) => {
-            let credentials = http::credential_headers("prometheus destination", &c.credentials, secrets)?;
-            let config = http::agent_config(c.tls.as_ref(), secrets)?;
-            let transport = remote_write::transport(c, &credentials, &config);
-            // No senders: every request goes from this thread, so one lands before the next is sent.
-            Ok(Box::new(
-                http::HttpDestination::new(
-                    transport,
-                    remote_write::RemoteWrite::new(c).with_unwritten(http::Unwritten::new(metrics.clone(), id, name)),
-                )
-                .with_subject(name)
-                .with_metrics(metrics, id)
-                .with_max_request_bytes(c.max_request_bytes)
-                .with_stall_after(c.stall_after),
-            ))
-        }
-        DestinationKind::Objects(c) => {
-            let runtime = objects::runtime()?;
-            let store = objects::store(c, secrets, &runtime)?;
-            let files = objects::destination(c, name, records, store, runtime).map_err(IoError::transient)?;
-            Ok(Box::new(files))
-        }
+        DestinationKind::Elasticsearch(c) => elastic::open(c, id, name, metrics, secrets),
+        DestinationKind::SplunkHec(c) => splunk::open(c, id, name, metrics, secrets),
+        DestinationKind::Http(c) => http_post::open(c, id, name, metrics, secrets),
+        DestinationKind::LogAnalytics(c) => http_post::open_log_analytics(c, id, name, metrics, secrets),
+        DestinationKind::Otlp(c) => otlp::export::open(c, id, name, metrics, secrets),
+        DestinationKind::Prometheus(c) => remote_write::open(c, id, name, metrics, secrets),
+        DestinationKind::Objects(c) => objects::open(c, name, records, secrets),
         DestinationKind::Iceberg(c) => Ok(Box::new(iceberg::table::destination(c, name, records, secrets)?)),
         DestinationKind::Delta(c) => Ok(Box::new(delta::table::destination(c, name, records, secrets)?)),
     }

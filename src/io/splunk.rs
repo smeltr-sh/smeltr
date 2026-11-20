@@ -87,6 +87,29 @@ pub fn transport(config: &SplunkHecDestinationConfig, token: &str, agent: &ureq:
     )
 }
 
+/// Opens `c` as a live destination, named `name` in its log lines and counting into `metrics` as destination `id`.
+pub fn open(
+    c: &SplunkHecDestinationConfig,
+    id: crate::core::id::DestId,
+    name: &str,
+    metrics: crate::metrics::MetricsHandle,
+    secrets: &crate::plan::topology::HeldSecrets,
+) -> Result<Box<dyn super::Destination>, IoError> {
+    let token = super::http::credential("splunk destination", "token", &c.token, secrets)?;
+    let config = super::http::agent_config(c.tls.as_ref(), secrets)?;
+    // One transport per sender, as Elasticsearch's, and each with its own channel: Splunk tracks
+    // acknowledgements per channel.
+    let make = || transport(c, &token, &config);
+    Ok(Box::new(
+        super::http::HttpDestination::new(make(), Hec::new(c))
+            .with_subject(name)
+            .with_metrics(metrics, id)
+            .with_max_request_bytes(c.max_request_bytes)
+            .with_stall_after(c.stall_after)
+            .with_senders_from(make, c.max_in_flight(), c.in_flight),
+    ))
+}
+
 /// A transport that, when it carries a channel, asks `/ack` once before its first request whether the token
 /// acknowledges, and stops unless that matches `acknowledgement`. Both mismatches index what they are sent before
 /// they show: under `indexer`, a token with acknowledgement off answers no `ackId`, so every batch would go again; under
@@ -138,7 +161,7 @@ impl<T: Transport> Transport for Collector<T> {
 
 /// A fresh GUID.
 fn channel() -> String {
-    let hex: String = crate::leader::auth::random_bytes(16)
+    let hex: String = crate::crypto::random_bytes(16)
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();

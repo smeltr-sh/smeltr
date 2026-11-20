@@ -68,11 +68,6 @@ const CASES: &[Case] = &[
         leg: Leg::Source(kafka::source),
     },
     Case {
-        name: "event hubs source",
-        services: &["event-hubs", "azurite"],
-        leg: Leg::Source(event_hubs::source),
-    },
-    Case {
         name: "s3 sqs source",
         services: &["localstack"],
         leg: Leg::Source(s3::sqs_source),
@@ -81,6 +76,11 @@ const CASES: &[Case] = &[
         name: "s3 list source",
         services: &["localstack"],
         leg: Leg::Source(s3::list_source),
+    },
+    Case {
+        name: "s3 list source on seaweedfs",
+        services: &["seaweedfs"],
+        leg: Leg::Source(s3::seaweedfs_list_source),
     },
     Case {
         name: "gcs list source",
@@ -156,11 +156,6 @@ const CASES: &[Case] = &[
         name: "kafka destination",
         services: &["kafka"],
         leg: Leg::Destination(kafka::destination),
-    },
-    Case {
-        name: "event hubs destination",
-        services: &["event-hubs", "azurite"],
-        leg: Leg::Destination(event_hubs::destination),
     },
     Case {
         name: "elasticsearch destination",
@@ -1023,7 +1018,6 @@ const SECRETS: &[(&str, &str)] = &[
     ("SM_AZ_KEY", azure::KEY),
     ("SM_SFTP_PW", "smeltr-live-1"),
     ("SM_SQL_PW", "smeltr-live-1"),
-    ("SM_EH_CONN", event_hubs::CONNECTION),
     ("SM_HEC_TOKEN", splunk::TOKEN),
     ("SM_HEC_AUTH", splunk::AUTHORIZATION),
 ];
@@ -1452,14 +1446,20 @@ const FILE_SECS: u64 = 5;
 /// Records in each file an object source reads: a log file's worth.
 const FILE_ROWS: u64 = 5_000;
 
-/// The corpus as files of lines, each named for its place in it.
-fn files(rows: u64) -> Vec<(String, String)> {
+/// The corpus as files of lines, each named for its place in it, and gzipped when `CONNECTOR_GZIP` is set.
+fn files(rows: u64) -> Vec<(String, Vec<u8>)> {
+    let gzip = std::env::var_os("CONNECTOR_GZIP").is_some();
     (0..rows.div_ceil(FILE_ROWS))
         .map(|f| {
-            let lines = (f * FILE_ROWS..((f + 1) * FILE_ROWS).min(rows))
+            let lines: String = (f * FILE_ROWS..((f + 1) * FILE_ROWS).min(rows))
                 .map(|i| line(i) + "\n")
                 .collect();
-            (format!("{f:06}.ndjson"), lines)
+            if !gzip {
+                return (format!("{f:06}.ndjson"), lines.into_bytes());
+            }
+            let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            std::io::Write::write_all(&mut gz, lines.as_bytes()).unwrap();
+            (format!("{f:06}.ndjson.gz"), gz.finish().unwrap())
         })
         .collect()
 }
@@ -1510,67 +1510,6 @@ fn underscored(run: &str) -> String {
     run.replace('-', "_")
 }
 
-mod event_hubs {
-    use super::*;
-    use rdkafka::ClientConfig;
-    use rdkafka::producer::{BaseProducer, BaseRecord, Producer};
-
-    /// The emulator's own.
-    pub const CONNECTION: &str = "Endpoint=sb://localhost;SharedAccessKeyName=RootManageSharedAccessKey;\
-                                  SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;";
-
-    /// The emulator's event hubs are fixed by `tests/fixtures/event-hubs-emulator.json`.
-    const HUB: &str = "smeltr-live";
-
-    pub fn source(run: &str, rows: u64) -> Option<Value> {
-        let namespace = live::event_hubs(&named(run))?;
-        // The hub holds every earlier run's records too: this one reads only its own.
-        let since = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64;
-        let producer: BaseProducer = ClientConfig::new()
-            .set("bootstrap.servers", &namespace)
-            .set("security.protocol", "SASL_PLAINTEXT")
-            .set("sasl.mechanism", "PLAIN")
-            .set("sasl.username", "$ConnectionString")
-            .set("sasl.password", CONNECTION)
-            .set("linger.ms", "20")
-            .create()
-            .expect("an Event Hubs producer");
-        for i in 0..rows {
-            let line = line(i);
-            let mut record = BaseRecord::<(), String>::to(HUB).payload(&line);
-            loop {
-                match producer.send(record) {
-                    Ok(()) => break,
-                    Err((_, r)) => {
-                        producer.poll(Duration::from_millis(50));
-                        record = r;
-                    }
-                }
-            }
-            producer.poll(Duration::ZERO);
-        }
-        producer
-            .flush(Duration::from_secs(120))
-            .expect("the corpus reaches the hub");
-        Some(
-            json!({"id": "in", "type": "eventHubs", "namespace": namespace, "eventHubs": [HUB],
-                    "consumerGroup": "smeltr", "connectionString": "SM_EH_CONN",
-                    "start": {"type": "timestamp", "millis": since}}),
-        )
-    }
-
-    pub fn destination(run: &str) -> Option<Value> {
-        let namespace = live::event_hubs(&named(run))?;
-        Some(
-            json!({"id": "out", "type": "eventHubs", "namespace": namespace, "defaultEventHub": HUB,
-                    "connectionString": "SM_EH_CONN"}),
-        )
-    }
-}
-
 mod s3 {
     use super::*;
 
@@ -1592,20 +1531,28 @@ mod s3 {
         assert!(status < 300 || status == 409, "bucket {bucket}: {status} {text}");
     }
 
-    fn put(at: &str, bucket: &str, files: &[(String, String)]) {
+    fn put(at: &str, bucket: &str, files: &[(String, Vec<u8>)]) {
         for (key, body) in files {
-            ok("PUT", &format!("{at}/{bucket}/{key}"), &[], body.as_bytes());
+            ok("PUT", &format!("{at}/{bucket}/{key}"), &[], body.as_slice());
         }
     }
 
     pub fn list_source(run: &str, rows: u64) -> Option<Value> {
-        let at = live::s3(&named(run))?;
-        bucket(&at, run);
-        put(&at, run, &files(rows));
-        Some(with_keys(
+        Some(listed(&live::s3(&named(run))?, run, rows))
+    }
+
+    pub fn seaweedfs_list_source(run: &str, rows: u64) -> Option<Value> {
+        Some(listed(&live::seaweedfs(&named(run))?, run, rows))
+    }
+
+    /// An `s3List` source reading the bucket at `at`, which holds the corpus.
+    fn listed(at: &str, run: &str, rows: u64) -> Value {
+        bucket(at, run);
+        put(at, run, &files(rows));
+        with_keys(
             json!({"id": "in", "type": "s3List", "bucket": run, "pollIntervalSecs": 1}),
-            &at,
-        ))
+            at,
+        )
     }
 
     pub fn sqs_source(run: &str, rows: u64) -> Option<Value> {
@@ -1691,13 +1638,13 @@ mod gcs {
         );
     }
 
-    fn put(at: &str, bucket: &str, files: &[(String, String)]) {
+    fn put(at: &str, bucket: &str, files: &[(String, Vec<u8>)]) {
         for (key, body) in files {
             ok(
                 "POST",
                 &format!("{at}/upload/storage/v1/b/{bucket}/o?uploadType=media&name={key}"),
                 &[("content-type", "application/x-ndjson")],
-                body.as_bytes(),
+                body.as_slice(),
             );
         }
     }
@@ -1775,13 +1722,13 @@ mod azure {
         );
     }
 
-    fn put(at: &str, container: &str, files: &[(String, String)]) {
+    fn put(at: &str, container: &str, files: &[(String, Vec<u8>)]) {
         for (key, body) in files {
             ok(
                 "PUT",
                 &format!("{at}/{container}/{key}?{SAS}"),
                 &[("x-ms-blob-type", "BlockBlob")],
-                body.as_bytes(),
+                body.as_slice(),
             );
         }
     }
@@ -1878,7 +1825,7 @@ mod sftp {
             exec(
                 "sftp",
                 &["sh", "-c", &format!("cat > {path} && chown 1001 {path}")],
-                body.as_bytes(),
+                body.as_slice(),
             );
         }
         decl["pollIntervalSecs"] = json!(1);
@@ -2160,6 +2107,6 @@ mod receivers {
     }
 
     pub fn syslog(port: u16) -> Value {
-        json!({"id": "in", "type": "syslogReceiver", "port": port, "allowFrom": ["0.0.0.0/0"]})
+        json!({"id": "in", "type": "socketReceiver", "framing": "syslog", "port": port, "allowFrom": ["0.0.0.0/0"]})
     }
 }

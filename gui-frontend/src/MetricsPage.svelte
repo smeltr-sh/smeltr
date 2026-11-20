@@ -74,10 +74,13 @@
   let fetchedAt = $state(Date.now());
   let failed = $state<string | null>(null);
 
-  /** The list grows as workers report metrics they had not before, so it is read with every answer. */
+  /** The list grows as workers report metrics they had not before, so it is read with every answer. It is set only
+   * when it changed: the effect that reads it asks again when it is set. */
   function readMetrics(): Promise<unknown> {
     return getSeriesMetrics()
-      .then((m) => (metrics = m))
+      .then((m) => {
+        if (JSON.stringify(m) !== JSON.stringify(metrics)) metrics = m;
+      })
       .catch((e: Error) => (failed = e.message));
   }
 
@@ -108,7 +111,10 @@
       : v;
 
   /** The metrics' answers as one: beside another, each series is named for its metric, and its split value after it. */
-  function together(answers: SeriesAnswerDto[], by: string): SeriesAnswerDto {
+  function together(
+    answers: SeriesAnswerDto[],
+    by: string,
+  ): [SeriesAnswerDto, Map<string, string>] {
     const of = new Map<string, string>();
     const series = answers.flatMap((a) =>
       a.series.map((s) => {
@@ -118,8 +124,7 @@
         return { ...s, name };
       }),
     );
-    metricOf = of;
-    return { ...answers[0], series };
+    return [{ ...answers[0], series }, of];
   }
 
   async function read(asked: MetricsView) {
@@ -142,8 +147,10 @@
       ]);
       // A slow answer to an older question must not land over the newer one's.
       if (asked === view) {
-        answer = got;
-        before = then;
+        answer = got[0];
+        // A series only last week has a metric too; this week's names win.
+        metricOf = new Map([...(then?.[1] ?? []), ...got[1]]);
+        before = then?.[0] ?? null;
         happened = marks;
         fetchedAt = Date.now();
         failed = null;
@@ -159,8 +166,8 @@
   });
 
   /** The deploys on `main` over the last `minutes`, and the issues that held in them, each from when it began until
-   * it cleared or until now. The open ones are on the Issues page, which every viewer reads; the cleared ones are in
-   * the leader's log, which only an administrator does, so another viewer sees the open ones alone. */
+   * it cleared or until now. The open ones are on the Issues page; the cleared ones are in the log. Both show only
+   * the groups the person views. */
   async function readMarks(minutes: number) {
     const now = Date.now();
     const since = now - minutes * MINUTE;
@@ -646,13 +653,15 @@
           {/if}
         </div>
 
-        <label class="split"
-          ><span class="dim">Split by</span>
-          <select value={view.by} onchange={(e) => go({ by: e.currentTarget.value })}>
-            <option value="">None</option>
-            {#each labels as l (l)}<option value={l}>{labelName(l)}</option>{/each}
-          </select></label
-        >
+        {#if labels.length > 0}
+          <label class="split"
+            ><span class="dim">Split by</span>
+            <select value={view.by} onchange={(e) => go({ by: e.currentTarget.value })}>
+              <option value="">None</option>
+              {#each labels as l (l)}<option value={l}>{labelName(l)}</option>{/each}
+            </select></label
+          >
+        {/if}
         {#if view.by && all.length > 1}
           <label class="split"
             ><span class="dim">Top</span>

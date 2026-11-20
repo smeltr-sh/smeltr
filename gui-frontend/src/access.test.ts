@@ -32,9 +32,18 @@ function signInAs(access: { administrator: boolean; areas: Record<string, string
   return load();
 }
 
-beforeEach(() => signedOut());
+beforeEach(() => {
+  signedOut();
+  const kept = new Map<string, string>();
+  vi.stubGlobal('localStorage', {
+    getItem: (k: string) => kept.get(k) ?? null,
+    setItem: (k: string, v: string) => kept.set(k, v),
+    removeItem: (k: string) => kept.delete(k),
+  });
+});
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   setScope('shared');
 });
 
@@ -76,17 +85,31 @@ describe('what a person may do', () => {
     expect(heldAreas()).toEqual(['shared', 'payments']);
     setScope('search');
     settleScope();
-    expect(currentScope()).toBe('shared');
+    expect(currentScope()).toBe('payments');
   });
 
-  it('moves a scope that is not held to the first one that is', async () => {
+  it('moves a scope that is not held to the first group that is', async () => {
     await signInAs({ administrator: false, areas: LEE });
     setScope('default');
     settleScope();
-    expect(currentScope()).toBe('shared');
+    expect(currentScope()).toBe('payments');
     setScope('search');
     settleScope();
     expect(currentScope()).toBe('search');
+  });
+
+  it('starts a person in their own group, and in shared only when it is all they hold', async () => {
+    await signInAs({ administrator: false, areas: LEE });
+    localStorage.removeItem('smeltr-scope');
+    settleScope();
+    expect(currentScope()).toBe('payments');
+    setScope('shared');
+    settleScope();
+    expect(currentScope()).toBe('shared');
+    await signInAs({ administrator: false, areas: { shared: 'editor' } });
+    localStorage.removeItem('smeltr-scope');
+    settleScope();
+    expect(currentScope()).toBe('shared');
   });
 
   it('needs a deployer in every area a change touches', async () => {

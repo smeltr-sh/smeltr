@@ -36,6 +36,7 @@ mod load;
 mod merge;
 mod sample;
 mod test;
+mod upgrade;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -65,7 +66,7 @@ pub use dto::{
     ParserKindDto, PipelineDto, PrometheusDestinationDto, PrometheusReceiverSourceDto, RenamePairDto, Requirement,
     RouteDto, S2sReceiverSourceDto, S3DestinationDto, S3ListSourceDto, S3SqsSourceDto, SchemaDto, SchemaFieldDto,
     SecretRefDto, SftpDestinationDto, SftpSourceDto, SocketReceiverSourceDto, SourceDto, SourceKindDto,
-    SplunkHecDestinationDto, SqlKind, SqlSourceDto, StartPositionDto, StepDto, SyslogReceiverSourceDto,
+    SplunkHecDestinationDto, SqlKind, SqlSourceDto, StartPositionDto, StepDto,
 };
 pub use export::{Export, export};
 pub use impact::{Impact, Reached, Reason, pipeline_answers_differ, pipelines_touched};
@@ -89,7 +90,7 @@ pub use test::{
 
 /// The `"version"` this build writes and reads. A change to the format bumps it and adds a converter from the
 /// version before it, so a file nobody has saved since still loads (`docs/architecture/control-plane.md`, Upgrades).
-pub const CURRENT_VERSION: u32 = 1;
+pub const CURRENT_VERSION: u32 = 2;
 
 /// Structural resolution, then compilation. The one check every write path runs.
 pub fn validate(file: FileConfig) -> Result<LoadedSystem, LoadError> {
@@ -605,9 +606,9 @@ mod tests {
 
     #[test]
     fn an_unsupported_version_is_rejected() {
-        let json = example_json().replacen("\"version\": 1", "\"version\": 2", 1);
+        let json = example_json().replacen("\"version\": 1", "\"version\": 99", 1);
         let err = load_str(&json).unwrap_err();
-        assert!(matches!(err, LoadError::UnsupportedVersion(2)));
+        assert!(matches!(err, LoadError::UnsupportedVersion(99)));
     }
 
     #[test]

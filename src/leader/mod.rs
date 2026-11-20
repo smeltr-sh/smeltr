@@ -6,8 +6,12 @@
 //! keeps a worker from talking to a spoofed leader. Neither needs external PKI. A revoked credential blocks future
 //! heartbeats and fetches; it never reaches into a running process.
 //!
-//! Operator access to the admin routes is the binary's concern (`src/bin/smeltr/admin_auth.rs`), which is why
+//! Operator access to the admin routes is the binary's concern (`src/bin/smeltr/gate.rs`), which is why
 //! [`admin_router`] is handed out separately: [`compose`] puts whatever gate the caller chose over that half only.
+//!
+//! A handler lives with what it reads. One that reads only [`AppState`] is in this module and routed by
+//! [`admin_router`], so a test reaches it through [`router`]. One that also reads the caller's account or the
+//! configuration files is in the binary (`src/bin/smeltr/*_api.rs`), which adds its route to [`admin_router`].
 //!
 //! Durable state (worker credentials, enrollment codes, a group's color) is behind `Store`. A worker group exists
 //! exactly when `main` holds a file under `groups/<id>/`; its identity, name and configuration are all in the one git
@@ -81,7 +85,9 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 
-use crate::heartbeat::{HeartbeatRequest, HeartbeatResponse, ThreadKind};
+use crate::heartbeat::{
+    CaptureInvitation, HeartbeatRequest, HeartbeatResponse, Hold, SecretDelivery, SenderFields, ThreadHeartbeat,
+};
 use envelope::{Empty, Envelope, Refusal};
 use registry::{FactKey, Registry, ThreadHealth, WorkerFacts};
 use store::{Issued, Kept, Spend, Store, StoreError};
@@ -338,7 +344,7 @@ async fn heartbeat(
     Extension(AuthenticatedWorker(worker_id)): Extension<AuthenticatedWorker>,
     Extension(kind): Extension<store::WorkerKind>,
     Json(mut req): Json<HeartbeatRequest>,
-) -> Result<Json<HeartbeatResponse>, (axum::http::StatusCode, String)> {
+) -> Result<Json<HeartbeatResponse>, Refused> {
     if req.worker_id != worker_id {
         return Err((
             axum::http::StatusCode::FORBIDDEN,
@@ -365,10 +371,8 @@ async fn heartbeat(
         stopping = req.stopping,
         "a worker's heartbeat arrived"
     );
-    // Kept for the answer's line: the id itself moves into the blocking work below.
-    let answering = worker_id.clone();
     let threads = std::mem::take(&mut req.threads);
-    let reported_group = threads.first().map(|t| t.group_id.clone());
+    let group_id = threads.first().map(|t| t.group_id.clone()).unwrap_or_default();
     let stopping = req.stopping;
     let directive = state.directives.heard(
         &worker_id,
@@ -376,130 +380,11 @@ async fn heartbeat(
         req.took.as_deref(),
         stopping,
     );
-    // One blocking hop for both, and off the runtime's threads: each is a write transaction behind the registry's
-    // one connection lock, and a fleet all beating at once would otherwise park every async thread the leader has.
-    // Logs first and separately committed -- what a worker had to say about a deployment it is about to describe is
-    // worth having even if describing it fails. The rest of the beat -- its state, and its window's points and
-    // streams -- is one transaction.
-    {
-        let registry = state.registry.clone();
-        let worker = worker_id.clone();
-        let events = std::mem::take(&mut req.logs);
-        let streams = req.streams.take();
-        let seq = req.streams_window;
-        let boot_id = req.boot_id;
-        // Empty from a worker too old to state one, which is stored as no group rather than as a group named "".
-        let group = Some(req.group_id.clone()).filter(|g| !g.is_empty());
-        let facts = WorkerFacts::of(&req, now_ms);
-        let data_dir = state.data_dir.clone();
-        // Kept by worker rather than by thread, so a worker running nothing still counts toward a rotation. Set
-        // before the blocking hop, because the answer below is built from it.
-        state
-            .registry
-            .record_authority(&worker_id, req.authority_fingerprints.clone(), req.takes_authority);
-        let recorded = tokio::task::spawn_blocking(move || {
-            registry.record_logs(&worker, boot_id, group.as_deref(), &events);
-            let repo = git::repo_path(&data_dir);
-            let deployed = git::deployed(&repo);
-            let config = |group_id: &str, commit: &str| Some(git::content_id(&repo, commit, group_id).ok()?.key());
-            let held = group
-                .as_deref()
-                .zip(deployed.as_deref())
-                .and_then(|(group_id, deployed)| config(group_id, deployed));
-            // A worker too old to state its group reports under none, and its streams go unrecorded.
-            let streams = streams
-                .as_ref()
-                .zip(group.as_deref())
-                .map(|(report, group_id)| series::Streams {
-                    group_id,
-                    report,
-                    // A worker that names no commit, or a leader with nothing deployed, cannot tell a rollout apart,
-                    // so the report counts as the deployed one.
-                    deployed: match (&facts.commit, &deployed) {
-                        (Some(running), Some(deployed)) => {
-                            held.is_some() && (running == deployed || config(group_id, running) == held)
-                        }
-                        _ => true,
-                    },
-                    config: held.as_deref(),
-                });
-            let window = series::Window { boot_id, seq, streams };
-            registry.record_heartbeat(&worker, threads, facts, window, now_ms)
-        })
-        .await;
-        // Said rather than swallowed: this is what updates the live view as well as the durable one, so a worker
-        // whose report never landed reads as silent on `/api/health` while still being answered here.
-        match recorded {
-            Err(e) => tracing::warn!(
-                name: "not_recorded", target: "heartbeats",
-                subject = %worker_id,
-                error = %e,
-                "a heartbeat could not be recorded, so this worker's threads stay as they were until the next one"
-            ),
-            // Refused, so the worker sends the window again rather than count it as recorded.
-            Ok(Err(e)) => {
-                return Err((
-                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                    format!("could not record this heartbeat: {e}"),
-                ));
-            }
-            Ok(Ok(())) => {}
-        }
-    }
-    // Before the forgetting below, so a stopping ephemeral worker's last progress lands and the worker is not
-    // heard again after it. A beat whose progress may not have landed is refused, so the worker sends it again
-    // rather than count it as recorded.
-    let holds = {
-        let registry = state.registry.clone();
-        let (worker, group) = (worker_id.clone(), req.group_id.clone());
-        let runs = std::mem::take(&mut req.single_worker);
-        let progress = std::mem::take(&mut req.progress);
-        let clock = holds::Clock::at(state.registry.up_for());
-        let settled = run_store(state.store.clone(), move |store| {
-            let beat = holds::Beat {
-                worker: &worker,
-                group: &group,
-                runs,
-                progress,
-                stopping,
-            };
-            registry.holds.beat(store, beat, clock)
-        })
-        .await;
-        settled.map_err(|e| {
-            (
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                format!("could not record which single-worker sources this worker holds: {e}"),
-            )
-        })?
-    };
-    let heartbeat_interval = crate::startup_config::leader_heartbeat_interval();
-    let group_id = reported_group.unwrap_or_default();
-    let data_dir = state.data_dir.clone();
-    let entitlements = state.entitlements.clone();
-    let for_group = group_id.clone();
-    // One blocking hop for all: each reads the repository or the store, and none belongs on the async runtime's
-    // threads. A certificate is entitled at its newest version, resolved on every beat so that a new version
-    // reaches the fleet on the next one.
-    let store = state.store.clone();
-    let (pointer, entitled, sender_fields) = tokio::task::spawn_blocking(move || {
-        (
-            deployed_pointer(&data_dir),
-            at_newest(
-                &entitled(&data_dir, &entitlements, &for_group),
-                // Unreadable, a beat entitles no certificate and the next one tries again.
-                &certificate_versions(&store).unwrap_or_else(|e| {
-                    if let Some(error) = relog(&CERTIFICATES_UNREADABLE, e) {
-                        tracing::warn!(name: "unreadable", target: "certificates", subject = %for_group, error, "the certificate versions could not be read, so this heartbeat is answered with none");
-                    }
-                    Default::default()
-                }),
-            ),
-            marks::Marks::read(&store).sender_fields(&for_group),
-        )
-    })
-    .await
-    .unwrap_or_default();
+    record(&state, &mut req, threads, now_ms).await?;
+    // Before the worker is forgotten below, so a stopping ephemeral worker's last progress lands, and settling its
+    // holds does not bring back a worker already forgotten.
+    let holds = settle_holds(&state, &mut req).await?;
+    let (pointer, entitled, sender_fields) = entitled_now(&state, &group_id).await;
     // The one moment a replaced authority can reach a worker: it asks, over a connection its own token
     // authenticates and its current authority verified.
     let authority = authority_to_hand(&state.data_dir, &req.authority_fingerprints, req.takes_authority);
@@ -509,30 +394,11 @@ async fn heartbeat(
     if stopping && kind == store::WorkerKind::Ephemeral {
         forget::forget(&state, &worker_id).await;
     }
-    // The whole of what this worker should run: it lets go of a session still filling that this leaves out
-    // (`Captures::invitations_for`). On the blocking pool, because `holder` waits on any beat in progress, which
-    // holds the holds lock across its store writes; an async thread parked on that would stall every handler.
-    let (captures_for, secrets) = tokio::task::spawn_blocking(move || {
-        let captures_for = state.captures.invitations_for(&worker_id, &group_id, |source| {
-            state.registry.holds.holder(&group_id, source)
-        });
-        let secrets = state
-            .store
-            .secrets_for_delivery(&entitled, &req.secret_versions)
-            .unwrap_or_else(|e| {
-                if let Some(error) = relog(&SECRETS_NOT_DELIVERED, e.to_string()) {
-                    tracing::warn!(name: "not_delivered", target: "secrets", subject = %worker_id, group = %group_id, error, "the secrets a worker is entitled to could not be read, so this heartbeat delivers none");
-                }
-                Default::default()
-            });
-        (captures_for, secrets)
-    })
-    .await
-    .unwrap_or_default();
+    let (captures_for, secrets) = to_run(&state, &worker_id, group_id, entitled, &mut req).await;
 
     tracing::trace!(
         name: "answered", target: "heartbeats",
-        worker = %answering,
+        worker = %worker_id,
         holds = holds.len(),
         deployed = pointer.as_deref(),
         directive = directive.as_ref().map(|d| format!("{:?} {}", d.action, d.id)),
@@ -553,8 +419,175 @@ async fn heartbeat(
         // Whole on every answer, so a worker that missed a change has it on its next beat.
         log_levels: state.log_levels.get(),
         sender_fields,
-        heartbeat_interval_ms: Some(heartbeat_interval.as_millis() as u64),
+        heartbeat_interval_ms: Some(crate::startup_config::leader_heartbeat_interval().as_millis() as u64),
     }))
+}
+
+/// Why a heartbeat is refused: the status, and a sentence the worker logs.
+type Refused = (axum::http::StatusCode, String);
+
+/// Records what the beat reports: its logs, then its state and its window's points and streams. Refused when the
+/// state did not land, so the worker sends the window again.
+async fn record(
+    state: &AppState,
+    req: &mut HeartbeatRequest,
+    threads: Vec<ThreadHeartbeat>,
+    now_ms: i64,
+) -> Result<(), Refused> {
+    let worker_id = req.worker_id.clone();
+    // One blocking hop for both, and off the runtime's threads: each is a write transaction behind the registry's
+    // one connection lock, and a fleet all beating at once would otherwise park every async thread the leader has.
+    // Logs first and separately committed -- what a worker had to say about a deployment it is about to describe is
+    // worth having even if describing it fails. The rest of the beat -- its state, and its window's points and
+    // streams -- is one transaction.
+    let registry = state.registry.clone();
+    let worker = worker_id.clone();
+    let events = std::mem::take(&mut req.logs);
+    let streams = req.streams.take();
+    let seq = req.streams_window;
+    let boot_id = req.boot_id;
+    // Empty from a worker too old to state one, which is stored as no group rather than as a group named "".
+    let group = Some(req.group_id.clone()).filter(|g| !g.is_empty());
+    let facts = WorkerFacts::of(req, now_ms);
+    let data_dir = state.data_dir.clone();
+    // Kept by worker rather than by thread, so a worker running nothing still counts toward a rotation. Set
+    // before the hop to the blocking pool below, because the answer is built from it.
+    state
+        .registry
+        .record_authority(&worker_id, req.authority_fingerprints.clone(), req.takes_authority);
+    let recorded = tokio::task::spawn_blocking(move || {
+        registry.record_logs(&worker, boot_id, group.as_deref(), &events);
+        let repo = git::repo_path(&data_dir);
+        let deployed = git::deployed(&repo);
+        let config = |group_id: &str, commit: &str| Some(git::content_id(&repo, commit, group_id).ok()?.key());
+        let held = group
+            .as_deref()
+            .zip(deployed.as_deref())
+            .and_then(|(group_id, deployed)| config(group_id, deployed));
+        // A worker too old to state its group reports under none, and its streams go unrecorded.
+        let streams = streams
+            .as_ref()
+            .zip(group.as_deref())
+            .map(|(report, group_id)| series::Streams {
+                group_id,
+                report,
+                // A worker that names no commit, or a leader with nothing deployed, cannot tell a rollout apart,
+                // so the report counts as the deployed one.
+                deployed: match (&facts.commit, &deployed) {
+                    (Some(running), Some(deployed)) => {
+                        held.is_some() && (running == deployed || config(group_id, running) == held)
+                    }
+                    _ => true,
+                },
+                config: held.as_deref(),
+            });
+        let window = series::Window { boot_id, seq, streams };
+        registry.record_heartbeat(&worker, threads, facts, window, now_ms)
+    })
+    .await;
+    // Said rather than swallowed: this is what updates the live view as well as the durable one, so a worker
+    // whose report never landed reads as silent on `/api/health` while still being answered here.
+    match recorded {
+        Err(e) => tracing::warn!(
+            name: "not_recorded", target: "heartbeats",
+            subject = %worker_id,
+            error = %e,
+            "a heartbeat could not be recorded, so this worker's threads stay as they were until the next one"
+        ),
+        // Refused, so the worker sends the window again rather than count it as recorded.
+        Ok(Err(e)) => {
+            return Err((
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                format!("could not record this heartbeat: {e}"),
+            ));
+        }
+        Ok(Ok(())) => {}
+    }
+    Ok(())
+}
+
+/// Settles which single-worker sources this worker holds, and lands its progress on them. Refused when the progress
+/// may not have landed, so the worker sends it again rather than count it as recorded.
+async fn settle_holds(state: &AppState, req: &mut HeartbeatRequest) -> Result<Vec<Hold>, Refused> {
+    let registry = state.registry.clone();
+    let (worker, group, stopping) = (req.worker_id.clone(), req.group_id.clone(), req.stopping);
+    let runs = std::mem::take(&mut req.single_worker);
+    let progress = std::mem::take(&mut req.progress);
+    let clock = holds::Clock::at(state.registry.up_for());
+    let settled = run_store(state.store.clone(), move |store| {
+        let beat = holds::Beat {
+            worker: &worker,
+            group: &group,
+            runs,
+            progress,
+            stopping,
+        };
+        registry.holds.beat(store, beat, clock)
+    })
+    .await;
+    settled.map_err(|e| {
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            format!("could not record which single-worker sources this worker holds: {e}"),
+        )
+    })
+}
+
+/// What is deployed, the secrets and certificates `group_id` is entitled to, and its senders' fields. A certificate
+/// is entitled at its newest version, resolved on every beat so that a new version reaches the fleet on the next one.
+async fn entitled_now(state: &AppState, group_id: &str) -> (Option<String>, Vec<SecretAt>, Vec<SenderFields>) {
+    let data_dir = state.data_dir.clone();
+    let entitlements = state.entitlements.clone();
+    let for_group = group_id.to_string();
+    let store = state.store.clone();
+    // One blocking hop for all: each reads the repository or the store, and none belongs on the async runtime's
+    // threads.
+    tokio::task::spawn_blocking(move || {
+        (
+            deployed_pointer(&data_dir),
+            at_newest(
+                &entitled(&data_dir, &entitlements, &for_group),
+                // Unreadable, a beat entitles no certificate and the next one tries again.
+                &certificate_versions(&store).unwrap_or_else(|e| {
+                    if let Some(error) = relog(&CERTIFICATES_UNREADABLE, e) {
+                        tracing::warn!(name: "unreadable", target: "certificates", subject = %for_group, error, "the certificate versions could not be read, so this heartbeat is answered with none");
+                    }
+                    Default::default()
+                }),
+            ),
+            marks::Marks::read(&store).sender_fields(&for_group),
+        )
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// Every capture this worker should run, and the secrets it is `entitled` to and does not hold. The worker lets go of
+/// a session still filling that these invitations leave out (`Captures::invitations_for`).
+async fn to_run(
+    state: &AppState,
+    worker_id: &str,
+    group_id: String,
+    entitled: Vec<SecretAt>,
+    req: &mut HeartbeatRequest,
+) -> (Vec<CaptureInvitation>, Vec<SecretDelivery>) {
+    let (captures, registry, store) = (state.captures.clone(), state.registry.clone(), state.store.clone());
+    let worker_id = worker_id.to_string();
+    let held = std::mem::take(&mut req.secret_versions);
+    // On the blocking pool, because `holder` waits on any beat in progress, which holds the holds lock across its
+    // store writes; an async thread parked on that would stall every handler.
+    tokio::task::spawn_blocking(move || {
+        let captures_for = captures.invitations_for(&worker_id, &group_id, |source| registry.holds.holder(&group_id, source));
+        let secrets = store.secrets_for_delivery(&entitled, &held).unwrap_or_else(|e| {
+            if let Some(error) = relog(&SECRETS_NOT_DELIVERED, e.to_string()) {
+                tracing::warn!(name: "not_delivered", target: "secrets", subject = %worker_id, group = %group_id, error, "the secrets a worker is entitled to could not be read, so this heartbeat delivers none");
+            }
+            Default::default()
+        });
+        (captures_for, secrets)
+    })
+    .await
+    .unwrap_or_default()
 }
 
 // -- capture --------------------------------------------------------------
@@ -978,54 +1011,22 @@ pub fn build_name(commit: &str, release: Option<&str>) -> String {
 
 // -- worker health status --------------------------------------------------
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GroupHealth {
-    pub group_id: String,
-    /// The pool: what `thread_limit` sizes, and the only one an operator sets.
-    pub transform_threads: usize,
-    /// One per source, set by how many sources the group's bundle declares.
-    pub readers: usize,
-    /// One per destination, set by how many the group delivers to.
-    pub egress_threads: usize,
-}
+/// What `GET /api/health` serves: each worker thread's last heartbeat.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HealthResponse {
     pub threads: Vec<ThreadHealth>,
-    pub groups: Vec<GroupHealth>,
     /// How long a worker may go without a heartbeat before it is silent: the window `workerSilent` is raised on, so
     /// a page counting silent workers agrees with it.
     pub silent_after_ms: u64,
 }
 
-/// What `GET /api/health` serves, for the binary's in-process Cluster page.
-pub fn health_snapshot(state: &AppState) -> HealthResponse {
-    let snapshot = state.registry.snapshot();
-
-    // Counted per kind, because each stage's size comes from something the others cannot influence (design doc,
-    // Runtime stages). `Worker` is
-    // the process itself, not a thread; a worker older than the pool reports no kind at all, and counts against nothing
-    // rather than being guessed at.
-    let mut groups: std::collections::BTreeMap<String, GroupHealth> = std::collections::BTreeMap::new();
-    for t in &snapshot {
-        let g = groups.entry(t.report.group_id.clone()).or_insert_with(|| GroupHealth {
-            group_id: t.report.group_id.clone(),
-            transform_threads: 0,
-            readers: 0,
-            egress_threads: 0,
-        });
-        match t.report.kind {
-            Some(ThreadKind::Transform) => g.transform_threads += 1,
-            Some(ThreadKind::Reader) => g.readers += 1,
-            Some(ThreadKind::Egress) => g.egress_threads += 1,
-            Some(ThreadKind::Worker) | None => {}
-        }
-    }
-
+/// The threads heartbeating in the groups `access` views.
+fn health_snapshot(state: &AppState, access: &access::Access) -> HealthResponse {
+    let mut threads = state.registry.snapshot();
+    threads.retain(|t| access.allows(&t.report.group_id, access::Level::Viewer));
     HealthResponse {
-        threads: snapshot,
-        groups: groups.into_values().collect(),
+        threads,
         silent_after_ms: heartbeat_window().as_millis() as u64,
     }
 }
@@ -1054,8 +1055,13 @@ pub struct SystemInfo {
     pub kafka_tls_props: &'static [&'static str],
 }
 
-async fn health(State(state): State<AppState>) -> Envelope<HealthResponse> {
-    Envelope::ok(health_snapshot(&state))
+/// The gate lets in anyone who views some area, and the registry holds the whole fleet's threads, so this keeps
+/// only those in the groups `access` views.
+async fn health(
+    State(state): State<AppState>,
+    Extension(access): Extension<access::Access>,
+) -> Envelope<HealthResponse> {
+    Envelope::ok(health_snapshot(&state, &access))
 }
 
 async fn system_info(State(state): State<AppState>) -> Envelope<SystemInfo> {
@@ -1083,12 +1089,6 @@ pub async fn warnings_snapshot(state: &AppState) -> Result<Vec<warnings::Warning
 /// What `GET /api/warnings?info=true`, `GET /api/metrics` and the alert channels are given: the fixed catalog (design
 /// doc, Control plane), info entries and all, derived fresh from the registry and the worker roster on every call --
 /// there is no warning table, so this is the only place the answer lives.
-///
-/// A route of its own rather than a field on [`HealthResponse`]: the "enrolled, never heartbeating" entry needs the
-/// worker roster, which lives in `Store` and so must be read on the blocking pool ([`run_store`]) -- and
-/// [`health_snapshot`] is also called synchronously from the in-process Cluster page, which a store read would
-/// block. The GUI pages that show warnings already poll `/api/health` on a timer; this rides the same timer as a
-/// second, independently-cheap fetch rather than reshaping the first.
 pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreError> {
     let now_ms = warnings::now_millis();
     let heartbeat_interval = crate::startup_config::leader_heartbeat_interval();
@@ -1911,8 +1911,12 @@ mod logs_query_tests {
     }
 }
 
+/// One page of the log, of the rows the caller may read: an administrator every row, anyone else the rows filed under
+/// a group they view (`series::RegistryStore::record_logs`). A row filed under no group is the leader's own, about
+/// the whole fleet: its accounts, secrets and sign-ins among them.
 async fn get_logs(
     State(state): State<AppState>,
+    axum::Extension(access): axum::Extension<access::Access>,
     Query(query): Query<LogsQuery>,
 ) -> Result<Envelope<LogsResponse>, Refusal> {
     let limit = query.limit.unwrap_or(LOGS_PAGE).clamp(1, LOGS_PAGE_MAX);
@@ -1934,11 +1938,17 @@ async fn get_logs(
         let Some(store) = registry.series() else {
             return Ok(Vec::new());
         };
+        let viewed = access.viewed();
         store.logs(
             &series::LogFilter {
                 levels: &levels,
                 worker_id: query.worker.as_deref(),
                 group_id: query.group.as_deref(),
+                filed: match &viewed {
+                    _ if access.is_administrator() => series::Filed::Any,
+                    None => series::Filed::InAGroup,
+                    Some(groups) => series::Filed::In(groups),
+                },
                 class: query.class.as_deref(),
                 r#type: query.r#type.as_deref(),
                 type_exact: query.type_exact,
@@ -3650,11 +3660,24 @@ pub async fn worker_credentials_snapshot(state: &AppState) -> Result<Vec<WorkerO
         .collect())
 }
 
-async fn list_workers(State(state): State<AppState>) -> Result<Envelope<WorkerList>, Refusal> {
-    worker_credentials_snapshot(&state)
+/// The roster of the workers `access` may see. A worker is the caller's when one of its threads heartbeats in a
+/// group they view; one that has never heartbeated has named no group, and only an administrator sees it.
+async fn list_workers(
+    State(state): State<AppState>,
+    Extension(access): Extension<access::Access>,
+) -> Result<Envelope<WorkerList>, Refusal> {
+    let mut workers = worker_credentials_snapshot(&state)
         .await
-        .map(|workers| Envelope::ok(WorkerList { workers }))
-        .map_err(|e| Refusal::internal(e.to_string()))
+        .map_err(|e| Refusal::internal(e.to_string()))?;
+    if !access.is_administrator() {
+        let theirs: std::collections::HashSet<String> = health_snapshot(&state, &access)
+            .threads
+            .into_iter()
+            .map(|t| t.worker_id)
+            .collect();
+        workers.retain(|w| theirs.contains(&w.worker_id));
+    }
+    Ok(Envelope::ok(WorkerList { workers }))
 }
 
 #[derive(serde::Serialize)]
@@ -3997,6 +4020,19 @@ pub fn admin_router() -> Router<AppState> {
         .route("/api/settings/alerts/test", post(alerts::post_test))
         .route("/api/settings/git-remote/sync", post(remote::post_sync))
         .route("/api/branches/:name/overwrite", post(remote::overwrite))
+        .route("/api/areas/:area/sources/:id/reset-history", post(marks::reset_history))
+        .route("/api/areas/:area/sources/:id/mark", post(marks::mark))
+        .route("/api/areas/:area/sources/:id/preset", put(marks::put_preset))
+        .route("/api/areas/:area/sources/:id/past", get(marks::past))
+        .route("/api/areas/:area/sources/:id/chart", get(marks::chart))
+        .route("/api/areas/:area/sources/:id/senders", get(senders::get))
+        .route("/api/areas/:area/sources/:id/senders/mark", post(marks::mark_sender))
+        .route("/api/areas/:area/sources/:id/senders/past", get(marks::past_sender))
+        .route("/api/areas/:area/sources/:id/senders/chart", get(marks::chart_sender))
+        .route(
+            "/api/areas/:area/sources/:id/senders/fields",
+            put(marks::put_sender_fields),
+        )
         .route("/api/secrets", get(list_secrets).post(create_secret))
         .route("/api/secrets/:name", delete(delete_secret))
         .route("/api/secrets/:name/versions", post(store_secret_value))
@@ -5077,6 +5113,69 @@ mod warnings_endpoint_tests {
         );
     }
 
+    /// `worker`'s one thread, heartbeating in `group`.
+    fn heard_from(state: &AppState, worker: &str, group: &str) {
+        state
+            .registry
+            .record_heartbeat(
+                worker,
+                vec![ThreadHeartbeat {
+                    thread_id: "reader-1".to_string(),
+                    group_id: group.to_string(),
+                    kind: Some(ThreadKind::Reader),
+                    partitions_owned: vec![],
+                    metrics: vec![],
+                }],
+                WorkerFacts::default(),
+                series::Window::default(),
+                0,
+            )
+            .unwrap();
+    }
+
+    /// Two groups' workers, and one that has never heartbeated: a viewer of one group sees its worker alone, in the
+    /// heartbeats and in the roster, and an administrator sees all three.
+    #[tokio::test]
+    async fn a_viewer_sees_only_the_workers_of_the_groups_they_view() {
+        let state = state("workers-by-group");
+        for worker in ["w-pay", "w-search", "w-new"] {
+            run_store(state.store.clone(), move |s| {
+                s.store_worker_credential(worker, &format!("hash-{worker}"))
+            })
+            .await
+            .unwrap();
+        }
+        heard_from(&state, "w-pay", "payments");
+        heard_from(&state, "w-search", "search");
+        let payments = access::Access::Areas([("payments".to_string(), access::Level::Viewer)].into());
+
+        let threads = health(State(state.clone()), Extension(payments.clone()))
+            .await
+            .body
+            .threads;
+        assert_eq!(
+            threads.iter().map(|t| t.worker_id.as_str()).collect::<Vec<_>>(),
+            ["w-pay"]
+        );
+        let ids = |access| {
+            let state = state.clone();
+            async move {
+                let mut ids: Vec<String> = list_workers(State(state), Extension(access))
+                    .await
+                    .unwrap()
+                    .body
+                    .workers
+                    .into_iter()
+                    .map(|w| w.worker_id)
+                    .collect();
+                ids.sort();
+                ids
+            }
+        };
+        assert_eq!(ids(payments).await, ["w-pay"]);
+        assert_eq!(ids(access::Access::Administrator).await, ["w-new", "w-pay", "w-search"]);
+    }
+
     #[tokio::test]
     async fn a_healthy_registry_and_roster_serve_no_warnings() {
         let state = state("healthy");
@@ -5309,7 +5408,70 @@ mod logs_endpoint_tests {
     }
 
     async fn get(state: &AppState, query: LogsQuery) -> LogsResponse {
-        get_logs(State(state.clone()), Query(query)).await.unwrap().body
+        read_as(state, access::Access::Administrator, query).await
+    }
+
+    async fn read_as(state: &AppState, access: access::Access, query: LogsQuery) -> LogsResponse {
+        get_logs(State(state.clone()), axum::Extension(access), Query(query))
+            .await
+            .unwrap()
+            .body
+    }
+
+    /// A line of the leader's own, naming `group` in its `group` field as an issue's line does.
+    fn about(seq: u64, group: &str) -> crate::heartbeat::LogDto {
+        let mut line = said(seq, "info", ("status", "cleared"), "an issue cleared");
+        line.fields = vec![(
+            "group".to_string(),
+            crate::heartbeat::FieldValueDto::Str(group.to_string()),
+        )];
+        line
+    }
+
+    #[tokio::test]
+    async fn a_viewer_reads_the_lines_filed_under_the_groups_they_view() {
+        let state = state();
+        state.registry.record_logs(
+            "w-1",
+            7,
+            Some("west"),
+            &[said(0, "info", ("processes", "started"), "west")],
+        );
+        state.registry.record_logs(
+            "w-2",
+            7,
+            Some("east"),
+            &[said(0, "info", ("processes", "started"), "east")],
+        );
+        let leader = [
+            about(0, "east"),
+            said(1, "warn", ("accounts", "sign_in_refused"), "the fleet's own"),
+        ];
+        state.registry.record_logs(LEADER_LOGS, 1, None, &leader);
+        let messages = |answer: LogsResponse| -> Vec<String> { answer.rows.into_iter().map(|r| r.message).collect() };
+
+        let east = access::Access::Areas([("east".to_string(), access::Level::Viewer)].into());
+        assert_eq!(
+            messages(read_as(&state, east.clone(), LogsQuery::default()).await),
+            ["an issue cleared", "east"],
+            "the worker's line, and the leader's line naming east, filed under it"
+        );
+        assert_eq!(
+            messages(get(&state, LogsQuery::default()).await).len(),
+            4,
+            "an administrator reads every line"
+        );
+        let agent = access::Access::Administrator.for_agent(access::AgentPermissions::default());
+        assert_eq!(
+            messages(read_as(&state, agent, LogsQuery::default()).await),
+            ["an issue cleared", "east", "west"],
+            "an administrator's agent reads every group, not the fleet's own lines"
+        );
+        let shared = access::Access::Areas([("shared".to_string(), access::Level::Deployer)].into());
+        assert!(
+            read_as(&state, shared, LogsQuery::default()).await.rows.is_empty(),
+            "no group, no lines"
+        );
     }
 
     #[tokio::test]

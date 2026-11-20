@@ -97,6 +97,11 @@ log { source(s_src); destination(d_smeltr); };`;
     Every worker in the group listens on its port, and a sender, or a balancer in front of the
     workers, picks one. Add workers to take more.
   </p>
+  <p>
+    It is a <a href="/docs/sources/socket-receiver">socket receiver</a> whose <code>framing</code>
+    is
+    <code>syslog</code>. The Sources page lists it as a syslog receiver.
+  </p>
 
   <h2 id="example">Example</h2>
   <p>
@@ -162,7 +167,8 @@ log { source(s_src); destination(d_smeltr); };`;
 
   <h2 id="settings">Settings</h2>
   <p>It also takes the settings <a href="/docs/sources#settings">every source</a> takes.</p>
-  <KindSettings group={SOURCES} type="syslogReceiver" />
+  <p>Set <code>framing</code> to <code>syslog</code>, over TCP and over UDP alike.</p>
+  <KindSettings group={SOURCES} type="socketReceiver" />
 
   <h2 id="senders">Who it admits</h2>
   <p>
@@ -280,7 +286,7 @@ log { source(s_src); destination(d_smeltr); };`;
     <code>&lt;PRI&gt;</code> header included. <code>__source.remote</code> holds the address the sender's
     connection or datagram came from.
   </p>
-  <FieldsTable names={kind(SOURCES, 'syslogReceiver').fields ?? []} />
+  <FieldsTable names={kind(SOURCES, 'socketReceiver').fields ?? []} />
 
   <h2 id="parse">Parse the header</h2>
   <p>

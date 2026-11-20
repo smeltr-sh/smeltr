@@ -194,7 +194,7 @@
     margin: 0.5rem 0 0.3rem 1.35rem;
   }
 
-  .detail :global(.sparkline svg) {
+  .detail :global(.sparkline > svg) {
     height: 110px;
   }
 

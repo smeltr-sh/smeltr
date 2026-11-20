@@ -34,7 +34,7 @@
     type SchemaDto,
     type SecretDto,
   } from './api';
-  import { mayCapture } from './access';
+  import { holdsSomewhere, mayCapture } from './access';
   import { bundleRoutes } from './routeFlow';
   import { at, typeLabel, writes } from './destinations';
   import NewDestination from './NewDestination.svelte';
@@ -115,7 +115,7 @@
   /** What this leader's build can select, for the security section, and the secret catalog. */
   let kafka: KafkaFacts = $state(NO_KAFKA_FACTS);
   let secrets: SecretDto[] = $state([]);
-  void fieldCatalogs().then((c) => ({ secrets, kafka } = c));
+  void fieldCatalogs(holdsSomewhere('editor')).then((c) => ({ secrets, kafka } = c));
 
   /** Ids the suggestion must not walk into. This scope's alone: the leader refuses a collision with the other
    * subtree, which this page cannot see. */

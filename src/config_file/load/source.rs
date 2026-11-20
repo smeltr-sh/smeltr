@@ -1,39 +1,45 @@
-//! Every kind of source: its struct, and what it answers about itself (`SourceSpec`), one file each.
+//! Every kind of source: its struct, and what it answers about itself (`SourceSpec`), one file each. The object
+//! sources share one generic struct, in `objects`, and the receivers another, in `receiver`.
 
-use super::*;
+use super::shared::*;
 
-mod azure_blob_list;
-mod azure_blob_queue;
 mod elastic_receiver;
 mod event_hubs;
-mod gcs_list;
-mod gcs_pub_sub;
 mod hec_receiver;
 mod http_api;
 mod http_receiver;
 mod kafka;
 mod logs;
 mod metrics;
+mod objects;
 mod okta_logs;
 mod otlp_receiver;
 mod prometheus_receiver;
+mod receiver;
 mod s2s_receiver;
-mod s3_list;
-mod s3_sqs;
 mod sftp;
 mod socket_receiver;
 mod sql;
-mod syslog_receiver;
 
 pub use self::{
-    azure_blob_list::AzureBlobListSourceDto, azure_blob_queue::AzureBlobQueueSourceDto,
-    elastic_receiver::ElasticReceiverSourceDto, event_hubs::EventHubsSourceDto, gcs_list::GcsListSourceDto,
-    gcs_pub_sub::GcsPubSubSourceDto, hec_receiver::HecReceiverSourceDto, http_api::HttpApiSourceDto,
-    http_receiver::HttpReceiverSourceDto, kafka::KafkaSourceDto, logs::LogsSourceDto, metrics::MetricsSourceDto,
-    okta_logs::OktaLogsSourceDto, otlp_receiver::OtlpReceiverSourceDto,
-    prometheus_receiver::PrometheusReceiverSourceDto, s2s_receiver::S2sReceiverSourceDto, s3_list::S3ListSourceDto,
-    s3_sqs::S3SqsSourceDto, sftp::SftpSourceDto, socket_receiver::SocketReceiverSourceDto,
-    syslog_receiver::SyslogReceiverSourceDto,
+    elastic_receiver::ElasticReceiverSourceDto,
+    event_hubs::EventHubsSourceDto,
+    hec_receiver::HecReceiverSourceDto,
+    http_api::HttpApiSourceDto,
+    http_receiver::HttpReceiverSourceDto,
+    kafka::KafkaSourceDto,
+    logs::LogsSourceDto,
+    metrics::MetricsSourceDto,
+    objects::{
+        AzureBlobListSourceDto, AzureBlobQueueSourceDto, GcsListSourceDto, GcsPubSubSourceDto, S3ListSourceDto,
+        S3SqsSourceDto,
+    },
+    okta_logs::OktaLogsSourceDto,
+    otlp_receiver::{OtlpReceiverDto, OtlpReceiverSourceDto},
+    prometheus_receiver::PrometheusReceiverSourceDto,
+    s2s_receiver::S2sReceiverSourceDto,
+    sftp::SftpSourceDto,
+    socket_receiver::SocketReceiverSourceDto,
 };
 
 /// What one kind of source answers about itself. Each kind implements it in its own file, beside its struct.
@@ -64,6 +70,10 @@ pub(super) trait SourceSpec {
     /// Every address this source reaches over HTTP, by the field naming it. Empty from a kind that is not reached
     /// over HTTP.
     fn urls(&self) -> Vec<(&'static str, &str)>;
+    /// Every address this source connects out to, over HTTP or not. Empty for a kind that only listens.
+    fn dials(&self) -> Vec<String> {
+        self.urls().into_iter().map(|(_, url)| url.to_string()).collect()
+    }
     /// The TLS this source connects out or serves under. `None` from a kind that speaks none.
     fn tls(&self) -> Option<TlsDto>;
     /// The registry a stream's Avro payloads name their schemas in.
@@ -83,25 +93,10 @@ pub(super) trait SourceSpec {
     fn receiver_port(&self) -> Option<u16> {
         None
     }
-    /// What a receiver's senders send over. TCP for every kind but a syslog receiver given UDP.
+    /// The transport a receiver's senders use: TCP, except for a socket receiver given UDP.
     fn receiver_transport(&self) -> Transport {
         Transport::Tcp
     }
-}
-
-/// The checks the OTLP, Prometheus and Elasticsearch receivers share: where they listen, what they serve and who
-/// may send.
-fn check_intake(
-    s: &SourceDto,
-    listener: &ReceiverSettingsDto,
-    connections: &ConnectionLimitsDto,
-    tls: &ServedTlsDto,
-    tokens: &BTreeMap<String, SecretRefDto>,
-    errors: &mut ItemErrors<'_>,
-) {
-    let what = format!("source {:?}", s.id);
-    check_receiver(&what, listener, tls, tokens, errors);
-    check_connection_limits(&what, connections, true, errors);
 }
 
 impl SourceKindDto {
@@ -126,7 +121,6 @@ impl SourceKindDto {
             SourceKindDto::OtlpReceiver(k) => k,
             SourceKindDto::PrometheusReceiver(k) => k,
             SourceKindDto::ElasticReceiver(k) => k,
-            SourceKindDto::SyslogReceiver(k) => k,
             SourceKindDto::SocketReceiver(k) => k,
             SourceKindDto::Postgres(k) | SourceKindDto::MySql(k) => k,
         }
@@ -153,7 +147,6 @@ impl SourceKindDto {
             SourceKindDto::OtlpReceiver(k) => k,
             SourceKindDto::PrometheusReceiver(k) => k,
             SourceKindDto::ElasticReceiver(k) => k,
-            SourceKindDto::SyslogReceiver(k) => k,
             SourceKindDto::SocketReceiver(k) => k,
             SourceKindDto::Postgres(k) | SourceKindDto::MySql(k) => k,
         }
@@ -174,7 +167,7 @@ impl SourceKindDto {
         self.spec().receiver_port()
     }
 
-    /// What a receiver's senders send over. TCP for every kind but a syslog receiver given UDP.
+    /// The transport a receiver's senders use: TCP, except for a socket receiver given UDP.
     pub fn receiver_transport(&self) -> Transport {
         self.spec().receiver_transport()
     }
@@ -227,6 +220,11 @@ impl SourceDto {
     /// over HTTP.
     pub fn urls(&self) -> Vec<(&'static str, &str)> {
         self.kind.spec().urls()
+    }
+
+    /// Every address this source connects out to, over HTTP or not. Empty for a kind that only listens.
+    pub fn dials(&self) -> Vec<String> {
+        self.kind.spec().dials()
     }
 
     /// The TLS this source connects out or serves under. `None` from a kind that speaks none.
