@@ -98,13 +98,33 @@ pub(super) struct Cuts {
 }
 
 impl Cuts {
-    fn push(&mut self, record: &[u8], filed: &Arc<Filed>) {
+    /// Adds `record`, filed under `filed`. A record before the first filed set is filed under nothing.
+    pub(super) fn push(&mut self, record: &[u8], filed: Option<&Arc<Filed>>) {
         let index = self.ends.len();
-        if !self.filed.last().is_some_and(|(_, last)| Arc::ptr_eq(last, filed)) {
+        if let Some(filed) = filed
+            && !self.filed.last().is_some_and(|(_, last)| Arc::ptr_eq(last, filed))
+        {
             self.filed.push((index, filed.clone()));
         }
         self.bytes.extend_from_slice(record);
         self.ends.push(self.bytes.len() as u32);
+    }
+
+    /// How many records it holds, taken or not.
+    pub(super) fn len(&self) -> usize {
+        self.ends.len()
+    }
+
+    /// Record `i`'s bytes.
+    pub(super) fn record(&self, i: usize) -> &[u8] {
+        let start = i.checked_sub(1).map_or(0, |before| self.ends[before] as usize);
+        &self.bytes[start..self.ends[i] as usize]
+    }
+
+    /// What record `i` is filed under.
+    pub(super) fn filed(&self, i: usize) -> Option<&Arc<Filed>> {
+        let set = self.filed.partition_point(|(first, _)| *first <= i).checked_sub(1)?;
+        Some(&self.filed[set].1)
     }
 
     fn is_empty(&self) -> bool {
@@ -113,7 +133,7 @@ impl Cuts {
 
     fn append(&mut self, other: Cuts) {
         for (record, filed) in other {
-            self.push(&record, &filed);
+            self.push(&record, Some(&filed));
         }
     }
 
@@ -1112,7 +1132,7 @@ impl<'a> Channels<'a> {
         }
         match event.broken {
             true if event.raw.trim_ascii().is_empty() => {}
-            true => records.push(&event.raw, &from.filed),
+            true => records.push(&event.raw, Some(&from.filed)),
             false => held.chunk(&event.raw, &from, self.max, &mut records),
         }
         if event.done {
@@ -1257,7 +1277,7 @@ impl ChannelBytes {
         while self.tail.len() > limit {
             let piece: Vec<u8> = self.tail.drain(..max).collect();
             let tail_from = self.tail_from.as_ref().expect("held bytes came from somewhere");
-            records.push(&piece, &tail_from.filed);
+            records.push(&piece, Some(&tail_from.filed));
             self.searched.found();
         }
     }
@@ -1331,7 +1351,7 @@ fn cut(event: &[u8], from: &Origin, max: usize, records: &mut Cuts) {
         return;
     }
     for piece in event.chunks(max) {
-        records.push(piece, &from.filed);
+        records.push(piece, Some(&from.filed));
     }
 }
 
@@ -1733,9 +1753,9 @@ mod tests {
         let other = Arc::new(vec![("host".to_string(), b"web-2".to_vec())]);
         let mut cuts = Cuts::default();
         for record in [&b"a"[..], b"bc", b"d"] {
-            cuts.push(record, &filed);
+            cuts.push(record, Some(&filed));
         }
-        cuts.push(b"e", &other);
+        cuts.push(b"e", Some(&other));
         assert_eq!(cuts.filed.len(), 2, "one filed set for each chunk");
         assert_eq!(
             cuts.size(),

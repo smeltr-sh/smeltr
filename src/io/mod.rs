@@ -144,8 +144,8 @@ pub fn build_destination(
 /// (`plan::topology::SourceMeta`). `topic` is an `Arc<str>` so a source interns each name once per poll.
 #[derive(Clone, Debug)]
 pub struct SourceRecord {
-    /// What the source read, as one row of `chunk`. Every record one `Source::poll_batch` returns points into the same
-    /// chunk.
+    /// What the source read, as one row of `chunk`. Every record one `Source::poll_batch` of typed rows returns points
+    /// into the same chunk; a poll of bytes may point into several.
     pub chunk: Arc<RecordChunk>,
     pub row: u32,
     pub offset: i64,
@@ -329,6 +329,27 @@ impl RecordChunkBuilder {
 
     /// The records pushed, in order, sharing one chunk.
     pub fn finish(self) -> Vec<SourceRecord> {
+        let (chunk, at) = self.split();
+        let chunk = Arc::new(chunk);
+        at.into_iter()
+            .enumerate()
+            .map(|(row, (offset, partition, topic, headers))| SourceRecord {
+                chunk: chunk.clone(),
+                row: row as u32,
+                offset,
+                partition,
+                topic,
+                headers,
+            })
+            .collect()
+    }
+
+    /// The records pushed, in order, as one chunk, without where each was read.
+    pub fn into_chunk(self) -> RecordChunk {
+        self.split().0
+    }
+
+    fn split(self) -> (RecordChunk, Vec<ReadAt>) {
         let column = {
             let mut home = self.home.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let bytes = self.size - self.at.iter().map(|at| headers_size(&at.3)).sum::<usize>();
@@ -344,19 +365,48 @@ impl RecordChunkBuilder {
         if self.time.iter().any(Option::is_some) {
             chunk.time = Some(self.time);
         }
-        let chunk = Arc::new(chunk);
+        (chunk, self.at)
+    }
+}
+
+/// The rows of a chunk cut where its records arrived, which its source's reader hands out in order.
+pub(crate) struct ChunkRows {
+    chunk: Arc<RecordChunk>,
+    at: usize,
+}
+
+impl ChunkRows {
+    pub(crate) fn new(chunk: RecordChunk) -> ChunkRows {
+        ChunkRows {
+            chunk: Arc::new(chunk),
+            at: 0,
+        }
+    }
+
+    /// The row taken next.
+    pub(crate) fn at(&self) -> usize {
         self.at
-            .into_iter()
-            .enumerate()
-            .map(|(row, (offset, partition, topic, headers))| SourceRecord {
-                chunk: chunk.clone(),
-                row: row as u32,
-                offset,
-                partition,
-                topic,
-                headers,
-            })
-            .collect()
+    }
+
+    pub(crate) fn is_done(&self) -> bool {
+        self.at == self.chunk.len()
+    }
+
+    /// What the next row holds.
+    pub(crate) fn next_size(&self) -> usize {
+        self.chunk.row_size(self.at)
+    }
+
+    /// What the rows not yet taken hold.
+    pub(crate) fn untaken(&self) -> usize {
+        (self.at..self.chunk.len()).map(|row| self.chunk.row_size(row)).sum()
+    }
+
+    /// Takes the next row.
+    pub(crate) fn take(&mut self) -> (Arc<RecordChunk>, u32) {
+        let row = self.at as u32;
+        self.at += 1;
+        (self.chunk.clone(), row)
     }
 }
 
@@ -515,7 +565,7 @@ impl RecordChunk {
     }
 
     /// What one row's values hold: a variable-length value its bytes, any other value eight.
-    fn row_size(&self, row: usize) -> usize {
+    pub(crate) fn row_size(&self, row: usize) -> usize {
         self.columns
             .iter()
             .map(|c| c.varlen().map_or(8, |v| v.row_len(row)))

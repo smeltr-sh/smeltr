@@ -44,9 +44,8 @@ sudo install -d -o root -g smeltr -m 0750 /etc/smeltr
 sudo install -d -o smeltr -g smeltr -m 0700 /var/lib/smeltr /etc/smeltr/secrets</code
     ></pre>
   <p>
-    Install Git using your operating system's package manager and confirm <code>git --version</code>
-    succeeds. The leader uses <code>git http-backend</code> to serve configuration; workers have a built-in
-    Git client. The executable includes the browser UI.
+    The executable is all Smeltr needs: it carries its own Git, which serves configuration to
+    workers, and the browser UI.
   </p>
   <p>
     The <strong>secrets encryption key</strong> encrypts secrets the leader stores. On a fresh
@@ -172,11 +171,6 @@ sudo rm -r /opt/smeltr</code
   </p>
 
   <h2 id="windows-service">Run as a Windows service</h2>
-  <p>
-    Install <a href="https://git-scm.com/downloads/win">Git for Windows</a>, which the leader uses
-    to serve configuration. If you installed it since Windows last started, restart Windows first:
-    the service finds Git only on the path Windows started with.
-  </p>
   <p>
     Save the configuration from <a href="#first-start">Standalone: first local start</a> as
     <code>smeltr.toml</code>, without its <code>[leader.storage]</code> and

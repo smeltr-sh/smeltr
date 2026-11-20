@@ -2614,11 +2614,13 @@ impl Reader {
         // Tracked at poll time, in poll order: what makes the tracker's prefix rule a watermark.
         let id = self.commits.next_id();
         let mut tokens = CommitMap::new();
-        for r in &records {
+        // Hashed once per run of records from one partition, not once per record.
+        for run in records.chunk_by(|a, b| a.partition == b.partition && Arc::ptr_eq(&a.topic, &b.topic)) {
+            let offset = run.iter().map(|r| r.offset).max().expect("a run holds a record");
             tokens
-                .entry(TopicPartition::new(r.topic.clone(), r.partition))
-                .and_modify(|o| *o = (*o).max(r.offset))
-                .or_insert(r.offset);
+                .entry(TopicPartition::new(run[0].topic.clone(), run[0].partition))
+                .and_modify(|o| *o = (*o).max(offset))
+                .or_insert(offset);
         }
         let waiting = self.destinations.iter().copied().collect();
         let bytes = records.iter().map(|r| r.read_size()).sum();

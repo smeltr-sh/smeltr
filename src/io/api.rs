@@ -199,15 +199,42 @@ impl Records {
 
     /// The next record, or `None` once there are no more.
     pub fn next_record(&mut self) -> Option<Vec<u8>> {
+        if self.cut == Cut::Whole {
+            // The body is the record, so it is handed over rather than copied.
+            self.cut = Cut::Done;
+            return Some(std::mem::take(&mut self.body));
+        }
+        let range = self.next_range()?;
+        Some(self.held_bytes()[range].to_vec())
+    }
+
+    /// Each record in order, handed to `each`.
+    pub fn each(mut self, mut each: impl FnMut(&[u8])) {
+        while let Some(range) = self.next_range() {
+            each(&self.held_bytes()[range]);
+        }
+    }
+
+    /// What its records are cut from.
+    fn held_bytes(&self) -> &[u8] {
+        match &self.cut {
+            Cut::Array(text) => text.as_bytes(),
+            _ => &self.body,
+        }
+    }
+
+    /// Where the next record is in `held_bytes`.
+    fn next_range(&mut self) -> Option<std::ops::Range<usize>> {
         loop {
+            let at = self.at;
             match self.cut {
                 Cut::Done => return None,
                 Cut::Whole => {
                     self.cut = Cut::Done;
-                    return Some(std::mem::take(&mut self.body));
+                    return Some(0..self.body.len());
                 }
                 Cut::Lines => {
-                    let rest = &self.body[self.at..];
+                    let rest = &self.body[at..];
                     if rest.is_empty() {
                         self.cut = Cut::Done;
                         continue;
@@ -215,16 +242,15 @@ impl Records {
                     let end = memchr::memchr(b'\n', rest).unwrap_or(rest.len());
                     let line = &rest[..end];
                     let line = line.strip_suffix(b"\r").unwrap_or(line);
-                    let record = (!line.trim_ascii().is_empty()).then(|| line.to_vec());
                     self.at += (end + 1).min(rest.len());
-                    if record.is_some() {
-                        return record;
+                    if !line.trim_ascii().is_empty() {
+                        return Some(at..at + line.len());
                     }
                 }
                 Cut::Broken(Some(ref line_breaker)) => {
-                    let rest = &self.body[self.at..];
+                    let rest = &self.body[at..];
                     let mut events = line_breaker.events(rest, true);
-                    let record = events.next().map(|event| rest[event].to_vec());
+                    let record = events.next().map(|event| at + event.start..at + event.end);
                     self.at += events.rest();
                     if record.is_none() {
                         self.cut = Cut::Done;
@@ -232,13 +258,14 @@ impl Records {
                     return record;
                 }
                 Cut::Broken(None) => {
-                    let rest = &self.body[self.at..];
+                    let rest = &self.body[at..];
                     let found = line_breaker::next_line(rest);
                     let (event, next) = match found {
                         Some((end, next)) => (&rest[..end], next),
                         None => (LineBreaker::last_event(rest), rest.len()),
                     };
-                    let record = (!event.trim_ascii().is_empty()).then(|| event.to_vec());
+                    // An event starts where its line does; only its end is trimmed.
+                    let record = (!event.trim_ascii().is_empty()).then(|| at..at + event.len());
                     self.at += next;
                     if found.is_none() {
                         self.cut = Cut::Done;
@@ -248,7 +275,7 @@ impl Records {
                     }
                 }
                 Cut::Array(ref text) => {
-                    let rest = text.get(self.at..).unwrap_or_default();
+                    let rest = text.get(at..).unwrap_or_default();
                     let skip = rest
                         .bytes()
                         .position(|b| !matches!(b, b' ' | b'\t' | b'\n' | b'\r' | b','))
@@ -256,15 +283,14 @@ impl Records {
                     // The body was checked as JSON whole, so an element always reads.
                     let element = match rest.as_bytes().get(skip) {
                         None | Some(b']') => None,
-                        Some(_) => Reader::of_str(&rest[skip..]).raw().ok(),
+                        Some(_) => Reader::of_str(&rest[skip..]).raw().ok().map(<[u8]>::len),
                     };
-                    let Some(element) = element else {
+                    let Some(len) = element else {
                         self.cut = Cut::Done;
                         continue;
                     };
-                    let record = element.to_vec();
-                    self.at += skip + element.len();
-                    return Some(record);
+                    self.at += skip + len;
+                    return Some(at + skip..at + skip + len);
                 }
             }
         }

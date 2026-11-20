@@ -66,8 +66,13 @@ jobs:
           persist-credentials: false
       - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
         with:
-          tool: just
+          tool: just,cargo-nextest@0.9.146
       - run: just dist
+      - name: Run the integration tests in the image
+        # The KDC and its tools the Kerberos tests sign in with; the runner has the JRE and openssl the brokers need.
+        run: |
+          sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y krb5-kdc krb5-admin-server krb5-user
+          just image-tests
       - name: Scan the image against the STIG
         run: just stig && mv stig/report.html smeltr-stig.html
       - name: Scan the image for known vulnerabilities
