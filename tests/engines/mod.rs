@@ -1042,19 +1042,14 @@ fn time(
         Some(sender) => {
             sender.stop();
             let in_body: Vec<u64> = (0..64).map(|b| kept_of(b * PER_REQUEST, PER_REQUEST)).collect();
-            let taken = || sender.sent().iter().zip(&in_body).map(|(n, k)| n * k).sum::<u64>();
-            // The requests in flight when it stopped are answered within the patience a row has.
-            let mut last = (taken(), Instant::now());
-            while last.1.elapsed() < Duration::from_secs(2) {
-                let now = taken();
-                if now != last.0 {
-                    last = (now, Instant::now());
-                }
-                assert!(last.1.elapsed() < PATIENCE, "{run}: the sender never stopped");
+            // Every request in flight when it stopped is answered, or the engine never answers it.
+            let stopped = Instant::now();
+            while sender.running() > 0 {
+                assert!(stopped.elapsed() < PATIENCE, "{run}: a request was never answered");
                 each();
                 std::thread::sleep(Duration::from_millis(100));
             }
-            last.0
+            sender.sent().iter().zip(&in_body).map(|(n, k)| n * k).sum::<u64>()
         }
         None => most,
     };

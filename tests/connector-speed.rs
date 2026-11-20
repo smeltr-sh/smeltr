@@ -780,22 +780,40 @@ impl Usage {
     }
 }
 
-/// The least free disk a row runs with. Engines and peers that spill to disk slow as it fills, so a row with less
+/// The least free disk a run runs with. Engines and peers that spill to disk slow as it fills, so a run with less
 /// would measure the disk.
 const LEAST_FREE_DISK: u64 = 5_000_000_000;
 
-/// The bytes free on the disk holding `target/`, where the containers' layers and data are.
+/// The bytes free on the fuller of the disks holding `target/`, where data is bind-mounted, and Docker's storage,
+/// where the containers' layers and volumes are.
 fn free_disk() -> u64 {
-    let out = Command::new("df")
-        .args(["-B1", "--output=avail"])
-        .arg(repo().join("target"))
-        .output()
-        .expect("df runs");
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .nth(1)
-        .and_then(|l| l.trim().parse().ok())
-        .expect("df gives the free bytes")
+    static DOCKER: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let docker = DOCKER.get_or_init(|| {
+        let out = Command::new("docker")
+            .args(["info", "-f", "{{.DockerRootDir}}"])
+            .output()
+            .ok()?;
+        Some(String::from_utf8(out.stdout).ok()?.trim().to_string()).filter(|d| !d.is_empty())
+    });
+    let free = |path: &std::path::Path| {
+        let out = Command::new("df")
+            .args(["-B1", "--output=avail"])
+            .arg(path)
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .nth(1)?
+            .trim()
+            .parse::<u64>()
+            .ok()
+    };
+    let target = free(&repo().join("target")).expect("df gives the free bytes of target/");
+    // Docker's root may be out of this user's reach, as it is under a rootless or remote daemon.
+    docker
+        .as_deref()
+        .and_then(|d| free(d.as_ref()))
+        .map_or(target, |d| d.min(target))
 }
 
 /// Waits until `count` reaches `want`, failing once it has not moved for `PATIENCE` or the disk is nearly full.
@@ -1230,6 +1248,8 @@ struct Sink {
     bytes: Arc<AtomicU64>,
     /// Every document that arrived, when started `keeping`.
     kept: Option<Arc<std::sync::Mutex<Vec<Value>>>>,
+    /// Stops the server, and its threads with it, when the sink is dropped.
+    _stop: tokio::sync::oneshot::Sender<()>,
 }
 
 impl Sink {
@@ -1247,6 +1267,7 @@ impl Sink {
         let port = listener.local_addr().unwrap().port();
         let (rows, bytes) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
         let (r, b, k) = (rows.clone(), bytes.clone(), kept.clone());
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         std::thread::spawn(move || {
             // As many as the harness's cores: a sink short of threads would set the speed of the row.
             let threads = std::thread::available_parallelism().map_or(2, |n| n.get());
@@ -1280,7 +1301,12 @@ impl Sink {
                 });
                 // Engines batch up to megabytes a request.
                 let app = app.layer(axum::extract::DefaultBodyLimit::disable());
-                axum::serve(listener, app).await.unwrap();
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(async {
+                        let _ = stopped.await;
+                    })
+                    .await
+                    .unwrap();
             });
         });
         Sink {
@@ -1288,6 +1314,7 @@ impl Sink {
             rows,
             bytes,
             kept,
+            _stop: stop,
         }
     }
 
@@ -1320,6 +1347,8 @@ struct Sender {
     acked: Arc<AtomicU64>,
     /// Requests answered, by the body each sent: what the receiver took, record for record.
     sent: Arc<Vec<AtomicU64>>,
+    /// Threads still sending.
+    live: Arc<AtomicU64>,
     bytes: Arc<AtomicU64>,
     /// Requests answered busy: the receiver had more than it could take.
     busy: Arc<AtomicU64>,
@@ -1337,7 +1366,9 @@ impl Sender {
         let authorization = push.authorization.replace("{}", RECEIVER_TOKEN);
         let said = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let live = Arc::new(AtomicU64::new(senders as u64));
         for _ in 0..senders {
+            let live = live.clone();
             let (bodies, next, acked, sent, bytes, busy, said, stop) = (
                 bodies.clone(),
                 next.clone(),
@@ -1350,6 +1381,14 @@ impl Sender {
             );
             let (url, authorization, headers) = (url.to_string(), authorization.clone(), push.headers);
             std::thread::spawn(move || {
+                /// Counts the thread out however it returns.
+                struct Out(Arc<AtomicU64>);
+                impl Drop for Out {
+                    fn drop(&mut self) {
+                        self.0.fetch_sub(1, Ordering::Relaxed);
+                    }
+                }
+                let _out = Out(live);
                 let agent =
                     ureq::Agent::new_with_config(ureq::Agent::config_builder().http_status_as_error(false).build());
                 loop {
@@ -1414,6 +1453,7 @@ impl Sender {
         Sender {
             acked,
             sent,
+            live,
             bytes,
             busy,
             stop,
@@ -1427,6 +1467,11 @@ impl Sender {
     /// Requests answered for each body.
     fn sent(&self) -> Vec<u64> {
         self.sent.iter().map(|n| n.load(Ordering::Relaxed)).collect()
+    }
+
+    /// Threads still sending: none once `stop` has been called and every request in flight is answered.
+    fn running(&self) -> u64 {
+        self.live.load(Ordering::Relaxed)
     }
 
     /// Stops sending: no request starts after this, though those in flight may still be answered.
