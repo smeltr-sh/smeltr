@@ -473,7 +473,7 @@ async fn preview(
         Ok(given) => given,
         Err(message) => return Preview::failed("sample", vec![ApiError::new(message)], vec![]),
     };
-    // Reading the branch spawns git, so it goes off the async executor.
+    // Reading the branch reads the repository from disk, so it goes off the async executor.
     let branch = q.name().to_string();
     blocking_answer(move || preview_on(&smeltr::startup_config::leader_data_dir(), &branch, &area, req, given)).await
 }

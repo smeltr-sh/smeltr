@@ -119,7 +119,7 @@ impl<S: Send + Sync> FromRequestParts<S> for Addressed {
 }
 
 impl Addressed {
-    /// The `Writing` this request's save goes through. Spawns git, so it runs under `blocking`.
+    /// The `Writing` this request's save goes through. It reads the repository from disk, so it runs under `blocking`.
     pub fn open(&self) -> Result<Writing, NotWritten> {
         Writing::open(&self.branch, self.base.as_deref(), &self.area)
     }
