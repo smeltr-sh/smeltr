@@ -647,6 +647,14 @@ measure:
     just live-up
     cargo test --profile dist --test tick-profile --test flush-cost -- --test-threads=1 --nocapture
 
+# The transform's work alone at each count of threads in `BENCH_THREADS` (1,2,4 when unset), each a copy of a
+# reference pipeline: whether this host's hyperthreads add throughput. Needs no services.
+[doc("The transform's work alone at each thread count in BENCH_THREADS.")]
+[group("dev")]
+[env("SMELTR_ALLOW_STALE_FRONTENDS", "1")]
+thread-scaling:
+    cargo test --profile dist --test thread-scaling -- --ignored --exact thread_scaling --nocapture
+
 # A row per reference pipeline in the log `BENCH_LOG` names, HEAD against the
 # pinned reference, and the ratio chart beside it as an .svg. Run daily.
 # Needs no services, and perf from linux-tools-generic.

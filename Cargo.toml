@@ -321,6 +321,11 @@ name = "reference-pipelines"
 path = "tests/reference-pipelines.rs"
 
 [[test]]
+name = "thread-scaling"
+path = "tests/thread-scaling.rs"
+test = false
+
+[[test]]
 name = "tick-profile"
 path = "tests/tick-profile.rs"
 test = false
