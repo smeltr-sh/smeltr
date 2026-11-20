@@ -20,7 +20,7 @@ use super::*;
 /// What `just engine-speed` compares. Each runs the image named here, pinned so a rerun runs the same.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Engine {
-    /// The `dist` binary, in `smeltr/Dockerfile`'s image: the distribution it was built on, and git.
+    /// The `dist` binary, in `smeltr/Dockerfile`'s image: the distribution it was built on.
     Smeltr,
     /// The Apache-2.0 distribution, without X-Pack.
     Logstash,
