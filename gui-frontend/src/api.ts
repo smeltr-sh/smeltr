@@ -4228,7 +4228,14 @@ export type PastSpan = {
   learned: boolean;
   holds?: boolean;
   markedBy?: string;
+  reason?: WarningReason;
 };
+
+/** Why a below normal warning began (`throughput::Reason`): its rows per second over the width
+ * that warned against that width's range then, or a quiet spell longer than the source may make. */
+export type WarningReason =
+  | { kind: 'width'; windowMillis: number; perSecond: number; low: number; high: number }
+  | { kind: 'gap'; silenceMillis: number; edgeMillis: number };
 
 /** One value of one field of a source's records that sends it rows (`senders::Sender`). */
 export type Sender = { field: string; value: string };
@@ -4295,15 +4302,21 @@ export type SourceChartResponse = {
   expected: ExpectedPointDto[];
 };
 
-/** `group`'s `source`'s chart from `fromMillis` until `toMillis`, or its `sender`'s. */
+/** `group`'s `source`'s chart from `fromMillis` until `toMillis`, or its `sender`'s; at
+ * `windowMillis`, the rate over that width against that width's range. */
 export function getSourceChart(
   group: string,
   source: string,
   fromMillis: number,
   toMillis: number,
   sender?: Sender,
+  windowMillis?: number,
 ): Promise<SourceChartResponse> {
-  const span = { fromMillis: String(fromMillis), toMillis: String(toMillis) };
+  const span = {
+    fromMillis: String(fromMillis),
+    toMillis: String(toMillis),
+    ...(windowMillis ? { windowMillis: String(windowMillis) } : {}),
+  };
   return apiJson(inArea(subjectPath(source, sender, 'chart', span), group));
 }
 
@@ -4857,6 +4870,7 @@ export type WarningSpanDto = {
   severity: WarningSeverity;
   startedMillis: number;
   endedMillis?: number;
+  reason?: WarningReason;
 };
 
 export function getStats(
