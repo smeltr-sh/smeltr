@@ -123,13 +123,12 @@ impl Messages {
 }
 
 impl Messages {
-    /// The bytes of its frames not yet taken.
-    pub(super) fn untaken(&self) -> usize {
-        let taken = match self.taken {
-            0 => 0,
-            i => self.ends[i - 1] as usize,
-        };
-        self.bytes.len() - taken
+    /// Each frame not yet taken, handed to `each` in order.
+    pub(super) fn each(self, mut each: impl FnMut(&[u8])) {
+        for i in self.taken..self.ends.len() {
+            let start = i.checked_sub(1).map_or(0, |before| self.ends[before] as usize);
+            each(&self.bytes[start..self.ends[i] as usize]);
+        }
     }
 }
 
@@ -287,11 +286,6 @@ impl Framer {
     /// How many bytes its buffer holds room for, which a reader charges against what it may hold.
     pub(super) fn capacity(&self) -> usize {
         self.held.capacity()
-    }
-
-    /// The bytes it holds that it has not yet cut.
-    pub(super) fn uncut(&self) -> usize {
-        self.held.len() - self.cut
     }
 
     /// Like `cut`, but the line breaker searches everything held, however little arrived since it last searched,

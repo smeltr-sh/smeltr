@@ -51,7 +51,7 @@ use super::prometheus;
 use super::raw::{RawRead, RawTap, Tapped, Tapping, offer_closed};
 use super::s2s_receiver;
 use super::socket_receiver;
-use super::{CommitMap, IoError, RecordChunkBuilder, Source, SourceRecord};
+use super::{ChunkRows, CommitMap, IoError, RecordChunk, RecordChunkBuilder, Source, SourceRecord};
 use crate::egress::QueuePool;
 use crate::format::json::write_json_string;
 use crate::format::json_scan::{Next, Reader};
@@ -799,14 +799,20 @@ impl Source for ReceiverSource {
         if matches!(taken.first().map(|q| &q.record), Some(Payload::Row(_))) {
             return Ok(rows_chunk(taken, &SourceMeta::prometheus_receiver()));
         }
-        let mut out = RecordChunkBuilder::new();
-        for q in taken {
-            let Payload::Bytes(record) = q.record else {
+        let records = taken.into_iter().map(|q| {
+            let Payload::Chunk(chunk, row) = q.record else {
                 unreachable!("a poll's records are all of one protocol")
             };
-            out.push(&record, q.offset, 0, q.remote, q.filed.map(Arc::unwrap_or_clone));
-        }
-        Ok(out.finish())
+            SourceRecord {
+                chunk,
+                row,
+                offset: q.offset,
+                partition: 0,
+                topic: q.remote,
+                headers: q.filed.map(Arc::unwrap_or_clone),
+            }
+        });
+        Ok(records.collect())
     }
 
     fn take_dropped(&mut self) -> u64 {
@@ -871,7 +877,7 @@ fn rows_chunk(taken: Vec<Queued>, meta: &SourceMeta) -> Vec<SourceRecord> {
         .iter()
         .map(|q| match &q.record {
             Payload::Row(row) => row,
-            Payload::Bytes(_) => unreachable!("a poll's records are all of one protocol"),
+            Payload::Chunk(..) => unreachable!("a poll's records are all of one protocol"),
         })
         .collect();
     let mismatch = |name: &str, ty: &DataType| -> ! { unreachable!("{name} is a {ty}, and a row gave it otherwise") };
@@ -1045,12 +1051,8 @@ impl Inbox {
     }
 }
 
-/// A request held whole: its records are cut from its body as the reader takes them, so a body of many small records
-/// costs what was sent and not a buffer per record.
 struct Request {
-    records: Cutter,
-    /// The record the reader takes next, cut ahead so the last one is known when it is taken.
-    next: Cut,
+    records: Rest,
     bytes: Counted,
     remote: Arc<str>,
     answer: Answer,
@@ -1079,82 +1081,138 @@ pub(super) enum Cutter {
     Documents(elastic_receiver::Documents),
 }
 
-/// One record cut from a request, and what it is filed under, where its protocol files records. The records a
-/// request files under one value share it.
-#[derive(Default)]
+/// What of a request the reader has not taken.
+enum Rest {
+    /// Its byte records, cut into one chunk on its handler's thread when it arrived, so the reader only hands out
+    /// rows. `filed` is what each row is filed under, where its protocol files records.
+    Chunk {
+        rows: ChunkRows,
+        filed: Vec<Arc<hec::Filed>>,
+    },
+    /// Its typed rows, cut as they are taken, the next cut ahead so the last one is known when it is taken.
+    Rows { rows: Box<Cutter>, next: Option<Cut> },
+}
+
+/// One row cut from a request, and what it is filed under. The rows a request files under one value share it.
 struct Cut {
-    record: Payload,
+    row: otlp::Row,
     filed: Option<Arc<hec::Filed>>,
 }
 
-/// What a record holds: the bytes it was sent as, or, where its protocol types them, its fields.
+/// What a taken record holds: its row of a request's chunk, or, where its protocol types records, its fields.
 enum Payload {
-    Bytes(Vec<u8>),
+    Chunk(Arc<RecordChunk>, u32),
     Row(otlp::Row),
 }
 
-impl Default for Payload {
-    fn default() -> Self {
-        Payload::Bytes(Vec::new())
-    }
+/// The bytes `filed` holds, as a record counts what it is filed under.
+fn filed_size(filed: &hec::Filed) -> usize {
+    filed.iter().map(|(k, v)| k.len() + v.len()).sum()
 }
 
-impl Cut {
-    /// What the record holds once taken, with what it is filed under. A row's chunk shares that, but a reader that
-    /// needs it as rows copies it to each, so a poll is bounded by what its rows hold so copied.
-    fn size(&self) -> usize {
-        let record = match &self.record {
-            Payload::Bytes(bytes) => bytes.len(),
-            Payload::Row(row) => row.size(),
-        };
-        let filed = self.filed.iter().flat_map(|f| f.iter());
-        record + filed.map(|(k, v)| k.len() + v.len()).sum::<usize>()
+impl Rest {
+    /// The request as the reader takes it, with its size, which for byte records is what they hold once cut. `None`
+    /// when it holds no record.
+    fn of(records: Cutter) -> Option<(Rest, usize)> {
+        let mut out = RecordChunkBuilder::new();
+        let mut filed = Vec::new();
+        let none: Arc<str> = Arc::from("");
+        let mut push = |record: &[u8]| out.push(record, 0, 0, none.clone(), None);
+        match records {
+            Cutter::Records(records) => records.each(push),
+            Cutter::Filed(records, under) => records.each(|record| {
+                push(record);
+                filed.push(under.clone());
+            }),
+            Cutter::Events(mut events) => {
+                while let Some((record, under)) = events.next_record() {
+                    push(&record);
+                    filed.push(Arc::new(under));
+                }
+            }
+            Cutter::Documents(mut documents) => {
+                while let Some((record, under)) = documents.next_record() {
+                    push(&record);
+                    filed.push(Arc::new(under));
+                }
+            }
+            Cutter::Each(cuts) => {
+                for i in 0..cuts.len() {
+                    push(cuts.record(i));
+                    filed.push(cuts.filed(i).cloned().unwrap_or_default());
+                }
+            }
+            Cutter::Messages(messages) => messages.each(push),
+            mut rows @ (Cutter::Otlp(_) | Cutter::Samples(_)) => {
+                let next = rows.next_row()?;
+                let rows = Box::new(rows);
+                return Some((Rest::Rows { rows, next: Some(next) }, 0));
+            }
+        }
+        if out.is_empty() {
+            return None;
+        }
+        // Their bytes, and what they are filed under, counted once for each run of records that shares it.
+        let shared = filed
+            .iter()
+            .enumerate()
+            .filter(|(i, under)| *i == 0 || !Arc::ptr_eq(under, &filed[i - 1]));
+        let size = out.size() + shared.map(|(_, under)| filed_size(under)).sum::<usize>();
+        let rows = ChunkRows::new(out.into_chunk());
+        Some((Rest::Chunk { rows, filed }, size))
     }
 
-    /// Whether this record is filed under the very value `queued` is.
-    fn files_with(&self, queued: &Queued) -> bool {
-        match (&self.filed, &queued.filed) {
-            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-            (a, b) => a.is_none() && b.is_none(),
+    /// What the next record holds once taken, with what it is filed under. A row's chunk shares that, but a reader
+    /// that needs it as rows copies it to each, so a poll is bounded by what its rows hold so copied.
+    fn next_size(&self) -> usize {
+        match self {
+            Rest::Chunk { rows, filed } => rows.next_size() + filed.get(rows.at()).map_or(0, |under| filed_size(under)),
+            Rest::Rows { next, .. } => {
+                let next = next.as_ref().expect("a request in the inbox has a record left");
+                next.row.size() + next.filed.as_deref().map_or(0, filed_size)
+            }
+        }
+    }
+
+    /// Whether the next record is filed apart from `queued`'s: a poll's rows are one chunk, filed under one value.
+    fn files_apart(&self, queued: &Queued) -> bool {
+        match self {
+            Rest::Chunk { .. } => false,
+            Rest::Rows { next, .. } => match (&next.as_ref().expect("a record left").filed, &queued.filed) {
+                (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+                (a, b) => a.is_some() || b.is_some(),
+            },
+        }
+    }
+
+    /// Takes the next record, and whether it was the last.
+    fn take(&mut self) -> (Payload, Option<Arc<hec::Filed>>, bool) {
+        match self {
+            Rest::Chunk { rows, filed } => {
+                let under = filed.get(rows.at()).cloned();
+                let (chunk, row) = rows.take();
+                (Payload::Chunk(chunk, row), under, rows.is_done())
+            }
+            Rest::Rows { rows, next } => {
+                let following = rows.next_row();
+                let last = following.is_none();
+                let Cut { row, filed } = std::mem::replace(next, following).expect("a record left");
+                (Payload::Row(row), filed, last)
+            }
         }
     }
 }
 
 impl Cutter {
-    fn next_record(&mut self) -> Option<Cut> {
+    /// The next of its typed rows.
+    fn next_row(&mut self) -> Option<Cut> {
         match self {
-            Cutter::Records(records) => records.next_record().map(|record| Cut {
-                record: Payload::Bytes(record),
-                filed: None,
-            }),
-            Cutter::Filed(records, filed) => records.next_record().map(|record| Cut {
-                record: Payload::Bytes(record),
-                filed: Some(filed.clone()),
-            }),
-            Cutter::Events(events) => events.next_record().map(|(record, filed)| Cut {
-                record: Payload::Bytes(record),
-                filed: Some(Arc::new(filed)),
-            }),
             Cutter::Otlp(export) => export.next_record().map(|(row, filed)| Cut {
-                record: Payload::Row(row),
+                row,
                 filed: Some(filed),
             }),
-            Cutter::Documents(documents) => documents.next_record().map(|(record, filed)| Cut {
-                record: Payload::Bytes(record),
-                filed: Some(Arc::new(filed)),
-            }),
-            Cutter::Samples(samples) => samples.next_record().map(|row| Cut {
-                record: Payload::Row(row),
-                filed: None,
-            }),
-            Cutter::Each(records) => records.next().map(|(record, filed)| Cut {
-                record: Payload::Bytes(record),
-                filed: Some(filed),
-            }),
-            Cutter::Messages(records) => records.next().map(|record| Cut {
-                record: Payload::Bytes(record),
-                filed: None,
-            }),
+            Cutter::Samples(samples) => samples.next_record().map(|row| Cut { row, filed: None }),
+            _ => unreachable!("byte records are cut on arrival"),
         }
     }
 }
@@ -1211,18 +1269,19 @@ impl Shared {
 
     /// Offers a request whose body, of `bytes`, `records` cuts. One on a `channel` is given an `ackId` there rather
     /// than held. `charge` is what the caller already took of the holdings for it, which passes to the inbox: the rest
-    /// is taken here, and what it took beyond `bytes`, or all of it when the request is not queued, is given back.
+    /// is taken here, and what it took beyond `bytes`, or beyond what its records hold once cut where that is more,
+    /// or all of it when the request is not queued, is given back.
     fn admit(
         &self,
-        mut records: Cutter,
+        records: Cutter,
         bytes: usize,
         remote: Arc<str>,
         channel: Option<&Arc<str>>,
         mut charge: Charge<'_>,
     ) -> Admitted {
-        let next = records.next_record();
+        let records = Rest::of(records);
         let mut inbox = self.state.lock().unwrap();
-        let Some(next) = next else {
+        let Some((records, cut)) = records else {
             // Nothing to deliver: an `ackId` asked after is already true.
             let Some(channel) = channel else {
                 return Admitted::Now;
@@ -1236,7 +1295,7 @@ impl Shared {
         if !inbox.open() {
             return Admitted::Busy;
         }
-        if !charge.resize(bytes) {
+        if !charge.resize(bytes.max(cut)) {
             self.holdings.note_full();
             return Admitted::Busy;
         }
@@ -1252,7 +1311,6 @@ impl Shared {
         };
         inbox.queue(Request {
             records,
-            next,
             bytes: charge.keep(),
             remote,
             answer,
@@ -1266,19 +1324,18 @@ impl Shared {
     /// blocked. What it returns fires once the request's last record is committed, as [`Admitted::Later`]'s does.
     async fn admit_waiting(
         &self,
-        mut records: Cutter,
+        records: Cutter,
         bytes: Counted,
         remote: Arc<str>,
     ) -> Result<oneshot::Receiver<()>, Closed> {
         let (answer, delivered) = oneshot::channel();
-        let Some(next) = records.next_record() else {
+        let Some((records, _)) = Rest::of(records) else {
             self.holdings.give(bytes);
             let _ = answer.send(());
             return Ok(delivered);
         };
         let request = Request {
             records,
-            next,
             bytes,
             remote,
             answer: Answer::Held(answer),
@@ -1323,16 +1380,14 @@ impl Shared {
         let mut freed = false;
         while taken.len() < max_rows.max(1) {
             let Some(front) = inbox.queued.front_mut() else { break };
-            let size = front.next.size();
-            if let Some(first) = taken.first() {
-                // A poll's rows are one chunk, filed under one value.
-                let filed_apart = matches!(front.next.record, Payload::Row(_)) && !front.next.files_with(first);
-                if filed_apart || bytes + size > max_bytes {
-                    break;
-                }
+            let size = front.records.next_size();
+            if let Some(first) = taken.first()
+                && (front.records.files_apart(first) || bytes + size > max_bytes)
+            {
+                break;
             }
             bytes += size;
-            let Cut { record, filed } = std::mem::take(&mut front.next);
+            let (record, filed, last) = front.records.take();
             let offset = inbox.next_offset;
             inbox.next_offset += 1;
             taken.push(Queued {
@@ -1341,15 +1396,12 @@ impl Shared {
                 offset,
                 remote: front.remote.clone(),
             });
-            match front.records.next_record() {
-                Some(next) => front.next = next,
-                None => {
-                    let done = inbox.queued.pop_front().expect("the front was there");
-                    inbox.queued_bytes.split_off(done.bytes.total());
-                    self.holdings.give(done.bytes);
-                    inbox.answers.insert(offset, done.answer);
-                    freed = true;
-                }
+            if last {
+                let done = inbox.queued.pop_front().expect("the front was there");
+                inbox.queued_bytes.split_off(done.bytes.total());
+                self.holdings.give(done.bytes);
+                inbox.answers.insert(offset, done.answer);
+                freed = true;
             }
         }
         if freed {
@@ -3658,7 +3710,7 @@ mod tests {
         /// The bytes of a record sent as bytes.
         fn bytes(&self) -> &[u8] {
             match &self.record {
-                Payload::Bytes(bytes) => bytes,
+                Payload::Chunk(chunk, row) => chunk.bytes(*row as usize).expect("a byte record"),
                 Payload::Row(_) => panic!("a row, not bytes"),
             }
         }
@@ -3703,6 +3755,59 @@ mod tests {
         rx.try_recv().is_ok()
     }
 
+    /// What a receiver's reader thread can take, and what its handlers spend admitting: requests of a thousand
+    /// 275-byte lines, polled as a worker's reader polls them, with the commit map it keeps.
+    #[test]
+    #[ignore = "a measurement: `cargo test --release --lib receiver::tests::reader_speed -- --ignored --nocapture`"]
+    fn reader_speed() {
+        let shared = Arc::new(Shared::default());
+        let mut source = ReceiverSource {
+            shared: shared.clone(),
+            serving: None,
+            port: None,
+        };
+        let line = format!("{{\"message\":\"{}\"}}\n", "x".repeat(260));
+        let body: Vec<u8> = line.repeat(1000).into_bytes();
+        let (mut admitting, mut reading, mut rows) = (Duration::ZERO, Duration::ZERO, 0usize);
+        for _ in 0..200 {
+            let bodies: Vec<_> = (0..10).map(|_| body.clone()).collect();
+            let t = Instant::now();
+            for body in bodies {
+                let bytes = body.len();
+                assert!(matches!(
+                    admit(&shared, (Records::lines(body), bytes)),
+                    Admitted::Later(_)
+                ));
+            }
+            admitting += t.elapsed();
+            let t = Instant::now();
+            loop {
+                let polled = source.poll_batch(4000, 4 << 20, Duration::ZERO).unwrap();
+                if polled.is_empty() {
+                    break;
+                }
+                let mut tokens = crate::io::CommitMap::new();
+                for run in polled.chunk_by(|a, b| a.partition == b.partition && Arc::ptr_eq(&a.topic, &b.topic)) {
+                    let offset = run.iter().map(|r| r.offset).max().unwrap();
+                    tokens
+                        .entry(crate::io::TopicPartition::new(run[0].topic.clone(), run[0].partition))
+                        .and_modify(|o| *o = (*o).max(offset))
+                        .or_insert(offset);
+                }
+                rows += polled.len();
+                std::hint::black_box((polled, tokens));
+            }
+            reading += t.elapsed();
+            shared.answer_through(i64::MAX - 1);
+        }
+        let per_sec = |d: Duration| rows as f64 / d.as_secs_f64();
+        println!(
+            "reader {:.0} rows/s, admitting {:.0} rows/s on one thread",
+            per_sec(reading),
+            per_sec(admitting)
+        );
+    }
+
     #[test]
     fn a_request_is_answered_once_the_watermark_passes_its_last_record() {
         let shared = Shared::default();
@@ -3739,8 +3844,8 @@ mod tests {
         assert!(answered(&mut held));
     }
 
-    /// A request is held whole and its records cut as they are taken, so one taken over several polls is answered
-    /// only once its last record is delivered, and its body is counted until then.
+    /// A request taken over several polls is answered only once its last record is delivered, and is counted until
+    /// then.
     #[test]
     fn a_request_taken_over_several_polls_is_answered_after_its_last_record() {
         let shared = Shared::default();
@@ -3779,6 +3884,20 @@ mod tests {
             Admitted::Later(_)
         ));
         assert_eq!(shared.take(10, 2000, Duration::ZERO).len(), 1);
+    }
+
+    /// The lines of one request share what its query files them under, so the inbox holds it once.
+    #[test]
+    fn an_inbox_holds_what_a_requests_lines_share_once() {
+        let shared = Shared::default();
+        let filed = vec![("host".to_string(), vec![b'h'; 1000])];
+        let lines = Records::lines(b"a\nb\nc\n".to_vec());
+        let charge = Charge::new(&shared.holdings);
+        assert!(matches!(
+            shared.admit(Cutter::Filed(lines, Arc::new(filed)), 6, remote(), None, charge),
+            Admitted::Later(_)
+        ));
+        assert!(shared.state.lock().unwrap().queued_bytes.total() < 1100);
     }
 
     /// A poll's rows are one chunk, which carries what they are filed under for them all.
