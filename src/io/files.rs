@@ -59,8 +59,8 @@ const BEHIND_BYTES: usize = crate::worker::TICK_MAX_BYTES;
 /// the worker reserves for each open file.
 pub const TAKE_BYTES: usize = 32 * 1024 * 1024;
 
-/// What one encoder's open files may buffer together. A file may take more than `TAKE_BYTES` while others take less:
-/// a row group grows to its table's size where few files are open.
+/// What every encoder's open files may buffer together, shared evenly among the encoders started. A file may take more
+/// than `TAKE_BYTES` while others take less: a row group grows to its table's size where few files are open.
 const TAKE_POOL_BYTES: usize = MAX_OPEN_FILES * TAKE_BYTES;
 
 /// Commits retried at once after a `Conflict` before the destination fails.
@@ -437,6 +437,7 @@ impl FileDestination {
                     runtime,
                     committer: Mutex::new(committer),
                     open_files: AtomicUsize::new(0),
+                    started: AtomicUsize::new(0),
                     fault: Mutex::new(None),
                     open_bytes: measured,
                 };
@@ -639,6 +640,8 @@ struct Shared {
     committer: Mutex<Box<dyn Committer>>,
     /// Files open across every encoder.
     open_files: AtomicUsize,
+    /// Encoders started, which share `TAKE_POOL_BYTES` evenly.
+    started: AtomicUsize,
     /// The first failure of an encoder's write, which the writer fails the destination with.
     fault: Mutex<Option<String>>,
     /// What every encoder's open files buffer, as each last measured.
@@ -829,6 +832,7 @@ impl Writer {
             .spawn(move || encoder.run(inbox))
             .map_err(|e| format!("starting an encoder: {e}"))?;
         self.encoders.push(Lane { orders, queued, thread });
+        self.shared.started.fetch_add(1, Ordering::Relaxed);
         Ok(self.encoders.len() - 1)
     }
 
@@ -1143,19 +1147,20 @@ impl Encoder {
         Ok(())
     }
 
-    /// What this encoder's open files may buffer more together: when they have buffered it all, the largest take goes
-    /// to its upload first.
+    /// How much more this encoder's open files may buffer, within its share of the pool. While they hold all of it,
+    /// the largest take is uploaded first.
     fn make_room(&mut self) -> Result<usize, String> {
-        let buffered: usize = self.open.values().map(|f| f.encoder.in_progress_bytes()).sum();
-        if buffered < TAKE_POOL_BYTES {
-            return Ok(TAKE_POOL_BYTES - buffered);
+        let share = TAKE_POOL_BYTES / self.shared.started.load(Ordering::Relaxed).max(1);
+        loop {
+            let buffered: usize = self.open.values().map(|f| f.encoder.in_progress_bytes()).sum();
+            if buffered < share {
+                return Ok(share - buffered);
+            }
+            let largest = (self.open.values_mut())
+                .max_by_key(|f| f.encoder.in_progress_bytes())
+                .expect("a full pool has a file");
+            upload_taken(largest)?;
         }
-        let largest = (self.open.values_mut())
-            .max_by_key(|f| f.encoder.in_progress_bytes())
-            .expect("a full pool has a file");
-        let freed = largest.encoder.in_progress_bytes();
-        upload_taken(largest)?;
-        Ok(TAKE_POOL_BYTES - buffered + freed)
     }
 
     fn open_file(&mut self, partition: Partition) -> Result<OpenFile, String> {
