@@ -165,6 +165,10 @@ fn content_type(config: &HttpDestinationConfig) -> &'static str {
 
 /// `text` with each line break written as the two characters `\n` or `\r`.
 fn on_one_line(text: &[u8]) -> Vec<u8> {
+    // Most text holds no line break, and is copied whole.
+    if memchr::memchr2(b'\n', b'\r', text).is_none() {
+        return text.to_vec();
+    }
     let mut out = Vec::with_capacity(text.len());
     for &b in text {
         match b {

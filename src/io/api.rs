@@ -212,7 +212,7 @@ impl Records {
                         self.cut = Cut::Done;
                         continue;
                     }
-                    let end = rest.iter().position(|&b| b == b'\n').unwrap_or(rest.len());
+                    let end = memchr::memchr(b'\n', rest).unwrap_or(rest.len());
                     let line = &rest[..end];
                     let line = line.strip_suffix(b"\r").unwrap_or(line);
                     let record = (!line.trim_ascii().is_empty()).then(|| line.to_vec());
