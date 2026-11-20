@@ -329,14 +329,14 @@
   ]);
 
   /** The width of the warning under the pointer on a source's rows chart, and that width's rate and
-   * range over the chart, to draw over it. */
+   * range over the chart, which the chart then draws instead of its own. */
   let warnedWidth = $state<number | null>(null);
-  let overlay = $state<SourceChartResponse | null>(null);
+  let widthChart = $state<SourceChartResponse | null>(null);
   $effect(() => {
     const window = warnedWidth;
     const [from, to] = [rateTimes[0], rateTimes[rateTimes.length - 1]];
     if (window === null || node.kind !== 'source' || from === undefined) {
-      overlay = null;
+      widthChart = null;
       return;
     }
     let current = true;
@@ -349,13 +349,24 @@
       window,
     )
       .then((got) => {
-        if (current) overlay = got.ok ? got : null;
+        if (current) widthChart = got.ok ? got : null;
       })
       .catch(() => {
-        if (current) overlay = null;
+        if (current) widthChart = null;
       });
     return () => {
       current = false;
+    };
+  });
+  /** The rows chart at the warned width, on the chart's own slots: each slot reads the point that holds it. */
+  let atWidth = $derived.by(() => {
+    if (!widthChart || warnedWidth === null) return null;
+    const step = widthChart.pointMillis;
+    const points = widthChart.points;
+    return {
+      label: `rows/s over ${lasted(warnedWidth)}`,
+      points: rateTimes.map((t) => points.find(([at]) => at <= t && t < at + step)?.[1] ?? null),
+      band: expectedSlots(widthChart.expected, rateTimes),
     };
   });
 
@@ -972,12 +983,12 @@
   band?: ReturnType<typeof expectedSlots>,
 )}
   {#if points.some((p) => p !== null)}
+    {@const shown = (label === 'rows/s' && atWidth) || { label, points, band }}
     <Sparkline
-      series={[{ label, color: 'var(--ink)', points }]}
-      {band}
+      series={[{ label: shown.label, color: 'var(--ink)', points: shown.points }]}
+      band={shown.band}
       times={rateTimes}
       {marks}
-      overlay={label === 'rows/s' ? overlay : null}
       onmark={label === 'rows/s'
         ? (m) => (warnedWidth = m?.reason?.kind === 'width' ? m.reason.windowMillis : null)
         : undefined}
