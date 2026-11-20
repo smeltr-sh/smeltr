@@ -1174,7 +1174,7 @@ fn speed() {
                     .map_err(|p| panic_message(&p));
                     match &result {
                         Ok(r) => println!(
-                            "{:<12} {:<6} {:<9} {n:>2} cores {:>9.0} rows/s  cpu {:>5.2}  peak {:>6.0} MB  broker {:>5.2}  \
+                            "{:<12} {:<6} {:<9} {n:>2} cores {:>9.0} records/s  cpu {:>5.2}  peak {:>6.0} MB  broker {:>5.2}  \
                              harness {:>3.0}%",
                             w.name,
                             t.label(),
@@ -1218,7 +1218,7 @@ fn table(
     refused: &[(Case, Engine, String)],
 ) -> String {
     let mut out = String::from(
-        "| Pipeline | Transport | Engine | Cores | rows/s | Spread | rows/s per core used | Cores used | Peak memory | \
+        "| Pipeline | Transport | Engine | Cores | records/s | Spread | records/s per core used | Cores used | Peak memory | \
          Broker cores | Harness busy |\n|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|\n",
     );
     let one_line = |why: &str| why.replace('|', "/").replace('\n', " ");
