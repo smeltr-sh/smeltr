@@ -60,6 +60,23 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
     && strip target/dist/smeltr \
     && cp target/dist/smeltr /smeltr
 
+# ---- tests: the integration tests, for `just image-tests` -------------------------------------------------------
+# Built on the builder, so they link the glibc the image carries, and archived by nextest, which runs each one in a
+# container of the image. nextest is pinned to the version the release workflow runs the archive with.
+FROM builder AS tests
+ADD --checksum=sha256:682c21b777c333e96fd532e114d3a5a894e0729ab88d94c0a9f20f8419695428 \
+    https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-x86_64-unknown-linux-gnu.tar.gz /nextest.tar.gz
+RUN tar -xzf /nextest.tar.gz -C /root/.cargo/bin && rm /nextest.tar.gz
+COPY . .
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/src/target \
+    CFLAGS=-std=gnu17 WARN_CFLAGS=-Wall CARGO_PROFILE_DEV_DEBUG=0 \
+    cargo nextest archive --locked --test integration --archive-file /tests.tar.zst
+
+FROM scratch AS tests-archive
+COPY --from=tests /tests.tar.zst /
+
 # ---- export: the handoff folder -------------------------------------------------------------------------------
 # Writes a folder rather than an image, for a site that builds the last step itself:
 #

@@ -342,6 +342,11 @@ opt-level = 3
 [profile.dev.package.blake2]
 opt-level = 3
 
+# Unoptimized, AWS-LC's FIPS module keeps absolute relocations against its own symbols, which lld refuses to link
+# into a position-independent test binary. Wolfi's builder, where `just image-tests` builds the tests, links that way.
+[profile.dev.package.aws-lc-fips-sys]
+opt-level = 3
+
 # What ships: the whole program, `std` included, optimized as one. Parse runs a few percent faster than `release`, and
 # what is inlined no longer moves with unrelated edits. A build takes about twice as long.
 [profile.dist]

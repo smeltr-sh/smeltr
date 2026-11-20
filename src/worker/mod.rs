@@ -609,7 +609,7 @@ fn set_ref(repo: &gix::Repository, name: &str, commit: &str) -> Result<(), Strin
 ///
 /// The clone is the leader's whole repository. The cluster is the security boundary, so an enrolled worker is trusted
 /// with all of it (design doc, Security).
-pub(crate) fn fetch_deployed(
+pub fn fetch_deployed(
     repo_dir: &Path,
     leader_url: &str,
     token: &str,
