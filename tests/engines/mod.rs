@@ -25,10 +25,19 @@ enum Engine {
     /// The Apache-2.0 distribution, without X-Pack.
     Logstash,
     Vector,
+    /// Mapping in a processor of its own, packaged as a NAR, as a NiFi shop builds one.
     Nifi,
+    /// Mapping in a Groovy script, as stock NiFi does with no code of its own.
+    NifiGroovy,
 }
 
-const ENGINES: [Engine; 4] = [Engine::Smeltr, Engine::Logstash, Engine::Vector, Engine::Nifi];
+const ENGINES: [Engine; 5] = [
+    Engine::Smeltr,
+    Engine::Logstash,
+    Engine::Vector,
+    Engine::Nifi,
+    Engine::NifiGroovy,
+];
 
 impl Engine {
     fn label(self) -> &'static str {
@@ -37,6 +46,7 @@ impl Engine {
             Engine::Logstash => "logstash",
             Engine::Vector => "vector",
             Engine::Nifi => "nifi",
+            Engine::NifiGroovy => "nifi-groovy",
         }
     }
 
@@ -45,7 +55,7 @@ impl Engine {
             Engine::Smeltr => "smeltr-engine-speed",
             Engine::Logstash => "docker.elastic.co/logstash/logstash-oss:9.5.6",
             Engine::Vector => "timberio/vector:0.62.0-debian",
-            Engine::Nifi => "apache/nifi:2.12.0",
+            Engine::Nifi | Engine::NifiGroovy => "apache/nifi:2.12.0",
         }
     }
 
@@ -56,11 +66,20 @@ impl Engine {
 
     /// `tests/engines/{engine}/{pipeline}.{extension}`, when the pipeline needs one for this engine.
     fn pipeline(self, w: &Workload, extension: &str) -> Option<String> {
+        let dir = match self {
+            Engine::NifiGroovy => "nifi",
+            _ => self.label(),
+        };
         let path = repo()
             .join("tests/engines")
-            .join(self.label())
+            .join(dir)
             .join(format!("{}.{extension}", w.name));
         std::fs::read_to_string(path).ok()
+    }
+
+    /// Whether the engine runs `w`: NiFi's Groovy row only where it maps, since it forwards as NiFi does.
+    fn runs(self, w: &Workload) -> bool {
+        self != Engine::NifiGroovy || self.pipeline(w, "groovy").is_some()
     }
 }
 
@@ -109,6 +128,8 @@ struct Workload {
     expect: Expect,
     /// An engine's document, put in the form `expect` writes.
     normal: fn(Value) -> Value,
+    /// Each record leaves as it came: every engine sends the bytes it read, wrapped in nothing of its own.
+    forwards: bool,
 }
 
 const WORKLOADS: &[Workload] = &[
@@ -116,7 +137,8 @@ const WORKLOADS: &[Workload] = &[
         name: "passthrough",
         steps: || json!([]),
         expect: |line| serde_json::from_str(line).ok(),
-        normal: carried,
+        normal: |doc| doc,
+        forwards: true,
     },
     Workload {
         name: "json_app",
@@ -131,31 +153,23 @@ const WORKLOADS: &[Workload] = &[
             }
             doc
         },
+        forwards: false,
     },
 ];
 
-/// A passthrough document is the record as the engine holds it: the line itself, or an event with the line in a field
-/// beside the engine's own metadata. Either way, the record it carries.
-fn carried(doc: Value) -> Value {
-    let inner = doc.as_object().and_then(|o| {
-        o.values()
-            .filter_map(Value::as_str)
-            .find_map(|s| serde_json::from_str::<Value>(s).ok().filter(Value::is_object))
-    });
-    inner.unwrap_or(doc)
-}
-
 /// `2026-10-01T00:00:01.727000Z` and `2026-10-01T00:00:01.727+00:00` alike as `2026-10-01T00:00:01.727Z`: the engines
-/// write a UTC instant each in its own way.
+/// write a UTC instant each in its own way. Any other instant is returned as it is, so it differs from what is wanted.
 fn instant(at: &str) -> String {
+    let Some(zone) = ["Z", "+00:00", "-00:00"].into_iter().find(|z| at.ends_with(z)) else {
+        return at.to_string();
+    };
+    let at = &at[..at.len() - zone.len()];
     let (seconds, rest) = at.split_at(at.len().min(19));
-    let fraction: String = rest
-        .strip_prefix('.')
-        .unwrap_or("")
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect();
-    let fraction = fraction.trim_end_matches('0');
+    let fraction = match rest.strip_prefix('.') {
+        Some(f) if f.chars().all(|c| c.is_ascii_digit()) => f.trim_end_matches('0'),
+        None if rest.is_empty() => "",
+        _ => return at.to_string(),
+    };
     match fraction {
         "" => format!("{seconds}Z"),
         f => format!("{seconds}.{f}Z"),
@@ -211,12 +225,13 @@ fn core_counts() -> Vec<usize> {
     })
 }
 
-/// The online CPUs, each core's hyperthreads together, so `n` of them is as few whole cores as `n` allows.
-fn cpus_by_core() -> Vec<usize> {
+/// The online CPUs of each physical core, its hyperthreads together. A row gives an engine whole cores, so every
+/// engine has the same hyperthreads, and none shares a core with the harness.
+fn cores_by_cpu() -> Vec<Vec<usize>> {
     let online = cpu_list(&std::fs::read_to_string("/sys/devices/system/cpu/online").expect("online CPUs"));
-    let mut ordered = Vec::new();
+    let mut cores: Vec<Vec<usize>> = Vec::new();
     for &cpu in &online {
-        if ordered.contains(&cpu) {
+        if cores.iter().any(|c| c.contains(&cpu)) {
             continue;
         }
         let siblings = std::fs::read_to_string(format!(
@@ -224,13 +239,9 @@ fn cpus_by_core() -> Vec<usize> {
         ))
         .map(|s| cpu_list(&s))
         .unwrap_or_else(|_| vec![cpu]);
-        for c in siblings {
-            if online.contains(&c) && !ordered.contains(&c) {
-                ordered.push(c);
-            }
-        }
+        cores.push(siblings.into_iter().filter(|c| online.contains(c)).collect());
     }
-    ordered
+    cores
 }
 
 fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
@@ -347,8 +358,12 @@ struct Broker {
     runtime: tokio::runtime::Runtime,
 }
 
-/// Partitions in every topic: as many as the most cores a row gives an engine, so each core can have its own.
-const PARTITIONS: i32 = 16;
+/// Partitions in every topic: at least as many as the hyperthreads the most cores a row gives an engine have, so each
+/// consumer thread can have its own, and never fewer than 16.
+fn partitions() -> i32 {
+    let (cores, most) = (cores_by_cpu(), *core_counts().iter().max().unwrap());
+    cores[..most.min(cores.len())].concat().len().max(16) as i32
+}
 
 impl Broker {
     fn start(run: &str, cpus: &[usize]) -> Broker {
@@ -392,7 +407,7 @@ impl Broker {
                 "-e",
                 "KAFKA_AUTO_CREATE_TOPICS_ENABLE=false",
             ])
-            .args(["-e", &format!("KAFKA_NUM_PARTITIONS={PARTITIONS}")])
+            .args(["-e", &format!("KAFKA_NUM_PARTITIONS={}", partitions())])
             .arg("apache/kafka:4.4.0");
         let broker = Broker {
             container: Container::run(docker, run),
@@ -422,7 +437,7 @@ impl Broker {
         use rdkafka::admin::{AdminOptions, NewTopic, TopicReplication};
         let admin = self.admin();
         let made = self.runtime.block_on(admin.create_topics(
-            &[NewTopic::new(topic, PARTITIONS, TopicReplication::Fixed(1))],
+            &[NewTopic::new(topic, partitions(), TopicReplication::Fixed(1))],
             &AdminOptions::new().operation_timeout(Some(Duration::from_secs(30))),
         ));
         for result in made.expect("the broker answers") {
@@ -446,9 +461,13 @@ impl Broker {
             .set("queue.buffering.max.messages", "1000000")
             .create()
             .expect("a Kafka producer");
+        let partitions = partitions();
         for i in 0..rows {
             let line = line(i);
-            let mut record = BaseRecord::<(), String>::to(topic).payload(&line);
+            // Spread evenly, so no partition is left to drain alone at the end.
+            let mut record = BaseRecord::<(), String>::to(topic)
+                .payload(&line)
+                .partition((i % partitions as u64) as i32);
             loop {
                 match producer.send(record) {
                     Ok(()) => break,
@@ -477,7 +496,7 @@ impl Broker {
     /// Records in `topic`, every partition's end added up.
     fn count(&self, consumer: &rdkafka::consumer::BaseConsumer, topic: &str) -> u64 {
         use rdkafka::consumer::Consumer;
-        (0..PARTITIONS)
+        (0..partitions())
             .map(|p| {
                 consumer
                     .fetch_watermarks(topic, p, Duration::from_secs(10))
@@ -492,7 +511,7 @@ impl Broker {
         use rdkafka::consumer::Consumer;
         let consumer = self.consumer();
         let mut assignment = rdkafka::TopicPartitionList::new();
-        for p in 0..PARTITIONS {
+        for p in 0..partitions() {
             assignment
                 .add_partition_offset(topic, p, rdkafka::Offset::Beginning)
                 .unwrap();
@@ -598,7 +617,16 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
                 .arg(cores.to_string());
             ("/", BASIC)
         }
-        Engine::Nifi => {
+        Engine::Nifi | Engine::NifiGroovy => {
+            if engine == Engine::Nifi {
+                docker.args([
+                    "-v",
+                    &format!(
+                        "{}:/opt/nifi/nifi-current/nar_extensions/json-app.nar:ro",
+                        nifi::nar().display()
+                    ),
+                ]);
+            }
             docker
                 .args(["-e", &format!("NIFI_WEB_HTTPS_PORT={api_port}")])
                 .args(["-e", "NIFI_WEB_HTTPS_HOST=127.0.0.1"])
@@ -641,9 +669,13 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
                     json!({"id": "out", "type": "kafka", "brokers": brokers, "defaultTopic": to}),
                 ),
             };
+            let mut destination = destination;
+            if w.forwards {
+                destination["format"] = json!("text");
+            }
             deploy(&dir, source, destination, (w.steps)());
         }
-        Engine::Nifi => nifi::build(&container, run, api_port, ends, w, cores),
+        Engine::Nifi | Engine::NifiGroovy => nifi::build(&container, run, api_port, ends, w, cores, engine),
         Engine::Logstash | Engine::Vector => {}
     }
     let push = match ends {
@@ -677,34 +709,56 @@ mod logstash {
 
     /// The transport's input, the pipeline's filters, and the transport's output.
     pub fn pipeline(w: &Workload, ends: &Ends, cores: usize) -> String {
+        let mut filter = Engine::Logstash.pipeline(w, "conf").unwrap_or_default();
         let (input, output) = match ends {
-            Ends::Http { port, sink } => (
-                // Every request is lines, whatever its content type says.
-                format!(
-                    "http {{ port => {port} user => \"bench\" password => \"{PASSWORD}\" codec => line \
-                     additional_codecs => {{}} max_pending_requests => 1024 }}"
-                ),
-                format!("http {{ url => \"{sink}\" http_method => \"post\" format => \"json_batch\" pool_max => 64 }}"),
-            ),
+            Ends::Http { port, sink } => {
+                // Every request is lines, whatever its content type says. Logstash posts many events to a request
+                // only as a JSON array of them, so a record it forwards is read as the JSON it is, and leaves
+                // without the fields the input adds. Those go at the top level, apart from the record's own `http`.
+                let codec = if w.forwards {
+                    filter =
+                        "filter { mutate { remove_field => [\"@timestamp\", \"@version\", \"headers\", \"host\"] } }"
+                            .to_string();
+                    "json_lines ecs_compatibility => disabled"
+                } else {
+                    "line"
+                };
+                (
+                    format!(
+                        "http {{ port => {port} user => \"bench\" password => \"{PASSWORD}\" codec => {codec} \
+                         additional_codecs => {{}} max_pending_requests => 1024 }}"
+                    ),
+                    format!(
+                        "http {{ url => \"{sink}\" http_method => \"post\" format => \"json_batch\" pool_max => 64 }}"
+                    ),
+                )
+            }
             // A consumer thread for each core. The producer batches as the Kafka clients of the other engines do
-            // by default: up to a megabyte, waiting up to 5 ms to fill one.
+            // by default: up to a megabyte, waiting up to 5 ms to fill one. Every broker acknowledges a write, as
+            // the other engines' producers ask.
             Ends::Kafka {
                 brokers,
                 from,
                 to,
                 group,
-            } => (
-                format!(
-                    "kafka {{ bootstrap_servers => \"{brokers}\" topics => [\"{from}\"] group_id => \"{group}\" \
-                     auto_offset_reset => \"earliest\" consumer_threads => {cores} }}"
-                ),
-                format!(
-                    "kafka {{ bootstrap_servers => \"{brokers}\" topic_id => \"{to}\" codec => json \
-                     linger_ms => 5 batch_size => 1000000 }}"
-                ),
-            ),
+            } => {
+                let codec = if w.forwards {
+                    "plain { format => \"%{message}\" }"
+                } else {
+                    "json"
+                };
+                (
+                    format!(
+                        "kafka {{ bootstrap_servers => \"{brokers}\" topics => [\"{from}\"] group_id => \"{group}\" \
+                         auto_offset_reset => \"earliest\" consumer_threads => {cores} }}"
+                    ),
+                    format!(
+                        "kafka {{ bootstrap_servers => \"{brokers}\" topic_id => \"{to}\" codec => {codec} \
+                         acks => \"all\" linger_ms => 5 batch_size => 1000000 }}"
+                    ),
+                )
+            }
         };
-        let filter = Engine::Logstash.pipeline(w, "conf").unwrap_or_default();
         format!("input {{ {input} }}\n{filter}\noutput {{ {output} }}\n")
     }
 
@@ -719,18 +773,20 @@ mod logstash {
 mod vector {
     use super::*;
 
-    /// The transport's source, the pipeline's remap when it has one, and the transport's sink. Every sink waits for
-    /// its destination's acknowledgement.
+    /// The transport's source, the pipeline's remap when it has one, and the transport's sink. The HTTP source answers
+    /// on receipt, as the other engines' listeners do; the Kafka sink acknowledges delivery, so the source commits
+    /// what was delivered, as smeltr does.
     pub fn config(w: &Workload, ends: &Ends) -> Value {
         let remap = Engine::Vector.pipeline(w, "vrl");
-        // A pipeline that reads the record parses it as it arrives.
+        // A pipeline that reads the record parses it as it arrives; one that forwards it sends the line it read.
         let codec = if remap.is_some() { "json" } else { "bytes" };
+        let encoding = if w.forwards { "text" } else { "json" };
         let (source, sink) = match ends {
             Ends::Http { port, sink } => (
                 json!({"type": "http_server", "address": format!("0.0.0.0:{port}"),
                        "auth": {"strategy": "basic", "username": "bench", "password": PASSWORD},
                        "framing": {"method": "newline_delimited"}, "decoding": {"codec": codec}}),
-                json!({"type": "http", "uri": sink, "encoding": {"codec": "json"},
+                json!({"type": "http", "uri": sink, "encoding": {"codec": encoding},
                        "framing": {"method": "newline_delimited"},
                        "batch": {"max_bytes": 10_000_000, "timeout_secs": 0.2}}),
             ),
@@ -742,12 +798,12 @@ mod vector {
             } => (
                 json!({"type": "kafka", "bootstrap_servers": brokers, "group_id": group, "topics": [from],
                        "auto_offset_reset": "earliest", "decoding": {"codec": codec}}),
-                json!({"type": "kafka", "bootstrap_servers": brokers, "topic": to, "encoding": {"codec": "json"}}),
+                json!({"type": "kafka", "bootstrap_servers": brokers, "topic": to, "encoding": {"codec": encoding},
+                       "acknowledgements": {"enabled": true}}),
             ),
         };
         let mut config = json!({
             "data_dir": "/tmp",
-            "acknowledgements": {"enabled": true},
             "sources": {"in": source},
             "sinks": {"out": sink},
         });
@@ -896,7 +952,8 @@ fn time(
 ) -> Timed {
     let rows = rows();
     // Under HTTP the sender cycles through its bodies; under Kafka the engine reads the seeded topic.
-    let keeps = |n: u64| (0..n).filter(|&i| (w.expect)(&line(i)).is_some()).count() as f64 / n as f64;
+    let kept_of = |from: u64, n: u64| (from..from + n).filter(|&i| (w.expect)(&line(i)).is_some()).count() as u64;
+    let keeps = |n: u64| kept_of(0, n) as f64 / n as f64;
     let sink = Sink::start();
     let consumer = broker.map(Broker::consumer);
     let (ends, kept, most) = match transport {
@@ -918,14 +975,20 @@ fn time(
                 group: run.into(),
             };
             let kept = keeps(KAFKA_SEED * rows);
-            (ends, kept, ((KAFKA_SEED * rows) as f64 * kept) as u64)
+            (ends, kept, kept_of(0, KAFKA_SEED * rows))
         }
     };
     let running = start(engine, w, run, cpus, &ends);
-    let _sender = running
-        .push
-        .as_ref()
-        .map(|(url, push)| Sender::start(url, push, &bodies(push), SENDERS, 0, u64::MAX / 2));
+    let sender = running.push.as_ref().map(|(url, push)| {
+        Sender::start(
+            url,
+            push,
+            &bodies(push),
+            env_or("ENGINE_SENDERS", SENDERS),
+            0,
+            u64::MAX / 2,
+        )
+    });
     let count = || match (&ends, broker, &consumer) {
         (Ends::Kafka { to, .. }, Some(b), Some(c)) => b.count(c, to),
         _ => sink.rows(),
@@ -936,6 +999,9 @@ fn time(
         polls += 1;
         if polls % 200 == 0 {
             running.container.check(run);
+            if let Some(b) = broker {
+                b.container.check("the broker");
+            }
         }
         if transport == Transport::Kafka {
             std::thread::sleep(Duration::from_millis(50));
@@ -971,6 +1037,30 @@ fn time(
         broker: (peer(broker) - b_cpu) / wall,
         harness: 1.0 - (idle(rest) - idle_before) / wall / rest.len() as f64,
     };
+    // Every record the engine took is delivered once: the count holds no loss and no duplicate.
+    let want = match &sender {
+        Some(sender) => {
+            sender.stop();
+            let in_body: Vec<u64> = (0..64).map(|b| kept_of(b * PER_REQUEST, PER_REQUEST)).collect();
+            let taken = || sender.sent().iter().zip(&in_body).map(|(n, k)| n * k).sum::<u64>();
+            // The requests in flight when it stopped are answered within the patience a row has.
+            let mut last = (taken(), Instant::now());
+            while last.1.elapsed() < Duration::from_secs(2) {
+                let now = taken();
+                if now != last.0 {
+                    last = (now, Instant::now());
+                }
+                assert!(last.1.elapsed() < PATIENCE, "{run}: the sender never stopped");
+                each();
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            last.0
+        }
+        None => most,
+    };
+    wait_for(&format!("{run} delivering the rest"), want, count, &mut each);
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(count(), want, "{run}: records delivered, against records taken");
     if let Ends::Kafka { to, .. } = &ends {
         broker.unwrap().delete(to);
     }
@@ -995,13 +1085,14 @@ fn speed() {
         );
     }
     let counts = core_counts();
-    let cpus = cpus_by_core();
+    let cores = cores_by_cpu();
     let most = *counts.iter().max().unwrap();
     assert!(
-        most < cpus.len(),
+        most < cores.len(),
         "{most} cores for the engine leave none for the harness"
     );
-    let rest = cpus[most..].to_vec();
+    let on = |n: usize| cores[..n].concat();
+    let rest = cores[most..].concat();
     // The sender, the sink and the broker run on the cores the engines do not.
     set_affinity(0, &rest);
     let only = |var: &str, name: &str| {
@@ -1045,11 +1136,11 @@ fn speed() {
     // Checked once each, on the fewest cores: an engine that makes other documents is not timed.
     let mut refused: Vec<(Case, Engine, String)> = Vec::new();
     for &(w, t) in &cases {
-        for &e in &engines {
+        for &e in engines.iter().filter(|e| e.runs(w)) {
             let run = format!("es-check-{}-{}-{}-{id}", w.name, t.label(), e.label());
             let fewest = *counts.iter().min().unwrap();
             if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                check(e, w, &run, &cpus[..fewest], t, broker.as_ref())
+                check(e, w, &run, &on(fewest), t, broker.as_ref())
             })) {
                 let why = panic_message(&panic);
                 println!("{:<12} {:<6} {:<9} check failed: {why}", w.name, t.label(), e.label());
@@ -1072,13 +1163,13 @@ fn speed() {
         }
         for &(w, t) in &cases {
             for &n in &cores {
-                for &e in &order {
+                for &e in order.iter().filter(|e| e.runs(w)) {
                     if refused.iter().any(|r| same(r.0, (w, t)) && r.1 == e) {
                         continue;
                     }
                     let run = format!("es-{}-{}-{}-{n}c-{round}-{id}", w.name, t.label(), e.label());
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        time(e, w, &run, &cpus[..n], &rest, t, broker.as_ref())
+                        time(e, w, &run, &on(n), &rest, t, broker.as_ref())
                     }))
                     .map_err(|p| panic_message(&p));
                     match &result {
@@ -1236,7 +1327,7 @@ mod nifi {
                 "POST",
                 &format!("/process-groups/{}/processors", self.root),
                 Some(json!({"revision": {"version": 0}, "component": {
-                    "type": format!("org.apache.nifi.{kind}"),
+                    "type": kind,
                     "config": {
                         "properties": properties,
                         "autoTerminatedRelationships": ended,
@@ -1247,21 +1338,70 @@ mod nifi {
             p["id"].as_str().unwrap().to_string()
         }
 
-        fn connect(&self, from: &str, to: &str, relationship: &str) {
+        fn connect(&self, from: &str, to: &str, relationships: &[&str]) {
             self.call(
                 "POST",
                 &format!("/process-groups/{}/connections", self.root),
                 Some(json!({"revision": {"version": 0}, "component": {
                     "source": {"id": from, "groupId": self.root, "type": "PROCESSOR"},
                     "destination": {"id": to, "groupId": self.root, "type": "PROCESSOR"},
-                    "selectedRelationships": [relationship],
+                    "selectedRelationships": relationships,
                 }})),
             );
         }
     }
 
+    /// `nifi/nar`'s NAR, built once a run by Maven in its own container, its downloads kept in a volume.
+    pub fn nar() -> PathBuf {
+        static NAR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        NAR.get_or_init(|| {
+            let dir = repo().join("target/engine-speed/nar");
+            let _ = std::fs::remove_dir_all(&dir);
+            let copied = Command::new("cp")
+                .arg("-r")
+                .arg(repo().join("tests/engines/nifi/nar"))
+                .arg(&dir)
+                .status()
+                .unwrap();
+            assert!(copied.success(), "could not copy the NAR's sources");
+            let built = Command::new("docker")
+                .args([
+                    "run",
+                    "--rm",
+                    "--network",
+                    "host",
+                    "-v",
+                    "smeltr-engine-speed-m2:/root/.m2",
+                    "-v",
+                ])
+                .arg(format!("{}:/nar", dir.display()))
+                .args([
+                    "-w",
+                    "/nar",
+                    "maven:3.9.11-eclipse-temurin-21",
+                    "mvn",
+                    "-q",
+                    "-B",
+                    "package",
+                ])
+                .status()
+                .unwrap();
+            assert!(built.success(), "Maven could not build the NAR");
+            dir.join("nar/target/json-app-nar-1.0.nar")
+        })
+        .clone()
+    }
+
     /// Builds `w`'s flow between `ends` in the NiFi whose API is on `api_port`, and starts it.
-    pub fn build(container: &Container, run: &str, api_port: u16, ends: &Ends, w: &Workload, cores: usize) {
+    pub fn build(
+        container: &Container,
+        run: &str,
+        api_port: u16,
+        ends: &Ends,
+        w: &Workload,
+        cores: usize,
+        engine: Engine,
+    ) {
         // NiFi's certificate is its own, for `localhost`, on loopback.
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
@@ -1312,16 +1452,16 @@ mod nifi {
         let (consume, produce) = match ends {
             Ends::Http { port, sink } => (
                 api.processor(
-                    "processors.standard.ListenHTTP",
+                    "org.apache.nifi.processors.standard.ListenHTTP",
                     json!({"Listening Port": port.to_string(), "Base Path": "in"}),
                     &[],
                     1,
                 ),
                 // A producer spends its task waiting on the answer, so it runs more than the cores.
                 api.processor(
-                    "processors.standard.InvokeHTTP",
+                    "org.apache.nifi.processors.standard.InvokeHTTP",
                     json!({"HTTP Method": "POST", "HTTP URL": sink}),
-                    &["Original", "Response", "Retry", "No Retry", "Failure"],
+                    &["Original", "Response"],
                     2 * cores,
                 ),
             ),
@@ -1337,7 +1477,7 @@ mod nifi {
                 );
                 (
                     api.processor(
-                        "kafka.processors.ConsumeKafka",
+                        "org.apache.nifi.kafka.processors.ConsumeKafka",
                         json!({"Kafka Connection Service": kafka, "Group ID": group, "Topics": from,
                                "auto.offset.reset": "earliest", "Processing Strategy": "DEMARCATOR",
                                "Message Demarcator": "\n"}),
@@ -1346,15 +1486,21 @@ mod nifi {
                     ),
                     // Without transactions, as the other engines produce.
                     api.processor(
-                        "kafka.processors.PublishKafka",
+                        "org.apache.nifi.kafka.processors.PublishKafka",
                         json!({"Kafka Connection Service": kafka, "Topic Name": to, "Message Demarcator": "\n",
                                "Transactions Enabled": "false"}),
-                        &["success", "failure"],
+                        &["success"],
                         2 * cores,
                     ),
                 )
             }
         };
+        // What the producer could not deliver it tries again, as the other engines retry, rather than lose it.
+        let failed: &[&str] = match ends {
+            Ends::Http { .. } => &["Retry", "No Retry", "Failure"],
+            Ends::Kafka { .. } => &["failure"],
+        };
+        api.connect(&produce, &produce, failed);
         match Engine::Nifi.pipeline(w, "groovy") {
             Some(script) => {
                 // A schema read once beats inferring one from each flowfile, as the record readers' documentation
@@ -1369,17 +1515,26 @@ mod nifi {
                     json!({"Schema Write Strategy": "no-schema", "Output Grouping": "output-oneline",
                            "Suppress Null Values": "always-suppress"}),
                 );
-                let transform = api.processor(
-                    "processors.script.ScriptedTransformRecord",
-                    json!({"Record Reader": reader, "Record Writer": writer, "Script Engine": "Groovy",
-                           "Script Body": script}),
-                    &["failure"],
-                    cores,
-                );
-                api.connect(&consume, &transform, "success");
-                api.connect(&transform, &produce, "success");
+                let transform = match engine {
+                    Engine::NifiGroovy => api.processor(
+                        "org.apache.nifi.processors.script.ScriptedTransformRecord",
+                        json!({"Record Reader": reader, "Record Writer": writer, "Script Engine": "Groovy",
+                               "Script Body": script}),
+                        &["failure"],
+                        cores,
+                    ),
+                    // The same mapping, in `nifi/nar`'s processor.
+                    _ => api.processor(
+                        "sh.smeltr.bench.NormalizeJsonApp",
+                        json!({"Record Reader": reader, "Record Writer": writer}),
+                        &["failure"],
+                        cores,
+                    ),
+                };
+                api.connect(&consume, &transform, &["success"]);
+                api.connect(&transform, &produce, &["success"]);
             }
-            None => api.connect(&consume, &produce, "success"),
+            None => api.connect(&consume, &produce, &["success"]),
         }
         let root = api.root.clone();
         api.call(

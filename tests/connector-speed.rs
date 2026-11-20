@@ -780,10 +780,39 @@ impl Usage {
     }
 }
 
-/// Waits until `count` reaches `want`, failing once it has not moved for `PATIENCE`.
+/// The least free disk a row runs with. Engines and peers that spill to disk slow as it fills, so a row with less
+/// would measure the disk.
+const LEAST_FREE_DISK: u64 = 5_000_000_000;
+
+/// The bytes free on the disk holding `target/`, where the containers' layers and data are.
+fn free_disk() -> u64 {
+    let out = Command::new("df")
+        .args(["-B1", "--output=avail"])
+        .arg(repo().join("target"))
+        .output()
+        .expect("df runs");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .nth(1)
+        .and_then(|l| l.trim().parse().ok())
+        .expect("df gives the free bytes")
+}
+
+/// Waits until `count` reaches `want`, failing once it has not moved for `PATIENCE` or the disk is nearly full.
 fn wait_for(what: &str, want: u64, count: impl Fn() -> u64, mut each: impl FnMut()) {
     let (mut last, mut moved) = (count(), Instant::now());
+    let mut checked = Instant::now() - Duration::from_secs(1);
     loop {
+        if checked.elapsed() >= Duration::from_secs(1) {
+            let free = free_disk();
+            assert!(
+                free >= LEAST_FREE_DISK,
+                "{what}: only {:.1} GB of disk free, under the {} GB a row needs",
+                free as f64 / 1e9,
+                LEAST_FREE_DISK / 1_000_000_000
+            );
+            checked = Instant::now();
+        }
         let n = count();
         if n >= want {
             return;
@@ -1219,8 +1248,10 @@ impl Sink {
         let (rows, bytes) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
         let (r, b, k) = (rows.clone(), bytes.clone(), kept.clone());
         std::thread::spawn(move || {
+            // As many as the harness's cores: a sink short of threads would set the speed of the row.
+            let threads = std::thread::available_parallelism().map_or(2, |n| n.get());
             let runtime = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
+                .worker_threads(threads)
                 .enable_all()
                 .build()
                 .unwrap();
@@ -1287,6 +1318,8 @@ fn bodies(push: &Push) -> Arc<Vec<Vec<u8>>> {
 /// records. Its threads stop when it is dropped.
 struct Sender {
     acked: Arc<AtomicU64>,
+    /// Requests answered, by the body each sent: what the receiver took, record for record.
+    sent: Arc<Vec<AtomicU64>>,
     bytes: Arc<AtomicU64>,
     /// Requests answered busy: the receiver had more than it could take.
     busy: Arc<AtomicU64>,
@@ -1299,15 +1332,17 @@ impl Sender {
         let build = push.body;
         let next = Arc::new(AtomicU64::new(from));
         let (acked, bytes) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
+        let sent: Arc<Vec<AtomicU64>> = Arc::new(bodies.iter().map(|_| AtomicU64::new(0)).collect());
         let busy = Arc::new(AtomicU64::new(0));
         let authorization = push.authorization.replace("{}", RECEIVER_TOKEN);
         let said = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         for _ in 0..senders {
-            let (bodies, next, acked, bytes, busy, said, stop) = (
+            let (bodies, next, acked, sent, bytes, busy, said, stop) = (
                 bodies.clone(),
                 next.clone(),
                 acked.clone(),
+                sent.clone(),
                 bytes.clone(),
                 busy.clone(),
                 said.clone(),
@@ -1325,8 +1360,9 @@ impl Sender {
                     let count = PER_REQUEST.min(to - at);
                     // A short last request is built for its own records, so it sends no more than it is credited.
                     let short;
+                    let which = (at / PER_REQUEST) as usize % bodies.len();
                     let body = if count == PER_REQUEST {
-                        &bodies[(at / PER_REQUEST) as usize % bodies.len()]
+                        &bodies[which]
                     } else {
                         short = build(at, count);
                         &short
@@ -1368,12 +1404,16 @@ impl Sender {
                         std::thread::sleep(wait);
                     }
                     acked.fetch_add(count, Ordering::Relaxed);
+                    if count == PER_REQUEST {
+                        sent[which].fetch_add(1, Ordering::Relaxed);
+                    }
                     bytes.fetch_add(body.len() as u64, Ordering::Relaxed);
                 }
             });
         }
         Sender {
             acked,
+            sent,
             bytes,
             busy,
             stop,
@@ -1382,6 +1422,16 @@ impl Sender {
 
     fn acked(&self) -> u64 {
         self.acked.load(Ordering::Relaxed)
+    }
+
+    /// Requests answered for each body.
+    fn sent(&self) -> Vec<u64> {
+        self.sent.iter().map(|n| n.load(Ordering::Relaxed)).collect()
+    }
+
+    /// Stops sending: no request starts after this, though those in flight may still be answered.
+    fn stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
     }
 
     fn busy(&self) -> u64 {
