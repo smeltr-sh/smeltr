@@ -439,6 +439,20 @@ fn a_reader_that_keeps_up_has_no_more_fetched_for_it() {
     assert!(held < 16 << 20, "{held} bytes held");
 }
 
+/// An object of long records a reader has not taken queues a few megabytes of them, not the object.
+#[test]
+fn a_fetch_queues_records_up_to_a_budget_of_bytes() {
+    let s = Setup::new();
+    let record = format!("{}\n", "x".repeat((1 << 20) - 1));
+    s.put("long", record.repeat(64).as_bytes());
+    s.announce("m", &["long"]);
+    let mut source = s.source(Framing::Lines, HOUR);
+    assert_eq!(source.poll_batch(1, 1 << 20, WAIT).unwrap().len(), 1);
+    std::thread::sleep(Duration::from_millis(500));
+    let held = source.held_bytes().unwrap();
+    assert!(held < 8 << 20, "{held} bytes held");
+}
+
 #[test]
 fn an_unreadable_object_leaves_its_message_on_the_queue() {
     let s = Setup::new();
