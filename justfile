@@ -171,6 +171,25 @@ sbom image="smeltr:latest": need-docker
       aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
       image --format cyclonedx --output /out/sbom.cdx.json {{image}}
 
+# The integration tests, run in an image's own root, so code that needs something the image lacks fails here and
+# not at a site. They are built in the image's builder (`Dockerfile`'s `tests` stage), so they link the glibc the
+# image carries, and nextest starts each test process in a container of the image (`tools/image-test-runner.sh`).
+# The whole suite runs first, its live tests skipping; then the Kerberos and Kafka TLS tests run again against
+# brokers started here, on the host, and must not skip; their scripts write the client's key and keytab for their own
+# user alone, so the image's user reads copies. `dist` tags the image it builds `smeltr:latest`.
+[unix]
+image-tests image="smeltr:latest": need-docker kerberos-up tls-up
+    rm -rf target/image-tests /tmp/krb/kinit-ran && mkdir -p target/image-tests/archive
+    docker build --target tests-archive --output type=local,dest=target/image-tests .
+    cp -r /tmp/krb /tmp/smeltr-tls target/image-tests/ && chmod -R a+rX target/image-tests/krb target/image-tests/smeltr-tls
+    export SMELTR_TEST_IMAGE={{image}} SMELTR_TEST_SOURCE="$PWD" SMELTR_TEST_DIR="$PWD/target/image-tests" \
+        CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="$PWD/tools/image-test-runner.sh" \
+      && run="cargo nextest run --archive-file target/image-tests/tests.tar.zst --workspace-remap . --extract-to target/image-tests/archive --extract-overwrite" \
+      && $run \
+      && set -a && . /tmp/krb/env && . /tmp/smeltr-tls/env && set +a \
+      && KRB5CCNAME=MEMORY:smeltr SMELTR_KINIT_RAN=/tmp/krb/kinit-ran SMELTR_LIVE_TESTS=required \
+        $run -E 'test(/^kerberos_tests::/) | test(/^kafka_tls_tests::/)'
+
 [doc("Release archives from a committed branch, and SHA256SUMS.")]
 [windows]
 dist: need-rust frontends
