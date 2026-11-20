@@ -530,13 +530,15 @@ impl Destination for FileDestination {
         }
         let jobs = self.jobs.as_ref().ok_or_else(|| self.stopped())?;
         let generation = self.generation;
-        jobs.send(Message::Job(Job {
+        let t = Instant::now();
+        let sent = jobs.send(Message::Job(Job {
             batch,
             groups,
             bytes,
             generation,
-        }))
-        .map_err(|_| self.stopped())?;
+        }));
+        timing::spend("send_to_writer", t.elapsed());
+        sent.map_err(|_| self.stopped())?;
         Ok((Dispatched::InFlight, refused))
     }
 
@@ -725,14 +727,16 @@ impl Writer {
                     .saturating_duration_since(Instant::now())
                     .min(MEASURE_EVERY),
             };
+            let t = Instant::now();
             let message = match next.take() {
                 Some(message) => Ok(message),
                 None => inbox.recv_timeout(wait),
             };
+            timing::spend("idle", t.elapsed());
             let failed = match message {
-                Ok(Message::Job(job)) => self.take(job).err(),
+                Ok(Message::Job(job)) => timing::time("dispatch", || self.take(job).err()),
                 Ok(Message::Barrier(reply)) => {
-                    let _ = reply.send(self.commit());
+                    let _ = reply.send(timing::time("commit", || self.commit()));
                     None
                 }
                 Err(RecvTimeoutError::Timeout) => None,
@@ -759,8 +763,11 @@ impl Writer {
                 if self.holds_nothing() {
                     // Nothing to commit: the interval runs from now.
                     self.next_commit = Instant::now() + self.shared.config.commit_interval;
-                } else if reports.send(self.commit()).is_err() {
-                    break;
+                } else {
+                    timing::count(if full { "commits_full" } else { "commits_due" }, 1);
+                    if reports.send(timing::time("commit", || self.commit())).is_err() {
+                        break;
+                    }
                 }
             }
         }
@@ -806,8 +813,14 @@ impl Writer {
             {
                 i
             }
-            _ => self.start_encoder()?,
+            _ => {
+                timing::count("encoders_started", 1);
+                self.start_encoder()?
+            }
         };
+        if self.home.get(&partition).is_some_and(|&home| home != to) {
+            timing::count("rehomed", 1);
+        }
         let lane = &self.encoders[to];
         let bytes = rows.iter().map(FileRow::bytes).sum();
         lane.queued.fetch_add(bytes, Ordering::Relaxed);
@@ -1044,10 +1057,19 @@ impl Encoder {
     fn run(&mut self, orders: Receiver<Order>) {
         loop {
             // Woken at least every `MEASURE_EVERY`, so what lands while no rows come shows as it lands.
+            let t = Instant::now();
             let order = match orders.recv_timeout(MEASURE_EVERY) {
                 Ok(order) => Some(order),
                 Err(RecvTimeoutError::Timeout) => None,
                 Err(RecvTimeoutError::Disconnected) => break,
+            };
+            timing::spend("idle", t.elapsed());
+            let t = Instant::now();
+            let kind = match &order {
+                Some(Order::Write(..)) => "write",
+                Some(Order::Close(_)) => "close",
+                Some(Order::Abort(_)) => "abort",
+                None => "none",
             };
             match order {
                 None => {}
@@ -1078,6 +1100,7 @@ impl Encoder {
                     let _ = reply.send(std::mem::take(&mut self.closed));
                 }
             }
+            timing::spend(kind, t.elapsed());
             let open = (self.open.values())
                 .map(|f| f.encoder.in_progress_bytes() + f.upload.pending())
                 .sum();
@@ -1346,8 +1369,10 @@ impl Upload {
                     ..PutMultipartOptions::default()
                 };
                 let opened = self.store.put_multipart_opts(&self.location, options);
-                let parts =
-                    wait(&self.runtime, self.stall_after, opened).map_err(|e| format!("opening {}: {e}", self.name))?;
+                let t = Instant::now();
+                let parts = wait(&self.runtime, self.stall_after, opened);
+                timing::spend("write.upload_open", t.elapsed());
+                let parts = parts.map_err(|e| format!("opening {}: {e}", self.name))?;
                 let parts = Box::new(Counted {
                     inner: parts,
                     pending: self.pending.clone(),
@@ -1361,12 +1386,14 @@ impl Upload {
             while !bytes.is_empty() {
                 // A part that failed on the way is found here, before more is written behind it. At most a part's
                 // worth starts at most one part.
-                wait(
+                let t = Instant::now();
+                let room = wait(
                     &self.runtime,
                     self.stall_after,
                     parts.wait_for_capacity(self.parts_in_flight),
-                )
-                .map_err(|e| format!("uploading {}: {e}", self.name))?;
+                );
+                timing::spend("write.upload_room", t.elapsed());
+                room.map_err(|e| format!("uploading {}: {e}", self.name))?;
                 let piece = bytes.split_to(bytes.len().min(PART_BYTES));
                 // Parts start as tasks on the runtime.
                 let _enter = self.runtime.enter();
@@ -1548,5 +1575,73 @@ mod tests {
         assert_eq!(retry.next(&CommitError::Conflict, start), Some(Duration::ZERO));
         assert_eq!(retry.next(&transient, start), Some(Duration::from_millis(200)));
         assert_eq!(retry.next(&transient, start + Duration::from_secs(1)), None);
+    }
+}
+
+/// Throwaway diagnostics: each thread's time by kind, appended once a second to `/tmp/smeltr-timing.log`.
+mod timing {
+    use std::cell::RefCell;
+    use std::io::Write;
+    use std::time::{Duration, Instant};
+
+    struct Spent {
+        since: Instant,
+        times: Vec<(&'static str, Duration)>,
+        counts: Vec<(&'static str, u64)>,
+    }
+
+    thread_local! {
+        static SPENT: RefCell<Spent> = RefCell::new(Spent { since: Instant::now(), times: Vec::new(), counts: Vec::new() });
+    }
+
+    pub fn time<T>(kind: &'static str, f: impl FnOnce() -> T) -> T {
+        let t = Instant::now();
+        let out = f();
+        spend(kind, t.elapsed());
+        out
+    }
+
+    pub fn count(kind: &'static str, n: u64) {
+        SPENT.with_borrow_mut(|s| match s.counts.iter_mut().find(|(k, _)| *k == kind) {
+            Some((_, c)) => *c += n,
+            None => s.counts.push((kind, n)),
+        });
+    }
+
+    pub fn spend(kind: &'static str, d: Duration) {
+        SPENT.with_borrow_mut(|s| {
+            match s.times.iter_mut().find(|(k, _)| *k == kind) {
+                Some((_, t)) => *t += d,
+                None => s.times.push((kind, d)),
+            }
+            let wall = s.since.elapsed();
+            if wall < Duration::from_secs(1) {
+                return;
+            }
+            let thread = std::thread::current();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default();
+            let (name, id) = (thread.name().unwrap_or("?"), thread.id());
+            let mut line = format!("{}.{:03} {name} {id:?}:", now.as_secs() % 100_000, now.subsec_millis());
+            for (k, t) in &s.times {
+                line += &format!(" {k} {:.0}%", t.as_secs_f64() / wall.as_secs_f64() * 100.0);
+            }
+            for (k, c) in &s.counts {
+                line += &format!(" {k}={c}");
+            }
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/smeltr-timing.log")
+            {
+                let _ = writeln!(f, "{line}");
+            }
+            *s = Spent {
+                since: Instant::now(),
+                times: Vec::new(),
+                counts: Vec::new(),
+            };
+        });
     }
 }
