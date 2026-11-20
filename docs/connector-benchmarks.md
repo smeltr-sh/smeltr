@@ -24,7 +24,8 @@ flowchart LR
   through its repository as an administrator deploys. Its one pipeline passes rows through unchanged.
 - **Cores.** The transform thread runs alone on the first core, with that core's hyperthread sibling left idle.
   Everything else, the worker's other threads, the harness and every container, shares the remaining cores. The
-  transform pool is one thread (`SMELTR_WORKER_THREAD_LIMIT=1`).
+  transform pool is one thread (`SMELTR_WORKER_THREAD_LIMIT=1`). With `CONNECTOR_PIN=off`, nothing is pinned and
+  everything shares every core, as on a worker whose transform pool is sized to its host.
 - **A source row** seeds its service before the worker starts, then reads it into a sink on this host. Object
   sources read files of 5,000 lines, gzipped when `CONNECTOR_GZIP` is set.
 - **A receiver row** sends from this host through a relay container. The relay's link is shaped, so the traffic
