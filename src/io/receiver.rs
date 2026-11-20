@@ -51,7 +51,7 @@ use super::prometheus;
 use super::raw::{RawRead, RawTap, Tapped, Tapping, offer_closed};
 use super::s2s_receiver;
 use super::socket_receiver;
-use super::{CommitMap, IoError, RecordChunk, RecordChunkBuilder, Source, SourceRecord};
+use super::{ChunkRows, CommitMap, IoError, RecordChunk, RecordChunkBuilder, Source, SourceRecord};
 use crate::egress::QueuePool;
 use crate::format::json::write_json_string;
 use crate::format::json_scan::{Next, Reader};
@@ -1084,11 +1084,10 @@ pub(super) enum Cutter {
 /// What of a request the reader has not taken.
 enum Rest {
     /// Its byte records, cut into one chunk on its handler's thread when it arrived, so the reader only hands out
-    /// rows; from row `at` on. `filed` is what each row is filed under, where its protocol files records.
+    /// rows. `filed` is what each row is filed under, where its protocol files records.
     Chunk {
-        chunk: Arc<RecordChunk>,
+        rows: ChunkRows,
         filed: Vec<Arc<hec::Filed>>,
-        at: usize,
     },
     /// Its typed rows, cut as they are taken, the next cut ahead so the last one is known when it is taken.
     Rows { rows: Box<Cutter>, next: Option<Cut> },
@@ -1159,17 +1158,15 @@ impl Rest {
             .enumerate()
             .filter(|(i, under)| *i == 0 || !Arc::ptr_eq(under, &filed[i - 1]));
         let size = out.size() + shared.map(|(_, under)| filed_size(under)).sum::<usize>();
-        let chunk = Arc::new(out.into_chunk());
-        Some((Rest::Chunk { chunk, filed, at: 0 }, size))
+        let rows = ChunkRows::new(out.into_chunk());
+        Some((Rest::Chunk { rows, filed }, size))
     }
 
     /// What the next record holds once taken, with what it is filed under. A row's chunk shares that, but a reader
     /// that needs it as rows copies it to each, so a poll is bounded by what its rows hold so copied.
     fn next_size(&self) -> usize {
         match self {
-            Rest::Chunk { chunk, filed, at } => {
-                chunk.row_size(*at) + filed.get(*at).map_or(0, |under| filed_size(under))
-            }
+            Rest::Chunk { rows, filed } => rows.next_size() + filed.get(rows.at()).map_or(0, |under| filed_size(under)),
             Rest::Rows { next, .. } => {
                 let next = next.as_ref().expect("a request in the inbox has a record left");
                 next.row.size() + next.filed.as_deref().map_or(0, filed_size)
@@ -1191,11 +1188,10 @@ impl Rest {
     /// Takes the next record, and whether it was the last.
     fn take(&mut self) -> (Payload, Option<Arc<hec::Filed>>, bool) {
         match self {
-            Rest::Chunk { chunk, filed, at } => {
-                let row = *at as u32;
-                let under = filed.get(*at).cloned();
-                *at += 1;
-                (Payload::Chunk(chunk.clone(), row), under, *at == chunk.len())
+            Rest::Chunk { rows, filed } => {
+                let under = filed.get(rows.at()).cloned();
+                let (chunk, row) = rows.take();
+                (Payload::Chunk(chunk, row), under, rows.is_done())
             }
             Rest::Rows { rows, next } => {
                 let following = rows.next_row();

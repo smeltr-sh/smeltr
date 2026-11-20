@@ -130,15 +130,6 @@ impl Messages {
             each(&self.bytes[start..self.ends[i] as usize]);
         }
     }
-
-    /// The bytes of its frames not yet taken.
-    pub(super) fn untaken(&self) -> usize {
-        let taken = match self.taken {
-            0 => 0,
-            i => self.ends[i - 1] as usize,
-        };
-        self.bytes.len() - taken
-    }
 }
 
 impl Iterator for Messages {
@@ -295,11 +286,6 @@ impl Framer {
     /// How many bytes its buffer holds room for, which a reader charges against what it may hold.
     pub(super) fn capacity(&self) -> usize {
         self.held.capacity()
-    }
-
-    /// The bytes it holds that it has not yet cut.
-    pub(super) fn uncut(&self) -> usize {
-        self.held.len() - self.cut
     }
 
     /// Like `cut`, but the line breaker searches everything held, however little arrived since it last searched,

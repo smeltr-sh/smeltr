@@ -146,7 +146,7 @@ dist: need-docker committed handoff
       && gzip -f smeltr-image.tar \
       && sha256sum smeltr-linux.tar.gz smeltr-image.tar.gz | tee SHA256SUMS
 
-# The RHEL 9 STIG, scanned against an image: `stig/report.html` and the rule-by-rule `stig/results.txt`. A
+# DISA's GPOS SRG (Chainguard's profile for Wolfi), scanned against an image: `stig/report.html` and the rule-by-rule `stig/results.txt`. A
 # report, not a gate. `dist` tags the image it builds `smeltr:latest`.
 [unix]
 stig image="smeltr:latest": need-docker
