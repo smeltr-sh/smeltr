@@ -807,7 +807,7 @@ fn wait_for(what: &str, want: u64, count: impl Fn() -> u64, mut each: impl FnMut
             let free = free_disk();
             assert!(
                 free >= LEAST_FREE_DISK,
-                "{what}: only {:.1} GB of disk free, under the {} GB a row needs",
+                "{what}: only {:.1} GB of disk free, under the {} GB a run needs",
                 free as f64 / 1e9,
                 LEAST_FREE_DISK / 1_000_000_000
             );

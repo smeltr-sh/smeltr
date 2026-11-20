@@ -36,8 +36,9 @@ NiFi has two entries. `nifi` maps records in a processor of its own, packaged as
 its data builds one. `nifi-groovy` maps them in a Groovy script, as stock NiFi does with no code of its own. They
 differ only in the mapping, and passthrough has none, so `nifi-groovy` runs `json_app` alone.
 
-Each engine is set up as its own documentation sets it up for throughput, with its documented settings only. Its
-pipelines are in `tests/engines/`, under its name, and its transports and settings in `tests/engines/mod.rs`.
+Each engine is set up for throughput with its documented settings only, at the values its documentation advises, or
+where it advises none, at the value past which more stopped adding speed. Its pipelines are in `tests/engines/`, under
+its name, and its transports and settings in `tests/engines/mod.rs`.
 
 - **smeltr** runs its defaults, as one process holding its leader and a worker, except that its worker's threads are
   limited to the hyperthreads it has.
@@ -46,11 +47,11 @@ pipelines are in `tests/engines/`, under its name, and its transports and settin
 - **Vector** runs a worker thread for each hyperthread.
 - **NiFi** runs a flow the harness builds through its REST API: the transport's consumer, the mapping, and the
   transport's producer. The consumer runs a task for each hyperthread over Kafka and one over HTTP, the mapping a task
-  for each hyperthread, the producer two for each, and the thread pool has four threads for each hyperthread, the most
-  NiFi's administration guide advises. The mapping's reader is given the record schema rather than inferring one. A
-  delivery that fails goes back to the producer, as the other engines retry it. Content archiving, which keeps sent
-  content for replay, is off: with it on, NiFi stops taking records while the disk is more than half full. Its heap is
-  half the container's memory.
+  for each hyperthread, the producer two for each hyperthread over Kafka and eight for each over HTTP, past which more
+  stopped adding speed, and the thread pool has four threads for each hyperthread, the most NiFi's administration guide
+  advises. The mapping's reader is given the record schema rather than inferring one. A delivery that fails goes back to
+  the producer, as the other engines retry it. Content archiving, which keeps sent content for replay, is off: with it
+  on, NiFi stops taking records while the disk is more than half full. Its heap is half the container's memory.
 
 ## Transports
 

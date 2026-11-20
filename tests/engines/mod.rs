@@ -1457,12 +1457,13 @@ mod nifi {
                     &[],
                     1,
                 ),
-                // A producer spends its task waiting on the answer, so it runs more than the cores.
+                // A producer spends its task waiting on the answer, so it runs more than the cores: eight tasks a
+                // hyperthread, past which it took no more on one core.
                 api.processor(
                     "org.apache.nifi.processors.standard.InvokeHTTP",
                     json!({"HTTP Method": "POST", "HTTP URL": sink}),
                     &["Original", "Response"],
-                    2 * cores,
+                    8 * cores,
                 ),
             ),
             Ends::Kafka {
