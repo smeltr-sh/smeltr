@@ -20,6 +20,7 @@
 //! everything else, the harness and the services included, shares the cores that remain. `CONNECTOR_THREADS=1,2,3`
 //! runs each row at each count of transform threads, each on a core of its own, so a row that stops gaining shows
 //! what keeps the worker from its cores; the cores left to everything else are those the largest count leaves.
+//! `CONNECTOR_PIN=off` pins nothing: every thread and service shares every core, as on a worker sized to its host.
 #![cfg(target_os = "linux")]
 
 mod live;
@@ -607,12 +608,23 @@ fn thread_counts() -> Vec<usize> {
 struct Cores {
     transform: Vec<usize>,
     rest: Vec<usize>,
+    /// Whether the transform threads keep their cores to themselves: with `CONNECTOR_PIN=off`, every core is in
+    /// `rest` and nothing is pinned.
+    pinned: bool,
 }
 
 impl Cores {
     /// `threads` transform cores, the first that are online.
     fn of_this_host(threads: usize) -> Cores {
         let mut rest = cpu_list(&std::fs::read_to_string("/sys/devices/system/cpu/online").expect("online CPUs"));
+        if std::env::var("CONNECTOR_PIN").as_deref() == Ok("off") {
+            let transform = (0..threads).collect();
+            return Cores {
+                transform,
+                rest,
+                pinned: false,
+            };
+        }
         let mut transform = Vec::new();
         while transform.len() < threads && !rest.is_empty() {
             let core = rest[0];
@@ -626,7 +638,11 @@ impl Cores {
         }
         assert_eq!(transform.len(), threads, "this host has fewer than {threads} cores");
         assert!(!rest.is_empty(), "{threads} transform cores leave nothing for the rest");
-        Cores { transform, rest }
+        Cores {
+            transform,
+            rest,
+            pinned: true,
+        }
     }
 
     /// The first `threads` of the transform cores, the rest as they are.
@@ -634,6 +650,7 @@ impl Cores {
         Cores {
             transform: self.transform[..threads].to_vec(),
             rest: self.rest.clone(),
+            pinned: self.pinned,
         }
     }
 
@@ -1139,7 +1156,9 @@ impl Smeltr {
 
     /// Puts each transform thread alone on a core of its own, once they run.
     fn pin(&self, cores: &Cores) {
-        let Some(pid) = self.runtime() else { return };
+        let Some(pid) = self.runtime().filter(|_| cores.pinned) else {
+            return;
+        };
         let transform = threads(pid).into_iter().filter(|t| t.1 == TRANSFORM_THREAD);
         for ((tid, _, _), &core) in transform.zip(&cores.transform) {
             set_affinity(tid, &[core]);

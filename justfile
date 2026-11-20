@@ -659,7 +659,8 @@ bench-log:
 # the link bench/network describes and over none. Needs a kernel with sch_netem; the services' containers are shaped
 # and kept off the transform cores. `CONNECTOR` picks the rows whose name holds it, `CONNECTOR_ROWS` (1,000,000) sets
 # their size, `CONNECTOR_LINK=bare` runs only the bare link, `CONNECTOR_THREADS=1,2,4` runs each row at each
-# count of transform threads (1 when unset), and `CONNECTOR_GZIP` gzips the files the object sources read.
+# count of transform threads (1 when unset), `CONNECTOR_GZIP` gzips the files the object sources read, and
+# `CONNECTOR_PIN=off` pins nothing, so every thread and service shares every core.
 [doc("Each source and destination timed alone through the worker, over a shaped link and a bare one.")]
 [group("dev")]
 [env("KAFKA_TEST_BROKERS", "localhost:19092")]
