@@ -70,13 +70,11 @@ rdkafka = { version = "0.39", features = ["cmake-build", "ssl", "libz-static", "
 # OpenSSL API. So Kafka's cryptography is the same module's as everything else's, and no OpenSSL is built.
 openssl-sys = { version = "0.9.118", features = ["aws-lc-fips"] }
 
-# Git, in-process, for both tiers' halves that do not have to run system git. `parallel` is what makes
+# Git, in-process, for both tiers. `parallel` is what makes
 # `Repository` `Send`, so it is a correctness requirement rather than a speed one; `merge` reaches
 # `bring_current` and drags in the attribute stack whether or not we want it. `blocking-http-transport-curl-rustls`
 # is the worker's fetch: the `reqwest` backend is `gix-transport`'s own experimental one and does not carry a
 # custom certificate authority, which a worker fetching from a leader that signs its own certificate must have.
-# Serving the repository stays on system git (leader/git.rs) -- framing the smart-HTTP protocol by hand is a
-# second implementation of something git already ships.
 gix = { version = "0.90", default-features = false, features = [
     "sha1",
     "merge",
