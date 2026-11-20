@@ -22,6 +22,7 @@
 //! what keeps the worker from its cores; the cores left to everything else are those the largest count leaves.
 #![cfg(target_os = "linux")]
 
+mod engines;
 mod live;
 mod panos;
 mod reference;
@@ -1072,34 +1073,7 @@ impl Smeltr {
 
     /// Deploys `source` routed unchanged to `destination`, as approving a change does.
     fn deploy(&self, source: Value, destination: Value) {
-        use smeltr::leader::git;
-        let repo = git::repo_path(&self.data_dir);
-        let parent = git::main_head(&repo).expect("main has a commit");
-        let file = |path: &str, content: String| git::FileEdit {
-            path: format!("groups/standalone/{path}"),
-            content: Some(content.into_bytes()),
-        };
-        let edits = [
-            file("system.json", json!({"version": 1}).to_string()),
-            file("sources.json", json!([source]).to_string()),
-            file("destinations.json", json!([destination]).to_string()),
-            file(
-                "pipelines/p.json",
-                json!({"id": "p", "name": "p", "steps": []}).to_string(),
-            ),
-            file(
-                "routes.json",
-                json!([{"id": "r", "source": "in", "pipeline": "p", "deliver": [{"to": ["out"]}]}]).to_string(),
-            ),
-        ];
-        let actor = smeltr::leader::store::Actor::system();
-        let git::Committed::At(commit) =
-            git::commit_edits(&repo, "main", &parent, Some(&parent), &edits, "connector speed", &actor)
-                .expect("the commit")
-        else {
-            panic!("the commit did not land");
-        };
-        git::deploy_commit(&self.data_dir, &commit, &actor).expect("the deploy");
+        deploy(&self.data_dir, source, destination, json!([]));
     }
 
     /// Waits until the receiver on `port` takes connections. Its supervisor binds the port before the runtime serves
@@ -1172,6 +1146,39 @@ impl Drop for Smeltr {
     }
 }
 
+/// Deploys to the leader in `data_dir` `source` routed through a pipeline of `steps` to `destination`, as approving a
+/// change does.
+fn deploy(data_dir: &std::path::Path, source: Value, destination: Value, steps: Value) {
+    use smeltr::leader::git;
+    let repo = git::repo_path(data_dir);
+    let parent = git::main_head(&repo).expect("main has a commit");
+    let file = |path: &str, content: String| git::FileEdit {
+        path: format!("groups/standalone/{path}"),
+        content: Some(content.into_bytes()),
+    };
+    let edits = [
+        file("system.json", json!({"version": 1}).to_string()),
+        file("sources.json", json!([source]).to_string()),
+        file("destinations.json", json!([destination]).to_string()),
+        file(
+            "pipelines/p.json",
+            json!({"id": "p", "name": "p", "steps": steps}).to_string(),
+        ),
+        file(
+            "routes.json",
+            json!([{"id": "r", "source": "in", "pipeline": "p", "deliver": [{"to": ["out"]}]}]).to_string(),
+        ),
+    ];
+    let actor = smeltr::leader::store::Actor::system();
+    let git::Committed::At(commit) =
+        git::commit_edits(&repo, "main", &parent, Some(&parent), &edits, "connector speed", &actor)
+            .expect("the commit")
+    else {
+        panic!("the commit did not land");
+    };
+    git::deploy_commit(data_dir, &commit, &actor).expect("the deploy");
+}
+
 fn children_of(pid: u32) -> Vec<u32> {
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return Vec::new();
@@ -1192,14 +1199,25 @@ struct Sink {
     port: u16,
     rows: Arc<AtomicU64>,
     bytes: Arc<AtomicU64>,
+    /// Every document that arrived, when started `keeping`.
+    kept: Option<Arc<std::sync::Mutex<Vec<Value>>>>,
 }
 
 impl Sink {
     fn start() -> Sink {
+        Sink::with(None)
+    }
+
+    /// A sink that also keeps every document, to be checked.
+    fn keeping() -> Sink {
+        Sink::with(Some(Arc::default()))
+    }
+
+    fn with(kept: Option<Arc<std::sync::Mutex<Vec<Value>>>>) -> Sink {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let (rows, bytes) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
-        let (r, b) = (rows.clone(), bytes.clone());
+        let (r, b, k) = (rows.clone(), bytes.clone(), kept.clone());
         std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
@@ -1210,19 +1228,36 @@ impl Sink {
                 listener.set_nonblocking(true).unwrap();
                 let listener = tokio::net::TcpListener::from_std(listener).unwrap();
                 let app = axum::Router::new().fallback(move |body: axum::body::Bytes| {
-                    let (r, b) = (r.clone(), b.clone());
+                    let (r, b, k) = (r.clone(), b.clone(), k.clone());
                     async move {
-                        // A body of lines, the last with or without its newline.
-                        let lines = body.split(|c| *c == b'\n').filter(|l| !l.is_empty()).count();
-                        r.fetch_add(lines as u64, Ordering::Relaxed);
+                        // A JSON array of documents, or a body of lines, the last with or without its newline.
+                        let docs: Vec<&[u8]> = if body.first() == Some(&b'[') {
+                            serde_json::from_slice::<Vec<&serde_json::value::RawValue>>(&body)
+                                .map(|docs| docs.into_iter().map(|d| d.get().as_bytes()).collect())
+                                .unwrap_or_default()
+                        } else {
+                            body.split(|c| *c == b'\n').filter(|l| !l.is_empty()).collect()
+                        };
+                        r.fetch_add(docs.len() as u64, Ordering::Relaxed);
                         b.fetch_add(body.len() as u64, Ordering::Relaxed);
+                        if let Some(k) = k {
+                            let parsed = docs.iter().map(|d| serde_json::from_slice(d).unwrap_or(Value::Null));
+                            k.lock().unwrap().extend(parsed);
+                        }
                         axum::http::StatusCode::OK
                     }
                 });
+                // Engines batch up to megabytes a request.
+                let app = app.layer(axum::extract::DefaultBodyLimit::disable());
                 axum::serve(listener, app).await.unwrap();
             });
         });
-        Sink { port, rows, bytes }
+        Sink {
+            port,
+            rows,
+            bytes,
+            kept,
+        }
     }
 
     fn rows(&self) -> u64 {
@@ -1296,8 +1331,9 @@ impl Sender {
                         short = build(at, count);
                         &short
                     };
-                    // Busy is the receiver's backpressure: ask again when it says, as a sender does. Asked sooner,
-                    // a full receiver spends its time refusing.
+                    // Busy is the receiver's backpressure: ask again when it says, as a sender does, or later each
+                    // time it says nothing. Asked sooner, a full receiver spends its time refusing.
+                    let mut backoff = Duration::from_millis(5);
                     loop {
                         if stop.load(Ordering::Relaxed) {
                             return;
@@ -1319,7 +1355,8 @@ impl Sender {
                                     .headers()
                                     .get("retry-after")
                                     .and_then(|v| v.to_str().ok()?.parse().ok());
-                                wait = after.map_or(wait, Duration::from_secs);
+                                wait = after.map_or(backoff, Duration::from_secs);
+                                backoff = (backoff * 2).min(Duration::from_secs(1));
                             }
                             // Said once: a refusal that is not busy will not pass on its own.
                             Ok(mut r) if !said.swap(true, Ordering::Relaxed) => {

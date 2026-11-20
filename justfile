@@ -685,6 +685,17 @@ bench-log:
 connector-speed: live-up
     cargo test --profile dist --test connector-speed -- --ignored --exact speed --nocapture
 
+# Smeltr beside Logstash, Vector and NiFi: each engine in a container on the same cores and memory, fed the same
+# records over HTTP and from Kafka, its output checked before it is timed. `ENGINES`, `ENGINE_PIPELINES` and
+# `ENGINE_TRANSPORTS` (http, kafka) pick by name,
+# `ENGINE_CORES=1,2,4` sets the cores each row gives the engine (1,2 when unset), `ENGINE_ROWS` (2,000,000) the
+# records each row times, `ENGINE_ROUNDS` (3) how often each row runs, and `ENGINE_MEMORY_GB` (4) the container's
+# memory.
+[doc("Smeltr, Logstash, Vector and NiFi timed on the same cores, memory and records.")]
+[group("dev")]
+engine-speed:
+    cargo test --profile dist --test connector-speed -- --ignored --exact engines::speed --nocapture
+
 # Stop the live services and the Kerberos and TLS brokers, and discard their
 # data. A line that fails, for a rig that is not up or a Docker that is not
 # running, does not stop the rest. The Kerberos and TLS rigs are bash scripts,
