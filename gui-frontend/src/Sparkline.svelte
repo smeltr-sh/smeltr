@@ -159,19 +159,14 @@
   }
 
   /** While a warning's width is drawn over the chart, the legend reads that width under the
-   * pointer: its rate and range at the nearest of its points. */
+   * pointer: its rate and range at the point whose stretch holds it, if any. */
   let overlaid = $derived.by(() => {
     const reason = reasoned?.reason;
     if (!shownOverlay || reason?.kind !== 'width' || pointedAt === null) return null;
-    // A point stands for the stretch it begins, so it is nearest by that stretch's middle.
-    const near = (at: number) => Math.abs(at + shownOverlay!.pointMillis / 2 - pointedAt!);
-    const nearest = <T,>(items: T[], at: (item: T) => number) =>
-      items.reduce<T | null>(
-        (best, item) => (best === null || near(at(item)) < near(at(best)) ? item : best),
-        null,
-      );
-    const point = nearest(shownOverlay.points, ([at]) => at);
-    const range = nearest(shownOverlay.expected, (b) => b.fromMillis);
+    // A point stands for the stretch it begins; where no point's stretch holds the pointer, there is no reading.
+    const holds = (at: number) => at <= pointedAt! && pointedAt! < at + shownOverlay!.pointMillis;
+    const point = shownOverlay.points.find(([at]) => holds(at));
+    const range = shownOverlay.expected.find((b) => holds(b.fromMillis));
     return {
       label: `rows/s over ${lasted(reason.windowMillis)}`,
       value: point?.[1] ?? null,
