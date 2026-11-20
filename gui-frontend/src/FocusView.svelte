@@ -1046,7 +1046,7 @@
   }
 
   @container panel (min-width: 40rem) {
-    .charts :global(.sparkline svg) {
+    .charts :global(.sparkline > svg) {
       height: 140px;
     }
   }

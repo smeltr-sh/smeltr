@@ -497,7 +497,7 @@
   }
 
   @container panel (min-width: 40rem) {
-    .big :global(.sparkline svg) {
+    .big :global(.sparkline > svg) {
       height: 140px;
     }
   }
