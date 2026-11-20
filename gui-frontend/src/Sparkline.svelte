@@ -5,15 +5,15 @@
 
   The pointer reads the chart: over it, the legend gives the slot under
   the pointer instead of the latest, with its time when the caller gave
-  `times`, and the warnings that held then, each with why it began. The
-  caller is told which warning is under the pointer (`onmark`), so it may
-  draw the chart at the width that warned.
+  `times`, and the warnings that held then, each with why it began. Over a
+  warning that began at a width, the caller may draw that width's rate and
+  range on top (`overlay`), so the dip that warned shows.
 -->
 <script lang="ts">
   import { bandPath, bandRect, maxOf, slotAt, sparklinePath, valueLabel, xAt } from './sparkline';
   import { clockTime, dateTime, lasted } from './time';
   import StateMark from './StateMark.svelte';
-  import type { WarningReason } from './api';
+  import type { ExpectedPointDto, WarningReason } from './api';
 
   type Series = { label: string; color: string; points: (number | null)[] };
 
@@ -29,12 +29,16 @@
     reason?: WarningReason;
   };
 
+  /** A width's rate, by when each point began, and its range, drawn over the chart's own. */
+  type Overlay = { pointMillis: number; points: [number, number][]; expected: ExpectedPointDto[] };
+
   let {
     series,
     band,
     times,
     marks = [],
     compact = false,
+    overlay = null,
     onmark,
   }: {
     series: Series[];
@@ -44,6 +48,7 @@
     times?: number[];
     marks?: Mark[];
     compact?: boolean;
+    overlay?: Overlay | null;
     /** Told the warning under the pointer that kept why it began, or `null` once none is. */
     onmark?: (mark: Mark | null) => void;
   } = $props();
@@ -53,17 +58,32 @@
   const markHeight = 6;
 
   let bands = $derived(Array.isArray(band) ? band : null);
+  /** The overlay's points and range within the chart's span. */
+  let shownOverlay = $derived.by(() => {
+    if (!overlay || !times || times.length < 2) return null;
+    const [first, last] = [times[0], times[times.length - 1]];
+    const within = (at: number) => at >= first && at <= last;
+    return {
+      ...overlay,
+      points: overlay.points.filter(([at]) => within(at)),
+      expected: overlay.expected.filter((b) => within(b.fromMillis)),
+    };
+  });
   let flat = $derived(band && !Array.isArray(band) ? band : null);
   let maxValue = $derived(
     maxOf([
       ...series.map((s) => s.points),
       flat ? [flat.high] : [],
       (bands ?? []).map((b) => b?.high ?? null),
+      shownOverlay ? shownOverlay.points.map(([, v]) => v) : [],
+      shownOverlay ? shownOverlay.expected.map((b) => b.high) : [],
     ]),
   );
   let count = $derived(Math.max(0, ...series.map((s) => s.points.length)));
 
   let hovered = $state<number | null>(null);
+  /** The moment under the pointer, finer than its slot: an overlay's points are finer than the slots on a long chart. */
+  let pointedAt = $state<number | null>(null);
   /** The slot the legend reads: the one under the pointer, else the latest. */
   let slot = $derived(hovered ?? count - 1);
 
@@ -101,6 +121,35 @@
     onmark?.(reasoned);
   });
 
+  /** Runs of an overlay's items whose times follow one another a point apart. */
+  function runsOf<T>(items: T[], at: (item: T) => number, step: number): T[][] {
+    const out: T[][] = [];
+    for (const item of items) {
+      const run = out[out.length - 1];
+      if (run && at(item) - at(run[run.length - 1]) === step) run.push(item);
+      else out.push([item]);
+    }
+    return out.filter((r) => r.length >= 2);
+  }
+  let overlayPaths = $derived.by(() => {
+    if (!shownOverlay || !times) return null;
+    const t = times;
+    const x = (at: number) => xAt(at, t, width).toFixed(1);
+    const y = (v: number) => (height - (v / maxValue) * height).toFixed(1);
+    const step = shownOverlay.pointMillis;
+    const line = runsOf(shownOverlay.points, ([at]) => at, step)
+      .map((run) => run.map(([at, v], j) => `${j ? 'L' : 'M'}${x(at)},${y(v)}`).join(' '))
+      .join(' ');
+    const band = runsOf(shownOverlay.expected, (b) => b.fromMillis, step)
+      .map((run) => {
+        const top = run.map((b, j) => `${j ? 'L' : 'M'}${x(b.fromMillis)},${y(b.high)}`);
+        const bottom = [...run].reverse().map((b) => `L${x(b.fromMillis)},${y(b.low)}`);
+        return [...top, ...bottom, 'Z'].join(' ');
+      })
+      .join(' ');
+    return { line, band };
+  });
+
   /** Why `mark` began, as the legend says it. A quiet spell is named by when it began, before the warning did. */
   function because(mark: Mark & { reason: WarningReason }): string {
     const reason = mark.reason;
@@ -109,10 +158,29 @@
       : `no rows since ${when(mark.from - reason.silenceMillis)}, expected a row within ${lasted(reason.edgeMillis)}`;
   }
 
+  /** While a warning's width is drawn over the chart, the legend reads that width under the
+   * pointer: its rate and range at the point whose stretch holds it, if any. */
+  let overlaid = $derived.by(() => {
+    const reason = reasoned?.reason;
+    if (!shownOverlay || reason?.kind !== 'width' || pointedAt === null) return null;
+    // A point stands for the stretch it begins; where no point's stretch holds the pointer, there is no reading.
+    const holds = (at: number) => at <= pointedAt! && pointedAt! < at + shownOverlay!.pointMillis;
+    const point = shownOverlay.points.find(([at]) => holds(at));
+    const range = shownOverlay.expected.find((b) => holds(b.fromMillis));
+    return {
+      label: `rows/s over ${lasted(reason.windowMillis)}`,
+      value: point?.[1] ?? null,
+      range: range ?? null,
+    };
+  });
+
   function track(e: PointerEvent) {
     const box = (e.currentTarget as SVGElement).getBoundingClientRect();
     if (count < 2 || box.width === 0) return;
-    hovered = slotAt((e.clientX - box.left) / box.width, count);
+    const share = (e.clientX - box.left) / box.width;
+    hovered = slotAt(share, count);
+    pointedAt =
+      times && times.length > 1 ? times[0] + share * (times[times.length - 1] - times[0]) : null;
   }
 </script>
 
@@ -127,9 +195,9 @@
   >
     {#if flat}
       {@const r = bandRect(flat.low, flat.high, height, maxValue)}
-      <rect class="band" x="0" y={r.y} {width} height={r.height} />
+      <rect class="band" class:under={overlayPaths} x="0" y={r.y} {width} height={r.height} />
     {:else if bands}
-      <path class="band" d={bandPath(bands, width, height, maxValue)} />
+      <path class="band" class:under={overlayPaths} d={bandPath(bands, width, height, maxValue)} />
     {/if}
     {#each drawn as { m, x1, x2 } (m.from + m.label)}
       <!-- A strip along the foot, so the band behind the line still reads while a warning holds. -->
@@ -142,8 +210,20 @@
         height={markHeight}
       />
     {/each}
-    {#each series as s (s.label)}
+    {#if overlayPaths}
+      <path class="overlay-band" d={overlayPaths.band} />
       <path
+        class="overlay-line"
+        d={overlayPaths.line}
+        fill="none"
+        stroke-width="1.5"
+        vector-effect="non-scaling-stroke"
+      />
+    {/if}
+    {#each series as s (s.label)}
+      <!-- Faint under an overlay, so the width that warned reads first. -->
+      <path
+        class:under={overlayPaths}
         d={sparklinePath(s.points, width, height, maxValue)}
         stroke={s.color}
         fill="none"
@@ -161,13 +241,26 @@
       {#if hovered !== null && times?.[hovered] !== undefined}
         <span class="legend-item mono">{when(times[hovered])}</span>
       {/if}
-      {#each series as s (s.label)}
+      {#if overlaid}
         <span class="legend-item">
-          <span class="swatch" style:background={s.color}></span>
-          {s.label}: {valueLabel(s.points[slot])}
+          <span class="swatch overlay-swatch"></span>
+          {overlaid.label}: {valueLabel(overlaid.value)}
         </span>
-      {/each}
-      {#if bandAt}
+        {#if overlaid.range}
+          <span class="legend-item">
+            <span class="swatch band-swatch overlay-band-swatch"></span>
+            expected: {valueLabel(overlaid.range.low)}–{valueLabel(overlaid.range.high)}
+          </span>
+        {/if}
+      {:else}
+        {#each series as s (s.label)}
+          <span class="legend-item">
+            <span class="swatch" style:background={s.color}></span>
+            {s.label}: {valueLabel(s.points[slot])}
+          </span>
+        {/each}
+      {/if}
+      {#if bandAt && !overlaid}
         <span class="legend-item">
           <span class="swatch band-swatch"></span>
           expected: {valueLabel(bandAt.low)}–{valueLabel(bandAt.high)}
@@ -220,6 +313,31 @@
 
   .mark {
     fill: color-mix(in oklch, var(--warn) 60%, transparent);
+  }
+
+  /* The width that warned, in the warning's own color, over the chart's neutral line and band. */
+  .under {
+    opacity: 0.25;
+  }
+  .overlay-band {
+    fill: color-mix(in oklch, var(--warn) 14%, transparent);
+    stroke: var(--warn);
+    stroke-width: 1.25;
+    stroke-dasharray: 4 3;
+    vector-effect: non-scaling-stroke;
+  }
+
+  .overlay-line {
+    stroke: var(--warn);
+  }
+
+  .overlay-swatch {
+    background: var(--warn);
+  }
+
+  .overlay-band-swatch {
+    background: color-mix(in oklch, var(--warn) 14%, transparent);
+    outline-color: var(--warn);
   }
 
   .mark.failed {

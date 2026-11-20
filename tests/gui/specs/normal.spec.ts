@@ -244,7 +244,7 @@ test('a source that drops below its normal is ranked and warned of, and an edito
   );
   const panel = admin.getByRole('complementary', { name: 'firewall-syslog', exact: true });
   await expect(panel.getByText('Rows per second, over the last 24 hours')).toBeVisible();
-  // Pointing at the warning on the chart says why it began, and the chart switches to that width's rows and range.
+  // Pointing at the warning on the chart says why it began, and draws that width's rows and range over the chart.
   const chart = panel.getByRole('img', { name: 'rows/s' }).first();
   const mark = (await chart.locator('rect.mark').first().boundingBox())!;
   const box = (await chart.boundingBox())!;
@@ -253,6 +253,7 @@ test('a source that drops below its normal is ranked and warned of, and an edito
     /Rows below normal, since \d\d:\d\d:\s+[\d.]+ rows\/s over \d+ minutes, expected [\d.]+–[\d.]+/;
   const legend = chart.locator('xpath=..').locator('.legend');
   await expect(legend).toContainText(why);
+  await expect(chart.locator('path.overlay-line')).toHaveAttribute('d', /M/);
   await expect(legend).toContainText(/rows\/s over \d+ minutes: [\d.]+\s*expected: /);
   await shoot(admin, '3a-history-why');
   await admin.mouse.move(0, 0);

@@ -1439,8 +1439,8 @@ pub struct Chart {
 /// weeks, an hour before.
 ///
 /// Given the `window_ms` of one of [`WIDTHS`], each point is instead the rate over that width ending where the point
-/// ends, against that width's range, as that width judged it. A point wider than the width samples it, so a chart of
-/// any span has as many points. A point whose width reaches a bucket nothing was kept for in five minutes has none.
+/// ends, against that width's range, as that width judged it; its points are then no wider than the width. A point
+/// whose width reaches a bucket nothing was kept for in five minutes has none.
 #[allow(clippy::too_many_arguments)]
 pub fn chart(
     store: &RegistryStore,
@@ -1460,6 +1460,7 @@ pub fn chart(
     let width = window_ms.and_then(|ms| WIDTHS.into_iter().find(|w| w.ms() == ms));
     let span = Duration::from_millis(to_ms.saturating_sub(from_ms).max(0) as u64);
     let point_ms = super::series::chart_point_ms(span).max(kept);
+    let point_ms = width.map_or(point_ms, |w| point_ms.min(w.ms()).max(kept));
     let since = from_ms.div_euclid(point_ms) * point_ms;
     let read_from = since - width.map_or(0, Width::ms);
     let rows = match sender {
@@ -1998,22 +1999,6 @@ mod tests {
             at.expected
         );
         assert!(!at.expected.is_empty());
-        let week = chart(
-            &store,
-            "g",
-            "s",
-            None,
-            END - 7 * DAY_MS,
-            END,
-            END,
-            Some(FIVE),
-            &Marks::default(),
-        )
-        .unwrap();
-        assert!(
-            week.point_millis > FIVE && week.points.len() <= 360,
-            "a long chart samples a narrow width"
-        );
     }
 
     /// At Off a stop is judged as at Balanced, so it reads below its range, but it never warns.
