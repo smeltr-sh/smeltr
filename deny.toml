@@ -75,7 +75,10 @@ wildcards = "deny"
 # that depends on them -- reaches it without a line here changing. Denied
 # rather than asserted: a second provider is otherwise found by reading a
 # lockfile, and a lockfile lists what is optional beside what is built.
-deny = [{ crate = "ring", reason = "smeltr's one provider is AWS-LC; see the design document's Cryptography section" }]
+deny = [
+    { crate = "ring", reason = "smeltr's one provider is AWS-LC; see the design document's Cryptography section" },
+    { crate = "openssl-src", reason = "librdkafka builds against AWS-LC (openssl-sys's aws-lc-fips); see the same section" },
+]
 
 [sources]
 # crates.io only. A git dependency is how a supply chain acquires an
@@ -83,3 +86,5 @@ deny = [{ crate = "ring", reason = "smeltr's one provider is AWS-LC; see the des
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# One exception, pinned to a commit in Cargo.toml: rdkafka-sys with one build.rs change, until a release has it.
+allow-git = ["https://github.com/smeltr-sh/rust-rdkafka"]

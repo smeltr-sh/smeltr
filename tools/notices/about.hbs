@@ -15,7 +15,6 @@ license of the code that actually ships.
 | library | via | license |
 | --- | --- | --- |
 | AWS-LC (FIPS) | `aws-lc-fips-sys` | ISC AND (Apache-2.0 OR ISC) AND OpenSSL |
-| OpenSSL 3.x | `openssl-src` | Apache-2.0 |
 | librdkafka | `rdkafka-sys` | BSD-2-Clause, plus its own bundled components |
 | SQLite | `libsqlite3-sys` | public domain |
 | zstd | `zstd-sys` | BSD-3-Clause (dual-licensed BSD-3-Clause or GPL-2.0; the BSD option is taken) |
