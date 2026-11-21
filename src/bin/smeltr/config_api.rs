@@ -13,7 +13,7 @@
 //! (`config_file::validation_errors`). A top-level file that failed to parse is overwritten only by the mutation that
 //! replaces that section; a pipeline file that failed to parse is touched only by the PUT or DELETE naming its id.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use axum::Json;
@@ -1061,17 +1061,16 @@ impl Writing {
         group_of(&self.prefix).unwrap_or(config_file::SHARED_DIR)
     }
 
-    /// The edits that move `going` out of this area and write `written` into `to`, each named from the repository's
-    /// root, once the bundles on both sides pass the checks a save goes through. `written` is what of `going` `to`
-    /// takes: without what it holds identically, renamed where the mover chose both. A lookup table's file goes with
-    /// it. `to` must pass [`Writing::can_move_to`].
+    /// The edits that move `going` out of this area into `to`, each named from the repository's root, once the bundles
+    /// on both sides pass the checks a save goes through. Each object replaces whatever `to` holds under its id, and a
+    /// lookup table's file goes with it. `to` must pass [`Writing::can_move_to`].
     pub(crate) fn move_edits(
         &mut self,
         to: &mut Writing,
-        going: &BTreeSet<(config_file::Part, String)>,
         written: config_file::Objects,
     ) -> Result<Vec<git::FileEdit>, Envelope<Save>> {
         use config_file::Part;
+        let going = written.ids();
         let refused = |e: Refusal| Envelope::refused(e);
         let (old_from, old_to) = (self.read(), to.read());
         let mut from = old_from.file.clone();
@@ -1111,7 +1110,7 @@ impl Writing {
 
         let path =
             |p: Result<String, config_file::BundleError>| p.map_err(|e| refused(Refusal::invalid(e.to_string())));
-        for (part, id) in going {
+        for (part, id) in &going {
             let gone = match part {
                 Part::Sample => config_file::sample_path(id),
                 Part::Test => config_file::test_path(id),
@@ -3541,7 +3540,6 @@ mod tests {
                     })
                     .collect()
             }),
-            taken: Vec::new(),
             go: true,
         };
         crate::move_api::move_between(from, to_writing, ask, &Actor::system())
@@ -3785,10 +3783,9 @@ mod tests {
         std::fs::remove_dir_all(&data).ok();
     }
 
-    /// A different test of the same id in the group needs an answer: without one the move is refused, and the branch
-    /// is where it was.
+    /// A move replaces what the group holds under the same id: west's own `t1` becomes the one that moved.
     #[test]
-    fn a_sample_move_onto_a_test_of_the_same_name_is_refused() {
+    fn a_sample_move_replaces_a_test_of_the_same_id() {
         let data = a_repo_with_a_shared_sample("move-sample-onto");
         Writing::open_in(&data, "work", None, "west")
             .unwrap()
@@ -3807,18 +3804,12 @@ mod tests {
                 &Actor::system(),
             )
             .unwrap();
-        let before = Reading::open_in(&data, "work", "shared").unwrap().commit;
 
         let response = move_to(&data, "shared", "west", Part::Sample, "logins");
-        assert_eq!(
-            response.errors[0].message, "test \"t1\" needs a Keep choice: its id is taken in west",
-            "{response:?}"
-        );
-        assert_eq!(
-            Reading::open_in(&data, "work", "shared").unwrap().commit,
-            before,
-            "nothing written"
-        );
+        assert!(response.succeeded(), "moved: {response:?}");
+        let reading = Reading::open_in(&data, "work", "west").unwrap();
+        let t1 = config_file::read_test(&mut reading.files(), "t1").unwrap().unwrap();
+        assert_eq!(t1.name, "t1", "shared's, not west's own");
         std::fs::remove_dir_all(&data).ok();
     }
 

@@ -58,11 +58,11 @@ pub struct Answers {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct TakenAnswer {
-    pub part: Part,
-    pub id: String,
+struct TakenAnswer {
+    part: Part,
+    id: String,
     #[serde(flatten)]
-    pub keep: Keep,
+    keep: Keep,
 }
 
 /// Import the export in the `file` field into the area and branch the request names. Without an `answers` field it

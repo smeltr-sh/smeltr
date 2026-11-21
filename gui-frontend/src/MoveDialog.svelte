@@ -1,22 +1,20 @@
 <!--
   Moving an object into another area, in one commit, the way an export and an import move objects between leaders.
   The leader lists each object the move would take or break, the least the move takes ticked; each tick asks again,
-  and what the ticks would leave broken shows under the list. An id the other area holds already is answered as an
-  import answers one. Move is the commit, against the commit the page read.
+  and what the ticks would leave broken shows under the list. What moves replaces whatever the other area holds under
+  its id. Move is the commit, against the commit the page read.
 -->
 <script lang="ts">
   import { Busy } from './busy.svelte';
   import Button, { BUSY, SAVE_FIRST } from './Button.svelte';
   import Dialog from './Dialog.svelte';
   import Field from './Field.svelte';
-  import TakenId from './TakenId.svelte';
   import {
     PART_NAMES,
     SHARED_SCOPE,
     currentScope,
     moveObjects,
     type ImportPart,
-    type MoveAsk,
     type MoveRow,
   } from './api';
   import type { Area } from './areas';
@@ -57,19 +55,12 @@
   let to = $state('');
   let rows = $state<MoveRow[]>([]);
   let exceptions = $state<string[]>([]);
-  /** Each taken id's answer, by `key`: a side, or `renamed` with the new id in `renames`. */
-  let keeps = $state<Record<string, '' | 'imported' | 'here' | 'renamed'>>({});
-  let renames = $state<Record<string, string>>({});
   /** Counts the asks, so an answer to one the person has since changed is dropped. */
   let asked = 0;
-  /** The answers the last ask sent, so a new answer asks again and nothing else does. */
-  let sent = '';
   const busy = new Busy();
 
   const key = (r: { part: ImportPart; id: string }) => `${r.part}\u0000${r.id}`;
   const nameOf = (area: string) => areas.find((a) => a.id === area)?.name ?? area;
-  const capitalized = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
-  const taken = $derived(rows.filter((r) => r.ticked && r.standing === 'taken'));
 
   $effect(() => {
     if (!open) return;
@@ -78,32 +69,11 @@
     untrack(choose);
   });
 
-  // Checked again once an answer changes: what the leader checks waits on every taken id's answer.
-  $effect(() => {
-    const now = JSON.stringify(answers());
-    if (open && rows.length > 0 && now !== sent) untrack(() => list(ticks()));
-  });
-
-  /** The answers to the taken ids, each once it is complete. */
-  function answers(): NonNullable<MoveAsk['taken']> {
-    return taken.flatMap((r): NonNullable<MoveAsk['taken']> => {
-      const keep = keeps[key(r)];
-      const base = { part: r.part, id: r.id };
-      if (keep === 'renamed') {
-        const as = renames[key(r)]?.trim();
-        return as ? [{ ...base, keep, as }] : [];
-      }
-      return keep ? [{ ...base, keep }] : [];
-    });
-  }
-
   /** Asks the leader what moving with `ticked` would do, or with the least the move takes when it is undefined. */
   async function list(ticked: { part: ImportPart; id: string }[] | undefined) {
     if (!to) return;
     const mine = ++asked;
-    const given = answers();
-    sent = JSON.stringify(given);
-    const res = await moveObjects({ part, id, to, ticked, taken: given }, readAt);
+    const res = await moveObjects({ part, id, to, ticked }, readAt);
     if (mine !== asked || !res.ok) return;
     rows = res.rows ?? [];
     exceptions = res.exceptions ?? [];
@@ -118,8 +88,6 @@
 
   /** Starts again from the least the move takes, for the area chosen. */
   function choose() {
-    keeps = {};
-    renames = {};
     rows = [];
     exceptions = [];
     list(undefined);
@@ -140,22 +108,13 @@
     if (dirty) return SAVE_FIRST;
     if (rows.length === 0) return BUSY;
     if (exceptions.length > 0) return 'Resolve the exceptions above to move.';
-    for (const r of taken) {
-      const keep = keeps[key(r)];
-      if (!keep) return 'Choose what to keep for every taken id first.';
-      if (keep === 'renamed' && !renames[key(r)]?.trim())
-        return 'Give every renamed object a new id first.';
-    }
     return '';
   });
 
   async function move() {
     if (blocked) return;
     await busy.run(async () => {
-      const res = await moveObjects(
-        { part, id, to, ticked: ticks(), taken: answers(), go: true },
-        readAt,
-      );
+      const res = await moveObjects({ part, id, to, ticked: ticks(), go: true }, readAt);
       if (res.ok) onmoved(to);
       else if (res.exceptions) exceptions = res.exceptions;
     });
@@ -214,24 +173,6 @@
         </tbody>
       </table>
     {/if}
-    {#if taken.length > 0}
-      <h3>Taken ids</h3>
-      {#each taken as r, i (key(r))}
-        <TakenId
-          listed={r}
-          index={i}
-          bind:keep={keeps[key(r)]}
-          bind:rename={renames[key(r)]}
-          disabled={busy.on}
-          incoming="moved"
-          existing={nameOf(to)}
-          keepExisting="{capitalized(nameOf(to))}'s"
-          sharedNote="Shared holds this id, so a move into a group can only choose {capitalized(
-            nameOf(to),
-          )}'s, or Both, rename moved."
-        />
-      {/each}
-    {/if}
     {#each exceptions as e (e)}
       <p class="exception">{e}</p>
     {/each}
@@ -258,7 +199,6 @@
   .exception {
     color: var(--accent);
   }
-  h3,
   p {
     margin: 0;
   }

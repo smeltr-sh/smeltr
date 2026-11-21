@@ -2067,14 +2067,13 @@ export type MoveResult = MutationResult & {
   at?: string;
 };
 
-/** What a mover asks: the object, where it goes, what goes with it (absent, the least the move takes), the answer
- * for each id the other area holds already, and `go` to write it. */
+/** What a mover asks: the object, where it goes, what goes with it (absent, the least the move takes), and `go` to
+ * write it. What goes replaces whatever the other area holds under its id. */
 export interface MoveAsk {
   part: ImportPart;
   id: string;
   to: string;
   ticked?: { part: ImportPart; id: string }[];
-  taken?: ImportAnswers['taken'];
   go?: boolean;
 }
 
