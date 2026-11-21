@@ -227,9 +227,6 @@
       : columns;
   }
 
-  /** Which parsers offer "split keys at dots". A CSV column's name is
-   * already a path, and the header text comes from it. */
-
   /** A lookup output as `key` types it. */
   function outputTyped(ty: LookupOutputType, key: TypeKey): LookupOutputType {
     // The picker offers a lookup output only what `lookupTypeGroups` lists, each one value.
@@ -1231,9 +1228,8 @@
                       <code>{'{'}"geo.city": …{'}'}</code>. On, it splits into a path,
                       <code>{'{'}"geo": {'{'}"city": …{'}'}{'}'}</code>.
                     {:else if parserKind.type === 'csv'}
-                      Off by default for CSV: the column <code>src.ip</code> is one key,
-                      <code>{'{'}"src.ip": …{'}'}</code>. On, it splits into a path,
-                      <code>{'{'}"src": {'{'}"ip": …{'}'}{'}'}</code>.
+                      On by default for CSV: the column <code>src.ip</code> becomes
+                      <code>src: {'{'}ip: …{'}'}</code>. Off, <code>src.ip</code> is one key.
                     {:else if parserKind.type === 'keyValue'}
                       On by default for Key/value: <code>a.b=1</code> becomes
                       <code>a: {'{'}b: "1"{'}'}</code>, its only way to nest. Off,

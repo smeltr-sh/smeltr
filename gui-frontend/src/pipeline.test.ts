@@ -733,7 +733,7 @@ describe('a parser’s splitDots', () => {
     for (const kind of [
       { type: 'json' as const, splitDots: false },
       { type: 'keyValue' as const, pairSep: '&', kvSep: '=', quote: '', splitDots: true },
-      { type: 'csv' as const, delimiter: ',', splitDots: false },
+      { type: 'csv' as const, delimiter: ',', splitDots: true },
     ]) {
       const dto = stepToDto(parser({ kind })) as { kind: Record<string, unknown> };
       expect('splitDots' in dto.kind).toBe(false);

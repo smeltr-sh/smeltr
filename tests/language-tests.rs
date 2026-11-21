@@ -295,10 +295,10 @@ cases! {
         [r#"{"geo": {"loc.lat": 1.5}}"#], Rows(&[(r#"{"geo": {"loc": {"lat": 1.5}}}"#, None)]);
     split_dots_splits_keys_inside_an_open_object: "g: {...}; Object.assign($, json(_raw, {splitDots: true}))",
         [r#"{"g": {"a.b": 1}}"#], Rows(&[(r#"{"g": {"a": {"b": 1}}}"#, None)]);
-    csv_headers_are_keys: r#"Object.assign($, csv(_raw, ["src.ip", "bytes"]))"#,
-        ["1.2.3.4,10"], Rows(&[(r#"{"src.ip": "1.2.3.4", "bytes": "10"}"#, None)]);
-    csv_split_dots_nests_its_headers: r#"Object.assign($, csv(_raw, ["src.ip", "bytes"], {splitDots: true}))"#,
+    a_csv_header_is_a_path: r#"Object.assign($, csv(_raw, ["src.ip", "bytes"]))"#,
         ["1.2.3.4,10"], Rows(&[(r#"{"src": {"ip": "1.2.3.4"}, "bytes": "10"}"#, None)]);
+    a_csv_header_without_split_dots_is_one_key: r#"Object.assign($, csv(_raw, ["src.ip", "bytes"], {splitDots: false}))"#,
+        ["1.2.3.4,10"], Rows(&[(r#"{"src.ip": "1.2.3.4", "bytes": "10"}"#, None)]);
     a_grok_capture_name_is_a_path: r#"Object.assign($, grok(_raw, ["%{IP:src.ip}"]))"#,
         ["1.2.3.4"], Rows(&[(r#"{"src": {"ip": "1.2.3.4"}}"#, None)]);
     a_grok_capture_name_without_split_dots_is_one_key: r#"Object.assign($, grok(_raw, ["%{IP:src.ip}"], {splitDots: false}))"#,

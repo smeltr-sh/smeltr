@@ -15,7 +15,7 @@ A name is a path, and a column holds a leaf. A dot in code is a path step; a
 dot in data is a character. A key a parser reads is one key, whatever it
 holds: `{"a": {"b": 0}}` names `a.b`, and `{"a.b": 0}` names the one key
 `a.b`, spelled `["a.b"]`. A parser takes `splitDots: true` to split its keys
-at dots into paths; `kv` and `grok` do by default, `json` and `csv` do not.
+at dots into paths; `kv`, `grok` and `csv` do by default, `json` does not.
 A record whose keys contradict after splitting keeps the last in record
 order and carries an exception. `a.b`, `a["b"]`, `at(a, "b")` and
 `a.at("b")` are one read of one path, and a bare name is `$["name"]`: `$` is

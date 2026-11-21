@@ -167,11 +167,11 @@ export const PROPOSED_FORMAT_NAMES: Record<NonNullable<OnboardProposal['format']
   combinedLog: 'combined access log',
 };
 
-/** Dots are Key/value's only way to nest, and a grok capture name is a path
- * by habit; a JSON or CSV key is one key. */
+/** A name the author types is a path, as in code: a CSV column, a grok
+ * capture. Dots are Key/value's only way to nest. A JSON key is data, one key. */
 export const SPLIT_DOTS_DEFAULT: Record<ParserKind['type'], boolean> = {
   json: false,
-  csv: false,
+  csv: true,
   keyValue: true,
   grok: true,
 };

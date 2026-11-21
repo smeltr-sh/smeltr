@@ -65,10 +65,10 @@ fn known_options(name: &str) -> &'static [&'static str] {
     OPTIONS.iter().find(|(n, _)| *n == name).map_or(&[], |(_, known)| known)
 }
 
-/// Whether the parse function `name` splits a key at its dots when its call does not say: only where dots are the
-/// format's way to nest (kv), or the key is written in code (a grok capture).
+/// Whether the parse function `name` splits a key at its dots when its call does not say: where dots are the format's
+/// way to nest (kv), or the author writes the key (a grok capture, a CSV column).
 pub fn split_dots_default(name: &str) -> bool {
-    matches!(name, "kv" | "grok")
+    matches!(name, "kv" | "grok" | "csv")
 }
 
 /// A call of a parse function.
