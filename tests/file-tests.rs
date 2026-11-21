@@ -1063,8 +1063,8 @@ fn a_compressed_file_is_finished_by_its_written_size() {
     assert_eq!(commits[0][0].record_count, lines.len() as u64);
 }
 
-/// Batches that come faster than one encoder writes them start more, each writing its own file, and the commit
-/// carries every row once.
+/// While a core is free, batches that keep coming faster than one encoder writes them start more encoders, each
+/// writing its own file; the commit carries every row once.
 #[test]
 fn an_encoder_behind_starts_another_and_the_commit_carries_every_file() {
     let schema = raw_schema();
@@ -1074,18 +1074,18 @@ fn an_encoder_behind_starts_another_and_the_commit_carries_every_file() {
     c.buffer_bytes = 1024 * 1024 * 1024;
     c.encoders = 3;
     let mut t = table(c, &[]);
-    // Each batch is more than a poll's worth, so the encoder it goes to is behind until it has written it.
+    // A batch comes four times as fast as an encoder writes one, for long enough that the writer reads a core free
+    // twice, `MEASURE_EVERY` apart: once for the second encoder and once for the third.
+    let batches = 70;
     let mut sent = Vec::new();
-    for batch in 0..6 {
-        let texts: Vec<String> = (0..5)
-            .map(|i| format!("{batch}-{i}-{}", "x".repeat(1024 * 1024)))
-            .collect();
-        let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
-        assert!(t.deliver(batch, &rows(&schema, &texts)).is_empty());
-        sent.extend(texts.iter().map(|text| text.to_string()));
+    for batch in 0..batches {
+        let text = format!("{batch}-{}", "x".repeat(1024 * 1024));
+        assert!(t.deliver(batch, &rows(&schema, &[&text])).is_empty());
+        sent.push(text);
+        std::thread::sleep(SLOW_WRITE / 4);
     }
     t.d.flush().unwrap();
-    assert_eq!(t.completed(6), (0..6).collect::<Vec<_>>());
+    assert_eq!(t.completed(batches as usize), (0..batches).collect::<Vec<_>>());
 
     let commits = t.commits();
     assert_eq!(commits.len(), 1, "one commit: {commits:?}");
