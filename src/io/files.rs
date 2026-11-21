@@ -6,11 +6,18 @@
 //! ```mermaid
 //! flowchart LR
 //!   E[egress thread<br/>deliver] -->|Job: batch, rows by partition| W[writer thread]
-//!   W -->|encoded bytes| U[put, or multipart upload<br/>object_store]
-//!   W -->|on interval, buffer or barrier| C[Committer::commit files]
+//!   W -->|one partition's rows| N[encoder threads]
+//!   N -->|encoded bytes| U[put, or multipart upload<br/>object_store]
+//!   W -->|on interval, buffer or barrier:<br/>every encoder closes its files| C[Committer::commit files]
 //!   C -->|Ok| D[completions for every batch in those files]
 //!   D --> P[poll_completions]
 //! ```
+//!
+//! Encoding is CPU work, so a busy destination spreads it over encoder threads, each with its own files. An encoder
+//! is behind when a poll's worth of rows waits for it. The writer sends a partition's rows to the encoder that took
+//! its last ones while that one is not behind, so a destination that one encoder serves writes at most one file per
+//! partition per commit, more only where a file fills or the open-file limit closes one. It starts another encoder
+//! only when every one it has is behind, and then a partition's rows go to several files.
 //!
 //! A row is refused only at `deliver`: it is `unfit`, the partitioner refuses it, or the format does not admit it (for
 //! Parquet: it carries no columns, names a part the destination has no schema for, or its chunk is not its part's
@@ -24,9 +31,9 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, channel, sync_channel};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -41,15 +48,19 @@ use tokio_util::bytes::Bytes;
 use super::parquet::{Columns, FileWriter, Schema, WriteOptions};
 use super::{BatchCompletion, BatchId, Destination, Dispatched, IoError, OwnedRecord, Rejection};
 
-/// Files open per destination. Opening one more closes the least recently written.
+/// Files open per destination, across its encoders. An encoder that has files open and would open one more closes its
+/// least recently written first; one with none opens one whatever the others hold.
 pub const MAX_OPEN_FILES: usize = 64;
+
+/// An encoder is behind when this many bytes of rows wait for it: a poll's worth.
+const BEHIND_BYTES: usize = crate::worker::TICK_MAX_BYTES;
 
 /// Bytes an encoder buffers before its output goes to the upload: a Parquet row group, or that much of lines. What
 /// the worker reserves for each open file.
 pub const TAKE_BYTES: usize = 32 * 1024 * 1024;
 
-/// What every open file's encoder may buffer together. A file may take more than `TAKE_BYTES` while others take less:
-/// a row group grows to its table's size where few files are open.
+/// What every encoder's open files may buffer together, shared evenly among the encoders started. A file may take more
+/// than `TAKE_BYTES` while others take less: a row group grows to its table's size where few files are open.
 const TAKE_POOL_BYTES: usize = MAX_OPEN_FILES * TAKE_BYTES;
 
 /// Commits retried at once after a `Conflict` before the destination fails.
@@ -348,6 +359,9 @@ pub struct FileConfig {
     pub stall_after: Duration,
     /// Set on every data file's upload: content type, storage class. Empty for a table.
     pub attributes: Attributes,
+    /// The most encoder threads the destination runs. It starts one, and another whenever every one it has is behind,
+    /// up to this.
+    pub encoders: usize,
     /// Parts of one file uploading at once. A take waits for room, so a slow store holds the writer back rather than
     /// growing a queue of parts.
     pub parts_in_flight: usize,
@@ -415,14 +429,22 @@ impl FileDestination {
         let thread = std::thread::Builder::new()
             .name(format!("{name}-file-writer"))
             .spawn(move || {
-                let mut writer = Writer {
+                let shared = Shared {
                     name,
                     subject,
                     config,
                     store,
                     runtime,
-                    committer,
-                    open: HashMap::new(),
+                    committer: Mutex::new(committer),
+                    open_files: AtomicUsize::new(0),
+                    started: AtomicUsize::new(0),
+                    fault: Mutex::new(None),
+                    open_bytes: measured,
+                };
+                let mut writer = Writer {
+                    shared: Arc::new(shared),
+                    encoders: Vec::new(),
+                    home: HashMap::new(),
                     closed: Vec::new(),
                     pending: Vec::new(),
                     held: 0,
@@ -430,10 +452,9 @@ impl FileDestination {
                     reset_said: crate::logs::Repeat::new(),
                     seen: 0,
                     ended: None,
-                    open_bytes: measured,
                     finishing: told,
                 };
-                writer.next_commit += writer.config.commit_interval;
+                writer.next_commit += writer.shared.config.commit_interval;
                 writer.run(inbox, reports);
             })
             .expect("a thread for the table writer");
@@ -604,18 +625,74 @@ struct OpenFile {
     /// Bytes handed to the upload so far.
     uploaded: usize,
     last_written: Instant,
+    _slot: Slot,
 }
 
-/// The writer thread's state. Owns the committer and every file between its opening and its commit.
-struct Writer {
+/// What the writer and its encoders share.
+struct Shared {
     name: &'static str,
     /// The destination, as its author named it, for its lines.
     subject: String,
     config: FileConfig,
     store: Arc<dyn ObjectStore>,
     runtime: Arc<tokio::runtime::Runtime>,
-    committer: Box<dyn Committer>,
-    open: HashMap<Partition, OpenFile>,
+    /// Names each file as an encoder opens it. The writer commits the files through it, while every encoder is idle.
+    committer: Mutex<Box<dyn Committer>>,
+    /// Files open across every encoder.
+    open_files: AtomicUsize,
+    /// Encoders started, which share `TAKE_POOL_BYTES` evenly.
+    started: AtomicUsize,
+    /// The first failure of an encoder's write, which the writer fails the destination with.
+    fault: Mutex<Option<String>>,
+    /// What every encoder's open files buffer, as each last measured.
+    open_bytes: Arc<AtomicUsize>,
+}
+
+/// One of `Shared::open_files`, counted while it is held.
+struct Slot(Arc<Shared>);
+
+impl Slot {
+    fn new(shared: Arc<Shared>) -> Slot {
+        shared.open_files.fetch_add(1, Ordering::Relaxed);
+        Slot(shared)
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.open_files.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// What the writer sends an encoder. An encoder takes them in order, so a `Close` closes every file the rows sent
+/// before it went into.
+enum Order {
+    /// One batch's rows of one partition.
+    Write(Partition, Vec<FileRow>),
+    /// Close every open file and answer with every file closed since the last `Close`.
+    Close(Sender<Result<Vec<DataFile>, String>>),
+    /// Abort every open file and answer with the closed ones, for the writer to delete.
+    Abort(Sender<Vec<DataFile>>),
+}
+
+/// The writer's end of one encoder.
+struct Lane {
+    orders: Sender<Order>,
+    /// Bytes of rows sent to the encoder and not yet written.
+    queued: Arc<AtomicUsize>,
+    /// The encoder was on a core for at least nine tenths of its last `MEASURE_EVERY`. One that is behind but not
+    /// busy waits for a core or for its uploads, and another encoder would only share what it waits for.
+    busy: Arc<AtomicBool>,
+    thread: JoinHandle<()>,
+}
+
+/// The writer thread's state. Commits through the committer in `Shared`, and owns every batch until its commit and
+/// every file between its close and its commit; its encoders own the files open.
+struct Writer {
+    shared: Arc<Shared>,
+    encoders: Vec<Lane>,
+    /// The encoder each partition's rows last went to. Forgotten at each commit and abort.
+    home: HashMap<Partition, usize>,
     /// Closed since the last commit.
     closed: Vec<DataFile>,
     /// Batches handed over since the last commit; they complete together.
@@ -628,8 +705,6 @@ struct Writer {
     /// one is a batch egress has already taken back.
     seen: u64,
     ended: Option<u64>,
-    /// Where it reports what its open files buffer.
-    open_bytes: Arc<AtomicUsize>,
     /// See `FileDestination::finishing`.
     finishing: Arc<AtomicBool>,
     /// Each reset's error names its own file, so a reset is told by time: once, then on the interval until a commit
@@ -642,9 +717,8 @@ impl Writer {
         // A message taken from the inbox ahead of a commit, handled before any other.
         let mut next = None;
         loop {
-            // Woken at least every `MEASURE_EVERY`, so what lands while no batch comes shows as it lands, and a
-            // `finish` is seen. A finishing writer's commit is always due, so with nothing to commit it waits for a
-            // batch rather than spinning.
+            // Woken at least every `MEASURE_EVERY`, so a `finish` is seen. A finishing writer's commit is always due,
+            // so with nothing to commit it waits for a batch rather than spinning.
             let finishing = self.finishing.load(Ordering::Relaxed);
             let wait = match (finishing, self.holds_nothing()) {
                 (true, true) => MEASURE_EVERY,
@@ -658,22 +732,23 @@ impl Writer {
                 Some(message) => Ok(message),
                 None => inbox.recv_timeout(wait),
             };
-            match message {
-                Ok(Message::Job(job)) => {
-                    if let Err(e) = self.take(job) {
-                        let e = self.fail(e);
-                        if reports.send(Err(e)).is_err() {
-                            break;
-                        }
-                    }
-                }
+            let failed = match message {
+                Ok(Message::Job(job)) => self.take(job).err(),
                 Ok(Message::Barrier(reply)) => {
                     let _ = reply.send(self.commit());
+                    None
                 }
-                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Timeout) => None,
                 Err(RecvTimeoutError::Disconnected) => break,
+            };
+            let fault = self.shared.fault.lock().unwrap().take();
+            if let Some(why) = failed.or(fault) {
+                let e = self.fail(why);
+                if reports.send(Err(e)).is_err() {
+                    break;
+                }
             }
-            let full = self.held >= commit_at(self.config.buffer_bytes);
+            let full = self.held >= commit_at(self.shared.config.buffer_bytes);
             let mut due = full || finishing || Instant::now() >= self.next_commit;
             if due && !full && finishing {
                 // A finishing writer takes what is queued before it commits, so the queue lands as one commit rather
@@ -686,28 +761,26 @@ impl Writer {
             if due {
                 if self.holds_nothing() {
                     // Nothing to commit: the interval runs from now.
-                    self.next_commit = Instant::now() + self.config.commit_interval;
+                    self.next_commit = Instant::now() + self.shared.config.commit_interval;
                 } else if reports.send(self.commit()).is_err() {
                     break;
                 }
             }
-            let open = self
-                .open
-                .values()
-                .map(|f| f.encoder.in_progress_bytes() + f.upload.pending())
-                .sum();
-            self.open_bytes.store(open, Ordering::Relaxed);
         }
         // Stopped with files between a close and their commit: as on a failure, nothing of them is kept.
-        self.abort_open();
+        self.abort_encoders();
         self.delete_closed();
+        for lane in self.encoders.drain(..) {
+            drop(lane.orders);
+            let _ = lane.thread.join();
+        }
     }
 
     fn holds_nothing(&self) -> bool {
-        self.pending.is_empty() && self.open.is_empty() && self.closed.is_empty()
+        self.pending.is_empty() && self.closed.is_empty() && self.shared.open_files.load(Ordering::Relaxed) == 0
     }
 
-    /// Writes one batch's rows into their partitions' files. A job of an ended generation is skipped: its batch comes
+    /// Sends one batch's rows to the encoders by partition. A job of an ended generation is skipped: its batch comes
     /// again under a new one.
     fn take(&mut self, job: Job) -> Result<(), String> {
         if self.ended.is_some_and(|ended| job.generation <= ended) {
@@ -715,131 +788,75 @@ impl Writer {
         }
         self.seen = self.seen.max(job.generation);
         for (partition, rows) in job.groups {
-            self.write(partition, &rows)?;
+            self.dispatch(partition, rows)?;
         }
         self.pending.push(job.batch);
         self.held += job.bytes;
         Ok(())
     }
 
-    fn write(&mut self, partition: Partition, rows: &[FileRow]) -> Result<(), String> {
-        // A group goes in slices, each filling what is left of the take in progress and of the file by the rows' own
-        // sizes, so the writer holds about one take and a file ends near its limit whatever the batch brought. A row's
-        // own size is at least what it adds encoded, so a file passes its limit only by its framing (for Parquet, page
-        // headers and footer).
-        let mut rest = rows;
-        while !rest.is_empty() {
-            if !self.open.contains_key(&partition) {
-                if self.open.len() >= MAX_OPEN_FILES {
-                    let oldest = self
-                        .open
-                        .iter()
-                        .min_by_key(|(_, f)| f.last_written)
-                        .map(|(p, _)| p.clone())
-                        .expect("a full map has an oldest file");
-                    let file = self.open.remove(&oldest).expect("found just now");
-                    tracing::debug!(name: "rotated", target: "destinations", subject = %self.subject, open = MAX_OPEN_FILES, "the oldest open file was closed to make room for another partition's file");
-                    self.close(file)?;
-                }
-                let file = self.open_file(partition.clone())?;
-                self.open.insert(partition.clone(), file);
+    /// Sends one partition's rows to an encoder: the one its rows last went to, unless it is behind; else the least
+    /// behind, unless every one is and the destination may start another.
+    fn dispatch(&mut self, partition: Partition, rows: Vec<FileRow>) -> Result<(), String> {
+        let queued = |lane: &Lane| lane.queued.load(Ordering::Relaxed);
+        let home = (self.home.get(&partition).copied()).filter(|&i| queued(&self.encoders[i]) < BEHIND_BYTES);
+        let least = (0..self.encoders.len()).min_by_key(|&i| queued(&self.encoders[i]));
+        let to = match (home, least) {
+            (Some(i), _) => i,
+            (None, Some(i))
+                if queued(&self.encoders[i]) < BEHIND_BYTES
+                    || self.encoders.len() >= self.shared.config.encoders.max(1)
+                    || self.encoders.iter().any(|lane| !lane.busy.load(Ordering::Relaxed)) =>
+            {
+                i
             }
-            let pooled = self.make_room()?;
-            let take_bytes = self.config.take_bytes;
-            let file = self.open.get_mut(&partition).expect("opened above");
-            file.last_written = Instant::now();
-            let room = take_bytes
-                .saturating_sub(file.encoder.in_progress_bytes())
-                .min(pooled)
-                .min(self.config.max_file_bytes.saturating_sub(file.encoder.bytes_written()));
-            let mut end = 1;
-            let mut bytes = rest[0].bytes();
-            while end < rest.len() && bytes + rest[end].bytes() <= room {
-                bytes += rest[end].bytes();
-                end += 1;
-            }
-            let (slice, later) = rest.split_at(end);
-            file.encoder.write(slice);
-            rest = later;
-            if file.encoder.in_progress_bytes() >= take_bytes {
-                upload_taken(file)?;
-            }
-            // Within a 64th of its limit a file is full: a slice there would be a few rows at a time.
-            let full = |f: &OpenFile| {
-                f.encoder.bytes_written() + self.config.max_file_bytes / 64 >= self.config.max_file_bytes
-            };
-            // The estimate counts what a codec still holds as written; a take measures it.
-            if full(file) && file.encoder.in_progress_bytes() > 0 {
-                upload_taken(file)?;
-            }
-            if full(file) {
-                let file = self.open.remove(&partition).expect("opened above");
-                self.close(file)?;
-            }
-        }
+            _ => self.start_encoder()?,
+        };
+        let lane = &self.encoders[to];
+        let bytes = rows.iter().map(FileRow::bytes).sum();
+        lane.queued.fetch_add(bytes, Ordering::Relaxed);
+        (lane.orders.send(Order::Write(partition.clone(), rows))).map_err(|_| "an encoder has stopped".to_string())?;
+        self.home.insert(partition, to);
         Ok(())
     }
 
-    /// What the open files' encoders may buffer more together: when they have buffered it all, the largest take goes
-    /// to its upload first.
-    fn make_room(&mut self) -> Result<usize, String> {
-        let buffered: usize = self.open.values().map(|f| f.encoder.in_progress_bytes()).sum();
-        if buffered < TAKE_POOL_BYTES {
-            return Ok(TAKE_POOL_BYTES - buffered);
-        }
-        let largest = (self.open.values_mut())
-            .max_by_key(|f| f.encoder.in_progress_bytes())
-            .expect("a full pool has a file");
-        let freed = largest.encoder.in_progress_bytes();
-        upload_taken(largest)?;
-        Ok(TAKE_POOL_BYTES - buffered + freed)
-    }
-
-    fn open_file(&mut self, partition: Partition) -> Result<OpenFile, String> {
-        let path = self.committer.file_path(&partition, &super::objects::object_id());
-        let upload = Upload::new(
-            self.store.clone(),
-            self.runtime.clone(),
-            self.config.stall_after,
-            self.config.parts_in_flight,
-            self.config.attributes.clone(),
-            &self.subject,
-            &path,
-        )?;
-        Ok(OpenFile {
-            encoder: self.config.format.open(&partition),
-            upload,
-            path,
-            partition,
-            uploaded: 0,
-            last_written: Instant::now(),
-        })
-    }
-
-    /// Ends the file and its upload; the file waits closed for the next commit.
-    fn close(&mut self, file: OpenFile) -> Result<(), String> {
-        let OpenFile {
-            encoder,
-            upload,
-            path,
-            partition,
-            uploaded,
-            ..
-        } = file;
-        let record_count = encoder.rows();
-        let (tail, metadata) = encoder.finish();
-        let size_bytes = (uploaded + tail.len()) as u64;
-        let mut upload = upload;
-        upload.write(tail)?;
-        upload.finish()?;
-        self.closed.push(DataFile {
-            path,
-            partition,
-            size_bytes,
-            record_count,
-            metadata: metadata.map(Arc::new),
+    fn start_encoder(&mut self) -> Result<usize, String> {
+        let (orders, inbox) = channel();
+        let queued = Arc::<AtomicUsize>::default();
+        let busy = Arc::<AtomicBool>::default();
+        let mut encoder = Encoder {
+            shared: self.shared.clone(),
+            queued: queued.clone(),
+            busy: busy.clone(),
+            open: HashMap::new(),
+            closed: Vec::new(),
+            broken: false,
+            measured: 0,
+        };
+        let thread = std::thread::Builder::new()
+            .name(format!("{}-file-encoder", self.shared.name))
+            .spawn(move || encoder.run(inbox))
+            .map_err(|e| format!("starting an encoder: {e}"))?;
+        self.encoders.push(Lane {
+            orders,
+            queued,
+            busy,
+            thread,
         });
-        Ok(())
+        self.shared.started.fetch_add(1, Ordering::Relaxed);
+        Ok(self.encoders.len() - 1)
+    }
+
+    /// Sends `order` to every encoder and gathers their answers.
+    fn every_encoder<T>(&self, order: impl Fn(Sender<T>) -> Order) -> Vec<Option<T>> {
+        let answers: Vec<_> = (self.encoders.iter())
+            .map(|lane| {
+                let (reply, answer) = channel();
+                let _ = lane.orders.send(order(reply));
+                answer
+            })
+            .collect();
+        answers.into_iter().map(|answer| answer.recv().ok()).collect()
     }
 
     /// Closes every open file and commits them with what was closed before; every pending batch completes. `Err`
@@ -848,7 +865,7 @@ impl Writer {
         match self.try_commit() {
             Ok(()) => {
                 self.held = 0;
-                self.next_commit = Instant::now() + self.config.commit_interval;
+                self.next_commit = Instant::now() + self.shared.config.commit_interval;
                 Ok(self
                     .pending
                     .drain(..)
@@ -865,25 +882,35 @@ impl Writer {
     }
 
     fn try_commit(&mut self) -> Result<(), String> {
-        let open = self.open.drain().map(|(_, f)| f).collect::<Vec<_>>();
-        for file in open {
-            // The files behind a failed one are dropped, which aborts their uploads.
-            self.close(file)?;
+        self.home.clear();
+        let mut failed = None;
+        for answer in self.every_encoder(Order::Close) {
+            match answer {
+                Some(Ok(files)) => self.closed.extend(files),
+                Some(Err(why)) => failed = failed.or(Some(why)),
+                None => failed = failed.or(Some("an encoder has stopped".to_string())),
+            }
+        }
+        if let Some(why) = failed {
+            return Err(why);
         }
         if self.closed.is_empty() {
             // A batch with nothing for the table completes at hand-over, so nothing is pending either.
             return Ok(());
         }
-        let mut retry = Retry::new(Instant::now(), self.config.stall_after);
+        let config = &self.shared.config;
+        let subject = &self.shared.subject;
+        let mut retry = Retry::new(Instant::now(), config.stall_after);
         let mut maybe_landed = false;
         // Whether a failure other than a conflict was logged: the table stays unwritten while it is tried again.
         let mut warned = false;
         loop {
-            let error = match self.committer.commit(&self.closed) {
+            let committed = self.shared.committer.lock().unwrap().commit(&self.closed);
+            let error = match committed {
                 Ok(()) => {
                     tracing::info!(
                         name: "committed", target: "destinations",
-                        subject = %self.subject,
+                        subject = %subject,
                         files = self.closed.len(),
                         rows = self.closed.iter().map(|f| f.record_count).sum::<u64>(),
                         after_failure = warned.then_some(true),
@@ -902,16 +929,16 @@ impl Writer {
                         // Another writer committed first: ordinary for a shared table, so no warning.
                         CommitError::Conflict => tracing::debug!(
                             name: "commit_conflict", target: "destinations",
-                            subject = %self.subject,
+                            subject = %subject,
                             "another writer committed first; committing again"
                         ),
                         CommitError::Transient(why) | CommitError::Unknown(why) if !warned => {
                             warned = true;
                             tracing::warn!(
                                 name: "commit_failed", target: "destinations",
-                                subject = %self.subject,
+                                subject = %subject,
                                 error = %why,
-                                stall_after_secs = self.config.stall_after.as_secs(),
+                                stall_after_secs = config.stall_after.as_secs(),
                                 "a commit failed; trying again until the destination stalls"
                             );
                         }
@@ -925,13 +952,13 @@ impl Writer {
                             format!("commit lost to another writer {MAX_CONFLICT_RETRIES} times over")
                         }
                         CommitError::Transient(why) | CommitError::Unknown(why) => {
-                            format!("commit did not land within {:?}: {why}", self.config.stall_after)
+                            format!("commit did not land within {:?}: {why}", config.stall_after)
                         }
                     };
                     // Only this line can say the rows may land twice: the stall that follows says the commit failed.
                     tracing::error!(
                         name: "commit_abandoned", target: "destinations",
-                        subject = %self.subject,
+                        subject = %subject,
                         files = self.closed.len(),
                         rows = self.closed.iter().map(|f| f.record_count).sum::<u64>(),
                         maybe_landed,
@@ -953,29 +980,35 @@ impl Writer {
     /// The destination failed: aborts and forgets everything, so the batches sent again start clean. A closed file is
     /// deleted, best effort; one the store keeps is an orphan the table's own cleanup removes.
     fn fail(&mut self, why: String) -> IoError {
+        let open = self.shared.open_files.load(Ordering::Relaxed);
+        self.abort_encoders();
         if self.reset_said.due() {
             tracing::warn!(
                 name: "writer_reset", target: "destinations",
-                subject = %self.subject,
-                files_aborted = self.open.len(),
+                subject = %self.shared.subject,
+                files_aborted = open,
                 files_deleted = self.closed.len(),
                 batches = self.pending.len(),
                 error = %why,
                 "the writer started over: its open uploads are aborted, its closed files deleted and its batches sent again"
             );
         }
-        self.abort_open();
         self.delete_closed();
+        // A fault an encoder met before it was aborted is this failure's.
+        self.shared.fault.lock().unwrap().take();
         self.ended = Some(self.seen);
         self.pending.clear();
         self.held = 0;
-        self.next_commit = Instant::now() + self.config.commit_interval;
-        IoError::transient(format!("{}: {why}", self.name))
+        self.next_commit = Instant::now() + self.shared.config.commit_interval;
+        IoError::transient(format!("{}: {why}", self.shared.name))
     }
 
-    fn abort_open(&mut self) {
-        // A dropped upload aborts.
-        self.open.clear();
+    /// Aborts every encoder's open files and takes the files they closed, for `delete_closed`.
+    fn abort_encoders(&mut self) {
+        self.home.clear();
+        for closed in self.every_encoder(Order::Abort).into_iter().flatten() {
+            self.closed.extend(closed);
+        }
     }
 
     fn delete_closed(&mut self) {
@@ -983,7 +1016,11 @@ impl Writer {
         let mut first = None;
         for file in self.closed.drain(..) {
             if let Ok(location) = Path::parse(&file.path)
-                && let Err(e) = wait(&self.runtime, self.config.stall_after, self.store.delete(&location))
+                && let Err(e) = wait(
+                    &self.shared.runtime,
+                    self.shared.config.stall_after,
+                    self.shared.store.delete(&location),
+                )
             {
                 left += 1;
                 first.get_or_insert_with(|| format!("{}: {e}", file.path));
@@ -992,13 +1029,239 @@ impl Writer {
         if let Some(error) = first {
             tracing::warn!(
                 name: "orphans_left", target: "destinations",
-                subject = %self.subject,
+                subject = %self.shared.subject,
                 count = left,
                 error,
                 "files of a commit that did not land could not be deleted, so the store keeps them as orphans"
             );
         }
     }
+}
+
+/// One encoder thread's state: the files it has open, and those it closed since the last `Close`.
+struct Encoder {
+    shared: Arc<Shared>,
+    /// See `Lane::queued`.
+    queued: Arc<AtomicUsize>,
+    /// See `Lane::busy`.
+    busy: Arc<AtomicBool>,
+    open: HashMap<Partition, OpenFile>,
+    closed: Vec<DataFile>,
+    /// A write failed: the writes after it are skipped until the writer aborts this encoder.
+    broken: bool,
+    /// Its share of `Shared::open_bytes`.
+    measured: usize,
+}
+
+impl Encoder {
+    fn run(&mut self, orders: Receiver<Order>) {
+        let mut since = (Instant::now(), crate::resources::thread_cpu_time());
+        loop {
+            // Woken at least every `MEASURE_EVERY`, so what lands while no rows come shows as it lands.
+            let order = match orders.recv_timeout(MEASURE_EVERY) {
+                Ok(order) => Some(order),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => break,
+            };
+            match order {
+                None => {}
+                Some(Order::Write(partition, rows)) => {
+                    if !self.broken
+                        && let Err(why) = self.write(partition, &rows)
+                    {
+                        self.broken = true;
+                        self.open.clear();
+                        self.shared.fault.lock().unwrap().get_or_insert(why);
+                    }
+                    let bytes = rows.iter().map(FileRow::bytes).sum();
+                    self.queued.fetch_sub(bytes, Ordering::Relaxed);
+                }
+                Some(Order::Close(reply)) => {
+                    let closed = match self.broken {
+                        // The writer has not seen the fault yet, or it would have aborted this encoder first.
+                        true => Err((self.shared.fault.lock().unwrap().take())
+                            .unwrap_or_else(|| "a file could not be written".to_string())),
+                        false => self.close_all().map(|()| std::mem::take(&mut self.closed)),
+                    };
+                    let _ = reply.send(closed);
+                }
+                Some(Order::Abort(reply)) => {
+                    // A dropped upload aborts.
+                    self.open.clear();
+                    self.broken = false;
+                    let _ = reply.send(std::mem::take(&mut self.closed));
+                }
+            }
+            let open = (self.open.values())
+                .map(|f| f.encoder.in_progress_bytes() + f.upload.pending())
+                .sum();
+            self.shared.open_bytes.fetch_add(open, Ordering::Relaxed);
+            self.shared
+                .open_bytes
+                .fetch_sub(std::mem::replace(&mut self.measured, open), Ordering::Relaxed);
+            if since.0.elapsed() >= MEASURE_EVERY {
+                let now = (Instant::now(), crate::resources::thread_cpu_time());
+                // A platform that cannot tell counts as busy, so encoders start as the queues alone say.
+                let busy = match (now.1, since.1) {
+                    (Some(cpu), Some(was)) => cpu.saturating_sub(was) * 10 >= (now.0 - since.0) * 9,
+                    _ => true,
+                };
+                self.busy.store(busy, Ordering::Relaxed);
+                since = now;
+            }
+        }
+        self.shared.open_bytes.fetch_sub(self.measured, Ordering::Relaxed);
+    }
+
+    fn write(&mut self, partition: Partition, rows: &[FileRow]) -> Result<(), String> {
+        // A group goes in slices, each filling what is left of the take in progress and of the file by the rows' own
+        // sizes, so each file holds about one take and ends near its limit whatever the batch brought. A row's own
+        // size is at least what it adds encoded, so a file passes its limit only by its framing (for Parquet, page
+        // headers and footer).
+        let shared = self.shared.clone();
+        let config = &shared.config;
+        let mut rest = rows;
+        while !rest.is_empty() {
+            if !self.open.contains_key(&partition) {
+                // An encoder with no file open opens one whatever the others hold, so the destination may pass the
+                // limit by one file per encoder.
+                if !self.open.is_empty() && self.shared.open_files.load(Ordering::Relaxed) >= MAX_OPEN_FILES {
+                    let oldest = self
+                        .open
+                        .iter()
+                        .min_by_key(|(_, f)| f.last_written)
+                        .map(|(p, _)| p.clone())
+                        .expect("a full map has an oldest file");
+                    let file = self.open.remove(&oldest).expect("found just now");
+                    tracing::debug!(name: "rotated", target: "destinations", subject = %self.shared.subject, open = MAX_OPEN_FILES, "the oldest open file was closed to make room for another partition's file");
+                    self.close(file)?;
+                }
+                let file = self.open_file(partition.clone())?;
+                self.open.insert(partition.clone(), file);
+            }
+            let pooled = self.make_room()?;
+            let file = self.open.get_mut(&partition).expect("opened above");
+            file.last_written = Instant::now();
+            let room = (config.take_bytes.saturating_sub(file.encoder.in_progress_bytes()))
+                .min(pooled)
+                .min(config.max_file_bytes.saturating_sub(file.encoder.bytes_written()));
+            let mut end = 1;
+            let mut bytes = rest[0].bytes();
+            while end < rest.len() && bytes + rest[end].bytes() <= room {
+                bytes += rest[end].bytes();
+                end += 1;
+            }
+            let (slice, later) = rest.split_at(end);
+            file.encoder.write(slice);
+            rest = later;
+            if file.encoder.in_progress_bytes() >= config.take_bytes {
+                upload_taken(file)?;
+            }
+            // Within a 64th of its limit a file is full: a slice there would be a few rows at a time.
+            let full = |f: &OpenFile| f.encoder.bytes_written() + config.max_file_bytes / 64 >= config.max_file_bytes;
+            // The estimate counts what a codec still holds as written; a take measures it.
+            if full(file) && file.encoder.in_progress_bytes() > 0 {
+                upload_taken(file)?;
+            }
+            if full(file) {
+                let file = self.open.remove(&partition).expect("opened above");
+                self.close(file)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// How much more this encoder's open files may buffer, within its share of the pool. While they hold all of it,
+    /// the largest take is uploaded first.
+    fn make_room(&mut self) -> Result<usize, String> {
+        let share = TAKE_POOL_BYTES / self.shared.started.load(Ordering::Relaxed).max(1);
+        loop {
+            let buffered: usize = self.open.values().map(|f| f.encoder.in_progress_bytes()).sum();
+            if buffered < share {
+                return Ok(share - buffered);
+            }
+            let largest = (self.open.values_mut())
+                .max_by_key(|f| f.encoder.in_progress_bytes())
+                .expect("a full pool has a file");
+            upload_taken(largest)?;
+        }
+    }
+
+    fn open_file(&mut self, partition: Partition) -> Result<OpenFile, String> {
+        let shared = &self.shared;
+        let path = (shared.committer.lock().unwrap()).file_path(&partition, &super::objects::object_id());
+        let upload = Upload::new(
+            shared.store.clone(),
+            shared.runtime.clone(),
+            shared.config.stall_after,
+            shared.config.parts_in_flight,
+            shared.config.attributes.clone(),
+            &shared.subject,
+            &path,
+        )?;
+        Ok(OpenFile {
+            encoder: shared.config.format.open(&partition),
+            upload,
+            path,
+            partition,
+            uploaded: 0,
+            last_written: Instant::now(),
+            _slot: Slot::new(shared.clone()),
+        })
+    }
+
+    /// Ends the file and its upload; the file waits closed for the next commit.
+    fn close(&mut self, file: OpenFile) -> Result<(), String> {
+        let (closed, upload) = seal(file)?;
+        upload.finish()?;
+        self.closed.push(closed);
+        Ok(())
+    }
+
+    /// Closes every open file, their uploads landing side by side. A file whose upload failed, or did not answer within
+    /// `stall_after`, is left out of `closed`.
+    fn close_all(&mut self) -> Result<(), String> {
+        // Every file is sealed before any starts to land, so a seal that fails drops every upload of this close, which
+        // aborts it.
+        let sealed: Vec<_> = std::mem::take(&mut self.open)
+            .into_values()
+            .map(seal)
+            .collect::<Result<_, _>>()?;
+        let (sealed, uploads): (Vec<_>, Vec<_>) = sealed.into_iter().unzip();
+        // Each upload waits up to `stall_after` on its own, so the ones that landed are kept when another does not
+        // answer.
+        let after = self.shared.config.stall_after;
+        let landing = uploads.into_iter().map(|upload| async move {
+            let landed = tokio::time::timeout(after, upload.landing()).await;
+            landed.unwrap_or_else(|_| Err(format!("no answer within {after:?}")))
+        });
+        let landed = self.shared.runtime.block_on(futures_util::future::join_all(landing));
+        let mut failed = None;
+        for (closed, landed) in sealed.into_iter().zip(landed) {
+            match landed {
+                Ok(()) => self.closed.push(closed),
+                Err(why) => failed = failed.or(Some(why)),
+            }
+        }
+        failed.map_or(Ok(()), Err)
+    }
+}
+
+/// Ends `file`'s encoding and hands its tail to its upload, which is left to land.
+fn seal(file: OpenFile) -> Result<(DataFile, Upload), String> {
+    let record_count = file.encoder.rows();
+    let (tail, metadata) = file.encoder.finish();
+    let size_bytes = (file.uploaded + tail.len()) as u64;
+    let mut upload = file.upload;
+    upload.write(tail)?;
+    let closed = DataFile {
+        path: file.path,
+        partition: file.partition,
+        size_bytes,
+        record_count,
+        metadata: metadata.map(Arc::new),
+    };
+    Ok((closed, upload))
 }
 
 /// When a failed commit is tried again. A `Conflict` is tried at once, up to `MAX_CONFLICT_RETRIES`; a `Transient`
@@ -1138,28 +1401,38 @@ impl Upload {
     }
 
     /// Ends the upload: the object is in the store.
-    pub(crate) fn finish(mut self) -> Result<(), String> {
+    pub(crate) fn finish(self) -> Result<(), String> {
+        let (runtime, after) = (self.runtime.clone(), self.stall_after);
+        wait(&runtime, after, self.landing())
+    }
+
+    /// Ends the upload, which lands as the future runs. Dropped before it lands, the object is not in the store, and
+    /// a multipart upload's parts are left for the store's lifecycle to remove.
+    fn landing(mut self) -> impl Future<Output = Result<(), String>> + use<> {
         let held = std::mem::take(&mut self.held);
-        match self.parts.take() {
-            None => {
-                let options = PutOptions {
-                    attributes: self.attributes.clone(),
-                    ..PutOptions::default()
-                };
-                let put = self.store.put_opts(&self.location, held.into_iter().collect(), options);
-                wait(&self.runtime, self.stall_after, put).map_err(|e| format!("writing {}: {e}", self.name))?;
-            }
-            Some(mut parts) => {
-                for bytes in held {
-                    let _enter = self.runtime.enter();
-                    parts.put(bytes);
+        let parts = self.parts.take();
+        let (store, location, name) = (self.store.clone(), self.location.clone(), self.name.clone());
+        let attributes = self.attributes.clone();
+        async move {
+            match parts {
+                None => {
+                    let options = PutOptions {
+                        attributes,
+                        ..PutOptions::default()
+                    };
+                    let put = store.put_opts(&location, held.into_iter().collect(), options).await;
+                    put.map(drop).map_err(|e| format!("writing {name}: {e}"))
                 }
-                // A finish that fails aborts the upload itself.
-                wait(&self.runtime, self.stall_after, parts.finish())
-                    .map_err(|e| format!("finishing {}: {e}", self.name))?;
+                Some(mut parts) => {
+                    for bytes in held {
+                        parts.put(bytes);
+                    }
+                    // A finish that fails aborts the upload itself.
+                    let finished = parts.finish().await;
+                    finished.map(drop).map_err(|e| format!("finishing {name}: {e}"))
+                }
             }
         }
-        Ok(())
     }
 }
 

@@ -142,6 +142,7 @@ pub fn destination(
         stall_after: config.stall_after,
         attributes: Attributes::new(),
         parts_in_flight: config.in_flight,
+        encoders: crate::startup_config::worker_thread_limit(),
     };
     Ok(FileDestination::new(
         "delta",
