@@ -654,7 +654,7 @@ export function stepName(step: Step, number: number, pipelineNames: PipelineName
 export type NumberedStep = { step: Step; number: number; name: string };
 
 /** What a step is made of, shown one line each, as a review compares them: an
- * eval's assignments, a rename's pairs, a removal's names, a code step's lines,
+ * eval's assignments, a rename's pairs, a Remove step's names, a code step's lines,
  * and any other step as a single line. An eval's targets and a rename's names
  * are padded to `width`, which `partsWidth` gives to line up their `=` or `→`. */
 export function stepParts(step: Step, pipelineNames: PipelineNames, width = 0): string[] {

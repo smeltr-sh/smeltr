@@ -136,8 +136,9 @@ export interface StepChange {
   position?: number;
   /** It runs in another order against the steps around it. */
   moved?: true;
-  /** The step's parts (`stepPartsOf`): an added or removed step's all marked so, a changed step's before against
-   * after where any of them changed. */
+  /** The step's parts (`stepPartsOf`). An added step's parts are all marked added and a removed step's all removed.
+   * A changed step has every part, before against after, when any part changed (the view folds the unchanged ones),
+   * and none otherwise. */
   parts?: DiffLine[];
   /** An `if` step's branches, compared the same way. */
   then?: StepChange[];
@@ -376,7 +377,7 @@ function modeled(raw: Record<string, unknown>): Step | null {
   }
 }
 
-/** A step's parts as `stepParts` names them, lined up to `width`, or its one
+/** A step's parts as `stepParts` gives them, lined up to `width`, or its one
  * line where this GUI cannot model it. */
 function stepPartsOf(
   raw: Record<string, unknown>,
@@ -387,7 +388,7 @@ function stepPartsOf(
   return step ? stepParts(step, pipelineNames, width) : [stepLine(raw, pipelineNames)];
 }
 
-/** The width that lines up the parts of `raws` (`partsWidth`). */
+/** The width that lines up the parts of `raws`, the old and the new step alike (`partsWidth`). */
 function widthOf(...raws: Record<string, unknown>[]): number {
   return partsWidth(raws.map(modeled).filter((s) => s !== null));
 }
