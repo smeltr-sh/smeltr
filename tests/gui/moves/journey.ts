@@ -2543,6 +2543,62 @@ const deleteSample: Move = {
   },
 };
 
+/** Moves a pasted sample from `shared` into `default` from its row on the Samples page, and back from `default`'s.
+ * Each way is one commit that takes the tests running over it along, and each way the leader holds the sample and
+ * those tests in the area it went to and not in the other. */
+const moveSample: Move = {
+  name: 'move-sample',
+  weight: (w) => (w.password && pasted(w).length ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const truth = await j.truth();
+    const on = () => `branch=${encodeURIComponent(world.branch ?? 'main')}`;
+    const name = rng.pick(pasted(world));
+    const id: string = (await truth.get(`/api/areas/shared/samples?${on()}`)).samples.find(
+      (s: { name: string }) => s.name === name,
+    ).id;
+    const testsOver = async (area: string) =>
+      (
+        (await truth.get(`/api/areas/${area}/tests?${on()}`)).tests as {
+          id: string;
+          sample: string;
+        }[]
+      )
+        .filter((t) => t.sample === id)
+        .map((t) => t.id)
+        .sort();
+    const tests = await testsOver('shared');
+    const holds = async (area: string) => ({
+      sample: (await truth.get(`/api/areas/${area}/samples?${on()}`)).samples.some(
+        (s: { id: string }) => s.id === id,
+      ),
+      tests: await testsOver(area),
+    });
+    const move = async (from: string, to: string) => {
+      const row = page.getByRole('row', { name: new RegExp(`^${name}\\b`) });
+      await row.getByRole('button', { name: 'Move to…' }).click();
+      const dialog = page.getByRole('dialog', { name: `move sample ${name}` });
+      await dialog.getByRole('combobox', { name: 'move to' }).selectOption(to);
+      await saveBy(j, dialog.getByRole('button', { name: 'Move', exact: true }), () =>
+        expect(dialog).toBeHidden(),
+      );
+      await expect(row).toHaveCount(0);
+      expect(await holds(to), `${name} and its tests moved to ${to}`).toEqual({
+        sample: true,
+        tests,
+      });
+      expect(await holds(from), `${from} keeps none of them`).toEqual({ sample: false, tests: [] });
+      await editingIsSaved(j);
+    };
+    await goto(page, leader, '#/build');
+    await move('shared', 'default');
+    await switchScope(page, 'shared', 'default');
+    await move('default', 'shared');
+    await switchScope(page, 'default', 'shared');
+    return `move ${name} with ${tests.length} tests to default and back`;
+  },
+};
+
 /** The pipelines the journey added, whose steps each set a field to its own name and read none, so any pasted
  * record runs. */
 const added = (w: World) => w.editing.pipelines.filter((p) => p.startsWith('pipe '));
@@ -3834,6 +3890,7 @@ export const MOVES: readonly Move[] = [
   duplicateDestination,
   moveSource,
   moveDestination,
+  moveSample,
   addPipeline,
   exportPipeline,
   importPipeline,
