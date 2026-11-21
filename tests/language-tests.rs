@@ -545,6 +545,8 @@ cases! {
         ["{}"], Rows(&[(r#"{"a": 3, "b": 21}"#, None)]);
     a_guarded_root_write_keeps_the_records_key_on_rows_it_skips: "f: bool; Object.assign($, json(_raw)) if (f) $ = {b: 1};",
         [r#"{"f": false, "b": 2}"#, r#"{"f": true, "b": 2}"#], Rows(&[(r#"{"f": false, "b": 2}"#, None), (r#"{"b": 1}"#, None)]);
+    a_guarded_root_write_under_a_value_is_refused: "a = \"x\"; f: bool; Object.assign($, json(_raw)) if (f) $ = {a: {b: 1}};",
+        [r#"{}"#], Error(&["`a` is a value here"]);
     undeclared_is_a_value: "a: i64; Object.assign($, kv(_raw)) b = $.undeclared().b;",
         ["a=1 b=2"], Rows(&[(r#"{"a": 1, "b": "2"}"#, None)]);
     switch_is_an_if_chain: r#"Object.assign($, json(_raw)) c: str = $.c; switch (c) { case "a": x = 1; break; case "b": x = 2; break; default: x = 0; }"#,

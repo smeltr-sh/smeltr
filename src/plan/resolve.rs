@@ -237,10 +237,11 @@ impl SymbolTable {
         self.root.get(name)
     }
 
-    /// The node `name` names, with the tree's name for it: `$` is the record, which the tree names `""`.
+    /// The node `name` names, with the name the tree knows it by. `$` and `""` both name the record; the tree's name
+    /// for it is `""`.
     pub fn named<'n>(&self, name: &'n str) -> (&'n str, Option<Node>) {
         match name {
-            tree::ROOT => ("", Some(Node::Object(self.record()))),
+            tree::ROOT | "" => ("", Some(Node::Object(self.record()))),
             name => (name, self.node(name).cloned()),
         }
     }

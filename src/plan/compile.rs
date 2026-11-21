@@ -1474,7 +1474,7 @@ impl Compiler<'_> {
             leaves.iter().any(|d| binding::at_or_under(n, &d.name)) || new.iter().any(|o| binding::at_or_under(n, o))
         };
         // The parse lays its keys over each object's column, so a key taken out of one is gone from it first.
-        let within = |n: &str| target.is_empty() || binding::at_or_under(n, target);
+        let within = |n: &str| binding::at_or_under(n, target);
         let kept: Vec<String> = std::iter::once(String::new())
             .chain(self.syms.root().objects().into_iter().map(|(name, _)| name))
             .filter(|name| within(name) && (!target.is_empty() || !self.syms.is_local(name)) && !replaced(name))
@@ -2382,7 +2382,7 @@ impl Compiler<'_> {
             let Some(input) = self.input_slot(call.input, Here { guard: None, ..here }) else {
                 return;
             };
-            self.replace(self.places_at(tree::ROOT), Here { guard: None, ..here });
+            self.replace(self.places_at(""), Here { guard: None, ..here });
             return self.parse_call(
                 &call,
                 Some(input),
@@ -2441,17 +2441,7 @@ impl Compiler<'_> {
                 }
             }
         }
-        let old: Vec<Place> = (self.places_at(tree::ROOT).into_iter())
-            .filter(|p| writes.iter().all(|(w, _)| w != p))
-            .collect();
-        if !self.check_shape("", &writes, blended, id) {
-            return;
-        }
-        let writes = self.staged(writes, here);
-        self.replace(old, here);
-        for (place, r) in writes {
-            self.bind_resolved(&place, r, here);
-        }
+        self.bind_writes("", writes, false, here);
     }
 
     /// Whether `name` is bound outside the construct being compiled: a bound name is, unless it is a local the block
