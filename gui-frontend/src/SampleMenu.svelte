@@ -5,6 +5,8 @@
 -->
 <script lang="ts">
   import ChipPicker from './ChipPicker.svelte';
+  import SampleIcon from './SampleIcon.svelte';
+  import TestIcon from './TestIcon.svelte';
   import { count, dateTime } from './time';
   import { capturedAt, type SampleSummary } from './api';
   import { HELD_NAME } from './sampleChoices.svelte';
@@ -109,12 +111,13 @@
   onopen={() => (query = '')}
 >
   {#snippet face()}
+    <!-- The glyph says which it is; the word is still there for a screen reader. -->
     {#if testName}
-      <span class="dim">Test</span>
-      <strong>{testName}</strong>
+      <TestIcon /><span class="visually-hidden">Test</span>
+      <strong class="ellipsis face-name">{testName}</strong>
     {:else}
-      <span class="dim">Sample</span>
-      <strong>{selectedName}</strong>
+      <SampleIcon /><span class="visually-hidden">Sample</span>
+      <strong class="ellipsis face-name">{selectedName}</strong>
     {/if}
     {#if records !== null}<span class="dim">{count(records, 'record')}</span>{/if} ▾
   {/snippet}
@@ -140,7 +143,7 @@
       />
       {#if foundTests.length}
         <div class="list" role="listbox" aria-label="Tests">
-          <span class="group">Tests</span>
+          <span class="group"><TestIcon /> Tests</span>
           {#each foundTests as t (t.id)}
             <button
               type="button"
@@ -159,7 +162,7 @@
         </div>
       {/if}
       <div class="list" role="listbox" aria-label="Samples">
-        {#if foundTests.length}<span class="group">Samples</span>{/if}
+        {#if foundTests.length}<span class="group"><SampleIcon /> Samples</span>{/if}
         {#each found as s (s.id)}
           <button
             type="button"
@@ -208,6 +211,9 @@
   }
 
   .group {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
     padding: 0.3rem 0.4rem 0.1rem;
     color: var(--dim);
     font-size: var(--text-label);
@@ -241,5 +247,10 @@
   .name {
     flex: 1;
     min-width: 0;
+  }
+
+  /* A long name is cut short before the chip wraps, most of all on a phone. */
+  .face-name {
+    max-width: 18rem;
   }
 </style>

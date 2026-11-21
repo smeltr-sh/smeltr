@@ -974,10 +974,12 @@
 <style>
   /* The sample and what is shown of it on one row, and the search on the next: the search has a
      row of its own to be read in. */
+  /* On a narrow screen the bar's controls wrap to a second line rather than run off it. */
   .output-bar {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 0.7rem;
+    gap: 0.5rem 0.7rem;
   }
 
   .output-bar + .output-bar {
