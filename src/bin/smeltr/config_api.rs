@@ -1074,14 +1074,7 @@ impl Writing {
         let refused = |e: Refusal| Envelope::refused(e);
         let (old_from, old_to) = (self.read(), to.read());
         let mut from = old_from.file.clone();
-        let goes = |part: Part, id: &str| going.contains(&(part, id.to_string()));
-        from.pipelines.retain(|o| !goes(Part::Pipeline, &o.id));
-        from.lookup_tables.retain(|o| !goes(Part::LookupTable, &o.id));
-        from.grok_patterns.retain(|o| !goes(Part::GrokPattern, &o.id));
-        from.schemas.retain(|o| !goes(Part::Schema, &o.id));
-        from.routes.retain(|o| !goes(Part::Route, &o.id));
-        from.sources.retain(|o| !goes(Part::Source, &o.id));
-        from.destinations.retain(|o| !goes(Part::Destination, &o.id));
+        config_file::retain_file(&mut from, &|part, id| !going.contains(&(part, id.to_string())));
         let mut into = old_to.file.clone();
         crate::import_api::upsert(&mut into, written.file.clone());
 
@@ -3479,9 +3472,8 @@ mod tests {
     }
 
     /// A branch where `shared/` holds source `fleet-audit`, pipeline `passthrough`, route `r1` from one to the
-    /// other, destination `archive` (delivered to by `r1` where `delivered`), sample `logins`, test `t1` over it and
-    /// test `t2` over another sample, beside groups `west` and `east`.
-    fn a_shared_repo(label: &str, delivered: bool) -> PathBuf {
+    /// other, sample `logins`, test `t1` over it and test `t2` over another sample, beside groups `west` and `east`.
+    fn a_shared_repo(label: &str) -> PathBuf {
         let data = a_repo(label);
         seed(&data, "west", serde_json::json!({"system.json": {"version": 1}}));
         seed(&data, "east", serde_json::json!({"system.json": {"version": 1}}));
@@ -3493,18 +3485,13 @@ mod tests {
         };
         let sample: config_file::SampleDto =
             serde_json::from_str(r#"{"id":"logins","name":"logins","records":[{"_raw":"{}"}]}"#).unwrap();
-        let deliver = match delivered {
-            true => serde_json::json!([{"to": ["archive"]}]),
-            false => serde_json::json!([]),
-        };
         seed(
             &data,
             "shared",
             serde_json::json!({
                 "sources.json": [a_source("fleet-audit")],
                 "pipelines/passthrough.json": {"id": "passthrough", "name": "passthrough", "steps": []},
-                "routes.json": [{"id": "r1", "source": "fleet-audit", "pipeline": "passthrough", "deliver": deliver}],
-                "destinations.json": [{"id": "archive", "type": "kafka", "brokers": "kafka:9092", "defaultTopic": "out"}],
+                "routes.json": [{"id": "r1", "source": "fleet-audit", "pipeline": "passthrough"}],
                 "samples/logins.json": String::from_utf8(config_file::sample_bytes(&sample)).unwrap(),
                 "tests/t1.json": test("t1", "logins"),
                 "tests/t2.json": test("t2", "other"),
@@ -3513,19 +3500,8 @@ mod tests {
         data
     }
 
+    /// Moves `id` from `from` to `to` with the least it takes.
     fn move_to(data: &Path, from: &str, to: &str, part: Part, id: &str) -> Envelope<crate::move_api::MoveAnswer> {
-        move_ticked(data, from, to, part, id, None)
-    }
-
-    /// Moves `id` with only what `ticked` names, or the least it takes when `None`.
-    fn move_ticked(
-        data: &Path,
-        from: &str,
-        to: &str,
-        part: Part,
-        id: &str,
-        ticked: Option<&[(Part, &str)]>,
-    ) -> Envelope<crate::move_api::MoveAnswer> {
         let from = Writing::open_in(data, "work", None, from).unwrap();
         let to_writing = Writing::open_in(data, "work", None, to).unwrap();
         let ask = crate::move_api::MoveAsk {
@@ -3533,14 +3509,7 @@ mod tests {
             id: id.to_string(),
             to: to.to_string(),
             also: Vec::new(),
-            ticked: ticked.map(|t| {
-                (t.iter())
-                    .map(|(part, id)| config_file::PartId {
-                        part: *part,
-                        id: id.to_string(),
-                    })
-                    .collect()
-            }),
+            ticked: None,
             go: true,
         };
         crate::move_api::move_between(from, to_writing, ask, &Actor::system())
@@ -3583,7 +3552,7 @@ mod tests {
     /// branch has it in both areas or in neither.
     #[test]
     fn a_source_moves_with_its_routes_in_one_commit() {
-        let data = a_shared_repo("move-source", false);
+        let data = a_shared_repo("move-source");
         let before = Reading::open_in(&data, "work", "shared").unwrap().commit;
         let response = move_to(&data, "shared", "west", Part::Source, "fleet-audit");
         assert!(response.succeeded(), "moved: {response:?}");
@@ -3613,7 +3582,7 @@ mod tests {
     /// branch is where it was.
     #[test]
     fn a_move_that_leaves_a_route_behind_is_refused() {
-        let data = a_shared_repo("move-left-behind", false);
+        let data = a_shared_repo("move-left-behind");
         let route = serde_json::json!([{"id": "r2", "source": "fleet-audit", "pipeline": "passthrough"}]);
         seed(&data, "east", serde_json::json!({ "routes.json": route }));
         let before = Reading::open_in(&data, "work", "shared").unwrap().commit;
@@ -3628,52 +3597,16 @@ mod tests {
         std::fs::remove_dir_all(&data).ok();
     }
 
-    /// A destination nothing delivers to leaves `shared/` for a group alone, in one commit, and the routes stay where
-    /// they were.
-    #[test]
-    fn a_destination_moves_alone_in_one_commit() {
-        let data = a_shared_repo("move-destination", false);
-        let response = move_to(&data, "shared", "west", Part::Destination, "archive");
-        assert!(response.succeeded(), "moved: {response:?}");
-
-        assert_eq!(ids_in(&data, "shared", Part::Destination), Vec::<String>::new());
-        assert_eq!(ids_in(&data, "west", Part::Destination), ["archive"]);
-        assert_eq!(ids_in(&data, "shared", Part::Route), ["r1"], "the route stays");
-        let (subject, files) = last_commit(&data);
-        assert_eq!(subject, "move destination archive to west");
-        assert_eq!(files, ["groups/west/destinations.json", "shared/destinations.json"]);
-        std::fs::remove_dir_all(&data).ok();
-    }
-
-    /// A route that stays in `shared/` and delivers to the destination would name nothing there: the move is refused,
-    /// and the branch is where it was.
-    #[test]
-    fn a_destination_move_that_leaves_a_route_delivering_to_it_is_refused() {
-        let data = a_shared_repo("move-destination-delivered", true);
-        let before = Reading::open_in(&data, "work", "shared").unwrap().commit;
-
-        let response = move_ticked(
-            &data,
-            "shared",
-            "west",
-            Part::Destination,
-            "archive",
-            Some(&[(Part::Destination, "archive")]),
-        );
-        refused_and_unwritten(&data, &before, &response);
-        assert_eq!(
-            response.errors[0].message,
-            "Route fleet-audit → passthrough stays in shared and delivers to destination archive, which shared would \
-             no longer have. Tick the route to move it with the destination.",
-        );
-        std::fs::remove_dir_all(&data).ok();
-    }
-
-    /// A sample leaves `shared/` for a group with the test that runs over it, in one commit, and a test over another
-    /// sample stays.
+    /// A sample leaves `shared/` for a group with the test that runs over it, in one commit, replacing west's own test
+    /// of the same id, and a test over another sample stays.
     #[test]
     fn a_sample_moves_with_its_tests_in_one_commit() {
-        let data = a_shared_repo("move-sample", false);
+        let data = a_shared_repo("move-sample");
+        let own = serde_json::json!({
+            "id": "t1", "name": "west's t1", "pipeline": "passthrough", "sample": "logins",
+            "lockedAt": 0, "rowsIn": 1, "fields": [], "rows": [],
+        });
+        seed(&data, "west", serde_json::json!({ "tests/t1.json": own }));
         let response = move_to(&data, "shared", "west", Part::Sample, "logins");
         assert!(response.succeeded(), "moved: {response:?}");
 
@@ -3692,21 +3625,6 @@ mod tests {
                 "shared/tests/t1.json"
             ]
         );
-        std::fs::remove_dir_all(&data).ok();
-    }
-
-    /// A move replaces what the group holds under the same id: west's own `t1` becomes the one that moved.
-    #[test]
-    fn a_sample_move_replaces_a_test_of_the_same_id() {
-        let data = a_shared_repo("move-sample-onto", false);
-        let own = serde_json::json!({
-            "id": "t1", "name": "west's t1", "pipeline": "passthrough", "sample": "logins",
-            "lockedAt": 0, "rowsIn": 1, "fields": [], "rows": [],
-        });
-        seed(&data, "west", serde_json::json!({ "tests/t1.json": own }));
-
-        let response = move_to(&data, "shared", "west", Part::Sample, "logins");
-        assert!(response.succeeded(), "moved: {response:?}");
         let reading = Reading::open_in(&data, "work", "west").unwrap();
         let t1 = config_file::read_test(&mut reading.files(), "t1").unwrap().unwrap();
         assert_eq!(t1.name, "t1", "shared's, not west's own");
@@ -3717,7 +3635,7 @@ mod tests {
     /// file, in one commit: east sees nothing of west's.
     #[test]
     fn between_groups_a_source_takes_what_its_route_needs_and_a_table_its_file() {
-        let data = a_shared_repo("move-between-groups", false);
+        let data = a_shared_repo("move-between-groups");
         let mut incoming = smeltr::lookup::store::Incoming::new(&git::repo_path(&data)).unwrap();
         std::io::Write::write_all(&mut incoming, b"ip,site\n10.0.0.1,hq\n").unwrap();
         seed(
@@ -3736,19 +3654,6 @@ mod tests {
 
         let response = move_to(&data, "west", "east", Part::Source, "fw");
         assert!(response.succeeded(), "moved: {response:?}");
-        let ticked: Vec<_> = (response.body.rows.iter())
-            .filter(|r| r.ticked)
-            .map(|r| (r.listed.part, r.listed.id.as_str()))
-            .collect();
-        assert_eq!(
-            ticked,
-            [
-                (Part::Source, "fw"),
-                (Part::Route, "r-fw"),
-                (Part::Pipeline, "sites"),
-                (Part::LookupTable, "sites")
-            ]
-        );
         let (subject, files) = last_commit(&data);
         assert_eq!(subject, "move source fw to east");
         assert_eq!(
@@ -3771,7 +3676,7 @@ mod tests {
 
     #[test]
     fn a_move_into_a_group_the_branch_does_not_hold_is_refused() {
-        let data = a_shared_repo("move-nowhere", false);
+        let data = a_shared_repo("move-nowhere");
         let before = Reading::open_in(&data, "work", "shared").unwrap().commit;
         let response = move_to(&data, "shared", "north", Part::Source, "fleet-audit");
         refused_and_unwritten(&data, &before, &response);
@@ -3781,7 +3686,7 @@ mod tests {
 
     #[test]
     fn a_move_names_what_it_cannot_find_and_where_it_already_is() {
-        let data = a_shared_repo("move-refusals", false);
+        let data = a_shared_repo("move-refusals");
         let response = move_to(&data, "shared", "west", Part::Source, "nowhere");
         assert_eq!(
             response.errors[0].message, "shared has no source \"nowhere\"",

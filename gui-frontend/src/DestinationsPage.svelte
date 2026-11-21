@@ -39,7 +39,7 @@
   import { at, typeLabel, writes } from './destinations';
   import NewDestination from './NewDestination.svelte';
   import MoveDialog, { type MoveTarget } from './MoveDialog.svelte';
-  import { addInto, idsTakenIn, type Area } from './areas';
+  import type { Area } from './areas';
 
   // `focus` is a destination's own way in from the map (design doc "The map"): which card to
   // land on and highlight, set from the route rather than chosen on this page.
@@ -87,7 +87,7 @@
   let adding: { from?: DestinationDto } | null = $state(null);
   /** The destination being moved into another area (`MoveDialog`). */
   let moving: MoveTarget | null = $state(null);
-  /** The areas the person edits, this one first: where a copy may go, and the rest where a move may. */
+  /** The areas the person edits (`MoveDialog`). */
   let areas: Area[] = $state([]);
   /** The row to show and mark: the one the map landed on, then the one just added. */
   // Follows the route, which can land on another row without remounting the page.
@@ -132,22 +132,9 @@
   /** Every id a new one may not take: this scope's and `shared`'s. */
   const unavailable = () => [...taken(), ...sharedDestinations.map((d) => d.id)];
 
-  /** Lists a new one here, saved with the page; a copy into another area is saved there and then. */
-  async function add(draft: DestinationDto, area?: string) {
-    if (area && area !== currentScope()) {
-      const commit = await addInto(area, editor.readAtCommit, {
-        section: 'destinations',
-        object: draft,
-      });
-      if (!commit) return;
-      // The branch moved past what this page read, though nothing here changed.
-      editor.readAtCommit = commit;
-      // A copy into `shared` is listed on a group's page, and its id is taken there now.
-      if (area === SHARED_SCOPE) await loadShared();
-    } else {
-      destinations.push(draft);
-      highlight = draft.id;
-    }
+  function add(draft: DestinationDto) {
+    destinations.push(draft);
+    highlight = draft.id;
     adding = null;
   }
 
@@ -296,8 +283,6 @@
       <NewDestination
         open={adding !== null}
         from={adding?.from}
-        areas={adding?.from ? areas : undefined}
-        takenIn={(area) => idsTakenIn(area, 'destinations')}
         unavailable={unavailable()}
         {secrets}
         {kafka}

@@ -1701,22 +1701,15 @@ export async function undoChanges(
   return result;
 }
 
-/** Saves `area`'s sources, the chip's unless named. */
-export function putSources(
-  sources: SourceDto[],
-  base?: string | null,
-  area?: string,
-): Promise<MutationResult> {
-  return configJson(inArea('/sources', area), json('PUT', sources), { base });
+export function putSources(sources: SourceDto[], base?: string | null): Promise<MutationResult> {
+  return configJson(inArea('/sources'), json('PUT', sources), { base });
 }
 
-/** Saves `area`'s destinations, the chip's unless named. */
 export function putDestinations(
   destinations: DestinationDto[],
   base?: string | null,
-  area?: string,
 ): Promise<MutationResult> {
-  return configJson(inArea('/destinations', area), json('PUT', destinations), { base });
+  return configJson(inArea('/destinations'), json('PUT', destinations), { base });
 }
 
 /** What the leader reads out of a PEM: every certificate in it, or why it is

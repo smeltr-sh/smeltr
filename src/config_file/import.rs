@@ -421,7 +421,7 @@ impl Objects {
 }
 
 /// Keeps only the objects of `f` that `keep` answers true for.
-pub(super) fn retain_file(f: &mut FileConfig, keep: &impl Fn(Part, &str) -> bool) {
+pub fn retain_file(f: &mut FileConfig, keep: &impl Fn(Part, &str) -> bool) {
     f.pipelines.retain(|o| keep(Part::Pipeline, &o.id));
     f.lookup_tables.retain(|o| keep(Part::LookupTable, &o.id));
     f.grok_patterns.retain(|o| keep(Part::GrokPattern, &o.id));

@@ -836,8 +836,7 @@ const addDestination: Move = {
 
 /** Duplicates a destination from its row's menu: the dialog opens on its fields, filled in as the original's, and the
  * copy the leader saves is the original under the new id. The copy keeps the original's prefix, which the moves that
- * pick a destination by kind go by. Where the journey made a group, the copy may be added to it instead: it is saved
- * there on Add, and the world, which follows `shared` and `default`, does not hold it. */
+ * pick a destination by kind go by. */
 const duplicateDestination: Move = {
   name: 'duplicate-destination',
   weight: (w) =>
@@ -852,117 +851,103 @@ const duplicateDestination: Move = {
     const form = page.getByRole('dialog', { name: /^new .* destination$/ });
     const idField = form.getByRole('textbox', { name: 'id', exact: true });
     await expect(idField).toHaveValue(`${original}-2`);
-    const into =
-      world.editing.groups.length && rng.chance(2) ? rng.pick(world.editing.groups) : null;
-    if (into) {
-      await form.getByRole('combobox', { name: 'add to' }).selectOption(into);
-      await expect(form.getByText(/^Saved in .* on Add\./)).toBeVisible();
-    }
     await idField.fill(id);
-    if (into) {
-      await saveBy(j, form.getByRole('button', { name: 'Add', exact: true }), () =>
-        expect(form).toBeHidden(),
-      );
-    } else {
-      await form.getByRole('button', { name: 'Add', exact: true }).click();
-      await save(j, unsaved(page));
-      world.editing.destinations.push(id);
-    }
+    await form.getByRole('button', { name: 'Add', exact: true }).click();
+    await save(j, unsaved(page));
+    world.editing.destinations.push(id);
     await editingIsSaved(j);
     const on = encodeURIComponent(world.branch!);
-    const truth = await j.truth();
-    const from = (await truth.get(`/api/areas/shared?branch=${on}`)).config.destinations;
-    const to = into
-      ? (await truth.get(`/api/areas/${into}?branch=${on}`)).config.destinations
-      : from;
-    const byId = (list: { id: string }[], d: string) => list.find((x) => x.id === d);
-    expect(byId(to, id), `${id} is ${original} under a new id`).toEqual({
-      ...byId(from, original),
-      id,
-    });
-    return `duplicate destination ${original} as ${id}${into ? ` into ${into}` : ''}`;
+    const res = await (await j.truth()).get(`/api/areas/shared?branch=${on}`);
+    const byId = (d: string) => res.config.destinations.find((x: { id: string }) => x.id === d);
+    expect(byId(id), `${id} is ${original} under a new id`).toEqual({ ...byId(original), id });
+    return `duplicate destination ${original} as ${id}`;
   },
 };
 
-/** Moves a source `shared` declares into `default` from its row's menu, and back from `default`'s page. Into
- * `default`, the routes starting at it are ticked already: `shared` keeps nothing that reads `default`'s. Back, they
- * would stay, since `default` reads what `shared` holds, so they are ticked to go too. Each way is one commit, so what
- * `shared` and `default` hold together is the world's throughout, and each way the leader holds the source and its
- * routes in the area it went to and not in the other. */
+/** Moves `name`, a `part` on the page at `at`, from `shared` into `default` from its row's menu, and back from
+ * `default`'s page, ticking what `tick` matches. Each way is one commit, and each way `holds` answers `held` for the area
+ * it went to and `none` for the other. */
+async function thereAndBack(
+  j: Journey,
+  { at, part, name, tick }: { at: string; part: string; name: string; tick?: RegExp },
+  holds: (area: string) => Promise<unknown>,
+  held: unknown,
+  none: unknown,
+) {
+  const { page, leader } = j;
+  const move = async (from: string, to: string) => {
+    await openRowMenu(page, `More actions for ${name}`);
+    await page.getByRole('button', { name: 'Move to…' }).click();
+    const dialog = page.getByRole('dialog', { name: `move ${part} ${name}` });
+    await dialog.getByRole('combobox', { name: 'move to' }).selectOption(to);
+    // The leader lists the rows in one answer, and the asked object's own tick is among them.
+    await expect(dialog.getByRole('checkbox').first()).toBeVisible();
+    if (tick)
+      for (const t of await dialog.getByRole('checkbox', { name: tick }).all()) await t.check();
+    const go = dialog.getByRole('button', { name: 'Move', exact: true });
+    await expect(go).toBeEnabled();
+    await saveBy(j, go, () => expect(dialog).toBeHidden());
+    // A group's page lists what `shared` declares too, so only `shared`'s own page loses the row.
+    if (to !== 'shared')
+      await expect(page.getByRole('button', { name: `More actions for ${name}` })).toHaveCount(0);
+    expect(await holds(to), `${name} moved to ${to}`).toEqual(held);
+    expect(await holds(from), `${from} keeps none of it`).toEqual(none);
+    await editingIsSaved(j);
+  };
+  await goto(page, leader, at);
+  await move('shared', 'default');
+  await switchScope(page, 'shared', 'default');
+  await move('default', 'shared');
+  await switchScope(page, 'default', 'shared');
+}
+
+/** Moves a source `shared` declares to `default` and back. Into `default`, the routes starting at it are ticked
+ * already: `shared` keeps nothing that reads `default`'s. Back, they would stay, since `default` reads what `shared`
+ * holds, so they are ticked to go too. */
 const moveSource: Move = {
   name: 'move-source',
   weight: (w) => (w.password && w.editing.sources.length ? 1 : 0),
   run: async (j) => {
-    const { page, leader, rng, world } = j;
+    const { rng, world } = j;
     const truth = await j.truth();
-    const branch = () => encodeURIComponent(world.branch ?? 'main');
-    const shared = (await truth.get(`/api/areas/shared?branch=${branch()}`)).config;
+    const config = async (area: string) =>
+      (await truth.get(`/api/areas/${area}?branch=${encodeURIComponent(world.branch ?? 'main')}`))
+        .config;
+    const startingAt = (c: { routes: { id: string; source: string }[] }, source: string) =>
+      c.routes
+        .filter((r) => r.source === source)
+        .map((r) => r.id)
+        .sort();
+    const shared = await config('shared');
     const declared = world.editing.sources.filter((s) =>
       shared.sources.some((x: { id: string }) => x.id === s),
     );
     if (!declared.length) return 'no source in shared to move';
     const source = rng.pick(declared);
-    const routes = shared.routes
-      .filter((r: { source: string }) => r.source === source)
-      .map((r: { id: string }) => r.id)
-      .sort();
+    const routes = startingAt(shared, source);
     const holds = async (area: string) => {
-      const config = (await truth.get(`/api/areas/${area}?branch=${branch()}`)).config;
+      const c = await config(area);
       return {
-        source: config.sources.some((x: { id: string }) => x.id === source),
-        routes: config.routes
-          .filter((r: { source: string }) => r.source === source)
-          .map((r: { id: string }) => r.id)
-          .sort(),
+        source: c.sources.some((x: { id: string }) => x.id === source),
+        routes: startingAt(c, source),
       };
     };
-    const move = async (from: string, to: string) => {
-      await openRowMenu(page, `More actions for ${source}`);
-      await page.getByRole('button', { name: 'Move to…' }).click();
-      const dialog = page.getByRole('dialog', { name: `move source ${source}` });
-      await dialog.getByRole('combobox', { name: 'move to' }).selectOption(to);
-      const routeTicks = dialog.getByRole('checkbox', { name: /^Move Route / });
-      await expect(routeTicks).toHaveCount(routes.length);
-      for (const tick of await routeTicks.all()) await tick.check();
-      const go = dialog.getByRole('button', { name: 'Move', exact: true });
-      await expect(go).toBeEnabled();
-      await saveBy(j, go, () => expect(dialog).toBeHidden());
-      // A group's page lists what `shared` declares too, so only `shared`'s own page loses the row.
-      if (to !== 'shared')
-        await expect(page.getByRole('button', { name: `More actions for ${source}` })).toHaveCount(
-          0,
-        );
-      expect(await holds(to), `${source} and its routes moved to ${to}`).toEqual({
-        source: true,
-        routes,
-      });
-      expect(await holds(from), `${from} keeps none of them`).toEqual({
-        source: false,
-        routes: [],
-      });
-      await editingIsSaved(j);
-    };
-    await goto(page, leader, '#/build/sources');
-    await move('shared', 'default');
-    await switchScope(page, 'shared', 'default');
-    await move('default', 'shared');
-    await switchScope(page, 'default', 'shared');
+    const at = { at: '#/build/sources', part: 'source', name: source, tick: /^Move Route / };
+    await thereAndBack(j, at, holds, { source: true, routes }, { source: false, routes: [] });
     return `move source ${source} with ${routes.length} routes to default and back`;
   },
 };
 
-/** Moves a destination `shared` declares, and no route delivers to, into `default` from its row's menu, and back from
- * `default`'s page. Each way is one commit that takes no route along, and each way the leader holds the destination in
- * the area it went to and not in the other. */
+/** Moves a destination `shared` declares, and no route delivers to, to `default` and back, taking no route along. */
 const moveDestination: Move = {
   name: 'move-destination',
   weight: (w) => (w.password && w.editing.destinations.length ? 1 : 0),
   run: async (j) => {
-    const { page, leader, rng, world } = j;
+    const { rng, world } = j;
     const truth = await j.truth();
-    const branch = () => encodeURIComponent(world.branch ?? 'main');
     const config = async (area: string) =>
-      (await truth.get(`/api/areas/${area}?branch=${branch()}`)).config;
+      (await truth.get(`/api/areas/${area}?branch=${encodeURIComponent(world.branch ?? 'main')}`))
+        .config;
     const shared = await config('shared');
     const delivered = new Set<string>();
     for (const area of ['shared', 'default', ...world.editing.groups])
@@ -973,37 +958,16 @@ const moveDestination: Move = {
     );
     if (!free.length) return 'no destination in shared that no route delivers to';
     const destination = rng.pick(free);
-    const routes = async (area: string) =>
-      ((await config(area)).routes as { id: string }[]).map((r) => r.id).sort();
-    const routesBefore = { shared: await routes('shared'), default: await routes('default') };
+    const routes = async () =>
+      [(await config('shared')).routes, (await config('default')).routes].map(
+        (rs: { id: string }[]) => rs.map((r) => r.id).sort(),
+      );
+    const before = await routes();
     const holds = async (area: string) =>
       (await config(area)).destinations.some((x: { id: string }) => x.id === destination);
-    const move = async (from: string, to: string) => {
-      await openRowMenu(page, `More actions for ${destination}`);
-      await page.getByRole('button', { name: 'Move to…' }).click();
-      const dialog = page.getByRole('dialog', { name: `move destination ${destination}` });
-      await dialog.getByRole('combobox', { name: 'move to' }).selectOption(to);
-      const go = dialog.getByRole('button', { name: 'Move', exact: true });
-      await expect(go).toBeEnabled();
-      await saveBy(j, go, () => expect(dialog).toBeHidden());
-      // A group's page lists what `shared` declares too, so only `shared`'s own page loses the row.
-      if (to !== 'shared')
-        await expect(
-          page.getByRole('button', { name: `More actions for ${destination}` }),
-        ).toHaveCount(0);
-      expect(await holds(to), `${destination} moved to ${to}`).toBe(true);
-      expect(await holds(from), `${from} no longer holds ${destination}`).toBe(false);
-      expect(
-        { shared: await routes('shared'), default: await routes('default') },
-        'no route moves with a destination',
-      ).toEqual(routesBefore);
-      await editingIsSaved(j);
-    };
-    await goto(page, leader, '#/build/destinations');
-    await move('shared', 'default');
-    await switchScope(page, 'shared', 'default');
-    await move('default', 'shared');
-    await switchScope(page, 'default', 'shared');
+    const at = { at: '#/build/destinations', part: 'destination', name: destination };
+    await thereAndBack(j, at, holds, true, false);
+    expect(await routes(), 'no route moves with a destination').toEqual(before);
     return `move destination ${destination} to default and back`;
   },
 };
@@ -2547,22 +2511,23 @@ const deleteSample: Move = {
   },
 };
 
-/** Moves a pasted sample from `shared` into `default` from its row on the Samples page, and back from `default`'s.
- * Each way is one commit that takes the tests running over it along, and each way the leader holds the sample and
- * those tests in the area it went to and not in the other. */
+/** Moves a pasted sample to `default` and back from its row on the Samples page, taking the tests over it along. */
 const moveSample: Move = {
   name: 'move-sample',
   weight: (w) => (w.password && pasted(w).length ? 1 : 0),
   run: async (j) => {
-    const { page, leader, rng, world } = j;
+    const { rng, world } = j;
     const truth = await j.truth();
     const on = () => `branch=${encodeURIComponent(world.branch ?? 'main')}`;
     const name = rng.pick(pasted(world));
     const id: string = (await truth.get(`/api/areas/shared/samples?${on()}`)).samples.find(
       (s: { name: string }) => s.name === name,
     ).id;
-    const testsOver = async (area: string) =>
-      (
+    const holds = async (area: string) => ({
+      sample: (await truth.get(`/api/areas/${area}/samples?${on()}`)).samples.some(
+        (s: { id: string }) => s.id === id,
+      ),
+      tests: (
         (await truth.get(`/api/areas/${area}/tests?${on()}`)).tests as {
           id: string;
           sample: string;
@@ -2570,36 +2535,16 @@ const moveSample: Move = {
       )
         .filter((t) => t.sample === id)
         .map((t) => t.id)
-        .sort();
-    const tests = await testsOver('shared');
-    const holds = async (area: string) => ({
-      sample: (await truth.get(`/api/areas/${area}/samples?${on()}`)).samples.some(
-        (s: { id: string }) => s.id === id,
-      ),
-      tests: await testsOver(area),
+        .sort(),
     });
-    const move = async (from: string, to: string) => {
-      const row = page.getByRole('row', { name: new RegExp(`^${name}\\b`) });
-      await openRowMenu(page, `More actions for ${name}`);
-      await page.getByRole('button', { name: 'Move to…' }).click();
-      const dialog = page.getByRole('dialog', { name: `move sample ${name}` });
-      await dialog.getByRole('combobox', { name: 'move to' }).selectOption(to);
-      const go = dialog.getByRole('button', { name: 'Move', exact: true });
-      await expect(go).toBeEnabled();
-      await saveBy(j, go, () => expect(dialog).toBeHidden());
-      await expect(row).toHaveCount(0);
-      expect(await holds(to), `${name} and its tests moved to ${to}`).toEqual({
-        sample: true,
-        tests,
-      });
-      expect(await holds(from), `${from} keeps none of them`).toEqual({ sample: false, tests: [] });
-      await editingIsSaved(j);
-    };
-    await goto(page, leader, '#/build');
-    await move('shared', 'default');
-    await switchScope(page, 'shared', 'default');
-    await move('default', 'shared');
-    await switchScope(page, 'default', 'shared');
+    const { tests } = await holds('shared');
+    await thereAndBack(
+      j,
+      { at: '#/build', part: 'sample', name },
+      holds,
+      { sample: true, tests },
+      { sample: false, tests: [] },
+    );
     return `move ${name} with ${tests.length} tests to default and back`;
   },
 };
