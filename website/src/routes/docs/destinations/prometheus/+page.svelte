@@ -176,9 +176,8 @@
     request go oldest first.
   </p>
   <p>
-    The destination sends <code>inFlight</code> requests at once, as that many shards. A shard sends one
-    request at a time, each landing before the next is sent, and a series always uses the same shard,
-    so its samples from one worker arrive in order.
+    The destination sends one request at a time, and each lands before the next is sent, so a
+    series' samples arrive in order.
   </p>
 
   <h2 id="answers">Answers</h2>
