@@ -34,6 +34,7 @@ mod import;
 mod links;
 mod load;
 mod merge;
+mod moving;
 mod sample;
 mod test;
 mod upgrade;
@@ -70,7 +71,7 @@ pub use dto::{
 };
 pub use export::{Export, export};
 pub use impact::{Impact, Reached, Reason, pipeline_answers_differ, pipelines_touched};
-pub use import::{Credential, Keep, Listed, Objects, Part, PartId, Standing, describe};
+pub use import::{Credential, Keep, Listed, Objects, Part, PartId, Standing, describe, retain_file};
 pub use links::{Connections, Kind, Links, Object};
 pub use load::{
     BundleAt, DeclaredAt, ItemRef, LoadError, RESERVED_KAFKA_PROPS, TLS_KAFKA_PROPS, ValidationError,
@@ -79,6 +80,7 @@ pub use load::{
     web_url,
 };
 pub use merge::{ObjectConflict, SectionMerge, Side, is_section_file, merge_section, text_merge_keeps_each_side};
+pub use moving::{MoveRow, Moving};
 pub use sample::{
     MAX_SAMPLE_RECORDS, SAMPLES_DIR, SampleDto, SampleSummary, list_samples, put_path, read_sample, record_source,
     refuse_sample_size, sample_bytes, sample_columns, sample_path, sample_records,

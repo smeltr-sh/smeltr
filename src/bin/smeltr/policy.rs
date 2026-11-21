@@ -4,6 +4,9 @@
 //! it. A route not listed here needs an administrator: a route added without a decision about who may use it is
 //! closed until somebody makes one.
 //!
+//! A move names the area it moves to in its body: the gate judges the area moved from, and `move_objects` the one
+//! moved to.
+//!
 //! Some routes cannot be judged from the request line, because the area is in the body, a branch or a capture. The
 //! gate asks [`Need::Somewhere`] of those, and the handler checks the rest once it knows the area (`start_capture` and
 //! the captures it opened, `review_change`, `deploy_change`, `deploy_commit`, and a change's own tests).
@@ -189,6 +192,8 @@ fn in_area(method: &Method, within: &[&str]) -> Option<Level> {
             ["sources" | "destinations" | "routes" | "lookups" | "grok-patterns" | "schemas" | "manifest"],
         )
         | (Method::POST, ["undo"] | ["lookups", "upload"] | ["test-runs"] | ["imports"]) => Level::Editor,
+        // In the area moved from. The one moved to is in the body, and the handler judges it (`move_objects`).
+        (Method::POST, ["moves"]) => Level::Editor,
         // What an admin says about a source's rows warning: it changes no configuration and touches no worker.
         (Method::POST, ["sources", _, "reset-history" | "mark"])
         | (Method::PUT, ["sources", _, "preset"])
@@ -383,6 +388,7 @@ mod tests {
             (Method::POST, "/api/areas/payments/samples"),
             (Method::PUT, "/api/areas/payments/samples/s1"),
             (Method::DELETE, "/api/areas/payments/samples/s1"),
+            (Method::POST, "/api/areas/payments/moves"),
             (Method::POST, "/api/areas/payments/test-runs"),
         ] {
             assert_eq!(need(&method, path), area("payments", Level::Editor), "{method} {path}");

@@ -29,6 +29,8 @@
     type KafkaFacts,
     getMapMeasurements,
   } from './api';
+  import type { Area } from './areas';
+  import MoveDialog, { type MoveTarget } from './MoveDialog.svelte';
   import { holdsSomewhere } from './access';
   import { holdings, sourceReadings } from './mapTerms';
   import NewSource from './NewSource.svelte';
@@ -59,6 +61,10 @@
   /** A source being added (`NewSource`), from a copy of `from` where it is one. It joins the list on Add, and the
    * file on the page's Save. */
   let adding: { from?: SourceDto } | null = $state(null);
+  /** The source being moved into another area (`MoveDialog`). */
+  let moving: MoveTarget | null = $state(null);
+  /** The areas the person edits (`MoveDialog`). */
+  let areas: Area[] = $state([]);
   /** The row to show and mark: the one the map landed on, then the one just added. */
   // Follows the route, which can land on another row without remounting the page.
   let highlight = $derived(focus);
@@ -237,7 +243,19 @@
             onsaved={(commit) => (editor.readAtCommit = commit)}
           />
         {/snippet}
-        {#snippet rowActions(_, i)}
+        {#snippet rowActions(source, i)}
+          {#if areas.length > 1}
+            <button
+              type="button"
+              class="pick"
+              onclick={() =>
+                (moving = {
+                  part: 'source',
+                  id: source.id,
+                  pullOne: SOURCE_KIND[source.type] === 'pullOne',
+                })}>Move to&hellip;</button
+            >
+          {/if}
           <button type="button" class="pick remove" onclick={() => removeSource(i)}>Remove</button>
         {/snippet}
         {#snippet sharedActions()}
@@ -259,6 +277,13 @@
         onsaved={(commit) => (editor.readAtCommit = commit)}
         onadd={add}
         oncancel={() => (adding = null)}
+      />
+      <MoveDialog
+        bind:moving
+        bind:areas
+        dirty={editor.isDirty}
+        readAt={editor.readAtCommit}
+        onmoved={() => void editor.load()}
       />
       <SaveBar
         dirty={editor.isDirty}

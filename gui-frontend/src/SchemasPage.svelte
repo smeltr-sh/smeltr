@@ -7,6 +7,9 @@
   `shared/`'s, changed in `shared/`. A row opens to the schema's fields, narrowed to the search.
 -->
 <script lang="ts">
+  import RowMenu from './RowMenu.svelte';
+  import MoveDialog, { type MoveTarget } from './MoveDialog.svelte';
+  import type { Area } from './areas';
   import EditInShared from './EditInShared.svelte';
   import UnreadableFiles from './UnreadableFiles.svelte';
   import SectionShell from './SectionShell.svelte';
@@ -22,7 +25,6 @@
   import JsonEditPage from './JsonEditPage.svelte';
   import SchemaFields from './SchemaFields.svelte';
   import NewSchema, { schemaOf, type SchemaDraft } from './NewSchema.svelte';
-  import CrossButton from './CrossButton.svelte';
   import { RESOURCES_TABS } from './nav';
   import {
     exportSchema,
@@ -45,6 +47,9 @@
   let { showJson = false, open }: { showJson?: boolean; open?: string } = $props();
 
   const readOnly = !editable();
+  /** The schema being moved into another area (`MoveDialog`), by id. */
+  let moving = $state<MoveTarget | null>(null);
+  let areas: Area[] = $state([]);
 
   let schemas: SchemaDto[] = $state([]);
   /** What `shared/` declares, which this group's pipelines may name as well. Never saved from here. */
@@ -245,11 +250,19 @@
                 <td class="used">
                   {@render usedBy(users.get(s.id))}
                   {#if !readOnly}
-                    <CrossButton
-                      removes
-                      label="Remove {s.id || 'unnamed'}"
-                      onclick={() => schemas.splice(n, 1)}
-                    />
+                    <RowMenu label="More actions for {s.id || 'unnamed'}">
+                      {#if areas.length > 1 && s.id}
+                        <button
+                          type="button"
+                          class="pick"
+                          onclick={() => (moving = { part: 'schema', id: s.id })}
+                          >Move to&hellip;</button
+                        >
+                      {/if}
+                      <button type="button" class="pick remove" onclick={() => schemas.splice(n, 1)}
+                        >Remove</button
+                      >
+                    </RowMenu>
                   {/if}
                 </td>
               </tr>
@@ -278,6 +291,13 @@
       {#if matches !== null && matches.size === 0}
         <p class="dim">No schema or field matches “{q.trim()}”.</p>
       {/if}
+      <MoveDialog
+        bind:moving
+        bind:areas
+        dirty={editor.isDirty}
+        readAt={editor.readAtCommit}
+        onmoved={() => void editor.load()}
+      />
       <SaveBar
         dirty={editor.isDirty}
         saving={editor.saving}

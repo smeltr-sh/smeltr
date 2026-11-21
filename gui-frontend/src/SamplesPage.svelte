@@ -6,7 +6,10 @@
 -->
 <script lang="ts">
   import { Busy } from './busy.svelte';
-  import Button, { BUSY } from './Button.svelte';
+  import Button, { BUSY, SAVE_FIRST } from './Button.svelte';
+  import RowMenu from './RowMenu.svelte';
+  import MoveDialog, { type MoveTarget } from './MoveDialog.svelte';
+  import type { Area } from './areas';
   import { reported } from './errors.svelte';
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
@@ -43,6 +46,9 @@
 
   // The sample open for editing, by id.
   let editing: string | null = $state(null);
+  /** The sample being moved into another area (`MoveDialog`). */
+  let moving: MoveTarget | null = $state(null);
+  let areas: Area[] = $state([]);
 
   /** The tests that run over each sample, so an edit to the sample can name the ones it changes the input of. */
   let tests: TestSummary[] = $state([]);
@@ -128,6 +134,16 @@
     }}
   />
 
+  <MoveDialog
+    bind:moving
+    bind:areas
+    dirty={editing !== null}
+    onmoved={() => {
+      void load();
+      void loadTests();
+    }}
+  />
+
   <UnreadableFiles problems={loadWarnings} onchanged={load}>
     {#snippet rest(left)}
       <p class="warn">{left.join('; ')}</p>
@@ -180,7 +196,21 @@
                     onclick={() => (editing = editing === s.id ? null : s.id)}
                     disabled={saving.on ? BUSY : ''}>Edit</Button
                   >
-                  <Button onclick={() => remove(s)} disabled={saving.on ? BUSY : ''}>Delete</Button>
+                  <RowMenu label="More actions for {s.name}">
+                    {#if areas.length > 1}
+                      <Button
+                        class="pick"
+                        onclick={() => (moving = { part: 'sample', id: s.id, name: s.name })}
+                        disabled={saving.on ? BUSY : ''}>Move to&hellip;</Button
+                      >
+                    {/if}
+                    <Button
+                      class="pick remove"
+                      onclick={() => remove(s)}
+                      disabled={saving.on ? BUSY : editing !== null ? SAVE_FIRST : ''}
+                      >Delete</Button
+                    >
+                  </RowMenu>
                 {/if}
               </td>
             </tr>

@@ -2058,6 +2058,49 @@ export function importExport(
   return configJson(inArea('/imports', into), { method: 'POST', body }, { base: at ?? null });
 }
 
+/** What a person calls each kind of object, capitalized, as a list of them shows it. */
+export const PART_NAMES: Record<ImportPart, string> = {
+  pipeline: 'Pipeline',
+  lookupTable: 'Lookup table',
+  grokPattern: 'Grok pattern',
+  schema: 'Schema',
+  sample: 'Sample',
+  test: 'Test',
+  route: 'Route',
+  source: 'Source',
+  destination: 'Destination',
+};
+
+/** One object a move lists: how it stands where it goes, whether it goes, and whether the move needs it. */
+export interface MoveRow extends ImportListed {
+  ticked: boolean;
+  needed: boolean;
+}
+
+/** What a move answers: each object it lists, why the ticks cannot move as they are, the commit both areas were read
+ * at, and once written, the commit the move made. */
+export type MoveResult = MutationResult & {
+  rows?: MoveRow[];
+  exceptions?: string[];
+  at?: string;
+};
+
+/** What a mover asks: the object, where it goes, what goes with it (absent, the least the move takes), and `go` to
+ * write it. What goes replaces whatever the other area holds under its id. */
+export interface MoveAsk {
+  part: ImportPart;
+  id: string;
+  to: string;
+  also?: { part: ImportPart; id: string }[];
+  ticked?: { part: ImportPart; id: string }[];
+  go?: boolean;
+}
+
+/** `ask` from the chip's area: written in one commit against `base` when `ask.go`, and otherwise only listed. */
+export function moveObjects(ask: MoveAsk, base?: string | null): Promise<MoveResult> {
+  return configJson(inArea('/moves'), json('POST', ask), { base });
+}
+
 // -- samples ----------------------------------------------------------------
 //
 // Records under a name, saved beside the config they are authored against

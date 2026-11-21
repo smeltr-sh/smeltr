@@ -5,7 +5,10 @@
 -->
 <script lang="ts">
   import { Busy } from './busy.svelte';
+  import RowMenu from './RowMenu.svelte';
   import Button, { BUSY } from './Button.svelte';
+  import MoveDialog, { type MoveTarget } from './MoveDialog.svelte';
+  import type { Area } from './areas';
   import { reported, unreported } from './errors.svelte';
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
@@ -40,6 +43,9 @@
   /** The result of each test's run, by test id; absent while its run is in flight. */
   let results: Record<string, TestResult> = $state({});
   const deleting = new Busy();
+  /** The test being moved into another area (`MoveDialog`). */
+  let moving: MoveTarget | null = $state(null);
+  let areas: Area[] = $state([]);
 
   const nameOf = (kind: 'pipelines' | 'routes', id: string) =>
     names.of(currentBranch(), currentScope(), kind, id);
@@ -177,9 +183,21 @@
               <td class="row-actions">
                 <a class="btn" href={testHash(t.id, t.sample, t.pipeline)}>Open</a>
                 {#if !readOnly}
-                  <Button onclick={() => remove(t)} disabled={deleting.on ? BUSY : ''}
-                    >Delete</Button
-                  >
+                  <RowMenu label="More actions for {t.name}">
+                    {#if areas.length > 1}
+                      <button
+                        type="button"
+                        class="pick"
+                        onclick={() => (moving = { part: 'test', id: t.id, name: t.name })}
+                        >Move to&hellip;</button
+                      >
+                    {/if}
+                    <Button
+                      class="pick remove"
+                      onclick={() => remove(t)}
+                      disabled={deleting.on ? BUSY : ''}>Delete</Button
+                    >
+                  </RowMenu>
                 {/if}
               </td>
             </tr>
@@ -196,6 +214,7 @@
       </table>
     </div>
   {/if}
+  <MoveDialog bind:moving bind:areas dirty={false} onmoved={() => void load()} />
 </SectionShell>
 
 <style>

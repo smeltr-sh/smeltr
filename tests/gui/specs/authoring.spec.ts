@@ -2003,7 +2003,8 @@ test('A6: a sample locked as a test passes, and a save that breaks it is allowed
   await expect(admin.getByText('1 failing')).toBeVisible();
   await expect(admin.getByText('Row 1 differs from what the test locks.')).toBeVisible();
   await expect(testRow.getByRole('link', { name: 'Open' })).toBeVisible();
-  await testRow.getByRole('button', { name: 'Delete' }).click();
+  await testRow.getByRole('button', { name: /^More actions for/ }).click();
+  await admin.getByRole('button', { name: 'Delete', exact: true }).click();
   await admin.getByRole('dialog').getByRole('button', { name: 'Delete' }).click();
   await expect(admin.getByText('No tests locked yet.', { exact: false })).toBeVisible();
 });

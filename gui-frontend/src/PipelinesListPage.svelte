@@ -18,6 +18,9 @@
   import { sharedConfig, listPipelines, deletePipeline, type PipelineDto } from './api';
   import ExportDialog from './ExportDialog.svelte';
   import ImportDialog from './ImportDialog.svelte';
+  import RowMenu from './RowMenu.svelte';
+  import MoveDialog, { type MoveTarget } from './MoveDialog.svelte';
+  import type { Area } from './areas';
 
   // Carried from a sample row's "Run in a pipeline" link (`nav.ts`'s `for`
   // route). Not validated against the sample library here -- a stale link
@@ -50,6 +53,9 @@
   /** The pipeline being exported, or null. */
   let exporting = $state<{ id: string; name: string } | null>(null);
   let importing = $state(false);
+  /** The pipeline being moved into another area (`MoveDialog`). */
+  let moving = $state<MoveTarget | null>(null);
+  let areas: Area[] = $state([]);
 
   // One sort for both bands: each band sorts within itself, so the shared rows stay under their own heading.
   const pipelineSort = new TableSort<'name' | 'steps'>();
@@ -185,21 +191,29 @@
               <td><a href={pipelineHash(p.id)}>{p.name}</a></td>
               <td class="dim" data-label="Steps">{p.steps.length}</td>
               <td class="row-actions">
-                <Button
-                  type="button"
-                  class="compact"
-                  onclick={() => (exporting = { id: p.id, name: p.name || p.id })}>Export</Button
-                >
-                {#if !readOnly}
-                  <Button
+                <RowMenu label="More actions for {p.name || p.id}">
+                  <button
                     type="button"
-                    class="compact"
-                    onclick={() => remove(p.id, p.name)}
-                    disabled={deletingId === p.id ? BUSY : ''}
+                    class="pick"
+                    onclick={() => (exporting = { id: p.id, name: p.name || p.id })}>Export</button
                   >
-                    {deletingId === p.id ? 'Deleting…' : 'Delete'}
-                  </Button>
-                {/if}
+                  {#if !readOnly && areas.length > 1}
+                    <button
+                      type="button"
+                      class="pick"
+                      onclick={() =>
+                        (moving = { part: 'pipeline', id: p.id, name: p.name || p.id })}
+                      >Move to&hellip;</button
+                    >
+                  {/if}
+                  {#if !readOnly}
+                    <Button
+                      class="pick remove"
+                      onclick={() => remove(p.id, p.name)}
+                      disabled={deletingId === p.id ? BUSY : ''}>Delete</Button
+                    >
+                  {/if}
+                </RowMenu>
               </td>
             </tr>
           {/each}
@@ -214,6 +228,7 @@
   name={exporting?.name ?? ''}
   oncancel={() => (exporting = null)}
 />
+<MoveDialog bind:moving bind:areas dirty={false} onmoved={() => void load()} />
 <ImportDialog
   open={importing}
   oncancel={() => (importing = false)}
