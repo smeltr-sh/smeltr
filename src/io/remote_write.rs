@@ -1120,14 +1120,21 @@ impl RemoteWrite {
         timeseries
     }
 
+    /// Remembers a family's metadata as its row is admitted, before any shard sends, so every shard's 2.0 requests
+    /// carry it.
+    fn remember(&self, metadata: &MetricMetadata) {
+        if self.version == RemoteWriteVersion::V2 {
+            (self.families.lock().unwrap_or_else(std::sync::PoisonError::into_inner)).remember(metadata);
+        }
+    }
+
     /// `timeseries` as a 2.0 request, its strings each once in its table, and each series carrying its family's
     /// metadata where this destination knows it, `items`' own the latest.
     fn v2(&self, items: &[Item], timeseries: Vec<TimeSeries>) -> RequestV2 {
-        let mut families = self.families.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let families = self.families.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         // The request's own metadata goes whatever the remembered families' bounds evict.
         let mut own: HashMap<&str, &MetricMetadata> = HashMap::new();
         for metadata in items.iter().filter_map(|item| item.metadata.as_ref()) {
-            families.remember(metadata);
             own.insert(&metadata.metric_family_name, metadata);
         }
         let known = |family: &str| own.get(family).copied().or_else(|| families.by_name.get(family));
@@ -1322,11 +1329,13 @@ impl Protocol for RemoteWrite {
         let exemplar_items = fields.exemplars.and_then(Value::items).unwrap_or_default();
         // Only a row of no time is metadata: one with a time and nothing at it is a point missing its value.
         if fields.time.is_none() && fields.value.is_none() && exemplar_items.is_empty() {
+            let metadata = metadata(&fields, &name)?;
+            self.remember(&metadata);
             return Ok(Item {
                 points: Vec::new(),
                 time: METADATA_TIME,
                 start: 0,
-                metadata: Some(metadata(&fields, &name)?),
+                metadata: Some(metadata),
                 series: 0,
             });
         }
@@ -1378,6 +1387,7 @@ impl Protocol for RemoteWrite {
         } else {
             Some(metadata(&fields, &name)?)
         };
+        metadata.iter().for_each(|m| self.remember(m));
         let mut labels = vec![(NAME_LABEL.to_string(), name.clone())];
         if let Some(attributes) = fields.attributes {
             let attributes = attributes
@@ -2849,6 +2859,18 @@ mod tests {
             .map(|m| m.metric_family_name.len() + m.help.len() + m.unit.len())
             .sum();
         assert_eq!(families.bytes, held);
+    }
+
+    /// Shards send at once, so a family's metadata in one shard's request must reach its points in another's.
+    #[test]
+    fn a_2_0_family_s_metadata_reaches_points_sent_before_it() {
+        let protocol = protocol_of(RemoteWriteVersion::V2);
+        protocol
+            .admit(&row(r#"{"name":"up","type":"gauge","description":"d"}"#))
+            .unwrap();
+        let point = protocol.admit(&row(r#"{"time":"1970-01-01T00:00:02Z","name":"up","value":1}"#));
+        let (_, series) = sent_v2(&protocol, &[point.unwrap()]);
+        assert_eq!(series[0].2.as_ref().map(|m| m.1.as_str()), Some("d"));
     }
 
     #[test]
