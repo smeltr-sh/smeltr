@@ -1055,7 +1055,7 @@ fn free_port() -> u16 {
 }
 
 /// The worker-local credentials the declarations name, as the worker's environment holds them.
-const SECRETS: &[(&str, &str)] = &[
+pub const SECRETS: &[(&str, &str)] = &[
     ("SM_RECEIVER_TOKEN", RECEIVER_TOKEN),
     ("SM_AWS_ID", "test"),
     ("SM_AWS_KEY", "test"),
@@ -1982,7 +1982,7 @@ mod azure {
 
     /// A signature for every service and permission of the account, signed with `KEY`, for the harness's own
     /// requests.
-    const SAS: &str = "sv=2021-08-06&ss=bq&srt=sco&sp=racwdlup&se=2099-01-01T00%3A00%3A00Z&spr=https%2Chttp&\
+    pub const SAS: &str = "sv=2021-08-06&ss=bq&srt=sco&sp=racwdlup&se=2099-01-01T00%3A00%3A00Z&spr=https%2Chttp&\
                        sig=%2BMnHWtCOrvDBlW0BOdq7P%2BNdl9UZ3hedCH6rBnGFXq0%3D";
 
     fn container(at: &str, container: &str) {

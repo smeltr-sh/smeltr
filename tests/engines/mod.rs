@@ -194,6 +194,10 @@ enum Out {
     Prometheus,
     /// OpenTelemetry logs over HTTP, to the harness's sink.
     Otlp,
+    /// Objects, to an S3 the harness starts.
+    S3,
+    /// Blobs, to an Azure Blob Storage emulator the harness starts.
+    AzureBlob,
 }
 
 impl Out {
@@ -205,6 +209,8 @@ impl Out {
             Out::SplunkHec => "splunk-hec",
             Out::Prometheus => "prometheus",
             Out::Otlp => "otlp",
+            Out::S3 => "s3",
+            Out::AzureBlob => "azure-blob",
         }
     }
 }
@@ -249,6 +255,15 @@ const TRANSPORTS: &[Transport] = &[
     Transport {
         from: In::Http,
         to: Out::SplunkHec,
+    },
+    Transport {
+        from: In::Http,
+        to: Out::S3,
+    },
+    // Not GCS: its emulator refuses the multipart uploads smeltr writes an object of more than one part with.
+    Transport {
+        from: In::Http,
+        to: Out::AzureBlob,
     },
     // Only samples leave as samples, and only OpenTelemetry's records as its records.
     Transport {
@@ -295,7 +310,7 @@ impl Ends {
     fn give_to(&self) -> Option<Out> {
         match self.give {
             Give::Sink { to, .. } => Some(to),
-            Give::Kafka { .. } => None,
+            Give::Kafka { .. } | Give::Store(_) => None,
         }
     }
 
@@ -323,6 +338,8 @@ enum Give {
         url: String,
         to: Out,
     },
+    /// An object store the run started.
+    Store(stores::Store),
     Kafka {
         brokers: String,
         topic: String,
@@ -353,8 +370,8 @@ const WORKLOADS: &[Workload] = &[
         expect: |line| serde_json::from_str(line).ok(),
         normal: |doc| doc,
         forwards: true,
-        // And each source delivering to the sink, and each protocol of its own records to itself.
-        over: |t| t.from != In::Http || t.to == Out::Http,
+        // And each source delivering to the sink, each protocol of its own records to itself, and each store of lines.
+        over: |t| !matches!(t.to, Out::Elasticsearch | Out::SplunkHec),
     },
     Workload {
         name: "json",
@@ -365,8 +382,8 @@ const WORKLOADS: &[Workload] = &[
         expect: |line| serde_json::from_str(line).ok(),
         normal: |doc| doc,
         forwards: false,
-        // Each destination, a document each record, taken from the sender.
-        over: |t| t.from == In::Http && !matches!(t.to, Out::Http | Out::Kafka),
+        // Each destination of documents, a document each record, taken from the sender.
+        over: |t| matches!(t.to, Out::Elasticsearch | Out::SplunkHec),
     },
     Workload {
         name: "json_app",
@@ -508,6 +525,13 @@ fn rows() -> u64 {
 /// Each engine warms for this long and for a tenth of its rows, whichever is longer: the JVM engines compile their
 /// hot paths as they run.
 const WARM_SECS: u64 = 20;
+
+/// Seconds an engine keeps adding to an object before it writes it: smeltr's file interval, Vector's batch timeout.
+const STORE_SECS: u64 = 5;
+
+/// The longest a run may take, its warm-up, timing and delivering what it took. The slowest takes a few minutes; one
+/// that takes this long is failing.
+const RUN_LIMIT: Duration = Duration::from_secs(20 * 60);
 
 /// Records the check sends each engine.
 const CHECK_ROWS: u64 = 20_000;
@@ -849,8 +873,7 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
                     &format!("SMELTR_GUI_PORT={}", free_port()),
                 ])
                 .args(["-e", &format!("SMELTR_WORKER_THREAD_LIMIT={cores}")])
-                .args(["-e", &format!("SM_RECEIVER_TOKEN={RECEIVER_TOKEN}")])
-                .args(["-e", &format!("SM_HEC_TOKEN={RECEIVER_TOKEN}")])
+                .args(SECRETS.iter().flat_map(|(k, v)| ["-e".to_string(), format!("{k}={v}")]))
                 .args([engine.image(), "/usr/local/bin/smeltr"]);
         }
         Engine::Logstash => {
@@ -941,13 +964,31 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
                             "acknowledgement": "receipt", "index": "main"}),
                     Out::Prometheus => json!({"id": "out", "type": "prometheus", "url": format!("{url}/api/v1/write")}),
                     Out::Otlp => json!({"id": "out", "type": "otlp", "url": url}),
-                    Out::Kafka => unreachable!("Kafka is a broker"),
+                    Out::Kafka | Out::S3 | Out::AzureBlob => unreachable!("{to:?} is no sink"),
                 },
                 Give::Kafka { brokers, topic } => {
                     json!({"id": "out", "type": "kafka", "brokers": brokers, "defaultTopic": topic})
                 }
+                Give::Store(store) => {
+                    // Its files are finished as often as Vector's batches, so neither holds the run's last records
+                    // for the minutes each holds them by default.
+                    let common = json!({"id": "out", "fileIntervalSecs": STORE_SECS});
+                    let mut d = match store.to {
+                        Out::S3 => json!({"type": "s3", "bucket": store.bucket, "region": "us-east-1",
+                                "endpoint": store.url, "accessKeyId": "SM_AWS_ID", "secretAccessKey": "SM_AWS_KEY"}),
+                        _ => json!({"type": "azureBlob", "container": store.bucket, "account": stores::ACCOUNT,
+                                "endpoint": store.url, "accessKey": "SM_AZ_KEY"}),
+                    };
+                    d.as_object_mut().unwrap().extend(common.as_object().unwrap().clone());
+                    d
+                }
             };
-            if w.forwards && matches!(ends.give, Give::Kafka { .. } | Give::Sink { to: Out::Http, .. }) {
+            if w.forwards
+                && matches!(
+                    ends.give,
+                    Give::Kafka { .. } | Give::Sink { to: Out::Http, .. } | Give::Store(_)
+                )
+            {
                 match ends.from() {
                     // A sample is a record of fields, which only JSON writes.
                     In::Prometheus => {}
@@ -1113,11 +1154,27 @@ mod vector {
                     json!({"type": "opentelemetry", "protocol": {"type": "http", "uri": format!("{url}/v1/logs"),
                        "method": "post", "encoding": {"codec": "otlp"}}})
                 }
-                Out::Kafka => unreachable!("Kafka is a broker"),
+                Out::Kafka | Out::S3 | Out::AzureBlob => unreachable!("{to:?} is no sink"),
             },
             Give::Kafka { brokers, topic } => {
                 json!({"type": "kafka", "bootstrap_servers": brokers, "topic": topic, "encoding": {"codec": encoding},
                        "acknowledgements": {"enabled": true}})
+            }
+            // Both its batches and smeltr's files end every `STORE_SECS`, and are gzipped, as both do by default.
+            Give::Store(store) => {
+                let common = json!({"encoding": {"codec": "text"}, "framing": {"method": "newline_delimited"},
+                       "batch": {"timeout_secs": STORE_SECS}, "healthcheck": {"enabled": false}});
+                let mut sink = match store.to {
+                    Out::S3 => json!({"type": "aws_s3", "bucket": store.bucket, "region": "us-east-1",
+                           "endpoint": store.url, "auth": {"access_key_id": "test", "secret_access_key": "test"}}),
+                    _ => json!({"type": "azure_blob", "container_name": store.bucket,
+                           "connection_string": format!("DefaultEndpointsProtocol=http;AccountName={0};AccountKey={1};\
+                                BlobEndpoint={2};", stores::ACCOUNT, azure::KEY, store.url)}),
+                };
+                sink.as_object_mut()
+                    .unwrap()
+                    .extend(common.as_object().unwrap().clone());
+                sink
             }
         };
         // Each event is what its source read, with what the source knows of it kept apart, as smeltr keeps it.
@@ -1144,7 +1201,7 @@ mod vector {
 impl Ends {
     /// `transport`'s ends for `run`: what it takes from `topic` when it takes from Kafka, and what it gives to `sink`
     /// or to a topic of its own, which this makes.
-    fn new(transport: Transport, run: &str, sink: &Sink, broker: Option<&Broker>, topic: &str) -> Ends {
+    fn new(transport: Transport, run: &str, sink: &Sink, broker: Option<&Broker>, topic: &str, rest: &[usize]) -> Ends {
         let take = match transport.from {
             In::Http | In::Hec | In::Otlp | In::Prometheus | In::Syslog => Take::Listen {
                 port: free_port(),
@@ -1161,6 +1218,7 @@ impl Ends {
                 url: format!("http://127.0.0.1:{}", sink.port),
                 to: transport.to,
             },
+            Out::S3 | Out::AzureBlob => Give::Store(stores::Store::start(transport.to, run, rest)),
             Out::Kafka => {
                 let broker = broker.expect("a broker");
                 broker.create(&format!("{run}-out"));
@@ -1197,6 +1255,7 @@ impl<'a> Delivered<'a> {
         match self.give {
             Give::Sink { .. } => self.sink.rows(),
             Give::Kafka { topic, .. } => self.broker.unwrap().count(self.consumer.as_ref().unwrap(), topic),
+            Give::Store(store) => store.count(),
         }
     }
 
@@ -1205,12 +1264,18 @@ impl<'a> Delivered<'a> {
         match self.give {
             Give::Sink { .. } => self.sink.kept.as_ref().unwrap().lock().unwrap().drain(..).collect(),
             Give::Kafka { topic, .. } => self.broker.unwrap().read(topic, self.count()),
+            Give::Store(store) => store.read(),
         }
     }
 
-    /// Whether it is slow to count, so the harness counts it less often.
-    fn remote(&self) -> bool {
-        !matches!(self.give, Give::Sink { .. })
+    /// How long to wait between counts: a broker or a store is asked over the network, and a store's objects are
+    /// read whole.
+    fn pause(&self) -> Duration {
+        match self.give {
+            Give::Sink { .. } => Duration::ZERO,
+            Give::Kafka { .. } => Duration::from_millis(50),
+            Give::Store(_) => Duration::from_secs(1),
+        }
     }
 }
 
@@ -1228,12 +1293,13 @@ fn made(
     w: &Workload,
     run: &str,
     cpus: &[usize],
+    rest: &[usize],
     transport: Transport,
     broker: Option<&Broker>,
 ) -> Vec<Value> {
     let want = (0..CHECK_ROWS).filter(|&i| (w.expect)(&line(i)).is_some()).count() as u64;
     let sink = Sink::keeping();
-    let ends = Ends::new(transport, run, &sink, broker, CHECK_TOPIC);
+    let ends = Ends::new(transport, run, &sink, broker, CHECK_TOPIC, rest);
     let delivered = Delivered::new(&ends.give, &sink, broker);
     let running = start(engine, w, run, cpus, &ends);
     let _sender = running
@@ -1253,9 +1319,7 @@ fn made(
             if polls % 200 == 0 {
                 running.container.check(run);
             }
-            if delivered.remote() {
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            std::thread::sleep(delivered.pause());
         },
     );
     // Late extras would show here.
@@ -1275,7 +1339,15 @@ const FINITE: u64 = 3;
 
 /// Panics unless the documents `engine` makes of the first `CHECK_ROWS` records are those `workload` must make, no
 /// more and no fewer, in any order.
-fn check(engine: Engine, w: &Workload, run: &str, cpus: &[usize], transport: Transport, broker: Option<&Broker>) {
+fn check(
+    engine: Engine,
+    w: &Workload,
+    run: &str,
+    cpus: &[usize],
+    rest: &[usize],
+    transport: Transport,
+    broker: Option<&Broker>,
+) {
     let from = transport.from;
     let mut want: Vec<String> = (0..CHECK_ROWS)
         .filter_map(|i| {
@@ -1287,7 +1359,7 @@ fn check(engine: Engine, w: &Workload, run: &str, cpus: &[usize], transport: Tra
         })
         .map(|d| canonical(&d))
         .collect();
-    let mut got: Vec<String> = made(engine, w, run, cpus, transport, broker)
+    let mut got: Vec<String> = made(engine, w, run, cpus, rest, transport, broker)
         .into_iter()
         .map(|d| canonical(&from.normal((w.normal)(d))))
         .collect();
@@ -1315,7 +1387,7 @@ struct Timed {
     cpu: f64,
     /// The most memory the container held, from its start.
     peak: u64,
-    /// Cores the broker used, on average, under Kafka.
+    /// Cores the service at the other end used, on average: the broker under Kafka, or a store.
     broker: f64,
     /// How busy the harness's cores were, the broker's included: near 100%, the harness, not the engine, set the
     /// row's speed.
@@ -1337,7 +1409,7 @@ fn time(
     let kept_of = |from: u64, n: u64| (from..from + n).filter(|&i| (w.expect)(&line(i)).is_some()).count() as u64;
     let keeps = |n: u64| kept_of(0, n) as f64 / n as f64;
     let sink = Sink::start();
-    let ends = Ends::new(transport, run, &sink, broker, INPUT_TOPIC);
+    let ends = Ends::new(transport, run, &sink, broker, INPUT_TOPIC, rest);
     let delivered = Delivered::new(&ends.give, &sink, broker);
     // A stream of lines, like a topic, is as long as a topic is seeded.
     let (kept, most) = match ends.take {
@@ -1363,15 +1435,15 @@ fn time(
     let mut polls = 0;
     let mut each = || {
         polls += 1;
+        // A destination that keeps failing still moves a few records, so no stall shows it.
+        assert!(began.elapsed() < RUN_LIMIT, "{run}: not done in {RUN_LIMIT:?}");
         if polls % 200 == 0 {
             running.container.check(run);
             if let Some(b) = broker {
                 b.container.check("the broker");
             }
         }
-        if delivered.remote() {
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        std::thread::sleep(delivered.pause());
     };
     let window = (rows as f64 * kept) as u64;
     wait_for(
@@ -1385,7 +1457,11 @@ fn time(
         std::thread::sleep(Duration::from_millis(100));
         each();
     }
-    let peer = |b: Option<&Broker>| b.map_or(0.0, |b| b.container.usage().0);
+    // The service at the other end, the broker or the store, whose cores the harness's are.
+    let peer = |b: Option<&Broker>| match &ends.give {
+        Give::Store(store) => store.container.usage().0,
+        _ => b.map_or(0.0, |b| b.container.usage().0),
+    };
     let (at, docs, (cpu, _), b_cpu, idle_before) = (
         Instant::now(),
         count(),
@@ -1499,7 +1575,7 @@ fn speed() {
             let run = format!("es-check-{}-{}-{}-{id}", w.name, t.label(), e.label());
             let fewest = *counts.iter().min().unwrap();
             if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                check(e, w, &run, &on(fewest), t, broker.as_ref())
+                check(e, w, &run, &on(fewest), &rest, t, broker.as_ref())
             })) {
                 let why = panic_message(&panic);
                 println!("{:<12} {:<6} {:<9} check failed: {why}", w.name, t.label(), e.label());
@@ -1533,7 +1609,7 @@ fn speed() {
                     .map_err(|p| panic_message(&p));
                     match &result {
                         Ok(r) => println!(
-                            "{:<12} {:<6} {:<9} {n:>2} cores {:>9.0} records/s  cpu {:>5.2}  peak {:>6.0} MB  broker {:>5.2}  \
+                            "{:<12} {:<6} {:<9} {n:>2} cores {:>9.0} records/s  cpu {:>5.2}  peak {:>6.0} MB  service {:>5.2}  \
                              harness {:>3.0}%",
                             w.name,
                             t.label(),
@@ -1578,7 +1654,7 @@ fn table(
 ) -> String {
     let mut out = String::from(
         "| Pipeline | Transport | Engine | Cores | records/s | Spread | records/s per core used | Cores used | Peak memory | \
-         Broker cores | Harness busy |\n|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|\n",
+         Service cores | Harness busy |\n|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|\n",
     );
     let one_line = |why: &str| why.replace('|', "/").replace('\n', " ");
     for &case in cases {
@@ -1606,7 +1682,7 @@ fn table(
                 ok.sort_by(|a, b| a.rows_per_sec.total_cmp(&b.rows_per_sec));
                 let median = ok[ok.len() / 2];
                 let spread = (ok[ok.len() - 1].rows_per_sec - ok[0].rows_per_sec) / median.rows_per_sec;
-                let broker = if t.kafka() {
+                let broker = if t.kafka() || matches!(t.to, Out::S3 | Out::AzureBlob) {
                     format!("{:.2}", median.broker)
                 } else {
                     String::new()
@@ -1869,6 +1945,7 @@ mod nifi {
         let failed: &[&str] = match ends.give {
             Give::Sink { .. } => &["Retry", "No Retry", "Failure"],
             Give::Kafka { .. } => &["failure"],
+            Give::Store(_) => unreachable!("NiFi runs HTTP and Kafka alone"),
         };
         api.connect(&produce, &produce, failed);
         match Engine::Nifi.pipeline(w, "groovy") {
@@ -1912,5 +1989,238 @@ mod nifi {
             &format!("/flow/process-groups/{root}"),
             Some(json!({"id": root, "state": "RUNNING"})),
         );
+    }
+}
+
+/// The object stores the harness starts for a run, each on the harness's cores, keeping what it is given in memory,
+/// and how the harness reads back what an engine wrote there.
+mod stores {
+    use super::*;
+
+    pub struct Store {
+        pub container: Container,
+        pub to: Out,
+        /// Where an engine reaches it: an S3 endpoint, or an Azure account's address.
+        pub url: String,
+        /// The bucket, or the container, the engine writes to.
+        pub bucket: String,
+        /// The objects counted, and the records in them.
+        counted: std::sync::Mutex<(std::collections::HashSet<String>, u64)>,
+    }
+
+    /// Azure's account in its emulator.
+    pub const ACCOUNT: &str = "devstoreaccount1";
+
+    impl Store {
+        /// Starts `to`'s store for `run` on `cpus`, and makes its bucket.
+        pub fn start(to: Out, run: &str, cpus: &[usize]) -> Store {
+            let port = free_port();
+            let mut docker = container(&format!("{run}-store"), cpus, env_or("ENGINE_BROKER_MEMORY_GB", 8));
+            let url = match to {
+                // SeaweedFS serves S3 from every core it has, where LocalStack serves it from about one. With no
+                // identities configured it takes any request, signed or not.
+                Out::S3 => {
+                    // Its master, volume and filer take ports of their own, and gRPC ports 10000 above each.
+                    let low = || loop {
+                        let p = free_port();
+                        if p < 55_000 {
+                            break p;
+                        }
+                    };
+                    let port = low();
+                    docker.args(["--tmpfs", "/data"]).args([
+                        "chrislusf/seaweedfs:4.52",
+                        "server",
+                        "-s3",
+                        "-dir=/data",
+                        "-ip=127.0.0.1",
+                        "-ip.bind=127.0.0.1",
+                    ]);
+                    docker.arg(format!("-s3.port={port}"));
+                    for flag in ["-master.port", "-volume.port", "-filer.port"] {
+                        docker.arg(format!("{flag}={}", low()));
+                    }
+                    format!("http://127.0.0.1:{port}")
+                }
+                Out::AzureBlob => {
+                    docker.args([
+                        "mcr.microsoft.com/azure-storage/azurite:3.35.0",
+                        "azurite-blob",
+                        "--blobHost",
+                        "127.0.0.1",
+                        "--blobPort",
+                        &port.to_string(),
+                        "--inMemoryPersistence",
+                        "--skipApiVersionCheck",
+                    ]);
+                    format!("http://127.0.0.1:{port}/{ACCOUNT}")
+                }
+                _ => unreachable!("{to:?} is no store"),
+            };
+            let store = Store {
+                container: Container::run(docker, &format!("{run}: the store")),
+                to,
+                url,
+                bucket: "bench".into(),
+                counted: Default::default(),
+            };
+            let deadline = Instant::now() + PATIENCE;
+            loop {
+                store.container.check("the store");
+                let made = match to {
+                    Out::S3 => fetch("PUT", &format!("{}/{}", store.url, store.bucket), &[], Vec::new()),
+                    _ => fetch(
+                        "PUT",
+                        &format!("{}/{}?restype=container&{}", store.url, store.bucket, azure::SAS),
+                        &[],
+                        Vec::new(),
+                    ),
+                };
+                if made.is_some() {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "{run}: the store never made its bucket");
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            store
+        }
+
+        /// Every object's name.
+        fn names(&self) -> Vec<String> {
+            let mut names = Vec::new();
+            let mut next = String::new();
+            loop {
+                let page = match self.to {
+                    Out::S3 => {
+                        let token = if next.is_empty() {
+                            String::new()
+                        } else {
+                            format!("&continuation-token={}", encode(&next))
+                        };
+                        fetch(
+                            "GET",
+                            &format!("{}/{}?list-type=2{token}", self.url, self.bucket),
+                            &[],
+                            Vec::new(),
+                        )
+                    }
+                    _ => fetch(
+                        "GET",
+                        &format!(
+                            "{}/{}?restype=container&comp=list&marker={}&{}",
+                            self.url,
+                            self.bucket,
+                            encode(&next),
+                            azure::SAS
+                        ),
+                        &[],
+                        Vec::new(),
+                    ),
+                }
+                .expect("the store lists its objects");
+                let page = String::from_utf8_lossy(&page).into_owned();
+                next = match self.to {
+                    Out::S3 => {
+                        names.extend(tags(&page, "Key"));
+                        tags(&page, "NextContinuationToken")
+                            .into_iter()
+                            .next()
+                            .unwrap_or_default()
+                    }
+                    _ => {
+                        names.extend(tags(&page, "Name"));
+                        tags(&page, "NextMarker").into_iter().next().unwrap_or_default()
+                    }
+                };
+                if next.is_empty() {
+                    return names;
+                }
+            }
+        }
+
+        /// Object `name`'s lines, ungzipped: every engine gzips what it writes, as each does by default.
+        fn lines(&self, name: &str) -> Vec<u8> {
+            let url = match self.to {
+                Out::S3 => format!("{}/{}/{name}", self.url, self.bucket),
+                _ => format!("{}/{}/{name}?{}", self.url, self.bucket, azure::SAS),
+            };
+            let (body, _) =
+                fetched("GET", &url, &[], Vec::new()).unwrap_or_else(|| panic!("the store does not give {name}"));
+            assert!(body.starts_with(&[0x1f, 0x8b]), "{name} is not gzipped");
+            let mut lines = Vec::new();
+            flate2::read::MultiGzDecoder::new(body.as_slice())
+                .read_to_end(&mut lines)
+                .expect("gzip");
+            lines
+        }
+
+        /// Records in the objects written so far: each object is read once, when it is first listed.
+        pub fn count(&self) -> u64 {
+            let names = self.names();
+            let mut counted = self.counted.lock().unwrap();
+            for name in names {
+                if !counted.0.contains(&name) {
+                    let lines = self.lines(&name);
+                    counted.1 += lines.iter().filter(|&&b| b == b'\n').count() as u64;
+                    counted.0.insert(name);
+                }
+            }
+            counted.1
+        }
+
+        /// Every record written, each line read as JSON, or as its text where it is not.
+        pub fn read(&self) -> Vec<Value> {
+            let mut docs = Vec::new();
+            for name in self.names() {
+                let lines = self.lines(&name);
+                docs.extend(lines.split(|&b| b == b'\n').filter(|l| !l.is_empty()).map(|l| {
+                    serde_json::from_slice(l).unwrap_or_else(|_| Value::String(String::from_utf8_lossy(l).into_owned()))
+                }));
+            }
+            docs
+        }
+    }
+
+    /// The text of each `<tag>` in `xml`.
+    fn tags(xml: &str, tag: &str) -> Vec<String> {
+        let (open, close) = (format!("<{tag}>"), format!("</{tag}>"));
+        xml.split(&open)
+            .skip(1)
+            .filter_map(|s| s.split_once(&close).map(|(t, _)| t.replace("&amp;", "&")))
+            .collect()
+    }
+
+    fn encode(s: &str) -> String {
+        s.bytes()
+            .map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+                _ => format!("%{b:02X}"),
+            })
+            .collect()
+    }
+
+    /// The body of a request that succeeded, or `None`.
+    fn fetch(method: &str, url: &str, headers: &[(&str, &str)], body: Vec<u8>) -> Option<Vec<u8>> {
+        fetched(method, url, headers, body).map(|f| f.0)
+    }
+
+    fn fetched(method: &str, url: &str, headers: &[(&str, &str)], body: Vec<u8>) -> Option<(Vec<u8>, bool)> {
+        // reqwest, built without its decompression, leaves a gzipped body and its header as they came.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let client = reqwest::Client::builder().timeout(PATIENCE).build().unwrap();
+            let mut request = client.request(method.parse().unwrap(), url).body(body);
+            for (name, value) in headers {
+                request = request.header(*name, *value);
+            }
+            let response = request.send().await.ok()?;
+            let ok = response.status().is_success() || response.status().as_u16() == 409;
+            let gzipped = response.headers().get("content-encoding").is_some_and(|e| e == "gzip");
+            let body = response.bytes().await.ok()?.to_vec();
+            ok.then_some((body, gzipped))
+        })
     }
 }
