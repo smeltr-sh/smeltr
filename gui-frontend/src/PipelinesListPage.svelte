@@ -147,7 +147,7 @@
     {/if}
   {:else}
     <div class="table-wrap">
-      <table>
+      <table class="readings">
         <thead>
           <tr>
             <th aria-sort={pipelineSort.aria('name')}
@@ -162,7 +162,7 @@
         <tbody>
           {#if sortedSharedPipelines.length > 0}
             <tr class="bandrow"
-              ><td colspan="3"
+              ><td class="whole" colspan="3"
                 >from shared/ &mdash; every worker group can call or route to these</td
               ></tr
             >
@@ -172,18 +172,18 @@
                   >{p.name}
                   <span class="shared-chip"><span class="shared-dot"></span>shared</span></td
                 >
-                <td class="dim">{p.steps.length}</td>
+                <td class="dim" data-label="Steps">{p.steps.length}</td>
                 <td class="row-actions">
                   <EditInShared hash="#/build/pipelines" />
                 </td>
               </tr>
             {/each}
-            <tr class="bandrow"><td colspan="3">this worker group</td></tr>
+            <tr class="bandrow"><td class="whole" colspan="3">this worker group</td></tr>
           {/if}
           {#each sortedPipelines as p (p.id)}
             <tr>
               <td><a href={pipelineHash(p.id)}>{p.name}</a></td>
-              <td class="dim">{p.steps.length}</td>
+              <td class="dim" data-label="Steps">{p.steps.length}</td>
               <td class="row-actions">
                 <Button
                   type="button"
@@ -271,31 +271,5 @@
 
   .toolbar {
     margin: 1.2rem 0;
-  }
-
-  .table-wrap {
-    overflow-x: auto;
-  }
-
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: var(--text-body);
-  }
-
-  th {
-    text-align: left;
-    font-size: var(--text-micro);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--dim);
-    border-bottom: 1px solid var(--border);
-    padding: 0.4rem 0.6rem;
-  }
-
-  td {
-    padding: 0.5rem 0.6rem;
-    border-bottom: 1px solid var(--border);
   }
 </style>

@@ -59,7 +59,13 @@ body {
   white-space: nowrap;
 }
 
-/* A table of readings: heads as uppercase labels, rows ruled apart, a `.num` column to the right. */
+/* A table of readings: heads as uppercase labels, rows ruled apart, a `.num` column to the right. The
+   width of its `.table-wrap` decides when the table is narrow. */
+:where(.table-wrap) {
+  container-type: inline-size;
+  overflow-x: auto;
+}
+
 :where(table.readings) {
   width: 100%;
   border-collapse: collapse;
@@ -74,6 +80,7 @@ body {
 }
 
 :where(table.readings th) {
+  white-space: nowrap;
   color: var(--dim);
   font-size: var(--text-micro);
   font-weight: 700;
@@ -128,6 +135,12 @@ body {
 
   :where(table.readings .whole) {
     flex-basis: 100%;
+  }
+
+  /* The row's actions end its last line at their own width, not the 1% their column gets on a wide table. */
+  table.readings td.row-actions {
+    width: auto;
+    margin-left: auto;
   }
 }
 
