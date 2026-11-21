@@ -347,12 +347,6 @@ export function stepLine(raw: Record<string, unknown>, pipelineNames: PipelineNa
   switch (raw.type) {
     case 'code':
       return oneLine(str('body'));
-    case 'lookup': {
-      const outputs = Array.isArray(raw.outputs)
-        ? raw.outputs.map((o) => (isRecord(o) && typeof o.field === 'string' ? o.field : '…'))
-        : [];
-      return `${str('table') || '…'}  ${str('input') || '…'} → ${outputs.join(', ') || '…'}`;
-    }
     case 'drop':
       return oneLine(str('condition'));
     case 'if':

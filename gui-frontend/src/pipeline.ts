@@ -708,7 +708,7 @@ export function stepSummary(step: Step, pipelineNames: PipelineNames): string {
     case 'parser':
       return `${step.input || '_raw'} as ${PARSER_FORMAT_NAMES[step.kind.type]}${shownInto(step.into) ? ` into ${shownInto(step.into)}` : ''}${step.declared.length ? ` (${step.declared.length} declared)` : ''}`;
     case 'lookup':
-      return `${step.input || '…'} → ${step.outputs.map((o) => o.field || '…').join(', ') || '(no outputs)'}`;
+      return `${step.table || '…'}  ${step.input || '…'} → ${step.outputs.map((o) => o.field || '…').join(', ') || '(no outputs)'}`;
     case 'unroll':
       return `${step.field || '(no field)'}${step.keepParentFields ? ' (keeps parent fields)' : ''}`;
     case 'call':
