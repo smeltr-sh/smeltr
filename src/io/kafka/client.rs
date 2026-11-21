@@ -266,6 +266,9 @@ fn client_config(config: &KafkaSourceConfig, secrets: &HeldSecrets) -> Result<Cl
         .set("enable.auto.commit", "false")
         // The client's queue, before its records are routed to each source's inbox.
         .set("queued.max.messages.kbytes", (config.fetch_bytes / 1024).to_string())
+        // librdkafka's default waits a second to fetch again once that queue is full, which idles a source whose
+        // transform drains it in less: Kafka passthrough on one core went from 181k to 306k rows a second.
+        .set("fetch.queue.backoff.ms", "10")
         // One fetch may carry half the queue, so a fetch always lands with room behind it. Both caps the same:
         // one hot partition may fill a fetch, and the request cap is what bounds the whole. What one round trip
         // to the broker brings back follows from `fetchBytes` and nothing else. The queue bound above is where

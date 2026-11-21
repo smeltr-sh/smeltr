@@ -23,6 +23,7 @@
 //! `CONNECTOR_PIN=off` pins nothing: every thread and service shares every core, as on a worker sized to its host.
 #![cfg(target_os = "linux")]
 
+mod engines;
 mod live;
 mod panos;
 mod reference;
@@ -796,10 +797,57 @@ impl Usage {
     }
 }
 
-/// Waits until `count` reaches `want`, failing once it has not moved for `PATIENCE`.
+/// The least free disk a run runs with. Engines and peers that spill to disk slow as it fills, so a run with less
+/// would measure the disk.
+const LEAST_FREE_DISK: u64 = 5_000_000_000;
+
+/// The bytes free on the fuller of the disks holding `target/`, where data is bind-mounted, and Docker's storage,
+/// where the containers' layers and volumes are.
+fn free_disk() -> u64 {
+    static DOCKER: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let docker = DOCKER.get_or_init(|| {
+        let out = Command::new("docker")
+            .args(["info", "-f", "{{.DockerRootDir}}"])
+            .output()
+            .ok()?;
+        Some(String::from_utf8(out.stdout).ok()?.trim().to_string()).filter(|d| !d.is_empty())
+    });
+    let free = |path: &std::path::Path| {
+        let out = Command::new("df")
+            .args(["-B1", "--output=avail"])
+            .arg(path)
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .nth(1)?
+            .trim()
+            .parse::<u64>()
+            .ok()
+    };
+    let target = free(&repo().join("target")).expect("df gives the free bytes of target/");
+    // Docker's root may be out of this user's reach, as it is under a rootless or remote daemon.
+    docker
+        .as_deref()
+        .and_then(|d| free(d.as_ref()))
+        .map_or(target, |d| d.min(target))
+}
+
+/// Waits until `count` reaches `want`, failing once it has not moved for `PATIENCE` or the disk is nearly full.
 fn wait_for(what: &str, want: u64, count: impl Fn() -> u64, mut each: impl FnMut()) {
     let (mut last, mut moved) = (count(), Instant::now());
+    let mut checked = Instant::now() - Duration::from_secs(1);
     loop {
+        if checked.elapsed() >= Duration::from_secs(1) {
+            let free = free_disk();
+            assert!(
+                free >= LEAST_FREE_DISK,
+                "{what}: only {:.1} GB of disk free, under the {} GB a run needs",
+                free as f64 / 1e9,
+                LEAST_FREE_DISK / 1_000_000_000
+            );
+            checked = Instant::now();
+        }
         let n = count();
         if n >= want {
             return;
@@ -1089,34 +1137,7 @@ impl Smeltr {
 
     /// Deploys `source` routed unchanged to `destination`, as approving a change does.
     fn deploy(&self, source: Value, destination: Value) {
-        use smeltr::leader::git;
-        let repo = git::repo_path(&self.data_dir);
-        let parent = git::main_head(&repo).expect("main has a commit");
-        let file = |path: &str, content: String| git::FileEdit {
-            path: format!("groups/standalone/{path}"),
-            content: Some(content.into_bytes()),
-        };
-        let edits = [
-            file("system.json", json!({"version": 1}).to_string()),
-            file("sources.json", json!([source]).to_string()),
-            file("destinations.json", json!([destination]).to_string()),
-            file(
-                "pipelines/p.json",
-                json!({"id": "p", "name": "p", "steps": []}).to_string(),
-            ),
-            file(
-                "routes.json",
-                json!([{"id": "r", "source": "in", "pipeline": "p", "deliver": [{"to": ["out"]}]}]).to_string(),
-            ),
-        ];
-        let actor = smeltr::leader::store::Actor::system();
-        let git::Committed::At(commit) =
-            git::commit_edits(&repo, "main", &parent, Some(&parent), &edits, "connector speed", &actor)
-                .expect("the commit")
-        else {
-            panic!("the commit did not land");
-        };
-        git::deploy_commit(&self.data_dir, &commit, &actor).expect("the deploy");
+        deploy(&self.data_dir, source, destination, json!([]));
     }
 
     /// Waits until the receiver on `port` takes connections. Its supervisor binds the port before the runtime serves
@@ -1191,6 +1212,39 @@ impl Drop for Smeltr {
     }
 }
 
+/// Deploys to the leader in `data_dir` `source` routed through a pipeline of `steps` to `destination`, as approving a
+/// change does.
+fn deploy(data_dir: &std::path::Path, source: Value, destination: Value, steps: Value) {
+    use smeltr::leader::git;
+    let repo = git::repo_path(data_dir);
+    let parent = git::main_head(&repo).expect("main has a commit");
+    let file = |path: &str, content: String| git::FileEdit {
+        path: format!("groups/standalone/{path}"),
+        content: Some(content.into_bytes()),
+    };
+    let edits = [
+        file("system.json", json!({"version": 1}).to_string()),
+        file("sources.json", json!([source]).to_string()),
+        file("destinations.json", json!([destination]).to_string()),
+        file(
+            "pipelines/p.json",
+            json!({"id": "p", "name": "p", "steps": steps}).to_string(),
+        ),
+        file(
+            "routes.json",
+            json!([{"id": "r", "source": "in", "pipeline": "p", "deliver": [{"to": ["out"]}]}]).to_string(),
+        ),
+    ];
+    let actor = smeltr::leader::store::Actor::system();
+    let git::Committed::At(commit) =
+        git::commit_edits(&repo, "main", &parent, Some(&parent), &edits, "connector speed", &actor)
+            .expect("the commit")
+    else {
+        panic!("the commit did not land");
+    };
+    git::deploy_commit(data_dir, &commit, &actor).expect("the deploy");
+}
+
 fn children_of(pid: u32) -> Vec<u32> {
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return Vec::new();
@@ -1211,17 +1265,33 @@ struct Sink {
     port: u16,
     rows: Arc<AtomicU64>,
     bytes: Arc<AtomicU64>,
+    /// Every document that arrived, when started `keeping`.
+    kept: Option<Arc<std::sync::Mutex<Vec<Value>>>>,
+    /// Stops the server, and its threads with it, when the sink is dropped.
+    _stop: tokio::sync::oneshot::Sender<()>,
 }
 
 impl Sink {
     fn start() -> Sink {
+        Sink::with(None)
+    }
+
+    /// A sink that also keeps every document, to be checked.
+    fn keeping() -> Sink {
+        Sink::with(Some(Arc::default()))
+    }
+
+    fn with(kept: Option<Arc<std::sync::Mutex<Vec<Value>>>>) -> Sink {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let (rows, bytes) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
-        let (r, b) = (rows.clone(), bytes.clone());
+        let (r, b, k) = (rows.clone(), bytes.clone(), kept.clone());
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         std::thread::spawn(move || {
+            // As many as the harness's cores: a sink short of threads would set the speed of the row.
+            let threads = std::thread::available_parallelism().map_or(2, |n| n.get());
             let runtime = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
+                .worker_threads(threads)
                 .enable_all()
                 .build()
                 .unwrap();
@@ -1229,19 +1299,42 @@ impl Sink {
                 listener.set_nonblocking(true).unwrap();
                 let listener = tokio::net::TcpListener::from_std(listener).unwrap();
                 let app = axum::Router::new().fallback(move |body: axum::body::Bytes| {
-                    let (r, b) = (r.clone(), b.clone());
+                    let (r, b, k) = (r.clone(), b.clone(), k.clone());
                     async move {
-                        // A body of lines, the last with or without its newline.
-                        let lines = body.split(|c| *c == b'\n').filter(|l| !l.is_empty()).count();
-                        r.fetch_add(lines as u64, Ordering::Relaxed);
+                        // A JSON array of documents, or a body of lines, the last with or without its newline.
+                        let docs: Vec<&[u8]> = if body.first() == Some(&b'[') {
+                            serde_json::from_slice::<Vec<&serde_json::value::RawValue>>(&body)
+                                .map(|docs| docs.into_iter().map(|d| d.get().as_bytes()).collect())
+                                .unwrap_or_default()
+                        } else {
+                            body.split(|c| *c == b'\n').filter(|l| !l.is_empty()).collect()
+                        };
+                        r.fetch_add(docs.len() as u64, Ordering::Relaxed);
                         b.fetch_add(body.len() as u64, Ordering::Relaxed);
+                        if let Some(k) = k {
+                            let parsed = docs.iter().map(|d| serde_json::from_slice(d).unwrap_or(Value::Null));
+                            k.lock().unwrap().extend(parsed);
+                        }
                         axum::http::StatusCode::OK
                     }
                 });
-                axum::serve(listener, app).await.unwrap();
+                // Engines batch up to megabytes a request.
+                let app = app.layer(axum::extract::DefaultBodyLimit::disable());
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(async {
+                        let _ = stopped.await;
+                    })
+                    .await
+                    .unwrap();
             });
         });
-        Sink { port, rows, bytes }
+        Sink {
+            port,
+            rows,
+            bytes,
+            kept,
+            _stop: stop,
+        }
     }
 
     fn rows(&self) -> u64 {
@@ -1271,6 +1364,10 @@ fn bodies(push: &Push) -> Arc<Vec<Vec<u8>>> {
 /// records. Its threads stop when it is dropped.
 struct Sender {
     acked: Arc<AtomicU64>,
+    /// Requests answered, by the body each sent: what the receiver took, record for record.
+    sent: Arc<Vec<AtomicU64>>,
+    /// Threads still sending.
+    live: Arc<AtomicU64>,
     bytes: Arc<AtomicU64>,
     /// Requests answered busy: the receiver had more than it could take.
     busy: Arc<AtomicU64>,
@@ -1283,15 +1380,19 @@ impl Sender {
         let build = push.body;
         let next = Arc::new(AtomicU64::new(from));
         let (acked, bytes) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
+        let sent: Arc<Vec<AtomicU64>> = Arc::new(bodies.iter().map(|_| AtomicU64::new(0)).collect());
         let busy = Arc::new(AtomicU64::new(0));
         let authorization = push.authorization.replace("{}", RECEIVER_TOKEN);
         let said = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let live = Arc::new(AtomicU64::new(senders as u64));
         for _ in 0..senders {
-            let (bodies, next, acked, bytes, busy, said, stop) = (
+            let live = live.clone();
+            let (bodies, next, acked, sent, bytes, busy, said, stop) = (
                 bodies.clone(),
                 next.clone(),
                 acked.clone(),
+                sent.clone(),
                 bytes.clone(),
                 busy.clone(),
                 said.clone(),
@@ -1299,6 +1400,14 @@ impl Sender {
             );
             let (url, authorization, headers) = (url.to_string(), authorization.clone(), push.headers);
             std::thread::spawn(move || {
+                /// Counts the thread out however it returns.
+                struct Out(Arc<AtomicU64>);
+                impl Drop for Out {
+                    fn drop(&mut self) {
+                        self.0.fetch_sub(1, Ordering::Relaxed);
+                    }
+                }
+                let _out = Out(live);
                 let agent =
                     ureq::Agent::new_with_config(ureq::Agent::config_builder().http_status_as_error(false).build());
                 loop {
@@ -1309,14 +1418,16 @@ impl Sender {
                     let count = PER_REQUEST.min(to - at);
                     // A short last request is built for its own records, so it sends no more than it is credited.
                     let short;
+                    let which = (at / PER_REQUEST) as usize % bodies.len();
                     let body = if count == PER_REQUEST {
-                        &bodies[(at / PER_REQUEST) as usize % bodies.len()]
+                        &bodies[which]
                     } else {
                         short = build(at, count);
                         &short
                     };
-                    // Busy is the receiver's backpressure: ask again when it says, as a sender does. Asked sooner,
-                    // a full receiver spends its time refusing.
+                    // Busy is the receiver's backpressure: ask again when it says, as a sender does, or later each
+                    // time it says nothing. Asked sooner, a full receiver spends its time refusing.
+                    let mut backoff = Duration::from_millis(5);
                     loop {
                         if stop.load(Ordering::Relaxed) {
                             return;
@@ -1338,7 +1449,8 @@ impl Sender {
                                     .headers()
                                     .get("retry-after")
                                     .and_then(|v| v.to_str().ok()?.parse().ok());
-                                wait = after.map_or(wait, Duration::from_secs);
+                                wait = after.map_or(backoff, Duration::from_secs);
+                                backoff = (backoff * 2).min(Duration::from_secs(1));
                             }
                             // Said once: a refusal that is not busy will not pass on its own.
                             Ok(mut r) if !said.swap(true, Ordering::Relaxed) => {
@@ -1350,12 +1462,17 @@ impl Sender {
                         std::thread::sleep(wait);
                     }
                     acked.fetch_add(count, Ordering::Relaxed);
+                    if count == PER_REQUEST {
+                        sent[which].fetch_add(1, Ordering::Relaxed);
+                    }
                     bytes.fetch_add(body.len() as u64, Ordering::Relaxed);
                 }
             });
         }
         Sender {
             acked,
+            sent,
+            live,
             bytes,
             busy,
             stop,
@@ -1364,6 +1481,21 @@ impl Sender {
 
     fn acked(&self) -> u64 {
         self.acked.load(Ordering::Relaxed)
+    }
+
+    /// Requests answered for each body.
+    fn sent(&self) -> Vec<u64> {
+        self.sent.iter().map(|n| n.load(Ordering::Relaxed)).collect()
+    }
+
+    /// Threads still sending: none once `stop` has been called and every request in flight is answered.
+    fn running(&self) -> u64 {
+        self.live.load(Ordering::Relaxed)
+    }
+
+    /// Stops sending: no request starts after this, though those in flight may still be answered.
+    fn stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
     }
 
     fn busy(&self) -> u64 {
