@@ -799,8 +799,6 @@ fn per_file_edits<T: serde::Serialize>(
     edits
 }
 
-/// The tree a save would leave behind, without building one: `edits` laid over what the parent commit holds. A
-/// pending delete reads as absent, so a removed pipeline is gone from the listing as well as from the read.
 /// [`refuse_broken_merge_of`] for a save to `writing`'s area alone.
 fn refuse_broken_merge(writing: &Writing, edits: &[git::FileEdit]) -> Result<(), Envelope<Save>> {
     let part = Part {
@@ -816,6 +814,8 @@ struct Part<'a> {
     edits: &'a [git::FileEdit],
 }
 
+/// The tree a save would leave behind, without building one: `edits` laid over what the parent commit holds. A
+/// pending delete reads as absent, so a removed pipeline is gone from the listing as well as from the read.
 struct Pending<'a> {
     under: TreeFiles<'a>,
     edits: &'a [git::FileEdit],
@@ -3500,8 +3500,6 @@ mod tests {
         );
     }
 
-    /// What `shared/` exists for: a group wiring its own route to a source declared once, fleet-wide. A group's
-    /// save is judged against the merge, where that source is known.
     /// A branch where `shared/` holds source `fleet-audit`, pipeline `passthrough` and route `r1` from one to the
     /// other, beside groups `west` and `east`.
     fn a_repo_with_a_shared_route(label: &str) -> PathBuf {
@@ -3623,6 +3621,8 @@ mod tests {
         std::fs::remove_dir_all(&data).ok();
     }
 
+    /// What `shared/` exists for: a group wiring its own route to a source declared once, fleet-wide. A group's
+    /// save is judged against the merge, where that source is known.
     #[test]
     fn a_group_may_route_from_a_source_shared_declares() {
         let data = a_repo("route-into-shared");
