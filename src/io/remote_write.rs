@@ -66,11 +66,11 @@ use arrow_array::types::{Float64Type, Int64Type, TimestampMicrosecondType};
 use prost::Message;
 
 use super::http::{HttpTransport, Order, Outcome, Protocol, Response, Unwritten};
+use super::parquet::Columns;
 use super::prometheus::{
     BucketSpan, Exemplar, ExemplarV2, Histogram, HistogramCount, HistogramZeroCount, Label, MetadataV2, MetricMetadata,
     MetricType, NAME_LABEL, ResetHint, Sample, TimeSeries, TimeSeriesV2,
 };
-use super::parquet::Columns;
 use super::{IoError, OwnedRecord};
 use crate::core::column::DataType;
 use crate::format::json_scan::{Next, Reader};
@@ -152,6 +152,8 @@ pub struct Item {
     /// When its points' series started counting, in milliseconds since the epoch; 0 for unknown.
     start: i64,
     metadata: Option<MetricMetadata>,
+    /// A hash of the row's name and labels, which picks the requests its series go in: every row of a series has one.
+    series: u64,
 }
 
 /// The time of a row that is metadata alone. It has none, and a store orders no metadata against points, so it goes
@@ -200,6 +202,8 @@ pub struct RemoteWrite {
     unwritten: Option<Unwritten>,
     /// Each route's record, which a row's columns hold (`config_file::parquet_records`).
     records: Records,
+    /// The parts a row's series are spread over, each sent one request at a time.
+    parts: usize,
 }
 
 impl RemoteWrite {
@@ -211,6 +215,7 @@ impl RemoteWrite {
             families: Arc::default(),
             unwritten: None,
             records: Records::default(),
+            parts: config.in_flight.max(1),
         }
     }
 
@@ -258,13 +263,15 @@ pub fn open(
     let config = super::http::agent_config(c.tls.as_ref(), secrets)?;
     let protocol = (RemoteWrite::new(c).with_unwritten(Unwritten::new(metrics.clone(), id, name)))
         .with_records(records.cloned().unwrap_or_default());
-    // No senders: every request goes from this thread, so one lands before the next is sent.
+    let make = || transport(c, &credentials, &config);
+    // A sender for each part, every one started: a part's requests go one at a time, so more would idle.
     Ok(Box::new(
-        super::http::HttpDestination::new(transport(c, &credentials, &config), protocol)
+        super::http::HttpDestination::new(make(), protocol)
             .with_subject(name)
             .with_metrics(metrics, id)
             .with_max_request_bytes(c.max_request_bytes)
-            .with_stall_after(c.stall_after),
+            .with_stall_after(c.stall_after)
+            .with_senders_from(make, c.in_flight, c.in_flight),
     ))
 }
 
@@ -1274,6 +1281,11 @@ impl Protocol for RemoteWrite {
         Some(|a, b| a.time.cmp(&b.time))
     }
 
+    /// A row's series always go in one part, so they land in the order their rows came.
+    fn part(&self, item: &Item) -> usize {
+        (item.series % self.parts as u64) as usize
+    }
+
     /// `name` a non-empty string, `time` a datetime, and `attributes` absent, null, or an object whose values are
     /// strings, numbers or booleans. An attribute that is null or the empty string is no label, as Prometheus reads a
     /// label with no value. JSON holds no NaN or infinity, so a number that was one arrives as none.
@@ -1315,6 +1327,7 @@ impl Protocol for RemoteWrite {
                 time: METADATA_TIME,
                 start: 0,
                 metadata: Some(metadata(&fields, &name)?),
+                series: 0,
             });
         }
         enum Shape {
@@ -1382,6 +1395,18 @@ impl Protocol for RemoteWrite {
                 }
             }
         }
+        labels.sort_unstable();
+        let series = {
+            use std::hash::Hasher;
+            let mut hasher = twox_hash::XxHash64::with_seed(0);
+            for (name, value) in &labels {
+                hasher.write(name.as_bytes());
+                hasher.write(&[0xff]);
+                hasher.write(value.as_bytes());
+                hasher.write(&[0xff]);
+            }
+            hasher.finish()
+        };
         let one = |mut labels: Labels, point, exemplars| {
             labels.sort_unstable();
             vec![SeriesPoint {
@@ -1431,6 +1456,7 @@ impl Protocol for RemoteWrite {
             time,
             start,
             metadata,
+            series,
         })
     }
 
@@ -1564,6 +1590,7 @@ mod tests {
             families: Arc::default(),
             unwritten: None,
             records: Records::default(),
+            parts: 1,
         }
     }
 
@@ -1716,6 +1743,7 @@ mod tests {
                 time: 1_791_741_600_123,
                 start: 0,
                 metadata: None,
+                series: item.series,
             }
         );
     }

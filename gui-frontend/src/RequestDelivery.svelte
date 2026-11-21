@@ -52,6 +52,7 @@
     sizeHelp,
     requests = 'Requests',
     concurrent = true,
+    adapts = true,
     including = 'retries included',
   }: {
     value: RequestDelivery;
@@ -63,15 +64,22 @@
     requests?: string;
     /** Whether the destination sends more than one request at once; one that does not has no concurrency to set. */
     concurrent?: boolean;
+    /** Whether the destination grows from its starting concurrency; one that does not keeps it fixed. */
+    adapts?: boolean;
     /** What one batch's delivery time counts besides the request, as "retries included". */
     including?: string;
   } = $props();
 </script>
 
 {#if concurrent}
-  <Field optional field="inFlight" label="starting concurrency">
+  <Field optional field="inFlight" label={adapts ? 'starting concurrency' : 'concurrency'}>
     {#snippet help()}
-      {requests} in flight at once when the destination starts, per worker; it adapts from there.
+      {#if adapts}
+        {requests} in flight at once when the destination starts, per worker; it adapts from there.
+      {:else}
+        {requests} in flight at once, per worker, in this many shards. A shard sends one request at a
+        time, and a series always uses the same shard, so its samples from a worker land in order.
+      {/if}
     {/snippet}
     <input
       type="number"
