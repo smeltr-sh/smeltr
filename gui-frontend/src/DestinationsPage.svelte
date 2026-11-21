@@ -145,6 +145,8 @@
       if (!commit) return;
       // The branch moved past what this page read, though nothing here changed.
       editor.readAtCommit = commit;
+      // A copy into `shared` is listed on a group's page, and its id is taken there now.
+      if (area === SHARED_SCOPE) await loadShared();
     } else {
       destinations.push(draft);
       highlight = draft.id;
