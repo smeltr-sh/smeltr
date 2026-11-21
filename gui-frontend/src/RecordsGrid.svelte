@@ -476,13 +476,14 @@
   }
 
   /** Shows what `test` checks, to lock it again: its fields the rows still hold and nothing else, and a chip
-   * keeping its rows. `rowOf` numbers a row as the test does. A field it checks that the rows no longer hold is
-   * left out; if it was renamed, the reader chooses it under its new name. */
+   * keeping its rows unless it checks every row. `rowOf` numbers a row as the test does. A field it checks that the
+   * rows no longer hold is left out; if it was renamed, the reader chooses it under its new name. */
   export function showTest(test: TestDto, rowOf: (row: GridRow) => number) {
     chosenFields.clear();
     const held = new Set(test.fields.filter((f) => allColumns.includes(f)));
     for (const { path } of menuFields) chosenFields.set(path, held.has(path));
     const checked = new Set(test.rows.map((o) => o.row));
+    if (rows?.every((row) => checked.has(rowOf(row)))) return;
     addChip({
       kind: 'rows',
       key: `test ${test.id}`,

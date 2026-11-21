@@ -583,10 +583,10 @@ test('a test locked again opens on its fields the rows still hold, and its rows'
   await goto(admin, leader, '#/changes/review/renamed');
   await admin.getByRole('tab', { name: /^Tests/ }).click();
   await admin.getByRole('button', { name: 'Lock again' }).click({ timeout: 30_000 });
-  // The editor, on the test's sample: what the test checks that the rows still hold, and its rows. A renamed field
-  // is not followed: the author chooses it.
+  // The editor, on the test's sample: what the test checks that the rows still hold. A renamed field is not
+  // followed: the author chooses it. The test checks every row, so no chip narrows them.
   await expect(admin.getByText('The 1 field on 1 row on screen')).toBeVisible({ timeout: 30_000 });
-  await expect(admin.getByText('Checked by orders keep their id')).toBeVisible();
+  await expect(admin.getByText('Checked by orders keep their id')).toHaveCount(0);
   await expect(admin.getByRole('button', { name: 'Choose fields' })).toHaveText(/Fields 1 of/);
   const grid = admin.getByRole('table');
   await expect(grid.getByRole('button', { name: /^kind\b/ })).toHaveCount(1);
@@ -602,7 +602,6 @@ test('a test locked again opens on its fields the rows still hold, and its rows'
   };
   await choose('returns');
   await expect(admin.getByText(/on 2 rows on screen/)).toBeVisible({ timeout: 30_000 });
-  await expect(admin.getByText('Checked by orders keep their id')).toHaveCount(0);
   await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeEnabled();
   await expect(relock).toHaveCount(0);
   await choose('orders');
