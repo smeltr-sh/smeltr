@@ -101,6 +101,8 @@ enum In {
     Prometheus,
     /// Syslog lines over TCP, on connections held open.
     Syslog,
+    /// Pulled from gzipped objects of lines in S3, each announced on an SQS queue of the run's own.
+    S3Sqs,
 }
 
 impl In {
@@ -112,6 +114,7 @@ impl In {
             In::Otlp => "otlp",
             In::Prometheus => "prometheus",
             In::Syslog => "syslog",
+            In::S3Sqs => "s3-sqs",
         }
     }
 
@@ -140,7 +143,7 @@ impl In {
                 ..receivers::PROMETHEUS
             },
             In::Prometheus => receivers::PROMETHEUS,
-            In::Kafka | In::Syslog => return None,
+            In::Kafka | In::Syslog | In::S3Sqs => return None,
         };
         Some(push)
     }
@@ -155,7 +158,7 @@ impl In {
                 "value": i as f64,
                 "time": utc_millis(1_790_000_000_000 + i),
             }),
-            In::Http | In::Kafka | In::Hec | In::Otlp => serde_json::from_str(&line(i)).unwrap(),
+            In::Http | In::Kafka | In::Hec | In::Otlp | In::S3Sqs => serde_json::from_str(&line(i)).unwrap(),
         }
     }
 
@@ -252,6 +255,10 @@ const TRANSPORTS: &[Transport] = &[
         to: Out::Http,
     },
     Transport {
+        from: In::S3Sqs,
+        to: Out::Http,
+    },
+    Transport {
         from: In::Http,
         to: Out::Elasticsearch,
     },
@@ -325,6 +332,7 @@ impl Ends {
         match self.take {
             Take::Listen { from, .. } => from,
             Take::Kafka { .. } => In::Kafka,
+            Take::Queue { .. } => In::S3Sqs,
         }
     }
 }
@@ -337,6 +345,8 @@ enum Take {
         topic: String,
         group: String,
     },
+    /// The queue at `queue`, announcing objects in the S3 at `url`, both on LocalStack.
+    Queue { url: String, queue: String },
 }
 
 enum Give {
@@ -987,11 +997,14 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
                     In::Otlp => receivers::otlp(*port),
                     In::Prometheus => receivers::prometheus(*port),
                     In::Syslog => receivers::syslog(*port),
-                    In::Kafka => unreachable!("Kafka is pulled"),
+                    In::Kafka | In::S3Sqs => unreachable!("{from:?} is pulled"),
                 },
                 Take::Kafka { brokers, topic, group } => {
                     json!({"id": "in", "type": "kafka", "brokers": brokers, "topics": [topic], "groupId": group})
                 }
+                Take::Queue { url, queue } => json!({"id": "in", "type": "s3Sqs", "queueUrl": queue,
+                        "region": "us-east-1", "endpoint": url, "accessKeyId": "SM_AWS_ID",
+                        "secretAccessKey": "SM_AWS_KEY"}),
             };
             let mut destination = match &ends.give {
                 Give::Sink { url, to } => match to {
@@ -1062,7 +1075,7 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
             from.push(engine)
                 .map(|push| (format!("http://127.0.0.1:{port}{}", push.path), push))
         }
-        Take::Kafka { .. } => None,
+        Take::Kafka { .. } | Take::Queue { .. } => None,
     };
     Running { container, push }
 }
@@ -1173,12 +1186,19 @@ mod vector {
                 // does, and its syslog source would parse them.
                 In::Syslog => json!({"type": "socket", "mode": "tcp", "address": address(port),
                        "framing": {"method": "newline_delimited"}, "decoding": {"codec": "bytes"}}),
-                In::Kafka => unreachable!("Kafka is pulled"),
+                In::Kafka | In::S3Sqs => unreachable!("{from:?} is pulled"),
             },
             Take::Kafka { brokers, topic, group } => {
                 json!({"type": "kafka", "bootstrap_servers": brokers, "group_id": group, "topics": [topic],
                        "auto_offset_reset": "earliest", "decoding": {"codec": codec}})
             }
+            // Each object's lines, ungzipped as its name says. A client holds its message until the sink delivers
+            // what it read, so the default of a client a core waits out each batch: 23k records/s on one core. 32
+            // clients keep the core busy (8: 204k, 32: 230k, 128: 224k).
+            Take::Queue { url, queue } => json!({"type": "aws_s3", "region": "us-east-1", "endpoint": url,
+                   "auth": {"access_key_id": "test", "secret_access_key": "test"},
+                   "sqs": {"queue_url": queue, "client_concurrency": 32},
+                   "decoding": {"codec": codec}}),
         };
         let sink = match &ends.give {
             Give::Sink { url, to } => match to {
@@ -1241,14 +1261,19 @@ mod vector {
             None if ends.from() == In::Otlp => json!(["in.logs"]),
             None => json!(["in"]),
         };
+        // An announcement is deleted once what it announced is delivered, as smeltr deletes it.
+        if let Take::Queue { .. } = ends.take {
+            config["sinks"]["out"]["acknowledgements"] = json!({"enabled": true});
+        }
         config
     }
 }
 
 impl Ends {
-    /// `transport`'s ends for `run`: what it takes from `topic` when it takes from Kafka, and what it gives to `sink`
-    /// or to a topic of its own, which this makes.
-    fn new(transport: Transport, run: &str, sink: &Sink, broker: Option<&Broker>, topic: &str, rest: &[usize]) -> Ends {
+    /// `transport`'s ends for `run`: what it takes of `corpus` when it pulls, and what it gives to `sink` or to a
+    /// topic of its own, which this makes.
+    fn new(transport: Transport, run: &str, sink: &Sink, services: &Services, corpus: Corpus, rest: &[usize]) -> Ends {
+        let broker = services.broker.as_ref();
         let take = match transport.from {
             In::Http | In::Hec | In::Otlp | In::Prometheus | In::Syslog => Take::Listen {
                 port: free_port(),
@@ -1256,9 +1281,16 @@ impl Ends {
             },
             In::Kafka => Take::Kafka {
                 brokers: broker.expect("a broker").brokers.clone(),
-                topic: topic.into(),
+                topic: corpus.topic().into(),
                 group: run.into(),
             },
+            In::S3Sqs => {
+                let objects = services.objects.as_ref().expect("objects");
+                Take::Queue {
+                    url: objects.url.clone(),
+                    queue: objects.announce(run, corpus.rows()),
+                }
+            }
         };
         let give = match transport.to {
             Out::Http | Out::Elasticsearch | Out::SplunkHec | Out::Prometheus | Out::Otlp | Out::LogAnalytics => {
@@ -1344,12 +1376,12 @@ fn made(
     cpus: &[usize],
     rest: &[usize],
     transport: Transport,
-    broker: Option<&Broker>,
+    services: &Services,
 ) -> Vec<Value> {
     let want = (0..CHECK_ROWS).filter(|&i| (w.expect)(&line(i)).is_some()).count() as u64;
     let sink = Sink::keeping();
-    let ends = Ends::new(transport, run, &sink, broker, CHECK_TOPIC, rest);
-    let delivered = Delivered::new(&ends.give, &sink, broker);
+    let ends = Ends::new(transport, run, &sink, services, Corpus::Check, rest);
+    let delivered = Delivered::new(&ends.give, &sink, services.broker.as_ref());
     let running = start(engine, w, run, cpus, &ends);
     let _sender = running
         .push
@@ -1376,6 +1408,35 @@ fn made(
     delivered.read()
 }
 
+/// What a run that pulls reads: the first `CHECK_ROWS` records to be checked, or `FINITE` times the rows to be timed.
+#[derive(Clone, Copy)]
+enum Corpus {
+    Check,
+    Input,
+}
+
+impl Corpus {
+    fn topic(self) -> &'static str {
+        match self {
+            Corpus::Check => CHECK_TOPIC,
+            Corpus::Input => INPUT_TOPIC,
+        }
+    }
+
+    fn rows(self) -> u64 {
+        match self {
+            Corpus::Check => CHECK_ROWS,
+            Corpus::Input => FINITE * rows(),
+        }
+    }
+}
+
+/// The services the runs that pull read from, each started when a case needs it, on the harness's cores.
+struct Services {
+    broker: Option<Broker>,
+    objects: Option<announced::Objects>,
+}
+
 /// The topic every Kafka check reads, seeded with the first `CHECK_ROWS` records.
 const CHECK_TOPIC: &str = "engine-speed-check";
 
@@ -1395,7 +1456,7 @@ fn check(
     cpus: &[usize],
     rest: &[usize],
     transport: Transport,
-    broker: Option<&Broker>,
+    services: &Services,
 ) {
     let from = transport.from;
     let mut want: Vec<String> = (0..CHECK_ROWS)
@@ -1408,7 +1469,7 @@ fn check(
         })
         .map(|d| canonical(&d))
         .collect();
-    let mut got: Vec<String> = made(engine, w, run, cpus, rest, transport, broker)
+    let mut got: Vec<String> = made(engine, w, run, cpus, rest, transport, services)
         .into_iter()
         .map(|d| canonical(&from.normal((w.normal)(d))))
         .collect();
@@ -1451,18 +1512,21 @@ fn time(
     cpus: &[usize],
     rest: &[usize],
     transport: Transport,
-    broker: Option<&Broker>,
+    services: &Services,
 ) -> Timed {
+    let broker = services.broker.as_ref();
     let rows = rows();
     // Under HTTP the sender cycles through its bodies; under Kafka the engine reads the seeded topic.
     let kept_of = |from: u64, n: u64| (from..from + n).filter(|&i| (w.expect)(&line(i)).is_some()).count() as u64;
     let keeps = |n: u64| kept_of(0, n) as f64 / n as f64;
     let sink = Sink::start();
-    let ends = Ends::new(transport, run, &sink, broker, INPUT_TOPIC, rest);
+    let ends = Ends::new(transport, run, &sink, services, Corpus::Input, rest);
     let delivered = Delivered::new(&ends.give, &sink, broker);
     // A stream of lines, like a topic, is as long as a topic is seeded.
     let (kept, most) = match ends.take {
-        Take::Listen { from: In::Syslog, .. } | Take::Kafka { .. } => (keeps(FINITE * rows), kept_of(0, FINITE * rows)),
+        Take::Listen { from: In::Syslog, .. } | Take::Kafka { .. } | Take::Queue { .. } => {
+            (keeps(FINITE * rows), kept_of(0, FINITE * rows))
+        }
         Take::Listen { .. } => (keeps(64 * PER_REQUEST), u64::MAX),
     };
     let running = start(engine, w, run, cpus, &ends);
@@ -1507,8 +1571,9 @@ fn time(
         each();
     }
     // The service at the other end, the broker or the store, whose cores the harness's are.
-    let peer = |b: Option<&Broker>| match &ends.give {
-        Give::Store(store) => store.container.usage().0,
+    let peer = |b: Option<&Broker>| match (&ends.take, &ends.give) {
+        (_, Give::Store(store)) => store.container.usage().0,
+        (Take::Queue { .. }, _) => services.objects.as_ref().unwrap().container.usage().0,
         _ => b.map_or(0.0, |b| b.container.usage().0),
     };
     let (at, docs, (cpu, _), b_cpu, idle_before) = (
@@ -1616,6 +1681,11 @@ fn speed() {
         broker.seed(INPUT_TOPIC, FINITE * rows());
         broker
     });
+    let objects = cases
+        .iter()
+        .any(|c| c.1.from == In::S3Sqs)
+        .then(|| announced::Objects::start(&format!("es-objects-{id}"), &rest));
+    let services = Services { broker, objects };
 
     // Checked once each, on the fewest cores: an engine that makes other documents is not timed.
     let mut refused: Vec<(Case, Engine, String)> = Vec::new();
@@ -1624,7 +1694,7 @@ fn speed() {
             let run = format!("es-check-{}-{}-{}-{id}", w.name, t.label(), e.label());
             let fewest = *counts.iter().min().unwrap();
             if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                check(e, w, &run, &on(fewest), &rest, t, broker.as_ref())
+                check(e, w, &run, &on(fewest), &rest, t, &services)
             })) {
                 let why = panic_message(&panic);
                 println!("{:<12} {:<6} {:<9} check failed: {why}", w.name, t.label(), e.label());
@@ -1653,7 +1723,7 @@ fn speed() {
                     }
                     let run = format!("es-{}-{}-{}-{n}c-{round}-{id}", w.name, t.label(), e.label());
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        time(e, w, &run, &on(n), &rest, t, broker.as_ref())
+                        time(e, w, &run, &on(n), &rest, t, &services)
                     }))
                     .map_err(|p| panic_message(&p));
                     match &result {
@@ -1731,7 +1801,7 @@ fn table(
                 ok.sort_by(|a, b| a.rows_per_sec.total_cmp(&b.rows_per_sec));
                 let median = ok[ok.len() / 2];
                 let spread = (ok[ok.len() - 1].rows_per_sec - ok[0].rows_per_sec) / median.rows_per_sec;
-                let broker = if t.kafka() || matches!(t.to, Out::S3 | Out::AzureBlob) {
+                let broker = if t.kafka() || matches!(t.to, Out::S3 | Out::AzureBlob) || t.from == In::S3Sqs {
                     format!("{:.2}", median.broker)
                 } else {
                     String::new()
@@ -2150,6 +2220,101 @@ pub mod entra {
     }
 }
 
+/// The corpus as gzipped objects of `FILE_ROWS` lines each in LocalStack's S3, and for each run an SQS queue of its
+/// own announcing them, as a bucket announces what lands in it. LocalStack, since Vector reaches S3 and SQS at one
+/// endpoint.
+mod announced {
+    use super::*;
+
+    pub struct Objects {
+        pub container: Container,
+        /// Where an engine reaches S3 and SQS.
+        pub url: String,
+    }
+
+    const BUCKET: &str = "bench-in";
+
+    impl Objects {
+        /// Starts LocalStack on `cpus` and puts the corpus in its bucket.
+        pub fn start(name: &str, cpus: &[usize]) -> Objects {
+            assert_eq!(CHECK_ROWS % FILE_ROWS, 0, "a check reads whole objects");
+            let port = free_port();
+            let mut docker = container(name, cpus, env_or("ENGINE_BROKER_MEMORY_GB", 8));
+            // A temporary file for each upload in flight: Docker's default of 1024 refuses puts.
+            docker
+                .args(["--ulimit", "nofile=16384:16384"])
+                .args(["-e", "SERVICES=s3,sqs", "-e", "SQS_ENDPOINT_STRATEGY=off"])
+                .args(["-e", &format!("GATEWAY_LISTEN=127.0.0.1:{port}")])
+                .args(["-e", &format!("LOCALSTACK_HOST=127.0.0.1:{port}")])
+                .arg("localstack/localstack:4.9");
+            let objects = Objects {
+                container: Container::run(docker, "the objects"),
+                url: format!("http://127.0.0.1:{port}"),
+            };
+            let deadline = Instant::now() + PATIENCE;
+            while stores::fetch("PUT", &format!("{}/{BUCKET}", objects.url), &[], Vec::new()).is_none() {
+                objects.container.check("the objects");
+                assert!(Instant::now() < deadline, "LocalStack never made its bucket");
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            for f in 0..(FINITE * rows()).div_ceil(FILE_ROWS) {
+                let lines: String = (f * FILE_ROWS..(f + 1) * FILE_ROWS).map(|i| line(i) + "\n").collect();
+                let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+                std::io::Write::write_all(&mut gz, lines.as_bytes()).unwrap();
+                let url = format!("{}/{BUCKET}/{}", objects.url, key(f));
+                stores::fetch("PUT", &url, &[], gz.finish().unwrap()).expect("LocalStack takes the corpus");
+            }
+            objects
+        }
+
+        /// A queue named for `run`, announcing the objects of the first `rows` records; its URL.
+        pub fn announce(&self, run: &str, rows: u64) -> String {
+            let created = self.sqs("CreateQueue", json!({"QueueName": run}));
+            let queue = created["QueueUrl"]
+                .as_str()
+                .expect("CreateQueue answers its URL")
+                .to_string();
+            let objects: Vec<u64> = (0..rows.div_ceil(FILE_ROWS)).collect();
+            for ten in objects.chunks(10) {
+                let entries: Vec<Value> = ten
+                    .iter()
+                    .map(|&f| {
+                        let event = json!({"Records": [{"eventVersion": "2.1", "eventSource": "aws:s3",
+                            "awsRegion": "us-east-1", "eventTime": "2026-11-21T00:00:00.000Z",
+                            "eventName": "ObjectCreated:Put",
+                            "s3": {"s3SchemaVersion": "1.0",
+                                   "bucket": {"name": BUCKET, "arn": format!("arn:aws:s3:::{BUCKET}")},
+                                   "object": {"key": key(f), "sequencer": format!("{f:016X}")}}}]});
+                        json!({"Id": f.to_string(), "MessageBody": event.to_string()})
+                    })
+                    .collect();
+                let sent = self.sqs("SendMessageBatch", json!({"QueueUrl": queue, "Entries": entries}));
+                assert!(
+                    sent.get("Failed")
+                        .is_none_or(|f| f.as_array().is_some_and(Vec::is_empty)),
+                    "{sent}"
+                );
+            }
+            queue
+        }
+
+        fn sqs(&self, action: &str, body: Value) -> Value {
+            let target = format!("AmazonSQS.{action}");
+            let headers = [
+                ("x-amz-target", target.as_str()),
+                ("content-type", "application/x-amz-json-1.0"),
+            ];
+            let answer = stores::fetch("POST", &self.url, &headers, body.to_string().into_bytes())
+                .unwrap_or_else(|| panic!("SQS answers {action}"));
+            serde_json::from_slice(&answer).unwrap()
+        }
+    }
+
+    fn key(f: u64) -> String {
+        format!("{f:06}.ndjson.gz")
+    }
+}
+
 /// The object stores the harness starts for a run, each on the harness's cores, keeping what it is given in memory,
 /// and how the harness reads back what an engine wrote there.
 mod stores {
@@ -2358,7 +2523,7 @@ mod stores {
     }
 
     /// The body of a request that succeeded, or `None`.
-    fn fetch(method: &str, url: &str, headers: &[(&str, &str)], body: Vec<u8>) -> Option<Vec<u8>> {
+    pub fn fetch(method: &str, url: &str, headers: &[(&str, &str)], body: Vec<u8>) -> Option<Vec<u8>> {
         fetched(method, url, headers, body).map(|f| f.0)
     }
 
