@@ -1279,28 +1279,16 @@ impl Sink {
             runtime.block_on(async move {
                 listener.set_nonblocking(true).unwrap();
                 let listener = tokio::net::TcpListener::from_std(listener).unwrap();
-                let app = axum::Router::new().fallback(move |body: axum::body::Bytes| {
+                let app = axum::Router::new().fallback(move |uri: axum::http::Uri, body: axum::body::Bytes| {
                     let (r, b, k) = (r.clone(), b.clone(), k.clone());
                     async move {
-                        // A JSON array of documents, or a body of lines, the last with or without its newline.
-                        let docs: Vec<&[u8]> = if body.first() == Some(&b'[') {
-                            serde_json::from_slice::<Vec<&serde_json::value::RawValue>>(&body)
-                                .map(|docs| docs.into_iter().map(|d| d.get().as_bytes()).collect())
-                                .unwrap_or_default()
-                        } else {
-                            body.split(|c| *c == b'\n').filter(|l| !l.is_empty()).collect()
-                        };
+                        let (docs, answer) = Sink::take(uri.path(), &body);
                         r.fetch_add(docs.len() as u64, Ordering::Relaxed);
                         b.fetch_add(body.len() as u64, Ordering::Relaxed);
                         if let Some(k) = k {
-                            // A line that is not JSON is kept as its text.
-                            let parsed = docs.iter().map(|d| {
-                                serde_json::from_slice(d)
-                                    .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(d).into_owned()))
-                            });
-                            k.lock().unwrap().extend(parsed);
+                            k.lock().unwrap().extend(docs.into_iter().map(Doc::value));
                         }
-                        axum::http::StatusCode::OK
+                        (axum::http::StatusCode::OK, answer)
                     }
                 });
                 // Engines batch up to megabytes a request.
@@ -1326,8 +1314,152 @@ impl Sink {
         self.rows.load(Ordering::Relaxed)
     }
 
+    /// The documents a request to `path` carries, and the answer the protocol it speaks wants: an Elasticsearch bulk
+    /// request's, a HEC event request's, a remote write's or an OTLP logs export's, or else a body of lines or a JSON
+    /// array of documents.
+    fn take<'b>(path: &str, body: &'b [u8]) -> (Vec<Doc<'b>>, String) {
+        let lines = || body.split(|c| *c == b'\n').filter(|l| !l.is_empty());
+        if path.ends_with("/_bulk") {
+            // An action, then its document. Every action is answered as done.
+            let docs: Vec<Doc> = lines().skip(1).step_by(2).map(Doc::Json).collect();
+            let items = vec![r#"{"create":{"status":201}}"#; docs.len()].join(",");
+            return (docs, format!(r#"{{"took":1,"errors":false,"items":[{items}]}}"#));
+        }
+        if path.ends_with("/api/v1/write") {
+            let request = snap::raw::Decoder::new().decompress_vec(body).unwrap_or_default();
+            return (
+                protobuf::samples(&request).into_iter().map(Doc::Value).collect(),
+                String::new(),
+            );
+        }
+        if path == "/v1/logs" {
+            return (
+                protobuf::log_bodies(body).into_iter().map(Doc::Json).collect(),
+                "{}".into(),
+            );
+        }
+        if path == "/services/collector/event" {
+            let envelopes = serde_json::Deserializer::from_slice(body).into_iter::<Value>();
+            let docs = envelopes
+                .map(|e| Doc::Value(e.map_or(Value::Null, |mut e| e["event"].take())))
+                .collect();
+            return (docs, r#"{"text":"Success","code":0}"#.into());
+        }
+        // A JSON array of documents, or a body of lines, the last with or without its newline.
+        let docs = if body.first() == Some(&b'[') {
+            serde_json::from_slice::<Vec<&serde_json::value::RawValue>>(body)
+                .map(|docs| docs.into_iter().map(|d| Doc::Json(d.get().as_bytes())).collect())
+                .unwrap_or_default()
+        } else {
+            lines().map(Doc::Json).collect()
+        };
+        (docs, String::new())
+    }
+
     fn bytes(&self) -> u64 {
         self.bytes.load(Ordering::Relaxed)
+    }
+}
+
+/// What the sink reads of the protobuf requests it takes.
+mod protobuf {
+    use super::*;
+
+    /// The fields of a message: its number, and its value, a length-delimited field's bytes or a number's bits.
+    fn fields(mut buf: &[u8]) -> impl Iterator<Item = (u64, &[u8], u64)> {
+        fn varint(buf: &mut &[u8]) -> Option<u64> {
+            let mut v = 0u64;
+            for shift in (0..64).step_by(7) {
+                let (&b, rest) = buf.split_first()?;
+                *buf = rest;
+                v |= u64::from(b & 0x7f) << shift;
+                if b < 0x80 {
+                    return Some(v);
+                }
+            }
+            None
+        }
+        std::iter::from_fn(move || {
+            let key = varint(&mut buf)?;
+            let (number, wire) = (key >> 3, key & 7);
+            match wire {
+                0 => Some((number, &[][..], varint(&mut buf)?)),
+                1 | 5 => {
+                    let n = if wire == 1 { 8 } else { 4 };
+                    let (bits, rest) = buf.split_at_checked(n)?;
+                    buf = rest;
+                    let mut b = [0u8; 8];
+                    b[..n].copy_from_slice(bits);
+                    Some((number, &[][..], u64::from_le_bytes(b)))
+                }
+                2 => {
+                    let n = varint(&mut buf)? as usize;
+                    let (bytes, rest) = buf.split_at_checked(n)?;
+                    buf = rest;
+                    Some((number, bytes, 0))
+                }
+                _ => None,
+            }
+        })
+    }
+
+    fn each(buf: &[u8], number: u64) -> impl Iterator<Item = &[u8]> {
+        fields(buf).filter(move |f| f.0 == number).map(|f| f.1)
+    }
+
+    /// A remote write 1.0 request's samples, each as `In::sent` writes one: a series is field 1, its labels field 1
+    /// (a name 1, a value 2) and its samples field 2 (a double 1, milliseconds 2).
+    pub fn samples(request: &[u8]) -> Vec<Value> {
+        let mut out = Vec::new();
+        for series in each(request, 1) {
+            let mut labels = serde_json::Map::new();
+            let mut name = Value::Null;
+            for label in each(series, 1) {
+                let text = |n| String::from_utf8_lossy(each(label, n).next().unwrap_or_default()).into_owned();
+                match text(1).as_str() {
+                    "__name__" => name = Value::String(text(2)),
+                    key => {
+                        labels.insert(key.to_string(), Value::String(text(2)));
+                    }
+                }
+            }
+            for sample in each(series, 2) {
+                let number = |n| fields(sample).find(|f| f.0 == n).map_or(0, |f| f.2);
+                out.push(
+                    json!({"name": name, "labels": labels, "value": f64::from_bits(number(1)),
+                                "time": engines::utc_millis(number(2))}),
+                );
+            }
+        }
+        out
+    }
+
+    /// An OTLP logs export's records' bodies, each a string: the request's resources are field 1, their scopes field
+    /// 2, their records field 2, a record's body field 5 and a string value's text field 1.
+    pub fn log_bodies(request: &[u8]) -> Vec<&[u8]> {
+        each(request, 1)
+            .flat_map(|resource| each(resource, 2))
+            .flat_map(|scope| each(scope, 2))
+            .flat_map(|record| each(record, 5).flat_map(|body| each(body, 1)))
+            .collect()
+    }
+}
+
+/// A document a sink took: its text, or what the protocol carrying it already parsed.
+enum Doc<'b> {
+    Json(&'b [u8]),
+    Value(Value),
+}
+
+impl Doc<'_> {
+    /// The document, its text kept as text where it is not JSON.
+    fn value(self) -> Value {
+        match self {
+            Doc::Json(d) => {
+                serde_json::from_slice(d).unwrap_or_else(|_| Value::String(String::from_utf8_lossy(d).into_owned()))
+            }
+            Doc::Value(v) => v,
+        }
     }
 }
 

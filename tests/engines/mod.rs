@@ -78,10 +78,11 @@ impl Engine {
     }
 
     /// Whether the engine runs `w` over `t`: NiFi's Groovy row only where it maps, since it forwards as NiFi does;
-    /// another source or destination only forwarding, and only where both engines have it, smeltr and Vector.
+    /// another source or destination only where both engines have it, smeltr and Vector.
     fn runs(self, w: &Workload, t: Transport) -> bool {
-        (self != Engine::NifiGroovy || self.pipeline(w, "groovy").is_some())
-            && (t.shared() || (w.forwards && matches!(self, Engine::Smeltr | Engine::Vector)))
+        (w.over)(t)
+            && (self != Engine::NifiGroovy || self.pipeline(w, "groovy").is_some())
+            && (t.shared() || matches!(self, Engine::Smeltr | Engine::Vector))
     }
 }
 
@@ -163,7 +164,7 @@ impl In {
         if self != In::Prometheus {
             return doc;
         }
-        let labels = doc.get("attributes").or_else(|| doc.get("tags"));
+        let labels = ["labels", "attributes", "tags"].iter().find_map(|k| doc.get(*k));
         // Vector reads a sample as a gauge, or as a counter where its name says it counts.
         let value = ["/value", "/gauge/value", "/counter/value"]
             .iter()
@@ -185,6 +186,14 @@ enum Out {
     Http,
     /// To a topic of the run's own, on the broker the run starts.
     Kafka,
+    /// Bulk requests, to the harness's sink speaking Elasticsearch's bulk API.
+    Elasticsearch,
+    /// HEC event requests, to the harness's sink speaking Splunk's HTTP Event Collector.
+    SplunkHec,
+    /// Remote write, to the harness's sink.
+    Prometheus,
+    /// OpenTelemetry logs over HTTP, to the harness's sink.
+    Otlp,
 }
 
 impl Out {
@@ -192,6 +201,10 @@ impl Out {
         match self {
             Out::Http => "http",
             Out::Kafka => "kafka",
+            Out::Elasticsearch => "elasticsearch",
+            Out::SplunkHec => "splunk-hec",
+            Out::Prometheus => "prometheus",
+            Out::Otlp => "otlp",
         }
     }
 }
@@ -229,15 +242,34 @@ const TRANSPORTS: &[Transport] = &[
         from: In::Syslog,
         to: Out::Http,
     },
+    Transport {
+        from: In::Http,
+        to: Out::Elasticsearch,
+    },
+    Transport {
+        from: In::Http,
+        to: Out::SplunkHec,
+    },
+    // Only samples leave as samples, and only OpenTelemetry's records as its records.
+    Transport {
+        from: In::Prometheus,
+        to: Out::Prometheus,
+    },
+    Transport {
+        from: In::Otlp,
+        to: Out::Otlp,
+    },
 ];
 
 impl Transport {
-    /// `http` and `kafka` for the transports every engine runs; otherwise the leg under test, `hec-in` or `s3-out`.
+    /// `http` and `kafka` for the transports every engine runs, and `prometheus` and `otlp`, both legs one protocol;
+    /// otherwise the leg under test, `hec-in` or `s3-out`.
     fn label(self) -> String {
         match (self.from, self.to) {
             (In::Http, Out::Http) => "http".into(),
             (In::Kafka, Out::Kafka) => "kafka".into(),
             (from, Out::Http) => format!("{}-in", from.label()),
+            (from, to) if from.label() == to.label() => from.label().into(),
             (_, to) => format!("{}-out", to.label()),
         }
     }
@@ -259,6 +291,14 @@ struct Ends {
 }
 
 impl Ends {
+    /// Where it delivers, when to the harness's sink.
+    fn give_to(&self) -> Option<Out> {
+        match self.give {
+            Give::Sink { to, .. } => Some(to),
+            Give::Kafka { .. } => None,
+        }
+    }
+
     fn from(&self) -> In {
         match self.take {
             Take::Listen { from, .. } => from,
@@ -278,8 +318,15 @@ enum Take {
 }
 
 enum Give {
-    Http { sink: String },
-    Kafka { brokers: String, topic: String },
+    /// The harness's sink at `url`, speaking `to`'s protocol.
+    Sink {
+        url: String,
+        to: Out,
+    },
+    Kafka {
+        brokers: String,
+        topic: String,
+    },
 }
 
 /// What a pipeline makes of record `line`, as the check compares it: `None` when the pipeline drops it.
@@ -295,6 +342,8 @@ struct Workload {
     normal: fn(Value) -> Value,
     /// Each record leaves as it came: every engine sends the bytes it read, wrapped in nothing of its own.
     forwards: bool,
+    /// Whether it runs over `t`.
+    over: fn(t: Transport) -> bool,
 }
 
 const WORKLOADS: &[Workload] = &[
@@ -304,6 +353,20 @@ const WORKLOADS: &[Workload] = &[
         expect: |line| serde_json::from_str(line).ok(),
         normal: |doc| doc,
         forwards: true,
+        // And each source delivering to the sink, and each protocol of its own records to itself.
+        over: |t| t.from != In::Http || t.to == Out::Http,
+    },
+    Workload {
+        name: "json",
+        steps: || {
+            json!([{"id": "parse", "type": "parser", "input": "_raw", "kind": {"type": "json"}},
+                   {"id": "unraw", "type": "eval", "assignments": [{"target": "_raw", "expr": "null"}]}])
+        },
+        expect: |line| serde_json::from_str(line).ok(),
+        normal: |doc| doc,
+        forwards: false,
+        // Each destination, a document each record, taken from the sender.
+        over: |t| t.from == In::Http && !matches!(t.to, Out::Http | Out::Kafka),
     },
     Workload {
         name: "json_app",
@@ -319,6 +382,7 @@ const WORKLOADS: &[Workload] = &[
             doc
         },
         forwards: false,
+        over: Transport::shared,
     },
 ];
 
@@ -366,7 +430,7 @@ fn json_app(line: &str) -> Option<Value> {
 }
 
 /// `millis` after the Unix epoch as a UTC instant, `2026-09-21T14:13:20.001Z`, as `instant` writes one.
-fn utc_millis(millis: u64) -> String {
+pub fn utc_millis(millis: u64) -> String {
     let (secs, ms) = (millis / 1000, millis % 1000);
     let (days, day) = ((secs / 86_400) as i64, secs % 86_400);
     // Howard Hinnant's days-to-civil.
@@ -774,6 +838,7 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
                 ])
                 .args(["-e", &format!("SMELTR_WORKER_THREAD_LIMIT={cores}")])
                 .args(["-e", &format!("SM_RECEIVER_TOKEN={RECEIVER_TOKEN}")])
+                .args(["-e", &format!("SM_HEC_TOKEN={RECEIVER_TOKEN}")])
                 .args([engine.image(), "/usr/local/bin/smeltr"]);
         }
         Engine::Logstash => {
@@ -855,12 +920,22 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
                 }
             };
             let mut destination = match &ends.give {
-                Give::Http { sink } => json!({"id": "out", "type": "http", "url": sink}),
+                Give::Sink { url, to } => match to {
+                    Out::Http => json!({"id": "out", "type": "http", "url": format!("{url}/")}),
+                    Out::Elasticsearch => {
+                        json!({"id": "out", "type": "elasticsearch", "url": url, "defaultIndex": "bench"})
+                    }
+                    Out::SplunkHec => json!({"id": "out", "type": "splunkHec", "url": url, "token": "SM_HEC_TOKEN",
+                            "acknowledgement": "receipt", "index": "main"}),
+                    Out::Prometheus => json!({"id": "out", "type": "prometheus", "url": format!("{url}/api/v1/write")}),
+                    Out::Otlp => json!({"id": "out", "type": "otlp", "url": url}),
+                    Out::Kafka => unreachable!("Kafka is a broker"),
+                },
                 Give::Kafka { brokers, topic } => {
                     json!({"id": "out", "type": "kafka", "brokers": brokers, "defaultTopic": topic})
                 }
             };
-            if w.forwards {
+            if w.forwards && matches!(ends.give, Give::Kafka { .. } | Give::Sink { to: Out::Http, .. }) {
                 match ends.from() {
                     // A sample is a record of fields, which only JSON writes.
                     In::Prometheus => {}
@@ -904,7 +979,13 @@ mod logstash {
     pub fn pipeline(w: &Workload, ends: &Ends, cores: usize) -> String {
         let mut filter = Engine::Logstash.pipeline(w, "conf").unwrap_or_default();
         let (input, output) = match (&ends.take, &ends.give) {
-            (Take::Listen { port, from: In::Http }, Give::Http { sink }) => {
+            (
+                Take::Listen { port, from: In::Http },
+                Give::Sink {
+                    url: sink,
+                    to: Out::Http,
+                },
+            ) => {
                 // Every request is lines, whatever its content type says. Logstash posts many events to a request
                 // only as a JSON array of them, so a record it forwards is read as the JSON it is, and leaves
                 // without the fields the input adds. Those go at the top level, apart from the record's own `http`.
@@ -968,7 +1049,7 @@ mod vector {
     pub fn config(w: &Workload, ends: &Ends) -> Value {
         let remap = Engine::Vector.pipeline(w, "vrl");
         // A pipeline that reads the record parses it as it arrives; one that forwards it sends the line it read.
-        let codec = if remap.is_some() { "json" } else { "bytes" };
+        let codec = if w.forwards { "bytes" } else { "json" };
         let encoding = if w.forwards && ends.from() != In::Prometheus {
             "text"
         } else {
@@ -982,9 +1063,11 @@ mod vector {
                        "framing": {"method": "newline_delimited"}, "decoding": {"codec": codec}}),
                 // Acknowledgements are off, so the collector answers on receipt, as smeltr's does.
                 In::Hec => json!({"type": "splunk_hec", "address": address(port), "valid_tokens": [RECEIVER_TOKEN]}),
-                // Its gRPC listener is required, and idle.
+                // Its gRPC listener is required, and idle. Its sink encodes only what the source keeps whole, so a
+                // request it forwards it keeps as one event, as its documentation does.
                 In::Otlp => json!({"type": "opentelemetry", "http": {"address": address(port)},
-                       "grpc": {"address": address(&free_port())}}),
+                       "grpc": {"address": address(&free_port())},
+                       "use_otlp_decoding": ends.give_to() == Some(Out::Otlp)}),
                 In::Prometheus => json!({"type": "prometheus_remote_write", "address": address(port), "auth": basic}),
                 // Its socket source, since smeltr's syslog receiver takes each message whole, as the socket source
                 // does, and its syslog source would parse them.
@@ -998,16 +1081,33 @@ mod vector {
             }
         };
         let sink = match &ends.give {
-            Give::Http { sink } => json!({"type": "http", "uri": sink, "encoding": {"codec": encoding},
-                   "framing": {"method": "newline_delimited"},
-                   "batch": {"max_bytes": 10_000_000, "timeout_secs": 0.2}}),
+            Give::Sink { url, to } => match to {
+                Out::Http => json!({"type": "http", "uri": format!("{url}/"), "encoding": {"codec": encoding},
+                       "framing": {"method": "newline_delimited"},
+                       "batch": {"max_bytes": 10_000_000, "timeout_secs": 0.2}}),
+                // The sink is no cluster to ask its version or health.
+                Out::Elasticsearch => json!({"type": "elasticsearch", "endpoints": [url], "api_version": "v8",
+                       "mode": "bulk", "bulk": {"index": "bench", "action": "create"},
+                       "healthcheck": {"enabled": false}}),
+                Out::SplunkHec => json!({"type": "splunk_hec_logs", "endpoint": url, "default_token": RECEIVER_TOKEN,
+                       "index": "main", "encoding": {"codec": "json"}, "healthcheck": {"enabled": false}}),
+                Out::Prometheus => json!({"type": "prometheus_remote_write", "endpoint": format!("{url}/api/v1/write"),
+                       "healthcheck": {"enabled": false}}),
+                Out::Otlp => {
+                    json!({"type": "opentelemetry", "protocol": {"type": "http", "uri": format!("{url}/v1/logs"),
+                       "method": "post", "encoding": {"codec": "otlp"}}})
+                }
+                Out::Kafka => unreachable!("Kafka is a broker"),
+            },
             Give::Kafka { brokers, topic } => {
                 json!({"type": "kafka", "bootstrap_servers": brokers, "topic": topic, "encoding": {"codec": encoding},
                        "acknowledgements": {"enabled": true}})
             }
         };
+        // Each event is what its source read, with what the source knows of it kept apart, as smeltr keeps it.
         let mut config = json!({
             "data_dir": "/tmp",
+            "schema": {"log_namespace": true},
             "sources": {"in": source},
             "sinks": {"out": sink},
         });
@@ -1041,8 +1141,9 @@ impl Ends {
             },
         };
         let give = match transport.to {
-            Out::Http => Give::Http {
-                sink: format!("http://127.0.0.1:{}/", sink.port),
+            Out::Http | Out::Elasticsearch | Out::SplunkHec | Out::Prometheus | Out::Otlp => Give::Sink {
+                url: format!("http://127.0.0.1:{}", sink.port),
+                to: transport.to,
             },
             Out::Kafka => {
                 let broker = broker.expect("a broker");
@@ -1078,7 +1179,7 @@ impl<'a> Delivered<'a> {
 
     fn count(&self) -> u64 {
         match self.give {
-            Give::Http { .. } => self.sink.rows(),
+            Give::Sink { .. } => self.sink.rows(),
             Give::Kafka { topic, .. } => self.broker.unwrap().count(self.consumer.as_ref().unwrap(), topic),
         }
     }
@@ -1086,14 +1187,14 @@ impl<'a> Delivered<'a> {
     /// Every document delivered, from a sink that keeps them.
     fn read(&self) -> Vec<Value> {
         match self.give {
-            Give::Http { .. } => self.sink.kept.as_ref().unwrap().lock().unwrap().drain(..).collect(),
+            Give::Sink { .. } => self.sink.kept.as_ref().unwrap().lock().unwrap().drain(..).collect(),
             Give::Kafka { topic, .. } => self.broker.unwrap().read(topic, self.count()),
         }
     }
 
     /// Whether it is slow to count, so the harness counts it less often.
     fn remote(&self) -> bool {
-        !matches!(self.give, Give::Http { .. })
+        !matches!(self.give, Give::Sink { .. })
     }
 }
 
@@ -1350,7 +1451,7 @@ fn speed() {
     let cases: Vec<Case> = WORKLOADS
         .iter()
         .filter(|w| only("ENGINE_PIPELINES", w.name))
-        .flat_map(|w| transports.iter().map(move |&t| (w, t)))
+        .flat_map(|w| transports.iter().filter(|t| (w.over)(**t)).map(move |&t| (w, t)))
         .collect();
     if engines.contains(&Engine::Smeltr) {
         let out = Command::new("docker")
@@ -1366,7 +1467,7 @@ fn speed() {
     }
     let rounds = env_or("ENGINE_ROUNDS", 3usize);
     let id = std::process::id();
-    let broker = transports.iter().any(|t| t.kafka()).then(|| {
+    let broker = cases.iter().any(|c| c.1.kafka()).then(|| {
         let broker = Broker::start(&format!("es-broker-{id}"), &rest);
         broker.create(CHECK_TOPIC);
         broker.seed(CHECK_TOPIC, CHECK_ROWS);
@@ -1693,7 +1794,13 @@ mod nifi {
         );
         // A flowfile holds many records, a line each, as a request body does.
         let (consume, produce) = match (&ends.take, &ends.give) {
-            (Take::Listen { port, from: In::Http }, Give::Http { sink }) => (
+            (
+                Take::Listen { port, from: In::Http },
+                Give::Sink {
+                    url: sink,
+                    to: Out::Http,
+                },
+            ) => (
                 api.processor(
                     "org.apache.nifi.processors.standard.ListenHTTP",
                     json!({"Listening Port": port.to_string(), "Base Path": "in"}),
@@ -1744,7 +1851,7 @@ mod nifi {
         };
         // What the producer could not deliver it tries again, as the other engines retry, rather than lose it.
         let failed: &[&str] = match ends.give {
-            Give::Http { .. } => &["Retry", "No Retry", "Failure"],
+            Give::Sink { .. } => &["Retry", "No Retry", "Failure"],
             Give::Kafka { .. } => &["failure"],
         };
         api.connect(&produce, &produce, failed);
