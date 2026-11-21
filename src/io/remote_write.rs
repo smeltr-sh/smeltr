@@ -60,6 +60,9 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
+use arrow_array::Array;
+use arrow_array::cast::AsArray;
+use arrow_array::types::{Float64Type, Int64Type, TimestampMicrosecondType};
 use prost::Message;
 
 use super::http::{HttpTransport, Order, Outcome, Protocol, Response, Unwritten};
@@ -67,9 +70,11 @@ use super::prometheus::{
     BucketSpan, Exemplar, ExemplarV2, Histogram, HistogramCount, HistogramZeroCount, Label, MetadataV2, MetricMetadata,
     MetricType, NAME_LABEL, ResetHint, Sample, TimeSeries, TimeSeriesV2,
 };
+use super::parquet::Columns;
 use super::{IoError, OwnedRecord};
+use crate::core::column::DataType;
 use crate::format::json_scan::{Next, Reader};
-use crate::plan::topology::{PrometheusDestinationConfig, RemoteWriteVersion};
+use crate::plan::topology::{PrometheusDestinationConfig, Records, RemoteWriteVersion};
 
 /// The `WriteRequest` this destination sends: its series, and each family's metadata once.
 #[derive(Clone, PartialEq, prost::Message)]
@@ -193,6 +198,8 @@ pub struct RemoteWrite {
     families: Arc<Mutex<Families>>,
     /// Counts what a 2.0 store says it did not write, where the destination reports on itself.
     unwritten: Option<Unwritten>,
+    /// Each route's record, which a row's columns hold (`config_file::parquet_records`).
+    records: Records,
 }
 
 impl RemoteWrite {
@@ -203,7 +210,14 @@ impl RemoteWrite {
             version: config.version,
             families: Arc::default(),
             unwritten: None,
+            records: Records::default(),
         }
+    }
+
+    /// Reads a row's columns as `records` gives its route's record.
+    pub fn with_records(mut self, records: Records) -> Self {
+        self.records = records;
+        self
     }
 
     pub fn with_unwritten(mut self, unwritten: Unwritten) -> Self {
@@ -230,17 +244,20 @@ pub fn transport(
     HttpTransport::new(&config.url, content_type, headers, agent).without_redirects()
 }
 
-/// Opens `c` as a live destination, named `name` in its log lines and counting into `metrics` as destination `id`.
+/// Opens `c` as a live destination, named `name` in its log lines and counting into `metrics` as destination `id`,
+/// reading a row's columns as `records` gives its route's record.
 pub fn open(
     c: &PrometheusDestinationConfig,
     id: crate::core::id::DestId,
     name: &str,
     metrics: crate::metrics::MetricsHandle,
     secrets: &crate::plan::topology::HeldSecrets,
+    records: Option<&Records>,
 ) -> Result<Box<dyn super::Destination>, IoError> {
     let credentials = super::http::credential_headers("prometheus destination", &c.credentials, secrets)?;
     let config = super::http::agent_config(c.tls.as_ref(), secrets)?;
-    let protocol = RemoteWrite::new(c).with_unwritten(Unwritten::new(metrics.clone(), id, name));
+    let protocol = (RemoteWrite::new(c).with_unwritten(Unwritten::new(metrics.clone(), id, name)))
+        .with_records(records.cloned().unwrap_or_default());
     // No senders: every request goes from this thread, so one lands before the next is sent.
     Ok(Box::new(
         super::http::HttpDestination::new(transport(c, &credentials, &config), protocol)
@@ -251,51 +268,203 @@ pub fn open(
     ))
 }
 
-/// A JSON value as the row writes it, read when it is used.
+/// A value of a row, read when it is used: its JSON text, or its cell of the route's columns (`io::parquet`). A cell
+/// reads as the row's JSON would: a datetime as its ISO text, bytes as their base64, a duration as its microseconds.
 #[derive(Clone, Copy)]
-struct Json<'d>(&'d str);
+enum Value<'d> {
+    Json(&'d str),
+    Cell(Cell<'d>),
+}
 
-impl<'d> Json<'d> {
+/// Row `row` of `array`, a column of the record's type `ty`, which is no variant: a variant's column holds its JSON.
+#[derive(Clone, Copy)]
+struct Cell<'d> {
+    array: &'d dyn Array,
+    ty: &'d DataType,
+    row: usize,
+}
+
+/// A scalar as the row's JSON writes it.
+enum Leaf<'d> {
+    Null,
+    Bool(bool),
+    Number(Cow<'d, str>),
+    Str(Cow<'d, str>),
+}
+
+impl<'d> Cell<'d> {
+    /// The cell, where it holds a value.
+    fn valid(self) -> Option<Cell<'d>> {
+        // Arrow's null column keeps no validity, so it reads as valid.
+        (*self.ty != DataType::Null && self.array.is_valid(self.row)).then_some(self)
+    }
+
+    fn int(self) -> Option<i64> {
+        Some(self.array.as_primitive_opt::<Int64Type>()?.value(self.row))
+    }
+
+    fn float(self) -> Option<f64> {
+        Some(self.array.as_primitive_opt::<Float64Type>()?.value(self.row))
+    }
+
+    fn micros(self) -> Option<i64> {
+        Some(
+            self.array
+                .as_primitive_opt::<TimestampMicrosecondType>()?
+                .value(self.row),
+        )
+    }
+
+    fn text(self) -> Option<&'d str> {
+        Some(self.array.as_string_opt::<i32>()?.value(self.row))
+    }
+}
+
+impl<'d> Value<'d> {
+    fn of(array: &'d dyn Array, ty: &'d DataType, row: usize) -> Value<'d> {
+        let cell = Cell { array, ty, row };
+        match (ty, cell.valid().and_then(Cell::text)) {
+            (DataType::Variant, Some(json)) => Value::Json(json),
+            _ => Value::Cell(cell),
+        }
+    }
+
     fn next(self) -> Option<Next<'d>> {
-        Reader::of_str(self.0).value().ok()
+        match self {
+            Value::Json(text) => Reader::of_str(text).value().ok(),
+            Value::Cell(_) => None,
+        }
     }
 
     fn is_null(self) -> bool {
-        self.0 == "null"
+        match self {
+            Value::Json(text) => text == "null",
+            Value::Cell(c) => c.valid().is_none(),
+        }
+    }
+
+    fn as_bool(self) -> Option<bool> {
+        match self {
+            Value::Json(_) => match self.next()? {
+                Next::Bool(b) => Some(b),
+                _ => None,
+            },
+            Value::Cell(c) => Some(c.valid()?.array.as_boolean_opt()?.value(c.row)),
+        }
     }
 
     /// The number, where an f64 holds it.
     fn as_f64(self) -> Option<f64> {
-        match self.next()? {
-            Next::Number(n) => n.parse().ok().filter(|n: &f64| n.is_finite()),
-            _ => None,
+        match self {
+            Value::Json(_) => match self.next()? {
+                Next::Number(n) => n.parse().ok().filter(|n: &f64| n.is_finite()),
+                _ => None,
+            },
+            Value::Cell(c) => match c.valid()?.ty {
+                DataType::I64 | DataType::Duration => Some(c.int()? as f64),
+                DataType::F64 => c.float().filter(|n| n.is_finite()),
+                _ => None,
+            },
         }
     }
 
     /// The number, where it is written whole and an i64 holds it.
     fn as_i64(self) -> Option<i64> {
-        match self.next()? {
-            Next::Number(n) => n.parse().ok(),
-            _ => None,
+        match self {
+            Value::Json(_) => match self.next()? {
+                Next::Number(n) => n.parse().ok(),
+                _ => None,
+            },
+            Value::Cell(c) => match c.valid()?.ty {
+                DataType::I64 | DataType::Duration => c.int(),
+                _ => None,
+            },
         }
     }
 
     fn as_str(self) -> Option<Cow<'d, str>> {
-        match self.next()? {
-            Next::Str(s) => Some(s),
-            _ => None,
+        match self {
+            Value::Json(_) => match self.next()? {
+                Next::Str(s) => Some(s),
+                _ => None,
+            },
+            Value::Cell(c) => match c.valid()?.ty {
+                DataType::Str => c.text().map(Cow::Borrowed),
+                DataType::DateTime => {
+                    let mut text = Vec::new();
+                    crate::ops::datetime::write_iso8601_micros_bare(c.micros()?, &mut text);
+                    String::from_utf8(text).ok().map(Cow::Owned)
+                }
+                DataType::Bytes => {
+                    let bytes = c.array.as_binary_opt::<i32>()?.value(c.row);
+                    Some(Cow::Owned(crate::format::bytes_text::BytesForm::Base64.text(bytes)))
+                }
+                _ => None,
+            },
+        }
+    }
+
+    /// The datetime, as epoch microseconds: a datetime's own, or text read as one.
+    fn as_micros(self) -> Option<i64> {
+        match self {
+            Value::Cell(c) if *c.ty == DataType::DateTime => c.valid()?.micros(),
+            _ => crate::ops::timeparse::parse_auto(&self.as_str()?),
+        }
+    }
+
+    /// The scalar, none for an object, an array or text that is no JSON.
+    fn leaf(self) -> Option<Leaf<'d>> {
+        match self {
+            Value::Json(_) => match self.next()? {
+                Next::Null => Some(Leaf::Null),
+                Next::Bool(b) => Some(Leaf::Bool(b)),
+                Next::Number(n) => Some(Leaf::Number(Cow::Borrowed(n))),
+                Next::Str(s) => Some(Leaf::Str(s)),
+                Next::Object | Next::Array => None,
+            },
+            Value::Cell(c) if c.valid().is_none() => Some(Leaf::Null),
+            Value::Cell(c) => match c.ty {
+                DataType::Bool => self.as_bool().map(Leaf::Bool),
+                DataType::I64 | DataType::Duration => Some(Leaf::Number(Cow::Owned(c.int()?.to_string()))),
+                DataType::F64 => Some(Leaf::Number(Cow::Owned(format!("{:?}", c.float()?)))),
+                DataType::Str | DataType::DateTime | DataType::Bytes => self.as_str().map(Leaf::Str),
+                DataType::Null | DataType::Variant | DataType::Array(_) | DataType::Struct(..) => None,
+            },
         }
     }
 
     /// An object's members sorted by name, a name written twice holding its last value.
-    fn members(self) -> Option<Vec<(Cow<'d, str>, Json<'d>)>> {
-        let mut r = Reader::of_str(self.0);
+    fn members(self) -> Option<Vec<(Cow<'d, str>, Value<'d>)>> {
+        let text = match self {
+            Value::Json(text) => text,
+            Value::Cell(c) => {
+                let DataType::Struct(fields, open) = c.ty else {
+                    return None;
+                };
+                let columns = c.valid()?.array.as_struct_opt()?.columns();
+                let mut members: Vec<_> = (fields.iter().zip(columns))
+                    .map(|((name, ty), array)| (Cow::Borrowed(name.as_str()), Value::of(array.as_ref(), ty, c.row)))
+                    .collect();
+                // An open struct's last column holds the keys its fields do not name, as a JSON object.
+                if *open
+                    && let Some(rest) = columns
+                        .last()
+                        .map(|rest| Value::of(rest.as_ref(), &DataType::Variant, c.row))
+                    && !rest.is_null()
+                {
+                    members.extend(rest.members()?);
+                }
+                members.sort_by(|a, b| a.0.cmp(&b.0));
+                return Some(members);
+            }
+        };
+        let mut r = Reader::of_str(text);
         if r.value().ok()? != Next::Object {
             return None;
         }
-        let mut members: Vec<(Cow<'d, str>, Json<'d>)> = Vec::new();
+        let mut members: Vec<(Cow<'d, str>, Value<'d>)> = Vec::new();
         while let Some(name) = r.key().ok()? {
-            members.push((name, Json::read(self.0, &mut r)?));
+            members.push((name, Value::read(text, &mut r)?));
         }
         // Reversed, a stable sort puts the last value of each name first, which `dedup_by` keeps.
         members.reverse();
@@ -304,102 +473,167 @@ impl<'d> Json<'d> {
         Some(members)
     }
 
-    fn items(self) -> Option<Vec<Json<'d>>> {
-        let mut r = Reader::of_str(self.0);
+    fn items(self) -> Option<Vec<Value<'d>>> {
+        let text = match self {
+            Value::Json(text) => text,
+            Value::Cell(c) => {
+                let DataType::Array(item) = c.ty else {
+                    return None;
+                };
+                let list = c.valid()?.array.as_list_opt::<i32>()?;
+                let span = &list.value_offsets()[c.row..c.row + 2];
+                let items = list.values().as_ref();
+                return Some(
+                    (span[0] as usize..span[1] as usize)
+                        .map(|i| Value::of(items, item, i))
+                        .collect(),
+                );
+            }
+        };
+        let mut r = Reader::of_str(text);
         if r.value().ok()? != Next::Array {
             return None;
         }
         let mut items = Vec::new();
         while r.item().ok()? {
-            items.push(Json::read(self.0, &mut r)?);
+            items.push(Value::read(text, &mut r)?);
         }
         Some(items)
     }
 
     /// The value `r`, a reader of `text`, is at.
-    fn read(text: &'d str, r: &mut Reader<'d>) -> Option<Json<'d>> {
+    fn read(text: &'d str, r: &mut Reader<'d>) -> Option<Value<'d>> {
         let raw = r.raw().ok()?.len();
         // `raw` ends where the reader is, so it is cut from `text` rather than checked as UTF-8 again.
-        text.get(r.at() - raw..r.at()).map(Json)
+        text.get(r.at() - raw..r.at()).map(Value::Json)
     }
 }
 
 /// The member `name` of `members`.
-fn member<'d>(members: &[(Cow<'d, str>, Json<'d>)], name: &str) -> Option<Json<'d>> {
+fn member<'d>(members: &[(Cow<'d, str>, Value<'d>)], name: &str) -> Option<Value<'d>> {
     members.iter().find(|(given, _)| given == name).map(|(_, value)| *value)
 }
 
-/// The row's fields this destination reads. A JSON null reads as none.
+/// The row's fields this destination reads. A null reads as none.
 #[derive(Default)]
 struct Fields<'d> {
-    name: Option<Json<'d>>,
-    value: Option<Json<'d>>,
-    time: Option<Json<'d>>,
-    attributes: Option<Json<'d>>,
-    kind: Option<Json<'d>>,
-    aggregation_temporality: Option<Json<'d>>,
-    count: Option<Json<'d>>,
-    sum: Option<Json<'d>>,
-    bucket_counts: Option<Json<'d>>,
-    explicit_bounds: Option<Json<'d>>,
-    reset_hint: Option<Json<'d>>,
-    scale: Option<Json<'d>>,
-    zero_count: Option<Json<'d>>,
-    zero_threshold: Option<Json<'d>>,
-    positive: Option<Json<'d>>,
-    negative: Option<Json<'d>>,
-    exemplars: Option<Json<'d>>,
-    description: Option<Json<'d>>,
-    unit: Option<Json<'d>>,
-    is_monotonic: Option<Json<'d>>,
-    start_time: Option<Json<'d>>,
+    name: Option<Value<'d>>,
+    value: Option<Value<'d>>,
+    time: Option<Value<'d>>,
+    attributes: Option<Value<'d>>,
+    kind: Option<Value<'d>>,
+    aggregation_temporality: Option<Value<'d>>,
+    count: Option<Value<'d>>,
+    sum: Option<Value<'d>>,
+    bucket_counts: Option<Value<'d>>,
+    explicit_bounds: Option<Value<'d>>,
+    reset_hint: Option<Value<'d>>,
+    scale: Option<Value<'d>>,
+    zero_count: Option<Value<'d>>,
+    zero_threshold: Option<Value<'d>>,
+    positive: Option<Value<'d>>,
+    negative: Option<Value<'d>>,
+    exemplars: Option<Value<'d>>,
+    description: Option<Value<'d>>,
+    unit: Option<Value<'d>>,
+    is_monotonic: Option<Value<'d>>,
+    start_time: Option<Value<'d>>,
+    /// The fields set so far, by their place above.
+    seen: u32,
 }
 
 impl<'d> Fields<'d> {
+    /// The fields of `row`: its cell of its route's columns where it has one, `records` giving each route's record,
+    /// else its JSON.
+    fn of(row: &'d OwnedRecord, records: &'d Records) -> Result<Fields<'d>, String> {
+        match (&row.columns, records.get(&row.route)) {
+            (Some(columns), Some(record)) => Fields::columns(columns, record),
+            _ => Fields::json(&row.value)
+                .ok_or_else(|| "a Prometheus destination sends a record, and this row is no JSON object".into()),
+        }
+    }
+
+    fn columns(columns: &'d Columns, record: &'d DataType) -> Result<Fields<'d>, String> {
+        if let Some(why) = columns.chunk.unfit(columns.row) {
+            return Err(why.to_string());
+        }
+        let row = columns.row as usize;
+        let (DataType::Struct(names, open), batch) = (record, columns.chunk.batch()) else {
+            return Err(format!(
+                "a Prometheus destination sends a record, and this route's is of type {record}"
+            ));
+        };
+        let mut fields = Fields::default();
+        for ((name, ty), array) in names.iter().zip(batch.columns()) {
+            fields.set(name, Value::of(array.as_ref(), ty, row));
+        }
+        // An open record's last column holds the keys its fields do not name, as a JSON object.
+        if *open && let Some(rest) = batch.columns().last() {
+            let rest = Value::of(rest.as_ref(), &DataType::Variant, row);
+            for (name, value) in rest.members().into_iter().flatten() {
+                fields.set(&name, value);
+            }
+        }
+        Ok(fields)
+    }
+
     /// None for a row that is no JSON object, or that names one of these fields twice.
-    fn read(row: &'d [u8]) -> Option<Fields<'d>> {
+    fn json(row: &'d [u8]) -> Option<Fields<'d>> {
         let text = std::str::from_utf8(row.trim_ascii()).ok()?;
         let mut r = Reader::of_str(text);
         if r.value().ok()? != Next::Object {
             return None;
         }
         let mut fields = Fields::default();
-        let mut seen = 0u32;
         while let Some(key) = r.key().ok()? {
-            let (i, field) = match &*key {
-                "name" => (0, &mut fields.name),
-                "value" => (1, &mut fields.value),
-                "time" => (2, &mut fields.time),
-                "attributes" => (3, &mut fields.attributes),
-                "type" => (4, &mut fields.kind),
-                "aggregationTemporality" => (5, &mut fields.aggregation_temporality),
-                "count" => (6, &mut fields.count),
-                "sum" => (7, &mut fields.sum),
-                "bucketCounts" => (8, &mut fields.bucket_counts),
-                "explicitBounds" => (9, &mut fields.explicit_bounds),
-                "resetHint" => (10, &mut fields.reset_hint),
-                "scale" => (11, &mut fields.scale),
-                "zeroCount" => (12, &mut fields.zero_count),
-                "zeroThreshold" => (13, &mut fields.zero_threshold),
-                "positive" => (14, &mut fields.positive),
-                "negative" => (15, &mut fields.negative),
-                "exemplars" => (16, &mut fields.exemplars),
-                "description" => (17, &mut fields.description),
-                "unit" => (18, &mut fields.unit),
-                "isMonotonic" => (19, &mut fields.is_monotonic),
-                "startTime" => (20, &mut fields.start_time),
-                _ => {
-                    r.skip().ok()?;
-                    continue;
-                }
-            };
-            if seen & 1 << i != 0 {
-                return None;
+            match fields.place(&key) {
+                Some(_) => fields.set(&key, Value::read(text, &mut r)?)?,
+                None => r.skip().ok()?,
             }
-            seen |= 1 << i;
-            *field = Some(Json::read(text, &mut r)?).filter(|value| !value.is_null());
         }
         r.end().then_some(fields)
+    }
+
+    /// The field `key` names, and its place in `seen`, where this destination reads it.
+    fn place(&mut self, key: &str) -> Option<(u32, &mut Option<Value<'d>>)> {
+        Some(match key {
+            "name" => (0, &mut self.name),
+            "value" => (1, &mut self.value),
+            "time" => (2, &mut self.time),
+            "attributes" => (3, &mut self.attributes),
+            "type" => (4, &mut self.kind),
+            "aggregationTemporality" => (5, &mut self.aggregation_temporality),
+            "count" => (6, &mut self.count),
+            "sum" => (7, &mut self.sum),
+            "bucketCounts" => (8, &mut self.bucket_counts),
+            "explicitBounds" => (9, &mut self.explicit_bounds),
+            "resetHint" => (10, &mut self.reset_hint),
+            "scale" => (11, &mut self.scale),
+            "zeroCount" => (12, &mut self.zero_count),
+            "zeroThreshold" => (13, &mut self.zero_threshold),
+            "positive" => (14, &mut self.positive),
+            "negative" => (15, &mut self.negative),
+            "exemplars" => (16, &mut self.exemplars),
+            "description" => (17, &mut self.description),
+            "unit" => (18, &mut self.unit),
+            "isMonotonic" => (19, &mut self.is_monotonic),
+            "startTime" => (20, &mut self.start_time),
+            _ => return None,
+        })
+    }
+
+    /// Sets the field `key` names to `value`, none where it is null. None where it was set already.
+    fn set(&mut self, key: &str, value: Value<'d>) -> Option<()> {
+        let seen = self.seen;
+        let Some((i, field)) = self.place(key) else {
+            return Some(());
+        };
+        if seen & 1 << i != 0 {
+            return None;
+        }
+        *field = Some(value).filter(|value| !value.is_null());
+        self.seen |= 1 << i;
+        Some(())
     }
 }
 
@@ -409,10 +643,10 @@ fn metric_type(fields: &Fields) -> Result<MetricType, String> {
         None => return Ok(MetricType::Unknown),
         Some(kind) => kind.as_str().ok_or("a row's type is a string in the field type")?,
     };
-    let cumulative = fields.aggregation_temporality.and_then(Json::as_i64) == Some(2);
+    let cumulative = fields.aggregation_temporality.and_then(Value::as_i64) == Some(2);
     Ok(match &*kind {
         "gauge" => MetricType::Gauge,
-        "sum" if fields.is_monotonic.and_then(Json::next) == Some(Next::Bool(true)) => MetricType::Counter,
+        "sum" if fields.is_monotonic.and_then(Value::as_bool) == Some(true) => MetricType::Counter,
         "sum" => MetricType::Gauge,
         "histogram" | "exponentialHistogram" if cumulative => MetricType::Histogram,
         "histogram" | "exponentialHistogram" => MetricType::GaugeHistogram,
@@ -429,8 +663,8 @@ fn metric_type(fields: &Fields) -> Result<MetricType, String> {
 }
 
 /// The text of a string field, empty when it is none or no string.
-fn text(value: Option<Json<'_>>) -> Cow<'_, str> {
-    value.and_then(Json::as_str).unwrap_or_default()
+fn text(value: Option<Value<'_>>) -> Cow<'_, str> {
+    value.and_then(Value::as_str).unwrap_or_default()
 }
 
 /// The metadata of `name`'s family, from the row of `fields`.
@@ -445,19 +679,20 @@ fn metadata(fields: &Fields, name: &str) -> Result<MetricMetadata, String> {
 
 /// A sample's value.
 fn sample(fields: &Fields) -> Result<f64, String> {
-    (fields.value.and_then(Json::as_f64))
+    (fields.value.and_then(Value::as_f64))
         .ok_or_else(|| "a sample's value is a number in the field value; a NaN or an infinity arrives as none".into())
 }
 
 /// The label value of an attribute, none when it is null or the empty string, as Prometheus reads a label with no
 /// value. `what` names the attribute in a refusal.
-fn label_value(value: Json<'_>, what: impl FnOnce() -> String) -> Result<Option<String>, String> {
-    let value = match value.next() {
-        Some(Next::Null) => return Ok(None),
-        Some(Next::Bool(b)) => b.to_string(),
-        Some(given @ (Next::Str(_) | Next::Number(_))) => super::splunk::text(given)
+fn label_value(value: Value<'_>, what: impl FnOnce() -> String) -> Result<Option<String>, String> {
+    let value = match value.leaf() {
+        Some(Leaf::Null) => return Ok(None),
+        Some(Leaf::Bool(b)) => b.to_string(),
+        Some(Leaf::Str(s)) => s.into_owned(),
+        Some(Leaf::Number(n)) => super::splunk::text(Next::Number(&n))
             .ok_or_else(|| format!("{} is a number no double holds, and a label's value is text", what()))?,
-        _ => return Err(format!("{} is no string, and a label's value is one", what())),
+        None => return Err(format!("{} is no string, and a label's value is one", what())),
     };
     Ok(Some(value).filter(|v| !v.is_empty()))
 }
@@ -467,7 +702,7 @@ const EXEMPLAR_LABEL_RUNES: usize = 128;
 
 /// The exemplars of `items` Prometheus stores, each at its own time or else at `time`, the row's. Prometheus drops an
 /// exemplar it cannot store and keeps its sample, so one that is not an exemplar is left out, not refused.
-fn exemplars(items: Vec<Json<'_>>, time: i64) -> Vec<Exemplar> {
+fn exemplars(items: Vec<Value<'_>>, time: i64) -> Vec<Exemplar> {
     items.into_iter().filter_map(|item| exemplar(item, time)).collect()
 }
 
@@ -475,17 +710,17 @@ fn exemplars(items: Vec<Json<'_>>, time: i64) -> Vec<Exemplar> {
 /// shares. None when it has no value or time Prometheus reads, or its trace and span alone pass
 /// [`EXEMPLAR_LABEL_RUNES`]. An attribute that is no label, or names the trace or span label again, is left out, and
 /// so are all of them where they would pass that limit: the trace and span are what an exemplar is for.
-fn exemplar(item: Json<'_>, time: i64) -> Option<Exemplar> {
+fn exemplar(item: Value<'_>, time: i64) -> Option<Exemplar> {
     let item = item.members()?;
     let timestamp = match member(&item, "time").filter(|time| !time.is_null()) {
         None => time,
-        Some(text) => crate::ops::timeparse::parse_auto(&text.as_str()?)?.div_euclid(1000),
+        Some(time) => time.as_micros()?.div_euclid(1000),
     };
     // A NaN value, which Prometheus holds, arrives as none.
-    let value = member(&item, "value").and_then(Json::as_f64)?;
+    let value = member(&item, "value").and_then(Value::as_f64)?;
     let mut ids = Vec::new();
     for (field, name) in [("traceId", "trace_id"), ("spanId", "span_id")] {
-        if let Some(id) = member(&item, field).and_then(Json::as_str)
+        if let Some(id) = member(&item, field).and_then(Value::as_str)
             && !id.is_empty()
         {
             ids.push(Label {
@@ -495,7 +730,7 @@ fn exemplar(item: Json<'_>, time: i64) -> Option<Exemplar> {
         }
     }
     let mut attributes = Vec::new();
-    if let Some(object) = member(&item, "filteredAttributes").and_then(Json::members) {
+    if let Some(object) = member(&item, "filteredAttributes").and_then(Value::members) {
         for (name, value) in object {
             if name.is_empty() || ids.iter().any(|id| id.name == name) {
                 continue;
@@ -543,7 +778,7 @@ fn labels_hash(labels: &[Label]) -> u64 {
 }
 
 /// A count in `field`: a number, not negative.
-fn count(value: Json<'_>, field: &str) -> Result<f64, String> {
+fn count(value: Value<'_>, field: &str) -> Result<f64, String> {
     match value.as_f64() {
         Some(count) if count >= 0.0 => Ok(count),
         Some(_) => Err(format!("a histogram's {field} is negative, and a count is not")),
@@ -554,7 +789,7 @@ fn count(value: Json<'_>, field: &str) -> Result<f64, String> {
 }
 
 /// The counts of the array in `field`, none when it is absent.
-fn counts(value: Option<Json<'_>>, field: &str) -> Result<Vec<f64>, String> {
+fn counts(value: Option<Value<'_>>, field: &str) -> Result<Vec<f64>, String> {
     match value.filter(|value| !value.is_null()) {
         None => Ok(Vec::new()),
         Some(value) => (value.items())
@@ -568,7 +803,7 @@ fn counts(value: Option<Json<'_>>, field: &str) -> Result<Vec<f64>, String> {
 /// Whether a histogram is cumulative, as its `aggregationTemporality` says: 2 for a cumulative one, none for a gauge
 /// histogram.
 fn cumulative(fields: &Fields) -> Result<bool, String> {
-    match fields.aggregation_temporality.map(Json::as_i64) {
+    match fields.aggregation_temporality.map(Value::as_i64) {
         None => Ok(false),
         Some(Some(2)) => Ok(true),
         Some(Some(1)) => Err(
@@ -589,7 +824,7 @@ fn count_and_sum(fields: &Fields) -> Result<(f64, f64), String> {
         "count",
     )?;
     // A staleness marker's sum is a NaN, which arrives as none.
-    let sum = (fields.sum.and_then(Json::as_f64))
+    let sum = (fields.sum.and_then(Value::as_f64))
         .ok_or("a histogram's sum is a number in the field sum; a NaN or an infinity arrives as none")?;
     Ok((count, sum))
 }
@@ -643,7 +878,7 @@ fn histogram(fields: &Fields) -> Result<Histogram, String> {
 /// An exponential histogram, its schema `scale` downscaled to the finest Prometheus takes.
 fn exponential(fields: &Fields) -> Result<Histogram, String> {
     let mut h = histogram(fields)?;
-    let scale = (fields.scale.and_then(Json::as_i64))
+    let scale = (fields.scale.and_then(Value::as_i64))
         .ok_or("an exponential histogram's scale is an integer in the field scale")?;
     if scale < COARSEST_SCHEMA {
         return Err(format!(
@@ -660,7 +895,7 @@ fn exponential(fields: &Fields) -> Result<Histogram, String> {
 
 /// One side of an exponential histogram, `{offset, bucketCounts}` in OTLP's buckets, as Prometheus's spans and the
 /// count of each bucket they cover, its buckets merged `by` schemas coarser.
-fn side(value: Option<Json<'_>>, field: &str, by: u32) -> Result<(Vec<BucketSpan>, Vec<f64>), String> {
+fn side(value: Option<Value<'_>>, field: &str, by: u32) -> Result<(Vec<BucketSpan>, Vec<f64>), String> {
     let (offset, counts) = match value.filter(|value| !value.is_null()) {
         None => return Ok((Vec::new(), Vec::new())),
         Some(side) => {
@@ -702,10 +937,10 @@ type ClassicSample = (&'static str, Option<String>, f64);
 fn classic(fields: &Fields) -> Result<(Vec<ClassicSample>, Vec<f64>), String> {
     cumulative(fields)?;
     let (count, sum) = count_and_sum(fields)?;
-    let bounds = match fields.explicit_bounds.and_then(Json::items) {
+    let bounds = match fields.explicit_bounds.and_then(Value::items) {
         Some(bounds) => bounds
             .into_iter()
-            .map(Json::as_f64)
+            .map(Value::as_f64)
             .collect::<Option<Vec<f64>>>()
             .ok_or("a histogram's explicitBounds are numbers; a NaN or an infinity arrives as none")?,
         _ => return Err("a histogram's bounds are an array in the field explicitBounds".into()),
@@ -1067,13 +1302,12 @@ impl Protocol for RemoteWrite {
     ///
     /// Other fields are not read.
     fn admit(&self, row: &OwnedRecord) -> Result<Item, String> {
-        let fields = Fields::read(&row.value)
-            .ok_or("a Prometheus destination sends a record, and this row is no JSON object")?;
-        let name = match fields.name.and_then(Json::as_str) {
+        let fields = Fields::of(row, &self.records)?;
+        let name = match fields.name.and_then(Value::as_str) {
             Some(name) if !name.is_empty() => name.into_owned(),
             _ => return Err("a row's name is a non-empty string in the field name".into()),
         };
-        let exemplar_items = fields.exemplars.and_then(Json::items).unwrap_or_default();
+        let exemplar_items = fields.exemplars.and_then(Value::items).unwrap_or_default();
         // Only a row of no time is metadata: one with a time and nothing at it is a point missing its value.
         if fields.time.is_none() && fields.value.is_none() && exemplar_items.is_empty() {
             return Ok(Item {
@@ -1090,10 +1324,7 @@ impl Protocol for RemoteWrite {
             Histogram(Box<Histogram>),
             Classic(Vec<ClassicSample>, Vec<f64>),
         }
-        let datetime = |field: Option<Json<'_>>| {
-            let text = field?.as_str()?;
-            crate::ops::timeparse::parse_auto(&text).map(|us| us.div_euclid(1000))
-        };
+        let datetime = |field: Option<Value<'_>>| field?.as_micros().map(|us| us.div_euclid(1000));
         let time =
             datetime(fields.time).ok_or("a row's time is a datetime from the year 0 to 9999 in the field time")?;
         let start = datetime(fields.start_time).unwrap_or(0);
@@ -1107,7 +1338,7 @@ impl Protocol for RemoteWrite {
                 sample(fields).map(Shape::Sample)
             }
         };
-        let shape = match fields.kind.map(Json::as_str) {
+        let shape = match fields.kind.map(Value::as_str) {
             None => sample_shape(&fields)?,
             Some(Some(kind)) => match &*kind {
                 "gauge" | "sum" => sample_shape(&fields)?,
@@ -1332,6 +1563,7 @@ mod tests {
             version,
             families: Arc::default(),
             unwritten: None,
+            records: Records::default(),
         }
     }
 
@@ -1343,8 +1575,103 @@ mod tests {
         }
     }
 
+    /// The row `json` admitted, and checked to read the same through its route's columns, for each record it may
+    /// arrive as.
     fn admit(json: &str) -> Result<Item, String> {
-        protocol().admit(&row(json))
+        let read = protocol().admit(&row(json));
+        // The row as a pipeline holds it, a name given twice once, and as egress writes it.
+        let mut held = Vec::new();
+        if let Ok(serde_json::Value::Object(_)) = serde_json::from_str::<serde_json::Value>(json)
+            && Reader::of_str(json).variant(&mut held).is_ok()
+        {
+            let mut written = Vec::new();
+            crate::io::values::json_text(&held, &mut written);
+            let written = String::from_utf8(written).unwrap();
+            let as_json = protocol().admit(&row(&written));
+            for record in records_of(&serde_json::from_str(&written).unwrap()) {
+                if let Some(columnar) = columnar(&written, &record) {
+                    assert_eq!(columnar, as_json, "{written} through columns of {record:?}");
+                }
+            }
+        }
+        read
+    }
+
+    /// The records a route may give the row `value`: its fields typed as it shows them, `time` and `startTime` as
+    /// datetimes where they read as one; each a variant; and all of them unclaimed.
+    fn records_of(value: &serde_json::Value) -> Vec<DataType> {
+        let DataType::Struct(fields, _) = crate::plan::dictionary::with_sample(&DataType::Variant, [value]) else {
+            unreachable!("an object's type is a struct")
+        };
+        let timed = (fields.iter())
+            .map(|(name, ty)| {
+                let time = value[name]
+                    .as_str()
+                    .and_then(crate::ops::timeparse::parse_auto)
+                    .is_some();
+                let ty = match name.as_str() {
+                    "time" | "startTime" if time => DataType::DateTime,
+                    _ => ty.clone(),
+                };
+                (name.clone(), ty)
+            })
+            .collect();
+        let variants = (fields.iter())
+            .map(|(name, _)| (name.clone(), DataType::Variant))
+            .collect();
+        vec![
+            DataType::Struct(fields, false),
+            DataType::Struct(timed, false),
+            DataType::Struct(variants, false),
+            DataType::Struct(Vec::new(), true),
+        ]
+    }
+
+    /// The row `json` admitted through columns cut to `record`, as egress cuts them for a route of that record. None
+    /// where Parquet cannot hold the record, so the route sends JSON.
+    fn columnar(json: &str, record: &DataType) -> Option<Result<Item, String>> {
+        use crate::core::buffer::BufferPool;
+        use crate::format::typed::{Cell, build};
+        let schema = crate::io::parquet::Schema::new(record).ok()?;
+        let DataType::Struct(fields, open) = record else {
+            return None;
+        };
+        let mut whole = Vec::new();
+        Reader::of_str(json).variant(&mut whole).ok()?;
+        let mut pool = BufferPool::new();
+        let mut columns: Vec<(&str, _)> = (fields.iter())
+            .map(|(name, ty)| {
+                let member = crate::core::variant::member(&whole, name).map(Cell::Variant);
+                (name.as_str(), build(std::iter::once(member), 1, ty, 0, &mut pool).0)
+            })
+            .collect();
+        if *open {
+            let all = build(
+                std::iter::once(Some(Cell::Variant(&whole))),
+                1,
+                &DataType::Variant,
+                0,
+                &mut pool,
+            )
+            .0;
+            columns.push((crate::plan::tree::UNCLAIMED, all));
+        }
+        let view = crate::format::record::RecordView::from_named(columns.iter().map(|(n, c)| (*n, c)));
+        let chunk = Arc::new(crate::io::parquet::Chunk::cut(&schema, &[(&view, &[0])], 0, &mut pool));
+        drop(view);
+        for (_, column) in columns {
+            column.reclaim(&mut pool);
+        }
+        let row = OwnedRecord {
+            payload: Payload::Record,
+            columns: Some(Columns { chunk, row: 0 }),
+            ..OwnedRecord::default()
+        };
+        Some(
+            protocol()
+                .with_records(Records::from([(None, record.clone())]))
+                .admit(&row),
+        )
     }
 
     /// `n` rows of one sample each.

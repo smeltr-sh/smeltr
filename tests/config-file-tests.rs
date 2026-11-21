@@ -2619,6 +2619,26 @@ fn a_prometheus_destination_loads_and_names_its_credentials() {
     );
 }
 
+/// A Prometheus destination reads a row's columns where Parquet holds its route's record, and its JSON where it does
+/// not, so such a record compiles.
+#[test]
+fn a_prometheus_destination_takes_a_record_parquet_cannot_hold() {
+    let json = cfg(
+        r#"{"id":"store","type":"prometheus","url":"https://mimir.example/api/v1/push"}"#,
+        r#"{"id":"p","name":"p","steps":[{"id":"c","type":"code","body":"Object.assign($, json(_raw)); rest = 1;"}]}"#,
+        r#"{"id":"r","source":"s","pipeline":"p","deliver":[{"to":["store"]}]}"#,
+    );
+    let system = load_str(&json).expect("must load");
+    let compiled = system
+        .compile_topology()
+        .unwrap_or_else(|e| panic!("{}", join_errors(&e)));
+    let record = &compiled.records[&system.topology.destinations[0].id][&Some(0)];
+    assert!(
+        smeltr::io::parquet::Schema::new(record).is_err(),
+        "Parquet holds {record:?}"
+    );
+}
+
 /// A Prometheus destination's `version` picks remote_write 2.0; anything but `1.0` or `2.0` is refused.
 #[test]
 fn a_prometheus_destination_names_its_remote_write_version() {
