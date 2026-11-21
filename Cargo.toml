@@ -363,4 +363,4 @@ codegen-units = 1
 # AWS-LC's headers but no root, so librdkafka's CMake found the build host's OpenSSL headers and the link failed.
 # The change hands CMake AWS-LC's headers. Drop this once an rdkafka-sys release does the same.
 [patch.crates-io]
-rdkafka-sys = { git = "https://github.com/smeltr-sh/rust-rdkafka", rev = "0d424190733fb1f659927dcb9a1d39df34f97cf1" }
+rdkafka-sys = { git = "https://github.com/smeltr-sh/rust-rdkafka", rev = "1b6590db033e9d17a963e4dd0427ebe3fe40a5d0" }
