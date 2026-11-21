@@ -819,9 +819,9 @@
     ]
   },
   {
-    "name": "16-samples-and-tests",
+    "name": "16-tests",
     "site": "build-tests",
-    "hash": "#/build",
+    "hash": "#/build/tests",
     "scope": "network",
     "branch": "work",
     "themes": ["light", "dark"],
