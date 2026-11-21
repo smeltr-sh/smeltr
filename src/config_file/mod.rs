@@ -424,8 +424,7 @@ impl LoadedSystem {
 
     /// What each destination that writes columns writes, route by route, and an error for each record it cannot hold.
     /// An Iceberg or Delta destination writes Parquet, and a destination writing Avro or CSV writes Parquet's columns
-    /// as Avro (`io::avro`) or CSV (`io::csv`). A Prometheus destination reads its rows' columns where Parquet holds
-    /// the record, and their JSON where it does not.
+    /// as Avro (`io::avro`) or CSV (`io::csv`).
     fn parquet_records(&self, compiled: &CompiledTopology) -> (HashMap<DestId, Records>, Vec<CompileError>) {
         let parquet: Vec<_> = self
             .topology
@@ -435,7 +434,6 @@ impl LoadedSystem {
                 DestinationKind::Objects(o) => o.format.writes_columns(),
                 DestinationKind::Iceberg(_) | DestinationKind::Delta(_) => true,
                 DestinationKind::Kafka(k) => k.avro.is_some(),
-                DestinationKind::Prometheus(_) => true,
                 _ => false,
             })
             .collect();
@@ -463,10 +461,8 @@ impl LoadedSystem {
             None,
             &DataType::Struct(vec![("_raw".to_string(), DataType::Str)], false),
         );
-        // A metrics destination reads a row as JSON where its route's record is none Parquet holds.
         let errors = parquet
             .iter()
-            .filter(|d| !matches!(d.kind, DestinationKind::Prometheus(_)))
             .flat_map(|d| {
                 records
                     .get(&d.id)
