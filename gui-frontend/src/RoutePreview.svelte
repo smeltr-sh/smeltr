@@ -100,10 +100,20 @@
     if (id) void getTest(id).then((res) => (relockTest = res.test ?? null));
   });
   $effect(() => {
-    if (showedTest || !relockTest || !grid || !table || ran !== relock?.sample) return;
+    // The sample's records too: until they are in, a field they hold is not yet known, and would show by default
+    // when it arrives.
+    if (
+      showedTest ||
+      !relockTest ||
+      !grid ||
+      !table ||
+      ran !== relock?.sample ||
+      !sampleRecords.length
+    )
+      return;
     showedTest = true;
-    const [test, of] = [relockTest, records];
-    untrack(() => grid!.showTest(test, (row) => of.get(row.key) ?? -1));
+    const test = relockTest;
+    untrack(() => grid!.showTest(test, (row) => records.get(row.key) ?? -1));
   });
 
   /** Locks the fields and records on screen: a record's rows share its number. */
