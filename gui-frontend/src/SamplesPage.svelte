@@ -204,8 +204,7 @@
     id={moving?.id ?? ''}
     name={moving?.name}
     {areas}
-    dirty={false}
-    readAt={null}
+    dirty={editing !== null}
     tests={moving ? testsOn(moving.id) : []}
     onmoved={() => {
       moving = null;

@@ -47,7 +47,7 @@
     /** Whether the page holds unsaved edits, which a move would leave behind a commit they never saw. */
     dirty: boolean;
     /** The commit the page read, which the move is made against, as the page's own Save is. */
-    readAt: string | null;
+    readAt?: string | null;
     /** A source one worker of a group reads at a time (`SOURCE_KIND`), whose read position the group keeps. */
     pullOne?: boolean;
     /** The tests that run over a sample, by name, which go with it. */
