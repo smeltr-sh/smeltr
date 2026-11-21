@@ -348,8 +348,10 @@ pub fn is_under(name: &str, prefix: &str) -> bool {
         .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
 }
 
-/// Whether `name` is `prefix` or a path under it.
+/// Whether `name` is `prefix` or a path under it. Every name is under the record, `""`.
 pub fn at_or_under(name: &str, prefix: &str) -> bool {
-    name.strip_prefix(prefix)
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with('.') || rest.starts_with('['))
+    prefix.is_empty()
+        || name
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('.') || rest.starts_with('['))
 }
