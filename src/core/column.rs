@@ -571,6 +571,37 @@ impl Column {
         }
     }
 
+    /// Adds what each row holds to its entry of `sizes`, one per row: a variable-length value its bytes, an array its
+    /// items', an object its fields' and its unclaimed fields', any other value eight.
+    pub fn add_row_sizes(&self, sizes: &mut [u32]) {
+        fn spans(offsets: &Buffer, len: usize) -> std::slice::Windows<'_, u32> {
+            offsets.as_slice::<u32>()[..len + 1].windows(2)
+        }
+        match &self.storage {
+            Storage::VarLen { offsets, .. } => {
+                for (size, span) in sizes.iter_mut().zip(spans(offsets, self.len)) {
+                    *size = size.saturating_add(span[1] - span[0]);
+                }
+            }
+            Storage::List { offsets, child, .. } => {
+                let mut items = vec![0; child.len()];
+                child.add_row_sizes(&mut items);
+                for (size, span) in sizes.iter_mut().zip(spans(offsets, self.len)) {
+                    let held = &items[span[0] as usize..span[1] as usize];
+                    *size = held.iter().fold(*size, |s, &i| s.saturating_add(i));
+                }
+            }
+            Storage::Struct(fields, unclaimed) => {
+                for column in fields.iter().map(|(_, c)| c).chain(unclaimed.as_deref()) {
+                    column.add_row_sizes(sizes);
+                }
+            }
+            Storage::Empty(_) | Storage::Constant(_) | Storage::Fixed { .. } | Storage::Bits { .. } => {
+                sizes.iter_mut().for_each(|size| *size = size.saturating_add(8));
+            }
+        }
+    }
+
     /// The rows of any variable-length column, whatever its bytes mean. For code that moves rows and reads none.
     pub fn varlen(&self) -> Result<VarLen<'_>, TypeError> {
         match &self.storage {
