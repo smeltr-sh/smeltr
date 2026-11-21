@@ -537,6 +537,14 @@ cases! {
         [r#"{}"#], Error(&["nothing names"]);
     a_guarded_root_parse_is_refused: "f: bool; Object.assign($, json(_raw)) if (f) $ = json(_raw);",
         [r#"{}"#], Error(&["nothing names"]);
+    a_root_write_in_a_loop_keeps_each_leafs_type: "Object.assign($, json(_raw)) a = 1; for (let x of [1]) { $ = {_raw: _raw}; }",
+        [r#"{}"#], Rows(&[(r#"{}"#, None)]);
+    a_root_write_that_fails_in_a_try_writes_nothing: "a = 1; caught = false; try { $ = {b: parseInt(_raw), caught: caught}; } catch { caught = true; }",
+        ["x"], Rows(&[(r#"{"a": 1, "caught": true}"#, None)]);
+    a_root_write_in_a_loop_unshares_its_fields: "a = 1; b = a; for (let x of [1, 2]) { $ = {_raw: _raw, a: a + 1, b: b + 10}; }",
+        ["{}"], Rows(&[(r#"{"a": 3, "b": 21}"#, None)]);
+    a_guarded_root_write_keeps_the_records_key_on_rows_it_skips: "f: bool; Object.assign($, json(_raw)) if (f) $ = {b: 1};",
+        [r#"{"f": false, "b": 2}"#, r#"{"f": true, "b": 2}"#], Rows(&[(r#"{"f": false, "b": 2}"#, None), (r#"{"b": 1}"#, None)]);
     undeclared_is_a_value: "a: i64; Object.assign($, kv(_raw)) b = $.undeclared().b;",
         ["a=1 b=2"], Rows(&[(r#"{"a": 1, "b": "2"}"#, None)]);
     switch_is_an_if_chain: r#"Object.assign($, json(_raw)) c: str = $.c; switch (c) { case "a": x = 1; break; case "b": x = 2; break; default: x = 0; }"#,
