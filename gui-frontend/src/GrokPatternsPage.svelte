@@ -9,9 +9,8 @@
   `shared/`; and the built-ins every grok may name, which no one changes.
 -->
 <script lang="ts">
-  import MoveDialog from './MoveDialog.svelte';
-  import { editableAreas, type Area } from './areas';
-  import { reported } from './errors.svelte';
+  import MoveDialog, { type MoveTarget } from './MoveDialog.svelte';
+  import type { Area } from './areas';
   import Button from './Button.svelte';
   import Connections from './Connections.svelte';
   import EditInShared from './EditInShared.svelte';
@@ -54,12 +53,8 @@
 
   const readOnly = !editable();
   /** The grok pattern being moved into another area (`MoveDialog`), by id. */
-  let moving = $state<string | null>(null);
-  /** The areas the person edits, where a move may go. */
+  let moving = $state<MoveTarget | null>(null);
   let areas: Area[] = $state([]);
-  editableAreas()
-    .then((a) => (areas = a))
-    .catch(reported);
 
   let patterns: GrokPatternDto[] = $state([]);
   /** What `shared/` declares, which this group's grok may name as well. Never saved from here. */
@@ -249,7 +244,10 @@
                 </td>
                 <td class="act">
                   {#if !readOnly && areas.length > 1 && p.id}
-                    <Button type="button" class="compact" onclick={() => (moving = p.id)}
+                    <Button
+                      type="button"
+                      class="compact"
+                      onclick={() => (moving = { part: 'grokPattern', id: p.id })}
                       >Move to&hellip;</Button
                     >
                   {/if}
@@ -296,17 +294,11 @@
         </tbody>
       </table>
       <MoveDialog
-        open={moving !== null}
-        part="grokPattern"
-        id={moving ?? ''}
-        {areas}
+        bind:moving
+        bind:areas
         dirty={editor.isDirty}
         readAt={editor.readAtCommit}
-        onmoved={() => {
-          moving = null;
-          void editor.load();
-        }}
-        oncancel={() => (moving = null)}
+        onmoved={() => void editor.load()}
       />
       <SaveBar
         dirty={editor.isDirty}
