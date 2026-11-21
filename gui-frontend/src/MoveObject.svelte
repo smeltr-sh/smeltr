@@ -29,6 +29,7 @@
     areas,
     dirty,
     readAt,
+    pullOne = false,
     onmoved,
     oncancel,
   }: {
@@ -36,17 +37,20 @@
     open: boolean;
     kind: 'source' | 'destination';
     id: string;
-    /** Where it may go: the areas the person edits, but this one. */
+    /** The areas the person edits: it may go to any but this one. */
     areas: Area[];
     /** Whether the page holds unsaved edits, which a move would leave behind a commit they never saw. */
     dirty: boolean;
     /** The commit the page read, which the move is made against, as the page's own Save is. */
     readAt: string | null;
+    /** A source one worker of a group reads at a time (`SOURCE_KIND`), whose read position the group keeps. */
+    pullOne?: boolean;
     onmoved: (to: string) => void;
     oncancel: () => void;
   } = $props();
 
   const here = currentScope();
+  const elsewhere = $derived(areas.filter((a) => a.id !== here));
   let to = $state('');
   let answer = $state<ConnectionsResponse | null>(null);
   /** The routes that end at a destination, which stay where they are: this area's and, from `shared`, the groups'. */
@@ -56,12 +60,15 @@
   $effect(() => {
     if (!open) return;
     // Picked once, on opening: the choice is the person's from there.
-    to = untrack(() => areas[0]?.id ?? '');
+    to = untrack(() => elsewhere[0]?.id ?? '');
     answer = null;
     behind = [];
     const asked = id;
     if (kind === 'destination') {
-      const read = untrack(() => [here, ...(here === SHARED_SCOPE ? areas.map((a) => a.id) : [])]);
+      const read = untrack(() => [
+        here,
+        ...(here === SHARED_SCOPE ? elsewhere.map((a) => a.id) : []),
+      ]);
       Promise.all(
         read.map(async (area) =>
           ((await configAt(currentBranch(), area)).config?.routes ?? [])
@@ -91,6 +98,15 @@
   );
   const nameOf = (area: string) => areas.find((a) => a.id === area)?.name ?? area;
   const runsAfter = $derived(to === SHARED_SCOPE ? 'every worker group' : nameOf(to));
+  /** A group keeps a source's progress and learned normal as its own, so a group the source moves into from another
+   * starts without them. */
+  const startsOver = $derived(
+    kind !== 'source' || here === SHARED_SCOPE || to === SHARED_SCOPE
+      ? undefined
+      : pullOne
+        ? `${nameOf(to)} has none of ${nameOf(here)}'s progress, so it reads everything again there, and learns its normal again.`
+        : `${nameOf(to)} has none of ${nameOf(here)}'s learned normal, so it learns it again.`,
+  );
 
   async function move() {
     if (busy.on || dirty || !to) return;
@@ -103,9 +119,9 @@
 
 <Dialog {open} title={`move ${kind} ${id}`} {oncancel} onsubmit={move}>
   <div class="form-body">
-    <Field label="move to">
+    <Field label="move to" note={startsOver}>
       <select bind:value={to}>
-        {#each areas as a (a.id)}
+        {#each elsewhere as a (a.id)}
           <option value={a.id}>{a.name}</option>
         {/each}
       </select>

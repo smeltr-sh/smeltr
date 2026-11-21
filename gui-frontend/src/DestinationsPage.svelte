@@ -308,7 +308,7 @@
         open={moving !== null}
         kind="destination"
         id={moving?.id ?? ''}
-        areas={areas.filter((a) => a.id !== currentScope())}
+        {areas}
         dirty={editor.isDirty}
         readAt={editor.readAtCommit}
         onmoved={() => {

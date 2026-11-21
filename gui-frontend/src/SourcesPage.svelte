@@ -293,7 +293,8 @@
         open={moving !== null}
         kind="source"
         id={moving?.id ?? ''}
-        areas={areas.filter((a) => a.id !== currentScope())}
+        pullOne={!!moving && SOURCE_KIND[moving.type] === 'pullOne'}
+        {areas}
         dirty={editor.isDirty}
         readAt={editor.readAtCommit}
         onmoved={() => {
