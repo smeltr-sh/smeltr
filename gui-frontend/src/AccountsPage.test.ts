@@ -119,6 +119,7 @@ function stubFetch() {
           temporaryPassword: `pw-${resets}`,
         });
       }
+      if (url.endsWith('/revoke-sessions')) return json({ ok: true, errors: [], ended: 2 });
       if (url.startsWith('/api/accounts/') && method === 'PATCH')
         return json({ ok: true, errors: [], ...ACCOUNTS[0] });
       if (url.endsWith('/keys') && method === 'POST')
@@ -453,6 +454,24 @@ describe('the Accounts tab', () => {
     expect(calls).toEqual([
       { method: 'POST', url: '/api/accounts/u-ada/reset-password', body: null },
     ]);
+  });
+
+  it('revokes sessions only once it is confirmed', async () => {
+    await accountsTab();
+    await manage('Ada');
+    ask.mockResolvedValueOnce(false);
+    button('Revoke sessions')!.click();
+    await settle();
+    expect(ask.mock.calls[0][0].action).toBe('Revoke sessions');
+    expect(calls).toEqual([]);
+
+    ask.mockResolvedValueOnce(true);
+    button('Revoke sessions')!.click();
+    await vi.waitFor(() =>
+      expect(calls).toEqual([
+        { method: 'POST', url: '/api/accounts/u-ada/revoke-sessions', body: null },
+      ]),
+    );
   });
 
   it('disables an account only once it is confirmed', async () => {

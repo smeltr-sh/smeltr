@@ -3,7 +3,6 @@
 //! does. Every worker-facing call goes through the real enroll-then-
 //! authenticate flow.
 
-use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -645,58 +644,18 @@ fn two_workers_in_one_group_can_report_different_policies() {
     assert_eq!(for_worker("w2"), None);
 }
 
-/// The build a worker names on every request for the repository, which the leader must share to serve it.
-fn build_header() -> String {
-    format!(
-        "http.extraHeader={}: {}",
-        smeltr::leader::BUILD_HEADER,
-        smeltr::version::commit()
-    )
-}
-
-/// Clone the running leader the way a worker does, and answer what it deploys.
-fn clone_and_read_deployed(base: &str, token: &str, dest: &std::path::Path) -> String {
-    let status = git_without_prompting()
-        .args([
-            "-c",
-            &format!("http.extraHeader=Authorization: Bearer {token}"),
-            "-c",
-            &build_header(),
-            "clone",
-            "--quiet",
-            &format!("{base}/api/worker/repo"),
-            dest.to_str().unwrap(),
-        ])
-        .status()
-        .expect("git clone runs");
-    assert!(status.success(), "git clone against the running leader failed");
-    fetch_deployed(token, dest)
-}
-
-/// Fetch what the leader deploys into an existing clone and answer the commit it names -- exactly what the worker
-/// does every heartbeat (`worker::fetch_deployed`).
-fn fetch_deployed(token: &str, dest: &std::path::Path) -> String {
-    let status = git_without_prompting()
-        .args([
-            "-c",
-            &format!("http.extraHeader=Authorization: Bearer {token}"),
-            "-c",
-            &build_header(),
-            "-C",
-            dest.to_str().unwrap(),
-            "fetch",
-            "--quiet",
-            "origin",
-            smeltr::leader::git::DEPLOYED_REF,
-        ])
-        .status()
-        .expect("git fetch runs");
-    assert!(status.success(), "git fetch against the running leader failed");
-    let out = Command::new("git")
-        .args(["-C", dest.to_str().unwrap(), "rev-parse", "FETCH_HEAD"])
-        .output()
-        .expect("rev-parse runs");
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
+/// Fetch what the running leader deploys into `dest` exactly as a worker does every heartbeat
+/// (`worker::fetch_deployed`), cloning first if `dest` holds nothing, and answer the commit it names.
+fn fetch_deployed(base: &str, token: &str, dest: &std::path::Path) -> Result<String, String> {
+    static ROOTS: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    let roots = ROOTS.get_or_init(|| {
+        let dir = scratch_dir("smeltr-leader-test-roots");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = smeltr::leader::remote::roots_path(&dir);
+        smeltr::io::trust::write_pem_file(smeltr::io::trust::public(), &path).unwrap();
+        path
+    });
+    smeltr::worker::fetch_deployed(dest, base, token, roots)
 }
 
 /// Deploying a commit is moving the pointer workers fetch: nothing names it to a worker, and fetching is how the
@@ -711,7 +670,7 @@ fn a_deployed_commit_is_what_a_worker_fetches() {
     let east = commit_for_group(&data_dir, "prod-east", Some("e1"));
 
     let dest = scratch_dir("smeltr-leader-test-fetch");
-    assert_eq!(clone_and_read_deployed(&base, &token, &dest), east);
+    assert_eq!(fetch_deployed(&base, &token, &dest).unwrap(), east);
 }
 
 #[test]
@@ -721,11 +680,15 @@ fn a_second_commit_moves_what_a_worker_fetches() {
 
     let first = commit_for_group(&data_dir, "prod-orders", None);
     let dest = scratch_dir("smeltr-leader-test-fetch-twice");
-    assert_eq!(clone_and_read_deployed(&base, &token, &dest), first);
+    assert_eq!(fetch_deployed(&base, &token, &dest).unwrap(), first);
 
     let second = commit_for_group(&data_dir, "prod-orders", Some("s1"));
     assert_ne!(first, second);
-    assert_eq!(fetch_deployed(&token, &dest), second, "the fetch sees the new commit");
+    assert_eq!(
+        fetch_deployed(&base, &token, &dest).unwrap(),
+        second,
+        "the fetch sees the new commit"
+    );
 }
 
 #[derive(serde::Deserialize)]
@@ -1190,14 +1153,6 @@ fn revoking_an_unknown_worker_fails() {
     assert!(!revoke_worker(&base, "nope").ok);
 }
 
-/// `git`, with credential prompting turned off. An empty `credential.helper` resets the helper list rather than
-/// appending to it.
-fn git_without_prompting() -> Command {
-    let mut cmd = Command::new("git");
-    cmd.args(["-c", "credential.helper="]).env("GIT_TERMINAL_PROMPT", "0");
-    cmd
-}
-
 /// Two groups in one repository, each in its own subtree: a commit for one leaves the other where it was.
 #[test]
 fn committing_one_group_leaves_another_groups_subtree_alone() {
@@ -1209,41 +1164,22 @@ fn committing_one_group_leaves_another_groups_subtree_alone() {
     commit_for_group(&data_dir, "prod-west", Some("west-2"));
 
     let dest = scratch_dir("smeltr-leader-test-two-groups");
-    let status = git_without_prompting()
-        .args([
-            "-c",
-            &format!("http.extraHeader=Authorization: Bearer {token}"),
-            "-c",
-            &build_header(),
-            "clone",
-            "--quiet",
-            &format!("{base}/api/worker/repo"),
-            dest.to_str().unwrap(),
-        ])
-        .status()
-        .expect("git clone runs");
-    assert!(status.success());
+    let deployed = fetch_deployed(&base, &token, &dest).unwrap();
+    let tree = smeltr::leader::git::open_tree(&dest, &deployed).unwrap();
+    let read = |path: &str| String::from_utf8(tree.read(path).unwrap().expect(path)).unwrap();
 
-    let west = std::fs::read_to_string(dest.join("groups/prod-west/sources.json")).unwrap();
-    let east = std::fs::read_to_string(dest.join("groups/prod-east/sources.json")).unwrap();
+    let west = read("groups/prod-west/sources.json");
+    let east = read("groups/prod-east/sources.json");
     assert!(west.contains("west-2"), "west has its latest: {west}");
     assert!(east.contains("east-1"), "east is untouched: {east}");
 }
 
 #[test]
-fn a_git_clone_without_a_token_is_rejected() {
+fn a_fetch_without_a_token_is_refused() {
     let (base, data_dir) = start_leader_with_data_dir();
     commit_for_group(&data_dir, "prod-orders", None);
 
     let dest = scratch_dir("smeltr-leader-test-clone-unauth");
-    let status = git_without_prompting()
-        .args([
-            "clone",
-            "--quiet",
-            &format!("{base}/api/worker/repo"),
-            dest.to_str().unwrap(),
-        ])
-        .status()
-        .expect("git clone runs");
-    assert!(!status.success(), "an unauthenticated clone must fail");
+    let refused = fetch_deployed(&base, "", &dest);
+    assert!(refused.is_err(), "a fetch with no token must be refused: {refused:?}");
 }

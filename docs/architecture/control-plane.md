@@ -69,7 +69,7 @@ its own group's subtree merged with `shared/`. Each answer also names the commit
 pointer is at, as a cue: a worker that has fetched that commit already does not fetch
 again, and one whose beat went unanswered fetches on its own schedule. A commit that moves nothing the
 worker runs is not a redeploy. The leader answers that fetch with git's
-protocol, and a lookup file by its SHA-256 from its lookup store, and nothing
+protocol v2 from its own process, and a lookup file by its SHA-256 from its lookup store, and nothing
 else: no path a worker sends returns a file git keeps to itself or one beside
 the repository, such as the secret store or the key of the leader's own authority.
 
@@ -394,10 +394,12 @@ normal. A source with too little history has no normal yet. A source that is
 held, unreachable or on a silent worker is not judged, because a warning that
 names the cause is already up. After that warning ends, the source is not judged
 at a width while that width's window still contains the stop and the catch-up
-after it. The leader keeps for a year when each warning about a source was up,
-so its end is known across a restart and the gap learns a year of quiet spells
-less those that warned. The Status page ranks sources by how far each is from
-the same normal.
+after it. The leader keeps for a year when each warning about a source was up
+and why it began: the width whose rows fell below its range, with the rows and
+range then, or how long the source had gone without a row. So the warning's end
+is known across a restart, and the gap learns a year of quiet spells less those
+that warned. The Status page ranks sources by how far each is from the same
+normal.
 
 An editor in the source's worker group may do any of three things about it.
 Normal and Outage mark what a below-normal warning was. Outage marks a real
@@ -407,16 +409,19 @@ info and is learned whole. A warning nobody marked stays a warning, and is not
 learned. Reset history forgets what the source read before now, so it has no
 normal until it has a week of rows again. The source's History tab on the Map
 charts its rows against its range. It lists the source's warnings of the past
-year, including the one that is up, each opening on the rows around it, and the
-source's longest quiet spells, each shown Normal when it is learned and Outage
-when it is not. It says when a new source is not yet judged, when every day of
-its week is judged alike, and how long the source may go without a row before it
-warns. The warning that is up can be marked from its row on the Issues page
-too. A mark names a warning by when it began, so every page marks the same
-warning. A window that contains rows of a warning marked Normal is learned
-without waiting a width. So marking the warning that is up Normal teaches the
-level the source reads now, and the warning ends once that normal is learned,
-within the hour. The leader keeps each mark, with who made it.
+year, including the one that is up, and the source's longest quiet spells, each
+shown Normal when it is learned and Outage when it is not. It says when a new
+source is not yet judged, when every day of its week is judged alike, and how
+long the source may go without a row before it warns. Each warning says why it
+began and opens on the rows around it: at the width whose rows fell below its
+range, or, for a warning a quiet spell raised, as the History chart draws them.
+Pointing at a warning a width raised, on the chart, draws that width's rows and
+range over the chart. The warning that is up can be marked from its row on the
+Issues page too. A mark names a warning by when it began, so every page marks
+the same warning. A window that contains rows of a warning marked Normal is
+learned without waiting a width. So marking the warning that is up Normal
+teaches the level the source reads now, and the warning ends once that normal is
+learned, within the hour. The leader keeps each mark, with who made it.
 
 A source's senders are judged as the source is. A sender is one value of one
 field of the source's records, such as a firewall's name, or of its stream key

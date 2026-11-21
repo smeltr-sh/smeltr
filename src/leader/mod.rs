@@ -50,6 +50,7 @@ pub mod model;
 pub mod oidc;
 pub mod onboard;
 pub mod outbound;
+pub mod pkt_line;
 pub mod preview;
 pub mod private_file;
 pub mod query;
@@ -70,6 +71,7 @@ pub mod throughput;
 pub mod tls;
 pub mod tree;
 pub mod updates;
+pub mod upload_pack;
 pub mod warnings;
 
 use std::collections::{BTreeMap, HashMap};
@@ -611,7 +613,7 @@ async fn capture_report(
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
-/// `f` on the blocking pool: where a handler spawns git, reads the store or compiles, none of which belongs on the
+/// `f` on the blocking pool: where a handler reads git or the store, or compiles, none of which belongs on the
 /// async executor. A panic in `f` is the error it answers with, never a request left hanging.
 pub async fn blocking<T, E>(f: impl FnOnce() -> Result<T, E> + Send + 'static) -> Result<T, E>
 where
@@ -951,8 +953,7 @@ pub const BUILD_HEADER: &str = "smeltr-commit";
 /// The header a worker names its release in beside [`BUILD_HEADER`] (`version::RELEASE`), on a build that is one.
 pub const RELEASE_HEADER: &str = "smeltr-release";
 
-/// Every git HTTP request, handed to `git http-backend`. One handler rather than a route per service: the paths a
-/// client asks for are git's to define, and enumerating them here would be a third place that has to agree.
+/// Every git HTTP request, answered by `upload_pack`, which decides what each path is.
 async fn git_http(
     State(state): State<AppState>,
     method: axum::http::Method,
@@ -979,29 +980,18 @@ async fn git_http(
             .into_response();
     }
     let repo_path = git::repo_path(&state.data_dir);
-    let content_type = headers
-        .get(axum::http::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
+    let protocol = header("git-protocol").map(str::to_string);
     let query = query.unwrap_or_default();
     let method = method.to_string();
-
-    let served = blocking(move || {
-        git::http_backend(&repo_path, &path, &method, &query, content_type.as_deref(), &body).map_err(|e| e.to_string())
-    })
-    .await;
-
+    let served =
+        blocking(move || upload_pack::serve(&repo_path, &path, &method, &query, protocol.as_deref(), &body)).await;
     match served {
-        Ok(cgi) => {
-            let mut response = axum::response::Response::builder()
-                .status(axum::http::StatusCode::from_u16(cgi.status).unwrap_or(axum::http::StatusCode::OK));
-            for (name, value) in &cgi.headers {
-                response = response.header(name, value);
-            }
-            response
-                .body(axum::body::Body::from(cgi.body))
-                .unwrap_or_else(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response())
-        }
+        Ok(answer) => axum::response::Response::builder()
+            .status(axum::http::StatusCode::from_u16(answer.status).unwrap_or(axum::http::StatusCode::OK))
+            .header(axum::http::header::CONTENT_TYPE, answer.content_type)
+            .header(axum::http::header::CACHE_CONTROL, "no-cache")
+            .body(axum::body::Body::from(answer.body))
+            .unwrap_or_else(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response()),
         Err(error) => {
             // The worker sees only a 500, so this is the one place the cause is said.
             tracing::error!(name: "serve_failed", target: "git", error = %error, "a worker's fetch could not be served");
@@ -1134,6 +1124,15 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     active_facts.extend(warnings::encryption_key_facts(&key, &channels));
     // Read, not yet observed: what else is active is known only once the whole catalog is.
     let starts = state.registry.starts_of(&active_facts, now_ms);
+    if let Some(series) = state.registry.series()
+        && let Err(e) = series.keep_reasons(&warnings::below_reasons(&readings, &snapshot, heartbeat_interval))
+    {
+        tracing::warn!(
+            name: "reasons_not_kept", target: "status",
+            error = %e,
+            "could not keep why a warning began, so it shows no reason"
+        );
+    }
     let key_warnings = warnings::encryption_key_warnings(&key, &channels, &kept, &starts);
     let mut normal_warnings =
         warnings::outside_normal_warnings(&readings, &snapshot, &starts, &marks, heartbeat_interval);

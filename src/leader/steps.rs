@@ -272,17 +272,18 @@ fn upgrade_repo_with(repo_path: &Path, steps: &[RepoStep]) -> Result<(), String>
     Ok(())
 }
 
+/// Set `key` in the repository's own config file, written whole beside it and renamed over it.
 fn set_repo_key(repo_path: &Path, key: &str, value: usize) -> Result<(), String> {
-    let status = std::process::Command::new("git")
-        .arg("--git-dir")
-        .arg(repo_path)
-        .args(["config", key, &value.to_string()])
-        .status()
-        .map_err(|e| format!("running git to set {key}: {e}"))?;
-    if !status.success() {
-        return Err(format!("git could not set {key} in {}: {status}", repo_path.display()));
-    }
-    Ok(())
+    let path = repo_path.join("config");
+    let failed = |e: &dyn std::fmt::Display| format!("setting {key} in {}: {e}", path.display());
+    let mut config =
+        gix::config::File::from_path_no_includes(path.clone(), gix::config::Source::Local).map_err(|e| failed(&e))?;
+    config
+        .set_raw_value(key, value.to_string().as_str())
+        .map_err(|e| failed(&e))?;
+    let mut bytes = Vec::new();
+    config.write_to(&mut bytes).map_err(|e| failed(&e))?;
+    super::private_file::replace(&path, &bytes).map_err(|e| failed(&e))
 }
 
 #[cfg(test)]

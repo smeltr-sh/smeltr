@@ -569,6 +569,29 @@ test('the git remote form takes an http or https URL, and warns about a credenti
   await expect(save).toBeEnabled();
 });
 
+test('disconnecting the git remote asks first', async ({ admin }) => {
+  await openAdmin(admin, 'System');
+  await admin.getByRole('link', { name: 'Git remote', exact: true }).click();
+  await admin
+    .getByRole('textbox', { name: /^URL\b/ })
+    .fill('https://git.example.com/team/config.git');
+  await admin.getByRole('button', { name: 'Save' }).click();
+  const disconnect = admin.getByRole('button', { name: 'Disconnect' });
+  const dialog = admin.getByRole('dialog');
+
+  await disconnect.click();
+  await expect(dialog).toContainText('forgets its token');
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(admin.getByRole('textbox', { name: /^URL\b/ })).toHaveValue(
+    'https://git.example.com/team/config.git',
+  );
+
+  await disconnect.click();
+  await dialog.getByRole('button', { name: 'Disconnect' }).click();
+  await expect(disconnect).toHaveCount(0);
+  await expect(admin.getByRole('textbox', { name: /^URL\b/ })).toHaveValue('');
+});
+
 /** A webhook on this host that answers 200 and keeps each request it takes. */
 async function webhook(): Promise<{
   url: string;

@@ -146,7 +146,7 @@ dist: need-docker committed handoff
       && gzip -f smeltr-image.tar \
       && sha256sum smeltr-linux.tar.gz smeltr-image.tar.gz | tee SHA256SUMS
 
-# The RHEL 9 STIG, scanned against an image: `stig/report.html` and the rule-by-rule `stig/results.txt`. A
+# DISA's GPOS SRG (Chainguard's profile for Wolfi), scanned against an image: `stig/report.html` and the rule-by-rule `stig/results.txt`. A
 # report, not a gate. `dist` tags the image it builds `smeltr:latest`.
 [unix]
 stig image="smeltr:latest": need-docker
@@ -170,6 +170,25 @@ sbom image="smeltr:latest": need-docker
     mkdir -p sbom && docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/sbom:/out" \
       aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
       image --format cyclonedx --output /out/sbom.cdx.json {{image}}
+
+# The integration tests, run in an image's own root, so code that needs something the image lacks fails here and
+# not at a site. They are built in the image's builder (`Dockerfile`'s `tests` stage), so they link the glibc the
+# image carries, and nextest starts each test process in a container of the image (`tools/image-test-runner.sh`).
+# The whole suite runs first, its live tests skipping; then the Kerberos and Kafka TLS tests run again against
+# brokers started here, on the host, and must not skip; their scripts write the client's key and keytab for their own
+# user alone, so the image's user reads copies. `dist` tags the image it builds `smeltr:latest`.
+[unix]
+image-tests image="smeltr:latest": need-docker kerberos-up tls-up
+    rm -rf target/image-tests /tmp/krb/kinit-ran && mkdir -p target/image-tests/archive
+    docker build --target tests-archive --output type=local,dest=target/image-tests .
+    cp -r /tmp/krb /tmp/smeltr-tls target/image-tests/ && chmod -R a+rX target/image-tests/krb target/image-tests/smeltr-tls
+    export SMELTR_TEST_IMAGE={{image}} SMELTR_TEST_SOURCE="$PWD" SMELTR_TEST_DIR="$PWD/target/image-tests" \
+        CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="$PWD/tools/image-test-runner.sh" \
+      && run="cargo nextest run --archive-file target/image-tests/tests.tar.zst --workspace-remap . --extract-to target/image-tests/archive --extract-overwrite" \
+      && $run \
+      && set -a && . /tmp/krb/env && . /tmp/smeltr-tls/env && set +a \
+      && KRB5CCNAME=MEMORY:smeltr SMELTR_KINIT_RAN=/tmp/krb/kinit-ran SMELTR_LIVE_TESTS=required \
+        $run -E 'test(/^kerberos_tests::/) | test(/^kafka_tls_tests::/)'
 
 [doc("Release archives from a committed branch, and SHA256SUMS.")]
 [windows]
@@ -647,6 +666,14 @@ measure:
     just live-up
     cargo test --profile dist --test tick-profile --test flush-cost -- --test-threads=1 --nocapture
 
+# The transform's work alone at each count of threads in `BENCH_THREADS` (1,2,4 when unset), each a copy of a
+# reference pipeline: whether this host's hyperthreads add throughput. Needs no services.
+[doc("The transform's work alone at each thread count in BENCH_THREADS.")]
+[group("dev")]
+[env("SMELTR_ALLOW_STALE_FRONTENDS", "1")]
+thread-scaling:
+    cargo test --profile dist --test thread-scaling -- --ignored --exact thread_scaling --nocapture
+
 # A row per reference pipeline in the log `BENCH_LOG` names, HEAD against the
 # pinned reference, and the ratio chart beside it as an .svg. Run daily.
 # Needs no services, and perf from linux-tools-generic.
@@ -657,9 +684,11 @@ bench-log:
 
 # Each source and each destination timed alone through the shipped worker: rows/s, MB/s and what saturated, over
 # the link bench/network describes and over none. Needs a kernel with sch_netem; the services' containers are shaped
-# and kept off the transform cores. `CONNECTOR` picks the rows whose name holds it, `CONNECTOR_ROWS` (1,000,000) sets
-# their size, `CONNECTOR_LINK=bare` runs only the bare link, `CONNECTOR_THREADS=1,2,4` runs each row at each
-# count of transform threads (1 when unset), and `CONNECTOR_GZIP` gzips the files the object sources read.
+# and kept off the worker's cores. `CONNECTOR` picks the rows whose name holds it, `CONNECTOR_ROWS` (1,000,000) sets
+# their size, `CONNECTOR_LINK=bare` runs only the bare link, `CONNECTOR_THREADS=1,2,4` runs each row on each
+# count of cores, a transform thread for each (1 when unset), `CONNECTOR_GZIP` gzips the files the object sources
+# read, `CONNECTOR_PIN=thread` keeps each transform thread alone on its core, and `CONNECTOR_PIN=off` pins nothing,
+# so every thread and service shares every core.
 [doc("Each source and destination timed alone through the worker, over a shaped link and a bare one.")]
 [group("dev")]
 [env("KAFKA_TEST_BROKERS", "localhost:19092")]

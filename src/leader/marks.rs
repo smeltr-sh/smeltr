@@ -563,10 +563,12 @@ pub async fn past_sender(
 pub struct ChartQuery {
     pub from_millis: i64,
     pub to_millis: i64,
+    /// The width to draw the rate and its range at, as a warning that width began names it.
+    pub window_millis: Option<i64>,
 }
 
-/// `GET /api/areas/:area/sources/:id/chart?fromMillis=&toMillis=`: the source's rows against its range over a span,
-/// as History draws it around a warning ([`throughput::chart`]).
+/// `GET /api/areas/:area/sources/:id/chart?fromMillis=&toMillis=&windowMillis=`: the source's rows against its range
+/// over a span, as History draws it around a warning ([`throughput::chart`]).
 pub async fn chart(
     State(state): State<AppState>,
     Path((group, source)): Path<(String, String)>,
@@ -607,6 +609,7 @@ async fn chart_of(
             asked.from_millis,
             asked.to_millis,
             now_ms,
+            asked.window_millis,
             &learning,
         )
         .into()

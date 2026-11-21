@@ -542,11 +542,10 @@ fn enroll(
 // -- git: fetch a group's deployed bundle -----------------------------------
 //
 // In-process, through `gix`, the way the leader's own reads and writes already are (`leader/git.rs`): nothing here
-// spawns git. Only the leader's serving half still does (`git http-backend`), so this is still a real git client
-// talking to a real git server.
+// spawns git. The leader answers in-process too (`leader::upload_pack`), in git's protocol v2.
 
 /// How long a fetch against the leader may take before it counts as stalled. A fetch that changes nothing is
-/// answered from the leader's cached ref advertisement, so this bounds a stalled exchange rather than ordinary
+/// answered from the leader's ref listing alone, so this bounds a stalled exchange rather than ordinary
 /// work. There is no process to kill here, so the budget is spent as curl's own stall detection: a transfer stuck
 /// at zero bytes/second for this long is aborted from inside the request rather than by a wall clock this code
 /// would otherwise have to enforce itself.
@@ -610,7 +609,7 @@ fn set_ref(repo: &gix::Repository, name: &str, commit: &str) -> Result<(), Strin
 ///
 /// The clone is the leader's whole repository. The cluster is the security boundary, so an enrolled worker is trusted
 /// with all of it (design doc, Security).
-fn fetch_deployed(repo_dir: &Path, leader_url: &str, token: &str, git_roots: &Path) -> Result<String, String> {
+pub fn fetch_deployed(repo_dir: &Path, leader_url: &str, token: &str, git_roots: &Path) -> Result<String, String> {
     let budget = if is_bare_clone(repo_dir) {
         GIT_BUDGET
     } else {
@@ -785,73 +784,20 @@ fn merge_packs(repo_dir: &Path) -> Result<(), String> {
         .collect::<Result<_, _>>()?;
 
     let hash = repo.object_hash();
-    let mut odb = gix::odb::at(repo_dir.join("objects"), hash).map_err(|e| failed(&e))?;
-    // The packs this reads from are the ones it replaces, and must stay readable until it is done.
-    odb.prevent_pack_unload();
-    odb.ignore_replacements = true;
-    let interrupt = std::sync::atomic::AtomicBool::new(false);
-    let (counts, _) = output::count::objects(
-        odb.clone(),
-        Box::new(commits.into_iter().map(Ok)),
-        &gix::progress::Discard,
-        &interrupt,
-        output::count::objects::Options {
-            input_object_expansion: output::count::objects::ObjectExpansion::TreeContents,
-            ..Default::default()
-        },
+    let pack = crate::leader::git::pack_of(
+        repo_dir,
+        hash,
+        commits,
+        output::count::objects::ObjectExpansion::TreeContents,
     )
     .map_err(|e| failed(&e))?;
-    let entries = u32::try_from(counts.len()).map_err(|e| failed(&e))?;
-    let chunks = output::entry::iter_from_counts(counts, odb, Box::new(gix::progress::Discard), Default::default())
-        .map_err(|e| failed(&e))?;
-    // In memory: a clone holds configuration and the pointers to lookup files, never their bytes.
-    // In order: the threads finish chunks in any order, and a delta names its base by its place in the pack.
-    let mut bytes = output::bytes::FromEntriesIter::new(
-        gix::parallel::InOrderIter::from(chunks),
-        Vec::new(),
-        entries,
-        gix_pack::data::Version::V2,
-        hash,
-    );
-    for written in bytes.by_ref() {
-        written.map_err(|e| failed(&e))?;
-    }
-    let pack = bytes.into_write();
-
     let dir = repo_dir.join("objects/pack");
-    let old = packs_in(&dir)?;
-    let written = gix_pack::Bundle::write_to_directory(
-        &mut pack.as_slice(),
-        Some(&dir),
-        &mut gix::progress::Discard,
-        &interrupt,
-        None::<gix::objs::find::Never>,
-        hash,
-        Default::default(),
-    )
-    .map_err(|e| failed(&e))?;
-    if let Some(keep) = &written.keep_path {
-        std::fs::remove_file(keep).map_err(|e| failed(&e))?;
-    }
-    let kept = written.data_path.ok_or_else(|| failed(&"no pack was written"))?;
+    let old = crate::leader::git::packs_in(&dir)?;
+    let kept = crate::leader::git::store_pack(&dir, hash, &pack).map_err(|e| failed(&e))?;
     for old in old.iter().filter(|p| **p != kept) {
-        // The index first: a pack without one is not looked in, and an index without its pack would be. A pack the
-        // runtime still maps cannot go on Windows, and goes with the next merge.
-        let _ = std::fs::remove_file(old.with_extension("idx"))
-            .and_then(|()| std::fs::remove_file(old))
-            .map(|()| std::fs::remove_file(old.with_extension("rev")));
+        crate::leader::git::remove_pack(old);
     }
     Ok(())
-}
-
-/// The `.pack` files in `dir`.
-fn packs_in(dir: &Path) -> Result<Vec<PathBuf>, String> {
-    let entries = std::fs::read_dir(dir).map_err(|e| format!("reading {}: {e}", dir.display()))?;
-    Ok(entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "pack"))
-        .collect())
 }
 
 /// Hold `commit` against garbage collection for as long as the deployment built from it runs.
@@ -5375,8 +5321,8 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A real leader, enrolled with and fetched from the way a worker does: `gix` and curl on this side, a real
-    /// `git http-backend` CGI process on the leader's, and a lookup file from its store. This is the whole path but
+    /// A real leader, enrolled with and fetched from the way a worker does: `gix` and curl on this side, the
+    /// leader's own git server on the other (`leader::upload_pack`), and a lookup file from its store. This is the whole path but
     /// the network hop, which is `127.0.0.1`.
     #[test]
     fn a_worker_s_fetch_lands_the_commit_a_leader_deployed() {

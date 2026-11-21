@@ -1,7 +1,7 @@
 <!--
   A source's rows per second, or one of its sender's, against its range over a span, as the leader
   reads them (`throughput::chart`), with the warnings that held then. History draws one around each
-  warning, and a sender's page draws one over the chart range.
+  warning, at the width that warned, and a sender's page draws one over the chart range.
 -->
 <script lang="ts">
   import Sparkline from './Sparkline.svelte';
@@ -11,10 +11,18 @@
     getSourceChart,
     type Sender,
     type SourceChartResponse,
+    type WarningReason,
   } from './api';
   import { expectedSlots } from './focus';
+  import { lasted } from './time';
 
-  type Mark = { from: number; to: number | null; label: string; failed: boolean };
+  type Mark = {
+    from: number;
+    to: number | null;
+    label: string;
+    failed: boolean;
+    reason?: WarningReason;
+  };
 
   let {
     group,
@@ -23,6 +31,7 @@
     fromMillis,
     toMillis,
     marks = [],
+    windowMillis,
     left,
     right,
   }: {
@@ -32,6 +41,8 @@
     fromMillis: number;
     toMillis: number;
     marks?: Mark[];
+    /** The width to draw the rate over and its range at, where a warning began at one. */
+    windowMillis?: number;
     /** What the chart's left and right edges are, under it. */
     left: string;
     right: string;
@@ -45,7 +56,7 @@
   let asked = 0;
   $effect(() => {
     const mine = ++asked;
-    getSourceChart(group, source, fromMillis, toMillis, sender)
+    getSourceChart(group, source, fromMillis, toMillis, sender, windowMillis)
       .then((got) => {
         if (mine !== asked) return;
         answer = got.ok ? got : null;
@@ -80,7 +91,13 @@
   <p class="dim small">No rows are kept from then.</p>
 {:else}
   <Sparkline
-    series={[{ label: 'rows/s', color: 'var(--ink)', points }]}
+    series={[
+      {
+        label: windowMillis ? `rows/s over ${lasted(windowMillis)}` : 'rows/s',
+        color: 'var(--ink)',
+        points,
+      },
+    ]}
     band={expectedSlots(answer.expected, times)}
     {times}
     {marks}

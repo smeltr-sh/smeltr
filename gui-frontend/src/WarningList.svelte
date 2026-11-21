@@ -124,8 +124,10 @@
                   to: span.holds ? null : span.toMillis,
                   label,
                   failed: false,
+                  reason: span.reason,
                 },
               ]}
+              windowMillis={span.reason?.kind === 'width' ? span.reason.windowMillis : undefined}
               left={a.left}
               right={a.right}
             />

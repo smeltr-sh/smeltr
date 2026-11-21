@@ -7,6 +7,7 @@
 <script lang="ts">
   import { Busy } from './busy.svelte';
   import Button, { BUSY, SAVE_FIRST, UNCHANGED } from './Button.svelte';
+  import { ask } from './Confirm.svelte';
   import { reported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import {
@@ -101,6 +102,13 @@
   }
 
   async function disconnect() {
+    const ok = await ask({
+      title: 'disconnect the git remote',
+      body: 'The leader stops following the remote and pushing saves to it, and forgets its token, so connecting again needs the token entered again. The fleet keeps running what it runs now, and the remote keeps everything already pushed to it.',
+      action: 'Disconnect',
+      danger: true,
+    });
+    if (!ok || busy.on) return;
     await busy.run(async () => {
       answer(await putRemoteSettings({ url: '', user: '', pollSeconds: 0, approvePushes: false }));
     });

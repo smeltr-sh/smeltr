@@ -142,6 +142,11 @@ impl FactKey {
     pub fn logged(&self) -> super::warnings::LoggedIssue<'_> {
         super::warnings::logged_issue(&self.entry, &self.subject)
     }
+
+    /// Its entry and subject, as the store keeps a fact.
+    pub fn into_parts(self) -> (String, String) {
+        (self.entry, self.subject)
+    }
 }
 
 /// What a worker last said of the authorities it would accept, and when.

@@ -473,7 +473,7 @@ async fn preview(
         Ok(given) => given,
         Err(message) => return Preview::failed("sample", vec![ApiError::new(message)], vec![]),
     };
-    // Reading the branch spawns git, so it goes off the async executor.
+    // Reading the branch reads the repository from disk, so it goes off the async executor.
     let branch = q.name().to_string();
     blocking_answer(move || preview_on(&smeltr::startup_config::leader_data_dir(), &branch, &area, req, given)).await
 }
@@ -2057,12 +2057,6 @@ async fn run_leader() {
         );
     }
 
-    // Without git the leader would start and serve nothing a worker can deploy, so it is refused before the bind
-    // for the same reason the bind comes first: a refused start leaves nothing behind.
-    if let Err(e) = smeltr::leader::git::check_git_runs() {
-        eprintln!("smeltr: refusing to start -- {e}");
-        std::process::exit(1);
-    }
     // Read before the bind, which a refusal must not hide behind.
     smeltr::startup_config::leader_heartbeat_interval();
 
