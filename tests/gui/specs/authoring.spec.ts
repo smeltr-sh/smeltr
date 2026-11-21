@@ -1585,13 +1585,17 @@ test('A4: an end-to-end test locked again opens on its fields the documents stil
     name: 'alerts',
     sample: 'web-sample',
     lockedAt: 0,
-    fields: ['status', 'gone'],
+    fields: ['status', 'gone', 'a', 'b', 'c'],
     rows: [1],
   });
 
   await goto(admin, leader, '#/build/routes/sample?sample=web-sample&relock=alerts');
   await expect(admin.getByText('Checked by alerts')).toBeVisible({ timeout: 30_000 });
-  await expect(admin.getByText('No longer in the rows: gone')).toBeVisible();
+  // A long list of fields gone names the first few, and the rest on asking.
+  const gone = admin.getByText(/^Fields no longer in the rows:/);
+  await expect(gone).toHaveText(/^Fields no longer in the rows: gone, a, b,\s*1 more$/);
+  await gone.getByRole('button', { name: '1 more' }).click();
+  await expect(gone).toHaveText('Fields no longer in the rows: gone, a, b, c');
   await expect(admin.getByRole('button', { name: 'Choose fields' })).toHaveText(/Fields 1 of/);
   const table = admin.getByRole('table');
   await expect(table.getByRole('row', { name: /^row 0 / })).toHaveCount(0);

@@ -488,6 +488,9 @@
   let showedTest = false;
   /** The fields the test checks that the rows no longer hold. */
   let gone = $state<string[]>([]);
+  /** How many of `gone` are named before "N more". */
+  const GONE_LISTED = 3;
+  let allGone = $state(false);
   // `relock` is a new object whenever it gets ready, which is no new test to read.
   let read = '';
   $effect(() => {
@@ -728,7 +731,14 @@
       {/if}
       <span class="grow"></span>
       {#if relock?.ready && gone.length > 0}
-        <span class="critical">No longer in the rows: {gone.join(', ')}</span>
+        {@const listed = allGone ? gone : gone.slice(0, GONE_LISTED)}
+        <span class="critical"
+          >Fields no longer in the rows: {listed.join(', ')}{#if listed.length < gone.length},
+            <ShowAll
+              more={gone.length - listed.length}
+              onshowall={() => (allGone = true)}
+            />{/if}</span
+        >
       {/if}
       {@render actions?.(
         gridOrder.map((i) => rows![i]),

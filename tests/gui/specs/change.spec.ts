@@ -587,7 +587,7 @@ test('a test locked again opens on its fields the rows still hold, and its rows'
   // followed: the author chooses it. The test checks every row, so no chip narrows them.
   await expect(admin.getByText('The 1 field on 1 row on screen')).toBeVisible({ timeout: 30_000 });
   await expect(admin.getByText('Checked by orders keep their id')).toHaveCount(0);
-  await expect(admin.getByText('No longer in the rows: id')).toBeVisible();
+  await expect(admin.getByText('Fields no longer in the rows: id')).toBeVisible();
   await expect(admin.getByRole('button', { name: 'Choose fields' })).toHaveText(/Fields 1 of/);
   const grid = admin.getByRole('table');
   await expect(grid.getByRole('button', { name: /^kind\b/ })).toHaveCount(1);
