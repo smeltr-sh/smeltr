@@ -1189,7 +1189,10 @@ async fn setup_leader(
         .route("/api/areas/:area/sources", put(config_api::put_sources))
         .route("/api/areas/:area/destinations", put(config_api::put_destinations))
         .route("/api/areas/:area/sources/:id/move", post(config_api::move_source))
-        .route("/api/areas/:area/destinations/:id/move", post(config_api::move_destination))
+        .route(
+            "/api/areas/:area/destinations/:id/move",
+            post(config_api::move_destination),
+        )
         // Not on `app` below with the rest of the samples routes: the capture a sample is made from is held in
         // `State<AppState>`.
         .route("/api/areas/:area/samples", post(capture_api::save_capture))

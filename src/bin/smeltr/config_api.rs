@@ -1049,10 +1049,20 @@ impl Writing {
     pub(crate) fn save_move(&self, to: &Writing, moved: Moved, id: &str, author: &Actor) -> Envelope<Save> {
         let area = |w: &Writing| group_of(&w.prefix).unwrap_or(config_file::SHARED_DIR).to_string();
         if to.prefix == self.prefix {
-            return Envelope::refused(Refusal::invalid(format!("{} {id:?} is in {} already", moved.noun(), area(to))));
+            return Envelope::refused(Refusal::invalid(format!(
+                "{} {id:?} is in {} already",
+                moved.noun(),
+                area(to)
+            )));
         }
         if to.parent != self.parent {
             return Save::refused(moved_since_you_loaded_it(&self.parent, Some(&to.parent)));
+        }
+        // A save would write a group it does not find, and the object would land where no page reads it.
+        if let Some(group) = group_of(&to.prefix)
+            && !smeltr::leader::tree::groups_at(&self.repo, &self.parent).is_ok_and(|g| g.iter().any(|g| g == group))
+        {
+            return Envelope::refused(Refusal::not_found(format!("this branch has no worker group {group:?}")));
         }
         let (old_from, old_to) = (self.read(), to.read());
         let (mut from, mut into) = (old_from.file.clone(), old_to.file.clone());
@@ -3519,7 +3529,11 @@ mod tests {
         };
         put("west", "system.json", br#"{"version":1}"#.to_vec());
         put("east", "system.json", br#"{"version":1}"#.to_vec());
-        put("shared", "sources.json", serde_json::to_vec(&vec![a_source("fleet-audit")]).unwrap());
+        put(
+            "shared",
+            "sources.json",
+            serde_json::to_vec(&vec![a_source("fleet-audit")]).unwrap(),
+        );
         put(
             "shared",
             "pipelines/passthrough.json",
@@ -3531,7 +3545,11 @@ mod tests {
             })
             .unwrap(),
         );
-        put("shared", "routes.json", serde_json::to_vec(&vec![a_route_from("r1", "fleet-audit")]).unwrap());
+        put(
+            "shared",
+            "routes.json",
+            serde_json::to_vec(&vec![a_route_from("r1", "fleet-audit")]).unwrap(),
+        );
         data
     }
 
@@ -3567,7 +3585,10 @@ mod tests {
         assert!(response.succeeded(), "moved: {response:?}");
 
         assert_eq!(ids_in(&data, "shared"), (vec![], vec![]));
-        assert_eq!(ids_in(&data, "west"), (vec!["fleet-audit".to_string()], vec!["r1".to_string()]));
+        assert_eq!(
+            ids_in(&data, "west"),
+            (vec!["fleet-audit".to_string()], vec!["r1".to_string()])
+        );
         let log = git::log(&git::repo_path(&data), "work", 2).unwrap();
         assert_eq!(log[1].commit, before, "one commit");
         assert_eq!(log[0].subject, "move source fleet-audit to west");
@@ -3606,8 +3627,32 @@ mod tests {
         let response = move_to(&data, "shared", "west", Moved::Source, "fleet-audit");
         assert!(!response.succeeded(), "a route in east still starts at it");
         let said = format!("{:?}", response.errors);
-        assert!(said.contains("east") && said.contains("fleet-audit"), "it names the group and the source: {said}");
-        assert_eq!(Reading::open_in(&data, "work", "shared").unwrap().commit, before, "nothing written");
+        assert!(
+            said.contains("east") && said.contains("fleet-audit"),
+            "it names the group and the source: {said}"
+        );
+        assert_eq!(
+            Reading::open_in(&data, "work", "shared").unwrap().commit,
+            before,
+            "nothing written"
+        );
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    #[test]
+    fn a_move_into_a_group_the_branch_does_not_hold_is_refused() {
+        let data = a_repo_with_a_shared_route("move-nowhere");
+        let before = Reading::open_in(&data, "work", "shared").unwrap().commit;
+        let response = move_to(&data, "shared", "north", Moved::Source, "fleet-audit");
+        assert_eq!(
+            response.errors[0].message, "this branch has no worker group \"north\"",
+            "{response:?}"
+        );
+        assert_eq!(
+            Reading::open_in(&data, "work", "shared").unwrap().commit,
+            before,
+            "nothing written"
+        );
         std::fs::remove_dir_all(&data).ok();
     }
 
@@ -3615,9 +3660,15 @@ mod tests {
     fn a_move_names_what_it_cannot_find_and_where_it_already_is() {
         let data = a_repo_with_a_shared_route("move-refusals");
         let response = move_to(&data, "shared", "west", Moved::Source, "nowhere");
-        assert_eq!(response.errors[0].message, "shared has no source \"nowhere\"", "{response:?}");
+        assert_eq!(
+            response.errors[0].message, "shared has no source \"nowhere\"",
+            "{response:?}"
+        );
         let response = move_to(&data, "shared", "shared", Moved::Source, "fleet-audit");
-        assert_eq!(response.errors[0].message, "source \"fleet-audit\" is in shared already", "{response:?}");
+        assert_eq!(
+            response.errors[0].message, "source \"fleet-audit\" is in shared already",
+            "{response:?}"
+        );
         std::fs::remove_dir_all(&data).ok();
     }
 
