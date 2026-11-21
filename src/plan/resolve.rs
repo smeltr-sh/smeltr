@@ -774,18 +774,14 @@ fn resolve_object_op(
         ObjectOp::Keys | ObjectOp::Entries | ObjectOp::Declared | ObjectOp::Undeclared if !keys.is_empty() => {
             fail(format!("`{word}` takes one object"))
         }
-        ObjectOp::Declared => {
-            let (fields, _) = object_parts(ir);
-            let ty = DataType::Struct(fields.iter().map(|(n, f)| (n.clone(), f.ty.clone())).collect(), false);
-            Ok(Ir::new(
-                ty,
-                span,
-                IrKind::Object {
-                    fields,
-                    unclaimed: None,
-                },
-            ))
-        }
+        ObjectOp::Declared => Ok(Ir::new(
+            DataType::Struct(fields, false),
+            span,
+            IrKind::Object {
+                fields: object_parts(ir).0,
+                unclaimed: None,
+            },
+        )),
         ObjectOp::Undeclared => {
             let (_, unclaimed) = object_parts(ir);
             Ok(Ir::new(
