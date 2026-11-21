@@ -9,9 +9,13 @@ use std::time::{Duration, Instant};
 
 use arrow_array::cast::AsArray;
 use futures_util::TryStreamExt;
+use futures_util::stream::BoxStream;
 use object_store::memory::InMemory;
 use object_store::path::Path;
-use object_store::{Attribute, AttributeValue, Attributes, ObjectStore, ObjectStoreExt};
+use object_store::{
+    Attribute, AttributeValue, Attributes, CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta,
+    ObjectStore, ObjectStoreExt, PutMultipartOptions, PutOptions, PutPayload, PutResult,
+};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::metadata::ParquetMetaData;
 use smeltr::core::column::DataType;
@@ -181,9 +185,82 @@ impl Committer for Recording {
 
 // --- the destination ----------------------------------------------------------
 
+/// How one put to an `Unsteady` store goes.
+#[derive(Clone, Copy, Debug)]
+enum Put {
+    Fine,
+    Fail,
+    /// It never answers.
+    Hang,
+}
+
+/// An in-memory store whose puts go as scripted, one by one, then fine.
+#[derive(Debug, Default)]
+struct Unsteady {
+    inner: InMemory,
+    puts: Mutex<VecDeque<Put>>,
+}
+
+impl std::fmt::Display for Unsteady {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Unsteady({})", self.inner)
+    }
+}
+
+#[async_trait::async_trait]
+impl ObjectStore for Unsteady {
+    async fn put_opts(
+        &self,
+        location: &Path,
+        payload: PutPayload,
+        opts: PutOptions,
+    ) -> object_store::Result<PutResult> {
+        let put = self.puts.lock().unwrap().pop_front().unwrap_or(Put::Fine);
+        match put {
+            Put::Fine => self.inner.put_opts(location, payload, opts).await,
+            Put::Fail => Err(object_store::Error::Generic {
+                store: "Unsteady",
+                source: "the store refused the put".into(),
+            }),
+            Put::Hang => std::future::pending().await,
+        }
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &Path,
+        opts: PutMultipartOptions,
+    ) -> object_store::Result<Box<dyn MultipartUpload>> {
+        self.inner.put_multipart_opts(location, opts).await
+    }
+
+    async fn get_opts(&self, location: &Path, options: GetOptions) -> object_store::Result<GetResult> {
+        self.inner.get_opts(location, options).await
+    }
+
+    fn delete_stream(
+        &self,
+        locations: BoxStream<'static, object_store::Result<Path>>,
+    ) -> BoxStream<'static, object_store::Result<Path>> {
+        self.inner.delete_stream(locations)
+    }
+
+    fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
+        self.inner.list(prefix)
+    }
+
+    async fn list_with_delimiter(&self, prefix: Option<&Path>) -> object_store::Result<ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+
+    async fn copy_opts(&self, from: &Path, to: &Path, options: CopyOptions) -> object_store::Result<()> {
+        self.inner.copy_opts(from, to, options).await
+    }
+}
+
 struct Table {
     d: FileDestination,
-    store: Arc<InMemory>,
+    store: Arc<Unsteady>,
     runtime: Arc<tokio::runtime::Runtime>,
     record: Record,
 }
@@ -199,11 +276,12 @@ fn config(schema: &Schema, partitioner: Arc<dyn Partitioner>) -> FileConfig {
         stall_after: Duration::from_secs(30),
         attributes: Attributes::new(),
         parts_in_flight: 4,
+        encoders: 1,
     }
 }
 
 fn table(config: FileConfig, answers: &[Answer]) -> Table {
-    let store = Arc::new(InMemory::new());
+    let store = Arc::new(Unsteady::default());
     let runtime = smeltr::io::objects::runtime().unwrap();
     let record: Record = Arc::default();
     let d = FileDestination::new(
@@ -825,8 +903,15 @@ fn the_configured_attributes_reach_every_uploaded_file() {
 /// Each row's value as a line, buffered whole until taken.
 struct Lines;
 
+/// `Lines`, each write taking `SLOW_WRITE`, so the writer finds its encoders behind.
+struct SlowLines;
+
+const SLOW_WRITE: Duration = Duration::from_millis(200);
+
 #[derive(Default)]
 struct LineEncoder {
+    /// How long each write takes.
+    pause: Duration,
     buffered: Vec<u8>,
     taken: usize,
     rows: u64,
@@ -842,8 +927,22 @@ impl FileFormat for Lines {
     }
 }
 
+impl FileFormat for SlowLines {
+    fn admit(&self, row: &OwnedRecord, partition: &Partition) -> Result<FileRow, String> {
+        Lines.admit(row, partition)
+    }
+
+    fn open(&self, _partition: &Partition) -> Box<dyn FileEncoder> {
+        Box::new(LineEncoder {
+            pause: SLOW_WRITE,
+            ..LineEncoder::default()
+        })
+    }
+}
+
 impl FileEncoder for LineEncoder {
     fn write(&mut self, rows: &[FileRow]) {
+        std::thread::sleep(self.pause);
         for row in rows {
             let FileRow::Line(line) = row else {
                 panic!("Lines admits only lines")
@@ -962,4 +1061,93 @@ fn a_compressed_file_is_finished_by_its_written_size() {
     let commits = t.commits();
     assert_eq!(commits[0].len(), 1, "one file: {:?}", commits[0]);
     assert_eq!(commits[0][0].record_count, lines.len() as u64);
+}
+
+/// While a core is free, batches that keep coming faster than one encoder writes them start more encoders, each
+/// writing its own file; the commit carries every row once.
+#[test]
+fn an_encoder_behind_starts_another_and_the_commit_carries_every_file() {
+    let schema = raw_schema();
+    let mut c = config(&schema, Arc::new(Unpartitioned));
+    c.format = Arc::new(SlowLines);
+    c.commit_interval = LONG;
+    c.buffer_bytes = 1024 * 1024 * 1024;
+    c.encoders = 3;
+    let mut t = table(c, &[]);
+    // A batch comes four times as fast as an encoder writes one, for long enough that the writer reads a core free
+    // twice, `MEASURE_EVERY` apart: once for the second encoder and once for the third.
+    let batches = 70;
+    let mut sent = Vec::new();
+    for batch in 0..batches {
+        let text = format!("{batch}-{}", "x".repeat(1024 * 1024));
+        assert!(t.deliver(batch, &rows(&schema, &[&text])).is_empty());
+        sent.push(text);
+        std::thread::sleep(SLOW_WRITE / 4);
+    }
+    t.d.flush().unwrap();
+    assert_eq!(t.completed(batches as usize), (0..batches).collect::<Vec<_>>());
+
+    let commits = t.commits();
+    assert_eq!(commits.len(), 1, "one commit: {commits:?}");
+    assert_eq!(commits[0].len(), 3, "a file from each encoder");
+    let mut landed = Vec::new();
+    for file in &commits[0] {
+        let store = t.store.clone();
+        let location = Path::from(file.path.as_str());
+        let bytes = t
+            .runtime
+            .block_on(async move { store.get(&location).await.unwrap().bytes().await })
+            .unwrap();
+        let lines: Vec<String> = bytes
+            .split(|b| *b == b'\n')
+            .filter(|l| !l.is_empty())
+            .map(|l| String::from_utf8(l.to_vec()).unwrap())
+            .collect();
+        assert_eq!(file.record_count, lines.len() as u64);
+        landed.extend(lines);
+    }
+    landed.sort();
+    sent.sort();
+    assert!(landed == sent, "every row lands once");
+}
+
+/// Three files are open at a flush and one file's put goes as `put` says: the commit fails, and the files that landed
+/// beside it are deleted, so the batches sent again are the only copy of their rows. `encoders` hold the three files
+/// one each, or one encoder holds all three, one per partition.
+fn one_put_of_three_goes_wrong(put: Put, encoders: usize) {
+    let schema = raw_schema();
+    let mut c = config(&schema, Arc::new(ByFirstChar));
+    c.format = Arc::new(SlowLines);
+    c.commit_interval = LONG;
+    c.buffer_bytes = 1024 * 1024 * 1024;
+    c.stall_after = Duration::from_secs(1);
+    c.encoders = encoders;
+    let mut t = table(c, &[]);
+    *t.store.puts.lock().unwrap() = VecDeque::from([Put::Fine, put, Put::Fine]);
+    // Each batch is more than a poll's worth, so with encoders to spare each goes to one of its own.
+    for (batch, first) in ["a", "b", "c"].into_iter().enumerate() {
+        let text = format!("{first}{}", "x".repeat(1024 * 1024));
+        assert!(
+            t.deliver(batch as u64, &partitioned_rows(&schema, &[text.as_str(); 5]))
+                .is_empty()
+        );
+    }
+    assert!(t.d.flush().is_err(), "the commit failed");
+    assert!(t.commits().is_empty(), "nothing was committed");
+    assert_eq!(t.objects(), Vec::<String>::new(), "the files that landed are deleted");
+}
+
+#[test]
+fn a_failed_put_fails_the_commit_and_leaves_no_file_on_any_encoder() {
+    one_put_of_three_goes_wrong(Put::Fail, 3);
+}
+
+#[test]
+fn a_put_that_never_answers_fails_the_commit_and_leaves_no_file_on_any_encoder() {
+    one_put_of_three_goes_wrong(Put::Hang, 3);
+}
+
+#[test]
+fn a_put_that_never_answers_beside_two_of_one_encoder_that_landed_leaves_no_file() {
+    one_put_of_three_goes_wrong(Put::Hang, 1);
 }
