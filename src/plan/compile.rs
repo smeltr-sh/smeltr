@@ -2343,29 +2343,31 @@ impl Compiler<'_> {
             _ => None,
         };
         let Some(keys) = keys else {
-            return self.err(
-                Some(id),
-                format!(
-                    "`{}` may hold keys nothing names, which would reach the rows the `if` or loop skips; write each \
-                     key, `key = …`, or merge it outside the `if` or loop",
-                    describe_expr(source)
-                ),
-            );
+            return self.unnamed_keys(source, id);
         };
         for (key, value) in keys {
             self.assign(&key, &value, false, false, here);
         }
     }
 
-    /// `$ = value`: `value` replaces the record. The engine's own `__` fields and the locals stay.
+    /// Refuses a write of `source` into the record under a guard or in a loop: `source` may hold keys nothing names.
+    fn unnamed_keys(&mut self, source: &Expr, id: FunctionId) {
+        self.err(
+            Some(id),
+            format!(
+                "`{}` may hold keys nothing names, which would reach the rows the `if` or loop skips; write each \
+                 key, `key = …`, or merge it outside the `if` or loop",
+                describe_expr(source)
+            ),
+        );
+    }
+
+    /// `$ = value`: `value` replaces the record. The engine's own `__` fields and the locals stay. Under a guard or in a
+    /// loop it replaces the record on the rows it runs on, as any write does, and so it takes only a value whose keys
+    /// are all known (`assign_keys`).
     fn assign_root(&mut self, value: &Expr, here: Here) {
         let Here { guard, id } = here;
-        if guard.is_some() || self.in_loop() {
-            return self.err(
-                Some(id),
-                "`$ = …` replaces the record on every row; write it outside the `if` or the loop".to_string(),
-            );
-        }
+        let blended = guard.is_some() || self.in_loop();
         let kept = |c: &Self, p: &Place| tree::is_internal(tree::head(p.name())) || c.syms.is_local(p.name());
         let held = |c: &Self| -> Vec<Place> {
             let places = c.syms.root().places().into_iter().map(|(p, _)| p);
@@ -2373,6 +2375,9 @@ impl Compiler<'_> {
         };
         // `$ = f(text)`: the text is read, the record goes, and the parse writes a new one.
         if let Some(call) = ParseCall::of(value) {
+            if blended {
+                return self.unnamed_keys(value, id);
+            }
             let Some(input) = self.input_slot(call.input, Here { guard: None, ..here }) else {
                 return;
             };
@@ -2391,7 +2396,15 @@ impl Compiler<'_> {
         let Some(writes) = self.resolve_writes("", value, id) else {
             return;
         };
-        let writes = self.split_objects(writes, Here { guard: None, ..here });
+        let writes = self.split_objects(writes, here);
+        // A literal has no keys nothing names, so it passes; it lays null over the record's unclaimed fields.
+        let unnamed = |(p, r): &(Place, Resolved)| {
+            *p == Place::Unclaimed(String::new())
+                && !matches!(r, Resolved::Ir(ir) if matches!(ir.kind, IrKind::Literal(Value::Null)))
+        };
+        if blended && writes.iter().any(unnamed) {
+            return self.unnamed_keys(value, id);
+        }
         if let [(Place::Leaf(n), r)] = writes.as_slice()
             && n.is_empty()
         {
@@ -2419,9 +2432,12 @@ impl Compiler<'_> {
             .into_iter()
             .filter(|p| writes.iter().all(|(w, _)| w != p))
             .collect();
-        self.replace(old, Here { guard: None, ..here });
+        if !self.check_shape("", &writes, blended, id) {
+            return;
+        }
+        self.replace(old, here);
         for (place, r) in writes {
-            self.bind_resolved(&place, r, Here { guard: None, ..here });
+            self.bind_resolved(&place, r, here);
         }
     }
 

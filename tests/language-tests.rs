@@ -527,6 +527,16 @@ cases! {
         Rows(&[(r#"{"a": 1, "f": true, "o": {"x": 1}}"#, None), (r#"{"a": 1, "f": false, "o": {"x": 1, "y": 2}}"#, None)]);
     a_literal_takes_undeclared_as_a_value: "a: i64; Object.assign($, kv(_raw)) $ = {a: a, more: undeclared($)};",
         ["a=1 b=2"], Rows(&[(r#"{"a": 1, "more": {"b": "2"}}"#, None)]);
+    a_guarded_root_write_runs_only_on_its_rows: "a: i64; f: bool; Object.assign($, json(_raw)) if (f) $ = declared($);",
+        [r#"{"a": 1, "f": true, "b": 2}"#, r#"{"a": 1, "f": false, "b": 2}"#],
+        Rows(&[(r#"{"a": 1, "f": true}"#, None), (r#"{"a": 1, "f": false, "b": 2}"#, None)]);
+    a_guarded_root_write_takes_known_keys: "a: i64; f: bool; Object.assign($, json(_raw)) if (f) $ = {a: a, g: 1};",
+        [r#"{"a": 1, "f": true, "b": 2}"#, r#"{"a": 1, "f": false, "b": 2}"#],
+        Rows(&[(r#"{"a": 1, "g": 1}"#, None), (r#"{"a": 1, "f": false, "b": 2}"#, None)]);
+    a_guarded_root_write_of_unnamed_keys_is_refused: "f: bool; Object.assign($, json(_raw)) if (f) $ = undeclared($);",
+        [r#"{}"#], Error(&["nothing names"]);
+    a_guarded_root_parse_is_refused: "f: bool; Object.assign($, json(_raw)) if (f) $ = json(_raw);",
+        [r#"{}"#], Error(&["nothing names"]);
     undeclared_is_a_value: "a: i64; Object.assign($, kv(_raw)) b = $.undeclared().b;",
         ["a=1 b=2"], Rows(&[(r#"{"a": 1, "b": "2"}"#, None)]);
     switch_is_an_if_chain: r#"Object.assign($, json(_raw)) c: str = $.c; switch (c) { case "a": x = 1; break; case "b": x = 2; break; default: x = 0; }"#,
