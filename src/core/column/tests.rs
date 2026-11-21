@@ -636,3 +636,35 @@ fn gather_with_no_indices_yields_a_zero_row_column() {
     c.reclaim(&mut p);
     g.reclaim(&mut p);
 }
+
+// --- row sizes --------------------------------------------------------
+
+/// Text counts its bytes, an array its items', an object its fields', and anything else eight.
+#[test]
+fn row_sizes_count_what_each_row_holds() {
+    let mut p = pool();
+    let text = |p: &mut BufferPool, rows: &[&str]| {
+        let mut b = StrBuilder::new(p, VarType::Str, rows.len());
+        for row in rows {
+            b.push_grow(p, row.as_bytes());
+        }
+        b.finish()
+    };
+    let mut offsets = p.take(3 * 4);
+    offsets.as_mut_slice::<u32>().copy_from_slice(&[0, 2, 3]);
+    let validity = Validity::alloc(&mut p, 2);
+    let list = Column::list_from_parts(offsets, text(&mut p, &["x", "yz", "uvw"]), validity, 2);
+    let object = Column::struct_from_parts(
+        vec![
+            ("s".into(), text(&mut p, &["ab", ""])),
+            ("n".into(), Column::alloc(&mut p, &DataType::I64, 2)),
+        ],
+        2,
+    );
+    let mut sizes = vec![0; 2];
+    for column in [text(&mut p, &["ab", "cde"]), list, object] {
+        column.add_row_sizes(&mut sizes);
+        column.reclaim(&mut p);
+    }
+    assert_eq!(sizes, [2 + (1 + 2) + (2 + 8), 3 + 3 + 8]);
+}

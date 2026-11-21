@@ -429,6 +429,8 @@ pub struct RecordChunk {
     unread: Vec<(u32, String)>,
     /// The Avro writers' schemas its rows were read with, newest last, where its source reads Avro.
     avro_writers: Vec<Arc<avro::Parsed>>,
+    /// What each row's values hold, counted once when the chunk is made: every limit asks it of each record.
+    sizes: Vec<u32>,
 }
 
 impl RecordChunk {
@@ -440,7 +442,12 @@ impl RecordChunk {
             "every column of a chunk has the chunk's rows"
         );
         failed.sort_by_key(|(row, field, _)| (*row, *field));
+        let mut sizes = vec![0; rows];
+        for column in &columns {
+            column.add_row_sizes(&mut sizes);
+        }
         RecordChunk {
+            sizes,
             columns,
             failed,
             home: None,
@@ -564,12 +571,9 @@ impl RecordChunk {
         &self.failed
     }
 
-    /// What one row's values hold: a variable-length value its bytes, any other value eight.
+    /// What one row's values hold, as `Column::add_row_sizes` counts them. A chunk of no columns holds nothing.
     pub(crate) fn row_size(&self, row: usize) -> usize {
-        self.columns
-            .iter()
-            .map(|c| c.varlen().map_or(8, |v| v.row_len(row)))
-            .sum()
+        self.sizes.get(row).map_or(0, |&size| size as usize)
     }
 }
 
