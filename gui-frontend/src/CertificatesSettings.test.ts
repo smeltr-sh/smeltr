@@ -163,6 +163,19 @@ describe('the certificate actions', () => {
     button('Cut over now')!.click();
     await vi.waitFor(() => expect(posts).toEqual(['/api/settings/tls/rotation/cutover']));
   });
+
+  it('abandons a rotation only once it is confirmed', async () => {
+    await show();
+    ask.mockResolvedValueOnce(false);
+    button('Abandon rotation')!.click();
+    await settle();
+    expect(ask.mock.calls[0][0].action).toBe('Abandon rotation');
+    expect(deletes).toEqual([]);
+
+    ask.mockResolvedValueOnce(true);
+    button('Abandon rotation')!.click();
+    await vi.waitFor(() => expect(deletes).toEqual(['/api/settings/tls/rotation']));
+  });
 });
 
 describe('the source', () => {
