@@ -311,7 +311,7 @@
       <p class="dim">No secrets declared yet.</p>
     {:else}
       <div class="table-wrap">
-        <table>
+        <table class="readings">
           <thead>
             <tr>
               <th aria-sort={secretSort.aria('name')}
@@ -341,7 +341,7 @@
                   <span class="mono">{s.name}</span>
                   {#if s.description}<small class="note">{s.description}</small>{/if}
                 </td>
-                <td class="one-line">
+                <td class="one-line" data-label="Value lives on">
                   {CUSTODY_LABEL[s.custody]}
                   {#if current && !current.usable}
                     <small class="unusable">
@@ -349,8 +349,10 @@
                     </small>
                   {/if}
                 </td>
-                <td class="num mono">{current ? `v${current.version}` : '--'}</td>
-                <td class="mono one-line">
+                <td class="num mono" data-label="Stored"
+                  >{current ? `v${current.version}` : '--'}</td
+                >
+                <td class="mono one-line" data-label="Running">
                   {#if s.custody === 'worker-local'}
                     <span class="dim">--</span>
                   {:else if running.length === 0}
@@ -362,7 +364,9 @@
                     <small class="staged">stored, not deployed</small>
                   {/if}
                 </td>
-                <td class="dim one-line">{current ? ago(current.setAt / 1000) : '--'}</td>
+                <td class="dim one-line" data-label="Last set"
+                  >{current ? ago(current.setAt / 1000) : '--'}</td
+                >
                 <td class="row-actions">
                   {#if s.custody === 'leader-stored'}
                     <button type="button" onclick={() => openPanel(s, 'check')}> Check </button>
@@ -374,7 +378,7 @@
 
               {#if showing(s, 'store')}
                 <tr>
-                  <td colspan="6">
+                  <td class="whole" colspan="6">
                     <div class="row-edit">
                       <PasswordField
                         bind:value={storeValue}
@@ -405,7 +409,7 @@
 
               {#if showing(s, 'check')}
                 <tr>
-                  <td colspan="6">
+                  <td class="whole" colspan="6">
                     <div class="row-edit">
                       <PasswordField
                         bind:value={checkValue}
@@ -471,32 +475,6 @@
     width: 100%;
   }
 
-  .table-wrap {
-    overflow-x: auto;
-  }
-
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: var(--text-body);
-  }
-
-  th {
-    text-align: left;
-    font-size: var(--text-micro);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--dim);
-    border-bottom: 1px solid var(--border);
-    padding: 0.4rem 0.6rem;
-  }
-
-  td {
-    padding: 0.5rem 0.6rem;
-    border-bottom: 1px solid var(--border);
-  }
-
   tbody tr:last-child td {
     border-bottom: none;
   }
@@ -504,7 +482,6 @@
   /* Each cell beside the name holds one short answer -- a custody, a
      version, an age -- and reads as one line rather than breaking between
      words when the frame is narrow. */
-  th,
   .one-line {
     white-space: nowrap;
   }

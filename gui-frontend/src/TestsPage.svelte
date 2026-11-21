@@ -141,7 +141,7 @@
       {#if passing > 0}<span class="passing">{passing} passing</span>{/if}
     </p>
     <div class="table-wrap">
-      <table>
+      <table class="readings">
         <thead>
           <tr>
             <th aria-sort={sort.aria('result')}
@@ -177,9 +177,9 @@
                 {/if}
               </td>
               <td><strong>{t.name}</strong></td>
-              <td class="mono dim">{coversOf(t)}</td>
-              <td class="mono dim">{sampleNameOf(t)}</td>
-              <td class="mono">{checksOf(t)}</td>
+              <td class="mono dim" data-label="Covers">{coversOf(t)}</td>
+              <td class="mono dim" data-label="Sample">{sampleNameOf(t)}</td>
+              <td class="mono" data-label="Checks">{checksOf(t)}</td>
               <td class="row-actions">
                 <a class="btn" href={testHash(t.id, t.sample, t.pipeline)}>Open</a>
                 {#if !readOnly}
@@ -204,7 +204,7 @@
             {#if fails}
               <tr class="open">
                 <td></td>
-                <td colspan="5">
+                <td class="whole" colspan="5">
                   <TestFailure verdict={r!.verdict!} routeName={(id) => nameOf('routes', id)} />
                 </td>
               </tr>
@@ -234,27 +234,9 @@
     color: var(--error);
     font-weight: 600;
   }
-  .table-wrap {
-    overflow-x: auto;
-  }
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: var(--text-body);
-  }
-  th,
-  td {
-    text-align: left;
-    padding: 0.4rem 0.5rem;
-    border-bottom: 1px solid var(--border);
-  }
+  tr.open:has(+ tr.open),
   tr.open:has(+ tr.open) td {
     border-bottom: 0;
-  }
-  th {
-    color: var(--dim);
-    font-weight: 600;
-    font-size: var(--text-label);
   }
   /* A failing test, with why under its row (STYLE_GUIDE.md, "Lists"). */
   tr.open {

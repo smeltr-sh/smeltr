@@ -160,7 +160,7 @@
     </p>
   {:else}
     <div class="table-wrap">
-      <table>
+      <table class="readings">
         <thead>
           <tr>
             <th aria-sort={sampleSort.aria('name')}
@@ -182,9 +182,9 @@
           {#each sortedSamples as s (s.id)}
             <tr>
               <td><strong>{s.name}</strong></td>
-              <td class="mono dim">{s.source ?? 'pasted'}</td>
-              <td class="mono">{s.records}</td>
-              <td class="dim"
+              <td class="mono dim" data-label="From">{s.source ?? 'pasted'}</td>
+              <td class="mono" data-label="Records">{s.records}</td>
+              <td class="dim" data-label={capturedAt(s) === undefined ? undefined : 'Captured'}
                 >{#if capturedAt(s) !== undefined}{dateTime(capturedAt(s)! / 1000)}{/if}</td
               >
               <td class="row-actions">
@@ -216,7 +216,7 @@
             </tr>
             {#if editing === s.id}
               <tr class="open">
-                <td colspan="5">
+                <td class="whole" colspan="5">
                   <SampleEditor
                     id={s.id}
                     tests={testsOn(s.id)}
@@ -245,25 +245,6 @@
   }
   .warn {
     color: var(--warn);
-  }
-  .table-wrap {
-    overflow-x: auto;
-  }
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: var(--text-body);
-  }
-  th,
-  td {
-    text-align: left;
-    padding: 0.4rem 0.5rem;
-    border-bottom: 1px solid var(--border);
-  }
-  th {
-    color: var(--dim);
-    font-weight: 600;
-    font-size: var(--text-label);
   }
   /* The sample open for editing, folded open under its row (STYLE_GUIDE.md, "Lists"). */
   tr.open {
