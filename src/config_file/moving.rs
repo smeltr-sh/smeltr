@@ -77,6 +77,9 @@ pub struct Moving<'a> {
     here: &'a Objects,
     there: &'a Objects,
     asked: Id,
+    /// Further objects asked for beside `asked`, each with the least it takes, which the move takes along with
+    /// `asked`'s: a card's other routes.
+    also: BTreeSet<Id>,
     from: &'a str,
     to: &'a str,
     /// What `there` holds identically, by kind and id.
@@ -93,10 +96,16 @@ impl<'a> Moving<'a> {
             here,
             there,
             asked,
+            also: BTreeSet::new(),
             from,
             to,
             same,
         }
+    }
+
+    /// A move that asks for `also` as well as the one object, with their least.
+    pub fn also(self, also: BTreeSet<Id>) -> Moving<'a> {
+        Moving { also, ..self }
     }
 
     /// Every reference between `here`'s objects.
@@ -212,7 +221,9 @@ impl<'a> Moving<'a> {
     /// a sentence for each reference the chosen ones leave broken.
     pub fn list(&self, ticked: Option<&BTreeSet<Id>>) -> (Vec<MoveRow>, Vec<String>) {
         let names = self.names();
-        let least = self.needed(&names, &BTreeSet::from([self.asked.clone()]));
+        let mut asked = self.also.clone();
+        asked.insert(self.asked.clone());
+        let least = self.needed(&names, &asked);
         let mut ticked = ticked.cloned().unwrap_or_else(|| least.clone());
         ticked.insert(self.asked.clone());
         let held = self.here.ids();
@@ -471,5 +482,18 @@ mod tests {
         let (rows, _) = moving.list(None);
         let es_net = rows.iter().find(|r| r.listed.id == "es-net").unwrap();
         assert_eq!((es_net.listed.standing, es_net.ticked), (Standing::Same, false));
+    }
+
+    #[test]
+    fn what_is_asked_for_beside_takes_its_own_least_too() {
+        let (here, there) = (objects(), empty());
+        let moving = Moving::new(&here, &there, (Part::Route, "r-fw".into()), "west", "east")
+            .also(BTreeSet::from([(Part::Route, "r-web".to_string())]));
+        let (rows, broken) = moving.list(None);
+        let ticked = ids(&rows, |r| r.ticked);
+        for id in ["r-fw", "r-web", "fw-normalize", "web-normalize"] {
+            assert!(ticked.iter().any(|(_, t)| *t == id), "{id} goes: {ticked:?}");
+        }
+        assert!(broken.is_empty(), "{broken:?}");
     }
 }

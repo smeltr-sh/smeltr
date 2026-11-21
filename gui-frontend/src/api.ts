@@ -498,6 +498,18 @@ export type HttpCompression = Extract<Compression, 'none' | 'gzip'>;
 export type HttpBody = 'lines' | 'jsonArray' | 'single';
 export const COMPRESSIONS: Compression[] = ['none', 'gzip', 'snappy', 'lz4', 'zstd'];
 
+/** The levels `codec` takes on a destination (`LIMITS`), or undefined for a codec that takes none; `kafka` is true for a
+ * destination librdkafka compresses for. */
+export function compressionLevels(
+  codec: Compression,
+  kafka: boolean,
+): { min: number; max: number; default: number } | undefined {
+  if (codec === 'gzip') return LIMITS.gzipLevel;
+  if (codec === 'zstd') return kafka ? LIMITS.kafkaZstdLevel : LIMITS.zstdLevel;
+  if (codec === 'lz4' && kafka) return LIMITS.kafkaLz4Level;
+  return undefined;
+}
+
 /** How many replicas hold a Kafka batch before it counts as delivered, mirroring `config_file::dto::AcksDto`. */
 export const ACKS = ['none', 'one', 'all'] as const;
 export type Acks = (typeof ACKS)[number];
@@ -509,6 +521,12 @@ export type Acks = (typeof ACKS)[number];
  * inputs never offer a value the save would reject. */
 export const LIMITS = {
   inFlight: { min: 1, max: 64, default: 4 },
+  /** The levels each codec takes, as `CompressionDto::levels` gives them: librdkafka caps zstd at 12, and only its
+   * lz4 takes a level. */
+  gzipLevel: { min: 1, max: 9, default: 6 },
+  zstdLevel: { min: 1, max: 22, default: 3 },
+  kafkaZstdLevel: { min: 1, max: 12, default: 3 },
+  kafkaLz4Level: { min: 0, max: 12, default: 0 },
   maxBulkBytes: { min: 64 * 1024, max: 100 * 1024 * 1024, default: 5 * 1024 * 1024 },
   maxRequestBytes: { min: 4 * 1024, max: 100 * 1024 * 1024, default: 1024 * 1024 },
   /** An HTTP destination's `maxRequestBytes` (`HttpRequestBytes`): one whole batch by default. */
@@ -573,6 +591,7 @@ export type DestinationDto = {
        * `bytes`. */
       field?: string;
       compression?: Compression;
+      compressionLevel?: number;
       /** Absent is `all`. */
       acks?: Acks;
       stallAfterSecs?: number;
@@ -594,6 +613,7 @@ export type DestinationDto = {
       field?: string;
       /** Event Hubs takes no other codec. */
       compression?: 'none' | 'gzip';
+      compressionLevel?: number;
       stallAfterSecs?: number;
       bufferBytes?: ByteCount;
       schemaRegistry?: SchemaRegistry;
@@ -663,6 +683,7 @@ export type DestinationDto = {
       field?: string;
       /** Absent is `none`. */
       compression?: HttpCompression;
+      compressionLevel?: number;
       inFlight?: number;
     })
   | (HttpRequestsDto & {
@@ -681,6 +702,7 @@ export type DestinationDto = {
       signal?: OtlpSignal;
       /** Absent is `none`. */
       compression?: HttpCompression;
+      compressionLevel?: number;
       inFlight?: number;
     })
   | (TlsDto &
@@ -759,6 +781,7 @@ export type DestinationDto = {
         signingName?: string;
         /** How each Parquet file compresses its columns. Absent is `zstd`. */
         compression?: Compression;
+        compressionLevel?: number;
         /** Parts of one file uploading at once. */
         inFlight?: number;
         maxObjectBytes?: ByteCount;
@@ -781,6 +804,7 @@ export type DestinationDto = {
         partitionBy?: string[];
         /** How each Parquet file compresses its columns. Absent is `zstd`. */
         compression?: Compression;
+        compressionLevel?: number;
         /** Parts of one file uploading at once. */
         inFlight?: number;
         maxObjectBytes?: ByteCount;
@@ -1020,6 +1044,7 @@ export interface ObjectSettings {
   variant?: 'json' | 'native';
   /** Absent is `gzip`. */
   compression?: Compression;
+  compressionLevel?: number;
   inFlight?: number;
   maxObjectBytes?: ByteCount;
   /** Unset is 512 MiB. */
@@ -2073,6 +2098,7 @@ export interface MoveAsk {
   part: ImportPart;
   id: string;
   to: string;
+  also?: { part: ImportPart; id: string }[];
   ticked?: { part: ImportPart; id: string }[];
   go?: boolean;
 }

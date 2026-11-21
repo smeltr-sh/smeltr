@@ -27,6 +27,7 @@ export function objectModified(d: ObjectDestination): boolean {
     accessModified(d.type, d) ||
     (d.type === 's3' && d.kmsKeyId !== undefined) ||
     (d.compression ?? 'gzip') !== 'gzip' ||
+    d.compressionLevel !== undefined ||
     (isCloud(d) && d.storageClass !== undefined) ||
     (d.inFlight ?? LIMITS.inFlight.default) !== LIMITS.inFlight.default ||
     byteCount(d.maxObjectBytes, LIMITS.maxObjectBytes.default) !== LIMITS.maxObjectBytes.default ||
@@ -44,6 +45,7 @@ export function httpModified(d: HeaderedDestination): boolean {
     tlsSet(d) ||
     (d.type === 'http' && d.zoneUrls !== undefined) ||
     (d.type !== 'prometheus' && (d.compression ?? 'none') !== 'none') ||
+    (d.type !== 'prometheus' && d.compressionLevel !== undefined) ||
     requestDeliveryModified(
       d,
       'maxRequestBytes',

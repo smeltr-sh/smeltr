@@ -109,6 +109,7 @@ const OPTIONS: &[&str] = &[
     "field",
     "compression.none",
     "compression.gzip",
+    "compressionLevel",
     "headers",
     "credentials",
     "secret.leaderStored",
@@ -142,6 +143,7 @@ const OPTIONS: &[&str] = &[
     "broken.field.json",
     "broken.field.blank",
     "broken.compression",
+    "broken.compressionLevel",
     "broken.headers.name",
     "broken.headers.owned",
     "broken.headers.twice",
@@ -269,6 +271,10 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target, stored: &mut Stored) -
     cov.reach(format!("compression.{compression}"));
     if compression != "none" || rng.chance(2) {
         d.insert("compression".into(), json!(compression));
+    }
+    if compression == "gzip" && rng.chance(2) {
+        cov.reach("compressionLevel");
+        d.insert("compressionLevel".into(), json!(1 + rng.below(9)));
     }
 
     let mut taken: BTreeSet<String> = BTreeSet::new();
@@ -450,6 +456,7 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> &'static str 
         "certificate",
         "tls.plainHttp",
         "compression",
+        "compressionLevel",
         "headers.name",
         "headers.owned",
         "headers.twice",
@@ -511,8 +518,15 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> &'static str 
             "field"
         }
         "compression" => {
+            d.remove("compressionLevel");
             d.insert("compression".into(), json!(rng.pick(&["snappy", "lz4", "zstd"])));
             "compression"
+        }
+        // Past the top of gzip's levels, or any level for none.
+        "compressionLevel" => {
+            let gzip = d.get("compression").and_then(Value::as_str) == Some("gzip");
+            d.insert("compressionLevel".into(), json!(if gzip { 10 } else { 1 }));
+            "compressionLevel"
         }
         "headers.name" | "headers.owned" | "headers.value" => {
             let in_credentials = what != "headers.value" && rng.chance(2);
@@ -737,7 +751,7 @@ fn check_loaded(draw: &Draw, c: &HttpDestinationConfig, named: &[SecretRef]) -> 
     };
     expect("format", format!("{payload:?}"), format!("{:?}", c.payload));
     let compression = match s("compression").unwrap_or("none") {
-        "gzip" => Compression::Gzip,
+        "gzip" => Compression::Gzip(d.get("compressionLevel").and_then(Value::as_u64).unwrap_or(6) as u8),
         _ => Compression::None,
     };
     expect(
@@ -1152,7 +1166,7 @@ fn check_requests(
         if seen.header("content-type") != [content_type(c)] {
             wrong.push(format!("content-type {:?}", seen.header("content-type")));
         }
-        let encoding: &[&str] = if c.compression == Compression::Gzip {
+        let encoding: &[&str] = if matches!(c.compression, Compression::Gzip(_)) {
             &["gzip"]
         } else {
             &[]

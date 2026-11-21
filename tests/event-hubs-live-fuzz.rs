@@ -77,17 +77,20 @@ fn settings(rng: &mut Rng, namespace: &str) -> Settings {
         "defaultEventHub".into(),
         "connectionString".into(),
     ];
-    let pools: [(&str, &[serde_json::Value]); 5] = [
+    let pools: [(&str, &[serde_json::Value]); 6] = [
         ("format", &[json!("json"), json!("text"), json!("bytes")]),
         ("field", &[json!("message"), json!("_raw")]),
         ("compression", &[json!("none"), json!("gzip")]),
+        ("compressionLevel", &[json!(1), json!(9)]),
         ("bufferBytes", &[json!(4 * 1024 * 1024), json!("64 MiB")]),
         ("stallAfterSecs", &[json!(10), json!(30)]),
     ];
     for (key, pool) in pools {
         // A field is read only beside the `text` and `bytes` formats.
         let readable = fields.get("format").is_some_and(|f| f != "json");
-        if rng.chance(2) && (key != "field" || readable) {
+        // A level is read only beside gzip.
+        let gzip = fields.get("compression").is_some_and(|c| c == "gzip");
+        if rng.chance(2) && (key != "field" || readable) && (key != "compressionLevel" || gzip) {
             let v = rng.pick(pool).clone();
             options.push(format!("{key}={v}"));
             fields.insert(key.into(), v);
@@ -242,7 +245,7 @@ fn write(
     }
     // The emulator, like Event Hubs' Basic and Standard tiers, refuses gzip: what was compressed comes back
     // undelivered with its batch, and the error says why.
-    if config.compression == Compression::Gzip {
+    if matches!(config.compression, Compression::Gzip(_)) {
         dest.flush()
             .map_err(|e| format!("gzip on the emulator did not flush: {e:?}"))?;
         let done = dest
@@ -319,6 +322,8 @@ fn live_generated_rows_reach_their_event_hub_once_or_are_refused() {
         r#"field="_raw""#,
         r#"compression="none""#,
         r#"compression="gzip""#,
+        "compressionLevel=1",
+        "compressionLevel=9",
         "bufferBytes=4194304",
         r#"bufferBytes="64 MiB""#,
         "stallAfterSecs=10",

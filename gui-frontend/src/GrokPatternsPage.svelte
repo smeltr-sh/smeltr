@@ -9,9 +9,9 @@
   `shared/`; and the built-ins every grok may name, which no one changes.
 -->
 <script lang="ts">
+  import RowMenu from './RowMenu.svelte';
   import MoveDialog, { type MoveTarget } from './MoveDialog.svelte';
   import type { Area } from './areas';
-  import Button from './Button.svelte';
   import Connections from './Connections.svelte';
   import EditInShared from './EditInShared.svelte';
   import OnlyNotice from './OnlyNotice.svelte';
@@ -38,7 +38,6 @@
     putGrokPatterns,
     type GrokPatternDto,
   } from './api';
-  import CrossButton from './CrossButton.svelte';
   import { count } from './time';
   import {
     builtinRegex,
@@ -243,20 +242,22 @@
                   </Field>
                 </td>
                 <td class="act">
-                  {#if !readOnly && areas.length > 1 && p.id}
-                    <Button
-                      type="button"
-                      class="compact"
-                      onclick={() => (moving = { part: 'grokPattern', id: p.id })}
-                      >Move to&hellip;</Button
-                    >
-                  {/if}
                   {#if !readOnly}
-                    <CrossButton
-                      removes
-                      label="Remove {p.id || 'unnamed'}"
-                      onclick={() => patterns.splice(n, 1)}
-                    />
+                    <RowMenu label="More actions for {p.id || 'unnamed'}">
+                      {#if areas.length > 1 && p.id}
+                        <button
+                          type="button"
+                          class="pick"
+                          onclick={() => (moving = { part: 'grokPattern', id: p.id })}
+                          >Move to&hellip;</button
+                        >
+                      {/if}
+                      <button
+                        type="button"
+                        class="pick remove"
+                        onclick={() => patterns.splice(n, 1)}>Remove</button
+                      >
+                    </RowMenu>
                   {/if}
                 </td>
               </tr>

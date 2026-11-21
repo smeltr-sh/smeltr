@@ -79,9 +79,9 @@ const TIMES: [&str; 3] = [
 const COMPRESSIONS: [(Compression, &str); 5] = [
     (Compression::None, "none"),
     (Compression::Snappy, "snappy"),
-    (Compression::Gzip, "gzip"),
-    (Compression::Lz4, "lz4"),
-    (Compression::Zstd, "zstd"),
+    (Compression::Gzip(6), "gzip"),
+    (Compression::Lz4(0), "lz4"),
+    (Compression::Zstd(3), "zstd"),
 ];
 
 /// A field's declared type.
@@ -375,6 +375,13 @@ fn case(seed: u64, rng: &mut Rng, coverage: &mut Coverage) -> Case {
         *rng.pick(&COMPRESSIONS)
     };
     coverage.reach(format!("compression {codec}"));
+    let compression = match compression.level() {
+        Some(_) if codec != "lz4" && rng.chance(2) => {
+            coverage.reach("compression level");
+            compression.at(1 + rng.below(9) as u8)
+        }
+        _ => compression,
+    };
     let (max_object_bytes, buffer_bytes) = if size == "big" {
         let buffer = if (seed / 8).is_multiple_of(2) {
             4 << 20
@@ -533,6 +540,7 @@ fn live_generated_tables_hold_every_row_once_in_a_consistent_log() {
             "compression gzip",
             "compression lz4",
             "compression zstd",
+            "compression level",
             "checkpoint interval set",
             "checkpoint interval default",
             "identity one writer",

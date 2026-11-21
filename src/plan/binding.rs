@@ -108,32 +108,7 @@ pub fn part<'e>(value: &'e Expr, syms: &SymbolTable) -> Result<Part<'e>, String>
             // A member of a variant, or a name nothing binds, which resolving it reports.
             None => Part::Leaf(Source::Expr(Cow::Borrowed(value))),
         }),
-        ExprKind::Call { name, args } if name == "rest" => rest(args, syms),
         _ => Ok(Part::Leaf(Source::Expr(Cow::Borrowed(value)))),
-    }
-}
-
-/// `rest(o)`: the unclaimed fields of the object `o`, as an open object with no field of its own.
-fn rest<'e>(args: &'e [Expr], syms: &SymbolTable) -> Result<Part<'e>, String> {
-    let [
-        Expr {
-            kind: ExprKind::Field(name),
-            ..
-        },
-    ] = args
-    else {
-        return Err("`rest` takes the name of an object, `rest(o)`".to_string());
-    };
-    match syms.named(name) {
-        (_, Some(Node::Object(o))) => match o.unclaimed {
-            Some(u) if !syms.no_keys(&o) => Ok(Part::Object(Draft {
-                fields: BTreeMap::new(),
-                unclaimed: vec![Source::Unclaimed(u, o.removed.clone())],
-                built: false,
-            })),
-            _ => Err(format!("`{name}` holds no unclaimed fields for `rest` to give")),
-        },
-        _ => Err(format!("`rest` takes an object, and `{name}` is not one")),
     }
 }
 
@@ -373,8 +348,10 @@ pub fn is_under(name: &str, prefix: &str) -> bool {
         .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
 }
 
-/// Whether `name` is `prefix` or a path under it.
+/// Whether `name` is `prefix` or a path under it. Every name is under the record, `""`.
 pub fn at_or_under(name: &str, prefix: &str) -> bool {
-    name.strip_prefix(prefix)
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with('.') || rest.starts_with('['))
+    prefix.is_empty()
+        || name
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('.') || rest.starts_with('['))
 }

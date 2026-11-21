@@ -59,21 +59,29 @@ body {
   white-space: nowrap;
 }
 
-/* A table of readings: heads as uppercase labels, rows ruled apart, a `.num` column to the right. */
+/* A table of readings: heads as uppercase labels, rows ruled apart, a `.num` column to the right. The
+   width of its `.table-wrap` decides when the table is narrow. */
+:where(.table-wrap) {
+  container-type: inline-size;
+  overflow-x: auto;
+}
+
+/* Each rule reaches the table's own rows and cells, never a table nested in one of its cells. */
 :where(table.readings) {
   width: 100%;
   border-collapse: collapse;
   font-size: var(--text-label);
 }
 
-:where(table.readings th, table.readings td) {
+:where(table.readings > * > tr > th, table.readings > * > tr > td) {
   text-align: left;
   padding: 0.4rem 0.75rem;
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
 }
 
-:where(table.readings th) {
+:where(table.readings > * > tr > th) {
+  white-space: nowrap;
   color: var(--dim);
   font-size: var(--text-micro);
   font-weight: 700;
@@ -81,23 +89,20 @@ body {
   text-transform: uppercase;
 }
 
-:where(table.readings .num) {
+:where(table.readings > * > tr > .num) {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
 
 /* In a narrow container each row wraps onto lines of its own: a `.whole` cell takes a line to itself, a cell names
-   what it holds by its `data-label`, and an empty one is left out. */
+   what it holds by its `data-label`, and an empty one is left out. The heads stay, as one line above the rows, so
+   their sort buttons still sort. */
 @container (max-width: 32rem) {
-  :where(table.readings, table.readings tbody) {
+  :where(table.readings, table.readings > thead, table.readings > tbody) {
     display: block;
   }
 
-  :where(table.readings thead) {
-    display: none;
-  }
-
-  :where(table.readings tr) {
+  :where(table.readings > * > tr) {
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
@@ -106,28 +111,34 @@ body {
     border-bottom: 1px solid var(--border);
   }
 
-  :where(table.readings td) {
+  :where(table.readings > * > tr > th, table.readings > * > tr > td) {
     padding: 0;
     border: 0;
   }
 
-  :where(table.readings td:empty) {
+  :where(table.readings > * > tr > :empty) {
     display: none;
   }
 
-  :where(table.readings td[data-label]) {
+  :where(table.readings > * > tr > td[data-label]) {
     display: flex;
     flex-wrap: wrap;
     gap: 0 0.3rem;
   }
 
-  :where(table.readings td[data-label])::before {
+  :where(table.readings > * > tr > td[data-label])::before {
     content: attr(data-label);
     color: var(--dim);
   }
 
-  :where(table.readings .whole) {
+  :where(table.readings > * > tr > .whole) {
     flex-basis: 100%;
+  }
+
+  /* The row's actions end its last line at their own width, not the 1% their column gets on a wide table. */
+  table.readings > * > tr > td.row-actions {
+    width: auto;
+    margin-left: auto;
   }
 }
 
@@ -216,6 +227,16 @@ body {
 /* What a route still needs before it can be saved: its source or pipeline, still to be chosen. */
 .unchosen {
   color: var(--accent);
+}
+
+/* A table row's actions: one cell at the row's end, as narrow as its buttons, which sit side by side. Each action
+   in a cell of its own would spread them across whatever width the table has left. */
+td.row-actions {
+  width: 1%;
+  white-space: nowrap;
+}
+td.row-actions > * + * {
+  margin-left: 0.5rem;
 }
 
 /* An instruction that must be read before acting: data lost, a step that

@@ -78,7 +78,7 @@ fn on(cloud: Cloud) -> ObjectsDestinationConfig {
         cloud,
         prefix: "default/%Y/".to_string(),
         format: ObjectFormat::Ndjson,
-        compression: Compression::Gzip,
+        compression: Compression::Gzip(6),
         storage_class: None,
         tls: None,
         in_flight: 2,
@@ -291,7 +291,7 @@ fn live_an_avro_object_lands_and_is_read_back() {
         ObjectsDestinationConfig {
             prefix: "in/".to_string(),
             format: ObjectFormat::Avro,
-            compression: Compression::Zstd,
+            compression: Compression::Zstd(3),
             ..config(&endpoint, &bucket)
         },
         Some(&record),

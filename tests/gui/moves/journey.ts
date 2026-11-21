@@ -926,9 +926,7 @@ const moveSource: Move = {
       for (const tick of await routeTicks.all()) await tick.check();
       const go = dialog.getByRole('button', { name: 'Move', exact: true });
       await expect(go).toBeEnabled();
-      await saveBy(j, go, () =>
-        expect(dialog).toBeHidden(),
-      );
+      await saveBy(j, go, () => expect(dialog).toBeHidden());
       // A group's page lists what `shared` declares too, so only `shared`'s own page loses the row.
       if (to !== 'shared')
         await expect(page.getByRole('button', { name: `More actions for ${source}` })).toHaveCount(
@@ -987,9 +985,7 @@ const moveDestination: Move = {
       await dialog.getByRole('combobox', { name: 'move to' }).selectOption(to);
       const go = dialog.getByRole('button', { name: 'Move', exact: true });
       await expect(go).toBeEnabled();
-      await saveBy(j, go, () =>
-        expect(dialog).toBeHidden(),
-      );
+      await saveBy(j, go, () => expect(dialog).toBeHidden());
       // A group's page lists what `shared` declares too, so only `shared`'s own page loses the row.
       if (to !== 'shared')
         await expect(
@@ -1044,10 +1040,8 @@ const exportPipeline: Move = {
       (p) => p.name === name,
     )!.id;
     await goto(page, leader, '#/build/pipelines');
-    await page
-      .getByRole('row', { name: new RegExp(`^${name}\\b`) })
-      .getByRole('button', { name: 'Export' })
-      .click();
+    await openRowMenu(page, `More actions for ${name}`);
+    await page.getByRole('button', { name: 'Export', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: `export ${name}` });
     if (routes)
       await dialog
@@ -2540,7 +2534,8 @@ const deleteSample: Move = {
     const name = rng.pick(pasted(world));
     await goto(page, leader, '#/build');
     const row = page.getByRole('row', { name: new RegExp(`^${name}\\b`) });
-    await row.getByRole('button', { name: 'Delete' }).click();
+    await openRowMenu(page, `More actions for ${name}`);
+    await page.getByRole('button', { name: 'Delete', exact: true }).click();
     await saveBy(
       j,
       page.getByRole('dialog', { name: 'delete sample' }).getByRole('button', { name: 'Delete' }),
@@ -2585,14 +2580,13 @@ const moveSample: Move = {
     });
     const move = async (from: string, to: string) => {
       const row = page.getByRole('row', { name: new RegExp(`^${name}\\b`) });
-      await row.getByRole('button', { name: 'Move to…' }).click();
+      await openRowMenu(page, `More actions for ${name}`);
+      await page.getByRole('button', { name: 'Move to…' }).click();
       const dialog = page.getByRole('dialog', { name: `move sample ${name}` });
       await dialog.getByRole('combobox', { name: 'move to' }).selectOption(to);
       const go = dialog.getByRole('button', { name: 'Move', exact: true });
       await expect(go).toBeEnabled();
-      await saveBy(j, go, () =>
-        expect(dialog).toBeHidden(),
-      );
+      await saveBy(j, go, () => expect(dialog).toBeHidden());
       await expect(row).toHaveCount(0);
       expect(await holds(to), `${name} and its tests moved to ${to}`).toEqual({
         sample: true,

@@ -152,10 +152,10 @@ fn decode(codec: Compression, bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     match codec {
         Compression::None => out.extend_from_slice(bytes),
-        Compression::Gzip => drop(flate2::read::GzDecoder::new(bytes).read_to_end(&mut out).unwrap()),
+        Compression::Gzip(_) => drop(flate2::read::GzDecoder::new(bytes).read_to_end(&mut out).unwrap()),
         Compression::Snappy => drop(snap::read::FrameDecoder::new(bytes).read_to_end(&mut out).unwrap()),
-        Compression::Lz4 => drop(lz4_flex::frame::FrameDecoder::new(bytes).read_to_end(&mut out).unwrap()),
-        Compression::Zstd => out = zstd::stream::decode_all(bytes).unwrap(),
+        Compression::Lz4(_) => drop(lz4_flex::frame::FrameDecoder::new(bytes).read_to_end(&mut out).unwrap()),
+        Compression::Zstd(_) => out = zstd::stream::decode_all(bytes).unwrap(),
     }
     out
 }
@@ -164,7 +164,7 @@ fn decode(codec: Compression, bytes: &[u8]) -> Vec<u8> {
 /// format writes every route's rows alike.
 #[test]
 fn each_prefix_gets_an_object_of_its_own() {
-    let mut f = fixture(&config(ObjectFormat::Ndjson, Compression::Gzip));
+    let mut f = fixture(&config(ObjectFormat::Ndjson, Compression::Gzip(6)));
     let refused = f.deliver(vec![
         row(r#"{"n":1}"#, Some("a/")),
         row(r#"{"n":2}"#, Some("b/")),
@@ -269,10 +269,10 @@ fn every_line_format_and_codec_names_types_and_reads_back() {
     for (format, stem, plain_type, rows, lines) in formats {
         for (codec, suffix, packed_type) in [
             (Compression::None, "", plain_type),
-            (Compression::Gzip, ".gz", "application/gzip"),
+            (Compression::Gzip(6), ".gz", "application/gzip"),
             (Compression::Snappy, ".sz", "application/x-snappy-framed"),
-            (Compression::Lz4, ".lz4", "application/x-lz4"),
-            (Compression::Zstd, ".zst", "application/zstd"),
+            (Compression::Lz4(0), ".lz4", "application/x-lz4"),
+            (Compression::Zstd(3), ".zst", "application/zstd"),
         ] {
             let mut f = fixture(&config(format.clone(), codec));
             let refused = f.deliver(rows.clone());
@@ -350,7 +350,7 @@ fn json_writes_one_array_and_text_writes_one_field() {
     assert_eq!(String::from_utf8_lossy(&objects[0].1), "[{\"n\":1},{\"n\":2}]\n");
 
     let plain = ObjectFormat::Text { field: "_raw".into() };
-    let mut f = fixture(&config(plain, Compression::Zstd));
+    let mut f = fixture(&config(plain, Compression::Zstd(3)));
     let lacking = OwnedRecord {
         unfit: Some("it has no _raw to write as text".to_string()),
         ..text("", Some("t/"))
@@ -477,7 +477,7 @@ fn batches_within_the_interval_share_one_line_object() {
         (ObjectFormat::Ndjson, "{\"n\":1}\n{\"n\":2}\n{\"n\":3}\n"),
         (ObjectFormat::Json, "[{\"n\":1},{\"n\":2},{\"n\":3}]\n"),
     ] {
-        let mut f = fixture(&config(format.clone(), Compression::Gzip));
+        let mut f = fixture(&config(format.clone(), Compression::Gzip(6)));
         assert!(f.hand_over(1, vec![row(r#"{"n":1}"#, None)]).is_empty());
         assert!(
             f.hand_over(2, vec![row(r#"{"n":2}"#, None), row(r#"{"n":3}"#, None)])
@@ -498,7 +498,7 @@ fn batches_within_the_interval_share_one_line_object() {
 /// and each batch handed over after that too.
 #[test]
 fn a_finishing_destination_does_not_wait_for_its_interval() {
-    let mut f = fixture(&config(ObjectFormat::Ndjson, Compression::Zstd));
+    let mut f = fixture(&config(ObjectFormat::Ndjson, Compression::Zstd(3)));
     assert!(f.hand_over(1, vec![row(r#"{"n":1}"#, None)]).is_empty());
     f.destination.finish();
     let completed = |f: &mut Fixture| {
@@ -524,7 +524,7 @@ fn a_finishing_destination_does_not_wait_for_its_interval() {
 /// A finishing destination commits what is queued together, not once per batch.
 #[test]
 fn a_finishing_destination_commits_its_queue_together() {
-    let mut f = fixture(&config(ObjectFormat::Ndjson, Compression::Zstd));
+    let mut f = fixture(&config(ObjectFormat::Ndjson, Compression::Zstd(3)));
     f.destination.finish();
     const BATCHES: u64 = 200;
     for batch in 1..=BATCHES {
@@ -550,7 +550,7 @@ fn a_finishing_destination_commits_its_queue_together() {
 /// A line object is finished at its interval with no `flush`, and its batch acknowledged then.
 #[test]
 fn a_line_object_is_finished_at_its_interval() {
-    let mut c = config(ObjectFormat::Ndjson, Compression::Zstd);
+    let mut c = config(ObjectFormat::Ndjson, Compression::Zstd(3));
     c.file_interval = Duration::from_millis(200);
     let mut f = fixture(&c);
     assert!(f.hand_over(4, vec![row(r#"{"n":1}"#, None)]).is_empty());
@@ -566,7 +566,7 @@ fn a_line_object_is_finished_at_its_interval() {
     assert_eq!(done.iter().map(|c| c.batch).collect::<Vec<_>>(), [4]);
     let objects = f.objects();
     assert_eq!(objects.len(), 1);
-    assert_eq!(decode(Compression::Zstd, &objects[0].1), b"{\"n\":1}\n");
+    assert_eq!(decode(Compression::Zstd(3), &objects[0].1), b"{\"n\":1}\n");
 }
 
 /// `pipeline`'s row `at` over `texts`, as egress hands it to a Parquet destination: its place in the chunk, from
@@ -600,7 +600,7 @@ fn a_parquet_object_holds_the_records_columns() {
     let chunk = harness::cut(&plan, &[r#"{"n":1,"msg":"a"}"#, r#"{"n":2,"smeltr":5}"#, r#"{"n":3}"#]);
     let record = harness::record(&plan);
     let mut f = writing(
-        &config(ObjectFormat::Parquet { native_variants: false }, Compression::Gzip),
+        &config(ObjectFormat::Parquet { native_variants: false }, Compression::Gzip(6)),
         &record,
     );
     let refused = f.hand_over(0, (0..3).map(|at| cut_row(&chunk, at, None)).collect());
@@ -777,7 +777,7 @@ fn a_csv_object_holds_the_records_leaves() {
         ],
     );
     let record = harness::record(&plan);
-    let mut f = writing(&config(ObjectFormat::Csv, Compression::Gzip), &record);
+    let mut f = writing(&config(ObjectFormat::Csv, Compression::Gzip(6)), &record);
     let refused = f.hand_over(0, (0..2).map(|at| cut_row(&chunk, at, None)).collect());
     assert!(refused.is_empty(), "{refused:?}");
     assert_eq!(f.finish(), [0]);

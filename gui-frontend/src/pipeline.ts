@@ -167,11 +167,11 @@ export const PROPOSED_FORMAT_NAMES: Record<NonNullable<OnboardProposal['format']
   combinedLog: 'combined access log',
 };
 
-/** Dots are Key/value's only way to nest, and a grok capture name is a path
- * by habit; a JSON or CSV key is one key. */
+/** A name the author types is a path, as in code: a CSV column, a grok
+ * capture. Dots are Key/value's only way to nest. A JSON key is data, one key. */
 export const SPLIT_DOTS_DEFAULT: Record<ParserKind['type'], boolean> = {
   json: false,
-  csv: false,
+  csv: true,
   keyValue: true,
   grok: true,
 };
@@ -592,6 +592,61 @@ export function truncateSteps(steps: Step[], target: Step, includeTarget: boolea
   return null;
 }
 
+type IfStep = Extract<Step, { type: 'if' }>;
+
+/** Where a step sits: the list that holds it and its index there, and, inside a branch, the `if` that owns the list,
+ * which branch it is and where that `if` sits in turn. */
+export type Place = {
+  list: Step[];
+  index: number;
+  owner: { step: IfStep; branch: 'then' | 'else'; place: Place } | null;
+};
+
+/** Where `step` sits under `steps`, or `null` when it is not there. */
+export function placeOf(steps: Step[], step: Step, owner: Place['owner'] = null): Place | null {
+  for (let index = 0; index < steps.length; index++) {
+    const s = steps[index];
+    if (s === step) return { list: steps, index, owner };
+    if (s.type !== 'if') continue;
+    const here: Place = { list: steps, index, owner };
+    for (const branch of ['then', 'else'] as const) {
+      const found = placeOf(s[branch], step, { step: s, branch, place: here });
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+/** Moves `step` to `index` of `to`, as `index` counts before the step leaves its place. False, and nothing moves,
+ * where `to` is one of the branches inside the step, or the step is not under `steps`. */
+export function moveStep(steps: Step[], step: Step, to: Step[], index: number): boolean {
+  const from = placeOf(steps, step);
+  const inside = flatSteps([step]).some((s) => s.type === 'if' && (s.then === to || s.else === to));
+  if (!from || inside) return false;
+  from.list.splice(from.index, 1);
+  to.splice(from.list === to && from.index < index ? index - 1 : index, 0, step);
+  return true;
+}
+
+/** Moves `step` one place up (-1) or down (1) as an outline does: into an `if` it meets, through its `then` and
+ * `else`, and out past the `if` at either end. False where it is already first or last in the pipeline. */
+export function stepAside(steps: Step[], step: Step, by: -1 | 1): boolean {
+  const at = placeOf(steps, step);
+  if (!at) return false;
+  const { list, index, owner } = at;
+  const next = list[index + by];
+  if (next?.type === 'if') {
+    return moveStep(steps, step, by === 1 ? next.then : next.else, by === 1 ? 0 : next.else.length);
+  }
+  if (next) return moveStep(steps, step, list, by === 1 ? index + 2 : index - 1);
+  if (!owner) return false;
+  // At the end of a branch: on to the other branch, or out past the `if`.
+  const { step: parent, branch, place } = owner;
+  if (by === 1 && branch === 'then') return moveStep(steps, step, parent.else, 0);
+  if (by === -1 && branch === 'else') return moveStep(steps, step, parent.then, parent.then.length);
+  return moveStep(steps, step, place.list, by === 1 ? place.index + 1 : place.index);
+}
+
 /** Every step in the order an author reads them: an `if` before its branches, `then` before `else`. */
 export function flatSteps(steps: Step[]): Step[] {
   return steps.flatMap((s) =>
@@ -654,14 +709,15 @@ export function stepName(step: Step, number: number, pipelineNames: PipelineName
 export type NumberedStep = { step: Step; number: number; name: string };
 
 /** What a step is made of, shown one line each, as a review compares them: an
- * eval's assignments, a rename's pairs, a removal's names, a code step's lines,
- * and any other step as a single line. */
-export function stepParts(step: Step, pipelineNames: PipelineNames): string[] {
+ * eval's assignments, a rename's pairs, a Remove step's names, a code step's lines,
+ * and any other step as a single line. An eval's targets and a rename's names
+ * are padded to `width`, which `partsWidth` gives to line up their `=` or `→`. */
+export function stepParts(step: Step, pipelineNames: PipelineNames, width = 0): string[] {
   switch (step.type) {
     case 'eval':
-      return step.assignments.map((a) => `${a.target || '…'} = ${a.expr || '…'}`);
+      return step.assignments.map((a) => `${(a.target || '…').padEnd(width)} = ${a.expr || '…'}`);
     case 'rename':
-      return step.pairs.map((p) => `${p.from || '…'} → ${p.to || '…'}`);
+      return step.pairs.map((p) => `${(p.from || '…').padEnd(width)} → ${p.to || '…'}`);
     case 'remove':
       return step.fields;
     case 'code':
@@ -669,6 +725,18 @@ export function stepParts(step: Step, pipelineNames: PipelineNames): string[] {
     default:
       return [stepSummary(step, pipelineNames)];
   }
+}
+
+/** The width that lines up the `=` or `→` of every part `stepParts` gives `steps`. */
+export function partsWidth(steps: Step[]): number {
+  const lefts = steps.flatMap((s) =>
+    s.type === 'eval'
+      ? s.assignments.map((a) => a.target)
+      : s.type === 'rename'
+        ? s.pairs.map((p) => p.from)
+        : [],
+  );
+  return Math.max(0, ...lefts.map((l) => (l || '…').length));
 }
 
 /** What `step` does, in one line, a Call step naming the pipeline it runs by `pipelineNames`. */
@@ -695,7 +763,7 @@ export function stepSummary(step: Step, pipelineNames: PipelineNames): string {
     case 'parser':
       return `${step.input || '_raw'} as ${PARSER_FORMAT_NAMES[step.kind.type]}${shownInto(step.into) ? ` into ${shownInto(step.into)}` : ''}${step.declared.length ? ` (${step.declared.length} declared)` : ''}`;
     case 'lookup':
-      return `${step.input || '…'} → ${step.outputs.map((o) => o.field || '…').join(', ') || '(no outputs)'}`;
+      return `${step.table || '…'}  ${step.input || '…'} → ${step.outputs.map((o) => o.field || '…').join(', ') || '(no outputs)'}`;
     case 'unroll':
       return `${step.field || '(no field)'}${step.keepParentFields ? ' (keeps parent fields)' : ''}`;
     case 'call':

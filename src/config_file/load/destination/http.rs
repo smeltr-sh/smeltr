@@ -22,6 +22,9 @@ pub struct HttpDestinationDto {
     /// `"none"` (default) or `"gzip"`.
     #[serde(default, skip_serializing_if = "CompressionDto::is_default")]
     pub compression: CompressionDto,
+    /// When absent, the codec's default level is used (`CompressionDto::levels`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression_level: Option<u8>,
     /// Header name -> its value, committed to the config repository.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, String>,
@@ -53,6 +56,7 @@ impl DestinationSpec for HttpDestinationDto {
             format,
             field,
             compression,
+            compression_level,
             headers,
             credentials,
             tls,
@@ -88,6 +92,7 @@ impl DestinationSpec for HttpDestinationDto {
         );
         refuse_avro(*format, &d.id, errors);
         check_http_compression(&d.id, compression, errors);
+        check_compression_level(&d.id, *compression, *compression_level, false, errors);
         check_http_headers(
             &format!("destination {:?}", d.id),
             headers,
@@ -107,6 +112,7 @@ impl DestinationSpec for HttpDestinationDto {
             format,
             field,
             compression,
+            compression_level,
             headers,
             credentials,
             tls,
@@ -126,7 +132,7 @@ impl DestinationSpec for HttpDestinationDto {
                 RequestBodyDto::Single => RequestBody::Single,
             },
             payload: to_payload(*format, field),
-            compression: compression.to_plan(),
+            compression: compression.to_plan(*compression_level),
             headers: headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
             credentials: credentials.iter().map(|(k, r)| (k.clone(), to_secret_ref(r))).collect(),
             ..to_http_core(

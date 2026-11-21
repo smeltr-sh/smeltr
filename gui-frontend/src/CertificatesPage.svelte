@@ -264,7 +264,7 @@
     <p class="dim">No certificates yet.</p>
   {:else}
     <div class="table-wrap">
-      <table>
+      <table class="readings">
         <thead>
           <tr>
             <th aria-sort={sort.aria('name')}><SortButton {sort} key="name">Name</SortButton></th>
@@ -304,12 +304,14 @@
                   >{/if}
                 {#if c.description}<small class="note">{c.description}</small>{/if}
               </td>
-              <td class="mono">{leaf(c)?.names.join(', ') || '--'}</td>
-              <td class="one-line">{leaf(c) ? purpose(c) : '--'}</td>
+              <td class="mono" data-label="Serves">{leaf(c)?.names.join(', ') || '--'}</td>
+              <td class="one-line" data-label="Usable as">{leaf(c) ? purpose(c) : '--'}</td>
               <td class="one-line" class:soon={leaf(c) && expiringSoon(leaf(c))}>
                 {leaf(c) ? expiry(leaf(c).notAfterMillis) : '--'}
               </td>
-              <td class="dim one-line">{current ? ago(current.setAt / 1000) : '--'}</td>
+              <td class="dim one-line" data-label="Last set"
+                >{current ? ago(current.setAt / 1000) : '--'}</td
+              >
               <td class="row-actions">
                 {#if leaf(c)}
                   <CopyButton
@@ -356,39 +358,11 @@
     font-size: var(--text-note);
   }
 
-  .table-wrap {
-    overflow-x: auto;
-  }
-
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: var(--text-body);
-  }
-
-  th {
-    text-align: left;
-    font-size: var(--text-micro);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--dim);
-    border-bottom: 1px solid var(--border);
-    padding: 0.4rem 0.6rem;
-  }
-
-  td {
-    padding: 0.5rem 0.6rem;
-    border-bottom: 1px solid var(--border);
-  }
-
   tbody tr:last-child td {
     border-bottom: none;
   }
 
-  th,
-  .one-line,
-  .row-actions {
+  .one-line {
     white-space: nowrap;
   }
 

@@ -21,7 +21,7 @@ import {
 } from './api';
 import { diffObjects, type DiffEntry } from './diff';
 import { count } from './time';
-import { stepParts, stepSummary, stepsFromDto } from './pipeline';
+import { partsWidth, stepParts, stepSummary, stepsFromDto, type Step } from './pipeline';
 import type { PipelineNames } from './pipelineNames';
 import { bundleRoutes } from './routeFlow';
 
@@ -136,7 +136,9 @@ export interface StepChange {
   position?: number;
   /** It runs in another order against the steps around it. */
   moved?: true;
-  /** A changed step's parts (`stepPartsOf`), before against after, where any of them changed. */
+  /** The step's parts (`stepPartsOf`). An added step's parts are all marked added and a removed step's all removed.
+   * A changed step has every part, before against after, when any part changed (the view folds the unchanged ones),
+   * and none otherwise. */
   parts?: DiffLine[];
   /** An `if` step's branches, compared the same way. */
   then?: StepChange[];
@@ -345,12 +347,6 @@ export function stepLine(raw: Record<string, unknown>, pipelineNames: PipelineNa
   switch (raw.type) {
     case 'code':
       return oneLine(str('body'));
-    case 'lookup': {
-      const outputs = Array.isArray(raw.outputs)
-        ? raw.outputs.map((o) => (isRecord(o) && typeof o.field === 'string' ? o.field : '…'))
-        : [];
-      return `${str('table') || '…'}  ${str('input') || '…'} → ${outputs.join(', ') || '…'}`;
-    }
     case 'drop':
       return oneLine(str('condition'));
     case 'if':
@@ -366,14 +362,29 @@ export function stepLine(raw: Record<string, unknown>, pipelineNames: PipelineNa
   }
 }
 
-/** A step's parts as `stepParts` names them, or its one line where this GUI
- * cannot model it. */
-function stepPartsOf(raw: Record<string, unknown>, pipelineNames: PipelineNames): string[] {
+/** The step as the editor models it, or null where this GUI cannot model it. */
+function modeled(raw: Record<string, unknown>): Step | null {
   try {
-    return stepParts(stepsFromDto([raw])[0], pipelineNames);
+    return stepsFromDto([raw])[0];
   } catch {
-    return [stepLine(raw, pipelineNames)];
+    return null;
   }
+}
+
+/** A step's parts as `stepParts` gives them, lined up to `width`, or its one
+ * line where this GUI cannot model it. */
+function stepPartsOf(
+  raw: Record<string, unknown>,
+  pipelineNames: PipelineNames,
+  width: number,
+): string[] {
+  const step = modeled(raw);
+  return step ? stepParts(step, pipelineNames, width) : [stepLine(raw, pipelineNames)];
+}
+
+/** The width that lines up the parts of `raws`, the old and the new step alike (`partsWidth`). */
+function widthOf(...raws: Record<string, unknown>[]): number {
+  return partsWidth(raws.map(modeled).filter((s) => s !== null));
 }
 
 function stepType(raw: Record<string, unknown>): string {
@@ -408,7 +419,7 @@ function stepEntry(
 /** A step with nothing to compare against: every branch step takes its status. */
 function whole(
   raw: Record<string, unknown>,
-  status: Status,
+  status: 'added' | 'removed',
   pipelineNames: PipelineNames,
   position?: number,
 ): StepChange {
@@ -418,7 +429,12 @@ function whole(
           .filter(isRecord)
           .map((s) => whole(s, status, pipelineNames))
       : undefined;
-  return stepEntry(raw, status, position, branch('then'), branch('else'), pipelineNames);
+  const entry = stepEntry(raw, status, position, branch('then'), branch('else'), pipelineNames);
+  entry.parts = stepPartsOf(raw, pipelineNames, widthOf(raw)).map((text) => ({
+    kind: status,
+    text,
+  }));
+  return entry;
 }
 
 /** One list of steps against another, in the order `after` runs them, each
@@ -474,7 +490,11 @@ export function compareSteps(
       names.after,
     );
     if (moved) entry.moved = true;
-    const parts = lineDiff(stepPartsOf(old, names.before), stepPartsOf(step, names.after));
+    const width = widthOf(old, step);
+    const parts = lineDiff(
+      stepPartsOf(old, names.before, width),
+      stepPartsOf(step, names.after, width),
+    );
     if (parts.some((p) => p.kind !== 'same')) entry.parts = parts;
     out.push(entry);
   });

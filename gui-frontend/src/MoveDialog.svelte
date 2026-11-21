@@ -9,7 +9,14 @@
 
   /** An object to move. `pullOne` marks a source that one worker of a group reads at a time (`SOURCE_KIND`); the
    * group keeps its read position. */
-  export type MoveTarget = { part: ImportPart; id: string; name?: string; pullOne?: boolean };
+  export type MoveTarget = {
+    part: ImportPart;
+    id: string;
+    name?: string;
+    pullOne?: boolean;
+    /** Further objects moved with it, each with the least it takes: a route card's other routes. */
+    also?: { part: ImportPart; id: string }[];
+  };
 </script>
 
 <script lang="ts">
@@ -74,7 +81,7 @@
   async function list(ticked: { part: ImportPart; id: string }[] | undefined) {
     if (!to) return;
     const mine = ++asked;
-    const res = await moveObjects({ part, id, to, ticked }, readAt);
+    const res = await moveObjects({ part, id, to, also: moving?.also, ticked }, readAt);
     if (mine !== asked || !res.ok) return;
     rows = res.rows ?? [];
     exceptions = res.exceptions ?? [];
@@ -115,7 +122,10 @@
   async function move() {
     if (blocked) return;
     await busy.run(async () => {
-      const res = await moveObjects({ part, id, to, ticked: ticks(), go: true }, readAt);
+      const res = await moveObjects(
+        { part, id, to, also: moving?.also, ticked: ticks(), go: true },
+        readAt,
+      );
       if (res.ok) {
         moving = null;
         onmoved(to);

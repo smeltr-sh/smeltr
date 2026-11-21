@@ -12,6 +12,7 @@ const LOAD = {
   sources: () => import('./SourcesPage.svelte'),
   destinations: () => import('./DestinationsPage.svelte'),
   samples: () => import('./SamplesPage.svelte'),
+  tests: () => import('./TestsPage.svelte'),
   pipelines: () => import('./PipelinesListPage.svelte'),
   lookups: () => import('./LookupTablesPage.svelte'),
   grok: () => import('./GrokPatternsPage.svelte'),
