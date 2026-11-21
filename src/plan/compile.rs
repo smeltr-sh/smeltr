@@ -2391,6 +2391,7 @@ impl Compiler<'_> {
         let Some(writes) = self.resolve_writes("", value, id) else {
             return;
         };
+        let writes = self.split_objects(writes, Here { guard: None, ..here });
         if let [(Place::Leaf(n), r)] = writes.as_slice()
             && n.is_empty()
         {
@@ -2656,6 +2657,20 @@ impl Compiler<'_> {
                 continue;
             };
             let pieces = match r {
+                // An object built of its pieces binds each piece where it goes: a piece that reads a slot shares that
+                // slot, as a copy does, and no row builds the whole object.
+                Resolved::Ir(ir) if matches!(ir.kind, IrKind::Object { .. }) => {
+                    let mut laid = Vec::new();
+                    laid_pieces(name, ir, &mut laid);
+                    let laid = (laid.into_iter())
+                        .map(|(place, ir)| match ir.kind {
+                            IrKind::Field(s) => (place, Resolved::Slot(s)),
+                            _ => (place, Resolved::Ir(ir)),
+                        })
+                        .collect();
+                    out.extend(self.split_objects(laid, here));
+                    continue;
+                }
                 Resolved::Slot(s) => split_struct(name, &Ir::new(ty, Span::default(), IrKind::Field(s))),
                 Resolved::Ir(ir) if matches!(ir.kind, IrKind::Field(_)) => split_struct(name, &ir),
                 Resolved::Unclaimed(..) => unreachable!("unclaimed fields are a variant, matched above"),

@@ -492,9 +492,9 @@ cases! {
         [r#"{"s": "x"}"#], Rows(&[(r#"{"s": "x", "d": true, "m": "outer"}"#, None)]);
     a_parse_inside_an_expression_names_the_write: "s: str; Object.assign($, json(_raw)) x = json(s).a;",
         [r#"{}"#], Error(&["`x = json(…);`"]);
-    a_spread_of_a_call_names_the_value_first: "Object.assign($, json(_raw)) x = {...rest($), b: 1};",
+    a_spread_of_a_call_names_the_value_first: "Object.assign($, json(_raw)) x = {...undeclared($), b: 1};",
         [r#"{"a": 1}"#], Error(&["`let v = …; {...v}`"]);
-    a_spread_takes_a_named_rest: "Object.assign($, json(_raw)) let r = rest($); x = {...r, b: 1}; $ = {x: x};",
+    a_spread_takes_a_named_undeclared: "Object.assign($, json(_raw)) let r = undeclared($); x = {...r, b: 1}; $ = {x: x};",
         [r#"{"a": 1}"#], Rows(&[(r#"{"x": {"a": 1, "b": 1}}"#, None)]);
     a_spread_is_no_statement: "{...json(_raw)}",
         [r#"{}"#], Error(&["write `Object.assign($, e)`"]);
@@ -512,10 +512,23 @@ cases! {
         [r#"{"f": true, "a": 1}"#, r#"{"f": false, "a": 1}"#], Rows(&[(r#"{"f": true}"#, None), (r#"{"f": false, "a": 1}"#, None)]);
     a_literal_takes_a_computed_key: r#"Object.assign($, json(_raw)) let p: str = $.p; t: str = {"6": "tcp", "17": "udp"}[p] ?? "other";"#,
         [r#"{"p": 6}"#, r#"{"p": 47}"#], Rows(&[(r#"{"p": 6, "t": "tcp"}"#, None), (r#"{"p": 47, "t": "other"}"#, None)]);
-    rest_is_the_unclaimed_fields: "a: i64; Object.assign($, kv(_raw)) r = rest($);",
+    undeclared_is_the_unclaimed_fields: "a: i64; Object.assign($, kv(_raw)) r = undeclared($);",
         ["a=1 b=2 c=3"], Rows(&[(r#"{"a": 1, "b": "2", "c": "3", "r": {"b": "2", "c": "3"}}"#, None)]);
-    a_closed_object_has_no_rest: "o = {a: 1}; r = rest(o);",
+    a_closed_object_has_no_undeclared: "o = {a: 1}; r = undeclared(o);",
         ["{}"], Error(&["`o`"]);
+    declared_is_the_fields: "a: i64; Object.assign($, kv(_raw)) d = declared($);",
+        ["a=1 b=2"], Rows(&[(r#"{"a": 1, "b": "2", "d": {"_raw": "a=1 b=2", "a": 1}}"#, None)]);
+    declared_drops_the_unclaimed_fields: "a: i64; Object.assign($, kv(_raw)) $ = declared($);",
+        ["a=1 b=2 c=3"], Rows(&[(r#"{"a": 1}"#, None)]);
+    declared_and_undeclared_move_the_unclaimed_fields: "a: i64; Object.assign($, kv(_raw)) more = undeclared($); $ = declared($);",
+        ["a=1 b=2 c=3"], Rows(&[(r#"{"a": 1, "more": {"b": "2", "c": "3"}}"#, None)]);
+    a_guarded_declared_drops_only_on_its_rows: "a: i64; f: bool; Object.assign($, json(_raw)) o: {x: i64, ...} = $.o; if (f) o = declared(o);",
+        [r#"{"a": 1, "f": true, "o": {"x": 1, "y": 2}}"#, r#"{"a": 1, "f": false, "o": {"x": 1, "y": 2}}"#],
+        Rows(&[(r#"{"a": 1, "f": true, "o": {"x": 1}}"#, None), (r#"{"a": 1, "f": false, "o": {"x": 1, "y": 2}}"#, None)]);
+    a_literal_takes_undeclared_as_a_value: "a: i64; Object.assign($, kv(_raw)) $ = {a: a, more: undeclared($)};",
+        ["a=1 b=2"], Rows(&[(r#"{"a": 1, "more": {"b": "2"}}"#, None)]);
+    undeclared_is_a_value: "a: i64; Object.assign($, kv(_raw)) b = $.undeclared().b;",
+        ["a=1 b=2"], Rows(&[(r#"{"a": 1, "b": "2"}"#, None)]);
     switch_is_an_if_chain: r#"Object.assign($, json(_raw)) c: str = $.c; switch (c) { case "a": x = 1; break; case "b": x = 2; break; default: x = 0; }"#,
         [r#"{"c": "a"}"#, r#"{"c": "z"}"#], Rows(&[(r#"{"c": "a", "x": 1}"#, None), (r#"{"c": "z", "x": 0}"#, None)]);
 

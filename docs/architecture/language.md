@@ -485,8 +485,6 @@ switch (c) { case "a": x = 1; break; default: x = 0; }
   `delete(e)` are refused.
 - `switch` is TypeScript's: a case without `break` falls through to the next.
   It is an `if` chain.
-- `rest(o)` is `o`'s unclaimed fields as an open object; on a closed object it
-  is a compile error.
 
 ## A name is a leaf or an object
 
@@ -609,7 +607,10 @@ unclaimed keys no field has. `entries(o)` pairs each key with its value, as
 open. `fromEntries(pairs)` is an open object with no fields, holding each
 pair, a later key winning. `omit(o, k, ...)` is `o` without those paths: a
 literal key drops its field, and a key only the row knows nulls the field
-it names there, at any depth. Each is also a method: `o.keys()`.
+it names there, at any depth. `declared(o)` is `o`'s fields as a closed
+object, and `undeclared(o)` its unclaimed fields as an open one, so together
+they are `o`; `undeclared` of a closed object is a compile error. Each is also
+a method: `o.keys()`.
 
 ## Rename
 

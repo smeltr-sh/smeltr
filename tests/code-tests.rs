@@ -3153,7 +3153,7 @@ fn a_tail_expression_is_the_value() {
 /// `let` of an arrow is a function too.
 #[test]
 fn a_function_cannot_take_a_builtin_name() {
-    for name in ["drop", "json", "length", "map", "keys", "rest"] {
+    for name in ["drop", "json", "length", "map", "keys", "declared", "undeclared"] {
         for body in [
             format!("function {name}(x: i64): i64 {{ x }} out = 1;"),
             format!("let {name} = (x) => x; out = 1;"),
