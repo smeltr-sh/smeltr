@@ -118,10 +118,10 @@ fn every_codec_is_readable() {
     let c = chunk("s: str;", &[r#"{"s":"a"}"#; 3]);
     for codec in [
         Compression::None,
-        Compression::Gzip,
+        Compression::Gzip(6),
         Compression::Snappy,
-        Compression::Lz4,
-        Compression::Zstd,
+        Compression::Lz4(0),
+        Compression::Zstd(3),
     ] {
         let b = round_trip(&c, 3, codec);
         assert_eq!(strs(b.column_by_name("s").unwrap()), [Some("a"); 3], "{codec:?}");

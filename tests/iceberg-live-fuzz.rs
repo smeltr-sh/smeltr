@@ -58,9 +58,9 @@ const COLUMNS: &[(&str, &str)] = &[
 const COMPRESSIONS: [(Compression, &str); 5] = [
     (Compression::None, "none"),
     (Compression::Snappy, "snappy"),
-    (Compression::Gzip, "gzip"),
-    (Compression::Lz4, "lz4"),
-    (Compression::Zstd, "zstd"),
+    (Compression::Gzip(6), "gzip"),
+    (Compression::Lz4(0), "lz4"),
+    (Compression::Zstd(3), "zstd"),
 ];
 
 /// Table and namespace names that a path or a URL escapes.
@@ -305,6 +305,13 @@ fn case(rng: &mut Rng, coverage: &mut Coverage) -> Case {
     coverage.reach(format!("table {table}"));
     let (compression, codec) = *rng.pick(&COMPRESSIONS);
     coverage.reach(format!("compression {codec}"));
+    let compression = match compression.level() {
+        Some(_) if codec != "lz4" && rng.chance(2) => {
+            coverage.reach("compression level");
+            compression.at(1 + rng.below(9) as u8)
+        }
+        _ => compression,
+    };
     let in_flight = 1 + rng.below(4);
     coverage.reach(if in_flight == 1 {
         "inFlight 1"
@@ -412,6 +419,7 @@ fn live_generated_tables_hold_every_row_once() {
     let mut expected: Vec<String> = COLUMNS.iter().map(|(n, _)| format!("column {n}")).collect();
     expected.extend(NAMES.iter().map(|n| format!("table {n}")));
     expected.extend(COMPRESSIONS.iter().map(|(_, c)| format!("compression {c}")));
+    expected.push("compression level".into());
     expected.extend(
         [
             "partition identity",

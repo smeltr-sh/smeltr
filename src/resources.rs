@@ -152,6 +152,12 @@ pub fn own_memory_bytes() -> u64 {
     platform::tree_memory(&[std::process::id()])
 }
 
+/// CPU time this process has used, its reaped children's included, as [`Sampler::sample`] counts each process of the
+/// worker's tree.
+pub fn own_cpu_time() -> Option<Duration> {
+    platform::tree_cpu_time(&[std::process::id()], &mut Default::default())
+}
+
 /// Every logical core the host reports, for whichever platform found no real limit to measure
 /// against instead. `1.0` on a host that will not answer, so a caller dividing by it still gets a
 /// number rather than a NaN.

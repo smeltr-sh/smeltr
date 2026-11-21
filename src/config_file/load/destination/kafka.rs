@@ -16,6 +16,9 @@ pub struct KafkaDestinationDto {
     pub field: Option<String>,
     #[serde(default, skip_serializing_if = "CompressionDto::is_default")]
     pub compression: CompressionDto,
+    /// When absent, the codec's default level is used (`CompressionDto::levels`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression_level: Option<u8>,
     #[serde(default, skip_serializing_if = "AcksDto::is_default")]
     pub acks: AcksDto,
     /// Seconds one batch may take to deliver before it is a stall.
@@ -44,6 +47,7 @@ impl DestinationSpec for KafkaDestinationDto {
         );
         check_stream_avro(self.format, &self.schema_registry, &d.id, errors);
         check_stall_after(self.stall_after_secs, &d.id, errors);
+        check_compression_level(&d.id, self.compression, self.compression_level, true, errors);
         validate_kafka_props(&self.props, &format!("destination {:?}", d.id), errors);
         check_kafka_tls(&self.tls, &self.props, &format!("destination {:?}", d.id), errors);
         check_kafka_buffer(self.buffer_bytes, &d.id, errors);
@@ -67,6 +71,7 @@ impl DestinationSpec for KafkaDestinationDto {
             tls,
             props,
             compression,
+            compression_level,
             acks,
             stall_after_secs,
             buffer_bytes,
@@ -80,7 +85,7 @@ impl DestinationSpec for KafkaDestinationDto {
             brokers: brokers.clone(),
             props: to_kafka_props(props),
             default_topic: default_topic.clone(),
-            compression: compression.to_plan(),
+            compression: compression.to_plan(*compression_level),
             acks: acks.to_plan(),
             stall_after: std::time::Duration::from_secs(stall_after_secs.0),
             buffer_bytes: buffer_bytes.map_or(BufferBytes::DEFAULT, |b| b.0),

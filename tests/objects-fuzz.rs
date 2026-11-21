@@ -38,7 +38,7 @@ use crate::store_access::{
     compare_s3, compare_sftp, connector_secrets, draw_access, held, refusals, text, uint,
 };
 
-const SEEDS: u64 = 800;
+const SEEDS: u64 = 1000;
 const LIVE_SEEDS: u64 = 100;
 
 const KIB: u64 = 1024;
@@ -96,6 +96,7 @@ const OPTIONS: &[&str] = &[
     "compression.snappy",
     "compression.lz4",
     "compression.zstd",
+    "compressionLevel",
     "inFlight",
     "maxObjectBytes",
     "bufferBytes",
@@ -114,6 +115,7 @@ const OPTIONS: &[&str] = &[
     "broken.newlines",
     "broken.variant",
     "broken.compression",
+    "broken.compressionLevel",
     "broken.maxObjectBytes",
     "broken.bufferBytes",
     "broken.inFlight",
@@ -254,6 +256,16 @@ fn draw_objects(rng: &mut Rng, cov: &mut Reached, store: Store, d: &mut Map<Stri
     if compression != "gzip" || rng.chance(2) {
         d.insert("compression".into(), json!(compression));
     }
+    let levels = match compression {
+        "gzip" => Some(1..=9),
+        "zstd" => Some(1..=22),
+        _ => None,
+    };
+    if let Some(levels) = levels.filter(|_| rng.chance(2)) {
+        cov.reach("compressionLevel");
+        let level = levels.start() + rng.below(usize::from(levels.end() - levels.start()) + 1) as u8;
+        d.insert("compressionLevel".into(), json!(level));
+    }
     if rng.chance(2) {
         cov.reach("inFlight");
         d.insert("inFlight".into(), json!(rng.pick(&[1, 2, 4, 16, 64])));
@@ -307,6 +319,7 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
     if format == "avro" {
         breaks.push("compression");
     }
+    breaks.push("compressionLevel");
     if draw.store != Store::Sftp {
         breaks.extend(["storageClass", "tls", "bucket"]);
     }
@@ -337,8 +350,19 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> Option<&'stat
             Some("variant")
         }
         "compression" => {
-            set("compression", json!("lz4"));
+            d.remove("compressionLevel");
+            d.insert("compression".into(), json!("lz4"));
             Some("compression")
+        }
+        // Past the top of the codec's levels, or any level for a codec that takes none.
+        "compressionLevel" => {
+            let level = match d.get("compression").and_then(Value::as_str).unwrap_or("gzip") {
+                "gzip" => 10,
+                "zstd" => 23,
+                _ => 1,
+            };
+            d.insert("compressionLevel".into(), json!(level));
+            Some("compressionLevel")
         }
         "maxObjectBytes" => {
             set("maxObjectBytes", json!(rng.pick(&[0, 64 * KIB - 1, 64 * GIB + 1])));
@@ -445,11 +469,13 @@ fn check_loaded(draw: &Draw, c: &ObjectsDestinationConfig, named: &[SecretRef]) 
     cmp.expect("prefix", text(d, "prefix").unwrap_or("%Y/%m/%d/%H/".into()), &c.prefix);
     let compression = match text(d, "compression").as_deref().unwrap_or("gzip") {
         "none" => Compression::None,
-        "gzip" => Compression::Gzip,
+        "gzip" => Compression::Gzip(6),
         "snappy" => Compression::Snappy,
-        "lz4" => Compression::Lz4,
-        _ => Compression::Zstd,
+        "lz4" => Compression::Lz4(0),
+        _ => Compression::Zstd(3),
     };
+    let compression =
+        (d.get("compressionLevel").and_then(Value::as_u64)).map_or(compression, |l| compression.at(l as u8));
     cmp.expect("compression", compression, c.compression);
     let field = text(d, "field");
     let format = match text(d, "format").as_deref().unwrap_or("ndjson") {
@@ -688,10 +714,10 @@ fn decode(codec: Compression, bytes: &[u8]) -> Result<Vec<u8>, String> {
             out.extend_from_slice(bytes);
             Ok(0)
         }
-        Compression::Gzip => flate2::read::GzDecoder::new(bytes).read_to_end(&mut out),
+        Compression::Gzip(_) => flate2::read::GzDecoder::new(bytes).read_to_end(&mut out),
         Compression::Snappy => snap::read::FrameDecoder::new(bytes).read_to_end(&mut out),
-        Compression::Lz4 => lz4_flex::frame::FrameDecoder::new(bytes).read_to_end(&mut out),
-        Compression::Zstd => zstd::stream::decode_all(bytes).map(|d| {
+        Compression::Lz4(_) => lz4_flex::frame::FrameDecoder::new(bytes).read_to_end(&mut out),
+        Compression::Zstd(_) => zstd::stream::decode_all(bytes).map(|d| {
             out = d;
             0
         }),
@@ -739,10 +765,10 @@ fn extension(c: &ObjectsDestinationConfig) -> String {
     };
     let suffix = match c.compression {
         Compression::None => "",
-        Compression::Gzip => ".gz",
+        Compression::Gzip(_) => ".gz",
         Compression::Snappy => ".sz",
-        Compression::Lz4 => ".lz4",
-        Compression::Zstd => ".zst",
+        Compression::Lz4(_) => ".lz4",
+        Compression::Zstd(_) => ".zst",
     };
     format!(".{stem}{suffix}")
 }

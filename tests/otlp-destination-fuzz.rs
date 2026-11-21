@@ -198,6 +198,17 @@ fn random_system(rng: &mut Rng, authority: &str) -> (String, Vec<String>) {
         };
         d.insert("compression".into(), compression);
     }
+    if rng.chance(2) {
+        let level = if loose(rng) {
+            any(
+                rng,
+                vec![json!(0), json!(10), json!(256), json!(-1), json!(1.5), json!("6")],
+            )
+        } else {
+            json!(1 + rng.below(9))
+        };
+        d.insert("compressionLevel".into(), level);
+    }
     let maps = |rng: &mut Rng, names: &[&str], value: fn(&mut Rng) -> Value| {
         let mut map = Map::new();
         for _ in 0..rng.below(4) {
@@ -356,7 +367,7 @@ fn settle(json: &str, secrets: &HeldSecrets) -> Result<Reached, String> {
     let landed = Landed::default();
     let service = Takes {
         signal: c.signal,
-        gzip: c.http.compression == Compression::Gzip,
+        gzip: matches!(c.http.compression, Compression::Gzip(_)),
         landed: Arc::clone(&landed),
     };
     let mut d = HttpDestination::new(service, Otlp::new(c))
@@ -416,10 +427,11 @@ impl Transport for Takes {
 }
 
 /// Every setting of an OTLP destination, as a bundle names it.
-const SETTINGS: [&str; 12] = [
+const SETTINGS: [&str; 13] = [
     "url",
     "signal",
     "compression",
+    "compressionLevel",
     "headers",
     "credentials",
     "certificate",
@@ -756,7 +768,7 @@ fn fuzz_one(seed: u64, receivers: &mut [Ends], coverage: &mut Coverage) -> Resul
             zone_urls: Default::default(),
             body: Default::default(),
             payload: Payload::Record,
-            compression: if gzip { Compression::Gzip } else { Compression::None },
+            compression: if gzip { Compression::Gzip(6) } else { Compression::None },
             headers: Vec::new(),
             credentials: Vec::new(),
             tls: None,
