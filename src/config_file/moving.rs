@@ -21,43 +21,13 @@ use super::links::{delivered_to, pattern_name_spans, walk};
 
 type Id = (Part, String);
 
-/// How one object names another, as a sentence says it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum How {
-    Reads,
-    Runs,
-    DeliversTo,
-    Calls,
-    LooksUpIn,
-    Uses,
-    Produces,
-    Accepts,
-    RunsOver,
-}
-
-impl How {
-    fn verb(self) -> &'static str {
-        match self {
-            How::Reads => "reads",
-            How::Runs => "runs",
-            How::DeliversTo => "delivers to",
-            How::Calls => "calls",
-            How::LooksUpIn => "looks up",
-            How::Uses => "uses",
-            How::Produces => "produces",
-            How::Accepts => "accepts",
-            How::RunsOver => "runs over",
-        }
-    }
-}
-
-/// One object naming another. A test naming what it runs is loose: the move goes ahead, and the test's run says it
+/// One object naming another, and how, as a sentence says it. A test naming what it runs is loose: the move goes ahead, and the test's run says it
 /// cannot run.
 #[derive(Clone, Debug)]
 struct Names {
     by: Id,
     of: Id,
-    how: How,
+    how: &'static str,
     loose: bool,
 }
 
@@ -111,9 +81,9 @@ impl<'a> Moving<'a> {
     /// Every reference between `here`'s objects.
     fn names(&self) -> Vec<Names> {
         let (f, mut all) = (&self.here.file, Vec::new());
-        let mut add = |by: Id, part: Part, id: &str, how: How| {
+        let mut add = |by: Id, part: Part, id: &str, how: &'static str| {
             all.push(Names {
-                loose: by.0 == Part::Test && how != How::RunsOver,
+                loose: by.0 == Part::Test && how != "runs over",
                 by,
                 of: (part, id.to_string()),
                 how,
@@ -128,12 +98,12 @@ impl<'a> Moving<'a> {
         };
         for r in &f.routes {
             let by = || (Part::Route, r.id.clone());
-            add(by(), Part::Source, &r.source, How::Reads);
-            add(by(), Part::Pipeline, &r.pipeline, How::Runs);
+            add(by(), Part::Source, &r.source, "reads");
+            add(by(), Part::Pipeline, &r.pipeline, "runs");
             let to: BTreeSet<String> = (r.deliver.iter().flat_map(|rule| rule.to.iter().cloned()))
                 .chain(delivered_to(&r.on_exception))
                 .collect();
-            to.iter().for_each(|d| add(by(), Part::Destination, d, How::DeliversTo));
+            to.iter().for_each(|d| add(by(), Part::Destination, d, "delivers to"));
         }
         for p in &f.pipelines {
             let by = || (Part::Pipeline, p.id.clone());
@@ -147,39 +117,35 @@ impl<'a> Moving<'a> {
                 }
                 _ => {}
             });
-            calls.iter().for_each(|c| add(by(), Part::Pipeline, c, How::Calls));
-            tables
-                .iter()
-                .for_each(|t| add(by(), Part::LookupTable, t, How::LooksUpIn));
+            calls.iter().for_each(|c| add(by(), Part::Pipeline, c, "calls"));
+            tables.iter().for_each(|t| add(by(), Part::LookupTable, t, "looks up"));
             let text = serde_json::to_string(&p.steps).unwrap_or_default();
             named_patterns(&text)
                 .iter()
-                .for_each(|g| add(by(), Part::GrokPattern, g, How::Uses));
-            p.produces
-                .iter()
-                .for_each(|s| add(by(), Part::Schema, s, How::Produces));
+                .for_each(|g| add(by(), Part::GrokPattern, g, "uses"));
+            p.produces.iter().for_each(|s| add(by(), Part::Schema, s, "produces"));
         }
         for d in &f.destinations {
             let by = || (Part::Destination, d.id.clone());
             let refused: BTreeSet<String> = delivered_to(&d.on_exception).collect();
             refused
                 .iter()
-                .for_each(|r| add(by(), Part::Destination, r, How::DeliversTo));
-            d.accepts.iter().for_each(|s| add(by(), Part::Schema, s, How::Accepts));
+                .for_each(|r| add(by(), Part::Destination, r, "delivers to"));
+            d.accepts.iter().for_each(|s| add(by(), Part::Schema, s, "accepts"));
         }
         for g in &f.grok_patterns {
             (named_patterns(&g.pattern).iter())
                 .filter(|n| **n != g.id)
-                .for_each(|n| add((Part::GrokPattern, g.id.clone()), Part::GrokPattern, n, How::Uses));
+                .for_each(|n| add((Part::GrokPattern, g.id.clone()), Part::GrokPattern, n, "uses"));
         }
         for t in &self.here.tests {
             let by = || (Part::Test, t.id.clone());
-            add(by(), Part::Sample, &t.sample, How::RunsOver);
-            t.pipeline.iter().for_each(|p| add(by(), Part::Pipeline, p, How::Runs));
+            add(by(), Part::Sample, &t.sample, "runs over");
+            t.pipeline.iter().for_each(|p| add(by(), Part::Pipeline, p, "runs"));
             let routes: BTreeSet<&String> = (t.rows.iter())
                 .filter_map(|o| o.sent.as_ref().map(|s| &s.route))
                 .collect();
-            routes.into_iter().for_each(|r| add(by(), Part::Route, r, How::Runs));
+            routes.into_iter().for_each(|r| add(by(), Part::Route, r, "runs"));
         }
         let held = self.here.ids();
         all.retain(|n| held.contains(&n.of) && n.by != n.of);
@@ -277,21 +243,15 @@ impl<'a> Moving<'a> {
             }
             let (by, of) = (describe(n.by.0), describe(n.of.0));
             let (by_name, of_name) = (name(&n.by), name(&n.of));
-            let verb = n.how.verb();
+            let (verb, from, to, cap) = (n.how, self.from, self.to, capitalized(by));
             broken.push(match moving {
                 false => format!(
-                    "{} {by_name} stays in {} and {verb} {of} {of_name}, which {} would no longer have. Tick the {by} \
-                     to move it with the {of}.",
-                    capitalized(by),
-                    self.from,
-                    self.from
+                    "{cap} {by_name} stays in {from} and {verb} {of} {of_name}, which {from} would no longer have. \
+                     Tick the {by} to move it with the {of}."
                 ),
                 true => format!(
-                    "{} {by_name} moves to {} and {verb} {of} {of_name}, which {} does not have. Tick the {of} to \
-                     move it with the {by}.",
-                    capitalized(by),
-                    self.to,
-                    self.to
+                    "{cap} {by_name} moves to {to} and {verb} {of} {of_name}, which {to} does not have. Tick the \
+                     {of} to move it with the {by}."
                 ),
             });
         }

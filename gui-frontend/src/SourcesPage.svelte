@@ -29,7 +29,7 @@
     type KafkaFacts,
     getMapMeasurements,
   } from './api';
-  import { addInto, idsTakenIn, type Area } from './areas';
+  import type { Area } from './areas';
   import MoveDialog, { type MoveTarget } from './MoveDialog.svelte';
   import { holdsSomewhere } from './access';
   import { holdings, sourceReadings } from './mapTerms';
@@ -63,7 +63,7 @@
   let adding: { from?: SourceDto } | null = $state(null);
   /** The source being moved into another area (`MoveDialog`). */
   let moving: MoveTarget | null = $state(null);
-  /** The areas the person edits, this one first: where a copy may go, and the rest where a move may. */
+  /** The areas the person edits (`MoveDialog`). */
   let areas: Area[] = $state([]);
   /** The row to show and mark: the one the map landed on, then the one just added. */
   // Follows the route, which can land on another row without remounting the page.
@@ -129,22 +129,9 @@
   /** Every id a new one may not take: this scope's and `shared`'s. */
   const unavailable = () => [...sources, ...sharedSources].map((s) => s.id);
 
-  /** Lists a new one here, saved with the page; a copy into another area is saved there and then. */
-  async function add(made: SourceDto, area?: string) {
-    if (area && area !== currentScope()) {
-      const commit = await addInto(area, editor.readAtCommit, {
-        section: 'sources',
-        object: made,
-      });
-      if (!commit) return;
-      // The branch moved past what this page read, though nothing here changed.
-      editor.readAtCommit = commit;
-      // A copy into `shared` is listed on a group's page, and its id is taken there now.
-      if (area === SHARED_SCOPE) await loadShared();
-    } else {
-      sources.push(made);
-      highlight = made.id;
-    }
+  function add(made: SourceDto) {
+    sources.push(made);
+    highlight = made.id;
     adding = null;
   }
 
@@ -283,8 +270,6 @@
       <NewSource
         open={adding !== null}
         from={adding?.from}
-        areas={adding?.from ? areas : undefined}
-        takenIn={(area) => idsTakenIn(area, 'sources')}
         unavailable={unavailable()}
         {secrets}
         {kafka}

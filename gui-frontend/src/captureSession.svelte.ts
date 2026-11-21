@@ -19,11 +19,11 @@ import {
   type CaptureStatus,
 } from './api';
 
-/** The group a capture of the source being edited asks: its area's own, the chip's unless named. Under `shared/` the
- * source runs in every group, so it asks the first that has a worker heard from lately, else the first, and `set`
- * takes it once the fleet answers. */
-export function groupToAsk(set: (group: string) => void, area: string = currentScope()) {
-  const scope = area;
+/** The group a capture of the source being edited asks: its scope's own. Under `shared/` the source runs in every
+ * group, so it asks the first that has a worker heard from lately, else the first, and `set` takes it once the
+ * fleet answers. */
+export function groupToAsk(set: (group: string) => void) {
+  const scope = currentScope();
   if (scope !== SHARED_SCOPE) {
     set(scope);
     return;
