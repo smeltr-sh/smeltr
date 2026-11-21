@@ -75,7 +75,7 @@
     TAG_FIELD,
   } from './api';
   import { mintRouteId } from './ids';
-  import { newPipelineHash, routeBackHash, ROUTES_TABS, type Making, type Relock } from './nav';
+  import { newPipelineHash, routeBackHash, ROUTES_TABS, type Making, type OpenTest } from './nav';
   import SecondaryTabs from './SecondaryTabs.svelte';
   import { SectionEditor } from './sectionEditor.svelte';
   import { provideValidation } from './validation.svelte';
@@ -89,7 +89,7 @@
     chose,
     group,
     back,
-    relock,
+    test,
   }: {
     showJson?: boolean;
     /** The Route a sample tab (`ROUTES_TABS`). */
@@ -103,8 +103,8 @@
     group?: string;
     /** Where Save returns to. */
     back?: string;
-    /** A test to lock again from the Route a sample tab. */
-    relock?: Relock;
+    /** A test to open on in the Route a sample tab. */
+    test?: OpenTest;
   } = $props();
   const narrowing = new Narrowing(() => only);
   const kept = (id: string) => narrowing.keeps(id);
@@ -537,7 +537,7 @@
     {/if}
 
     {#if sampling}
-      <RoutePreview config={previewConfig} dirty={isDirty} sources={sourceIds} {relock} />
+      <RoutePreview config={previewConfig} dirty={isDirty} sources={sourceIds} {test} />
     {:else}
       {#if !readOnly}
         <div class="toolbar">

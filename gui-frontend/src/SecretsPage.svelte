@@ -514,10 +514,6 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .row-actions {
-    white-space: nowrap;
-  }
-
   /* A panel opened under its row: its controls on one line, wrapping only
      where the frame is too narrow to hold them. */
   .row-edit {

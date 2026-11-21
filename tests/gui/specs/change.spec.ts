@@ -582,7 +582,7 @@ test('a test locked again opens on its fields the rows still hold, and its rows'
 
   await goto(admin, leader, '#/changes/review/renamed');
   await admin.getByRole('tab', { name: /^Tests/ }).click();
-  await admin.getByRole('button', { name: 'Lock again' }).click({ timeout: 30_000 });
+  await admin.getByRole('button', { name: 'Open', exact: true }).click({ timeout: 30_000 });
   // The editor, on the test's sample: what the test checks that the rows still hold. A renamed field is not
   // followed: the author chooses it. The test checks every row, so no chip narrows them.
   await expect(admin.getByText('The 1 field on 1 row on screen')).toBeVisible({ timeout: 30_000 });
@@ -592,21 +592,34 @@ test('a test locked again opens on its fields the rows still hold, and its rows'
   const grid = admin.getByRole('table');
   await expect(grid.getByRole('button', { name: /^kind\b/ })).toHaveCount(1);
   await expect(grid.getByRole('button', { name: /^order_id\b/ })).toHaveCount(0);
-  // The test runs over its own sample, so it is locked again only on that one: on another, Lock makes a new test.
+  // The menu names the test on screen. A sample chosen there shows that sample, where Lock makes a new test; the
+  // test chosen again shows what it checks, and Lock locks it again.
+  const menu = admin.getByRole('button', { name: 'Choose a sample' });
+  await expect(menu).toHaveText(/Test\s*orders keep their id/);
   const relock = admin.getByRole('button', { name: 'Lock this test again' });
-  const choose = async (sample: string) => {
-    await admin.getByRole('button', { name: 'Choose a sample' }).click();
-    await admin
-      .getByRole('listbox', { name: 'Samples' })
-      .getByRole('option', { name: sample })
-      .click();
+  const choose = async (list: 'Samples' | 'Tests', name: RegExp) => {
+    await menu.click();
+    await admin.getByRole('listbox', { name: list }).getByRole('option', { name }).click();
   };
-  await choose('returns');
+  await expect(admin).toHaveURL(/[?&]test=orders-keep-id\b/);
+  await choose('Samples', /^returns/);
+  await expect(menu).toHaveText(/Sample\s*returns/);
+  // The address follows the menu, so a reload opens on what is on screen.
+  await expect(admin).not.toHaveURL(/[?&]test=/);
   await expect(admin.getByText(/on 2 rows on screen/)).toBeVisible({ timeout: 30_000 });
   await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeEnabled();
   await expect(relock).toHaveCount(0);
-  await choose('orders');
-  await expect(admin.getByText(/on 1 row on screen/)).toBeVisible({ timeout: 30_000 });
+  await choose('Tests', /^orders keep their id/);
+  await expect(menu).toHaveText(/Test\s*orders keep their id/);
+  await expect(admin).toHaveURL(/[?&]test=orders-keep-id\b/);
+  await expect(admin.getByText('The 1 field on 1 row on screen')).toBeVisible({ timeout: 30_000 });
+  await expect(relock).toBeEnabled();
+  // The test's own sample, chosen, closes the test and keeps its records on screen.
+  await choose('Samples', /orders\s*1 record/);
+  await expect(menu).toHaveText(/Sample\s*orders/);
+  await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeEnabled();
+  await expect(admin.getByText(/on 1 row on screen/)).toBeVisible();
+  await choose('Tests', /^orders keep their id/);
   await expect(relock).toBeEnabled();
   await admin.getByRole('button', { name: 'Choose fields' }).click();
   await admin.getByRole('searchbox', { name: 'Find a field' }).fill('order_id');
