@@ -3107,7 +3107,8 @@ impl RouteColumns<'_> {
         let (mut json, mut columns, mut text) = (false, false, false);
         for d in set.iter().chain(chains) {
             match self.topology.payload(*d) {
-                _ if self.dests.contains(d) => columns = self.schema.is_some(),
+                // A destination given no chunk reads JSON, or refuses the row if it writes columns only.
+                _ if self.dests.contains(d) && self.schema.is_some() => columns = true,
                 Payload::Record => json = true,
                 Payload::Text { .. } => text = true,
                 Payload::Bytes { .. } => {}

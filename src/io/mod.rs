@@ -132,7 +132,7 @@ pub fn build_destination(
         DestinationKind::Http(c) => http_post::open(c, id, name, metrics, secrets),
         DestinationKind::LogAnalytics(c) => http_post::open_log_analytics(c, id, name, metrics, secrets),
         DestinationKind::Otlp(c) => otlp::export::open(c, id, name, metrics, secrets),
-        DestinationKind::Prometheus(c) => remote_write::open(c, id, name, metrics, secrets),
+        DestinationKind::Prometheus(c) => remote_write::open(c, id, name, metrics, secrets, records),
         DestinationKind::Objects(c) => objects::open(c, name, records, secrets),
         DestinationKind::Iceberg(c) => Ok(Box::new(iceberg::table::destination(c, name, records, secrets)?)),
         DestinationKind::Delta(c) => Ok(Box::new(delta::table::destination(c, name, records, secrets)?)),
