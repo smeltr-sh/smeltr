@@ -23,6 +23,9 @@ pub struct EventHubsDestinationDto {
     /// None or gzip: Event Hubs refuses the other codecs.
     #[serde(default, skip_serializing_if = "CompressionDto::is_default")]
     pub compression: CompressionDto,
+    /// When absent, the codec's default level is used (`CompressionDto::levels`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression_level: Option<u8>,
     /// Seconds one batch may take to deliver before it is a stall.
     #[serde(default, skip_serializing_if = "StallAfter::is_default")]
     pub stall_after_secs: StallAfter,
@@ -66,6 +69,8 @@ impl DestinationSpec for EventHubsDestinationDto {
                      \"gzip\" or \"none\"",
                 d.id
             ));
+        } else {
+            check_compression_level(&d.id, self.compression, self.compression_level, true, errors);
         }
     }
 
@@ -79,6 +84,7 @@ impl DestinationSpec for EventHubsDestinationDto {
             format,
             field,
             compression,
+            compression_level,
             stall_after_secs,
             buffer_bytes,
             schema_registry,
@@ -90,7 +96,7 @@ impl DestinationSpec for EventHubsDestinationDto {
             props: event_hubs_props(&brokers, connection_string.as_ref(), sign_in),
             brokers,
             default_topic: default_event_hub.clone(),
-            compression: compression.to_plan(),
+            compression: compression.to_plan(*compression_level),
             acks: crate::plan::topology::Acks::All,
             stall_after: std::time::Duration::from_secs(stall_after_secs.0),
             buffer_bytes: buffer_bytes.map_or(BufferBytes::DEFAULT, |b| b.0),

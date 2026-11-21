@@ -160,14 +160,14 @@ impl Stream {
     fn open(compression: Compression) -> Stream {
         match compression {
             Compression::None => Stream::None(Vec::new()),
-            Compression::Gzip => Stream::Gzip(Box::new(flate2::write::GzEncoder::new(
+            Compression::Gzip(level) => Stream::Gzip(Box::new(flate2::write::GzEncoder::new(
                 Vec::new(),
-                flate2::Compression::default(),
+                flate2::Compression::new(level.into()),
             ))),
             Compression::Snappy => Stream::Snappy(Box::new(snap::write::FrameEncoder::new(Vec::new()))),
-            Compression::Lz4 => Stream::Lz4(Box::new(lz4_flex::frame::FrameEncoder::new(Vec::new()))),
-            Compression::Zstd => Stream::Zstd(Box::new(
-                zstd::stream::write::Encoder::new(Vec::new(), 3).expect("zstd level 3"),
+            Compression::Lz4(_) => Stream::Lz4(Box::new(lz4_flex::frame::FrameEncoder::new(Vec::new()))),
+            Compression::Zstd(level) => Stream::Zstd(Box::new(
+                zstd::stream::write::Encoder::new(Vec::new(), level.into()).expect("a zstd level the loader checked"),
             )),
         }
     }
@@ -272,10 +272,10 @@ mod tests {
 
     const CODECS: [Compression; 5] = [
         Compression::None,
-        Compression::Gzip,
+        Compression::Gzip(6),
         Compression::Snappy,
-        Compression::Lz4,
-        Compression::Zstd,
+        Compression::Lz4(0),
+        Compression::Zstd(3),
     ];
 
     fn partition() -> Partition {
@@ -297,18 +297,18 @@ mod tests {
         let mut plain = Vec::new();
         match compression {
             Compression::None => plain.extend_from_slice(bytes),
-            Compression::Gzip => {
+            Compression::Gzip(_) => {
                 flate2::read::GzDecoder::new(bytes).read_to_end(&mut plain).unwrap();
             }
             Compression::Snappy => {
                 snap::read::FrameDecoder::new(bytes).read_to_end(&mut plain).unwrap();
             }
-            Compression::Lz4 => {
+            Compression::Lz4(_) => {
                 lz4_flex::frame::FrameDecoder::new(bytes)
                     .read_to_end(&mut plain)
                     .unwrap();
             }
-            Compression::Zstd => plain = zstd::stream::decode_all(bytes).unwrap(),
+            Compression::Zstd(_) => plain = zstd::stream::decode_all(bytes).unwrap(),
         }
         plain
     }

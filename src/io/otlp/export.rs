@@ -38,7 +38,7 @@ use crate::plan::topology::{Compression, OtlpDestinationConfig, Signal};
 #[derive(Clone, Debug)]
 pub struct Otlp {
     signal: Signal,
-    gzip: bool,
+    gzip: Option<u8>,
     /// What the last row admitted came under, which the next most often shares. Shared by every clone, though only
     /// the egress thread admits.
     last: Arc<Mutex<Last>>,
@@ -56,7 +56,10 @@ impl Otlp {
     pub fn new(config: &OtlpDestinationConfig) -> Otlp {
         Otlp {
             signal: config.signal,
-            gzip: config.http.compression == Compression::Gzip,
+            gzip: match config.http.compression {
+                Compression::Gzip(level) => Some(level),
+                _ => None,
+            },
             last: Arc::default(),
             unwritten: None,
         }

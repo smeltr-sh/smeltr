@@ -136,6 +136,7 @@ const COVERED: &[&str] = &[
     "compression snappy",
     "compression lz4",
     "compression zstd",
+    "compression level",
     "inFlight 1",
     "inFlight several",
     "maxObjectBytes small",
@@ -1090,12 +1091,19 @@ fn run(seed: u64, reached: &mut Vec<String>) -> Result<(), String> {
     }
     let (compression, codec) = *rng.pick(&[
         (Compression::None, "none"),
-        (Compression::Gzip, "gzip"),
+        (Compression::Gzip(6), "gzip"),
         (Compression::Snappy, "snappy"),
-        (Compression::Lz4, "lz4"),
-        (Compression::Zstd, "zstd"),
+        (Compression::Lz4(0), "lz4"),
+        (Compression::Zstd(3), "zstd"),
     ]);
     reached.push(format!("compression {codec}"));
+    let compression = match compression.level() {
+        Some(_) if codec != "lz4" && rng.chance(2) => {
+            reached.push("compression level".into());
+            compression.at(1 + rng.below(9) as u8)
+        }
+        _ => compression,
+    };
     let in_flight = 1 + rng.below(4);
     reached.push(if in_flight == 1 {
         "inFlight 1".into()

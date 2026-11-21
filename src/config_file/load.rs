@@ -2472,8 +2472,22 @@ mod tests {
         use crate::plan::topology::MAX_SENDERS;
         type Request = RequestBytes;
         // Name, min, max (none where the loader sets none), default (none where absent is not a number).
+        use crate::config_file::dto::CompressionDto::{self as Codec, Gzip, Lz4, Zstd};
+        let level = |name, codec: Codec, kafka| {
+            let (levels, default) = codec.levels(kafka).expect("a codec with levels");
+            (
+                name,
+                u64::from(*levels.start()),
+                Some(u64::from(*levels.end())),
+                u64::from(default),
+            )
+        };
         let want: Vec<(&str, u64, Option<u64>, Option<u64>)> = [
             ("inFlight", 1, Some(MAX_SENDERS as u64), InFlight::DEFAULT as u64),
+            level("gzipLevel", Gzip, false),
+            level("zstdLevel", Zstd, false),
+            level("kafkaZstdLevel", Zstd, true),
+            level("kafkaLz4Level", Lz4, true),
             (
                 "maxBulkBytes",
                 Bulk::MIN as u64,
@@ -3143,7 +3157,7 @@ mod tests {
             CompressionDto::Zstd,
         ] {
             let props = crate::plan::topology::KafkaProps {
-                literal: vec![("compression.type".into(), codec.to_plan().as_property().into())],
+                literal: vec![("compression.type".into(), codec.to_plan(None).as_property().into())],
                 credentials: Vec::new(),
             };
             let mut errors = Vec::new();
@@ -3151,7 +3165,7 @@ mod tests {
             assert!(
                 errors.is_empty(),
                 "{} is offered but this build refuses it: {errors:?}",
-                codec.to_plan().as_property()
+                codec.to_plan(None).as_property()
             );
         }
     }
@@ -3411,7 +3425,7 @@ mod tests {
         assert!(c.partition_by.is_empty() && c.tls.is_none());
         assert!(c.storage.region.is_none() && c.storage.endpoint.is_none());
         assert!(c.storage.access_key.is_none() && c.storage.role.is_none());
-        assert_eq!(c.compression, crate::plan::topology::Compression::Zstd);
+        assert_eq!(c.compression, crate::plan::topology::Compression::Zstd(3));
         assert_eq!(c.in_flight, InFlight::default().0);
         assert_eq!(c.max_object_bytes, ObjectBytes::default().0);
         assert_eq!(c.buffer_bytes, BufferBytes::OBJECT_DEFAULT);

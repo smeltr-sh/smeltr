@@ -302,7 +302,7 @@ impl WriteSettings {
         let bytes = |key: &str| property(key).and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0);
         let codec = match property(CODEC).map(str::to_ascii_lowercase).as_deref() {
             None => config.compression,
-            Some(name) => codec(name).unwrap_or_else(|| {
+            Some(name) => codec(name, config.compression).unwrap_or_else(|| {
                 tracing::warn!(name: "write", target: "destinations", table = config.table, codec = name,
                     "the table asks for a codec this writer has not, and its files take the destination's");
                 config.compression
@@ -339,11 +339,11 @@ fn codec_name(codec: Compression) -> &'static str {
     }
 }
 
-/// The codec Iceberg names `name`, where this writer has it.
-fn codec(name: &str) -> Option<Compression> {
-    use Compression as C;
-    [C::None, C::Gzip, C::Snappy, C::Lz4, C::Zstd]
-        .into_iter()
+/// The codec Iceberg names `name`, where this writer has it: at the destination's level when it is the destination's
+/// codec, else at its default.
+fn codec(name: &str, destination: Compression) -> Option<Compression> {
+    std::iter::once(destination)
+        .chain(Compression::ALL)
         .find(|c| codec_name(*c) == name || c.as_property() == name)
 }
 
@@ -1411,7 +1411,7 @@ mod tests {
             table: "t".into(),
             partition_by: partition_by.iter().map(|t| t.to_string()).collect(),
             storage: None,
-            compression: Compression::Zstd,
+            compression: Compression::Zstd(3),
             tls: None,
             in_flight: 2,
             max_object_bytes: 1 << 20,

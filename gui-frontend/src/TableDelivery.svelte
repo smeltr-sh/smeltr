@@ -11,6 +11,7 @@
   /** The settings the Delivery section holds, as every table destination names them. */
   export type TableDelivery = {
     compression?: Compression;
+    compressionLevel?: number;
     inFlight?: number;
     maxObjectBytes?: ByteCount;
     bufferBytes?: ByteCount;
@@ -22,6 +23,7 @@
   export function tableDeliveryModified(d: TableDelivery): boolean {
     return (
       (d.compression ?? 'zstd') !== 'zstd' ||
+      d.compressionLevel !== undefined ||
       (d.inFlight ?? LIMITS.inFlight.default) !== LIMITS.inFlight.default ||
       byteCount(d.maxObjectBytes, LIMITS.maxObjectBytes.default) !==
         LIMITS.maxObjectBytes.default ||
@@ -37,6 +39,7 @@
   import Advanced from './Advanced.svelte';
   import BytesInput from './BytesInput.svelte';
   import Field from './Field.svelte';
+  import CompressionLevel from './CompressionLevel.svelte';
   import { exactBytes } from './bytes';
   import { numberOrUnset } from './page';
   import { COMPRESSIONS } from './api';
@@ -65,6 +68,7 @@
         const v = e.currentTarget.value as Compression;
         if (v === 'zstd') delete d.compression;
         else d.compression = v;
+        delete d.compressionLevel;
       }}
     >
       {#each COMPRESSIONS as codec (codec)}
@@ -72,6 +76,7 @@
       {/each}
     </select>
   </Field>
+  <CompressionLevel value={d} codec={d.compression ?? 'zstd'} />
   <Field optional field="inFlight" label="parts uploading at once">
     {#snippet help()}
       How many parts of one file upload at once.

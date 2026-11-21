@@ -1418,6 +1418,9 @@ pub struct ObjectSettingsDto {
     /// Absent is gzip.
     #[serde(default = "CompressionDto::gzip", skip_serializing_if = "CompressionDto::is_gzip")]
     pub compression: CompressionDto,
+    /// When absent, the codec's default level is used (`CompressionDto::levels`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression_level: Option<u8>,
     /// Parts of one file uploading at once.
     #[serde(default, skip_serializing_if = "InFlight::is_default")]
     pub in_flight: InFlight,
@@ -1763,15 +1766,31 @@ impl CompressionDto {
         *self == CompressionDto::Zstd
     }
 
-    pub fn to_plan(self) -> crate::plan::topology::Compression {
+    /// The levels this codec takes on a destination, lowest first, and the one it is given when none is set; `None`
+    /// for a codec that takes none. librdkafka (`kafka`) caps every level at 12, and only its lz4 takes one.
+    pub fn levels(self, kafka: bool) -> Option<(std::ops::RangeInclusive<u8>, u8)> {
+        let levels = match self {
+            CompressionDto::Gzip => 1..=9,
+            CompressionDto::Zstd => 1..=if kafka { 12 } else { 22 },
+            CompressionDto::Lz4 if kafka => 0..=12,
+            CompressionDto::None | CompressionDto::Snappy | CompressionDto::Lz4 => return None,
+        };
+        Some((levels, self.to_plan(None).level()?))
+    }
+
+    /// The codec at `level`, or at its default (`Compression::ALL`) when `level` is `None`. The loader has checked
+    /// `level` against [`Self::levels`].
+    pub fn to_plan(self, level: Option<u8>) -> crate::plan::topology::Compression {
         use crate::plan::topology::Compression;
-        match self {
-            CompressionDto::None => Compression::None,
-            CompressionDto::Gzip => Compression::Gzip,
-            CompressionDto::Snappy => Compression::Snappy,
-            CompressionDto::Lz4 => Compression::Lz4,
-            CompressionDto::Zstd => Compression::Zstd,
-        }
+        let [none, gzip, snappy, lz4, zstd] = Compression::ALL;
+        let codec = match self {
+            CompressionDto::None => none,
+            CompressionDto::Gzip => gzip,
+            CompressionDto::Snappy => snappy,
+            CompressionDto::Lz4 => lz4,
+            CompressionDto::Zstd => zstd,
+        };
+        level.map_or(codec, |l| codec.at(l))
     }
 }
 

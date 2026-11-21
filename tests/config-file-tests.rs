@@ -2727,7 +2727,7 @@ fn a_minimal_iceberg_destination_loads_with_the_defaults() {
     assert_eq!(c.namespace, vec!["logs".to_string(), "web".to_string()]);
     assert_eq!(c.table, "access");
     assert!(c.partition_by.is_empty() && c.storage.is_none() && c.tls.is_none());
-    assert_eq!(c.compression, Compression::Zstd);
+    assert_eq!(c.compression, Compression::Zstd(3));
     assert_eq!(c.in_flight, 4);
     assert_eq!(c.max_object_bytes, 64 * 1024 * 1024);
     assert_eq!(c.buffer_bytes, 256 * 1024 * 1024);
@@ -2981,7 +2981,7 @@ fn a_minimal_s3_destination_loads_with_the_defaults() {
     let c = objects(&system);
     assert_eq!(c.prefix, "%Y/%m/%d/%H/");
     assert_eq!(c.format, ObjectFormat::Ndjson);
-    assert_eq!(c.compression, Compression::Gzip);
+    assert_eq!(c.compression, Compression::Gzip(6));
     let s3 = s3(&system);
     assert_eq!(s3.bucket, "logs");
     assert!(s3.access.access_key.is_none() && s3.access.role.is_none());
@@ -4732,7 +4732,7 @@ fn an_event_hubs_destination_loads_as_a_kafka_destination_signed_in_with_its_con
         };
         assert_eq!(k.brokers, brokers);
         assert_eq!(k.default_topic, "alerts");
-        assert_eq!(k.compression, Compression::Gzip);
+        assert_eq!(k.compression, Compression::Gzip(6));
         assert_eq!(k.service, KafkaService::EventHubs);
         assert!(k.tls.is_none());
         let source = event_hubs_kafka(&event_hubs_config(namespace, ""));
