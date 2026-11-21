@@ -154,6 +154,13 @@
   }
 
   async function revokeSessions() {
+    const ok = await ask({
+      title: 'revoke sessions',
+      body: `Sign ${account.displayName} out everywhere. They can sign in again.`,
+      action: 'Revoke sessions',
+      danger: true,
+    });
+    if (!ok) return;
     form = null;
     const result = await act(() => revokeAccountSessions(account.id));
     if (result === null) return;

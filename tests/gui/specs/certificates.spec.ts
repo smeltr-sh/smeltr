@@ -174,6 +174,10 @@ test('a renewal is served while the switch back to Leader issued waits for a wor
   expect(renewed.authority.fingerprint).toBe(before.authority.fingerprint);
 
   await served.getByRole('button', { name: 'Abandon switch' }).click();
+  await page
+    .getByRole('dialog', { name: 'abandon the switch' })
+    .getByRole('button', { name: 'Abandon switch' })
+    .click();
   await inForce(served, 'Uploaded');
 
   // Replacing the entry the leader serves serves the new version.
