@@ -36,6 +36,7 @@
   import DisableIcon from './DisableIcon.svelte';
   import CrossButton from './CrossButton.svelte';
   import { glideTo } from './glide';
+  import { stepMoves } from './stepMoves.svelte';
   import FieldRow from './FieldRow.svelte';
   import RemoveFields from './RemoveFields.svelte';
   import TypePicker from './TypePicker.svelte';
@@ -142,6 +143,9 @@
 
   const readOnly = !editable();
   let step = $derived(steps[index]);
+  const { moves } = stepMoves(() => steps);
+  /** Holding the step's head picks it up, to drag it elsewhere. */
+  const handle = moves.holds(() => (readOnly ? null : step));
   let stepErrors = $derived(errorsByStep.get(step) ?? []);
   /** The plain messages every field's `errors` prop takes -- the substring
    * heuristic's fallback, kept for every error `assignmentIndex` cannot
@@ -258,16 +262,8 @@
   function remove() {
     steps.splice(index, 1);
   }
-  function moveUp() {
-    if (index === 0) return;
-    const [s] = steps.splice(index, 1);
-    steps.splice(index - 1, 0, s);
-  }
-  function moveDown() {
-    if (index === steps.length - 1) return;
-    const [s] = steps.splice(index, 1);
-    steps.splice(index + 1, 0, s);
-  }
+  const moveUp = () => moves.aside(step, -1);
+  const moveDown = () => moves.aside(step, 1);
 
   /** Swaps a declared field with its neighbor. Only meaningful where position
    * is significant -- a CSV column's index -- so the caller only offers this
@@ -563,11 +559,12 @@
   <div
     id={`step-${step.id}`}
     class="card if-card"
+    class:carried={moves.dragging === step}
     class:has-error={stepErrors.length > 0}
     class:paused-at={isPausedAt}
     class:not-run={notRun}
   >
-    <div class="card-head if-head">
+    <div class="card-head if-head" {@attach handle}>
       <span class="type-badge uppercase-label">
         <StepGlyph type="if" />
         If
@@ -589,7 +586,7 @@
     </div>
     {@render stepErrorList()}
     <div class="branches">
-      <div class="branch">
+      <div class="branch" {@attach moves.shows(step.then)}>
         <div class="branch-label uppercase-label">then</div>
         <StepList
           steps={step.then}
@@ -614,7 +611,7 @@
           {recordBefore}
         />
       </div>
-      <div class="branch">
+      <div class="branch" {@attach moves.shows(step.else)}>
         <div class="branch-label uppercase-label">else</div>
         <StepList
           steps={step.else}
@@ -646,6 +643,7 @@
     id={`step-${step.id}`}
     class="card"
     class:open={expanded}
+    class:carried={moves.dragging === step}
     class:has-error={stepErrors.length > 0}
     class:comment-card={step.type === 'comment'}
     class:paused-at={isPausedAt}
@@ -654,7 +652,7 @@
   >
     <!-- The controls sit beside the button that opens the step: a button cannot hold
          another, and the More menu is one. -->
-    <div class="card-head">
+    <div class="card-head" {@attach handle}>
       <button
         class="expander"
         type="button"
@@ -1534,6 +1532,11 @@
      chip, which ChipPicker draws. */
   /* At rest a step is its surface alone: `--field` on the panel draws it.
      Open, it takes its border and the accent rail down its leading edge. */
+  /* The step being dragged is lifted out of its list, and the gap where it would land opens to the height of its head. */
+  .card.carried {
+    display: none;
+  }
+
   .card {
     border: 1px solid transparent;
     border-radius: var(--radius-card);
