@@ -45,13 +45,12 @@ function listOf(steps: Tree[], ref: ListRef): Tree[] {
   return ref.owner === null ? steps : find(steps, ref.owner)![ref.branch!];
 }
 
-/** Where a drop of `id` at `index` of `ref`, counted before it leaves its place, puts it; unchanged into its own
- * branches. */
+/** The place that dropping step `id` at `index` of `ref` puts it in; `index` is counted before the step leaves its
+ * place. */
 function dropped(id: string, ref: ListRef, index: number): string {
   const steps = START();
   const moved = find(steps, id)!;
   const to = listOf(steps, ref);
-  if (ref.owner !== null && find([moved], ref.owner)) return outline(steps);
   const strip = (list: Tree[]): boolean => {
     const at = list.indexOf(moved);
     if (at !== -1) {
@@ -101,9 +100,11 @@ async function gapPoint(page: Page, ref: ListRef, index: number) {
   const list = listOn(page, ref);
   const slots = list.locator(':scope > .slot');
   const n = await slots.count();
+  // The dragged step's card is lifted out, and its empty slot stands where it was.
+  const card = slots.nth(index).locator(':scope > .card:not(.carried)');
   const box =
     index < n
-      ? (await slots.nth(index).locator(':scope > .card').boundingBox())!
+      ? ((await card.count()) ? await card.boundingBox() : await slots.nth(index).boundingBox())!
       : (await list.locator(':scope > .add-row').boundingBox())!;
   return { x: box.x + 20, y: index < n ? box.y + 3 : box.y + box.height / 2 };
 }
@@ -128,15 +129,42 @@ async function fresh(page: Page): Promise<Page> {
   return next;
 }
 
+/** Waits for what is moving on the page to come to rest. */
+async function still(page: Page) {
+  await page.evaluate(
+    () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))),
+  );
+  await page.waitForFunction(() =>
+    document.getAnimations().every((a) => a.playState !== 'running'),
+  );
+}
+
+/** Moves the pointer with `move` onto `to`, and again until `to` stops moving from under it: the gaps a drag opens
+ * shift the steps after them. */
+async function aim(
+  page: Page,
+  to: () => Promise<{ x: number; y: number }>,
+  move: (at: { x: number; y: number }) => Promise<void>,
+): Promise<{ x: number; y: number }> {
+  let at = await to();
+  for (let tries = 0; ; tries++) {
+    expect(tries, 'the pointer comes to rest over its gap').toBeLessThan(5);
+    await move(at);
+    await still(page);
+    const next = await to();
+    if (Math.hypot(next.x - at.x, next.y - at.y) < 1) return at;
+    at = next;
+  }
+}
+
 /** Holds `id`'s head until it is picked up, then drags it over `to` and lets go. */
 async function drag(page: Page, id: string, to: () => Promise<{ x: number; y: number }>) {
   const badge = (await page.locator(`#step-${id} > .card-head .type-badge`).boundingBox())!;
   const from = { x: badge.x + badge.width / 2, y: badge.y + badge.height / 2 };
   await page.mouse.move(from.x, from.y);
   await page.mouse.down();
-  await expect(page.locator('.carried').first()).toBeVisible();
-  const at = await to();
-  await page.mouse.move(at.x, at.y, { steps: 8 });
+  await expect(page.locator('.carried-chip').first()).toBeVisible();
+  await aim(page, to, (at) => page.mouse.move(at.x, at.y, { steps: 8 }));
   await page.mouse.up();
   await page.mouse.move(0, 0);
 }
@@ -146,6 +174,8 @@ for (const id of ['b', 'a', 'd', 't2', 'e1', 'i', 'j']) {
     let page = admin;
     test.setTimeout(300_000);
     for (const ref of LISTS) {
+      // An If's branches are lifted out with it, so they are no place to drop it.
+      if (ref.owner !== null && find([find(START(), id)!], ref.owner)) continue;
       const size = listOf(START(), ref).length;
       for (let index = 0; index <= size; index++) {
         // A page of its own, so the last case's unsaved move is not this one's start.
@@ -155,12 +185,7 @@ for (const id of ['b', 'a', 'd', 't2', 'e1', 'i', 'j']) {
         const where = `${ref.owner ?? 'top'}${ref.branch ? `.${ref.branch}` : ''}[${index}]`;
         await expect.poll(() => onScreen(page), { message: where }).toBe(dropped(id, ref, index));
         // Once the steps have glided to their places, which starts on the frame after the drop.
-        await page.evaluate(
-          () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))),
-        );
-        await page.waitForFunction(() =>
-          document.getAnimations().every((a) => a.playState !== 'running'),
-        );
+        await still(page);
         expect(await works(page, false), where).toEqual([]);
       }
     }
@@ -178,17 +203,17 @@ test('a press that moves before it is held, or a drag Esc ends, moves nothing', 
   await page.mouse.down();
   await page.mouse.move(head.x + 50, head.y + 200, { steps: 4 });
   await page.mouse.up();
-  await expect(page.locator('.carried')).toHaveCount(0);
+  await expect(page.locator('.carried-chip')).toHaveCount(0);
   expect(await onScreen(page)).toBe(outline(START()));
 
   await page.mouse.move(head.x + 50, head.y + head.height / 2);
   await page.mouse.down();
-  await expect(page.locator('.carried').first()).toBeVisible();
+  await expect(page.locator('.carried-chip').first()).toBeVisible();
   const end = await gapPoint(page, { owner: null }, 4);
   await page.mouse.move(end.x, end.y, { steps: 4 });
   await page.keyboard.press('Escape');
   await page.mouse.up();
-  await expect(page.locator('.carried')).toHaveCount(0);
+  await expect(page.locator('.carried-chip')).toHaveCount(0);
   expect(await onScreen(page)).toBe(outline(START()));
 });
 
@@ -209,10 +234,14 @@ test('a step dragged to the edge of the steps scrolls them toward a gap out of s
   await settled(page);
   const then = listOn(page, { owner: 'i', branch: 'then' }).locator(':scope > .add-row');
   await expect(then).not.toBeInViewport();
+  let scrolled = false;
   await drag(page, 'n0', async () => {
     // Held at the bottom edge until the If's then comes into sight.
-    await page.mouse.move(200, 590, { steps: 4 });
-    await expect(then).toBeInViewport({ ratio: 1 });
+    if (!scrolled) {
+      await page.mouse.move(200, 590, { steps: 4 });
+      await expect(then).toBeInViewport({ ratio: 1 });
+      scrolled = true;
+    }
     const box = (await then.boundingBox())!;
     return { x: box.x + 20, y: box.y + box.height / 2 };
   });
@@ -262,13 +291,41 @@ test('a finger held on a step drags it, rather than scrolling the page', async (
       touchPoints: type === 'touchEnd' ? [] : [{ x: at.x, y: at.y }],
     });
   await touch('touchStart', from);
-  await expect(page.locator('.carried').first()).toBeVisible();
-  const to = await gapPoint(page, { owner: 'i', branch: 'then' }, 0);
-  for (let k = 1; k <= 8; k++)
-    await touch('touchMove', {
-      x: from.x + ((to.x - from.x) * k) / 8,
-      y: from.y + ((to.y - from.y) * k) / 8,
-    });
+  await expect(page.locator('.carried-chip').first()).toBeVisible();
+  let finger = from;
+  const to = await aim(
+    page,
+    () => gapPoint(page, { owner: 'i', branch: 'then' }, 0),
+    async (at) => {
+      for (let k = 1; k <= 8; k++)
+        await touch('touchMove', {
+          x: finger.x + ((at.x - finger.x) * k) / 8,
+          y: finger.y + ((at.y - finger.y) * k) / 8,
+        });
+      finger = at;
+    },
+  );
   await touch('touchEnd', to);
   await expect.poll(() => onScreen(page)).toBe(dropped('b', { owner: 'i', branch: 'then' }, 0));
+});
+
+test('a screen reader hears where a moved step now is', async ({ admin: page, api, leader }) => {
+  await arrange(page, api, leader);
+  const said = page.locator('[aria-live="polite"]', { hasText: /^Moved/ });
+  await page.locator('#step-b > .card-head').getByRole('button', { name: 'Move down' }).focus();
+  await page.keyboard.press('Enter');
+  await expect(said).toHaveText('Moved to step 1 of 3 in the then branch of If true.');
+  await page.locator('#step-b > .card-head').getByRole('button', { name: 'Move up' }).focus();
+  await page.keyboard.press('Enter');
+  await expect(said).toHaveText('Moved to step 2 of 4.');
+});
+
+test('with reduced motion, nothing glides', async ({ admin: page, api, leader }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await arrange(page, api, leader);
+  await drag(page, 'b', () => gapPoint(page, { owner: 'i', branch: 'then' }, 0));
+  await expect.poll(() => onScreen(page)).toBe(dropped('b', { owner: 'i', branch: 'then' }, 0));
+  expect(await page.evaluate(() => document.getAnimations().map((a) => a.playState))).not.toContain(
+    'running',
+  );
 });

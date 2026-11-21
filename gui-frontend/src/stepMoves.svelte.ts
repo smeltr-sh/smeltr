@@ -6,7 +6,8 @@
 
 import { getContext, setContext, tick } from 'svelte';
 import type { Attachment } from 'svelte/attachments';
-import { flatSteps, moveStep, stepAside, type Step } from './pipeline';
+import { flatSteps, moveStep, placeOf, stepAside, type Step } from './pipeline';
+import { glideCards, lessMotion } from './glide';
 
 const CONTEXT = Symbol('step moves');
 
@@ -32,10 +33,16 @@ export type Drop = { list: Step[]; index: number };
 export class StepMoves {
   /** The step being dragged, once held; null otherwise. */
   dragging = $state<Step | null>(null);
+  /** How tall the dragged step is; the gap it would drop into opens to this height. */
+  height = $state(0);
   /** Where it would land if dropped now; null when the pointer is over no place it can go. */
   over = $state<Drop | null>(null);
   /** The pointer's position, which the dragged step's chip follows. */
   at = $state({ x: 0, y: 0 });
+  /** True while steps land from a move: the rows take their new places at once and the cards glide there. */
+  landing = $state(false);
+  /** Where the step just moved now is, for a screen reader to say. */
+  said = $state('');
 
   #steps: () => Step[];
   /** The step list each element shows, so the element under the pointer finds its list. */
@@ -53,10 +60,55 @@ export class StepMoves {
     // A focused control without a label of its own is taken to be a choice in the More menu; the menu's button takes
     // the focus back.
     const label = focused && (focused.getAttribute('aria-label') ?? 'More actions');
-    stepAside(this.#steps(), step, by);
-    if (!label) return;
+    const card = document.getElementById(`step-${step.id}`);
+    if (!card) return;
+    await this.#glideMoved(step, card.getBoundingClientRect(), 1, () =>
+      stepAside(this.#steps(), step, by),
+    );
+    const control = label && document.querySelector<HTMLElement>(`${head} [aria-label="${label}"]`);
+    if (!control) return;
+    // Brought into sight only once its card has stopped gliding, since focus would scroll to where the card is drawn
+    // mid-glide.
+    control.focus({ preventScroll: true });
+    const moved = document.getElementById(`step-${step.id}`);
+    await Promise.allSettled(moved?.getAnimations().map((a) => a.finished) ?? []);
+    control.scrollIntoView({ block: 'nearest' });
+  }
+
+  /** Makes `move`, then glides each step's card from where it was to its new place. `step`'s card glides from `from`
+   * instead, fading in from `opacity` and drawn over the other cards. A card may be drawn anew in another list, so the
+   * cards glide, not their rows; each branch's + step row glides with them. */
+  async #glideMoved(step: Step, from: DOMRect, opacity: number, move: () => boolean) {
+    const moved = `step-${step.id}`;
+    const cards = () => [...document.querySelectorAll<HTMLElement>('.card[id^="step-"]')];
+    const addRows = () =>
+      [...document.querySelectorAll<HTMLElement>('.step-list')].flatMap((el) => {
+        const list = this.#lists.get(el);
+        const row = el.querySelector<HTMLElement>(':scope > .add-row');
+        return list && row ? [[list, row] as const] : [];
+      });
+    const cardsWere = new Map(cards().map((c) => [c.id, c.getBoundingClientRect()]));
+    cardsWere.set(moved, from);
+    const rowsWere = new Map(addRows().map(([list, row]) => [list, row.getBoundingClientRect()]));
+    this.landing = true;
+    const done = move();
+    this.said = '';
     await tick();
-    document.querySelector<HTMLElement>(`${head} [aria-label="${label}"]`)?.focus();
+    if (done) this.said = this.#whereIs(step);
+    // The rows read `landing` when their glides start, in the flush above, so it clears only on the next frame.
+    requestAnimationFrame(() => (this.landing = false));
+    const glides = new Map<HTMLElement, { from: DOMRect; opacity?: number; above?: boolean }>();
+    for (const card of cards()) {
+      const was = cardsWere.get(card.id);
+      if (was)
+        glides.set(card, card.id === moved ? { from: was, opacity, above: true } : { from: was });
+    }
+    for (const [list, row] of addRows()) {
+      const was = rowsWere.get(list);
+      // The + step row at the end of the outermost list stays put, as does everything below the steps.
+      if (was && list !== this.#steps()) glides.set(row, { from: was });
+    }
+    glideCards(glides);
   }
 
   /** Marks an element as showing `list`: a step dropped over it lands in `list`, between the slots (`.slot`) the
@@ -86,13 +138,25 @@ export class StepMoves {
     if (e.button !== 0 || (e.target as Element).closest('input, textarea, select, .controls'))
       return;
     const start = { x: e.clientX, y: e.clientY };
-    const timer = setTimeout(() => this.#pickUp(step, start), HOLD_MS);
+    // The card presses in as the hold runs, and springs back if the press ends first.
+    const card = (e.currentTarget as Element).closest<HTMLElement>('.card');
+    const pressing = lessMotion()
+      ? null
+      : card?.animate([{ transform: 'none' }, { transform: 'scale(0.98)' }], {
+          duration: HOLD_MS,
+          easing: 'ease-in',
+        });
+    const timer = setTimeout(() => {
+      pressing?.cancel();
+      this.#pickUp(step, start);
+    }, HOLD_MS);
     const wander = (m: PointerEvent) => {
       if (Math.hypot(m.clientX - start.x, m.clientY - start.y) > SLOP_PX) quit();
     };
     // A long touch opens no menu while it holds or drags the step.
     const menu = (c: Event) => c.preventDefault();
     const quit = () => {
+      if (pressing?.playState === 'running') pressing.reverse();
       clearTimeout(timer);
       removeEventListener('pointermove', wander);
       removeEventListener('pointerup', quit);
@@ -106,6 +170,7 @@ export class StepMoves {
   }
 
   #pickUp(step: Step, at: { x: number; y: number }) {
+    this.height = document.getElementById(`step-${step.id}`)?.getBoundingClientRect().height ?? 0;
     this.dragging = step;
     this.at = at;
     this.over = null;
@@ -119,17 +184,20 @@ export class StepMoves {
     const pan = (t: TouchEvent) => t.preventDefault();
     // A step picked up near an edge scrolls nothing until the pointer sets off.
     let setOff = false;
+    const aim = () => {
+      const over = this.#dropAt(step, this.at.x, this.at.y);
+      if (over?.list !== this.over?.list || over?.index !== this.over?.index) this.over = over;
+    };
     const move = (m: PointerEvent) => {
       setOff ||= Math.hypot(m.clientX - at.x, m.clientY - at.y) > SLOP_PX;
       this.at = { x: m.clientX, y: m.clientY };
-      this.over = this.#dropAt(step, m.clientX, m.clientY);
-    };
-    // The steps under a still pointer change as they scroll.
-    const scrolled = () => {
-      this.over = this.#dropAt(step, this.at.x, this.at.y);
+      aim();
     };
     const box = scroller(document.elementFromPoint(at.x, at.y));
-    const edge = () => {
+    // Each frame, the drop is read again, because the steps under a still pointer move as they scroll and as the gaps
+    // open and close; at the edges the loop also scrolls.
+    const follow = () => {
+      aim();
       const view =
         box === document.scrollingElement
           ? { top: 0, bottom: innerHeight }
@@ -142,15 +210,22 @@ export class StepMoves {
             ? y - view.bottom + EDGE_PX
             : 0;
       if (setOff && by !== 0) box.scrollBy(0, by / 4);
-      frame = requestAnimationFrame(edge);
+      frame = requestAnimationFrame(follow);
     };
-    let frame = requestAnimationFrame(edge);
+    let frame = requestAnimationFrame(follow);
     const end = (drop: boolean) => {
-      if (drop && this.over) moveStep(this.#steps(), step, this.over.list, this.over.index);
+      // From the chip, the step glides to where it drops, or back where it was.
+      const to = drop ? this.over : null;
+      const chip = document.querySelector('.carried-chip')?.getBoundingClientRect();
+      void this.#glideMoved(
+        step,
+        chip ?? new DOMRect(at.x, at.y),
+        0.4,
+        () => to !== null && moveStep(this.#steps(), step, to.list, to.index),
+      );
       this.dragging = null;
       this.over = null;
       cancelAnimationFrame(frame);
-      removeEventListener('scroll', scrolled, true);
       removeEventListener('touchmove', pan);
       removeEventListener('pointermove', move);
       removeEventListener('pointerup', up);
@@ -166,12 +241,21 @@ export class StepMoves {
       end(false);
     };
     addEventListener('touchmove', pan, { passive: false });
-    addEventListener('scroll', scrolled, true);
     addEventListener('pointermove', move);
     addEventListener('pointerup', up);
     addEventListener('pointercancel', cancel);
     addEventListener('keydown', key, true);
     addEventListener('click', swallow, true);
+  }
+
+  /** Where `step` is, as a screen reader says it after a move: its place in its list, and the branch and If that
+   * hold the list, if any. */
+  #whereIs(step: Step): string {
+    const at = placeOf(this.#steps(), step);
+    if (!at) return '';
+    const place = `Moved to step ${at.index + 1} of ${at.list.length}`;
+    if (!at.owner) return `${place}.`;
+    return `${place} in the ${at.owner.branch} branch of If ${at.owner.step.condition}.`;
   }
 
   /** The drop under the pointer: in the innermost list there, before the first of its steps whose middle is below
@@ -185,7 +269,9 @@ export class StepMoves {
       return null;
     const slots = [...el.querySelectorAll(':scope > .slot, :scope > .step-list > .slot')];
     const index = slots.filter((s) => {
-      const r = s.getBoundingClientRect();
+      // The step's card, not its slot: the slot holds the gap above it too, which opens as the pointer comes near. The
+      // dragged step's card is lifted out, and its empty slot stands where it was.
+      const r = (s.querySelector(':scope > .card:not(.carried)') ?? s).getBoundingClientRect();
       return r.top + r.height / 2 < y;
     }).length;
     return { list, index };

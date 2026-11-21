@@ -17,7 +17,8 @@
   import { editable } from './access';
   import TypeCatalog, { type CatalogType } from './TypeCatalog.svelte';
   import { STEP_GLYPHS } from './stepGlyphs';
-  import { glideTo } from './glide';
+  import { glideTo, lessMotion } from './glide';
+  import { scale } from 'svelte/transition';
   import { stepMoves } from './stepMoves.svelte';
   import StepGlyph from './StepGlyph.svelte';
 
@@ -117,9 +118,14 @@
   }
 </script>
 
-<div class="step-list" class:dragging={moves.dragging !== null} {@attach moves.shows(steps)}>
+<div
+  class="step-list"
+  class:dragging={moves.dragging !== null}
+  style:--carried-height={outermost && moves.dragging ? `${moves.height}px` : undefined}
+  {@attach moves.shows(steps)}
+>
   {#each steps as step, i (step)}
-    <div class="slot" animate:glideTo>
+    <div class="slot" animate:glideTo={{ still: moves.landing }}>
       {#if editable()}
         <div class="insert" class:drop={dropsAt(i)}>
           <button type="button" onclick={() => (addingAt = i)} aria-label="Insert step"
@@ -162,8 +168,16 @@
   {/if}
 </div>
 
+{#if outermost}
+  <div class="visually-hidden" aria-live="polite">{moves.said}</div>
+{/if}
 {#if outermost && moves.dragging}
-  <div class="carried" style:left="{moves.at.x + 12}px" style:top="{moves.at.y + 12}px">
+  <div
+    class="carried-chip"
+    in:scale={{ start: 0.9, duration: lessMotion() ? 0 : 150 }}
+    style:left="{moves.at.x + 12}px"
+    style:top="{moves.at.y + 12}px"
+  >
     <StepGlyph type={moves.dragging.type} />
     <span class="ellipsis">{stepSummary(moves.dragging, pipelineNames)}</span>
   </div>
@@ -226,10 +240,20 @@
     }
   }
 
-  /* While a step is dragged, the gap it would drop into shows as a solid rule, and nothing offers to add. */
+  /* While a step is dragged, the gap it would drop into opens to make room for it, outlined where it would land, and
+     nothing offers to add. A touch screen hides the gaps otherwise; while a step is dragged they show there too. */
   .dragging .insert,
   .dragging .add-row {
     cursor: grabbing;
+  }
+  .dragging .insert {
+    display: flex;
+  }
+  .dragging .insert,
+  .dragging .add-row {
+    transition:
+      height 150ms ease-out,
+      margin 150ms ease-out;
   }
   .dragging .insert button,
   .dragging .add-row button {
@@ -237,24 +261,41 @@
   }
   .insert.drop {
     opacity: 1;
-  }
-  .insert.drop::before,
-  .add-row.drop::before {
-    border-top: 2px solid var(--accent);
+    height: var(--carried-height);
+    margin: 0 0 0.6rem;
   }
   .add-row {
     position: relative;
   }
+  .add-row.drop {
+    margin-top: calc(var(--carried-height) + 0.6rem);
+  }
+  .insert.drop::before,
   .add-row.drop::before {
     content: '';
     position: absolute;
-    left: 0;
-    right: 0;
-    top: 0;
+    inset: 0;
+    border: 2px dashed var(--accent);
+    border-radius: var(--radius-card);
+  }
+  .add-row.drop::before {
+    inset: auto 0 calc(100% + 0.6rem);
+    height: var(--carried-height);
+  }
+  /* The dragged step's slot is empty while the step is lifted out; it cancels the space the list leaves between it
+     and the next step. */
+  .slot:has(> :global(.card.carried)) {
+    margin-bottom: -0.6rem;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .dragging .insert,
+    .dragging .add-row {
+      transition: none;
+    }
   }
 
   /* The dragged step, beside the pointer. */
-  .carried {
+  .carried-chip {
     position: fixed;
     z-index: 100;
     pointer-events: none;

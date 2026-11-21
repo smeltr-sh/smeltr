@@ -382,13 +382,16 @@ const drag: Move = {
     const from = (await badge.boundingBox())!;
     await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
     await page.mouse.down();
-    await expect(page.locator('.carried').first()).toBeVisible();
+    await expect(page.locator('.carried-chip').first()).toBeVisible();
     // Over the top edge of the step the gap is before, or the + step row at the end.
     const on = listOn(page, target.path);
     const gap =
-      index < target.steps.length
-        ? slot(on, index).locator(':scope > [id^="step-"]')
-        : on.locator(':scope > .add-row');
+      index >= target.steps.length
+        ? on.locator(':scope > .add-row')
+        : target.steps[index] === step
+          ? // The dragged step's card is lifted out, and its empty slot stands where it was.
+            slot(on, index)
+          : slot(on, index).locator(':scope > [id^="step-"]');
     // Brought into sight at once: a smooth scroll still under way would move the gap from under the pointer.
     await gap.evaluate((el) => el.scrollIntoView({ block: 'center', behavior: 'instant' }));
     const box = (await gap.boundingBox())!;
