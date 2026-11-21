@@ -112,6 +112,30 @@ describe('compareSteps', () => {
     ]);
   });
 
+  it('shows an added or removed step part by part, every part marked', () => {
+    const pairs = [
+      { from: 'a', to: 'b' },
+      { from: 'ccc', to: 'd' },
+    ];
+    const [added] = compareSteps([], [{ ...rename, pairs }], NO_NAMES);
+    expect(added.parts).toEqual([
+      { kind: 'added', text: 'a   → b' },
+      { kind: 'added', text: 'ccc → d' },
+    ]);
+    const [removed] = compareSteps([{ ...rename, pairs }], [], NO_NAMES);
+    expect(removed.parts?.map((p) => p.kind)).toEqual(['removed', 'removed']);
+  });
+
+  it('lines up a changed step by its longest target at either end, so a longer one changes no other line', () => {
+    const before = { type: 'eval', id: 'e1', assignments: [{ target: 'a', expr: '1' }] };
+    const after = { ...before, assignments: [...before.assignments, { target: 'abc', expr: '2' }] };
+    const [step] = compareSteps([before], [after], NO_NAMES);
+    expect(step.parts).toEqual([
+      { kind: 'same', text: 'a   = 1' },
+      { kind: 'added', text: 'abc = 2' },
+    ]);
+  });
+
   it('shows a blank line a code step gained as a line of its own', () => {
     const before = { type: 'code', id: 'c1', body: 'a = 1\nb = 2' };
     const after = { type: 'code', id: 'c1', body: 'a = 1\n\nb = 2' };

@@ -2593,6 +2593,13 @@ impl Compiler<'_> {
     /// scope to put back when the block ends.
     fn bind_writes(&mut self, target: &str, writes: Vec<(Place, Resolved)>, declares: bool, here: Here) {
         let Here { guard, id } = here;
+        // A `let` of the name binds a local and leaves the field as it was.
+        if !declares && target == "__live" {
+            self.warn(
+                id,
+                "writing `__live` drops each row where it is false; to drop rows, use a Drop step",
+            );
+        }
         let blended = guard.is_some() || self.in_loop();
         let mut writes = self.split_objects(writes, here);
         // `null` over an object nulls its leaves and unclaimed fields, and the name stays the object it was, each leaf
@@ -2847,12 +2854,6 @@ impl Compiler<'_> {
             }
         }
         let keys = matcher_keys(&kind, &matcher);
-        if let Some((k, _)) = keys.iter().flatten().find(|(k, _)| tree::is_internal(tree::head(k))) {
-            return self.err(
-                Some(id),
-                format!("`{k}` is the engine's own field; give the capture or column another name"),
-            );
-        }
         for name in chosen {
             if !keys.iter().flatten().any(|(k, _)| *k == name) {
                 self.warn(
@@ -4627,9 +4628,16 @@ impl Compiler<'_> {
                 span: Span::default(),
             }]),
         };
+        // A step is the code it lowers to, compiled as code is.
+        let expanded = (crate::expr::inline::expand(&lowered.body))
+            .and_then(|body| Ok((body, crate::expr::inline::expand(&lowered.after)?)));
+        let (body, after) = match expanded {
+            Ok(both) => both,
+            Err(e) => return self.err(Some(id), e.message),
+        };
         self.settle(|c| {
-            c.code_block(&lowered.body, here);
-            c.code_block(&lowered.after, Here { guard: outer, ..here });
+            c.code_block(&body, here);
+            c.code_block(&after, Here { guard: outer, ..here });
         });
         self.chosen.clear();
     }
@@ -4958,6 +4966,19 @@ mod tests {
     fn warnings(body: &str) -> Vec<String> {
         let plan = compile(&code_pipeline(body), &SourceMeta::KAFKA).unwrap_or_else(|e| panic!("{body}: {e:?}"));
         plan.warnings.into_iter().map(|w| w.message).collect()
+    }
+
+    /// A write of `__live`, by code or a parser, drops rows as a Drop step would, so it warns; a Drop does not.
+    #[test]
+    fn a_write_of_live_is_a_warning() {
+        let live = "writing `__live` drops each row where it is false; to drop rows, use a Drop step";
+        assert!(warnings("__live = false").iter().any(|w| w == live));
+        assert!(
+            warnings(r#"Object.assign($, grok(_raw, ["%{WORD:__live}"]))"#)
+                .iter()
+                .any(|w| w == live)
+        );
+        assert!(!warnings("if (_raw == \"x\") { drop(); }").iter().any(|w| w == live));
     }
 
     /// What compiles but is likely a mistake is a warning; what is read, or what the record holds at the end, is not.

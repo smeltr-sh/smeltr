@@ -654,14 +654,15 @@ export function stepName(step: Step, number: number, pipelineNames: PipelineName
 export type NumberedStep = { step: Step; number: number; name: string };
 
 /** What a step is made of, shown one line each, as a review compares them: an
- * eval's assignments, a rename's pairs, a removal's names, a code step's lines,
- * and any other step as a single line. */
-export function stepParts(step: Step, pipelineNames: PipelineNames): string[] {
+ * eval's assignments, a rename's pairs, a Remove step's names, a code step's lines,
+ * and any other step as a single line. An eval's targets and a rename's names
+ * are padded to `width`, which `partsWidth` gives to line up their `=` or `→`. */
+export function stepParts(step: Step, pipelineNames: PipelineNames, width = 0): string[] {
   switch (step.type) {
     case 'eval':
-      return step.assignments.map((a) => `${a.target || '…'} = ${a.expr || '…'}`);
+      return step.assignments.map((a) => `${(a.target || '…').padEnd(width)} = ${a.expr || '…'}`);
     case 'rename':
-      return step.pairs.map((p) => `${p.from || '…'} → ${p.to || '…'}`);
+      return step.pairs.map((p) => `${(p.from || '…').padEnd(width)} → ${p.to || '…'}`);
     case 'remove':
       return step.fields;
     case 'code':
@@ -669,6 +670,18 @@ export function stepParts(step: Step, pipelineNames: PipelineNames): string[] {
     default:
       return [stepSummary(step, pipelineNames)];
   }
+}
+
+/** The width that lines up the `=` or `→` of every part `stepParts` gives `steps`. */
+export function partsWidth(steps: Step[]): number {
+  const lefts = steps.flatMap((s) =>
+    s.type === 'eval'
+      ? s.assignments.map((a) => a.target)
+      : s.type === 'rename'
+        ? s.pairs.map((p) => p.from)
+        : [],
+  );
+  return Math.max(0, ...lefts.map((l) => (l || '…').length));
 }
 
 /** What `step` does, in one line, a Call step naming the pipeline it runs by `pipelineNames`. */
@@ -695,7 +708,7 @@ export function stepSummary(step: Step, pipelineNames: PipelineNames): string {
     case 'parser':
       return `${step.input || '_raw'} as ${PARSER_FORMAT_NAMES[step.kind.type]}${shownInto(step.into) ? ` into ${shownInto(step.into)}` : ''}${step.declared.length ? ` (${step.declared.length} declared)` : ''}`;
     case 'lookup':
-      return `${step.input || '…'} → ${step.outputs.map((o) => o.field || '…').join(', ') || '(no outputs)'}`;
+      return `${step.table || '…'}  ${step.input || '…'} → ${step.outputs.map((o) => o.field || '…').join(', ') || '(no outputs)'}`;
     case 'unroll':
       return `${step.field || '(no field)'}${step.keepParentFields ? ' (keeps parent fields)' : ''}`;
     case 'call':

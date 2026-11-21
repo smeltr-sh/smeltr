@@ -200,7 +200,7 @@
         {
           "name": "splitDots",
           "holds": "Whether a key holding dots is split into a nested path: `a.b` becomes `{a: {b}}`.",
-          "default": "`false`"
+          "default": "`true`"
         },
         {
           "name": "formats",
