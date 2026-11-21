@@ -980,6 +980,9 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
                 );
         }
     }
+    // What the engine runs with, published with the row (`publish`).
+    let args: Vec<_> = docker.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+    std::fs::write(dir.join("docker-run.txt"), format!("docker {}\n", args.join(" "))).unwrap();
     let container = Container::run(docker, run);
     match engine {
         Engine::Smeltr => {
@@ -1055,7 +1058,10 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
                     _ => destination["format"] = json!("text"),
                 }
             }
-            deploy(&dir, source, destination, (w.steps)());
+            let steps = (w.steps)();
+            let bundle = json!({"sources": [&source], "destinations": [&destination], "steps": &steps});
+            std::fs::write(dir.join("smeltr.json"), serde_json::to_string_pretty(&bundle).unwrap()).unwrap();
+            deploy(&dir, source, destination, steps);
         }
         Engine::Nifi | Engine::NifiGroovy => nifi::build(&container, run, api_port, ends, w, cores, engine),
         Engine::Logstash | Engine::Vector => {}
@@ -1245,10 +1251,13 @@ mod vector {
                 sink
             }
         };
-        // Each event is what its source read, with what the source knows of it kept apart, as smeltr keeps it.
+        // Vector's default, its legacy namespace, adds `source_type`, `path` and `timestamp` to each event, which a
+        // destination writing each event as a JSON document sends: there the beta `log_namespace` keeps what the source
+        // knows of an event apart from it, as smeltr keeps it, so the documents match the other engines' 1:1.
+        let json_documents = matches!(ends.give_to(), Some(Out::Elasticsearch | Out::SplunkHec | Out::LogAnalytics));
         let mut config = json!({
             "data_dir": "/tmp",
-            "schema": {"log_namespace": true},
+            "schema": {"log_namespace": json_documents},
             "sources": {"in": source},
             "sinks": {"out": sink},
         });
@@ -1470,9 +1479,9 @@ fn check(
         })
         .map(|d| canonical(&d))
         .collect();
-    let mut got: Vec<String> = made(engine, w, run, cpus, rest, transport, services)
-        .into_iter()
-        .map(|d| canonical(&from.normal((w.normal)(d))))
+    let made = made(engine, w, run, cpus, rest, transport, services);
+    let mut got: Vec<String> = (made.iter())
+        .map(|d| canonical(&from.normal((w.normal)(d.clone()))))
         .collect();
     want.sort_unstable();
     got.sort_unstable();
@@ -1487,6 +1496,38 @@ fn check(
             extra.map_or("none", String::as_str)
         );
     }
+    publish(engine, w, run, transport, &made);
+}
+
+/// How many of the records sent and the documents made a row publishes.
+const SAMPLE: usize = 20;
+
+/// Keeps what `engine` ran with for the row of `w` over `transport`, which `run` checked and found `made` right:
+/// its container's arguments, its configuration as the engine read it, and the first records sent and documents
+/// made, under `target/engine-speed/published/{pipeline}/{transport}/{engine}`.
+fn publish(engine: Engine, w: &Workload, run: &str, transport: Transport, made: &[Value]) {
+    let from = repo().join("target/engine-speed").join(run);
+    let to = (repo().join("target/engine-speed/published"))
+        .join(w.name)
+        .join(transport.label())
+        .join(engine.label());
+    let _ = std::fs::remove_dir_all(&to);
+    std::fs::create_dir_all(&to).unwrap();
+    let files = [
+        "docker-run.txt",
+        "smeltr.json",
+        "vector.json",
+        "logstash.yml",
+        "pipeline/p.conf",
+        "nifi-flow.jsonl",
+    ];
+    for file in files.iter().filter(|f| from.join(f).exists()) {
+        std::fs::copy(from.join(file), to.join(file.replace('/', "-"))).unwrap();
+    }
+    let lines = |docs: &mut dyn Iterator<Item = Value>| docs.map(|d| d.to_string() + "\n").collect::<String>();
+    let sent = lines(&mut (0..SAMPLE as u64).map(|i| transport.from.sent(i)));
+    std::fs::write(to.join("sent.ndjson"), sent).unwrap();
+    std::fs::write(to.join("made.ndjson"), lines(&mut made.iter().take(SAMPLE).cloned())).unwrap();
 }
 
 /// What a row cost, between the end of its warm-up and its last record.
@@ -1836,6 +1877,8 @@ mod nifi {
         token: String,
         agent: ureq::Agent,
         root: String,
+        /// Each change made to the flow, one a line, published with the row (`publish`).
+        log: PathBuf,
     }
 
     impl Api {
@@ -1844,6 +1887,15 @@ mod nifi {
                 .method(method)
                 .uri(format!("{}{path}", self.base))
                 .header("authorization", format!("Bearer {}", self.token));
+            if method != "GET" {
+                let line = json!({"method": method, "path": path, "body": &body}).to_string() + "\n";
+                let mut log = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&self.log)
+                    .unwrap();
+                std::io::Write::write_all(&mut log, line.as_bytes()).unwrap();
+            }
             let body = match body {
                 Some(b) => {
                     request = request.header("content-type", "application/json");
@@ -1992,6 +2044,7 @@ mod nifi {
             token,
             agent,
             root: String::new(),
+            log: repo().join("target/engine-speed").join(run).join("nifi-flow.jsonl"),
         };
         api.root = api.call("GET", "/flow/process-groups/root", None)["processGroupFlow"]["id"]
             .as_str()
