@@ -495,7 +495,8 @@
   let read = '';
   $effect(() => {
     const id = test?.test;
-    // Closed, it is read afresh when reopened: closing put the rows and fields back.
+    // Once the test is closed, `read` is cleared so the test is read afresh when opened again: closing put the rows
+    // and fields back.
     if (!id) read = '';
     if (!id || id === read) return;
     read = id;
