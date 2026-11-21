@@ -129,7 +129,8 @@
     newPipelineHash,
     withPipeline,
     type Making,
-    type Relock,
+    addressTest,
+    type OpenTest,
   } from './nav';
   import { ago } from './time';
   import { NOT_IN_DEMO, editable, mayCapture } from './access';
@@ -140,7 +141,7 @@
     sample = '',
     for: making,
     back,
-    relock,
+    test,
   }: {
     id: string;
     showJson?: boolean;
@@ -149,8 +150,8 @@
     for?: Making;
     /** Where Save returns to, told the pipeline saved. */
     back?: string;
-    /** A test of this pipeline to lock again, on `sample`: locking hands the choice to its lock page. */
-    relock?: Relock;
+    /** A test of this pipeline to open on, along with its `sample`. */
+    test?: OpenTest;
   } = $props();
 
   const readOnly = !editable();
@@ -776,19 +777,11 @@
     });
   });
 
-  // The tests of this pipeline, for the samples they lock. A failure only
-  // leaves the padlocks off.
+  // The tests, for the sample menu. A failure to load them only leaves them out of the menu.
   let tests: TestSummary[] = $state([]);
   listTests()
     .then((res) => (tests = res.tests))
     .catch(() => {});
-  let lockedBy = $derived.by(() => {
-    const by = new Map<string, string[]>();
-    for (const t of tests)
-      if (pipelineId && t.pipelines.includes(pipelineId))
-        by.set(t.sample, [...(by.get(t.sample) ?? []), t.name]);
-    return by;
-  });
 
   async function captured(id: string) {
     capturing = false;
@@ -833,6 +826,15 @@
   let lastUsed = $state('');
   function readLastUsed(): string {
     return stored(sampleKey(pipelineId)) ?? '';
+  }
+
+  /** Shows test `id` on its sample. */
+  function openTest(id: string) {
+    const t = tests.find((t) => t.id === id);
+    if (!t) return;
+    opened = { test: t.id, sample: t.sample };
+    addressTest(opened);
+    if (selectedSample !== t.sample) void chooseSample(t.sample);
   }
 
   async function chooseSample(id: string) {
@@ -1032,8 +1034,11 @@
     }
   }
 
-  /** Lock locks `relock` again while it is on the test's own sample; on another it locks a new test there. */
-  let relocking = $derived(!!relock && selectedSample === relock.sample);
+  /** The test on screen, chosen in the sample menu: the one `test` names until another test or a sample is chosen
+   * there. Lock locks the test again while the editor is on the test's own sample; on any other sample it locks a new
+   * test. */
+  let opened = $state(untrack(() => test));
+  let relocking = $derived(!!opened && selectedSample === opened.sample);
 
   // Locking a test needs a saved pipeline to attach it to, a saved sample to
   // name, and a run that actually produced the output being locked. The lock
@@ -1064,7 +1069,7 @@
     chooseLock(
       choice,
       relocking
-        ? `#/build/tests/relock/${encodeURIComponent(relock!.test)}`
+        ? `#/build/tests/relock/${encodeURIComponent(opened!.test)}`
         : `#/build/tests/lock/${encodeURIComponent(loadedId)}/${encodeURIComponent(selectedSample)}`,
     );
   }
@@ -1706,6 +1711,10 @@
       <RecordsPane
         bind:this={records}
         {pipelineId}
+        test={opened && {
+          test: opened.test,
+          ready: !!result?.ok && lastSample === opened.sample,
+        }}
         {steps}
         {signature}
         {sampleRows}
@@ -1739,9 +1748,19 @@
             records={selectedSample && lastGoodResult && lastSample === selectedSample
               ? lastGoodResult.rows.length
               : null}
-            {lockedBy}
+            tests={tests
+              .filter((t) => t.pipeline === pipelineId)
+              .map((t) => ({ id: t.id, name: t.name, sample: t.sample }))}
+            test={relocking ? opened!.test : ''}
+            ontest={openTest}
             held={choices.menuHeld}
-            onpick={chooseSample}
+            onpick={(id) => {
+              if (opened) addressTest();
+              opened = undefined;
+              // The test's own sample has run already: closing the test leaves its records on screen.
+              if (id === selectedSample) records?.clearFind();
+              else void chooseSample(id);
+            }}
             onadd={addSample}
           />
         {/snippet}

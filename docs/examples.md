@@ -2,7 +2,7 @@
 
 Seven common log types, each parsed and normalized to ECS, and one telemetry stream given its column names, in the language
 every step lowers to ([Compiler](architecture/compiler.md#every-step-is-code)). `$ = {...}` builds the document,
-`try`/`catch` handles the other case, `switch` branches, and `rest($)` is
+`try`/`catch` handles the other case, `switch` branches, and `undeclared($)` is
 the record's undeclared keys as an object. The GUI's step forms lower to
 this code, and the compiler compiles it whole.
 
@@ -18,7 +18,7 @@ The shape every pipeline has:
 `_raw` is the source's payload, decoded as text. An undeclared key reads as it arrived and
 can be copied into the document; a key the document compares, computes
 with or puts in a template is declared, which types it. A declared key is
-a field, so it is not in `rest($)`, the undeclared keys as one object. A parse that cannot
+a field, so it is not in `undeclared($)`, the undeclared keys as one object. A parse that cannot
 read a row is an exception on it; an exception no `catch` took goes to the
 `exceptions` answer (ignore, tag, drop, deliver or block) at the end of
 the row, so a bad row is answered without a line here.
@@ -118,7 +118,7 @@ $ = {
   network: {transport: {"6": "tcp", "17": "udp", "1": "icmp"}[proto] ?? proto, application: app},
   observer: {name: devname, vendor: "Fortinet", product: "FortiGate"},
   rule: {id: policyid},
-  fortinet: rest($)
+  fortinet: undeclared($)
 };
 ```
 
@@ -129,7 +129,7 @@ Out:
 ```
 
 Every key the document moves is declared, even the ones that stay text,
-so `rest($)` is exactly what it did not move: `vd`, `subtype`, `sessionid`, and any key
+so `undeclared($)` is exactly what it did not move: `vd`, `subtype`, `sessionid`, and any key
 the firewall adds next release.
 
 ## 4. Positional CSV in a syslog envelope (PAN-OS TRAFFIC to ECS)
@@ -269,7 +269,7 @@ records: array<{eventTime: datetime, eventName: str, eventSource: str, awsRegion
                 userIdentity: {type: str, arn: str, ...}, ...}> = Records;
 unroll(records, false);
 $ = records;
-let extra = rest($);
+let extra = undeclared($);
 $ = {
   "@timestamp": eventTime,
   event: {action: eventName, provider: eventSource, outcome: errorCode == null ? "success" : "failure"},

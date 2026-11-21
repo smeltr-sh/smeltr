@@ -295,8 +295,8 @@
     On, a dot in a field name nests the field: <code>geo.city</code> is the field <code>city</code>
     inside the object <code>geo</code>. Off, <code>geo.city</code> is one field name with a dot in
     it, which a later step reads as <code>$["geo.city"]</code>. The default follows the format. JSON
-    and CSV have their own way to nest or none at all, so it is off. Key/value and Regex/Grok
-    captures can nest only through a dot, so it is on.
+    has its own way to nest, so it is off. Key/value can nest only through a dot, and you name CSV
+    columns and Regex/Grok captures yourself, so it is on.
   </p>
   <p>Turned on for JSON, a dotted field name becomes a nested object:</p>
   <StepExample example={examples.splitDotsJson} />

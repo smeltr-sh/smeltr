@@ -23,7 +23,7 @@
   import Button, { INCOMPLETE } from './Button.svelte';
   import { untrack, type Snippet } from 'svelte';
   import type { NumberedStep, Step } from './pipeline';
-  import RecordsGrid, { type GridRow } from './RecordsGrid.svelte';
+  import RecordsGrid, { type GridRow, type TestOnScreen } from './RecordsGrid.svelte';
   import ChipPicker from './ChipPicker.svelte';
   import { count } from './time';
   import { type Declared } from './recordDiff';
@@ -37,6 +37,7 @@
 
   let {
     pipelineId,
+    test,
     steps,
     signature,
     sampleRows,
@@ -64,6 +65,7 @@
   }: {
     /** What the field choice and the recent expressions are remembered under. */
     pipelineId: string;
+    test?: TestOnScreen;
     steps: Step[];
     /** Changes whenever the steps a preview runs do, so an expression is run again. */
     signature: string;
@@ -259,6 +261,7 @@
     chosen={selectedSample !== ''}
     declared={shownDeclared}
     remember={pipelineId}
+    {test}
     openOn={lastSample || undefined}
     {dictionary}
     {lacking}
@@ -348,10 +351,11 @@
       /* Its grid and dictionary scroll themselves; a short pane must not clip a menu opened in it. */
       overflow: visible;
       /* From where it stands on screen to the bottom of the window, clear of what the page holds
-         below it and of the bars held over the page: the Save bar, and the agent panel under it. */
+         below it and of the Save bar held over the page. The agent panel pads the page's foot, so
+         what the page holds below the pane already includes the panel. */
       max-height: calc(
         100vh - max(var(--pane-top), var(--clear-top, 0px)) - var(--pane-after) -
-          var(--clear-bottom, 0px) - var(--agent-panel, 0px)
+          var(--clear-bottom, 0px)
       );
     }
 

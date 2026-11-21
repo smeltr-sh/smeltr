@@ -6,6 +6,7 @@
     STEP_TYPES,
     STEP_LABELS,
     STEP_SUMMARIES,
+    stepSummary,
     type Step,
     type StepType,
     type PreviewError,
@@ -16,7 +17,10 @@
   import { editable } from './access';
   import TypeCatalog, { type CatalogType } from './TypeCatalog.svelte';
   import { STEP_GLYPHS } from './stepGlyphs';
-  import { glideTo } from './glide';
+  import { glideTo, lessMotion } from './glide';
+  import { scale } from 'svelte/transition';
+  import { stepMoves } from './stepMoves.svelte';
+  import StepGlyph from './StepGlyph.svelte';
 
   let {
     steps,
@@ -99,6 +103,10 @@
     help: STEP_SUMMARIES[type],
   }));
 
+  const { moves, outermost } = stepMoves(() => steps);
+  /** Whether a step dropped now lands at `index` of this list. */
+  const dropsAt = (index: number) => moves.over?.list === steps && moves.over.index === index;
+
   /** Where the step the catalog adds goes, as an index into `steps`; null while it is shut. */
   let addingAt = $state<number | null>(null);
 
@@ -110,11 +118,16 @@
   }
 </script>
 
-<div class="step-list">
+<div
+  class="step-list"
+  class:dragging={moves.dragging !== null}
+  style:--carried-height={outermost && moves.dragging ? `${moves.height}px` : undefined}
+  {@attach moves.shows(steps)}
+>
   {#each steps as step, i (step)}
-    <div class="slot" animate:glideTo>
+    <div class="slot" animate:glideTo={{ still: moves.landing }}>
       {#if editable()}
-        <div class="insert">
+        <div class="insert" class:drop={dropsAt(i)}>
           <button type="button" onclick={() => (addingAt = i)} aria-label="Insert step"
             >+ step</button
           >
@@ -147,13 +160,28 @@
   {/each}
 
   {#if editable()}
-    <div class="add-row">
+    <div class="add-row" class:drop={dropsAt(steps.length)}>
       <button type="button" onclick={() => (addingAt = steps.length)} aria-label="Add step"
         >+ step</button
       >
     </div>
   {/if}
 </div>
+
+{#if outermost}
+  <div class="visually-hidden" aria-live="polite">{moves.said}</div>
+{/if}
+{#if outermost && moves.dragging}
+  <div
+    class="carried-chip"
+    in:scale={{ start: 0.9, duration: lessMotion() ? 0 : 150 }}
+    style:left="{moves.at.x + 12}px"
+    style:top="{moves.at.y + 12}px"
+  >
+    <StepGlyph type={moves.dragging.type} />
+    <span class="ellipsis">{stepSummary(moves.dragging, pipelineNames)}</span>
+  </div>
+{/if}
 
 <Dialog open={addingAt !== null} title="add step" wide oncancel={() => (addingAt = null)}>
   <TypeCatalog types={TYPES} cards onpick={add} />
@@ -210,6 +238,77 @@
     .insert {
       display: none;
     }
+  }
+
+  /* While a step is dragged, the gap it would drop into opens to make room for it, outlined where it would land, and
+     nothing offers to add. A touch screen hides the gaps otherwise; while a step is dragged they show there too. */
+  .dragging .insert,
+  .dragging .add-row {
+    cursor: grabbing;
+  }
+  .dragging .insert {
+    display: flex;
+  }
+  .dragging .insert,
+  .dragging .add-row {
+    transition:
+      height 150ms ease-out,
+      margin 150ms ease-out;
+  }
+  .dragging .insert button,
+  .dragging .add-row button {
+    visibility: hidden;
+  }
+  .insert.drop {
+    opacity: 1;
+    height: var(--carried-height);
+    margin: 0 0 0.6rem;
+  }
+  .add-row {
+    position: relative;
+  }
+  .add-row.drop {
+    margin-top: calc(var(--carried-height) + 0.6rem);
+  }
+  .insert.drop::before,
+  .add-row.drop::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border: 2px dashed var(--accent);
+    border-radius: var(--radius-card);
+  }
+  .add-row.drop::before {
+    inset: auto 0 calc(100% + 0.6rem);
+    height: var(--carried-height);
+  }
+  /* The dragged step's slot is empty while the step is lifted out; it cancels the space the list leaves between it
+     and the next step. */
+  .slot:has(> :global(.card.carried)) {
+    margin-bottom: -0.6rem;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .dragging .insert,
+    .dragging .add-row {
+      transition: none;
+    }
+  }
+
+  /* The dragged step, beside the pointer. */
+  .carried-chip {
+    position: fixed;
+    z-index: 100;
+    pointer-events: none;
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+    max-width: 20rem;
+    padding: 0.3rem 0.6rem;
+    background: var(--field);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius);
+    box-shadow: 0 6px 18px oklch(0% 0 0 / 0.18);
+    font-size: var(--text-label);
   }
 
   .add-row button,

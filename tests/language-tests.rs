@@ -228,18 +228,18 @@ cases! {
         [r#"{"t": "garbage"}"#], Rows(&[(r#"{"t": "garbage"}"#, Some(r#"t is "garbage", which could not convert to datetime in w"#))]);
 
     // -- a declaration types the name; `as` converts the value
-    o3_a_different_object_does_not_fit: r#"o = {a: 1}; o = {b: "x"};"#,
-        ["{}"], Error(&[r#"`{b: "x"}`"#, r#"`o: {b: str} = {b: "x"}`"#]);
+    o3_an_object_replaces_an_object: r#"o = {a: 1}; o = {b: "x"};"#,
+        ["{}"], Rows(&[(r#"{"o": {"b": "x"}}"#, None)]);
     o4_a_variant_needs_as: "Object.assign($, json(_raw)) o = {a: 1}; o = $.user;",
         [r#"{"user": 7}"#], Error(&["`o`", "`user as {a: i64}`"]);
     l1_a_plain_write_of_a_variant_needs_as: "x: i64 = 0; Object.assign($, json(_raw)) x = $.v;",
         [r#"{"v": "5"}"#], Error(&["`x`", "`v as i64`"]);
-    o5_an_open_value_needs_as: r#"o = {a: 1}; let pairs = [{key: "a", value: "5"}, {key: "z", value: "y"}]; o = fromEntries(pairs);"#,
-        ["{}"], Error(&["`fromEntries(pairs) as {a: i64}`", "`o: {...} = fromEntries(pairs)`"]);
+    o5_an_open_object_replaces_a_closed_one: r#"o = {a: 1}; let pairs = [{key: "a", value: "5"}, {key: "z", value: "y"}]; o = fromEntries(pairs);"#,
+        ["{}"], Rows(&[(r#"{"o": {"a": "5", "z": "y"}}"#, None)]);
     o6_as_converts_the_value: r#"o = {a: 1}; let pairs = [{key: "a", value: "5"}, {key: "z", value: "y"}]; o = fromEntries(pairs) as {a: i64};"#,
         ["{}"], Rows(&[(r#"{"o": {"a": 5}}"#, None)]);
-    o7_as_does_not_change_the_names_type: r#"o = {a: 1}; o = {b: "x"} as {b: str};"#,
-        ["{}"], Error(&["`o`", r#"`o: {b: str} = {b: "x"}`"#]);
+    o7_a_converted_object_replaces_an_object: r#"o = {a: 1}; o = {b: "x"} as {b: str};"#,
+        ["{}"], Rows(&[(r#"{"o": {"b": "x"}}"#, None)]);
 
     // -- a write adds a field
     a_write_adds_a_field_after_csv: r#"Object.assign($, csv(_raw, ["a", "b"])) c = 1;"#,
@@ -295,10 +295,10 @@ cases! {
         [r#"{"geo": {"loc.lat": 1.5}}"#], Rows(&[(r#"{"geo": {"loc": {"lat": 1.5}}}"#, None)]);
     split_dots_splits_keys_inside_an_open_object: "g: {...}; Object.assign($, json(_raw, {splitDots: true}))",
         [r#"{"g": {"a.b": 1}}"#], Rows(&[(r#"{"g": {"a": {"b": 1}}}"#, None)]);
-    csv_headers_are_keys: r#"Object.assign($, csv(_raw, ["src.ip", "bytes"]))"#,
-        ["1.2.3.4,10"], Rows(&[(r#"{"src.ip": "1.2.3.4", "bytes": "10"}"#, None)]);
-    csv_split_dots_nests_its_headers: r#"Object.assign($, csv(_raw, ["src.ip", "bytes"], {splitDots: true}))"#,
+    a_csv_header_is_a_path: r#"Object.assign($, csv(_raw, ["src.ip", "bytes"]))"#,
         ["1.2.3.4,10"], Rows(&[(r#"{"src": {"ip": "1.2.3.4"}, "bytes": "10"}"#, None)]);
+    a_csv_header_without_split_dots_is_one_key: r#"Object.assign($, csv(_raw, ["src.ip", "bytes"], {splitDots: false}))"#,
+        ["1.2.3.4,10"], Rows(&[(r#"{"src.ip": "1.2.3.4", "bytes": "10"}"#, None)]);
     a_grok_capture_name_is_a_path: r#"Object.assign($, grok(_raw, ["%{IP:src.ip}"]))"#,
         ["1.2.3.4"], Rows(&[(r#"{"src": {"ip": "1.2.3.4"}}"#, None)]);
     a_grok_capture_name_without_split_dots_is_one_key: r#"Object.assign($, grok(_raw, ["%{IP:src.ip}"], {splitDots: false}))"#,
@@ -492,9 +492,9 @@ cases! {
         [r#"{"s": "x"}"#], Rows(&[(r#"{"s": "x", "d": true, "m": "outer"}"#, None)]);
     a_parse_inside_an_expression_names_the_write: "s: str; Object.assign($, json(_raw)) x = json(s).a;",
         [r#"{}"#], Error(&["`x = json(…);`"]);
-    a_spread_of_a_call_names_the_value_first: "Object.assign($, json(_raw)) x = {...rest($), b: 1};",
+    a_spread_of_a_call_names_the_value_first: "Object.assign($, json(_raw)) x = {...undeclared($), b: 1};",
         [r#"{"a": 1}"#], Error(&["`let v = …; {...v}`"]);
-    a_spread_takes_a_named_rest: "Object.assign($, json(_raw)) let r = rest($); x = {...r, b: 1}; $ = {x: x};",
+    a_spread_takes_a_named_undeclared: "Object.assign($, json(_raw)) let r = undeclared($); x = {...r, b: 1}; $ = {x: x};",
         [r#"{"a": 1}"#], Rows(&[(r#"{"x": {"a": 1, "b": 1}}"#, None)]);
     a_spread_is_no_statement: "{...json(_raw)}",
         [r#"{}"#], Error(&["write `Object.assign($, e)`"]);
@@ -512,10 +512,49 @@ cases! {
         [r#"{"f": true, "a": 1}"#, r#"{"f": false, "a": 1}"#], Rows(&[(r#"{"f": true}"#, None), (r#"{"f": false, "a": 1}"#, None)]);
     a_literal_takes_a_computed_key: r#"Object.assign($, json(_raw)) let p: str = $.p; t: str = {"6": "tcp", "17": "udp"}[p] ?? "other";"#,
         [r#"{"p": 6}"#, r#"{"p": 47}"#], Rows(&[(r#"{"p": 6, "t": "tcp"}"#, None), (r#"{"p": 47, "t": "other"}"#, None)]);
-    rest_is_the_unclaimed_fields: "a: i64; Object.assign($, kv(_raw)) r = rest($);",
+    undeclared_is_the_unclaimed_fields: "a: i64; Object.assign($, kv(_raw)) r = undeclared($);",
         ["a=1 b=2 c=3"], Rows(&[(r#"{"a": 1, "b": "2", "c": "3", "r": {"b": "2", "c": "3"}}"#, None)]);
-    a_closed_object_has_no_rest: "o = {a: 1}; r = rest(o);",
+    a_closed_object_has_no_undeclared: "o = {a: 1}; r = undeclared(o);",
         ["{}"], Error(&["`o`"]);
+    declared_is_the_fields: "a: i64; Object.assign($, kv(_raw)) d = declared($);",
+        ["a=1 b=2"], Rows(&[(r#"{"a": 1, "b": "2", "d": {"_raw": "a=1 b=2", "a": 1}}"#, None)]);
+    declared_drops_the_unclaimed_fields: "a: i64; Object.assign($, kv(_raw)) $ = declared($);",
+        ["a=1 b=2 c=3"], Rows(&[(r#"{"a": 1}"#, None)]);
+    declared_and_undeclared_move_the_unclaimed_fields: "a: i64; Object.assign($, kv(_raw)) more = undeclared($); $ = declared($);",
+        ["a=1 b=2 c=3"], Rows(&[(r#"{"a": 1, "more": {"b": "2", "c": "3"}}"#, None)]);
+    a_guarded_declared_drops_only_on_its_rows: "a: i64; f: bool; Object.assign($, json(_raw)) o: {x: i64, ...} = $.o; if (f) o = declared(o);",
+        [r#"{"a": 1, "f": true, "o": {"x": 1, "y": 2}}"#, r#"{"a": 1, "f": false, "o": {"x": 1, "y": 2}}"#],
+        Rows(&[(r#"{"a": 1, "f": true, "o": {"x": 1}}"#, None), (r#"{"a": 1, "f": false, "o": {"x": 1, "y": 2}}"#, None)]);
+    a_literal_takes_undeclared_as_a_value: "a: i64; Object.assign($, kv(_raw)) $ = {a: a, more: undeclared($)};",
+        ["a=1 b=2"], Rows(&[(r#"{"a": 1, "more": {"b": "2"}}"#, None)]);
+    a_guarded_root_write_runs_only_on_its_rows: "a: i64; f: bool; Object.assign($, json(_raw)) if (f) $ = declared($);",
+        [r#"{"a": 1, "f": true, "b": 2}"#, r#"{"a": 1, "f": false, "b": 2}"#],
+        Rows(&[(r#"{"a": 1, "f": true}"#, None), (r#"{"a": 1, "f": false, "b": 2}"#, None)]);
+    a_guarded_root_write_takes_known_keys: "a: i64; f: bool; Object.assign($, json(_raw)) if (f) $ = {a: a, g: 1};",
+        [r#"{"a": 1, "f": true, "b": 2}"#, r#"{"a": 1, "f": false, "b": 2}"#],
+        Rows(&[(r#"{"a": 1, "g": 1}"#, None), (r#"{"a": 1, "f": false, "b": 2}"#, None)]);
+    a_guarded_root_write_of_unnamed_keys_is_refused: "f: bool; Object.assign($, json(_raw)) if (f) $ = undeclared($);",
+        [r#"{}"#], Error(&["nothing names"]);
+    a_guarded_root_parse_is_refused: "f: bool; Object.assign($, json(_raw)) if (f) $ = json(_raw);",
+        [r#"{}"#], Error(&["nothing names"]);
+    a_root_write_in_a_loop_keeps_each_leafs_type: "Object.assign($, json(_raw)) a = 1; for (let x of [1]) { $ = {_raw: _raw}; }",
+        [r#"{}"#], Rows(&[(r#"{}"#, None)]);
+    a_root_write_that_fails_in_a_try_writes_nothing: "a = 1; caught = false; try { $ = {b: parseInt(_raw), caught: caught}; } catch { caught = true; }",
+        ["x"], Rows(&[(r#"{"a": 1, "caught": true}"#, None)]);
+    a_root_write_in_a_loop_unshares_its_fields: "a = 1; b = a; for (let x of [1, 2]) { $ = {_raw: _raw, a: a + 1, b: b + 10}; }",
+        ["{}"], Rows(&[(r#"{"a": 3, "b": 21}"#, None)]);
+    a_guarded_root_write_keeps_the_records_key_on_rows_it_skips: "f: bool; Object.assign($, json(_raw)) if (f) $ = {b: 1};",
+        [r#"{"f": false, "b": 2}"#, r#"{"f": true, "b": 2}"#], Rows(&[(r#"{"f": false, "b": 2}"#, None), (r#"{"b": 1}"#, None)]);
+    a_guarded_root_write_under_a_value_is_refused: "a = \"x\"; f: bool; Object.assign($, json(_raw)) if (f) $ = {a: {b: 1}};",
+        [r#"{}"#], Error(&["`a` is a value here"]);
+    a_root_parse_in_a_try_is_refused: "a = 1; try { $ = json(_raw); } catch { }",
+        [r#"{}"#], Error(&["skip this `if`, loop or `try`"]);
+    a_guarded_object_write_keeps_the_objects_type: r#"f: bool; Object.assign($, json(_raw)) o = {a: 1}; if (f) { o = {a: "x"}; }"#,
+        [r#"{"f": true}"#], Error(&["to change the type of `o`"]);
+    a_root_write_replaces_the_records_types: r#"a: i64 = 1; $ = {a: "x"};"#,
+        ["{}"], Rows(&[(r#"{"a": "x"}"#, None)]);
+    undeclared_is_a_value: "a: i64; Object.assign($, kv(_raw)) b = $.undeclared().b;",
+        ["a=1 b=2"], Rows(&[(r#"{"a": 1, "b": "2"}"#, None)]);
     switch_is_an_if_chain: r#"Object.assign($, json(_raw)) c: str = $.c; switch (c) { case "a": x = 1; break; case "b": x = 2; break; default: x = 0; }"#,
         [r#"{"c": "a"}"#, r#"{"c": "z"}"#], Rows(&[(r#"{"c": "a", "x": 1}"#, None), (r#"{"c": "z", "x": 0}"#, None)]);
 
@@ -717,8 +756,6 @@ cases! {
         [r#"{"a": 1, "c": "x"}"#], Rows(&[(r#"{"c": 1}"#, None)]);
     a_csv_parse_in_a_loop_writes_the_record: r#"Object.assign($, json(_raw)) xs: array<str> = $.xs; for (let x of xs) { Object.assign($, csv(x, ["a"])) }"#,
         [r#"{"xs": ["1", "2"]}"#], Rows(&[(r#"{"xs": ["1", "2"], "a": "2"}"#, None)]);
-    a_capture_may_not_name_an_engine_field: r#"Object.assign($, grok(_raw, ["%{WORD:__live}"]))"#,
-        ["x"], Error(&["`__live`"]);
     a_parse_key_that_names_a_local_declares_it_again: r#"let status = "x"; Object.assign($, grok(_raw, ["%{INT:status}"]));"#,
         ["200"], Error(&["`status` is a local"]);
     a_json_key_leaves_a_local_of_its_name: r#"let status = "x"; Object.assign($, json(_raw)); s = status;"#,

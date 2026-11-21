@@ -6,7 +6,8 @@ import {
   exitOf,
   movedTo,
   parseRoute,
-  relockHash,
+  testHash,
+  withTest,
   section,
   sentFrom,
   newPipelineHash,
@@ -228,13 +229,27 @@ describe('parseRoute', () => {
     expect(parseRoute('#/build/tests/relock')).toEqual({ tab: 'build', page: 'samples' });
   });
 
-  it('carries a test to lock again to the editor or the routes run, on its sample', () => {
+  it('puts the test chosen in the address, and takes it out again', () => {
+    const routes = '#/build/routes/sample?sample=web&back=x';
+    const alerts = withTest(routes, { test: 'alerts', sample: 'other' });
+    expect(alerts).toBe('#/build/routes/sample?sample=other&back=x&test=alerts');
+    expect(withTest(alerts)).toBe('#/build/routes/sample?sample=other&back=x');
+    const opened = withTest('#/build/pipelines/orders', { test: 'keep id', sample: 'a b' });
+    expect(opened).toBe('#/build/pipelines/orders/for/a%20b?test=keep+id');
+    expect(parseRoute(opened)).toMatchObject({ test: { test: 'keep id', sample: 'a b' } });
+    expect(withTest(opened, { test: 't', sample: 'c' })).toBe(
+      '#/build/pipelines/orders/for/c?test=t',
+    );
+    expect(withTest(opened)).toBe('#/build/pipelines/orders/for/a%20b');
+  });
+
+  it('opens a test in the editor or the routes run, on its sample', () => {
     for (const [pipeline, page] of [
       ['orders', 'pipeline'],
       [undefined, 'routes'],
     ] as const) {
-      const route = parseRoute(relockHash('keep id', 'orders sample', pipeline));
-      expect(route).toMatchObject({ page, relock: { test: 'keep id', sample: 'orders sample' } });
+      const route = parseRoute(testHash('keep id', 'orders sample', pipeline));
+      expect(route).toMatchObject({ page, test: { test: 'keep id', sample: 'orders sample' } });
     }
   });
 

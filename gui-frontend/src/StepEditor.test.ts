@@ -87,10 +87,10 @@ describe('a parser step’s split keys at dots', () => {
     expect(names(body, 'values run to the next key', 'off')).toBe(true);
   });
 
-  it('is offered for CSV, off by default', () => {
-    const body = render_(parser({ type: 'csv', delimiter: ',', splitDots: true }));
-    expect(names(body, 'split keys at dots', 'on')).toBe(true);
-    expect(body).toContain('Off by default for CSV');
+  it('is offered for CSV, on by default', () => {
+    const body = render_(parser({ type: 'csv', delimiter: ',', splitDots: false }));
+    expect(names(body, 'split keys at dots', 'off')).toBe(true);
+    expect(body).toContain('On by default for CSV');
   });
 });
 

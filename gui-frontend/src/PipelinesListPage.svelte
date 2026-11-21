@@ -298,8 +298,4 @@
     padding: 0.5rem 0.6rem;
     border-bottom: 1px solid var(--border);
   }
-
-  .row-actions {
-    text-align: right;
-  }
 </style>
