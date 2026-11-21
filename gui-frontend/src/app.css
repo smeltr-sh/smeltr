@@ -126,8 +126,9 @@ body {
     gap: 0 0.3rem;
   }
 
+  /* Empty alt text keeps the label out of the cell's accessible name, which its column heading already gives. */
   :where(table.readings > * > tr > td[data-label])::before {
-    content: attr(data-label);
+    content: attr(data-label) / '';
     color: var(--dim);
   }
 
