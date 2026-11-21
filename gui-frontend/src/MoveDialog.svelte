@@ -7,8 +7,8 @@
 <script module lang="ts">
   import type { ImportPart } from './api';
 
-  /** An object to move. `pullOne` marks a source one worker of a group reads at a time (`SOURCE_KIND`), whose read
-   * position the group keeps. */
+  /** An object to move. `pullOne` marks a source that one worker of a group reads at a time (`SOURCE_KIND`); the
+   * group keeps its read position. */
   export type MoveTarget = { part: ImportPart; id: string; name?: string; pullOne?: boolean };
 </script>
 
@@ -29,11 +29,11 @@
     readAt,
     onmoved,
   }: {
-    /** What is being moved, or null while the dialog is closed. It is kept mounted and closed rather than removed,
-     * so focus goes back to what opened it. */
+    /** What is being moved, or null while the dialog is closed. The dialog stays mounted, closed, rather than being
+     * removed, so focus goes back to what opened it. */
     moving: MoveTarget | null;
-    /** The areas the person edits, loaded here for the page to bind: it may go to any but this one, so a page offers
-     * Move to… only while there are two. */
+    /** The areas the person edits, loaded here for the page to bind. A move may go to any of them but this one, so a
+     * page offers Move to… only while there are at least two. */
     areas?: Area[];
     /** Whether the page holds unsaved edits, which a move would leave behind a commit they never saw. */
     dirty: boolean;
