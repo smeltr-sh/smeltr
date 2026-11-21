@@ -39,20 +39,25 @@ export function glideTo(
   return config;
 }
 
-/** Glides each element from where it was to where it now is, fading in from its `opacity`, and drawn over the other
- * elements if it is `above`: for elements drawn anew in another place, which `glideTo` cannot follow. An element
- * inside another that glides moves with it, so it glides only by how far it moved within that one. */
+/** Glides each element from where it was to where it now is, fading in from its `opacity`. One that is `above` is
+ * drawn over the other elements, and unfolds from its old height if it was shorter. This is for elements drawn anew
+ * in another place, which `glideTo` cannot follow. An element inside another that glides moves with it, so it glides
+ * only by how far it moved within that one. */
 export function glideCards(
   cards: Map<HTMLElement, { from: DOMRect; opacity?: number; above?: boolean }>,
 ) {
   if (lessMotion()) return;
-  const by = new Map<HTMLElement, { x: number; y: number }>();
+  const by = new Map<HTMLElement, { x: number; y: number; folded: number }>();
   for (const [card, { from }] of cards) {
     const to = card.getBoundingClientRect();
-    by.set(card, { x: from.left - to.left, y: from.top - to.top });
+    by.set(card, {
+      x: from.left - to.left,
+      y: from.top - to.top,
+      folded: Math.max(0, to.height - from.height),
+    });
   }
   for (const [card, { opacity = 1, above }] of cards) {
-    let { x, y } = by.get(card)!;
+    let { x, y, folded } = by.get(card)!;
     let outer = card.parentElement;
     while (outer && !by.has(outer)) outer = outer.parentElement;
     if (outer) {
@@ -60,10 +65,15 @@ export function glideCards(
       y -= by.get(outer)!.y;
     }
     if (Math.abs(x) < 0.5 && Math.abs(y) < 0.5 && opacity === 1) continue;
+    const unfold = above && folded > 0;
     const gliding = card.animate(
       [
-        { transform: `translate(${x}px, ${y}px)`, opacity },
-        { transform: 'none', opacity: 1 },
+        {
+          transform: `translate(${x}px, ${y}px)`,
+          opacity,
+          ...(unfold && { clipPath: `inset(0 0 ${folded}px 0)` }),
+        },
+        { transform: 'none', opacity: 1, ...(unfold && { clipPath: 'inset(0)' }) },
       ],
       { duration: glide(), easing: 'cubic-bezier(0.33, 1, 0.68, 1)' },
     );

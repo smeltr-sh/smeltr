@@ -1532,7 +1532,7 @@
      chip, which ChipPicker draws. */
   /* At rest a step is its surface alone: `--field` on the panel draws it.
      Open, it takes its border and the accent rail down its leading edge. */
-  /* The step being dragged is lifted out of its list, and the gap where it would land opens to its height. */
+  /* The step being dragged is lifted out of its list, and the gap where it would land opens to the height of its head. */
   .card.carried {
     display: none;
   }

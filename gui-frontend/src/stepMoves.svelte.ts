@@ -33,7 +33,7 @@ export type Drop = { list: Step[]; index: number };
 export class StepMoves {
   /** The step being dragged, once held; null otherwise. */
   dragging = $state<Step | null>(null);
-  /** How tall the dragged step is; the gap it would drop into opens to this height. */
+  /** How tall the dragged step's head is; the gap it would drop into opens to this height. */
   height = $state(0);
   /** Where it would land if dropped now; null when the pointer is over no place it can go. */
   over = $state<Drop | null>(null);
@@ -87,9 +87,19 @@ export class StepMoves {
         const row = el.querySelector<HTMLElement>(':scope > .add-row');
         return list && row ? [[list, row] as const] : [];
       });
-    const cardsWere = new Map(cards().map((c) => [c.id, c.getBoundingClientRect()]));
+    // The steps inside a dragged If are not drawn while it is lifted out; they land with it.
+    const drawn = (el: Element) => el.getClientRects().length > 0;
+    const cardsWere = new Map(
+      cards()
+        .filter(drawn)
+        .map((c) => [c.id, c.getBoundingClientRect()]),
+    );
     cardsWere.set(moved, from);
-    const rowsWere = new Map(addRows().map(([list, row]) => [list, row.getBoundingClientRect()]));
+    const rowsWere = new Map(
+      addRows()
+        .filter(([, row]) => drawn(row))
+        .map(([list, row]) => [list, row.getBoundingClientRect()]),
+    );
     this.landing = true;
     const done = move();
     this.said = '';
@@ -170,7 +180,14 @@ export class StepMoves {
   }
 
   #pickUp(step: Step, at: { x: number; y: number }) {
-    this.height = document.getElementById(`step-${step.id}`)?.getBoundingClientRect().height ?? 0;
+    // An open step, or an If with its branches, opens a gap only as tall as its head, so the list it is dragged over
+    // stays short.
+    const card = document.getElementById(`step-${step.id}`);
+    const head = card?.querySelector(':scope > .card-head');
+    this.height =
+      card && head
+        ? head.getBoundingClientRect().height + card.offsetHeight - card.clientHeight
+        : 0;
     this.dragging = step;
     this.at = at;
     this.over = null;
@@ -214,12 +231,13 @@ export class StepMoves {
     };
     let frame = requestAnimationFrame(follow);
     const end = (drop: boolean) => {
-      // From the chip, the step glides to where it drops, or back where it was.
+      // From the chip, the step glides to where it drops, or back where it was, and unfolds from the height of the
+      // gap it had.
       const to = drop ? this.over : null;
       const chip = document.querySelector('.carried-chip')?.getBoundingClientRect();
       void this.#glideMoved(
         step,
-        chip ?? new DOMRect(at.x, at.y),
+        new DOMRect(chip?.x ?? at.x, chip?.y ?? at.y, chip?.width ?? 0, this.height),
         0.4,
         () => to !== null && moveStep(this.#steps(), step, to.list, to.index),
       );
@@ -232,6 +250,8 @@ export class StepMoves {
       removeEventListener('pointercancel', cancel);
       removeEventListener('keydown', key, true);
       setTimeout(() => removeEventListener('click', swallow, true));
+      root.removeProperty('user-select');
+      root.removeProperty('-webkit-user-select');
     };
     const up = () => end(true);
     const cancel = () => end(false);
@@ -246,6 +266,11 @@ export class StepMoves {
     addEventListener('pointercancel', cancel);
     addEventListener('keydown', key, true);
     addEventListener('click', swallow, true);
+    // The press that picked the step up would select the text it is dragged over.
+    getSelection()?.removeAllRanges();
+    const root = document.documentElement.style;
+    root.setProperty('user-select', 'none');
+    root.setProperty('-webkit-user-select', 'none');
   }
 
   /** Where `step` is, as a screen reader says it after a move: its place in its list, and the branch and If that
