@@ -1519,12 +1519,14 @@ impl Default for Holdings {
 }
 
 impl Holdings {
-    /// Holdings with `reserve` bytes for its turn and up to `INBOX_BYTES` shared, from `pool` when given.
+    /// Holdings with `reserve` bytes for its turn and shared bytes from `pool`, as far as the pool lends. Without a
+    /// pool, `INBOX_BYTES` shared.
     pub fn reserving(reserve: usize, pool: Option<Arc<QueuePool>>) -> Holdings {
         Holdings {
             account: Mutex::new(Account::default()),
             reserve,
-            ceiling: INBOX_BYTES,
+            // A receiver buffers into the memory its worker gives it: the pool is sized to that.
+            ceiling: pool.as_ref().map_or(INBOX_BYTES, |p| p.limit()),
             lender: pool.as_ref().map_or(0, |p| p.lender()),
             pool,
             freed: Notify::new(),

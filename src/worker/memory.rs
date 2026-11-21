@@ -262,7 +262,7 @@ pub const LEAST_BATCH_BYTES: usize = 512 * 1024;
 ///
 /// The queue of a destination left out holds what raises its throughput (`egress::pacing`), borrowing from the pool
 /// as far as its share of it, so a busy one takes what idle ones leave and a slow one holds little. A receiver grows
-/// to `io::receiver::INBOX_BYTES`. Only `delivered` destinations are sized: the rest are never built.
+/// as far as its share of the receivers' pool. Only `delivered` destinations are sized: the rest are never built.
 ///
 /// Lookup tables are left out: they are mapped files, whose pages the kernel drops under pressure.
 pub(super) fn fit(
@@ -330,13 +330,14 @@ pub(super) fn fit(
             most: usize::MAX,
         });
     }
-    // The receivers weigh as many default queues: each receiver holds about as much as one.
+    // The receivers weigh as many default queues: each receiver holds about as much as one. Nothing bounds them
+    // above: a receiver buffers what it is sent into the memory the worker has, as a destination's queue does.
     if !reserves.is_empty() {
         claims.push(Claim {
             weight: 2 * reserves.len() as u64,
             halves: 2,
             least: 0,
-            most: reserves.len() * crate::io::receiver::INBOX_BYTES,
+            most: usize::MAX,
         });
     }
     let left = match stated_columnar {
