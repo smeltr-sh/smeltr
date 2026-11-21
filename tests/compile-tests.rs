@@ -765,7 +765,7 @@ fn a_csv_step_column_is_one_key_unless_it_splits_dots() {
     }
 }
 
-/// A CSV step over `_raw` whose columns are `names`, each a `str` and each a path.
+/// A CSV step over `_raw` whose columns are `names`, each a `str`, with dots in a name splitting it into a path.
 fn csv_step(names: &[&str]) -> Step {
     func(
         0,
@@ -801,16 +801,46 @@ fn a_csv_column_writes_an_internal_field_the_engine_does_not_use() {
     b.reclaim(&mut env.pool);
 }
 
-/// The fields the engine fills or reads back are refused as a parser's columns.
+/// A parser inside a function writes a local, which the compiler renames with a temporary's prefix; the reserved-name
+/// check must not refuse it.
 #[test]
-fn a_csv_column_cannot_write_a_field_the_engine_uses() {
-    for name in ["__live", "__source.topic", "__source", "__loc_x", "__inl1"] {
+fn a_csv_parse_into_a_local_of_a_function_compiles() {
+    ok(vec![code(
+        0,
+        r#"function f(s: str): str { let o = {}; Object.assign(o, csv(s, ["a"])); return o.a; } v = f(_raw);"#,
+    )]);
+}
+
+/// A step may not take the names code may not: `__live` stays bool, and the prefixes of the compiler's temporaries
+/// are reserved, for a parser's column and a Rename's target alike.
+#[test]
+fn a_step_cannot_take_a_name_code_cannot() {
+    for (name, why) in [
+        ("__live", "`__live` is already bool"),
+        ("__inl1", "reserves for its own temporaries"),
+        ("__loc_x", "reserves for its own temporaries"),
+    ] {
         let errs = err(vec![csv_step(&["id", name])]);
-        assert!(
-            errs.iter().any(|e| e.message.contains("is the engine's own field")),
-            "{name}: {errs:?}"
-        );
+        assert!(errs.iter().any(|e| e.message.contains(why)), "{name}: {errs:?}");
     }
+    let rename = func(
+        0,
+        FunctionKind::Rename {
+            pairs: vec![("_raw".into(), "__loc_x".into())],
+        },
+    );
+    let errs = err(vec![rename]);
+    assert!(
+        errs.iter()
+            .any(|e| e.message.contains("reserves for its own temporaries")),
+        "{errs:?}"
+    );
+}
+
+/// A parser may write a source's metadata, as an Eval may.
+#[test]
+fn a_csv_column_writes_a_source_field() {
+    ok(vec![csv_step(&["id", "__source.topic"])]);
 }
 
 /// A header nothing declares is still a column the parse writes: it is a `str` field, read like any other.
