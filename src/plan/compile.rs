@@ -2171,7 +2171,14 @@ impl Compiler<'_> {
             }
             return;
         }
+        // An object written over an object replaces it, type and all, where the write reaches every row.
+        let object = match writes.as_slice() {
+            [(Place::Leaf(n), r)] if n == target => matches!(self.resolved_ty(r), DataType::Struct(..)),
+            _ => true,
+        };
+        let replaces = object && guard.is_none() && !self.in_loop();
         let writes = match (typed, self.syms.node(target)) {
+            (false, Some(Node::Object(_))) if replaces => writes,
             (false, Some(node)) => {
                 let held = node_type(&self.syms, node);
                 match self.keep_type(target, &held, writes, value, id) {

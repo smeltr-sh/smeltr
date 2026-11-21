@@ -199,12 +199,13 @@ key an open object may hold: after `x = $.v`, `x: i64;`, `x.a: str;` and,
 after a JSON parse, `k: str;` each name the conversion instead. A later
 assignment keeps the type and converts nothing: an `i64` widens to `f64`,
 a value holds in a `variant`, and any other value is a compile error naming
-`expr as type`. An object keeps its type the same way:
-its fields take the value's, a field the value lacks is null, a key an open
-object has no field for joins its unclaimed fields, and an open value does not
-fit a closed object. `expr as type` converts the value, whatever it is, by
-the same table, and the name it is written to keeps its type: `o = p as
-{a: i64}`. Only `name: type = expr` changes a type, and it converts only a
+`expr as type`. An object written over an object replaces it, type and all,
+as `$ = e` replaces the record. Inside an `if` or a loop, where the write
+reaches only some rows, the object keeps its type the same way: its fields
+take the value's, a field the value lacks is null, a key of the value that an
+open object has no field for joins the object's unclaimed fields, and an open
+value does not fit a closed object. `expr as type` converts the value, whatever it is, by the same
+table. Only `name: type = expr` changes a leaf's type, and it converts only a
 variant: `x: i64 = $.v`, `y: array<str> = []`, `x: str = x as str`. `__live`, which the runtime reads back after the run, stays bound and stays `bool` to the end of a pipeline: a step that removes it or changes its type is a compile error. An object converted to an object type
 takes each field from the value's field of that name, else from a key of its
 unclaimed fields; an open type keeps the value's other keys, and a closed one

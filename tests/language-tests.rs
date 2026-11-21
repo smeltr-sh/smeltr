@@ -228,18 +228,18 @@ cases! {
         [r#"{"t": "garbage"}"#], Rows(&[(r#"{"t": "garbage"}"#, Some(r#"t is "garbage", which could not convert to datetime in w"#))]);
 
     // -- a declaration types the name; `as` converts the value
-    o3_a_different_object_does_not_fit: r#"o = {a: 1}; o = {b: "x"};"#,
-        ["{}"], Error(&[r#"`{b: "x"}`"#, r#"`o: {b: str} = {b: "x"}`"#]);
+    o3_an_object_replaces_an_object: r#"o = {a: 1}; o = {b: "x"};"#,
+        ["{}"], Rows(&[(r#"{"o": {"b": "x"}}"#, None)]);
     o4_a_variant_needs_as: "Object.assign($, json(_raw)) o = {a: 1}; o = $.user;",
         [r#"{"user": 7}"#], Error(&["`o`", "`user as {a: i64}`"]);
     l1_a_plain_write_of_a_variant_needs_as: "x: i64 = 0; Object.assign($, json(_raw)) x = $.v;",
         [r#"{"v": "5"}"#], Error(&["`x`", "`v as i64`"]);
-    o5_an_open_value_needs_as: r#"o = {a: 1}; let pairs = [{key: "a", value: "5"}, {key: "z", value: "y"}]; o = fromEntries(pairs);"#,
-        ["{}"], Error(&["`fromEntries(pairs) as {a: i64}`", "`o: {...} = fromEntries(pairs)`"]);
+    o5_an_open_object_replaces_a_closed_one: r#"o = {a: 1}; let pairs = [{key: "a", value: "5"}, {key: "z", value: "y"}]; o = fromEntries(pairs);"#,
+        ["{}"], Rows(&[(r#"{"o": {"a": "5", "z": "y"}}"#, None)]);
     o6_as_converts_the_value: r#"o = {a: 1}; let pairs = [{key: "a", value: "5"}, {key: "z", value: "y"}]; o = fromEntries(pairs) as {a: i64};"#,
         ["{}"], Rows(&[(r#"{"o": {"a": 5}}"#, None)]);
-    o7_as_does_not_change_the_names_type: r#"o = {a: 1}; o = {b: "x"} as {b: str};"#,
-        ["{}"], Error(&["`o`", r#"`o: {b: str} = {b: "x"}`"#]);
+    o7_a_converted_object_replaces_an_object: r#"o = {a: 1}; o = {b: "x"} as {b: str};"#,
+        ["{}"], Rows(&[(r#"{"o": {"b": "x"}}"#, None)]);
 
     // -- a write adds a field
     a_write_adds_a_field_after_csv: r#"Object.assign($, csv(_raw, ["a", "b"])) c = 1;"#,
@@ -549,6 +549,10 @@ cases! {
         [r#"{}"#], Error(&["`a` is a value here"]);
     a_root_parse_in_a_try_is_refused: "a = 1; try { $ = json(_raw); } catch { }",
         [r#"{}"#], Error(&["skip this `if`, loop or `try`"]);
+    a_guarded_object_write_keeps_the_objects_type: r#"f: bool; Object.assign($, json(_raw)) o = {a: 1}; if (f) { o = {a: "x"}; }"#,
+        [r#"{"f": true}"#], Error(&["to change the type of `o`"]);
+    a_root_write_replaces_the_records_types: r#"a: i64 = 1; $ = {a: "x"};"#,
+        ["{}"], Rows(&[(r#"{"a": "x"}"#, None)]);
     undeclared_is_a_value: "a: i64; Object.assign($, kv(_raw)) b = $.undeclared().b;",
         ["a=1 b=2"], Rows(&[(r#"{"a": 1, "b": "2"}"#, None)]);
     switch_is_an_if_chain: r#"Object.assign($, json(_raw)) c: str = $.c; switch (c) { case "a": x = 1; break; case "b": x = 2; break; default: x = 0; }"#,
