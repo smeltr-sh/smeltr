@@ -4,52 +4,53 @@
   and what the ticks would leave broken shows under the list. What moves replaces whatever the other area holds under
   its id. Move is the commit, against the commit the page read.
 -->
+<script module lang="ts">
+  import type { ImportPart } from './api';
+
+  /** An object to move. `pullOne` marks a source one worker of a group reads at a time (`SOURCE_KIND`), whose read
+   * position the group keeps. */
+  export type MoveTarget = { part: ImportPart; id: string; name?: string; pullOne?: boolean };
+</script>
+
 <script lang="ts">
   import { Busy } from './busy.svelte';
   import Button, { BUSY, SAVE_FIRST } from './Button.svelte';
   import Dialog from './Dialog.svelte';
   import Field from './Field.svelte';
-  import {
-    PART_NAMES,
-    SHARED_SCOPE,
-    currentScope,
-    moveObjects,
-    type ImportPart,
-    type MoveRow,
-  } from './api';
-  import type { Area } from './areas';
+  import { PART_NAMES, SHARED_SCOPE, currentScope, moveObjects, type MoveRow } from './api';
+  import { editableAreas, type Area } from './areas';
+  import { reported } from './errors.svelte';
   import { untrack } from 'svelte';
 
   let {
-    open,
-    part,
-    id,
-    name = id,
-    areas,
+    moving = $bindable(),
+    areas = $bindable([]),
     dirty,
     readAt,
-    pullOne = false,
     onmoved,
-    oncancel,
   }: {
-    /** Kept mounted and closed rather than removed, so the dialog closes and focus goes back to what opened it. */
-    open: boolean;
-    part: ImportPart;
-    id: string;
-    /** What the person calls it, where that is not its id. */
-    name?: string;
-    /** The areas the person edits: it may go to any but this one. */
-    areas: Area[];
+    /** What is being moved, or null while the dialog is closed. It is kept mounted and closed rather than removed,
+     * so focus goes back to what opened it. */
+    moving: MoveTarget | null;
+    /** The areas the person edits, loaded here for the page to bind: it may go to any but this one, so a page offers
+     * Move to… only while there are two. */
+    areas?: Area[];
     /** Whether the page holds unsaved edits, which a move would leave behind a commit they never saw. */
     dirty: boolean;
     /** The commit the page read, which the move is made against, as the page's own Save is. */
     readAt?: string | null;
-    /** A source one worker of a group reads at a time (`SOURCE_KIND`), whose read position the group keeps. */
-    pullOne?: boolean;
     onmoved: (to: string) => void;
-    oncancel: () => void;
   } = $props();
 
+  editableAreas()
+    .then((a) => (areas = a))
+    .catch(reported);
+
+  const open = $derived(moving !== null);
+  const part = $derived(moving?.part ?? 'source');
+  const id = $derived(moving?.id ?? '');
+  const name = $derived(moving?.name ?? id);
+  const oncancel = () => (moving = null);
   const here = currentScope();
   const elsewhere = $derived(areas.filter((a) => a.id !== here));
   let to = $state('');
@@ -97,7 +98,7 @@
    * starts without them. */
   const startsOver = $derived.by(() => {
     if (part !== 'source' || here === SHARED_SCOPE || to === SHARED_SCOPE) return undefined;
-    if (pullOne)
+    if (moving?.pullOne)
       return `${nameOf(to)} has none of ${nameOf(here)}'s progress, so it reads everything again there, and learns its normal again.`;
     return `${nameOf(to)} has none of what ${nameOf(here)} learned as normal for this source, so ${nameOf(to)} learns it again.`;
   });
@@ -115,8 +116,10 @@
     if (blocked) return;
     await busy.run(async () => {
       const res = await moveObjects({ part, id, to, ticked: ticks(), go: true }, readAt);
-      if (res.ok) onmoved(to);
-      else if (res.exceptions) exceptions = res.exceptions;
+      if (res.ok) {
+        moving = null;
+        onmoved(to);
+      } else if (res.exceptions) exceptions = res.exceptions;
     });
   }
 </script>

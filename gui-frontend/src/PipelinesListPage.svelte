@@ -18,8 +18,8 @@
   import { sharedConfig, listPipelines, deletePipeline, type PipelineDto } from './api';
   import ExportDialog from './ExportDialog.svelte';
   import ImportDialog from './ImportDialog.svelte';
-  import MoveDialog from './MoveDialog.svelte';
-  import { editableAreas, type Area } from './areas';
+  import MoveDialog, { type MoveTarget } from './MoveDialog.svelte';
+  import type { Area } from './areas';
 
   // Carried from a sample row's "Run in a pipeline" link (`nav.ts`'s `for`
   // route). Not validated against the sample library here -- a stale link
@@ -53,12 +53,8 @@
   let exporting = $state<{ id: string; name: string } | null>(null);
   let importing = $state(false);
   /** The pipeline being moved into another area (`MoveDialog`). */
-  let moving = $state<{ id: string; name: string } | null>(null);
-  /** The areas the person edits, where a move may go. */
+  let moving = $state<MoveTarget | null>(null);
   let areas: Area[] = $state([]);
-  editableAreas()
-    .then((a) => (areas = a))
-    .catch(reported);
 
   // One sort for both bands: each band sorts within itself, so the shared rows stay under their own heading.
   const pipelineSort = new TableSort<'name' | 'steps'>();
@@ -203,7 +199,7 @@
                   <Button
                     type="button"
                     class="compact"
-                    onclick={() => (moving = { id: p.id, name: p.name || p.id })}
+                    onclick={() => (moving = { part: 'pipeline', id: p.id, name: p.name || p.id })}
                     >Move to&hellip;</Button
                   >
                 {/if}
@@ -231,19 +227,7 @@
   name={exporting?.name ?? ''}
   oncancel={() => (exporting = null)}
 />
-<MoveDialog
-  open={moving !== null}
-  part="pipeline"
-  id={moving?.id ?? ''}
-  name={moving?.name}
-  {areas}
-  dirty={false}
-  onmoved={() => {
-    moving = null;
-    void load();
-  }}
-  oncancel={() => (moving = null)}
-/>
+<MoveDialog bind:moving bind:areas dirty={false} onmoved={() => void load()} />
 <ImportDialog
   open={importing}
   oncancel={() => (importing = false)}

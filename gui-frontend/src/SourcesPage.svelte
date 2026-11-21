@@ -29,8 +29,8 @@
     type KafkaFacts,
     getMapMeasurements,
   } from './api';
-  import { addInto, editableAreas, idsTakenIn, type Area } from './areas';
-  import MoveDialog from './MoveDialog.svelte';
+  import { addInto, idsTakenIn, type Area } from './areas';
+  import MoveDialog, { type MoveTarget } from './MoveDialog.svelte';
   import { holdsSomewhere } from './access';
   import { holdings, sourceReadings } from './mapTerms';
   import NewSource from './NewSource.svelte';
@@ -62,12 +62,9 @@
    * file on the page's Save. */
   let adding: { from?: SourceDto } | null = $state(null);
   /** The source being moved into another area (`MoveDialog`). */
-  let moving: SourceDto | null = $state(null);
+  let moving: MoveTarget | null = $state(null);
   /** The areas the person edits, this one first: where a copy may go, and the rest where a move may. */
   let areas: Area[] = $state([]);
-  editableAreas()
-    .then((a) => (areas = a))
-    .catch(() => {});
   /** The row to show and mark: the one the map landed on, then the one just added. */
   // Follows the route, which can land on another row without remounting the page.
   let highlight = $derived(focus);
@@ -261,8 +258,15 @@
         {/snippet}
         {#snippet rowActions(source, i)}
           {#if areas.length > 1}
-            <button type="button" class="pick" onclick={() => (moving = source)}
-              >Move to&hellip;</button
+            <button
+              type="button"
+              class="pick"
+              onclick={() =>
+                (moving = {
+                  part: 'source',
+                  id: source.id,
+                  pullOne: SOURCE_KIND[source.type] === 'pullOne',
+                })}>Move to&hellip;</button
             >
           {/if}
           <button type="button" class="pick remove" onclick={() => removeSource(i)}>Remove</button>
@@ -290,18 +294,11 @@
         oncancel={() => (adding = null)}
       />
       <MoveDialog
-        open={moving !== null}
-        part="source"
-        id={moving?.id ?? ''}
-        pullOne={!!moving && SOURCE_KIND[moving.type] === 'pullOne'}
-        {areas}
+        bind:moving
+        bind:areas
         dirty={editor.isDirty}
         readAt={editor.readAtCommit}
-        onmoved={() => {
-          moving = null;
-          void editor.load();
-        }}
-        oncancel={() => (moving = null)}
+        onmoved={() => void editor.load()}
       />
       <SaveBar
         dirty={editor.isDirty}

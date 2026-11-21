@@ -38,8 +38,8 @@
   import { bundleRoutes } from './routeFlow';
   import { at, typeLabel, writes } from './destinations';
   import NewDestination from './NewDestination.svelte';
-  import MoveDialog from './MoveDialog.svelte';
-  import { addInto, editableAreas, idsTakenIn, type Area } from './areas';
+  import MoveDialog, { type MoveTarget } from './MoveDialog.svelte';
+  import { addInto, idsTakenIn, type Area } from './areas';
 
   // `focus` is a destination's own way in from the map (design doc "The map"): which card to
   // land on and highlight, set from the route rather than chosen on this page.
@@ -86,12 +86,9 @@
    * and the file on the page's Save. */
   let adding: { from?: DestinationDto } | null = $state(null);
   /** The destination being moved into another area (`MoveDialog`). */
-  let moving: DestinationDto | null = $state(null);
+  let moving: MoveTarget | null = $state(null);
   /** The areas the person edits, this one first: where a copy may go, and the rest where a move may. */
   let areas: Area[] = $state([]);
-  editableAreas()
-    .then((a) => (areas = a))
-    .catch(() => {});
   /** The row to show and mark: the one the map landed on, then the one just added. */
   // Follows the route, which can land on another row without remounting the page.
   let highlight = $derived(focus);
@@ -275,7 +272,10 @@
         {#snippet rowActions(destination, i)}
           {#if captureGroup}{@render captureButton(destination.id, captureGroup)}{/if}
           {#if areas.length > 1}
-            <button type="button" class="pick" onclick={() => (moving = destination)}
+            <button
+              type="button"
+              class="pick"
+              onclick={() => (moving = { part: 'destination', id: destination.id })}
               >Move to&hellip;</button
             >
           {/if}
@@ -305,17 +305,11 @@
         oncancel={() => (adding = null)}
       />
       <MoveDialog
-        open={moving !== null}
-        part="destination"
-        id={moving?.id ?? ''}
-        {areas}
+        bind:moving
+        bind:areas
         dirty={editor.isDirty}
         readAt={editor.readAtCommit}
-        onmoved={() => {
-          moving = null;
-          void editor.load();
-        }}
-        oncancel={() => (moving = null)}
+        onmoved={() => void editor.load()}
       />
 
       {#if capturing !== null && captureGroup}

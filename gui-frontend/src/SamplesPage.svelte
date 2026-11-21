@@ -13,8 +13,8 @@
   import SecondaryTabs from './SecondaryTabs.svelte';
   import { ask } from './Confirm.svelte';
   import AddSampleDialog from './AddSampleDialog.svelte';
-  import MoveDialog from './MoveDialog.svelte';
-  import { editableAreas, type Area } from './areas';
+  import MoveDialog, { type MoveTarget } from './MoveDialog.svelte';
+  import type { Area } from './areas';
   import SampleEditor from './SampleEditor.svelte';
   import UnreadableFiles from './UnreadableFiles.svelte';
   import SortButton from './SortButton.svelte';
@@ -51,12 +51,8 @@
 
   let adding = $state(false);
   /** The sample or test being moved into another area (`MoveDialog`). */
-  let moving: { part: 'sample' | 'test'; id: string; name: string } | null = $state(null);
-  /** The areas a move may go to: those the person edits, except this one. */
+  let moving: MoveTarget | null = $state(null);
   let areas: Area[] = $state([]);
-  editableAreas()
-    .then((a) => (areas = a))
-    .catch(() => {});
 
   // The sample open for editing, by id.
   let editing: string | null = $state(null);
@@ -199,18 +195,13 @@
   />
 
   <MoveDialog
-    open={moving !== null}
-    part={moving?.part ?? 'sample'}
-    id={moving?.id ?? ''}
-    name={moving?.name}
-    {areas}
+    bind:moving
+    bind:areas
     dirty={editing !== null}
     onmoved={() => {
-      moving = null;
       void load();
       void loadTests();
     }}
-    oncancel={() => (moving = null)}
   />
 
   <UnreadableFiles problems={loadWarnings} onchanged={load}>
