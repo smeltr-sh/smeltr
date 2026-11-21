@@ -1068,6 +1068,7 @@ pub const SECRETS: &[(&str, &str)] = &[
     ("SM_SQL_PW", "smeltr-live-1"),
     ("SM_HEC_TOKEN", splunk::TOKEN),
     ("SM_HEC_AUTH", splunk::AUTHORIZATION),
+    ("SM_ENTRA_SECRET", engines::entra::SECRET),
 ];
 
 /// What the sender presents to the receiver.
@@ -1279,18 +1280,29 @@ impl Sink {
             runtime.block_on(async move {
                 listener.set_nonblocking(true).unwrap();
                 let listener = tokio::net::TcpListener::from_std(listener).unwrap();
-                let app = axum::Router::new().fallback(move |uri: axum::http::Uri, body: axum::body::Bytes| {
-                    let (r, b, k) = (r.clone(), b.clone(), k.clone());
-                    async move {
-                        let (docs, answer) = Sink::take(uri.path(), &body);
-                        r.fetch_add(docs.len() as u64, Ordering::Relaxed);
-                        b.fetch_add(body.len() as u64, Ordering::Relaxed);
-                        if let Some(k) = k {
-                            k.lock().unwrap().extend(docs.into_iter().map(Doc::value));
+                let app = axum::Router::new().fallback(
+                    move |uri: axum::http::Uri, headers: axum::http::HeaderMap, body: axum::body::Bytes| {
+                        let (r, b, k) = (r.clone(), b.clone(), k.clone());
+                        async move {
+                            // Log Analytics requests are gzipped.
+                            let gzipped = headers.get("content-encoding").is_some_and(|e| e == "gzip");
+                            let body = if gzipped {
+                                let mut plain = Vec::new();
+                                flate2::read::GzDecoder::new(&body[..]).read_to_end(&mut plain).unwrap();
+                                axum::body::Bytes::from(plain)
+                            } else {
+                                body
+                            };
+                            let (docs, answer) = Sink::take(uri.path(), &body);
+                            r.fetch_add(docs.len() as u64, Ordering::Relaxed);
+                            b.fetch_add(body.len() as u64, Ordering::Relaxed);
+                            if let Some(k) = k {
+                                k.lock().unwrap().extend(docs.into_iter().map(Doc::value));
+                            }
+                            (axum::http::StatusCode::OK, answer)
                         }
-                        (axum::http::StatusCode::OK, answer)
-                    }
-                });
+                    },
+                );
                 // Engines batch up to megabytes a request.
                 let app = app.layer(axum::extract::DefaultBodyLimit::disable());
                 axum::serve(listener, app)

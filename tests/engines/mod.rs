@@ -194,6 +194,8 @@ enum Out {
     Prometheus,
     /// OpenTelemetry logs over HTTP, to the harness's sink.
     Otlp,
+    /// Logs Ingestion API requests, to the harness's sink, signed in at the harness's stand-in for Entra ID.
+    LogAnalytics,
     /// Objects, to an S3 the harness starts.
     S3,
     /// Blobs, to an Azure Blob Storage emulator the harness starts.
@@ -209,6 +211,7 @@ impl Out {
             Out::SplunkHec => "splunk-hec",
             Out::Prometheus => "prometheus",
             Out::Otlp => "otlp",
+            Out::LogAnalytics => "log-analytics",
             Out::S3 => "s3",
             Out::AzureBlob => "azure-blob",
         }
@@ -255,6 +258,10 @@ const TRANSPORTS: &[Transport] = &[
     Transport {
         from: In::Http,
         to: Out::SplunkHec,
+    },
+    Transport {
+        from: In::Http,
+        to: Out::LogAnalytics,
     },
     Transport {
         from: In::Http,
@@ -371,7 +378,7 @@ const WORKLOADS: &[Workload] = &[
         normal: |doc| doc,
         forwards: true,
         // And each source delivering to the sink, each protocol of its own records to itself, and each store of lines.
-        over: |t| !matches!(t.to, Out::Elasticsearch | Out::SplunkHec),
+        over: |t| !matches!(t.to, Out::Elasticsearch | Out::SplunkHec | Out::LogAnalytics),
     },
     Workload {
         name: "json",
@@ -384,6 +391,27 @@ const WORKLOADS: &[Workload] = &[
         forwards: false,
         // Each destination of documents, a document each record, taken from the sender.
         over: |t| matches!(t.to, Out::Elasticsearch | Out::SplunkHec),
+    },
+    Workload {
+        name: "json_timed",
+        steps: || {
+            json!([{"id": "parse", "type": "parser", "input": "_raw", "kind": {"type": "json"}},
+                   {"id": "unraw", "type": "eval", "assignments": [{"target": "_raw", "expr": "null"},
+                                                                  {"target": "TimeGenerated", "expr": "now()"}]}])
+        },
+        expect: |line| serde_json::from_str(line).ok(),
+        // The time each was taken, which no two runs share: an instant is all that is checked of it.
+        normal: |mut doc| {
+            let at = doc.get("TimeGenerated").and_then(Value::as_str);
+            if at.is_some_and(|at| at.len() >= 20 && at.ends_with('Z')) {
+                doc.as_object_mut().unwrap().remove("TimeGenerated");
+            }
+            doc
+        },
+        forwards: false,
+        // Log Analytics, each document stamped with the time it was taken, as a table's rows must be and as Vector's
+        // sink stamps them.
+        over: |t| t.to == Out::LogAnalytics,
     },
     Workload {
         name: "json_app",
@@ -897,6 +925,17 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
         }
         Engine::Vector => {
             std::fs::write(dir.join("vector.json"), vector::config(w, ends).to_string()).unwrap();
+            if ends.give_to() == Some(Out::LogAnalytics) {
+                // Its Azure client signs in only over HTTPS, so at the stand-in's TLS port, under its certificate.
+                let entra = entra::Entra::get();
+                docker
+                    .args([
+                        "-v",
+                        &format!("{}:/etc/engine/entra.pem:ro", entra.certificate.display()),
+                    ])
+                    .args(["-e", "SSL_CERT_FILE=/etc/engine/entra.pem"])
+                    .args(["-e", &format!("AZURE_AUTHORITY_HOST={}", entra.tls())]);
+            }
             docker
                 .args([
                     "-v",
@@ -964,6 +1003,10 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
                             "acknowledgement": "receipt", "index": "main"}),
                     Out::Prometheus => json!({"id": "out", "type": "prometheus", "url": format!("{url}/api/v1/write")}),
                     Out::Otlp => json!({"id": "out", "type": "otlp", "url": url}),
+                    Out::LogAnalytics => json!({"id": "out", "type": "logAnalytics", "endpoint": url,
+                            "ruleId": entra::RULE, "stream": entra::STREAM, "tenantId": entra::TENANT,
+                            "clientId": entra::CLIENT, "clientSecret": "SM_ENTRA_SECRET",
+                            "authEndpoint": entra::Entra::get().plain()}),
                     Out::Kafka | Out::S3 | Out::AzureBlob => unreachable!("{to:?} is no sink"),
                 },
                 Give::Kafka { brokers, topic } => {
@@ -1154,6 +1197,10 @@ mod vector {
                     json!({"type": "opentelemetry", "protocol": {"type": "http", "uri": format!("{url}/v1/logs"),
                        "method": "post", "encoding": {"codec": "otlp"}}})
                 }
+                Out::LogAnalytics => json!({"type": "azure_logs_ingestion", "endpoint": url,
+                       "dcr_immutable_id": entra::RULE, "stream_name": entra::STREAM,
+                       "auth": {"azure_credential_kind": "client_secret_credential", "azure_tenant_id": entra::TENANT,
+                                "azure_client_id": entra::CLIENT, "azure_client_secret": entra::SECRET}}),
                 Out::Kafka | Out::S3 | Out::AzureBlob => unreachable!("{to:?} is no sink"),
             },
             Give::Kafka { brokers, topic } => {
@@ -1214,10 +1261,12 @@ impl Ends {
             },
         };
         let give = match transport.to {
-            Out::Http | Out::Elasticsearch | Out::SplunkHec | Out::Prometheus | Out::Otlp => Give::Sink {
-                url: format!("http://127.0.0.1:{}", sink.port),
-                to: transport.to,
-            },
+            Out::Http | Out::Elasticsearch | Out::SplunkHec | Out::Prometheus | Out::Otlp | Out::LogAnalytics => {
+                Give::Sink {
+                    url: format!("http://127.0.0.1:{}", sink.port),
+                    to: transport.to,
+                }
+            }
             Out::S3 | Out::AzureBlob => Give::Store(stores::Store::start(transport.to, run, rest)),
             Out::Kafka => {
                 let broker = broker.expect("a broker");
@@ -1989,6 +2038,115 @@ mod nifi {
             &format!("/flow/process-groups/{root}"),
             Some(json!({"id": root, "state": "RUNNING"})),
         );
+    }
+}
+
+/// A stand-in for Entra ID's token endpoint, which hands every client secret the same token: in plain HTTP on
+/// loopback for smeltr, and in HTTPS under a certificate of its own for Vector, whose Azure client signs in over
+/// nothing else. Each engine signs in once a run, so neither leg sets its speed.
+pub mod entra {
+    use super::*;
+    use std::io::Write;
+    use std::sync::OnceLock;
+
+    pub const TENANT: &str = "bench";
+    pub const CLIENT: &str = "bench";
+    pub const SECRET: &str = "bench";
+    pub const RULE: &str = "dcr-00000000000000000000000000000000";
+    pub const STREAM: &str = "Custom-Bench";
+
+    pub struct Entra {
+        plain: u16,
+        tls: u16,
+        /// The certificate it serves HTTPS under, for a client to trust.
+        pub certificate: PathBuf,
+    }
+
+    impl Entra {
+        /// The one stand-in, started on first use.
+        pub fn get() -> &'static Entra {
+            static ENTRA: OnceLock<Entra> = OnceLock::new();
+            ENTRA.get_or_init(Entra::start)
+        }
+
+        fn start() -> Entra {
+            let signed = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+            let certificate = std::env::temp_dir().join(format!("engine-speed-entra-{}.pem", std::process::id()));
+            std::fs::write(&certificate, signed.cert.pem()).unwrap();
+            let config = Arc::new(
+                rustls::ServerConfig::builder_with_provider(rustls::crypto::aws_lc_rs::default_provider().into())
+                    .with_safe_default_protocol_versions()
+                    .unwrap()
+                    .with_no_client_auth()
+                    .with_single_cert(
+                        vec![signed.cert.der().clone()],
+                        rustls::pki_types::PrivateKeyDer::Pkcs8(signed.signing_key.serialize_der().into()),
+                    )
+                    .unwrap(),
+            );
+            let plain = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let tls = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let ports = (plain.local_addr().unwrap().port(), tls.local_addr().unwrap().port());
+            std::thread::spawn(move || {
+                for stream in plain.incoming().flatten() {
+                    std::thread::spawn(move || answer(stream));
+                }
+            });
+            std::thread::spawn(move || {
+                for stream in tls.incoming().flatten() {
+                    let connection = rustls::ServerConnection::new(config.clone()).unwrap();
+                    std::thread::spawn(move || answer(rustls::StreamOwned::new(connection, stream)));
+                }
+            });
+            Entra {
+                plain: ports.0,
+                tls: ports.1,
+                certificate,
+            }
+        }
+
+        pub fn plain(&self) -> String {
+            format!("http://127.0.0.1:{}", self.plain)
+        }
+
+        pub fn tls(&self) -> String {
+            format!("https://localhost:{}", self.tls)
+        }
+    }
+
+    /// Reads each request on `stream` and answers it with a token good for an hour.
+    fn answer(stream: impl Read + Write) {
+        let mut stream = std::io::BufReader::new(stream);
+        let body = json!({"token_type": "Bearer", "expires_in": 3600, "ext_expires_in": 3600, "access_token": "bench"})
+            .to_string();
+        loop {
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                if std::io::BufRead::read_line(&mut stream, &mut line).unwrap_or(0) == 0 {
+                    return;
+                }
+                let lower = line.to_ascii_lowercase();
+                if let Some(n) = lower.strip_prefix("content-length:") {
+                    length = n.trim().parse().unwrap_or(0);
+                }
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            let mut form = vec![0; length];
+            if stream.read_exact(&mut form).is_err() {
+                return;
+            }
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let stream = stream.get_mut();
+            if stream.write_all(reply.as_bytes()).and_then(|_| stream.flush()).is_err() {
+                return;
+            }
+        }
     }
 }
 
