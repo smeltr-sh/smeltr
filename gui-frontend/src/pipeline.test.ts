@@ -8,6 +8,8 @@ import {
   newStep,
   parseInputFor,
   flatSteps,
+  moveStep,
+  stepAside,
   orderedStepErrors,
   parsePipelineDtoJson,
   stepSummary,
@@ -118,6 +120,60 @@ describe('flatSteps', () => {
     const [a, t, e, z] = [ev('a'), ev('t'), ev('e'), ev('z')];
     const branch = ifStep('check', 'cond', [t], [e]);
     expect(flatSteps([a, branch, z])).toEqual([a, branch, t, e, z]);
+  });
+});
+
+/** The pipeline as an outline: each step's id, an `if`'s branches in brackets. */
+function outline(steps: Step[]): string {
+  return steps
+    .map((s) => (s.type === 'if' ? `${s.id}[${outline(s.then)}|${outline(s.else)}]` : s.id))
+    .join(' ');
+}
+
+describe('stepAside', () => {
+  it('walks a step into an if, through both branches and out, and back', () => {
+    const m = ev('m');
+    const steps = [m, ifStep('i', 'c', [ev('t')], [ev('e')]), ev('z')];
+    const down = [];
+    while (stepAside(steps, m, 1)) down.push(outline(steps));
+    expect(down).toEqual([
+      'i[m t|e] z',
+      'i[t m|e] z',
+      'i[t|m e] z',
+      'i[t|e m] z',
+      'i[t|e] m z',
+      'i[t|e] z m',
+    ]);
+    const up = [];
+    while (stepAside(steps, m, -1)) up.push(outline(steps));
+    expect(up).toEqual([...down.slice(0, -1).reverse(), 'm i[t|e] z']);
+  });
+
+  it('enters an empty branch', () => {
+    const m = ev('m');
+    const steps = [m, ifStep('i', 'c', [], [])];
+    stepAside(steps, m, 1);
+    expect(outline(steps)).toBe('i[m|]');
+    stepAside(steps, m, 1);
+    expect(outline(steps)).toBe('i[|m]');
+  });
+});
+
+describe('moveStep', () => {
+  it('counts the index before the step leaves its list', () => {
+    const [a, b, c] = [ev('a'), ev('b'), ev('c')];
+    const steps = [a, b, c];
+    moveStep(steps, a, steps, 3);
+    expect(outline(steps)).toBe('b c a');
+  });
+
+  it('carries an if with its branches, and never into itself', () => {
+    const inner = ifStep('j', 'c', [], []);
+    const outer = ifStep('i', 'c', [inner], []);
+    const steps = [outer, ev('z')];
+    expect(moveStep(steps, outer, (inner as { then: Step[] }).then, 0)).toBe(false);
+    expect(moveStep(steps, outer, steps, 2)).toBe(true);
+    expect(outline(steps)).toBe('z i[j[|]|]');
   });
 });
 

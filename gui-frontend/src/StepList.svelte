@@ -6,6 +6,7 @@
     STEP_TYPES,
     STEP_LABELS,
     STEP_SUMMARIES,
+    stepSummary,
     type Step,
     type StepType,
     type PreviewError,
@@ -17,6 +18,8 @@
   import TypeCatalog, { type CatalogType } from './TypeCatalog.svelte';
   import { STEP_GLYPHS } from './stepGlyphs';
   import { glideTo } from './glide';
+  import { stepMoves } from './stepMoves.svelte';
+  import StepGlyph from './StepGlyph.svelte';
 
   let {
     steps,
@@ -99,6 +102,10 @@
     help: STEP_SUMMARIES[type],
   }));
 
+  const { moves, outermost } = stepMoves(() => steps);
+  /** Whether a step dropped now lands at `index` of this list. */
+  const dropsAt = (index: number) => moves.over?.list === steps && moves.over.index === index;
+
   /** Where the step the catalog adds goes, as an index into `steps`; null while it is shut. */
   let addingAt = $state<number | null>(null);
 
@@ -110,11 +117,11 @@
   }
 </script>
 
-<div class="step-list">
+<div class="step-list" class:dragging={moves.dragging !== null} {@attach moves.shows(steps)}>
   {#each steps as step, i (step)}
     <div class="slot" animate:glideTo>
       {#if editable()}
-        <div class="insert">
+        <div class="insert" class:drop={dropsAt(i)}>
           <button type="button" onclick={() => (addingAt = i)} aria-label="Insert step"
             >+ step</button
           >
@@ -147,13 +154,20 @@
   {/each}
 
   {#if editable()}
-    <div class="add-row">
+    <div class="add-row" class:drop={dropsAt(steps.length)}>
       <button type="button" onclick={() => (addingAt = steps.length)} aria-label="Add step"
         >+ step</button
       >
     </div>
   {/if}
 </div>
+
+{#if outermost && moves.dragging}
+  <div class="carried" style:left="{moves.at.x + 12}px" style:top="{moves.at.y + 12}px">
+    <StepGlyph type={moves.dragging.type} />
+    <span class="ellipsis">{stepSummary(moves.dragging, pipelineNames)}</span>
+  </div>
+{/if}
 
 <Dialog open={addingAt !== null} title="add step" wide oncancel={() => (addingAt = null)}>
   <TypeCatalog types={TYPES} cards onpick={add} />
@@ -210,6 +224,50 @@
     .insert {
       display: none;
     }
+  }
+
+  /* While a step is dragged, the gap it would drop into shows as a solid rule, and nothing offers to add. */
+  .dragging .insert,
+  .dragging .add-row {
+    cursor: grabbing;
+  }
+  .dragging .insert button,
+  .dragging .add-row button {
+    visibility: hidden;
+  }
+  .insert.drop {
+    opacity: 1;
+  }
+  .insert.drop::before,
+  .add-row.drop::before {
+    border-top: 2px solid var(--accent);
+  }
+  .add-row {
+    position: relative;
+  }
+  .add-row.drop::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+  }
+
+  /* The dragged step, beside the pointer. */
+  .carried {
+    position: fixed;
+    z-index: 100;
+    pointer-events: none;
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+    max-width: 20rem;
+    padding: 0.3rem 0.6rem;
+    background: var(--field);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius);
+    box-shadow: 0 6px 18px oklch(0% 0 0 / 0.18);
+    font-size: var(--text-label);
   }
 
   .add-row button,
