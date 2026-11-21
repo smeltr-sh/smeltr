@@ -859,7 +859,8 @@ fn send_report(
 
 /// A runtime the supervisor owns: one process, one incarnation, killable as a tree.
 pub struct RuntimeHandle {
-    process: crate::process::Contained,
+    /// Boxed: on Windows a `Contained` alone would make every `Result` that hands a runtime back too large to move.
+    process: Box<crate::process::Contained>,
     control: Control,
     /// The thread decoding this runtime's frames, joined once the tree is dead. A runtime writes its final report
     /// and its last captures just before exiting, so the process ending is not the reader having finished with
@@ -978,7 +979,7 @@ impl RuntimeHandle {
         // its tree: what was started is ended before the failure is reported, on every such path.
         let (control, reader, incarnation, commit) = RuntimeHandle::attach(&mut process, spec, inbox)?;
         Ok(RuntimeHandle {
-            process,
+            process: Box::new(process),
             control,
             reader: Some(reader),
             incarnation,
