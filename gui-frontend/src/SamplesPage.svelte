@@ -6,7 +6,7 @@
 -->
 <script lang="ts">
   import { Busy } from './busy.svelte';
-  import Button, { BUSY } from './Button.svelte';
+  import Button, { BUSY, SAVE_FIRST } from './Button.svelte';
   import { reported, unreported } from './errors.svelte';
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
@@ -279,7 +279,10 @@
               </td>
               <td class="right">
                 {#if !readOnly}
-                  <Button onclick={() => remove(s)} disabled={saving.on ? BUSY : ''}>Delete</Button>
+                  <Button
+                    onclick={() => remove(s)}
+                    disabled={saving.on ? BUSY : editing !== null ? SAVE_FIRST : ''}>Delete</Button
+                  >
                 {/if}
               </td>
             </tr>
