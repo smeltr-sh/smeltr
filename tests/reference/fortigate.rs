@@ -7,7 +7,7 @@
 //! takes the header off, the key-value parser splits the body, a lookup on
 //! the source IP adds the asset's owner and criticality, and the mapping
 //! moves the vendor's names onto ECS ones. The keys the mapping does not
-//! use go under `fortinet.`, which is where `rest($)` puts them in
+//! use go under `fortinet.`, which is where `undeclared($)` puts them in
 //! `docs/examples.md`.
 
 use super::{Clock, Pipeline, mix, pick};
@@ -392,7 +392,7 @@ const DECLARED: &[(&str, &str)] = &[
 ];
 
 /// Every other key the four record kinds carry, moved under `fortinet.`.
-/// `rest($)` gathers whatever the mapping did not move; a rename step moves
+/// `undeclared($)` gathers whatever the mapping did not move; a rename step moves
 /// only a field the pipeline knows, so these are declared as the text a
 /// key-value pair is, and a key a later FortiOS adds lands at the
 /// document's top level instead.

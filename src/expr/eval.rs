@@ -358,7 +358,9 @@ fn eval_object_op(op: ObjectOp, args: &[Ir], ty: &DataType, batch: &Batch, ctx: 
             o::entries(ctx, cols[0], &value_ty.unwrap_or(DataType::Null))
         }
         ObjectOp::FromEntries => o::from_entries(ctx, cols[0]),
-        ObjectOp::Omit => unreachable!("`omit` lowers to an object and a merge of its unclaimed fields"),
+        ObjectOp::Omit | ObjectOp::Declared | ObjectOp::Undeclared => {
+            unreachable!("`omit`, `declared` and `undeclared` lower to objects")
+        }
         ObjectOp::Get => o::get(ctx, cols[0], cols[1]),
     };
     for v in vals {

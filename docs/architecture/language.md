@@ -199,12 +199,13 @@ key an open object may hold: after `x = $.v`, `x: i64;`, `x.a: str;` and,
 after a JSON parse, `k: str;` each name the conversion instead. A later
 assignment keeps the type and converts nothing: an `i64` widens to `f64`,
 a value holds in a `variant`, and any other value is a compile error naming
-`expr as type`. An object keeps its type the same way:
-its fields take the value's, a field the value lacks is null, a key an open
-object has no field for joins its unclaimed fields, and an open value does not
-fit a closed object. `expr as type` converts the value, whatever it is, by
-the same table, and the name it is written to keeps its type: `o = p as
-{a: i64}`. Only `name: type = expr` changes a type, and it converts only a
+`expr as type`. An object written over an object replaces it, type and all,
+as `$ = e` replaces the record. Inside an `if` or a loop, where the write
+reaches only some rows, the object keeps its type the same way: its fields
+take the value's, a field the value lacks is null, a key of the value that an
+open object has no field for joins the object's unclaimed fields, and an open
+value does not fit a closed object. `expr as type` converts the value, whatever it is, by the same
+table. Only `name: type = expr` changes a leaf's type, and it converts only a
 variant: `x: i64 = $.v`, `y: array<str> = []`, `x: str = x as str`. `__live`, which the runtime reads back after the run, stays bound and stays `bool` to the end of a pipeline: a step that removes it or changes its type is a compile error. An object converted to an object type
 takes each field from the value's field of that name, else from a key of its
 unclaimed fields; an open type keeps the value's other keys, and a closed one
@@ -455,6 +456,9 @@ switch (c) { case "a": x = 1; break; default: x = 0; }
   loop and a `try`.
 - `$ = e` replaces the record's fields and unclaimed fields; the engine's
   `__` fields and the locals stay, and `_raw` goes unless `e` carries it.
+  Inside an `if`, a loop or a `try` it does so on the rows it runs on, and, as
+  with `Object.assign($, a)`, an `e` that may hold keys nothing names is a
+  compile error there.
 - A `try` stops where an exception happens: the row leaves the body, and every
   block and loop inside it, for the nearest `try` with a `catch`. A write
   whose value fails does not happen: the name keeps what it held. The `catch`
@@ -485,8 +489,6 @@ switch (c) { case "a": x = 1; break; default: x = 0; }
   `delete(e)` are refused.
 - `switch` is TypeScript's: a case without `break` falls through to the next.
   It is an `if` chain.
-- `rest(o)` is `o`'s unclaimed fields as an open object; on a closed object it
-  is a compile error.
 
 ## A name is a leaf or an object
 
@@ -609,7 +611,10 @@ unclaimed keys no field has. `entries(o)` pairs each key with its value, as
 open. `fromEntries(pairs)` is an open object with no fields, holding each
 pair, a later key winning. `omit(o, k, ...)` is `o` without those paths: a
 literal key drops its field, and a key only the row knows nulls the field
-it names there, at any depth. Each is also a method: `o.keys()`.
+it names there, at any depth. `declared(o)` is `o`'s fields as a closed
+object, and `undeclared(o)` its unclaimed fields as an open one, so together
+they are `o`; `undeclared` of a closed object is a compile error. Each is also
+a method: `o.keys()`.
 
 ## Rename
 
