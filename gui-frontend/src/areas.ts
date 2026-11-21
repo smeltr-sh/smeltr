@@ -41,10 +41,12 @@ export async function idsTakenIn(
   return (await Promise.all(read)).flat();
 }
 
-/** Saves `made` into `area`, after what is there, against the commit that read it. The commit it made, or null where
- * the leader refused it, which it has reported. */
+/** Saves `made` into `area`, after what is there, against `base`: the commit the calling page read, so a branch that
+ * moved since is refused as its own Save would be. The commit it made, or null where the leader refused it, which it
+ * has reported. */
 export async function addInto(
   area: string,
+  base: string | null,
   made:
     { section: 'sources'; object: SourceDto } | { section: 'destinations'; object: DestinationDto },
 ): Promise<string | null> {
@@ -52,7 +54,7 @@ export async function addInto(
   if (!there.config) return null;
   const res =
     made.section === 'sources'
-      ? await putSources([...there.config.sources, made.object], there.commit, area)
-      : await putDestinations([...there.config.destinations, made.object], there.commit, area);
+      ? await putSources([...there.config.sources, made.object], base, area)
+      : await putDestinations([...there.config.destinations, made.object], base, area);
   return res.ok ? (res.commit ?? null) : null;
 }

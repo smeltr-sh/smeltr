@@ -49,7 +49,7 @@
     /** Whether a draft with a good id can be added. */
     ready?: (draft: O) => boolean;
     /** The draft's fields, under its id. */
-    fields: Snippet<[O]>;
+    fields: Snippet<[O, string | undefined]>;
     /** An object to copy: the dialog opens on its fields, every one as it is but the id. */
     from?: O;
     /** Where a copy may go, the page's own area first. */
@@ -146,7 +146,7 @@
       <Field required label="id" error={idProblem(draft.id, taken)}>
         <input type="text" class="mono" bind:value={draft.id} />
       </Field>
-      {@render fields(draft)}
+      {@render fields(draft, into || undefined)}
     </div>
   {:else}
     <TypeCatalog

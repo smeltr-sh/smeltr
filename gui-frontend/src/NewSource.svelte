@@ -61,7 +61,7 @@
   {onadd}
   {oncancel}
 >
-  {#snippet fields(draft)}
-    <SourceFields source={draft} {secrets} {kafka} {readAt} {onsaved} />
+  {#snippet fields(draft, area)}
+    <SourceFields source={draft} {secrets} {kafka} {readAt} {onsaved} {area} />
   {/snippet}
 </NewObject>

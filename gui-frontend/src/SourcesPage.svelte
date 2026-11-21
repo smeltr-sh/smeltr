@@ -135,7 +135,10 @@
   /** Lists a new one here, saved with the page; a copy into another area is saved there and then. */
   async function add(made: SourceDto, area?: string) {
     if (area && area !== currentScope()) {
-      const commit = await addInto(area, { section: 'sources', object: made });
+      const commit = await addInto(area, editor.readAtCommit, {
+        section: 'sources',
+        object: made,
+      });
       if (!commit) return;
       // The branch moved past what this page read, though nothing here changed.
       editor.readAtCommit = commit;
