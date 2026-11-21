@@ -1122,7 +1122,13 @@ impl Smeltr {
             process,
             data_dir,
             rest: cores.rest.clone(),
-            transform: cores.transform.clone(),
+            // Unpinned, the worker may run on any core, so the Cores column samples all of them.
+            transform: if cores.pin == Pin::Off {
+                &cores.rest
+            } else {
+                &cores.transform
+            }
+            .clone(),
         }
     }
 
