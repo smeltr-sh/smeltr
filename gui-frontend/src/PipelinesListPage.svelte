@@ -18,6 +18,8 @@
   import { sharedConfig, listPipelines, deletePipeline, type PipelineDto } from './api';
   import ExportDialog from './ExportDialog.svelte';
   import ImportDialog from './ImportDialog.svelte';
+  import MoveDialog from './MoveDialog.svelte';
+  import { editableAreas, type Area } from './areas';
 
   // Carried from a sample row's "Run in a pipeline" link (`nav.ts`'s `for`
   // route). Not validated against the sample library here -- a stale link
@@ -50,6 +52,13 @@
   /** The pipeline being exported, or null. */
   let exporting = $state<{ id: string; name: string } | null>(null);
   let importing = $state(false);
+  /** The pipeline being moved into another area (`MoveDialog`). */
+  let moving = $state<{ id: string; name: string } | null>(null);
+  /** The areas the person edits, where a move may go. */
+  let areas: Area[] = $state([]);
+  editableAreas()
+    .then((a) => (areas = a))
+    .catch(reported);
 
   // One sort for both bands: each band sorts within itself, so the shared rows stay under their own heading.
   const pipelineSort = new TableSort<'name' | 'steps'>();
@@ -190,6 +199,14 @@
                   class="compact"
                   onclick={() => (exporting = { id: p.id, name: p.name || p.id })}>Export</Button
                 >
+                {#if !readOnly && areas.length > 1}
+                  <Button
+                    type="button"
+                    class="compact"
+                    onclick={() => (moving = { id: p.id, name: p.name || p.id })}
+                    >Move to&hellip;</Button
+                  >
+                {/if}
                 {#if !readOnly}
                   <Button
                     type="button"
@@ -213,6 +230,19 @@
   pipeline={exporting?.id ?? ''}
   name={exporting?.name ?? ''}
   oncancel={() => (exporting = null)}
+/>
+<MoveDialog
+  open={moving !== null}
+  part="pipeline"
+  id={moving?.id ?? ''}
+  name={moving?.name}
+  {areas}
+  dirty={false}
+  onmoved={() => {
+    moving = null;
+    void load();
+  }}
+  oncancel={() => (moving = null)}
 />
 <ImportDialog
   open={importing}

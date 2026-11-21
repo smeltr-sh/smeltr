@@ -1694,21 +1694,6 @@ export function putDestinations(
   return configJson(inArea('/destinations', area), json('PUT', destinations), { base });
 }
 
-/** Moves `id` from the chip's area into `to`, in one commit, against `base` as a save is. A source takes the routes
- * that start at it and a sample the tests that run over it. Refused where something left behind still uses what
- * moves, or where `to` already holds something of the same name. */
-export function moveObject(
-  kind: 'source' | 'destination' | 'sample',
-  id: string,
-  to: string,
-  base?: string | null,
-): Promise<MutationResult> {
-  const section = `${kind}s`;
-  return configJson(inArea(`/${section}/${encodeURIComponent(id)}/move`), json('POST', { to }), {
-    base,
-  });
-}
-
 /** What the leader reads out of a PEM: every certificate in it, or why it is
  * not one. Asked of the leader because `leader::tls` already reads PEM, and a
  * second reading in the browser would drift from the one a save is judged by. */
@@ -2053,6 +2038,48 @@ export function importExport(
   body.append('file', file);
   if (answers) body.append('answers', JSON.stringify(answers));
   return configJson(inArea('/imports', into), { method: 'POST', body }, { base: at ?? null });
+}
+
+/** What a person calls each kind of object, capitalized, as a list of them shows it. */
+export const PART_NAMES: Record<ImportPart, string> = {
+  pipeline: 'Pipeline',
+  lookupTable: 'Lookup table',
+  grokPattern: 'Grok pattern',
+  schema: 'Schema',
+  sample: 'Sample',
+  test: 'Test',
+  route: 'Route',
+  source: 'Source',
+  destination: 'Destination',
+};
+
+/** One object a move lists: how it stands where it goes, whether it goes, and whether the move needs it. */
+export interface MoveRow extends ImportListed {
+  ticked: boolean;
+  needed: boolean;
+}
+
+/** What a move answers: each object it lists, why the ticks cannot move as they are, the commit both areas were read
+ * at, and once written, the commit the move made. */
+export type MoveResult = MutationResult & {
+  rows?: MoveRow[];
+  exceptions?: string[];
+  at?: string;
+};
+
+/** What a mover asks: the object, where it goes, what goes with it (absent, the least the move takes), and `go` to
+ * write it. What goes replaces whatever the other area holds under its id. */
+export interface MoveAsk {
+  part: ImportPart;
+  id: string;
+  to: string;
+  ticked?: { part: ImportPart; id: string }[];
+  go?: boolean;
+}
+
+/** `ask` from the chip's area: written in one commit against `base` when `ask.go`, and otherwise only listed. */
+export function moveObjects(ask: MoveAsk, base?: string | null): Promise<MoveResult> {
+  return configJson(inArea('/moves'), json('POST', ask), { base });
 }
 
 // -- samples ----------------------------------------------------------------

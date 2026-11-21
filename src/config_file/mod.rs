@@ -34,6 +34,7 @@ mod import;
 mod links;
 mod load;
 mod merge;
+mod moving;
 mod sample;
 mod test;
 mod upgrade;
@@ -79,6 +80,7 @@ pub use load::{
     web_url,
 };
 pub use merge::{ObjectConflict, SectionMerge, Side, is_section_file, merge_section, text_merge_keeps_each_side};
+pub use moving::{MoveRow, Moving};
 pub use sample::{
     MAX_SAMPLE_RECORDS, SAMPLES_DIR, SampleDto, SampleSummary, list_samples, put_path, read_sample, record_source,
     refuse_sample_size, sample_bytes, sample_columns, sample_path, sample_records,

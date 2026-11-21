@@ -802,7 +802,7 @@ fn per_file_edits<T: serde::Serialize>(
 
 /// [`refuse_broken_merge_of`] for a save to `writing`'s area alone.
 fn refuse_broken_merge(writing: &Writing, edits: &[git::FileEdit]) -> Result<(), Envelope<Save>> {
-    let part = Part {
+    let part = AreaEdits {
         prefix: &writing.prefix,
         edits,
     };
@@ -810,7 +810,7 @@ fn refuse_broken_merge(writing: &Writing, edits: &[git::FileEdit]) -> Result<(),
 }
 
 /// One area a commit writes: its bundle's prefix, and the edits under it, each named relative to the bundle.
-struct Part<'a> {
+struct AreaEdits<'a> {
     prefix: &'a str,
     edits: &'a [git::FileEdit],
 }
@@ -877,7 +877,7 @@ fn errors_of(loaded: Result<config_file::LoadedSystem, config_file::BundleError>
 /// failure this save introduces is refused.
 ///
 /// `parts` are the areas one commit writes, each with its edits: one for a section's save, two for a move.
-fn refuse_broken_merge_of(writing: &Writing, parts: &[Part]) -> Result<(), Envelope<Save>> {
+fn refuse_broken_merge_of(writing: &Writing, parts: &[AreaEdits]) -> Result<(), Envelope<Save>> {
     let repo = writing.repo.clone();
     let parent = writing.parent.clone();
     let shared = config_file::SHARED_DIR;
@@ -1041,89 +1041,105 @@ impl Writing {
         refuse_worse(errors_in(new.clone(), &self.at()), errors_in(old.clone(), &before))
     }
 
-    /// Moves the source, destination or sample `id` from this area into `to`, in one commit. A source takes the
-    /// routes that start at it, since a route belongs to its source, and a sample the tests that run over it; a
-    /// destination goes alone. `to` must be open on the same branch at the same commit.
-    ///
-    /// Whatever stays behind and still names it -- a route in another group, a route delivering to a destination --
-    /// is a reference the move breaks, and the checks every save goes through refuse it, naming the group it breaks.
-    pub(crate) fn save_move(&self, to: &Writing, moved: Moved, id: &str, author: &Actor) -> Envelope<Save> {
-        if to.prefix == self.prefix {
-            return Envelope::refused(Refusal::invalid(format!(
-                "{} {id:?} is in {} already",
-                moved.noun(),
-                to.area()
-            )));
-        }
+    /// Refused when objects in this area cannot move to another area `to`: a branch that moved between the two reads,
+    /// or a group the branch does not hold.
+    pub(crate) fn can_move_to(&self, to: &Writing) -> Result<(), NotWritten> {
         if to.parent != self.parent {
-            return Save::refused(moved_since_you_loaded_it(&self.parent, Some(&to.parent)));
+            return Err(moved_since_you_loaded_it(&self.parent, Some(&to.parent)));
         }
-        // A save would write a group it does not find, and the object would land where no page reads it.
+        // A save would write a group it does not find, and the objects would land where no page reads them.
         if let Some(group) = group_of(&to.prefix)
             && !smeltr::leader::tree::groups_at(&self.repo, &self.parent).is_ok_and(|g| g.iter().any(|g| g == group))
         {
-            return Envelope::refused(Refusal::not_found(format!("this branch has no worker group {group:?}")));
+            return Err(Refusal::not_found(format!("this branch has no worker group {group:?}")).into());
         }
-        let edits = match self.move_edits(to, moved, id) {
-            Ok(edits) => edits,
-            Err(response) => return response,
-        };
-        let message = format!("move {} {id} to {}", moved.noun(), to.area());
-        match self.commit_in_repo(edits, &message, author) {
-            Ok(commit) => Save::done(commit),
-            Err(e) => Save::refused(e),
-        }
+        Ok(())
     }
 
     /// `shared`, or the group this writes.
-    fn area(&self) -> &str {
+    pub(crate) fn area(&self) -> &str {
         group_of(&self.prefix).unwrap_or(config_file::SHARED_DIR)
     }
 
-    /// The edits of [`Writing::save_move`], each named from the repository's root, once the bundles on both sides
-    /// pass the checks a save goes through.
-    fn move_edits(&self, to: &Writing, moved: Moved, id: &str) -> Result<Vec<git::FileEdit>, Envelope<Save>> {
+    /// The edits that move `going` out of this area into `to`, each named from the repository's root, once the bundles
+    /// on both sides pass the checks a save goes through. Each object replaces whatever `to` holds under its id, and a
+    /// lookup table's file goes with it. `to` must pass [`Writing::can_move_to`].
+    pub(crate) fn move_edits(
+        &mut self,
+        to: &mut Writing,
+        written: config_file::Objects,
+    ) -> Result<Vec<git::FileEdit>, Envelope<Save>> {
+        use config_file::Part;
+        let going = written.ids();
+        let refused = |e: Refusal| Envelope::refused(e);
         let (old_from, old_to) = (self.read(), to.read());
-        let (mut from, mut into) = (old_from.file.clone(), old_to.file.clone());
-        let (found, section) = match moved {
-            Moved::Source => (
-                take_into(&mut from.sources, &mut into.sources, |s| s.id == id),
-                Touches::Sources,
-            ),
-            Moved::Destination => (
-                take_into(&mut from.destinations, &mut into.destinations, |d| d.id == id),
-                Touches::Destinations,
-            ),
-            Moved::Sample => return self.sample_move_edits(to, id),
-        };
-        if found == 0 {
-            return Err(self.has_no(moved, id));
-        }
-        let routes = match moved {
-            Moved::Source => take_into(&mut from.routes, &mut into.routes, |r| r.source == id),
-            Moved::Destination | Moved::Sample => 0,
-        };
+        let mut from = old_from.file.clone();
+        let goes = |part: Part, id: &str| going.contains(&(part, id.to_string()));
+        from.pipelines.retain(|o| !goes(Part::Pipeline, &o.id));
+        from.lookup_tables.retain(|o| !goes(Part::LookupTable, &o.id));
+        from.grok_patterns.retain(|o| !goes(Part::GrokPattern, &o.id));
+        from.schemas.retain(|o| !goes(Part::Schema, &o.id));
+        from.routes.retain(|o| !goes(Part::Route, &o.id));
+        from.sources.retain(|o| !goes(Part::Source, &o.id));
+        from.destinations.retain(|o| !goes(Part::Destination, &o.id));
+        let mut into = old_to.file.clone();
+        crate::import_api::upsert(&mut into, written.file.clone());
 
-        for (writing, old, new) in [(self, &old_from.file, &from), (to, &old_to.file, &into)] {
-            writing.refuse_worse_alone(old, new)?;
-        }
-        let edits_of = |old: &RawBundle, new: &FileConfig| -> Result<Vec<git::FileEdit>, Refusal> {
-            let mut edits = edits_for(new, old, section)?;
-            if routes > 0 {
-                edits.extend(edits_for(new, old, Touches::Routes)?);
+        // Each table's file, copied to the same path under `to`, where its table names it. Staged so the checks below
+        // read the tables against it.
+        let mut files = self.files();
+        let mut lookups = Vec::new();
+        for path in written.file.lookup_tables.iter().filter_map(lookup_file_of) {
+            match files.read(path) {
+                Ok(Some(content)) => lookups.push(git::FileEdit {
+                    path: path.to_string(),
+                    content: Some(content),
+                }),
+                Ok(None) => {}
+                Err(e) => return Err(refused(Refusal::internal(e.to_string()))),
             }
-            Ok(edits)
-        };
-        let (from_edits, to_edits) = match (edits_of(&old_from, &from), edits_of(&old_to, &into)) {
-            (Ok(f), Ok(t)) => (f, t),
-            (Err(e), _) | (_, Err(e)) => return Err(Envelope::refused(e)),
-        };
+        }
+        to.stage(lookups.clone()).map_err(refused)?;
+        self.seen = to.seen.clone();
+
+        self.refuse_worse_alone(&old_from.file, &from)?;
+        to.refuse_worse_alone(&old_to.file, &into)?;
+        let mut from_edits = edits_for(&from, &old_from, Touches::Every).map_err(refused)?;
+        let mut to_edits = edits_for(&into, &old_to, Touches::Every).map_err(refused)?;
+        to_edits.extend(lookups);
+
+        let path =
+            |p: Result<String, config_file::BundleError>| p.map_err(|e| refused(Refusal::invalid(e.to_string())));
+        for (part, id) in &going {
+            let gone = match part {
+                Part::Sample => config_file::sample_path(id),
+                Part::Test => config_file::test_path(id),
+                _ => continue,
+            };
+            from_edits.push(git::FileEdit {
+                path: path(gone)?,
+                content: None,
+            });
+        }
+        for sample in &written.samples {
+            to_edits.push(git::FileEdit {
+                path: path(config_file::sample_path(&sample.id))?,
+                content: Some(config_file::sample_bytes(sample)),
+            });
+        }
+        for test in &written.tests {
+            to_edits.push(git::FileEdit {
+                path: path(config_file::test_path(&test.id))?,
+                content: Some(config_file::test_bytes(test)),
+            });
+        }
+
         let parts = [
-            Part {
+            AreaEdits {
                 prefix: &self.prefix,
                 edits: &from_edits,
             },
-            Part {
+            AreaEdits {
                 prefix: &to.prefix,
                 edits: &to_edits,
             },
@@ -1134,81 +1150,13 @@ impl Writing {
         Ok(edits)
     }
 
-    /// A sample's file, and the file of each test that runs over it, removed here and written unchanged into `to`. A
-    /// test left behind would name a sample its area no longer holds. No worker reads either, so no bundle check runs
-    /// (`write_one_file`); a test whose pipeline `to` does not hold cannot run there, and its run says so.
-    fn sample_move_edits(&self, to: &Writing, id: &str) -> Result<Vec<git::FileEdit>, Envelope<Save>> {
-        let invalid = |e: String| Envelope::refused(Refusal::invalid(e));
-        let mut here = self.files();
-        let mut there = to.files();
-        let (tests, _) = config_file::list_tests(&mut here);
-        let mut going = vec![("sample", config_file::sample_path(id), id.to_string())];
-        going.extend(
-            (tests.into_iter())
-                .filter(|t| t.sample == id)
-                .map(|t| ("test", config_file::test_path(&t.id), t.id)),
-        );
-        let (mut out, mut into) = (Vec::new(), Vec::new());
-        for (noun, path, file_id) in going {
-            let path = path.map_err(|e| invalid(e.to_string()))?;
-            let Some(content) = here.read(&path).map_err(|e| invalid(e.to_string()))? else {
-                return Err(self.has_no(Moved::Sample, id));
-            };
-            // What is there already would be replaced unseen: the same id, or another whose slug is the same.
-            if there.read(&path).map_err(|e| invalid(e.to_string()))?.is_some() {
-                return Err(Envelope::refused(Refusal::conflict(format!(
-                    "{} already holds a {noun} at {path}, where {file_id:?} would go; rename or delete it first",
-                    to.area()
-                ))));
-            }
-            out.push(git::FileEdit {
-                path: path.clone(),
-                content: None,
-            });
-            into.push(git::FileEdit {
-                path,
-                content: Some(content),
-            });
-        }
-        let mut edits = self.in_repo(out);
-        edits.extend(to.in_repo(into));
-        Ok(edits)
-    }
-
-    fn has_no(&self, moved: Moved, id: &str) -> Envelope<Save> {
-        Envelope::refused(Refusal::not_found(format!(
-            "{} has no {} {id:?}",
-            self.area(),
-            moved.noun()
-        )))
-    }
-}
-
-/// What [`Writing::save_move`] moves.
-#[derive(Clone, Copy)]
-pub(crate) enum Moved {
-    Source,
-    Destination,
-    Sample,
-}
-
-impl Moved {
-    fn noun(self) -> &'static str {
-        match self {
-            Moved::Source => "source",
-            Moved::Destination => "destination",
-            Moved::Sample => "sample",
+    /// Commits `edits` from [`Writing::move_edits`] in one commit.
+    pub(crate) fn commit_move(&self, edits: Vec<git::FileEdit>, message: &str, author: &Actor) -> Envelope<Save> {
+        match self.commit_in_repo(edits, message, author) {
+            Ok(commit) => Save::done(commit),
+            Err(e) => Save::refused(e),
         }
     }
-}
-
-/// Moves each item of `from` that `which` picks onto the end of `into`, in order, and answers how many moved.
-fn take_into<T>(from: &mut Vec<T>, into: &mut Vec<T>, which: impl Fn(&T) -> bool) -> usize {
-    let (going, staying): (Vec<T>, Vec<T>) = std::mem::take(from).into_iter().partition(|t| which(t));
-    *from = staying;
-    let moved = going.len();
-    into.extend(going);
-    moved
 }
 
 /// What a writer is told when the branch is not where they read it. Their change is the one thing here that is *not*
@@ -1368,70 +1316,6 @@ pub async fn put_destinations(
     }
     at.save(actor, Touches::Destinations, "edit destinations".into(), |file| {
         file.destinations = destinations
-    })
-    .await
-}
-
-/// Where a source or destination moves: `shared`, or a group id.
-#[derive(serde::Deserialize)]
-pub struct MoveTo {
-    to: String,
-}
-
-pub async fn move_source(
-    Extension(actor): Extension<Actor>,
-    Extension(access): Extension<smeltr::leader::access::Access>,
-    at: Addressed,
-    AxPath((_, id)): AxPath<(String, String)>,
-    Json(MoveTo { to }): Json<MoveTo>,
-) -> Envelope<Save> {
-    move_object(Moved::Source, actor, access, at, id, to).await
-}
-
-pub async fn move_destination(
-    Extension(actor): Extension<Actor>,
-    Extension(access): Extension<smeltr::leader::access::Access>,
-    at: Addressed,
-    AxPath((_, id)): AxPath<(String, String)>,
-    Json(MoveTo { to }): Json<MoveTo>,
-) -> Envelope<Save> {
-    move_object(Moved::Destination, actor, access, at, id, to).await
-}
-
-pub async fn move_sample(
-    Extension(actor): Extension<Actor>,
-    Extension(access): Extension<smeltr::leader::access::Access>,
-    at: Addressed,
-    AxPath((_, id)): AxPath<(String, String)>,
-    Json(MoveTo { to }): Json<MoveTo>,
-) -> Envelope<Save> {
-    move_object(Moved::Sample, actor, access, at, id, to).await
-}
-
-async fn move_object(
-    moved: Moved,
-    actor: Actor,
-    access: smeltr::leader::access::Access,
-    at: Addressed,
-    id: String,
-    to: String,
-) -> Envelope<Save> {
-    // The gate judged the area moved from, which the path names. The one moved to is in the body.
-    let need = crate::policy::Need::Area {
-        area: to.clone(),
-        level: smeltr::leader::access::Level::Editor,
-    };
-    if !need.met_by(&access) {
-        return Envelope::refused(Refusal::from(need));
-    }
-    blocking_save(move || {
-        let opened = at
-            .open()
-            .and_then(|from| Ok((from, Writing::open(&at.branch, at.base.as_deref(), &to)?)));
-        match opened {
-            Ok((from, into)) => from.save_move(&into, moved, &id, &actor),
-            Err(e) => Save::refused(e),
-        }
     })
     .await
 }
@@ -2812,7 +2696,7 @@ fn refuse_worse_read(writing: &Writing, edits: &[git::FileEdit]) -> Result<(), E
 #[cfg(test)]
 mod tests {
     use super::*;
-    use smeltr::config_file::MetricsSourceDto;
+    use smeltr::config_file::{MetricsSourceDto, Part};
     use std::path::PathBuf;
 
     /// The shape the GUI places a save's error by (`api.ts`, `ApiError`).
@@ -3629,10 +3513,36 @@ mod tests {
         }
     }
 
-    fn move_to(data: &Path, from: &str, to: &str, moved: Moved, id: &str) -> Envelope<Save> {
+    fn move_to(data: &Path, from: &str, to: &str, part: Part, id: &str) -> Envelope<crate::move_api::MoveAnswer> {
+        move_ticked(data, from, to, part, id, None)
+    }
+
+    /// Moves `id` with only what `ticked` names, or the least it takes when `None`.
+    fn move_ticked(
+        data: &Path,
+        from: &str,
+        to: &str,
+        part: Part,
+        id: &str,
+        ticked: Option<&[(Part, &str)]>,
+    ) -> Envelope<crate::move_api::MoveAnswer> {
         let from = Writing::open_in(data, "work", None, from).unwrap();
-        let to = Writing::open_in(data, "work", None, to).unwrap();
-        from.save_move(&to, moved, id, &Actor::system())
+        let to_writing = Writing::open_in(data, "work", None, to).unwrap();
+        let ask = crate::move_api::MoveAsk {
+            part,
+            id: id.to_string(),
+            to: to.to_string(),
+            ticked: ticked.map(|t| {
+                (t.iter())
+                    .map(|(part, id)| config_file::PartId {
+                        part: *part,
+                        id: id.to_string(),
+                    })
+                    .collect()
+            }),
+            go: true,
+        };
+        crate::move_api::move_between(from, to_writing, ask, &Actor::system())
     }
 
     fn ids_in(data: &Path, area: &str) -> (Vec<String>, Vec<String>) {
@@ -3649,7 +3559,7 @@ mod tests {
     fn a_source_moves_with_its_routes_in_one_commit() {
         let data = a_repo_with_a_shared_route("move-source");
         let before = Reading::open_in(&data, "work", "shared").unwrap().commit;
-        let response = move_to(&data, "shared", "west", Moved::Source, "fleet-audit");
+        let response = move_to(&data, "shared", "west", Part::Source, "fleet-audit");
         assert!(response.succeeded(), "moved: {response:?}");
 
         assert_eq!(ids_in(&data, "shared"), (vec![], vec![]));
@@ -3692,7 +3602,7 @@ mod tests {
             .unwrap();
         let before = Reading::open_in(&data, "work", "shared").unwrap().commit;
 
-        let response = move_to(&data, "shared", "west", Moved::Source, "fleet-audit");
+        let response = move_to(&data, "shared", "west", Part::Source, "fleet-audit");
         assert!(!response.succeeded(), "a route in east still starts at it");
         let said = format!("{:?}", response.errors);
         assert!(
@@ -3754,7 +3664,7 @@ mod tests {
     #[test]
     fn a_destination_moves_alone_in_one_commit() {
         let data = a_repo_with_a_shared_destination("move-destination", false);
-        let response = move_to(&data, "shared", "west", Moved::Destination, "archive");
+        let response = move_to(&data, "shared", "west", Part::Destination, "archive");
         assert!(response.succeeded(), "moved: {response:?}");
 
         assert_eq!(destination_ids_in(&data, "shared"), Vec::<String>::new());
@@ -3775,10 +3685,20 @@ mod tests {
         let data = a_repo_with_a_shared_destination("move-destination-delivered", true);
         let before = Reading::open_in(&data, "work", "shared").unwrap().commit;
 
-        let response = move_to(&data, "shared", "west", Moved::Destination, "archive");
-        assert!(!response.succeeded(), "r1 in shared still delivers to it");
-        let said = format!("{:?}", response.errors);
-        assert!(said.contains("archive"), "it names the destination: {said}");
+        let response = move_ticked(
+            &data,
+            "shared",
+            "west",
+            Part::Destination,
+            "archive",
+            Some(&[(Part::Destination, "archive")]),
+        );
+        assert_eq!(
+            response.errors[0].message,
+            "Route fleet-audit → passthrough stays in shared and delivers to destination archive, which shared would \
+             no longer have. Tick the route to move it with the destination.",
+            "{response:?}"
+        );
         assert_eq!(
             Reading::open_in(&data, "work", "shared").unwrap().commit,
             before,
@@ -3836,7 +3756,7 @@ mod tests {
     #[test]
     fn a_sample_moves_with_its_tests_in_one_commit() {
         let data = a_repo_with_a_shared_sample("move-sample");
-        let response = move_to(&data, "shared", "west", Moved::Sample, "logins");
+        let response = move_to(&data, "shared", "west", Part::Sample, "logins");
         assert!(response.succeeded(), "moved: {response:?}");
 
         assert_eq!(
@@ -3863,34 +3783,99 @@ mod tests {
         std::fs::remove_dir_all(&data).ok();
     }
 
-    /// A test of the same name in the group would be replaced unseen: the move is refused, and the branch is where it
-    /// was.
+    /// A move replaces what the group holds under the same id: west's own `t1` becomes the one that moved.
     #[test]
-    fn a_sample_move_onto_a_test_of_the_same_name_is_refused() {
+    fn a_sample_move_replaces_a_test_of_the_same_id() {
         let data = a_repo_with_a_shared_sample("move-sample-onto");
         Writing::open_in(&data, "work", None, "west")
             .unwrap()
             .commit(
                 vec![git::FileEdit {
                     path: "tests/t1.json".to_string(),
-                    content: Some(b"{}".to_vec()),
+                    content: Some(
+                        serde_json::to_vec(&serde_json::json!({
+                            "id": "t1", "name": "west's t1", "pipeline": "passthrough", "sample": "logins",
+                            "lockedAt": 0, "rowsIn": 1, "fields": [], "rows": [],
+                        }))
+                        .unwrap(),
+                    ),
                 }],
                 "west's own t1",
                 &Actor::system(),
             )
             .unwrap();
-        let before = Reading::open_in(&data, "work", "shared").unwrap().commit;
 
-        let response = move_to(&data, "shared", "west", Moved::Sample, "logins");
+        let response = move_to(&data, "shared", "west", Part::Sample, "logins");
+        assert!(response.succeeded(), "moved: {response:?}");
+        let reading = Reading::open_in(&data, "work", "west").unwrap();
+        let t1 = config_file::read_test(&mut reading.files(), "t1").unwrap().unwrap();
+        assert_eq!(t1.name, "t1", "shared's, not west's own");
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    /// Between groups, a source takes its route, the route's pipeline and the table it looks up in, with the table's
+    /// file, in one commit: east sees nothing of west's.
+    #[test]
+    fn between_groups_a_source_takes_what_its_route_needs_and_a_table_its_file() {
+        let data = a_repo_with_a_shared_route("move-between-groups");
+        let west = serde_json::json!({
+            "sources.json": [{"id": "fw", "type": "metrics", "bucketSeconds": 10}],
+            "pipelines/sites.json": {"id": "sites", "name": "sites", "steps": [
+                {"type": "lookup", "id": "site", "input": "_raw", "table": "sites", "matchKind": "exact",
+                 "multiplicity": "first", "keyColumn": "ip", "outputs": [{"source": "site", "field": "site"}]}]},
+            "routes.json": [{"id": "r-fw", "source": "fw", "pipeline": "sites"}],
+            "lookup-tables.json": [{"id": "sites", "type": "csv", "path": "lookups/sites.csv", "delimiter": ","}],
+        });
+        let mut edits: Vec<git::FileEdit> = (west.as_object().unwrap().iter())
+            .map(|(path, body)| git::FileEdit {
+                path: path.clone(),
+                content: Some(serde_json::to_vec(body).unwrap()),
+            })
+            .collect();
+        let mut incoming = smeltr::lookup::store::Incoming::new(&git::repo_path(&data)).unwrap();
+        std::io::Write::write_all(&mut incoming, b"ip,site\n10.0.0.1,hq\n").unwrap();
+        edits.push(git::FileEdit {
+            path: "lookups/sites.csv".to_string(),
+            content: Some(incoming.finish(None).unwrap().text().into_bytes()),
+        });
+        Writing::open_in(&data, "work", None, "west")
+            .unwrap()
+            .commit(edits, "seed", &Actor::system())
+            .expect("seeded");
+
+        let response = move_to(&data, "west", "east", Part::Source, "fw");
+        assert!(response.succeeded(), "moved: {response:?}");
+        let ticked: Vec<_> = (response.body.rows.iter())
+            .filter(|r| r.ticked)
+            .map(|r| (r.listed.part, r.listed.id.as_str()))
+            .collect();
         assert_eq!(
-            response.errors[0].message,
-            "west already holds a test at tests/t1.json, where \"t1\" would go; rename or delete it first",
-            "{response:?}"
+            ticked,
+            [
+                (Part::Source, "fw"),
+                (Part::Route, "r-fw"),
+                (Part::Pipeline, "sites"),
+                (Part::LookupTable, "sites")
+            ]
         );
+        let log = git::log(&git::repo_path(&data), "work", 1).unwrap();
+        assert_eq!(log[0].subject, "move source fw to east");
+        let mut files = log[0].files.clone();
+        files.sort();
         assert_eq!(
-            Reading::open_in(&data, "work", "shared").unwrap().commit,
-            before,
-            "nothing written"
+            files,
+            [
+                "groups/east/lookup-tables.json",
+                "groups/east/lookups/sites.csv",
+                "groups/east/pipelines/sites.json",
+                "groups/east/routes.json",
+                "groups/east/sources.json",
+                "groups/west/lookup-tables.json",
+                "groups/west/lookups/sites.csv",
+                "groups/west/pipelines/sites.json",
+                "groups/west/routes.json",
+                "groups/west/sources.json",
+            ]
         );
         std::fs::remove_dir_all(&data).ok();
     }
@@ -3899,7 +3884,7 @@ mod tests {
     fn a_move_into_a_group_the_branch_does_not_hold_is_refused() {
         let data = a_repo_with_a_shared_route("move-nowhere");
         let before = Reading::open_in(&data, "work", "shared").unwrap().commit;
-        let response = move_to(&data, "shared", "north", Moved::Source, "fleet-audit");
+        let response = move_to(&data, "shared", "north", Part::Source, "fleet-audit");
         assert_eq!(
             response.errors[0].message, "this branch has no worker group \"north\"",
             "{response:?}"
@@ -3915,12 +3900,12 @@ mod tests {
     #[test]
     fn a_move_names_what_it_cannot_find_and_where_it_already_is() {
         let data = a_repo_with_a_shared_route("move-refusals");
-        let response = move_to(&data, "shared", "west", Moved::Source, "nowhere");
+        let response = move_to(&data, "shared", "west", Part::Source, "nowhere");
         assert_eq!(
             response.errors[0].message, "shared has no source \"nowhere\"",
             "{response:?}"
         );
-        let response = move_to(&data, "shared", "shared", Moved::Source, "fleet-audit");
+        let response = move_to(&data, "shared", "shared", Part::Source, "fleet-audit");
         assert_eq!(
             response.errors[0].message, "source \"fleet-audit\" is in shared already",
             "{response:?}"

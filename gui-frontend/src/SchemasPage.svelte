@@ -7,6 +7,9 @@
   `shared/`'s, changed in `shared/`. A row opens to the schema's fields, narrowed to the search.
 -->
 <script lang="ts">
+  import MoveDialog from './MoveDialog.svelte';
+  import { editableAreas, type Area } from './areas';
+  import Button from './Button.svelte';
   import EditInShared from './EditInShared.svelte';
   import UnreadableFiles from './UnreadableFiles.svelte';
   import SectionShell from './SectionShell.svelte';
@@ -45,6 +48,13 @@
   let { showJson = false, open }: { showJson?: boolean; open?: string } = $props();
 
   const readOnly = !editable();
+  /** The schema being moved into another area (`MoveDialog`), by id. */
+  let moving = $state<string | null>(null);
+  /** The areas the person edits, where a move may go. */
+  let areas: Area[] = $state([]);
+  editableAreas()
+    .then((a) => (areas = a))
+    .catch(reported);
 
   let schemas: SchemaDto[] = $state([]);
   /** What `shared/` declares, which this group's pipelines may name as well. Never saved from here. */
@@ -244,6 +254,11 @@
                 </td>
                 <td class="used">
                   {@render usedBy(users.get(s.id))}
+                  {#if !readOnly && areas.length > 1 && s.id}
+                    <Button type="button" class="compact" onclick={() => (moving = s.id)}
+                      >Move to&hellip;</Button
+                    >
+                  {/if}
                   {#if !readOnly}
                     <CrossButton
                       removes
@@ -278,6 +293,19 @@
       {#if matches !== null && matches.size === 0}
         <p class="dim">No schema or field matches “{q.trim()}”.</p>
       {/if}
+      <MoveDialog
+        open={moving !== null}
+        part="schema"
+        id={moving ?? ''}
+        {areas}
+        dirty={editor.isDirty}
+        readAt={editor.readAtCommit}
+        onmoved={() => {
+          moving = null;
+          void editor.load();
+        }}
+        oncancel={() => (moving = null)}
+      />
       <SaveBar
         dirty={editor.isDirty}
         saving={editor.saving}

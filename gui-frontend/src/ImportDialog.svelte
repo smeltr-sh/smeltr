@@ -11,6 +11,7 @@
   import Dialog from './Dialog.svelte';
   import Field from './Field.svelte';
   import {
+    PART_NAMES,
     SHARED_SCOPE,
     importExport,
     listCertificates,
@@ -31,17 +32,6 @@
     onimported,
   }: { open: boolean; oncancel: () => void; onimported: () => void } = $props();
 
-  const PARTS: Record<ImportPart, string> = {
-    pipeline: 'Pipeline',
-    lookupTable: 'Lookup table',
-    grokPattern: 'Grok pattern',
-    schema: 'Schema',
-    sample: 'Sample',
-    test: 'Test',
-    route: 'Route',
-    source: 'Source',
-    destination: 'Destination',
-  };
   const STANDINGS = { new: 'New', same: 'Same as here', taken: 'Taken' };
 
   /** Shared or a group's id; '' until one is chosen. */
@@ -71,14 +61,16 @@
 
   /** A taken object by its name and the id that is taken, or by its id when that is its name. */
   const takenLabel = (l: ImportListed) =>
-    l.name && l.name !== l.id ? `${PARTS[l.part]} ${l.name} (${l.id})` : `${PARTS[l.part]} ${l.id}`;
+    l.name && l.name !== l.id
+      ? `${PART_NAMES[l.part]} ${l.name} (${l.id})`
+      : `${PART_NAMES[l.part]} ${l.id}`;
   const key = (l: ImportListed) => `${l.part}\u0000${l.id}`;
   const credKey = (c: ImportCredential) => `${c.certificate}\u0000${c.name}`;
   let kept = $derived(listed.filter((l) => !leftOut[key(l)]));
   let taken = $derived(kept.filter((l) => l.standing === 'taken'));
   /** The secrets and certificates a source or destination being imported names. */
   let needed = $derived.by(() => {
-    const by = new Set(kept.map((l) => `${PARTS[l.part]} ${l.id}`));
+    const by = new Set(kept.map((l) => `${PART_NAMES[l.part]} ${l.id}`));
     return credentials.filter((c) => c.namedBy.some((n) => by.has(n)));
   });
 
@@ -205,7 +197,7 @@
         <tbody>
           {#each listed as l (key(l))}
             <tr>
-              <td>{PARTS[l.part]}</td>
+              <td>{PART_NAMES[l.part]}</td>
               <td class="mono">{l.name ?? l.id}</td>
               <td class:dim={l.standing === 'same'} class:taken={l.standing === 'taken'}
                 >{STANDINGS[l.standing]}</td
@@ -213,7 +205,7 @@
               <td>
                 <input
                   type="checkbox"
-                  aria-label="Import {PARTS[l.part]} {l.name ?? l.id}"
+                  aria-label="Import {PART_NAMES[l.part]} {l.name ?? l.id}"
                   checked={!leftOut[key(l)]}
                   disabled={busy.on}
                   onchange={(e) => (leftOut[key(l)] = !e.currentTarget.checked)}

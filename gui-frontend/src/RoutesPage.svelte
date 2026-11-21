@@ -9,6 +9,9 @@
   routes. A destination made from a route card is saved to `destinations.json` on Add.
 -->
 <script lang="ts">
+  import MoveDialog from './MoveDialog.svelte';
+  import { editableAreas, type Area } from './areas';
+  import { reported } from './errors.svelte';
   // A link can open a new route (`make`, from the map), and a pipeline made for one comes back to it (`chose`):
   //
   // ```mermaid
@@ -229,6 +232,13 @@
     return () => off.forEach((f) => f());
   });
   const readOnly = !editable();
+  /** The route being moved into another area (`MoveDialog`), by id. */
+  let moving = $state<string | null>(null);
+  /** The areas the person edits, where a move may go. */
+  let areas: Area[] = $state([]);
+  editableAreas()
+    .then((a) => (areas = a))
+    .catch(reported);
   /** Destinations brought onto a card and not yet wired, per source (`RouteFlow`). Kept here because collapsing a
    * card unmounts its body. */
   const unwired = new SvelteMap<string, string[]>();
@@ -612,6 +622,7 @@
               bind:extras={() => unwired.get(card.source) ?? [], (v) => unwired.set(card.source, v)}
               onaddroute={readOnly ? undefined : () => addBranch(card.source)}
               onremoveroute={removeRoute}
+              onmovetoarea={readOnly || areas.length < 2 ? undefined : (r) => (moving = r.id)}
               onorderroute={readOnly ? undefined : shiftRoute}
               onmoveroute={(to) => expanded.set(to, true)}
               onsource={(to) => moveCard(card.source, to)}
@@ -680,6 +691,20 @@
       oncancel={() => (sourcing = null)}
     />
 
+    <MoveDialog
+      open={moving !== null}
+      part="route"
+      id={moving ?? ''}
+      name={moving ? routeNames.get(moving) : undefined}
+      {areas}
+      dirty={isDirty}
+      readAt={routesEditor.readAtCommit}
+      onmoved={() => {
+        moving = null;
+        void load();
+      }}
+      oncancel={() => (moving = null)}
+    />
     <SaveBar
       dirty={isDirty}
       {saving}

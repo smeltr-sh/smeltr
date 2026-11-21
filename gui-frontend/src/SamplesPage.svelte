@@ -13,7 +13,7 @@
   import SecondaryTabs from './SecondaryTabs.svelte';
   import { ask } from './Confirm.svelte';
   import AddSampleDialog from './AddSampleDialog.svelte';
-  import MoveObject from './MoveObject.svelte';
+  import MoveDialog from './MoveDialog.svelte';
   import { editableAreas, type Area } from './areas';
   import SampleEditor from './SampleEditor.svelte';
   import UnreadableFiles from './UnreadableFiles.svelte';
@@ -50,8 +50,8 @@
   const saving = new Busy();
 
   let adding = $state(false);
-  /** The sample being moved into another area (`MoveObject`). */
-  let moving: SampleSummary | null = $state(null);
+  /** The sample or test being moved into another area (`MoveDialog`). */
+  let moving: { part: 'sample' | 'test'; id: string; name: string } | null = $state(null);
   /** The areas a move may go to: those the person edits, except this one. */
   let areas: Area[] = $state([]);
   editableAreas()
@@ -198,14 +198,13 @@
     }}
   />
 
-  <MoveObject
+  <MoveDialog
     open={moving !== null}
-    kind="sample"
+    part={moving?.part ?? 'sample'}
     id={moving?.id ?? ''}
     name={moving?.name}
     {areas}
     dirty={editing !== null}
-    tests={moving ? testsOn(moving.id) : []}
     onmoved={() => {
       moving = null;
       void load();
@@ -272,8 +271,9 @@
               </td>
               <td class="right">
                 {#if !readOnly && areas.length > 1}
-                  <Button onclick={() => (moving = s)} disabled={saving.on ? BUSY : ''}
-                    >Move to&hellip;</Button
+                  <Button
+                    onclick={() => (moving = { part: 'sample', id: s.id, name: s.name })}
+                    disabled={saving.on ? BUSY : ''}>Move to&hellip;</Button
                   >
                 {/if}
               </td>
@@ -363,6 +363,11 @@
                   {/if}
                 </td>
                 <td class="right">
+                  {#if !readOnly && areas.length > 1}
+                    <Button onclick={() => (moving = { part: 'test', id: t.id, name: t.name })}
+                      >Move to&hellip;</Button
+                    >
+                  {/if}
                   {#if !readOnly}
                     <Button onclick={() => removeTest(t)} disabled={deletingTest.on ? BUSY : ''}>
                       Delete
