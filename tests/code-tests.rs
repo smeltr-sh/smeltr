@@ -6468,7 +6468,10 @@ fn an_object_keeps_its_type_and_as_converts_a_value() {
     let pairs = r#"let pairs = [{key: "a", value: "5"}, {key: "z", value: "y"}];"#;
     let plan = ok(vec![
         code(0, JSON),
-        code(1, &format!(r#"o = {{a: 1}}; o = {{b: "x"}}; {pairs} p = {{a: 1}}; p = fromEntries(pairs);"#)),
+        code(
+            1,
+            &format!(r#"o = {{a: 1}}; o = {{b: "x"}}; {pairs} p = {{a: 1}}; p = fromEntries(pairs);"#),
+        ),
     ]);
     assert_eq!(
         cols(&run(&plan, &["{}"]), &["o", "p"]),
