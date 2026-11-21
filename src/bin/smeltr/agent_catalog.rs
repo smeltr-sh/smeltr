@@ -52,8 +52,8 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "POST",
         path: "/api/areas/:area/moves",
-        what: "Moves an object from this area to another (shared or a worker group), with the objects it needs, in one commit on a branch. Without `go`, it writes nothing and lists each object the move involves: whether it is ticked, whether it is needed, how it stands in the other area, and why any tick cannot move. Without `ticked`, only the least the move needs goes. Needs the editor role in both areas. Query: `branch`.",
-        body: "{ part, id, to: area, ticked?: { part, id }[], taken?: { part, id, keep: imported | here | renamed, as? }[], go?: boolean }",
+        what: "Moves an object from this area to another (shared or a worker group), with the objects it needs, in one commit on a branch. Without `go`, it writes nothing and lists each object the move involves: whether it is ticked, whether it is needed, how it stands in the other area (`new`, `same`, or `taken`, which the move replaces), and why any tick cannot move. Without `ticked`, only the least the move needs goes. What moves replaces what the other area holds under its id. Needs the editor role in both areas. Query: `branch`.",
+        body: "{ part, id, to: area, ticked?: { part, id }[], go?: boolean }",
     },
     Route {
         method: "POST",

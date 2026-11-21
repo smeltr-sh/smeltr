@@ -153,7 +153,7 @@
                   ? 'New'
                   : r.standing === 'same'
                     ? 'Same as there'
-                    : 'Taken'}</td
+                    : 'Replaced'}</td
               >
               {#if r.part === 'sample' && !(r.part === part && r.id === id)}
                 <td class="dim">With its tests</td>
