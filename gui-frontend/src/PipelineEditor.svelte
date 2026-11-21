@@ -1763,7 +1763,9 @@
             held={choices.menuHeld}
             onpick={(id) => {
               opened = undefined;
-              void chooseSample(id);
+              // The test's own sample has run already: closing the test leaves its records on screen.
+              if (id === selectedSample) records?.clearFind();
+              else void chooseSample(id);
             }}
             onadd={addSample}
           />
