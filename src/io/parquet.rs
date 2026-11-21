@@ -876,7 +876,11 @@ impl WriteOptions {
             ),
             Compression::Snappy => Codec::SNAPPY,
             Compression::Lz4 => Codec::LZ4_RAW,
-            Compression::Zstd => Codec::ZSTD(self.level.and_then(|l| ZstdLevel::try_new(l).ok()).unwrap_or_default()),
+            // Level 3, zstd's own default, as every other zstd this worker writes; the parquet crate's default is 1.
+            Compression::Zstd => Codec::ZSTD(
+                (self.level.and_then(|l| ZstdLevel::try_new(l).ok()))
+                    .unwrap_or(ZstdLevel::try_new(3).expect("3 is a zstd level")),
+            ),
         };
         // Row groups end where `take_row_group` says, not where the writer's own limits fall.
         let mut props = WriterProperties::builder()

@@ -265,7 +265,7 @@ pub fn compressed(body: Vec<u8>, gzip: bool) -> Vec<u8> {
     if !gzip {
         return body;
     }
-    let mut out = flate2::write::GzEncoder::new(Vec::with_capacity(body.len() / 4), flate2::Compression::fast());
+    let mut out = flate2::write::GzEncoder::new(Vec::with_capacity(body.len() / 4), flate2::Compression::default());
     // Writing to a Vec cannot fail.
     out.write_all(&body).expect("gzip into memory");
     out.finish().expect("gzip into memory")
