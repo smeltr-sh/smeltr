@@ -51,6 +51,18 @@ pub const CATALOG: &[Route] = &[
     },
     Route {
         method: "POST",
+        path: "/api/areas/:area/sources/:id/move",
+        what: "Move a source, with the routes that start at it, from this area to another (shared or a worker group), in one commit on a branch. Refused if anything left behind still uses it. Needs editor in both areas. Query: branch.",
+        body: "{ to: area }",
+    },
+    Route {
+        method: "POST",
+        path: "/api/areas/:area/destinations/:id/move",
+        what: "Move a destination from this area to another (shared or a worker group), in one commit on a branch. Refused if a route left behind still delivers to it. Needs editor in both areas. Query: branch.",
+        body: "{ to: area }",
+    },
+    Route {
+        method: "POST",
         path: "/api/preview/certificate",
         what: "Describe the certificates in a PEM (subject, expiry, fingerprint). No query.",
         body: "{ pem: string }",

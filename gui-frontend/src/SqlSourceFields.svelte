@@ -56,8 +56,11 @@
     secrets,
     readAt,
     onsaved,
+    area,
   }: {
     source: SqlSource;
+    /** The area the source is saved in, the chip's unless named: Run asks its workers, and its sample goes there. */
+    area?: string;
     secrets: SecretDto[];
     /** The commit the page read its sources at. A sample is saved against it, so its commit follows that one. */
     readAt?: string | null;
@@ -90,7 +93,7 @@
   });
 
   let group = $state('');
-  groupToAsk((g) => (group = g));
+  $effect(() => groupToAsk((g) => (group = g), area));
 
   let runError = $state('');
   const run = new CaptureSession((e) => (runError = e));
@@ -278,7 +281,10 @@
     saving = true;
     runError = '';
     try {
-      const res = await saveCapture(run.session, mintSampleId(), source.id, { base: readAt });
+      const res = await saveCapture(run.session, mintSampleId(), source.id, {
+        base: readAt,
+        into: area,
+      });
       if (!res.ok) runError = errorText(res.errors) || 'Could not save the rows.';
       else {
         // Without a read commit the save was checked against nothing, so it says nothing of what else moved.

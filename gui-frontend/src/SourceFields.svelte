@@ -70,8 +70,11 @@
     startMoves = () => false,
     readAt,
     onsaved,
+    area,
   }: {
     source: SourceDto;
+    /** The area the source is saved in, when it is not the chip's: a copy's. */
+    area?: string;
     /** The secret catalog, so a credential can be pointed at one the leader holds. */
     secrets: SecretDto[];
     /** What this leader's build can do with a Kafka client. */
@@ -1460,7 +1463,7 @@
   {:else if source.type === 'oktaLogs'}
     {@render oktaFields(source)}
   {:else if isSql(source)}
-    <SqlSourceFields {source} {secrets} {readAt} {onsaved} />
+    <SqlSourceFields {source} {secrets} {readAt} {onsaved} {area} />
   {:else if isReceiver(source)}
     {@render receiverFields(source)}
   {:else if source.type === 'metrics'}

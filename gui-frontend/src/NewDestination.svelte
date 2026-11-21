@@ -5,6 +5,7 @@
   import NewObject from './NewObject.svelte';
   import DestinationFields from './DestinationFields.svelte';
   import { DESTINATION_TYPES, blankDestination, typeLabel } from './destinations';
+  import type { Area } from './areas';
   import type { DestinationDto, KafkaFacts, SecretDto } from './api';
 
   let {
@@ -13,6 +14,8 @@
     secrets,
     kafka,
     from,
+    areas,
+    takenIn,
     onadd,
     oncancel,
   }: {
@@ -24,8 +27,11 @@
     kafka: KafkaFacts;
     /** A destination to copy (`NewObject`). */
     from?: DestinationDto;
-    /** Takes the destination. The dialog stays open until its owner closes it. */
-    onadd: (destination: DestinationDto) => void | Promise<void>;
+    /** Where a copy may go (`NewObject`). */
+    areas?: Area[];
+    takenIn?: (area: string) => Promise<string[]>;
+    /** Takes the destination, and the area picked for a copy. The dialog stays open until its owner closes it. */
+    onadd: (destination: DestinationDto, area?: string) => void | Promise<void>;
     oncancel: () => void;
   } = $props();
 </script>
@@ -38,6 +44,8 @@
   blank={blankDestination}
   {typeLabel}
   {from}
+  {areas}
+  {takenIn}
   {onadd}
   {oncancel}
 >
