@@ -17,7 +17,8 @@
 //! is behind when a poll's worth of rows waits for it. The writer sends a partition's rows to the encoder that took
 //! its last ones while that one is not behind, so a destination that one encoder serves writes at most one file per
 //! partition per commit, more only where a file fills or the open-file limit closes one. It starts another encoder
-//! only when every one it has is behind, and then a partition's rows go to several files.
+//! only when every one it has is behind and a core of the worker's thread limit is free, so a partition's rows may go
+//! to several files.
 //!
 //! A row is refused only at `deliver`: it is `unfit`, the partitioner refuses it, or the format does not admit it (for
 //! Parquet: it carries no columns, names a part the destination has no schema for, or its chunk is not its part's
@@ -359,8 +360,8 @@ pub struct FileConfig {
     pub stall_after: Duration,
     /// Set on every data file's upload: content type, storage class. Empty for a table.
     pub attributes: Attributes,
-    /// The most encoder threads the destination runs. It starts one, and another whenever every one it has is behind,
-    /// up to this.
+    /// The most encoder threads the destination runs. It starts one, and another whenever every one it has is behind
+    /// and a core is free (`Writer::core_free`), up to this number.
     pub encoders: usize,
     /// Parts of one file uploading at once. A take waits for room, so a slow store holds the writer back rather than
     /// growing a queue of parts.
@@ -1096,7 +1097,10 @@ impl Encoder {
                         // The writer has not seen the fault yet, or it would have aborted this encoder first.
                         true => Err((self.shared.fault.lock().unwrap().take())
                             .unwrap_or_else(|| "a file could not be written".to_string())),
-                        false => self.close_all().map(|()| std::mem::take(&mut self.closed)),
+                        false => {
+                            let open = std::mem::take(&mut self.open).into_values().collect();
+                            self.close(open).map(|()| std::mem::take(&mut self.closed))
+                        }
                     };
                     let _ = reply.send(closed);
                 }
@@ -1139,7 +1143,7 @@ impl Encoder {
                         .expect("a full map has an oldest file");
                     let file = self.open.remove(&oldest).expect("found just now");
                     tracing::debug!(name: "rotated", target: "destinations", subject = %self.shared.subject, open = MAX_OPEN_FILES, "the oldest open file was closed to make room for another partition's file");
-                    self.close(file)?;
+                    self.close(vec![file])?;
                 }
                 let file = self.open_file(partition.clone())?;
                 self.open.insert(partition.clone(), file);
@@ -1170,7 +1174,7 @@ impl Encoder {
             }
             if full(file) {
                 let file = self.open.remove(&partition).expect("opened above");
-                self.close(file)?;
+                self.close(vec![file])?;
             }
         }
         Ok(())
@@ -1215,23 +1219,12 @@ impl Encoder {
         })
     }
 
-    /// Ends the file and its upload; the file waits closed for the next commit.
-    fn close(&mut self, file: OpenFile) -> Result<(), String> {
-        let (closed, upload) = seal(file)?;
-        upload.finish()?;
-        self.closed.push(closed);
-        Ok(())
-    }
-
-    /// Closes every open file, their uploads landing side by side. A file whose upload failed, or did not answer within
-    /// `stall_after`, is left out of `closed`.
-    fn close_all(&mut self) -> Result<(), String> {
+    /// Ends `files` and their uploads, which land side by side; the files wait closed for the next commit. A file whose
+    /// upload failed, or did not answer within `stall_after`, is left out of `closed`.
+    fn close(&mut self, files: Vec<OpenFile>) -> Result<(), String> {
         // Every file is sealed before any starts to land, so a seal that fails drops every upload of this close, which
         // aborts it.
-        let sealed: Vec<_> = std::mem::take(&mut self.open)
-            .into_values()
-            .map(seal)
-            .collect::<Result<_, _>>()?;
+        let sealed: Vec<_> = files.into_iter().map(seal).collect::<Result<_, _>>()?;
         let (sealed, uploads): (Vec<_>, Vec<_>) = sealed.into_iter().unzip();
         // Each upload waits up to `stall_after` on its own, so the ones that landed are kept when another does not
         // answer.
