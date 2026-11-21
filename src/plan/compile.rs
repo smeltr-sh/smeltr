@@ -2792,6 +2792,15 @@ impl Compiler<'_> {
         }
     }
 
+    /// Whether `name` is under a field the engine fills or reads back: a reserved name, a source's metadata, or a
+    /// compiler temporary. A parser may write any other `__` field, as an Eval may.
+    fn is_engines(&self, name: &str) -> bool {
+        let head = tree::head(name);
+        reserved_names().any(|(n, _)| n == head)
+            || self.ingest.iter().any(|n| tree::is_internal(n) && tree::head(n) == head)
+            || crate::expr::inline::RESERVED_PREFIXES.iter().any(|p| head.starts_with(p))
+    }
+
     /// Parse `in_slot` as `call` says into `dest`, once the call is checked against its input and the target: each
     /// field the parser declares, a name under the target, is a write of its name under `here`'s guard, and a dynamic
     /// parse lays every other key into the unclaimed fields of the deepest object at its name. A parse that merges,
@@ -2832,7 +2841,7 @@ impl Compiler<'_> {
             }
         }
         let keys = matcher_keys(&kind, &matcher);
-        if let Some((k, _)) = keys.iter().flatten().find(|(k, _)| tree::is_internal(tree::head(k))) {
+        if let Some((k, _)) = keys.iter().flatten().find(|(k, _)| self.is_engines(&tree::join(target, k))) {
             return self.err(
                 Some(id),
                 format!("`{k}` is the engine's own field; give the capture or column another name"),

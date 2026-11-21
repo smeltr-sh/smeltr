@@ -765,6 +765,54 @@ fn a_csv_step_column_is_one_key_unless_it_splits_dots() {
     }
 }
 
+/// A CSV step over `_raw` whose columns are `names`, each a `str` and each a path.
+fn csv_step(names: &[&str]) -> Step {
+    func(
+        0,
+        FunctionKind::Parser {
+            input: "_raw".into(),
+            into: "$".into(),
+            kind: ParserKind::Csv(smeltr::plan::config::CsvConfig {
+                headers: names.iter().map(|n| Some(n.to_string())).collect(),
+                split_dots: true,
+                ..Default::default()
+            }),
+            declared: names
+                .iter()
+                .map(|n| DeclaredField {
+                    name: n.to_string(),
+                    ty: DataType::Str,
+                    time_source: None,
+                })
+                .collect(),
+        },
+    )
+}
+
+/// A parser writes a `__` field the engine does not use, as an Eval may, and a later step reads it.
+#[test]
+fn a_csv_column_writes_an_internal_field_the_engine_does_not_use() {
+    let plan = ok(vec![csv_step(&["id", "__version"]), code(1, "v = __version;")]);
+    let mut env = Env::new();
+    let mut b = raw_batch(&plan, &["7,2.1"], &mut env.pool);
+    let mut rows = env.run_json(&plan, &mut b);
+    rows[0].as_object_mut().expect("an object").remove("_raw");
+    assert_eq!(rows[0], serde_json::json!({"id": "7", "v": "2.1"}));
+    b.reclaim(&mut env.pool);
+}
+
+/// The fields the engine fills or reads back are refused as a parser's columns.
+#[test]
+fn a_csv_column_cannot_write_a_field_the_engine_uses() {
+    for name in ["__live", "__source.topic", "__source", "__loc_x", "__inl1"] {
+        let errs = err(vec![csv_step(&["id", name])]);
+        assert!(
+            errs.iter().any(|e| e.message.contains("is the engine's own field")),
+            "{name}: {errs:?}"
+        );
+    }
+}
+
 /// A header nothing declares is still a column the parse writes: it is a `str` field, read like any other.
 #[test]
 fn a_csv_column_nobody_declared_is_a_str_field() {
