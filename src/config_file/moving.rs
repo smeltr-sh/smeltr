@@ -77,7 +77,8 @@ pub struct Moving<'a> {
     here: &'a Objects,
     there: &'a Objects,
     asked: Id,
-    /// Further objects asked for beside `asked`, whose least joins its own: a card's other routes.
+    /// Further objects asked for beside `asked`, each with the least it takes, which the move takes along with
+    /// `asked`'s: a card's other routes.
     also: BTreeSet<Id>,
     from: &'a str,
     to: &'a str,
@@ -102,7 +103,7 @@ impl<'a> Moving<'a> {
         }
     }
 
-    /// This move with `also` asked for beside the one asked for.
+    /// A move that asks for `also` as well as the one object, with their least.
     pub fn also(self, also: BTreeSet<Id>) -> Moving<'a> {
         Moving { also, ..self }
     }

@@ -1,5 +1,6 @@
 <!--
-  A row's ⋯ menu: the row's actions as `.pick` buttons, `.pick.remove` for the one that deletes. Choosing one closes it.
+  A row's ⋯ menu: the row's actions as `.pick` buttons, `.pick.remove` for the one that deletes. Choosing an action closes the
+  menu.
 -->
 <script lang="ts">
   import type { Snippet } from 'svelte';

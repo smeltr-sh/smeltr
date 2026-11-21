@@ -23,7 +23,8 @@ pub struct MoveAsk {
     pub(crate) id: String,
     /// `shared`, or a group id.
     pub(crate) to: String,
-    /// Further objects asked for beside the one moved, whose least the move takes too: a route card's other routes.
+    /// Further objects asked for beside the one moved, each with the least it takes, which the move takes too: a
+    /// route card's other routes.
     #[serde(default)]
     pub(crate) also: Vec<PartId>,
     /// What goes. Absent, the least the move takes.

@@ -322,7 +322,7 @@
     if (i >= 0) routes.splice(i, 1);
   }
   /** What was brought onto a card goes with it, so a new route on the same source starts clean. */
-  /** Moves every route of `card` into another area (`MoveDialog`), with the least they take. */
+  /** Opens `MoveDialog` to move every route of `card` to another area, with the least they take. */
   function moveToArea(card: Card) {
     const [first, ...rest] = card.routes;
     moving = {
