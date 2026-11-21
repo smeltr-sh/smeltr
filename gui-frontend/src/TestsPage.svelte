@@ -14,7 +14,7 @@
   import TestFailure from './TestFailure.svelte';
   import { ask } from './Confirm.svelte';
   import { TableSort } from './sort.svelte';
-  import { RESOURCES_TABS, relockHash } from './nav';
+  import { RESOURCES_TABS, testHash } from './nav';
   import { checksOf } from './objectChanges';
   import { editable } from './access';
   import { names } from './names.svelte';
@@ -175,7 +175,7 @@
               <td class="mono dim">{sampleNameOf(t)}</td>
               <td class="mono">{checksOf(t)}</td>
               <td class="row-actions">
-                <a class="btn" href={relockHash(t.id, t.sample, t.pipeline)}>Open</a>
+                <a class="btn" href={testHash(t.id, t.sample, t.pipeline)}>Open</a>
                 {#if !readOnly}
                   <Button onclick={() => remove(t)} disabled={deleting.on ? BUSY : ''}
                     >Delete</Button

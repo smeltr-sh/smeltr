@@ -1300,9 +1300,8 @@ test('A3: the proposal says which fields some rows lack and where rows disagree 
   await expect(suggested.getByRole('group', { name: 'id' })).not.toContainText('absent');
 });
 
-// A2, choosing what to run over. The editor opens on no sample, still compiling the steps, and the samples a test
-// of this pipeline locks come first in the Sample menu, marked. The output is searched by keyword, or filtered by an
-// expression.
+// A2, choosing what to run over. The editor opens on no sample, still compiling the steps, and the Sample menu lists
+// the pipeline's tests above its samples. The output is searched by keyword, or filtered by an expression.
 test('A2: a sample is picked from the Sample menu, its output searched by keyword or expression', async ({
   admin,
   leader,
@@ -1335,11 +1334,12 @@ test('A2: a sample is picked from the Sample menu, its output searched by keywor
   await expect(fields.getByText('total', { exact: true })).toBeVisible();
   await admin.keyboard.press('Escape');
 
-  // The locked sample first, though `other` sorts before it by name.
+  // The pipeline's tests are listed above its samples.
   await sampleMenu.click();
+  await expect(
+    admin.getByRole('listbox', { name: 'Tests' }).getByRole('option', { name: /^orders parse/ }),
+  ).toBeVisible();
   const saved = admin.getByRole('listbox', { name: 'Samples' });
-  await expect(saved.getByRole('option').first()).toContainText('orders');
-  await expect(saved.getByTitle('Locked by the test orders parse')).toBeVisible();
   await saved.getByRole('option', { name: /\borders 3 records$/ }).click();
   await expect(sampleMenu).toContainText('3 records');
   const search = admin.getByRole('combobox', { name: 'Search the output' });
@@ -1606,6 +1606,36 @@ test('A4: an end-to-end test opened from Tests shows its fields the documents st
   await expect(table.getByRole('row', { name: /^row 0 / })).toHaveCount(0);
   await expect(table.getByRole('row', { name: /^row 1 / }).first()).toBeVisible();
   await expect(admin.getByRole('button', { name: 'Lock this test again' })).toBeEnabled();
+
+  // A test on another sample, chosen in the menu, runs at once, and the address follows it.
+  await api.put(`/api/areas/shared/samples/quiet-sample${ON}`, {
+    id: 'quiet-sample',
+    name: 'quiet hour',
+    source: 'storefront',
+    records: [{ _raw: '{"status":204}' }],
+  });
+  await api.put(`/api/areas/shared/tests/quiet${ON}`, {
+    name: 'quiet',
+    sample: 'quiet-sample',
+    lockedAt: 0,
+    fields: ['status'],
+    rows: [0],
+  });
+  await goto(admin, leader, '#/build/tests');
+  await admin
+    .getByRole('row', { name: /alerts/ })
+    .getByRole('link', { name: 'Open' })
+    .click({ timeout: 30_000 });
+  await expect(admin.getByText('Checked by alerts')).toBeVisible({ timeout: 30_000 });
+  const menu = admin.getByRole('button', { name: 'Choose a sample' });
+  await menu.click();
+  await admin
+    .getByRole('listbox', { name: 'Tests' })
+    .getByRole('option', { name: /^quiet/ })
+    .click();
+  await expect(menu).toHaveText(/Test\s*quiet\s*1 record/, { timeout: 30_000 });
+  await expect(admin.getByRole('table').getByText('204').first()).toBeVisible();
+  await expect(admin).toHaveURL(/sample=quiet-sample.*test=quiet/);
 });
 
 // A1 and A4: records pasted are held as a capture is, route from the source chosen for them, and save with none.

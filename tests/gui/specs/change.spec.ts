@@ -582,7 +582,7 @@ test('a test locked again opens on its fields the rows still hold, and its rows'
 
   await goto(admin, leader, '#/changes/review/renamed');
   await admin.getByRole('tab', { name: /^Tests/ }).click();
-  await admin.getByRole('button', { name: 'Lock again' }).click({ timeout: 30_000 });
+  await admin.getByRole('button', { name: 'Open', exact: true }).click({ timeout: 30_000 });
   // The editor, on the test's sample: what the test checks that the rows still hold. A renamed field is not
   // followed: the author chooses it. The test checks every row, so no chip narrows them.
   await expect(admin.getByText('The 1 field on 1 row on screen')).toBeVisible({ timeout: 30_000 });
@@ -601,13 +601,17 @@ test('a test locked again opens on its fields the rows still hold, and its rows'
     await menu.click();
     await admin.getByRole('listbox', { name: list }).getByRole('option', { name }).click();
   };
+  await expect(admin).toHaveURL(/[?&]test=orders-keep-id\b/);
   await choose('Samples', /^returns/);
   await expect(menu).toHaveText(/Sample\s*returns/);
+  // The address follows the menu, so a reload opens on what is on screen.
+  await expect(admin).not.toHaveURL(/[?&]test=/);
   await expect(admin.getByText(/on 2 rows on screen/)).toBeVisible({ timeout: 30_000 });
   await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeEnabled();
   await expect(relock).toHaveCount(0);
   await choose('Tests', /^orders keep their id/);
   await expect(menu).toHaveText(/Test\s*orders keep their id/);
+  await expect(admin).toHaveURL(/[?&]test=orders-keep-id\b/);
   await expect(admin.getByText('The 1 field on 1 row on screen')).toBeVisible({ timeout: 30_000 });
   await expect(relock).toBeEnabled();
   // The test's own sample, chosen, closes the test and keeps its records on screen.

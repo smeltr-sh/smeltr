@@ -5,7 +5,6 @@
 -->
 <script lang="ts">
   import ChipPicker from './ChipPicker.svelte';
-  import LockIcon from './LockIcon.svelte';
   import { count, dateTime } from './time';
   import { capturedAt, type SampleSummary } from './api';
   import { HELD_NAME } from './sampleChoices.svelte';
@@ -15,7 +14,6 @@
     selected,
     lastUsed = '',
     records,
-    lockedBy = new Map(),
     held,
     tests = [],
     test = '',
@@ -30,8 +28,6 @@
     lastUsed?: string;
     /** How many records it holds, once run. */
     records: number | null;
-    /** The names of this pipeline's tests that lock each sample, by sample id. */
-    lockedBy?: Map<string, string[]>;
     /** The capture the leader holds for the person signed in, listed first among the samples. Picking it passes
      * `choice` to `onpick`. */
     held?: { choice: string; records: number; source?: string };
@@ -58,12 +54,10 @@
 
   // -- samples -------------------------------------------------------------
 
-  const locked = (s: SampleSummary) => (lockedBy.get(s.id)?.length ?? 0) > 0;
   let saved = $derived(
     [...samples].sort(
       (a, b) =>
         Number(b.id === lastUsed) - Number(a.id === lastUsed) ||
-        Number(locked(b)) - Number(locked(a)) ||
         (b.written ?? 0) - (a.written ?? 0),
     ),
   );
@@ -167,7 +161,6 @@
       <div class="list" role="listbox" aria-label="Samples">
         {#if foundTests.length}<span class="group">Samples</span>{/if}
         {#each found as s (s.id)}
-          {@const lockers = lockedBy.get(s.id) ?? []}
           <button
             type="button"
             class="item"
@@ -180,12 +173,7 @@
               if (s.id !== selected || testName) onpick(s.id);
             }}
           >
-            <span class="name ellipsis">
-              {#if lockers.length > 0}<span title={`Locked by the test ${lockers.join(', ')}`}
-                  ><LockIcon /></span
-                >{/if}
-              {s.name}
-            </span>
+            <span class="name ellipsis">{s.name}</span>
             <span class="dim">{s.said}</span>
           </button>
         {/each}

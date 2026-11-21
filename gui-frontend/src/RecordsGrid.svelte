@@ -45,10 +45,10 @@
     return c.note ? (c.text ? `${c.text} ${c.note}` : c.note) : c.text;
   }
 
-  /** A test being locked again. When it is `ready`, on its sample's run, the grid shows what the test checks, one
+  /** The test on screen. When it is `ready`, on its sample's run, the grid shows what the test checks, one
    * time; after that the fields and rows are the reader's. `rowOf` numbers a row as the test does; without it, a row
    * is numbered by its key. */
-  export type Relocking = { test: string; ready: boolean; rowOf?: (row: GridRow) => number };
+  export type TestOnScreen = { test: string; ready: boolean; rowOf?: (row: GridRow) => number };
 
   /** The steps that touched a field, in the order they ran, each with its number in the step list. */
   export type Touched = (path: string) => NumberedStep[];
@@ -106,7 +106,7 @@
     onjump,
     onassign,
     leads = [],
-    relock,
+    test,
     bar,
     above,
     actions,
@@ -137,7 +137,7 @@
     onassign?: (path: string) => void;
     /** Columns ahead of the fields. */
     leads?: LeadColumn[];
-    relock?: Relocking;
+    test?: TestOnScreen;
     /** Ahead of the Fields menu, on the bar over the grid. */
     bar?: Snippet;
     /** Between the find box and the grid. */
@@ -280,7 +280,7 @@
 
   // The field choice is the reader's own, remembered per grid in this browser. Showing a test's fields is no choice
   // of the reader's, so a test's are kept apart from the reader's.
-  const fieldsKey = (key: string) => `smeltr-workspace-fields:${key}${relock ? ' relock' : ''}`;
+  const fieldsKey = (key: string) => `smeltr-workspace-fields:${key}${test ? ' test' : ''}`;
   $effect(() => {
     const key = fieldsKey(remember);
     untrack(() => {
@@ -484,32 +484,32 @@
     chips = [];
   }
 
-  let relockTest = $state<TestDto | null>(null);
+  let testRead = $state<TestDto | null>(null);
   let showedTest = false;
   /** The fields the test checks that the rows no longer hold. */
   let gone = $state<string[]>([]);
   /** How many of `gone` are named before "N more". */
   const GONE_LISTED = 3;
   let allGone = $state(false);
-  // `relock` is a new object whenever it gets ready, which is no new test to read.
+  // `test` is a new object whenever it gets ready, which is no new test to read.
   let read = '';
   $effect(() => {
-    const id = relock?.test;
+    const id = test?.test;
     if (!id || id === read) return;
     read = id;
     // When another test is chosen, the grid shows it.
-    relockTest = null;
+    testRead = null;
     showedTest = false;
     gone = [];
     void getTest(id).then((res) => {
-      if (read === id) relockTest = res.test ?? null;
+      if (read === id) testRead = res.test ?? null;
     });
   });
   $effect(() => {
-    if (showedTest || !relockTest || !relock?.ready || !rows) return;
+    if (showedTest || !testRead || !test?.ready || !rows) return;
     showedTest = true;
-    const [test, rowOf] = [relockTest, relock.rowOf ?? ((row: GridRow) => row.key)];
-    untrack(() => showTest(test, rowOf));
+    const [dto, rowOf] = [testRead, test.rowOf ?? ((row: GridRow) => row.key)];
+    untrack(() => showTest(dto, rowOf));
   });
 
   /** Shows what `test` checks: its fields the rows still hold and nothing else, and a chip keeping its rows unless it
@@ -737,7 +737,7 @@
         >
       {/if}
       <span class="grow"></span>
-      {#if relock?.ready && gone.length > 0}
+      {#if test?.ready && gone.length > 0}
         {@const listed = allGone ? gone : gone.slice(0, GONE_LISTED)}
         <span class="critical"
           >Fields no longer in the rows: {listed.join(', ')}{#if listed.length < gone.length},

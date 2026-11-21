@@ -119,7 +119,7 @@ export type Route =
       chose?: { route: string; pipeline: string };
       group?: string;
       back?: string;
-      relock?: Relock;
+      test?: OpenTest;
     }
   // `sample`, carried the same way, is what the editor previews against on
   // load instead of defaulting to the first sample in the library.
@@ -133,7 +133,7 @@ export type Route =
       sample?: string;
       for?: Making;
       back?: string;
-      relock?: Relock;
+      test?: OpenTest;
     }
   // `pipeline` absent locks an end-to-end test instead: the sample routed
   // by its source, not one pipeline's output.
@@ -165,23 +165,43 @@ export type Route =
  * new pipeline starts out producing the schemas they accept. */
 export type Making = { source: string; condition?: string; group?: string; to?: string[] };
 
-/** A test opened where it is locked (`relockHash`): its id, and the sample it runs over. */
-export type Relock = { test: string; sample: string };
+/** A test opened where it is locked (`testHash`): its id, and the sample it runs over. */
+export type OpenTest = { test: string; sample: string };
 
-/** Where test `test` is locked again, on its sample: its pipeline's editor, or for an end-to-end test the routes
- * run over the sample. Its fields the rows still hold and its rows are on screen there, to change before they are
- * handed to its lock page. */
-export function relockHash(test: string, sample: string, pipeline?: string): string {
-  const relock = `relock=${encodeURIComponent(test)}`;
+/** Where test `test` is opened, on its sample: its pipeline's editor, or for an end-to-end test Route a sample. Its
+ * fields the rows still hold and its rows are on screen there, and Lock locks it again. */
+export function testHash(test: string, sample: string, pipeline?: string): string {
+  const opened = `test=${encodeURIComponent(test)}`;
   return pipeline
-    ? `#/build/pipelines/${encodeURIComponent(pipeline)}/for/${encodeURIComponent(sample)}?${relock}`
-    : `#/build/routes/sample?sample=${encodeURIComponent(sample)}&${relock}`;
+    ? `#/build/pipelines/${encodeURIComponent(pipeline)}/for/${encodeURIComponent(sample)}?${opened}`
+    : `#/build/routes/sample?sample=${encodeURIComponent(sample)}&${opened}`;
 }
 
-/** The test `params` lock again on `sample`, if they name one. */
-function relockFrom(params: URLSearchParams, sample: string | null): { relock?: Relock } {
-  const test = params.get('relock');
-  return test && sample ? { relock: { test, sample } } : {};
+/** Puts the test chosen on screen in the address, or takes it out if none is chosen, without navigating: the screen
+ * shows it already, and a reload or a copied address opens on it. */
+export function addressTest(opened?: OpenTest) {
+  history.replaceState(history.state, '', withTest(location.hash, opened));
+}
+
+/** `hash` (a pipeline editor's or Route a sample's), changed to open on test `opened`, or on no test. */
+export function withTest(hash: string, opened?: OpenTest): string {
+  const [path, query = ''] = hash.split('?');
+  const params = new URLSearchParams(query);
+  params.delete('test');
+  let at = path;
+  if (opened) {
+    if (path.startsWith('#/build/routes')) params.set('sample', opened.sample);
+    else at = `${path.replace(/\/for\/[^/]*$/, '')}/for/${encodeURIComponent(opened.sample)}`;
+    params.set('test', opened.test);
+  }
+  const rest = params.toString();
+  return rest ? `${at}?${rest}` : at;
+}
+
+/** The test `params` open on `sample`, if they name one. */
+function testFrom(params: URLSearchParams, sample: string | null): { test?: OpenTest } {
+  const test = params.get('test');
+  return test && sample ? { test: { test, sample } } : {};
 }
 
 /** The Routes page, opening a new route that takes `make`. Save returns to `back`. */
@@ -578,7 +598,7 @@ export function parseRoute(hash: string): Route {
           ...(route && pipeline ? { chose: { route, pipeline } } : {}),
           ...(params.get('group') ? { group: params.get('group')! } : {}),
           ...backFrom(params),
-          ...relockFrom(params, params.get('sample')),
+          ...testFrom(params, params.get('sample')),
         };
       }
       // The pipeline (or, for an end-to-end lock, nothing) and the sample
@@ -616,7 +636,7 @@ export function parseRoute(hash: string): Route {
             id: decodeURIComponent(parts[2]),
             json: false,
             sample,
-            ...relockFrom(new URLSearchParams(search), sample),
+            ...testFrom(new URLSearchParams(search), sample),
           };
         }
         // List carrying a sample, no id: `for/<sample>`. `json` stays

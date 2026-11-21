@@ -17,7 +17,7 @@
   import Help from './Help.svelte';
   import { names } from './names.svelte';
   import { openOnBranch } from './unsavedGuard';
-  import { relockHash } from './nav';
+  import { testHash } from './nav';
 
   let {
     branch,
@@ -135,9 +135,9 @@
       .join(', '),
   );
 
-  /** Lock a failing test again, on the change's branch and in the scope that holds it. */
-  function relock(t: TestResult) {
-    if (t.sample) void openOnBranch(branch, t.area, relockHash(t.id, t.sample, t.pipeline));
+  /** Opens a failing test where it is locked, on the change's branch and in the scope that holds it. */
+  function open(t: TestResult) {
+    if (t.sample) void openOnBranch(branch, t.area, testHash(t.id, t.sample, t.pipeline));
   }
 
   /** "dst, src on 5 rows": what test `t` checks, per its summary. */
@@ -225,7 +225,7 @@
                 <span class="added">Passing</span>
               {:else}
                 <span class="removed">Failing</span>
-                <button type="button" onclick={() => relock(t)}>Lock again</button>
+                <button type="button" onclick={() => open(t)}>Open</button>
               {/if}
             </div>
             {@const checks = checksText(t)}
@@ -335,7 +335,7 @@
   .test-line span:first-child {
     flex-grow: 1;
   }
-  /* The name takes what is left; a verdict and its Lock again never wrap. */
+  /* The name takes what is left; a verdict and its Open never wrap. */
   .test-line > :not(:first-child) {
     flex: none;
   }

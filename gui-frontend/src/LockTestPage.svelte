@@ -40,7 +40,7 @@
   } from './api';
   import { count } from './time';
   import { formatDiffValue } from './diff';
-  import { announcePipelineNames, relockHash } from './nav';
+  import { announcePipelineNames, testHash } from './nav';
   import { editable } from './access';
   import { nameOf, pipelineNamesAt } from './pipelineNames';
   import { names } from './names.svelte';
@@ -117,7 +117,7 @@
         pipeline = testRes.test.pipeline;
         sample = testRes.test.sample;
         // Its fields and rows are chosen again where a fresh lock's are: a renamed field is one it does not have.
-        if (!choice) return location.replace(relockHash(relock, sample, pipeline));
+        if (!choice) return location.replace(testHash(relock, sample, pipeline));
         name = testRes.test.name;
       }
       const sampleRes = await getSample(sample);
