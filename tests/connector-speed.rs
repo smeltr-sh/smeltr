@@ -16,11 +16,12 @@
 //! ```
 //!
 //! The worker is the shipped binary, a leader with its worker inside, deployed through its repository as an
-//! administrator deploys. It runs one transform thread, alone on the first core with that core's sibling left idle;
-//! everything else, the harness and the services included, shares the cores that remain. `CONNECTOR_THREADS=1,2,3`
-//! runs each row at each count of transform threads, each on a core of its own, so a row that stops gaining shows
-//! what keeps the worker from its cores; the cores left to everything else are those the largest count leaves.
-//! `CONNECTOR_PIN=off` pins nothing: every thread and service shares every core, as on a worker sized to its host.
+//! administrator deploys. It runs as on a host of one core: the whole worker on the first core, that core's sibling
+//! left idle, and one transform thread. The harness and the services share the cores that remain.
+//! `CONNECTOR_THREADS=1,2,4` runs each row on each count of cores, a transform thread for each, so a row that stops
+//! gaining shows what keeps the worker from its cores; the cores left to everything else are those the largest count
+//! leaves. `CONNECTOR_PIN=thread` keeps each transform thread alone on its core and runs the worker's other threads
+//! with the harness. `CONNECTOR_PIN=off` pins nothing: every thread and service shares every core.
 #![cfg(target_os = "linux")]
 
 mod live;
@@ -393,6 +394,8 @@ struct Measured {
     /// How busy the cores everything but the transform shares were, the harness's own work included: near 100%, the
     /// host, not the worker, set the row's speed.
     rest: f64,
+    /// How busy the transform cores were: near 100%, the worker used every core it was given.
+    cores: f64,
 }
 
 impl Measured {
@@ -414,8 +417,9 @@ impl Measured {
         )
     }
 
-    /// What saturated: the transform threads, another thread of the worker, or the peer, at nine tenths of a core
-    /// each or more. Neither is `waits`: the row waits on round trips, polls, acknowledgements or a lock.
+    /// What saturated: the transform threads, another thread of the worker or the peer, at nine tenths of a core or
+    /// more; else the cores the harness shares, or the worker's own, at nine tenths busy. None is `waits`: the row
+    /// waits on round trips, polls, acknowledgements or a lock.
     fn bound(&self) -> String {
         let (t, b, p) = self.shares();
         if t >= 0.9 {
@@ -426,6 +430,8 @@ impl Measured {
             "peer".into()
         } else if self.rest >= 0.9 {
             "host".into()
+        } else if self.cores >= 0.9 {
+            "cores".into()
         } else {
             "waits".into()
         }
@@ -434,7 +440,7 @@ impl Measured {
     fn row(&self) -> String {
         let (t, b, p) = self.shares();
         format!(
-            "{:>9.0} rows/s {:>7.1} MB/s  transform {:>4.0}%  {} {:>4.0}%  peer {:>4.0}%  rest {:>4.0}%  bound: {}",
+            "{:>9.0} rows/s {:>7.1} MB/s  transform {:>4.0}%  {} {:>4.0}%  peer {:>4.0}%  rest {:>4.0}%  cores {:>4.0}%  bound: {}",
             self.rows_per_sec(),
             self.mb_per_sec(),
             t * 100.0,
@@ -442,6 +448,7 @@ impl Measured {
             b * 100.0,
             p * 100.0,
             self.rest * 100.0,
+            self.cores * 100.0,
             self.bound()
         )
     }
@@ -449,8 +456,8 @@ impl Measured {
 
 fn markdown(table: &[(&str, Link, Row)]) -> String {
     let mut out = String::from(
-        "| Connector | Link | Threads | rows/s | Per thread | MB/s | Transform | Busiest other thread | Peer | Rest | Bound by |\n\
-         |---|---|---:|---:|---:|---:|---:|---|---:|---:|---|\n",
+        "| Connector | Link | Threads | rows/s | Per thread | MB/s | Transform | Busiest other thread | Peer | Rest | Cores | Bound by |\n\
+         |---|---|---:|---:|---:|---:|---:|---|---:|---:|---:|---|\n",
     );
     // A row's speed per thread against its fewest threads', on the same link, both rounds averaged: 100% is a
     // worker that gains all of each core it is given.
@@ -477,7 +484,7 @@ fn markdown(table: &[(&str, Link, Row)]) -> String {
                     .unwrap();
                 let per_thread = m.rows_per_sec() / m.threads as f64 / (mean(name, *link, fewest) / fewest as f64);
                 out.push_str(&format!(
-                    "| {name} | {} | {} | {:.0} | {:.0}% | {:.1} | {:.0}% | {} {:.0}% | {:.0}% | {:.0}% | {} |\n",
+                    "| {name} | {} | {} | {:.0} | {:.0}% | {:.1} | {:.0}% | {} {:.0}% | {:.0}% | {:.0}% | {:.0}% | {} |\n",
                     link.label(),
                     m.threads,
                     m.rows_per_sec(),
@@ -488,16 +495,17 @@ fn markdown(table: &[(&str, Link, Row)]) -> String {
                     b * 100.0,
                     p * 100.0,
                     m.rest * 100.0,
+                    m.cores * 100.0,
                     m.bound()
                 ));
             }
             Row::Skipped => out.push_str(&format!(
-                "| {name} | {} | | skipped: no service | | | | | | | |\n",
+                "| {name} | {} | | skipped: no service | | | | | | | | |\n",
                 link.label()
             )),
             // One line, so a reason with a pipe or a newline keeps the table's shape.
             Row::Failed(threads, reason) => out.push_str(&format!(
-                "| {name} | {} | {threads} | failed: {} | | | | | | | |\n",
+                "| {name} | {} | {threads} | failed: {} | | | | | | | | |\n",
                 link.label(),
                 reason.replace('|', "/").replace('\n', " ")
             )),
@@ -603,27 +611,40 @@ fn thread_counts() -> Vec<usize> {
     })
 }
 
-/// The transform cores, one thread on each with its siblings left idle, and the cores everything else shares.
+/// The worker's cores, and the cores the harness and the services share.
 #[derive(Clone)]
 struct Cores {
+    /// One for each transform thread, siblings left idle. The whole worker runs on them, as on a host of that many,
+    /// unless `pin` says how else.
     transform: Vec<usize>,
     rest: Vec<usize>,
-    /// Whether the transform threads keep their cores to themselves: with `CONNECTOR_PIN=off`, every core is in
-    /// `rest` and nothing is pinned.
-    pinned: bool,
+    pin: Pin,
+}
+
+/// How `CONNECTOR_PIN` places the worker.
+#[derive(Clone, Copy, PartialEq)]
+enum Pin {
+    /// The whole worker on the transform cores, its threads sharing them as on a host of that many: unset.
+    Worker,
+    /// Each transform thread alone on its core, and the worker's other threads with the harness: `thread`.
+    Thread,
+    /// Nothing pinned: every thread and service shares every core: `off`.
+    Off,
 }
 
 impl Cores {
     /// `threads` transform cores, the first that are online.
     fn of_this_host(threads: usize) -> Cores {
         let mut rest = cpu_list(&std::fs::read_to_string("/sys/devices/system/cpu/online").expect("online CPUs"));
-        if std::env::var("CONNECTOR_PIN").as_deref() == Ok("off") {
+        let pin = match std::env::var("CONNECTOR_PIN").as_deref() {
+            Err(_) => Pin::Worker,
+            Ok("thread") => Pin::Thread,
+            Ok("off") => Pin::Off,
+            Ok(other) => panic!("CONNECTOR_PIN is thread or off, not {other}"),
+        };
+        if pin == Pin::Off {
             let transform = (0..threads).collect();
-            return Cores {
-                transform,
-                rest,
-                pinned: false,
-            };
+            return Cores { transform, rest, pin };
         }
         let mut transform = Vec::new();
         while transform.len() < threads && !rest.is_empty() {
@@ -638,11 +659,7 @@ impl Cores {
         }
         assert_eq!(transform.len(), threads, "this host has fewer than {threads} cores");
         assert!(!rest.is_empty(), "{threads} transform cores leave nothing for the rest");
-        Cores {
-            transform,
-            rest,
-            pinned: true,
-        }
+        Cores { transform, rest, pin }
     }
 
     /// The first `threads` of the transform cores, the rest as they are.
@@ -650,7 +667,7 @@ impl Cores {
         Cores {
             transform: self.transform[..threads].to_vec(),
             rest: self.rest.clone(),
-            pinned: self.pinned,
+            pin: self.pin,
         }
     }
 
@@ -753,6 +770,9 @@ struct Usage {
     /// Seconds the cores everything but the transform shares have been idle, together.
     rest_idle: f64,
     rest_cores: usize,
+    /// Seconds the transform cores have been idle, together.
+    transform_idle: f64,
+    transform_cores: usize,
 }
 
 impl Usage {
@@ -763,6 +783,8 @@ impl Usage {
             peer: containers_cpu(peer),
             rest_idle: idle(&worker.rest),
             rest_cores: worker.rest.len(),
+            transform_idle: idle(&worker.transform),
+            transform_cores: worker.transform.len(),
         }
     }
 
@@ -792,6 +814,10 @@ impl Usage {
             peer: self.peer - before.peer,
             rest: 1.0
                 - (self.rest_idle - before.rest_idle) / (self.at - before.at).as_secs_f64() / self.rest_cores as f64,
+            cores: 1.0
+                - (self.transform_idle - before.transform_idle)
+                    / (self.at - before.at).as_secs_f64()
+                    / self.transform_cores as f64,
         }
     }
 }
@@ -1049,6 +1075,7 @@ struct Smeltr {
     data_dir: PathBuf,
     /// The cores everything but the transform shares.
     rest: Vec<usize>,
+    transform: Vec<usize>,
 }
 
 impl Smeltr {
@@ -1057,7 +1084,18 @@ impl Smeltr {
         let data_dir = repo().join("target/connector-speed").join(run);
         let _ = std::fs::remove_dir_all(&data_dir);
         std::fs::create_dir_all(&data_dir).unwrap();
-        let process = Command::new(env!("CARGO_BIN_EXE_smeltr"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_smeltr"));
+        if cores.pin == Pin::Worker {
+            let worker = cores.transform.clone();
+            // SAFETY: between fork and exec it makes one system call, on memory made before the fork.
+            unsafe {
+                command.pre_exec(move || {
+                    set_affinity(0, &worker);
+                    Ok(())
+                })
+            };
+        }
+        let process = command
             .env("SMELTR_LEADER_ENABLED", "1")
             .env("SMELTR_WORKER_ENABLED", "1")
             .env("SMELTR_WORKER_GROUP", "standalone")
@@ -1084,6 +1122,7 @@ impl Smeltr {
             process,
             data_dir,
             rest: cores.rest.clone(),
+            transform: cores.transform.clone(),
         }
     }
 
@@ -1156,7 +1195,7 @@ impl Smeltr {
 
     /// Puts each transform thread alone on a core of its own, once they run.
     fn pin(&self, cores: &Cores) {
-        let Some(pid) = self.runtime().filter(|_| cores.pinned) else {
+        let Some(pid) = self.runtime().filter(|_| cores.pin == Pin::Thread) else {
             return;
         };
         let transform = threads(pid).into_iter().filter(|t| t.1 == TRANSFORM_THREAD);
