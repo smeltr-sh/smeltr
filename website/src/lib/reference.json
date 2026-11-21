@@ -114,6 +114,30 @@
               "result": "{\"b\":2}"
             }
           ]
+        },
+        {
+          "name": "declared",
+          "signature": "object.declared()",
+          "summary": "The object's declared fields, without its undeclared keys.",
+          "examples": [
+            {
+              "expr": "o.declared()",
+              "result": "{\"a\":1}",
+              "given": ["o = {\"a\": 1, \"b\": 2} as {a: i64, ...}"]
+            }
+          ]
+        },
+        {
+          "name": "undeclared",
+          "signature": "object.undeclared()",
+          "summary": "The object's undeclared keys, without its declared fields. An object whose type allows no undeclared keys does not compile.",
+          "examples": [
+            {
+              "expr": "o.undeclared()",
+              "result": "{\"b\":2}",
+              "given": ["o = {\"a\": 1, \"b\": 2} as {a: i64, ...}"]
+            }
+          ]
         }
       ]
     },
