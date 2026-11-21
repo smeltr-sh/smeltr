@@ -551,11 +551,23 @@ impl Container {
     /// Panics with the end of the container's log once it has stopped.
     fn check(&self, what: &str) {
         let out = Command::new("docker")
-            .args(["inspect", "-f", "{{.State.Running}}", &self.id])
+            .args([
+                "inspect",
+                "-f",
+                "{{.State.Running}} {{.State.OOMKilled}} {{.State.ExitCode}}",
+                &self.id,
+            ])
             .output()
             .expect("docker runs");
-        if String::from_utf8_lossy(&out.stdout).trim() != "true" {
-            panic!("{what}: the container stopped: {}", self.log_tail());
+        let state = String::from_utf8_lossy(&out.stdout);
+        let state: Vec<&str> = state.split_whitespace().collect();
+        if state.first() != Some(&"true") {
+            let why = match state[..] {
+                [_, "true", _] => "out of memory".to_string(),
+                [_, _, code] => format!("exit {code}"),
+                _ => "gone".to_string(),
+            };
+            panic!("{what}: the container stopped ({why}): {}", self.log_tail());
         }
     }
 
@@ -1066,8 +1078,12 @@ mod vector {
                 // Its gRPC listener is required, and idle. Its sink encodes only what the source keeps whole, so a
                 // request it forwards it keeps as one event, as its documentation does.
                 In::Otlp => json!({"type": "opentelemetry", "http": {"address": address(port)},
-                       "grpc": {"address": address(&free_port())},
-                       "use_otlp_decoding": ends.give_to() == Some(Out::Otlp)}),
+                "grpc": {"address": address(&free_port())},
+                "decoding": if ends.give_to() == Some(Out::Otlp) {
+                    json!({"codec": "otlp", "signal_types": ["logs"]})
+                } else {
+                    json!({})
+                }}),
                 In::Prometheus => json!({"type": "prometheus_remote_write", "address": address(port), "auth": basic}),
                 // Its socket source, since smeltr's syslog receiver takes each message whole, as the socket source
                 // does, and its syslog source would parse them.
