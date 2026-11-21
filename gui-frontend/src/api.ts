@@ -1694,15 +1694,16 @@ export function putDestinations(
   return configJson(inArea('/destinations', area), json('PUT', destinations), { base });
 }
 
-/** Moves a source, with the routes that start at it, or a destination from the chip's area into `to`, in one
- * commit, against `base` as a save is. Refused where anything left behind still uses it. */
+/** Moves `id` from the chip's area into `to`, in one commit, against `base` as a save is. A source takes the routes
+ * that start at it and a sample the tests that run over it. Refused where something left behind still uses what
+ * moves, or where `to` already holds something of the same name. */
 export function moveObject(
-  kind: 'source' | 'destination',
+  kind: 'source' | 'destination' | 'sample',
   id: string,
   to: string,
   base?: string | null,
 ): Promise<MutationResult> {
-  const section = kind === 'source' ? 'sources' : 'destinations';
+  const section = `${kind}s`;
   return configJson(inArea(`/${section}/${encodeURIComponent(id)}/move`), json('POST', { to }), {
     base,
   });

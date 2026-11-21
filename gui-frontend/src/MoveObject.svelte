@@ -1,8 +1,9 @@
 <!--
-  Moving a source or a destination into another area, in one commit: a source takes the routes that start at it. A
-  destination takes none, since a route belongs to the source it starts at, so the routes that end at it stay behind.
-  It shows where the object runs before and after, so the person sees which groups stop or start running it. The
-  leader refuses a move that leaves something behind still using it, and the refusal shows in the dialog.
+  Moving a source, a destination or a sample into another area, in one commit: a source takes the routes that start
+  at it, and a sample the tests that run over it. A destination takes none, since a route belongs to the source it
+  starts at, so the routes that end at it stay behind. For a source or a destination it shows where it runs before and
+  after, so the person sees which groups stop or start running it. The leader refuses a move that leaves something
+  behind still using it, and the refusal shows in the dialog.
 -->
 <script lang="ts">
   import { Busy } from './busy.svelte';
@@ -26,17 +27,21 @@
     open,
     kind,
     id,
+    name = id,
     areas,
     dirty,
     readAt,
     pullOne = false,
+    tests = [],
     onmoved,
     oncancel,
   }: {
     /** Kept mounted and closed rather than removed, so the dialog closes and focus goes back to what opened it. */
     open: boolean;
-    kind: 'source' | 'destination';
+    kind: 'source' | 'destination' | 'sample';
     id: string;
+    /** What the person calls it, where that is not its id: a sample's name. */
+    name?: string;
     /** The areas the person edits: it may go to any but this one. */
     areas: Area[];
     /** Whether the page holds unsaved edits, which a move would leave behind a commit they never saw. */
@@ -45,6 +50,8 @@
     readAt: string | null;
     /** A source one worker of a group reads at a time (`SOURCE_KIND`), whose read position the group keeps. */
     pullOne?: boolean;
+    /** The tests that run over a sample, by name, which go with it. */
+    tests?: string[];
     onmoved: (to: string) => void;
     oncancel: () => void;
   } = $props();
@@ -81,6 +88,7 @@
         })
         .catch(() => {});
     }
+    if (kind === 'sample') return;
     getConnections(kind, asked)
       .then((res) => {
         if (asked === id && res.ok) answer = res;
@@ -88,13 +96,15 @@
       .catch(() => {});
   });
 
-  /** The routes that start at a source here, which go with it. */
-  const routes = $derived(
-    kind === 'source' && answer
-      ? answer.downstream
-          .filter((c) => c.kind === 'route' && c.area === here)
-          .map((c) => names.of(currentBranch(), here, 'routes', c.id))
-      : [],
+  /** What goes with it: the routes that start at a source here, or the tests that run over a sample. */
+  const goes = $derived(
+    kind === 'sample'
+      ? tests
+      : kind === 'source' && answer
+        ? answer.downstream
+            .filter((c) => c.kind === 'route' && c.area === here)
+            .map((c) => names.of(currentBranch(), here, 'routes', c.id))
+        : [],
   );
   const nameOf = (area: string) => areas.find((a) => a.id === area)?.name ?? area;
   const runsAfter = $derived(to === SHARED_SCOPE ? 'every worker group' : nameOf(to));
@@ -117,7 +127,7 @@
   }
 </script>
 
-<Dialog {open} title={`move ${kind} ${id}`} {oncancel} onsubmit={move}>
+<Dialog {open} title={`move ${kind} ${name}`} {oncancel} onsubmit={move}>
   <div class="form-body">
     <Field label="move to" note={startsOver}>
       <select bind:value={to}>
@@ -127,18 +137,20 @@
       </select>
     </Field>
     <dl class="rows">
-      {#if routes.length > 0}
+      {#if goes.length > 0}
         <dt>goes with it</dt>
-        <dd class="mono">{routes.join(', ')}</dd>
+        <dd class="mono">{goes.join(', ')}</dd>
       {/if}
       {#if behind.length > 0}
         <dt>stay behind</dt>
         <dd class="mono">{behind.join(', ')}</dd>
       {/if}
-      <dt>runs in now</dt>
-      <dd>{answer ? answer.groups.join(', ') || 'no worker group' : '…'}</dd>
-      <dt>runs in after</dt>
-      <dd>{runsAfter}</dd>
+      {#if kind !== 'sample'}
+        <dt>runs in now</dt>
+        <dd>{answer ? answer.groups.join(', ') || 'no worker group' : '…'}</dd>
+        <dt>runs in after</dt>
+        <dd>{runsAfter}</dd>
+      {/if}
     </dl>
   </div>
   {#snippet actions()}

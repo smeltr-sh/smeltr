@@ -193,7 +193,7 @@ fn in_area(method: &Method, within: &[&str]) -> Option<Level> {
         )
         | (Method::POST, ["undo"] | ["lookups", "upload"] | ["test-runs"] | ["imports"]) => Level::Editor,
         // In the area moved from. The one moved to is in the body, and the handler judges it (`move_object`).
-        (Method::POST, ["sources" | "destinations", _, "move"]) => Level::Editor,
+        (Method::POST, ["sources" | "destinations" | "samples", _, "move"]) => Level::Editor,
         // What an admin says about a source's rows warning: it changes no configuration and touches no worker.
         (Method::POST, ["sources", _, "reset-history" | "mark"])
         | (Method::PUT, ["sources", _, "preset"])
@@ -388,6 +388,7 @@ mod tests {
             (Method::POST, "/api/areas/payments/samples"),
             (Method::PUT, "/api/areas/payments/samples/s1"),
             (Method::DELETE, "/api/areas/payments/samples/s1"),
+            (Method::POST, "/api/areas/payments/samples/s1/move"),
             (Method::POST, "/api/areas/payments/test-runs"),
         ] {
             assert_eq!(need(&method, path), area("payments", Level::Editor), "{method} {path}");

@@ -13,6 +13,8 @@
   import SecondaryTabs from './SecondaryTabs.svelte';
   import { ask } from './Confirm.svelte';
   import AddSampleDialog from './AddSampleDialog.svelte';
+  import MoveObject from './MoveObject.svelte';
+  import { editableAreas, type Area } from './areas';
   import SampleEditor from './SampleEditor.svelte';
   import UnreadableFiles from './UnreadableFiles.svelte';
   import SortButton from './SortButton.svelte';
@@ -48,6 +50,13 @@
   const saving = new Busy();
 
   let adding = $state(false);
+  /** The sample being moved into another area (`MoveObject`). */
+  let moving: SampleSummary | null = $state(null);
+  /** The areas a move may go to: those the person edits, except this one. */
+  let areas: Area[] = $state([]);
+  editableAreas()
+    .then((a) => (areas = a))
+    .catch(() => {});
 
   // The sample open for editing, by id.
   let editing: string | null = $state(null);
@@ -189,6 +198,23 @@
     }}
   />
 
+  <MoveObject
+    open={moving !== null}
+    kind="sample"
+    id={moving?.id ?? ''}
+    name={moving?.name}
+    {areas}
+    dirty={false}
+    readAt={null}
+    tests={moving ? testsOn(moving.id) : []}
+    onmoved={() => {
+      moving = null;
+      void load();
+      void loadTests();
+    }}
+    oncancel={() => (moving = null)}
+  />
+
   <UnreadableFiles problems={loadWarnings} onchanged={load}>
     {#snippet rest(left)}
       <p class="warn">{left.join('; ')}</p>
@@ -220,7 +246,7 @@
             <th aria-sort={sampleSort.aria('captured')}
               ><SortButton sort={sampleSort} key="captured">Captured</SortButton></th
             >
-            <th></th><th></th><th></th>
+            <th></th><th></th><th></th><th></th>
           </tr>
         </thead>
         <tbody>
@@ -246,6 +272,13 @@
                 {/if}
               </td>
               <td class="right">
+                {#if !readOnly && areas.length > 1}
+                  <Button onclick={() => (moving = s)} disabled={saving.on ? BUSY : ''}
+                    >Move to&hellip;</Button
+                  >
+                {/if}
+              </td>
+              <td class="right">
                 {#if !readOnly}
                   <Button onclick={() => remove(s)} disabled={saving.on ? BUSY : ''}>Delete</Button>
                 {/if}
@@ -253,7 +286,7 @@
             </tr>
             {#if editing === s.id}
               <tr class="open">
-                <td colspan="7">
+                <td colspan="8">
                   <SampleEditor
                     id={s.id}
                     tests={testsOn(s.id)}
