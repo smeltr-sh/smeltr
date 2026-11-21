@@ -218,3 +218,57 @@ test('a step dragged to the edge of the steps scrolls them toward a gap out of s
   });
   await expect.poll(() => onScreen(page)).toBe(`${notes.slice(1).join(' ')} i[n0|]`);
 });
+
+test('↓ pressed from the keyboard walks a step through an If and out, keeping its focus', async ({
+  admin: page,
+  api,
+  leader,
+}) => {
+  await arrange(page, api, leader);
+  await page.locator('#step-b > .card-head').getByRole('button', { name: 'Move down' }).focus();
+  for (const want of [
+    'a i[b t1 t2|e1 j[|]] d',
+    'a i[t1 b t2|e1 j[|]] d',
+    'a i[t1 t2 b|e1 j[|]] d',
+    'a i[t1 t2|b e1 j[|]] d',
+    'a i[t1 t2|e1 b j[|]] d',
+    'a i[t1 t2|e1 j[b|]] d',
+    'a i[t1 t2|e1 j[|b]] d',
+    'a i[t1 t2|e1 j[|] b] d',
+    'a i[t1 t2|e1 j[|]] b d',
+    'a i[t1 t2|e1 j[|]] d b',
+  ]) {
+    await page.keyboard.press('Enter');
+    await expect.poll(() => onScreen(page)).toBe(want);
+    await expect(
+      page.locator('#step-b > .card-head').getByRole('button', { name: 'Move down' }),
+    ).toBeFocused();
+  }
+});
+
+test('a finger held on a step drags it, rather than scrolling the page', async ({
+  admin: page,
+  api,
+  leader,
+}) => {
+  await arrange(page, api, leader);
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+  const badge = (await page.locator('#step-b > .card-head .type-badge').boundingBox())!;
+  const from = { x: badge.x + badge.width / 2, y: badge.y + badge.height / 2 };
+  const touch = (type: string, at: { x: number; y: number }) =>
+    cdp.send('Input.dispatchTouchEvent', {
+      type,
+      touchPoints: type === 'touchEnd' ? [] : [{ x: at.x, y: at.y }],
+    });
+  await touch('touchStart', from);
+  await expect(page.locator('.carried').first()).toBeVisible();
+  const to = await gapPoint(page, { owner: 'i', branch: 'then' }, 0);
+  for (let k = 1; k <= 8; k++)
+    await touch('touchMove', {
+      x: from.x + ((to.x - from.x) * k) / 8,
+      y: from.y + ((to.y - from.y) * k) / 8,
+    });
+  await touch('touchEnd', to);
+  await expect.poll(() => onScreen(page)).toBe(dropped('b', { owner: 'i', branch: 'then' }, 0));
+});

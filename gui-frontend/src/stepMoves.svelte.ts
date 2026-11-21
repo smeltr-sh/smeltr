@@ -4,7 +4,7 @@
  * makes (`stepMoves`).
  */
 
-import { getContext, setContext } from 'svelte';
+import { getContext, setContext, tick } from 'svelte';
 import type { Attachment } from 'svelte/attachments';
 import { flatSteps, moveStep, stepAside, type Step } from './pipeline';
 
@@ -45,9 +45,18 @@ export class StepMoves {
     this.#steps = steps;
   }
 
-  /** Moves `step` one place up or down the outline (`stepAside`). */
-  aside(step: Step, by: -1 | 1) {
+  /** Moves `step` one place up or down the outline (`stepAside`). A control of its head that had focus has it again
+   * after: a step that changes lists is drawn anew in its new list, and its old controls go with the old drawing. */
+  async aside(step: Step, by: -1 | 1) {
+    const head = `#step-${CSS.escape(step.id)} > .card-head`;
+    const focused = document.activeElement?.closest(head) ? document.activeElement : null;
+    // A focused control without a label of its own is taken to be a choice in the More menu; the menu's button takes
+    // the focus back.
+    const label = focused && (focused.getAttribute('aria-label') ?? 'More actions');
     stepAside(this.#steps(), step, by);
+    if (!label) return;
+    await tick();
+    document.querySelector<HTMLElement>(`${head} [aria-label="${label}"]`)?.focus();
   }
 
   /** Marks an element as showing `list`: a step dropped over it lands in `list`, between the slots (`.slot`) the
@@ -81,12 +90,16 @@ export class StepMoves {
     const wander = (m: PointerEvent) => {
       if (Math.hypot(m.clientX - start.x, m.clientY - start.y) > SLOP_PX) quit();
     };
+    // A long touch opens no menu while it holds or drags the step.
+    const menu = (c: Event) => c.preventDefault();
     const quit = () => {
       clearTimeout(timer);
       removeEventListener('pointermove', wander);
       removeEventListener('pointerup', quit);
       removeEventListener('pointercancel', quit);
+      removeEventListener('contextmenu', menu, true);
     };
+    addEventListener('contextmenu', menu, true);
     addEventListener('pointermove', wander);
     addEventListener('pointerup', quit);
     addEventListener('pointercancel', quit);
@@ -101,6 +114,9 @@ export class StepMoves {
       c.stopPropagation();
       c.preventDefault();
     };
+    // A finger that drags a held step moves the step, not the page: the browser would take the move for a scroll
+    // and cancel the drag.
+    const pan = (t: TouchEvent) => t.preventDefault();
     // A step picked up near an edge scrolls nothing until the pointer sets off.
     let setOff = false;
     const move = (m: PointerEvent) => {
@@ -135,6 +151,7 @@ export class StepMoves {
       this.over = null;
       cancelAnimationFrame(frame);
       removeEventListener('scroll', scrolled, true);
+      removeEventListener('touchmove', pan);
       removeEventListener('pointermove', move);
       removeEventListener('pointerup', up);
       removeEventListener('pointercancel', cancel);
@@ -148,6 +165,7 @@ export class StepMoves {
       k.stopPropagation();
       end(false);
     };
+    addEventListener('touchmove', pan, { passive: false });
     addEventListener('scroll', scrolled, true);
     addEventListener('pointermove', move);
     addEventListener('pointerup', up);
