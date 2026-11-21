@@ -1,5 +1,9 @@
 [target.'cfg(windows)']
 rustflags = ["-A", "linker_messages"]
+# librdkafka's TLS code asks the MSVC linker for `libcrypto.lib` and `libssl.lib` by name. No OpenSSL is built here:
+# `openssl-sys` links AWS-LC, whose libraries have other names; `/NODEFAULTLIB` drops both requests.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "link-arg=/NODEFAULTLIB:libcrypto.lib", "-C", "link-arg=/NODEFAULTLIB:libssl.lib"]
 [env]
 # This checkout, so a workspace crate built into a `target/` other checkouts share rebuilds when the build moves
 # between them: each crate's build script reruns when it changes. Cargo alone keys their builds by file times.
