@@ -29,6 +29,8 @@
     type KafkaFacts,
     getMapMeasurements,
   } from './api';
+  import { addInto, editableAreas, idsTakenIn, type Area } from './areas';
+  import MoveObject from './MoveObject.svelte';
   import { holdsSomewhere } from './access';
   import { holdings, sourceReadings } from './mapTerms';
   import NewSource from './NewSource.svelte';
@@ -59,6 +61,13 @@
   /** A source being added (`NewSource`), from a copy of `from` where it is one. It joins the list on Add, and the
    * file on the page's Save. */
   let adding: { from?: SourceDto } | null = $state(null);
+  /** The source being moved into another area (`MoveObject`). */
+  let moving: SourceDto | null = $state(null);
+  /** The areas the person edits, this one first: where a copy may go, and the rest where a move may. */
+  let areas: Area[] = $state([]);
+  editableAreas()
+    .then((a) => (areas = a))
+    .catch(() => {});
   /** The row to show and mark: the one the map landed on, then the one just added. */
   // Follows the route, which can land on another row without remounting the page.
   let highlight = $derived(focus);
@@ -123,9 +132,17 @@
   /** Every id a new one may not take: this scope's and `shared`'s. */
   const unavailable = () => [...sources, ...sharedSources].map((s) => s.id);
 
-  function add(made: SourceDto) {
-    sources.push(made);
-    highlight = made.id;
+  /** Lists a new one here, saved with the page; a copy into another area is saved there and then. */
+  async function add(made: SourceDto, area?: string) {
+    if (area && area !== currentScope()) {
+      const commit = await addInto(area, { section: 'sources', object: made });
+      if (!commit) return;
+      // The branch moved past what this page read, though nothing here changed.
+      editor.readAtCommit = commit;
+    } else {
+      sources.push(made);
+      highlight = made.id;
+    }
     adding = null;
   }
 
@@ -237,7 +254,12 @@
             onsaved={(commit) => (editor.readAtCommit = commit)}
           />
         {/snippet}
-        {#snippet rowActions(_, i)}
+        {#snippet rowActions(source, i)}
+          {#if areas.length > 1}
+            <button type="button" class="pick" onclick={() => (moving = source)}
+              >Move to&hellip;</button
+            >
+          {/if}
           <button type="button" class="pick remove" onclick={() => removeSource(i)}>Remove</button>
         {/snippet}
         {#snippet sharedActions()}
@@ -252,6 +274,8 @@
       <NewSource
         open={adding !== null}
         from={adding?.from}
+        areas={adding?.from ? areas : undefined}
+        takenIn={(area) => idsTakenIn(area, 'sources')}
         unavailable={unavailable()}
         {secrets}
         {kafka}
@@ -259,6 +283,18 @@
         onsaved={(commit) => (editor.readAtCommit = commit)}
         onadd={add}
         oncancel={() => (adding = null)}
+      />
+      <MoveObject
+        open={moving !== null}
+        kind="source"
+        id={moving?.id ?? ''}
+        areas={areas.filter((a) => a.id !== currentScope())}
+        dirty={editor.isDirty}
+        onmoved={() => {
+          moving = null;
+          void editor.load();
+        }}
+        oncancel={() => (moving = null)}
       />
       <SaveBar
         dirty={editor.isDirty}

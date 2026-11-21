@@ -1676,15 +1676,33 @@ export async function undoChanges(
   return result;
 }
 
-export function putSources(sources: SourceDto[], base?: string | null): Promise<MutationResult> {
-  return configJson(inArea('/sources'), json('PUT', sources), { base });
+/** Saves `area`'s sources, the chip's unless named. */
+export function putSources(
+  sources: SourceDto[],
+  base?: string | null,
+  area?: string,
+): Promise<MutationResult> {
+  return configJson(inArea('/sources', area), json('PUT', sources), { base });
 }
 
+/** Saves `area`'s destinations, the chip's unless named. */
 export function putDestinations(
   destinations: DestinationDto[],
   base?: string | null,
+  area?: string,
 ): Promise<MutationResult> {
-  return configJson(inArea('/destinations'), json('PUT', destinations), { base });
+  return configJson(inArea('/destinations', area), json('PUT', destinations), { base });
+}
+
+/** Moves a source, with the routes that start at it, or a destination from the chip's area into `to`, in one
+ * commit. Refused where anything left behind still uses it. */
+export function moveObject(
+  kind: 'source' | 'destination',
+  id: string,
+  to: string,
+): Promise<MutationResult> {
+  const section = kind === 'source' ? 'sources' : 'destinations';
+  return configJson(inArea(`/${section}/${encodeURIComponent(id)}/move`), json('POST', { to }));
 }
 
 /** What the leader reads out of a PEM: every certificate in it, or why it is

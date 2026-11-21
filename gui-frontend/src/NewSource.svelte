@@ -6,6 +6,7 @@
   import SourceFields from './SourceFields.svelte';
   import { SOURCE_KINDS } from './sourceKinds';
   import { SOURCE_TYPES, blankSource, isSql, typeLabel, typeOf } from './sources';
+  import type { Area } from './areas';
   import type { KafkaFacts, SecretDto, SourceDto } from './api';
 
   let {
@@ -16,6 +17,8 @@
     readAt,
     onsaved,
     from,
+    areas,
+    takenIn,
     onadd,
     oncancel,
   }: {
@@ -30,8 +33,11 @@
     onsaved: (commit: string) => void;
     /** A source to copy (`NewObject`). */
     from?: SourceDto;
-    /** Takes the source. The dialog stays open until its owner closes it. */
-    onadd: (source: SourceDto) => void | Promise<void>;
+    /** Where a copy may go (`NewObject`). */
+    areas?: Area[];
+    takenIn?: (area: string) => Promise<string[]>;
+    /** Takes the source, and the area picked for a copy. The dialog stays open until its owner closes it. */
+    onadd: (source: SourceDto, area?: string) => void | Promise<void>;
     oncancel: () => void;
   } = $props();
 
@@ -50,6 +56,8 @@
   {typeOf}
   {ready}
   {from}
+  {areas}
+  {takenIn}
   {onadd}
   {oncancel}
 >

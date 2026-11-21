@@ -836,7 +836,8 @@ const addDestination: Move = {
 
 /** Duplicates a destination from its row's menu: the dialog opens on its fields, filled in as the original's, and the
  * copy the leader saves is the original under the new id. The copy keeps the original's prefix, which the moves that
- * pick a destination by kind go by. */
+ * pick a destination by kind go by. Where the journey made a group, the copy may be added to it instead: it is saved
+ * there on Add, and the world, which follows `shared` and `default`, does not hold it. */
 const duplicateDestination: Move = {
   name: 'duplicate-destination',
   weight: (w) =>
@@ -851,16 +852,97 @@ const duplicateDestination: Move = {
     const form = page.getByRole('dialog', { name: /^new .* destination$/ });
     const idField = form.getByRole('textbox', { name: 'id', exact: true });
     await expect(idField).toHaveValue(`${original}-2`);
+    const into =
+      world.editing.groups.length && rng.chance(2) ? rng.pick(world.editing.groups) : null;
+    if (into) {
+      await form.getByRole('combobox', { name: 'add to' }).selectOption(into);
+      await expect(form.getByText(/^Saved in .* on Add\./)).toBeVisible();
+    }
     await idField.fill(id);
-    await form.getByRole('button', { name: 'Add', exact: true }).click();
-    await save(j, unsaved(page));
-    world.editing.destinations.push(id);
+    if (into) {
+      await saveBy(j, form.getByRole('button', { name: 'Add', exact: true }), () =>
+        expect(form).toBeHidden(),
+      );
+    } else {
+      await form.getByRole('button', { name: 'Add', exact: true }).click();
+      await save(j, unsaved(page));
+      world.editing.destinations.push(id);
+    }
     await editingIsSaved(j);
     const on = encodeURIComponent(world.branch!);
-    const res = await (await j.truth()).get(`/api/areas/shared?branch=${on}`);
-    const byId = (d: string) => res.config.destinations.find((x: { id: string }) => x.id === d);
-    expect(byId(id), `${id} is ${original} under a new id`).toEqual({ ...byId(original), id });
-    return `duplicate destination ${original} as ${id}`;
+    const truth = await j.truth();
+    const from = (await truth.get(`/api/areas/shared?branch=${on}`)).config.destinations;
+    const to = into
+      ? (await truth.get(`/api/areas/${into}?branch=${on}`)).config.destinations
+      : from;
+    const byId = (list: { id: string }[], d: string) => list.find((x) => x.id === d);
+    expect(byId(to, id), `${id} is ${original} under a new id`).toEqual({
+      ...byId(from, original),
+      id,
+    });
+    return `duplicate destination ${original} as ${id}${into ? ` into ${into}` : ''}`;
+  },
+};
+
+/** Moves a source `shared` declares into `default` from its row's menu, and back from `default`'s page. Each way is
+ * one commit that takes the routes starting at it along, so what `shared` and `default` hold together is the world's
+ * throughout, and each way the leader holds the source and its routes in the area it went to and not in the other. */
+const moveSource: Move = {
+  name: 'move-source',
+  weight: (w) => (w.password && w.editing.sources.length ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const truth = await j.truth();
+    const branch = () => encodeURIComponent(world.branch ?? 'main');
+    const shared = (await truth.get(`/api/areas/shared?branch=${branch()}`)).config;
+    const declared = world.editing.sources.filter((s) =>
+      shared.sources.some((x: { id: string }) => x.id === s),
+    );
+    if (!declared.length) return 'no source in shared to move';
+    const source = rng.pick(declared);
+    const routes = shared.routes
+      .filter((r: { source: string }) => r.source === source)
+      .map((r: { id: string }) => r.id)
+      .sort();
+    const holds = async (area: string) => {
+      const config = (await truth.get(`/api/areas/${area}?branch=${branch()}`)).config;
+      return {
+        source: config.sources.some((x: { id: string }) => x.id === source),
+        routes: config.routes
+          .filter((r: { source: string }) => r.source === source)
+          .map((r: { id: string }) => r.id)
+          .sort(),
+      };
+    };
+    const move = async (from: string, to: string) => {
+      await openRowMenu(page, `More actions for ${source}`);
+      await page.getByRole('button', { name: 'Move to…' }).click();
+      const dialog = page.getByRole('dialog', { name: `move source ${source}` });
+      await dialog.getByRole('combobox', { name: 'move to' }).selectOption(to);
+      await saveBy(j, dialog.getByRole('button', { name: 'Move', exact: true }), () =>
+        expect(dialog).toBeHidden(),
+      );
+      // A group's page lists what `shared` declares too, so only `shared`'s own page loses the row.
+      if (to !== 'shared')
+        await expect(page.getByRole('button', { name: `More actions for ${source}` })).toHaveCount(
+          0,
+        );
+      expect(await holds(to), `${source} and its routes moved to ${to}`).toEqual({
+        source: true,
+        routes,
+      });
+      expect(await holds(from), `${from} keeps none of them`).toEqual({
+        source: false,
+        routes: [],
+      });
+      await editingIsSaved(j);
+    };
+    await goto(page, leader, '#/build/sources');
+    await move('shared', 'default');
+    await switchScope(page, 'shared', 'default');
+    await move('default', 'shared');
+    await switchScope(page, 'default', 'shared');
+    return `move source ${source} with ${routes.length} routes to default and back`;
   },
 };
 
@@ -3693,6 +3775,7 @@ export const MOVES: readonly Move[] = [
   fillAvro,
   addDestination,
   duplicateDestination,
+  moveSource,
   addPipeline,
   exportPipeline,
   importPipeline,
