@@ -38,7 +38,7 @@ use crate::harness::destination::{self, Broken, ClientTls, Pki, Reached, set_tls
 use crate::harness::fuzz::{self, Coverage, Rng};
 use crate::live;
 
-const SEEDS: u64 = 300;
+const SEEDS: u64 = 400;
 const LIVE_SEEDS: u64 = 24;
 
 /// A worker-local credential no test sets, so a destination naming it cannot build.
@@ -73,6 +73,7 @@ const OPTIONS: &[&str] = &[
     "compression.snappy",
     "compression.lz4",
     "compression.zstd",
+    "compressionLevel",
     "acks.all",
     "acks.one",
     "acks.none",
@@ -115,6 +116,7 @@ const OPTIONS: &[&str] = &[
     "broken.sasl.case",
     "broken.stallAfterSecs",
     "broken.bufferBytes",
+    "broken.compressionLevel",
     "mangled",
 ];
 
@@ -209,6 +211,18 @@ fn draw(rng: &mut Rng, cov: &mut Reached, target: Target) -> Draw {
     } else {
         cov.reach(format!("compression.{compression}"));
         d.insert("compression".into(), json!(compression));
+    }
+    // librdkafka caps every level at 12, and its lz4 takes one too.
+    let levels = match compression {
+        "gzip" => Some(1..=9),
+        "zstd" => Some(1..=12),
+        "lz4" => Some(0..=12),
+        _ => None,
+    };
+    if let Some(levels) = levels.filter(|_| rng.chance(2)) {
+        cov.reach("compressionLevel");
+        let level = levels.start() + rng.below(usize::from(levels.end() - levels.start()) + 1) as u8;
+        d.insert("compressionLevel".into(), json!(level));
     }
     let acks = *rng.pick(&["", "none", "one", "all"]);
     if acks.is_empty() {
@@ -349,6 +363,7 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> &'static str 
         "sasl.case",
         "stallAfterSecs",
         "bufferBytes",
+        "compressionLevel",
     ]);
     cov.reach(format!("broken.{what}"));
     let d = &mut draw.destination;
@@ -485,6 +500,16 @@ fn break_one(rng: &mut Rng, cov: &mut Reached, draw: &mut Draw) -> &'static str 
             d.insert("bufferBytes".into(), json!(rng.pick(&[0, 4 * MIB - 1, 1024 * MIB + 1])));
             "bufferBytes"
         }
+        // Past the top of the codec's levels, or any level for a codec that takes none.
+        "compressionLevel" => {
+            let level = match d.get("compression").and_then(Value::as_str) {
+                Some("gzip") => 10,
+                Some("zstd" | "lz4") => 13,
+                _ => 1,
+            };
+            d.insert("compressionLevel".into(), json!(level));
+            "compressionLevel"
+        }
         other => unreachable!("{other}"),
     }
 }
@@ -578,10 +603,15 @@ fn check_loaded(draw: &Draw, c: &KafkaDestinationConfig) -> Result<(), String> {
     };
     expect("format", format!("{payload:?}"), format!("{:?}", c.payload));
     let compression = s("compression").unwrap_or_else(|| "none".into());
+    expect("compression", compression, c.compression.as_property().to_string());
+    let level = d.get("compressionLevel").and_then(Value::as_u64).map(|l| l as u8);
+    let default = (smeltr::plan::topology::Compression::ALL.into_iter())
+        .find(|codec| codec.as_property() == c.compression.as_property())
+        .and_then(|codec| codec.level());
     expect(
-        "compression",
-        compression,
-        format!("{:?}", c.compression).to_lowercase(),
+        "compressionLevel",
+        format!("{:?}", level.or(default)),
+        format!("{:?}", c.compression.level()),
     );
     let acks = s("acks").unwrap_or_else(|| "all".into());
     expect("acks", acks, format!("{:?}", c.acks).to_lowercase());

@@ -210,7 +210,7 @@ fn log_records_arrive_as_they_were_received() {
             {"body": {"kvlistValue": {"values": [{"key": "n", "value": {"intValue": "7"}}]}}},
         ])
     });
-    for compression in [Compression::None, Compression::Gzip] {
+    for compression in [Compression::None, Compression::Gzip(6)] {
         let (received, arrived) = round_trip(Signal::Logs, &logs, 6, compression);
         assert_eq!(arrived, received, "{compression:?}");
     }
@@ -266,7 +266,7 @@ fn metric_points_arrive_as_they_were_received() {
                 "quantileValues": [{"quantile": 0.5, "value": 2.0}, {"quantile": 0.99, "value": 4.5}]}))]}},
         ])
     });
-    let (received, arrived) = round_trip(Signal::Metrics, &metrics, 18, Compression::Gzip);
+    let (received, arrived) = round_trip(Signal::Metrics, &metrics, 18, Compression::Gzip(6));
     assert_eq!(arrived, received);
 }
 
@@ -324,7 +324,7 @@ fn an_otlp_destination_loads_from_a_bundle() {
         panic!("loads as {:?}", system.topology.destinations[0].kind);
     };
     assert_eq!(c.signal, Signal::Traces);
-    assert_eq!(c.http.compression, Compression::Gzip);
+    assert_eq!(c.http.compression, Compression::Gzip(6));
     assert_eq!(c.http.url, "https://collector.example.com:4318/");
     assert_eq!(c.http.headers, vec![("X-Tenant".to_string(), "a".to_string())]);
 }

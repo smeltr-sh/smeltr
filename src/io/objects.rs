@@ -178,10 +178,10 @@ fn extension(format: &ObjectFormat, compression: Compression) -> String {
     };
     match compression {
         Compression::None => format.into(),
-        Compression::Gzip => format!("{format}.gz"),
+        Compression::Gzip(_) => format!("{format}.gz"),
         Compression::Snappy => format!("{format}.sz"),
-        Compression::Lz4 => format!("{format}.lz4"),
-        Compression::Zstd => format!("{format}.zst"),
+        Compression::Lz4(_) => format!("{format}.lz4"),
+        Compression::Zstd(_) => format!("{format}.zst"),
     }
 }
 
@@ -190,10 +190,10 @@ fn content_type(format: &ObjectFormat, compression: Compression) -> &'static str
     match (format, compression) {
         (ObjectFormat::Parquet { .. }, _) => "application/vnd.apache.parquet",
         (ObjectFormat::Avro, _) => "application/avro",
-        (_, Compression::Gzip) => "application/gzip",
+        (_, Compression::Gzip(_)) => "application/gzip",
         (_, Compression::Snappy) => "application/x-snappy-framed",
-        (_, Compression::Lz4) => "application/x-lz4",
-        (_, Compression::Zstd) => "application/zstd",
+        (_, Compression::Lz4(_)) => "application/x-lz4",
+        (_, Compression::Zstd(_)) => "application/zstd",
         (ObjectFormat::Ndjson, Compression::None) => "application/x-ndjson",
         (ObjectFormat::Json, Compression::None) => "application/json",
         (ObjectFormat::Csv, Compression::None) => "text/csv; charset=utf-8",

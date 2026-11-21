@@ -110,6 +110,9 @@ const COMPRESSIONS: Pool = &[
     (r#""zstd""#, true),
 ];
 
+/// gzip's levels: one outside them, or beside no compression, is refused.
+const LEVELS: Pool = &[("1", false), ("6", false), ("9", false), ("0", true), ("10", true)];
+
 const BUFFER_BYTES: Pool = &[
     ("4194304", false),
     (r#""64 MiB""#, false),
@@ -197,6 +200,15 @@ fn known(rng: &mut Rng) -> Case {
                 refused.insert(key);
             }
         }
+    }
+    if rng.chance(2) {
+        let (v, bad) = take(rng, LEVELS);
+        // A level beside a codec Event Hubs refuses is never read: the codec is refused first.
+        let codec = fields.get("compression").and_then(Value::as_str).unwrap_or("none");
+        if (codec == "gzip" && bad) || codec == "none" {
+            refused.insert("compressionLevel");
+        }
+        fields.insert("compressionLevel".into(), v);
     }
 
     // Routing a `bytes` destination asks the bundle's sources to declare its field, which is no field of this one.
@@ -327,6 +339,7 @@ fn garbage(rng: &mut Rng) -> Case {
         ("format", FORMATS),
         ("field", FIELDS),
         ("compression", COMPRESSIONS),
+        ("compressionLevel", LEVELS),
         ("bufferBytes", BUFFER_BYTES),
         ("stallAfterSecs", STALL_AFTERS),
     ] {
@@ -469,7 +482,7 @@ fn built(case: &Case, system: &super::LoadedSystem) -> Result<(), String> {
     {
         return Err(format!("built default topic {:?}", k.default_topic));
     }
-    if !matches!(k.compression, Compression::None | Compression::Gzip) {
+    if !matches!(k.compression, Compression::None | Compression::Gzip(_)) {
         return Err(format!("built compression {:?}", k.compression));
     }
     let format = text(case, "format");
@@ -499,7 +512,7 @@ fn built(case: &Case, system: &super::LoadedSystem) -> Result<(), String> {
 }
 
 /// Every option of an Event Hubs destination, by its name in the file.
-const OPTIONS: [&str; 13] = [
+const OPTIONS: [&str; 14] = [
     "namespace",
     "defaultEventHub",
     "connectionString",
@@ -511,6 +524,7 @@ const OPTIONS: [&str; 13] = [
     "format",
     "field",
     "compression",
+    "compressionLevel",
     "bufferBytes",
     "stallAfterSecs",
 ];

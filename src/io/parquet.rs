@@ -846,7 +846,7 @@ impl Sink {
 #[derive(Clone, Debug, PartialEq)]
 pub struct WriteOptions {
     pub codec: Compression,
-    /// The codec's level, where it takes one (gzip, zstd); its default when `None` or out of its range.
+    /// The level the table asks of the codec, which wins over the codec's own; ignored when outside the codec's range.
     pub level: Option<i32>,
     /// Leaf columns, by their names in the written file, that carry a bloom filter, each with its false-positive
     /// probability.
@@ -869,17 +869,16 @@ impl WriteOptions {
         use parquet::schema::types::ColumnPath;
         let compression = match self.codec {
             Compression::None => Codec::UNCOMPRESSED,
-            Compression::Gzip => Codec::GZIP(
+            Compression::Gzip(level) => Codec::GZIP(
                 (self.level.and_then(|l| u32::try_from(l).ok()))
                     .and_then(|l| GzipLevel::try_new(l).ok())
-                    .unwrap_or_default(),
+                    .unwrap_or(GzipLevel::try_new(level.into()).expect("a gzip level the loader checked")),
             ),
             Compression::Snappy => Codec::SNAPPY,
-            Compression::Lz4 => Codec::LZ4_RAW,
-            // Level 3, zstd's own default, as every other zstd this worker writes; the parquet crate's default is 1.
-            Compression::Zstd => Codec::ZSTD(
+            Compression::Lz4(_) => Codec::LZ4_RAW,
+            Compression::Zstd(level) => Codec::ZSTD(
                 (self.level.and_then(|l| ZstdLevel::try_new(l).ok()))
-                    .unwrap_or(ZstdLevel::try_new(3).expect("3 is a zstd level")),
+                    .unwrap_or(ZstdLevel::try_new(level.into()).expect("a zstd level the loader checked")),
             ),
         };
         // Row groups end where `take_row_group` says, not where the writer's own limits fall.
@@ -1589,7 +1588,7 @@ mod tests {
     fn a_file_carries_the_codec_and_the_bloom_filters_asked() {
         let schema = raw_schema();
         let options = WriteOptions {
-            codec: Compression::Gzip,
+            codec: Compression::Gzip(6),
             level: Some(9),
             bloom_filters: vec![(vec!["_raw".into()], 0.05), (vec!["nowhere".into()], 0.05)],
         };
@@ -1599,7 +1598,7 @@ mod tests {
         let column = metadata.row_group(0).column(0);
         assert!(matches!(column.compression(), parquet::basic::Compression::GZIP(_)));
         assert!(column.bloom_filter_offset().is_some(), "a bloom filter for _raw");
-        let mut plain = FileWriter::open(&schema, &Compression::Gzip.into());
+        let mut plain = FileWriter::open(&schema, &Compression::Gzip(6).into());
         plain.write(&rows(&schema, &["a", "b"]));
         assert_eq!(plain.finish().1.row_group(0).column(0).bloom_filter_offset(), None);
     }
@@ -1607,7 +1606,7 @@ mod tests {
     #[test]
     fn a_file_streams_out_a_row_group_at_a_time() {
         let schema = raw_schema();
-        let mut w = FileWriter::open(&schema, &Compression::Zstd.into());
+        let mut w = FileWriter::open(&schema, &Compression::Zstd(3).into());
         assert!(w.take_row_group().is_empty());
 
         let first = rows(&schema, &["a", "b"]);

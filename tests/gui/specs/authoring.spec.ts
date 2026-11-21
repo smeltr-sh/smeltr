@@ -3739,6 +3739,10 @@ test('A10: an OTLP destination is added from its form, sending spans gzipped, it
     .selectOption('otlp-token');
   await dialog.getByRole('button', { name: /^Advanced(?! TLS)/ }).click();
   await dialog.getByRole('combobox', { name: /^compression/ }).selectOption('gzip');
+  // gzip's level starts at its default, and the label shows the level the slider is at.
+  await expect(dialog.getByRole('slider', { name: 'compression level: 6' })).toBeVisible();
+  await dialog.getByRole('slider', { name: /^compression level/ }).fill('9');
+  await expect(dialog.getByRole('slider', { name: 'compression level: 9' })).toBeVisible();
   await expect(dialog.getByRole('spinbutton', { name: /^starting concurrency/ })).toBeVisible();
   await dialog.screenshot({ path: test.info().outputPath('otlp-destination-form.png') });
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
@@ -3754,6 +3758,7 @@ test('A10: an OTLP destination is added from its form, sending spans gzipped, it
       url: 'https://otel-collector.example.com:4318',
       signal: 'traces',
       compression: 'gzip',
+      compressionLevel: 9,
       credentials: { Authorization: { secret: 'otlp-token', version: 1 } },
     },
   ]);
