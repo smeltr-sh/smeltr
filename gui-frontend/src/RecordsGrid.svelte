@@ -45,6 +45,11 @@
     return c.note ? (c.text ? `${c.text} ${c.note}` : c.note) : c.text;
   }
 
+  /** A test being locked again. When it is `ready`, on its sample's run, the grid shows what the test checks, one
+   * time; after that the fields and rows are the reader's. `rowOf` numbers a row as the test does; without it, a row
+   * is numbered by its key. */
+  export type Relocking = { test: string; ready: boolean; rowOf?: (row: GridRow) => number };
+
   /** The steps that touched a field, in the order they ran, each with its number in the step list. */
   export type Touched = (path: string) => NumberedStep[];
 </script>
@@ -80,6 +85,7 @@
     type Declared,
   } from './recordDiff';
   import {
+    getTest,
     isInternal,
     type DictionaryOut,
     type MissingField,
@@ -100,6 +106,7 @@
     onjump,
     onassign,
     leads = [],
+    relock,
     bar,
     above,
     actions,
@@ -130,6 +137,7 @@
     onassign?: (path: string) => void;
     /** Columns ahead of the fields. */
     leads?: LeadColumn[];
+    relock?: Relocking;
     /** Ahead of the Fields menu, on the bar over the grid. */
     bar?: Snippet;
     /** Between the find box and the grid. */
@@ -270,8 +278,9 @@
     for (const path of paths) chosenFields.set(path, show);
   }
 
-  // The field choice is the reader's own, remembered per grid in this browser.
-  const fieldsKey = (key: string) => `smeltr-workspace-fields:${key}`;
+  // The field choice is the reader's own, remembered per grid in this browser. Showing a test's fields is no choice
+  // of the reader's, so a test's are kept apart from the reader's.
+  const fieldsKey = (key: string) => `smeltr-workspace-fields:${key}${relock ? ' relock' : ''}`;
   $effect(() => {
     const key = fieldsKey(remember);
     untrack(() => {
@@ -475,12 +484,32 @@
     chips = [];
   }
 
-  /** Shows what `test` checks, to lock it again: its fields the rows still hold and nothing else, and a chip
-   * keeping its rows unless it checks every row. `rowOf` numbers a row as the test does. A field it checks that the
-   * rows no longer hold is left out; if it was renamed, the reader chooses it under its new name. */
-  export function showTest(test: TestDto, rowOf: (row: GridRow) => number) {
+  let relockTest = $state<TestDto | null>(null);
+  let showedTest = false;
+  /** The fields the test checks that the rows no longer hold. */
+  let gone = $state<string[]>([]);
+  // `relock` is a new object whenever it gets ready, which is no new test to read.
+  let read = '';
+  $effect(() => {
+    const id = relock?.test;
+    if (!id || id === read) return;
+    read = id;
+    void getTest(id).then((res) => (relockTest = res.test ?? null));
+  });
+  $effect(() => {
+    if (showedTest || !relockTest || !relock?.ready || !rows) return;
+    showedTest = true;
+    const [test, rowOf] = [relockTest, relock.rowOf ?? ((row: GridRow) => row.key)];
+    untrack(() => showTest(test, rowOf));
+  });
+
+  /** Shows what `test` checks: its fields the rows still hold and nothing else, and a chip keeping its rows unless it
+   * checks every row. A field it checks that the rows no longer hold is left out and named; if it was renamed, the
+   * reader chooses it under its new name. */
+  function showTest(test: TestDto, rowOf: (row: GridRow) => number) {
     chosenFields.clear();
     const held = new Set(test.fields.filter((f) => allColumns.includes(f)));
+    gone = test.fields.filter((f) => !held.has(f));
     for (const { path } of menuFields) chosenFields.set(path, held.has(path));
     const checked = new Set(test.rows.map((o) => o.row));
     if (rows?.every((row) => checked.has(rowOf(row)))) return;
@@ -698,6 +727,9 @@
         >
       {/if}
       <span class="grow"></span>
+      {#if relock?.ready && gone.length > 0}
+        <span class="critical">No longer in the rows: {gone.join(', ')}</span>
+      {/if}
       {@render actions?.(
         gridOrder.map((i) => rows![i]),
         columns,
@@ -954,6 +986,10 @@
     align-items: center;
     gap: 0.7rem;
     margin-top: 0.5rem;
+  }
+  /* On a line of buttons, centered as they are. */
+  .output-actions .critical {
+    margin: 0;
   }
 
   .results {

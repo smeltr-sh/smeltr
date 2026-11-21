@@ -25,8 +25,6 @@
     chooseLock,
     routePreview,
     errorText,
-    getTest,
-    type TestDto,
     type FileConfigDto,
     type RoutePreviewResult,
     type SampleRecordDto,
@@ -90,31 +88,6 @@
               ? 'The routes changed since this run. Run it again.'
               : '',
   );
-
-  /** The test `relock` names, once read. The first run on its sample shows what the test checks; after that the
-   * fields and rows are the reader's. */
-  let relockTest = $state<TestDto | null>(null);
-  let showedTest = false;
-  $effect(() => {
-    const id = relock?.test;
-    if (id) void getTest(id).then((res) => (relockTest = res.test ?? null));
-  });
-  $effect(() => {
-    // The sample's records too: until they are in, a field they hold is not yet known, and would show by default
-    // when it arrives.
-    if (
-      showedTest ||
-      !relockTest ||
-      !grid ||
-      !table ||
-      ran !== relock?.sample ||
-      !sampleRecords.length
-    )
-      return;
-    showedTest = true;
-    const test = relockTest;
-    untrack(() => grid!.showTest(test, (row) => records.get(row.key) ?? -1));
-  });
 
   /** Locks the fields and records on screen: a record's rows share its number. */
   function goLockTest() {
@@ -422,14 +395,19 @@
     </div>
 
     <!-- The field choice and recent expressions are remembered under the empty id, which no
-         pipeline can take. Showing a test's fields is no choice of the reader's, so a test's
-         fields are kept apart from the reader's. -->
+         pipeline can take. A test is shown once the sample's records are in too: until then a
+         field they hold is not yet known, and would show by default when it arrives. -->
     <RecordsGrid
       bind:this={grid}
       rows={table?.rows ?? null}
-      remember={relock ? ' relock' : ''}
+      remember=""
       openOn={result}
       {leads}
+      relock={relock && {
+        test: relock.test,
+        ready: !!table && ran === relock.sample && sampleRecords.length > 0,
+        rowOf: (row) => records.get(row.key) ?? -1,
+      }}
     />
   {/if}
 </div>

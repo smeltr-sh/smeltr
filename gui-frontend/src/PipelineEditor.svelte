@@ -105,8 +105,6 @@
     parsersIn,
     chooseLock,
     type LockChoice,
-    getTest,
-    type TestDto,
   } from './api';
   import ChipPicker from './ChipPicker.svelte';
   import JumpLinks from './JumpLinks.svelte';
@@ -1062,25 +1060,6 @@
   /** The dialog is open to save the held capture, the input run over, as a sample. */
   let savingInput = $state(false);
 
-  /** The test `relock` names, once read. The first run on its sample shows what the test checks; after that the
-   * fields and rows are the reader's. */
-  let relockTest = $state<TestDto | null>(null);
-  let showedTest = false;
-  /** What the grid remembers its field choice under. Showing a test's fields is no choice of the reader's, so the key
-   * is kept apart from the reader's own for this pipeline. */
-  let remember = $derived(relock ? `${pipelineId} relock` : pipelineId);
-  $effect(() => {
-    const id = relock?.test;
-    if (id) void getTest(id).then((res) => (relockTest = res.test ?? null));
-  });
-  $effect(() => {
-    if (showedTest || !relockTest || !records || !result?.ok || lastSample !== relock?.sample)
-      return;
-    showedTest = true;
-    const test = relockTest;
-    untrack(() => records!.showTest(test));
-  });
-
   function goLockTest(choice: LockChoice) {
     chooseLock(
       choice,
@@ -1726,7 +1705,11 @@
 
       <RecordsPane
         bind:this={records}
-        {remember}
+        {pipelineId}
+        relock={relock && {
+          test: relock.test,
+          ready: !!result?.ok && lastSample === relock.sample,
+        }}
         {steps}
         {signature}
         {sampleRows}

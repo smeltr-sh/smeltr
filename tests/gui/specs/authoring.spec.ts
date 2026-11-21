@@ -1591,6 +1591,7 @@ test('A4: an end-to-end test locked again opens on its fields the documents stil
 
   await goto(admin, leader, '#/build/routes/sample?sample=web-sample&relock=alerts');
   await expect(admin.getByText('Checked by alerts')).toBeVisible({ timeout: 30_000 });
+  await expect(admin.getByText('No longer in the rows: gone')).toBeVisible();
   await expect(admin.getByRole('button', { name: 'Choose fields' })).toHaveText(/Fields 1 of/);
   const table = admin.getByRole('table');
   await expect(table.getByRole('row', { name: /^row 0 / })).toHaveCount(0);
