@@ -329,3 +329,49 @@ test('with reduced motion, nothing glides', async ({ admin: page, api, leader })
     'running',
   );
 });
+
+test('an open step and an If each open a gap only as tall as their head', async ({
+  admin: page,
+  api,
+  leader,
+}) => {
+  await arrange(page, api, leader);
+  await page.locator('#step-b > .card-head .expander').click();
+  for (const id of ['b', 'i']) {
+    const card = page.locator(`#step-${id}`);
+    const head = (await card.locator(':scope > .card-head').boundingBox())!.height;
+    expect((await card.boundingBox())!.height).toBeGreaterThan(head + 10);
+    const badge = (await card.locator(':scope > .card-head .type-badge').boundingBox())!;
+    await page.mouse.move(badge.x + badge.width / 2, badge.y + badge.height / 2);
+    await page.mouse.down();
+    await expect(page.locator('.carried-chip')).toBeVisible();
+    await aim(
+      page,
+      () => gapPoint(page, { owner: null }, 0),
+      (at) => page.mouse.move(at.x, at.y, { steps: 8 }),
+    );
+    const gap = (await page.locator('.insert.drop').boundingBox())!.height;
+    expect(Math.abs(gap - head)).toBeLessThan(4);
+    await page.keyboard.press('Escape');
+    await page.mouse.up();
+    await still(page);
+  }
+});
+
+test('a dropped If brings its steps with it as it glides', async ({ admin: page, api, leader }) => {
+  await arrange(page, api, leader);
+  const within = () =>
+    page.evaluate(() => {
+      const outer = document.getElementById('step-i')!.getBoundingClientRect();
+      return ['t1', 't2', 'e1', 'j'].map((id) => {
+        const r = document.getElementById(`step-${id}`)!.getBoundingClientRect();
+        return [Math.round(r.left - outer.left), Math.round(r.top - outer.top)];
+      });
+    });
+  const landed = await within();
+  await drag(page, 'i', () => gapPoint(page, { owner: null }, 0));
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(done)));
+  expect(await within()).toEqual(landed);
+  await still(page);
+  expect(await within()).toEqual(landed);
+});

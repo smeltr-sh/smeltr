@@ -6,7 +6,7 @@
 
 import { getContext, setContext, tick } from 'svelte';
 import type { Attachment } from 'svelte/attachments';
-import { flatSteps, moveStep, placeOf, stepAside, type Step } from './pipeline';
+import { moveStep, placeOf, stepAside, type Step } from './pipeline';
 import { glideCards, lessMotion } from './glide';
 
 const CONTEXT = Symbol('step moves');
@@ -202,7 +202,7 @@ export class StepMoves {
     // A step picked up near an edge scrolls nothing until the pointer sets off.
     let setOff = false;
     const aim = () => {
-      const over = this.#dropAt(step, this.at.x, this.at.y);
+      const over = this.#dropAt(this.at.x, this.at.y);
       if (over?.list !== this.over?.list || over?.index !== this.over?.index) this.over = over;
     };
     const move = (m: PointerEvent) => {
@@ -284,14 +284,12 @@ export class StepMoves {
   }
 
   /** The drop under the pointer: in the innermost list there, before the first of its steps whose middle is below
-   * the pointer. None inside the dragged step itself. */
-  #dropAt(step: Step, x: number, y: number): Drop | null {
+   * the pointer, or at the end if none is. */
+  #dropAt(x: number, y: number): Drop | null {
     let el = document.elementFromPoint(x, y);
     while (el && !this.#lists.has(el)) el = el.parentElement;
     if (!el) return null;
     const list = this.#lists.get(el)!;
-    if (flatSteps([step]).some((s) => s.type === 'if' && (s.then === list || s.else === list)))
-      return null;
     const slots = [...el.querySelectorAll(':scope > .slot, :scope > .step-list > .slot')];
     const index = slots.filter((s) => {
       // The step's card, not its slot: the slot holds the gap above it too, which opens as the pointer comes near. The
