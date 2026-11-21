@@ -387,8 +387,7 @@
   }
 
   th,
-  .one-line,
-  .row-actions {
+  .one-line {
     white-space: nowrap;
   }
 

@@ -237,10 +237,11 @@ impl SymbolTable {
         self.root.get(name)
     }
 
-    /// The node `name` names, with the tree's name for it: `$` is the record, which the tree names `""`.
+    /// The node `name` names, with the name the tree knows it by. `$` and `""` both name the record; the tree's name
+    /// for it is `""`.
     pub fn named<'n>(&self, name: &'n str) -> (&'n str, Option<Node>) {
         match name {
-            tree::ROOT => ("", Some(Node::Object(self.record()))),
+            tree::ROOT | "" => ("", Some(Node::Object(self.record()))),
             name => (name, self.node(name).cloned()),
         }
     }
@@ -714,15 +715,14 @@ pub fn is_builtin(name: &str) -> bool {
     STATEMENT_CALLS.contains(&name)
         || PARSE_FNS.contains(&name)
         || PRELUDE_FUNCTIONS.contains(&name)
-        || name == "rest"
         || name == crate::expr::unpack::UNPACK
         || name == crate::expr::unpack::PACK
         || ObjectOp::by_name(name).is_some()
         || StdFunc::by_name(name).is_some()
 }
 
-/// Lower `keys`, `entries`, `fromEntries` and `omit`. A value read from a key is one of the types the object's values
-/// meet as, and a value in unclaimed fields is one a variant holds.
+/// Lower `keys`, `entries`, `fromEntries`, `omit`, `declared` and `undeclared`. A value read from a key is one of the
+/// types the object's values meet as, and a value in unclaimed fields is one a variant holds.
 fn resolve_object_op(
     op: ObjectOp,
     args: &[Expr],
@@ -755,6 +755,16 @@ fn resolve_object_op(
     };
     let ir = resolve(object, syms, res)?;
     refuse_variant(&ir, object, syms)?;
+    if let (ObjectOp::Undeclared, DataType::Struct(_, false)) = (op, &ir.ty) {
+        let this = match &object.kind {
+            ExprKind::Field(name) => format!("`{name}`"),
+            _ => "this one".to_string(),
+        };
+        return fail(format!(
+            "`undeclared` takes an object that may hold undeclared keys, and {this} is {}",
+            ir.ty.spell()
+        ));
+    }
     if !op.accepts(&ir.ty) {
         return fail(format!("`{word}` takes an object, found {}", ir.ty.spell()));
     }
@@ -762,7 +772,28 @@ fn resolve_object_op(
         unreachable!("`accepts` takes only an object here");
     };
     match op {
-        ObjectOp::Keys | ObjectOp::Entries if !keys.is_empty() => fail(format!("`{word}` takes one object")),
+        ObjectOp::Keys | ObjectOp::Entries | ObjectOp::Declared | ObjectOp::Undeclared if !keys.is_empty() => {
+            fail(format!("`{word}` takes one object"))
+        }
+        ObjectOp::Declared => Ok(Ir::new(
+            DataType::Struct(fields, false),
+            span,
+            IrKind::Object {
+                fields: object_parts(ir).0,
+                unclaimed: None,
+            },
+        )),
+        ObjectOp::Undeclared => {
+            let (_, unclaimed) = object_parts(ir);
+            Ok(Ir::new(
+                DataType::Struct(Vec::new(), true),
+                span,
+                IrKind::Object {
+                    fields: Vec::new(),
+                    unclaimed: unclaimed.map(Box::new),
+                },
+            ))
+        }
         ObjectOp::Keys => Ok(Ir::new(
             DataType::Array(Box::new(DataType::Str)),
             span,
@@ -973,7 +1004,7 @@ fn resolve_call(
         return resolve_object_op(op, &arg_exprs, span, syms, res);
     }
     let Some(func) = StdFunc::by_name(method) else {
-        if PARSE_FNS.contains(&name) || name == "rest" {
+        if PARSE_FNS.contains(&name) {
             return Err(CompileError::new(
                 None,
                 format!("`{name}(…)` is the whole value of a write: write `x = {name}(…);`, then read `x`"),

@@ -7,36 +7,28 @@
 <script lang="ts">
   import { Busy } from './busy.svelte';
   import Button, { BUSY, SAVE_FIRST } from './Button.svelte';
-  import { reported, unreported } from './errors.svelte';
+  import MoveDialog, { type MoveTarget } from './MoveDialog.svelte';
+  import type { Area } from './areas';
+  import { reported } from './errors.svelte';
   import SectionShell from './SectionShell.svelte';
   import PageHeader from './PageHeader.svelte';
   import SecondaryTabs from './SecondaryTabs.svelte';
   import { ask } from './Confirm.svelte';
   import AddSampleDialog from './AddSampleDialog.svelte';
-  import MoveDialog, { type MoveTarget } from './MoveDialog.svelte';
-  import type { Area } from './areas';
   import SampleEditor from './SampleEditor.svelte';
   import UnreadableFiles from './UnreadableFiles.svelte';
   import SortButton from './SortButton.svelte';
   import { TableSort } from './sort.svelte';
   import { RESOURCES_TABS } from './nav';
-  import { checksOf } from './objectChanges';
   import { dateTime } from './time';
   import { editable } from './access';
-  import { names } from './names.svelte';
   import {
     listSamples,
     deleteSample,
     listTests,
-    runTests,
-    deleteTest,
-    currentBranch,
-    currentScope,
-    errorText,
     capturedAt,
     type SampleSummary,
     type TestSummary,
-    type TestResult,
   } from './api';
 
   const readOnly = !editable();
@@ -50,21 +42,15 @@
   const saving = new Busy();
 
   let adding = $state(false);
-  /** The sample or test being moved into another area (`MoveDialog`). */
-  let moving: MoveTarget | null = $state(null);
-  let areas: Area[] = $state([]);
 
   // The sample open for editing, by id.
   let editing: string | null = $state(null);
+  /** The sample being moved into another area (`MoveDialog`). */
+  let moving: MoveTarget | null = $state(null);
+  let areas: Area[] = $state([]);
 
+  /** The tests that run over each sample, so an edit to the sample can name the ones it changes the input of. */
   let tests: TestSummary[] = $state([]);
-  let testsLoading = $state(true);
-  let testsRunError = $state('');
-  // Keyed by test id; absent while its run is still in flight.
-  let results: Record<string, TestResult> = $state({});
-  const deletingTest = new Busy();
-
-  const pipelineName = (id: string) => names.of(currentBranch(), currentScope(), 'pipelines', id);
 
   const sampleSort = new TableSort<'name' | 'source' | 'records' | 'captured'>();
   let sortedSamples = $derived(
@@ -76,61 +62,14 @@
     }),
   );
 
-  /** The sample name a test row shows: its id when the sample is gone. */
-  function sampleNameOf(t: TestSummary): string {
-    return samples.find((s) => s.id === t.sample)?.name ?? t.sample;
-  }
-
-  const testSort = new TableSort<'name' | 'pipelines' | 'sample' | 'checks'>();
-  let sortedTests = $derived(
-    testSort.apply(tests, {
-      name: (t) => t.name,
-      pipelines: (t) => t.pipelines.map(pipelineName).join(', '),
-      sample: sampleNameOf,
-      checks: checksOf,
-    }),
-  );
-
   async function loadTests() {
-    testsLoading = true;
     try {
-      const res = await listTests();
-      tests = res.tests;
+      tests = (await listTests()).tests;
     } catch (e) {
       reported(e);
-    } finally {
-      testsLoading = false;
     }
-    if (!readOnly) runAllTests();
   }
   loadTests();
-
-  async function runAllTests() {
-    testsRunError = '';
-    try {
-      const res = await runTests({});
-      if (!res.ok) testsRunError = errorText(res.errors ?? []);
-      const byId: Record<string, TestResult> = {};
-      for (const r of res.results) byId[r.id] = r;
-      results = byId;
-    } catch (e) {
-      testsRunError = unreported(e);
-    }
-  }
-
-  async function removeTest(t: TestSummary) {
-    const ok = await ask({
-      title: 'delete test',
-      body: `Delete the test "${t.name}".`,
-      action: 'Delete',
-      danger: true,
-    });
-    if (!ok) return;
-    await deletingTest.run(async () => {
-      const res = await deleteTest(t.id);
-      if (res.ok) await loadTests();
-    });
-  }
 
   async function load() {
     loading = true;
@@ -235,7 +174,7 @@
             <th aria-sort={sampleSort.aria('captured')}
               ><SortButton sort={sampleSort} key="captured">Captured</SortButton></th
             >
-            <th></th><th></th><th></th><th></th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -247,29 +186,21 @@
               <td class="dim"
                 >{#if capturedAt(s) !== undefined}{dateTime(capturedAt(s)! / 1000)}{/if}</td
               >
-              <td class="right">
+              <td class="row-actions">
                 <a class="btn" href={`#/build/pipelines/for/${encodeURIComponent(s.id)}`}
                   >Run in a pipeline</a
                 >
-              </td>
-              <td class="right">
                 {#if !readOnly}
                   <Button
                     onclick={() => (editing = editing === s.id ? null : s.id)}
                     disabled={saving.on ? BUSY : ''}>Edit</Button
                   >
-                {/if}
-              </td>
-              <td class="right">
-                {#if !readOnly && areas.length > 1}
-                  <Button
-                    onclick={() => (moving = { part: 'sample', id: s.id, name: s.name })}
-                    disabled={saving.on ? BUSY : ''}>Move to&hellip;</Button
-                  >
-                {/if}
-              </td>
-              <td class="right">
-                {#if !readOnly}
+                  {#if areas.length > 1}
+                    <Button
+                      onclick={() => (moving = { part: 'sample', id: s.id, name: s.name })}
+                      disabled={saving.on ? BUSY : ''}>Move to&hellip;</Button
+                    >
+                  {/if}
                   <Button
                     onclick={() => remove(s)}
                     disabled={saving.on ? BUSY : editing !== null ? SAVE_FIRST : ''}>Delete</Button
@@ -279,7 +210,7 @@
             </tr>
             {#if editing === s.id}
               <tr class="open">
-                <td colspan="8">
+                <td colspan="5">
                   <SampleEditor
                     id={s.id}
                     tests={testsOn(s.id)}
@@ -298,80 +229,6 @@
       </table>
     </div>
   {/if}
-
-  <div class="card tests-card">
-    <div class="row">
-      <h2>Tests</h2>
-      <span class="dim">{tests.length}</span>
-    </div>
-    {#if testsRunError}
-      <p class="warn">{testsRunError}</p>
-    {/if}
-    {#if testsLoading}
-      <p class="dim">Loading…</p>
-    {:else if tests.length === 0}
-      <p class="dim">
-        No tests locked yet. <a href="#/build/pipelines">Run a pipeline</a> against a sample and lock
-        what it produces.
-      </p>
-    {:else}
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th aria-sort={testSort.aria('name')}
-                ><SortButton sort={testSort} key="name">Test</SortButton></th
-              >
-              <th aria-sort={testSort.aria('pipelines')}
-                ><SortButton sort={testSort} key="pipelines">Pipelines</SortButton></th
-              >
-              <th aria-sort={testSort.aria('sample')}
-                ><SortButton sort={testSort} key="sample">Sample</SortButton></th
-              >
-              <th aria-sort={testSort.aria('checks')}
-                ><SortButton sort={testSort} key="checks">Checks</SortButton></th
-              >
-              <th></th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each sortedTests as t (t.id)}
-              <tr>
-                <td><strong>{t.name}</strong></td>
-                <td class="mono dim">{t.pipelines.map(pipelineName).join(', ') || '—'}</td>
-                <td class="mono dim">{sampleNameOf(t)}</td>
-                <td class="mono">{checksOf(t)}</td>
-                <td>
-                  {#if !results[t.id]}
-                    <span class="dim">running…</span>
-                  {:else if results[t.id].error}
-                    <span class="warn" title={results[t.id].error}>could not run</span>
-                  {:else if results[t.id].verdict?.passed}
-                    <span class="passing">Passing</span>
-                  {:else}
-                    <span class="failing">Failing</span>
-                  {/if}
-                </td>
-                <td class="right">
-                  {#if !readOnly && areas.length > 1}
-                    <Button onclick={() => (moving = { part: 'test', id: t.id, name: t.name })}
-                      >Move to&hellip;</Button
-                    >
-                  {/if}
-                  {#if !readOnly}
-                    <Button onclick={() => removeTest(t)} disabled={deletingTest.on ? BUSY : ''}>
-                      Delete
-                    </Button>
-                  {/if}
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
-    {/if}
-  </div>
 </SectionShell>
 
 <style>
@@ -383,51 +240,8 @@
   .warn {
     color: var(--warn);
   }
-  .card {
-    border: 1px solid var(--border);
-    border-radius: var(--radius-card);
-    background: var(--panel);
-    padding: 0.9rem;
-    margin-bottom: 1.25rem;
-  }
-  .tests-card {
-    padding: 0;
-    overflow: hidden;
-  }
-  .tests-card table {
-    margin: 0;
-  }
   .table-wrap {
     overflow-x: auto;
-  }
-  .row {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 0.9rem;
-    background: var(--bg);
-    border-bottom: 1px solid var(--border);
-  }
-  .row h2 {
-    flex-grow: 1;
-    margin: 0;
-    font-size: var(--text-micro);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--dim);
-  }
-  .tests-card p {
-    margin: 0;
-    padding: 0.75rem 0.9rem;
-  }
-  .passing {
-    color: var(--added);
-    font-weight: 600;
-  }
-  .failing {
-    color: var(--error);
-    font-weight: 600;
   }
   table {
     width: 100%;
@@ -444,9 +258,6 @@
     color: var(--dim);
     font-weight: 600;
     font-size: var(--text-label);
-  }
-  .right {
-    text-align: right;
   }
   /* The sample open for editing, folded open under its row (STYLE_GUIDE.md, "Lists"). */
   tr.open {

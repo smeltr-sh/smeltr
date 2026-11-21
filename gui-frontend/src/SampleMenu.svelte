@@ -5,7 +5,8 @@
 -->
 <script lang="ts">
   import ChipPicker from './ChipPicker.svelte';
-  import LockIcon from './LockIcon.svelte';
+  import SampleIcon from './SampleIcon.svelte';
+  import TestIcon from './TestIcon.svelte';
   import { count, dateTime } from './time';
   import { capturedAt, type SampleSummary } from './api';
   import { HELD_NAME } from './sampleChoices.svelte';
@@ -15,8 +16,10 @@
     selected,
     lastUsed = '',
     records,
-    lockedBy = new Map(),
     held,
+    tests = [],
+    test = '',
+    ontest,
     onpick,
     onadd,
   }: {
@@ -27,11 +30,16 @@
     lastUsed?: string;
     /** How many records it holds, once run. */
     records: number | null;
-    /** The names of this pipeline's tests that lock each sample, by sample id. */
-    lockedBy?: Map<string, string[]>;
     /** The capture the leader holds for the person signed in, listed first among the samples. Picking it passes
      * `choice` to `onpick`. */
     held?: { choice: string; records: number; source?: string };
+    /** The tests that run here, each over its sample: a pipeline's in its editor, the end-to-end ones in Route a
+     * sample. */
+    tests?: { id: string; name: string; sample: string }[];
+    /** The test on screen, if there is one: the grid shows its sample's records, with the fields and rows the test
+     * checks. */
+    test?: string;
+    ontest?: (id: string) => void;
     onpick: (id: string) => void;
     /** Opens Add sample to make a new sample; absent where the person may make none. */
     onadd?: () => void;
@@ -48,12 +56,10 @@
 
   // -- samples -------------------------------------------------------------
 
-  const locked = (s: SampleSummary) => (lockedBy.get(s.id)?.length ?? 0) > 0;
   let saved = $derived(
     [...samples].sort(
       (a, b) =>
         Number(b.id === lastUsed) - Number(a.id === lastUsed) ||
-        Number(locked(b)) - Number(locked(a)) ||
         (b.written ?? 0) - (a.written ?? 0),
     ),
   );
@@ -87,6 +93,11 @@
   ]);
 
   let q = $derived(query.trim().toLowerCase());
+  let testName = $derived(tests.find((t) => t.id === test)?.name);
+  const sampleName = (id: string) => samples.find((s) => s.id === id)?.name ?? id;
+  let foundTests = $derived(
+    tests.filter((t) => `${t.name} ${sampleName(t.sample)}`.toLowerCase().includes(q)),
+  );
   let found = $derived(
     listed.filter((s) => `${s.name} ${s.source ?? ''}`.toLowerCase().includes(q)),
   );
@@ -100,8 +111,14 @@
   onopen={() => (query = '')}
 >
   {#snippet face()}
-    <span class="dim">Sample</span>
-    <strong>{selectedName}</strong>
+    <!-- The glyph says which it is; the word is still there for a screen reader. -->
+    {#if testName}
+      <TestIcon /><span class="visually-hidden">Test</span>
+      <strong class="ellipsis face-name">{testName}</strong>
+    {:else}
+      <SampleIcon /><span class="visually-hidden">Sample</span>
+      <strong class="ellipsis face-name">{selectedName}</strong>
+    {/if}
     {#if records !== null}<span class="dim">{count(records, 'record')}</span>{/if} ▾
   {/snippet}
   {#snippet children()}
@@ -120,30 +137,46 @@
       <input
         type="search"
         bind:value={query}
-        placeholder="Find a sample"
-        aria-label="Find a sample"
+        placeholder={tests.length ? 'Find a test or sample' : 'Find a sample'}
+        aria-label={tests.length ? 'Find a test or sample' : 'Find a sample'}
         autofocus
       />
+      {#if foundTests.length}
+        <div class="list" role="listbox" aria-label="Tests">
+          <span class="group"><TestIcon /> Tests</span>
+          {#each foundTests as t (t.id)}
+            <button
+              type="button"
+              class="item"
+              role="option"
+              aria-selected={t.id === test}
+              onclick={() => {
+                open = false;
+                if (t.id !== test) ontest?.(t.id);
+              }}
+            >
+              <span class="name ellipsis">{t.name}</span>
+              <span class="dim">{sampleName(t.sample)}</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
       <div class="list" role="listbox" aria-label="Samples">
+        {#if foundTests.length}<span class="group"><SampleIcon /> Samples</span>{/if}
         {#each found as s (s.id)}
-          {@const lockers = lockedBy.get(s.id) ?? []}
           <button
             type="button"
             class="item"
             role="option"
-            aria-selected={s.id === selected}
+            aria-selected={!testName && s.id === selected}
             onclick={() => {
               open = false;
-              // The sample already chosen is chosen: picking it again keeps what it shows.
-              if (s.id !== selected) onpick(s.id);
+              // Picking the sample already chosen changes nothing. While a test is chosen, picking any sample, the
+              // test's own included, closes the test and shows that sample.
+              if (s.id !== selected || testName) onpick(s.id);
             }}
           >
-            <span class="name ellipsis">
-              {#if lockers.length > 0}<span title={`Locked by the test ${lockers.join(', ')}`}
-                  ><LockIcon /></span
-                >{/if}
-              {s.name}
-            </span>
+            <span class="name ellipsis">{s.name}</span>
             <span class="dim">{s.said}</span>
           </button>
         {/each}
@@ -177,6 +210,16 @@
     overflow-y: auto;
   }
 
+  .group {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.3rem 0.4rem 0.1rem;
+    color: var(--dim);
+    font-size: var(--text-label);
+    font-weight: 600;
+  }
+
   .item {
     display: flex;
     align-items: baseline;
@@ -204,5 +247,10 @@
   .name {
     flex: 1;
     min-width: 0;
+  }
+
+  /* A long name is cut short before the chip wraps, most of all on a phone. */
+  .face-name {
+    max-width: 18rem;
   }
 </style>

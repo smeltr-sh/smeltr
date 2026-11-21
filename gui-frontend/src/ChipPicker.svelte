@@ -124,9 +124,11 @@
     display: block;
   }
 
+  /* A chip's face is one line: words that wrap inside a pill read as two controls. */
   .chip {
     display: inline-flex;
     align-items: center;
+    white-space: nowrap;
     gap: 0.35rem;
     padding: 0.2rem 0.6rem;
     border-width: 1px;

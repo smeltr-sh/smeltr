@@ -45,6 +45,11 @@
     return c.note ? (c.text ? `${c.text} ${c.note}` : c.note) : c.text;
   }
 
+  /** The test on screen. When it is `ready`, on its sample's run, the grid shows what the test checks, one
+   * time; after that the fields and rows are the reader's. `rowOf` numbers a row as the test does; without it, a row
+   * is numbered by its key. */
+  export type TestOnScreen = { test: string; ready: boolean; rowOf?: (row: GridRow) => number };
+
   /** The steps that touched a field, in the order they ran, each with its number in the step list. */
   export type Touched = (path: string) => NumberedStep[];
 </script>
@@ -79,7 +84,14 @@
     typeAt,
     type Declared,
   } from './recordDiff';
-  import { isInternal, type DictionaryOut, type MissingField, type PreviewResult } from './api';
+  import {
+    getTest,
+    isInternal,
+    type DictionaryOut,
+    type MissingField,
+    type PreviewResult,
+    type TestDto,
+  } from './api';
 
   let {
     rows,
@@ -94,6 +106,7 @@
     onjump,
     onassign,
     leads = [],
+    test,
     bar,
     above,
     actions,
@@ -124,6 +137,7 @@
     onassign?: (path: string) => void;
     /** Columns ahead of the fields. */
     leads?: LeadColumn[];
+    test?: TestOnScreen;
     /** Ahead of the Fields menu, on the bar over the grid. */
     bar?: Snippet;
     /** Between the find box and the grid. */
@@ -264,8 +278,9 @@
     for (const path of paths) chosenFields.set(path, show);
   }
 
-  // The field choice is the reader's own, remembered per grid in this browser.
-  const fieldsKey = (key: string) => `smeltr-workspace-fields:${key}`;
+  // The field choice is the reader's own, remembered per grid in this browser. Showing a test's fields is no choice
+  // of the reader's, so a test's are kept apart from the reader's.
+  const fieldsKey = (key: string) => `smeltr-workspace-fields:${key}${test ? ' test' : ''}`;
   $effect(() => {
     const key = fieldsKey(remember);
     untrack(() => {
@@ -467,6 +482,54 @@
   export function clearFind() {
     outputQuery = '';
     chips = [];
+  }
+
+  let testRead = $state<TestDto | null>(null);
+  let showedTest = false;
+  /** The fields the test checks that the rows no longer hold. */
+  let gone = $state<string[]>([]);
+  /** How many of `gone` are named before "N more". */
+  const GONE_LISTED = 3;
+  let allGone = $state(false);
+  // `test` is a new object whenever it gets ready, which is no new test to read.
+  let read = '';
+  $effect(() => {
+    const id = test?.test;
+    if (!id || id === read) return;
+    read = id;
+    // When another test is chosen, the grid shows it.
+    testRead = null;
+    showedTest = false;
+    gone = [];
+    void getTest(id).then((res) => {
+      if (read === id) testRead = res.test ?? null;
+    });
+  });
+  $effect(() => {
+    if (showedTest || !testRead || !test?.ready || !rows) return;
+    showedTest = true;
+    const [dto, rowOf] = [testRead, test.rowOf ?? ((row: GridRow) => row.key)];
+    untrack(() => showTest(dto, rowOf));
+  });
+
+  /** Shows what `test` checks: its fields the rows still hold and nothing else, and a chip keeping its rows unless it
+   * checks every row. A field it checks that the rows no longer hold is left out and named; if it was renamed, the
+   * reader chooses it under its new name. */
+  function showTest(test: TestDto, rowOf: (row: GridRow) => number) {
+    clearFind();
+    chosenFields.clear();
+    const held = new Set(test.fields.filter((f) => allColumns.includes(f)));
+    gone = test.fields.filter((f) => !held.has(f));
+    for (const { path } of menuFields) chosenFields.set(path, held.has(path));
+    const checked = new Set(test.rows.map((o) => o.row));
+    if (rows?.every((row) => checked.has(rowOf(row)))) return;
+    addChip({
+      kind: 'rows',
+      key: `test ${test.id}`,
+      label: `Checked by ${test.name}`,
+      failing: false,
+      keeps: (row) => checked.has(rowOf(row)),
+    });
   }
 
   /** The rows the find box keeps and the fields shown: what `actions` is given, for a caller acting from
@@ -674,6 +737,16 @@
         >
       {/if}
       <span class="grow"></span>
+      {#if test?.ready && gone.length > 0}
+        {@const listed = allGone ? gone : gone.slice(0, GONE_LISTED)}
+        <span class="critical"
+          >Fields no longer in the rows: {listed.join(', ')}{#if listed.length < gone.length},
+            <ShowAll
+              more={gone.length - listed.length}
+              onshowall={() => (allGone = true)}
+            />{/if}</span
+        >
+      {/if}
       {@render actions?.(
         gridOrder.map((i) => rows![i]),
         columns,
@@ -901,10 +974,12 @@
 <style>
   /* The sample and what is shown of it on one row, and the search on the next: the search has a
      row of its own to be read in. */
+  /* On a narrow screen the bar's controls wrap to a second line rather than run off it. */
   .output-bar {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 0.7rem;
+    gap: 0.5rem 0.7rem;
   }
 
   .output-bar + .output-bar {
@@ -930,6 +1005,10 @@
     align-items: center;
     gap: 0.7rem;
     margin-top: 0.5rem;
+  }
+  /* On a line of buttons, centered as they are. */
+  .output-actions .critical {
+    margin: 0;
   }
 
   .results {
