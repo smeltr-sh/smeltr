@@ -735,7 +735,7 @@
       <RequestDelivery
         value={h}
         sizeDefault={(h.type === 'http' ? LIMITS.httpRequestBytes : LIMITS.maxRequestBytes).default}
-        concurrent={h.type !== 'prometheus'}
+        adapts={h.type !== 'prometheus'}
       >
         {#snippet sizeHelp()}
           A request is sent as soon as it reaches this size. Keep it under the largest body the

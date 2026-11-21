@@ -184,10 +184,10 @@ pub trait Protocol: Clone + Send + 'static {
         0
     }
 
-    /// The order a batch's items must reach the service in, when it has one. `Some` holds a batch's items until all
-    /// are admitted and sorts each group by it before cutting requests, so no request carries an item that sorts
-    /// before one already sent. A pool sends a batch's requests side by side, so a destination whose protocol has an
-    /// order has none. `None` cuts a request as soon as it fills.
+    /// The order a batch's items must reach the service in, within each part, when it has one. `Some` holds a batch's
+    /// items until all are admitted and sorts each part's by it before cutting requests, and a pool sends a part's
+    /// requests one at a time, in the order they were cut, so no request carries an item that sorts before one of its
+    /// part already sent. `None` cuts a request as soon as it fills.
     fn order(&self) -> Option<Order<Self::Item>> {
         None
     }
@@ -326,10 +326,6 @@ impl<P: Protocol, T: Transport> HttpDestination<P, T> {
         if senders.is_empty() {
             return self;
         }
-        debug_assert!(
-            self.protocol.order().is_none(),
-            "a pool sends a batch's requests out of order"
-        );
         self.pool = Some(Pool::new(
             senders
                 .into_iter()
@@ -451,6 +447,7 @@ fn in_halves<P: Protocol, T: Transport>(
         pending: group.pending.split_off(half),
         sent_index: group.sent_index.split_off(half),
         bytes: 0,
+        key: group.key,
     };
     let delivered =
         deliver(protocol, transport, group, round).and_then(|()| deliver(protocol, transport, &mut tail, round));
@@ -579,6 +576,8 @@ struct Group<I> {
     sent_index: Vec<usize>,
     /// What `pending` adds to a request body.
     bytes: usize,
+    /// The part, where the protocol has an order: a pool sends a part's requests one at a time.
+    key: Option<usize>,
 }
 
 impl<I> Group<I> {
@@ -590,6 +589,7 @@ impl<I> Group<I> {
             pending: std::mem::take(&mut self.pending),
             sent_index: std::mem::take(&mut self.sent_index),
             bytes: std::mem::take(&mut self.bytes),
+            key: self.key,
         }
     }
 }
@@ -620,6 +620,10 @@ impl<P: Protocol, T: Transport> pipelined::Sender for HttpSender<P, T> {
                 rows: group.sent_index,
             }),
         }
+    }
+
+    fn key(group: &Group<P::Item>) -> Option<usize> {
+        group.key
     }
 }
 
@@ -666,6 +670,7 @@ impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
                         pending: Vec::new(),
                         sent_index: Vec::new(),
                         bytes: 0,
+                        key: order.map(|_| part),
                     });
                     groups.len() - 1
                 }

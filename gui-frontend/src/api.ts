@@ -671,6 +671,7 @@ export type DestinationDto = {
       url: string;
       /** The remote_write protocol version sent. Absent is `1.0`. */
       version?: '1.0' | '2.0';
+      inFlight?: number;
     })
   | (HttpRequestsDto & {
       type: 'otlp';
