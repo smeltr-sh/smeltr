@@ -75,15 +75,21 @@
     Once the preview is right, show the fields that matter with <strong>Fields</strong>, narrow the
     rows with the find box, and choose <strong>Lock this as a test</strong>. The test checks those
     fields on those rows, and whether each row is dropped, and nothing else, so an edit elsewhere
-    leaves it passing. A sample can carry several tests, each checking its own fields and rows. Open
-    Resources → Samples to run every test again. A failing test names the row and the field, what it
-    expected and what it got.
+    leaves it passing. A sample can carry several tests, each checking its own fields and rows.
+  </p>
+  <p>
+    Build → Resources → Tests runs every test again. A failing test names the row and the field,
+    what it expected and what it got. <strong>Open</strong> shows a test where it was locked, on its
+    sample with the fields and rows it checks, and <strong>Lock this test again</strong> locks what is
+    on screen in its place. The sample menu in the pipeline editor lists the pipeline's tests above its
+    samples, so you can open one from there too.
   </p>
   <ProductScreenshot
     source="build-tests"
     height={1800}
-    alt="Samples page with two passing firewall pipeline tests, each listing the fields it checks on 10 rows."
-    caption="Each test lists the fields it checks."
+    crop={{ x: 0, y: 0, width: 2880, height: 960 }}
+    alt="Tests page with two passing firewall pipeline tests, each listing the fields it checks on 10 rows."
+    caption="Each test lists what it covers and the fields it checks."
   />
 
   <h2 id="troubleshooting">Troubleshooting</h2>
