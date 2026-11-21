@@ -1433,7 +1433,8 @@ impl Protocol for RemoteWrite {
                 let mut points: Vec<SeriesPoint> = (samples.into_iter())
                     .map(|(suffix, end, value)| {
                         let mut labels = labels.clone();
-                        labels[0].1 = format!("{name}{suffix}");
+                        // `labels` are sorted, and an attribute such as `Cluster` sorts before `__name__`.
+                        labels.iter_mut().find(|(key, _)| key == NAME_LABEL).unwrap().1 = format!("{name}{suffix}");
                         labels.extend(end.map(|end| (BUCKET_LABEL.to_string(), end)));
                         labels.sort_unstable();
                         SeriesPoint {
@@ -2296,6 +2297,24 @@ mod tests {
     }
 
     /// As Prometheus exposes a classic histogram's exemplars: each on the bucket that holds its value.
+    #[test]
+    fn a_classic_histogram_names_its_series_whatever_its_attributes_sort_before() {
+        let request = sent(&[admit(&format!(
+            r#"{{{T},"name":"x","type":"histogram","aggregationTemporality":2,"count":1,"sum":1,
+            "attributes":{{"Cluster":"c"}},"explicitBounds":[],"bucketCounts":[1]}}"#
+        ))
+        .unwrap()]);
+        let labels: Vec<_> = series(&request).into_iter().map(|(labels, _)| labels).collect();
+        assert_eq!(
+            labels,
+            [
+                vec![("Cluster", "c"), ("__name__", "x_bucket"), ("le", "+Inf")],
+                vec![("Cluster", "c"), ("__name__", "x_sum")],
+                vec![("Cluster", "c"), ("__name__", "x_count")],
+            ]
+        );
+    }
+
     #[test]
     fn a_classic_histogram_s_exemplars_go_on_the_buckets_holding_them() {
         let item = admit(&format!(
