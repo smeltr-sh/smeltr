@@ -98,6 +98,7 @@ export type Route =
   | { tab: 'build'; page: 'sources'; json: boolean; focus?: string; only?: string[] }
   | { tab: 'build'; page: 'destinations'; json: boolean; focus?: string; only?: string[] }
   | { tab: 'build'; page: 'samples' }
+  | { tab: 'build'; page: 'tests' }
   // `sample` carries the choice from a sample row's "Run in a pipeline"
   // link, so the list can say which sample opening a pipeline will preview.
   | { tab: 'build'; page: 'pipelines'; sample?: string; only?: string[] }
@@ -314,6 +315,7 @@ const SECTIONS: Partial<Record<Tab, SectionItem[]>> = {
  * are tabs rather than rail entries. */
 export const RESOURCES_TABS: SectionItem[] = [
   { label: 'Samples', hash: '#/build' },
+  { label: 'Tests', hash: '#/build/tests' },
   { label: 'Lookup tables', hash: '#/build/lookups' },
   { label: 'Grok patterns', hash: '#/build/grok' },
   { label: 'Schemas', hash: '#/build/schemas' },
@@ -370,6 +372,7 @@ const SECTION_OF: Record<Route['page'], string | null> = {
   sources: 'Sources',
   destinations: 'Destinations',
   samples: 'Resources',
+  tests: 'Resources',
   pipelines: 'Pipelines',
   routes: 'Routes',
   lookups: 'Resources',
@@ -408,6 +411,7 @@ const SCOPED_PAGES: ReadonlySet<Route['page']> = new Set([
   'sources',
   'destinations',
   'samples',
+  'tests',
   'pipelines',
   'pipeline',
   'routes',
@@ -588,6 +592,7 @@ export function parseRoute(hash: string): Route {
       if (parts[1] === 'tests' && parts[2] === 'relock' && parts[3]) {
         return { tab: 'build', page: 'lock-test', relock: decodeURIComponent(parts[3]) };
       }
+      if (parts[1] === 'tests' && !parts[2]) return { tab: 'build', page: 'tests' };
       if (parts[1] === 'tests' && parts[2] === 'lock' && parts[3] && parts[4]) {
         return {
           tab: 'build',
@@ -712,10 +717,12 @@ function pipelineCrumb(id: string, names: PipelineNames): string {
  * themselves here, the same way a `RESOURCES_TABS` entry names itself in
  * the tab strip. */
 function drilledInto(route: Route, names: PipelineNames): Crumb[] {
-  const [samplesTab, lookupsTab, grokTab, schemasTab] = RESOURCES_TABS;
+  const [samplesTab, testsTab, lookupsTab, grokTab, schemasTab] = RESOURCES_TABS;
   switch (route.page) {
     case 'samples':
       return [{ label: samplesTab.label }];
+    case 'tests':
+      return [{ label: testsTab.label }];
     case 'lookups':
       return [{ label: lookupsTab.label }];
     case 'grok':

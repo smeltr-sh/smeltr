@@ -167,7 +167,7 @@
       if (res.ok) {
         // Back past the editor the choice was made in, to where Lock again was pressed.
         if (relock) history.go(-2);
-        else location.hash = '#/build';
+        else location.hash = '#/build/tests';
       } else if (res.conflict) {
         conflict = res.conflict;
         errors.shown(res.errors);

@@ -1962,11 +1962,15 @@ test('A6: a sample locked as a test passes, and a save that breaks it is allowed
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Saved.')).toBeVisible();
 
-  await goto(admin, leader, '#/build');
-  await expect(admin.getByRole('row', { name: /orders keep every order/ })).toContainText(
-    'Failing',
-    { timeout: 15_000 },
-  );
+  // The Tests tab puts it first, says why it fails, and offers to lock it again or delete it.
+  await goto(admin, leader, '#/build/tests');
+  await expect(testRow).toContainText('Failing', { timeout: 15_000 });
+  await expect(admin.getByText('1 failing')).toBeVisible();
+  await expect(admin.getByText('Row 1 differs from what the test locks.')).toBeVisible();
+  await expect(testRow.getByRole('link', { name: 'Lock again' })).toBeVisible();
+  await testRow.getByRole('button', { name: 'Delete' }).click();
+  await admin.getByRole('dialog').getByRole('button', { name: 'Delete' }).click();
+  await expect(admin.getByText('No tests locked yet.', { exact: false })).toBeVisible();
 });
 
 // A11, a test checks the fields and rows on screen, and nothing else.

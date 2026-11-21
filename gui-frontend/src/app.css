@@ -218,6 +218,16 @@ body {
   color: var(--accent);
 }
 
+/* A table row's actions: one cell at the row's end, as narrow as its buttons, which sit side by side. Each action
+   in a cell of its own would spread them across whatever width the table has left. */
+td.row-actions {
+  width: 1%;
+  white-space: nowrap;
+}
+td.row-actions > * + * {
+  margin-left: 0.5rem;
+}
+
 /* An instruction that must be read before acting: data lost, a step that
    cannot be undone, a condition that blocks the task. The only prose a
    page shows unasked (STYLE_GUIDE.md, "Text"). */

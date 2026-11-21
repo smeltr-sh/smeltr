@@ -650,6 +650,11 @@
         {@const SamplesPage = pages.samples}
         <SamplesPage />
       {/if}
+    {:else if route.page === 'tests'}
+      {#if pages.tests}
+        {@const TestsPage = pages.tests}
+        <TestsPage />
+      {/if}
     {:else if route.page === 'pipelines'}
       {#if pages.pipelines}
         {@const PipelinesListPage = pages.pipelines}
