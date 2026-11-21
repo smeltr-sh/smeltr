@@ -168,7 +168,8 @@ export type Making = { source: string; condition?: string; group?: string; to?: 
 export type Relock = { test: string; sample: string };
 
 /** Where test `test` is locked again, on its sample: its pipeline's editor, or for an end-to-end test the routes
- * run over the sample. The fields and rows are chosen there, as for a fresh lock, and handed to its lock page. */
+ * run over the sample. Its fields the rows still hold and its rows are on screen there, to change before they are
+ * handed to its lock page. */
 export function relockHash(test: string, sample: string, pipeline?: string): string {
   const relock = `relock=${encodeURIComponent(test)}`;
   return pipeline

@@ -1575,6 +1575,29 @@ test('A4: a route preview shows each output row, the route it matched and the de
   await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeDisabled();
 });
 
+test('A4: an end-to-end test locked again opens on its fields the documents still hold, and its records', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await webRoutes(api, ['{"status":200}', '{"status":503}']);
+  await api.put(`/api/areas/shared/tests/alerts${ON}`, {
+    name: 'alerts',
+    sample: 'web-sample',
+    lockedAt: 0,
+    fields: ['status', 'gone'],
+    rows: [1],
+  });
+
+  await goto(admin, leader, '#/build/routes/sample?sample=web-sample&relock=alerts');
+  await expect(admin.getByText('Checked by alerts')).toBeVisible({ timeout: 30_000 });
+  await expect(admin.getByRole('button', { name: 'Choose fields' })).toHaveText(/Fields 1 of/);
+  const table = admin.getByRole('table');
+  await expect(table.getByRole('row', { name: /^row 0 / })).toHaveCount(0);
+  await expect(table.getByRole('row', { name: /^row 1 / }).first()).toBeVisible();
+  await expect(admin.getByRole('button', { name: 'Lock this test again' })).toBeEnabled();
+});
+
 // A1 and A4: records pasted are held as a capture is, route from the source chosen for them, and save with none.
 test('A4: pasted records are held unsaved and route from the source chosen for them', async ({
   admin,

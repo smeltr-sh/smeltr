@@ -33,10 +33,11 @@
     type PreviewResult,
     type PreviewRow,
     type SampleRecordDto,
+    type TestDto,
   } from './api';
 
   let {
-    pipelineId,
+    remember,
     steps,
     signature,
     sampleRows,
@@ -63,7 +64,7 @@
     stage,
   }: {
     /** What the field choice and the recent expressions are remembered under. */
-    pipelineId: string;
+    remember: string;
     steps: Step[];
     /** Changes whenever the steps a preview runs do, so an expression is run again. */
     signature: string;
@@ -121,6 +122,11 @@
           ? attribution?.get(row.key)?.droppedBy === c.step
           : (attribution?.get(row.key)?.exceptions.some((e) => e.step === c.step) ?? false),
     });
+  }
+
+  /** Shows what `test` checks, to lock it again (`RecordsGrid.showTest`). */
+  export function showTest(test: TestDto) {
+    grid?.showTest(test, (row) => row.key);
   }
 
   /** Empties the find box, for records it was not typed over. */
@@ -258,7 +264,7 @@
     {rows}
     chosen={selectedSample !== ''}
     declared={shownDeclared}
-    remember={pipelineId}
+    {remember}
     openOn={lastSample || undefined}
     {dictionary}
     {lacking}

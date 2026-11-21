@@ -25,6 +25,8 @@
     chooseLock,
     routePreview,
     errorText,
+    getTest,
+    type TestDto,
     type FileConfigDto,
     type RoutePreviewResult,
     type SampleRecordDto,
@@ -88,6 +90,21 @@
               ? 'The routes changed since this run. Run it again.'
               : '',
   );
+
+  /** The test `relock` names, once read. The first run on its sample shows what the test checks; after that the
+   * fields and rows are the reader's. */
+  let relockTest = $state<TestDto | null>(null);
+  let showedTest = false;
+  $effect(() => {
+    const id = relock?.test;
+    if (id) void getTest(id).then((res) => (relockTest = res.test ?? null));
+  });
+  $effect(() => {
+    if (showedTest || !relockTest || !grid || !table || ran !== relock?.sample) return;
+    showedTest = true;
+    const [test, of] = [relockTest, records];
+    untrack(() => grid!.showTest(test, (row) => of.get(row.key) ?? -1));
+  });
 
   /** Locks the fields and records on screen: a record's rows share its number. */
   function goLockTest() {
@@ -320,7 +337,12 @@
       {selected}
       records={result && ran === selected ? result.rows.length : null}
       held={choices.menuHeld}
-      onpick={(choice) => ((selected = choice), (standsFor = ''))}
+      onpick={(choice) => {
+        selected = choice;
+        standsFor = '';
+        // The rows the find box keeps were the last sample's.
+        grid?.clearFind();
+      }}
     />
     {#if selected && !named}
       <label class="stands-for">
@@ -390,8 +412,15 @@
     </div>
 
     <!-- The field choice and recent expressions are remembered under the empty id, which no
-         pipeline can take. -->
-    <RecordsGrid bind:this={grid} rows={table?.rows ?? null} remember="" openOn={result} {leads} />
+         pipeline can take. Showing a test's fields is no choice of the reader's, so a test's
+         fields are kept apart from the reader's. -->
+    <RecordsGrid
+      bind:this={grid}
+      rows={table?.rows ?? null}
+      remember={relock ? ' relock' : ''}
+      openOn={result}
+      {leads}
+    />
   {/if}
 </div>
 
