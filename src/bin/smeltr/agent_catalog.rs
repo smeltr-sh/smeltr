@@ -51,21 +51,9 @@ pub const CATALOG: &[Route] = &[
     },
     Route {
         method: "POST",
-        path: "/api/areas/:area/sources/:id/move",
-        what: "Move a source, with the routes that start at it, from this area to another (shared or a worker group), in one commit on a branch. Refused if anything left behind still uses it. Needs editor in both areas. Query: branch.",
-        body: "{ to: area }",
-    },
-    Route {
-        method: "POST",
-        path: "/api/areas/:area/destinations/:id/move",
-        what: "Move a destination from this area to another (shared or a worker group), in one commit on a branch. Refused if a route left behind still delivers to it. Needs editor in both areas. Query: branch.",
-        body: "{ to: area }",
-    },
-    Route {
-        method: "POST",
-        path: "/api/areas/:area/samples/:id/move",
-        what: "Move a sample, with the tests that run over it, from this area to another (shared or a worker group), in one commit on a branch. Refused if the other area already holds a sample or test of the same name. A test whose pipeline the other area does not hold cannot run there, and its run says so. Needs editor in both areas. Query: branch.",
-        body: "{ to: area }",
+        path: "/api/areas/:area/moves",
+        what: "Moves an object from this area to another (shared or a worker group), with the objects it needs, in one commit on a branch. Without `go`, it writes nothing and lists each object the move involves: whether it is ticked, whether it is needed, how it stands in the other area, and why any tick cannot move. Without `ticked`, only the least the move needs goes. Needs the editor role in both areas. Query: `branch`.",
+        body: "{ part, id, to: area, ticked?: { part, id }[], taken?: { part, id, keep: imported | here | renamed, as? }[], go?: boolean }",
     },
     Route {
         method: "POST",

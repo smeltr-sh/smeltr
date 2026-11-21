@@ -10,8 +10,10 @@
   leader writes as a new file and points the table at.
 -->
 <script lang="ts">
+  import MoveDialog from './MoveDialog.svelte';
+  import { editableAreas, type Area } from './areas';
   import Button from './Button.svelte';
-  import { unreported } from './errors.svelte';
+  import { reported, unreported } from './errors.svelte';
   import Connections from './Connections.svelte';
   import EditInShared from './EditInShared.svelte';
   import Locked from './Locked.svelte';
@@ -59,6 +61,13 @@
   let { showJson = false }: { showJson?: boolean } = $props();
 
   const readOnly = !editable();
+  /** The lookup table being moved into another area (`MoveDialog`), by id. */
+  let moving = $state<string | null>(null);
+  /** The areas the person edits, where a move may go. */
+  let areas: Area[] = $state([]);
+  editableAreas()
+    .then((a) => (areas = a))
+    .catch(reported);
 
   let tables: LookupTableDto[] = $state([]);
   /** `shared/`'s own, which this group looks up too. A table's file is named relative to the bundle that
@@ -438,6 +447,9 @@
               <option value="mmdb">MaxMind DB (MMDB) file</option>
             </select>
             <span class="grow"></span>
+            {#if !readOnly && areas.length > 1 && t.id}
+              <button type="button" onclick={() => (moving = t.id)}>Move to&hellip;</button>
+            {/if}
             {#if !readOnly}
               <button type="button" onclick={() => removeTable(sel)}>Remove</button>
             {/if}
@@ -591,6 +603,19 @@
         {/if}
       {/snippet}
     </Dialog>
+    <MoveDialog
+      open={moving !== null}
+      part="lookupTable"
+      id={moving ?? ''}
+      {areas}
+      dirty={isDirty}
+      readAt={editor.readAtCommit}
+      onmoved={() => {
+        moving = null;
+        void load();
+      }}
+      oncancel={() => (moving = null)}
+    />
     <SaveBar
       dirty={isDirty}
       saving={editor.saving}

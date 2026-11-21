@@ -10,7 +10,9 @@
   import Button, { BUSY } from './Button.svelte';
   import Dialog from './Dialog.svelte';
   import Field from './Field.svelte';
+  import TakenId from './TakenId.svelte';
   import {
+    PART_NAMES,
     SHARED_SCOPE,
     importExport,
     listCertificates,
@@ -22,7 +24,6 @@
     type ImportListed,
     type ImportPart,
   } from './api';
-  import { diffObjects, formatDiffValue } from './diff';
   import { reported } from './errors.svelte';
 
   let {
@@ -31,17 +32,6 @@
     onimported,
   }: { open: boolean; oncancel: () => void; onimported: () => void } = $props();
 
-  const PARTS: Record<ImportPart, string> = {
-    pipeline: 'Pipeline',
-    lookupTable: 'Lookup table',
-    grokPattern: 'Grok pattern',
-    schema: 'Schema',
-    sample: 'Sample',
-    test: 'Test',
-    route: 'Route',
-    source: 'Source',
-    destination: 'Destination',
-  };
   const STANDINGS = { new: 'New', same: 'Same as here', taken: 'Taken' };
 
   /** Shared or a group's id; '' until one is chosen. */
@@ -62,23 +52,13 @@
   let secretsHere = $state<string[]>([]);
   let certificatesHere = $state<string[]>([]);
 
-  /** Each top-level field a taken id's two versions differ in, from the one here to the imported one. */
-  function differs(l: ImportListed) {
-    const parsed = (text: string | undefined) =>
-      text === undefined ? undefined : JSON.parse(text);
-    return diffObjects(parsed(l.here), parsed(l.imported)).filter((e) => e.kind !== 'unchanged');
-  }
-
-  /** A taken object by its name and the id that is taken, or by its id when that is its name. */
-  const takenLabel = (l: ImportListed) =>
-    l.name && l.name !== l.id ? `${PARTS[l.part]} ${l.name} (${l.id})` : `${PARTS[l.part]} ${l.id}`;
   const key = (l: ImportListed) => `${l.part}\u0000${l.id}`;
   const credKey = (c: ImportCredential) => `${c.certificate}\u0000${c.name}`;
   let kept = $derived(listed.filter((l) => !leftOut[key(l)]));
   let taken = $derived(kept.filter((l) => l.standing === 'taken'));
   /** The secrets and certificates a source or destination being imported names. */
   let needed = $derived.by(() => {
-    const by = new Set(kept.map((l) => `${PARTS[l.part]} ${l.id}`));
+    const by = new Set(kept.map((l) => `${PART_NAMES[l.part]} ${l.id}`));
     return credentials.filter((c) => c.namedBy.some((n) => by.has(n)));
   });
 
@@ -205,7 +185,7 @@
         <tbody>
           {#each listed as l (key(l))}
             <tr>
-              <td>{PARTS[l.part]}</td>
+              <td>{PART_NAMES[l.part]}</td>
               <td class="mono">{l.name ?? l.id}</td>
               <td class:dim={l.standing === 'same'} class:taken={l.standing === 'taken'}
                 >{STANDINGS[l.standing]}</td
@@ -213,7 +193,7 @@
               <td>
                 <input
                   type="checkbox"
-                  aria-label="Import {PARTS[l.part]} {l.name ?? l.id}"
+                  aria-label="Import {PART_NAMES[l.part]} {l.name ?? l.id}"
                   checked={!leftOut[key(l)]}
                   disabled={busy.on}
                   onchange={(e) => (leftOut[key(l)] = !e.currentTarget.checked)}
@@ -227,62 +207,17 @@
     {#if taken.length > 0}
       <h3>Taken ids</h3>
       {#each taken as l, i (key(l))}
-        <section class="taken-id" aria-label={takenLabel(l)}>
-          <h4>{takenLabel(l)}</h4>
-          {#if l.inShared}
-            <p class="dim">
-              Shared holds this one, so an import into a group can only choose Here, or Both, rename
-              imported.
-            </p>
-          {/if}
-          <h5 id="differs-{i}">What differs, here → imported</h5>
-          <ul class="differs" aria-labelledby="differs-{i}">
-            {#each differs(l) as entry (entry.key)}
-              <li class="mono">
-                <span class="diff-key">{entry.key}:</span>
-                {#if entry.kind !== 'added'}
-                  <span class="removed">{formatDiffValue(entry.before)}</span>
-                {/if}
-                {#if entry.kind === 'changed'}
-                  <span class="dim">&rarr;</span>
-                {/if}
-                {#if entry.kind !== 'removed'}
-                  <span class="added">{formatDiffValue(entry.after)}</span>
-                {/if}
-              </li>
-            {:else}
-              <li class="dim">Only the contents of the lookup file differ.</li>
-            {/each}
-          </ul>
-          <details>
-            <summary>Both versions</summary>
-            <div class="versions">
-              {#each [['Here', l.here], ['Imported', l.imported]] as [label, text] (label)}
-                <div role="group" aria-label={label}>
-                  <h5>{label}</h5>
-                  <pre>{text}</pre>
-                </div>
-              {/each}
-            </div>
-          </details>
-          <div class="answer">
-            <Field label="Keep">
-              <select bind:value={keeps[key(l)]} disabled={busy.on}>
-                <option value="" disabled>Choose</option>
-                {#if !l.inShared}
-                  <option value="imported">Imported</option>
-                {/if}
-                <option value="here">Here</option>
-                <option value="renamed">Both, rename imported</option>
-              </select>
-            </Field>
-            {#if keeps[key(l)] === 'renamed'}
-              <Field label="New id" required>
-                <input class="mono" bind:value={renames[key(l)]} disabled={busy.on} />
-              </Field>
-            {/if}
-          </div>
-        </section>
+        <TakenId
+          listed={l}
+          index={i}
+          bind:keep={keeps[key(l)]}
+          bind:rename={renames[key(l)]}
+          disabled={busy.on}
+          incoming="imported"
+          existing="here"
+          keepExisting="Here"
+          sharedNote="Shared holds this one, so an import into a group can only choose Here, or Both, rename imported."
+        />
       {/each}
     {/if}
     {#if needed.length > 0}
@@ -328,70 +263,17 @@
     flex-direction: column;
     gap: 0.9rem;
   }
-  .mono,
-  pre {
+  .mono {
     font-family: var(--mono);
   }
   .taken {
     color: var(--warn);
     font-weight: 600;
   }
-  h3,
-  h4,
-  h5,
-  .taken-id p {
+  h3 {
     margin: 0;
-  }
-  .taken-id {
-    display: grid;
-    gap: 0.6rem;
-  }
-  .taken-id + .taken-id {
-    border-top: 1px solid var(--border);
-    padding-top: 0.9rem;
-  }
-  .differs {
-    margin: 0;
-    padding: 0;
-    list-style: none;
-    overflow-wrap: anywhere;
-  }
-  .diff-key {
-    color: var(--dim);
-    margin-right: 0.4rem;
-  }
-  .added {
-    color: var(--added);
-  }
-  .removed {
-    color: var(--removed);
-  }
-  summary {
-    cursor: pointer;
-  }
-  .versions {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.75rem;
-  }
-  pre {
-    margin: 0;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    max-height: 20rem;
-    overflow: auto;
-  }
-  .answer {
-    display: flex;
-    gap: 1rem;
-    align-items: flex-end;
   }
   th {
     text-align: left;
-  }
-  @media (max-width: 800px) {
-    .versions {
-      grid-template-columns: minmax(0, 1fr);
-    }
   }
 </style>

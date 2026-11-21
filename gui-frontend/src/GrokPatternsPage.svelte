@@ -9,6 +9,10 @@
   `shared/`; and the built-ins every grok may name, which no one changes.
 -->
 <script lang="ts">
+  import MoveDialog from './MoveDialog.svelte';
+  import { editableAreas, type Area } from './areas';
+  import { reported } from './errors.svelte';
+  import Button from './Button.svelte';
   import Connections from './Connections.svelte';
   import EditInShared from './EditInShared.svelte';
   import OnlyNotice from './OnlyNotice.svelte';
@@ -49,6 +53,13 @@
   let { showJson = false, only }: { showJson?: boolean; only?: string[] } = $props();
 
   const readOnly = !editable();
+  /** The grok pattern being moved into another area (`MoveDialog`), by id. */
+  let moving = $state<string | null>(null);
+  /** The areas the person edits, where a move may go. */
+  let areas: Area[] = $state([]);
+  editableAreas()
+    .then((a) => (areas = a))
+    .catch(reported);
 
   let patterns: GrokPatternDto[] = $state([]);
   /** What `shared/` declares, which this group's grok may name as well. Never saved from here. */
@@ -237,6 +248,11 @@
                   </Field>
                 </td>
                 <td class="act">
+                  {#if !readOnly && areas.length > 1 && p.id}
+                    <Button type="button" class="compact" onclick={() => (moving = p.id)}
+                      >Move to&hellip;</Button
+                    >
+                  {/if}
                   {#if !readOnly}
                     <CrossButton
                       removes
@@ -279,6 +295,19 @@
           {/each}
         </tbody>
       </table>
+      <MoveDialog
+        open={moving !== null}
+        part="grokPattern"
+        id={moving ?? ''}
+        {areas}
+        dirty={editor.isDirty}
+        readAt={editor.readAtCommit}
+        onmoved={() => {
+          moving = null;
+          void editor.load();
+        }}
+        oncancel={() => (moving = null)}
+      />
       <SaveBar
         dirty={editor.isDirty}
         saving={editor.saving}

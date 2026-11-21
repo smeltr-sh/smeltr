@@ -884,9 +884,11 @@ const duplicateDestination: Move = {
   },
 };
 
-/** Moves a source `shared` declares into `default` from its row's menu, and back from `default`'s page. Each way is
- * one commit that takes the routes starting at it along, so what `shared` and `default` hold together is the world's
- * throughout, and each way the leader holds the source and its routes in the area it went to and not in the other. */
+/** Moves a source `shared` declares into `default` from its row's menu, and back from `default`'s page. Into
+ * `default`, the routes starting at it are ticked already: `shared` keeps nothing that reads `default`'s. Back, they
+ * would stay, since `default` reads what `shared` holds, so they are ticked to go too. Each way is one commit, so what
+ * `shared` and `default` hold together is the world's throughout, and each way the leader holds the source and its
+ * routes in the area it went to and not in the other. */
 const moveSource: Move = {
   name: 'move-source',
   weight: (w) => (w.password && w.editing.sources.length ? 1 : 0),
@@ -919,7 +921,12 @@ const moveSource: Move = {
       await page.getByRole('button', { name: 'Move to…' }).click();
       const dialog = page.getByRole('dialog', { name: `move source ${source}` });
       await dialog.getByRole('combobox', { name: 'move to' }).selectOption(to);
-      await saveBy(j, dialog.getByRole('button', { name: 'Move', exact: true }), () =>
+      const routeTicks = dialog.getByRole('checkbox', { name: /^Move Route / });
+      await expect(routeTicks).toHaveCount(routes.length);
+      for (const tick of await routeTicks.all()) await tick.check();
+      const go = dialog.getByRole('button', { name: 'Move', exact: true });
+      await expect(go).toBeEnabled();
+      await saveBy(j, go, () =>
         expect(dialog).toBeHidden(),
       );
       // A group's page lists what `shared` declares too, so only `shared`'s own page loses the row.
@@ -978,7 +985,9 @@ const moveDestination: Move = {
       await page.getByRole('button', { name: 'Move to…' }).click();
       const dialog = page.getByRole('dialog', { name: `move destination ${destination}` });
       await dialog.getByRole('combobox', { name: 'move to' }).selectOption(to);
-      await saveBy(j, dialog.getByRole('button', { name: 'Move', exact: true }), () =>
+      const go = dialog.getByRole('button', { name: 'Move', exact: true });
+      await expect(go).toBeEnabled();
+      await saveBy(j, go, () =>
         expect(dialog).toBeHidden(),
       );
       // A group's page lists what `shared` declares too, so only `shared`'s own page loses the row.
@@ -2579,7 +2588,9 @@ const moveSample: Move = {
       await row.getByRole('button', { name: 'Move to…' }).click();
       const dialog = page.getByRole('dialog', { name: `move sample ${name}` });
       await dialog.getByRole('combobox', { name: 'move to' }).selectOption(to);
-      await saveBy(j, dialog.getByRole('button', { name: 'Move', exact: true }), () =>
+      const go = dialog.getByRole('button', { name: 'Move', exact: true });
+      await expect(go).toBeEnabled();
+      await saveBy(j, go, () =>
         expect(dialog).toBeHidden(),
       );
       await expect(row).toHaveCount(0);

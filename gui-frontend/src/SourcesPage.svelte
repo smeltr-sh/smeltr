@@ -30,7 +30,7 @@
     getMapMeasurements,
   } from './api';
   import { addInto, editableAreas, idsTakenIn, type Area } from './areas';
-  import MoveObject from './MoveObject.svelte';
+  import MoveDialog from './MoveDialog.svelte';
   import { holdsSomewhere } from './access';
   import { holdings, sourceReadings } from './mapTerms';
   import NewSource from './NewSource.svelte';
@@ -61,7 +61,7 @@
   /** A source being added (`NewSource`), from a copy of `from` where it is one. It joins the list on Add, and the
    * file on the page's Save. */
   let adding: { from?: SourceDto } | null = $state(null);
-  /** The source being moved into another area (`MoveObject`). */
+  /** The source being moved into another area (`MoveDialog`). */
   let moving: SourceDto | null = $state(null);
   /** The areas the person edits, this one first: where a copy may go, and the rest where a move may. */
   let areas: Area[] = $state([]);
@@ -289,9 +289,9 @@
         onadd={add}
         oncancel={() => (adding = null)}
       />
-      <MoveObject
+      <MoveDialog
         open={moving !== null}
-        kind="source"
+        part="source"
         id={moving?.id ?? ''}
         pullOne={!!moving && SOURCE_KIND[moving.type] === 'pullOne'}
         {areas}

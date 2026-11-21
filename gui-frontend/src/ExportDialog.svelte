@@ -10,6 +10,7 @@
   import Field from './Field.svelte';
   import Toggle from './Toggle.svelte';
   import {
+    PART_NAMES,
     exportContents,
     exportUrl,
     type ExportContents,
@@ -48,18 +49,6 @@
       reported(e);
     }
   }
-
-  const PARTS: Record<ImportPart, string> = {
-    pipeline: 'Pipeline',
-    lookupTable: 'Lookup table',
-    grokPattern: 'Grok pattern',
-    schema: 'Schema',
-    sample: 'Sample',
-    test: 'Test',
-    route: 'Route',
-    source: 'Source',
-    destination: 'Destination',
-  };
 
   type Row = { part: ImportPart; id: string; shown: string };
   const key = (r: { part: ImportPart; id: string }) => `${r.part}\u0000${r.id}`;
@@ -105,7 +94,9 @@
   ]);
   /** The secrets and certificates a ticked source or destination names. */
   let credentials = $derived.by(() => {
-    const by = new Set(rows.filter((r) => !leftOut[key(r)]).map((r) => `${PARTS[r.part]} ${r.id}`));
+    const by = new Set(
+      rows.filter((r) => !leftOut[key(r)]).map((r) => `${PART_NAMES[r.part]} ${r.id}`),
+    );
     return (contents?.credentials ?? []).filter((c) => c.namedBy.some((n) => by.has(n)));
   });
   let unticked = $derived(
@@ -130,12 +121,12 @@
         <tbody>
           {#each rows as r (key(r))}
             <tr>
-              <td>{PARTS[r.part]}</td>
+              <td>{PART_NAMES[r.part]}</td>
               <td class="mono">{r.shown}</td>
               <td>
                 <input
                   type="checkbox"
-                  aria-label="Export {PARTS[r.part]} {r.shown}"
+                  aria-label="Export {PART_NAMES[r.part]} {r.shown}"
                   checked={!leftOut[key(r)]}
                   onchange={(e) => (leftOut[key(r)] = !e.currentTarget.checked)}
                 />
