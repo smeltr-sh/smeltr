@@ -1695,14 +1695,17 @@ export function putDestinations(
 }
 
 /** Moves a source, with the routes that start at it, or a destination from the chip's area into `to`, in one
- * commit. Refused where anything left behind still uses it. */
+ * commit, against `base` as a save is. Refused where anything left behind still uses it. */
 export function moveObject(
   kind: 'source' | 'destination',
   id: string,
   to: string,
+  base?: string | null,
 ): Promise<MutationResult> {
   const section = kind === 'source' ? 'sources' : 'destinations';
-  return configJson(inArea(`/${section}/${encodeURIComponent(id)}/move`), json('POST', { to }));
+  return configJson(inArea(`/${section}/${encodeURIComponent(id)}/move`), json('POST', { to }), {
+    base,
+  });
 }
 
 /** What the leader reads out of a PEM: every certificate in it, or why it is

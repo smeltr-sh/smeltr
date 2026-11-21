@@ -293,6 +293,7 @@
         id={moving?.id ?? ''}
         areas={areas.filter((a) => a.id !== currentScope())}
         dirty={editor.isDirty}
+        readAt={editor.readAtCommit}
         onmoved={() => {
           moving = null;
           void editor.load();

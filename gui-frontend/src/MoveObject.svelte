@@ -28,6 +28,7 @@
     id,
     areas,
     dirty,
+    readAt,
     onmoved,
     oncancel,
   }: {
@@ -39,6 +40,8 @@
     areas: Area[];
     /** Whether the page holds unsaved edits, which a move would leave behind a commit they never saw. */
     dirty: boolean;
+    /** The commit the page read, which the move is made against, as the page's own Save is. */
+    readAt: string | null;
     onmoved: (to: string) => void;
     oncancel: () => void;
   } = $props();
@@ -92,7 +95,7 @@
   async function move() {
     if (busy.on || dirty || !to) return;
     await busy.run(async () => {
-      const res = await moveObject(kind, id, to);
+      const res = await moveObject(kind, id, to, readAt);
       if (res.ok) onmoved(to);
     });
   }
