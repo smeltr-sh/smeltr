@@ -3,6 +3,7 @@
 // If nested in that one's else, so each list's start, middle and end and each empty branch is a drop, and checks
 // the steps on screen against where the drop must put it.
 import type { Locator, Page } from '@playwright/test';
+import { onScreen as works } from '../onscreen';
 import { test, expect, goto, settled, watchRequests, type Api, type Leader } from '../fleet';
 
 const ON = '?branch=work';
@@ -153,6 +154,14 @@ for (const id of ['b', 'a', 'd', 't2', 'e1', 'i', 'j']) {
         await drag(page, id, () => gapPoint(page, ref, index));
         const where = `${ref.owner ?? 'top'}${ref.branch ? `.${ref.branch}` : ''}[${index}]`;
         await expect.poll(() => onScreen(page), { message: where }).toBe(dropped(id, ref, index));
+        // Once the steps have glided to their places, which starts on the frame after the drop.
+        await page.evaluate(
+          () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))),
+        );
+        await page.waitForFunction(() =>
+          document.getAnimations().every((a) => a.playState !== 'running'),
+        );
+        expect(await works(page, false), where).toEqual([]);
       }
     }
   });
@@ -181,4 +190,31 @@ test('a press that moves before it is held, or a drag Esc ends, moves nothing', 
   await page.mouse.up();
   await expect(page.locator('.carried')).toHaveCount(0);
   expect(await onScreen(page)).toBe(outline(START()));
+});
+
+test('a step dragged to the edge of the steps scrolls them toward a gap out of sight', async ({
+  admin: page,
+  api,
+  leader,
+}) => {
+  await page.setViewportSize({ width: 1920, height: 600 });
+  const notes = Array.from({ length: 12 }, (_, k) => `n${k}`);
+  await api.put(`/api/areas/shared/pipelines/${PIPELINE}${ON}`, {
+    id: PIPELINE,
+    name: PIPELINE,
+    steps: [...notes.map((id) => dto(leaf(id))), dto({ id: 'i', then: [], else: [] })],
+  });
+  await goto(page, leader, `#/build/pipelines/${PIPELINE}`);
+  await expect.poll(() => onScreen(page)).toBe(`${notes.join(' ')} i[|]`);
+  await settled(page);
+  const then = listOn(page, { owner: 'i', branch: 'then' }).locator(':scope > .add-row');
+  await expect(then).not.toBeInViewport();
+  await drag(page, 'n0', async () => {
+    // Held at the bottom edge until the If's then comes into sight.
+    await page.mouse.move(200, 590, { steps: 4 });
+    await expect(then).toBeInViewport({ ratio: 1 });
+    const box = (await then.boundingBox())!;
+    return { x: box.x + 20, y: box.y + box.height / 2 };
+  });
+  await expect.poll(() => onScreen(page)).toBe(`${notes.slice(1).join(' ')} i[n0|]`);
 });

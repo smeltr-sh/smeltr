@@ -309,6 +309,41 @@ const remove: Move = {
   },
 };
 
+/** The steps an `if` holds, itself among them. */
+const within = (step: StepModel): StepModel[] =>
+  step.type === 'if' ? [step, ...flat(step.then), ...flat(step.else)] : [step];
+
+/** Moves `step` to `index` of `to`, as `index` counts before it leaves its place. */
+function relocate(steps: StepModel[], step: StepModel, to: StepModel[], index: number) {
+  const from = lists(steps).find((l) => l.steps.includes(step))!.steps;
+  const at = from.indexOf(step);
+  from.splice(at, 1);
+  to.splice(from === to && at < index ? index - 1 : index, 0, step);
+}
+
+/** Where ↑ (-1) or ↓ (1) takes the step at `at` of `list`, as an outline: into an if it meets, through its then and
+ * else, and out past the if at either end. Null at the pipeline's first or last place. */
+function aside(
+  steps: StepModel[],
+  list: List,
+  at: number,
+  by: -1 | 1,
+): { to: StepModel[]; index: number } | null {
+  const next = list.steps[at + by];
+  if (next?.type === 'if')
+    return by === 1 ? { to: next.then, index: 0 } : { to: next.else, index: next.else.length };
+  if (next) return { to: list.steps, index: by === 1 ? at + 2 : at - 1 };
+  const hop = list.path[list.path.length - 1];
+  if (!hop) return null;
+  const outer = lists(steps).find(
+    (l) => l.path.length === list.path.length - 1 && l.path.every((h, k) => h === list.path[k]),
+  )!;
+  const owner = outer.steps[hop.at] as StepModel & { type: 'if' };
+  if (by === 1 && hop.branch === 'then') return { to: owner.else, index: 0 };
+  if (by === -1 && hop.branch === 'else') return { to: owner.then, index: owner.then.length };
+  return { to: outer.steps, index: by === 1 ? hop.at + 1 : hop.at };
+}
+
 function mover(name: 'move-up' | 'move-down', label: 'Move up' | 'Move down', by: -1 | 1): Move {
   return {
     name,
@@ -317,16 +352,55 @@ function mover(name: 'move-up' | 'move-down', label: 'Move up' | 'Move down', by
       const { page, rng, model } = j;
       const { list, at, step } = rng.pick(placed(model.editing));
       await control(j, cardOn(page, list, at), label);
-      // At the end of its list it stays where it is.
-      const to = at + by;
-      if (to >= 0 && to < list.steps.length) {
-        const [s] = list.steps.splice(at, 1);
-        list.steps.splice(to, 0, s);
-      }
+      // At the pipeline's first or last place it stays where it is.
+      const where = aside(model.editing, list, at, by);
+      if (where) relocate(model.editing, step, where.to, where.index);
       return `${label.toLowerCase()} ${step.type} ${step.id}, ${describe(list, at)}`;
     },
   };
 }
+
+/** A step held on its badge until it is picked up, then dragged to any gap of any list but its own branches and
+ * dropped. */
+const drag: Move = {
+  name: 'drag',
+  weight: (m) => (count(m.editing) > 1 ? 3 : 0),
+  run: async (j) => {
+    const { page, rng, model } = j;
+    const { list, at, step } = rng.pick(placed(model.editing));
+    const inside = within(step);
+    const target = rng.pick(
+      lists(model.editing).filter(
+        (l) =>
+          l.path.length < 3 &&
+          !inside.some((s) => s.type === 'if' && (s.then === l.steps || s.else === l.steps)),
+      ),
+    );
+    const index = rng.below(target.steps.length + 1);
+    const badge = cardOn(page, list, at).locator(':scope > .card-head .type-badge');
+    await badge.scrollIntoViewIfNeeded();
+    const from = (await badge.boundingBox())!;
+    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+    await page.mouse.down();
+    await expect(page.locator('.carried').first()).toBeVisible();
+    // Over the top edge of the step the gap is before, or the + step row at the end.
+    const on = listOn(page, target.path);
+    const gap =
+      index < target.steps.length
+        ? slot(on, index).locator(':scope > [id^="step-"]')
+        : on.locator(':scope > .add-row');
+    // Brought into sight at once: a smooth scroll still under way would move the gap from under the pointer.
+    await gap.evaluate((el) => el.scrollIntoView({ block: 'center', behavior: 'instant' }));
+    const box = (await gap.boundingBox())!;
+    await page.mouse.move(
+      box.x + 12,
+      index < target.steps.length ? box.y + 3 : box.y + box.height / 2,
+    );
+    await page.mouse.up();
+    relocate(model.editing, step, target.steps, index);
+    return `drag ${step.type} ${step.id}, ${describe(list, at)}, to ${describe(target, index)}`;
+  },
+};
 
 const disable: Move = {
   name: 'disable',
@@ -505,6 +579,7 @@ export const MOVES: readonly Move[] = [
   remove,
   mover('move-up', 'Move up', -1),
   mover('move-down', 'Move down', 1),
+  drag,
   disable,
   edit,
   fields,

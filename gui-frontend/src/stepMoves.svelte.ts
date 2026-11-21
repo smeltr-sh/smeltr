@@ -13,6 +13,16 @@ const CONTEXT = Symbol('step moves');
 const HOLD_MS = 400;
 /** How far the pointer may wander during the hold before the press is a click or a scroll instead. */
 const SLOP_PX = 5;
+/** How near the edge of the steps' scrolling box the dragged step scrolls it, toward a gap out of sight. */
+const EDGE_PX = 48;
+
+/** The box that scrolls `el`: its nearest ancestor that scrolls up and down, or the page. */
+function scroller(el: Element | null): Element {
+  for (let at = el?.parentElement; at; at = at.parentElement)
+    if (/auto|scroll/.test(getComputedStyle(at).overflowY) && at.scrollHeight > at.clientHeight)
+      return at;
+  return document.scrollingElement ?? document.documentElement;
+}
 
 /** Where a dropped step goes: before the step at `index` of `list`, or at its end. */
 export type Drop = { list: Step[]; index: number };
@@ -88,14 +98,40 @@ export class StepMoves {
       c.stopPropagation();
       c.preventDefault();
     };
+    // A step picked up near an edge scrolls nothing until the pointer sets off.
+    let setOff = false;
     const move = (m: PointerEvent) => {
+      setOff ||= Math.hypot(m.clientX - at.x, m.clientY - at.y) > SLOP_PX;
       this.at = { x: m.clientX, y: m.clientY };
       this.over = this.#dropAt(step, m.clientX, m.clientY);
     };
+    // The steps under a still pointer change as they scroll.
+    const scrolled = () => {
+      this.over = this.#dropAt(step, this.at.x, this.at.y);
+    };
+    const box = scroller(document.elementFromPoint(at.x, at.y));
+    const edge = () => {
+      const view =
+        box === document.scrollingElement
+          ? { top: 0, bottom: innerHeight }
+          : box.getBoundingClientRect();
+      const y = this.at.y;
+      const by =
+        y < view.top + EDGE_PX
+          ? y - view.top - EDGE_PX
+          : y > view.bottom - EDGE_PX
+            ? y - view.bottom + EDGE_PX
+            : 0;
+      if (setOff && by !== 0) box.scrollBy(0, by / 4);
+      frame = requestAnimationFrame(edge);
+    };
+    let frame = requestAnimationFrame(edge);
     const end = (drop: boolean) => {
       if (drop && this.over) moveStep(this.#steps(), step, this.over.list, this.over.index);
       this.dragging = null;
       this.over = null;
+      cancelAnimationFrame(frame);
+      removeEventListener('scroll', scrolled, true);
       removeEventListener('pointermove', move);
       removeEventListener('pointerup', up);
       removeEventListener('pointercancel', cancel);
@@ -109,6 +145,7 @@ export class StepMoves {
       k.stopPropagation();
       end(false);
     };
+    addEventListener('scroll', scrolled, true);
     addEventListener('pointermove', move);
     addEventListener('pointerup', up);
     addEventListener('pointercancel', cancel);
