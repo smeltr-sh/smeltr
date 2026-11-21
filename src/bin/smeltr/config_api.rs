@@ -3532,6 +3532,7 @@ mod tests {
             part,
             id: id.to_string(),
             to: to.to_string(),
+            also: Vec::new(),
             ticked: ticked.map(|t| {
                 (t.iter())
                     .map(|(part, id)| config_file::PartId {

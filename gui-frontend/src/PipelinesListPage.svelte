@@ -18,6 +18,7 @@
   import { sharedConfig, listPipelines, deletePipeline, type PipelineDto } from './api';
   import ExportDialog from './ExportDialog.svelte';
   import ImportDialog from './ImportDialog.svelte';
+  import RowMenu from './RowMenu.svelte';
   import MoveDialog, { type MoveTarget } from './MoveDialog.svelte';
   import type { Area } from './areas';
 
@@ -190,29 +191,29 @@
               <td><a href={pipelineHash(p.id)}>{p.name}</a></td>
               <td class="dim">{p.steps.length}</td>
               <td class="row-actions">
-                <Button
-                  type="button"
-                  class="compact"
-                  onclick={() => (exporting = { id: p.id, name: p.name || p.id })}>Export</Button
-                >
-                {#if !readOnly && areas.length > 1}
-                  <Button
+                <RowMenu label="More actions for {p.name || p.id}">
+                  <button
                     type="button"
-                    class="compact"
-                    onclick={() => (moving = { part: 'pipeline', id: p.id, name: p.name || p.id })}
-                    >Move to&hellip;</Button
+                    class="pick"
+                    onclick={() => (exporting = { id: p.id, name: p.name || p.id })}>Export</button
                   >
-                {/if}
-                {#if !readOnly}
-                  <Button
-                    type="button"
-                    class="compact"
-                    onclick={() => remove(p.id, p.name)}
-                    disabled={deletingId === p.id ? BUSY : ''}
-                  >
-                    {deletingId === p.id ? 'Deleting…' : 'Delete'}
-                  </Button>
-                {/if}
+                  {#if !readOnly && areas.length > 1}
+                    <button
+                      type="button"
+                      class="pick"
+                      onclick={() =>
+                        (moving = { part: 'pipeline', id: p.id, name: p.name || p.id })}
+                      >Move to&hellip;</button
+                    >
+                  {/if}
+                  {#if !readOnly}
+                    <Button
+                      class="pick remove"
+                      onclick={() => remove(p.id, p.name)}
+                      disabled={deletingId === p.id ? BUSY : ''}>Delete</Button
+                    >
+                  {/if}
+                </RowMenu>
               </td>
             </tr>
           {/each}

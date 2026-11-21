@@ -58,8 +58,9 @@ test('a pipeline is exported with the pipeline it calls, and its routes when ask
   await goto(admin, leader, '#/build/pipelines');
   await admin
     .getByRole('row', { name: /Firewall/ })
-    .getByRole('button', { name: 'Export' })
+    .getByRole('button', { name: /^More actions for/ })
     .click();
+  await admin.getByRole('button', { name: 'Export', exact: true }).click();
   const dialog = admin.getByRole('dialog', { name: /export Firewall/ });
   // A pipeline and a route show by name: their ids are keys nobody chose.
   const row = (kind: string, name: string) =>

@@ -9,6 +9,7 @@
   routes. A destination made from a route card is saved to `destinations.json` on Add.
 -->
 <script lang="ts">
+  import RowMenu from './RowMenu.svelte';
   import MoveDialog, { type MoveTarget } from './MoveDialog.svelte';
   import type { Area } from './areas';
   // A link can open a new route (`make`, from the map), and a pipeline made for one comes back to it (`chose`):
@@ -54,7 +55,6 @@
     withCategories,
     type ExceptionsDto,
   } from './exceptions';
-  import CrossButton from './CrossButton.svelte';
   import {
     sharedConfig,
     currentScope,
@@ -322,6 +322,16 @@
     if (i >= 0) routes.splice(i, 1);
   }
   /** What was brought onto a card goes with it, so a new route on the same source starts clean. */
+  /** Moves every route of `card` into another area (`MoveDialog`), with the least they take. */
+  function moveToArea(card: Card) {
+    const [first, ...rest] = card.routes;
+    moving = {
+      part: 'route',
+      id: first.id,
+      name: card.routes.map((r) => routeNames.get(r.id) ?? r.id).join(', '),
+      also: rest.map((r) => ({ part: 'route', id: r.id })),
+    };
+  }
   function removeCard(card: Card) {
     card.routes.forEach(removeRoute);
     unwired.delete(card.source);
@@ -602,7 +612,16 @@
                   .length}
               />
               {#if !readOnly}
-                <CrossButton removes label="Remove" onclick={() => removeCard(card)} />
+                <RowMenu label="More actions for {card.source || 'this route'}">
+                  {#if areas.length > 1}
+                    <button type="button" class="pick" onclick={() => moveToArea(card)}
+                      >Move to&hellip;</button
+                    >
+                  {/if}
+                  <button type="button" class="pick remove" onclick={() => removeCard(card)}
+                    >Remove</button
+                  >
+                </RowMenu>
               {/if}
             {/snippet}
             <RouteFlow
@@ -617,9 +636,6 @@
               bind:extras={() => unwired.get(card.source) ?? [], (v) => unwired.set(card.source, v)}
               onaddroute={readOnly ? undefined : () => addBranch(card.source)}
               onremoveroute={removeRoute}
-              onmovetoarea={readOnly || areas.length < 2
-                ? undefined
-                : (r) => (moving = { part: 'route', id: r.id, name: routeNames.get(r.id) })}
               onorderroute={readOnly ? undefined : shiftRoute}
               onmoveroute={(to) => expanded.set(to, true)}
               onsource={(to) => moveCard(card.source, to)}

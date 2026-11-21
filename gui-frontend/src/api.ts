@@ -2073,6 +2073,7 @@ export interface MoveAsk {
   part: ImportPart;
   id: string;
   to: string;
+  also?: { part: ImportPart; id: string }[];
   ticked?: { part: ImportPart; id: string }[];
   go?: boolean;
 }

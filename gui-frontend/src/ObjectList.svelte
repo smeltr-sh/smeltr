@@ -28,10 +28,9 @@
   import type { Snippet } from 'svelte';
   import { tick, untrack } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
-  import ChipPicker from './ChipPicker.svelte';
   import Chips from './Chips.svelte';
   import Collapsible from './Collapsible.svelte';
-  import MoreIcon from './MoreIcon.svelte';
+  import RowMenu from './RowMenu.svelte';
   import OnlyNotice from './OnlyNotice.svelte';
   import { Narrowing } from './narrowing.svelte';
   import SortButton from './SortButton.svelte';
@@ -81,7 +80,7 @@
     extra?: Snippet;
     /** A row of this scope's, open. `i` is its index in `items`. */
     body: Snippet<[T, number]>;
-    /** A row's menu: `.pick` buttons (`ChipPicker`). */
+    /** A row's menu: `.pick` buttons (`RowMenu`). */
     rowActions: Snippet<[T, number]>;
     sharedActions: Snippet<[T]>;
     /** Offered first in every row's menu, `shared/`'s too: starts a new one as a copy of the row. */
@@ -100,7 +99,6 @@
   let chip = $state<string | null>(null);
   const opened = new SvelteSet<T>();
   /** The row whose menu is open. */
-  let menuFor = $state<T | null>(null);
 
   const all = $derived([...shared, ...items]);
   const narrowing = new Narrowing(() => only);
@@ -212,21 +210,12 @@
 </div>
 
 {#snippet menu(item: T, i: number)}
-  <ChipPicker
-    kind="row"
-    compact
-    ariaLabel="More actions for {idOf(item)}"
-    bind:open={() => menuFor === item, (v) => (menuFor = v ? item : null)}
-  >
-    {#snippet face()}<MoreIcon />{/snippet}
-    <!-- Choosing closes the menu (`ChipPicker` leaves that to its caller). -->
-    <div class="menu-picks" onclick={() => (menuFor = null)} role="presentation">
-      {#if onduplicate}
-        <button type="button" class="pick" onclick={() => onduplicate(item)}>Duplicate</button>
-      {/if}
-      {#if i < 0}{@render sharedActions(item)}{:else}{@render rowActions(item, i)}{/if}
-    </div>
-  </ChipPicker>
+  <RowMenu label="More actions for {idOf(item)}">
+    {#if onduplicate}
+      <button type="button" class="pick" onclick={() => onduplicate(item)}>Duplicate</button>
+    {/if}
+    {#if i < 0}{@render sharedActions(item)}{:else}{@render rowActions(item, i)}{/if}
+  </RowMenu>
 {/snippet}
 
 {#if all.length === 0}
@@ -387,11 +376,6 @@
     margin-right: 0.35rem;
     border-radius: 50%;
     background: oklch(var(--scope-l) var(--scope-c) var(--shared-h, 260));
-  }
-
-  /* Its picks stay the panel's own children for layout. */
-  .menu-picks {
-    display: contents;
   }
 
   .none,

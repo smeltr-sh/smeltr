@@ -10,6 +10,7 @@
   leader writes as a new file and points the table at.
 -->
 <script lang="ts">
+  import RowMenu from './RowMenu.svelte';
   import MoveDialog, { type MoveTarget } from './MoveDialog.svelte';
   import type { Area } from './areas';
   import Button from './Button.svelte';
@@ -443,13 +444,20 @@
               <option value="mmdb">MaxMind DB (MMDB) file</option>
             </select>
             <span class="grow"></span>
-            {#if !readOnly && areas.length > 1 && t.id}
-              <button type="button" onclick={() => (moving = { part: 'lookupTable', id: t.id })}
-                >Move to&hellip;</button
-              >
-            {/if}
             {#if !readOnly}
-              <button type="button" onclick={() => removeTable(sel)}>Remove</button>
+              <RowMenu label="More actions for {t.id || 'unnamed'}">
+                {#if areas.length > 1 && t.id}
+                  <button
+                    type="button"
+                    class="pick"
+                    onclick={() => (moving = { part: 'lookupTable', id: t.id })}
+                    >Move to&hellip;</button
+                  >
+                {/if}
+                <button type="button" class="pick remove" onclick={() => removeTable(sel)}
+                  >Remove</button
+                >
+              </RowMenu>
             {/if}
           </div>
           <div class="tabs">

@@ -23,6 +23,9 @@ pub struct MoveAsk {
     pub(crate) id: String,
     /// `shared`, or a group id.
     pub(crate) to: String,
+    /// Further objects asked for beside the one moved, whose least the move takes too: a route card's other routes.
+    #[serde(default)]
+    pub(crate) also: Vec<PartId>,
     /// What goes. Absent, the least the move takes.
     #[serde(default)]
     pub(crate) ticked: Option<Vec<PartId>>,
@@ -103,7 +106,8 @@ pub(crate) fn move_between(mut from: Writing, mut to: Writing, ask: MoveAsk, aut
     };
 
     let (from_area, to_area) = (from.area().to_string(), to.area().to_string());
-    let moving = Moving::new(&here, &there, asked, &from_area, &to_area);
+    let also = (ask.also.iter()).map(|o| (o.part, o.id.clone())).collect();
+    let moving = Moving::new(&here, &there, asked, &from_area, &to_area).also(also);
     let ticked: Option<BTreeSet<(Part, String)>> =
         (ask.ticked.as_ref()).map(|t| t.iter().map(|o| (o.part, o.id.clone())).collect());
     let (rows, mut exceptions) = moving.list(ticked.as_ref());

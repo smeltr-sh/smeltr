@@ -69,7 +69,6 @@
     extras = $bindable([]),
     onaddroute,
     onremoveroute,
-    onmovetoarea,
     onorderroute,
     onmoveroute,
     onsource,
@@ -97,8 +96,6 @@
     /** A new route from this card's source, its pipeline still to choose. */
     onaddroute?: () => void;
     onremoveroute?: (route: RouteDto) => void;
-    /** Moves the route into another area (`MoveDialog`). Absent where the person can't move it. */
-    onmovetoarea?: (route: RouteDto) => void;
     /** Moves a route one place left (`by` -1) or right among this card's, with its destinations: the caller
      * holds the routes' order, which is the card's. */
     onorderroute?: (route: RouteDto, by: number) => void;
@@ -1237,19 +1234,6 @@
       >
         <span class="k">&#8644;</span>move to another source&hellip;
       </button>
-      {#if onmovetoarea}
-        <button
-          type="button"
-          onclick={() => {
-            // Read before the menu closes: `route` is the open menu's, and is gone with it.
-            const r = route;
-            closeMenu(true);
-            onmovetoarea(r);
-          }}
-        >
-          <span class="k">&#8644;</span>move to another area&hellip;
-        </button>
-      {/if}
       <button
         type="button"
         onclick={() => {

@@ -7,6 +7,7 @@
 <script lang="ts">
   import { Busy } from './busy.svelte';
   import Button, { BUSY, SAVE_FIRST } from './Button.svelte';
+  import RowMenu from './RowMenu.svelte';
   import MoveDialog, { type MoveTarget } from './MoveDialog.svelte';
   import type { Area } from './areas';
   import { reported } from './errors.svelte';
@@ -195,16 +196,21 @@
                     onclick={() => (editing = editing === s.id ? null : s.id)}
                     disabled={saving.on ? BUSY : ''}>Edit</Button
                   >
-                  {#if areas.length > 1}
+                  <RowMenu label="More actions for {s.name}">
+                    {#if areas.length > 1}
+                      <Button
+                        class="pick"
+                        onclick={() => (moving = { part: 'sample', id: s.id, name: s.name })}
+                        disabled={saving.on ? BUSY : ''}>Move to&hellip;</Button
+                      >
+                    {/if}
                     <Button
-                      onclick={() => (moving = { part: 'sample', id: s.id, name: s.name })}
-                      disabled={saving.on ? BUSY : ''}>Move to&hellip;</Button
+                      class="pick remove"
+                      onclick={() => remove(s)}
+                      disabled={saving.on ? BUSY : editing !== null ? SAVE_FIRST : ''}
+                      >Delete</Button
                     >
-                  {/if}
-                  <Button
-                    onclick={() => remove(s)}
-                    disabled={saving.on ? BUSY : editing !== null ? SAVE_FIRST : ''}>Delete</Button
-                  >
+                  </RowMenu>
                 {/if}
               </td>
             </tr>

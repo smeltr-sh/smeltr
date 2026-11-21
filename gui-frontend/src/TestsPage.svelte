@@ -5,6 +5,7 @@
 -->
 <script lang="ts">
   import { Busy } from './busy.svelte';
+  import RowMenu from './RowMenu.svelte';
   import Button, { BUSY } from './Button.svelte';
   import MoveDialog, { type MoveTarget } from './MoveDialog.svelte';
   import type { Area } from './areas';
@@ -182,14 +183,21 @@
               <td class="row-actions">
                 <a class="btn" href={testHash(t.id, t.sample, t.pipeline)}>Open</a>
                 {#if !readOnly}
-                  {#if areas.length > 1}
-                    <Button onclick={() => (moving = { part: 'test', id: t.id, name: t.name })}
-                      >Move to&hellip;</Button
+                  <RowMenu label="More actions for {t.name}">
+                    {#if areas.length > 1}
+                      <button
+                        type="button"
+                        class="pick"
+                        onclick={() => (moving = { part: 'test', id: t.id, name: t.name })}
+                        >Move to&hellip;</button
+                      >
+                    {/if}
+                    <Button
+                      class="pick remove"
+                      onclick={() => remove(t)}
+                      disabled={deleting.on ? BUSY : ''}>Delete</Button
                     >
-                  {/if}
-                  <Button onclick={() => remove(t)} disabled={deleting.on ? BUSY : ''}
-                    >Delete</Button
-                  >
+                  </RowMenu>
                 {/if}
               </td>
             </tr>
