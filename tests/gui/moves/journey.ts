@@ -946,6 +946,63 @@ const moveSource: Move = {
   },
 };
 
+/** Moves a destination `shared` declares, and no route delivers to, into `default` from its row's menu, and back from
+ * `default`'s page. Each way is one commit that takes no route along, and each way the leader holds the destination in
+ * the area it went to and not in the other. */
+const moveDestination: Move = {
+  name: 'move-destination',
+  weight: (w) => (w.password && w.editing.destinations.length ? 1 : 0),
+  run: async (j) => {
+    const { page, leader, rng, world } = j;
+    const truth = await j.truth();
+    const branch = () => encodeURIComponent(world.branch ?? 'main');
+    const config = async (area: string) =>
+      (await truth.get(`/api/areas/${area}?branch=${branch()}`)).config;
+    const shared = await config('shared');
+    const delivered = new Set<string>();
+    for (const area of ['shared', 'default', ...world.editing.groups])
+      for (const r of (await config(area)).routes as { deliver?: { to: string[] }[] }[])
+        for (const rule of r.deliver ?? []) for (const to of rule.to) delivered.add(to);
+    const free = world.editing.destinations.filter(
+      (d) => !delivered.has(d) && shared.destinations.some((x: { id: string }) => x.id === d),
+    );
+    if (!free.length) return 'no destination in shared that no route delivers to';
+    const destination = rng.pick(free);
+    const routes = async (area: string) =>
+      ((await config(area)).routes as { id: string }[]).map((r) => r.id).sort();
+    const routesBefore = { shared: await routes('shared'), default: await routes('default') };
+    const holds = async (area: string) =>
+      (await config(area)).destinations.some((x: { id: string }) => x.id === destination);
+    const move = async (from: string, to: string) => {
+      await openRowMenu(page, `More actions for ${destination}`);
+      await page.getByRole('button', { name: 'Move to…' }).click();
+      const dialog = page.getByRole('dialog', { name: `move destination ${destination}` });
+      await dialog.getByRole('combobox', { name: 'move to' }).selectOption(to);
+      await saveBy(j, dialog.getByRole('button', { name: 'Move', exact: true }), () =>
+        expect(dialog).toBeHidden(),
+      );
+      // A group's page lists what `shared` declares too, so only `shared`'s own page loses the row.
+      if (to !== 'shared')
+        await expect(
+          page.getByRole('button', { name: `More actions for ${destination}` }),
+        ).toHaveCount(0);
+      expect(await holds(to), `${destination} moved to ${to}`).toBe(true);
+      expect(await holds(from), `${from} no longer holds ${destination}`).toBe(false);
+      expect(
+        { shared: await routes('shared'), default: await routes('default') },
+        'no route moves with a destination',
+      ).toEqual(routesBefore);
+      await editingIsSaved(j);
+    };
+    await goto(page, leader, '#/build/destinations');
+    await move('shared', 'default');
+    await switchScope(page, 'shared', 'default');
+    await move('default', 'shared');
+    await switchScope(page, 'default', 'shared');
+    return `move destination ${destination} to default and back`;
+  },
+};
+
 const addPipeline: Move = {
   name: 'add-pipeline',
   leadsTo: ['add-route', 'add-route-to-new-destination', 'add-step'],
@@ -3776,6 +3833,7 @@ export const MOVES: readonly Move[] = [
   addDestination,
   duplicateDestination,
   moveSource,
+  moveDestination,
   addPipeline,
   exportPipeline,
   importPipeline,

@@ -3639,6 +3639,86 @@ mod tests {
         std::fs::remove_dir_all(&data).ok();
     }
 
+    /// [`a_repo_with_a_shared_route`] with destination `archive` declared in `shared/` too, delivered to by `r1`
+    /// where `delivered`.
+    fn a_repo_with_a_shared_destination(label: &str, delivered: bool) -> PathBuf {
+        let data = a_repo_with_a_shared_route(label);
+        let archive = serde_json::json!([{
+            "id": "archive",
+            "type": "kafka",
+            "brokers": "kafka:9092",
+            "defaultTopic": "out",
+        }]);
+        let mut route = a_route_from("r1", "fleet-audit");
+        if delivered {
+            route.deliver = vec![config_file::DeliverRuleDto {
+                when: None,
+                to: vec!["archive".to_string()],
+            }];
+        }
+        let edits = [
+            ("destinations.json", serde_json::to_vec(&archive).unwrap()),
+            ("routes.json", serde_json::to_vec(&vec![route]).unwrap()),
+        ];
+        Writing::open_in(&data, "work", None, "shared")
+            .unwrap()
+            .commit(
+                (edits.into_iter())
+                    .map(|(path, body)| git::FileEdit {
+                        path: path.to_string(),
+                        content: Some(body),
+                    })
+                    .collect(),
+                "seed",
+                &Actor::system(),
+            )
+            .expect("seeded");
+        data
+    }
+
+    fn destination_ids_in(data: &Path, area: &str) -> Vec<String> {
+        let file = Reading::open_in(data, "work", area).unwrap().raw().file;
+        file.destinations.into_iter().map(|d| d.id).collect()
+    }
+
+    /// A destination nothing delivers to leaves `shared/` for a group alone, in one commit, and the routes stay where
+    /// they were.
+    #[test]
+    fn a_destination_moves_alone_in_one_commit() {
+        let data = a_repo_with_a_shared_destination("move-destination", false);
+        let response = move_to(&data, "shared", "west", Moved::Destination, "archive");
+        assert!(response.succeeded(), "moved: {response:?}");
+
+        assert_eq!(destination_ids_in(&data, "shared"), Vec::<String>::new());
+        assert_eq!(destination_ids_in(&data, "west"), ["archive"]);
+        assert_eq!(ids_in(&data, "shared").1, ["r1"], "the route stays");
+        let log = git::log(&git::repo_path(&data), "work", 1).unwrap();
+        assert_eq!(log[0].subject, "move destination archive to west");
+        let mut files = log[0].files.clone();
+        files.sort();
+        assert_eq!(files, ["groups/west/destinations.json", "shared/destinations.json"]);
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    /// A route that stays in `shared/` and delivers to the destination would name nothing there: the move is refused,
+    /// and the branch is where it was.
+    #[test]
+    fn a_destination_move_that_leaves_a_route_delivering_to_it_is_refused() {
+        let data = a_repo_with_a_shared_destination("move-destination-delivered", true);
+        let before = Reading::open_in(&data, "work", "shared").unwrap().commit;
+
+        let response = move_to(&data, "shared", "west", Moved::Destination, "archive");
+        assert!(!response.succeeded(), "r1 in shared still delivers to it");
+        let said = format!("{:?}", response.errors);
+        assert!(said.contains("archive"), "it names the destination: {said}");
+        assert_eq!(
+            Reading::open_in(&data, "work", "shared").unwrap().commit,
+            before,
+            "nothing written"
+        );
+        std::fs::remove_dir_all(&data).ok();
+    }
+
     #[test]
     fn a_move_into_a_group_the_branch_does_not_hold_is_refused() {
         let data = a_repo_with_a_shared_route("move-nowhere");
