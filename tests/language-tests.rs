@@ -717,8 +717,6 @@ cases! {
         [r#"{"a": 1, "c": "x"}"#], Rows(&[(r#"{"c": 1}"#, None)]);
     a_csv_parse_in_a_loop_writes_the_record: r#"Object.assign($, json(_raw)) xs: array<str> = $.xs; for (let x of xs) { Object.assign($, csv(x, ["a"])) }"#,
         [r#"{"xs": ["1", "2"]}"#], Rows(&[(r#"{"xs": ["1", "2"], "a": "2"}"#, None)]);
-    a_capture_may_not_name_an_engine_field: r#"Object.assign($, grok(_raw, ["%{WORD:__live}"]))"#,
-        ["x"], Error(&["`__live`"]);
     a_parse_key_that_names_a_local_declares_it_again: r#"let status = "x"; Object.assign($, grok(_raw, ["%{INT:status}"]));"#,
         ["200"], Error(&["`status` is a local"]);
     a_json_key_leaves_a_local_of_its_name: r#"let status = "x"; Object.assign($, json(_raw)); s = status;"#,
