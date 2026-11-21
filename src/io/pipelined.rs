@@ -6,14 +6,13 @@
 //!
 //! The pool sets no limit of its own. What is in flight is bounded by the egress queue in front of it, which holds
 //! the pacing target (`egress::pacing`) until each batch is acknowledged; the pool sends every request it is handed,
-//! a batch's side by side, and reports the batch once its last request is answered. A job with a key
-//! (`Sender::key`) waits while an earlier one of its key is in flight, so jobs of one key land in the order handed over. It spawns a sender when every one
+//! a batch's side by side, and reports the batch once its last request is answered. It spawns a sender when every one
 //! it has is busy, up to the sender count; the configured figure is how many it starts with. A destination that asks
 //! to be sent less (429) is obeyed by the sender that was asked, which waits out the backoff, and its completion says
 //! it was throttled, so the model caps what it holds below what was in flight then. Not for Kafka: librdkafka
 //! pipelines on its own threads.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
@@ -40,12 +39,6 @@ pub trait Sender: Send + 'static {
     type Job: Send + 'static;
 
     fn send_one(&mut self, job: Self::Job) -> Delivered;
-
-    /// The key `job` shares with the jobs that must land in the order they were handed over: a job goes only once
-    /// no earlier one of its key is in flight. `None`, the default, goes as soon as a sender is free.
-    fn key(_job: &Self::Job) -> Option<usize> {
-        None
-    }
 }
 
 /// How long a sender waits for a job before handing its free pages back, so what the last request freed has had its
@@ -56,56 +49,30 @@ const IDLE: Duration = Duration::from_millis(100);
 /// notices on its own that it has gone idle; a shared channel receiver lets one sender wait while the rest queue on its
 /// lock.
 struct Jobs<J> {
-    waiting: Mutex<Waiting<J>>,
+    waiting: Mutex<(VecDeque<(BatchId, J)>, bool)>,
     arrived: Condvar,
 }
 
-struct Waiting<J> {
-    /// Each job, with its batch and its key (`Sender::key`), in the order handed over.
-    queue: VecDeque<(BatchId, J, Option<usize>)>,
-    /// The keys of the jobs in flight.
-    busy: HashSet<usize>,
-    closed: bool,
-}
-
-impl<J> Waiting<J> {
-    /// The first job no job in flight holds back.
-    fn next(&mut self) -> Option<(BatchId, J, Option<usize>)> {
-        let at = (self.queue.iter()).position(|(_, _, key)| key.is_none_or(|key| !self.busy.contains(&key)))?;
-        let job = self.queue.remove(at)?;
-        self.busy.extend(job.2);
-        Some(job)
-    }
-}
-
 impl<J> Jobs<J> {
-    fn push(&self, job: (BatchId, J, Option<usize>)) {
-        self.waiting.lock().unwrap().queue.push_back(job);
+    fn push(&self, job: (BatchId, J)) {
+        self.waiting.lock().unwrap().0.push_back(job);
         self.arrived.notify_one();
     }
 
     fn close(&self) {
-        self.waiting.lock().unwrap().closed = true;
+        self.waiting.lock().unwrap().1 = true;
         self.arrived.notify_all();
     }
 
-    /// A job of `key` has landed, so the next of its key may go.
-    fn done(&self, key: Option<usize>) {
-        if let Some(key) = key {
-            self.waiting.lock().unwrap().busy.remove(&key);
-            self.arrived.notify_all();
-        }
-    }
-
     /// The next job, or `None` once closed. Hands this thread's free pages back once per idle stretch.
-    fn take(&self) -> Option<(BatchId, J, Option<usize>)> {
+    fn take(&self) -> Option<(BatchId, J)> {
         let mut waiting = self.waiting.lock().unwrap();
         let mut released = false;
         loop {
-            if let Some(job) = waiting.next() {
+            if let Some(job) = waiting.0.pop_front() {
                 return Some(job);
             }
-            if waiting.closed {
+            if waiting.1 {
                 return None;
             }
             if released {
@@ -114,7 +81,7 @@ impl<J> Jobs<J> {
             }
             let (held, timeout) = self.arrived.wait_timeout(waiting, IDLE).unwrap();
             waiting = held;
-            if timeout.timed_out() && waiting.queue.is_empty() {
+            if timeout.timed_out() && waiting.0.is_empty() {
                 drop(waiting);
                 crate::core::buffer::release_idle();
                 released = true;
@@ -155,11 +122,7 @@ impl<S: Sender> Pool<S> {
     pub fn new(senders: Vec<S>, start: usize) -> Pool<S> {
         assert!(!senders.is_empty(), "a pool needs at least one sender");
         let jobs = Arc::new(Jobs {
-            waiting: Mutex::new(Waiting {
-                queue: VecDeque::new(),
-                busy: HashSet::new(),
-                closed: false,
-            }),
+            waiting: Mutex::new((VecDeque::new(), false)),
             arrived: Condvar::new(),
         });
         let (done_tx, done_rx) = sync_channel(senders.len() * 4);
@@ -203,9 +166,8 @@ impl<S: Sender> Pool<S> {
                 std::thread::Builder::new()
                     .name("smeltr-destination-sender".into())
                     .spawn(move || {
-                        while let Some((batch, job, key)) = jobs.take() {
+                        while let Some((batch, job)) = jobs.take() {
                             let outcome = s.send_one(job);
-                            jobs.done(key);
                             if done_tx.send((batch, outcome)).is_err() {
                                 break;
                             }
@@ -264,8 +226,7 @@ impl<S: Sender> Pool<S> {
                 }
             }
             // Senders that have all stopped are found out when their completions channel closes.
-            let key = S::key(&job);
-            self.jobs.push((batch, job, key));
+            self.jobs.push((batch, job));
             self.outstanding += 1;
         }
         Ok(())

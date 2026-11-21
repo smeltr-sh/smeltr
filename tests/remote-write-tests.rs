@@ -149,7 +149,6 @@ fn config(url: &str) -> PrometheusDestinationConfig {
         headers: Vec::new(),
         credentials: Vec::new(),
         tls: None,
-        in_flight: 1,
         max_request_bytes: 1024 * 1024,
         buffer_bytes: 1024 * 1024,
         stall_after: Duration::from_secs(5),
@@ -195,86 +194,6 @@ fn scripted(statuses: &[u16]) -> (HttpDestination<RemoteWrite, ScriptedTransport
     let d = HttpDestination::new(transport, RemoteWrite::new(&config("http://unused")))
         .with_stall_after(Duration::from_secs(5));
     (d, sent)
-}
-
-/// Lands each request after a wait of its own, so requests sent side by side land in any order, and records each
-/// body as it lands.
-#[derive(Clone)]
-struct SlowTransport {
-    landed: Sent,
-    count: Arc<std::sync::atomic::AtomicU64>,
-}
-
-impl Transport for SlowTransport {
-    fn post(&mut self, _path: &str, body: &[u8], _budget: Duration) -> Result<Response, IoError> {
-        let n = self.count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        std::thread::sleep(Duration::from_micros(n.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 52));
-        self.landed.lock().unwrap().push(body.to_vec());
-        Ok(Response {
-            status: 204,
-            headers: Vec::new(),
-            body: Vec::new(),
-        })
-    }
-}
-
-/// Requests go several at once, and each series' samples still land oldest first, across requests and batches.
-#[test]
-fn requests_sent_at_once_land_each_series_in_order() {
-    let landed: Sent = Arc::default();
-    let make = || SlowTransport {
-        landed: Arc::clone(&landed),
-        count: Arc::default(),
-    };
-    let c = PrometheusDestinationConfig {
-        in_flight: 4,
-        max_request_bytes: 4096,
-        ..config("http://unused")
-    };
-    let mut d = HttpDestination::new(make(), RemoteWrite::new(&c))
-        .with_max_request_bytes(c.max_request_bytes)
-        .with_stall_after(Duration::from_secs(5))
-        .with_senders_from(make, c.in_flight, c.in_flight);
-    for batch in 0..20u64 {
-        let rows = (0..200)
-            .map(|i| {
-                let micros = batch * 1_000_000 + i * 1000;
-                let time = format!(
-                    "2026-10-11T18:{:02}:{:02}.{:06}Z",
-                    micros / 60_000_000,
-                    micros / 1_000_000 % 60,
-                    micros % 1_000_000
-                );
-                sample("up", &(i % 16).to_string(), 1.0, &time)
-            })
-            .collect();
-        d.deliver(batch, Cow::Owned(rows)).unwrap();
-    }
-    d.flush().unwrap();
-    let completions = d.poll_completions().unwrap();
-    assert_eq!(completions.len(), 20);
-    assert!(
-        completions
-            .iter()
-            .all(|c| c.undelivered.is_none() && c.rejections.is_empty())
-    );
-    let mut newest: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-    let mut samples = 0;
-    for body in landed.lock().unwrap().iter() {
-        for series in decoded(body).timeseries {
-            let job = series.labels.iter().find(|l| l.name == "job").unwrap().value.clone();
-            for sample in series.samples {
-                let before = newest.insert(job.clone(), sample.timestamp);
-                assert!(
-                    before.is_none_or(|t| t <= sample.timestamp),
-                    "job {job} went back to {}",
-                    sample.timestamp
-                );
-                samples += 1;
-            }
-        }
-    }
-    assert_eq!(samples, 20 * 200);
 }
 
 /// Hands `rows` over as one batch, answered before `deliver` returns.

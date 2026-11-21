@@ -2039,9 +2039,6 @@ pub struct PrometheusDestinationConfig {
     pub credentials: Vec<(String, SecretRef)>,
     /// The TLS this client speaks. `None` is no certificate and the platform's own roots.
     pub tls: Option<Tls>,
-    /// How many requests this destination sends at once, each carrying its own share of the series, so a series'
-    /// samples go one request after another.
-    pub in_flight: usize,
     /// Bytes of samples one request may carry, before compression, before the destination sends early: each sample
     /// counted with its labels, which a request sends once per series, so a request is smaller.
     pub max_request_bytes: usize,

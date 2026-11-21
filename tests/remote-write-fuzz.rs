@@ -62,13 +62,11 @@ type Sent = Arc<Mutex<Vec<Vec<u8>>>>;
 /// The kind of each answer a store gave, as the fuzzer's coverage names it.
 type Answered = Arc<Mutex<Vec<&'static str>>>;
 
-/// A store answering each request at random, recording its body and the kind of its answer. Its clones are one store,
-/// each a connection a sender holds.
-#[derive(Clone)]
+/// A store answering each request at random, recording its body and the kind of its answer.
 struct FuzzStore {
     seed: u64,
     /// How often each body, by its hash, was sent.
-    attempts: Arc<Mutex<HashMap<u64, u64>>>,
+    attempts: HashMap<u64, u64>,
     version: RemoteWriteVersion,
     sent: Sent,
     answered: Answered,
@@ -91,13 +89,9 @@ impl Transport for FuzzStore {
         let mut hasher = DefaultHasher::new();
         body.hash(&mut hasher);
         let key = hasher.finish();
-        let attempt = {
-            let mut attempts = self.attempts.lock().unwrap();
-            let attempt = attempts.entry(key).or_default();
-            *attempt += 1;
-            *attempt
-        };
-        let rng = &mut Rng::seeded(self.seed ^ key ^ attempt);
+        let attempt = self.attempts.entry(key).or_default();
+        *attempt += 1;
+        let rng = &mut Rng::seeded(self.seed ^ key ^ *attempt);
         let mut headers = Vec::new();
         let mut answered = self.answered.lock().unwrap();
         let status = match rng.below(100) {
@@ -345,14 +339,6 @@ fn random_system(rng: &mut Rng, authority: &str) -> (String, Vec<String>) {
         }
     }
     if rng.chance(2) {
-        let in_flight = if loose(rng) {
-            any(rng, vec![json!(0), json!(65), json!(-1), json!("4"), json!(1.5)])
-        } else {
-            any(rng, vec![json!(1), json!(4), json!(16)])
-        };
-        d.insert("inFlight".into(), in_flight);
-    }
-    if rng.chance(2) {
         let stall = if loose(rng) {
             any(rng, vec![json!(0), json!(121), json!(u64::MAX), json!(-1), json!("30")])
         } else {
@@ -418,10 +404,9 @@ fn settle(json: &str, secrets: &HeldSecrets) -> Result<Reached, String> {
     let store = Lands {
         sent: Arc::clone(&sent),
     };
-    let mut d = HttpDestination::new(store.clone(), RemoteWrite::new(c))
+    let mut d = HttpDestination::new(store, RemoteWrite::new(c))
         .with_max_request_bytes(c.max_request_bytes)
-        .with_stall_after(c.stall_after)
-        .with_senders_from(|| store.clone(), c.in_flight, c.in_flight);
+        .with_stall_after(c.stall_after);
     let sample = br#"{"time":"2026-10-11T18:00:00Z","name":"up","value":1,"attributes":{"job":"api"}}"#;
     let refused = deliver(&mut d, vec![row(sample.to_vec())]).map_err(|e| format!("delivering a sample: {e}"))?;
     if !refused.is_empty() {
@@ -434,7 +419,6 @@ fn settle(json: &str, secrets: &HeldSecrets) -> Result<Reached, String> {
 }
 
 /// A store that lands every request, saying what it wrote as a 2.0 store does.
-#[derive(Clone)]
 struct Lands {
     sent: Sent,
 }
@@ -450,27 +434,21 @@ impl Transport for Lands {
     }
 }
 
-/// `rows` as one batch, answered: by `deliver` itself for a destination of no senders, else by its completion.
 fn deliver<T: Transport>(
     d: &mut HttpDestination<RemoteWrite, T>,
     rows: Vec<OwnedRecord>,
 ) -> Result<Vec<Rejection>, IoError> {
-    let (dispatched, mut refused) = d.deliver(0, Cow::Owned(rows))?;
-    if dispatched == Dispatched::InFlight {
-        d.flush()?;
-        let mut completions = d.poll_completions()?;
-        assert_eq!(completions.len(), 1, "one batch, one completion");
-        let completion = completions.remove(0);
-        if let Some(undelivered) = completion.undelivered {
-            return Err(undelivered.error);
-        }
-        refused.extend(completion.rejections);
-    }
+    let (dispatched, refused) = d.deliver(0, Cow::Owned(rows))?;
+    assert_eq!(
+        dispatched,
+        Dispatched::Complete,
+        "a destination of no senders answers before it returns"
+    );
     Ok(refused)
 }
 
 /// Every setting of a Prometheus destination, as a bundle names it.
-const SETTINGS: [&str; 11] = [
+const SETTINGS: [&str; 10] = [
     "url",
     "version",
     "headers",
@@ -478,7 +456,6 @@ const SETTINGS: [&str; 11] = [
     "certificate",
     "trustedAuthorities",
     "trustPublic",
-    "inFlight",
     "maxRequestBytes",
     "bufferBytes",
     "stallAfterSecs",
@@ -1039,8 +1016,6 @@ const ROW_OPTIONS: &[&str] = &[
     "stall 20ms",
     "stall 50ms",
     "stall 300ms",
-    "inFlight 1",
-    "inFlight 3",
     "row garbage",
     "row of no name",
     "row metadata",
@@ -1096,13 +1071,11 @@ fn fuzz_one(seed: u64, coverage: &mut Coverage) -> Result<(), String> {
     // A throttled answer naps up to the stall threshold, so most are short.
     let stall_after = *rng.pick(&[0, 2, 20, 20, 50, 50, 50, 300]);
     coverage.reach(format!("stall {stall_after}ms"));
-    let in_flight = *rng.pick(&[1, 3]);
-    coverage.reach(format!("inFlight {in_flight}"));
     let sent = Sent::default();
     let answered = Answered::default();
     let store = FuzzStore {
         seed: !seed,
-        attempts: Arc::default(),
+        attempts: HashMap::new(),
         version,
         sent: Arc::clone(&sent),
         answered: Arc::clone(&answered),
@@ -1119,7 +1092,6 @@ fn fuzz_one(seed: u64, coverage: &mut Coverage) -> Result<(), String> {
         headers: Vec::new(),
         credentials: Vec::new(),
         tls: None,
-        in_flight,
         max_request_bytes,
         buffer_bytes: max_request_bytes,
         stall_after: Duration::from_millis(stall_after),
@@ -1129,12 +1101,9 @@ fn fuzz_one(seed: u64, coverage: &mut Coverage) -> Result<(), String> {
         0,
         "d",
     );
-    let mut d = HttpDestination::new(store.clone(), RemoteWrite::new(&config).with_unwritten(unwritten))
+    let mut d = HttpDestination::new(store, RemoteWrite::new(&config).with_unwritten(unwritten))
         .with_max_request_bytes(max_request_bytes)
         .with_stall_after(config.stall_after);
-    if in_flight > 1 {
-        d = d.with_senders_from(|| store.clone(), in_flight, in_flight);
-    }
     // Miscounted histograms come only in seeds of their own, which the receiver may refuse, so every other seed
     // holds the round trip to every body.
     let miscount = rng.chance(8);
@@ -1349,7 +1318,6 @@ fn live_run(seed: u64, base: &str, out_of_order: bool, coverage: &mut Coverage) 
         headers,
         credentials: Vec::new(),
         tls: None,
-        in_flight: 1,
         max_request_bytes,
         buffer_bytes: *rng.pick(&[4 << 20, 64 << 20]).max(&max_request_bytes),
         stall_after: Duration::from_secs(*rng.pick(&[5, 10, 30])),
