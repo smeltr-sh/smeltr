@@ -97,26 +97,22 @@
   });
 
   /** What goes with it: the routes that start at a source here, or the tests that run over a sample. */
-  const goes = $derived(
-    kind === 'sample'
-      ? tests
-      : kind === 'source' && answer
-        ? answer.downstream
-            .filter((c) => c.kind === 'route' && c.area === here)
-            .map((c) => names.of(currentBranch(), here, 'routes', c.id))
-        : [],
-  );
+  const goes = $derived.by(() => {
+    if (kind === 'sample') return tests;
+    if (kind !== 'source' || !answer) return [];
+    const routes = answer.downstream.filter((c) => c.kind === 'route' && c.area === here);
+    return routes.map((c) => names.of(currentBranch(), here, 'routes', c.id));
+  });
   const nameOf = (area: string) => areas.find((a) => a.id === area)?.name ?? area;
   const runsAfter = $derived(to === SHARED_SCOPE ? 'every worker group' : nameOf(to));
   /** A group keeps a source's progress and learned normal as its own, so a group the source moves into from another
    * starts without them. */
-  const startsOver = $derived(
-    kind !== 'source' || here === SHARED_SCOPE || to === SHARED_SCOPE
-      ? undefined
-      : pullOne
-        ? `${nameOf(to)} has none of ${nameOf(here)}'s progress, so it reads everything again there, and learns its normal again.`
-        : `${nameOf(to)} has none of ${nameOf(here)}'s learned normal, so it learns it again.`,
-  );
+  const startsOver = $derived.by(() => {
+    if (kind !== 'source' || here === SHARED_SCOPE || to === SHARED_SCOPE) return undefined;
+    if (pullOne)
+      return `${nameOf(to)} has none of ${nameOf(here)}'s progress, so it reads everything again there, and learns its normal again.`;
+    return `${nameOf(to)} has none of ${nameOf(here)}'s learned normal, so it learns it again.`;
+  });
 
   async function move() {
     if (busy.on || dirty || !to) return;
