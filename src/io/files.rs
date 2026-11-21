@@ -680,6 +680,9 @@ struct Lane {
     orders: Sender<Order>,
     /// Bytes of rows sent to the encoder and not yet written.
     queued: Arc<AtomicUsize>,
+    /// The encoder was on a core for at least nine tenths of its last `MEASURE_EVERY`. One that is behind but not
+    /// busy waits for a core or for its uploads, and another encoder would only share what it waits for.
+    busy: Arc<AtomicBool>,
     thread: JoinHandle<()>,
 }
 
@@ -802,7 +805,8 @@ impl Writer {
             (Some(i), _) => i,
             (None, Some(i))
                 if queued(&self.encoders[i]) < BEHIND_BYTES
-                    || self.encoders.len() >= self.shared.config.encoders.max(1) =>
+                    || self.encoders.len() >= self.shared.config.encoders.max(1)
+                    || self.encoders.iter().any(|lane| !lane.busy.load(Ordering::Relaxed)) =>
             {
                 i
             }
@@ -819,9 +823,11 @@ impl Writer {
     fn start_encoder(&mut self) -> Result<usize, String> {
         let (orders, inbox) = channel();
         let queued = Arc::<AtomicUsize>::default();
+        let busy = Arc::<AtomicBool>::default();
         let mut encoder = Encoder {
             shared: self.shared.clone(),
             queued: queued.clone(),
+            busy: busy.clone(),
             open: HashMap::new(),
             closed: Vec::new(),
             broken: false,
@@ -831,7 +837,12 @@ impl Writer {
             .name(format!("{}-file-encoder", self.shared.name))
             .spawn(move || encoder.run(inbox))
             .map_err(|e| format!("starting an encoder: {e}"))?;
-        self.encoders.push(Lane { orders, queued, thread });
+        self.encoders.push(Lane {
+            orders,
+            queued,
+            busy,
+            thread,
+        });
         self.shared.started.fetch_add(1, Ordering::Relaxed);
         Ok(self.encoders.len() - 1)
     }
@@ -1032,6 +1043,8 @@ struct Encoder {
     shared: Arc<Shared>,
     /// See `Lane::queued`.
     queued: Arc<AtomicUsize>,
+    /// See `Lane::busy`.
+    busy: Arc<AtomicBool>,
     open: HashMap<Partition, OpenFile>,
     closed: Vec<DataFile>,
     /// A write failed: the writes after it are skipped until the writer aborts this encoder.
@@ -1042,6 +1055,7 @@ struct Encoder {
 
 impl Encoder {
     fn run(&mut self, orders: Receiver<Order>) {
+        let mut since = (Instant::now(), crate::resources::thread_cpu_time());
         loop {
             // Woken at least every `MEASURE_EVERY`, so what lands while no rows come shows as it lands.
             let order = match orders.recv_timeout(MEASURE_EVERY) {
@@ -1085,6 +1099,16 @@ impl Encoder {
             self.shared
                 .open_bytes
                 .fetch_sub(std::mem::replace(&mut self.measured, open), Ordering::Relaxed);
+            if since.0.elapsed() >= MEASURE_EVERY {
+                let now = (Instant::now(), crate::resources::thread_cpu_time());
+                // A platform that cannot tell counts as busy, so encoders start as the queues alone say.
+                let busy = match (now.1, since.1) {
+                    (Some(cpu), Some(was)) => cpu.saturating_sub(was) * 10 >= (now.0 - since.0) * 9,
+                    _ => true,
+                };
+                self.busy.store(busy, Ordering::Relaxed);
+                since = now;
+            }
         }
         self.shared.open_bytes.fetch_sub(self.measured, Ordering::Relaxed);
     }

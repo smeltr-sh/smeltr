@@ -152,6 +152,11 @@ pub fn own_memory_bytes() -> u64 {
     platform::tree_memory(&[std::process::id()])
 }
 
+/// CPU time the calling thread has used. `None` when the platform will not say.
+pub fn thread_cpu_time() -> Option<Duration> {
+    platform::thread_cpu_time()
+}
+
 /// Every logical core the host reports, for whichever platform found no real limit to measure
 /// against instead. `1.0` on a host that will not answer, so a caller dividing by it still gets a
 /// number rather than a NaN.
@@ -312,6 +317,13 @@ mod platform {
             }
         };
         (cpu, memory)
+    }
+
+    pub(super) fn thread_cpu_time() -> Option<std::time::Duration> {
+        let mut time: libc::timespec = unsafe { std::mem::zeroed() };
+        // SAFETY: a clock every Linux has, and an out-parameter of the type asked for.
+        let ok = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) } == 0;
+        ok.then(|| std::time::Duration::new(time.tv_sec as u64, time.tv_nsec as u32))
     }
 
     /// Every process in `tree`'s CPU time, for a cgroup that holds more than this worker or a host
@@ -1529,6 +1541,14 @@ mod platform {
     /// difference, or an order, between two readings is ever used.
     fn ticks(ft: FILETIME) -> u64 {
         ((ft.dwHighDateTime as u64) << 32) | ft.dwLowDateTime as u64
+    }
+
+    pub(super) fn thread_cpu_time() -> Option<std::time::Duration> {
+        use windows_sys::Win32::System::Threading::{GetCurrentThread, GetThreadTimes};
+        let [mut creation, mut exit, mut kernel, mut user] = [FILETIME::default(); 4];
+        // SAFETY: the current thread's pseudo-handle, and four out-parameters of the type asked for.
+        let ok = unsafe { GetThreadTimes(GetCurrentThread(), &mut creation, &mut exit, &mut kernel, &mut user) };
+        (ok != 0).then(|| std::time::Duration::from_nanos((ticks(kernel) + ticks(user)) * 100))
     }
 
     /// This process and every descendant of it, by the parent each process names. Windows does
