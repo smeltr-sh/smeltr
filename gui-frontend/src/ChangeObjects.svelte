@@ -514,11 +514,13 @@
                       more={line.count}
                       label="{count(line.count, 'line')} unchanged"
                       onshowall={() => unfolded.add(step)}
-                    /></div>{:else}<div class={line.kind}>{line.kind === 'added'
+                    /></div>{:else if step.status === 'changed'}<div
+                    class={line.kind}>{line.kind === 'added'
                       ? '+'
                       : line.kind === 'removed'
                         ? '-'
-                        : ' '} {line.text}</div>{/if}{/each}</pre>
+                        : ' '} {line.text}</div>{:else}<div
+                    class:struck={line.kind === 'removed'}>{line.text}</div>{/if}{/each}</pre>
           </div>
         {:else if step.status !== 'same' && step.summary}
           <div class="step-body mono" class:struck={step.status === 'removed'}>{step.summary}</div>
