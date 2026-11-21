@@ -4613,14 +4613,16 @@ impl Compiler<'_> {
                 span: Span::default(),
             }]),
         };
-        // A step names fields by code's rules: it may not take the names that code refuses.
-        let stmts = [&lowered.body[..], &lowered.after[..]].concat();
-        if let Err(e) = crate::expr::inline::check_reserved_names(&stmts) {
-            return self.err(Some(id), e.message);
-        }
+        // A step is the code it lowers to, compiled as code is.
+        let expanded = (crate::expr::inline::expand(&lowered.body))
+            .and_then(|body| Ok((body, crate::expr::inline::expand(&lowered.after)?)));
+        let (body, after) = match expanded {
+            Ok(both) => both,
+            Err(e) => return self.err(Some(id), e.message),
+        };
         self.settle(|c| {
-            c.code_block(&lowered.body, here);
-            c.code_block(&lowered.after, Here { guard: outer, ..here });
+            c.code_block(&body, here);
+            c.code_block(&after, Here { guard: outer, ..here });
         });
         self.chosen.clear();
     }

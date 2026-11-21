@@ -398,7 +398,7 @@ pub fn is_temporary(name: &str) -> bool {
 }
 
 /// Rejects any name under `RESERVED_PREFIXES`, before any rewrite runs.
-pub(crate) fn check_reserved_names(stmts: &[Stmt]) -> Result<(), InlineError> {
+fn check_reserved_names(stmts: &[Stmt]) -> Result<(), InlineError> {
     let Some((name, span)) = reserved_name(stmts) else {
         return Ok(());
     };
