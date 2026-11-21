@@ -77,44 +77,209 @@ impl Engine {
         std::fs::read_to_string(path).ok()
     }
 
-    /// Whether the engine runs `w`: NiFi's Groovy row only where it maps, since it forwards as NiFi does.
-    fn runs(self, w: &Workload) -> bool {
-        self != Engine::NifiGroovy || self.pipeline(w, "groovy").is_some()
+    /// Whether the engine runs `w` over `t`: NiFi's Groovy row only where it maps, since it forwards as NiFi does;
+    /// another source or destination only forwarding, and only where both engines have it, smeltr and Vector.
+    fn runs(self, w: &Workload, t: Transport) -> bool {
+        (self != Engine::NifiGroovy || self.pipeline(w, "groovy").is_some())
+            && (t.shared() || (w.forwards && matches!(self, Engine::Smeltr | Engine::Vector)))
     }
 }
 
-/// How records reach an engine and leave it.
+/// Where an engine takes records: HTTP and Kafka for every engine, and each other source smeltr and Vector share.
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum Transport {
-    /// Pushed by the harness, each request answered by the engine; delivered to the harness the same way.
+enum In {
+    /// Pushed by the harness's sender, each request answered by the engine.
     Http,
-    /// Pulled from a topic and produced to another, on the broker the run starts.
+    /// Pulled from the topic the harness seeded, on the broker the run starts.
+    Kafka,
+    /// Splunk's HTTP Event Collector, its raw endpoint taking lines.
+    Hec,
+    /// OpenTelemetry logs over HTTP, a record the body of each.
+    Otlp,
+    /// Prometheus remote write, a record each sample.
+    Prometheus,
+    /// Syslog lines over TCP, on connections held open.
+    Syslog,
+}
+
+impl In {
+    fn label(self) -> &'static str {
+        match self {
+            In::Http => "http",
+            In::Kafka => "kafka",
+            In::Hec => "hec",
+            In::Otlp => "otlp",
+            In::Prometheus => "prometheus",
+            In::Syslog => "syslog",
+        }
+    }
+
+    /// How the harness sends a receiver the corpus, for each engine its own path and credentials; `None` for a
+    /// stream of lines rather than requests.
+    fn push(self, engine: Engine) -> Option<Push> {
+        let push = match self {
+            In::Http => {
+                let (path, authorization) = match engine {
+                    Engine::Smeltr => ("/", "Bearer {}"),
+                    Engine::Logstash | Engine::Vector => ("/", BASIC),
+                    Engine::Nifi | Engine::NifiGroovy => ("/in", "Bearer {}"),
+                };
+                Push {
+                    path,
+                    authorization,
+                    ..receivers::HTTP
+                }
+            }
+            In::Hec => receivers::HEC,
+            In::Otlp => receivers::OTLP,
+            // Vector serves remote write at its root.
+            In::Prometheus if engine == Engine::Vector => Push {
+                path: "/",
+                authorization: BASIC,
+                ..receivers::PROMETHEUS
+            },
+            In::Prometheus => receivers::PROMETHEUS,
+            In::Kafka | In::Syslog => return None,
+        };
+        Some(push)
+    }
+
+    /// What a row that forwards delivers of record `i` of the corpus, sent this way: the record as it was sent.
+    fn sent(self, i: u64) -> Value {
+        match self {
+            In::Syslog => Value::String(syslog_line(i)),
+            In::Prometheus => json!({
+                "name": "connector_speed_requests_total",
+                "labels": {"instance": format!("host-{}", i % 1000), "path": format!("/api/v{}/items", i % 7)},
+                "value": i as f64,
+                "time": utc_millis(1_790_000_000_000 + i),
+            }),
+            In::Http | In::Kafka | In::Hec | In::Otlp => serde_json::from_str(&line(i)).unwrap(),
+        }
+    }
+
+    /// An engine's document in the form `sent` writes it. Smeltr and Vector each write a sample as JSON of their own.
+    fn normal(self, doc: Value) -> Value {
+        if self != In::Prometheus {
+            return doc;
+        }
+        let labels = doc.get("attributes").or_else(|| doc.get("tags"));
+        // Vector reads a sample as a gauge, or as a counter where its name says it counts.
+        let value = ["/value", "/gauge/value", "/counter/value"]
+            .iter()
+            .find_map(|p| doc.pointer(p));
+        let time = doc.get("time").or_else(|| doc.get("timestamp"));
+        json!({
+            "name": doc["name"],
+            "labels": labels,
+            "value": value,
+            "time": time.and_then(Value::as_str).map(instant),
+        })
+    }
+}
+
+/// Where an engine delivers records.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Out {
+    /// To the harness's sink.
+    Http,
+    /// To a topic of the run's own, on the broker the run starts.
     Kafka,
 }
 
-const TRANSPORTS: [Transport; 2] = [Transport::Http, Transport::Kafka];
-
-impl Transport {
+impl Out {
     fn label(self) -> &'static str {
         match self {
-            Transport::Http => "http",
-            Transport::Kafka => "kafka",
+            Out::Http => "http",
+            Out::Kafka => "kafka",
         }
     }
 }
 
-/// Where one engine takes its records and delivers them.
-enum Ends {
-    Http {
-        port: u16,
-        sink: String,
+/// How records reach an engine and leave it. Each source and each destination is timed alone, HTTP its other end: the
+/// leg every engine runs fastest, so the leg under test sets the row's speed.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Transport {
+    from: In,
+    to: Out,
+}
+
+const TRANSPORTS: &[Transport] = &[
+    Transport {
+        from: In::Http,
+        to: Out::Http,
     },
+    Transport {
+        from: In::Kafka,
+        to: Out::Kafka,
+    },
+    Transport {
+        from: In::Hec,
+        to: Out::Http,
+    },
+    Transport {
+        from: In::Otlp,
+        to: Out::Http,
+    },
+    Transport {
+        from: In::Prometheus,
+        to: Out::Http,
+    },
+    Transport {
+        from: In::Syslog,
+        to: Out::Http,
+    },
+];
+
+impl Transport {
+    /// `http` and `kafka` for the transports every engine runs; otherwise the leg under test, `hec-in` or `s3-out`.
+    fn label(self) -> String {
+        match (self.from, self.to) {
+            (In::Http, Out::Http) => "http".into(),
+            (In::Kafka, Out::Kafka) => "kafka".into(),
+            (from, Out::Http) => format!("{}-in", from.label()),
+            (_, to) => format!("{}-out", to.label()),
+        }
+    }
+
+    fn kafka(self) -> bool {
+        self.from == In::Kafka || self.to == Out::Kafka
+    }
+
+    /// Whether every engine has both legs: Logstash and NiFi are timed over HTTP and Kafka alone.
+    fn shared(self) -> bool {
+        matches!((self.from, self.to), (In::Http, Out::Http) | (In::Kafka, Out::Kafka))
+    }
+}
+
+/// Where one engine takes its records and delivers them.
+struct Ends {
+    take: Take,
+    give: Give,
+}
+
+impl Ends {
+    fn from(&self) -> In {
+        match self.take {
+            Take::Listen { from, .. } => from,
+            Take::Kafka { .. } => In::Kafka,
+        }
+    }
+}
+
+enum Take {
+    /// A listener on `port`, taking what `from` sends it.
+    Listen { port: u16, from: In },
     Kafka {
         brokers: String,
-        from: String,
-        to: String,
+        topic: String,
         group: String,
     },
+}
+
+enum Give {
+    Http { sink: String },
+    Kafka { brokers: String, topic: String },
 }
 
 /// What a pipeline makes of record `line`, as the check compares it: `None` when the pipeline drops it.
@@ -198,6 +363,29 @@ fn json_app(line: &str) -> Option<Value> {
         doc["error"] = json!({"type": e["type"], "message": e["message"], "stack_trace": e["stack"]});
     }
     Some(doc)
+}
+
+/// `millis` after the Unix epoch as a UTC instant, `2026-09-21T14:13:20.001Z`, as `instant` writes one.
+fn utc_millis(millis: u64) -> String {
+    let (secs, ms) = (millis / 1000, millis % 1000);
+    let (days, day) = ((secs / 86_400) as i64, secs % 86_400);
+    // Howard Hinnant's days-to-civil.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    let at = format!(
+        "{y}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{ms:03}Z",
+        day / 3600,
+        day / 60 % 60,
+        day % 60
+    );
+    instant(&at)
 }
 
 /// `value` with every object's keys in order, as text: two documents are the same when these are.
@@ -539,7 +727,7 @@ impl Broker {
 /// An engine running in its container, taking records at `ends`.
 struct Running {
     container: Container,
-    /// Where the sender posts, and how, under HTTP.
+    /// Where the sender posts, and how, to a receiver that takes requests.
     push: Option<(String, Push)>,
 }
 
@@ -553,7 +741,7 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
     // NiFi serves its API on a port of its own.
     let api_port = free_port();
     let mut docker = container(run, cpus, gb);
-    let (path, authorization) = match engine {
+    match engine {
         Engine::Smeltr => {
             // SAFETY: neither reads anything but this process's own credentials.
             let user = unsafe { format!("{}:{}", libc::getuid(), libc::getgid()) };
@@ -587,7 +775,6 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
                 .args(["-e", &format!("SMELTR_WORKER_THREAD_LIMIT={cores}")])
                 .args(["-e", &format!("SM_RECEIVER_TOKEN={RECEIVER_TOKEN}")])
                 .args([engine.image(), "/usr/local/bin/smeltr"]);
-            ("/", "Bearer {}")
         }
         Engine::Logstash => {
             std::fs::create_dir_all(dir.join("pipeline")).unwrap();
@@ -607,7 +794,6 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
                 ])
                 .args(["-e", &format!("LS_JAVA_OPTS=-Xms{0} -Xmx{0}", Engine::heap(gb))])
                 .arg(engine.image());
-            ("/", BASIC)
         }
         Engine::Vector => {
             std::fs::write(dir.join("vector.json"), vector::config(w, ends).to_string()).unwrap();
@@ -618,7 +804,6 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
                 ])
                 .args([engine.image(), "--config", "/etc/engine/vector.json", "--threads"])
                 .arg(cores.to_string());
-            ("/", BASIC)
         }
         Engine::Nifi | Engine::NifiGroovy => {
             if engine == Engine::Nifi {
@@ -644,9 +829,8 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
                     "sed -i 's/^nifi.content.repository.archive.enabled=.*/nifi.content.repository.archive.enabled=false/' \
                      conf/nifi.properties && exec ../scripts/start.sh",
                 );
-            ("/in", "Bearer {}")
         }
-    };
+    }
     let container = Container::run(docker, run);
     match engine {
         Engine::Smeltr => {
@@ -657,34 +841,45 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
                 assert!(Instant::now() < deadline, "{run}: the leader never started");
                 std::thread::sleep(Duration::from_millis(100));
             }
-            let (source, destination) = match ends {
-                Ends::Http { port, sink } => (
-                    receivers::http(*port),
-                    json!({"id": "out", "type": "http", "url": sink}),
-                ),
-                Ends::Kafka {
-                    brokers,
-                    from,
-                    to,
-                    group,
-                } => (
-                    json!({"id": "in", "type": "kafka", "brokers": brokers, "topics": [from], "groupId": group}),
-                    json!({"id": "out", "type": "kafka", "brokers": brokers, "defaultTopic": to}),
-                ),
+            let source = match &ends.take {
+                Take::Listen { port, from } => match from {
+                    In::Http => receivers::http(*port),
+                    In::Hec => receivers::hec(*port),
+                    In::Otlp => receivers::otlp(*port),
+                    In::Prometheus => receivers::prometheus(*port),
+                    In::Syslog => receivers::syslog(*port),
+                    In::Kafka => unreachable!("Kafka is pulled"),
+                },
+                Take::Kafka { brokers, topic, group } => {
+                    json!({"id": "in", "type": "kafka", "brokers": brokers, "topics": [topic], "groupId": group})
+                }
             };
-            let mut destination = destination;
+            let mut destination = match &ends.give {
+                Give::Http { sink } => json!({"id": "out", "type": "http", "url": sink}),
+                Give::Kafka { brokers, topic } => {
+                    json!({"id": "out", "type": "kafka", "brokers": brokers, "defaultTopic": topic})
+                }
+            };
             if w.forwards {
-                destination["format"] = json!("text");
+                match ends.from() {
+                    // A sample is a record of fields, which only JSON writes.
+                    In::Prometheus => {}
+                    In::Otlp => {
+                        destination["format"] = json!("text");
+                        destination["field"] = json!("body");
+                    }
+                    _ => destination["format"] = json!("text"),
+                }
             }
             deploy(&dir, source, destination, (w.steps)());
         }
         Engine::Nifi | Engine::NifiGroovy => nifi::build(&container, run, api_port, ends, w, cores, engine),
         Engine::Logstash | Engine::Vector => {}
     }
-    let push = match ends {
-        Ends::Http { port, .. } => {
+    let push = match ends.take {
+        Take::Listen { port, from } => {
             let deadline = Instant::now() + PATIENCE;
-            while std::net::TcpStream::connect(("127.0.0.1", *port)).is_err() {
+            while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
                 container.check(run);
                 assert!(
                     Instant::now() < deadline,
@@ -693,15 +888,10 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
                 );
                 std::thread::sleep(Duration::from_millis(200));
             }
-            let push = Push {
-                path,
-                authorization,
-                headers: &[],
-                body: receivers::HTTP.body,
-            };
-            Some((format!("http://127.0.0.1:{port}{path}"), push))
+            from.push(engine)
+                .map(|push| (format!("http://127.0.0.1:{port}{}", push.path), push))
         }
-        Ends::Kafka { .. } => None,
+        Take::Kafka { .. } => None,
     };
     Running { container, push }
 }
@@ -713,8 +903,8 @@ mod logstash {
     /// The transport's input, the pipeline's filters, and the transport's output.
     pub fn pipeline(w: &Workload, ends: &Ends, cores: usize) -> String {
         let mut filter = Engine::Logstash.pipeline(w, "conf").unwrap_or_default();
-        let (input, output) = match ends {
-            Ends::Http { port, sink } => {
+        let (input, output) = match (&ends.take, &ends.give) {
+            (Take::Listen { port, from: In::Http }, Give::Http { sink }) => {
                 // Every request is lines, whatever its content type says. Logstash posts many events to a request
                 // only as a JSON array of them, so a record it forwards is read as the JSON it is, and leaves
                 // without the fields the input adds. Those go at the top level, apart from the record's own `http`.
@@ -739,12 +929,7 @@ mod logstash {
             // A consumer thread for each core. The producer batches as the Kafka clients of the other engines do
             // by default: up to a megabyte, waiting up to 5 ms to fill one. Every broker acknowledges a write, as
             // the other engines' producers ask.
-            Ends::Kafka {
-                brokers,
-                from,
-                to,
-                group,
-            } => {
+            (Take::Kafka { brokers, topic, group }, Give::Kafka { topic: to, .. }) => {
                 let codec = if w.forwards {
                     "plain { format => \"%{message}\" }"
                 } else {
@@ -752,7 +937,7 @@ mod logstash {
                 };
                 (
                     format!(
-                        "kafka {{ bootstrap_servers => \"{brokers}\" topics => [\"{from}\"] group_id => \"{group}\" \
+                        "kafka {{ bootstrap_servers => \"{brokers}\" topics => [\"{topic}\"] group_id => \"{group}\" \
                          auto_offset_reset => \"earliest\" consumer_threads => {cores} }}"
                     ),
                     format!(
@@ -761,6 +946,7 @@ mod logstash {
                     ),
                 )
             }
+            _ => panic!("Logstash runs HTTP and Kafka alone"),
         };
         format!("input {{ {input} }}\n{filter}\noutput {{ {output} }}\n")
     }
@@ -783,27 +969,42 @@ mod vector {
         let remap = Engine::Vector.pipeline(w, "vrl");
         // A pipeline that reads the record parses it as it arrives; one that forwards it sends the line it read.
         let codec = if remap.is_some() { "json" } else { "bytes" };
-        let encoding = if w.forwards { "text" } else { "json" };
-        let (source, sink) = match ends {
-            Ends::Http { port, sink } => (
-                json!({"type": "http_server", "address": format!("0.0.0.0:{port}"),
-                       "auth": {"strategy": "basic", "username": "bench", "password": PASSWORD},
+        let encoding = if w.forwards && ends.from() != In::Prometheus {
+            "text"
+        } else {
+            "json"
+        };
+        let address = |port: &u16| format!("0.0.0.0:{port}");
+        let basic = json!({"strategy": "basic", "username": "bench", "password": PASSWORD});
+        let source = match &ends.take {
+            Take::Listen { port, from } => match from {
+                In::Http => json!({"type": "http_server", "address": address(port), "auth": basic,
                        "framing": {"method": "newline_delimited"}, "decoding": {"codec": codec}}),
-                json!({"type": "http", "uri": sink, "encoding": {"codec": encoding},
-                       "framing": {"method": "newline_delimited"},
-                       "batch": {"max_bytes": 10_000_000, "timeout_secs": 0.2}}),
-            ),
-            Ends::Kafka {
-                brokers,
-                from,
-                to,
-                group,
-            } => (
-                json!({"type": "kafka", "bootstrap_servers": brokers, "group_id": group, "topics": [from],
-                       "auto_offset_reset": "earliest", "decoding": {"codec": codec}}),
-                json!({"type": "kafka", "bootstrap_servers": brokers, "topic": to, "encoding": {"codec": encoding},
-                       "acknowledgements": {"enabled": true}}),
-            ),
+                // Acknowledgements are off, so the collector answers on receipt, as smeltr's does.
+                In::Hec => json!({"type": "splunk_hec", "address": address(port), "valid_tokens": [RECEIVER_TOKEN]}),
+                // Its gRPC listener is required, and idle.
+                In::Otlp => json!({"type": "opentelemetry", "http": {"address": address(port)},
+                       "grpc": {"address": address(&free_port())}}),
+                In::Prometheus => json!({"type": "prometheus_remote_write", "address": address(port), "auth": basic}),
+                // Its socket source, since smeltr's syslog receiver takes each message whole, as the socket source
+                // does, and its syslog source would parse them.
+                In::Syslog => json!({"type": "socket", "mode": "tcp", "address": address(port),
+                       "framing": {"method": "newline_delimited"}, "decoding": {"codec": "bytes"}}),
+                In::Kafka => unreachable!("Kafka is pulled"),
+            },
+            Take::Kafka { brokers, topic, group } => {
+                json!({"type": "kafka", "bootstrap_servers": brokers, "group_id": group, "topics": [topic],
+                       "auto_offset_reset": "earliest", "decoding": {"codec": codec}})
+            }
+        };
+        let sink = match &ends.give {
+            Give::Http { sink } => json!({"type": "http", "uri": sink, "encoding": {"codec": encoding},
+                   "framing": {"method": "newline_delimited"},
+                   "batch": {"max_bytes": 10_000_000, "timeout_secs": 0.2}}),
+            Give::Kafka { brokers, topic } => {
+                json!({"type": "kafka", "bootstrap_servers": brokers, "topic": topic, "encoding": {"codec": encoding},
+                       "acknowledgements": {"enabled": true}})
+            }
         };
         let mut config = json!({
             "data_dir": "/tmp",
@@ -816,13 +1017,95 @@ mod vector {
                     json!({"pipeline": {"type": "remap", "inputs": ["in"], "drop_on_abort": true, "source": vrl}});
                 json!(["pipeline"])
             }
+            // The OpenTelemetry source puts its logs, metrics and traces each on an output of its own.
+            None if ends.from() == In::Otlp => json!(["in.logs"]),
             None => json!(["in"]),
         };
         config
     }
 }
 
-/// The documents `engine` makes of the first `CHECK_ROWS` records of the corpus, sent between `ends`.
+impl Ends {
+    /// `transport`'s ends for `run`: what it takes from `topic` when it takes from Kafka, and what it gives to `sink`
+    /// or to a topic of its own, which this makes.
+    fn new(transport: Transport, run: &str, sink: &Sink, broker: Option<&Broker>, topic: &str) -> Ends {
+        let take = match transport.from {
+            In::Http | In::Hec | In::Otlp | In::Prometheus | In::Syslog => Take::Listen {
+                port: free_port(),
+                from: transport.from,
+            },
+            In::Kafka => Take::Kafka {
+                brokers: broker.expect("a broker").brokers.clone(),
+                topic: topic.into(),
+                group: run.into(),
+            },
+        };
+        let give = match transport.to {
+            Out::Http => Give::Http {
+                sink: format!("http://127.0.0.1:{}/", sink.port),
+            },
+            Out::Kafka => {
+                let broker = broker.expect("a broker");
+                broker.create(&format!("{run}-out"));
+                Give::Kafka {
+                    brokers: broker.brokers.clone(),
+                    topic: format!("{run}-out"),
+                }
+            }
+        };
+        Ends { take, give }
+    }
+}
+
+/// What an engine delivered where `give` says, counted and read as the harness's other end counts and reads it.
+struct Delivered<'a> {
+    give: &'a Give,
+    sink: &'a Sink,
+    broker: Option<&'a Broker>,
+    consumer: Option<rdkafka::consumer::BaseConsumer>,
+}
+
+impl<'a> Delivered<'a> {
+    fn new(give: &'a Give, sink: &'a Sink, broker: Option<&'a Broker>) -> Delivered<'a> {
+        let consumer = matches!(give, Give::Kafka { .. }).then(|| broker.expect("a broker").consumer());
+        Delivered {
+            give,
+            sink,
+            broker,
+            consumer,
+        }
+    }
+
+    fn count(&self) -> u64 {
+        match self.give {
+            Give::Http { .. } => self.sink.rows(),
+            Give::Kafka { topic, .. } => self.broker.unwrap().count(self.consumer.as_ref().unwrap(), topic),
+        }
+    }
+
+    /// Every document delivered, from a sink that keeps them.
+    fn read(&self) -> Vec<Value> {
+        match self.give {
+            Give::Http { .. } => self.sink.kept.as_ref().unwrap().lock().unwrap().drain(..).collect(),
+            Give::Kafka { topic, .. } => self.broker.unwrap().read(topic, self.count()),
+        }
+    }
+
+    /// Whether it is slow to count, so the harness counts it less often.
+    fn remote(&self) -> bool {
+        !matches!(self.give, Give::Http { .. })
+    }
+}
+
+impl Drop for Delivered<'_> {
+    fn drop(&mut self) {
+        if let Give::Kafka { topic, .. } = self.give {
+            self.broker.unwrap().delete(topic);
+        }
+    }
+}
+
+/// The documents `engine` makes of the first `CHECK_ROWS` records of the corpus, sent over `transport`.
 fn made(
     engine: Engine,
     w: &Workload,
@@ -832,85 +1115,64 @@ fn made(
     broker: Option<&Broker>,
 ) -> Vec<Value> {
     let want = (0..CHECK_ROWS).filter(|&i| (w.expect)(&line(i)).is_some()).count() as u64;
-    match transport {
-        Transport::Http => {
-            let sink = Sink::keeping();
-            let ends = Ends::Http {
-                port: free_port(),
-                sink: format!("http://127.0.0.1:{}/", sink.port),
-            };
-            let running = start(engine, w, run, cpus, &ends);
-            let (url, push) = running.push.as_ref().unwrap();
-            let _sender = Sender::start(url, push, &bodies(push), SENDERS, 0, CHECK_ROWS);
-            let mut polls = 0;
-            wait_for(
-                &format!("{run} check"),
-                want,
-                || sink.rows(),
-                || {
-                    polls += 1;
-                    if polls % 200 == 0 {
-                        running.container.check(run);
-                    }
-                },
-            );
-            // Late extras would show here.
-            std::thread::sleep(Duration::from_secs(1));
-            sink.kept.as_ref().unwrap().lock().unwrap().drain(..).collect()
-        }
-        Transport::Kafka => {
-            let broker = broker.expect("a broker");
-            let to = format!("{run}-out");
-            broker.create(&to);
-            let ends = Ends::Kafka {
-                brokers: broker.brokers.clone(),
-                from: CHECK_TOPIC.into(),
-                to: to.clone(),
-                group: run.into(),
-            };
-            let running = start(engine, w, run, cpus, &ends);
-            let consumer = broker.consumer();
-            let mut polls = 0;
-            wait_for(
-                &format!("{run} check"),
-                want,
-                || broker.count(&consumer, &to),
-                || {
-                    polls += 1;
-                    if polls % 20 == 0 {
-                        running.container.check(run);
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                },
-            );
-            std::thread::sleep(Duration::from_secs(1));
-            let docs = broker.read(&to, broker.count(&consumer, &to));
-            broker.delete(&to);
-            docs
-        }
+    let sink = Sink::keeping();
+    let ends = Ends::new(transport, run, &sink, broker, CHECK_TOPIC);
+    let delivered = Delivered::new(&ends.give, &sink, broker);
+    let running = start(engine, w, run, cpus, &ends);
+    let _sender = running
+        .push
+        .as_ref()
+        .map(|(url, push)| Sender::start(url, push, &bodies(push), SENDERS, 0, CHECK_ROWS));
+    if let Take::Listen { port, from: In::Syslog } = ends.take {
+        stream_syslog(port, 0, CHECK_ROWS);
     }
+    let mut polls = 0;
+    wait_for(
+        &format!("{run} check"),
+        want,
+        || delivered.count(),
+        || {
+            polls += 1;
+            if polls % 200 == 0 {
+                running.container.check(run);
+            }
+            if delivered.remote() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        },
+    );
+    // Late extras would show here.
+    std::thread::sleep(Duration::from_secs(1));
+    delivered.read()
 }
 
 /// The topic every Kafka check reads, seeded with the first `CHECK_ROWS` records.
 const CHECK_TOPIC: &str = "engine-speed-check";
 
-/// The topic every timed Kafka row reads, seeded with `KAFKA_SEED` times the rows a row times.
+/// The topic every timed Kafka row reads, seeded with `FINITE` times the rows a row times.
 const INPUT_TOPIC: &str = "engine-speed-input";
 
-/// How many rows' worth of records the input topic holds: enough for the warm-up and the timed rows of the fastest
-/// engine.
-const KAFKA_SEED: u64 = 3;
+/// How many rows' worth of records a finite input holds, the input topic or a stream of syslog lines: enough for the
+/// warm-up and the timed rows of the fastest engine.
+const FINITE: u64 = 3;
 
 /// Panics unless the documents `engine` makes of the first `CHECK_ROWS` records are those `workload` must make, no
 /// more and no fewer, in any order.
 fn check(engine: Engine, w: &Workload, run: &str, cpus: &[usize], transport: Transport, broker: Option<&Broker>) {
+    let from = transport.from;
     let mut want: Vec<String> = (0..CHECK_ROWS)
-        .filter_map(|i| (w.expect)(&line(i)))
+        .filter_map(|i| {
+            if w.forwards {
+                Some(from.sent(i))
+            } else {
+                (w.expect)(&line(i))
+            }
+        })
         .map(|d| canonical(&d))
         .collect();
     let mut got: Vec<String> = made(engine, w, run, cpus, transport, broker)
         .into_iter()
-        .map(|d| canonical(&(w.normal)(d)))
+        .map(|d| canonical(&from.normal((w.normal)(d))))
         .collect();
     want.sort_unstable();
     got.sort_unstable();
@@ -958,28 +1220,12 @@ fn time(
     let kept_of = |from: u64, n: u64| (from..from + n).filter(|&i| (w.expect)(&line(i)).is_some()).count() as u64;
     let keeps = |n: u64| kept_of(0, n) as f64 / n as f64;
     let sink = Sink::start();
-    let consumer = broker.map(Broker::consumer);
-    let (ends, kept, most) = match transport {
-        Transport::Http => (
-            Ends::Http {
-                port: free_port(),
-                sink: format!("http://127.0.0.1:{}/", sink.port),
-            },
-            keeps(64 * PER_REQUEST),
-            u64::MAX,
-        ),
-        Transport::Kafka => {
-            let broker = broker.expect("a broker");
-            broker.create(&format!("{run}-out"));
-            let ends = Ends::Kafka {
-                brokers: broker.brokers.clone(),
-                from: INPUT_TOPIC.into(),
-                to: format!("{run}-out"),
-                group: run.into(),
-            };
-            let kept = keeps(KAFKA_SEED * rows);
-            (ends, kept, kept_of(0, KAFKA_SEED * rows))
-        }
+    let ends = Ends::new(transport, run, &sink, broker, INPUT_TOPIC);
+    let delivered = Delivered::new(&ends.give, &sink, broker);
+    // A stream of lines, like a topic, is as long as a topic is seeded.
+    let (kept, most) = match ends.take {
+        Take::Listen { from: In::Syslog, .. } | Take::Kafka { .. } => (keeps(FINITE * rows), kept_of(0, FINITE * rows)),
+        Take::Listen { .. } => (keeps(64 * PER_REQUEST), u64::MAX),
     };
     let running = start(engine, w, run, cpus, &ends);
     let sender = running.push.as_ref().map(|(url, push)| {
@@ -992,10 +1238,10 @@ fn time(
             u64::MAX / 2,
         )
     });
-    let count = || match (&ends, broker, &consumer) {
-        (Ends::Kafka { to, .. }, Some(b), Some(c)) => b.count(c, to),
-        _ => sink.rows(),
-    };
+    if let Take::Listen { port, from: In::Syslog } = ends.take {
+        stream_syslog(port, 0, FINITE * rows);
+    }
+    let count = || delivered.count();
     let began = Instant::now();
     let mut polls = 0;
     let mut each = || {
@@ -1006,7 +1252,7 @@ fn time(
                 b.container.check("the broker");
             }
         }
-        if transport == Transport::Kafka {
+        if delivered.remote() {
             std::thread::sleep(Duration::from_millis(50));
         }
     };
@@ -1059,9 +1305,6 @@ fn time(
     wait_for(&format!("{run} delivering the rest"), want, count, &mut each);
     std::thread::sleep(Duration::from_secs(2));
     assert_eq!(count(), want, "{run}: records delivered, against records taken");
-    if let Ends::Kafka { to, .. } = &ends {
-        broker.unwrap().delete(to);
-    }
     timed
 }
 
@@ -1100,8 +1343,9 @@ fn speed() {
     };
     let engines: Vec<Engine> = ENGINES.into_iter().filter(|e| only("ENGINES", e.label())).collect();
     let transports: Vec<Transport> = TRANSPORTS
-        .into_iter()
-        .filter(|t| only("ENGINE_TRANSPORTS", t.label()))
+        .iter()
+        .copied()
+        .filter(|t| only("ENGINE_TRANSPORTS", &t.label()))
         .collect();
     let cases: Vec<Case> = WORKLOADS
         .iter()
@@ -1122,19 +1366,19 @@ fn speed() {
     }
     let rounds = env_or("ENGINE_ROUNDS", 3usize);
     let id = std::process::id();
-    let broker = transports.contains(&Transport::Kafka).then(|| {
+    let broker = transports.iter().any(|t| t.kafka()).then(|| {
         let broker = Broker::start(&format!("es-broker-{id}"), &rest);
         broker.create(CHECK_TOPIC);
         broker.seed(CHECK_TOPIC, CHECK_ROWS);
         broker.create(INPUT_TOPIC);
-        broker.seed(INPUT_TOPIC, KAFKA_SEED * rows());
+        broker.seed(INPUT_TOPIC, FINITE * rows());
         broker
     });
 
     // Checked once each, on the fewest cores: an engine that makes other documents is not timed.
     let mut refused: Vec<(Case, Engine, String)> = Vec::new();
     for &(w, t) in &cases {
-        for &e in engines.iter().filter(|e| e.runs(w)) {
+        for &e in engines.iter().filter(|e| e.runs(w, t)) {
             let run = format!("es-check-{}-{}-{}-{id}", w.name, t.label(), e.label());
             let fewest = *counts.iter().min().unwrap();
             if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1161,7 +1405,7 @@ fn speed() {
         }
         for &(w, t) in &cases {
             for &n in &cores {
-                for &e in order.iter().filter(|e| e.runs(w)) {
+                for &e in order.iter().filter(|e| e.runs(w, t)) {
                     if refused.iter().any(|r| same(r.0, (w, t)) && r.1 == e) {
                         continue;
                     }
@@ -1245,9 +1489,10 @@ fn table(
                 ok.sort_by(|a, b| a.rows_per_sec.total_cmp(&b.rows_per_sec));
                 let median = ok[ok.len() / 2];
                 let spread = (ok[ok.len() - 1].rows_per_sec - ok[0].rows_per_sec) / median.rows_per_sec;
-                let broker = match t {
-                    Transport::Http => String::new(),
-                    Transport::Kafka => format!("{:.2}", median.broker),
+                let broker = if t.kafka() {
+                    format!("{:.2}", median.broker)
+                } else {
+                    String::new()
                 };
                 out.push_str(&format!(
                     "{head} {:.0} | {:.0}% | {:.0} | {:.2} | {:.0} MB | {broker} | {:.0}% |\n",
@@ -1447,8 +1692,8 @@ mod nifi {
             Some(json!({"revision": config["revision"], "component": {"maxTimerDrivenThreadCount": 4 * cores}})),
         );
         // A flowfile holds many records, a line each, as a request body does.
-        let (consume, produce) = match ends {
-            Ends::Http { port, sink } => (
+        let (consume, produce) = match (&ends.take, &ends.give) {
+            (Take::Listen { port, from: In::Http }, Give::Http { sink }) => (
                 api.processor(
                     "org.apache.nifi.processors.standard.ListenHTTP",
                     json!({"Listening Port": port.to_string(), "Base Path": "in"}),
@@ -1464,12 +1709,14 @@ mod nifi {
                     8 * cores,
                 ),
             ),
-            Ends::Kafka {
-                brokers,
-                from,
-                to,
-                group,
-            } => {
+            (
+                Take::Kafka {
+                    brokers,
+                    topic: from,
+                    group,
+                },
+                Give::Kafka { topic: to, .. },
+            ) => {
                 let kafka = api.service(
                     "org.apache.nifi.kafka.service.Kafka3ConnectionService",
                     json!({"bootstrap.servers": brokers, "security.protocol": "PLAINTEXT"}),
@@ -1493,11 +1740,12 @@ mod nifi {
                     ),
                 )
             }
+            _ => panic!("NiFi runs HTTP and Kafka alone"),
         };
         // What the producer could not deliver it tries again, as the other engines retry, rather than lose it.
-        let failed: &[&str] = match ends {
-            Ends::Http { .. } => &["Retry", "No Retry", "Failure"],
-            Ends::Kafka { .. } => &["failure"],
+        let failed: &[&str] = match ends.give {
+            Give::Http { .. } => &["Retry", "No Retry", "Failure"],
+            Give::Kafka { .. } => &["failure"],
         };
         api.connect(&produce, &produce, failed);
         match Engine::Nifi.pipeline(w, "groovy") {

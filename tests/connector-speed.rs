@@ -1293,7 +1293,11 @@ impl Sink {
                         r.fetch_add(docs.len() as u64, Ordering::Relaxed);
                         b.fetch_add(body.len() as u64, Ordering::Relaxed);
                         if let Some(k) = k {
-                            let parsed = docs.iter().map(|d| serde_json::from_slice(d).unwrap_or(Value::Null));
+                            // A line that is not JSON is kept as its text.
+                            let parsed = docs.iter().map(|d| {
+                                serde_json::from_slice(d)
+                                    .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(d).into_owned()))
+                            });
                             k.lock().unwrap().extend(parsed);
                         }
                         axum::http::StatusCode::OK
@@ -1513,18 +1517,22 @@ fn stream_syslog(port: u16, from: u64, to: u64) {
                     return;
                 }
                 for i in at..(at + PER_REQUEST).min(to) {
-                    let line = format!(
-                        "<134>1 2026-10-01T00:00:00.000Z host-{} app - - - {}\n",
-                        i % 1000,
-                        line(i)
-                    );
-                    if socket.write_all(line.as_bytes()).is_err() {
+                    if socket.write_all((syslog_line(i) + "\n").as_bytes()).is_err() {
                         return;
                     }
                 }
             }
         });
     }
+}
+
+/// Record `i` of the corpus as a syslog message (RFC 5424) carries it.
+fn syslog_line(i: u64) -> String {
+    format!(
+        "<134>1 2026-10-01T00:00:00.000Z host-{} app - - - {}",
+        i % 1000,
+        line(i)
+    )
 }
 
 /// The test's own name for a skip message.
@@ -2135,11 +2143,21 @@ mod receivers {
         json!({"id": "in", "type": "hecReceiver", "port": port, "tokens": {"bench": {"token": "SM_RECEIVER_TOKEN"}}})
     }
 
+    /// The event endpoint, as Splunk's logging libraries and forwarders post to it: an envelope for each record, its
+    /// event the record's line.
     pub const HEC: Push = Push {
-        path: "/services/collector/raw",
+        path: "/services/collector/event",
         authorization: "Splunk {}",
         headers: &[],
-        body: lines,
+        body: |first, count| {
+            (first..first + count)
+                .flat_map(|i| {
+                    json!({"event": line(i), "time": 1_790_000_000 + i / 1000})
+                        .to_string()
+                        .into_bytes()
+                })
+                .collect()
+        },
     };
 
     pub fn elastic(port: u16) -> Value {
@@ -2161,20 +2179,29 @@ mod receivers {
         json!({"id": "in", "type": "otlpReceiver", "port": port, "tokens": tokens()})
     }
 
+    /// Protobuf, as an OpenTelemetry exporter sends by default: an `ExportLogsServiceRequest` of one resource and
+    /// one scope, each record's body its line. Its field 1 is the resource's logs, whose field 2 is the scope's, whose
+    /// field 2 is a record: its time field 1, its body field 5, a string value's field 1.
     pub const OTLP: Push = Push {
         path: "/v1/logs",
         authorization: "Bearer {}",
-        headers: &[("content-type", "application/json")],
+        headers: &[("content-type", "application/x-protobuf")],
         body: |first, count| {
-            let records: Vec<Value> = (first..first + count)
-                .map(|i| {
-                    json!({"timeUnixNano": (1_790_000_000_000 + i).to_string() + "000000",
-                                "body": {"stringValue": line(i)}})
-                })
-                .collect();
-            json!({"resourceLogs": [{"resource": {}, "scopeLogs": [{"scope": {}, "logRecords": records}]}]})
-                .to_string()
-                .into_bytes()
+            let mut scope = Vec::new();
+            for i in first..first + count {
+                let mut record = Vec::new();
+                varint(&mut record, 1 << 3 | 1);
+                record.extend_from_slice(&((1_790_000_000_000 + i) * 1_000_000).to_le_bytes());
+                let mut body = Vec::new();
+                field(&mut body, 1, line(i).as_bytes());
+                field(&mut record, 5, &body);
+                field(&mut scope, 2, &record);
+            }
+            let mut resource = Vec::new();
+            field(&mut resource, 2, &scope);
+            let mut request = Vec::new();
+            field(&mut request, 1, &resource);
+            request
         },
     };
 
@@ -2199,21 +2226,24 @@ mod receivers {
             .collect()
     }
 
+    fn varint(out: &mut Vec<u8>, mut v: u64) {
+        while v >= 0x80 {
+            out.push(v as u8 | 0x80);
+            v >>= 7;
+        }
+        out.push(v as u8);
+    }
+
+    /// A protobuf field of length-delimited `bytes`.
+    fn field(out: &mut Vec<u8>, number: u64, bytes: &[u8]) {
+        varint(out, number << 3 | 2);
+        varint(out, bytes.len() as u64);
+        out.extend_from_slice(bytes);
+    }
+
     /// A remote write 1.0 `WriteRequest` of `count` series, a sample each, snappy-compressed. Its protobuf written
     /// out by hand: field 1 of a request is a series, whose field 1 is a label and field 2 a sample.
     fn remote_write(first: u64, count: u64) -> Vec<u8> {
-        fn varint(out: &mut Vec<u8>, mut v: u64) {
-            while v >= 0x80 {
-                out.push(v as u8 | 0x80);
-                v >>= 7;
-            }
-            out.push(v as u8);
-        }
-        fn field(out: &mut Vec<u8>, number: u64, bytes: &[u8]) {
-            varint(out, number << 3 | 2);
-            varint(out, bytes.len() as u64);
-            out.extend_from_slice(bytes);
-        }
         fn label(name: &str, value: &str) -> Vec<u8> {
             let mut l = Vec::new();
             field(&mut l, 1, name.as_bytes());
