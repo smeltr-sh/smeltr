@@ -93,7 +93,14 @@
   });
 
   let group = $state('');
-  $effect(() => groupToAsk((g) => (group = g), area));
+  $effect(() => {
+    // A lookup for an area since left must not land after the one picked now.
+    let current = true;
+    groupToAsk((g) => {
+      if (current) group = g;
+    }, area);
+    return () => (current = false);
+  });
 
   let runError = $state('');
   const run = new CaptureSession((e) => (runError = e));
