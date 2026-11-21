@@ -546,9 +546,25 @@ cases! {
     a_guarded_root_write_keeps_the_records_key_on_rows_it_skips: "f: bool; Object.assign($, json(_raw)) if (f) $ = {b: 1};",
         [r#"{"f": false, "b": 2}"#, r#"{"f": true, "b": 2}"#], Rows(&[(r#"{"f": false, "b": 2}"#, None), (r#"{"b": 1}"#, None)]);
     a_guarded_root_write_under_a_value_is_refused: "a = \"x\"; f: bool; Object.assign($, json(_raw)) if (f) $ = {a: {b: 1}};",
-        [r#"{}"#], Error(&["`a` is a value here"]);
+        [r#"{}"#], Error(&["writes `a` as {b: i64}, and `a` is str"]);
     a_root_parse_in_a_try_is_refused: "a = 1; try { $ = json(_raw); } catch { }",
         [r#"{}"#], Error(&["skip this `if`, loop or `try`"]);
+    a_root_write_keeps_each_fields_type: r#"a: i64 = 1; $ = {a: "x"};"#,
+        ["{}"], Error(&["to change the type of `a`, write `a: str = …` before it"]);
+    a_root_write_converts_to_a_fields_type: "a: f64 = 1.5; $ = {a: 2}; b = a / 4;",
+        ["{}"], Rows(&[(r#"{"a": 2.0, "b": 0.5}"#, None)]);
+    a_typed_write_before_a_root_write_changes_the_type: r#"a: i64 = 1; a: str = null; $ = {a: "x"};"#,
+        ["{}"], Rows(&[(r#"{"a": "x"}"#, None)]);
+    a_root_write_that_makes_a_value_an_object_is_refused: "a = 1; $ = {a: {b: 1}};",
+        ["{}"], Error(&["writes `a` as {b: i64}, and `a` is i64"]);
+    a_root_write_takes_a_key_the_record_lacks_at_its_type: r#"a = 1; $ = {b: "x"};"#,
+        ["{}"], Rows(&[(r#"{"b": "x"}"#, None)]);
+    a_typed_write_before_a_root_write_makes_a_value_an_object: "a = 1; a: {b: i64} = null; $ = {a: {b: 1}};",
+        ["{}"], Rows(&[(r#"{"a": {"b": 1}}"#, None)]);
+    a_merge_into_the_record_converts_to_each_fields_type: "a = 1; let o = json(_raw); Object.assign($, o);",
+        [r#"{"a": "2"}"#], Rows(&[(r#"{"a": 2}"#, None)]);
+    a_root_write_of_a_variant_to_a_typed_field_is_refused: "a = 1; let o = json(_raw); $ = {a: o.a};",
+        [r#"{"a": 2}"#], Error(&["write it `… as i64`"]);
     undeclared_is_a_value: "a: i64; Object.assign($, kv(_raw)) b = $.undeclared().b;",
         ["a=1 b=2"], Rows(&[(r#"{"a": 1, "b": "2"}"#, None)]);
     switch_is_an_if_chain: r#"Object.assign($, json(_raw)) c: str = $.c; switch (c) { case "a": x = 1; break; case "b": x = 2; break; default: x = 0; }"#,

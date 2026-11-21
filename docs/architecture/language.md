@@ -454,7 +454,9 @@ switch (c) { case "a": x = 1; break; default: x = 0; }
   local hides among them; the locals stay. It is refused inside an `if`, a
   loop and a `try`.
 - `$ = e` replaces the record's fields and unclaimed fields; the engine's
-  `__` fields and the locals stay, and `_raw` goes unless `e` carries it.
+  `__` fields and the locals stay, and `_raw` goes unless `e` carries it. A
+  field the record holds keeps its type, as any name does; `Object.assign($, e)`
+  converts a key `e` may hold to that type on each row.
   Inside an `if`, a loop or a `try` it does so on the rows it runs on, and, as
   with `Object.assign($, a)`, an `e` that may hold keys nothing names is a
   compile error there.

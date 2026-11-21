@@ -2010,7 +2010,7 @@ impl Compiler<'_> {
             return self.object_assign(target, &args[1..], declares, typed, here);
         }
         if target == tree::ROOT {
-            return self.assign_root(value, here);
+            return self.assign_root(value, false, here);
         }
         // `move`'s write replaces what `to` held, whatever its type, as a Rename does.
         if let ExprKind::Field(from) = &value.kind
@@ -2296,7 +2296,10 @@ impl Compiler<'_> {
                             },
                         );
                     }
-                    self.assign(target, &spread, declares, typed, here);
+                    match root {
+                        true => self.assign_root(&spread, true, here),
+                        false => self.assign(target, &spread, declares, typed, here),
+                    }
                 }
             }
         }
@@ -2371,7 +2374,7 @@ impl Compiler<'_> {
     /// `$ = value`: `value` replaces the record. The engine's own `__` fields and the locals stay. Under a guard or in a
     /// loop it replaces the record on the rows it runs on, as any write does, and so it takes only a value whose keys
     /// are all known (`assign_keys`).
-    fn assign_root(&mut self, value: &Expr, here: Here) {
+    fn assign_root(&mut self, value: &Expr, merge: bool, here: Here) {
         let Here { guard, id } = here;
         let blended = guard.is_some() || self.in_loop();
         // `$ = f(text)`: the text is read, the record goes, and the parse writes a new one.
@@ -2429,6 +2432,9 @@ impl Compiler<'_> {
             .into_iter()
             .filter(|(p, _)| !tree::is_internal(tree::head(p.name())))
             .collect();
+        let Some(writes) = self.keep_record_types(writes, value, merge, id) else {
+            return;
+        };
         // In a construct's typing pass, a field the record first takes here is noted, as any first write is, so the
         // construct declares it ahead, from the record's key, and a row that skips the write keeps the value it had.
         if matches!(self.pass, Pass::Typing(_)) && blended {
@@ -2442,6 +2448,91 @@ impl Compiler<'_> {
             }
         }
         self.bind_writes("", writes, false, here);
+    }
+
+    /// Returns the `writes` of `$ = e` with each place the record holds kept at its type, as any name keeps its type
+    /// (language.md): a leaf it holds is converted to that type, and a write that would make a leaf an object, or an
+    /// object a leaf, is a compile error naming the typed assignment that changes the type. A key the record does not
+    /// hold takes the write's type. A merge, `Object.assign($, e)`, converts a key `e` may hold to the type the record
+    /// holds it at, on each row, as `Object.assign(o, e)` does. `None` means an error was recorded.
+    fn keep_record_types(
+        &mut self,
+        writes: Vec<(Place, Resolved)>,
+        value: &Expr,
+        merge: bool,
+        id: FunctionId,
+    ) -> Option<Vec<(Place, Resolved)>> {
+        // The leaf at `place`, or else the nearest leaf above it, with the leaf's type.
+        let held = |c: &Self, place: &Place| -> Option<(String, DataType)> {
+            match (c.syms.node(place.name()), c.syms.leaf_above(place.name())) {
+                (Some(Node::Leaf(s)), _) if matches!(place, Place::Leaf(_)) => {
+                    Some((place.name().to_string(), c.syms.type_of(*s).clone()))
+                }
+                (_, Some((above, s))) => Some((above.to_string(), c.syms.type_of(s).clone())),
+                _ => None,
+            }
+        };
+        // A place that is now an object, or that lies under a value, is where the type changes.
+        let changed = writes
+            .iter()
+            .find_map(|(place, _)| match (place, self.syms.node(place.name())) {
+                (Place::Leaf(n), Some(node @ Node::Object(_))) => Some((n.clone(), node_type(&self.syms, node))),
+                _ => held(self, place).filter(|(at, to)| at != place.name() && *to != DataType::Null),
+            });
+        if let Some((name, to)) = changed {
+            // The type the value gives `name`: the type at that path in the value's type.
+            let from = resolve(value, &mut self.syms, &mut self.res).map(|ir| ir.ty).ok();
+            let from = from.and_then(|from| {
+                tree::segments(&name).try_fold(from, |ty, key| match ty {
+                    DataType::Struct(fields, _) => fields.into_iter().find(|(k, _)| *k == key).map(|(_, t)| t),
+                    _ => None,
+                })
+            });
+            self.retyped(&name, &from.unwrap_or(DataType::Struct(vec![], true)), &to, id);
+            return None;
+        }
+        let mut out = Vec::with_capacity(writes.len());
+        for (place, r) in writes {
+            let to = match held(self, &place) {
+                Some((_, to)) if to != DataType::Null => to,
+                _ => {
+                    out.push((place, r));
+                    continue;
+                }
+            };
+            let from = self.resolved_ty(&r);
+            if from == to {
+                out.push((place, r));
+                continue;
+            }
+            match coerce_ir(self.resolved_ir(r), &to, Span::default()) {
+                Ok(ir) if keeps(&from, &to) || merge && from == DataType::Variant => {
+                    out.push((place, Resolved::Ir(ir)))
+                }
+                _ => {
+                    self.retyped(place.name(), &from, &to, id);
+                    return None;
+                }
+            }
+        }
+        Some(out)
+    }
+
+    /// Records that `$ = …` would change the type of `name` from `held` to `written`.
+    fn retyped(&mut self, name: &str, written: &DataType, held: &DataType, id: FunctionId) {
+        // A variant has no type of its own to change the name to: `as` is its one fix.
+        let fix = match written {
+            DataType::Variant => format!("to convert the value, write it `… as {}`", held.spell()),
+            w => format!(
+                "to change the type of `{name}`, write `{name}: {} = …` before it",
+                w.spell()
+            ),
+        };
+        let (from, to) = (written.spell(), held.spell());
+        self.err(
+            Some(id),
+            format!("`$ = …` writes `{name}` as {from}, and `{name}` is {to}; {fix}"),
+        );
     }
 
     /// Whether `name` is bound outside the construct being compiled: a bound name is, unless it is a local the block
