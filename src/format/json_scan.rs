@@ -828,6 +828,15 @@ impl<'d> Reader<'d> {
         Ok(())
     }
 
+    /// The string the reader is at, read past it. `None`, with nothing read, where it is at another value.
+    pub fn string(&mut self) -> Result<Option<Cow<'d, str>>, Malformed> {
+        self.s.skip_ws();
+        if self.s.peek() != Some(b'"') {
+            return Ok(None);
+        }
+        scan_string(&mut self.s).map(Some).map_err(|()| Malformed)
+    }
+
     /// The value the reader is at, skipped, as the bytes the document writes it in.
     pub fn raw(&mut self) -> Result<&'d [u8], Malformed> {
         self.s.skip_ws();

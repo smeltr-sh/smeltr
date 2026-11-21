@@ -58,15 +58,9 @@ impl Invalid {
     }
 }
 
-/// The envelopes of an event endpoint's body, cut one at a time as they are taken.
+/// The records of an event endpoint's body, each with what it is filed under, cut when the body was read.
 #[derive(Debug)]
-pub struct Events {
-    body: String,
-    /// Where the next envelope starts.
-    at: usize,
-    /// The number of the next envelope.
-    n: usize,
-}
+pub struct Events(std::vec::IntoIter<(Vec<u8>, Filed)>);
 
 impl Events {
     /// `body`'s envelopes, or why HEC refuses it. Every envelope is read here, so none of a refused body is taken.
@@ -77,34 +71,29 @@ impl Events {
             Err(e) => {
                 let valid = e.utf8_error().valid_up_to();
                 let text = std::str::from_utf8(&e.as_bytes()[..valid]).expect("UTF-8 up to here");
-                return Err(Invalid::format(read_all(text)?));
+                return Err(Invalid::format(read_all(text)?.len()));
             }
         };
         match read_all(&body)? {
-            0 => Err(Invalid::NO_DATA),
-            _ => Ok(Events { body, at: 0, n: 0 }),
+            records if records.is_empty() => Err(Invalid::NO_DATA),
+            records => Ok(Events(records.into_iter())),
         }
     }
 
     /// The next envelope's record and what it is filed under.
     pub fn next_record(&mut self) -> Option<(Vec<u8>, Filed)> {
-        let mut r = Reader::of_str(&self.body[self.at..]);
-        let next = cut(&mut r, self.n)?;
-        self.at += r.at();
-        self.n += 1;
-        Some(next.expect("every envelope was read when the request was"))
+        self.0.next()
     }
 }
 
-/// How many envelopes `text` holds, each read, or why HEC refuses the first it cannot take.
-fn read_all(text: &str) -> Result<usize, Invalid> {
+/// The records of the envelopes `text` holds, or why HEC refuses the first it cannot take.
+fn read_all(text: &str) -> Result<Vec<(Vec<u8>, Filed)>, Invalid> {
     let mut r = Reader::of_str(text);
-    let mut n = 0;
-    while let Some(envelope) = cut(&mut r, n) {
-        envelope?;
-        n += 1;
+    let mut records = Vec::new();
+    while let Some(envelope) = cut(&mut r, records.len()) {
+        records.push(envelope?);
     }
-    Ok(n)
+    Ok(records)
 }
 
 /// The envelope `r` is at, numbered `n`. `None` once only whitespace is left.
@@ -141,7 +130,12 @@ fn envelope(r: &mut Reader, n: usize) -> Result<(Vec<u8>, Filed), Invalid> {
         }
         seen |= 1 << member;
         match member {
-            0 => event = Some(raw(r).map_err(bad)?),
+            0 => {
+                event = Some(match r.string().map_err(bad)? {
+                    Some(text) => Event::Text(text),
+                    None => Event::Json(raw(r).map_err(bad)?),
+                })
+            }
             1 => time = Some(raw(r).map_err(bad)?),
             2 => {
                 let mut encoded = Vec::new();
@@ -151,12 +145,10 @@ fn envelope(r: &mut Reader, n: usize) -> Result<(Vec<u8>, Filed), Invalid> {
             i => named[i - 3] = Some(raw(r).map_err(bad)?),
         }
     }
-    let event = event
-        .filter(|e| *e != "null")
-        .ok_or_else(|| Invalid::at(12, "Event field is required", n))?;
-    let record = match Reader::of_str(event).value() {
-        Ok(Next::Str(text)) => text.into_owned().into_bytes(),
-        _ => event.as_bytes().to_vec(),
+    let record = match event {
+        Some(Event::Text(text)) => text.into_owned().into_bytes(),
+        Some(Event::Json(json)) if json != "null" => json.as_bytes().to_vec(),
+        _ => return Err(Invalid::at(12, "Event field is required", n)),
     };
     if record.is_empty() {
         return Err(Invalid::at(13, "Event field cannot be blank", n));
@@ -184,6 +176,12 @@ fn envelope(r: &mut Reader, n: usize) -> Result<(Vec<u8>, Filed), Invalid> {
         _ => {}
     }
     Ok((record, filed))
+}
+
+/// An envelope's `event`: a string's text, or anything else as the document writes it.
+enum Event<'d> {
+    Text(std::borrow::Cow<'d, str>),
+    Json(&'d str),
 }
 
 /// The value `r` is at, as the document writes it.
