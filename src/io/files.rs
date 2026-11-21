@@ -453,6 +453,8 @@ impl FileDestination {
                     seen: 0,
                     ended: None,
                     finishing: told,
+                    cpu: (Instant::now(), crate::resources::own_cpu_time()),
+                    core_free: false,
                 };
                 writer.next_commit += writer.shared.config.commit_interval;
                 writer.run(inbox, reports);
@@ -680,9 +682,6 @@ struct Lane {
     orders: Sender<Order>,
     /// Bytes of rows sent to the encoder and not yet written.
     queued: Arc<AtomicUsize>,
-    /// The encoder was on a core for at least nine tenths of its last `MEASURE_EVERY`. One that is behind but not
-    /// busy waits for a core or for its uploads, and another encoder would only share what it waits for.
-    busy: Arc<AtomicBool>,
     thread: JoinHandle<()>,
 }
 
@@ -707,6 +706,10 @@ struct Writer {
     ended: Option<u64>,
     /// See `FileDestination::finishing`.
     finishing: Arc<AtomicBool>,
+    /// This process's CPU time when last read, and when, and whether a core of the worker's thread limit was free
+    /// over the reading before.
+    cpu: (Instant, Option<Duration>),
+    core_free: bool,
     /// Each reset's error names its own file, so a reset is told by time: once, then on the interval until a commit
     /// lands.
     reset_said: crate::logs::Repeat,
@@ -806,7 +809,7 @@ impl Writer {
             (None, Some(i))
                 if queued(&self.encoders[i]) < BEHIND_BYTES
                     || self.encoders.len() >= self.shared.config.encoders.max(1)
-                    || self.encoders.iter().any(|lane| !lane.busy.load(Ordering::Relaxed)) =>
+                    || !self.core_free() =>
             {
                 i
             }
@@ -820,14 +823,30 @@ impl Writer {
         Ok(())
     }
 
+    /// Whether the worker left a core of its thread limit unused over the last `MEASURE_EVERY`. An encoder that is
+    /// behind while none is free waits for a core, and another would only share it.
+    fn core_free(&mut self) -> bool {
+        if self.cpu.0.elapsed() >= MEASURE_EVERY {
+            let now = (Instant::now(), crate::resources::own_cpu_time());
+            // A worker that cannot read its CPU time starts encoders as the queues alone say.
+            self.core_free = match (now.1, self.cpu.1) {
+                (Some(cpu), Some(was)) => {
+                    let used = cpu.saturating_sub(was).as_secs_f64() / (now.0 - self.cpu.0).as_secs_f64();
+                    used + 1.0 <= crate::startup_config::worker_thread_limit() as f64
+                }
+                _ => true,
+            };
+            self.cpu = now;
+        }
+        self.core_free
+    }
+
     fn start_encoder(&mut self) -> Result<usize, String> {
         let (orders, inbox) = channel();
         let queued = Arc::<AtomicUsize>::default();
-        let busy = Arc::<AtomicBool>::default();
         let mut encoder = Encoder {
             shared: self.shared.clone(),
             queued: queued.clone(),
-            busy: busy.clone(),
             open: HashMap::new(),
             closed: Vec::new(),
             broken: false,
@@ -837,13 +856,12 @@ impl Writer {
             .name(format!("{}-file-encoder", self.shared.name))
             .spawn(move || encoder.run(inbox))
             .map_err(|e| format!("starting an encoder: {e}"))?;
-        self.encoders.push(Lane {
-            orders,
-            queued,
-            busy,
-            thread,
-        });
+        self.encoders.push(Lane { orders, queued, thread });
         self.shared.started.fetch_add(1, Ordering::Relaxed);
+        // A reading from before this encoder started says nothing about the cores it leaves free: read again, and count
+        // no core free until `MEASURE_EVERY` has passed.
+        self.cpu = (Instant::now(), crate::resources::own_cpu_time());
+        self.core_free = false;
         Ok(self.encoders.len() - 1)
     }
 
@@ -1043,8 +1061,6 @@ struct Encoder {
     shared: Arc<Shared>,
     /// See `Lane::queued`.
     queued: Arc<AtomicUsize>,
-    /// See `Lane::busy`.
-    busy: Arc<AtomicBool>,
     open: HashMap<Partition, OpenFile>,
     closed: Vec<DataFile>,
     /// A write failed: the writes after it are skipped until the writer aborts this encoder.
@@ -1055,7 +1071,6 @@ struct Encoder {
 
 impl Encoder {
     fn run(&mut self, orders: Receiver<Order>) {
-        let mut since = (Instant::now(), crate::resources::thread_cpu_time());
         loop {
             // Woken at least every `MEASURE_EVERY`, so what lands while no rows come shows as it lands.
             let order = match orders.recv_timeout(MEASURE_EVERY) {
@@ -1099,16 +1114,6 @@ impl Encoder {
             self.shared
                 .open_bytes
                 .fetch_sub(std::mem::replace(&mut self.measured, open), Ordering::Relaxed);
-            if since.0.elapsed() >= MEASURE_EVERY {
-                let now = (Instant::now(), crate::resources::thread_cpu_time());
-                // A platform that cannot tell counts as busy, so encoders start as the queues alone say.
-                let busy = match (now.1, since.1) {
-                    (Some(cpu), Some(was)) => cpu.saturating_sub(was) * 10 >= (now.0 - since.0) * 9,
-                    _ => true,
-                };
-                self.busy.store(busy, Ordering::Relaxed);
-                since = now;
-            }
         }
         self.shared.open_bytes.fetch_sub(self.measured, Ordering::Relaxed);
     }
