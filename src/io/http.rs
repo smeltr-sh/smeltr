@@ -694,6 +694,16 @@ impl<P: Protocol, T: Transport> Destination for HttpDestination<P, T> {
             }
         }
         full.extend(groups.into_iter().filter(|g| !g.pending.is_empty()));
+        // A pool sends a part's requests one at a time and holds no more than it has senders, so every part's first
+        // request goes before any part's second, keeping each sender busy.
+        if order.is_some() {
+            let mut seen: HashMap<Option<usize>, usize> = HashMap::new();
+            let mut ranked: Vec<_> = (full.into_iter())
+                .map(|g| (*seen.entry(g.key).and_modify(|n| *n += 1).or_default(), g))
+                .collect();
+            ranked.sort_by_key(|(rank, _)| *rank);
+            full = ranked.into_iter().map(|(_, g)| g).collect();
+        }
         // A batch with nothing to send is done: no answer will come for it.
         let Some(pool) = self.pool.as_mut().filter(|_| !full.is_empty()) else {
             for group in &mut full {

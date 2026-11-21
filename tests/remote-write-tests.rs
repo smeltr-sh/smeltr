@@ -277,6 +277,64 @@ fn requests_sent_at_once_land_each_series_in_order() {
     assert_eq!(samples, 20 * 200);
 }
 
+/// Records each body as its request starts, and lands it after a wait.
+#[derive(Clone)]
+struct StartedTransport(Sent);
+
+impl Transport for StartedTransport {
+    fn post(&mut self, _path: &str, body: &[u8], _budget: Duration) -> Result<Response, IoError> {
+        self.0.lock().unwrap().push(body.to_vec());
+        std::thread::sleep(Duration::from_millis(5));
+        Ok(Response {
+            status: 204,
+            headers: Vec::new(),
+            body: Vec::new(),
+        })
+    }
+}
+
+/// A batch of many requests a shard starts one request of every shard first, so each sender has one to send.
+#[test]
+fn a_batch_starts_a_request_of_every_shard_first() {
+    let started: Sent = Arc::default();
+    let make = || StartedTransport(Arc::clone(&started));
+    let c = PrometheusDestinationConfig {
+        in_flight: 4,
+        max_request_bytes: 4096,
+        ..config("http://unused")
+    };
+    let mut d = HttpDestination::new(make(), RemoteWrite::new(&c))
+        .with_max_request_bytes(c.max_request_bytes)
+        .with_stall_after(Duration::from_secs(5))
+        .with_senders_from(make, c.in_flight, c.in_flight);
+    let rows = (0..2000)
+        .map(|i| {
+            sample(
+                "up",
+                &(i % 16).to_string(),
+                1.0,
+                &format!("2026-10-11T18:00:{:02}Z", i / 40),
+            )
+        })
+        .collect();
+    d.deliver(0, Cow::Owned(rows)).unwrap();
+    d.flush().unwrap();
+    let started = started.lock().unwrap();
+    assert!(started.len() > 2 * c.in_flight, "{} requests", started.len());
+    let jobs = |body: &[u8]| -> std::collections::BTreeSet<String> {
+        let series = decoded(body).timeseries;
+        (series.iter())
+            .map(|s| s.labels.iter().find(|l| l.name == "job").unwrap().value.clone())
+            .collect()
+    };
+    let first: Vec<_> = started[..c.in_flight].iter().map(|b| jobs(b)).collect();
+    for (i, a) in first.iter().enumerate() {
+        for b in &first[i + 1..] {
+            assert!(a.is_disjoint(b), "two of the first requests share a shard: {a:?} {b:?}");
+        }
+    }
+}
+
 /// Hands `rows` over as one batch, answered before `deliver` returns.
 fn deliver<T: Transport>(
     d: &mut HttpDestination<RemoteWrite, T>,
