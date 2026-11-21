@@ -24,7 +24,9 @@
     heldSession,
     chooseLock,
     routePreview,
+    listTests,
     errorText,
+    type TestSummary,
     type FileConfigDto,
     type RoutePreviewResult,
     type SampleRecordDto,
@@ -40,7 +42,7 @@
     dirty,
     /** The sources the routes may read, the group's own and `shared/`'s. */
     sources,
-    /** A test to lock again: its sample runs first, and locking hands the choice to its lock page. */
+    /** The test to open on: its sample runs first, and Lock hands the fields and rows on screen to its lock page. */
     relock,
   }: {
     config: FileConfigDto | null;
@@ -70,8 +72,16 @@
     if (choices.sourceOf(selected)) untrack(run);
   });
   let grid = $state<RecordsGrid | undefined>();
-  /** Lock locks `relock` again while it is on the test's own sample; on another it locks a new test there. */
-  let relocking = $derived(!!relock && selected === relock.sample);
+  /** The test on screen, chosen in the sample menu: the one `relock` names until another test or a sample is chosen
+   * there. Lock locks the test again while the editor is on the test's own sample; on any other sample it locks a new
+   * test. */
+  let opened = $state(untrack(() => relock));
+  let relocking = $derived(!!opened && selected === opened.sample);
+  // The end-to-end tests, for the sample menu. A failure to load them only leaves them out of the menu.
+  let tests: TestSummary[] = $state([]);
+  listTests()
+    .then((res) => (tests = res.tests.filter((t) => !t.pipeline)))
+    .catch(() => {});
 
   /** Why Lock this as a test is off, or `''` when it is on. A test runs the routes as saved over a saved sample, so it
    * locks a run of exactly those. */
@@ -95,7 +105,7 @@
     chooseLock(
       { fields, rows: rows.map((r) => records.get(r.key) ?? -1).filter((r) => r >= 0) },
       relocking
-        ? `#/build/tests/relock/${encodeURIComponent(relock!.test)}`
+        ? `#/build/tests/relock/${encodeURIComponent(opened!.test)}`
         : `#/build/tests/lock-e2e/${encodeURIComponent(ran)}`,
     );
   }
@@ -320,7 +330,19 @@
       {selected}
       records={result && ran === selected ? result.rows.length : null}
       held={choices.menuHeld}
+      tests={tests.map((t) => ({ id: t.id, name: t.name, sample: t.sample }))}
+      test={relocking ? opened!.test : ''}
+      ontest={(id) => {
+        const t = tests.find((t) => t.id === id);
+        if (!t) return;
+        opened = { test: t.id, sample: t.sample };
+        if (selected !== t.sample) {
+          selected = t.sample;
+          standsFor = '';
+        }
+      }}
       onpick={(choice) => {
+        opened = undefined;
         selected = choice;
         standsFor = '';
         // The rows the find box keeps were the last sample's.
@@ -403,9 +425,9 @@
       remember=""
       openOn={result}
       {leads}
-      relock={relock && {
-        test: relock.test,
-        ready: !!table && ran === relock.sample && sampleRecords.length > 0,
+      relock={opened && {
+        test: opened.test,
+        ready: !!table && ran === opened.sample && sampleRecords.length > 0,
         rowOf: (row) => records.get(row.key) ?? -1,
       }}
     />

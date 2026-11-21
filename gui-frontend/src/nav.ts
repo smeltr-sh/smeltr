@@ -165,7 +165,7 @@ export type Route =
  * new pipeline starts out producing the schemas they accept. */
 export type Making = { source: string; condition?: string; group?: string; to?: string[] };
 
-/** A failing test being locked again (`relockHash`): its id, and the sample it runs over. */
+/** A test opened where it is locked (`relockHash`): its id, and the sample it runs over. */
 export type Relock = { test: string; sample: string };
 
 /** Where test `test` is locked again, on its sample: its pipeline's editor, or for an end-to-end test the routes

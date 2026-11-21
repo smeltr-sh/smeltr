@@ -592,21 +592,23 @@ test('a test locked again opens on its fields the rows still hold, and its rows'
   const grid = admin.getByRole('table');
   await expect(grid.getByRole('button', { name: /^kind\b/ })).toHaveCount(1);
   await expect(grid.getByRole('button', { name: /^order_id\b/ })).toHaveCount(0);
-  // The test runs over its own sample, so it is locked again only on that one: on another, Lock makes a new test.
+  // The menu names the test on screen. A sample chosen there shows that sample, where Lock makes a new test; the
+  // test chosen again shows what it checks, and Lock locks it again.
+  const menu = admin.getByRole('button', { name: 'Choose a sample' });
+  await expect(menu).toHaveText(/Test\s*orders keep their id/);
   const relock = admin.getByRole('button', { name: 'Lock this test again' });
-  const choose = async (sample: string) => {
-    await admin.getByRole('button', { name: 'Choose a sample' }).click();
-    await admin
-      .getByRole('listbox', { name: 'Samples' })
-      .getByRole('option', { name: sample })
-      .click();
+  const choose = async (list: 'Samples' | 'Tests', name: RegExp) => {
+    await menu.click();
+    await admin.getByRole('listbox', { name: list }).getByRole('option', { name }).click();
   };
-  await choose('returns');
+  await choose('Samples', /^returns/);
+  await expect(menu).toHaveText(/Sample\s*returns/);
   await expect(admin.getByText(/on 2 rows on screen/)).toBeVisible({ timeout: 30_000 });
   await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeEnabled();
   await expect(relock).toHaveCount(0);
-  await choose('orders');
-  await expect(admin.getByText(/on 1 row on screen/)).toBeVisible({ timeout: 30_000 });
+  await choose('Tests', /^orders keep their id/);
+  await expect(menu).toHaveText(/Test\s*orders keep their id/);
+  await expect(admin.getByText('The 1 field on 1 row on screen')).toBeVisible({ timeout: 30_000 });
   await expect(relock).toBeEnabled();
   await admin.getByRole('button', { name: 'Choose fields' }).click();
   await admin.getByRole('searchbox', { name: 'Find a field' }).fill('order_id');

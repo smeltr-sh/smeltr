@@ -1575,7 +1575,7 @@ test('A4: a route preview shows each output row, the route it matched and the de
   await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeDisabled();
 });
 
-test('A4: an end-to-end test locked again opens on its fields the documents still hold, and its records', async ({
+test('A4: an end-to-end test opened from Tests shows its fields the documents still hold, and its records', async ({
   admin,
   leader,
   api,
@@ -1589,8 +1589,13 @@ test('A4: an end-to-end test locked again opens on its fields the documents stil
     rows: [1],
   });
 
-  await goto(admin, leader, '#/build/routes/sample?sample=web-sample&relock=alerts');
+  await goto(admin, leader, '#/build/tests');
+  await admin
+    .getByRole('row', { name: /alerts/ })
+    .getByRole('link', { name: 'Open' })
+    .click({ timeout: 30_000 });
   await expect(admin.getByText('Checked by alerts')).toBeVisible({ timeout: 30_000 });
+  await expect(admin.getByRole('button', { name: 'Choose a sample' })).toHaveText(/Test\s*alerts/);
   // A long list of fields gone names the first few, and the rest on asking.
   const gone = admin.getByText(/^Fields no longer in the rows:/);
   await expect(gone).toHaveText(/^Fields no longer in the rows: gone, a, b,\s*1 more$/);
@@ -1967,7 +1972,7 @@ test('A6: a sample locked as a test passes, and a save that breaks it is allowed
   await expect(testRow).toContainText('Failing', { timeout: 15_000 });
   await expect(admin.getByText('1 failing')).toBeVisible();
   await expect(admin.getByText('Row 1 differs from what the test locks.')).toBeVisible();
-  await expect(testRow.getByRole('link', { name: 'Lock again' })).toBeVisible();
+  await expect(testRow.getByRole('link', { name: 'Open' })).toBeVisible();
   await testRow.getByRole('button', { name: 'Delete' }).click();
   await admin.getByRole('dialog').getByRole('button', { name: 'Delete' }).click();
   await expect(admin.getByText('No tests locked yet.', { exact: false })).toBeVisible();

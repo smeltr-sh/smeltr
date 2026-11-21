@@ -1,7 +1,7 @@
 <!--
   Tests: every test in the branch chip's scope, run on the branch, each saying whether it passes. A failing one says why under
-  its row, and is locked again or deleted from here. New tests are locked where the output is: the pipeline editor,
-  or Route a sample.
+  its row. Open shows a test where it is locked (the pipeline editor or Route a sample), on its sample with the
+  fields and rows it checks; new tests are locked there too.
 -->
 <script lang="ts">
   import { Busy } from './busy.svelte';
@@ -175,9 +175,7 @@
               <td class="mono dim">{sampleNameOf(t)}</td>
               <td class="mono">{checksOf(t)}</td>
               <td class="row-actions">
-                {#if fails && !readOnly}
-                  <a class="btn" href={relockHash(t.id, t.sample, r!.pipeline)}>Lock again</a>
-                {/if}
+                <a class="btn" href={relockHash(t.id, t.sample, t.pipeline)}>Open</a>
                 {#if !readOnly}
                   <Button onclick={() => remove(t)} disabled={deleting.on ? BUSY : ''}
                     >Delete</Button

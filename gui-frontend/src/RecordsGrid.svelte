@@ -497,7 +497,13 @@
     const id = relock?.test;
     if (!id || id === read) return;
     read = id;
-    void getTest(id).then((res) => (relockTest = res.test ?? null));
+    // When another test is chosen, the grid shows it.
+    relockTest = null;
+    showedTest = false;
+    gone = [];
+    void getTest(id).then((res) => {
+      if (read === id) relockTest = res.test ?? null;
+    });
   });
   $effect(() => {
     if (showedTest || !relockTest || !relock?.ready || !rows) return;
@@ -510,6 +516,7 @@
    * checks every row. A field it checks that the rows no longer hold is left out and named; if it was renamed, the
    * reader chooses it under its new name. */
   function showTest(test: TestDto, rowOf: (row: GridRow) => number) {
+    clearFind();
     chosenFields.clear();
     const held = new Set(test.fields.filter((f) => allColumns.includes(f)));
     gone = test.fields.filter((f) => !held.has(f));

@@ -17,6 +17,9 @@
     records,
     lockedBy = new Map(),
     held,
+    tests = [],
+    test = '',
+    ontest,
     onpick,
     onadd,
   }: {
@@ -32,6 +35,13 @@
     /** The capture the leader holds for the person signed in, listed first among the samples. Picking it passes
      * `choice` to `onpick`. */
     held?: { choice: string; records: number; source?: string };
+    /** The tests that run here, each over its sample: a pipeline's in its editor, the end-to-end ones in Route a
+     * sample. */
+    tests?: { id: string; name: string; sample: string }[];
+    /** The test on screen, if there is one: the grid shows its sample's records, with the fields and rows the test
+     * checks. */
+    test?: string;
+    ontest?: (id: string) => void;
     onpick: (id: string) => void;
     /** Opens Add sample to make a new sample; absent where the person may make none. */
     onadd?: () => void;
@@ -87,6 +97,11 @@
   ]);
 
   let q = $derived(query.trim().toLowerCase());
+  let testName = $derived(tests.find((t) => t.id === test)?.name);
+  const sampleName = (id: string) => samples.find((s) => s.id === id)?.name ?? id;
+  let foundTests = $derived(
+    tests.filter((t) => `${t.name} ${sampleName(t.sample)}`.toLowerCase().includes(q)),
+  );
   let found = $derived(
     listed.filter((s) => `${s.name} ${s.source ?? ''}`.toLowerCase().includes(q)),
   );
@@ -100,8 +115,13 @@
   onopen={() => (query = '')}
 >
   {#snippet face()}
-    <span class="dim">Sample</span>
-    <strong>{selectedName}</strong>
+    {#if testName}
+      <span class="dim">Test</span>
+      <strong>{testName}</strong>
+    {:else}
+      <span class="dim">Sample</span>
+      <strong>{selectedName}</strong>
+    {/if}
     {#if records !== null}<span class="dim">{count(records, 'record')}</span>{/if} ▾
   {/snippet}
   {#snippet children()}
@@ -120,22 +140,44 @@
       <input
         type="search"
         bind:value={query}
-        placeholder="Find a sample"
-        aria-label="Find a sample"
+        placeholder={tests.length ? 'Find a test or sample' : 'Find a sample'}
+        aria-label={tests.length ? 'Find a test or sample' : 'Find a sample'}
         autofocus
       />
+      {#if foundTests.length}
+        <div class="list" role="listbox" aria-label="Tests">
+          <span class="group">Tests</span>
+          {#each foundTests as t (t.id)}
+            <button
+              type="button"
+              class="item"
+              role="option"
+              aria-selected={t.id === test}
+              onclick={() => {
+                open = false;
+                if (t.id !== test) ontest?.(t.id);
+              }}
+            >
+              <span class="name ellipsis">{t.name}</span>
+              <span class="dim">{sampleName(t.sample)}</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
       <div class="list" role="listbox" aria-label="Samples">
+        {#if foundTests.length}<span class="group">Samples</span>{/if}
         {#each found as s (s.id)}
           {@const lockers = lockedBy.get(s.id) ?? []}
           <button
             type="button"
             class="item"
             role="option"
-            aria-selected={s.id === selected}
+            aria-selected={!testName && s.id === selected}
             onclick={() => {
               open = false;
-              // The sample already chosen is chosen: picking it again keeps what it shows.
-              if (s.id !== selected) onpick(s.id);
+              // Picking the sample already chosen changes nothing. While a test is chosen, picking any sample, the
+              // test's own included, closes the test and shows that sample.
+              if (s.id !== selected || testName) onpick(s.id);
             }}
           >
             <span class="name ellipsis">
@@ -175,6 +217,13 @@
     flex-direction: column;
     max-height: 22rem;
     overflow-y: auto;
+  }
+
+  .group {
+    padding: 0.3rem 0.4rem 0.1rem;
+    color: var(--dim);
+    font-size: var(--text-label);
+    font-weight: 600;
   }
 
   .item {

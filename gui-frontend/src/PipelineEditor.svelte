@@ -835,6 +835,14 @@
     return stored(sampleKey(pipelineId)) ?? '';
   }
 
+  /** Shows test `id` on its sample. */
+  function openTest(id: string) {
+    const t = tests.find((t) => t.id === id);
+    if (!t) return;
+    opened = { test: t.id, sample: t.sample };
+    if (selectedSample !== t.sample) void chooseSample(t.sample);
+  }
+
   async function chooseSample(id: string) {
     const pipeline = untrack(() => pipelineId);
     selectedSample = id;
@@ -1032,8 +1040,11 @@
     }
   }
 
-  /** Lock locks `relock` again while it is on the test's own sample; on another it locks a new test there. */
-  let relocking = $derived(!!relock && selectedSample === relock.sample);
+  /** The test on screen, chosen in the sample menu: the one `relock` names until another test or a sample is chosen
+   * there. Lock locks the test again while the editor is on the test's own sample; on any other sample it locks a new
+   * test. */
+  let opened = $state(untrack(() => relock));
+  let relocking = $derived(!!opened && selectedSample === opened.sample);
 
   // Locking a test needs a saved pipeline to attach it to, a saved sample to
   // name, and a run that actually produced the output being locked. The lock
@@ -1064,7 +1075,7 @@
     chooseLock(
       choice,
       relocking
-        ? `#/build/tests/relock/${encodeURIComponent(relock!.test)}`
+        ? `#/build/tests/relock/${encodeURIComponent(opened!.test)}`
         : `#/build/tests/lock/${encodeURIComponent(loadedId)}/${encodeURIComponent(selectedSample)}`,
     );
   }
@@ -1706,9 +1717,9 @@
       <RecordsPane
         bind:this={records}
         {pipelineId}
-        relock={relock && {
-          test: relock.test,
-          ready: !!result?.ok && lastSample === relock.sample,
+        relock={opened && {
+          test: opened.test,
+          ready: !!result?.ok && lastSample === opened.sample,
         }}
         {steps}
         {signature}
@@ -1744,8 +1755,16 @@
               ? lastGoodResult.rows.length
               : null}
             {lockedBy}
+            tests={tests
+              .filter((t) => t.pipeline === pipelineId)
+              .map((t) => ({ id: t.id, name: t.name, sample: t.sample }))}
+            test={relocking ? opened!.test : ''}
+            ontest={openTest}
             held={choices.menuHeld}
-            onpick={chooseSample}
+            onpick={(id) => {
+              opened = undefined;
+              void chooseSample(id);
+            }}
             onadd={addSample}
           />
         {/snippet}
