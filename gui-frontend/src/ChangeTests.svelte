@@ -4,21 +4,20 @@
 -->
 <script lang="ts">
   import InlineError from './InlineError.svelte';
+  import TestFailure from './TestFailure.svelte';
   import {
     scopedKey,
     type Reason,
     type ScopedImpact,
     type TestResult,
     type TestSummary,
-    type Verdict,
   } from './api';
-  import { diffObjects, formatDiffValue, type DiffEntry } from './diff';
   import { count } from './time';
-  import { checksOf, outcomeText, sentText, testsCovering } from './objectChanges';
+  import { checksOf, testsCovering } from './objectChanges';
   import Help from './Help.svelte';
   import { names } from './names.svelte';
   import { openOnBranch } from './unsavedGuard';
-  import { relockHash } from './nav';
+  import { testHash } from './nav';
 
   let {
     branch,
@@ -136,70 +135,15 @@
       .join(', '),
   );
 
-  /** What a failing verdict's first difference is, laid out for the card: a headline sentence, and
-   * either the changed fields (both sides made a document) or a plain note plus whichever side is
-   * present -- a drop, or a row that made more or fewer documents than the test locks. */
-  type FailInfo = {
-    headline: string;
-    note: string | null;
-    entries: DiffEntry[];
-    expectedLine: string | null;
-    actualLine: string | null;
-  };
-
-  /** Lock a failing test again, on the change's branch and in the scope that holds it. */
-  function relock(t: TestResult) {
-    if (t.sample) void openOnBranch(branch, t.area, relockHash(t.id, t.sample, t.pipeline));
-  }
-
-  /** "held 3 records when locked, now 4": the sample itself changed under the test. */
-  function rowsInText(v: Verdict): string | null {
-    if (!v.rowsIn) return null;
-    return `The sample held ${count(v.rowsIn.locked, 'record')} when locked, now ${v.rowsIn.now}.`;
+  /** Opens a failing test where it is locked, on the change's branch and in the scope that holds it. */
+  function open(t: TestResult) {
+    if (t.sample) void openOnBranch(branch, t.area, testHash(t.id, t.sample, t.pipeline));
   }
 
   /** "dst, src on 5 rows": what test `t` checks, per its summary. */
   function checksText(t: TestResult): string | null {
     const s = testSummaryByKey.get(scopedKey(t.area, t.id));
     return s ? checksOf(s) : null;
-  }
-
-  function failInfo(v: Verdict, scope: string): FailInfo | null {
-    const named = (id: string) => routeName(scope, id);
-    const d = v.firstDifference;
-    if (!d) return null;
-    const headline = `Row ${d.row} differs from what the test locks.`;
-    const { expected, actual } = d;
-    if (
-      expected?.values &&
-      actual?.values &&
-      sentText(expected, named) === sentText(actual, named)
-    ) {
-      return {
-        headline,
-        note: null,
-        entries: diffObjects(expected.values, actual.values).filter((e) => e.kind !== 'unchanged'),
-        expectedLine: null,
-        actualLine: null,
-      };
-    }
-    const note =
-      expected === undefined
-        ? 'The test locks no more documents on this row; this run made another.'
-        : actual === undefined
-          ? 'The test locks another document on this row; this run made none.'
-          : !expected.values && actual.values
-            ? 'The test locked this row as dropped; this run kept it.'
-            : expected.values && !actual.values
-              ? 'The test locked a document here; this run dropped it.'
-              : 'This run sent the document elsewhere.';
-    return {
-      headline,
-      note,
-      entries: [],
-      expectedLine: expected ? outcomeText(expected, named) : null,
-      actualLine: actual ? outcomeText(actual, named) : null,
-    };
   }
 </script>
 
@@ -281,49 +225,13 @@
                 <span class="added">Passing</span>
               {:else}
                 <span class="removed">Failing</span>
-                <button type="button" onclick={() => relock(t)}>Lock again</button>
+                <button type="button" onclick={() => open(t)}>Open</button>
               {/if}
             </div>
             {@const checks = checksText(t)}
             {#if checks}<div class="dim checks-line">Checks {checks}</div>{/if}
             {#if t.verdict && !t.verdict.passed}
-              {@const info = failInfo(t.verdict, t.area)}
-              {@const rowsIn = rowsInText(t.verdict)}
-              {#if rowsIn || info}
-                <div class="fail-card">
-                  {#if rowsIn}<p class="fail-headline">{rowsIn}</p>{/if}
-                  {#if info}<p class="fail-headline">{info.headline}</p>{/if}
-                  {#if info?.note}
-                    <p>{info.note}</p>
-                    {#if info.expectedLine !== null}
-                      <div class="mono diff-line removed">
-                        expected&emsp;{info.expectedLine}
-                      </div>
-                    {/if}
-                    {#if info.actualLine !== null}
-                      <div class="mono diff-line added">
-                        actual&emsp;&emsp;{info.actualLine}
-                      </div>
-                    {/if}
-                  {:else if info}
-                    {#each info.entries as entry}
-                      <div class="mono diff-line">
-                        <span class="diff-key">{entry.key}:</span>
-                        {#if entry.kind === 'changed'}
-                          <span class="dim">expected</span>
-                          <span class="removed">{formatDiffValue(entry.before)},</span>
-                          <span class="dim">got</span>
-                          <span class="added">{formatDiffValue(entry.after)}</span>
-                        {:else if entry.kind === 'removed'}
-                          <span class="removed">{formatDiffValue(entry.before)}</span>
-                        {:else}
-                          <span class="added">{formatDiffValue(entry.after)}</span>
-                        {/if}
-                      </div>
-                    {/each}
-                  {/if}
-                </div>
-              {/if}
+              <TestFailure verdict={t.verdict} routeName={(id) => routeName(t.area, id)} />
             {/if}
           {/each}
         </div>
@@ -427,7 +335,7 @@
   .test-line span:first-child {
     flex-grow: 1;
   }
-  /* The name takes what is left; a verdict and its Lock again never wrap. */
+  /* The name takes what is left; a verdict and its Open never wrap. */
   .test-line > :not(:first-child) {
     flex: none;
   }
@@ -435,26 +343,6 @@
     font-size: var(--text-micro);
   }
 
-  .fail-card {
-    margin: 0.35rem 0 0.6rem 0.9rem;
-    padding: 0.55rem 0.7rem;
-    border: 1px solid var(--error);
-    border-radius: var(--radius-card);
-    background: color-mix(in oklch, var(--error) 6%, transparent);
-  }
-  .fail-headline {
-    margin: 0 0 0.35rem;
-    font-size: var(--text-label);
-  }
-  .diff-line {
-    font-size: var(--text-note);
-    padding: 0.1rem 0;
-    overflow-wrap: anywhere;
-  }
-  .diff-key {
-    color: var(--dim);
-    margin-right: 0.4rem;
-  }
   .added {
     color: var(--added);
   }

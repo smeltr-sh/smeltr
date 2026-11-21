@@ -533,7 +533,7 @@ test('a review shows what each test checks, and a failing one says which row and
   await expect(line).toHaveText(/id:\s*expected\s*2,\s*got\s*1/);
 });
 
-test('a test locked again after a rename chooses its fields in the editor, as a fresh lock does', async ({
+test('a test locked again opens on its fields the rows still hold, and its rows', async ({
   admin,
   api,
   leader,
@@ -544,7 +544,10 @@ test('a test locked again after a rename chooses its fields in the editor, as a 
     id: 'body',
     input: '_raw',
     kind: { type: 'json' },
-    declared: [{ name: 'id', type: 'i64' }],
+    declared: [
+      { name: 'id', type: 'i64' },
+      { name: 'kind', type: 'str' },
+    ],
   };
   await api.put(`/api/areas/shared/pipelines/orders${on}`, {
     id: 'orders',
@@ -554,7 +557,7 @@ test('a test locked again after a rename chooses its fields in the editor, as a 
   await api.put(`/api/areas/shared/samples/orders-sample${on}`, {
     id: 'orders-sample',
     name: 'orders',
-    records: [{ _raw: '{"id":2}' }],
+    records: [{ _raw: '{"id":2,"kind":"new"}' }],
   });
   await api.put(`/api/areas/shared/samples/returns-sample${on}`, {
     id: 'returns-sample',
@@ -566,7 +569,7 @@ test('a test locked again after a rename chooses its fields in the editor, as a 
     pipeline: 'orders',
     sample: 'orders-sample',
     lockedAt: 0,
-    fields: ['id'],
+    fields: ['id', 'kind'],
     rows: [0],
   });
   // `id` becomes `order_id`, so the test's `id` is absent on every row.
@@ -579,33 +582,56 @@ test('a test locked again after a rename chooses its fields in the editor, as a 
 
   await goto(admin, leader, '#/changes/review/renamed');
   await admin.getByRole('tab', { name: /^Tests/ }).click();
-  await admin.getByRole('button', { name: 'Lock again' }).click({ timeout: 30_000 });
-  // The editor, on the test's sample: the renamed field is on screen to lock.
-  await expect(admin.getByText(/on 1 row on screen/)).toBeVisible({ timeout: 30_000 });
-  await expect(admin.getByRole('columnheader', { name: /order_id/ })).toBeVisible();
-  // The test runs over its own sample, so it is locked again only on that one: on another, Lock makes a new test.
+  await admin.getByRole('button', { name: 'Open', exact: true }).click({ timeout: 30_000 });
+  // The editor, on the test's sample: what the test checks that the rows still hold. A renamed field is not
+  // followed: the author chooses it. The test checks every row, so no chip narrows them.
+  await expect(admin.getByText('The 1 field on 1 row on screen')).toBeVisible({ timeout: 30_000 });
+  await expect(admin.getByText('Checked by orders keep their id')).toHaveCount(0);
+  await expect(admin.getByText('Fields no longer in the rows: id')).toBeVisible();
+  await expect(admin.getByRole('button', { name: 'Choose fields' })).toHaveText(/Fields 1 of/);
+  const grid = admin.getByRole('table');
+  await expect(grid.getByRole('button', { name: /^kind\b/ })).toHaveCount(1);
+  await expect(grid.getByRole('button', { name: /^order_id\b/ })).toHaveCount(0);
+  // The menu names the test on screen. A sample chosen there shows that sample, where Lock makes a new test; the
+  // test chosen again shows what it checks, and Lock locks it again.
+  const menu = admin.getByRole('button', { name: 'Choose a sample' });
+  await expect(menu).toHaveText(/Test\s*orders keep their id/);
   const relock = admin.getByRole('button', { name: 'Lock this test again' });
-  const choose = async (sample: string) => {
-    await admin.getByRole('button', { name: 'Choose a sample' }).click();
-    await admin
-      .getByRole('listbox', { name: 'Samples' })
-      .getByRole('option', { name: sample })
-      .click();
+  const choose = async (list: 'Samples' | 'Tests', name: RegExp) => {
+    await menu.click();
+    await admin.getByRole('listbox', { name: list }).getByRole('option', { name }).click();
   };
-  await choose('returns');
+  await expect(admin).toHaveURL(/[?&]test=orders-keep-id\b/);
+  await choose('Samples', /^returns/);
+  await expect(menu).toHaveText(/Sample\s*returns/);
+  // The address follows the menu, so a reload opens on what is on screen.
+  await expect(admin).not.toHaveURL(/[?&]test=/);
   await expect(admin.getByText(/on 2 rows on screen/)).toBeVisible({ timeout: 30_000 });
   await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeEnabled();
   await expect(relock).toHaveCount(0);
-  await choose('orders');
-  await expect(admin.getByText(/on 1 row on screen/)).toBeVisible({ timeout: 30_000 });
+  await choose('Tests', /^orders keep their id/);
+  await expect(menu).toHaveText(/Test\s*orders keep their id/);
+  await expect(admin).toHaveURL(/[?&]test=orders-keep-id\b/);
+  await expect(admin.getByText('The 1 field on 1 row on screen')).toBeVisible({ timeout: 30_000 });
   await expect(relock).toBeEnabled();
+  // The test's own sample, chosen, closes the test and keeps its records on screen.
+  await choose('Samples', /orders\s*1 record/);
+  await expect(menu).toHaveText(/Sample\s*orders/);
+  await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeEnabled();
+  await expect(admin.getByText(/on 1 row on screen/)).toBeVisible();
+  await choose('Tests', /^orders keep their id/);
+  await expect(relock).toBeEnabled();
+  await admin.getByRole('button', { name: 'Choose fields' }).click();
+  await admin.getByRole('searchbox', { name: 'Find a field' }).fill('order_id');
+  await admin.getByRole('group', { name: 'Fields' }).getByRole('checkbox').check();
+  await admin.keyboard.press('Escape');
+  await expect(admin.getByText('The 2 fields on 1 row on screen')).toBeVisible();
   await relock.click();
   await expect(admin.getByRole('heading', { name: 'Lock this test again' })).toBeVisible();
   await admin.getByRole('button', { name: 'Lock the test' }).click();
   await expect(admin).toHaveURL(/#\/changes\/review\/renamed/);
   const { test } = await api.get(`/api/areas/shared/tests/orders-keep-id${on}`);
-  expect(test.fields).toContain('order_id');
-  expect(test.fields).not.toContain('id');
+  expect(test.fields.sort()).toEqual(['kind', 'order_id']);
   // Locked anew, at the instant it was locked again.
   expect(test.lockedAt).toBeGreaterThan(0);
 });

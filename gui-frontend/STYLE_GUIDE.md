@@ -60,7 +60,8 @@ offers it. Only remove reddens on hover: it is the one Save makes stick. `src/Di
 out of play. `src/ChevronIcon.svelte` is fold -- it points right while what it folds is
 closed and down while it is open; a button that is only the chevron is an `icon` control. `src/WidenIcon.svelte` is
 widen -- spread the map's panel across the page, and narrow it back. Renaming is not its own sign: it is the editor a worker group happens to
-have, having nothing else to change in place.
+have, having nothing else to change in place. `src/TestIcon.svelte` is a test, a clipboard
+with its check, and `src/SampleIcon.svelte` is a sample, a stack of records, wherever either is listed or chosen.
 
 A state has a sign, `src/StateMark.svelte`: a dot for info, a check for ok,
 a triangle for a warning, an octagon struck with an X for an error. Wherever

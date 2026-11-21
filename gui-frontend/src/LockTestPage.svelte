@@ -40,7 +40,7 @@
   } from './api';
   import { count } from './time';
   import { formatDiffValue } from './diff';
-  import { announcePipelineNames, relockHash } from './nav';
+  import { announcePipelineNames, testHash } from './nav';
   import { editable } from './access';
   import { nameOf, pipelineNamesAt } from './pipelineNames';
   import { names } from './names.svelte';
@@ -117,7 +117,7 @@
         pipeline = testRes.test.pipeline;
         sample = testRes.test.sample;
         // Its fields and rows are chosen again where a fresh lock's are: a renamed field is one it does not have.
-        if (!choice) return location.replace(relockHash(relock, sample, pipeline));
+        if (!choice) return location.replace(testHash(relock, sample, pipeline));
         name = testRes.test.name;
       }
       const sampleRes = await getSample(sample);
@@ -167,7 +167,7 @@
       if (res.ok) {
         // Back past the editor the choice was made in, to where Lock again was pressed.
         if (relock) history.go(-2);
-        else location.hash = '#/build';
+        else location.hash = '#/build/tests';
       } else if (res.conflict) {
         conflict = res.conflict;
         errors.shown(res.errors);
