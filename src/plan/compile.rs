@@ -2331,9 +2331,9 @@ impl Compiler<'_> {
         self.err(
             Some(id),
             format!(
-                "`{}` may hold keys nothing names, which would reach the rows the `if` or loop skips; write each \
-                 key, `key = …`, or merge it outside the `if` or loop",
-                describe_expr(source)
+                "`{e}` may hold keys nothing names, and they would reach the rows that skip this `if`, loop or \
+                 `try`; write each key as `key = …`, or merge `{e}` outside it",
+                e = describe_expr(source)
             ),
         );
     }

@@ -455,9 +455,9 @@ switch (c) { case "a": x = 1; break; default: x = 0; }
   loop and a `try`.
 - `$ = e` replaces the record's fields and unclaimed fields; the engine's
   `__` fields and the locals stay, and `_raw` goes unless `e` carries it.
-  Inside an `if` or a loop it does so on the rows it runs on, and, as with
-  `Object.assign($, a)`, an `e` that may hold keys nothing names is a compile
-  error there.
+  Inside an `if`, a loop or a `try` it does so on the rows it runs on, and, as
+  with `Object.assign($, a)`, an `e` that may hold keys nothing names is a
+  compile error there.
 - A `try` stops where an exception happens: the row leaves the body, and every
   block and loop inside it, for the nearest `try` with a `catch`. A write
   whose value fails does not happen: the name keeps what it held. The `catch`
