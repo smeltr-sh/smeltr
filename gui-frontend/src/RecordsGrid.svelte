@@ -495,6 +495,8 @@
   let read = '';
   $effect(() => {
     const id = test?.test;
+    // Closed, it is read afresh when reopened: closing put the rows and fields back.
+    if (!id) read = '';
     if (!id || id === read) return;
     read = id;
     // When another test is chosen, the grid shows it.
