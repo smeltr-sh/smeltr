@@ -1174,13 +1174,14 @@ mod vector {
                 In::Hec => json!({"type": "splunk_hec", "address": address(port), "valid_tokens": [RECEIVER_TOKEN]}),
                 // Its gRPC listener is required, and idle. Its sink encodes only what the source keeps whole, so a
                 // request it forwards it keeps as one event, as its documentation does.
-                In::Otlp => json!({"type": "opentelemetry", "http": {"address": address(port)},
-                "grpc": {"address": address(&free_port())},
-                "decoding": if ends.give_to() == Some(Out::Otlp) {
-                    json!({"codec": "otlp", "signal_types": ["logs"]})
-                } else {
-                    json!({})
-                }}),
+                In::Otlp => {
+                    let mut source = json!({"type": "opentelemetry", "http": {"address": address(port)},
+                        "grpc": {"address": address(&free_port())}});
+                    if ends.give_to() == Some(Out::Otlp) {
+                        source["decoding"] = json!({"codec": "otlp", "signal_types": ["logs"]});
+                    }
+                    source
+                }
                 In::Prometheus => json!({"type": "prometheus_remote_write", "address": address(port), "auth": basic}),
                 // Its socket source, since smeltr's syslog receiver takes each message whole, as the socket source
                 // does, and its syslog source would parse them.
