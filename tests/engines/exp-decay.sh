@@ -7,7 +7,7 @@ cd "$(dirname "$0")/../.."
 OUT=target/exp-decay.txt
 : > $OUT
 cargo test --profile dist --test connector-speed --no-run || exit 1
-kills() { dmesg 2>/dev/null | grep -c 'Killed process' || echo "?"; }
+kills() { dmesg 2>/dev/null | grep -c 'Killed process'; }
 for r in 1 2 3; do
   if [ $((r % 2)) = 1 ]; then arms="purge decay"; else arms="decay purge"; fi
   for arm in $arms; do
