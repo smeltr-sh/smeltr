@@ -300,6 +300,8 @@ async function nameBranch(j: Journey) {
   const name = `edit-${world.made++}`;
   await prompt.getByLabel('branch to edit on').fill(name);
   await prompt.getByRole('button', { name: 'Edit on this branch' }).click();
+  // Until it closes, a dialog the save came from is not the page's only one.
+  await expect(prompt).toBeHidden();
   world.branch = name;
 }
 
@@ -878,6 +880,8 @@ async function thereAndBack(
   const move = async (from: string, to: string) => {
     await openRowMenu(page, `More actions for ${name}`);
     await page.getByRole('button', { name: 'Move to…' }).click();
+    // On main, the preview the dialog opens with asks for the branch the move will be written on.
+    await nameBranch(j);
     const dialog = page.getByRole('dialog', { name: `move ${part} ${name}` });
     await dialog.getByRole('combobox', { name: 'move to' }).selectOption(to);
     // The leader lists the rows in one answer, and the asked object's own tick is among them.
