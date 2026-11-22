@@ -28,7 +28,7 @@ export interface SeriesAnswer {
   draw: Draw;
   pointMillis: number;
   fromMillis: number;
-  series: { name: string; points: [number, number][] }[];
+  series: { name: string; values: string[]; points: [number, number][] }[];
 }
 
 const MINUTE_MS = 60_000;
@@ -151,7 +151,7 @@ export class SeriesStore {
       filter.push([part.slice(0, at), part.slice(at + 1)]);
     }
     const metric = q.get('metric') ?? '';
-    const by = q.get('by') ?? '';
+    const by = (q.get('by') ?? '').split(',').filter(Boolean);
     const number = (name: string, fallback: number) => {
       const n = Number(q.get(name) ?? fallback);
       return Number.isFinite(n) ? Math.trunc(n) : fallback;
@@ -175,13 +175,13 @@ export class SeriesStore {
     const tiers = new Set(TIERS.filter((t) => t.code <= within.code).map((t) => t.code));
     const merge = counter ? (a: number, b: number) => a + b : Math.max;
 
-    const splits = new Map<string, Map<number, number>>();
+    const splits = new Map<string, { values: string[]; points: Map<number, number> }>();
     for (const s of subjects) {
       const labels = labelsOf(s.key);
       if (!labels || valueOf(labels, GROUP_LABEL) === undefined) continue;
       if (!filter.every(([k, v]) => valueOf(labels, k) === v)) continue;
-      const name = by ? valueOf(labels, by) : '';
-      if (name === undefined) continue;
+      const values = by.map((label) => valueOf(labels, label));
+      if (values.some((v) => v === undefined)) continue;
       // `RegistryStore::points_from`: each bucket on the point it starts in, a point's buckets merged.
       const points: [number, number][] = [];
       for (const [code, gaps, values] of s.tiers) {
@@ -203,9 +203,13 @@ export class SeriesStore {
         if (last && last[0] === at) last[1] = merge(last[1], value);
         else merged.push([at, value]);
       }
-      const into = splits.get(name) ?? new Map<number, number>();
-      for (const [at, value] of merged) into.set(at, (into.get(at) ?? 0) + value);
-      splits.set(name, into);
+      const key = JSON.stringify(values);
+      const into = splits.get(key) ?? {
+        values: values as string[],
+        points: new Map<number, number>(),
+      };
+      for (const [at, value] of merged) into.points.set(at, (into.points.get(at) ?? 0) + value);
+      splits.set(key, into);
     }
     const per = (value: number) =>
       counter && draw === 'perSecond' ? value / (pointMs / 1000) : value;
@@ -215,12 +219,24 @@ export class SeriesStore {
       draw,
       pointMillis: pointMs,
       fromMillis: fromMs,
-      series: [...splits.keys()].sort().map((name) => ({
-        name,
-        points: [...splits.get(name)!.entries()]
-          .sort((a, b) => a[0] - b[0])
-          .map(([at, value]) => [at, per(value)] as [number, number]),
-      })),
+      // In `BTreeMap<Vec<String>>` order, as the leader answers.
+      series: [...splits.values()]
+        .sort((a, b) => compareValues(a.values, b.values))
+        .map(({ values, points }) => ({
+          name: values.join(', '),
+          values,
+          points: [...points.entries()]
+            .sort((a, b) => a[0] - b[0])
+            .map(([at, value]) => [at, per(value)] as [number, number]),
+        })),
     };
   }
+}
+
+/** `a` against `b` element by element, a shorter list first where one starts the other. */
+function compareValues(a: string[], b: string[]): number {
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
+  }
+  return a.length - b.length;
 }
