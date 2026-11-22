@@ -3764,6 +3764,60 @@ fn a_blocking_destination_blocks_the_source_until_its_refused_row_lands() {
     );
 }
 
+/// A batch whose destination has no room waits with the rows its pipelines made, and is handed them once there is
+/// room without running again: every pool thread is woken when room frees, and a batch run again on each wake-up would
+/// be run once per thread.
+#[test]
+fn a_batch_waiting_for_room_is_handed_over_without_running_again() {
+    let dest = AsyncDestination::new();
+    let src = FakeSource::new([record("a", 10, 0), record("b", 11, 0)]);
+    // One byte: the first batch goes in alone, and the second finds no room until it is acknowledged.
+    let mut stage = Egress::start(
+        0,
+        "d",
+        Box::new(dest.clone()),
+        Duration::from_secs(5),
+        1,
+        MetricsHandle::new(Arc::new(Metrics::new()), "test"),
+    );
+    let mut w = worker(plain_route(), vec![pipeline(0, vec![])], &src);
+    w.add_destination(target(0, stage.handle()));
+    let one = |w: &mut Worker| w.tick(1, 1 << 20, Duration::from_millis(1));
+
+    one(&mut w).unwrap();
+    for _ in 0..500 {
+        if !dest.outstanding().is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let first = dest.outstanding()[0];
+    one(&mut w).unwrap();
+    assert_eq!(
+        counter(&w, "smeltr_batches_waiting_for_room_total", &[("source", "0")]),
+        Some(1),
+        "the second batch waits for room"
+    );
+
+    dest.complete(first);
+    for _ in 0..500 {
+        let _ = one(&mut w);
+        if let Some(&second) = dest.outstanding().first() {
+            dest.complete(second);
+        }
+        if src.committed().len() == 2 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(src.committed().len(), 2, "both landed");
+    assert_eq!(
+        counter(&w, "smeltr_tick_batches_total", &[("source", "0")]),
+        Some(2),
+        "each batch ran its pipelines once"
+    );
+}
+
 /// A worker over `routes` whose topology knows each destination's DLQs, as a deployed one does: the serializer reads a
 /// DLQ's identity field only for a DLQ it knows of.
 fn worker_with_dlqs(

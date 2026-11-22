@@ -1221,11 +1221,8 @@ pub enum Dispatched {
     InFlight,
     /// Not taken: the destination's queue has no room for a batch of `bytes`. Nothing was sent and the rows are
     /// dropped, so the caller keeps the batch and runs it again once [`Destination::has_room`] says so. A batch
-    /// kept waiting longer than `stall_after` is a stall, reported as a block.
-    NoRoom {
-        bytes: usize,
-        stall_after: std::time::Duration,
-    },
+    /// kept waiting longer than [`Destination::stall_after`] is a stall, reported as a block.
+    NoRoom { bytes: usize },
 }
 
 /// A destination for serialized rows, driven by one egress thread. `Send` so it may be built on one thread and run
@@ -1302,11 +1299,17 @@ pub trait Destination: Send {
         None
     }
 
-    /// Whether a batch of `bytes` would be taken now. Asked before re-running a batch `deliver` answered
-    /// [`Dispatched::NoRoom`] to, so a thread never runs a pipeline for a queue that is still full. A transport that
-    /// never answers `NoRoom` always has room.
+    /// Whether a batch of `bytes` would be taken now. Asked before handing rows over, so rows a full queue would drop
+    /// wait for room instead, and before re-running a batch `deliver` answered [`Dispatched::NoRoom`] to. A
+    /// transport that never answers `NoRoom` always has room.
     fn has_room(&self, _bytes: usize) -> bool {
         true
+    }
+
+    /// How long a batch may wait for room before the wait is a stall, reported as a block. Asked only of a
+    /// destination that had no room.
+    fn stall_after(&self) -> std::time::Duration {
+        std::time::Duration::MAX
     }
 }
 

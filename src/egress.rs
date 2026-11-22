@@ -1354,10 +1354,7 @@ impl Destination for EgressHandle {
                 Dispatched::InFlight
             }
             // The rows go with the unit: the batch is re-run whole when room returns.
-            Err(Refused::NoRoom(unit)) => Dispatched::NoRoom {
-                bytes: unit.bytes,
-                stall_after: self.stall_after,
-            },
+            Err(Refused::NoRoom(unit)) => Dispatched::NoRoom { bytes: unit.bytes },
             Err(Refused::Closed) => return Err(IoError::transient("destination is shutting down")),
         };
         Ok((dispatched, Vec::new()))
@@ -1365,6 +1362,10 @@ impl Destination for EgressHandle {
 
     fn has_room(&self, bytes: usize) -> bool {
         self.queue.has_room(bytes)
+    }
+
+    fn stall_after(&self) -> Duration {
+        self.stall_after
     }
 
     fn poll_completions(&mut self) -> Result<Vec<BatchCompletion>, IoError> {
