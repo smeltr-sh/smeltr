@@ -172,7 +172,8 @@ pub async fn poll(state: AppState) {
     }
 }
 
-/// What the check sends as its User-Agent: `smeltr/1.2.0 (linux; x86_64)`. smeltr.sh reads this shape (`website/worker`).
+/// What the check sends as its User-Agent: `smeltr/1.2.0 (linux; x86_64)`. smeltr.sh reads this shape
+/// (`website/worker`).
 fn user_agent(own: &str) -> String {
     format!("smeltr/{own} ({}; {})", std::env::consts::OS, std::env::consts::ARCH)
 }
