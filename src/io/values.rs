@@ -499,7 +499,7 @@ fn rest_of(object: &[u8], claimed: impl Fn(&str) -> bool) -> Value {
 }
 
 /// What `value` holds at `path`, each key a member of the object above it: null where an object on the way is null or
-/// has no such member. Err is the value on the way that is no object.
+/// has no such member. Err is `value` where it, or a value on the way, is no object.
 pub(crate) fn at<'v>(value: &'v Value, path: &[String]) -> Result<Value, &'v Value> {
     let Some((first, below)) = path.split_first() else {
         return Ok(value.clone());
