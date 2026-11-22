@@ -1110,6 +1110,8 @@ fn undeclared(
         } else {
             match value.as_object() {
                 Some(inner) if above => undeclared(inner, path, &crate::plan::tree::child(name, key), declared),
+                // A null where an object is declared is that object with none of its fields.
+                None if above && value.is_null() => None,
                 _ if kept && !above => None,
                 _ => Some(crate::plan::tree::child(name, key)),
             }
@@ -4263,6 +4265,12 @@ mod tests {
             meta.record_object(&read[0], ""),
             stored,
             "each leaf and each other key reads back"
+        );
+        let null = object_of(serde_json::json!({"destination": null, "labels": null}));
+        let read = meta.read_stored(&[(&null, &fields)]).unwrap();
+        assert!(
+            meta.record_object(&read[0], "").is_empty(),
+            "a null object holds no field"
         );
         let extra = object_of(serde_json::json!({"destination": {"ip": "8.8.8.8", "mac": "aa"}}));
         let err = meta.read_stored(&[(&extra, &fields)]).unwrap_err();
