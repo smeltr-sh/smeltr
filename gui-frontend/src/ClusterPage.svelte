@@ -13,8 +13,9 @@
   Groups lead with transform threads: that is the count `thread_limit`
   sizes, and the only one an operator sets.
 
-  Rows in and out (E2) read the leader's own series (`GET /api/flow`,
-  `flow.ts`), so the window survives a reload; a gap in a subject's
+  Rows in and out (E2), the chart and the table under it, read the
+  leader's own series (`GET /api/series`, `flow.ts`), so the range
+  survives a reload; a gap in a subject's
   history breaks its line rather than dipping to zero. It is drawn from
   one baseline -- in above, out below (`FlowChart.svelte`) -- because the
   two usually agree, and laid over each other the second one drawn hid
@@ -23,8 +24,8 @@
   running total is not a rate. The ranked table
   compares each source and destination to its own mean at this local
   hour of day over the last thirty days, independent of the chart's own
-  window picker. Errors still chart this page's own rolling window: the
-  leader keeps no series for `smeltr_rows_errored_total`.
+  range picker. Exceptions read the leader's series too, over a range of
+  their own.
 -->
 <script lang="ts">
   import Button, { BUSY } from './Button.svelte';
@@ -50,6 +51,8 @@
   import FoldAllButton from './FoldAllButton.svelte';
   import Chips from './Chips.svelte';
   import Segmented from './Segmented.svelte';
+  import RangePicker from './RangePicker.svelte';
+  import { chartRange, lastChartRange, rangeOfMinutes } from './map';
   import { TableSort } from './sort.svelte';
   import {
     errorText,
@@ -86,25 +89,8 @@
     rollout,
   } from './workers';
   import { isOver, workerMemory, type MemoryPart } from './memoryParts';
-  import {
-    addPoll,
-    formatFunction,
-    formatSample,
-    labelOf,
-    rowKey,
-    sampleKey,
-    sumMetric,
-    toRows,
-    type BreakdownTotals,
-  } from './metrics';
-  import {
-    DEFAULT_WINDOW_MINUTES,
-    FLOW_METRICS,
-    FLOW_WINDOWS,
-    denseAnswer,
-    furthestFromNormal,
-    lastClosedBucket,
-  } from './flow';
+  import { formatFunction, formatSample, sampleKey } from './metrics';
+  import { FLOW_METRICS, denseAnswer, furthestFromNormal, lastClosedBucket } from './flow';
   import { DEFAULT_VIEW, seriesQuery } from './metricsView';
   import { clockTime, count, shortCommit } from './time';
 
@@ -131,24 +117,6 @@
 
   const POLL_MS = 2000;
 
-  // Heartbeat counters are per-drain deltas (`Metrics::drain`), so each
-  // poll's raw value is already "activity since the last sample". Errors
-  // are the only rollup left on this page's own rolling window -- rows in
-  // and out now read the leader's own series (`flow.ts`), which survives
-  // a reload.
-  const MAX_HISTORY = 150; // ~5 minutes at POLL_MS
-  type HistoryPoint = { at: number; threads: Health['threads'] };
-  let history: HistoryPoint[] = $state([]);
-
-  // Totals per label combination, accumulated over the same window as the
-  // chart: the sparkline shows the trend, this says which pipeline it
-  // belongs to.
-
-  function recordHistory(health: Health) {
-    history.push({ at: Date.now(), threads: health.threads });
-    if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
-  }
-
   let selectedGroupId = $state<string | null>(null);
   let selectedWorkerId = $state<string | null>(null);
   // The runtime's parts, folded under its whole.
@@ -160,77 +128,93 @@
         ? `group ${selectedGroupId}`
         : 'whole fleet',
   );
-  function flowMatchesSelection(series: { group: string; workerId?: string | null }) {
-    if (selectedWorkerId) return series.workerId === selectedWorkerId;
-    if (selectedGroupId) return series.group === selectedGroupId;
-    return true;
+  /** The selected worker or group, as the labels a series must hold. */
+  function selectionFilter(): [string, string][] {
+    if (selectedWorkerId) return [['worker', selectedWorkerId]];
+    if (selectedGroupId) return [['group', selectedGroupId]];
+    return [];
   }
-  function threadsForSelection(threads: Health['threads']) {
-    if (selectedWorkerId) return threads.filter((thread) => thread.workerId === selectedWorkerId);
-    if (selectedGroupId) return threads.filter((thread) => thread.groupId === selectedGroupId);
-    return threads;
+
+  // -- exceptions: the leader's own series, over the panel's own range ----------
+
+  const EXCEPTIONS_METRIC = 'smeltr_rows_errored_total';
+
+  let exceptionsMinutes = $state(lastChartRange().minutes);
+  type ExceptionsRead = { at: number; total: SeriesAnswerDto; split: SeriesAnswerDto };
+  let exceptions = $state<ExceptionsRead | null>(null);
+  /** The request the newest exceptions fetch made, so an older answer does not land over it. */
+  let exceptionsAsked: string | null = null;
+
+  function fetchExceptions() {
+    const ask = seriesQuery(
+      { ...DEFAULT_VIEW, filter: selectionFilter(), windowMinutes: exceptionsMinutes },
+      EXCEPTIONS_METRIC,
+      0,
+    );
+    exceptionsAsked = ask;
+    const by = (labels: string) => {
+      const q = new URLSearchParams(ask);
+      q.set('by', labels);
+      return q.toString();
+    };
+    Promise.all([getSeries(ask), getSeries(by('group,pipeline,function,kind'))])
+      .then(([total, split]) => {
+        if (exceptionsAsked === ask) exceptions = { at: Date.now(), total, split };
+      })
+      .catch(() => {});
   }
-  let scopedErroredBy = $derived.by(() =>
-    history.reduce(
-      (totals, point) =>
-        addPoll(totals, threadsForSelection(point.threads), 'smeltr_rows_errored_total', [
-          'pipeline',
-          'function',
-          'kind',
-        ]),
-      {} as BreakdownTotals,
-    ),
+
+  /** The exceptions' line, per second, up to the last complete point. */
+  let exceptionsTo = $derived(
+    exceptions ? lastClosedBucket(exceptions.total.pointMillis, exceptions.at) : 0,
   );
-  let erroredRows = $derived(toRows(scopedErroredBy));
-  const erroredSort = new TableSort<'pipeline' | 'function' | 'kind' | 'rows'>();
-  let sortedErroredRows = $derived(
-    erroredSort.apply(erroredRows, {
-      pipeline: (r) => pipelineName(r.values[0]),
-      function: (r) => formatFunction(r.values[1]),
-      kind: (r) => r.values[2],
+  let exceptionSeries = $derived(exceptions ? denseAnswer(exceptions.total, exceptionsTo) : []);
+  let exceptionTimes = $derived(
+    exceptions
+      ? exceptionSeries.map(
+          (_, i) => exceptions!.total.fromMillis + i * exceptions!.total.pointMillis,
+        )
+      : [],
+  );
+  /** The exceptions of each pipeline, function and kind over the range; a pipeline is shown by its name. */
+  let exceptionRows = $derived.by(() => {
+    if (!exceptions) return [];
+    const seconds = exceptions.split.pointMillis / 1000;
+    const rows = new Map<
+      string,
+      { pipeline: string; function: string; kind: string; total: number }
+    >();
+    for (const s of exceptions.split.series) {
+      const [group, pipeline, fn, kind] = s.values;
+      const name = names.of(MAIN_BRANCH, group, 'pipelines', pipeline);
+      const key = JSON.stringify([name, fn, kind]);
+      const row = rows.get(key) ?? { pipeline: name, function: fn, kind, total: 0 };
+      row.total += s.points.reduce((a, [, v]) => a + v, 0) * seconds;
+      rows.set(key, row);
+    }
+    return [...rows.values()].map((r) => ({ ...r, total: Math.round(r.total) }));
+  });
+  let totalExceptions = $derived(exceptionRows.reduce((a, r) => a + r.total, 0));
+  const exceptionSort = new TableSort<'pipeline' | 'function' | 'kind' | 'rows'>();
+  let sortedExceptionRows = $derived(
+    exceptionSort.apply(exceptionRows, {
+      pipeline: (r) => r.pipeline,
+      function: (r) => formatFunction(r.function),
+      kind: (r) => r.kind,
       rows: (r) => r.total,
     }),
   );
 
-  /** The groups whose threads reported errors for each pipeline id over the window. */
-  let erroredGroups = $derived.by(() => {
-    const groups = new Map<string, Set<string>>();
-    for (const point of history)
-      for (const thread of threadsForSelection(point.threads))
-        for (const m of thread.metrics) {
-          if (m.metric !== 'smeltr_rows_errored_total') continue;
-          const id = labelOf(m, 'pipeline');
-          groups.set(id, (groups.get(id) ?? new Set()).add(thread.groupId));
-        }
-    return groups;
-  });
-  /** A pipeline by the name a group that ran it gives it on `main`, which is what its workers run. */
-  function pipelineName(id: string): string {
-    const named = [...(erroredGroups.get(id) ?? [])].map((g) =>
-      names.of(MAIN_BRANCH, g, 'pipelines', id),
-    );
-    return named.find((n) => n !== id) ?? id;
-  }
   /** What a person calls a row's pipeline or route: its name in its group on `main`. */
   const nameOf = (r: { group: string; subjectId: string }) =>
     kind === 'route' || kind === 'pipeline'
       ? names.of(MAIN_BRANCH, r.group, `${kind}s`, r.subjectId)
       : r.subjectId;
 
-  let erroredSeries = $derived(
-    history.map((point) =>
-      sumMetric(threadsForSelection(point.threads), 'smeltr_rows_errored_total'),
-    ),
-  );
-  let totalErrored = $derived(erroredSeries.reduce((a, b) => a + b, 0));
-  // What the total actually spans: `history` is a rolling window, not the
-  // life of the page.
-  const HISTORY_MINUTES = Math.round((MAX_HISTORY * POLL_MS) / 60_000);
-
   // -- flow (E2): the window-picked chart --------------------------------
 
-  let windowMinutes = $state(DEFAULT_WINDOW_MINUTES);
-  /** The table's totals and the sources' normals. */
+  let windowMinutes = $state(lastChartRange().minutes);
+  /** The sources' normals. */
   let flow: FlowResponseDto | null = $state(null);
 
   /** What the chart and the table count. */
@@ -241,62 +225,61 @@
   let picked: { group: string; subjectId: string } | null = $state(null);
 
   function fetchFlow() {
-    // Reads `windowMinutes`, so the effect below re-fetches the moment it changes rather than
-    // waiting for the next tick.
-    getFlow(windowMinutes)
+    getFlow()
       .then((f) => (flow = f))
       .catch(() => {
-        // Keep showing the last window rather than blanking a working table over one bad poll.
+        // Keep showing the last normals rather than blanking a working panel over one bad poll.
       });
   }
 
-  /** What the chart reads from `GET /api/series`: the picked row's in and out, or the fleet's,
-   * within the selected group or worker. */
-  let chartAsk = $derived.by(() => {
-    const selection: [string, string][] = selectedWorkerId
-      ? [['worker', selectedWorkerId]]
-      : selectedGroupId
-        ? [['group', selectedGroupId]]
-        : [];
-    const filter: [string, string][] = picked
-      ? [...selection, ['group', picked.group], [kind, picked.subjectId]]
-      : selection;
-    return { metrics: FLOW_METRICS[picked ? kind : 'fleet'], filter, selection, windowMinutes };
-  });
-  type FlowCharts = {
+  /** The labels a kind's table rows are told apart by: a route's also name its source and pipeline. */
+  const ROW_LABELS: Record<FlowKind, string> = {
+    source: 'group,source',
+    pipeline: 'group,pipeline',
+    route: 'group,route,source,pipeline',
+    destination: 'group,destination',
+  };
+
+  /** What the chart and the table read from `GET /api/series`, within the selected group or worker: the fleet's
+   * in and out, its sources told apart, and the shown kind's, its rows told apart. */
+  let flowAsk = $derived({ kind, filter: selectionFilter(), windowMinutes });
+  type FlowReads = {
     /** When they were read: the chart ends at the point before the one this falls in. */
     at: number;
-    rowsIn: SeriesAnswerDto;
-    rowsOut: SeriesAnswerDto;
-    bytesIn: SeriesAnswerDto;
-    bytesOut: SeriesAnswerDto;
-    /** The fleet's rows out within the selection, for the line at the top of the page. */
-    fleetOut: SeriesAnswerDto;
+    /** Rows in, rows out, bytes in and bytes out. */
+    fleet: SeriesAnswerDto[];
+    /** The same for `of`, the kind the table lists. */
+    kind: SeriesAnswerDto[];
+    of: FlowKind;
   };
-  let charts = $state<FlowCharts | null>(null);
-  /** The ask the newest fetch is for: an answer to an older one is for a chart no longer shown. */
-  let asked: typeof chartAsk | null = null;
+  let reads = $state<FlowReads | null>(null);
+  /** The request the newest fetch made: an answer to an older one is for a view no longer shown. */
+  let asked: typeof flowAsk | null = null;
 
-  function fetchCharts(ask: typeof chartAsk) {
+  function fetchReads(ask: typeof flowAsk) {
     asked = ask;
-    // On UTC's clock, as `/api/flow` totals the table, so a row's total is its chart's.
-    const read = (metric: string, filter: [string, string][]) =>
+    const read = (metric: string, by: string) =>
       getSeries(
-        seriesQuery({ ...DEFAULT_VIEW, filter, windowMinutes: ask.windowMinutes }, metric, 0),
+        seriesQuery(
+          { ...DEFAULT_VIEW, filter: ask.filter, by, windowMinutes: ask.windowMinutes },
+          metric,
+          0,
+        ),
       );
     Promise.all([
-      ...ask.metrics.map((metric) => read(metric, ask.filter)),
-      read(FLOW_METRICS.fleet[1], ask.selection),
+      Promise.all(FLOW_METRICS.fleet.map((m, i) => read(m, i === 0 ? ROW_LABELS.source : ''))),
+      Promise.all(FLOW_METRICS[ask.kind].map((m) => read(m, ROW_LABELS[ask.kind]))),
     ])
-      .then(([rowsIn, rowsOut, bytesIn, bytesOut, fleetOut]) => {
-        if (asked === ask)
-          charts = { at: Date.now(), rowsIn, rowsOut, bytesIn, bytesOut, fleetOut };
+      .then(([fleet, kind]) => {
+        if (asked === ask) reads = { at: Date.now(), fleet, kind, of: ask.kind };
       })
       .catch(() => {});
   }
 
-  // A new window, selection or pick reads the chart at once, paused or not.
-  $effect(() => fetchCharts(chartAsk));
+  // A new range, selection or kind reads at once, paused or not.
+  $effect(() => fetchReads(flowAsk));
+  // Likewise the exceptions panel's own range and the selection.
+  $effect(fetchExceptions);
 
   function pick(row: { group: string; subjectId: string } | null) {
     picked = row;
@@ -307,17 +290,15 @@
     pick(null);
   }
 
-  let pointMillis = $derived(charts?.rowsIn.pointMillis ?? 0);
-  let windowFrom = $derived(charts?.rowsIn.fromMillis ?? 0);
+  let pointMillis = $derived(reads?.fleet[0].pointMillis ?? 0);
+  let windowFrom = $derived(reads?.fleet[0].fromMillis ?? 0);
   /** Where the chart stops. The point covering now is still filling, so its total is only
    * what has landed so far -- drawn, it is a dip that fills itself in on the next poll. */
-  let windowTo = $derived(charts ? lastClosedBucket(pointMillis, charts.at) : 0);
+  let windowTo = $derived(reads ? lastClosedBucket(pointMillis, reads.at) : 0);
 
   /** The fleet line at the top of the page, which answers before the chart is reached: the
    * last point the chart draws. */
-  let nowOutRate = $derived(
-    charts ? (denseAnswer(charts.fleetOut, windowTo).at(-1) ?? null) : null,
-  );
+  let nowOutRate = $derived(reads ? (denseAnswer(reads.fleet[1], windowTo).at(-1) ?? null) : null);
   /** A rate, or `--` where the bucket that would carry it is missing. Not "0 rows/s": a
    * fleet nobody has heard from and a fleet moving nothing are different answers. A rate
    * under one takes two significant digits, the same count a grid step carries: rounding
@@ -332,10 +313,24 @@
 
   // Per second: the unit the rate line above the chart is in, and the only one that holds across
   // the picker -- a point is 10s at sixty minutes and six hours at thirty days.
-  const chartRates = (answer: SeriesAnswerDto | undefined) =>
-    answer ? denseAnswer(answer, windowTo) : [];
-  let chartIn = $derived(chartRates(unit === 'rows' ? charts?.rowsIn : charts?.bytesIn));
-  let chartOut = $derived(chartRates(unit === 'rows' ? charts?.rowsOut : charts?.bytesOut));
+  /** The picked row's series of `answer`, which the kind's labels tell apart by group then id. */
+  const pickedOf = (answer: SeriesAnswerDto) => ({
+    ...answer,
+    series: answer.series.filter(
+      (s) => s.values[0] === picked?.group && s.values[1] === picked.subjectId,
+    ),
+  });
+  /** The fleet's, or the picked row's, rows or bytes in (0) or out (1). */
+  const chartRates = (half: 0 | 1) => {
+    if (!reads) return [];
+    const at = (unit === 'rows' ? 0 : 2) + half;
+    return denseAnswer(
+      picked && reads.of === kind ? pickedOf(reads.kind[at]) : reads.fleet[at],
+      windowTo,
+    );
+  };
+  let chartIn = $derived(chartRates(0));
+  let chartOut = $derived(chartRates(1));
   let hasChartData = $derived(chartIn.some((v) => v !== null) || chartOut.some((v) => v !== null));
   /** Bytes are drawn in the unit the busiest bucket reads best in. */
   let chartScale = $derived(
@@ -356,7 +351,7 @@
     { value: 'route', label: 'Routes', one: 'route' },
     { value: 'destination', label: 'Destinations', one: 'destination' },
   ];
-  /** What each half counts, named for where it is counted (`leader::FlowKind::metrics`). The
+  /** What each half counts, named for where it is counted (`FLOW_METRICS`). The
    * fleet's out is what destinations delivered, which only a destination's own series carries. */
   const WORDS: Record<FlowKind, [string, string]> = {
     source: ['read', 'sent'],
@@ -374,19 +369,24 @@
     in: number;
     out: number;
   };
-  /** One row per object the selection holds, its workers' counts added. */
+  /** One row per object the selection holds, its workers' counts added: each point is a rate, so each is
+   * multiplied by the seconds it covers. */
   let tableRows = $derived.by(() => {
+    // Until the shown kind's answer lands, the last is another kind's.
+    if (!reads || reads.of !== kind) return [];
     const rows = new Map<string, TableRow>();
-    // An answer from before the leader totalled the window has none.
-    for (const t of flow?.totals ?? []) {
-      if (t.kind !== kind || !flowMatchesSelection(t)) continue;
-      const key = JSON.stringify([t.group, t.subjectId]);
-      const row = rows.get(key) ?? { group: t.group, subjectId: t.subjectId, in: 0, out: 0 };
-      row.source ??= t.source;
-      row.pipeline ??= t.pipeline;
-      row.in += unit === 'rows' ? t.rowsIn : t.bytesIn;
-      row.out += unit === 'rows' ? t.rowsOut : t.bytesOut;
-      rows.set(key, row);
+    for (const [half, answer] of [
+      [0, reads.kind[unit === 'rows' ? 0 : 2]],
+      [1, reads.kind[unit === 'rows' ? 1 : 3]],
+    ] as const) {
+      const seconds = answer.pointMillis / 1000;
+      for (const s of answer.series) {
+        const [group, subjectId, source, pipeline] = s.values;
+        const key = JSON.stringify([group, subjectId]);
+        const row = rows.get(key) ?? { group, subjectId, source, pipeline, in: 0, out: 0 };
+        row[half === 0 ? 'in' : 'out'] += s.points.reduce((a, [, v]) => a + v, 0) * seconds;
+        rows.set(key, row);
+      }
     }
     return [...rows.values()].sort((a, b) => b.in - a.in || b.out - a.out);
   });
@@ -424,22 +424,14 @@
   const readFrom = (dense: (number | null)[]) => (readSlot >= 0 ? (dense[readSlot] ?? null) : null);
 
   // -- furthest from normal (Main storyboard): each source's reading against the normal
-  // its warnings read, whatever window the chart shows. A source is in the selection when a
-  // total the selection holds counts it.
+  // its warnings read, whatever range the chart shows. A source is in the selection when the
+  // selection read rows from it.
 
   let normals = $derived.by(() => {
-    const read = flow;
-    return read === null
-      ? []
-      : read.normals.filter((n) =>
-          read.totals.some(
-            (t) =>
-              t.kind === 'source' &&
-              t.group === n.group &&
-              t.subjectId === n.subjectId &&
-              flowMatchesSelection(t),
-          ),
-        );
+    const read = reads?.fleet[0].series ?? [];
+    return (flow?.normals ?? []).filter((n) =>
+      read.some((s) => s.values[0] === n.group && s.values[1] === n.subjectId),
+    );
   });
   let ranked = $derived(furthestFromNormal(normals));
   const rankedSort = new TableSort<'name' | 'group' | 'now' | 'normal' | 'away'>();
@@ -476,7 +468,6 @@
       .then(([health, workers, workerGroups]) => {
         status = { health, workers, workerGroups };
         now = Date.now();
-        recordHistory(health);
       })
       .catch(reported)
       .finally(() => {
@@ -506,14 +497,13 @@
     return () => clearInterval(id);
   });
 
-  // Reading `windowMinutes` inside `fetchFlow` makes this effect depend on it, so changing
-  // the picker re-fetches immediately rather than waiting for the next tick.
   $effect(() => {
     if (!autoRefresh) return;
     fetchFlow();
     const id = setInterval(() => {
       fetchFlow();
-      fetchCharts(chartAsk);
+      fetchReads(flowAsk);
+      fetchExceptions();
     }, POLL_MS);
     return () => clearInterval(id);
   });
@@ -781,13 +771,12 @@
   function refreshNow() {
     refresh();
     fetchFlow();
-    fetchCharts(chartAsk);
+    fetchReads(flowAsk);
+    fetchExceptions();
   }
 
   function chooseWindow(minutes: number) {
     windowMinutes = minutes;
-    // The live effect reacts to the new window. Paused pages need the explicit fetch.
-    if (!autoRefresh) fetchFlow();
   }
 </script>
 
@@ -1221,17 +1210,17 @@
             ]}
             bind:value={unit}
           />
-          <Segmented
-            label="Chart window"
-            options={FLOW_WINDOWS.map((w) => ({ value: String(w.minutes), label: w.label }))}
-            bind:value={() => String(windowMinutes), (v) => chooseWindow(Number(v))}
+          <span class="dim">Over the last {rangeOfMinutes(windowMinutes)?.spoken}</span>
+          <RangePicker
+            range={rangeOfMinutes(windowMinutes)?.range ?? ''}
+            onpick={(r) => chooseWindow(chartRange(r).minutes)}
           />
         </div>
       </div>
-      {#if charts === null}
+      {#if reads === null}
         <p class="empty">Loading…</p>
       {:else if !hasChartData}
-        <p class="empty">No rows recorded in this window yet.</p>
+        <p class="empty">No rows recorded in this range yet.</p>
       {:else}
         <p class="rate">
           <span class="at mono">{readAt}</span>
@@ -1316,7 +1305,7 @@
           </table>
         </div>
       {:else}
-        <p class="empty">No rows recorded in this window yet.</p>
+        <p class="empty">No rows recorded in this range yet.</p>
       {/if}
     </section>
 
@@ -1382,50 +1371,58 @@
     </section>
 
     <div class="lower-grid">
-      <section class="panel errors">
+      <section class="panel exceptions">
         <div class="panel-head">
           <div>
             <h2>
-              Errors — {selectionLabel}
-              <Help label="Errors"
-                >Rows that failed to parse, compile or run in a pipeline's function.</Help
+              Exceptions — {selectionLabel}
+              <Help label="Exceptions"
+                >Exceptions raised by a pipeline's functions, counted per pipeline, function and
+                kind.</Help
               >
             </h2>
-            <p class="note">{totalErrored} in the last {HISTORY_MINUTES} minutes.</p>
+            <p class="note">{count(totalExceptions, 'exception')}.</p>
+          </div>
+          <div class="controls">
+            <span class="dim">Over the last {rangeOfMinutes(exceptionsMinutes)?.spoken}</span>
+            <RangePicker
+              range={rangeOfMinutes(exceptionsMinutes)?.range ?? ''}
+              onpick={(r) => (exceptionsMinutes = chartRange(r).minutes)}
+            />
           </div>
         </div>
-        {#if history.length >= 2}
+        {#if exceptions}
           <Sparkline
-            series={[{ label: 'rows errored', color: 'var(--error)', points: erroredSeries }]}
-            times={history.map((p) => p.at)}
+            series={[{ label: 'exceptions', color: 'var(--error)', points: exceptionSeries }]}
+            times={exceptionTimes}
           />
-        {:else}<p class="empty">Collecting data…</p>{/if}
-        {#if erroredRows.length > 0}
+        {:else}<p class="empty">Loading…</p>{/if}
+        {#if exceptionRows.length > 0}
           <div class="table-wrap">
             <table>
               <thead
                 ><tr
-                  ><th aria-sort={erroredSort.aria('pipeline')}
-                    ><SortButton sort={erroredSort} key="pipeline">Pipeline</SortButton></th
-                  ><th aria-sort={erroredSort.aria('function')}
-                    ><SortButton sort={erroredSort} key="function">Function</SortButton></th
-                  ><th aria-sort={erroredSort.aria('kind')}
-                    ><SortButton sort={erroredSort} key="kind">Kind</SortButton></th
-                  ><th class="num" aria-sort={erroredSort.aria('rows')}
-                    ><SortButton sort={erroredSort} key="rows">Rows</SortButton></th
+                  ><th aria-sort={exceptionSort.aria('pipeline')}
+                    ><SortButton sort={exceptionSort} key="pipeline">Pipeline</SortButton></th
+                  ><th aria-sort={exceptionSort.aria('function')}
+                    ><SortButton sort={exceptionSort} key="function">Function</SortButton></th
+                  ><th aria-sort={exceptionSort.aria('kind')}
+                    ><SortButton sort={exceptionSort} key="kind">Kind</SortButton></th
+                  ><th class="num" aria-sort={exceptionSort.aria('rows')}
+                    ><SortButton sort={exceptionSort} key="rows">Exceptions</SortButton></th
                   ></tr
                 ></thead
               >
               <tbody
-                >{#each sortedErroredRows as r (rowKey(r))}<tr
-                    ><td>{pipelineName(r.values[0])}</td><td
-                      ><code>{formatFunction(r.values[1])}</code></td
-                    ><td>{r.values[2]}</td><td class="num">{r.total}</td></tr
+                >{#each sortedExceptionRows as r (`${r.pipeline} ${r.function} ${r.kind}`)}<tr
+                    ><td>{r.pipeline}</td><td><code>{formatFunction(r.function)}</code></td><td
+                      >{r.kind}</td
+                    ><td class="num">{r.total.toLocaleString()}</td></tr
                   >{/each}</tbody
               >
             </table>
           </div>
-        {:else}<p class="empty">No errors recorded.</p>{/if}
+        {:else}<p class="empty">No exceptions recorded.</p>{/if}
       </section>
     </div>
   {/if}
@@ -2026,6 +2023,7 @@
   }
   .controls {
     display: flex;
+    align-items: center;
     gap: 0.5rem;
     flex-wrap: wrap;
   }

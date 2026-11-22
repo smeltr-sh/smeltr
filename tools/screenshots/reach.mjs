@@ -6,7 +6,7 @@
 /** Pickers whose every choice is visited. A `Segmented` holds a page's or a form's own state; the chart range picker
  * moves the link, so each range is a page too, and is opened before its choices show. */
 const SEGMENTED = '.seg[role=group] button:not(:disabled)';
-const OPENED = [{ face: 'button[aria-label="Chart range"]', choice: '[popover] button.pick' }];
+const OPENED = [{ face: 'button[aria-label="Chart range"] >> nth=0', choice: '[popover] button.pick' }];
 /** A table row that narrows the page to itself, as the Status page's Totals narrow its chart. */
 const ROW = 'td button.pick';
 

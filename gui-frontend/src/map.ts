@@ -17,6 +17,7 @@ import type {
   UnmatchedStreamsDto,
 } from './api';
 import { TERM_FIELDS, termFor, termsFor } from './mapTerms';
+import { store, stored } from './stored';
 
 // -- identity -------------------------------------------------------------
 //
@@ -54,18 +55,41 @@ export function statsHash(
 }
 
 /** How far back a panel's charts reach, by the name the link carries. */
-export const CHART_RANGES: { range: string; label: string; minutes: number }[] = [
-  { range: '10m', label: '10 min', minutes: 10 },
-  { range: '1h', label: '1 hour', minutes: 60 },
-  { range: '6h', label: '6 hours', minutes: 6 * 60 },
-  { range: '24h', label: '24 hours', minutes: 24 * 60 },
-  { range: '7d', label: '7 days', minutes: 7 * 24 * 60 },
-  { range: '30d', label: '30 days', minutes: 30 * 24 * 60 },
+export const CHART_RANGES: {
+  range: string;
+  label: string;
+  /** How a sentence names the range after "the last". */
+  spoken: string;
+  minutes: number;
+}[] = [
+  { range: '10m', label: '10 min', spoken: '10 minutes', minutes: 10 },
+  { range: '1h', label: '1 hour', spoken: 'hour', minutes: 60 },
+  { range: '6h', label: '6 hours', spoken: '6 hours', minutes: 6 * 60 },
+  { range: '24h', label: '24 hours', spoken: '24 hours', minutes: 24 * 60 },
+  { range: '7d', label: '7 days', spoken: '7 days', minutes: 7 * 24 * 60 },
+  { range: '30d', label: '30 days', spoken: '30 days', minutes: 30 * 24 * 60 },
 ];
 
-/** Ten minutes is short enough that it is about now rather than about today, which is what someone
- * who just clicked a node is asking. */
-export const DEFAULT_CHART_RANGE = '10m';
+/** The range every picker opens on before one is picked in this browser. */
+export const DEFAULT_CHART_RANGE = '1h';
+
+/** Where this browser keeps the range last picked or shown, which every picker opens on. */
+const RANGE_KEY = 'smeltr.map.chartRange';
+
+/** The range last picked or shown in this browser, or the default before any. */
+export function lastChartRange(): (typeof CHART_RANGES)[number] {
+  return chartRange(stored(RANGE_KEY) ?? undefined);
+}
+
+/** Makes `range` the one every picker opens on in this browser. */
+export function rememberChartRange(range: string): void {
+  store(RANGE_KEY, range);
+}
+
+/** The range `minutes` long, or `undefined` where no range is. */
+export function rangeOfMinutes(minutes: number): (typeof CHART_RANGES)[number] | undefined {
+  return CHART_RANGES.find((r) => r.minutes === minutes);
+}
 
 /** The range a link names, or the default for one it does not. */
 export function chartRange(range: string | undefined): (typeof CHART_RANGES)[number] {
