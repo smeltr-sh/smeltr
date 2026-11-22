@@ -1422,6 +1422,8 @@ fn dto_keys(enum_name: &str) -> std::collections::BTreeMap<String, std::collecti
             text.push_str(&std::fs::read_to_string(file.unwrap().path()).unwrap());
         }
     }
+    // A Windows checkout has CRLF endings, and the alias regex's `$` matches only before `\n`.
+    let text = text.replace("\r\n", "\n");
     // `pub type S3ListSourceDto = ObjectSourceDto<BucketDto, S3AccessDto, ListingDto>;`
     let alias = regex::Regex::new(r"(?m)^pub type (\w+) = (\w+)<(.+)>;$").unwrap();
     let body = |head: &str| -> Vec<String> {
