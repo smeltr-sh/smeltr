@@ -275,8 +275,8 @@ struct Waiting {
 
 /// What a lane had for the pool.
 enum ParkedTake {
-    /// A batch to run, or to hand over again.
-    Batch(Undelivered),
+    /// A batch to run, or to hand over again. Boxed: it carries its rows, and the other answers are small.
+    Batch(Box<Undelivered>),
     /// The oldest parked batch waits on a queue with no room, so nothing on this lane may run: it is older than
     /// everything behind it, and a batch behind it would meet the same queue.
     Waiting(Waiting),
@@ -405,7 +405,7 @@ impl Lane {
         {
             return ParkedTake::Waiting(w);
         }
-        ParkedTake::Batch(parked.retry.pop_front().expect("front was just seen"))
+        ParkedTake::Batch(Box::new(parked.retry.pop_front().expect("front was just seen")))
     }
 
     /// Record that the reader has been told, if the oldest parked batch is still the one waiting on `dest` since
