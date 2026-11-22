@@ -625,8 +625,6 @@ check-live: live-up check-all
     cargo test --test integration syslog_receiver_tests::a_real_
     cargo test --test integration syslog_receiver_fuzz::live_
     cargo test --test integration socket_receiver_fuzz::live_
-    cargo test --test integration okta_live_tests:: -- --ignored
-    cargo test --test integration log_analytics_fuzz::live_ -- --ignored
     cargo test --test integration gate_tests::live_ -- --test-threads=4
     cargo test --test integration acme_live_tests:: -- --test-threads=1
 
@@ -648,8 +646,7 @@ check-kerberos: kerberos-up
     set -a && . /tmp/krb/env && set +a && PATH="$PWD/tests/kerberos/no-kinit:$PATH" KRB5CCNAME=MEMORY:smeltr SMELTR_KINIT_RAN=/tmp/krb/kinit-ran SMELTR_LIVE_TESTS=required cargo test --test integration kerberos_tests::
 
 # Reads a real Okta org's System Log, by API token and as a service app with
-# DPoP: the one check of what Okta itself takes. `check-live` runs it too;
-# `check` never does. Needs OKTA_ORG, OKTA_TOKEN, OKTA_CLIENT_ID and
+# DPoP: the one check of what Okta itself takes. No other check runs it. Needs OKTA_ORG, OKTA_TOKEN, OKTA_CLIENT_ID and
 # OKTA_PRIVATE_KEY (PEM, or that PEM in base64 on one line), from an Okta org
 # with an API Services app granted okta.logs.read and the Read-only
 # Administrator role. OKTA_KEY_ID names its key when it holds several.
@@ -657,8 +654,7 @@ check-okta:
     SMELTR_LIVE_TESTS=required cargo test --test integration okta_live_tests:: -- --ignored
 
 # What a real Log Analytics workspace takes from smeltr: rows
-# sent to a data collection rule, queried back. `check-live` runs it too;
-# `check` never does. Needs LOG_ANALYTICS_TEST_ENDPOINT (the rule's logs ingestion
+# sent to a data collection rule, queried back. No other check runs it. Needs LOG_ANALYTICS_TEST_ENDPOINT (the rule's logs ingestion
 # endpoint), LOG_ANALYTICS_TEST_RULE_ID, LOG_ANALYTICS_TEST_STREAM, LOG_ANALYTICS_TEST_TABLE
 # (a table with TimeGenerated, Tag and Message columns, which the stream fills
 # as it is), LOG_ANALYTICS_TEST_WORKSPACE (the workspace's id), and

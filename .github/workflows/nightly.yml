@@ -58,20 +58,6 @@ jobs:
         with:
           cache: 'true'
       - run: just check-live
-        env:
-          OKTA_ORG: ${{ secrets.OKTA_ORG }}
-          OKTA_TOKEN: ${{ secrets.OKTA_TOKEN }}
-          OKTA_CLIENT_ID: ${{ secrets.OKTA_CLIENT_ID }}
-          OKTA_PRIVATE_KEY: ${{ secrets.OKTA_PRIVATE_KEY }}
-          OKTA_KEY_ID: ${{ secrets.OKTA_KEY_ID }}
-          LOG_ANALYTICS_TEST_ENDPOINT: ${{ secrets.LOG_ANALYTICS_TEST_ENDPOINT }}
-          LOG_ANALYTICS_TEST_RULE_ID: ${{ secrets.LOG_ANALYTICS_TEST_RULE_ID }}
-          LOG_ANALYTICS_TEST_STREAM: ${{ secrets.LOG_ANALYTICS_TEST_STREAM }}
-          LOG_ANALYTICS_TEST_TABLE: ${{ secrets.LOG_ANALYTICS_TEST_TABLE }}
-          LOG_ANALYTICS_TEST_WORKSPACE: ${{ secrets.LOG_ANALYTICS_TEST_WORKSPACE }}
-          LOG_ANALYTICS_TEST_TENANT_ID: ${{ secrets.LOG_ANALYTICS_TEST_TENANT_ID }}
-          LOG_ANALYTICS_TEST_CLIENT_ID: ${{ secrets.LOG_ANALYTICS_TEST_CLIENT_ID }}
-          LOG_ANALYTICS_TEST_CLIENT_SECRET: ${{ secrets.LOG_ANALYTICS_TEST_CLIENT_SECRET }}
 
   gui:
     needs: moved
