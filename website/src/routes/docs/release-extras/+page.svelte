@@ -14,9 +14,9 @@
   <h1>Release extras</h1>
   <p>
     Each release carries <code>smeltr-extras.zip</code> beside its downloads. It holds the container image
-    as a file, and the software bill of materials (SBOM) and scan reports for that image. Before you unzip
-    it, compare its SHA-256 checksum with the one shown beside it on the release page, and stop if it
-    differs.
+    for each architecture as a file, and the software bill of materials (SBOM) and scan reports for each
+    image. Before you unzip it, compare its SHA-256 checksum with the one shown beside it on the release
+    page, and stop if it differs.
   </p>
 
   <h2 id="files">What the extras hold</h2>
@@ -56,6 +56,11 @@
       </tbody>
     </table>
   </div>
+  <p>
+    Each file has an Arm64 version, with <code>-arm64</code> added to the name before the extension:
+    <code>smeltr-image-arm64.tar.gz</code>, <code>smeltr-sbom-arm64.cdx.json</code>,
+    <code>smeltr-stig-arm64.html</code> and <code>smeltr-cves-arm64.txt</code>.
+  </p>
 
   <h2 id="reports">Read the reports</h2>
   <p>

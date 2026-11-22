@@ -149,7 +149,8 @@ handoff: need-docker
 
 # A release, from a commit with nothing uncommitted, so its version names a commit anyone can check out:
 # the handoff tarball (binary, license, notices) as `smeltr-linux.tar.gz`, the image built from it as
-# `smeltr-image.tar.gz`, and SHA256SUMS over both. Any branch builds one; the release workflow holds a published
+# `smeltr-image.tar.gz`, and SHA256SUMS over both. An arm64 machine names them `smeltr-linux-arm64.tar.gz` and
+# `smeltr-image-arm64.tar.gz`. Any branch builds one; the release workflow holds a published
 # release to `main`. On Windows, `smeltr-windows.zip` of the binary, the license and the notices, and SHA256SUMS
 # over it. The file names carry no version, so a link to the newest release's file never changes; the release
 # they are attached to, the binary and the image's tags carry it. On a commit tagged `v1.2.0` the image is
@@ -162,11 +163,12 @@ dist: need-docker committed handoff
       && r=$(git tag --points-at HEAD --list 'v[0-9]*') \
       && { test "$(echo "$r" | wc -w)" -le 1 || { echo "more than one v* tag on this commit: $r" >&2; exit 1; }; } \
       && n=${r#v} && n=${n:-$v} \
-      && mv "smeltr-$v.tar.gz" smeltr-linux.tar.gz \
+      && case $(uname -m) in x86_64) a= ;; aarch64) a=-arm64 ;; *) echo "no release for $(uname -m)" >&2; exit 1 ;; esac \
+      && mv "smeltr-$v.tar.gz" "smeltr-linux$a.tar.gz" \
       && docker build --build-arg VERSION="$n" -t smeltr:latest -t "smeltr:$(echo "$n" | tr + -)" handoff \
-      && docker save -o smeltr-image.tar smeltr:latest "smeltr:$(echo "$n" | tr + -)" \
-      && gzip -f smeltr-image.tar \
-      && sha256sum smeltr-linux.tar.gz smeltr-image.tar.gz | tee SHA256SUMS
+      && docker save -o "smeltr-image$a.tar" smeltr:latest "smeltr:$(echo "$n" | tr + -)" \
+      && gzip -f "smeltr-image$a.tar" \
+      && sha256sum "smeltr-linux$a.tar.gz" "smeltr-image$a.tar.gz" | tee SHA256SUMS
 
 # DISA's GPOS SRG (Chainguard's profile for Wolfi), scanned against an image: `stig/report.html` and the rule-by-rule `stig/results.txt`. A
 # report, not a gate. `dist` tags the image it builds `smeltr:latest`.
@@ -205,7 +207,7 @@ image-tests image="smeltr:latest": need-docker kerberos-up tls-up
     docker build --target tests-archive --output type=local,dest=target/image-tests .
     cp -r /tmp/krb /tmp/smeltr-tls target/image-tests/ && chmod -R a+rX target/image-tests/krb target/image-tests/smeltr-tls
     export SMELTR_TEST_IMAGE={{image}} SMELTR_TEST_SOURCE="$PWD" SMELTR_TEST_DIR="$PWD/target/image-tests" \
-        CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="$PWD/tools/image-test-runner.sh" \
+        "CARGO_TARGET_$(uname -m | tr a-z A-Z)_UNKNOWN_LINUX_GNU_RUNNER=$PWD/tools/image-test-runner.sh" \
       && run="cargo nextest run --archive-file target/image-tests/tests.tar.zst --workspace-remap . --extract-to target/image-tests/archive --extract-overwrite" \
       && $run \
       && set -a && . /tmp/krb/env && . /tmp/smeltr-tls/env && set +a \
