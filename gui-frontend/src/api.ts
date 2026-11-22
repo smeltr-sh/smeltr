@@ -4759,11 +4759,13 @@ export type ParserShapeDto = {
 
 type StreamsDto = { parsers: ParserShapeDto[]; unmatched: UnmatchedStreamsDto[] };
 
-/** `GET /api/streams` at the groups that run `scope`: its own group, or every group for `shared`. */
-function streamsAt(scope: string): Promise<StreamsDto> {
+/** `GET /api/streams` at the groups that run `scope`: its own group, or every group for `shared`. A Parser's counts
+ * are those of the last `windowMinutes`, or of every bucket the leader keeps when it is absent. */
+function streamsAt(scope: string, windowMinutes?: number): Promise<StreamsDto> {
   const at = (g: { groupId: string }) => scope === SHARED_SCOPE || g.groupId === scope;
+  const query = windowMinutes === undefined ? '' : `?windowMinutes=${windowMinutes}`;
   // Best-effort everywhere it is read: what production saw is offered, never needed.
-  return apiJson<StreamsDto>('/api/streams', undefined, 'quiet').then((r) => ({
+  return apiJson<StreamsDto>(`/api/streams${query}`, undefined, 'quiet').then((r) => ({
     parsers: r.parsers.filter(at),
     unmatched: r.unmatched.filter(at),
   }));
@@ -4774,9 +4776,10 @@ export function streamsIn(scope: string): Promise<UnmatchedStreamsDto[]> {
   return streamsAt(scope).then((r) => r.unmatched);
 }
 
-/** What the Parser steps of `scope`'s pipelines produced in production, at the groups that run `scope`. */
-export function parsersIn(scope: string): Promise<ParserShapeDto[]> {
-  return streamsAt(scope).then((r) => r.parsers);
+/** What the Parser steps of `scope`'s pipelines produced in production over the last `windowMinutes`, at the groups
+ * that run `scope`. */
+export function parsersIn(scope: string, windowMinutes: number): Promise<ParserShapeDto[]> {
+  return streamsAt(scope, windowMinutes).then((r) => r.parsers);
 }
 
 // -- object stats (design doc "The map": the focus view) -------------------

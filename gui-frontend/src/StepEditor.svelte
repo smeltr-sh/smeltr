@@ -32,6 +32,8 @@
   import Locked from './Locked.svelte';
   import SeparatorInput from './SeparatorInput.svelte';
   import ChipPicker from './ChipPicker.svelte';
+  import RangePicker from './RangePicker.svelte';
+  import { chartRange } from './map';
   import MoreIcon from './MoreIcon.svelte';
   import DisableIcon from './DisableIcon.svelte';
   import CrossButton from './CrossButton.svelte';
@@ -469,11 +471,15 @@
           <strong>Suggested</strong> from {#if p.result}<code>{open.sampleName}</code
             >{sampleRowCount === undefined ? '' : `, ${count(sampleRowCount, 'row')}`}{production
               ? ', and '
-              : ''}{/if}{#if production}production, {count(production.rows, 'row')}, last seen {ago(
+              : ''}{/if}{#if production}{p.result ? 'from ' : ''}production, {count(
+              production.rows,
+              'row',
+            )} over the last {chartRange(open.range).label}, last seen {ago(
               production.lastSeenMs / 1000,
             )}{/if}
         {/if}
       </span>
+      {#if production}<RangePicker range={open.range} onpick={open.onRange} />{/if}
       {#if addable.length > 0}
         <button
           type="button"

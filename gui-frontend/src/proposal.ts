@@ -121,8 +121,14 @@ export interface OpenProposal {
   step: Step;
   proposal: FieldProposal;
   sampleName: string;
+  /** How far back production is read, by its `CHART_RANGES` name. */
+  range: string;
+  onRange: (range: string) => void;
   onClose: () => void;
 }
+
+/** Where a proposal reads production from: far enough back to see a field that arrives a few times a week. */
+export const PRODUCTION_RANGE = '7d';
 
 /** One proposed field, and its declaration as the author edits it before adding it: `null` where this builder
  * cannot express its shape. */

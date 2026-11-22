@@ -27,7 +27,7 @@
 
 <script lang="ts">
   import Button, { FIRST_PAGE, LAST_PAGE } from './Button.svelte';
-  import { CHART_RANGES, chartRange, type SourceGap } from './map';
+  import { chartRange, type SourceGap } from './map';
   import {
     conditionLabel,
     errorMessage,
@@ -61,8 +61,7 @@
   import PresetPicker from './PresetPicker.svelte';
   import Sparkline from './Sparkline.svelte';
   import WarningList from './WarningList.svelte';
-  import ChipPicker from './ChipPicker.svelte';
-  import ClockIcon from './ClockIcon.svelte';
+  import RangePicker from './RangePicker.svelte';
   import { byteUnit, bytes } from './bytes';
   import WidenIcon from './WidenIcon.svelte';
   import Figure from './Figure.svelte';
@@ -148,7 +147,6 @@
 
   /** What the answer is drawn over. */
   let chart = $derived(chartRange(range));
-  let rangeOpen = $state(false);
 
   /** Workers on one page of the Buffers tab: a fleet's worth would bury the busiest. A wide panel
    * has room for more of them. */
@@ -952,20 +950,7 @@
 {/snippet}
 
 {#snippet rangePicker()}
-  <ChipPicker kind="row" compact ariaLabel="Chart range" title="Chart range" bind:open={rangeOpen}>
-    {#snippet face()}<ClockIcon />{/snippet}
-    {#each CHART_RANGES as r (r.range)}
-      <button
-        type="button"
-        class="pick"
-        class:on={r.range === chart.range}
-        onclick={() => {
-          rangeOpen = false;
-          location.hash = rangeHash(r.range);
-        }}>{r.label}</button
-      >
-    {/each}
-  </ChipPicker>
+  <RangePicker range={chart.range} onpick={(r) => (location.hash = rangeHash(r))} />
 {/snippet}
 
 {#snippet overWindow(

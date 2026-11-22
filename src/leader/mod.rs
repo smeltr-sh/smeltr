@@ -1724,10 +1724,24 @@ impl StreamsResponse {
     }
 }
 
+/// `GET /api/streams`'s query: how far back a Parser's counts reach, in minutes; by default, every bucket kept.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StreamsQuery {
+    #[serde(default = "max_window_minutes")]
+    window_minutes: i64,
+}
+
+fn max_window_minutes() -> i64 {
+    MAX_WINDOW_MINUTES
+}
+
 async fn get_streams(
     State(state): State<AppState>,
     axum::Extension(access): axum::Extension<access::Access>,
+    Query(query): Query<StreamsQuery>,
 ) -> Result<Envelope<StreamsResponse>, Refusal> {
+    let since_ms = warnings::now_millis() - query.window_minutes.clamp(1, MAX_WINDOW_MINUTES) * 60_000;
     let registry = state.registry.clone();
     let data_dir = state.data_dir.clone();
     // Off the runtime's threads: a blocking read behind the lock every heartbeat's write takes, and the bundles read
@@ -1736,7 +1750,7 @@ async fn get_streams(
         let Some(store) = registry.series() else {
             return Ok(series::StoredStreams::default());
         };
-        let mut stored = store.streams()?;
+        let mut stored = store.streams(since_ms)?;
         stream_conditions(&data_dir, &mut stored.unmatched);
         // `recent` is what the `StreamUnrouted` warning names: the same rows, read by the same rule.
         let deployed = deployed_configs(&data_dir, &deployed_groups(&data_dir));
