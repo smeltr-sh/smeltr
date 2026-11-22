@@ -8,7 +8,6 @@
 import {
   SHARED_SCOPE,
   recordLine,
-  runTests,
   sampleSource,
   scopedKey,
   type ConfigSection,
@@ -685,12 +684,6 @@ export type Standing = 'failing' | 'error' | 'passing';
 
 export function standingOf(r: TestResult): Standing {
   return r.error ? 'error' : r.verdict?.passed ? 'passing' : 'failing';
-}
-
-/** Runs tests `ids` on the branch, and says where each stands, by id. */
-export async function standingsOf(ids: string[]): Promise<Record<string, Standing>> {
-  const res = await runTests({ ids });
-  return Object.fromEntries(res.results.map((r) => [r.id, standingOf(r)]));
 }
 
 /** "dst, src on 5 rows": what a test checks. */

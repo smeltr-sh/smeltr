@@ -112,7 +112,8 @@
   import { setFunctionUsage } from './usage.svelte';
   import { ask } from './Confirm.svelte';
   import { errors, reported, unreported } from './errors.svelte';
-  import { canonicalJson, standingsOf, type Standing } from './objectChanges';
+  import { canonicalJson } from './objectChanges';
+  import { Standings } from './standings.svelte';
   import SaveConflictPanel from './SaveConflict.svelte';
   import HeldEdit from './HeldEdit.svelte';
   import { hold, verdictFor, drop } from './edits';
@@ -615,6 +616,7 @@
         ...(submittedProduces.length > 0 ? { produces: submittedProduces } : {}),
       });
       if (res.ok) {
+        const savedFrom = pipelineId;
         loadedId = targetId;
         saveMessage = 'Saved.';
         savedSignature = editSignatureOf(submittedName, submittedSteps, submittedProduces);
@@ -625,7 +627,8 @@
         // Clear the draft under the URL this save was submitted from,
         // including `#/build/pipelines/new` on a new pipeline's first save.
         drop(`pipelines/${savingId}`);
-        void runOwnTests();
+        // A save that changes `pipelineId` leaves the tests to the effect on `pipelineId`.
+        if (pipelineId === savedFrom) void runOwnTests();
         if (back) location.hash = withPipeline(back, targetId);
         else if (id !== targetId) {
           location.hash = `#/build/pipelines/${encodeURIComponent(targetId)}${showJson ? '/json' : ''}`;
@@ -678,6 +681,7 @@
       ...(parsed.produces.length > 0 ? { produces: parsed.produces } : {}),
     });
     if (res.ok) {
+      const savedFrom = pipelineId;
       pipelineName = parsed.pipelineName;
       steps = parsed.steps;
       produces = parsed.produces;
@@ -688,7 +692,7 @@
       savedProduces = [...parsed.produces];
       readAtCommit = res.commit ?? null;
       drop(`pipelines/${id}`);
-      void runOwnTests();
+      if (pipelineId === savedFrom) void runOwnTests();
       if (back) location.hash = withPipeline(back, targetId);
       else if (id !== targetId) {
         location.hash = `#/build/pipelines/${encodeURIComponent(targetId)}/json`;
@@ -786,20 +790,11 @@
     .then((res) => (tests = res.tests))
     .catch(() => {});
 
-  // Where each of this pipeline's tests stands on the branch, for the sample menu: run when the pipeline opens and
-  // after each save, so the marks are the saved pipeline's. A viewer runs none. A run that fails leaves the marks
-  // off.
-  let standings: Record<string, Standing> | undefined = $state();
-  let standingsRun = 0;
-  async function runOwnTests() {
-    const ids = tests.filter((t) => t.pipeline === pipelineId).map((t) => t.id);
-    const run = ++standingsRun;
-    standings = undefined;
-    if (readOnly || ids.length === 0) return;
-    standings = {};
-    const found = await standingsOf(ids).catch(() => undefined);
-    if (run === standingsRun) standings = found;
-  }
+  // Where each of this pipeline's tests stands, for the sample menu: run when the pipeline opens and after each save,
+  // so the marks are the saved pipeline's.
+  const standings = new Standings();
+  const runOwnTests = () =>
+    standings.run(tests.filter((t) => t.pipeline === pipelineId).map((t) => t.id));
   $effect(() => {
     void [tests, pipelineId];
     untrack(() => void runOwnTests());
@@ -1785,7 +1780,7 @@
             tests={tests
               .filter((t) => t.pipeline === pipelineId)
               .map((t) => ({ id: t.id, name: t.name, sample: t.sample }))}
-            {standings}
+            standings={standings.of}
             test={relocking ? opened!.test : ''}
             ontest={openTest}
             held={choices.menuHeld}
