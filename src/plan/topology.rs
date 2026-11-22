@@ -137,9 +137,58 @@ pub struct SourceMeta {
     encoding: Encoding,
 }
 
-/// The fields of a source's record, each with its type, in slot order. A source's own kinds declare theirs in a
+/// The entries of a source's record, each with its type, in slot order. A source's own kinds declare theirs in a
 /// `const`; a source whose record is configured declares it when it is built.
-pub type RecordFields = std::borrow::Cow<'static, [(std::borrow::Cow<'static, str>, DataType)]>;
+pub type RecordFields = std::borrow::Cow<'static, [(Entry, DataType)]>;
+
+/// One entry of a record: a field, by its name, or the unclaimed fields of an open object, by the object's name. The
+/// root's name is `""`.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum Entry {
+    Field(std::borrow::Cow<'static, str>),
+    Unclaimed(std::borrow::Cow<'static, str>),
+}
+
+/// The entry as a place in the name tree: a field's name, or `object.*` for an object's unclaimed fields.
+impl std::fmt::Display for Entry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.place().fmt(f)
+    }
+}
+
+impl Entry {
+    /// The field's name, or `None` for an object's unclaimed fields.
+    pub fn field(&self) -> Option<&str> {
+        match self {
+            Entry::Field(name) => Some(name),
+            Entry::Unclaimed(_) => None,
+        }
+    }
+
+    /// The keys of the field, or of the object whose unclaimed fields it is.
+    pub fn keys(&self) -> Vec<String> {
+        let (Entry::Field(name) | Entry::Unclaimed(name)) = self;
+        crate::plan::tree::object_keys(name)
+            .map(std::borrow::Cow::into_owned)
+            .collect()
+    }
+
+    /// Its place in the compiler's name tree.
+    pub fn place(&self) -> crate::plan::tree::Place {
+        match self {
+            Entry::Field(name) => crate::plan::tree::Place::Leaf(name.to_string()),
+            Entry::Unclaimed(object) => crate::plan::tree::Place::Unclaimed(object.to_string()),
+        }
+    }
+
+    /// The name a capture gives its column (`tree::unclaimed_entry` for an object's unclaimed fields).
+    pub fn column(&self) -> String {
+        match self {
+            Entry::Field(name) => name.to_string(),
+            Entry::Unclaimed(object) => crate::plan::tree::unclaimed_entry(object),
+        }
+    }
+}
 
 /// The `__source` field holding each record's payload as the source read it, before any decoding.
 pub const SOURCE_BYTES: &str = "__source.bytes";
@@ -151,7 +200,8 @@ pub const DOC_ID: &str = "__destination.id";
 const TOPIC_FIELDS: [&str; 4] = ["__source.topic", "__source.url", "__source.remote", "__source.database"];
 
 /// The record of a source whose client hands over payloads: the payload, decoded with the source's encoding.
-const PAYLOAD_RECORD: RecordFields = std::borrow::Cow::Borrowed(&[(std::borrow::Cow::Borrowed("_raw"), DataType::Str)]);
+const PAYLOAD_RECORD: RecordFields =
+    std::borrow::Cow::Borrowed(&[(Entry::Field(std::borrow::Cow::Borrowed("_raw")), DataType::Str)]);
 
 /// Every source names itself and its kind. `MetricsSource` also stamps a fixed `__source.topic` (`metrics::METRICS_TOPIC`) so a route can select metrics rows like any
 /// other source's. Its partition and offset are a constant and a counter, carried for the commit tracker and
@@ -231,40 +281,67 @@ const ELASTIC_RECEIVER_FIELDS: &[(&str, DataType)] = &[
 /// a double, bytes, a list or a map. Its times are microseconds, the finest a datetime holds. Each field is null where
 /// the log record leaves it unset.
 const OTLP_LOG: RecordFields = std::borrow::Cow::Borrowed(&[
-    (std::borrow::Cow::Borrowed("time"), DataType::DateTime),
-    (std::borrow::Cow::Borrowed("observedTime"), DataType::DateTime),
-    (std::borrow::Cow::Borrowed("severityNumber"), DataType::I64),
-    (std::borrow::Cow::Borrowed("severityText"), DataType::Str),
-    (std::borrow::Cow::Borrowed("body"), DataType::Variant),
-    (std::borrow::Cow::Borrowed("attributes"), DataType::Variant),
-    (std::borrow::Cow::Borrowed("traceId"), DataType::Str),
-    (std::borrow::Cow::Borrowed("spanId"), DataType::Str),
-    (std::borrow::Cow::Borrowed("flags"), DataType::I64),
-    (std::borrow::Cow::Borrowed("eventName"), DataType::Str),
-    (std::borrow::Cow::Borrowed("droppedAttributesCount"), DataType::I64),
+    (Entry::Field(std::borrow::Cow::Borrowed("time")), DataType::DateTime),
+    (
+        Entry::Field(std::borrow::Cow::Borrowed("observedTime")),
+        DataType::DateTime,
+    ),
+    (
+        Entry::Field(std::borrow::Cow::Borrowed("severityNumber")),
+        DataType::I64,
+    ),
+    (Entry::Field(std::borrow::Cow::Borrowed("severityText")), DataType::Str),
+    (Entry::Field(std::borrow::Cow::Borrowed("body")), DataType::Variant),
+    (
+        Entry::Field(std::borrow::Cow::Borrowed("attributes")),
+        DataType::Variant,
+    ),
+    (Entry::Field(std::borrow::Cow::Borrowed("traceId")), DataType::Str),
+    (Entry::Field(std::borrow::Cow::Borrowed("spanId")), DataType::Str),
+    (Entry::Field(std::borrow::Cow::Borrowed("flags")), DataType::I64),
+    (Entry::Field(std::borrow::Cow::Borrowed("eventName")), DataType::Str),
+    (
+        Entry::Field(std::borrow::Cow::Borrowed("droppedAttributesCount")),
+        DataType::I64,
+    ),
 ]);
 
 /// An OTLP span, each field typed as OTLP types it: `kind` and `statusCode` its enums' numbers, `attributes` and the
 /// `events` and `links` lists variants that keep each value's own type. Each field is null where the span leaves it
 /// unset.
 const OTLP_SPAN: RecordFields = std::borrow::Cow::Borrowed(&[
-    (std::borrow::Cow::Borrowed("traceId"), DataType::Str),
-    (std::borrow::Cow::Borrowed("spanId"), DataType::Str),
-    (std::borrow::Cow::Borrowed("parentSpanId"), DataType::Str),
-    (std::borrow::Cow::Borrowed("traceState"), DataType::Str),
-    (std::borrow::Cow::Borrowed("flags"), DataType::I64),
-    (std::borrow::Cow::Borrowed("name"), DataType::Str),
-    (std::borrow::Cow::Borrowed("kind"), DataType::I64),
-    (std::borrow::Cow::Borrowed("startTime"), DataType::DateTime),
-    (std::borrow::Cow::Borrowed("endTime"), DataType::DateTime),
-    (std::borrow::Cow::Borrowed("attributes"), DataType::Variant),
-    (std::borrow::Cow::Borrowed("droppedAttributesCount"), DataType::I64),
-    (std::borrow::Cow::Borrowed("events"), DataType::Variant),
-    (std::borrow::Cow::Borrowed("droppedEventsCount"), DataType::I64),
-    (std::borrow::Cow::Borrowed("links"), DataType::Variant),
-    (std::borrow::Cow::Borrowed("droppedLinksCount"), DataType::I64),
-    (std::borrow::Cow::Borrowed("statusCode"), DataType::I64),
-    (std::borrow::Cow::Borrowed("statusMessage"), DataType::Str),
+    (Entry::Field(std::borrow::Cow::Borrowed("traceId")), DataType::Str),
+    (Entry::Field(std::borrow::Cow::Borrowed("spanId")), DataType::Str),
+    (Entry::Field(std::borrow::Cow::Borrowed("parentSpanId")), DataType::Str),
+    (Entry::Field(std::borrow::Cow::Borrowed("traceState")), DataType::Str),
+    (Entry::Field(std::borrow::Cow::Borrowed("flags")), DataType::I64),
+    (Entry::Field(std::borrow::Cow::Borrowed("name")), DataType::Str),
+    (Entry::Field(std::borrow::Cow::Borrowed("kind")), DataType::I64),
+    (
+        Entry::Field(std::borrow::Cow::Borrowed("startTime")),
+        DataType::DateTime,
+    ),
+    (Entry::Field(std::borrow::Cow::Borrowed("endTime")), DataType::DateTime),
+    (
+        Entry::Field(std::borrow::Cow::Borrowed("attributes")),
+        DataType::Variant,
+    ),
+    (
+        Entry::Field(std::borrow::Cow::Borrowed("droppedAttributesCount")),
+        DataType::I64,
+    ),
+    (Entry::Field(std::borrow::Cow::Borrowed("events")), DataType::Variant),
+    (
+        Entry::Field(std::borrow::Cow::Borrowed("droppedEventsCount")),
+        DataType::I64,
+    ),
+    (Entry::Field(std::borrow::Cow::Borrowed("links")), DataType::Variant),
+    (
+        Entry::Field(std::borrow::Cow::Borrowed("droppedLinksCount")),
+        DataType::I64,
+    ),
+    (Entry::Field(std::borrow::Cow::Borrowed("statusCode")), DataType::I64),
+    (Entry::Field(std::borrow::Cow::Borrowed("statusMessage")), DataType::Str),
 ]);
 
 fn array(ty: DataType) -> DataType {
@@ -279,10 +356,10 @@ fn closed(fields: &[(&str, DataType)]) -> DataType {
 }
 
 /// The fields `name: ty` declares, onto `fields`: itself, or for an object each leaf under it, then the entry of its
-/// unclaimed fields (`tree::unclaimed_entry`) where it is open. Err for an object that declares nothing.
-pub(crate) fn leaves(name: &str, ty: &DataType, fields: &mut Vec<(String, DataType)>) -> Result<(), String> {
+/// unclaimed fields where it is open. Err for an object that declares nothing.
+pub(crate) fn leaves(name: &str, ty: &DataType, fields: &mut Vec<(Entry, DataType)>) -> Result<(), String> {
     let DataType::Struct(members, open) = ty else {
-        fields.push((name.to_string(), ty.clone()));
+        fields.push((Entry::Field(name.to_string().into()), ty.clone()));
         return Ok(());
     };
     if members.is_empty() && !open {
@@ -295,7 +372,7 @@ pub(crate) fn leaves(name: &str, ty: &DataType, fields: &mut Vec<(String, DataTy
         leaves(&crate::plan::tree::child(name, key), member, fields)?;
     }
     if *open {
-        fields.push((crate::plan::tree::unclaimed_entry(name), DataType::Variant));
+        fields.push((Entry::Unclaimed(name.to_string().into()), DataType::Variant));
     }
     Ok(())
 }
@@ -309,36 +386,36 @@ pub(crate) fn leaves(name: &str, ty: &DataType, fields: &mut Vec<(String, DataTy
 fn otlp_metric_point() -> RecordFields {
     use std::borrow::Cow::Borrowed;
     std::borrow::Cow::Owned(vec![
-        (Borrowed("name"), DataType::Str),
-        (Borrowed("description"), DataType::Str),
-        (Borrowed("unit"), DataType::Str),
-        (Borrowed("type"), DataType::Str),
-        (Borrowed("metadata"), DataType::Variant),
-        (Borrowed("aggregationTemporality"), DataType::I64),
-        (Borrowed("isMonotonic"), DataType::Bool),
-        (Borrowed("startTime"), DataType::DateTime),
-        (Borrowed("time"), DataType::DateTime),
-        (Borrowed("attributes"), DataType::Variant),
-        (Borrowed("flags"), DataType::I64),
-        (Borrowed("value"), DataType::Variant),
-        (Borrowed("count"), DataType::F64),
-        (Borrowed("sum"), DataType::F64),
-        (Borrowed("min"), DataType::F64),
-        (Borrowed("max"), DataType::F64),
-        (Borrowed("bucketCounts"), array(DataType::F64)),
-        (Borrowed("explicitBounds"), array(DataType::F64)),
-        (Borrowed("scale"), DataType::I64),
-        (Borrowed("zeroCount"), DataType::F64),
-        (Borrowed("zeroThreshold"), DataType::F64),
-        (Borrowed("positive.offset"), DataType::I64),
-        (Borrowed("positive.bucketCounts"), array(DataType::F64)),
-        (Borrowed("negative.offset"), DataType::I64),
-        (Borrowed("negative.bucketCounts"), array(DataType::F64)),
+        (Entry::Field(Borrowed("name")), DataType::Str),
+        (Entry::Field(Borrowed("description")), DataType::Str),
+        (Entry::Field(Borrowed("unit")), DataType::Str),
+        (Entry::Field(Borrowed("type")), DataType::Str),
+        (Entry::Field(Borrowed("metadata")), DataType::Variant),
+        (Entry::Field(Borrowed("aggregationTemporality")), DataType::I64),
+        (Entry::Field(Borrowed("isMonotonic")), DataType::Bool),
+        (Entry::Field(Borrowed("startTime")), DataType::DateTime),
+        (Entry::Field(Borrowed("time")), DataType::DateTime),
+        (Entry::Field(Borrowed("attributes")), DataType::Variant),
+        (Entry::Field(Borrowed("flags")), DataType::I64),
+        (Entry::Field(Borrowed("value")), DataType::Variant),
+        (Entry::Field(Borrowed("count")), DataType::F64),
+        (Entry::Field(Borrowed("sum")), DataType::F64),
+        (Entry::Field(Borrowed("min")), DataType::F64),
+        (Entry::Field(Borrowed("max")), DataType::F64),
+        (Entry::Field(Borrowed("bucketCounts")), array(DataType::F64)),
+        (Entry::Field(Borrowed("explicitBounds")), array(DataType::F64)),
+        (Entry::Field(Borrowed("scale")), DataType::I64),
+        (Entry::Field(Borrowed("zeroCount")), DataType::F64),
+        (Entry::Field(Borrowed("zeroThreshold")), DataType::F64),
+        (Entry::Field(Borrowed("positive.offset")), DataType::I64),
+        (Entry::Field(Borrowed("positive.bucketCounts")), array(DataType::F64)),
+        (Entry::Field(Borrowed("negative.offset")), DataType::I64),
+        (Entry::Field(Borrowed("negative.bucketCounts")), array(DataType::F64)),
         (
-            Borrowed("quantileValues"),
+            Entry::Field(Borrowed("quantileValues")),
             array(closed(&[("quantile", DataType::F64), ("value", DataType::F64)])),
         ),
-        (Borrowed("exemplars"), DataType::Variant),
+        (Entry::Field(Borrowed("exemplars")), DataType::Variant),
     ])
 }
 
@@ -374,29 +451,29 @@ const OTLP_RECEIVER_FIELDS: &[(&str, DataType)] = &[
 fn prometheus_record() -> RecordFields {
     use std::borrow::Cow::Borrowed;
     std::borrow::Cow::Owned(vec![
-        (Borrowed("time"), DataType::DateTime),
-        (Borrowed("name"), DataType::Str),
-        (Borrowed("value"), DataType::Variant),
-        (Borrowed("attributes"), DataType::Variant),
-        (Borrowed("type"), DataType::Str),
-        (Borrowed("aggregationTemporality"), DataType::I64),
-        (Borrowed("count"), DataType::F64),
-        (Borrowed("sum"), DataType::F64),
-        (Borrowed("bucketCounts"), array(DataType::F64)),
-        (Borrowed("explicitBounds"), array(DataType::F64)),
-        (Borrowed("scale"), DataType::I64),
-        (Borrowed("zeroCount"), DataType::F64),
-        (Borrowed("zeroThreshold"), DataType::F64),
-        (Borrowed("positive.offset"), DataType::I64),
-        (Borrowed("positive.bucketCounts"), array(DataType::F64)),
-        (Borrowed("negative.offset"), DataType::I64),
-        (Borrowed("negative.bucketCounts"), array(DataType::F64)),
-        (Borrowed("resetHint"), DataType::Str),
-        (Borrowed("exemplars"), DataType::Variant),
-        (Borrowed("description"), DataType::Str),
-        (Borrowed("unit"), DataType::Str),
-        (Borrowed("isMonotonic"), DataType::Bool),
-        (Borrowed("startTime"), DataType::DateTime),
+        (Entry::Field(Borrowed("time")), DataType::DateTime),
+        (Entry::Field(Borrowed("name")), DataType::Str),
+        (Entry::Field(Borrowed("value")), DataType::Variant),
+        (Entry::Field(Borrowed("attributes")), DataType::Variant),
+        (Entry::Field(Borrowed("type")), DataType::Str),
+        (Entry::Field(Borrowed("aggregationTemporality")), DataType::I64),
+        (Entry::Field(Borrowed("count")), DataType::F64),
+        (Entry::Field(Borrowed("sum")), DataType::F64),
+        (Entry::Field(Borrowed("bucketCounts")), array(DataType::F64)),
+        (Entry::Field(Borrowed("explicitBounds")), array(DataType::F64)),
+        (Entry::Field(Borrowed("scale")), DataType::I64),
+        (Entry::Field(Borrowed("zeroCount")), DataType::F64),
+        (Entry::Field(Borrowed("zeroThreshold")), DataType::F64),
+        (Entry::Field(Borrowed("positive.offset")), DataType::I64),
+        (Entry::Field(Borrowed("positive.bucketCounts")), array(DataType::F64)),
+        (Entry::Field(Borrowed("negative.offset")), DataType::I64),
+        (Entry::Field(Borrowed("negative.bucketCounts")), array(DataType::F64)),
+        (Entry::Field(Borrowed("resetHint")), DataType::Str),
+        (Entry::Field(Borrowed("exemplars")), DataType::Variant),
+        (Entry::Field(Borrowed("description")), DataType::Str),
+        (Entry::Field(Borrowed("unit")), DataType::Str),
+        (Entry::Field(Borrowed("isMonotonic")), DataType::Bool),
+        (Entry::Field(Borrowed("startTime")), DataType::DateTime),
     ])
 }
 
@@ -684,24 +761,24 @@ impl SourceMeta {
     }
 
     /// This meta with its record open: every top-level field of a payload no declared field claims is kept, as the
-    /// root's unclaimed fields (`tree::UNCLAIMED`).
+    /// root's unclaimed fields.
     pub fn opened(mut self) -> SourceMeta {
         let mut record = self.record.into_owned();
-        record.push((crate::plan::tree::UNCLAIMED.into(), DataType::Variant));
+        record.push((Entry::Unclaimed("".into()), DataType::Variant));
         self.record = record.into();
         self
     }
 
     /// Whether this meta's record keeps the fields it does not declare (`opened`).
     pub fn is_open(&self) -> bool {
-        self.record.iter().any(|(n, _)| n == crate::plan::tree::UNCLAIMED)
+        self.record.contains(&(Entry::Unclaimed("".into()), DataType::Variant))
     }
 
     /// `declaring`, allowing a field under an internal key where `internal` says so. A field declared as an object is
     /// its leaves, each a field of the record, and the object's unclaimed fields where it is open (Language).
     fn declare(self, record: Vec<(String, DataType)>, internal: fn(&str) -> bool) -> Result<SourceMeta, String> {
         use crate::plan::tree;
-        let mut fields: Vec<(String, DataType)> = Vec::with_capacity(record.len());
+        let mut fields: Vec<(Entry, DataType)> = Vec::with_capacity(record.len());
         // Each field's place, by its keys, and the name it was declared under.
         let mut places: Vec<(Vec<String>, bool, &str)> = Vec::with_capacity(record.len());
         for (name, ty) in &record {
@@ -712,12 +789,9 @@ impl SourceMeta {
             let from = fields.len();
             leaves(name, ty, &mut fields)?;
             for (leaf, _) in &fields[from..] {
-                let object = tree::unclaimed_object(leaf);
-                let keys: Vec<String> = tree::segments(object.unwrap_or(leaf))
-                    .map(std::borrow::Cow::into_owned)
-                    .collect();
+                let (keys, object) = (leaf.keys(), leaf.field().is_none());
                 // A leaf holds no other field, and an object's unclaimed fields sit under no leaf.
-                let clash = |(other, others, _): &&(Vec<String>, bool, &str)| match (object.is_some(), *others) {
+                let clash = |(other, others, _): &&(Vec<String>, bool, &str)| match (object, *others) {
                     (false, false) => other.starts_with(&keys) || keys.starts_with(other),
                     (true, false) => keys.starts_with(other),
                     (false, true) => other.starts_with(&keys),
@@ -726,7 +800,7 @@ impl SourceMeta {
                 if let Some((_, _, other)) = places.iter().find(clash) {
                     return Err(format!("`{other}` and `{name}` are one field, or one holds the other"));
                 }
-                places.push((keys, object.is_some(), name));
+                places.push((keys, object, name));
             }
         }
         // Its chunks are the record's columns, so there is no payload for `__source.bytes` to read.
@@ -735,7 +809,7 @@ impl SourceMeta {
             _ => self.source,
         };
         Ok(SourceMeta {
-            record: fields.into_iter().map(|(n, t)| (n.into(), t)).collect(),
+            record: fields.into(),
             source,
             ..self
         })
@@ -777,14 +851,14 @@ impl SourceMeta {
         Ok(if open { meta.opened() } else { meta })
     }
 
-    /// The record's fields, in slot order.
+    /// The record's entries, in slot order.
     pub fn record(&self) -> &RecordFields {
         &self.record
     }
 
-    /// Each of the record's fields, with its type, in slot order.
-    pub fn record_fields(&self) -> Vec<(&str, DataType)> {
-        self.record.iter().map(|(n, t)| (n.as_ref(), t.clone())).collect()
+    /// Each of the record's fields, with its type, in the record's order.
+    pub fn fields(&self) -> impl Iterator<Item = (&str, &DataType)> {
+        self.record.iter().filter_map(|(entry, ty)| Some((entry.field()?, ty)))
     }
 
     pub fn record_len(&self) -> usize {
@@ -824,9 +898,7 @@ impl SourceMeta {
 
     /// The type of `field`, a field of the record or a `__source` field, or `None` where this source declares none.
     pub fn field_type(&self, field: &str) -> Option<DataType> {
-        self.record
-            .iter()
-            .map(|(n, t)| (n.as_ref(), t))
+        self.fields()
             .chain(self.source.iter().map(|(n, t)| (*n, t)))
             .find(|(n, _)| *n == field)
             .map(|(_, t)| t.clone())
@@ -1042,7 +1114,7 @@ impl SourceMeta {
         let at = self
             .record
             .iter()
-            .position(|(n, t)| n == field && *t == DataType::Bytes)?;
+            .position(|(entry, t)| entry.field() == Some(field) && *t == DataType::Bytes)?;
         let column = record.chunk.column(at);
         let row = record.row as usize;
         (column.is_valid(row)).then(|| column.varlen().expect("a bytes column").get(row).to_vec())
@@ -1078,11 +1150,11 @@ impl SourceMeta {
     /// A view of `chunk`'s columns under the names this meta declares for them.
     fn row_view<'a>(&'a self, chunk: &'a crate::io::RecordChunk) -> crate::format::record::RecordView<'a> {
         assert!(!self.reads_bytes(), "a row's columns are its record's fields");
-        crate::format::record::RecordView::from_named(
+        crate::format::record::RecordView::from_places(
             self.record
                 .iter()
                 .enumerate()
-                .map(|(i, (name, _))| (name.as_ref(), chunk.column(i))),
+                .map(|(i, (entry, _))| (entry.place(), chunk.column(i))),
         )
     }
 }
@@ -4247,8 +4319,8 @@ mod tests {
                 "destination.ip: str",
                 "destination.port: i64",
                 "destination.geo.city: str",
-                "destination.geo....: variant",
-                "labels....: variant",
+                "destination.geo.*: variant",
+                "labels.*: variant",
                 "tags: array<{}>",
             ]
         );

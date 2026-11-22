@@ -148,7 +148,7 @@ impl Kind {
         };
         let column = record
             .chunk
-            .column(meta.record().iter().position(|(n, _)| n == name).unwrap());
+            .column(meta.record().iter().position(|(n, _)| n.field() == Some(name)).unwrap());
         match column.constant_value() {
             Some(smeltr::core::column::Scalar::Str(s)) => s.as_bytes().to_vec(),
             _ if !column.is_valid(record.row as usize) => Vec::new(),

@@ -2111,7 +2111,7 @@ mod tests {
         use crate::format::tag::{self, Tag};
         use crate::io::iceberg::schema::{parquet_annotations, table_schema, with_field_ids};
         use crate::io::parquet_variant::tests::read;
-        use crate::plan::tree::UNCLAIMED;
+        use crate::plan::tree::Place;
         use arrow_array::cast::AsArray;
         use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
         use std::borrow::Cow;
@@ -2183,7 +2183,14 @@ mod tests {
             &DataType::Array(Box::new(DataType::Variant)),
             &mut pool,
         );
-        let view = RecordView::from_named([("v", &v), ("o.k", &k), (UNCLAIMED, &unclaimed), ("s.w", &w), ("l", &l)]);
+        let leaf = |name: &str| Place::Leaf(name.to_string());
+        let view = RecordView::from_places([
+            (leaf("v"), &v),
+            (leaf("o.k"), &k),
+            (Place::Unclaimed(String::new()), &unclaimed),
+            (leaf("s.w"), &w),
+            (leaf("l"), &l),
+        ]);
         let chunk = Arc::new(Chunk::cut(&schema, &[(&view, &[0, 1])], 0, &mut pool));
         drop(view);
         for column in [v, k, unclaimed, w, l] {

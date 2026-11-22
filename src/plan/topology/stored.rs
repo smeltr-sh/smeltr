@@ -79,20 +79,13 @@ impl SourceMeta {
         } else {
             let fields = &self.record;
             // Each field's keys, and each open object's: what an object does not declare, it keeps where it is open.
-            let keys = |name: &str| -> Vec<String> {
-                crate::plan::tree::object_keys(name)
-                    .map(std::borrow::Cow::into_owned)
-                    .collect()
+            let keys = |open: bool| -> Vec<Vec<String>> {
+                let of = fields.iter().filter(|(entry, _)| entry.field().is_none() == open);
+                of.map(|(entry, _)| entry.keys()).collect()
             };
-            let (open, leaves): (Vec<_>, Vec<_>) = (fields.iter())
-                .map(|(name, _)| match crate::plan::tree::unclaimed_object(name) {
-                    Some(object) => (true, keys(object)),
-                    None => (false, keys(name)),
-                })
-                .partition(|(open, _)| *open);
             let declared = Declared {
-                leaves: leaves.into_iter().map(|(_, keys)| keys).collect(),
-                open: open.into_iter().map(|(_, keys)| keys).collect(),
+                leaves: keys(false),
+                open: keys(true),
             };
             let mut objects: Vec<crate::io::RecordObject> =
                 stored.iter().map(|(record, _)| (*record).clone()).collect();

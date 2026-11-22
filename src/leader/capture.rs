@@ -1013,9 +1013,7 @@ mod tests {
         let meta =
             crate::plan::topology::SourceMeta::of_columns(&columns).expect("a sample reads its `__capture` columns");
         assert!(
-            meta.record()
-                .iter()
-                .any(|(name, _)| name.as_ref() == "__capture.config"),
+            meta.fields().any(|(name, _)| name == "__capture.config"),
             "a pipeline reads them"
         );
     }

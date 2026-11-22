@@ -151,7 +151,7 @@ pub struct AvroReader {
 struct Field {
     /// The keys of its path, or of the object whose unclaimed fields it is.
     keys: Vec<String>,
-    /// Whether it is an object's unclaimed fields (`tree::unclaimed_entry`): the members no declared field claims.
+    /// Whether it is an object's unclaimed fields: the members no declared field claims.
     unclaimed: bool,
     ty: DataType,
 }
@@ -162,15 +162,11 @@ impl AvroReader {
             registry: (config.registry.as_ref())
                 .map(|r| Registry::new(r, tls, secrets))
                 .transpose()?,
-            fields: (config.meta.record_fields().into_iter())
-                .map(|(name, ty)| {
-                    let object = crate::plan::tree::unclaimed_object(name);
-                    Field {
-                        keys: (crate::plan::tree::object_keys(object.unwrap_or(name)).map(|k| k.into_owned()))
-                            .collect(),
-                        unclaimed: object.is_some(),
-                        ty,
-                    }
+            fields: (config.meta.record().iter())
+                .map(|(entry, ty)| Field {
+                    keys: entry.keys(),
+                    unclaimed: entry.field().is_none(),
+                    ty: ty.clone(),
                 })
                 .collect(),
             schemas: HashMap::new(),

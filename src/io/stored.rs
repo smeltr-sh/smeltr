@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use super::{RecordChunk, SourceRecord, elastic_receiver, hec, otlp};
 use crate::core::column::DataType;
+use crate::plan::topology::Entry;
 
 /// A record as an object: each of its fields by name, as the source read it. What a sample and a capture hold.
 pub type RecordObject = serde_json::Map<String, serde_json::Value>;
@@ -22,25 +23,18 @@ pub fn value_at<'v>(object: &'v RecordObject, path: &str) -> Option<&'v serde_js
     Some(value)
 }
 
-/// The keys of the object `object` of `record` that no field of `fields` claims, by its key there: what that object's
-/// unclaimed fields hold (`tree::unclaimed_entry`). `None` where every key is claimed, or `record` holds no object
-/// there.
-pub fn unclaimed_of<N: AsRef<str>>(
-    record: &RecordObject,
-    object: &str,
-    fields: &[(N, DataType)],
-) -> Option<serde_json::Value> {
-    use crate::plan::tree;
-    let at: Vec<_> = tree::object_keys(object).collect();
+/// The keys of the object `object` of `record` that no entry of `fields` claims, by its key there: what that object's
+/// unclaimed fields hold. `None` where every key is claimed, or `record` holds no object there.
+pub fn unclaimed_of(record: &RecordObject, object: &str, fields: &[(Entry, DataType)]) -> Option<serde_json::Value> {
+    let at: Vec<String> = Entry::Unclaimed(object.to_string().into()).keys();
     let mut held = record;
     for key in &at {
-        held = held.get(key.as_ref())?.as_object()?;
+        held = held.get(key)?.as_object()?;
     }
     let claimed = |key: &str| {
-        fields.iter().any(|(name, _)| {
-            let name = name.as_ref();
-            let mut keys = tree::object_keys(tree::unclaimed_object(name).unwrap_or(name));
-            at.iter().all(|k| keys.next().as_ref() == Some(k)) && keys.next().is_some_and(|k| k == key)
+        fields.iter().any(|(entry, _)| {
+            let keys = entry.keys();
+            keys.len() > at.len() && keys.starts_with(&at) && keys[at.len()] == key
         })
     };
     let rest: RecordObject = (held.iter())
@@ -126,8 +120,8 @@ impl RecordChunk {
     /// field `failed` names for its object (`take_mistyped`), a value that failed when it was taken: its text is how the
     /// source spelled it, which its type may well accept. `failed` may be shorter than `objects`. A `bytes` field is
     /// stored as its base64, as a capture writes it. Err for a field of a type a stored record object cannot carry.
-    pub fn from_objects<N: AsRef<str>>(
-        fields: &[(N, DataType)],
+    pub fn from_objects(
+        fields: &[(Entry, DataType)],
         objects: &[&RecordObject],
         failed: &[Vec<String>],
     ) -> Result<RecordChunk, String> {
@@ -135,7 +129,7 @@ impl RecordChunk {
         if let Some((name, ty)) = fields
             .iter()
             .filter(|(_, ty)| *ty != DataType::Bytes)
-            .find_map(|(name, ty)| Some((name.as_ref(), values::unbuilt(ty)?)))
+            .find_map(|(name, ty)| Some((name, values::unbuilt(ty)?)))
         {
             return Err(format!(
                 "field `{name}` is declared {}, which a stored record cannot hold",
@@ -146,16 +140,17 @@ impl RecordChunk {
         let marked = |row: usize, name: &str| failed.get(row).is_some_and(|f| f.iter().any(|n| n == name));
         let mut failed = Vec::new();
         let mut columns = Vec::with_capacity(fields.len());
-        for (i, (name, ty)) in fields.iter().enumerate() {
-            let name = name.as_ref();
-            let object = crate::plan::tree::unclaimed_object(name);
-            let unclaimed: Vec<Option<serde_json::Value>> = object
-                .map(|object| objects.iter().map(|o| unclaimed_of(o, object, fields)).collect())
-                .unwrap_or_default();
-            let read: Vec<Option<&serde_json::Value>> = match object {
-                Some(_) => unclaimed.iter().map(Option::as_ref).collect(),
-                None => (objects.iter())
-                    .map(|o| value_at(o, name).filter(|v| !v.is_null()))
+        for (i, (entry, ty)) in fields.iter().enumerate() {
+            // A stored record lists a failed value by its column's name.
+            let name = &entry.column();
+            let unclaimed: Vec<Option<serde_json::Value>> = match entry {
+                Entry::Unclaimed(object) => objects.iter().map(|o| unclaimed_of(o, object, fields)).collect(),
+                Entry::Field(_) => Vec::new(),
+            };
+            let read: Vec<Option<&serde_json::Value>> = match entry {
+                Entry::Unclaimed(_) => unclaimed.iter().map(Option::as_ref).collect(),
+                Entry::Field(field) => (objects.iter())
+                    .map(|o| value_at(o, field).filter(|v| !v.is_null()))
                     .collect(),
             };
             if *ty == DataType::Bytes {

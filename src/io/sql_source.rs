@@ -1030,12 +1030,9 @@ fn chunk(fields: &[(String, DataType)], columns: &[usize], rows: &[Vec<Value>]) 
         let mut leaves = Vec::new();
         crate::plan::topology::leaves(name, ty, &mut leaves).expect("the record declared these fields");
         // Each leaf by its keys below the column's value, and whether it is the unclaimed fields of the object there.
+        let depth = tree::object_keys(name).count();
         let below: Vec<(Vec<String>, bool)> = (leaves.iter())
-            .map(|(leaf, _)| {
-                let object = tree::unclaimed_object(leaf);
-                let keys = tree::object_keys(tree::key_under(name, object.unwrap_or(leaf)));
-                (keys.map(|k| k.into_owned()).collect(), object.is_some())
-            })
+            .map(|(leaf, _)| (leaf.keys().split_off(depth), leaf.field().is_none()))
             .collect();
         for ((keys, unclaimed), (_, ty)) in below.iter().zip(&leaves) {
             let f = out.len();

@@ -18,8 +18,8 @@ pub fn read(signal: Signal) -> Vec<SchemaFieldDto> {
     let meta = SourceMeta::otlp(signal);
     let object = DataType::Struct(Vec::new(), true);
     let mut fields: Vec<SchemaFieldDto> = Vec::new();
-    for (name, ty) in meta.record().iter() {
-        let requirement = match required.contains(&name.as_ref()) {
+    for (name, ty) in meta.fields() {
+        let requirement = match required.contains(&name) {
             true => Requirement::Required,
             false => Requirement::Optional,
         };
@@ -94,8 +94,8 @@ mod tests {
                 ..Default::default()
             };
             crate::schema::read(&dto).unwrap_or_else(|e| panic!("{}: {e}", signal.name()));
-            for (name, _) in SourceMeta::otlp(signal).record().iter() {
-                assert!(fields.iter().any(|f| f.field == *name), "{}: {name}", signal.name());
+            for (name, _) in SourceMeta::otlp(signal).fields() {
+                assert!(fields.iter().any(|f| f.field == name), "{}: {name}", signal.name());
             }
         }
     }
@@ -111,13 +111,7 @@ mod tests {
             };
             let schema = crate::schema::read(&dto).unwrap();
             let meta = SourceMeta::otlp(signal);
-            let record = DataType::Struct(
-                meta.record_fields()
-                    .into_iter()
-                    .map(|(n, t)| (n.to_string(), t))
-                    .collect(),
-                false,
-            );
+            let record = DataType::Struct(meta.fields().map(|(n, t)| (n.to_string(), t.clone())).collect(), false);
             assert_eq!(schema.check(&record), [], "{}", signal.name());
         }
     }

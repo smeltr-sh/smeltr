@@ -61,18 +61,18 @@ pub struct Object {
 /// The root object's name in a pipeline: `$`, as in `$["@timestamp"]`. The tree's own name for it is `""`.
 pub const ROOT: &str = "$";
 
-/// What a record's field list names its root's unclaimed fields: a column holding one object per row, of every key
+/// How a capture names the column of its root's unclaimed fields: a column holding one object per row, of every key
 /// no field claims. No path spells it, so no field takes it.
 pub const UNCLAIMED: &str = "...";
 
-/// How a record's field list names the unclaimed fields of the object `name`: `destination....`, and `UNCLAIMED` for
-/// the root, whose name is `""`. No path spells it.
+/// How a capture names the column of the unclaimed fields of the object `name`: `destination....`, and `UNCLAIMED`
+/// for the root, whose name is `""`. No path spells it.
 pub fn unclaimed_entry(name: &str) -> String {
     join(name, UNCLAIMED)
 }
 
-/// The object whose unclaimed fields the field-list name `entry` stands for (`unclaimed_entry`): `""` for the root;
-/// `None` for a field's name.
+/// The object whose unclaimed fields a capture's column `entry` holds (`unclaimed_entry`): `""` for the root; `None`
+/// for a field's column.
 pub fn unclaimed_object(entry: &str) -> Option<&str> {
     let object = entry.strip_suffix(UNCLAIMED)?;
     match object.strip_suffix('.') {

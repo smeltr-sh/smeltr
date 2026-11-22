@@ -1930,7 +1930,7 @@ mod tests {
     #[test]
     fn a_row_holds_the_records_fields_in_its_order() {
         let meta = crate::plan::topology::SourceMeta::prometheus_receiver();
-        let names: Vec<&str> = meta.record().iter().map(|(name, _)| name.as_ref()).collect();
+        let names: Vec<&str> = meta.fields().map(|(name, _)| name).collect();
         assert_eq!(names.len(), field::ALL);
         for (at, name) in [
             (field::TIME, "time"),

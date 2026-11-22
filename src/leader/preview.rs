@@ -441,29 +441,30 @@ pub fn read_sample(
             .map(std::borrow::Cow::into_owned)
     };
     let own = |name: &str| !head(name).is_some_and(|h| crate::plan::tree::is_internal(&h));
-    let entry = |name: &str| crate::plan::tree::unclaimed_object(name).is_some();
     // The sample's columns as the fields they declare, as `meta`'s are: an object is its leaves.
     let own_columns: Vec<_> = columns.iter().filter(|c| own(&c.name)).cloned().collect();
     let captured: Vec<(String, DataType)> = match own_columns.is_empty() {
         true => Vec::new(),
-        false => (SourceMeta::of_columns(&own_columns)?.record_fields().into_iter())
-            .filter(|(name, _)| !entry(name))
-            .map(|(name, ty)| (name.to_string(), ty))
+        false => (SourceMeta::of_columns(&own_columns)?.fields())
+            .map(|(name, ty)| (name.to_string(), ty.clone()))
             .collect(),
     };
-    let declared = meta.record_fields();
+    let declared: Vec<(&str, &DataType)> = meta.fields().collect();
     let keys = |name: &str| -> Vec<String> {
-        crate::plan::tree::object_keys(crate::plan::tree::unclaimed_object(name).unwrap_or(name))
+        crate::plan::tree::object_keys(name)
             .map(std::borrow::Cow::into_owned)
             .collect()
     };
+    let open: Vec<Vec<String>> = (meta.record().iter())
+        .filter(|(entry, _)| entry.field().is_none())
+        .map(|(entry, _)| entry.keys())
+        .collect();
     // An open object keeps a field under it that no declared field claims by its key there.
     let kept = |name: &str| {
         let at = keys(name);
-        declared.iter().filter(|(d, _)| entry(d)).any(|(open, _)| {
-            let object = keys(open);
+        open.iter().any(|object| {
             let claimed = |d: &[String]| d.len() > object.len() && d[..=object.len()] == at[..=object.len()];
-            at.len() > object.len() && at.starts_with(&object) && !declared.iter().any(|(d, _)| claimed(&keys(d)))
+            at.len() > object.len() && at.starts_with(object) && !declared.iter().any(|(d, _)| claimed(&keys(d)))
         })
     };
     let mut warnings = Vec::new();
@@ -479,7 +480,7 @@ pub fn read_sample(
                     ));
                     gone.push(name.as_str());
                 }
-                Some((_, now)) if now != was => {
+                Some((_, now)) if *now != was => {
                     warnings.push(format!(
                         "`{name}` was captured as {} and its source now declares it {}",
                         was.spell(),
@@ -490,7 +491,7 @@ pub fn read_sample(
                 Some(_) => {}
             }
         }
-        for (name, _) in declared.iter().filter(|(n, _)| !entry(n) && own(n)) {
+        for (name, _) in declared.iter().filter(|(n, _)| own(n)) {
             if !captured.iter().any(|(c, _)| c == name) {
                 warnings.push(format!("`{name}` is declared and was not captured, so it reads null"));
             }
@@ -1313,10 +1314,13 @@ fn touched<'p>(plan: &'p Plan, batch: &Batch) -> Touched<'p> {
             None => vec![true; rows],
             Some(was) => differs(was, now).unwrap_or_else(|| {
                 // Unclaimed fields serialize as an object's own keys, under no name.
-                let field = if name.ends_with('*') { tree::UNCLAIMED } else { "v" };
+                let place = match name.ends_with('*') {
+                    true => tree::Place::Unclaimed(String::new()),
+                    false => tree::Place::Leaf("v".to_string()),
+                };
                 let (was, now) = (
-                    RecordView::from_named([(field, was)]),
-                    RecordView::from_named([(field, now)]),
+                    RecordView::from_places([(place.clone(), was)]),
+                    RecordView::from_places([(place, now)]),
                 );
                 (0..rows).map(|row| was.row(row) != now.row(row)).collect()
             }),
@@ -2051,7 +2055,7 @@ mod tests {
         assert!(saved.succeeded(), "{:?}", messages(&saved));
         let sample = saved.body.as_sample.unwrap();
         let meta = SourceMeta::of_columns(&sample.columns).unwrap();
-        let declared: Vec<_> = meta.record().iter().map(|(name, _)| name.as_ref()).collect();
+        let declared: Vec<_> = meta.fields().map(|(name, _)| name).collect();
         for leaf in [
             "destination.ip",
             "destination.port",

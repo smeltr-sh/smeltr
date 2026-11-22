@@ -417,10 +417,10 @@ fn a_declared_object_reads_its_leaves_and_an_open_one_keeps_its_other_keys() {
             ("limits", object(&[("cpu", DataType::I64)], false)),
         ],
     );
-    let names: Vec<_> = meta.record().iter().map(|(name, _)| name.to_string()).collect();
+    let names: Vec<_> = meta.record().iter().map(|(entry, _)| entry.to_string()).collect();
     assert_eq!(
         names,
-        ["id", "home.city", "home....", "labels.env", "labels....", "limits.cpu"]
+        ["id", "home.city", "home.*", "labels.env", "labels.*", "limits.cpu"]
     );
     let map = |entries: &[(&str, Avro)]| Avro::Map(entries.iter().map(|(k, v)| (k.to_string(), v.clone())).collect());
     let value = Avro::Record(vec![

@@ -177,28 +177,31 @@ impl<'a> RecordView<'a> {
         Self::build(tree, &column, true)
     }
 
-    /// A record of `fields`, each at its dotted name, and each object's unclaimed fields the one its
-    /// `tree::unclaimed_entry` names, if any.
+    /// A record of `fields`, each at its dotted name.
     pub fn from_named(fields: impl IntoIterator<Item = (&'a str, &'a Column)>) -> Self {
+        Self::from_places(
+            fields
+                .into_iter()
+                .map(|(name, col)| (tree::Place::Leaf(name.to_string()), col)),
+        )
+    }
+
+    /// A record of the column at each place: a field at its dotted name, or the unclaimed fields of the object named.
+    pub fn from_places(places: impl IntoIterator<Item = (tree::Place, &'a Column)>) -> Self {
         let mut s = RecordView {
             root: Object::new(Unclaimed::None),
             leaves: Vec::new(),
         };
-        for (name, col) in fields {
-            let object = tree::unclaimed_object(name);
-            // The root's name has no key.
-            let segs: Vec<Cow<str>> = match object {
-                Some("") => Vec::new(),
-                _ => tree::segments(object.unwrap_or(name)).collect(),
-            };
+        for (place, col) in places {
+            let segs: Vec<Cow<str>> = tree::object_keys(place.name()).collect();
             let segs: Vec<&str> = segs.iter().map(AsRef::as_ref).collect();
-            match object {
-                Some(_) => {
+            match place {
+                tree::Place::Unclaimed(_) => {
                     if let Ok(v) = col.variant() {
                         s.root.object_at(&segs, false).unclaimed = Unclaimed::Slot(v);
                     }
                 }
-                None => s.root.put(&segs, col, &mut s.leaves, false),
+                tree::Place::Leaf(_) => s.root.put(&segs, col, &mut s.leaves, false),
             }
         }
         s

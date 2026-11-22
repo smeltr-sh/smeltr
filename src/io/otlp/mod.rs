@@ -696,7 +696,7 @@ mod testing {
             signal.name()
         );
         let mut fields = Map::new();
-        for ((name, _), cell) in meta.record().iter().zip(&row.0) {
+        for ((name, _), cell) in meta.fields().zip(&row.0) {
             let Some(cell) = cell else { continue };
             let value = match cell {
                 Cell::Int(i) => (*i).into(),

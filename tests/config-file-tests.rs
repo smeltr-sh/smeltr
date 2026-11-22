@@ -6249,7 +6249,7 @@ fn a_postgres_source_loads_with_the_defaults() {
     assert_eq!(sql.source.poll_interval, std::time::Duration::from_secs(60));
     assert_eq!(&*sql.source.place, "db.internal:5432/auth");
     assert_eq!(
-        kind.meta().record_fields(),
+        kind.meta().fields().map(|(n, t)| (n, t.clone())).collect::<Vec<_>>(),
         [
             ("event_id", DataType::I64),
             ("occurred_at", DataType::DateTime),
