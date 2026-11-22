@@ -911,6 +911,7 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
                     &format!("SMELTR_GUI_PORT={}", free_port()),
                 ])
                 .args(["-e", &format!("SMELTR_WORKER_THREAD_LIMIT={cores}")])
+                .args(std::env::var("ENGINE_SMELTR_ENV").ok().map(|e| vec!["-e".to_string(), e]).unwrap_or_default())
                 .args(SECRETS.iter().flat_map(|(k, v)| ["-e".to_string(), format!("{k}={v}")]))
                 .args([engine.image(), "/usr/local/bin/smeltr"]);
         }

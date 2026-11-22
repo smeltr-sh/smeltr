@@ -285,6 +285,9 @@ pub fn release_idle() {
 /// `dirty_decay_ms`. Until then those pages count against a container's memory limit as if they were still held.
 /// Whether the allocator did it.
 pub fn purge_freed() -> bool {
+    if std::env::var_os("SMELTR_EXP_DECAY").is_some() {
+        return decay_sooner(true);
+    }
     // `4096` is jemalloc's `MALLCTL_ARENAS_ALL`: every arena at once.
     // SAFETY: the name is NUL-terminated, and `arena.<i>.purge` reads and writes nothing through the pointers.
     #[cfg(unix)]
@@ -304,6 +307,26 @@ pub fn purge_freed() -> bool {
         true
     };
     purged
+}
+
+pub fn decay_sooner(pressed: bool) -> bool {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static PRESSED: AtomicBool = AtomicBool::new(false);
+    if PRESSED.swap(pressed, Ordering::Relaxed) == pressed {
+        return true;
+    }
+    let ms: isize = if pressed { 1000 } else { 10_000 };
+    unsafe {
+        let mut n: u32 = 0;
+        let mut len = std::mem::size_of::<u32>();
+        tikv_jemalloc_sys::mallctl(c"arenas.narenas".as_ptr(), (&raw mut n).cast(), &mut len, std::ptr::null_mut(), 0);
+        for i in 0..n {
+            let name = std::ffi::CString::new(format!("arena.{i}.dirty_decay_ms")).unwrap();
+            let mut v = ms;
+            tikv_jemalloc_sys::mallctl(name.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut(), (&raw mut v).cast(), std::mem::size_of::<isize>());
+        }
+    }
+    true
 }
 
 /// jemalloc's settings, read once at its start: background threads hand freed pages back to the OS ten seconds after

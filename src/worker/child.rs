@@ -786,8 +786,11 @@ fn collect_report(
     let resident = super::record_memory_gauge(registry, "runtime");
     // The deployment was sized to fill the worker's memory, so pages freed and not yet handed back can carry the
     // runtime past its limit. Past its size, they are handed back now.
-    if super::memory_to_fit().is_some_and(|fit| resident > fit as u64) {
+    let over = super::memory_to_fit().is_some_and(|fit| resident > fit as u64);
+    if over {
         crate::core::buffer::purge_freed();
+    } else if std::env::var_os("SMELTR_EXP_DECAY").is_some() {
+        crate::core::buffer::decay_sooner(false);
     }
     let peeked = registry.peek_delta(crate::metrics::SUBSCRIBER_HEARTBEAT);
     let metrics: Vec<MetricSampleDto> = peeked.iter().cloned().map(MetricSampleDto::from).collect();
