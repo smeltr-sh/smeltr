@@ -319,11 +319,12 @@ test('rows in and out are charted over the window the engineer picks', async ({
     timeout: 30_000,
   });
 
-  const windows = flow.getByRole('group', { name: 'Chart window' });
-  await windows.getByRole('button', { name: '15m' }).click();
-  await expect(flow.getByText(new RegExp(`^read ${MOVING.source}`))).toBeVisible();
-  await windows.getByRole('button', { name: '60m' }).click();
-  await expect(flow.getByText(new RegExp(`^read ${MOVING.source}`))).toBeVisible();
+  for (const range of ['10 min', '1 hour']) {
+    await flow.getByRole('button', { name: 'Chart range' }).click();
+    await admin.getByRole('button', { name: range, exact: true }).click();
+    await expect(flow.getByText(`Over the last ${range}`)).toBeVisible();
+    await expect(flow.getByText(new RegExp(`^read ${MOVING.source}`))).toBeVisible();
+  }
 
   // Under the chart, each source's rows over the window; one picked narrows the chart to it.
   const table = flow.getByRole('table');

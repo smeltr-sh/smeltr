@@ -67,6 +67,11 @@ export const CHART_RANGES: { range: string; label: string; minutes: number }[] =
  * who just clicked a node is asking. */
 export const DEFAULT_CHART_RANGE = '10m';
 
+/** The range `minutes` long, or `undefined` where no range is. */
+export function rangeOfMinutes(minutes: number): (typeof CHART_RANGES)[number] | undefined {
+  return CHART_RANGES.find((r) => r.minutes === minutes);
+}
+
 /** The range a link names, or the default for one it does not. */
 export function chartRange(range: string | undefined): (typeof CHART_RANGES)[number] {
   return (

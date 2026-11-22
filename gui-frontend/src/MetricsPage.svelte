@@ -13,7 +13,8 @@
   import MetricsChart from './MetricsChart.svelte';
   import { TableSort } from './sort.svelte';
   import { byteUnit, bytes } from './bytes';
-  import { FLOW_WINDOWS } from './flow';
+  import RangePicker from './RangePicker.svelte';
+  import { chartRange, rangeOfMinutes } from './map';
   import { clockTime } from './time';
   import { names } from './names.svelte';
   import {
@@ -405,7 +406,7 @@
       : null,
   );
   let windowLabel = $derived(
-    FLOW_WINDOWS.find((w) => w.minutes === view.windowMinutes)?.label ?? `${view.windowMinutes}m`,
+    rangeOfMinutes(view.windowMinutes)?.label ?? `${view.windowMinutes} min`,
   );
   let pointSeconds = $derived((answer?.pointMillis ?? 1000) / 1000);
   let barWord = $derived(
@@ -690,10 +691,10 @@
               bind:value={() => view.draw, (v) => go({ draw: v })}
             />
           {/if}
-          <Segmented
-            label="Chart window"
-            options={FLOW_WINDOWS.map((w) => ({ value: String(w.minutes), label: w.label }))}
-            bind:value={() => String(view.windowMinutes), (v) => go({ windowMinutes: Number(v) })}
+          <span class="dim">Over the last {windowLabel}</span>
+          <RangePicker
+            range={rangeOfMinutes(view.windowMinutes)?.range ?? ''}
+            onpick={(r) => go({ windowMinutes: chartRange(r).minutes })}
           />
         </div>
       </div>
@@ -791,6 +792,7 @@
 
   .controls {
     display: flex;
+    align-items: center;
     flex-wrap: wrap;
     gap: 0.5rem;
     margin-left: auto;

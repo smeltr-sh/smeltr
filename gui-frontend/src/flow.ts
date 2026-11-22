@@ -8,17 +8,6 @@
 
 import type { FlowKind, FlowNormalDto, SeriesAnswerDto } from './api';
 
-/** The window picker (E2: sixty minutes by default, out to thirty days). */
-export const FLOW_WINDOWS: { label: string; minutes: number }[] = [
-  { label: '15m', minutes: 15 },
-  { label: '60m', minutes: 60 },
-  { label: '24h', minutes: 24 * 60 },
-  { label: '7d', minutes: 7 * 24 * 60 },
-  { label: '30d', minutes: 30 * 24 * 60 },
-];
-
-export const DEFAULT_WINDOW_MINUTES = 60;
-
 /** How many rows the ranked table shows (Main storyboard). */
 export const FURTHEST_FROM_NORMAL_LIMIT = 8;
 

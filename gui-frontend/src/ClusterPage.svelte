@@ -50,6 +50,8 @@
   import FoldAllButton from './FoldAllButton.svelte';
   import Chips from './Chips.svelte';
   import Segmented from './Segmented.svelte';
+  import RangePicker from './RangePicker.svelte';
+  import { chartRange, rangeOfMinutes } from './map';
   import { TableSort } from './sort.svelte';
   import {
     errorText,
@@ -97,14 +99,7 @@
     toRows,
     type BreakdownTotals,
   } from './metrics';
-  import {
-    DEFAULT_WINDOW_MINUTES,
-    FLOW_METRICS,
-    FLOW_WINDOWS,
-    denseAnswer,
-    furthestFromNormal,
-    lastClosedBucket,
-  } from './flow';
+  import { FLOW_METRICS, denseAnswer, furthestFromNormal, lastClosedBucket } from './flow';
   import { DEFAULT_VIEW, seriesQuery } from './metricsView';
   import { clockTime, count, shortCommit } from './time';
 
@@ -229,7 +224,7 @@
 
   // -- flow (E2): the window-picked chart --------------------------------
 
-  let windowMinutes = $state(DEFAULT_WINDOW_MINUTES);
+  let windowMinutes = $state(DEFAULT_VIEW.windowMinutes);
   /** The table's totals and the sources' normals. */
   let flow: FlowResponseDto | null = $state(null);
 
@@ -1221,10 +1216,10 @@
             ]}
             bind:value={unit}
           />
-          <Segmented
-            label="Chart window"
-            options={FLOW_WINDOWS.map((w) => ({ value: String(w.minutes), label: w.label }))}
-            bind:value={() => String(windowMinutes), (v) => chooseWindow(Number(v))}
+          <span class="dim">Over the last {rangeOfMinutes(windowMinutes)?.label}</span>
+          <RangePicker
+            range={rangeOfMinutes(windowMinutes)?.range ?? ''}
+            onpick={(r) => chooseWindow(chartRange(r).minutes)}
           />
         </div>
       </div>
@@ -2026,6 +2021,7 @@
   }
   .controls {
     display: flex;
+    align-items: center;
     gap: 0.5rem;
     flex-wrap: wrap;
   }
