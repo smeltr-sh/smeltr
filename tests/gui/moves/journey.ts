@@ -82,7 +82,7 @@ export type World = {
   password: string | null;
   /** The branch the GUI edits on, once a save has named one; `null` on main. */
   branch: string | null;
-  /** The branch exists on the leader: a save went onto it. */
+  /** The branch exists on the leader, and holds a save main lacks. */
   branchSaved: boolean;
   /** What the branch holds, or main when there is none. */
   editing: Config;
@@ -898,11 +898,14 @@ async function thereAndBack(
     expect(await holds(from), `${from} keeps none of it`).toEqual(none);
     await editingIsSaved(j);
   };
+  const saved = j.world.branchSaved;
   await goto(page, leader, at);
   await move('shared', 'default');
   await switchScope(page, 'shared', 'default');
   await move('default', 'shared');
   await switchScope(page, 'default', 'shared');
+  // There and back, the branch holds what it held before: nothing to deploy if that was nothing.
+  j.world.branchSaved = saved;
 }
 
 /** Moves a source `shared` declares to `default` and back. Into `default`, the routes starting at it are ticked
