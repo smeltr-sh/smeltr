@@ -1,4 +1,4 @@
-# `just dist` on Windows: the binary, the AWS-LC FIPS DLL it loads, the license and the notices in
+# `just dist` on Windows: the binary, the AWS-LC FIPS DLLs it loads, the license and the notices in
 # `smeltr-windows.zip`, and SHA256SUMS over it. From any branch with nothing uncommitted, like the Linux recipe,
 # whose comment says why the name carries no version.
 param([string]$Version)
@@ -15,9 +15,9 @@ $target = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { 'target' }
 $exe = Join-Path $target 'dist/smeltr.exe'
 $v = (Select-String -Path $exe -Pattern $Version -Encoding ascii | Select-Object -First 1).Matches[0].Value
 if (-not $v) { throw "no version in $exe, so build.rs read no repository" }
-$dll = & (Join-Path $PSScriptRoot 'fips-dll.ps1') (Join-Path $target 'dist')
+$dlls = & (Join-Path $PSScriptRoot 'fips-dll.ps1') (Join-Path $target 'dist')
 $zip = 'smeltr-windows.zip'
-Compress-Archive -Force -Path $exe, $dll, LICENSE, THIRD-PARTY-NOTICES.md -DestinationPath $zip
+Compress-Archive -Force -Path (@($exe) + $dlls + 'LICENSE', 'THIRD-PARTY-NOTICES.md') -DestinationPath $zip
 # Not `Get-FileHash`: under the pwsh 7 that starts it on a runner, Windows PowerShell inherits pwsh's module path and
 # cannot load the module that defines it.
 $sha = [Security.Cryptography.SHA256]::Create().ComputeHash([IO.File]::ReadAllBytes((Resolve-Path $zip)))
