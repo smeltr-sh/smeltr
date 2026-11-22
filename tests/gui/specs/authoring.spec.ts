@@ -1751,7 +1751,9 @@ test('A4: an end-to-end test opened from Tests shows its fields the documents st
     .getByRole('link', { name: 'Open' })
     .click({ timeout: 30_000 });
   await expect(admin.getByText('Checked by alerts')).toBeVisible({ timeout: 30_000 });
-  await expect(admin.getByRole('button', { name: 'Choose a sample' })).toHaveText(/Test\s*alerts/);
+  await expect(admin.getByRole('button', { name: 'Choose a sample' })).toHaveAccessibleName(
+    /test alerts/,
+  );
   // A long list of fields gone names the first few, and the rest on asking.
   const gone = admin.getByText(/^Fields no longer in the rows:/);
   await expect(gone).toHaveText(/^Fields no longer in the rows: gone, a, b,\s*1 more$/);
@@ -1789,7 +1791,8 @@ test('A4: an end-to-end test opened from Tests shows its fields the documents st
     .getByRole('listbox', { name: 'Tests' })
     .getByRole('option', { name: /^quiet/ })
     .click();
-  await expect(menu).toHaveText(/Test\s*quiet\s*1 record/, { timeout: 30_000 });
+  await expect(menu).toHaveAccessibleName(/test quiet/, { timeout: 30_000 });
+  await expect(menu).toHaveText(/quiet\s*1 record/);
   await expect(admin.getByRole('table').getByText('204').first()).toBeVisible();
   await expect(admin).toHaveURL(/sample=quiet-sample.*test=quiet/);
 });
@@ -2168,7 +2171,7 @@ test('A6: a sample locked as a test passes, and a save that breaks it is allowed
   await goto(admin, leader, '#/build/pipelines');
   await admin
     .getByRole('row', { name: /orders/ })
-    .getByRole('link', { name: /1 failing/ })
+    .getByRole('link', { name: /1 test/ })
     .click();
   await expect(admin).toHaveURL(/#\/build\/tests\?only=/);
   await expect(admin.getByText('Showing 1 of 1')).toBeVisible();

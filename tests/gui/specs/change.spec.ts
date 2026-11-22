@@ -595,7 +595,7 @@ test('a test locked again opens on its fields the rows still hold, and its rows'
   // The menu names the test on screen. A sample chosen there shows that sample, where Lock makes a new test; the
   // test chosen again shows what it checks, and Lock locks it again.
   const menu = admin.getByRole('button', { name: 'Choose a sample' });
-  await expect(menu).toHaveText(/Test\s*orders keep their id/);
+  await expect(menu).toHaveAccessibleName(/test orders keep their id/);
   const relock = admin.getByRole('button', { name: 'Lock this test again' });
   const choose = async (list: 'Samples' | 'Tests', name: RegExp) => {
     await menu.click();
@@ -603,20 +603,20 @@ test('a test locked again opens on its fields the rows still hold, and its rows'
   };
   await expect(admin).toHaveURL(/[?&]test=orders-keep-id\b/);
   await choose('Samples', /^returns/);
-  await expect(menu).toHaveText(/Sample\s*returns/);
+  await expect(menu).toHaveAccessibleName(/sample returns/);
   // The address follows the menu, so a reload opens on what is on screen.
   await expect(admin).not.toHaveURL(/[?&]test=/);
   await expect(admin.getByText(/on 2 rows on screen/)).toBeVisible({ timeout: 30_000 });
   await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeEnabled();
   await expect(relock).toHaveCount(0);
   await choose('Tests', /^orders keep their id/);
-  await expect(menu).toHaveText(/Test\s*orders keep their id/);
+  await expect(menu).toHaveAccessibleName(/test orders keep their id/);
   await expect(admin).toHaveURL(/[?&]test=orders-keep-id\b/);
   await expect(admin.getByText('The 1 field on 1 row on screen')).toBeVisible({ timeout: 30_000 });
   await expect(relock).toBeEnabled();
   // The test's own sample, chosen, closes the test and keeps its records on screen.
   await choose('Samples', /orders\s*1 record/);
-  await expect(menu).toHaveText(/Sample\s*orders/);
+  await expect(menu).toHaveAccessibleName(/sample orders/);
   await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeEnabled();
   await expect(admin.getByText(/on 1 row on screen/)).toBeVisible();
   await choose('Tests', /^orders keep their id/);

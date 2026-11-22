@@ -23,7 +23,7 @@
     type PipelineDto,
     type TestSummary,
   } from './api';
-  import { standingsOf, type Standing } from './objectChanges';
+  import { narrowedHash } from './connections';
   import { count } from './time';
   import TestIcon from './TestIcon.svelte';
   import ExportDialog from './ExportDialog.svelte';
@@ -67,34 +67,25 @@
   let moving = $state<MoveTarget | null>(null);
   let areas: Area[] = $state([]);
 
-  // This area's tests, and where each stands once run, for the Tests column. A viewer runs none, so the column
-  // counts them. A failure to load or run them only leaves the column without them.
+  // This area's tests, for the Tests column, which counts them and runs none: the list stays as quick with thousands
+  // of tests as with none, and the Tests tab it links to says how they stand. Loaded with the pipelines, so a delete
+  // or a move counts again. A failure to load them leaves the column without them.
   let tests: TestSummary[] = $state([]);
-  let standings: Record<string, Standing> = $state({});
   async function loadTests() {
-    try {
-      tests = (await listTests()).tests;
-      if (!readOnly && tests.length > 0) standings = await standingsOf(tests.map((t) => t.id));
-    } catch {
-      // The column shows what it has so far.
-    }
+    tests = await listTests()
+      .then((res) => res.tests)
+      .catch(() => []);
   }
-  loadTests();
 
   /** Pipeline `id`'s tests: each that runs it, its own and the end-to-end ones whose records it takes. */
-  const testsOf = (id: string) => tests.filter((t) => t.pipelines.includes(id));
-  const tallyOf = (id: string, standing: Standing) =>
-    testsOf(id).filter((t) => standings[t.id] === standing).length;
-  /** The Tests page, narrowed to `of`. */
-  const testsHash = (of: TestSummary[]) =>
-    `#/build/tests?${new URLSearchParams(of.map((t) => ['only', t.id]))}`;
+  const testIdsOf = (id: string) => tests.filter((t) => t.pipelines.includes(id)).map((t) => t.id);
 
   // One sort for both bands: each band sorts within itself, so the shared rows stay under their own heading.
   const pipelineSort = new TableSort<'name' | 'steps' | 'tests'>();
   const pipelineColumns = {
     name: (p: PipelineDto) => p.name,
     steps: (p: PipelineDto) => p.steps.length,
-    tests: (p: PipelineDto) => tallyOf(p.id, 'failing'),
+    tests: (p: PipelineDto) => testIdsOf(p.id).length,
   };
   const narrowing = new Narrowing(() => only);
   const kept = (p: PipelineDto) => narrowing.keeps(p.id);
@@ -104,6 +95,7 @@
   );
 
   async function load() {
+    void loadTests();
     loading = true;
     loadFailed = false;
     bundleProblems = [];
@@ -224,23 +216,16 @@
             <tr class="bandrow"><td class="whole" colspan="4">this worker group</td></tr>
           {/if}
           {#each sortedPipelines as p (p.id)}
-            {@const of = testsOf(p.id)}
-            {@const failing = tallyOf(p.id, 'failing')}
-            {@const errored = tallyOf(p.id, 'error')}
-            {@const passing = tallyOf(p.id, 'passing')}
+            {@const ids = testIdsOf(p.id)}
             <tr>
               <td><a href={pipelineHash(p.id)}>{p.name}</a></td>
               <td class="dim" data-label="Steps">{p.steps.length}</td>
               <td data-label="Tests">
-                {#if of.length === 0}
+                {#if ids.length === 0}
                   <span class="dim">none</span>
                 {:else}
-                  <a class="glyphed" href={testsHash(of)}
-                    ><TestIcon />
-                    {#if failing + errored + passing === 0}{count(of.length, 'test')}{/if}
-                    {#if failing > 0}<span class="failing">{failing} failing</span>{/if}
-                    {#if errored > 0}<span class="errored">{errored} could not run</span>{/if}
-                    {#if passing > 0}<span class="dim">{passing} passing</span>{/if}</a
+                  <a class="glyphed" href={narrowedHash('#/build/tests', ids)}
+                    ><TestIcon />{count(ids.length, 'test')}</a
                   >
                 {/if}
               </td>
@@ -294,16 +279,6 @@
 
 <style>
   /* What `shared/` gave this group: listed, because the group runs it, and not this page's to change. */
-  /* A test's standing, colored as `TestStanding` colors it. */
-  .failing {
-    color: var(--error);
-    font-weight: 600;
-  }
-
-  .errored {
-    color: var(--warn);
-  }
-
   tr.fromshared td {
     color: var(--dim);
   }

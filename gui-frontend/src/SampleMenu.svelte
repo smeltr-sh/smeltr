@@ -8,6 +8,7 @@
   import SampleIcon from './SampleIcon.svelte';
   import TestIcon from './TestIcon.svelte';
   import TestStanding from './TestStanding.svelte';
+  import TestTally from './TestTally.svelte';
   import type { Standing } from './objectChanges';
   import { count, dateTime } from './time';
   import { capturedAt, type SampleSummary } from './api';
@@ -108,32 +109,32 @@
   let found = $derived(
     listed.filter((s) => `${s.name} ${s.source ?? ''}`.toLowerCase().includes(q)),
   );
+  /** The chip's name, which a screen reader reads in place of its face: what it chooses, what is chosen, and what
+   * fails. */
+  let label = $derived(
+    [
+      'Choose a sample',
+      testName ? `chosen: test ${testName}` : selectedName && `chosen: sample ${selectedName}`,
+      failing > 0 && !testName && `${count(failing, 'test')} failing`,
+    ]
+      .filter(Boolean)
+      .join(', '),
+  );
 </script>
 
-<ChipPicker
-  kind="columns"
-  align="left"
-  bind:open
-  ariaLabel="Choose a sample"
-  onopen={() => (query = '')}
->
+<ChipPicker kind="columns" align="left" bind:open ariaLabel={label} onopen={() => (query = '')}>
   {#snippet face()}
-    <!-- The glyph says which it is; the word is still there for a screen reader. -->
+    <!-- The glyph says which it is; `label` says it in words. -->
     {#if testName}
-      <TestIcon /><span class="visually-hidden">Test</span>
+      <TestIcon />
       <strong class="ellipsis face-name">{testName}</strong>
     {:else}
-      <SampleIcon /><span class="visually-hidden">Sample</span>
+      <SampleIcon />
       <strong class="ellipsis face-name">{selectedName}</strong>
     {/if}
     {#if records !== null}<span class="dim">{count(records, 'record')}</span>{/if}
     {#if failing > 0 && !testName}
-      <span class="failing"
-        ><span class="dim">·</span>
-        <TestIcon />{failing} failing<span class="visually-hidden">
-          {failing === 1 ? 'test' : 'tests'}</span
-        ></span
-      >
+      <span class="glyphed"><span class="dim">·</span> <TestIcon /><TestTally {failing} /></span>
     {/if} ▾
   {/snippet}
   {#snippet children()}
@@ -263,15 +264,6 @@
   .name {
     flex: 1;
     min-width: 0;
-  }
-
-  /* The chip's count of failing tests, in the color a failing test takes everywhere (`TestStanding`). */
-  .failing {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    color: var(--error);
-    font-weight: 600;
   }
 
   /* A long name is cut short before the chip wraps, most of all on a phone. */

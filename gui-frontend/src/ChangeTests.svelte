@@ -5,6 +5,8 @@
 <script lang="ts">
   import InlineError from './InlineError.svelte';
   import TestFailure from './TestFailure.svelte';
+  import TestStanding from './TestStanding.svelte';
+  import TestTally from './TestTally.svelte';
   import {
     scopedKey,
     type Reason,
@@ -13,7 +15,7 @@
     type TestSummary,
   } from './api';
   import { count } from './time';
-  import { checksOf, testsCovering } from './objectChanges';
+  import { checksOf, standingOf, testsCovering, type Standing } from './objectChanges';
   import Help from './Help.svelte';
   import { names } from './names.svelte';
   import { openOnBranch } from './unsavedGuard';
@@ -171,9 +173,7 @@
       <p class="dim">This change touches no pipeline or route.</p>
     {:else}
       {#each reachedGroups as group (`${group.kind}:${group.scope}:${group.id}`)}
-        {@const failing = group.tests.filter((t) => t.verdict && !t.verdict.passed)}
-        {@const passing = group.tests.filter((t) => t.verdict?.passed)}
-        {@const errored = group.tests.filter((t) => t.error)}
+        {@const tallied = (s: Standing) => group.tests.filter((t) => standingOf(t) === s).length}
         <div class="pipeline-block">
           <div class="pipeline-head">
             <span class="kind-tag uppercase-label"
@@ -190,15 +190,11 @@
             {#if group.tests.length === 0}
               <span class="dim">no tests</span>
             {:else}
-              {#if passing.length > 0}
-                <span class="added">{count(passing.length, 'test')} passing</span>
-              {/if}
-              {#if failing.length > 0}
-                <span class="removed">{count(failing.length, 'test')} failing</span>
-              {/if}
-              {#if passing.length === 0 && failing.length === 0}
-                <span class="dim">{count(errored.length, 'test')} could not run</span>
-              {/if}
+              <TestTally
+                failing={tallied('failing')}
+                errored={tallied('error')}
+                passing={tallied('passing')}
+              />
             {/if}
           </div>
           {#if group.reasons.length > 0}
@@ -217,14 +213,8 @@
                   >via {routes.map((r) => routeName(t.area, r)).join(', ')}</span
                 >
               {/if}
-              {#if t.error}
-                <span class="dim could-not-run"
-                  >could not run<Help label="could not run">{t.error}</Help></span
-                >
-              {:else if t.verdict?.passed}
-                <span class="added">Passing</span>
-              {:else}
-                <span class="removed">Failing</span>
+              <TestStanding standing={standingOf(t)} error={t.error} />
+              {#if standingOf(t) === 'failing'}
                 <button type="button" onclick={() => open(t)}>Open</button>
               {/if}
             </div>
@@ -341,12 +331,5 @@
   }
   .route-tag {
     font-size: var(--text-micro);
-  }
-
-  .added {
-    color: var(--added);
-  }
-  .removed {
-    color: var(--removed);
   }
 </style>

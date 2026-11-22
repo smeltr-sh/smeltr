@@ -144,7 +144,7 @@ describe('the sample a pipeline opens on', () => {
       },
     });
     await lastRan('s1');
-    const chip = () => target.querySelector<HTMLButtonElement>('[aria-label="Choose a sample"]')!;
+    const chip = () => target.querySelector<HTMLButtonElement>('[aria-label^="Choose a sample"]')!;
     await vi.waitFor(() => expect(chip().textContent).toContain('0 records'));
 
     chip().click();

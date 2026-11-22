@@ -1,8 +1,9 @@
 <!--
   Tests: every test in the branch chip's scope, run on the branch, each saying whether it passes, under the pipeline it
-  tests; the end-to-end ones last, each saying the routes its sample takes. A failing one says why under its row. A
-  pipeline's Tests link opens the page narrowed to its tests (`?only=`). Open shows a test where it is locked (the
-  pipeline editor or Route a sample), on its sample with the fields and rows it checks; new tests are locked there too.
+  tests; the end-to-end ones under their own, each saying the routes its sample takes. A failing one says why under its
+  row, and a group with failing tests comes before one without. A pipeline's Tests link opens the page narrowed to its
+  tests (`?only=`). Open shows a test where it is locked (the pipeline editor or Route a sample), on its sample with the
+  fields and rows it checks; new tests are locked there too.
 -->
 <script lang="ts">
   import { Busy } from './busy.svelte';
@@ -17,6 +18,7 @@
   import SortButton from './SortButton.svelte';
   import TestFailure from './TestFailure.svelte';
   import TestStanding from './TestStanding.svelte';
+  import TestTally from './TestTally.svelte';
   import OnlyNotice from './OnlyNotice.svelte';
   import { Narrowing } from './narrowing.svelte';
   import { ask } from './Confirm.svelte';
@@ -58,8 +60,7 @@
     names.of(currentBranch(), currentScope(), kind, id);
 
   /** The routes an end-to-end test's sample takes. */
-  const viaOf = (t: TestSummary) =>
-    `via ${(t.routes ?? []).map((r) => nameOf('routes', r)).join(', ')}`;
+  const routesOf = (t: TestSummary) => (t.routes ?? []).map((r) => nameOf('routes', r)).join(', ');
 
   /** The name a row shows for its sample: the sample's id when the sample is gone. */
   const sampleNameOf = (t: TestSummary) => samples.find((s) => s.id === t.sample)?.name ?? t.sample;
@@ -78,21 +79,30 @@
       { result: standing, name: (t) => t.name, sample: sampleNameOf, checks: checksOf },
     ),
   );
-  /** The rows under each heading: a pipeline's tests under the pipeline's name, the headings in name order and the
-   * end-to-end ones last. Under each, the tests keep the order the sort gave them. */
+  /** The rows under each heading: a pipeline's tests under the pipeline's name, and the end-to-end ones under their
+   * own. The headings go by their rows' worst standing (failing, then could not run, then passing), then by name with
+   * the end-to-end ones last among equals. Under each, the tests keep the order the sort gave them. */
   let groups = $derived.by(() => {
     const by = new Map<string, TestSummary[]>();
     for (const t of sorted) {
       const key = t.pipeline ?? '';
-      by.set(key, [...(by.get(key) ?? []), t]);
+      const rows = by.get(key) ?? [];
+      rows.push(t);
+      by.set(key, rows);
     }
-    const heading = (key: string) => (key ? nameOf('pipelines', key) : 'end-to-end');
     return [...by]
-      .map(([key, rows]) => ({ key, heading: heading(key), rows }))
-      .sort((a, b) => Number(!a.key) - Number(!b.key) || a.heading.localeCompare(b.heading));
+      .map(([key, rows]) => ({
+        key,
+        heading: key ? nameOf('pipelines', key) : 'end-to-end',
+        rank: Math.min(...rows.map(standing)),
+        rows,
+      }))
+      .sort(
+        (a, b) =>
+          a.rank - b.rank || Number(!a.key) - Number(!b.key) || a.heading.localeCompare(b.heading),
+      );
   });
-  let failing = $derived(shown.filter((t) => standing(t) === 0).length);
-  let passing = $derived(shown.filter((t) => standing(t) === 2).length);
+  const tallied = (rank: number) => shown.filter((t) => standing(t) === rank).length;
 
   async function load() {
     loading = true;
@@ -151,8 +161,7 @@
   {:else}
     <OnlyNotice {narrowing} ids={tests.map((t) => t.id)} />
     <p class="tally">
-      {#if failing > 0}<span class="failing">{failing} failing</span>{/if}
-      {#if passing > 0}<span class="passing">{passing} passing</span>{/if}
+      <TestTally failing={tallied(0)} errored={tallied(1)} passing={tallied(2)} />
     </p>
     <div class="table-wrap">
       <table class="readings">
@@ -181,7 +190,7 @@
                 <td><TestStanding standing={r && standingOf(r)} error={r?.error} /></td>
                 <td
                   ><strong>{t.name}</strong>
-                  {#if !t.pipeline}<span class="mono dim">{viaOf(t)}</span>{/if}</td
+                  {#if t.routes?.length}<span class="mono dim">via {routesOf(t)}</span>{/if}</td
                 >
                 <td class="mono dim" data-label="Sample">{sampleNameOf(t)}</td>
                 <td class="mono" data-label="Checks">{checksOf(t)}</td>
@@ -231,14 +240,6 @@
     display: flex;
     gap: 1rem;
     margin: 1.2rem 0 0.6rem;
-  }
-  .passing {
-    color: var(--added);
-    font-weight: 600;
-  }
-  .failing {
-    color: var(--error);
-    font-weight: 600;
   }
   tr.open:has(+ tr.open),
   tr.open:has(+ tr.open) td {
