@@ -3352,7 +3352,7 @@ fn an_editor_saves_in_their_group_and_does_not_deploy() {
     let (status, body) = leader.post_as(
         &editor,
         "/api/areas/west/moves?branch=dana",
-        serde_json::json!({ "part": "source", "id": "storefront", "to": "east", "go": true }),
+        serde_json::json!({ "part": "source", "id": "storefront", "to": "east" }),
     );
     assert_eq!(status, 403, "moved into a group no role gives: {body}");
 
