@@ -2,37 +2,27 @@
   {
     "version": "1.3.1",
     "date": "2026-11-22",
-    "summary": "Smeltr runs on Arm64 Linux, shows a pipeline's tests where you edit it, downloads samples and a pipeline's input and output as NDJSON, and no longer lets a busy object writer outgrow its container's memory.",
+    "summary": "Smeltr runs on Arm64 Linux, and a busy object writer no longer outgrows its container's memory.",
     "highlights": [
       {
         "title": "Runs on Arm64 Linux",
         "text": "Each release has a Linux Arm64 archive, and the container image runs on x86-64 and Arm64 hosts, such as AWS Graviton. A pull fetches the one for the host.",
         "href": "/get"
-      },
-      {
-        "title": "Tests beside each pipeline",
-        "text": "The pipeline editor runs a pipeline's tests when it opens and after each save. The sample menu marks each test Failing, Could not run or Passing. The Pipelines list counts each pipeline's tests, and the count opens them on the Tests tab.",
-        "href": "/docs/steps#verify"
-      },
-      {
-        "title": "Download as NDJSON",
-        "text": "Download a sample from the Samples page, or a pipeline's input or output from the editor's Save or download menu, one record per line. Viewers can download too.",
-        "href": "/docs/capture-sample"
-      },
-      {
-        "title": "Pick the range counts cover",
-        "text": "Suggested fields read production over a range you pick, 7 days to start. Status, Metrics and a source's Routes tab say what range their counts cover, and pick it with the same range picker.",
-        "href": "/docs/parsers"
       }
     ],
     "features": [
       {
         "title": "Build pipelines",
-        "items": ["Schemas offer OCSF 1.10.0 in place of 1.9.0."]
+        "items": [
+          "The pipeline editor runs a pipeline's tests when it opens and after each save. The sample menu marks each test Failing, Could not run or Passing. The Pipelines list counts each pipeline's tests, and the count opens them on the Tests tab.",
+          "Download a sample from the Samples page, or a pipeline's input or output from the editor's Save or download menu, as NDJSON, one record per line. Viewers can download too.",
+          "Schemas offer OCSF 1.10.0 in place of 1.9.0."
+        ]
       },
       {
         "title": "Run a fleet",
         "items": [
+          "Suggested fields read production over a range you pick, 7 days to start. Status, Metrics and a source's Routes tab say what range their counts cover, and pick it with the same range picker.",
           "Choosing a source's warning preset, or marking a span Normal or Outage, asks first and says what changes.",
           "Admin › System › General has Check now, which looks for a newer release at once."
         ]
