@@ -15,7 +15,8 @@ import {
   type Api,
   type Leader,
 } from '../fleet';
-import type { Page } from '@playwright/test';
+import { openRowMenu } from '../moves/admin';
+import type { Download, Page } from '@playwright/test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -111,6 +112,83 @@ test('A1: a pasted sample is saved under its name and is there to come back to',
 
   await admin.reload();
   await expect(admin.getByRole('row', { name: /orders, an ordinary hour/ })).toBeVisible();
+});
+
+// A1, records taken away to look at elsewhere.
+test("A1: a sample, and a pipeline's input and output, download as files of one record per line", async ({
+  admin,
+  leader,
+  api,
+}) => {
+  const records = [{ _raw: 'GET /a 200' }, { _raw: 'GET /b 404' }, { _raw: 'GET /c 200' }];
+  await api.put(`/api/areas/shared/samples/access${ON}`, {
+    id: 'access',
+    name: 'access log',
+    records,
+  });
+  await api.put(`/api/areas/shared/pipelines/tag${ON}`, {
+    id: 'tag',
+    name: 'tag',
+    steps: [{ type: 'eval', id: 'mark', assignments: [{ target: 'seen', expr: 'true' }] }],
+  });
+  const lines = async (download: Download) =>
+    fs
+      .readFileSync(await download.path(), 'utf8')
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+
+  await goto(admin, leader, '#/build');
+  await openRowMenu(admin, 'More actions for access log');
+  const [sample] = await Promise.all([
+    admin.waitForEvent('download'),
+    admin.getByRole('button', { name: 'Download', exact: true }).click(),
+  ]);
+  expect(sample.suggestedFilename()).toBe('access-log.ndjson');
+  expect(await lines(sample)).toEqual(records);
+  // A sample gone since the page loaded downloads nothing, and the refusal is shown.
+  await api.delete(`/api/areas/shared/samples/access${ON}`);
+  let downloaded = false;
+  admin.on('download', () => (downloaded = true));
+  await openRowMenu(admin, 'More actions for access log');
+  await admin.getByRole('button', { name: 'Download', exact: true }).click();
+  await expect(
+    admin.getByRole('alert').filter({ hasText: 'no sample by that name' }),
+  ).toBeVisible();
+  expect(downloaded).toBe(false);
+  await api.put(`/api/areas/shared/samples/access${ON}`, {
+    id: 'access',
+    name: 'access log',
+    records,
+  });
+
+  await goto(admin, leader, '#/build/pipelines/tag/for/access');
+  await expect(admin.getByText('3 rows')).toBeVisible();
+  // A filter leaves its rows on screen, and the output's download holds those, each with every field.
+  await admin.getByRole('combobox', { name: 'Search the output' }).fill('404');
+  await expect(admin.getByText('1 of 3 rows')).toBeVisible();
+  const menu = admin.getByRole('button', { name: 'Save or download', exact: true });
+  await menu.click();
+  await expect(admin.getByRole('button', { name: /^Download input/ })).toContainText('3 records');
+  const [input] = await Promise.all([
+    admin.waitForEvent('download'),
+    admin.getByRole('button', { name: /^Download input/ }).click(),
+  ]);
+  expect(input.suggestedFilename()).toBe('tag-input.ndjson');
+  expect(await lines(input)).toEqual(records);
+  await menu.click();
+  await expect(admin.getByRole('button', { name: /^Download output/ })).toContainText(
+    'The 1 row on screen',
+  );
+  const [output] = await Promise.all([
+    admin.waitForEvent('download'),
+    admin.getByRole('button', { name: /^Download output/ }).click(),
+  ]);
+  expect(output.suggestedFilename()).toBe('tag-output.ndjson');
+  // As Save output as sample saves them, with where each came from.
+  const [row] = await lines(output);
+  expect(row).toMatchObject({ _raw: 'GET /b 404', seen: true, __capture: { sample: 'access' } });
+  expect(await lines(output)).toHaveLength(1);
 });
 
 // A1, real records to work from.
@@ -396,7 +474,7 @@ test('A1: an editor runs a pipeline over a capture without saving it, then saves
   await expect(chip).toContainText('3 records', { timeout: 30_000 });
   expect((await api.get(`/api/areas/shared/samples${ON}`)).samples).toEqual([]);
 
-  await admin.getByRole('button', { name: 'Save as sample', exact: true }).click();
+  await admin.getByRole('button', { name: 'Save or download', exact: true }).click();
   await expect(admin.getByRole('button', { name: /^Save output as sample/ })).toContainText(
     'The 3 rows on screen',
   );
@@ -411,8 +489,11 @@ test('A1: an editor runs a pipeline over a capture without saving it, then saves
   await expect(admin.getByRole('button', { name: 'Lock this as a test' })).toBeEnabled({
     timeout: 15_000,
   });
-  // The output's save is its own again, with no unsaved input beside it.
-  await expect(admin.getByRole('button', { name: 'Save output as sample' })).toBeVisible();
+  // The output's save is there with no unsaved input beside it.
+  await admin.getByRole('button', { name: 'Save or download', exact: true }).click();
+  await expect(admin.getByRole('button', { name: /^Save output as sample/ })).toBeVisible();
+  await expect(admin.getByRole('button', { name: /^Save input as sample/ })).toHaveCount(0);
+  await admin.keyboard.press('Escape');
   const [sample] = (await api.get(`/api/areas/shared/samples${ON}`)).samples;
   expect(sample).toMatchObject({
     name: 'own metrics, captured',
@@ -1058,10 +1139,8 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
   });
 
   await goto(admin, leader, '#/build');
-  await admin
-    .getByRole('row', { name: /orders, a busy hour/ })
-    .getByRole('button', { name: 'Edit' })
-    .click();
+  await openRowMenu(admin, 'More actions for orders, a busy hour');
+  await admin.getByRole('button', { name: 'Edit', exact: true }).click();
   const records = admin.getByRole('group', { name: 'Records' });
   // Where each record was read from is a column per field, typed as the capture recorded it.
   await expect(records.getByRole('columnheader', { name: /^__source\.offset/ })).toContainText(
@@ -1130,10 +1209,8 @@ test('a sample of more than 100 records shows the first 100 until Show all', asy
     records: Array.from({ length: 150 }, (_, i) => ({ _raw: `record ${i}` })),
   });
   await goto(admin, leader, '#/build');
-  await admin
-    .getByRole('row', { name: /many records/ })
-    .getByRole('button', { name: 'Edit' })
-    .click();
+  await openRowMenu(admin, 'More actions for many records');
+  await admin.getByRole('button', { name: 'Edit', exact: true }).click();
   const records = admin.getByRole('group', { name: 'Records' });
   const ticks = records.getByRole('checkbox', { name: /^Select record \d/ });
   await expect(ticks).toHaveCount(100);
@@ -1166,10 +1243,8 @@ test('A1: a SQL sample is edited a column at a time, and a value fixed to its ty
   });
 
   await goto(admin, leader, '#/build');
-  await admin
-    .getByRole('row', { name: /invoices/ })
-    .getByRole('button', { name: 'Edit' })
-    .click();
+  await openRowMenu(admin, 'More actions for invoices');
+  await admin.getByRole('button', { name: 'Edit', exact: true }).click();
   const records = admin.getByRole('group', { name: 'Records' });
   await expect(records.getByRole('columnheader', { name: /^amount/ })).toContainText('f64');
   await expect(records.getByRole('columnheader', { name: /^__source\.database/ })).toContainText(
@@ -1752,7 +1827,7 @@ test('A4: pasted records are held unsaved and route from the source chosen for t
   // Opened again, the editor starts on the records held, as Route a sample does.
   await goto(admin, leader, '#/build/pipelines/web');
   await expect(chip).toContainText('Your records');
-  await admin.getByRole('button', { name: 'Save as sample', exact: true }).click();
+  await admin.getByRole('button', { name: 'Save or download', exact: true }).click();
   await admin.getByRole('button', { name: /^Save input as sample/ }).click();
   const saving = admin.getByRole('dialog');
   await saving.getByLabel('Name').fill('pasted errors');
@@ -2276,14 +2351,16 @@ test('A6: the output rows on screen are saved as a sample that another pipeline 
     if (route.request().postDataJSON()?.as_sample) await held;
     await route.continue();
   });
-  await admin.getByRole('button', { name: 'Save output as sample' }).click();
+  await admin.getByRole('button', { name: 'Save or download', exact: true }).click();
+  await admin.getByRole('button', { name: /^Save output as sample/ }).click();
   await expect(dialog.getByRole('button', { name: 'Loading…' })).toBeDisabled();
   await dialog.getByRole('button', { name: 'Cancel' }).click();
   await expect(dialog).toHaveCount(0);
   answer();
   await admin.unrouteAll({ behavior: 'wait' });
 
-  await admin.getByRole('button', { name: 'Save output as sample' }).click();
+  await admin.getByRole('button', { name: 'Save or download', exact: true }).click();
+  await admin.getByRole('button', { name: /^Save output as sample/ }).click();
   await expect(dialog.getByText('2 records')).toBeVisible();
   await dialog.getByLabel('Name').fill('orders, parsed');
   await admin.screenshot({ path: test.info().outputPath('save-output.png'), fullPage: true });

@@ -23,11 +23,13 @@
   import { RESOURCES_TABS } from './nav';
   import { dateTime } from './time';
   import { editable } from './access';
+  import { downloadRecords } from './download';
   import {
     listSamples,
     deleteSample,
     listTests,
     capturedAt,
+    getSample,
     type SampleSummary,
     type TestSummary,
   } from './api';
@@ -88,6 +90,15 @@
     }
   }
   load();
+
+  async function download(s: SampleSummary) {
+    try {
+      const { sample } = await getSample(s.id);
+      if (sample) downloadRecords(s.name, sample.records);
+    } catch (e) {
+      reported(e);
+    }
+  }
 
   /** The names of the tests run over sample `id`, which an edit to it changes the input of. */
   function testsOn(id: string): string[] {
@@ -191,12 +202,14 @@
                 <a class="btn" href={`#/build/pipelines/for/${encodeURIComponent(s.id)}`}
                   >Run in a pipeline</a
                 >
-                {#if !readOnly}
-                  <Button
-                    onclick={() => (editing = editing === s.id ? null : s.id)}
-                    disabled={saving.on ? BUSY : ''}>Edit</Button
-                  >
-                  <RowMenu label="More actions for {s.name}">
+                <RowMenu label="More actions for {s.name}">
+                  <Button class="pick" onclick={() => download(s)}>Download</Button>
+                  {#if !readOnly}
+                    <Button
+                      class="pick"
+                      onclick={() => (editing = editing === s.id ? null : s.id)}
+                      disabled={saving.on ? BUSY : ''}>Edit</Button
+                    >
                     {#if areas.length > 1}
                       <Button
                         class="pick"
@@ -210,8 +223,8 @@
                       disabled={saving.on ? BUSY : editing !== null ? SAVE_FIRST : ''}
                       >Delete</Button
                     >
-                  </RowMenu>
-                {/if}
+                  {/if}
+                </RowMenu>
               </td>
             </tr>
             {#if editing === s.id}

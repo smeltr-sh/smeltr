@@ -247,8 +247,9 @@
     <div class="form-body">
       {#if way === 'upload'}
         <Field required label="File">
-          {#snippet help()}One record per non-empty line; each line becomes <code>_raw</code
-            >.{/snippet}
+          {#snippet help()}One record per line, or per element of a JSON array, the text in <code
+              >_raw</code
+            >. A record that already has a <code>_raw</code> field is kept as it is.{/snippet}
           <input type="file" accept=".json,.ndjson,.jsonl,.txt,.log" onchange={pickFile} />
         </Field>
       {/if}
@@ -261,7 +262,9 @@
       {@render sourceField()}
       {#if way === 'paste'}
         <Field required label="Records">
-          {#snippet help()}One record per line; each line becomes <code>_raw</code>.{/snippet}
+          {#snippet help()}One record per line, or per element of a JSON array, the text in <code
+              >_raw</code
+            >. A record that already has a <code>_raw</code> field is kept as it is.{/snippet}
           <textarea bind:value={text} rows="8" spellcheck="false"></textarea>
         </Field>
       {/if}
