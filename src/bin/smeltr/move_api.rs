@@ -107,7 +107,13 @@ fn not_written(e: NotWritten) -> Envelope<MoveAnswer> {
 }
 
 /// [`move_objects`] once both areas are open. Blocking.
-pub(crate) fn move_between(mut from: Writing, mut to: Writing, ask: MoveAsk, go: Go, author: &Actor) -> Envelope<MoveAnswer> {
+pub(crate) fn move_between(
+    mut from: Writing,
+    mut to: Writing,
+    ask: MoveAsk,
+    go: Go,
+    author: &Actor,
+) -> Envelope<MoveAnswer> {
     let what = format!("{} {:?}", describe(ask.part), ask.id);
     if to.area() == from.area() {
         return Envelope::refused(Refusal::invalid(format!("{what} is in {} already", to.area())));
