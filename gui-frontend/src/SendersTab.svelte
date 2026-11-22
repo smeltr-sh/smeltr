@@ -47,7 +47,7 @@
     source: string;
     nowMillis?: number;
     /** The panel's chart range, which a sender's chart is drawn over, and its picker. */
-    range: { minutes: number; label: string };
+    range: { minutes: number; label: string; spoken: string };
     picker: Snippet;
   } = $props();
 
@@ -256,7 +256,7 @@
       <span class="mono">{sender.field} {sender.value}</span>
     </p>
     <h3 class="with-range">
-      <span>Rows per second, over the last {range.label}</span>{@render picker()}
+      <span>Rows per second, over the last {range.spoken}</span>{@render picker()}
     </h3>
     {#if past?.judgedFromMillis !== undefined}
       <p class="dim small learning">Learning: this sender is judged once it has a week of rows.</p>

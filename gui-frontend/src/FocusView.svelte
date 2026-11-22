@@ -586,7 +586,7 @@
       {/if}
     </Figures>
     <section>
-      <h3 class="with-range"><span>Over the last {chart.label}</span>{@render rangePicker()}</h3>
+      <h3 class="with-range"><span>Over the last {chart.spoken}</span>{@render rangePicker()}</h3>
       <div class="charts">
         {#each charts as c (c.title)}
           <div>
@@ -656,7 +656,7 @@
       <Figure label="Read over the window">{rows(source.polled)}</Figure>
     </Figures>
     <section>
-      <h3 class="with-range"><span>Over the last {chart.label}</span>{@render rangePicker()}</h3>
+      <h3 class="with-range"><span>Over the last {chart.spoken}</span>{@render rangePicker()}</h3>
       <div class="charts stacked">
         <div>
           <h4>Kafka lag</h4>
@@ -719,7 +719,7 @@
     {#if pipeline.perRow}
       <section>
         <h3 class="with-range">
-          <span>Time per row, over the last {chart.label}</span>{@render rangePicker()}
+          <span>Time per row, over the last {chart.spoken}</span>{@render rangePicker()}
         </h3>
         {@render overWindow('µs', slotsOf(pipeline.perRow))}
       </section>
@@ -738,7 +738,7 @@
           pick={pickPreset}
         />
         <h3 class="with-range against">
-          <span>Rows per second, over the last {chart.label}</span>{@render rangePicker()}
+          <span>Rows per second, over the last {chart.spoken}</span>{@render rangePicker()}
         </h3>
         {#if past.judgedFromMillis !== undefined}
           <p class="dim small learning">{LEARNING.judged}</p>
@@ -799,7 +799,7 @@
     <section>
       <h3 class:with-range={source}>
         <span
-          >Routes{#if source}, over the last {chart.label}{/if}
+          >Routes{#if source}, over the last {chart.spoken}{/if}
           <Help label="Routes">{HELP.routes}</Help></span
         >{#if source}{@render rangePicker()}{/if}
       </h3>

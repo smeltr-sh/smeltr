@@ -492,7 +492,7 @@
   {:else if answer === null}
     <p class="empty">Loading…</p>
   {:else if all.length === 0}
-    <p class="empty">Nothing recorded in this window yet.</p>
+    <p class="empty">Nothing recorded in this range yet.</p>
   {:else}
     <div class="over">
       {#if shown.length > 1}
@@ -691,7 +691,10 @@
               bind:value={() => view.draw, (v) => go({ draw: v })}
             />
           {/if}
-          <span class="dim">Over the last {windowLabel}</span>
+          <span class="dim"
+            >Over the last {rangeOfMinutes(view.windowMinutes)?.spoken ??
+              `${view.windowMinutes} minutes`}</span
+          >
           <RangePicker
             range={rangeOfMinutes(view.windowMinutes)?.range ?? ''}
             onpick={(r) => go({ windowMinutes: chartRange(r).minutes })}

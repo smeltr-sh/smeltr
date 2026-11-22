@@ -319,10 +319,13 @@ test('rows in and out are charted over the window the engineer picks', async ({
     timeout: 30_000,
   });
 
-  for (const range of ['10 min', '1 hour']) {
+  for (const [range, spoken] of [
+    ['10 min', '10 minutes'],
+    ['1 hour', 'hour'],
+  ]) {
     await flow.getByRole('button', { name: 'Chart range' }).click();
     await admin.getByRole('button', { name: range, exact: true }).click();
-    await expect(flow.getByText(`Over the last ${range}`)).toBeVisible();
+    await expect(flow.getByText(`Over the last ${spoken}`)).toBeVisible();
     await expect(flow.getByText(new RegExp(`^read ${MOVING.source}`))).toBeVisible();
   }
 
@@ -720,7 +723,7 @@ test('rows that do not come out are put down to a route or a step', async ({
   ).toBeVisible();
   // The counts are over the panel's range, so the tab names it and offers its picker.
   await expect(
-    focus(admin, 'own-metrics').getByRole('heading', { name: /^Routes, over the last 1 hour/ }),
+    focus(admin, 'own-metrics').getByRole('heading', { name: /^Routes, over the last hour/ }),
   ).toBeVisible();
   await expect(
     focus(admin, 'own-metrics').getByRole('button', { name: 'Chart range' }),

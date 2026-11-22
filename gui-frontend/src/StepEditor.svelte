@@ -474,7 +474,7 @@
               : ''}{/if}{#if production}{p.result ? 'from ' : ''}production, {count(
               production.rows,
               'row',
-            )} over the last {chartRange(open.range).label}, last seen {ago(
+            )} over the last {chartRange(open.range).spoken}, last seen {ago(
               production.lastSeenMs / 1000,
             )}{/if}
         {/if}

@@ -1362,7 +1362,7 @@ test('A3: the proposal counts production over the range the clock picks', async 
   await admin.getByRole('button', { name: 'Suggest fields' }).click();
 
   const suggested = admin.getByRole('group', { name: 'Suggested fields' });
-  await expect(suggested).toContainText('from production, 48,210 rows over the last 1 hour');
+  await expect(suggested).toContainText('from production, 48,210 rows over the last hour');
   expect(asked.at(-1)).toBe('60');
   await suggested.getByRole('button', { name: 'Chart range' }).click();
   await admin.getByRole('button', { name: '24 hours' }).click();

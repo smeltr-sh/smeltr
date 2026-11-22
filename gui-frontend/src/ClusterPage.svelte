@@ -1204,7 +1204,7 @@
             ]}
             bind:value={unit}
           />
-          <span class="dim">Over the last {rangeOfMinutes(windowMinutes)?.label}</span>
+          <span class="dim">Over the last {rangeOfMinutes(windowMinutes)?.spoken}</span>
           <RangePicker
             range={rangeOfMinutes(windowMinutes)?.range ?? ''}
             onpick={(r) => chooseWindow(chartRange(r).minutes)}
@@ -1214,7 +1214,7 @@
       {#if charts === null}
         <p class="empty">Loading…</p>
       {:else if !hasChartData}
-        <p class="empty">No rows recorded in this window yet.</p>
+        <p class="empty">No rows recorded in this range yet.</p>
       {:else}
         <p class="rate">
           <span class="at mono">{readAt}</span>
@@ -1299,7 +1299,7 @@
           </table>
         </div>
       {:else}
-        <p class="empty">No rows recorded in this window yet.</p>
+        <p class="empty">No rows recorded in this range yet.</p>
       {/if}
     </section>
 
@@ -1378,7 +1378,7 @@
             <p class="note">{count(totalErrored, 'exception')}.</p>
           </div>
           <div class="controls">
-            <span class="dim">Over the last {rangeOfMinutes(errorsMinutes)?.label}</span>
+            <span class="dim">Over the last {rangeOfMinutes(errorsMinutes)?.spoken}</span>
             <RangePicker
               range={rangeOfMinutes(errorsMinutes)?.range ?? ''}
               onpick={(r) => (errorsMinutes = chartRange(r).minutes)}

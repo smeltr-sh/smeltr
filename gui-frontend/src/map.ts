@@ -55,13 +55,19 @@ export function statsHash(
 }
 
 /** How far back a panel's charts reach, by the name the link carries. */
-export const CHART_RANGES: { range: string; label: string; minutes: number }[] = [
-  { range: '10m', label: '10 min', minutes: 10 },
-  { range: '1h', label: '1 hour', minutes: 60 },
-  { range: '6h', label: '6 hours', minutes: 6 * 60 },
-  { range: '24h', label: '24 hours', minutes: 24 * 60 },
-  { range: '7d', label: '7 days', minutes: 7 * 24 * 60 },
-  { range: '30d', label: '30 days', minutes: 30 * 24 * 60 },
+export const CHART_RANGES: {
+  range: string;
+  label: string;
+  /** How a sentence names the range after "the last". */
+  spoken: string;
+  minutes: number;
+}[] = [
+  { range: '10m', label: '10 min', spoken: '10 minutes', minutes: 10 },
+  { range: '1h', label: '1 hour', spoken: 'hour', minutes: 60 },
+  { range: '6h', label: '6 hours', spoken: '6 hours', minutes: 6 * 60 },
+  { range: '24h', label: '24 hours', spoken: '24 hours', minutes: 24 * 60 },
+  { range: '7d', label: '7 days', spoken: '7 days', minutes: 7 * 24 * 60 },
+  { range: '30d', label: '30 days', spoken: '30 days', minutes: 30 * 24 * 60 },
 ];
 
 /** The range every picker opens on before one is picked in this browser. */
