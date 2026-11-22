@@ -352,10 +352,12 @@ test('rows in and out are charted over the window the engineer picks', async ({
     .getByRole('button', { name: 'Routes' })
     .click();
   await expect(
-    table.getByRole('row', { name: /^all\s+(east|west)\s+own-metrics\s+pass/ }).first(),
+    table
+      .getByRole('row', { name: /^own-metrics → pass\s+(east|west)\s+own-metrics\s+pass/ })
+      .first(),
   ).toBeVisible();
   await expect(table.getByRole('row', { name: /^Total/ })).toHaveCount(0);
-  await table.getByRole('button', { name: 'all' }).first().click();
+  await table.getByRole('button', { name: 'own-metrics → pass' }).first().click();
   await expect(flow.getByRole('heading')).toContainText(/route own-metrics → pass \((east|west)\)/);
   await expect(flow.getByText(new RegExp(`^matched ${MOVING.source}`))).toBeVisible({
     timeout: 30_000,
