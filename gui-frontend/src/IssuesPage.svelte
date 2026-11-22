@@ -78,7 +78,7 @@
     was: 'normal' | 'outage',
     now: string,
   ) {
-    if (was === now || !(await askMark(was, since, true, 'source'))) return;
+    if (was === now || !(await askMark(was, since, true))) return;
     await mark(() => markWarning(group, source, since, was));
   }
 

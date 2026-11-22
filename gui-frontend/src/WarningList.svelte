@@ -14,10 +14,9 @@
     was: 'normal' | 'outage',
     fromMillis: number,
     holds: boolean,
-    of: 'source' | 'sender',
   ): Promise<boolean> {
     const at = `The warning from ${dateTime(fromMillis / 1000)} becomes info`;
-    const rows = `the ${of}'s rows while it lasts`;
+    const rows = 'the rows while it lasts';
     return !!(await ask(
       was === 'normal'
         ? {
@@ -81,11 +80,7 @@
   }
 
   async function mark(span: PastSpan, was: 'normal' | 'outage', now: string) {
-    if (
-      was === now ||
-      !(await askMark(was, span.fromMillis, span.holds, sender ? 'sender' : 'source'))
-    )
-      return;
+    if (was === now || !(await askMark(was, span.fromMillis, span.holds))) return;
     change(() => markWarning(group, source, span.fromMillis, was, sender));
   }
 

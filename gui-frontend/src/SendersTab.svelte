@@ -141,7 +141,7 @@
   }
 
   async function mark(sender: Sender, sinceMillis: number, was: 'normal' | 'outage', now: string) {
-    if (busy.on || was === now || !(await askMark(was, sinceMillis, true, 'sender'))) return;
+    if (busy.on || was === now || !(await askMark(was, sinceMillis, true))) return;
     void busy.run(async () => {
       const answer = await markWarning(group, source, sinceMillis, was, sender);
       problem = answer.ok ? '' : errorText(answer.errors);
@@ -305,13 +305,7 @@
   <section>
     {#if preset}
       <div class="preset">
-        <PresetPicker
-          value={preset}
-          label="Senders' preset"
-          of="sender"
-          {editor}
-          pick={pickPreset}
-        />
+        <PresetPicker value={preset} label="Senders' preset" {editor} pick={pickPreset} />
       </div>
     {/if}
     <div class="head">

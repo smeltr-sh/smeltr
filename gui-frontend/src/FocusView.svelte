@@ -736,7 +736,6 @@
         <PresetPicker
           value={past.preset}
           label="Preset"
-          of="source"
           editor={holds(node.group, 'editor')}
           pick={pickPreset}
         />

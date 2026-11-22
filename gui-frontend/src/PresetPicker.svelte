@@ -11,15 +11,12 @@
   let {
     value,
     label,
-    of,
     editor,
     pick,
   }: {
     value: Preset;
     /** What it is the preset of, for a screen reader. */
     label: string;
-    /** Whose stop the preset warns of: the source's, or each of its senders'. */
-    of: 'source' | 'sender';
     editor: boolean;
     pick: (preset: Preset) => void;
   } = $props();
@@ -48,10 +45,10 @@
     const [now, was] = [STOP_MINUTES[to], STOP_MINUTES[value]];
     const what =
       now === null
-        ? `a ${of} that stops never warns`
-        : `a ${of} warns about ${now} minutes after it stops${was === null ? '' : `, instead of about ${was}`}`;
+        ? 'when rows stop, no warning comes'
+        : `when rows stop, a warning comes after about ${now} minutes${was === null ? '' : ` instead of about ${was}`}`;
     const ok = await ask({
-      title: of === 'source' ? "change the source's preset" : "change the senders' preset",
+      title: 'change the preset',
       body: `From ${named(value)} to ${named(to)}: ${what}.`,
       action: `Change to ${named(to)}`,
     });
