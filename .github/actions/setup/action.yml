@@ -1,0 +1,32 @@
+# What every check job needs before its `just` recipe: the tools the justfile looks for, Node, and on Linux the disk
+# a full build and the live services take.
+name: Set up the checks
+inputs:
+  cache:
+    description: Restore the Linux test build's dependencies, which the nightly live job saves
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    # A runner starts with about 14 GB free; a test build takes up to 12 and the live services' images about 10.
+    - if: runner.os == 'Linux'
+      shell: bash
+      run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: 26
+    - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+      with:
+        tool: just,cargo-nextest@0.9.146,cargo-deny
+    # AWS-LC's FIPS build wants NASM and Ninja on Windows; the runner has cmake, Go and perl.
+    - if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        choco install nasm ninja --no-progress -y
+        "C:\Program Files\NASM" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+    - if: inputs.cache == 'true'
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      with:
+        shared-key: linux-test
+        # Only main's nightly writes the cache, so a pull request reads one build of main rather than evicting it.
+        save-if: ${{ github.ref == 'refs/heads/main' }}

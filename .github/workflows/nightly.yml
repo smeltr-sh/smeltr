@@ -1,0 +1,149 @@
+# Every check on main, at night, when main has moved since the last finished run: the live services, the whole of
+# the GUI specs, every fuzzer, Kerberos and Windows. Sunday's run goes ahead whatever moved, for what changes outside
+# the repository: advisories, npm audit, and new ECS and OCSF releases. A newer run cancels an older one.
+name: Nightly
+
+on:
+  schedule:
+    # 07:00 UTC, the small hours in America.
+    - cron: '0 7 * * 1-6'
+    - cron: '0 7 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  WEEKLY: '0 7 * * 0'
+
+jobs:
+  moved:
+    runs-on: ubuntu-26.04
+    permissions:
+      actions: read
+    outputs:
+      run: ${{ steps.moved.outputs.run }}
+    steps:
+      - id: moved
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != schedule ] || [ "$SCHEDULE" = "$WEEKLY" ]; then
+            echo run=true >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # A cancelled run checked nothing, so only a run that passed or failed counts.
+          last=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow nightly.yml --branch main --limit 20 \
+            --json headSha,conclusion --jq '[.[] | select(.conclusion == "success" or .conclusion == "failure")][0].headSha')
+          echo "last finished run: ${last:-none}"
+          if [ "$last" = "$GITHUB_SHA" ]; then echo run=false; else echo run=true; fi >> "$GITHUB_OUTPUT"
+
+  # `check-live` runs `check-all` first, then every live test against `tests/live/compose.live.yaml`.
+  live:
+    needs: moved
+    if: needs.moved.outputs.run == 'true'
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache: 'true'
+      - run: just check-live
+        env:
+          OKTA_ORG: ${{ secrets.OKTA_ORG }}
+          OKTA_TOKEN: ${{ secrets.OKTA_TOKEN }}
+          OKTA_CLIENT_ID: ${{ secrets.OKTA_CLIENT_ID }}
+          OKTA_PRIVATE_KEY: ${{ secrets.OKTA_PRIVATE_KEY }}
+          OKTA_KEY_ID: ${{ secrets.OKTA_KEY_ID }}
+          LOG_ANALYTICS_TEST_ENDPOINT: ${{ secrets.LOG_ANALYTICS_TEST_ENDPOINT }}
+          LOG_ANALYTICS_TEST_RULE_ID: ${{ secrets.LOG_ANALYTICS_TEST_RULE_ID }}
+          LOG_ANALYTICS_TEST_STREAM: ${{ secrets.LOG_ANALYTICS_TEST_STREAM }}
+          LOG_ANALYTICS_TEST_TABLE: ${{ secrets.LOG_ANALYTICS_TEST_TABLE }}
+          LOG_ANALYTICS_TEST_WORKSPACE: ${{ secrets.LOG_ANALYTICS_TEST_WORKSPACE }}
+          LOG_ANALYTICS_TEST_TENANT_ID: ${{ secrets.LOG_ANALYTICS_TEST_TENANT_ID }}
+          LOG_ANALYTICS_TEST_CLIENT_ID: ${{ secrets.LOG_ANALYTICS_TEST_CLIENT_ID }}
+          LOG_ANALYTICS_TEST_CLIENT_SECRET: ${{ secrets.LOG_ANALYTICS_TEST_CLIENT_SECRET }}
+
+  gui:
+    needs: moved
+    if: needs.moved.outputs.run == 'true'
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - run: npm --prefix tests/gui ci && npx --prefix tests/gui playwright install --with-deps chromium
+      - run: just check-gui
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gui-report
+          path: tests/gui/report
+
+  # The crate's offline fuzzers, then the GUI's.
+  fuzz:
+    needs: moved
+    if: needs.moved.outputs.run == 'true'
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - run: npm --prefix tests/gui ci && npx --prefix tests/gui playwright install --with-deps chromium
+      - run: just check-fuzz
+
+  kerberos:
+    needs: moved
+    if: needs.moved.outputs.run == 'true'
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      # The KDC and its tools; the runner has the JRE the broker needs.
+      - run: sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y krb5-kdc krb5-admin-server krb5-user
+      - run: just check-kerberos
+
+  # Windows checks out with CRLF line endings, as a Windows clone does.
+  windows:
+    needs: moved
+    if: needs.moved.outputs.run == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - run: just check-rust
+
+  # What can fail with nothing changed here: a new release of ECS or OCSF, or an npm advisory. `check-all` runs
+  # cargo deny's advisories.
+  upstream:
+    needs: moved
+    if: needs.moved.outputs.run == 'true'
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+        with:
+          tool: just
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+      - run: just schemas-latest
+      - if: ${{ !cancelled() }}
+        run: |
+          status=0
+          for dir in gui-frontend website tests/gui; do npm --prefix "$dir" audit || status=1; done
+          exit $status

@@ -52,15 +52,17 @@ What a leader stores and what builds send each other outlive the build that wrot
 
 ## Checks
 
-One thread watches main. On each commit that lands there it runs `just check`, which on main itself is
-`just check-all`, and the whole of `just check-gui`, and it fixes a failure in a PR of its own before other work. John
-runs `just check-all` before a merge to main. Nothing runs on a PR.
+GitHub runs the checks. Each push to a pull request runs `just check` (`.github/workflows/check.yml`). Each night that
+main has moved, GitHub runs the rest on main (`.github/workflows/nightly.yml`): `just check-live`, which runs
+`just check-all` first, the whole of `just check-gui`, `just check-fuzz`, `just check-kerberos`, and `just check-rust`
+on Windows. One thread watches that nightly run and fixes a failure in a PR of its own before other work. John runs
+`just check-all` before a merge to main.
 
 Every other thread tests only what it changed, once, before its push: the tests of the modules it touched
 (`SMELTR_NO_GUI=1 cargo nextest run <module>::`, as the checks build them, so neither rebuilds for the other), and
 after a change to the GUI or the API it calls, the specs it touched (`just check-gui specs/<name>.spec.ts`). It runs no `just check`, `just check-all` or whole `just check-gui`. A thread
-that changes `Cargo.toml`, `Cargo.lock` or the Kerberos tests also runs `just check-kerberos`, which the main
-checks leave out.
+that changes `Cargo.toml`, `Cargo.lock` or the Kerberos tests also runs `just check-kerberos`, which `just check`
+leaves out.
 
 A dependency change also needs `just notices`: nothing else keeps
 `THIRD-PARTY-NOTICES.md` current.
@@ -74,8 +76,7 @@ Live checks are expensive. Run one only when a change touches a live
 integration directly and `just check` cannot cover it. Never run the whole
 `just check-live`: run only the lines of its recipe the change affects, with
 the `SMELTR_LIVE_TESTS=required` and service variables the recipe sets for
-them. Start the Docker daemon first, then `just live-up`. Windows is checked
-nowhere.
+them. Start the Docker daemon first, then `just live-up`.
 
 While building, run the app with `just build-dev` or `just run-dev`, and take screenshots from it. `just build` and
 `just run` are for checking how a release build behaves.
@@ -95,8 +96,7 @@ draw from `src/fuzz.rs` (`crate::fuzz` in the crate's tests, `harness::fuzz` und
 seed.
 
 The offline fuzzers run in `just check-fuzz`, which picks them by the `fuzz` in their test names, so a fuzzer's
-module or file is named for it. They run weekly, in the scheduled check that also runs `cargo deny check advisories`
-and `npm audit`, and after a change to anything a fuzzer exercises: a source, a destination, a parser or the
+module or file is named for it. They run in the nightly check on main, and after a change to anything a fuzzer exercises: a source, a destination, a parser or the
 compiler. The live one is a live test like any other: it takes its service
 from `tests/live`, so it skips without one, and it gets its own line in `just check-live`.
 

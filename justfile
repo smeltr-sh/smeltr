@@ -256,7 +256,7 @@ check: need-checks
 need-checks: need-rust need-nextest need-node need-deny
 
 # Kerberos is not in it, since it needs a KDC: after a change to `Cargo.toml`, `Cargo.lock` or the Kerberos tests,
-# run `just check-kerberos`. `just check-live` adds the live services. Windows is checked nowhere.
+# run `just check-kerberos`. `just check-live` adds the live services. GitHub checks Windows nightly.
 #
 # The five share nothing but `stable`, so `[parallel]` runs them at once: 25s
 # of work in 12s. Two costs. Their output interleaves -- run one by name
