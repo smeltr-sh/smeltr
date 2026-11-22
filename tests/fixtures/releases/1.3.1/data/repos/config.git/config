@@ -1,0 +1,10 @@
+[core]
+	filemode = true
+	bare = true
+	logallrefupdates = false
+	ignorecase = false
+	precomposeunicode = false
+	repositoryformatversion = 0
+[smeltr]
+	minReader = 0
+	steps = 0
