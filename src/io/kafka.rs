@@ -77,7 +77,7 @@ const MESSAGE_CEILING_TIMEOUT: Duration = Duration::from_secs(5);
 /// librdkafka's own `batch.size` and `message.max.bytes`. A producer keeps this batch unless its broker takes less.
 const DEFAULT_BATCH_BYTES: usize = 1_000_000;
 
-/// What librdkafka and the delivery tag hold for each queued record beyond its payload and key. librdkafka's own
+/// What librdkafka holds for each queued record beyond its payload and key. librdkafka's own
 /// bounds count payloads alone, or records whatever their size, so the producer counts each record at this much more
 /// against its share of `bufferBytes` (`Held`). `per_message_overhead` keeps it true across librdkafka upgrades.
 const MESSAGE_OVERHEAD_BYTES: usize = 225;
@@ -87,17 +87,22 @@ fn held_bytes(value: usize, key: usize) -> usize {
     value + key + MESSAGE_OVERHEAD_BYTES
 }
 
-/// What one queued record carries back to its delivery report. Sixteen bytes, so each record's allocation is the
-/// allocator's smallest (`per_message_overhead`): a record is under `message.max.bytes`'s 1 GB, and a batch has fewer
-/// rows than `u32` counts.
-struct Sent {
-    /// The send-sequence its batch was tagged with, so an acknowledgment is attributed to the batch.
-    seq: u64,
-    /// Its `held_bytes`, given back when it is reported.
-    held: u32,
-    /// Its position in the rows its batch was handed over with, so a failure names it.
-    row: u32,
+/// What one queued record carries back to its delivery report, packed into the integer librdkafka keeps with it, so
+/// a record costs no allocation of its own: its batch's send-sequence, so the acknowledgment is attributed to the
+/// batch, and its position in the rows the batch was handed over with, so a failure names it. A batch has fewer rows
+/// than `u32` counts. What it holds is read back from the message itself.
+fn sent(seq: Seq, row: usize) -> usize {
+    ((seq as usize) << 32) | (row & 0xffff_ffff)
 }
+
+/// The send-sequence and row `sent` packed.
+fn unpack(sent: usize) -> (Seq, usize) {
+    ((sent >> 32) as Seq, sent & 0xffff_ffff)
+}
+
+/// A batch's send-sequence. Wraps: a sequence comes round again only after four billion hand-overs, long after its
+/// batch has completed.
+type Seq = u32;
 
 /// The range librdkafka lets `message.max.bytes` take. A broker ceiling outside it is brought inside: a producer built
 /// outside the range never comes up at all.
@@ -924,17 +929,17 @@ impl Source for KafkaSource {
 /// a batch is acknowledged (design doc, Runtime stages), so failures are recorded here.
 #[derive(Default)]
 struct Completion {
-    /// Unreported records per send-sequence. Keyed by sequence rather than batch id: records are counted as they are
-    /// queued, before the hand-over is sealed under its batch.
-    outstanding: HashMap<u64, u64>,
+    /// Unreported records per send-sequence. Keyed by sequence rather than batch id: records are counted before they
+    /// are queued, and the hand-over is sealed under its batch after.
+    outstanding: HashMap<Seq, u64>,
     /// Sealed sequences and their batch ids. A sequence not here is still accumulating and must not be reported
     /// complete.
-    sealed: HashMap<u64, BatchId>,
+    sealed: HashMap<Seq, BatchId>,
     /// What each sequence's records that did not land said.
-    failed: HashMap<u64, Failed>,
+    failed: HashMap<Seq, Failed>,
     /// Sequences a hand-over that failed part way left records queued under. Its batch goes again whole, under a
     /// sequence of its own, so what is reported for these answers for nothing.
-    abandoned: HashSet<u64>,
+    abandoned: HashSet<Seq>,
     /// Sealed and wholly reported, waiting to be returned.
     done: Vec<BatchCompletion>,
 }
@@ -958,7 +963,7 @@ enum Failure {
 
 impl Completion {
     /// Row `row` of sequence `seq` was reported: landed, or `failure`.
-    fn reported(&mut self, seq: u64, row: usize, failure: Option<Failure>) {
+    fn reported(&mut self, seq: Seq, row: usize, failure: Option<Failure>) {
         if let Some(failure) = failure.filter(|_| !self.abandoned.contains(&seq)) {
             let failed = self.failed.entry(seq).or_default();
             match failure {
@@ -985,7 +990,7 @@ impl Completion {
 
     /// A sequence completes once it is sealed and has nothing outstanding; either can happen last. One abandoned is
     /// forgotten once nothing of it is outstanding.
-    fn settle(&mut self, seq: u64) {
+    fn settle(&mut self, seq: Seq) {
         if self.outstanding.get(&seq).is_some_and(|n| *n > 0) {
             return;
         }
@@ -1006,7 +1011,7 @@ impl Completion {
     }
 
     /// The hand-over under `seq` failed part way, and its batch goes again whole.
-    fn abandon(&mut self, seq: u64) {
+    fn abandon(&mut self, seq: Seq) {
         self.failed.remove(&seq);
         self.abandoned.insert(seq);
         self.settle(seq);
@@ -1185,11 +1190,15 @@ impl ClientContext for DeliveryTracker {
 }
 
 impl ProducerContext for DeliveryTracker {
-    type DeliveryOpaque = Box<Sent>;
+    type DeliveryOpaque = usize;
 
     fn delivery(&self, result: &DeliveryResult<'_>, sent: Self::DeliveryOpaque) {
-        self.held
-            .fetch_sub(sent.held as usize, std::sync::atomic::Ordering::Relaxed);
+        let message = match result {
+            Ok(m) | Err((_, m)) => m,
+        };
+        let held = held_bytes(message.payload_len(), message.key_len());
+        self.held.fetch_sub(held, std::sync::atomic::Ordering::Relaxed);
+        let (seq, row) = unpack(sent);
         let failure = result.as_ref().err().map(|(e, _)| {
             let why = match e {
                 KafkaError::MessageProduction(RDKafkaErrorCode::UnsupportedForMessageFormat)
@@ -1205,10 +1214,7 @@ impl ProducerContext for DeliveryTracker {
                 Failure::Undelivered(why)
             }
         });
-        self.state
-            .lock()
-            .unwrap()
-            .reported(sent.seq, sent.row as usize, failure);
+        self.state.lock().unwrap().reported(seq, row, failure);
     }
 }
 
@@ -1227,7 +1233,7 @@ pub struct KafkaDestination {
     reach: Arc<Mutex<Reach>>,
     /// The send-sequence records are tagged with. Bumped once a hand-over is sealed, so every record of one batch
     /// shares one tag.
-    seq: u64,
+    seq: Seq,
     /// How its rows are written, where they are written as Avro.
     avro: Option<crate::io::avro::AvroWriter>,
     /// Shared with the producer's own `DeliveryTracker`.
@@ -1390,11 +1396,11 @@ impl KafkaDestination {
 }
 
 impl KafkaDestination {
-    /// Undoes the `outstanding` increment `produce` makes up front, for a record that never entered the queue.
-    fn uncount(&mut self) {
+    /// Takes `records` that will never be reported off the count `deliver` makes up front.
+    fn uncount(&mut self, records: u64) {
         let mut state = self.state.lock().unwrap();
         if let Some(n) = state.outstanding.get_mut(&self.seq) {
-            *n = n.saturating_sub(1);
+            *n = n.saturating_sub(records);
         }
         let seq = self.seq;
         state.settle(seq);
@@ -1407,19 +1413,12 @@ impl KafkaDestination {
         use std::sync::atomic::Ordering::Relaxed;
         let topic = out.placement.unwrap_or(&self.default_topic);
         let held = held_bytes(out.value.len(), out.key.map_or(0, <[u8]>::len));
-        let sent = Box::new(Sent {
-            seq: self.seq,
-            held: u32::try_from(held).expect("a record is under message.max.bytes"),
-            row: u32::try_from(row).expect("a batch has fewer rows than u32 counts"),
-        });
-        let mut record = BaseRecord::with_opaque_to(topic, sent).payload(out.value);
+        let mut record = BaseRecord::with_opaque_to(topic, sent(self.seq, row)).payload(out.value);
         if let Some(k) = out.key {
             record = record.key(k);
         }
-        // Counted before the send: a delivery report can fire under the queue-full poll below, and decrementing a
-        // record not yet counted would complete the batch early.
-        *self.state.lock().unwrap().outstanding.entry(self.seq).or_insert(0) += 1;
-        let deadline = Instant::now() + self.stall_after;
+        // Read only once the queue is full: a clock read per record is a measurable share of the egress thread.
+        let mut deadline = None;
         loop {
             // A record larger than the whole budget goes alone, rather than never.
             let queued = self.held.load(Relaxed);
@@ -1433,18 +1432,14 @@ impl KafkaDestination {
                     Err((KafkaError::MessageProduction(RDKafkaErrorCode::QueueFull), rejected)) => record = rejected,
                     // Refused synchronously, before queuing: a rejection of this record (`is_rejection`), distinct
                     // from a delivery failure reported through `DeliveryTracker`. No callback will come for it, so
-                    // take the count back off.
-                    Err((e, _)) => {
-                        self.uncount();
-                        return Err(e.into());
-                    }
+                    // `deliver` takes the count back off.
+                    Err((e, _)) => return Err(e.into()),
                 }
             }
             // A full queue is ordinarily momentary backpressure: poll to drain, since `BaseProducer` has no thread of
             // its own. Bounded, because a queue full for the whole budget means the destination is not draining, and
             // blocking would stop the consumer polling (`MAX_POLL_INTERVAL`).
-            if Instant::now() >= deadline {
-                self.uncount();
+            if Instant::now() >= *deadline.get_or_insert_with(|| Instant::now() + self.stall_after) {
                 return Err(IoError::transient(format!(
                     "destination {} is not draining: its local queue stayed full for {:?}",
                     self.default_topic, self.stall_after
@@ -1496,6 +1491,15 @@ impl Destination for KafkaDestination {
             Some(avro) => Some(avro_values(avro, &self.default_topic, &rows)?),
             None => None,
         };
+        // Counted up front, once: a delivery report can fire under a queue-full poll in `produce`, and decrementing a
+        // record not yet counted would complete the batch early.
+        let to_send = (0..rows.len())
+            .filter(|&i| rows[i].unfit.is_none() && encoded.as_ref().is_none_or(|e| e[i].is_ok()))
+            .count() as u64;
+        if to_send > 0 {
+            self.state.lock().unwrap().outstanding.insert(self.seq, to_send);
+        }
+        let mut unsent = to_send;
         for (i, row) in rows.iter().enumerate() {
             if let Some(why) = &row.unfit {
                 rejections.push(Rejection::of(&rows, i, why.clone()));
@@ -1511,14 +1515,20 @@ impl Destination for KafkaDestination {
                     }
                 }
             }
-            match self.produce(i, out) {
+            let result = self.produce(i, out);
+            unsent -= 1;
+            match result {
                 Ok(()) => {}
                 // Refused before queuing: this record is refused, and the batch goes on without it.
-                Err(e) if e.is_rejection() => rejections.push(Rejection::of(&rows, i, e.message)),
+                Err(e) if e.is_rejection() => {
+                    self.uncount(1);
+                    rejections.push(Rejection::of(&rows, i, e.message));
+                }
                 // The batch goes again whole, so what is already queued of it answers for nothing.
                 Err(e) => {
+                    self.uncount(unsent + 1);
                     self.state.lock().unwrap().abandon(self.seq);
-                    self.seq += 1;
+                    self.seq = self.seq.wrapping_add(1);
                     return Err(e);
                 }
             }
@@ -1529,7 +1539,7 @@ impl Destination for KafkaDestination {
             // A batch acknowledged before it was sealed, or one that sent nothing, is already done.
             state.settle(self.seq);
         }
-        self.seq += 1;
+        self.seq = self.seq.wrapping_add(1);
         self.producer.poll(Duration::ZERO);
         Ok((Dispatched::InFlight, rejections))
     }
@@ -1552,7 +1562,7 @@ impl Destination for KafkaDestination {
         let mut state = self.state.lock().unwrap();
         state.outstanding.clear();
         state.abandoned.clear();
-        let sealed: Vec<u64> = state.sealed.keys().copied().collect();
+        let sealed: Vec<Seq> = state.sealed.keys().copied().collect();
         for seq in sealed {
             state.settle(seq);
         }
@@ -1649,12 +1659,7 @@ mod tests {
             .unwrap();
         let before = resident();
         for seq in 0..RECORDS {
-            let sent = Box::new(Sent {
-                seq: seq as u64,
-                held: held_bytes(1, 0) as u32,
-                row: 0,
-            });
-            let record = BaseRecord::<(), [u8], _>::with_opaque_to("t", sent).payload(b"x");
+            let record = BaseRecord::<(), [u8], _>::with_opaque_to("t", sent(seq as Seq, 0)).payload(b"x");
             producer.send(record).map_err(|(e, _)| e).unwrap();
         }
         let per_record = (resident() - before) / RECORDS;
