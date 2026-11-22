@@ -825,7 +825,7 @@ test('an OCSF class comes in with only the profiles ticked, and then names them 
   expect(field('device'), "the Host profile's").toBeUndefined();
   expect(field('src_endpoint.ip')).toBeDefined();
   const described =
-    'OCSF 1.9.0 Network Activity, 2 levels deep, required and recommended fields, profiles: none';
+    'OCSF 1.10.0 Network Activity, 2 levels deep, required and recommended fields, profiles: none';
   await expect(admin.getByText(described, { exact: true })).toBeVisible();
 
   // A profile ticked stays ticked on a class that takes it too.
