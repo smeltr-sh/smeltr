@@ -256,7 +256,7 @@ check: need-checks
 need-checks: need-rust need-nextest need-node need-deny
 
 # Kerberos is not in it, since it needs a KDC: after a change to `Cargo.toml`, `Cargo.lock` or the Kerberos tests,
-# run `just check-kerberos`. `just check-live` adds the live services. Windows is checked nowhere.
+# run `just check-kerberos`. `just check-live` adds the live services. GitHub checks Windows nightly.
 #
 # The five share nothing but `stable`, so `[parallel]` runs them at once: 25s
 # of work in 12s. Two costs. Their output interleaves -- run one by name
@@ -541,13 +541,17 @@ live-up: need-docker
     docker compose -f tests/live/compose.live.yaml exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:19092 --create --if-not-exists --topic budget-b --partitions 4 --replication-factor 1
     docker compose -f tests/live/compose.live.yaml exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:19092 --create --if-not-exists --topic budget-c --partitions 4 --replication-factor 1
 
+# `check-all`, then every live test that asserts behavior.
+[group("dev")]
+check-live: check-all live-tests
+
 # `SMELTR_LIVE_TESTS=required`: without it a missing service makes the
 # live tests skip, and a skipped test reports `ok`. Only the suites that
 # assert behavior; the measurement suites assert on timings. The tests
 # share one broker, hence `--test-threads` and one suite at a time.
 # Services stay up afterward; `just down` clears them.
 
-# `check-all`, plus every live test that asserts behavior.
+# Every live test that asserts behavior, without `check-all`. The nightly check runs the two on separate runners.
 [group("dev")]
 [env("KAFKA_TEST_BROKERS", "localhost:19092")]
 [env("ES_TEST_URL", "http://localhost:9200")]
@@ -585,7 +589,7 @@ live-up: need-docker
 [env("SOCKET_SENDER_TEST_IMAGE", "python:3.13-slim@sha256:d0a9e379c0c588befb0e427db17ca9731751d281f32c6cb1a90a1277b680bdad")]
 [env("S2S_FORWARDER_TEST_IMAGE", "splunk/universalforwarder:10.6.0.5@sha256:944fd52a8da3cb5709532a8d8e349732fdccaf6e09c165d1877be7c41f1c88e3")]
 [env("SMELTR_LIVE_TESTS", "required")]
-check-live: live-up check-all
+live-tests: live-up
     cargo test --test integration kafka_tests:: -- --test-threads=4
     cargo test --test integration kafka_fuzz::
     cargo test --test integration kafka_destination_fuzz::live_
@@ -625,8 +629,6 @@ check-live: live-up check-all
     cargo test --test integration syslog_receiver_tests::a_real_
     cargo test --test integration syslog_receiver_fuzz::live_
     cargo test --test integration socket_receiver_fuzz::live_
-    cargo test --test integration okta_live_tests:: -- --ignored
-    cargo test --test integration log_analytics_fuzz::live_ -- --ignored
     cargo test --test integration gate_tests::live_ -- --test-threads=4
     cargo test --test integration acme_live_tests:: -- --test-threads=1
 
@@ -648,8 +650,7 @@ check-kerberos: kerberos-up
     set -a && . /tmp/krb/env && set +a && PATH="$PWD/tests/kerberos/no-kinit:$PATH" KRB5CCNAME=MEMORY:smeltr SMELTR_KINIT_RAN=/tmp/krb/kinit-ran SMELTR_LIVE_TESTS=required cargo test --test integration kerberos_tests::
 
 # Reads a real Okta org's System Log, by API token and as a service app with
-# DPoP: the one check of what Okta itself takes. `check-live` runs it too;
-# `check` never does. Needs OKTA_ORG, OKTA_TOKEN, OKTA_CLIENT_ID and
+# DPoP: the one check of what Okta itself takes. No other check runs it. Needs OKTA_ORG, OKTA_TOKEN, OKTA_CLIENT_ID and
 # OKTA_PRIVATE_KEY (PEM, or that PEM in base64 on one line), from an Okta org
 # with an API Services app granted okta.logs.read and the Read-only
 # Administrator role. OKTA_KEY_ID names its key when it holds several.
@@ -657,8 +658,7 @@ check-okta:
     SMELTR_LIVE_TESTS=required cargo test --test integration okta_live_tests:: -- --ignored
 
 # What a real Log Analytics workspace takes from smeltr: rows
-# sent to a data collection rule, queried back. `check-live` runs it too;
-# `check` never does. Needs LOG_ANALYTICS_TEST_ENDPOINT (the rule's logs ingestion
+# sent to a data collection rule, queried back. No other check runs it. Needs LOG_ANALYTICS_TEST_ENDPOINT (the rule's logs ingestion
 # endpoint), LOG_ANALYTICS_TEST_RULE_ID, LOG_ANALYTICS_TEST_STREAM, LOG_ANALYTICS_TEST_TABLE
 # (a table with TimeGenerated, Tag and Message columns, which the stream fills
 # as it is), LOG_ANALYTICS_TEST_WORKSPACE (the workspace's id), and
