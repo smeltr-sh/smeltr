@@ -11,8 +11,8 @@ import type { FlowKind, FlowNormalDto, SeriesAnswerDto } from './api';
 /** How many rows the ranked table shows (Main storyboard). */
 export const FURTHEST_FROM_NORMAL_LIMIT = 8;
 
-/** Each kind's rows in, rows out, bytes in and bytes out (`leader::FlowKind::metrics`). Out is what was handed to
- * destinations; a destination's own out, and the fleet's, is what destinations acknowledged. */
+/** Each kind's rows in, rows out, bytes in and bytes out, as the Status page reads them. Out is what was handed to
+ * destinations; a destination's own out, and the fleet's, is what destinations delivered. */
 export const FLOW_METRICS: Record<FlowKind | 'fleet', [string, string, string, string]> = {
   fleet: [
     'smeltr_rows_polled_total',

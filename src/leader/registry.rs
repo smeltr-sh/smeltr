@@ -676,7 +676,7 @@ fn recovered_instant(last_seen_ms: i64, now_ms: i64) -> Instant {
 /// carrying none of them is about the worker, and its series is kept per worker.
 const SUBJECT_LABELS: [&str; 3] = ["source", "destination", "pipeline"];
 
-/// Metrics exposed by `GET /api/flow` keep one series per authenticated worker so the dashboard can focus its
+/// The Status page's flow metrics keep one series per authenticated worker so the dashboard can focus its
 /// charts on a worker. Warning inputs deliberately remain logical group/subject series: partition ownership can
 /// move between workers, and splitting those series would leave stale or duplicate warnings behind.
 const WORKER_SCOPED_METRICS: [&str; 8] = [

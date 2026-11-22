@@ -2141,7 +2141,7 @@ async fn run_leader() {
     );
 
     // `open` rather than `default`: the durable registry is what makes a warning's start time survive a restart, and
-    // what gives `/api/flow` anything to serve. Its own file, since the series is written per heartbeat and
+    // what gives `/api/series` anything to serve. Its own file, since the series is written per heartbeat and
     // `leader.db` is for operator actions.
     let registry = smeltr::leader::registry::Registry::open(&data_dir.join("registry.db")).unwrap_or_else(|e| {
         eprintln!("smeltr: refusing to start -- {e}");

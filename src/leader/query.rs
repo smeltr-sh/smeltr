@@ -118,7 +118,7 @@ fn grid(draw: Draw, window_minutes: i64, offset_ms: i64, end_ms: i64, now_ms: i6
     let now_ms = end_ms;
     let start = |at: i64| (at - offset_ms).div_euclid(point_ms) * point_ms + offset_ms;
     let from_ms = match draw {
-        // The window's oldest whole point, as `/api/flow` reads it.
+        // The window's oldest whole point.
         Draw::PerSecond => start(now_ms - window_ms),
         // As many bars as the window holds, the last the one still filling.
         Draw::Totals => start(now_ms) - (window_ms / point_ms - 1) * point_ms,
@@ -154,8 +154,14 @@ pub fn answer(
     let (point_ms, from_ms) = grid(draw, window_minutes, offset_ms, end_ms, now_ms);
     let by: Vec<&str> = query.by.split(',').filter(|l| !l.is_empty()).collect();
     let mut splits: BTreeMap<Vec<String>, BTreeMap<i64, f64>> = BTreeMap::new();
-    for (subject_key, points) in store.points_from(&query.metric, counter, point_ms, offset_ms, from_ms, end_ms)? {
-        let Some(labels) = labels_of(&subject_key) else {
+    // A live window reads through the bucket's cache; one that ends in the past is asked rarely enough to read fresh.
+    let read = if end_ms == now_ms {
+        store.points_this_bucket(&query.metric, counter, point_ms, offset_ms, from_ms, now_ms)?
+    } else {
+        std::sync::Arc::new(store.points_from(&query.metric, counter, point_ms, offset_ms, from_ms, end_ms)?)
+    };
+    for (subject_key, points) in read.iter() {
+        let Some(labels) = labels_of(subject_key) else {
             continue;
         };
         if !value_of(&labels, GROUP_LABEL).is_some_and(&sees) {
@@ -195,8 +201,8 @@ pub fn answer(
 }
 
 /// `points` added into `into`, point by point.
-fn add(into: &mut BTreeMap<i64, f64>, points: SubjectPoints) {
-    for (at, value) in points {
+fn add(into: &mut BTreeMap<i64, f64>, points: &SubjectPoints) {
+    for &(at, value) in points {
         *into.entry(at).or_default() += value;
     }
 }
@@ -461,6 +467,42 @@ mod tests {
         );
         assert_eq!(week_before.point_millis, 5 * 60_000);
         assert_eq!(week_before.series[0].points, [(NOON - week - 10 * 60_000, 5.0)]);
+    }
+
+    /// Thirty days are read in six-hour points from the coarse tier, and the newest buckets, not yet rolled into it,
+    /// from the finer ones.
+    #[test]
+    fn a_long_window_holds_its_newest_buckets_too() {
+        let store = RegistryStore::open(Path::new(":memory:")).unwrap();
+        let key = source("east", "a", "e1");
+        let six_hours = 6 * HOUR_MS;
+        let point = NOON.div_euclid(six_hours) * six_hours;
+        let earlier = point - 2 * DAY_MS;
+        store.record_delta(ROWS, &key, earlier, 4.0).unwrap();
+        store.record_delta(ROWS, &key, earlier + six_hours / 2, 1.0).unwrap();
+        store.maintain(NOON).unwrap();
+        store.record_delta(ROWS, &key, point, 2.0).unwrap();
+        store.record_delta(ROWS, &key, point + 1, 3.0).unwrap();
+        let month = ask(
+            &store,
+            &SeriesQuery {
+                window_minutes: 30 * 24 * 60,
+                draw: Draw::Totals,
+                ..asked(ROWS)
+            },
+            &["east"],
+        );
+        assert_eq!(values(&month), [("", 10.0)]);
+    }
+
+    /// A subject with no group belongs to no caller, so no answer counts it.
+    #[test]
+    fn a_subject_without_a_group_is_left_out() {
+        let store = RegistryStore::open(Path::new(":memory:")).unwrap();
+        store
+            .record_delta(ROWS, r#"[["source","a"]]"#, NOON - 60_000, 5.0)
+            .unwrap();
+        assert!(ask(&store, &asked(ROWS), &["east"]).series.is_empty());
     }
 
     #[test]
