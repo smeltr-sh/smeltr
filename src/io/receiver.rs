@@ -384,16 +384,13 @@ fn bound(listen: Listen) -> Result<socket2::Socket, IoError> {
 }
 
 /// The TLS an HTTP receiver serves, offering HTTP/2, which gRPC needs, and HTTP/1.1.
-fn http_tls(
-    config: &ReceiverConfig,
-    secrets: &HeldSecrets,
-) -> Result<Option<axum_server::tls_rustls::RustlsConfig>, IoError> {
+fn http_tls(config: &ReceiverConfig, secrets: &HeldSecrets) -> Result<Option<Arc<rustls::ServerConfig>>, IoError> {
     let Some(tls) = &config.tls else {
         return Ok(None);
     };
     let mut tls = server_tls(tls, secrets)?;
     tls.alpn_protocols = http_alpn();
-    Ok(Some(axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(tls))))
+    Ok(Some(Arc::new(tls)))
 }
 
 /// What a server of HTTP offers in its TLS handshake: HTTP/2, which gRPC needs, and HTTP/1.1.
@@ -409,7 +406,7 @@ pub(crate) fn http_alpn() -> Vec<Vec<u8>> {
 /// `tap`, where given, is offered every read of every connection, after TLS, and every connection closed unread.
 pub(crate) fn serve_router(
     listener: TcpListener,
-    tls: Option<axum_server::tls_rustls::RustlsConfig>,
+    tls: Option<Arc<rustls::ServerConfig>>,
     router: axum::Router,
     address: SocketAddr,
     serving: &str,
@@ -435,7 +432,7 @@ pub(crate) fn serve_router(
         Some(tls) => axum_server::from_tcp(listener).map(|server| {
             let acceptor = Tapping {
                 inner: Admitting {
-                    inner: axum_server::tls_rustls::RustlsAcceptor::new(tls),
+                    inner: Handshaking(tokio_rustls::TlsAcceptor::from(tls)),
                     open,
                     said,
                 },
@@ -3280,13 +3277,7 @@ async fn serve_streams<H, F>(
     H: Fn(Connection) -> F + Send + Sync + 'static,
     F: Future<Output = ()> + Send + 'static,
 {
-    use axum_server::accept::Accept;
-
-    let tls = tls.map(|config| {
-        axum_server::tls_rustls::RustlsAcceptor::new(axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(
-            config,
-        )))
-    });
+    let tls = tls.map(|config| tokio_rustls::TlsAcceptor::from(Arc::new(config)));
     let handle = Arc::new(handle);
     let mut tasks = tokio::task::JoinSet::new();
     let mut accepting = crate::logs::Relog::default();
@@ -3344,8 +3335,8 @@ async fn serve_streams<H, F>(
         let abort = tasks.spawn(async move {
             let (inner, tls): (Box<dyn Stream>, bool) = match tls {
                 None => (Box::new(tcp), false),
-                Some(tls) => match tls.accept(tcp, ()).await {
-                    Ok((stream, ())) => (Box::new(stream), true),
+                Some(tls) => match handshake(&tls, tcp).await {
+                    Ok(stream) => (Box::new(stream), true),
                     Err(e) => {
                         tracing::trace!(
                             name: "receiver_handshake_failed", target: "sources",
@@ -3372,6 +3363,57 @@ async fn serve_streams<H, F>(
         });
         open.lock().unwrap_or_else(|e| e.into_inner()).started(place.id, abort);
     }
+}
+
+/// How long a sender has to complete its TLS handshake.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A sender's TLS handshake on `io`, within [`HANDSHAKE_TIMEOUT`]. When `acceptor` refuses it, the connection is
+/// closed so the sender reads why ([`close_after_alert`]). `Err` says why it failed.
+async fn handshake<I: AsyncRead + AsyncWrite + Unpin>(
+    acceptor: &tokio_rustls::TlsAcceptor,
+    io: I,
+) -> Result<tokio_rustls::server::TlsStream<I>, String> {
+    match tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(io).into_fallible()).await {
+        Ok(Ok(stream)) => Ok(stream),
+        Ok(Err((e, io))) => {
+            close_after_alert(io).await;
+            Err(e.to_string())
+        }
+        Err(_) => Err(format!("none within {}s", HANDSHAKE_TIMEOUT.as_secs())),
+    }
+}
+
+/// An HTTP server's TLS acceptor that shakes hands as a receiver that streams does ([`handshake`]).
+#[derive(Clone)]
+struct Handshaking(tokio_rustls::TlsAcceptor);
+
+impl<I, S> axum_server::accept::Accept<I, S> for Handshaking
+where
+    I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    S: Send + 'static,
+{
+    type Stream = tokio_rustls::server::TlsStream<I>;
+    type Service = S;
+    type Future = std::pin::Pin<Box<dyn Future<Output = std::io::Result<(Self::Stream, S)>> + Send>>;
+
+    fn accept(&self, io: I, service: S) -> Self::Future {
+        let acceptor = self.0.clone();
+        Box::pin(async move {
+            let stream = handshake(&acceptor, io).await.map_err(std::io::Error::other)?;
+            Ok((stream, service))
+        })
+    }
+}
+
+/// Closes `tcp`, whose TLS handshake failed, so that the sender reads the alert the handshake sent it. A close with the
+/// sender's bytes unread resets the connection, and a reset may discard the alert before the sender reads it: Windows
+/// does. So it closes its own side, then reads what the sender sent until the sender closes too, for a second at most.
+async fn close_after_alert(mut tcp: impl AsyncRead + AsyncWrite + Unpin) {
+    use tokio::io::AsyncWriteExt;
+    let _ = tcp.shutdown().await;
+    let mut sink = tokio::io::sink();
+    let _ = tokio::time::timeout(Duration::from_secs(1), tokio::io::copy(&mut tcp, &mut sink)).await;
 }
 
 /// What a receiver says of the connections its limits close or refuse: each kind once, then again every

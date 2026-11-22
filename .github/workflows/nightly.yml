@@ -87,6 +87,7 @@ jobs:
         with:
           name: gui-report
           path: tests/gui/report
+          retention-days: 14
 
   # The crate's offline fuzzers, then the GUI's.
   fuzz:
@@ -105,6 +106,7 @@ jobs:
         with:
           name: fuzz-report
           path: tests/gui/report
+          retention-days: 14
 
   kerberos:
     needs: moved
@@ -129,7 +131,29 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
+        with:
+          cache: 'true'
       - run: just check-rust
+
+  # The cache the jobs above saved, against GitHub's 10 GB a repository holds before it evicts the least recently
+  # used. A warning, not a failure: a cache evicted costs one cold build, not a check.
+  cache:
+    needs: [moved, all, live, windows]
+    if: ${{ !cancelled() && needs.moved.outputs.run == 'true' }}
+    runs-on: ubuntu-26.04
+    permissions:
+      actions: read
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh cache list --repo "$GITHUB_REPOSITORY" --limit 100 --json key,ref,sizeInBytes,lastAccessedAt \
+            --jq '.[] | "\(.sizeInBytes / 1e9 * 100 | round / 100) GB  \(.ref)  \(.key)  last used \(.lastAccessedAt)"'
+          used=$(gh api "repos/$GITHUB_REPOSITORY/actions/cache/usage" --jq .active_caches_size_in_bytes)
+          echo "In use: $((used / 1000000)) MB of 10 GB"
+          if [ "$used" -gt 8000000000 ]; then
+            echo "::warning title=Cache nearly full::$((used / 1000000)) MB of 10 GB in use; past 10 GB GitHub evicts the least recently used"
+          fi
 
   # What can fail with nothing changed here: a new release of ECS or OCSF, or an npm advisory. `check-all` runs
   # cargo deny's advisories.
