@@ -46,10 +46,11 @@
         >
         <tr
           ><th><code>smeltr-stig.html</code></th><td
-            >The image checked against the DISA
-            <a href="https://public.cyber.mil/stigs/">Security Technical Implementation Guide</a>
-            (STIG) for Red Hat Enterprise Linux 9, by
-            <a href="https://www.open-scap.org/">OpenSCAP</a>.</td
+            >The image checked by <a href="https://www.open-scap.org/">OpenSCAP</a> against DISA's
+            General Purpose Operating System
+            <a href="https://public.cyber.mil/stigs/">Security Requirements Guide</a> (SRG), the
+            baseline that operating system STIGs are built from, with
+            <a href="https://github.com/chainguard-dev/stigs">Chainguard's profile</a> for Wolfi images.</td
           ></tr
         >
       </tbody>
@@ -62,7 +63,24 @@
     found since then is not in them: scan the image again to see it.
   </p>
   <p>
-    Some STIG rules govern the boot and the console, which a container does not have, so the STIG
-    report shows those rules as failed whatever the image holds.
+    The STIG report, an OpenSCAP scan against the SRG, marks rules a container cannot meet, such as
+    those for the boot and the console, as not applicable. Two kinds of rule fail, and you can check
+    each yourself:
   </p>
+  <ul>
+    <li>
+      Rules that ask for FIPS-validated cryptography look for it only in OpenSSL's FIPS provider.
+      The image has no OpenSSL: all of Smeltr's cryptography goes through AWS-LC's FIPS module,
+      built into Smeltr. The SBOM lists it as <code>aws-lc-fips-sys</code>. In NIST's
+      <a href="https://csrc.nist.gov/projects/cryptographic-module-validation-program"
+        >Cryptographic Module Validation Program</a
+      >, look up the validation of the version the SBOM lists. The SBOM also lists
+      <code>aws-lc-sys</code>, which is built because <code>rustls</code> asks for it, and is not used.
+    </li>
+    <li>
+      The rule on trust anchors checks that <code>SSL_CERT_FILE</code> names the image's CA bundle.
+      The image sets it, but the scan reads the image's files, not the environment the image gives a
+      container. Run <code>docker image inspect</code> on the image to see it set.
+    </li>
+  </ul>
 </GuideLayout>
