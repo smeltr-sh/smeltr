@@ -384,16 +384,13 @@ fn bound(listen: Listen) -> Result<socket2::Socket, IoError> {
 }
 
 /// The TLS an HTTP receiver serves, offering HTTP/2, which gRPC needs, and HTTP/1.1.
-fn http_tls(
-    config: &ReceiverConfig,
-    secrets: &HeldSecrets,
-) -> Result<Option<axum_server::tls_rustls::RustlsConfig>, IoError> {
+fn http_tls(config: &ReceiverConfig, secrets: &HeldSecrets) -> Result<Option<Arc<rustls::ServerConfig>>, IoError> {
     let Some(tls) = &config.tls else {
         return Ok(None);
     };
     let mut tls = server_tls(tls, secrets)?;
     tls.alpn_protocols = http_alpn();
-    Ok(Some(axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(tls))))
+    Ok(Some(Arc::new(tls)))
 }
 
 /// What a server of HTTP offers in its TLS handshake: HTTP/2, which gRPC needs, and HTTP/1.1.
@@ -409,7 +406,7 @@ pub(crate) fn http_alpn() -> Vec<Vec<u8>> {
 /// `tap`, where given, is offered every read of every connection, after TLS, and every connection closed unread.
 pub(crate) fn serve_router(
     listener: TcpListener,
-    tls: Option<axum_server::tls_rustls::RustlsConfig>,
+    tls: Option<Arc<rustls::ServerConfig>>,
     router: axum::Router,
     address: SocketAddr,
     serving: &str,
@@ -435,7 +432,7 @@ pub(crate) fn serve_router(
         Some(tls) => axum_server::from_tcp(listener).map(|server| {
             let acceptor = Tapping {
                 inner: Admitting {
-                    inner: axum_server::tls_rustls::RustlsAcceptor::new(tls),
+                    inner: Handshaking(tokio_rustls::TlsAcceptor::from(tls)),
                     open,
                     said,
                 },
@@ -3338,30 +3335,19 @@ async fn serve_streams<H, F>(
         let abort = tasks.spawn(async move {
             let (inner, tls): (Box<dyn Stream>, bool) = match tls {
                 None => (Box::new(tcp), false),
-                Some(tls) => {
-                    let failed = match tokio::time::timeout(HANDSHAKE_TIMEOUT, tls.accept(tcp).into_fallible()).await {
-                        Ok(Ok(stream)) => Ok(stream),
-                        Ok(Err((e, tcp))) => {
-                            let e = e.to_string();
-                            close_after_alert(tcp).await;
-                            Err(e)
-                        }
-                        Err(_) => Err(format!("none within {}s", HANDSHAKE_TIMEOUT.as_secs())),
-                    };
-                    match failed {
-                        Ok(stream) => (Box::new(stream), true),
-                        Err(e) => {
-                            tracing::trace!(
-                                name: "receiver_handshake_failed", target: "sources",
-                                subject = %peer,
-                                error = %e,
-                                "a sender's TLS handshake failed"
-                            );
-                            offer_closed(&*shared, &remote, true, &format!("TLS handshake failed: {e}"));
-                            return;
-                        }
+                Some(tls) => match handshake(&tls, tcp).await {
+                    Ok(stream) => (Box::new(stream), true),
+                    Err(e) => {
+                        tracing::trace!(
+                            name: "receiver_handshake_failed", target: "sources",
+                            subject = %peer,
+                            error = %e,
+                            "a sender's TLS handshake failed"
+                        );
+                        offer_closed(&*shared, &remote, true, &format!("TLS handshake failed: {e}"));
+                        return;
                     }
-                }
+                },
             };
             let stream = Box::new(Tapped {
                 inner,
@@ -3379,8 +3365,46 @@ async fn serve_streams<H, F>(
     }
 }
 
-/// How long a sender has to complete its TLS handshake, as an HTTP receiver's gives it.
+/// How long a sender has to complete its TLS handshake.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A sender's TLS handshake on `io`, within [`HANDSHAKE_TIMEOUT`]. When `acceptor` refuses it, the connection is
+/// closed so the sender reads why ([`close_after_alert`]). `Err` says why it failed.
+async fn handshake<I: AsyncRead + AsyncWrite + Unpin>(
+    acceptor: &tokio_rustls::TlsAcceptor,
+    io: I,
+) -> Result<tokio_rustls::server::TlsStream<I>, String> {
+    match tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(io).into_fallible()).await {
+        Ok(Ok(stream)) => Ok(stream),
+        Ok(Err((e, io))) => {
+            close_after_alert(io).await;
+            Err(e.to_string())
+        }
+        Err(_) => Err(format!("none within {}s", HANDSHAKE_TIMEOUT.as_secs())),
+    }
+}
+
+/// An HTTP server's TLS acceptor that shakes hands as a receiver that streams does ([`handshake`]).
+#[derive(Clone)]
+struct Handshaking(tokio_rustls::TlsAcceptor);
+
+impl<I, S> axum_server::accept::Accept<I, S> for Handshaking
+where
+    I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    S: Send + 'static,
+{
+    type Stream = tokio_rustls::server::TlsStream<I>;
+    type Service = S;
+    type Future = std::pin::Pin<Box<dyn Future<Output = std::io::Result<(Self::Stream, S)>> + Send>>;
+
+    fn accept(&self, io: I, service: S) -> Self::Future {
+        let acceptor = self.0.clone();
+        Box::pin(async move {
+            let stream = handshake(&acceptor, io).await.map_err(std::io::Error::other)?;
+            Ok((stream, service))
+        })
+    }
+}
 
 /// Closes `tcp`, whose TLS handshake failed, so that the sender reads the alert the handshake sent it. A close with the
 /// sender's bytes unread resets the connection, and a reset may discard the alert before the sender reads it: Windows
