@@ -82,7 +82,7 @@ nanoseconds, move the application's fields to their ECS names, and leave out the
 | Engine | Pipeline |
 |---|---|
 | smeltr | five steps, in `tests/reference/json_app.rs`: a JSON parser typing `ts`, `level`, `attempt` and `latency_ms`; an `if` dropping debug; an `eval` computing `event.duration` and copying the fields that move; a `rename` of the typed fields; an `eval` setting the fields left out to null |
-| Logstash | `tests/engines/logstash/json_app.conf`: `json`, a conditional `drop`, `date`, one `ruby` line for `event.duration`, which no core filter can compute, and a `mutate` renaming and removing |
+| Logstash | `tests/engines/logstash/json_app.conf`: `json`, a conditional `drop`, `date`, one Ruby filter line for `event.duration`, which no core filter can compute, and a `mutate` renaming and removing |
 | Vector | `tests/engines/vector/json_app.vrl`, one `remap` |
 | NiFi | `tests/engines/nifi/nar/`, a Java processor reading and writing records through NiFi's JSON reader and writer |
 | NiFi Groovy | `tests/engines/nifi/json_app.groovy`, a ScriptedTransformRecord, with the reader's schema in `json_app.avsc` |
