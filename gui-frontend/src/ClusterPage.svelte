@@ -1372,7 +1372,7 @@
               Exceptions — {selectionLabel}
               <Help label="Exceptions"
                 >Exceptions raised by a pipeline's functions, counted per pipeline, function and
-                kind. A row can raise several, and some, such as a guessed encoding, let it go on.</Help
+                kind.</Help
               >
             </h2>
             <p class="note">{count(totalErrored, 'exception')}.</p>
