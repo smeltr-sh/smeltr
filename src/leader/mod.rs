@@ -1045,7 +1045,7 @@ pub struct SystemInfo {
     pub newer_release: Option<updates::Newer>,
     /// The last look for one: when, and why it failed if it did.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub release_check: Option<updates::Looked>,
+    pub release_check: Option<updates::Checked>,
     /// The SASL mechanisms a Kafka client here can select. GSSAPI is in it only where a provider was linked, and a
     /// form that offered one this build does not carry would be offering a save that is refused.
     pub sasl_mechanisms: Vec<&'static str>,
@@ -1069,7 +1069,7 @@ async fn system_info(State(state): State<AppState>) -> Envelope<SystemInfo> {
         smeltr_version: crate::version::VERSION,
         release: crate::version::RELEASE,
         newer_release: state.updates.newer(),
-        release_check: state.updates.looked(),
+        release_check: state.updates.last_check(),
         sasl_mechanisms: crate::io::kafka::available_sasl_mechanisms(),
         kafka_reserved: crate::config_file::RESERVED_KAFKA_PROPS.iter().copied().collect(),
         kafka_tls_props: crate::config_file::TLS_KAFKA_PROPS,
