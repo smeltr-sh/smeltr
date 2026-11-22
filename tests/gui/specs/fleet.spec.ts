@@ -668,6 +668,14 @@ test('rows that do not come out are put down to a route or a step', async ({
   await expect(
     focus(admin, 'own-metrics').getByText(/^[1-9][\d,]* of [\d,]+ met Unmatched\.$/),
   ).toBeVisible();
+  // The counts are over the panel's range, so the tab names it and offers its picker.
+  await expect(
+    focus(admin, 'own-metrics').getByRole('heading', { name: /^Routes, over the last 10 min/ }),
+  ).toBeVisible();
+  await expect(
+    focus(admin, 'own-metrics').getByRole('button', { name: 'Chart range' }),
+  ).toBeVisible();
+  await shoot(admin, focus(admin, 'own-metrics'), 'routes-range');
 
   await east.getByRole('link', { name: /trim/ }).click();
   await focus(admin, 'trim').getByRole('link', { name: 'Steps' }).click();

@@ -799,9 +799,11 @@
     />
   {:else if shown === 'routes'}
     <section>
-      <h3>
-        Routes
-        <Help label="Routes">{HELP.routes}</Help>
+      <h3 class:with-range={source}>
+        <span
+          >Routes{#if source}, over the last {chart.label}{/if}
+          <Help label="Routes">{HELP.routes}</Help></span
+        >{#if source}{@render rangePicker()}{/if}
       </h3>
       {#if routes.length === 0}
         <p class="dim small">
