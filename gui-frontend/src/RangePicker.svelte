@@ -1,10 +1,11 @@
 <!--
-  How far back a view's charts and counts reach (`CHART_RANGES`), picked from behind a clock.
+  How far back a view's charts and counts reach (`CHART_RANGES`), picked from behind a clock. A pick
+  is remembered, so every picker opens on it next.
 -->
 <script lang="ts">
   import ChipPicker from './ChipPicker.svelte';
   import ClockIcon from './ClockIcon.svelte';
-  import { CHART_RANGES } from './map';
+  import { CHART_RANGES, rememberChartRange } from './map';
 
   let {
     range,
@@ -27,6 +28,7 @@
       class:on={r.range === range}
       onclick={() => {
         open = false;
+        rememberChartRange(r.range);
         onpick(r.range);
       }}>{r.label}</button
     >

@@ -386,6 +386,52 @@ test('rows in and out are charted over the window the engineer picks', async ({
   });
 });
 
+test("errored rows are counted from the leader's series over the range their own clock picks", async ({
+  admin,
+  leader,
+}) => {
+  const asked: { by: string | null; minutes: string | null }[] = [];
+  await admin.route('**/api/series?*', (route) => {
+    const q = new URL(route.request().url()).searchParams;
+    if (q.get('metric') !== 'smeltr_rows_errored_total') return route.continue();
+    const by = q.get('by');
+    const minutes = q.get('windowMinutes');
+    asked.push({ by, minutes });
+    // Ten closed one-minute points averaging 1 row a second over 1 hour and 10 over 24: 600 rows, then 6,000.
+    const pointMillis = 60_000;
+    const fromMillis = Math.floor(Date.now() / pointMillis) * pointMillis - 10 * pointMillis;
+    const points: [number, number][] = Array.from({ length: 10 }, (_, i) => [
+      fromMillis + i * pointMillis,
+      (minutes === '1440' ? 10 : 1) * (i % 3 === 0 ? 0.25 : 1.5),
+    ]);
+    const values = ['default', 'orders', '3', 'Conversion'];
+    return route.fulfill({
+      json: {
+        metric: 'smeltr_rows_errored_total',
+        counter: true,
+        draw: 'perSecond',
+        pointMillis,
+        fromMillis,
+        series: by
+          ? [{ name: values.join(', '), values, points }]
+          : [{ name: '', values: [], points }],
+      },
+    });
+  });
+
+  await goto(admin, leader, '#/status');
+  const errors = admin.locator('section.errors');
+  await expect(errors.getByText('600 rows errored.')).toBeVisible();
+  await expect(errors.getByRole('row', { name: /orders\s+3\s+Conversion\s+600/ })).toBeVisible();
+  expect(asked).toContainEqual({ by: 'group,pipeline,function,kind', minutes: '60' });
+
+  await errors.getByRole('button', { name: 'Chart range' }).click();
+  await admin.getByRole('button', { name: '24 hours', exact: true }).click();
+  await expect(errors.getByText('Over the last 24 hours')).toBeVisible();
+  await expect(errors.getByText('6,000 rows errored.')).toBeVisible();
+  await shoot(admin, errors, 'errors-range');
+});
+
 test('the Metrics page charts any stored metric, split by a label, as a rate or in totals', async ({
   admin,
   api,
@@ -671,7 +717,7 @@ test('rows that do not come out are put down to a route or a step', async ({
   ).toBeVisible();
   // The counts are over the panel's range, so the tab names it and offers its picker.
   await expect(
-    focus(admin, 'own-metrics').getByRole('heading', { name: /^Routes, over the last 10 min/ }),
+    focus(admin, 'own-metrics').getByRole('heading', { name: /^Routes, over the last 1 hour/ }),
   ).toBeVisible();
   await expect(
     focus(admin, 'own-metrics').getByRole('button', { name: 'Chart range' }),

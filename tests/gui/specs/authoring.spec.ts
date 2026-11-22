@@ -1362,8 +1362,8 @@ test('A3: the proposal counts production over the range the clock picks', async 
   await admin.getByRole('button', { name: 'Suggest fields' }).click();
 
   const suggested = admin.getByRole('group', { name: 'Suggested fields' });
-  await expect(suggested).toContainText('from production, 48210 rows over the last 7 days');
-  expect(asked.at(-1)).toBe(String(7 * 24 * 60));
+  await expect(suggested).toContainText('from production, 48,210 rows over the last 1 hour');
+  expect(asked.at(-1)).toBe('60');
   await suggested.getByRole('button', { name: 'Chart range' }).click();
   await admin.getByRole('button', { name: '24 hours' }).click();
   await expect(suggested).toContainText('from production, 900 rows over the last 24 hours');
@@ -1371,6 +1371,9 @@ test('A3: the proposal counts production over the range the clock picks', async 
     'In production: absent from 870 of 900 rows',
   );
   expect(asked.at(-1)).toBe('1440');
+  // A pick is remembered: every picker opens on it next.
+  await goto(admin, leader, '#/status');
+  await expect(admin.getByText('Over the last 24 hours')).toHaveCount(2);
   const shots = process.env.SMELTR_SHOTS;
   if (shots) {
     await admin.setViewportSize({ width: 1920, height: 1080 });

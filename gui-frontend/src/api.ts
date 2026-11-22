@@ -4266,8 +4266,9 @@ export function getFlow(windowMinutes: number): Promise<FlowResponseDto> {
 /** How a counter is drawn: its rate, or what each minute, hour or day added up to (`leader::query::Draw`). */
 export type SeriesDraw = 'perSecond' | 'totals';
 
-/** One series of `GET /api/series`: the subjects whose split label holds `name`, added together. */
-export type SeriesSplitDto = { name: string; points: [number, number][] };
+/** One series of `GET /api/series`: the subjects whose split labels hold `values`, added together
+ * (`leader::query::Split`). */
+export type SeriesSplitDto = { name: string; values: string[]; points: [number, number][] };
 
 /** `GET /api/series` (`leader::query::SeriesAnswer`). */
 export type SeriesAnswerDto = {

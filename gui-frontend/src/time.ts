@@ -105,9 +105,9 @@ export function lasted(millis: number): string {
   return count(Math.floor(hours / 24), 'day');
 }
 
-/** `n` of something, pluralized by adding an s unless `plural` says otherwise. */
+/** `n` with its noun, thousands separated, the noun pluralized by adding an s unless `plural` gives its plural. */
 export function count(n: number, what: string, plural = `${what}s`): string {
-  return `${n} ${n === 1 ? what : plural}`;
+  return `${n.toLocaleString()} ${n === 1 ? what : plural}`;
 }
 
 /** A commit, short enough to read and long enough to name one. */

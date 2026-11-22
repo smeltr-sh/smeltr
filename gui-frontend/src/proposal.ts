@@ -127,9 +127,6 @@ export interface OpenProposal {
   onClose: () => void;
 }
 
-/** Where a proposal reads production from: far enough back to see a field that arrives a few times a week. */
-export const PRODUCTION_RANGE = '7d';
-
 /** One proposed field, and its declaration as the author edits it before adding it: `null` where this builder
  * cannot express its shape. */
 export interface Suggestion {
@@ -148,9 +145,11 @@ export function suggestionsOf(rows: ProposalRow[]): Suggestion[] {
 export function fieldNotes(f: ParserFieldProposal): string[] {
   const notes: string[] = [];
   if (f.present !== f.rows)
-    notes.push(`absent from ${f.rows - f.present} of ${count(f.rows, 'row')}`);
+    notes.push(`absent from ${(f.rows - f.present).toLocaleString()} of ${count(f.rows, 'row')}`);
   if (f.kinds.length > 1)
-    notes.push(`rows disagree — ${f.kinds.map(([k, n]) => `${n} ${k}`).join(', ')}`);
+    notes.push(
+      `rows disagree — ${f.kinds.map(([k, n]) => `${n.toLocaleString()} ${k}`).join(', ')}`,
+    );
   if (f.failed) notes.push(`${count(f.failed, 'row')} did not fit the declared type`);
   return notes;
 }

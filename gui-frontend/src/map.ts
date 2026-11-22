@@ -17,6 +17,7 @@ import type {
   UnmatchedStreamsDto,
 } from './api';
 import { TERM_FIELDS, termFor, termsFor } from './mapTerms';
+import { store, stored } from './stored';
 
 // -- identity -------------------------------------------------------------
 //
@@ -63,9 +64,21 @@ export const CHART_RANGES: { range: string; label: string; minutes: number }[] =
   { range: '30d', label: '30 days', minutes: 30 * 24 * 60 },
 ];
 
-/** Ten minutes is short enough that it is about now rather than about today, which is what someone
- * who just clicked a node is asking. */
-export const DEFAULT_CHART_RANGE = '10m';
+/** The range every picker opens on before one is picked in this browser. */
+export const DEFAULT_CHART_RANGE = '1h';
+
+/** Where this browser keeps the range last picked or shown, which every picker opens on. */
+const RANGE_KEY = 'smeltr.map.chartRange';
+
+/** The range last picked or shown in this browser, or the default before any. */
+export function lastChartRange(): (typeof CHART_RANGES)[number] {
+  return chartRange(stored(RANGE_KEY) ?? undefined);
+}
+
+/** Makes `range` the one every picker opens on in this browser. */
+export function rememberChartRange(range: string): void {
+  store(RANGE_KEY, range);
+}
 
 /** The range `minutes` long, or `undefined` where no range is. */
 export function rangeOfMinutes(minutes: number): (typeof CHART_RANGES)[number] | undefined {

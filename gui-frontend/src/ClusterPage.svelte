@@ -23,8 +23,8 @@
   running total is not a rate. The ranked table
   compares each source and destination to its own mean at this local
   hour of day over the last thirty days, independent of the chart's own
-  window picker. Errors still chart this page's own rolling window: the
-  leader keeps no series for `smeltr_rows_errored_total`.
+  window picker. Errors read the leader's series too, over a range of
+  their own.
 -->
 <script lang="ts">
   import Button, { BUSY } from './Button.svelte';
@@ -51,7 +51,7 @@
   import Chips from './Chips.svelte';
   import Segmented from './Segmented.svelte';
   import RangePicker from './RangePicker.svelte';
-  import { chartRange, rangeOfMinutes } from './map';
+  import { chartRange, lastChartRange, rangeOfMinutes } from './map';
   import { TableSort } from './sort.svelte';
   import {
     errorText,
@@ -88,17 +88,7 @@
     rollout,
   } from './workers';
   import { isOver, workerMemory, type MemoryPart } from './memoryParts';
-  import {
-    addPoll,
-    formatFunction,
-    formatSample,
-    labelOf,
-    rowKey,
-    sampleKey,
-    sumMetric,
-    toRows,
-    type BreakdownTotals,
-  } from './metrics';
+  import { formatFunction, formatSample, sampleKey } from './metrics';
   import { FLOW_METRICS, denseAnswer, furthestFromNormal, lastClosedBucket } from './flow';
   import { DEFAULT_VIEW, seriesQuery } from './metricsView';
   import { clockTime, count, shortCommit } from './time';
@@ -126,24 +116,6 @@
 
   const POLL_MS = 2000;
 
-  // Heartbeat counters are per-drain deltas (`Metrics::drain`), so each
-  // poll's raw value is already "activity since the last sample". Errors
-  // are the only rollup left on this page's own rolling window -- rows in
-  // and out now read the leader's own series (`flow.ts`), which survives
-  // a reload.
-  const MAX_HISTORY = 150; // ~5 minutes at POLL_MS
-  type HistoryPoint = { at: number; threads: Health['threads'] };
-  let history: HistoryPoint[] = $state([]);
-
-  // Totals per label combination, accumulated over the same window as the
-  // chart: the sparkline shows the trend, this says which pipeline it
-  // belongs to.
-
-  function recordHistory(health: Health) {
-    history.push({ at: Date.now(), threads: health.threads });
-    if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
-  }
-
   let selectedGroupId = $state<string | null>(null);
   let selectedWorkerId = $state<string | null>(null);
   // The runtime's parts, folded under its whole.
@@ -160,71 +132,88 @@
     if (selectedGroupId) return series.group === selectedGroupId;
     return true;
   }
-  function threadsForSelection(threads: Health['threads']) {
-    if (selectedWorkerId) return threads.filter((thread) => thread.workerId === selectedWorkerId);
-    if (selectedGroupId) return threads.filter((thread) => thread.groupId === selectedGroupId);
-    return threads;
+  /** The selected worker or group, as the labels a series must hold. */
+  function selectionFilter(): [string, string][] {
+    if (selectedWorkerId) return [['worker', selectedWorkerId]];
+    if (selectedGroupId) return [['group', selectedGroupId]];
+    return [];
   }
-  let scopedErroredBy = $derived.by(() =>
-    history.reduce(
-      (totals, point) =>
-        addPoll(totals, threadsForSelection(point.threads), 'smeltr_rows_errored_total', [
-          'pipeline',
-          'function',
-          'kind',
-        ]),
-      {} as BreakdownTotals,
-    ),
+
+  // -- errors: the leader's own series, over the panel's own range ----------
+
+  const ERRORED = 'smeltr_rows_errored_total';
+
+  let errorsMinutes = $state(lastChartRange().minutes);
+  type ErrorsRead = { at: number; total: SeriesAnswerDto; split: SeriesAnswerDto };
+  let errors = $state<ErrorsRead | null>(null);
+  /** The request the newest errors fetch made, so an older answer does not land over it. */
+  let errorsAsked: string | null = null;
+
+  function fetchErrors() {
+    const ask = seriesQuery(
+      { ...DEFAULT_VIEW, filter: selectionFilter(), windowMinutes: errorsMinutes },
+      ERRORED,
+      0,
+    );
+    errorsAsked = ask;
+    const by = (labels: string) => {
+      const q = new URLSearchParams(ask);
+      q.set('by', labels);
+      return q.toString();
+    };
+    Promise.all([getSeries(ask), getSeries(by('group,pipeline,function,kind'))])
+      .then(([total, split]) => {
+        if (errorsAsked === ask) errors = { at: Date.now(), total, split };
+      })
+      .catch(() => {});
+  }
+
+  /** The errored rows' line, per second, up to the last complete point. */
+  let erroredTo = $derived(errors ? lastClosedBucket(errors.total.pointMillis, errors.at) : 0);
+  let erroredSeries = $derived(errors ? denseAnswer(errors.total, erroredTo) : []);
+  let erroredTimes = $derived(
+    errors
+      ? erroredSeries.map((_, i) => errors!.total.fromMillis + i * errors!.total.pointMillis)
+      : [],
   );
-  let erroredRows = $derived(toRows(scopedErroredBy));
+  /** The errored rows of each pipeline, function and kind over the range; a pipeline is shown by its name. */
+  let erroredRows = $derived.by(() => {
+    if (!errors) return [];
+    const seconds = errors.split.pointMillis / 1000;
+    const rows = new Map<
+      string,
+      { pipeline: string; function: string; kind: string; total: number }
+    >();
+    for (const s of errors.split.series) {
+      const [group, pipeline, fn, kind] = s.values;
+      const name = names.of(MAIN_BRANCH, group, 'pipelines', pipeline);
+      const key = JSON.stringify([name, fn, kind]);
+      const row = rows.get(key) ?? { pipeline: name, function: fn, kind, total: 0 };
+      row.total += s.points.reduce((a, [, v]) => a + v, 0) * seconds;
+      rows.set(key, row);
+    }
+    return [...rows.values()].map((r) => ({ ...r, total: Math.round(r.total) }));
+  });
+  let totalErrored = $derived(erroredRows.reduce((a, r) => a + r.total, 0));
   const erroredSort = new TableSort<'pipeline' | 'function' | 'kind' | 'rows'>();
   let sortedErroredRows = $derived(
     erroredSort.apply(erroredRows, {
-      pipeline: (r) => pipelineName(r.values[0]),
-      function: (r) => formatFunction(r.values[1]),
-      kind: (r) => r.values[2],
+      pipeline: (r) => r.pipeline,
+      function: (r) => formatFunction(r.function),
+      kind: (r) => r.kind,
       rows: (r) => r.total,
     }),
   );
 
-  /** The groups whose threads reported errors for each pipeline id over the window. */
-  let erroredGroups = $derived.by(() => {
-    const groups = new Map<string, Set<string>>();
-    for (const point of history)
-      for (const thread of threadsForSelection(point.threads))
-        for (const m of thread.metrics) {
-          if (m.metric !== 'smeltr_rows_errored_total') continue;
-          const id = labelOf(m, 'pipeline');
-          groups.set(id, (groups.get(id) ?? new Set()).add(thread.groupId));
-        }
-    return groups;
-  });
-  /** A pipeline by the name a group that ran it gives it on `main`, which is what its workers run. */
-  function pipelineName(id: string): string {
-    const named = [...(erroredGroups.get(id) ?? [])].map((g) =>
-      names.of(MAIN_BRANCH, g, 'pipelines', id),
-    );
-    return named.find((n) => n !== id) ?? id;
-  }
   /** What a person calls a row's pipeline or route: its name in its group on `main`. */
   const nameOf = (r: { group: string; subjectId: string }) =>
     kind === 'route' || kind === 'pipeline'
       ? names.of(MAIN_BRANCH, r.group, `${kind}s`, r.subjectId)
       : r.subjectId;
 
-  let erroredSeries = $derived(
-    history.map((point) =>
-      sumMetric(threadsForSelection(point.threads), 'smeltr_rows_errored_total'),
-    ),
-  );
-  let totalErrored = $derived(erroredSeries.reduce((a, b) => a + b, 0));
-  // What the total actually spans: `history` is a rolling window, not the
-  // life of the page.
-  const HISTORY_MINUTES = Math.round((MAX_HISTORY * POLL_MS) / 60_000);
-
   // -- flow (E2): the window-picked chart --------------------------------
 
-  let windowMinutes = $state(DEFAULT_VIEW.windowMinutes);
+  let windowMinutes = $state(lastChartRange().minutes);
   /** The table's totals and the sources' normals. */
   let flow: FlowResponseDto | null = $state(null);
 
@@ -248,11 +237,7 @@
   /** What the chart reads from `GET /api/series`: the picked row's in and out, or the fleet's,
    * within the selected group or worker. */
   let chartAsk = $derived.by(() => {
-    const selection: [string, string][] = selectedWorkerId
-      ? [['worker', selectedWorkerId]]
-      : selectedGroupId
-        ? [['group', selectedGroupId]]
-        : [];
+    const selection = selectionFilter();
     const filter: [string, string][] = picked
       ? [...selection, ['group', picked.group], [kind, picked.subjectId]]
       : selection;
@@ -292,6 +277,8 @@
 
   // A new window, selection or pick reads the chart at once, paused or not.
   $effect(() => fetchCharts(chartAsk));
+  // Likewise the errors panel's own range and the selection.
+  $effect(fetchErrors);
 
   function pick(row: { group: string; subjectId: string } | null) {
     picked = row;
@@ -471,7 +458,6 @@
       .then(([health, workers, workerGroups]) => {
         status = { health, workers, workerGroups };
         now = Date.now();
-        recordHistory(health);
       })
       .catch(reported)
       .finally(() => {
@@ -509,6 +495,7 @@
     const id = setInterval(() => {
       fetchFlow();
       fetchCharts(chartAsk);
+      fetchErrors();
     }, POLL_MS);
     return () => clearInterval(id);
   });
@@ -777,6 +764,7 @@
     refresh();
     fetchFlow();
     fetchCharts(chartAsk);
+    fetchErrors();
   }
 
   function chooseWindow(minutes: number) {
@@ -1386,15 +1374,22 @@
                 >Rows that failed to parse, compile or run in a pipeline's function.</Help
               >
             </h2>
-            <p class="note">{totalErrored} in the last {HISTORY_MINUTES} minutes.</p>
+            <p class="note">{count(totalErrored, 'row')} errored.</p>
+          </div>
+          <div class="controls">
+            <span class="dim">Over the last {rangeOfMinutes(errorsMinutes)?.label}</span>
+            <RangePicker
+              range={rangeOfMinutes(errorsMinutes)?.range ?? ''}
+              onpick={(r) => (errorsMinutes = chartRange(r).minutes)}
+            />
           </div>
         </div>
-        {#if history.length >= 2}
+        {#if errors}
           <Sparkline
             series={[{ label: 'rows errored', color: 'var(--error)', points: erroredSeries }]}
-            times={history.map((p) => p.at)}
+            times={erroredTimes}
           />
-        {:else}<p class="empty">Collecting data…</p>{/if}
+        {:else}<p class="empty">Loading…</p>{/if}
         {#if erroredRows.length > 0}
           <div class="table-wrap">
             <table>
@@ -1412,10 +1407,10 @@
                 ></thead
               >
               <tbody
-                >{#each sortedErroredRows as r (rowKey(r))}<tr
-                    ><td>{pipelineName(r.values[0])}</td><td
-                      ><code>{formatFunction(r.values[1])}</code></td
-                    ><td>{r.values[2]}</td><td class="num">{r.total}</td></tr
+                >{#each sortedErroredRows as r (`${r.pipeline} ${r.function} ${r.kind}`)}<tr
+                    ><td>{r.pipeline}</td><td><code>{formatFunction(r.function)}</code></td><td
+                      >{r.kind}</td
+                    ><td class="num">{r.total.toLocaleString()}</td></tr
                   >{/each}</tbody
               >
             </table>

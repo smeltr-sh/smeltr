@@ -36,7 +36,7 @@ pub struct SeriesQuery {
     /// `label:value` pairs, comma-separated; a series must match every one.
     #[serde(default)]
     pub filter: String,
-    /// The label whose values become the answer's series; none adds every subject into one.
+    /// The labels, comma-separated, whose values become the answer's series; if empty, every subject is added into one series.
     #[serde(default)]
     pub by: String,
     #[serde(default = "default_window_minutes")]
@@ -68,12 +68,14 @@ pub struct SeriesAnswer {
     pub series: Vec<Split>,
 }
 
-/// One series of the answer: the subjects whose split label holds `name`, added together.
+/// One series of the answer: the subjects whose split labels hold `values`, added together.
 #[derive(Debug, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Split {
-    /// The split label's value; empty when nothing splits the answer.
+    /// The split labels' values, joined by ", "; empty when nothing splits the answer.
     pub name: String,
+    /// Each split label's value, in the order `by` names them.
+    pub values: Vec<String>,
     /// `[start, value]`, oldest first. A point nothing landed in is absent rather than zero: an outage is not a quiet
     /// spell.
     pub points: Vec<(i64, f64)>,
@@ -150,7 +152,8 @@ pub fn answer(
     let draw = if counter { query.draw } else { Draw::PerSecond };
     let end_ms = now_ms - query.ago_minutes.clamp(0, MAX_WINDOW_MINUTES) * MINUTE_MS;
     let (point_ms, from_ms) = grid(draw, window_minutes, offset_ms, end_ms, now_ms);
-    let mut splits: BTreeMap<String, BTreeMap<i64, f64>> = BTreeMap::new();
+    let by: Vec<&str> = query.by.split(',').filter(|l| !l.is_empty()).collect();
+    let mut splits: BTreeMap<Vec<String>, BTreeMap<i64, f64>> = BTreeMap::new();
     for (subject_key, points) in store.points_from(&query.metric, counter, point_ms, offset_ms, from_ms, end_ms)? {
         let Some(labels) = labels_of(&subject_key) else {
             continue;
@@ -161,15 +164,14 @@ pub fn answer(
         if !filter.iter().all(|(k, v)| value_of(&labels, k) == Some(v.as_str())) {
             continue;
         }
-        let name = if query.by.is_empty() {
-            String::new()
-        } else {
-            match value_of(&labels, &query.by) {
-                Some(value) => value.to_string(),
-                None => continue,
-            }
+        let Some(values) = by
+            .iter()
+            .map(|label| value_of(&labels, label).map(str::to_string))
+            .collect::<Option<Vec<_>>>()
+        else {
+            continue;
         };
-        add(splits.entry(name).or_default(), points);
+        add(splits.entry(values).or_default(), points);
     }
     let per = |value: f64| match (counter, draw) {
         (true, Draw::PerSecond) => value / (point_ms as f64 / 1000.0),
@@ -183,8 +185,9 @@ pub fn answer(
         from_millis: from_ms,
         series: splits
             .into_iter()
-            .map(|(name, points)| Split {
-                name,
+            .map(|(values, points)| Split {
+                name: values.join(", "),
+                values,
                 points: points.into_iter().map(|(at, value)| (at, per(value))).collect(),
             })
             .collect(),
@@ -361,6 +364,21 @@ mod tests {
             &["east", "west"],
         );
         assert_eq!(values(&by_worker), [("e1", 66.0), ("w1", 0.6)]);
+        let by_both = ask(
+            &store,
+            &SeriesQuery {
+                by: "source,group".into(),
+                ..asked(ROWS)
+            },
+            &["east", "west"],
+        );
+        let names: Vec<&[String]> = by_both.series.iter().map(|s| s.values.as_slice()).collect();
+        assert_eq!(
+            names,
+            [["a", "east"], ["a", "west"], ["b", "east"]],
+            "one series per pair, in label order"
+        );
+        assert_eq!(values(&by_both)[0].0, "a, east");
     }
 
     #[test]
