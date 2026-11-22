@@ -406,13 +406,12 @@ fn run_in(
     let wanted: Vec<String> = if !ids.is_empty() {
         ids
     } else if let Some(deployed) = &deployed {
-        let (mut before, mut after) = (deployed.files(), reading.files());
         listed
             .into_iter()
             .filter(|t| {
                 t.pipelines.iter().any(|p| touched_pipeline_ids.contains(p.as_str()))
                     || t.routes.iter().any(|r| touched_route_ids.contains(r.as_str()))
-                    || test_or_sample_changed(&mut before, &mut after, t)
+                    || test_or_sample_changed(deployed, &reading, t)
             })
             .map(|t| t.id)
             .collect()
@@ -421,10 +420,8 @@ fn run_in(
     };
 
     let mut results = Vec::with_capacity(wanted.len());
-    // One read of the tree for every test: each directory is decoded once, not once per test.
-    let mut files = reading.files();
     for id in wanted {
-        let test = match config_file::read_test(&mut files, &id) {
+        let test = match config_file::read_test(&mut reading.files(), &id) {
             Ok(Some(test)) => test,
             Ok(None) => {
                 results.push(TestResult {
@@ -451,7 +448,7 @@ fn run_in(
                 continue;
             }
         };
-        results.push(run_one(&test, scope, &config, &mut files, &declared_at));
+        results.push(run_one(&test, scope, &config, &mut reading.files(), &declared_at));
     }
     Ok((results, impact))
 }
@@ -501,12 +498,13 @@ fn failure_text(verdict: &Verdict) -> String {
 /// only re-locks a test, reaches no pipeline, yet it is exactly what that test checks. The files compare as stored, so
 /// one new on the branch counts, and so does an unreadable one whose bytes changed.
 fn test_or_sample_changed(
-    deployed: &mut dyn config_file::FileSet,
-    branch: &mut dyn config_file::FileSet,
+    deployed: &config_api::Reading,
+    branch: &config_api::Reading,
     test: &config_file::TestSummary,
 ) -> bool {
-    let mut differs = |path: Result<String, config_file::BundleError>| match path {
-        Ok(path) => deployed.read(&path).ok() != branch.read(&path).ok(),
+    use config_file::FileSet;
+    let differs = |path: Result<String, config_file::BundleError>| match path {
+        Ok(path) => deployed.files().read(&path).ok() != branch.files().read(&path).ok(),
         Err(_) => true,
     };
     differs(config_file::sample_path(&test.sample)) || differs(config_file::test_path(&test.id))
