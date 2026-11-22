@@ -584,11 +584,13 @@ const BASIC: &str = "Basic YmVuY2g6Y29ubmVjdG9yLXNwZWVk";
 /// volumes of their own.
 struct Container {
     id: String,
+    /// The Docker it runs on: another host's (`engine_host`), or this one's.
+    host: Option<String>,
 }
 
 impl Drop for Container {
     fn drop(&mut self) {
-        let _ = Command::new("docker")
+        let _ = docker(self.host.as_deref())
             .args(["rm", "-f", "-v", &self.id])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -598,7 +600,7 @@ impl Drop for Container {
 
 impl Container {
     /// Runs `docker`, returning the container it started.
-    fn run(mut docker: Command, run: &str) -> Container {
+    fn run(mut docker: Command, run: &str, host: Option<&str>) -> Container {
         let out = docker.output().expect("docker runs");
         assert!(
             out.status.success(),
@@ -607,12 +609,13 @@ impl Container {
         );
         Container {
             id: String::from_utf8(out.stdout).unwrap().trim().to_string(),
+            host: host.map(str::to_string),
         }
     }
 
     /// Panics with the end of the container's log once it has stopped.
     fn check(&self, what: &str) {
-        let out = Command::new("docker")
+        let out = docker(self.host.as_deref())
             .args([
                 "inspect",
                 "-f",
@@ -634,7 +637,7 @@ impl Container {
     }
 
     fn log_tail(&self) -> String {
-        let out = Command::new("docker")
+        let out = docker(self.host.as_deref())
             .args(["logs", "--tail", "20", &self.id])
             .output()
             .expect("docker runs");
@@ -643,6 +646,27 @@ impl Container {
 
     /// CPU seconds and the most memory the container has used, as its cgroup counts them.
     fn usage(&self) -> (f64, u64) {
+        if let Some(host) = &self.host {
+            // Another host's cgroups, read from inside the container, whose own they are.
+            let out = docker(Some(host))
+                .args([
+                    "exec",
+                    &self.id,
+                    "cat",
+                    "/sys/fs/cgroup/cpu.stat",
+                    "/sys/fs/cgroup/memory.peak",
+                ])
+                .output()
+                .expect("docker runs");
+            let text = String::from_utf8_lossy(&out.stdout);
+            let usec: f64 = text
+                .lines()
+                .find_map(|l| l.strip_prefix("usage_usec "))
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0.0);
+            let peak = text.lines().last().and_then(|l| l.trim().parse().ok()).unwrap_or(0);
+            return (usec / 1e6, peak);
+        }
         // cgroup v2 under systemd, then v1.
         let peak = [
             format!("/sys/fs/cgroup/system.slice/docker-{}.scope/memory.peak", self.id),
@@ -655,9 +679,39 @@ impl Container {
     }
 }
 
-/// A container on `cpus` with `gb` of memory and the host's network.
-fn container(run: &str, cpus: &[usize], gb: u64) -> Command {
+/// The Docker engines run on, from `ENGINE_DOCKER_HOST` (such as `tcp://10.0.0.5:2375`): another host, so an engine
+/// has a host of its own and its rows cross a real network. That host must see the harness's checkout at the same
+/// path, since an engine's files are bind-mounted, and have the same cores. Unset, this host.
+fn engine_host() -> Option<String> {
+    std::env::var("ENGINE_DOCKER_HOST").ok()
+}
+
+/// Where the harness reaches an engine: its host's address, or loopback.
+fn engine_address() -> String {
+    engine_host().map_or("127.0.0.1".into(), |h| {
+        let h = h.rsplit("://").next().unwrap();
+        h.rsplit_once(':').map_or(h, |(a, _)| a).to_string()
+    })
+}
+
+/// Where an engine reaches what the harness serves: `HARNESS_ADDRESS`, this host's address on the network the
+/// engine's host shares with it, or loopback.
+fn harness_address() -> String {
+    std::env::var("HARNESS_ADDRESS").unwrap_or_else(|_| "127.0.0.1".into())
+}
+
+/// `docker`, speaking to `host`'s Docker, or this host's.
+fn docker(host: Option<&str>) -> Command {
     let mut docker = Command::new("docker");
+    if let Some(host) = host {
+        docker.args(["-H", host]);
+    }
+    docker
+}
+
+/// A container on `host`'s Docker, on `cpus` with `gb` of memory and the host's network.
+fn container(host: Option<&str>, run: &str, cpus: &[usize], gb: u64) -> Command {
+    let mut docker = docker(host);
     let list: Vec<String> = cpus.iter().map(|c| c.to_string()).collect();
     docker.args([
         "run",
@@ -694,18 +748,20 @@ fn partitions() -> i32 {
 impl Broker {
     fn start(run: &str, cpus: &[usize]) -> Broker {
         let (port, controller) = (free_port(), free_port());
-        let mut docker = container(run, cpus, env_or("ENGINE_BROKER_MEMORY_GB", 8));
+        let gb = env_or("ENGINE_BROKER_MEMORY_GB", 8);
+        let at = harness_address();
+        let mut docker = container(None, run, cpus, gb);
         docker
-            .args(["--tmpfs", "/var/lib/kafka/data:size=6g,uid=1000"])
+            .args([
+                "--tmpfs",
+                &format!("/var/lib/kafka/data:size={}g,uid=1000", gb.saturating_sub(2).max(1)),
+            ])
             .args(["-e", "KAFKA_NODE_ID=1", "-e", "KAFKA_PROCESS_ROLES=broker,controller"])
             .args([
                 "-e",
-                &format!("KAFKA_LISTENERS=PLAINTEXT://127.0.0.1:{port},CONTROLLER://127.0.0.1:{controller}"),
+                &format!("KAFKA_LISTENERS=PLAINTEXT://{at}:{port},CONTROLLER://127.0.0.1:{controller}"),
             ])
-            .args([
-                "-e",
-                &format!("KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://127.0.0.1:{port}"),
-            ])
+            .args(["-e", &format!("KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://{at}:{port}")])
             .args([
                 "-e",
                 &format!("KAFKA_CONTROLLER_QUORUM_VOTERS=1@127.0.0.1:{controller}"),
@@ -739,15 +795,15 @@ impl Broker {
             .args(["-e", "KAFKA_LOG_SEGMENT_DELETE_DELAY_MS=0"])
             .arg("apache/kafka:4.4.0");
         let broker = Broker {
-            container: Container::run(docker, run),
-            brokers: format!("127.0.0.1:{port}"),
+            container: Container::run(docker, run, None),
+            brokers: format!("{at}:{port}"),
             runtime: tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap(),
         };
         let deadline = Instant::now() + PATIENCE;
-        while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+        while std::net::TcpStream::connect((at.as_str(), port)).is_err() {
             broker.container.check(run);
             assert!(Instant::now() < deadline, "{run}: the broker never listened");
             std::thread::sleep(Duration::from_millis(200));
@@ -878,7 +934,8 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
     std::fs::create_dir_all(&dir).unwrap();
     // NiFi serves its API on a port of its own.
     let api_port = free_port();
-    let mut docker = container(run, cpus, gb);
+    let host = engine_host();
+    let mut docker = container(host.as_deref(), run, cpus, gb);
     match engine {
         Engine::Smeltr => {
             // SAFETY: neither reads anything but this process's own credentials.
@@ -983,7 +1040,7 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
     // What the engine runs with, published with the row (`publish`).
     let args: Vec<_> = docker.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
     std::fs::write(dir.join("docker-run.txt"), format!("docker {}\n", args.join(" "))).unwrap();
-    let container = Container::run(docker, run);
+    let container = Container::run(docker, run, host.as_deref());
     match engine {
         Engine::Smeltr => {
             let ca = dir.join("tls").join("ca.pem");
@@ -1254,7 +1311,10 @@ mod vector {
         // Vector's default, its legacy namespace, adds `source_type`, `path` and `timestamp` to each event, which a
         // destination writing each event as a JSON document sends: there the beta `log_namespace` keeps what the source
         // knows of an event apart from it, as smeltr keeps it, so the documents match the other engines' 1:1.
-        let json_documents = matches!(ends.give_to(), Some(Out::Elasticsearch | Out::SplunkHec | Out::LogAnalytics));
+        let json_documents = matches!(
+            ends.give_to(),
+            Some(Out::Elasticsearch | Out::SplunkHec | Out::LogAnalytics)
+        );
         let mut config = json!({
             "data_dir": "/tmp",
             "schema": {"log_namespace": json_documents},
@@ -1677,12 +1737,14 @@ fn speed() {
     let counts = core_counts();
     let cores = cores_by_cpu();
     let most = *counts.iter().max().unwrap();
+    // An engine on a host of its own may have all of it; on this one, the harness keeps what it does not have.
+    let remote = engine_host().is_some();
     assert!(
-        most < cores.len(),
+        most < cores.len() || remote && most == cores.len(),
         "{most} cores for the engine leave none for the harness"
     );
     let on = |n: usize| cores[..n].concat();
-    let rest = cores[most..].concat();
+    let rest = if remote { cores.concat() } else { cores[most..].concat() };
     // The sender, the sink and the broker run on the cores the engines do not.
     set_affinity(0, &rest);
     let only = |var: &str, name: &str| {
@@ -1702,7 +1764,7 @@ fn speed() {
         .flat_map(|w| transports.iter().filter(|t| (w.over)(**t)).map(move |&t| (w, t)))
         .collect();
     if engines.contains(&Engine::Smeltr) {
-        let out = Command::new("docker")
+        let out = docker(engine_host().as_deref())
             .args(["build", "-q", "-t", Engine::Smeltr.image()])
             .arg(repo().join("tests/engines/smeltr"))
             .output()
@@ -2293,7 +2355,7 @@ mod announced {
         pub fn start(name: &str, cpus: &[usize]) -> Objects {
             assert_eq!(CHECK_ROWS % FILE_ROWS, 0, "a check reads whole objects");
             let port = free_port();
-            let mut docker = container(name, cpus, env_or("ENGINE_BROKER_MEMORY_GB", 8));
+            let mut docker = container(None, name, cpus, env_or("ENGINE_BROKER_MEMORY_GB", 8));
             // A temporary file for each upload in flight: Docker's default of 1024 refuses puts.
             docker
                 .args(["--ulimit", "nofile=16384:16384"])
@@ -2302,7 +2364,7 @@ mod announced {
                 .args(["-e", &format!("LOCALSTACK_HOST=127.0.0.1:{port}")])
                 .arg("localstack/localstack:4.9");
             let objects = Objects {
-                container: Container::run(docker, "the objects"),
+                container: Container::run(docker, "the objects", None),
                 url: format!("http://127.0.0.1:{port}"),
             };
             let deadline = Instant::now() + PATIENCE;
@@ -2392,7 +2454,12 @@ mod stores {
         /// Starts `to`'s store for `run` on `cpus`, and makes its bucket.
         pub fn start(to: Out, run: &str, cpus: &[usize]) -> Store {
             let port = free_port();
-            let mut docker = container(&format!("{run}-store"), cpus, env_or("ENGINE_BROKER_MEMORY_GB", 8));
+            let mut docker = container(
+                None,
+                &format!("{run}-store"),
+                cpus,
+                env_or("ENGINE_BROKER_MEMORY_GB", 8),
+            );
             let url = match to {
                 // SeaweedFS serves S3 from every core it has, where LocalStack serves it from about one. With no
                 // identities configured it takes any request, signed or not.
@@ -2435,7 +2502,7 @@ mod stores {
                 _ => unreachable!("{to:?} is no store"),
             };
             let store = Store {
-                container: Container::run(docker, &format!("{run}: the store")),
+                container: Container::run(docker, &format!("{run}: the store"), None),
                 to,
                 url,
                 bucket: "bench".into(),
