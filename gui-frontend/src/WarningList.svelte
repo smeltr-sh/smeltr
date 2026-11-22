@@ -80,7 +80,7 @@
   }
 
   async function mark(span: PastSpan, was: 'normal' | 'outage', now: string) {
-    if (was === now || !(await askMark(was, span.fromMillis, span.holds))) return;
+    if (was === now || !(await askMark(was, span.fromMillis, span.holds ?? false))) return;
     change(() => markWarning(group, source, span.fromMillis, was, sender));
   }
 
