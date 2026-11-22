@@ -878,6 +878,8 @@ async function thereAndBack(
   const move = async (from: string, to: string) => {
     await openRowMenu(page, `More actions for ${name}`);
     await page.getByRole('button', { name: 'Move to…' }).click();
+    // On main, the preview the dialog opens with asks for the branch the move will be written on.
+    await nameBranch(j);
     const dialog = page.getByRole('dialog', { name: `move ${part} ${name}` });
     await dialog.getByRole('combobox', { name: 'move to' }).selectOption(to);
     // The leader lists the rows in one answer, and the asked object's own tick is among them.
