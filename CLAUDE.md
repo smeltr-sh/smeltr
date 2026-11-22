@@ -53,8 +53,8 @@ What a leader stores and what builds send each other outlive the build that wrot
 ## Checks
 
 GitHub runs the checks. Each push to a pull request runs `just check` (`.github/workflows/check.yml`). Each night that
-main has moved, GitHub runs the rest on main (`.github/workflows/nightly.yml`): `just check-live`, which runs
-`just check-all` first, the whole of `just check-gui`, `just check-fuzz`, `just check-kerberos`, and `just check-rust`
+main has moved, GitHub runs the rest on main (`.github/workflows/nightly.yml`): `just check-live`, as
+`just check-all` and `just live-tests` on runners of their own, the whole of `just check-gui`, `just check-fuzz`, `just check-kerberos`, and `just check-rust`
 on Windows. One thread watches that nightly run and fixes a failure in a PR of its own before other work. John runs
 `just check-all` before a merge to main.
 

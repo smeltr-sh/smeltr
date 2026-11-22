@@ -541,13 +541,17 @@ live-up: need-docker
     docker compose -f tests/live/compose.live.yaml exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:19092 --create --if-not-exists --topic budget-b --partitions 4 --replication-factor 1
     docker compose -f tests/live/compose.live.yaml exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:19092 --create --if-not-exists --topic budget-c --partitions 4 --replication-factor 1
 
+# `check-all`, then every live test that asserts behavior.
+[group("dev")]
+check-live: check-all live-tests
+
 # `SMELTR_LIVE_TESTS=required`: without it a missing service makes the
 # live tests skip, and a skipped test reports `ok`. Only the suites that
 # assert behavior; the measurement suites assert on timings. The tests
 # share one broker, hence `--test-threads` and one suite at a time.
 # Services stay up afterward; `just down` clears them.
 
-# `check-all`, plus every live test that asserts behavior.
+# Every live test that asserts behavior, without `check-all`. The nightly check runs the two on separate runners.
 [group("dev")]
 [env("KAFKA_TEST_BROKERS", "localhost:19092")]
 [env("ES_TEST_URL", "http://localhost:9200")]
@@ -585,7 +589,7 @@ live-up: need-docker
 [env("SOCKET_SENDER_TEST_IMAGE", "python:3.13-slim@sha256:d0a9e379c0c588befb0e427db17ca9731751d281f32c6cb1a90a1277b680bdad")]
 [env("S2S_FORWARDER_TEST_IMAGE", "splunk/universalforwarder:10.6.0.5@sha256:944fd52a8da3cb5709532a8d8e349732fdccaf6e09c165d1877be7c41f1c88e3")]
 [env("SMELTR_LIVE_TESTS", "required")]
-check-live: live-up check-all
+live-tests: live-up
     cargo test --test integration kafka_tests:: -- --test-threads=4
     cargo test --test integration kafka_fuzz::
     cargo test --test integration kafka_destination_fuzz::live_

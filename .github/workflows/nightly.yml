@@ -42,7 +42,22 @@ jobs:
           echo "last finished run: ${last:-none}"
           if [ "$last" = "$GITHUB_SHA" ]; then echo run=false; else echo run=true; fi >> "$GITHUB_OUTPUT"
 
-  # `check-live` runs `check-all` first, then every live test against `tests/live/compose.live.yaml`.
+  # `check-live` in two: `check-all` here, and the live tests on a runner of their own, so neither's timeouts
+  # suffer the other's load.
+  all:
+    needs: moved
+    if: needs.moved.outputs.run == 'true'
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache: 'true'
+      - run: just check-all
+
+  # Every live test, against `tests/live/compose.live.yaml`.
   live:
     needs: moved
     if: needs.moved.outputs.run == 'true'
@@ -54,7 +69,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           cache: 'true'
-      - run: just check-live
+      - run: just live-tests
 
   gui:
     needs: moved
