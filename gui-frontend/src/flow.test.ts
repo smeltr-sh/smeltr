@@ -9,7 +9,7 @@ describe('denseAnswer', () => {
     draw: 'perSecond',
     pointMillis: 10_000,
     fromMillis: 0,
-    series: series.map((points, i) => ({ name: String(i), points })),
+    series: series.map((points, i) => ({ name: String(i), values: [String(i)], points })),
   });
 
   it('adds every series on each point through the last, a point nothing landed in a gap', () => {
