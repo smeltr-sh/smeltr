@@ -193,7 +193,9 @@ fn in_area(method: &Method, within: &[&str]) -> Option<Level> {
         )
         | (Method::POST, ["undo"] | ["lookups", "upload"] | ["test-runs"] | ["imports"]) => Level::Editor,
         // In the area moved from. The one moved to is in the body, and the handler judges it (`move_objects`).
-        (Method::POST, ["moves"]) => Level::Editor,
+        (Method::POST, ["moves"] | ["preview", "moves"]) => Level::Editor,
+        // What an import would take: it lists the credentials it matches, so it needs what the import itself needs.
+        (Method::POST, ["preview", "imports"]) => Level::Editor,
         // What an admin says about a source's rows warning: it changes no configuration and touches no worker.
         (Method::POST, ["sources", _, "reset-history" | "mark"])
         | (Method::PUT, ["sources", _, "preset"])
@@ -254,6 +256,8 @@ mod tests {
     fn only_what_changes_nothing_is_exempt_from_the_audit() {
         assert!(changes_nothing(&Method::POST, "/api/agent/conversations/c1/messages"));
         assert!(changes_nothing(&Method::POST, "/api/areas/shared/preview/routes"));
+        assert!(changes_nothing(&Method::POST, "/api/areas/shared/preview/moves"));
+        assert!(!changes_nothing(&Method::POST, "/api/areas/shared/moves"));
         assert!(changes_nothing(&Method::POST, "/api/areas/shared/test-runs"));
         assert!(!changes_nothing(&Method::DELETE, "/api/agent/conversations/c1"));
         assert!(!changes_nothing(&Method::POST, "/api/something-new"));
@@ -389,6 +393,8 @@ mod tests {
             (Method::PUT, "/api/areas/payments/samples/s1"),
             (Method::DELETE, "/api/areas/payments/samples/s1"),
             (Method::POST, "/api/areas/payments/moves"),
+            (Method::POST, "/api/areas/payments/preview/moves"),
+            (Method::POST, "/api/areas/payments/preview/imports"),
             (Method::POST, "/api/areas/payments/test-runs"),
         ] {
             assert_eq!(need(&method, path), area("payments", Level::Editor), "{method} {path}");

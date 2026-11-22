@@ -24,7 +24,7 @@
   import Button, { BUSY, SAVE_FIRST } from './Button.svelte';
   import Dialog from './Dialog.svelte';
   import Field from './Field.svelte';
-  import { PART_NAMES, SHARED_SCOPE, currentScope, moveObjects, type MoveRow } from './api';
+  import { PART_NAMES, SHARED_SCOPE, currentScope, moveObjects, previewMove, type MoveRow } from './api';
   import { editableAreas, type Area } from './areas';
   import { reported } from './errors.svelte';
   import { untrack } from 'svelte';
@@ -81,7 +81,7 @@
   async function list(ticked: { part: ImportPart; id: string }[] | undefined) {
     if (!to) return;
     const mine = ++asked;
-    const res = await moveObjects({ part, id, to, also: moving?.also, ticked }, readAt);
+    const res = await previewMove({ part, id, to, also: moving?.also, ticked }, readAt);
     if (mine !== asked || !res.ok) return;
     rows = res.rows ?? [];
     exceptions = res.exceptions ?? [];
@@ -122,10 +122,7 @@
   async function move() {
     if (blocked) return;
     await busy.run(async () => {
-      const res = await moveObjects(
-        { part, id, to, also: moving?.also, ticked: ticks(), go: true },
-        readAt,
-      );
+      const res = await moveObjects({ part, id, to, also: moving?.also, ticked: ticks() }, readAt);
       if (res.ok) {
         moving = null;
         onmoved(to);
