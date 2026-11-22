@@ -1732,6 +1732,7 @@
         onlock={readOnly ? undefined : goLockTest}
         {relocking}
         onsaveoutput={readOnly ? undefined : (rows) => (savingOutput = rows)}
+        {outputOf}
         saveinput={!readOnly && choices.held && heldSession(selectedSample) === choices.held.session
           ? { records: heldCount(choices.held), onsave: () => (savingInput = true) }
           : undefined}

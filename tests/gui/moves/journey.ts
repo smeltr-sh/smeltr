@@ -2425,10 +2425,8 @@ const editSample: Move = {
     const raw = draft.some((r) => '_raw' in r.record);
     await goto(page, leader, '#/build');
     if (scope !== 'shared') await switchScope(page, 'shared', scope);
-    await page
-      .getByRole('row', { name: new RegExp(`^${name}\\b`) })
-      .getByRole('button', { name: 'Edit' })
-      .click();
+    await openRowMenu(page, `More actions for ${name}`);
+    await page.getByRole('button', { name: 'Edit', exact: true }).click();
     const editor = page.locator('form').filter({ has: page.getByLabel('Search records') });
     await expect(editor.getByLabel(`Select record ${draft[0].n}`)).toBeVisible();
     const done: string[] = [];
@@ -2591,7 +2589,8 @@ const saveOutputSample: Move = {
       .getByRole('listbox', { name: 'Samples' })
       .getByRole('option', { name: new RegExp(`^${input}\\b`) })
       .click();
-    const saveOutput = page.getByRole('button', { name: 'Save output as sample' });
+    await page.getByRole('button', { name: 'Save or download', exact: true }).click();
+    const saveOutput = page.getByRole('button', { name: /^Save output as sample/ });
     await expect(saveOutput).toBeEnabled();
     await saveOutput.click();
     const dialog = page.getByRole('dialog', { name: 'save output as sample' });
@@ -2746,7 +2745,7 @@ const saveInputSample: Move = {
     // A capture ends at its deadline holding fewer than it asked for, when the source was slow.
     const held = Number((await chip.textContent())?.match(/(\d+) records?/)?.[1]);
 
-    await page.getByRole('button', { name: 'Save as sample', exact: true }).click();
+    await page.getByRole('button', { name: 'Save or download', exact: true }).click();
     await page.getByRole('button', { name: /^Save input as sample/ }).click();
     // Found by what it holds: a branch prompt can open beside it.
     const dialog = page.getByRole('dialog').filter({ has: page.getByLabel('Name') });
