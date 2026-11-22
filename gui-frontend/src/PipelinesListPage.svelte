@@ -15,7 +15,17 @@
   import SortButton from './SortButton.svelte';
   import { TableSort } from './sort.svelte';
   import { NOT_IN_DEMO, editable } from './access';
-  import { sharedConfig, listPipelines, deletePipeline, type PipelineDto } from './api';
+  import {
+    sharedConfig,
+    listPipelines,
+    listTests,
+    deletePipeline,
+    type PipelineDto,
+    type TestSummary,
+  } from './api';
+  import { standingsOf, type Standing } from './objectChanges';
+  import { count } from './time';
+  import TestIcon from './TestIcon.svelte';
   import ExportDialog from './ExportDialog.svelte';
   import ImportDialog from './ImportDialog.svelte';
   import RowMenu from './RowMenu.svelte';
@@ -57,11 +67,34 @@
   let moving = $state<MoveTarget | null>(null);
   let areas: Area[] = $state([]);
 
+  // This area's tests, and where each stands once run, for the Tests column. A viewer runs none, so the column
+  // counts them. A failure to load or run them only leaves the column without them.
+  let tests: TestSummary[] = $state([]);
+  let standings: Record<string, Standing> = $state({});
+  async function loadTests() {
+    try {
+      tests = (await listTests()).tests;
+      if (!readOnly && tests.length > 0) standings = await standingsOf(tests.map((t) => t.id));
+    } catch {
+      // The column shows what it has so far.
+    }
+  }
+  loadTests();
+
+  /** Pipeline `id`'s tests: each that runs it, its own and the end-to-end ones whose records it takes. */
+  const testsOf = (id: string) => tests.filter((t) => t.pipelines.includes(id));
+  const tallyOf = (id: string, standing: Standing) =>
+    testsOf(id).filter((t) => standings[t.id] === standing).length;
+  /** The Tests page, narrowed to `of`. */
+  const testsHash = (of: TestSummary[]) =>
+    `#/build/tests?${new URLSearchParams(of.map((t) => ['only', t.id]))}`;
+
   // One sort for both bands: each band sorts within itself, so the shared rows stay under their own heading.
-  const pipelineSort = new TableSort<'name' | 'steps'>();
+  const pipelineSort = new TableSort<'name' | 'steps' | 'tests'>();
   const pipelineColumns = {
     name: (p: PipelineDto) => p.name,
     steps: (p: PipelineDto) => p.steps.length,
+    tests: (p: PipelineDto) => tallyOf(p.id, 'failing'),
   };
   const narrowing = new Narrowing(() => only);
   const kept = (p: PipelineDto) => narrowing.keeps(p.id);
@@ -162,13 +195,16 @@
             <th aria-sort={pipelineSort.aria('steps')}
               ><SortButton sort={pipelineSort} key="steps">Steps</SortButton></th
             >
+            <th aria-sort={pipelineSort.aria('tests')}
+              ><SortButton sort={pipelineSort} key="tests">Tests</SortButton></th
+            >
             <th></th>
           </tr>
         </thead>
         <tbody>
           {#if sortedSharedPipelines.length > 0}
             <tr class="bandrow"
-              ><td class="whole" colspan="3"
+              ><td class="whole" colspan="4"
                 >from shared/ &mdash; every worker group can call or route to these</td
               ></tr
             >
@@ -179,17 +215,35 @@
                   <span class="shared-chip"><span class="shared-dot"></span>shared</span></td
                 >
                 <td class="dim" data-label="Steps">{p.steps.length}</td>
+                <td></td>
                 <td class="row-actions">
                   <EditInShared hash="#/build/pipelines" />
                 </td>
               </tr>
             {/each}
-            <tr class="bandrow"><td class="whole" colspan="3">this worker group</td></tr>
+            <tr class="bandrow"><td class="whole" colspan="4">this worker group</td></tr>
           {/if}
           {#each sortedPipelines as p (p.id)}
+            {@const of = testsOf(p.id)}
+            {@const failing = tallyOf(p.id, 'failing')}
+            {@const errored = tallyOf(p.id, 'error')}
+            {@const passing = tallyOf(p.id, 'passing')}
             <tr>
               <td><a href={pipelineHash(p.id)}>{p.name}</a></td>
               <td class="dim" data-label="Steps">{p.steps.length}</td>
+              <td data-label="Tests">
+                {#if of.length === 0}
+                  <span class="dim">none</span>
+                {:else}
+                  <a class="glyphed" href={testsHash(of)}
+                    ><TestIcon />
+                    {#if failing + errored + passing === 0}{count(of.length, 'test')}{/if}
+                    {#if failing > 0}<span class="failing">{failing} failing</span>{/if}
+                    {#if errored > 0}<span class="errored">{errored} could not run</span>{/if}
+                    {#if passing > 0}<span class="dim">{passing} passing</span>{/if}</a
+                  >
+                {/if}
+              </td>
               <td class="row-actions">
                 <RowMenu label="More actions for {p.name || p.id}">
                   <button
@@ -240,14 +294,14 @@
 
 <style>
   /* What `shared/` gave this group: listed, because the group runs it, and not this page's to change. */
-  .bandrow td {
-    padding-top: 0.9rem;
-    font-size: var(--text-micro);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--dim);
-    border-bottom: 1px solid var(--border);
+  /* A test's standing, colored as `TestStanding` colors it. */
+  .failing {
+    color: var(--error);
+    font-weight: 600;
+  }
+
+  .errored {
+    color: var(--warn);
   }
 
   tr.fromshared td {

@@ -94,6 +94,16 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* A row that heads the rows under it, which it names: an uppercase label across the whole table. */
+:where(table.readings tr.bandrow td) {
+  padding-top: 0.9rem;
+  color: var(--dim);
+  font-size: var(--text-micro);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 /* In a narrow container each row wraps onto lines of its own: a `.whole` cell takes a line to itself, a cell names
    what it holds by its `data-label`, and an empty one is left out. The heads stay, as one line above the rows, so
    their sort buttons still sort. */

@@ -1997,8 +1997,28 @@ test('A6: a sample locked as a test passes, and a save that breaks it is allowed
   await admin.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(admin.getByText('Saved.')).toBeVisible();
 
-  // The Tests tab puts it first, says why it fails, and offers to lock it again or delete it.
-  await goto(admin, leader, '#/build/tests');
+  // The save runs the pipeline's tests again: the sample menu counts the failing one and marks it.
+  const menu = admin.getByRole('button', { name: 'Choose a sample' });
+  await expect(menu).toContainText('1 failing', { timeout: 15_000 });
+  await menu.click();
+  await expect(
+    admin
+      .getByRole('listbox', { name: 'Tests' })
+      .getByRole('option', { name: /orders keep every order/ }),
+  ).toContainText('Failing');
+  await admin.keyboard.press('Escape');
+
+  // The Pipelines list counts it too, and its count opens the Tests tab narrowed to the pipeline's tests.
+  await goto(admin, leader, '#/build/pipelines');
+  await admin
+    .getByRole('row', { name: /orders/ })
+    .getByRole('link', { name: /1 failing/ })
+    .click();
+  await expect(admin).toHaveURL(/#\/build\/tests\?only=/);
+  await expect(admin.getByText('Showing 1 of 1')).toBeVisible();
+
+  // The Tests tab lists it under its pipeline, says why it fails, and offers to open or delete it.
+  await expect(admin.getByRole('row', { name: 'orders', exact: true })).toBeVisible();
   await expect(testRow).toContainText('Failing', { timeout: 15_000 });
   await expect(admin.getByText('1 failing')).toBeVisible();
   await expect(admin.getByText('Row 1 differs from what the test locks.')).toBeVisible();

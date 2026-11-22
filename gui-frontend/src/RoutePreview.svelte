@@ -19,6 +19,7 @@
   import { routeCounts } from './routeCounts';
   import SampleMenu from './SampleMenu.svelte';
   import { editable } from './access';
+  import { standingsOf, type Standing } from './objectChanges';
   import { recordsOf, SampleChoices } from './sampleChoices.svelte';
   import {
     heldSession,
@@ -80,8 +81,20 @@
   // The end-to-end tests, for the sample menu. A failure to load them only leaves them out of the menu.
   let tests: TestSummary[] = $state([]);
   listTests()
-    .then((res) => (tests = res.tests.filter((t) => !t.pipeline)))
+    .then((res) => {
+      tests = res.tests.filter((t) => !t.pipeline);
+      void runTestsHere();
+    })
     .catch(() => {});
+
+  // Where each of those tests stands on the branch, for the sample menu. A viewer runs none. A run that fails leaves
+  // the marks off.
+  let standings: Record<string, Standing> | undefined = $state();
+  async function runTestsHere() {
+    if (!editable() || tests.length === 0) return;
+    standings = {};
+    standings = await standingsOf(tests.map((t) => t.id)).catch(() => undefined);
+  }
 
   /** Why Lock this as a test is off, or `''` when it is on. A test runs the routes as saved over a saved sample, so it
    * locks a run of exactly those. */
@@ -331,6 +344,7 @@
       records={result && ran === selected ? result.rows.length : null}
       held={choices.menuHeld}
       tests={tests.map((t) => ({ id: t.id, name: t.name, sample: t.sample }))}
+      {standings}
       test={relocking ? opened!.test : ''}
       ontest={(id) => {
         const t = tests.find((t) => t.id === id);
