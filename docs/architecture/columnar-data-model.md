@@ -130,11 +130,7 @@ the test.
 
 A source declares its record's fields by name and type, and a batch's slots
 begin with them: the liveness mask, then the record, then the kind's
-`__source` fields. A field declared as an object is its leaves
-([language](language.md)), so the record lists each leaf under its own name,
-and an open object's unclaimed fields as one more entry. No leaf holds an
-object. An open object's unclaimed fields are the one entry that holds one.
-The source's reader fills each leaf.
+`__source` fields.
 
 ```mermaid
 flowchart LR
