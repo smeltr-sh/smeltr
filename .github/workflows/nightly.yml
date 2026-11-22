@@ -87,6 +87,7 @@ jobs:
         with:
           name: gui-report
           path: tests/gui/report
+          retention-days: 14
 
   # The crate's offline fuzzers, then the GUI's.
   fuzz:
@@ -105,6 +106,7 @@ jobs:
         with:
           name: fuzz-report
           path: tests/gui/report
+          retention-days: 14
 
   kerberos:
     needs: moved
@@ -129,6 +131,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
+        with:
+          cache: 'true'
       - run: just check-rust
 
   # What can fail with nothing changed here: a new release of ECS or OCSF, or an npm advisory. `check-all` runs

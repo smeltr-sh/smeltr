@@ -590,47 +590,52 @@ check-live: check-all live-tests
 [env("S2S_FORWARDER_TEST_IMAGE", "splunk/universalforwarder:10.6.0.5@sha256:944fd52a8da3cb5709532a8d8e349732fdccaf6e09c165d1877be7c41f1c88e3")]
 [env("SMELTR_LIVE_TESTS", "required")]
 live-tests: live-up
-    cargo test --test integration kafka_tests:: -- --test-threads=4
-    cargo test --test integration kafka_fuzz::
-    cargo test --test integration kafka_destination_fuzz::live_
-    cargo test --test integration kafka_avro_fuzz::live_
-    cargo test --test integration worker_tests:: -- --test-threads=4
-    cargo test --test integration elastic_live_tests:: -- --test-threads=4
-    cargo test --test integration splunk_live_tests:: -- --test-threads=4
-    cargo test --test integration elastic_fuzz::live_
-    cargo test --test integration splunk_fuzz::live_
-    cargo test --test integration http_fuzz::live_
-    cargo test --test integration s2s_live_tests::
-    cargo test --test integration s2s_receiver_fuzz::live_
-    cargo test --test integration objects_live_tests:: -- --test-threads=4
-    cargo test --test integration objects_fuzz::live_ -- --test-threads=4
-    cargo test --test integration object_source_fuzz::live_ -- --test-threads=7
-    cargo test --test integration iceberg_live_tests::
-    cargo test --test integration iceberg_live_fuzz::
-    cargo test --test integration delta_live_tests::
-    cargo test --test integration delta_live_fuzz::
-    cargo test --test integration event_hubs_live_fuzz::
-    cargo test --lib io::sftp::tests::live_ -- --test-threads=4
-    cargo test --test integration git_remote_live_tests:: -- --test-threads=4
-    cargo test --test integration postgres_live_tests:: -- --test-threads=4
-    cargo test --test integration mysql_live_tests:: -- --test-threads=4
-    cargo test --test integration sql_live_fuzz::
-    cargo test --test integration receiver_tests::an_opentelemetry_
-    cargo test --test integration otlp_receiver_fuzz::live_
-    cargo test --test integration otlp_destination_fuzz::live_
-    cargo test --test integration receiver_tests::prometheus_
-    cargo test --test integration remote_write_tests::prometheus_
-    cargo test --test integration prometheus_receiver_fuzz::live_
-    cargo test --test integration remote_write_fuzz::prometheus_
-    cargo test --test integration hec_receiver_fuzz::live_
-    cargo test --test integration http_receiver_fuzz::live_
-    cargo test --test integration receiver_tests::elastic_
-    cargo test --test integration elastic_receiver_fuzz::live_
-    cargo test --test integration syslog_receiver_tests::a_real_
-    cargo test --test integration syslog_receiver_fuzz::live_
-    cargo test --test integration socket_receiver_fuzz::live_
-    cargo test --test integration gate_tests::live_ -- --test-threads=4
-    cargo test --test integration acme_live_tests:: -- --test-threads=1
+    #!/usr/bin/env bash
+    # Every line runs, whichever failed before it, so one failure hides no other; the recipe fails at the end.
+    failed=()
+    t() { "$@" || failed+=("$*"); }
+    t cargo test --test integration kafka_tests:: -- --test-threads=4
+    t cargo test --test integration kafka_fuzz::
+    t cargo test --test integration kafka_destination_fuzz::live_
+    t cargo test --test integration kafka_avro_fuzz::live_
+    t cargo test --test integration worker_tests:: -- --test-threads=4
+    t cargo test --test integration elastic_live_tests:: -- --test-threads=4
+    t cargo test --test integration splunk_live_tests:: -- --test-threads=4
+    t cargo test --test integration elastic_fuzz::live_
+    t cargo test --test integration splunk_fuzz::live_
+    t cargo test --test integration http_fuzz::live_
+    t cargo test --test integration s2s_live_tests::
+    t cargo test --test integration s2s_receiver_fuzz::live_
+    t cargo test --test integration objects_live_tests:: -- --test-threads=4
+    t cargo test --test integration objects_fuzz::live_ -- --test-threads=4
+    t cargo test --test integration object_source_fuzz::live_ -- --test-threads=7
+    t cargo test --test integration iceberg_live_tests::
+    t cargo test --test integration iceberg_live_fuzz::
+    t cargo test --test integration delta_live_tests::
+    t cargo test --test integration delta_live_fuzz::
+    t cargo test --test integration event_hubs_live_fuzz::
+    t cargo test --lib io::sftp::tests::live_ -- --test-threads=4
+    t cargo test --test integration git_remote_live_tests:: -- --test-threads=4
+    t cargo test --test integration postgres_live_tests:: -- --test-threads=4
+    t cargo test --test integration mysql_live_tests:: -- --test-threads=4
+    t cargo test --test integration sql_live_fuzz::
+    t cargo test --test integration receiver_tests::an_opentelemetry_
+    t cargo test --test integration otlp_receiver_fuzz::live_
+    t cargo test --test integration otlp_destination_fuzz::live_
+    t cargo test --test integration receiver_tests::prometheus_
+    t cargo test --test integration remote_write_tests::prometheus_
+    t cargo test --test integration prometheus_receiver_fuzz::live_
+    t cargo test --test integration remote_write_fuzz::prometheus_
+    t cargo test --test integration hec_receiver_fuzz::live_
+    t cargo test --test integration http_receiver_fuzz::live_
+    t cargo test --test integration receiver_tests::elastic_
+    t cargo test --test integration elastic_receiver_fuzz::live_
+    t cargo test --test integration syslog_receiver_tests::a_real_
+    t cargo test --test integration syslog_receiver_fuzz::live_
+    t cargo test --test integration socket_receiver_fuzz::live_
+    t cargo test --test integration gate_tests::live_ -- --test-threads=4
+    t cargo test --test integration acme_live_tests:: -- --test-threads=1
+    [ ${#failed[@]} = 0 ] || { printf 'failed: %s\n' "${failed[@]}"; exit 1; }
 
 # A KDC and a broker that demands GSSAPI, for the Kerberos tests. Needs
 # `krb5-kdc krb5-admin-server krb5-user` and a JRE; the scripts say what
