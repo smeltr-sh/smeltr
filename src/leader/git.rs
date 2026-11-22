@@ -973,8 +973,7 @@ impl OpenTree {
         let mut dir = Dir::default();
         if let Some(tree) = id.and_then(|id| self.repo.find_tree(id).ok()) {
             for entry in tree.iter() {
-                let entry =
-                    entry.map_err(|e| GitError::failed(format!("listing {path:?} of {}: {e}", self.commit)))?;
+                let entry = entry.map_err(|e| GitError::failed(format!("listing {path:?} of {}: {e}", self.commit)))?;
                 let name = entry.inner.filename.to_string();
                 dir.by_name.insert(name.clone(), dir.entries.len());
                 dir.entries.push((name, entry.inner.mode, entry.inner.oid.to_owned()));
