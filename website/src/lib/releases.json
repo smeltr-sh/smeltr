@@ -1,5 +1,126 @@
 [
   {
+    "version": "1.3.0",
+    "date": "2026-11-22",
+    "summary": "Move anything between areas, find every test on one tab, and take in and send out more on each core. The image is smaller, and Trivy finds no known CVEs in it.",
+    "highlights": [
+      {
+        "title": "Move anything to another area",
+        "text": "Move to… takes a source, destination, route, pipeline, lookup table, grok pattern, schema, sample or test into another area in one commit. It lists what can go with it and what staying behind would break, and moves only when nothing would break.",
+        "href": "/docs/build"
+      },
+      {
+        "title": "Every test on one tab",
+        "text": "Build › Resources › Tests lists every test in the area, failing first, each failing one with why. Open shows a test where it is locked, with the fields and rows it checks.",
+        "href": "/docs/steps#verify"
+      },
+      {
+        "title": "More on each core",
+        "text": "File destinations add encoders when one falls behind and a core is free. Object sources fetch and decompress ahead of the pipeline. Receivers cut records on the threads that take them, the HEC source is about twice as fast, and Kafka sources no longer stall for half of every second.",
+        "href": "/docs/destinations"
+      },
+      {
+        "title": "A smaller image with no known CVEs",
+        "text": "The image is built on Wolfi and holds only glibc beside smeltr: no shell, git, curl or OpenSSL. All of smeltr's cryptography, Kafka's included, goes through AWS-LC's FIPS module.",
+        "href": "/docs/release-extras"
+      }
+    ],
+    "features": [
+      {
+        "title": "Before you upgrade",
+        "items": [
+          "`rest(o)` is now `undeclared(o)`. A pipeline that calls `rest` does not compile on 1.3.0. Upgrade the leader, rename `rest` to `undeclared` and deploy, then upgrade the workers: until they are upgraded, a 1.2 worker keeps running what it has.",
+          "A CSV column name with a dot makes a path: `sub.rule` is the field `rule` in the object `sub`. To keep such a name one key, set `splitDots: false`.",
+          "A row from a syslog receiver has `__source.type` `socketReceiver`, where it was `syslogReceiver`. Change any step that tests for the old value.",
+          "`/api/cluster` is gone. Read the heartbeats from `/api/health`, the workers from `/api/workers` and the groups from `/api/worker-groups`."
+        ]
+      },
+      {
+        "title": "Build pipelines",
+        "items": [
+          "Drag a step into or out of an If's branches, at any depth. ↑ and ↓ move a step through an If's then and else and out past it.",
+          "The sample menu in the pipeline editor and in Route a sample lists the tests that run there above the samples. Choosing a test shows its sample with the fields and rows it checks.",
+          "Each list's row actions, Move to…, Export and Delete, are in one ⋯ menu. A route card's ⋯ moves every route on it.",
+          "The change review page shows an added or removed step one part per line, lined up, and a Lookup step names its table."
+        ]
+      },
+      {
+        "title": "Smeltr language",
+        "items": [
+          "`declared(o)` gives an object's declared fields, and `undeclared(o)` its other fields.",
+          "`$ = e` works inside an `if`, a loop or a `try` when every key `e` may hold is known.",
+          "A parser may write a `__` field the engine does not use, as an Eval may. Writing `__live` warns that it drops each row where it is false, and that a Drop step is the way to drop rows."
+        ]
+      },
+      {
+        "title": "Sources",
+        "items": [
+          "A syslog receiver is a socket receiver with `framing: \"syslog\"`. A saved `syslogReceiver` is read as one, and the GUI still calls it Syslog receiver.",
+          "A receiver buffers into its share of the worker's memory, where it stopped at 64 MiB."
+        ]
+      },
+      {
+        "title": "Destinations",
+        "items": [
+          "Set a destination's compression level with `compressionLevel`: gzip 1 to 9 (default 6), zstd 1 to 22 (default 3), and Kafka's lz4 0 to 12."
+        ]
+      },
+      {
+        "title": "Run a fleet",
+        "items": [
+          "Pointing at a warning on a source's History chart says why it began: the width whose rows fell below its range, or how long no row came. It draws that width's rows and range over the chart.",
+          "A worker that cannot confirm that a stopped deployment is gone exits after `exit_after_blocked_secs` (default 600), so Kubernetes, systemd or Docker starts it again.",
+          "Neither a leader's nor a worker's host needs Git: the leader serves, packs and pushes its configuration repository itself."
+        ]
+      },
+      {
+        "title": "Teams",
+        "items": [
+          "Editors and deployers can lock tests.",
+          "A deployer can roll back a deploy when they are a deployer in each area the rollback changes.",
+          "Someone who is not an administrator starts in their first group, not in shared.",
+          "Viewers read the logs of the groups they view."
+        ]
+      }
+    ],
+    "fixes": [
+      {
+        "title": "Build pipelines",
+        "items": [
+          "Lock again opens on the fields the test checks that the rows still hold, and on its rows.",
+          "Tests, Samples, Pipelines, Secrets and Certificates fit a phone: each row wraps, with its actions at the end.",
+          "The records pane no longer stops short of the agent panel, leaving a gap as tall as the panel."
+        ]
+      },
+      {
+        "title": "Sources and destinations",
+        "items": [
+          "A GCS bucket and an Azure container name are checked by their cloud's naming rule, as S3's already was, and every store name is trimmed.",
+          "The queue, slice and in-flight limits of a source whose records are typed (OTLP, Prometheus) count what each record's arrays and objects hold, so they hold what they say.",
+          "When one upload of a commit failed or hung, the files that had landed were neither committed nor deleted, and their rows came again on the retry. The commit now fails whole and leaves no file behind, so the retry writes each row once."
+        ]
+      },
+      {
+        "title": "Run a fleet",
+        "items": [
+          "Under load, a warning could end and start again at once, so a source showed two warnings for one drop.",
+          "Hovering a warning no longer stretches the warning icon in the chart's legend.",
+          "The status pages list a group a rollback brought back, though main has since deleted it.",
+          "History shows Roll back, Deploy this and Release only to someone who may use them."
+        ]
+      },
+      {
+        "title": "Security",
+        "items": [
+          "The image holds no shell, git, curl or OpenSSL, and Trivy finds no known CVEs in it.",
+          "Kafka's TLS and SASL go through AWS-LC's FIPS module, as the rest of smeltr's cryptography does.",
+          "Revoking sessions, abandoning a certificate switch or rotation, and disconnecting the Git remote each ask first.",
+          "A capture's audit row names the secrets and certificates it lent its workers, and every address its source connects to."
+        ]
+      }
+    ]
+  },
+  {
     "version": "1.2.1",
     "date": "2026-11-19",
     "summary": "Kafka over Kerberos works in the image, and alert email gets six SMTP security fixes.",
