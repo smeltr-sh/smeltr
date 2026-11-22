@@ -93,7 +93,8 @@
 
   async function download(s: SampleSummary) {
     try {
-      downloadRecords(s.name, (await getSample(s.id)).sample?.records ?? []);
+      const { sample } = await getSample(s.id);
+      if (sample) downloadRecords(s.name, sample.records);
     } catch (e) {
       reported(e);
     }

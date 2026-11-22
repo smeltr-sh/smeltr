@@ -146,6 +146,21 @@ test("A1: a sample, and a pipeline's input and output, download as files of one 
   ]);
   expect(sample.suggestedFilename()).toBe('access-log.ndjson');
   expect(await lines(sample)).toEqual(records);
+  // A sample gone since the page loaded downloads nothing, and the refusal is shown.
+  await api.delete(`/api/areas/shared/samples/access${ON}`);
+  let downloaded = false;
+  admin.on('download', () => (downloaded = true));
+  await openRowMenu(admin, 'More actions for access log');
+  await admin.getByRole('button', { name: 'Download', exact: true }).click();
+  await expect(
+    admin.getByRole('alert').filter({ hasText: 'no sample by that name' }),
+  ).toBeVisible();
+  expect(downloaded).toBe(false);
+  await api.put(`/api/areas/shared/samples/access${ON}`, {
+    id: 'access',
+    name: 'access log',
+    records,
+  });
 
   await goto(admin, leader, '#/build/pipelines/tag/for/access');
   await expect(admin.getByText('3 rows')).toBeVisible();
