@@ -430,6 +430,9 @@ test("exceptions are counted from the leader's series over the range their own c
   await expect(errors.getByText('Over the last 24 hours')).toBeVisible();
   await expect(errors.getByText('6,000 exceptions.')).toBeVisible();
   await shoot(admin, errors, 'errors-range');
+  await errors.getByRole('button', { name: 'About Exceptions' }).click();
+  await expect(admin.getByText(/A row can raise several/)).toBeVisible();
+  if (SHOTS) await admin.screenshot({ path: path.join(SHOTS, 'errors-help.png') });
 });
 
 test('the Metrics page charts any stored metric, split by a label, as a rate or in totals', async ({
