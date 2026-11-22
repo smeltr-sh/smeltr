@@ -687,6 +687,7 @@
       savedProduces = [...parsed.produces];
       readAtCommit = res.commit ?? null;
       drop(`pipelines/${id}`);
+      void runOwnTests();
       if (back) location.hash = withPipeline(back, targetId);
       else if (id !== targetId) {
         location.hash = `#/build/pipelines/${encodeURIComponent(targetId)}/json`;
