@@ -1300,6 +1300,87 @@ test('A3: the proposal says which fields some rows lack and where rows disagree 
   await expect(suggested.getByRole('group', { name: 'id' })).not.toContainText('absent');
 });
 
+// A3, beside the sample: what production read, over the range the clock picks. The leader's counts are stood in
+// for here, since no worker runs; the leader's own tests read them over a range.
+test('A3: the proposal counts production over the range the clock picks', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await jsonPipeline(api, 'orders', [], { id: 'orders-sample', name: 'orders', records: ORDERS });
+  const asked: (string | null)[] = [];
+  await admin.route('**/api/streams*', (route) => {
+    const minutes = new URL(route.request().url()).searchParams.get('windowMinutes');
+    asked.push(minutes);
+    const rows = minutes === '1440' ? 900 : 48_210;
+    const field = {
+      declared: false,
+      suggested: 'str',
+      bools: 0,
+      ints: 0,
+      floats: 0,
+      arrays: 0,
+      objects: 0,
+    };
+    return route.fulfill({
+      json: {
+        ok: true,
+        errors: [],
+        unmatched: [],
+        parsers: [
+          {
+            groupId: 'default',
+            source: 'shop',
+            route: 'r1',
+            pipeline: 'orders',
+            step: 'body',
+            rows,
+            fieldsDropped: 0,
+            firstSeenMs: Date.now() - 86_400_000,
+            lastSeenMs: Date.now() - 60_000,
+            fields: [
+              {
+                ...field,
+                name: 'coupon',
+                present: 30,
+                strings: 30,
+                failed: 0,
+                times: 0,
+                firstSeenMs: 0,
+                lastSeenMs: 0,
+              },
+            ],
+          },
+        ],
+      },
+    });
+  });
+
+  await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
+  await expect(admin.getByRole('table').getByRole('row', { name: /^row 0 / })).toBeVisible();
+  await admin.getByRole('button', { name: /^Parser _raw as JSON/ }).click();
+  await admin.getByRole('button', { name: 'Suggest fields' }).click();
+
+  const suggested = admin.getByRole('group', { name: 'Suggested fields' });
+  await expect(suggested).toContainText('from production, 48,210 rows over the last hour');
+  expect(asked.at(-1)).toBe('60');
+  await suggested.getByRole('button', { name: 'Chart range' }).click();
+  await admin.getByRole('button', { name: '24 hours' }).click();
+  await expect(suggested).toContainText('from production, 900 rows over the last 24 hours');
+  await expect(suggested.getByRole('group', { name: 'coupon' })).toContainText(
+    'In production: absent from 870 of 900 rows',
+  );
+  expect(asked.at(-1)).toBe('1440');
+  // A pick is remembered: every picker opens on it next.
+  await goto(admin, leader, '#/status');
+  await expect(admin.getByText('Over the last 24 hours')).toHaveCount(2);
+  const shots = process.env.SMELTR_SHOTS;
+  if (shots) {
+    await admin.setViewportSize({ width: 1920, height: 1080 });
+    await admin.screenshot({ path: path.join(shots, 'production-range.png') });
+  }
+});
+
 // A2, choosing what to run over. The editor opens on no sample, still compiling the steps, and the Sample menu lists
 // the pipeline's tests above its samples. The output is searched by keyword, or filtered by an expression.
 test('A2: a sample is picked from the Sample menu, its output searched by keyword or expression', async ({

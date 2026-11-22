@@ -392,7 +392,7 @@ pub fn history(
 }
 
 /// Each bucket of the day starting at `day_ms` that its `kept` rows say held a row, with how many.
-fn each_held(day_ms: i64, kept: &[u8]) -> impl Iterator<Item = (i64, u64)> + '_ {
+pub(super) fn each_held(day_ms: i64, kept: &[u8]) -> impl Iterator<Item = (i64, u64)> + '_ {
     (day_ms..)
         .step_by(TIER.bucket_ms() as usize)
         .zip(each_count(kept))

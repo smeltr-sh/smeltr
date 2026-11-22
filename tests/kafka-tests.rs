@@ -675,7 +675,7 @@ fn live_lag_reports_the_read_positions_distance_from_the_watermark() {
     )
     .unwrap();
 
-    let records = drain_at_least(&mut source, 1, Duration::from_secs(15));
+    let records = drain_at_least(&mut source, 2, Duration::from_secs(15));
     let first = records
         .iter()
         .find(|r| r.offset == 0)

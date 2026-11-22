@@ -10,6 +10,7 @@
   holds, else on the sample this pipeline last ran over in this browser.
 -->
 <script lang="ts">
+  import { chartRange, lastChartRange } from './map';
   import Button, { BUSY, INCOMPLETE, SAVE_FIRST } from './Button.svelte';
   import StateMark from './StateMark.svelte';
   import ExportDialog from './ExportDialog.svelte';
@@ -1338,6 +1339,7 @@
 
   let proposalStep: Step | null = $state(null);
   let proposal = $state<FieldProposal | null>(null);
+  let productionRange = $state(lastChartRange().range);
   let selectedSampleName = $derived(choices.name(selectedSample));
 
   /** Writes `path` in the last open eval step, or in a new one at the end, and opens that step for its value. */
@@ -1363,7 +1365,7 @@
     }
     proposal = { loading: true, error: '', result: null, production: null, suggestions: [] };
     // What production saw is offered beside the sample, never in its way: a leader that cannot say shows the sample.
-    const production = parsersIn(currentScope())
+    const production = parsersIn(currentScope(), chartRange(productionRange).minutes)
       .then((shapes) => productionOf(shapes, pipelineId, step.id))
       .catch(() => null);
     let error = '';
@@ -1396,7 +1398,17 @@
 
   let openProposal: OpenProposal | null = $derived(
     proposalStep && proposal
-      ? { step: proposalStep, proposal, sampleName: selectedSampleName, onClose: closeProposal }
+      ? {
+          step: proposalStep,
+          proposal,
+          sampleName: selectedSampleName,
+          range: productionRange,
+          onRange: (range) => {
+            productionRange = range;
+            if (proposalStep) proposeFields(proposalStep);
+          },
+          onClose: closeProposal,
+        }
       : null,
   );
 

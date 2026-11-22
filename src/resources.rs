@@ -359,20 +359,19 @@ mod platform {
         tree.iter().map(|pid| process_memory(*pid)).sum()
     }
 
-    /// Anonymous and shared-memory PSS from `smaps_rollup`: file-backed pages, a mapped lookup's
-    /// included, are cache the kernel can drop, as the cgroup's working set leaves them out. A
-    /// kernel too old to split PSS gives it whole, and one older than 4.14 gives `VmRSS:`. A
-    /// process that has gone since the tree was built counts nothing.
+    /// Anonymous and shared-memory resident pages from `status`: file-backed pages, a mapped
+    /// lookup's included, are cache the kernel can drop, as the cgroup's working set leaves them
+    /// out. They are counters the kernel keeps, so reading them costs the same however large the
+    /// process. A kernel older than 4.5 gives `VmRSS:` whole. A process that has gone since the
+    /// tree was built counts nothing.
     fn process_memory(pid: u32) -> u64 {
-        let rollup = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).ok();
-        let field = |name: &str| rollup.as_deref().and_then(|text| status_field(text, name));
-        let kib = match (field("Pss_Anon:"), field("Pss_Shmem:")) {
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok();
+        let field = |name: &str| status.as_deref().and_then(|text| status_field(text, name));
+        let kib = match (field("RssAnon:"), field("RssShmem:")) {
             (Some(anon), shmem) => Some(anon + shmem.unwrap_or(0)),
-            (None, _) => field("Pss:"),
+            (None, _) => field("VmRSS:"),
         };
-        kib.or_else(|| read_proc_status_field(&format!("/proc/{pid}/status"), "VmRSS:"))
-            .unwrap_or(0)
-            * 1024
+        kib.unwrap_or(0) * 1024
     }
 
     fn host_memory_total() -> Option<u64> {
@@ -1880,15 +1879,15 @@ mod tests {
         );
     }
 
-    /// Mapped lookup files are cache the kernel can drop, so PSS from them is not a worker's.
+    /// Mapped lookup files are cache the kernel can drop, so resident pages from them are not a worker's.
     #[cfg(target_os = "linux")]
     #[test]
     fn status_field_reads_one_named_line() {
-        let rollup = "55d0-7ffe ---p 00000000 00:00 0 [rollup]\nRss: 900 kB\nPss: 800 kB\nPss_Anon: 300 kB\nPss_File: 450 kB\nPss_Shmem: 50 kB\n";
-        assert_eq!(platform::status_field(rollup, "Pss:"), Some(800));
-        assert_eq!(platform::status_field(rollup, "Pss_Anon:"), Some(300));
-        assert_eq!(platform::status_field(rollup, "Pss_Shmem:"), Some(50));
-        assert_eq!(platform::status_field(rollup, "Swap:"), None);
+        let status = "Name:\tsmeltr\nVmRSS:\t     900 kB\nRssAnon:\t     300 kB\nRssFile:\t     550 kB\nRssShmem:\t      50 kB\n";
+        assert_eq!(platform::status_field(status, "VmRSS:"), Some(900));
+        assert_eq!(platform::status_field(status, "RssAnon:"), Some(300));
+        assert_eq!(platform::status_field(status, "RssShmem:"), Some(50));
+        assert_eq!(platform::status_field(status, "VmSwap:"), None);
     }
 
     /// A process that exited mid-sample leaves a total with a hole in it. That sample has no

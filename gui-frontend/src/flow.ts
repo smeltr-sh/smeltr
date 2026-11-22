@@ -8,22 +8,11 @@
 
 import type { FlowKind, FlowNormalDto, SeriesAnswerDto } from './api';
 
-/** The window picker (E2: sixty minutes by default, out to thirty days). */
-export const FLOW_WINDOWS: { label: string; minutes: number }[] = [
-  { label: '15m', minutes: 15 },
-  { label: '60m', minutes: 60 },
-  { label: '24h', minutes: 24 * 60 },
-  { label: '7d', minutes: 7 * 24 * 60 },
-  { label: '30d', minutes: 30 * 24 * 60 },
-];
-
-export const DEFAULT_WINDOW_MINUTES = 60;
-
 /** How many rows the ranked table shows (Main storyboard). */
 export const FURTHEST_FROM_NORMAL_LIMIT = 8;
 
-/** Each kind's rows in, rows out, bytes in and bytes out (`leader::FlowKind::metrics`). Out is what was handed to
- * destinations; a destination's own out, and the fleet's, is what destinations acknowledged. */
+/** Each kind's rows in, rows out, bytes in and bytes out, as the Status page reads them. Out is what was handed to
+ * destinations; a destination's own out, and the fleet's, is what destinations delivered. */
 export const FLOW_METRICS: Record<FlowKind | 'fleet', [string, string, string, string]> = {
   fleet: [
     'smeltr_rows_polled_total',
