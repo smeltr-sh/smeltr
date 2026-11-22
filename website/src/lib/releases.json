@@ -21,7 +21,7 @@
       },
       {
         "title": "A smaller image with no known CVEs",
-        "text": "The image is built on Wolfi and holds only glibc beside smeltr: no shell, git, curl or OpenSSL. All of smeltr's cryptography, Kafka's included, goes through AWS-LC's FIPS module.",
+        "text": "The image is built on Wolfi and holds only glibc beside smeltr: no shell, git, curl or OpenSSL. Smeltr's cryptography, Kafka's included, goes through AWS-LC's FIPS module, except the hashing of local account passwords, which uses Argon2id, an algorithm FIPS does not approve.",
         "href": "/docs/release-extras"
       }
     ],
@@ -113,7 +113,7 @@
         "title": "Security",
         "items": [
           "The image holds no shell, git, curl or OpenSSL, and Trivy finds no known CVEs in it.",
-          "Kafka's TLS and SASL go through AWS-LC's FIPS module, as the rest of smeltr's cryptography does.",
+          "Kafka's TLS and SASL go through AWS-LC's FIPS module.",
           "Revoking sessions, abandoning a certificate switch or rotation, and disconnecting the Git remote each ask first.",
           "A capture's audit row names the secrets and certificates it lent its workers, and every address its source connects to."
         ]
