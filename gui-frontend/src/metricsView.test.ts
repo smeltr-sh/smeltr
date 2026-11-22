@@ -122,6 +122,7 @@ describe('metricsView', () => {
       fromMillis: 100,
       series: ['a', 'b', 'c', 'd'].map((name, i) => ({
         name,
+        values: [name],
         points: [[100 + 10 * i, i + 1] as [number, number]],
       })),
     };
