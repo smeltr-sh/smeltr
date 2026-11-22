@@ -12,6 +12,10 @@ runs:
     - if: runner.os == 'Linux'
       shell: bash
       run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
+    # As the Dockerfile's builder sets them: the vendored C is written for C17, and the runner's GCC defaults to C23.
+    - if: runner.os == 'Linux'
+      shell: bash
+      run: printf 'CFLAGS=-std=gnu17\nWARN_CFLAGS=-Wall\n' >> "$GITHUB_ENV"
     - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
         node-version: 26
