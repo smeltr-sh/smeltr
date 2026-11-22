@@ -118,12 +118,15 @@ either side: it is polled, delivered and committed once, whatever its slices.
 ## Egress
 
 Egress is one thread per destination, owning that destination's client and
-draining a queue every reader pushes to. Retry belongs to egress: it keeps
-each unit until acknowledged and re-sends it itself, so a reader carries
-offsets and nothing else. A destination that names which of a batch's rows
-did not land has only those sent again: the rest of the batch is released,
-and the batch is acknowledged once they land. A batch the destination would not
-take is sent again alone. A destination that fails as a whole sends again every
+draining a queue every reader pushes to. A destination that writes files also
+encodes on threads of its own, because encoding is CPU work: it starts one
+encoder, and another whenever every one it has has a poll's worth of rows
+waiting, up to the transform pool's size. A commit closes every encoder's
+files. Retry belongs to egress: it keeps each unit until acknowledged and
+re-sends it itself, so a reader carries offsets and nothing else. A
+destination that names which of a batch's rows did not land has only those
+sent again: the rest of the batch is released, and the batch is acknowledged
+once they land. A batch the destination would not take is sent again alone. A destination that fails as a whole sends again every
 unit not yet acknowledged. A unit that failed waits its own backoff, doubling
 with each failure, so the batches that land beside it do not wait on it; only a
 destination where nothing lands backs off as a whole. The destination counts as

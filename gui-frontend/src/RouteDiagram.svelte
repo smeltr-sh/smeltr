@@ -3,6 +3,7 @@
   edges sized by how many records traveled them.
 -->
 <script lang="ts">
+  import SampleIcon from './SampleIcon.svelte';
   import { count } from './time';
   import type { RoutePreviewResult } from './api';
   import type { RouteCounts } from './routeCounts';
@@ -222,7 +223,9 @@
     </svg>
     {#each allNodes as n (n.key)}
       <div class="node" class:warn={n.warn} style="left: {n.x}px; top: {n.y}px">
-        <div class="node-label">{n.label}</div>
+        <div class="node-label">
+          {#if n === sampleNode}<SampleIcon />{/if}{n.label}
+        </div>
         <div class="node-sub mono">{n.sub}</div>
         {#if n.kind}<div class="node-kind uppercase-label">{n.kind}</div>{/if}
       </div>
@@ -263,6 +266,9 @@
   }
 
   .node-label {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
     font-weight: 600;
     font-size: var(--text-label);
   }

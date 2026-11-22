@@ -225,7 +225,18 @@ test('a source that drops below its normal is ranked and warned of, and an edito
   await expect(was.getByRole('button', { name: 'Outage' })).toHaveAttribute('aria-pressed', 'true');
   await shoot(admin, '3-outage');
 
-  // History charts the source against its range and lists the warning that is up, which opens on the rows around it.
+  // The warning keeps why it began: the width that read below, against that width's range. The leader keeps it at its
+  // next look after the warning began.
+  await expect
+    .poll(
+      async () =>
+        (await api.get('/api/areas/edge/sources/firewall-syslog/past')).warnings[0]?.reason?.kind,
+      { timeout: 60_000 },
+    )
+    .toBe('width');
+
+  // History charts the source against its range and lists the warning that is up, which opens on the rows around it
+  // at the width that warned.
   await goto(
     admin,
     leader,
@@ -233,12 +244,26 @@ test('a source that drops below its normal is ranked and warned of, and an edito
   );
   const panel = admin.getByRole('complementary', { name: 'firewall-syslog', exact: true });
   await expect(panel.getByText('Rows per second, over the last 24 hours')).toBeVisible();
+  // Pointing at the warning on the chart says why it began, and draws that width's rows and range over the chart.
+  const chart = panel.getByRole('img', { name: 'rows/s' }).first();
+  const mark = (await chart.locator('rect.mark').first().boundingBox())!;
+  const box = (await chart.boundingBox())!;
+  await admin.mouse.move(mark.x + mark.width / 2, box.y + box.height / 2);
+  const why =
+    /Rows below normal, since \d\d:\d\d:\s+[\d.]+ rows\/s over \d+ minutes, expected [\d.]+–[\d.]+/;
+  const legend = chart.locator('xpath=..').locator('.legend');
+  await expect(legend).toContainText(why);
+  await expect(chart.locator('path.overlay-line')).toHaveAttribute('d', /M/);
+  await expect(legend).toContainText(/rows\/s over \d+ minutes: [\d.]+\s*expected: /);
+  await shoot(admin, '3a-history-why');
+  await admin.mouse.move(0, 0);
   const up = panel
     .getByRole('listitem')
     .filter({ has: admin.getByRole('img', { name: 'up now' }) });
   await expect(up).toContainText('Marked by');
   await up.getByRole('button', { expanded: false }).click();
   await expect(up.getByText('24 hours ago')).toBeVisible({ timeout: 30_000 });
+  await expect(up.getByText(/rows\/s over \d+ minutes: /)).toBeVisible();
   await shoot(admin, '3b-history-warning');
 
   // Said Normal on the Issues page, it is Normal on History too: the source learns the level it reads now.

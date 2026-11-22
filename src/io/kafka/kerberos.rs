@@ -86,6 +86,7 @@ pub(super) fn hold(config: &ClientConfig) -> Result<Option<Held>, IoError> {
 
 /// Whether a process holding `held` may take `asked` too: one identity per process, since both share the default
 /// cache, and a second principal would overwrite the first's ticket.
+#[cfg(target_os = "linux")]
 fn conflict(held: &Identity, asked: &Identity) -> Option<String> {
     (held.principal != asked.principal).then(|| {
         format!(
@@ -343,6 +344,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn a_second_principal_is_refused_and_the_same_one_with_another_keytab_is_not() {
         let held = Identity {
             principal: "a".into(),

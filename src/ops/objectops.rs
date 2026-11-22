@@ -24,6 +24,10 @@ pub enum ObjectOp {
     /// `omit(o, k, ...)`: `o` without those keys. The compiler lowers it to an object whose unclaimed fields are a
     /// merge, so no kernel runs it.
     Omit,
+    /// `declared(o)`: `o`'s fields, without its unclaimed fields. The compiler lowers it to an object, as `omit`.
+    Declared,
+    /// `undeclared(o)`: `o`'s unclaimed fields, without its fields. The compiler lowers it to an object, as `omit`.
+    Undeclared,
     /// The value at the key argument 1 gives in unclaimed fields, argument 0: a variant, null where the row's object
     /// has no such key.
     Get,
@@ -31,7 +35,14 @@ pub enum ObjectOp {
 
 impl ObjectOp {
     /// The ones a pipeline calls by name.
-    pub const NAMED: [ObjectOp; 4] = [ObjectOp::Keys, ObjectOp::Entries, ObjectOp::FromEntries, ObjectOp::Omit];
+    pub const NAMED: [ObjectOp; 6] = [
+        ObjectOp::Keys,
+        ObjectOp::Entries,
+        ObjectOp::FromEntries,
+        ObjectOp::Omit,
+        ObjectOp::Declared,
+        ObjectOp::Undeclared,
+    ];
 
     /// The name a pipeline calls it by, where it has one.
     pub const fn name(self) -> Option<&'static str> {
@@ -40,6 +51,8 @@ impl ObjectOp {
             ObjectOp::Entries => Some("entries"),
             ObjectOp::FromEntries => Some("fromEntries"),
             ObjectOp::Omit => Some("omit"),
+            ObjectOp::Declared => Some("declared"),
+            ObjectOp::Undeclared => Some("undeclared"),
             ObjectOp::Get => None,
         }
     }
@@ -57,8 +70,8 @@ impl ObjectOp {
         }
     }
 
-    /// Whether its first argument may be of type `ty`: an object, or for `fromEntries` an array of `{key, value}`
-    /// objects whose keys are strings. Null is a `fromEntries` of nothing.
+    /// Whether its first argument may be of type `ty`: an object, an open one for `undeclared`, or for `fromEntries` an
+    /// array of `{key, value}` objects whose keys are strings. Null is a `fromEntries` of nothing.
     pub fn accepts(self, ty: &DataType) -> bool {
         let entry = |e: &DataType| match e {
             DataType::Null => true,
@@ -77,6 +90,7 @@ impl ObjectOp {
                 DataType::Array(e) => entry(e),
                 _ => false,
             },
+            ObjectOp::Undeclared => matches!(ty, DataType::Struct(_, true)),
             _ => matches!(ty, DataType::Struct(..)),
         }
     }

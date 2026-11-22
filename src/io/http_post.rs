@@ -34,7 +34,7 @@ pub struct Item {
 pub struct Post {
     /// How rows make a request's body.
     shape: RequestBody,
-    gzip: bool,
+    gzip: Option<u8>,
     /// The URL's trailing slashes, which the transport trims off its base address and this puts back.
     path: String,
     /// Where the next row's part is taken from under [`RequestBody::Single`]. Shared by every clone, though only the
@@ -50,7 +50,10 @@ impl Post {
         Post {
             name: "http",
             shape: config.body,
-            gzip: config.compression == Compression::Gzip,
+            gzip: match config.compression {
+                Compression::Gzip(level) => Some(level),
+                _ => None,
+            },
             path: url[url.trim_end_matches('/').len()..].to_string(),
             next_part: Arc::new(AtomicUsize::new(0)),
         }
@@ -144,7 +147,7 @@ pub fn transport_as(
     agent: &ureq::config::Config,
 ) -> HttpTransport {
     let mut headers: Vec<(String, String)> = config.headers.iter().chain(credentials).cloned().collect();
-    if config.compression == Compression::Gzip {
+    if matches!(config.compression, Compression::Gzip(_)) {
         headers.push(("Content-Encoding".to_string(), "gzip".to_string()));
     }
     // A redirect would land nothing: see `HttpTransport::without_redirects`. It would also carry the credential
@@ -264,12 +267,15 @@ impl Protocol for Post {
     }
 }
 
-/// `body` gzipped where `gzip` says.
-pub fn compressed(body: Vec<u8>, gzip: bool) -> Vec<u8> {
-    if !gzip {
+/// `body` gzipped at level `gzip`, or as it is when `gzip` is `None`.
+pub fn compressed(body: Vec<u8>, gzip: Option<u8>) -> Vec<u8> {
+    let Some(level) = gzip else {
         return body;
-    }
-    let mut out = flate2::write::GzEncoder::new(Vec::with_capacity(body.len() / 4), flate2::Compression::fast());
+    };
+    let mut out = flate2::write::GzEncoder::new(
+        Vec::with_capacity(body.len() / 4),
+        flate2::Compression::new(level.into()),
+    );
     // Writing to a Vec cannot fail.
     out.write_all(&body).expect("gzip into memory");
     out.finish().expect("gzip into memory")

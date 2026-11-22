@@ -86,13 +86,13 @@ test('the map draws the fleet from the service', async ({ page }) => {
   await expect(page.getByText('lookup key column')).toHaveCount(0);
 });
 
-test("the samples page runs the scope's locked tests in the service", async ({ page }) => {
-  await open(page, '#/build');
+test("the Tests page runs the scope's locked tests in the service", async ({ page }) => {
+  await open(page, '#/build/tests');
   // The page reads the whole recording before it draws, which a loaded machine takes seconds over.
   await expect(page.getByText('panos-traffic maps sessions to ECS')).toBeVisible({
     timeout: 30_000,
   });
-  await expect(page.getByText('Passing')).toHaveCount(2);
+  await expect(page.getByText('Passing', { exact: true })).toHaveCount(2);
 });
 
 test('the Schemas page reads a schema through the service', async ({ page }) => {

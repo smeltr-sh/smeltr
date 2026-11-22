@@ -9,6 +9,9 @@
   routes. A destination made from a route card is saved to `destinations.json` on Add.
 -->
 <script lang="ts">
+  import RowMenu from './RowMenu.svelte';
+  import MoveDialog, { type MoveTarget } from './MoveDialog.svelte';
+  import type { Area } from './areas';
   // A link can open a new route (`make`, from the map), and a pipeline made for one comes back to it (`chose`):
   //
   // ```mermaid
@@ -52,7 +55,6 @@
     withCategories,
     type ExceptionsDto,
   } from './exceptions';
-  import CrossButton from './CrossButton.svelte';
   import {
     sharedConfig,
     currentScope,
@@ -75,7 +77,7 @@
     TAG_FIELD,
   } from './api';
   import { mintRouteId } from './ids';
-  import { newPipelineHash, routeBackHash, ROUTES_TABS, type Making, type Relock } from './nav';
+  import { newPipelineHash, routeBackHash, ROUTES_TABS, type Making, type OpenTest } from './nav';
   import SecondaryTabs from './SecondaryTabs.svelte';
   import { SectionEditor } from './sectionEditor.svelte';
   import { provideValidation } from './validation.svelte';
@@ -89,7 +91,7 @@
     chose,
     group,
     back,
-    relock,
+    test,
   }: {
     showJson?: boolean;
     /** The Route a sample tab (`ROUTES_TABS`). */
@@ -103,8 +105,8 @@
     group?: string;
     /** Where Save returns to. */
     back?: string;
-    /** A test to lock again from the Route a sample tab. */
-    relock?: Relock;
+    /** A test to open on in the Route a sample tab. */
+    test?: OpenTest;
   } = $props();
   const narrowing = new Narrowing(() => only);
   const kept = (id: string) => narrowing.keeps(id);
@@ -229,6 +231,9 @@
     return () => off.forEach((f) => f());
   });
   const readOnly = !editable();
+  /** The route being moved into another area (`MoveDialog`), by id. */
+  let moving = $state<MoveTarget | null>(null);
+  let areas: Area[] = $state([]);
   /** Destinations brought onto a card and not yet wired, per source (`RouteFlow`). Kept here because collapsing a
    * card unmounts its body. */
   const unwired = new SvelteMap<string, string[]>();
@@ -317,6 +322,16 @@
     if (i >= 0) routes.splice(i, 1);
   }
   /** What was brought onto a card goes with it, so a new route on the same source starts clean. */
+  /** Opens `MoveDialog` to move every route of `card` to another area, with the least they take. */
+  function moveToArea(card: Card) {
+    const [first, ...rest] = card.routes;
+    moving = {
+      part: 'route',
+      id: first.id,
+      name: card.routes.map((r) => routeNames.get(r.id) ?? r.id).join(', '),
+      also: rest.map((r) => ({ part: 'route', id: r.id })),
+    };
+  }
   function removeCard(card: Card) {
     card.routes.forEach(removeRoute);
     unwired.delete(card.source);
@@ -537,7 +552,7 @@
     {/if}
 
     {#if sampling}
-      <RoutePreview config={previewConfig} dirty={isDirty} sources={sourceIds} {relock} />
+      <RoutePreview config={previewConfig} dirty={isDirty} sources={sourceIds} {test} />
     {:else}
       {#if !readOnly}
         <div class="toolbar">
@@ -597,7 +612,16 @@
                   .length}
               />
               {#if !readOnly}
-                <CrossButton removes label="Remove" onclick={() => removeCard(card)} />
+                <RowMenu label="More actions for {card.source || 'this route'}">
+                  {#if areas.length > 1}
+                    <button type="button" class="pick" onclick={() => moveToArea(card)}
+                      >Move to&hellip;</button
+                    >
+                  {/if}
+                  <button type="button" class="pick remove" onclick={() => removeCard(card)}
+                    >Remove</button
+                  >
+                </RowMenu>
               {/if}
             {/snippet}
             <RouteFlow
@@ -680,6 +704,13 @@
       oncancel={() => (sourcing = null)}
     />
 
+    <MoveDialog
+      bind:moving
+      bind:areas
+      dirty={isDirty}
+      readAt={routesEditor.readAtCommit}
+      onmoved={() => void load()}
+    />
     <SaveBar
       dirty={isDirty}
       {saving}

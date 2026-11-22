@@ -733,6 +733,7 @@ mod tests {
                 format: Default::default(),
                 field: None,
                 compression: Default::default(),
+                compression_level: None,
                 acks: Default::default(),
                 stall_after_secs: Default::default(),
                 buffer_bytes: Default::default(),

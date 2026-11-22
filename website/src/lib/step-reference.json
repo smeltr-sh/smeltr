@@ -436,7 +436,7 @@
       {
         "name": "splitDots",
         "type": "bool",
-        "absent": "`false` for JSON and CSV, `true` for Key/value and Regex/Grok",
+        "absent": "`false` for JSON, `true` for CSV, Key/value and Regex/Grok",
         "examples": [true],
         "what": "Whether a dot in a field name nests the field."
       }

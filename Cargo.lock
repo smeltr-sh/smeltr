@@ -4651,7 +4651,7 @@ dependencies = [
 [[package]]
 name = "rdkafka-sys"
 version = "4.10.0+2.12.1"
-source = "git+https://github.com/smeltr-sh/rust-rdkafka?rev=0d424190733fb1f659927dcb9a1d39df34f97cf1#0d424190733fb1f659927dcb9a1d39df34f97cf1"
+source = "git+https://github.com/smeltr-sh/rust-rdkafka?rev=1b6590db033e9d17a963e4dd0427ebe3fe40a5d0#1b6590db033e9d17a963e4dd0427ebe3fe40a5d0"
 dependencies = [
  "cmake",
  "curl-sys",

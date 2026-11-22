@@ -11,6 +11,7 @@
   import Advanced from './Advanced.svelte';
   import Help from './Help.svelte';
   import Field from './Field.svelte';
+  import CompressionLevel from './CompressionLevel.svelte';
   import Nested from './Nested.svelte';
   import UrlField from './UrlField.svelte';
   import KafkaPropsEditor from './KafkaPropsEditor.svelte';
@@ -92,6 +93,7 @@
     return (
       hasProps(d) ||
       (d.compression ?? 'none') !== 'none' ||
+      d.compressionLevel !== undefined ||
       (d.acks ?? 'all') !== 'all' ||
       (d.stallAfterSecs ?? LIMITS.stallAfterSecs.default) !== LIMITS.stallAfterSecs.default ||
       byteCount(d.bufferBytes, LIMITS.bufferBytes.default) !== LIMITS.bufferBytes.default
@@ -103,6 +105,7 @@
     return (
       accessModified('eventHubs', d) ||
       (d.compression ?? 'none') !== 'none' ||
+      d.compressionLevel !== undefined ||
       (d.stallAfterSecs ?? LIMITS.stallAfterSecs.default) !== LIMITS.stallAfterSecs.default ||
       byteCount(d.bufferBytes, LIMITS.bufferBytes.default) !== LIMITS.bufferBytes.default
     );
@@ -187,8 +190,10 @@
         <select
           value={destination.compression ?? 'none'}
           onchange={(e) => {
-            if (destination.type === 'kafka')
+            if (destination.type === 'kafka') {
               destination.compression = e.currentTarget.value as Compression;
+              delete destination.compressionLevel;
+            }
           }}
         >
           {#each COMPRESSIONS as codec (codec)}
@@ -196,6 +201,7 @@
           {/each}
         </select>
       </Field>
+      <CompressionLevel value={destination} codec={destination.compression ?? 'none'} kafka />
       <Field optional field="acks" label="acks">
         {#snippet help()}
           How many replicas must hold a batch before it counts as delivered. Choose all unless you
@@ -281,14 +287,17 @@
         <select
           value={destination.compression ?? 'none'}
           onchange={(e) => {
-            if (destination.type === 'eventHubs')
+            if (destination.type === 'eventHubs') {
               destination.compression = e.currentTarget.value as 'none' | 'gzip';
+              delete destination.compressionLevel;
+            }
           }}
         >
           <option value="none">none</option>
           <option value="gzip">gzip</option>
         </select>
       </Field>
+      <CompressionLevel value={destination} codec={destination.compression ?? 'none'} kafka />
       <Field optional field="stallAfterSecs" label="stall after (seconds)">
         {#snippet help()}
           How long one batch may take to deliver before this destination counts as stalled.
@@ -725,12 +734,14 @@
               const v = e.currentTarget.value as HttpCompression;
               if (v === 'none') delete h.compression;
               else h.compression = v;
+              delete h.compressionLevel;
             }}
           >
             <option value="none">none</option>
             <option value="gzip">gzip</option>
           </select>
         </Field>
+        <CompressionLevel value={h} codec={h.compression ?? 'none'} />
       {/if}
       <RequestDelivery
         value={h}
@@ -882,6 +893,7 @@
             const v = e.currentTarget.value as Compression;
             if (v === 'gzip') delete o.compression;
             else o.compression = v;
+            delete o.compressionLevel;
           }}
         >
           {#each COMPRESSIONS.filter((c) => o.format !== 'avro' || c !== 'lz4') as codec (codec)}
@@ -891,6 +903,7 @@
           {/each}
         </select>
       </Field>
+      <CompressionLevel value={o} codec={o.compression ?? 'gzip'} />
       {#if isCloud(o)}
         <Field field="storageClass" label="storage class">
           {#snippet help()}

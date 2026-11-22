@@ -1474,7 +1474,7 @@ impl Compiler<'_> {
             leaves.iter().any(|d| binding::at_or_under(n, &d.name)) || new.iter().any(|o| binding::at_or_under(n, o))
         };
         // The parse lays its keys over each object's column, so a key taken out of one is gone from it first.
-        let within = |n: &str| target.is_empty() || binding::at_or_under(n, target);
+        let within = |n: &str| binding::at_or_under(n, target);
         let kept: Vec<String> = std::iter::once(String::new())
             .chain(self.syms.root().objects().into_iter().map(|(name, _)| name))
             .filter(|name| within(name) && (!target.is_empty() || !self.syms.is_local(name)) && !replaced(name))
@@ -2057,31 +2057,7 @@ impl Compiler<'_> {
                     .node(target)
                     .map(|n| node_type(&self.syms, n))
                     .unwrap_or(DataType::Null);
-                let Pass::Typing(typing) = &mut self.pass else {
-                    unreachable!("a typing pass")
-                };
-                let first = match tracked {
-                    Some(i) => &mut typing[i].1,
-                    None => {
-                        typing.push((
-                            target.to_string(),
-                            FirstWrite {
-                                ty: DataType::Null,
-                                declared: 0,
-                            },
-                        ));
-                        &mut typing.last_mut().expect("just pushed").1
-                    }
-                };
-                match stated {
-                    Some(ty) => {
-                        first.ty = ty;
-                        first.declared += 1;
-                    }
-                    None if first.declared == 0 => first.ty = first.ty.unify(&now).unwrap_or(DataType::Variant),
-                    None => {}
-                }
-                return;
+                return self.note_write(target, stated, now);
             }
         }
         // A declaration types every row (Language): inside an `if` or a loop it declares a name of the
@@ -2195,7 +2171,14 @@ impl Compiler<'_> {
             }
             return;
         }
+        // An object written over an object replaces it, type and all, where the write reaches every row.
+        let object = match writes.as_slice() {
+            [(Place::Leaf(n), r)] if n == target => matches!(self.resolved_ty(r), DataType::Struct(..)),
+            _ => true,
+        };
+        let replaces = object && guard.is_none() && !self.in_loop();
         let writes = match (typed, self.syms.node(target)) {
+            (false, Some(Node::Object(_))) if replaces => writes,
             (false, Some(node)) => {
                 let held = node_type(&self.syms, node);
                 match self.keep_type(target, &held, writes, value, id) {
@@ -2343,40 +2326,70 @@ impl Compiler<'_> {
             _ => None,
         };
         let Some(keys) = keys else {
-            return self.err(
-                Some(id),
-                format!(
-                    "`{}` may hold keys nothing names, which would reach the rows the `if` or loop skips; write each \
-                     key, `key = …`, or merge it outside the `if` or loop",
-                    describe_expr(source)
-                ),
-            );
+            return self.unnamed_keys(source, id);
         };
         for (key, value) in keys {
             self.assign(&key, &value, false, false, here);
         }
     }
 
-    /// `$ = value`: `value` replaces the record. The engine's own `__` fields and the locals stay.
+    /// Refuses a write of `source` into the record under a guard or in a loop: `source` may hold keys nothing names.
+    fn unnamed_keys(&mut self, source: &Expr, id: FunctionId) {
+        self.err(
+            Some(id),
+            format!(
+                "`{e}` may hold keys nothing names, and they would reach the rows that skip this `if`, loop or \
+                 `try`; write each key as `key = …`, or merge `{e}` outside it",
+                e = describe_expr(source)
+            ),
+        );
+    }
+
+    /// In a construct's typing pass, notes a write of `target` to a value of type `now`, or a declaration of the type
+    /// `stated`. The construct declares the name with the stated type if there is one, else the type its writes blend
+    /// to.
+    fn note_write(&mut self, target: &str, stated: Option<DataType>, now: DataType) {
+        let Pass::Typing(typing) = &mut self.pass else {
+            unreachable!("a typing pass")
+        };
+        let first = match typing.iter().position(|(n, _)| n == target) {
+            Some(i) => &mut typing[i].1,
+            None => {
+                typing.push((
+                    target.to_string(),
+                    FirstWrite {
+                        ty: DataType::Null,
+                        declared: 0,
+                    },
+                ));
+                &mut typing.last_mut().expect("just pushed").1
+            }
+        };
+        match stated {
+            Some(ty) => {
+                first.ty = ty;
+                first.declared += 1;
+            }
+            None if first.declared == 0 => first.ty = first.ty.unify(&now).unwrap_or(DataType::Variant),
+            None => {}
+        }
+    }
+
+    /// `$ = value`: `value` replaces the record. The engine's own `__` fields and the locals stay. Under a guard or in a
+    /// loop it replaces the record on the rows it runs on, as any write does, and so it takes only a value whose keys
+    /// are all known (`assign_keys`).
     fn assign_root(&mut self, value: &Expr, here: Here) {
         let Here { guard, id } = here;
-        if guard.is_some() || self.in_loop() {
-            return self.err(
-                Some(id),
-                "`$ = …` replaces the record on every row; write it outside the `if` or the loop".to_string(),
-            );
-        }
-        let kept = |c: &Self, p: &Place| tree::is_internal(tree::head(p.name())) || c.syms.is_local(p.name());
-        let held = |c: &Self| -> Vec<Place> {
-            let places = c.syms.root().places().into_iter().map(|(p, _)| p);
-            places.filter(|p| !kept(c, p)).collect()
-        };
+        let blended = guard.is_some() || self.in_loop();
         // `$ = f(text)`: the text is read, the record goes, and the parse writes a new one.
         if let Some(call) = ParseCall::of(value) {
+            if blended {
+                return self.unnamed_keys(value, id);
+            }
             let Some(input) = self.input_slot(call.input, Here { guard: None, ..here }) else {
                 return;
             };
-            self.replace(held(self), Here { guard: None, ..here });
+            self.replace(self.places_at(""), Here { guard: None, ..here });
             return self.parse_call(
                 &call,
                 Some(input),
@@ -2391,6 +2404,15 @@ impl Compiler<'_> {
         let Some(writes) = self.resolve_writes("", value, id) else {
             return;
         };
+        let writes = self.split_objects(writes, here);
+        // A literal has no keys nothing names, so it passes; it lays null over the record's unclaimed fields.
+        let unnamed = |(p, r): &(Place, Resolved)| {
+            *p == Place::Unclaimed(String::new())
+                && !matches!(r, Resolved::Ir(ir) if matches!(ir.kind, IrKind::Literal(Value::Null)))
+        };
+        if blended && writes.iter().any(unnamed) {
+            return self.unnamed_keys(value, id);
+        }
         if let [(Place::Leaf(n), r)] = writes.as_slice()
             && n.is_empty()
         {
@@ -2414,14 +2436,19 @@ impl Compiler<'_> {
             .into_iter()
             .filter(|(p, _)| !tree::is_internal(tree::head(p.name())))
             .collect();
-        let old: Vec<Place> = held(self)
-            .into_iter()
-            .filter(|p| writes.iter().all(|(w, _)| w != p))
-            .collect();
-        self.replace(old, Here { guard: None, ..here });
-        for (place, r) in writes {
-            self.bind_resolved(&place, r, Here { guard: None, ..here });
+        // In a construct's typing pass, a field the record first takes here is noted, as any first write is, so the
+        // construct declares it ahead, from the record's key, and a row that skips the write keeps the value it had.
+        if matches!(self.pass, Pass::Typing(_)) && blended {
+            for (place, r) in &writes {
+                let Place::Leaf(name) = place else { continue };
+                let tracked = matches!(&self.pass, Pass::Typing(t) if t.iter().any(|(n, _)| n == name));
+                if tracked || self.syms.node(name).is_none() {
+                    let ty = self.resolved_ty(r);
+                    self.note_write(name, None, ty);
+                }
+            }
         }
+        self.bind_writes("", writes, false, here);
     }
 
     /// Whether `name` is bound outside the construct being compiled: a bound name is, unless it is a local the block
@@ -2592,6 +2619,13 @@ impl Compiler<'_> {
     /// scope to put back when the block ends.
     fn bind_writes(&mut self, target: &str, writes: Vec<(Place, Resolved)>, declares: bool, here: Here) {
         let Here { guard, id } = here;
+        // A `let` of the name binds a local and leaves the field as it was.
+        if !declares && target == "__live" {
+            self.warn(
+                id,
+                "writing `__live` drops each row where it is false; to drop rows, use a Drop step",
+            );
+        }
         let blended = guard.is_some() || self.in_loop();
         let mut writes = self.split_objects(writes, here);
         // `null` over an object nulls its leaves and unclaimed fields, and the name stays the object it was, each leaf
@@ -2604,20 +2638,7 @@ impl Compiler<'_> {
                 .map(|(p, slot)| (p.under(target), null(self.syms.type_of(slot))))
                 .collect();
         }
-        // In a `try`, a value that fails leaves its row before anything is written there.
-        if self.tries > 0 {
-            writes = (writes.into_iter())
-                .map(|(place, r)| match r {
-                    Resolved::Ir(ir) if !matches!(ir.kind, IrKind::Field(_) | IrKind::Literal(_)) => {
-                        let (span, ty) = (ir.span, ir.ty.clone());
-                        let slot = self.syms.alloc(place.name().to_string(), ty.clone(), Origin::Temp);
-                        self.emit_under(guard, Op::Eval { ir }, slot, ty.clone(), id);
-                        (place, Resolved::Ir(Ir::new(ty, span, IrKind::Field(slot))))
-                    }
-                    r => (place, r),
-                })
-                .collect();
-        }
+        let writes = self.staged(writes, here);
         if declares {
             self.syms.unbind(target);
         } else if !self.check_shape(target, &writes, blended, id) {
@@ -2656,6 +2677,20 @@ impl Compiler<'_> {
                 continue;
             };
             let pieces = match r {
+                // An object built of its pieces binds each piece where it goes: a piece that reads a slot shares that
+                // slot, as a copy does, and no row builds the whole object.
+                Resolved::Ir(ir) if matches!(ir.kind, IrKind::Object { .. }) => {
+                    let mut laid = Vec::new();
+                    laid_pieces(name, ir, &mut laid);
+                    let laid = (laid.into_iter())
+                        .map(|(place, ir)| match ir.kind {
+                            IrKind::Field(s) => (place, Resolved::Slot(s)),
+                            _ => (place, Resolved::Ir(ir)),
+                        })
+                        .collect();
+                    out.extend(self.split_objects(laid, here));
+                    continue;
+                }
                 Resolved::Slot(s) => split_struct(name, &Ir::new(ty, Span::default(), IrKind::Field(s))),
                 Resolved::Ir(ir) if matches!(ir.kind, IrKind::Field(_)) => split_struct(name, &ir),
                 Resolved::Unclaimed(..) => unreachable!("unclaimed fields are a variant, matched above"),
@@ -2677,12 +2712,32 @@ impl Compiler<'_> {
         out
     }
 
+    /// Returns `writes` with each value that may fail computed into a slot first, where a `try` is open, so a row whose
+    /// value fails leaves the `try`'s body before anything is written there.
+    fn staged(&mut self, writes: Vec<(Place, Resolved)>, here: Here) -> Vec<(Place, Resolved)> {
+        let Here { guard, id } = here;
+        if self.tries == 0 {
+            return writes;
+        }
+        (writes.into_iter())
+            .map(|(place, r)| match r {
+                Resolved::Ir(ir) if !matches!(ir.kind, IrKind::Field(_) | IrKind::Literal(_)) => {
+                    let (span, ty) = (ir.span, ir.ty.clone());
+                    let slot = self.syms.alloc(place.name().to_string(), ty.clone(), Origin::Temp);
+                    self.emit_under(guard, Op::Eval { ir }, slot, ty.clone(), id);
+                    (place, Resolved::Ir(Ir::new(ty, span, IrKind::Field(slot))))
+                }
+                r => (place, r),
+            })
+            .collect()
+    }
+
     /// Every place at or under `name` the tree holds.
     fn places_at(&self, name: &str) -> Vec<Place> {
-        match self.syms.node(name) {
-            Some(Node::Leaf(_)) => vec![Place::Leaf(name.to_string())],
-            Some(Node::Object(o)) => o.places().into_iter().map(|(p, _)| p.under(name)).collect(),
-            None => Vec::new(),
+        match self.syms.named(name) {
+            (name, Some(Node::Leaf(_))) => vec![Place::Leaf(name.to_string())],
+            (name, Some(Node::Object(o))) => o.places().into_iter().map(|(p, _)| p.under(name)).collect(),
+            (_, None) => Vec::new(),
         }
     }
 
@@ -2783,9 +2838,11 @@ impl Compiler<'_> {
                 self.syms.unbind_place(&place);
                 continue;
             }
+            // A cleared leaf keeps its type and holds null on these rows, so a loop's accumulator keeps one type across
+            // its trips.
             let ty = match place {
                 Place::Unclaimed(_) => DataType::Variant,
-                Place::Leaf(_) => DataType::Null,
+                Place::Leaf(_) => (self.syms.slot_of(&place)).map_or(DataType::Null, |s| self.syms.type_of(s).clone()),
             };
             let null = Ir::new(ty, Span::default(), IrKind::Literal(Value::Null));
             self.bind_resolved(&place, Resolved::Ir(null), here);
@@ -2832,12 +2889,6 @@ impl Compiler<'_> {
             }
         }
         let keys = matcher_keys(&kind, &matcher);
-        if let Some((k, _)) = keys.iter().flatten().find(|(k, _)| tree::is_internal(tree::head(k))) {
-            return self.err(
-                Some(id),
-                format!("`{k}` is the engine's own field; give the capture or column another name"),
-            );
-        }
         for name in chosen {
             if !keys.iter().flatten().any(|(k, _)| *k == name) {
                 self.warn(
@@ -4612,9 +4663,16 @@ impl Compiler<'_> {
                 span: Span::default(),
             }]),
         };
+        // A step is the code it lowers to, compiled as code is.
+        let expanded = (crate::expr::inline::expand(&lowered.body))
+            .and_then(|body| Ok((body, crate::expr::inline::expand(&lowered.after)?)));
+        let (body, after) = match expanded {
+            Ok(both) => both,
+            Err(e) => return self.err(Some(id), e.message),
+        };
         self.settle(|c| {
-            c.code_block(&lowered.body, here);
-            c.code_block(&lowered.after, Here { guard: outer, ..here });
+            c.code_block(&body, here);
+            c.code_block(&after, Here { guard: outer, ..here });
         });
         self.chosen.clear();
     }
@@ -4943,6 +5001,19 @@ mod tests {
     fn warnings(body: &str) -> Vec<String> {
         let plan = compile(&code_pipeline(body), &SourceMeta::KAFKA).unwrap_or_else(|e| panic!("{body}: {e:?}"));
         plan.warnings.into_iter().map(|w| w.message).collect()
+    }
+
+    /// A write of `__live`, by code or a parser, drops rows as a Drop step would, so it warns; a Drop does not.
+    #[test]
+    fn a_write_of_live_is_a_warning() {
+        let live = "writing `__live` drops each row where it is false; to drop rows, use a Drop step";
+        assert!(warnings("__live = false").iter().any(|w| w == live));
+        assert!(
+            warnings(r#"Object.assign($, grok(_raw, ["%{WORD:__live}"]))"#)
+                .iter()
+                .any(|w| w == live)
+        );
+        assert!(!warnings("if (_raw == \"x\") { drop(); }").iter().any(|w| w == live));
     }
 
     /// What compiles but is likely a mistake is a warning; what is read, or what the record holds at the end, is not.

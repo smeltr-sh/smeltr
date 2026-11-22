@@ -1124,6 +1124,15 @@ pub async fn catalog(state: &AppState) -> Result<Vec<warnings::Warning>, StoreEr
     active_facts.extend(warnings::encryption_key_facts(&key, &channels));
     // Read, not yet observed: what else is active is known only once the whole catalog is.
     let starts = state.registry.starts_of(&active_facts, now_ms);
+    if let Some(series) = state.registry.series()
+        && let Err(e) = series.keep_reasons(&warnings::below_reasons(&readings, &snapshot, heartbeat_interval))
+    {
+        tracing::warn!(
+            name: "reasons_not_kept", target: "status",
+            error = %e,
+            "could not keep why a warning began, so it shows no reason"
+        );
+    }
     let key_warnings = warnings::encryption_key_warnings(&key, &channels, &kept, &starts);
     let mut normal_warnings =
         warnings::outside_normal_warnings(&readings, &snapshot, &starts, &marks, heartbeat_interval);

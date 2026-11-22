@@ -15,6 +15,9 @@ pub struct OtlpDestinationDto {
     /// `"none"` (default) or `"gzip"`.
     #[serde(default, skip_serializing_if = "CompressionDto::is_default")]
     pub compression: CompressionDto,
+    /// When absent, the codec's default level is used (`CompressionDto::levels`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression_level: Option<u8>,
     /// Header name -> its value, committed to the config repository.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, String>,
@@ -43,6 +46,7 @@ impl DestinationSpec for OtlpDestinationDto {
             url,
             signal: _,
             compression,
+            compression_level,
             headers,
             credentials,
             tls,
@@ -71,6 +75,7 @@ impl DestinationSpec for OtlpDestinationDto {
             errors,
         );
         check_http_compression(&d.id, compression, errors);
+        check_compression_level(&d.id, *compression, *compression_level, false, errors);
         // An exporter's per-signal endpoint, as `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` holds one, names its path.
         let signals = [Signal::Logs, Signal::Metrics, Signal::Traces].map(crate::io::otlp::http_path);
         if let Some(path) = (signals.into_iter()).find(|path| url.trim().trim_end_matches('/').ends_with(path)) {
@@ -96,6 +101,7 @@ impl DestinationSpec for OtlpDestinationDto {
             url,
             signal,
             compression,
+            compression_level,
             headers,
             credentials,
             tls,
@@ -106,7 +112,7 @@ impl DestinationSpec for OtlpDestinationDto {
         } = self;
         DestinationKind::Otlp(OtlpDestinationConfig {
             http: HttpDestinationConfig {
-                compression: compression.to_plan(),
+                compression: compression.to_plan(*compression_level),
                 headers: headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
                 credentials: credentials.iter().map(|(k, r)| (k.clone(), to_secret_ref(r))).collect(),
                 ..to_http_core(

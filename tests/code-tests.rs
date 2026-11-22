@@ -3153,7 +3153,7 @@ fn a_tail_expression_is_the_value() {
 /// `let` of an arrow is a function too.
 #[test]
 fn a_function_cannot_take_a_builtin_name() {
-    for name in ["drop", "json", "length", "map", "keys", "rest"] {
+    for name in ["drop", "json", "length", "map", "keys", "declared", "undeclared"] {
         for body in [
             format!("function {name}(x: i64): i64 {{ x }} out = 1;"),
             format!("let {name} = (x) => x; out = 1;"),
@@ -5757,8 +5757,7 @@ fn object_assign_spreads_its_sources_into_its_target() {
     assert_eq!(rows[0]["p"], json!({"a": 1, "k": 1, "b": 2}));
 }
 
-/// `Object.assign` keeps its target's type, under a guard too: the sources' keys convert to it on each row, and a
-/// plain write of the same spread is a compile error.
+/// `Object.assign` keeps its target's type, under a guard too: the sources' keys convert to that type on each row.
 #[test]
 fn object_assign_keeps_its_targets_type() {
     let decl = || code(0, &json("p: {a: i64, ...}; q: {b: i64, ...}; f: bool;"));
@@ -5772,8 +5771,6 @@ fn object_assign_keeps_its_targets_type() {
     );
     assert_eq!(rows[0]["p"], json!({"a": 7}));
     assert_eq!(rows[1]["p"], json!({"a": 1}));
-    let e = err(vec![decl(), code(1, "p = {...p, ...q};")]);
-    assert!(e.contains("not {a: i64, ...}"), "{e}");
 }
 
 /// A spread takes a name or an object literal, and only in an object literal a name is assigned.
@@ -5959,10 +5956,6 @@ fn a_write_to_a_bound_leaf_keeps_its_type() {
                 "to convert the value, write `2.5 as i64`",
                 "to change the type of `x`, write `x: f64 = 2.5`",
             ][..],
-        ),
-        (
-            "o = {a: 1}; o = {a: \"x\"};",
-            &["`{a: \"x\"}` is {a: str}, not {a: i64}"][..],
         ),
         (
             "x = [1]; x = [\"a\"];",
@@ -6468,31 +6461,22 @@ fn a_conversion_to_an_object_type_converts_each_variant_leaf() {
     );
 }
 
-/// A written value converts to the type held (O.3-O.7): an object literal of another shape is a compile error naming
-/// the typed assignment; a variant that does not fit leaves the object null on that row, marked; an open value
-/// over a closed object is a compile error naming both ways out; `as` converts the value and the name keeps its
-/// type; a converted value of another shape is still refused. `$ = e` is not built.
+/// An object written over an object replaces it, type and all (O.3-O.7). A variant is no object, so it converts to
+/// the type held; a variant that does not fit leaves the object null on that row, and the exception is recorded.
 #[test]
 fn an_object_keeps_its_type_and_as_converts_a_value() {
     let pairs = r#"let pairs = [{key: "a", value: "5"}, {key: "z", value: "y"}];"#;
-    for (body, want) in [
-        (
-            r#"o = {a: 1}; o = {b: "x"};"#,
-            r#"`{b: "x"}` is {b: str}, not {a: i64}; to change the type of `o`, write `o: {b: str} = {b: "x"}`"#,
+    let plan = ok(vec![
+        code(0, JSON),
+        code(
+            1,
+            &format!(r#"o = {{a: 1}}; o = {{b: "x"}}; {pairs} p = {{a: 1}}; p = fromEntries(pairs);"#),
         ),
-        (
-            &format!("o = {{a: 1}}; {pairs} o = fromEntries(pairs);"),
-            "`fromEntries(pairs)` is {...}, not {a: i64}; to convert the value, write `fromEntries(pairs) as \
-             {a: i64}`; to change the type of `o`, write `o: {...} = fromEntries(pairs)`",
-        ),
-        (
-            r#"o = {a: 1}; o = {b: "x"} as {b: str};"#,
-            r#"`{b: "x"} as {b: str}` is {b: str}, not {a: i64}; to change the type of `o`, write `o: {b: str} = {b: "x"}`"#,
-        ),
-    ] {
-        let e = err(vec![code(0, JSON), code(1, body)]);
-        assert!(e.contains(want), "{body}:\n  want {want}\n  got {e}");
-    }
+    ]);
+    assert_eq!(
+        cols(&run(&plan, &["{}"]), &["o", "p"]),
+        rows![[{"b": "x"}, {"a": "5", "z": "y"}]]
+    );
     let plan = ok(vec![
         code(0, JSON),
         code(

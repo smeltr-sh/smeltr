@@ -300,6 +300,23 @@ impl Judged {
     }
 }
 
+/// Why a below-normal warning began, as the warning keeps it (`RegistryStore::keep_reasons`).
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum Reason {
+    /// Its rows per second over the width `window_millis` long that warned, against that width's range then.
+    #[serde(rename_all = "camelCase")]
+    Width {
+        window_millis: i64,
+        per_second: f64,
+        low: f64,
+        high: f64,
+    },
+    /// It went `silence_millis` without a row, longer than the `edge_millis` it may.
+    #[serde(rename_all = "camelCase")]
+    Gap { silence_millis: i64, edge_millis: i64 },
+}
+
 /// Which side of its normal a source is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Outside {
@@ -321,6 +338,35 @@ impl Reading {
             .find(side)
             .or_else(|| self.judged.iter().find(|j| j.window == WINDOW))
             .or_else(|| self.judged.first())
+    }
+
+    /// Why it is below normal: the narrowest width that waited out its readings below its range, else the narrowest
+    /// below it now, else the gap. None while it is not below, or is held below while nothing judges it.
+    pub fn reason(&self) -> Option<Reason> {
+        if self.outside != Some(Outside::Below) {
+            return None;
+        }
+        let width = self
+            .judged
+            .iter()
+            .find(|j| j.below)
+            .or_else(|| self.judged.iter().find(|j| j.under()));
+        match (width, self.gap.filter(Gap::below)) {
+            (Some(j), _) => {
+                let (per_second, band) = j.per_second();
+                Some(Reason::Width {
+                    window_millis: j.window.as_millis() as i64,
+                    per_second,
+                    low: band.low,
+                    high: band.high,
+                })
+            }
+            (None, Some(gap)) => Some(Reason::Gap {
+                silence_millis: gap.silence_ms,
+                edge_millis: gap.edge_ms,
+            }),
+            (None, None) => None,
+        }
     }
 }
 
@@ -1092,6 +1138,9 @@ pub struct PastSpan {
     /// Who answered what it was, if anyone did: Normal where it is `learned`, else Outage.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub marked_by: Option<String>,
+    /// Why it began, where it kept why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<Reason>,
 }
 
 /// `group`'s `source`'s [`Past`], or its `sender`'s, as of `now_ms`.
@@ -1112,6 +1161,7 @@ pub fn past(
         learned: !warned.span_during(to_millis, to_millis - from_millis),
         holds: false,
         marked_by: None,
+        reason: None,
     };
     let (below, mut silences) = match sender {
         Some(sender) => (warnings::sender_spans(store, group, source, sender, year)?, Vec::new()),
@@ -1143,6 +1193,7 @@ pub fn past(
                 marked_by: learning
                     .answer(group, source, sender, Some(s.started_millis))
                     .map(|m| m.by.clone()),
+                reason: s.reason,
             })
             .collect(),
         silences: silences
@@ -1386,6 +1437,10 @@ pub struct Chart {
 /// ([`expected_over`]), as of `now_ms`. Its points are as wide as a chart of that span draws them
 /// ([`super::series::chart_point_ms`]), and no finer than the rows kept from then: five minutes for the past four
 /// weeks, an hour before.
+///
+/// Given the `window_ms` of one of [`WIDTHS`], each point is instead the rate over that width ending where the point
+/// ends, against that width's range, as that width judged it; its points are then no wider than the width. A point
+/// whose width reaches a bucket nothing was kept for in five minutes has none.
 #[allow(clippy::too_many_arguments)]
 pub fn chart(
     store: &RegistryStore,
@@ -1395,30 +1450,56 @@ pub fn chart(
     from_ms: i64,
     to_ms: i64,
     now_ms: i64,
+    window_ms: Option<i64>,
     learning: &Marks,
 ) -> Result<Chart, super::store::StoreError> {
     let kept = match now_ms - from_ms <= Tier::FiveMinutes.retention_ms() {
         true => BUCKET.bucket_ms(),
         false => Tier::OneHour.bucket_ms(),
     };
+    let width = window_ms.and_then(|ms| WIDTHS.into_iter().find(|w| w.ms() == ms));
     let span = Duration::from_millis(to_ms.saturating_sub(from_ms).max(0) as u64);
     let point_ms = super::series::chart_point_ms(span).max(kept);
+    let point_ms = width.map_or(point_ms, |w| point_ms.min(w.ms()).max(kept));
     let since = from_ms.div_euclid(point_ms) * point_ms;
+    let read_from = since - width.map_or(0, Width::ms);
     let rows = match sender {
-        Some(_) => rows_of(store, group, source, sender, since)?,
+        Some(_) => rows_of(store, group, source, sender, read_from)?,
+        None => history(store, Tier::OneHour.and_finer(), BUCKET, read_from)?
+            .remove(&(group.to_string(), source.to_string())),
+    }
+    .unwrap_or_default();
+    let points = match width {
         None => {
-            history(store, Tier::OneHour.and_finer(), BUCKET, since)?.remove(&(group.to_string(), source.to_string()))
+            let mut points: BTreeMap<i64, f64> = BTreeMap::new();
+            for (&at, &n) in rows.range(since..to_ms) {
+                *points.entry(at.div_euclid(point_ms) * point_ms).or_default() += n;
+            }
+            let seconds = point_ms as f64 / 1000.0;
+            points.into_iter().map(|(at, n)| (at, n / seconds)).collect()
+        }
+        Some(width) => {
+            let read = Rows::of(&rows, read_from, to_ms.div_euclid(point_ms) * point_ms + point_ms);
+            let seconds = width.window.as_secs_f64();
+            (since..to_ms)
+                .step_by(point_ms as usize)
+                .filter_map(|at| Some((at, read.window(at + point_ms, width)? / seconds)))
+                .collect()
         }
     };
-    let mut points: BTreeMap<i64, f64> = BTreeMap::new();
-    for (&at, &n) in rows.iter().flat_map(|rows| rows.range(since..to_ms)) {
-        *points.entry(at.div_euclid(point_ms) * point_ms).or_default() += n;
-    }
-    let seconds = point_ms as f64 / 1000.0;
-    Ok(Chart {
-        point_millis: point_ms,
-        points: points.into_iter().map(|(at, n)| (at, n / seconds)).collect(),
-        expected: expected_over(
+    let expected = match width {
+        Some(width) => expected_at(
+            store,
+            group,
+            source,
+            sender,
+            since,
+            to_ms.min(now_ms),
+            point_ms,
+            width,
+            learning,
+        )?,
+        None => expected_over(
             store,
             group,
             source,
@@ -1428,6 +1509,11 @@ pub fn chart(
             point_ms,
             learning,
         )?,
+    };
+    Ok(Chart {
+        point_millis: point_ms,
+        points,
+        expected,
     })
 }
 
@@ -1469,6 +1555,24 @@ pub fn expected_over(
         .rev()
         .find(|w| w.ms() <= point_ms)
         .unwrap_or(WIDTHS[0]);
+    expected_at(
+        store, group, source, sender, since_ms, now_ms, point_ms, width, learning,
+    )
+}
+
+/// [`expected_over`] at `width`, whatever its points' width.
+#[allow(clippy::too_many_arguments)]
+fn expected_at(
+    store: &RegistryStore,
+    group: &str,
+    source: &str,
+    sender: Option<&Sender>,
+    since_ms: i64,
+    now_ms: i64,
+    point_ms: i64,
+    width: Width,
+    learning: &Marks,
+) -> Result<Vec<ExpectedPoint>, super::store::StoreError> {
     let step = point_ms;
     let first = since_ms.div_euclid(step) * step + step;
     let last = now_ms.div_euclid(step) * step + step;
@@ -1841,6 +1945,62 @@ mod tests {
         }
     }
 
+    /// A stop's warning says why it began: its rate over a width that waited out its readings, against that width's
+    /// range. The warning keeps it, and its source's past lists it.
+    #[test]
+    fn a_warning_keeps_why_it_began() {
+        let stopped = store_with(7, |at| Some(if at >= END - 12 * FIVE { 0.0 } else { 100.0 }));
+        let reason = reading_at(&stopped, END, &Marks::default()).unwrap().reason().unwrap();
+        assert!(
+            matches!(reason, Reason::Width { per_second, low, .. } if per_second == 0.0 && low > 0.0),
+            "{reason:?}"
+        );
+        let subject = serde_json::to_string(&("g", "s")).unwrap();
+        let fact = vec![("source_rows_below".to_string(), subject.clone())];
+        stopped.sync_fact_clock(&[], &fact, END - FIVE).unwrap();
+        let kept = serde_json::to_string(&reason).unwrap();
+        stopped
+            .keep_reasons(&[("source_rows_below".to_string(), subject, kept)])
+            .unwrap();
+        let past = past(&stopped, "g", "s", None, END, &Marks::default()).unwrap();
+        assert_eq!(past.warnings[0].reason, Some(reason));
+    }
+
+    /// Drawn at a width, a chart's points are the rate over that width, against that width's range.
+    #[test]
+    fn a_chart_at_a_width_draws_its_rate_against_its_range() {
+        let store = store_with(7, |at| Some(if at >= END - 6 * FIVE { 80.0 } else { 100.0 }));
+        let half_hour = WINDOW.as_millis() as i64;
+        let at = chart(
+            &store,
+            "g",
+            "s",
+            None,
+            END - 2 * HOUR,
+            END,
+            END,
+            Some(half_hour),
+            &Marks::default(),
+        )
+        .unwrap();
+        assert_eq!(at.point_millis, FIVE);
+        assert_eq!(at.points.first(), Some(&(END - 2 * HOUR, 600.0 / 1800.0)));
+        assert_eq!(
+            at.points.last(),
+            Some(&(END - FIVE, 480.0 / 1800.0)),
+            "the last half hour, all of it low"
+        );
+        let seconds = 1800.0;
+        assert!(
+            at.expected
+                .iter()
+                .all(|e| e.low * seconds == 420.0 && e.high * seconds == 780.0),
+            "{:?}",
+            at.expected
+        );
+        assert!(!at.expected.is_empty());
+    }
+
     /// At Off a stop is judged as at Balanced, so it reads below its range, but it never warns.
     #[test]
     fn a_source_at_off_is_judged_but_never_warns() {
@@ -2016,6 +2176,7 @@ mod tests {
                     learned: false,
                     holds: true,
                     marked_by: None,
+                    reason: None,
                 }],
                 Vec::new(),
                 Presets::default().senders,
@@ -2067,6 +2228,7 @@ mod tests {
             END - HOUR,
             END,
             END,
+            None,
             &Marks::default(),
         )
         .unwrap();
@@ -2085,6 +2247,7 @@ mod tests {
             dropped - DAY_MS,
             dropped,
             END,
+            None,
             &Marks::default(),
         )
         .unwrap();
@@ -2993,6 +3156,7 @@ mod tests {
             learned: false,
             holds: false,
             marked_by: None,
+            reason: None,
         };
         assert_eq!(
             past.warnings,

@@ -10,6 +10,9 @@
   leader writes as a new file and points the table at.
 -->
 <script lang="ts">
+  import RowMenu from './RowMenu.svelte';
+  import MoveDialog, { type MoveTarget } from './MoveDialog.svelte';
+  import type { Area } from './areas';
   import Button from './Button.svelte';
   import { unreported } from './errors.svelte';
   import Connections from './Connections.svelte';
@@ -59,6 +62,9 @@
   let { showJson = false }: { showJson?: boolean } = $props();
 
   const readOnly = !editable();
+  /** The lookup table being moved into another area (`MoveDialog`), by id. */
+  let moving = $state<MoveTarget | null>(null);
+  let areas: Area[] = $state([]);
 
   let tables: LookupTableDto[] = $state([]);
   /** `shared/`'s own, which this group looks up too. A table's file is named relative to the bundle that
@@ -439,7 +445,19 @@
             </select>
             <span class="grow"></span>
             {#if !readOnly}
-              <button type="button" onclick={() => removeTable(sel)}>Remove</button>
+              <RowMenu label="More actions for {t.id || 'unnamed'}">
+                {#if areas.length > 1 && t.id}
+                  <button
+                    type="button"
+                    class="pick"
+                    onclick={() => (moving = { part: 'lookupTable', id: t.id })}
+                    >Move to&hellip;</button
+                  >
+                {/if}
+                <button type="button" class="pick remove" onclick={() => removeTable(sel)}
+                  >Remove</button
+                >
+              </RowMenu>
             {/if}
           </div>
           <div class="tabs">
@@ -591,6 +609,13 @@
         {/if}
       {/snippet}
     </Dialog>
+    <MoveDialog
+      bind:moving
+      bind:areas
+      dirty={isDirty}
+      readAt={editor.readAtCommit}
+      onmoved={() => void load()}
+    />
     <SaveBar
       dirty={isDirty}
       saving={editor.saving}

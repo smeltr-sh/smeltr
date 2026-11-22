@@ -681,7 +681,15 @@
             <Button
               type="button"
               disabled={rotationBusy ? BUSY : ''}
-              onclick={() => rotationAct(() => abandonRotation(), 'switch abandoned')}
+              onclick={async () => {
+                const ok = await ask({
+                  title: 'abandon the switch',
+                  body: 'This leader keeps serving the current certificate and drops the switch. To switch later, start it again.',
+                  action: 'Abandon switch',
+                  danger: true,
+                });
+                if (ok) rotationAct(() => abandonRotation(), 'switch abandoned');
+              }}
             >
               Abandon switch
             </Button>
@@ -763,7 +771,15 @@
               <Button
                 type="button"
                 disabled={rotationBusy ? BUSY : ''}
-                onclick={() => rotationAct(() => abandonRotation(), 'rotation abandoned')}
+                onclick={async () => {
+                  const ok = await ask({
+                    title: 'abandon the rotation',
+                    body: 'This leader keeps signing under the current authority and deletes the incoming one. Rotating again makes a new authority, which every worker must be given again.',
+                    action: 'Abandon rotation',
+                    danger: true,
+                  });
+                  if (ok) rotationAct(() => abandonRotation(), 'rotation abandoned');
+                }}
               >
                 Abandon rotation
               </Button>

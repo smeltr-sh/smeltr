@@ -20,6 +20,7 @@ use smeltr::leader::{blocking, blocking_answer};
 
 use crate::config_api::{Addressed, Naming, Touches, Writing, group_of, merged_file, store_lookup_file};
 use crate::export_api::table_file;
+use crate::move_api::Go;
 
 /// The most entries an export may hold: far more than one pipeline's objects, and few enough to unpack at once.
 const MAX_ENTRIES: usize = 10_000;
@@ -65,13 +66,34 @@ struct TakenAnswer {
     keep: Keep,
 }
 
-/// Import the export in the `file` field into the area and branch the request names. Without an `answers` field it
-/// writes nothing and answers what the export holds; with one, it saves, or answers 409 with what still needs one.
+/// Import the export in the `file` field into the area and branch the request names, by the importer's `answers`
+/// field: it saves, or answers 409 with what still needs an answer.
 pub async fn import(
+    state: State<smeltr::leader::AppState>,
+    actor: Extension<Actor>,
+    at: Addressed,
+    multipart: Multipart,
+) -> Envelope<Import> {
+    received(state, actor, at, multipart, Go::Write).await
+}
+
+/// What the export in the `file` field holds, compared with the area and branch the request names. Writes nothing: a
+/// path under `preview` changes nothing (`policy::changes_nothing`), so the gate holds it to that.
+pub async fn preview_import(
+    state: State<smeltr::leader::AppState>,
+    actor: Extension<Actor>,
+    at: Addressed,
+    multipart: Multipart,
+) -> Envelope<Import> {
+    received(state, actor, at, multipart, Go::List).await
+}
+
+async fn received(
     State(state): State<smeltr::leader::AppState>,
     Extension(actor): Extension<Actor>,
     at: Addressed,
     mut multipart: Multipart,
+    go: Go,
 ) -> Envelope<Import> {
     // Opened first: the zip is unpacked beside the repository, which a first save creates.
     let writing = match blocking(move || at.open()).await {
@@ -121,6 +143,16 @@ pub async fn import(
     }
     if !received {
         return Envelope::refused(Refusal::bad_request("no `file` field in this upload"));
+    }
+    match (go, &answers) {
+        (Go::Write, None) => {
+            let message = "no `answers` field in this upload: preview/imports lists what an export holds";
+            return Envelope::refused(Refusal::bad_request(message));
+        }
+        (Go::List, Some(_)) => {
+            return Envelope::refused(Refusal::bad_request("a preview takes no `answers`: imports saves them"));
+        }
+        _ => {}
     }
     let store = state.store.clone();
     let imported = blocking_answer(move || {
@@ -297,7 +329,7 @@ fn file_edit(
 }
 
 /// Each of `written`'s objects put into `file`, replacing one of its kind and id.
-fn upsert(file: &mut FileConfig, written: FileConfig) {
+pub(crate) fn upsert(file: &mut FileConfig, written: FileConfig) {
     fn put<T>(into: &mut Vec<T>, items: Vec<T>, id: impl Fn(&T) -> &str) {
         for item in items {
             match into.iter().position(|o| id(o) == id(&item)) {
@@ -360,14 +392,16 @@ fn strip_content_prefix(name: &str) -> &str {
 /// What `writing`'s area holds of the kinds `imported` holds: what the group runs, `shared/` merged with its own, and
 /// the samples and tests of the ids the import holds. With it, what of that `shared/` holds, when the area is a group:
 /// an import into the group can keep those or rename beside them, but not replace them.
-fn here(writing: &Writing, imported: &Objects) -> Result<(Objects, BTreeSet<(Part, String)>), Refusal> {
-    let own = scope_objects(writing, writing.prefix(), writing.read().file, imported)?;
+pub(crate) fn here(writing: &Writing, imported: &Objects) -> Result<(Objects, BTreeSet<(Part, String)>), Refusal> {
+    let samples: Vec<&str> = imported.samples.iter().map(|s| s.id.as_str()).collect();
+    let tests: Vec<&str> = imported.tests.iter().map(|t| t.id.as_str()).collect();
+    let own = scope_objects(writing, writing.prefix(), writing.read().file, &samples, &tests)?;
     let Some(group) = group_of(writing.prefix()) else {
         return Ok((own, BTreeSet::new()));
     };
     let mut files = TreeFiles::new(writing.repo(), &writing.parent, config_file::SHARED_DIR);
     let shared_file = config_file::read_raw_from(&mut files).file;
-    let shared = scope_objects(writing, config_file::SHARED_DIR, shared_file, imported)?;
+    let shared = scope_objects(writing, config_file::SHARED_DIR, shared_file, &samples, &tests)?;
     let in_shared = shared.ids();
     let mut here = Objects {
         file: merged_file(&shared.file, &own.file, group),
@@ -381,9 +415,15 @@ fn here(writing: &Writing, imported: &Objects) -> Result<(Objects, BTreeSet<(Par
     Ok((here, in_shared))
 }
 
-/// The scope at `prefix`, holding `file`, with those of its samples and tests whose ids `imported` holds, and each of
-/// its lookup files' content hash.
-fn scope_objects(writing: &Writing, prefix: &str, file: FileConfig, imported: &Objects) -> Result<Objects, Refusal> {
+/// The scope at `prefix`, holding `file`, with those of its samples and tests whose ids are `samples` and `tests`,
+/// and each of its lookup files' content hash.
+pub(crate) fn scope_objects(
+    writing: &Writing,
+    prefix: &str,
+    file: FileConfig,
+    samples: &[&str],
+    tests: &[&str],
+) -> Result<Objects, Refusal> {
     let (repo, commit) = (writing.repo(), writing.parent.as_str());
     let failed = |e: &dyn std::fmt::Display| Refusal::internal(e.to_string());
     let mut files = TreeFiles::new(repo, commit, prefix.to_string());
@@ -393,15 +433,13 @@ fn scope_objects(writing: &Writing, prefix: &str, file: FileConfig, imported: &O
         tests: Vec::new(),
         contents: BTreeMap::new(),
     };
-    for s in &imported.samples {
+    for id in samples {
         objects
             .samples
-            .extend(read_sample(&mut files, &s.id).map_err(|e| failed(&e))?);
+            .extend(read_sample(&mut files, id).map_err(|e| failed(&e))?);
     }
-    for t in &imported.tests {
-        objects
-            .tests
-            .extend(read_test(&mut files, &t.id).map_err(|e| failed(&e))?);
+    for id in tests {
+        objects.tests.extend(read_test(&mut files, id).map_err(|e| failed(&e))?);
     }
     let at = config_file::BundleAt::Commit {
         repo: repo.to_path_buf(),

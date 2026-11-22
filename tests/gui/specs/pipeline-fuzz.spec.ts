@@ -86,16 +86,13 @@ for (const seed of seeds(PIPELINE_SEEDS)) {
         // the steps have glided to the places its answer gives them.
         await page.mouse.move(0, 0);
         await settled(page);
-        // Two frames on, since a glide starts on the frame after the change that moves it.
-        await page.waitForFunction(
-          () =>
-            new Promise((done) =>
-              requestAnimationFrame(() =>
-                requestAnimationFrame(() =>
-                  done(document.getAnimations().every((a) => a.playState !== 'running')),
-                ),
-              ),
-            ),
+        // Two frames on, since a glide starts on the frame after the change that moves it. The wait itself is plain:
+        // waitForFunction takes a promise the function answers for a truthy answer, not for the value it settles to.
+        await page.evaluate(
+          () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))),
+        );
+        await page.waitForFunction(() =>
+          document.getAnimations().every((a) => a.playState !== 'running'),
         );
         problems.push(...(await onScreen(page, false)));
       }

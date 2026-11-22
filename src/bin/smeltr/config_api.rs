@@ -27,7 +27,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 
 use smeltr::config_file::{
-    self, DestinationDto, FileConfig, LookupSourceDto, LookupTableDto, PipelineDto, RawBundle, RouteDto, SourceDto,
+    self, DestinationDto, FileConfig, FileSet, LookupSourceDto, LookupTableDto, PipelineDto, RawBundle, RouteDto,
+    SourceDto,
 };
 use smeltr::leader::envelope::{ApiError, Envelope, Refusal};
 use smeltr::leader::store::Actor;
@@ -448,7 +449,12 @@ impl Writing {
     /// `author` is the account the gate resolved, which is what the commit records. Every caller takes it from an
     /// `Extension`, so no handler can name an author of its own.
     pub fn commit(&self, edits: Vec<git::FileEdit>, message: &str, author: &Actor) -> Result<String, NotWritten> {
-        let edits = self.in_repo(edits);
+        self.commit_in_repo(self.in_repo(edits), message, author)
+    }
+
+    /// [`Writing::commit`] with each edit's path already named from the repository's root, so one commit can write
+    /// more than this bundle.
+    fn commit_in_repo(&self, edits: Vec<git::FileEdit>, message: &str, author: &Actor) -> Result<String, NotWritten> {
         match git::commit_edits(
             &self.repo,
             &self.branch,
@@ -662,7 +668,7 @@ impl Save {
 }
 
 /// The section a mutation replaces, and so the only file `edits_for` writes.
-#[derive(PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Touches {
     Sources,
     Destinations,
@@ -794,6 +800,21 @@ fn per_file_edits<T: serde::Serialize>(
     edits
 }
 
+/// [`refuse_broken_merge_of`] for a save to `writing`'s area alone.
+fn refuse_broken_merge(writing: &Writing, edits: &[git::FileEdit]) -> Result<(), Envelope<Save>> {
+    let part = AreaEdits {
+        prefix: &writing.prefix,
+        edits,
+    };
+    refuse_broken_merge_of(writing, &[part])
+}
+
+/// One area a commit writes: its bundle's prefix, and the edits under it, each named relative to the bundle.
+struct AreaEdits<'a> {
+    prefix: &'a str,
+    edits: &'a [git::FileEdit],
+}
+
 /// The tree a save would leave behind, without building one: `edits` laid over what the parent commit holds. A
 /// pending delete reads as absent, so a removed pipeline is gone from the listing as well as from the read.
 struct Pending<'a> {
@@ -854,13 +875,19 @@ fn errors_of(loaded: Result<config_file::LoadedSystem, config_file::BundleError>
 ///
 /// Held to the same bar as the rest of a save: a group already broken still takes an unrelated fix, and only a
 /// failure this save introduces is refused.
-fn refuse_broken_merge(writing: &Writing, edits: &[git::FileEdit]) -> Result<(), Envelope<Save>> {
+///
+/// `parts` are the areas one commit writes, each with its edits: one for a section's save, two for a move.
+fn refuse_broken_merge_of(writing: &Writing, parts: &[AreaEdits]) -> Result<(), Envelope<Save>> {
     let repo = writing.repo.clone();
     let parent = writing.parent.clone();
     let shared = config_file::SHARED_DIR;
 
-    let writing_shared = writing.prefix == shared;
-    let written = writing.prefix.strip_prefix(&format!("{}/", config_file::GROUPS_DIR));
+    let edits_of = |prefix: &str| parts.iter().find(|p| p.prefix == prefix).map(|p| p.edits);
+    let shared_edits = edits_of(shared);
+    let writing_shared = shared_edits.is_some();
+    let written: Vec<&str> = (parts.iter())
+        .filter_map(|p| p.prefix.strip_prefix(&format!("{}/", config_file::GROUPS_DIR)))
+        .collect();
     let mut groups = match smeltr::leader::tree::groups_at(&repo, &parent) {
         Ok(groups) => groups,
         // The group list is unreadable, so there is nothing to check against. The scope's own validation still
@@ -871,17 +898,17 @@ fn refuse_broken_merge(writing: &Writing, edits: &[git::FileEdit]) -> Result<(),
         }
         Err(e) => {
             tracing::debug!(name: "merge_unchecked", target: "deploy", error = %e, "the worker group list could not be read, so a save was checked against its own worker group only");
-            written.map(|id| vec![id.to_string()]).unwrap_or_default()
+            written.iter().map(|id| id.to_string()).collect()
         }
     };
-    if !writing_shared && written.is_none() {
+    if !writing_shared && written.is_empty() {
         return Ok(());
     }
     // A group this save creates is not on the branch yet, and is checked like the rest.
-    if let Some(id) = written
-        && !groups.iter().any(|g| g == id)
-    {
-        groups.push(id.to_string());
+    for id in &written {
+        if !groups.iter().any(|g| g == id) {
+            groups.push(id.to_string());
+        }
     }
 
     // Every group as it loads before and after this save, for the check across groups below.
@@ -889,7 +916,7 @@ fn refuse_broken_merge(writing: &Writing, edits: &[git::FileEdit]) -> Result<(),
     let mut afters = Vec::new();
     for group in groups {
         let loaded_before = smeltr::leader::tree::load_group_at(&repo, &parent, &group);
-        if !writing_shared && written != Some(group.as_str()) {
+        if !writing_shared && !written.contains(&group.as_str()) {
             // This save does not reach the group: it loads the same after.
             if let Ok(loaded) = loaded_before {
                 befores.push((group.clone(), loaded.topology.clone()));
@@ -907,14 +934,15 @@ fn refuse_broken_merge(writing: &Writing, edits: &[git::FileEdit]) -> Result<(),
             commit: writing.seen.clone(),
             prefix: prefix.to_string(),
         };
-        let overlay = |prefix: &str| Pending {
+        let overlay = |prefix: &str, edits| Pending {
             under: TreeFiles::new(&repo, &parent, prefix.to_string()),
             edits,
         };
+        let group_edits = edits_of(&group_prefix);
         let mut plain_shared = TreeFiles::new(&repo, &parent, shared.to_string());
         let mut plain_group = TreeFiles::new(&repo, &parent, group_prefix.clone());
-        let mut pending_shared = overlay(shared);
-        let mut pending_group = overlay(&group_prefix);
+        let mut pending_shared = overlay(shared, shared_edits.unwrap_or_default());
+        let mut pending_group = overlay(&group_prefix, group_edits.unwrap_or_default());
 
         let loaded_after = config_file::load_group_from(
             if writing_shared {
@@ -923,10 +951,10 @@ fn refuse_broken_merge(writing: &Writing, edits: &[git::FileEdit]) -> Result<(),
                 &mut plain_shared
             },
             &at(shared),
-            if writing_shared {
-                &mut plain_group
-            } else {
+            if group_edits.is_some() {
                 &mut pending_group
+            } else {
+                &mut plain_group
             },
             &at(&group_prefix),
             &group,
@@ -971,29 +999,13 @@ impl Writing {
         author: &Actor,
         mutate: impl FnOnce(&mut FileConfig),
     ) -> Envelope<Save> {
-        let at = self.at();
         let old = self.read();
 
         let mut file = old.file.clone();
         mutate(&mut file);
 
-        // `shared/` has to stand on its own: every group draws on it, so it can reference nothing that only one of
-        // them holds. A group is the other way round -- it runs `shared/` merged with its own subtree, and a route of
-        // its own may name a source `shared/` declares, which the subtree read alone calls unknown. Judging a group by
-        // its subtree refused every legitimate use of the thing `shared/` exists for; `refuse_broken_merge` below is
-        // what holds a group to the bundle it actually runs.
-        if self.prefix == config_file::SHARED_DIR {
-            // The old config is judged where it was saved: a save that rewrites a lookup file in place has already
-            // staged the new bytes at the path the old config names.
-            let before = config_file::BundleAt::Commit {
-                repo: self.repo.clone(),
-                commit: self.parent.clone(),
-                prefix: self.prefix.clone(),
-            };
-            let old_errors = errors_in(old.file.clone(), &before);
-            if let Err(response) = refuse_worse(errors_in(file.clone(), &at), old_errors) {
-                return response;
-            }
+        if let Err(response) = self.refuse_worse_alone(&old.file, &file) {
+            return response;
         }
 
         let mut edits = match edits_for(&file, &old, touches) {
@@ -1005,6 +1017,135 @@ impl Writing {
             return response;
         }
         match self.commit(edits, message, author) {
+            Ok(commit) => Save::done(commit),
+            Err(e) => Save::refused(e),
+        }
+    }
+
+    /// `shared/` has to stand on its own: every group draws on it, so it can reference nothing that only one of them
+    /// holds. A group is the other way round -- it runs `shared/` merged with its own subtree, and a route of its own
+    /// may name a source `shared/` declares, which the subtree read alone calls unknown. Judging a group by its
+    /// subtree refused every legitimate use of the thing `shared/` exists for; `refuse_broken_merge` is what holds a
+    /// group to the bundle it actually runs. So this judges `shared/` alone, and passes a group.
+    fn refuse_worse_alone(&self, old: &FileConfig, new: &FileConfig) -> Result<(), Envelope<Save>> {
+        if self.prefix != config_file::SHARED_DIR {
+            return Ok(());
+        }
+        // The old config is judged where it was saved: a save that rewrites a lookup file in place has already
+        // staged the new bytes at the path the old config names.
+        let before = config_file::BundleAt::Commit {
+            repo: self.repo.clone(),
+            commit: self.parent.clone(),
+            prefix: self.prefix.clone(),
+        };
+        refuse_worse(errors_in(new.clone(), &self.at()), errors_in(old.clone(), &before))
+    }
+
+    /// Refused when objects in this area cannot move to another area `to`: a branch that moved between the two reads,
+    /// or a group the branch does not hold.
+    pub(crate) fn can_move_to(&self, to: &Writing) -> Result<(), NotWritten> {
+        if to.parent != self.parent {
+            return Err(moved_since_you_loaded_it(&self.parent, Some(&to.parent)));
+        }
+        // A save would write a group it does not find, and the objects would land where no page reads them.
+        if let Some(group) = group_of(&to.prefix)
+            && !smeltr::leader::tree::groups_at(&self.repo, &self.parent).is_ok_and(|g| g.iter().any(|g| g == group))
+        {
+            return Err(Refusal::not_found(format!("this branch has no worker group {group:?}")).into());
+        }
+        Ok(())
+    }
+
+    /// `shared`, or the group this writes.
+    pub(crate) fn area(&self) -> &str {
+        group_of(&self.prefix).unwrap_or(config_file::SHARED_DIR)
+    }
+
+    /// The edits that move `going` out of this area into `to`, each named from the repository's root, once the bundles
+    /// on both sides pass the checks a save goes through. Each object replaces whatever `to` holds under its id, and a
+    /// lookup table's file goes with it. `to` must pass [`Writing::can_move_to`].
+    pub(crate) fn move_edits(
+        &mut self,
+        to: &mut Writing,
+        written: config_file::Objects,
+    ) -> Result<Vec<git::FileEdit>, Envelope<Save>> {
+        use config_file::Part;
+        let going = written.ids();
+        let refused = |e: Refusal| Envelope::refused(e);
+        let (old_from, old_to) = (self.read(), to.read());
+        let mut from = old_from.file.clone();
+        config_file::retain_file(&mut from, &|part, id| !going.contains(&(part, id.to_string())));
+        let mut into = old_to.file.clone();
+        crate::import_api::upsert(&mut into, written.file.clone());
+
+        // Each table's file, copied to the same path under `to`, where its table names it. Staged so the checks below
+        // read the tables against it.
+        let mut files = self.files();
+        let mut lookups = Vec::new();
+        for path in written.file.lookup_tables.iter().filter_map(lookup_file_of) {
+            match files.read(path) {
+                Ok(Some(content)) => lookups.push(git::FileEdit {
+                    path: path.to_string(),
+                    content: Some(content),
+                }),
+                Ok(None) => {}
+                Err(e) => return Err(refused(Refusal::internal(e.to_string()))),
+            }
+        }
+        to.stage(lookups.clone()).map_err(refused)?;
+        self.seen = to.seen.clone();
+
+        self.refuse_worse_alone(&old_from.file, &from)?;
+        to.refuse_worse_alone(&old_to.file, &into)?;
+        let mut from_edits = edits_for(&from, &old_from, Touches::Every).map_err(refused)?;
+        let mut to_edits = edits_for(&into, &old_to, Touches::Every).map_err(refused)?;
+        to_edits.extend(lookups);
+
+        let path =
+            |p: Result<String, config_file::BundleError>| p.map_err(|e| refused(Refusal::invalid(e.to_string())));
+        for (part, id) in &going {
+            let gone = match part {
+                Part::Sample => config_file::sample_path(id),
+                Part::Test => config_file::test_path(id),
+                _ => continue,
+            };
+            from_edits.push(git::FileEdit {
+                path: path(gone)?,
+                content: None,
+            });
+        }
+        for sample in &written.samples {
+            to_edits.push(git::FileEdit {
+                path: path(config_file::sample_path(&sample.id))?,
+                content: Some(config_file::sample_bytes(sample)),
+            });
+        }
+        for test in &written.tests {
+            to_edits.push(git::FileEdit {
+                path: path(config_file::test_path(&test.id))?,
+                content: Some(config_file::test_bytes(test)),
+            });
+        }
+
+        let parts = [
+            AreaEdits {
+                prefix: &self.prefix,
+                edits: &from_edits,
+            },
+            AreaEdits {
+                prefix: &to.prefix,
+                edits: &to_edits,
+            },
+        ];
+        refuse_broken_merge_of(self, &parts)?;
+        let mut edits = self.in_repo(from_edits);
+        edits.extend(to.in_repo(to_edits));
+        Ok(edits)
+    }
+
+    /// Commits `edits` from [`Writing::move_edits`] in one commit.
+    pub(crate) fn commit_move(&self, edits: Vec<git::FileEdit>, message: &str, author: &Actor) -> Envelope<Save> {
+        match self.commit_in_repo(edits, message, author) {
             Ok(commit) => Save::done(commit),
             Err(e) => Save::refused(e),
         }
@@ -2548,7 +2689,7 @@ fn refuse_worse_read(writing: &Writing, edits: &[git::FileEdit]) -> Result<(), E
 #[cfg(test)]
 mod tests {
     use super::*;
-    use smeltr::config_file::MetricsSourceDto;
+    use smeltr::config_file::{MetricsSourceDto, Part};
     use std::path::PathBuf;
 
     /// The shape the GUI places a save's error by (`api.ts`, `ApiError`).
@@ -3312,6 +3453,250 @@ mod tests {
             !raw.unreadable.is_empty(),
             "the lenient read names the file it could not parse"
         );
+    }
+
+    /// Commits each of `files` into `area` on branch `work`: a JSON body as JSON, a string as its bytes.
+    fn seed(data: &Path, area: &str, files: serde_json::Value) {
+        let edits = (files.as_object().unwrap().iter())
+            .map(|(path, body)| git::FileEdit {
+                path: path.clone(),
+                content: Some(match body {
+                    serde_json::Value::String(text) => text.clone().into_bytes(),
+                    body => serde_json::to_vec(body).unwrap(),
+                }),
+            })
+            .collect();
+        (Writing::open_in(data, "work", None, area).unwrap())
+            .commit(edits, "seed", &Actor::system())
+            .expect("seeded");
+    }
+
+    /// A branch where `shared/` holds source `fleet-audit`, pipeline `passthrough`, route `r1` from one to the
+    /// other, sample `logins`, test `t1` over it and test `t2` over another sample, beside groups `west` and `east`.
+    fn a_shared_repo(label: &str) -> PathBuf {
+        let data = a_repo(label);
+        seed(&data, "west", serde_json::json!({"system.json": {"version": 1}}));
+        seed(&data, "east", serde_json::json!({"system.json": {"version": 1}}));
+        let test = |id: &str, sample: &str| {
+            serde_json::json!({
+                "id": id, "name": id, "pipeline": "passthrough", "sample": sample,
+                "lockedAt": 0, "rowsIn": 1, "fields": [], "rows": [],
+            })
+        };
+        let sample: config_file::SampleDto =
+            serde_json::from_str(r#"{"id":"logins","name":"logins","records":[{"_raw":"{}"}]}"#).unwrap();
+        seed(
+            &data,
+            "shared",
+            serde_json::json!({
+                "sources.json": [a_source("fleet-audit")],
+                "pipelines/passthrough.json": {"id": "passthrough", "name": "passthrough", "steps": []},
+                "routes.json": [{"id": "r1", "source": "fleet-audit", "pipeline": "passthrough"}],
+                "samples/logins.json": String::from_utf8(config_file::sample_bytes(&sample)).unwrap(),
+                "tests/t1.json": test("t1", "logins"),
+                "tests/t2.json": test("t2", "other"),
+            }),
+        );
+        data
+    }
+
+    /// Moves `id` from `from` to `to` with the least it takes.
+    fn move_to(data: &Path, from: &str, to: &str, part: Part, id: &str) -> Envelope<crate::move_api::MoveAnswer> {
+        let from = Writing::open_in(data, "work", None, from).unwrap();
+        let to_writing = Writing::open_in(data, "work", None, to).unwrap();
+        let ask = crate::move_api::MoveAsk {
+            part,
+            id: id.to_string(),
+            to: to.to_string(),
+            also: Vec::new(),
+            ticked: None,
+        };
+        crate::move_api::move_between(from, to_writing, ask, crate::move_api::Go::Write, &Actor::system())
+    }
+
+    /// The ids of `part` that `area` holds.
+    fn ids_in(data: &Path, area: &str, part: Part) -> Vec<String> {
+        let reading = Reading::open_in(data, "work", area).unwrap();
+        let file = reading.raw().file;
+        match part {
+            Part::Source => file.sources.into_iter().map(|s| s.id).collect(),
+            Part::Route => file.routes.into_iter().map(|r| r.id).collect(),
+            Part::Destination => file.destinations.into_iter().map(|d| d.id).collect(),
+            Part::Sample => (config_file::list_samples(&mut reading.files()).0.into_iter())
+                .map(|s| s.id)
+                .collect(),
+            Part::Test => (config_file::list_tests(&mut reading.files()).0.into_iter())
+                .map(|t| t.id)
+                .collect(),
+            _ => unreachable!("not asked"),
+        }
+    }
+
+    /// The last commit on `work`: its subject and the files it changed, sorted.
+    fn last_commit(data: &Path) -> (String, Vec<String>) {
+        let log = git::log(&git::repo_path(data), "work", 1).unwrap();
+        let mut files = log[0].files.clone();
+        files.sort();
+        (log[0].subject.clone(), files)
+    }
+
+    /// Asserts that `response` was refused and that `work` still ends at `before`.
+    fn refused_and_unwritten(data: &Path, before: &str, response: &Envelope<crate::move_api::MoveAnswer>) {
+        assert!(!response.succeeded(), "refused: {response:?}");
+        let now = Reading::open_in(data, "work", "shared").unwrap().commit;
+        assert_eq!(now, before, "nothing written");
+    }
+
+    /// A source leaves `shared/` for a group with the route that starts at it, in one commit, so no commit on the
+    /// branch has it in both areas or in neither.
+    #[test]
+    fn a_source_moves_with_its_routes_in_one_commit() {
+        let data = a_shared_repo("move-source");
+        let before = Reading::open_in(&data, "work", "shared").unwrap().commit;
+        let response = move_to(&data, "shared", "west", Part::Source, "fleet-audit");
+        assert!(response.succeeded(), "moved: {response:?}");
+
+        assert_eq!(ids_in(&data, "shared", Part::Source), Vec::<String>::new());
+        assert_eq!(ids_in(&data, "shared", Part::Route), Vec::<String>::new());
+        assert_eq!(ids_in(&data, "west", Part::Source), ["fleet-audit"]);
+        assert_eq!(ids_in(&data, "west", Part::Route), ["r1"]);
+        let log = git::log(&git::repo_path(&data), "work", 2).unwrap();
+        assert_eq!(log[1].commit, before, "one commit");
+        assert_eq!(
+            last_commit(&data),
+            (
+                "move source fleet-audit to west".to_string(),
+                vec![
+                    "groups/west/routes.json".to_string(),
+                    "groups/west/sources.json".to_string(),
+                    "shared/routes.json".to_string(),
+                    "shared/sources.json".to_string()
+                ]
+            )
+        );
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    /// Another group's own route from the shared source would be left naming nothing: the move is refused, and the
+    /// branch is where it was.
+    #[test]
+    fn a_move_that_leaves_a_route_behind_is_refused() {
+        let data = a_shared_repo("move-left-behind");
+        let route = serde_json::json!([{"id": "r2", "source": "fleet-audit", "pipeline": "passthrough"}]);
+        seed(&data, "east", serde_json::json!({ "routes.json": route }));
+        let before = Reading::open_in(&data, "work", "shared").unwrap().commit;
+
+        let response = move_to(&data, "shared", "west", Part::Source, "fleet-audit");
+        refused_and_unwritten(&data, &before, &response);
+        let said = format!("{:?}", response.errors);
+        assert!(
+            said.contains("east") && said.contains("fleet-audit"),
+            "it names the group and the source: {said}"
+        );
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    /// A sample leaves `shared/` for a group with the test that runs over it, in one commit, replacing west's own test
+    /// of the same id, and a test over another sample stays.
+    #[test]
+    fn a_sample_moves_with_its_tests_in_one_commit() {
+        let data = a_shared_repo("move-sample");
+        let own = serde_json::json!({
+            "id": "t1", "name": "west's t1", "pipeline": "passthrough", "sample": "logins",
+            "lockedAt": 0, "rowsIn": 1, "fields": [], "rows": [],
+        });
+        seed(&data, "west", serde_json::json!({ "tests/t1.json": own }));
+        let response = move_to(&data, "shared", "west", Part::Sample, "logins");
+        assert!(response.succeeded(), "moved: {response:?}");
+
+        assert_eq!(ids_in(&data, "shared", Part::Sample), Vec::<String>::new());
+        assert_eq!(ids_in(&data, "shared", Part::Test), ["t2"]);
+        assert_eq!(ids_in(&data, "west", Part::Sample), ["logins"]);
+        assert_eq!(ids_in(&data, "west", Part::Test), ["t1"]);
+        let (subject, files) = last_commit(&data);
+        assert_eq!(subject, "move sample logins to west");
+        assert_eq!(
+            files,
+            [
+                "groups/west/samples/logins.json",
+                "groups/west/tests/t1.json",
+                "shared/samples/logins.json",
+                "shared/tests/t1.json"
+            ]
+        );
+        let reading = Reading::open_in(&data, "work", "west").unwrap();
+        let t1 = config_file::read_test(&mut reading.files(), "t1").unwrap().unwrap();
+        assert_eq!(t1.name, "t1", "shared's, not west's own");
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    /// Between groups, a source takes its route, the route's pipeline and the table it looks up in, with the table's
+    /// file, in one commit: east sees nothing of west's.
+    #[test]
+    fn between_groups_a_source_takes_what_its_route_needs_and_a_table_its_file() {
+        let data = a_shared_repo("move-between-groups");
+        let mut incoming = smeltr::lookup::store::Incoming::new(&git::repo_path(&data)).unwrap();
+        std::io::Write::write_all(&mut incoming, b"ip,site\n10.0.0.1,hq\n").unwrap();
+        seed(
+            &data,
+            "west",
+            serde_json::json!({
+                "sources.json": [{"id": "fw", "type": "metrics", "bucketSeconds": 10}],
+                "pipelines/sites.json": {"id": "sites", "name": "sites", "steps": [
+                    {"type": "lookup", "id": "site", "input": "_raw", "table": "sites", "matchKind": "exact",
+                     "multiplicity": "first", "keyColumn": "ip", "outputs": [{"source": "site", "field": "site"}]}]},
+                "routes.json": [{"id": "r-fw", "source": "fw", "pipeline": "sites"}],
+                "lookup-tables.json": [{"id": "sites", "type": "csv", "path": "lookups/sites.csv", "delimiter": ","}],
+                "lookups/sites.csv": incoming.finish(None).unwrap().text(),
+            }),
+        );
+
+        let response = move_to(&data, "west", "east", Part::Source, "fw");
+        assert!(response.succeeded(), "moved: {response:?}");
+        let (subject, files) = last_commit(&data);
+        assert_eq!(subject, "move source fw to east");
+        assert_eq!(
+            files,
+            [
+                "groups/east/lookup-tables.json",
+                "groups/east/lookups/sites.csv",
+                "groups/east/pipelines/sites.json",
+                "groups/east/routes.json",
+                "groups/east/sources.json",
+                "groups/west/lookup-tables.json",
+                "groups/west/lookups/sites.csv",
+                "groups/west/pipelines/sites.json",
+                "groups/west/routes.json",
+                "groups/west/sources.json",
+            ]
+        );
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    #[test]
+    fn a_move_into_a_group_the_branch_does_not_hold_is_refused() {
+        let data = a_shared_repo("move-nowhere");
+        let before = Reading::open_in(&data, "work", "shared").unwrap().commit;
+        let response = move_to(&data, "shared", "north", Part::Source, "fleet-audit");
+        refused_and_unwritten(&data, &before, &response);
+        assert_eq!(response.errors[0].message, "this branch has no worker group \"north\"");
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    #[test]
+    fn a_move_names_what_it_cannot_find_and_where_it_already_is() {
+        let data = a_shared_repo("move-refusals");
+        let response = move_to(&data, "shared", "west", Part::Source, "nowhere");
+        assert_eq!(
+            response.errors[0].message, "shared has no source \"nowhere\"",
+            "{response:?}"
+        );
+        let response = move_to(&data, "shared", "shared", Part::Source, "fleet-audit");
+        assert_eq!(
+            response.errors[0].message, "source \"fleet-audit\" is in shared already",
+            "{response:?}"
+        );
+        std::fs::remove_dir_all(&data).ok();
     }
 
     /// What `shared/` exists for: a group wiring its own route to a source declared once, fleet-wide. A group's

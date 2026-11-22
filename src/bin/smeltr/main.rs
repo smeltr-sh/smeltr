@@ -27,6 +27,7 @@ mod config_api;
 mod docs_api;
 mod export_api;
 mod import_api;
+mod move_api;
 // What the crate's fuzzers share, compiled here as `tests/harness` compiles it: the library's is test-only.
 #[cfg(test)]
 #[path = "../../fuzz.rs"]
@@ -1188,6 +1189,8 @@ async fn setup_leader(
         // it holds the certificate named.
         .route("/api/areas/:area/sources", put(config_api::put_sources))
         .route("/api/areas/:area/destinations", put(config_api::put_destinations))
+        .route("/api/areas/:area/moves", post(move_api::move_objects))
+        .route("/api/areas/:area/preview/moves", post(move_api::preview_move))
         // Not on `app` below with the rest of the samples routes: the capture a sample is made from is held in
         // `State<AppState>`.
         .route("/api/areas/:area/samples", post(capture_api::save_capture))
@@ -1208,6 +1211,12 @@ async fn setup_leader(
         .route(
             "/api/areas/:area/imports",
             post(import_api::import).layer(axum::extract::DefaultBodyLimit::max(
+                smeltr::lookup::store::MAX_FILE_BYTES as usize,
+            )),
+        )
+        .route(
+            "/api/areas/:area/preview/imports",
+            post(import_api::preview_import).layer(axum::extract::DefaultBodyLimit::max(
                 smeltr::lookup::store::MAX_FILE_BYTES as usize,
             )),
         )

@@ -864,6 +864,114 @@ const duplicateDestination: Move = {
   },
 };
 
+/** Moves `name`, a `part` on the page at `at`, from `shared` into `default` from its row's menu, and back from
+ * `default`'s page, ticking what `tick` matches. Each way is one commit, and each way `holds` answers `held` for the area
+ * it went to and `none` for the other. */
+async function thereAndBack(
+  j: Journey,
+  { at, part, name, tick }: { at: string; part: string; name: string; tick?: RegExp },
+  holds: (area: string) => Promise<unknown>,
+  held: unknown,
+  none: unknown,
+) {
+  const { page, leader } = j;
+  const move = async (from: string, to: string) => {
+    await openRowMenu(page, `More actions for ${name}`);
+    await page.getByRole('button', { name: 'Move to…' }).click();
+    const dialog = page.getByRole('dialog', { name: `move ${part} ${name}` });
+    await dialog.getByRole('combobox', { name: 'move to' }).selectOption(to);
+    // The leader lists the rows in one answer, and the asked object's own tick is among them.
+    await expect(dialog.getByRole('checkbox').first()).toBeVisible();
+    if (tick)
+      for (const t of await dialog.getByRole('checkbox', { name: tick }).all()) await t.check();
+    const go = dialog.getByRole('button', { name: 'Move', exact: true });
+    await expect(go).toBeEnabled();
+    await saveBy(j, go, () => expect(dialog).toBeHidden());
+    // A group's page lists what `shared` declares too, so only `shared`'s own page loses the row.
+    if (to !== 'shared')
+      await expect(page.getByRole('button', { name: `More actions for ${name}` })).toHaveCount(0);
+    expect(await holds(to), `${name} moved to ${to}`).toEqual(held);
+    expect(await holds(from), `${from} keeps none of it`).toEqual(none);
+    await editingIsSaved(j);
+  };
+  await goto(page, leader, at);
+  await move('shared', 'default');
+  await switchScope(page, 'shared', 'default');
+  await move('default', 'shared');
+  await switchScope(page, 'default', 'shared');
+}
+
+/** Moves a source `shared` declares to `default` and back. Into `default`, the routes starting at it are ticked
+ * already: `shared` keeps nothing that reads `default`'s. Back, they would stay, since `default` reads what `shared`
+ * holds, so they are ticked to go too. */
+const moveSource: Move = {
+  name: 'move-source',
+  weight: (w) => (w.password && w.editing.sources.length ? 1 : 0),
+  run: async (j) => {
+    const { rng, world } = j;
+    const truth = await j.truth();
+    const config = async (area: string) =>
+      (await truth.get(`/api/areas/${area}?branch=${encodeURIComponent(world.branch ?? 'main')}`))
+        .config;
+    const startingAt = (c: { routes: { id: string; source: string }[] }, source: string) =>
+      c.routes
+        .filter((r) => r.source === source)
+        .map((r) => r.id)
+        .sort();
+    const shared = await config('shared');
+    const declared = world.editing.sources.filter((s) =>
+      shared.sources.some((x: { id: string }) => x.id === s),
+    );
+    if (!declared.length) return 'no source in shared to move';
+    const source = rng.pick(declared);
+    const routes = startingAt(shared, source);
+    const holds = async (area: string) => {
+      const c = await config(area);
+      return {
+        source: c.sources.some((x: { id: string }) => x.id === source),
+        routes: startingAt(c, source),
+      };
+    };
+    const at = { at: '#/build/sources', part: 'source', name: source, tick: /^Move Route / };
+    await thereAndBack(j, at, holds, { source: true, routes }, { source: false, routes: [] });
+    return `move source ${source} with ${routes.length} routes to default and back`;
+  },
+};
+
+/** Moves a destination `shared` declares, and no route delivers to, to `default` and back, taking no route along. */
+const moveDestination: Move = {
+  name: 'move-destination',
+  weight: (w) => (w.password && w.editing.destinations.length ? 1 : 0),
+  run: async (j) => {
+    const { rng, world } = j;
+    const truth = await j.truth();
+    const config = async (area: string) =>
+      (await truth.get(`/api/areas/${area}?branch=${encodeURIComponent(world.branch ?? 'main')}`))
+        .config;
+    const shared = await config('shared');
+    const delivered = new Set<string>();
+    for (const area of ['shared', 'default', ...world.editing.groups])
+      for (const r of (await config(area)).routes as { deliver?: { to: string[] }[] }[])
+        for (const rule of r.deliver ?? []) for (const to of rule.to) delivered.add(to);
+    const free = world.editing.destinations.filter(
+      (d) => !delivered.has(d) && shared.destinations.some((x: { id: string }) => x.id === d),
+    );
+    if (!free.length) return 'no destination in shared that no route delivers to';
+    const destination = rng.pick(free);
+    const routes = async () =>
+      [(await config('shared')).routes, (await config('default')).routes].map(
+        (rs: { id: string }[]) => rs.map((r) => r.id).sort(),
+      );
+    const before = await routes();
+    const holds = async (area: string) =>
+      (await config(area)).destinations.some((x: { id: string }) => x.id === destination);
+    const at = { at: '#/build/destinations', part: 'destination', name: destination };
+    await thereAndBack(j, at, holds, true, false);
+    expect(await routes(), 'no route moves with a destination').toEqual(before);
+    return `move destination ${destination} to default and back`;
+  },
+};
+
 const addPipeline: Move = {
   name: 'add-pipeline',
   leadsTo: ['add-route', 'add-route-to-new-destination', 'add-step'],
@@ -896,10 +1004,8 @@ const exportPipeline: Move = {
       (p) => p.name === name,
     )!.id;
     await goto(page, leader, '#/build/pipelines');
-    await page
-      .getByRole('row', { name: new RegExp(`^${name}\\b`) })
-      .getByRole('button', { name: 'Export' })
-      .click();
+    await openRowMenu(page, `More actions for ${name}`);
+    await page.getByRole('button', { name: 'Export', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: `export ${name}` });
     if (routes)
       await dialog
@@ -2392,7 +2498,8 @@ const deleteSample: Move = {
     const name = rng.pick(pasted(world));
     await goto(page, leader, '#/build');
     const row = page.getByRole('row', { name: new RegExp(`^${name}\\b`) });
-    await row.getByRole('button', { name: 'Delete' }).click();
+    await openRowMenu(page, `More actions for ${name}`);
+    await page.getByRole('button', { name: 'Delete', exact: true }).click();
     await saveBy(
       j,
       page.getByRole('dialog', { name: 'delete sample' }).getByRole('button', { name: 'Delete' }),
@@ -2401,6 +2508,44 @@ const deleteSample: Move = {
     world.editing.samples = world.editing.samples.filter((s) => s !== name);
     await editingIsSaved(j);
     return `delete ${name}`;
+  },
+};
+
+/** Moves a pasted sample to `default` and back from its row on the Samples page, taking the tests over it along. */
+const moveSample: Move = {
+  name: 'move-sample',
+  weight: (w) => (w.password && pasted(w).length ? 1 : 0),
+  run: async (j) => {
+    const { rng, world } = j;
+    const truth = await j.truth();
+    const on = () => `branch=${encodeURIComponent(world.branch ?? 'main')}`;
+    const name = rng.pick(pasted(world));
+    const id: string = (await truth.get(`/api/areas/shared/samples?${on()}`)).samples.find(
+      (s: { name: string }) => s.name === name,
+    ).id;
+    const holds = async (area: string) => ({
+      sample: (await truth.get(`/api/areas/${area}/samples?${on()}`)).samples.some(
+        (s: { id: string }) => s.id === id,
+      ),
+      tests: (
+        (await truth.get(`/api/areas/${area}/tests?${on()}`)).tests as {
+          id: string;
+          sample: string;
+        }[]
+      )
+        .filter((t) => t.sample === id)
+        .map((t) => t.id)
+        .sort(),
+    });
+    const { tests } = await holds('shared');
+    await thereAndBack(
+      j,
+      { at: '#/build', part: 'sample', name },
+      holds,
+      { sample: true, tests },
+      { sample: false, tests: [] },
+    );
+    return `move ${name} with ${tests.length} tests to default and back`;
   },
 };
 
@@ -3693,6 +3838,9 @@ export const MOVES: readonly Move[] = [
   fillAvro,
   addDestination,
   duplicateDestination,
+  moveSource,
+  moveDestination,
+  moveSample,
   addPipeline,
   exportPipeline,
   importPipeline,

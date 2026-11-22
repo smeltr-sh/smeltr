@@ -765,6 +765,84 @@ fn a_csv_step_column_is_one_key_unless_it_splits_dots() {
     }
 }
 
+/// A CSV step over `_raw` whose columns are `names`, each a `str`, with dots in a name splitting it into a path.
+fn csv_step(names: &[&str]) -> Step {
+    func(
+        0,
+        FunctionKind::Parser {
+            input: "_raw".into(),
+            into: "$".into(),
+            kind: ParserKind::Csv(smeltr::plan::config::CsvConfig {
+                headers: names.iter().map(|n| Some(n.to_string())).collect(),
+                split_dots: true,
+                ..Default::default()
+            }),
+            declared: names
+                .iter()
+                .map(|n| DeclaredField {
+                    name: n.to_string(),
+                    ty: DataType::Str,
+                    time_source: None,
+                })
+                .collect(),
+        },
+    )
+}
+
+/// A parser writes a `__` field the engine does not use, as an Eval may, and a later step reads it.
+#[test]
+fn a_csv_column_writes_an_internal_field_the_engine_does_not_use() {
+    let plan = ok(vec![csv_step(&["id", "__version"]), code(1, "v = __version;")]);
+    let mut env = Env::new();
+    let mut b = raw_batch(&plan, &["7,2.1"], &mut env.pool);
+    let mut rows = env.run_json(&plan, &mut b);
+    rows[0].as_object_mut().expect("an object").remove("_raw");
+    assert_eq!(rows[0], serde_json::json!({"id": "7", "v": "2.1"}));
+    b.reclaim(&mut env.pool);
+}
+
+/// A parser inside a function writes a local, which the compiler renames with a temporary's prefix; the reserved-name
+/// check must not refuse it.
+#[test]
+fn a_csv_parse_into_a_local_of_a_function_compiles() {
+    ok(vec![code(
+        0,
+        r#"function f(s: str): str { let o = {}; Object.assign(o, csv(s, ["a"])); return o.a; } v = f(_raw);"#,
+    )]);
+}
+
+/// A step may not take the names code may not: `__live` stays bool, and the prefixes of the compiler's temporaries
+/// are reserved, for a parser's column and a Rename's target alike.
+#[test]
+fn a_step_cannot_take_a_name_code_cannot() {
+    for (name, why) in [
+        ("__live", "`__live` is already bool"),
+        ("__inl1", "reserves for its own temporaries"),
+        ("__loc_x", "reserves for its own temporaries"),
+    ] {
+        let errs = err(vec![csv_step(&["id", name])]);
+        assert!(errs.iter().any(|e| e.message.contains(why)), "{name}: {errs:?}");
+    }
+    let rename = func(
+        0,
+        FunctionKind::Rename {
+            pairs: vec![("_raw".into(), "__loc_x".into())],
+        },
+    );
+    let errs = err(vec![rename]);
+    assert!(
+        errs.iter()
+            .any(|e| e.message.contains("reserves for its own temporaries")),
+        "{errs:?}"
+    );
+}
+
+/// A parser may write a source's metadata, as an Eval may.
+#[test]
+fn a_csv_column_writes_a_source_field() {
+    ok(vec![csv_step(&["id", "__source.topic"])]);
+}
+
 /// A header nothing declares is still a column the parse writes: it is a `str` field, read like any other.
 #[test]
 fn a_csv_column_nobody_declared_is_a_str_field() {

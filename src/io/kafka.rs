@@ -1304,7 +1304,7 @@ impl KafkaDestination {
             destination: id.to_string(),
             reach: Arc::default(),
             gzip_to_event_hubs: config.service == crate::plan::topology::KafkaService::EventHubs
-                && config.compression == crate::plan::topology::Compression::Gzip,
+                && matches!(config.compression, crate::plan::topology::Compression::Gzip(_)),
             held: Arc::default(),
         };
         let held = tracker.held.clone();
@@ -1334,6 +1334,9 @@ impl KafkaDestination {
             .set("client.id", CLIENT_ID);
         // From the destination's own field; the passthrough reserves `compression.type`.
         producer_config.set("compression.type", config.compression.as_property());
+        if let Some(level) = config.compression.level() {
+            producer_config.set("compression.level", level.to_string());
+        }
         // Broker-enforced throttling and the producer queue's depth are reported nowhere else; see `publish_stats`.
         producer_config.set("statistics.interval.ms", STATS_INTERVAL.as_millis().to_string());
         apply_client_config(&mut producer_config, &config.props, config.tls.as_ref(), secrets)?;

@@ -9,6 +9,9 @@
   `shared/`; and the built-ins every grok may name, which no one changes.
 -->
 <script lang="ts">
+  import RowMenu from './RowMenu.svelte';
+  import MoveDialog, { type MoveTarget } from './MoveDialog.svelte';
+  import type { Area } from './areas';
   import Connections from './Connections.svelte';
   import EditInShared from './EditInShared.svelte';
   import OnlyNotice from './OnlyNotice.svelte';
@@ -35,7 +38,6 @@
     putGrokPatterns,
     type GrokPatternDto,
   } from './api';
-  import CrossButton from './CrossButton.svelte';
   import { count } from './time';
   import {
     builtinRegex,
@@ -49,6 +51,9 @@
   let { showJson = false, only }: { showJson?: boolean; only?: string[] } = $props();
 
   const readOnly = !editable();
+  /** The grok pattern being moved into another area (`MoveDialog`), by id. */
+  let moving = $state<MoveTarget | null>(null);
+  let areas: Area[] = $state([]);
 
   let patterns: GrokPatternDto[] = $state([]);
   /** What `shared/` declares, which this group's grok may name as well. Never saved from here. */
@@ -238,11 +243,21 @@
                 </td>
                 <td class="act">
                   {#if !readOnly}
-                    <CrossButton
-                      removes
-                      label="Remove {p.id || 'unnamed'}"
-                      onclick={() => patterns.splice(n, 1)}
-                    />
+                    <RowMenu label="More actions for {p.id || 'unnamed'}">
+                      {#if areas.length > 1 && p.id}
+                        <button
+                          type="button"
+                          class="pick"
+                          onclick={() => (moving = { part: 'grokPattern', id: p.id })}
+                          >Move to&hellip;</button
+                        >
+                      {/if}
+                      <button
+                        type="button"
+                        class="pick remove"
+                        onclick={() => patterns.splice(n, 1)}>Remove</button
+                      >
+                    </RowMenu>
                   {/if}
                 </td>
               </tr>
@@ -279,6 +294,13 @@
           {/each}
         </tbody>
       </table>
+      <MoveDialog
+        bind:moving
+        bind:areas
+        dirty={editor.isDirty}
+        readAt={editor.readAtCommit}
+        onmoved={() => void editor.load()}
+      />
       <SaveBar
         dirty={editor.isDirty}
         saving={editor.saving}

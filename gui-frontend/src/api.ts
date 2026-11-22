@@ -498,6 +498,18 @@ export type HttpCompression = Extract<Compression, 'none' | 'gzip'>;
 export type HttpBody = 'lines' | 'jsonArray' | 'single';
 export const COMPRESSIONS: Compression[] = ['none', 'gzip', 'snappy', 'lz4', 'zstd'];
 
+/** The levels `codec` takes on a destination (`LIMITS`), or undefined for a codec that takes none; `kafka` is true for a
+ * destination librdkafka compresses for. */
+export function compressionLevels(
+  codec: Compression,
+  kafka: boolean,
+): { min: number; max: number; default: number } | undefined {
+  if (codec === 'gzip') return LIMITS.gzipLevel;
+  if (codec === 'zstd') return kafka ? LIMITS.kafkaZstdLevel : LIMITS.zstdLevel;
+  if (codec === 'lz4' && kafka) return LIMITS.kafkaLz4Level;
+  return undefined;
+}
+
 /** How many replicas hold a Kafka batch before it counts as delivered, mirroring `config_file::dto::AcksDto`. */
 export const ACKS = ['none', 'one', 'all'] as const;
 export type Acks = (typeof ACKS)[number];
@@ -509,6 +521,12 @@ export type Acks = (typeof ACKS)[number];
  * inputs never offer a value the save would reject. */
 export const LIMITS = {
   inFlight: { min: 1, max: 64, default: 4 },
+  /** The levels each codec takes, as `CompressionDto::levels` gives them: librdkafka caps zstd at 12, and only its
+   * lz4 takes a level. */
+  gzipLevel: { min: 1, max: 9, default: 6 },
+  zstdLevel: { min: 1, max: 22, default: 3 },
+  kafkaZstdLevel: { min: 1, max: 12, default: 3 },
+  kafkaLz4Level: { min: 0, max: 12, default: 0 },
   maxBulkBytes: { min: 64 * 1024, max: 100 * 1024 * 1024, default: 5 * 1024 * 1024 },
   maxRequestBytes: { min: 4 * 1024, max: 100 * 1024 * 1024, default: 1024 * 1024 },
   /** An HTTP destination's `maxRequestBytes` (`HttpRequestBytes`): one whole batch by default. */
@@ -573,6 +591,7 @@ export type DestinationDto = {
        * `bytes`. */
       field?: string;
       compression?: Compression;
+      compressionLevel?: number;
       /** Absent is `all`. */
       acks?: Acks;
       stallAfterSecs?: number;
@@ -594,6 +613,7 @@ export type DestinationDto = {
       field?: string;
       /** Event Hubs takes no other codec. */
       compression?: 'none' | 'gzip';
+      compressionLevel?: number;
       stallAfterSecs?: number;
       bufferBytes?: ByteCount;
       schemaRegistry?: SchemaRegistry;
@@ -663,6 +683,7 @@ export type DestinationDto = {
       field?: string;
       /** Absent is `none`. */
       compression?: HttpCompression;
+      compressionLevel?: number;
       inFlight?: number;
     })
   | (HttpRequestsDto & {
@@ -681,6 +702,7 @@ export type DestinationDto = {
       signal?: OtlpSignal;
       /** Absent is `none`. */
       compression?: HttpCompression;
+      compressionLevel?: number;
       inFlight?: number;
     })
   | (TlsDto &
@@ -759,6 +781,7 @@ export type DestinationDto = {
         signingName?: string;
         /** How each Parquet file compresses its columns. Absent is `zstd`. */
         compression?: Compression;
+        compressionLevel?: number;
         /** Parts of one file uploading at once. */
         inFlight?: number;
         maxObjectBytes?: ByteCount;
@@ -781,6 +804,7 @@ export type DestinationDto = {
         partitionBy?: string[];
         /** How each Parquet file compresses its columns. Absent is `zstd`. */
         compression?: Compression;
+        compressionLevel?: number;
         /** Parts of one file uploading at once. */
         inFlight?: number;
         maxObjectBytes?: ByteCount;
@@ -1020,6 +1044,7 @@ export interface ObjectSettings {
   variant?: 'json' | 'native';
   /** Absent is `gzip`. */
   compression?: Compression;
+  compressionLevel?: number;
   inFlight?: number;
   maxObjectBytes?: ByteCount;
   /** Unset is 512 MiB. */
@@ -2030,7 +2055,55 @@ export function importExport(
   const body = new FormData();
   body.append('file', file);
   if (answers) body.append('answers', JSON.stringify(answers));
-  return configJson(inArea('/imports', into), { method: 'POST', body }, { base: at ?? null });
+  const path = answers ? '/imports' : '/preview/imports';
+  return configJson(inArea(path, into), { method: 'POST', body }, { base: at ?? null });
+}
+
+/** What a person calls each kind of object, capitalized, as a list of them shows it. */
+export const PART_NAMES: Record<ImportPart, string> = {
+  pipeline: 'Pipeline',
+  lookupTable: 'Lookup table',
+  grokPattern: 'Grok pattern',
+  schema: 'Schema',
+  sample: 'Sample',
+  test: 'Test',
+  route: 'Route',
+  source: 'Source',
+  destination: 'Destination',
+};
+
+/** One object a move lists: how it stands where it goes, whether it goes, and whether the move needs it. */
+export interface MoveRow extends ImportListed {
+  ticked: boolean;
+  needed: boolean;
+}
+
+/** What a move answers: each object it lists, why the ticks cannot move as they are, the commit both areas were read
+ * at, and once written, the commit the move made. */
+export type MoveResult = MutationResult & {
+  rows?: MoveRow[];
+  exceptions?: string[];
+  at?: string;
+};
+
+/** What a mover asks: the object, where it goes, and what goes with it (absent, the least the move takes). What goes
+ * replaces whatever the other area holds under its id. */
+export interface MoveAsk {
+  part: ImportPart;
+  id: string;
+  to: string;
+  also?: { part: ImportPart; id: string }[];
+  ticked?: { part: ImportPart; id: string }[];
+}
+
+/** What moving `ask` from the chip's area would do. Writes nothing. */
+export function previewMove(ask: MoveAsk, base?: string | null): Promise<MoveResult> {
+  return configJson(inArea('/preview/moves'), json('POST', ask), { base });
+}
+
+/** `ask` from the chip's area, written in one commit against `base`. */
+export function moveObjects(ask: MoveAsk, base?: string | null): Promise<MoveResult> {
+  return configJson(inArea('/moves'), json('POST', ask), { base });
 }
 
 // -- samples ----------------------------------------------------------------
@@ -4228,7 +4301,14 @@ export type PastSpan = {
   learned: boolean;
   holds?: boolean;
   markedBy?: string;
+  reason?: WarningReason;
 };
+
+/** Why a below normal warning began (`throughput::Reason`): its rows per second over the width
+ * that warned against that width's range then, or a quiet spell longer than the source may make. */
+export type WarningReason =
+  | { kind: 'width'; windowMillis: number; perSecond: number; low: number; high: number }
+  | { kind: 'gap'; silenceMillis: number; edgeMillis: number };
 
 /** One value of one field of a source's records that sends it rows (`senders::Sender`). */
 export type Sender = { field: string; value: string };
@@ -4295,15 +4375,21 @@ export type SourceChartResponse = {
   expected: ExpectedPointDto[];
 };
 
-/** `group`'s `source`'s chart from `fromMillis` until `toMillis`, or its `sender`'s. */
+/** `group`'s `source`'s chart from `fromMillis` until `toMillis`, or its `sender`'s; at
+ * `windowMillis`, the rate over that width against that width's range. */
 export function getSourceChart(
   group: string,
   source: string,
   fromMillis: number,
   toMillis: number,
   sender?: Sender,
+  windowMillis?: number,
 ): Promise<SourceChartResponse> {
-  const span = { fromMillis: String(fromMillis), toMillis: String(toMillis) };
+  const span = {
+    fromMillis: String(fromMillis),
+    toMillis: String(toMillis),
+    ...(windowMillis ? { windowMillis: String(windowMillis) } : {}),
+  };
   return apiJson(inArea(subjectPath(source, sender, 'chart', span), group));
 }
 
@@ -4857,6 +4943,7 @@ export type WarningSpanDto = {
   severity: WarningSeverity;
   startedMillis: number;
   endedMillis?: number;
+  reason?: WarningReason;
 };
 
 export function getStats(

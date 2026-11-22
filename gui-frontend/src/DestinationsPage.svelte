@@ -38,6 +38,8 @@
   import { bundleRoutes } from './routeFlow';
   import { at, typeLabel, writes } from './destinations';
   import NewDestination from './NewDestination.svelte';
+  import MoveDialog, { type MoveTarget } from './MoveDialog.svelte';
+  import type { Area } from './areas';
 
   // `focus` is a destination's own way in from the map (design doc "The map"): which card to
   // land on and highlight, set from the route rather than chosen on this page.
@@ -83,6 +85,10 @@
   /** A destination being added (`NewDestination`), from a copy of `from` where it is one. It joins the list on Add,
    * and the file on the page's Save. */
   let adding: { from?: DestinationDto } | null = $state(null);
+  /** The destination being moved into another area (`MoveDialog`). */
+  let moving: MoveTarget | null = $state(null);
+  /** The areas the person edits (`MoveDialog`). */
+  let areas: Area[] = $state([]);
   /** The row to show and mark: the one the map landed on, then the one just added. */
   // Follows the route, which can land on another row without remounting the page.
   let highlight = $derived(focus);
@@ -252,6 +258,14 @@
         {/snippet}
         {#snippet rowActions(destination, i)}
           {#if captureGroup}{@render captureButton(destination.id, captureGroup)}{/if}
+          {#if areas.length > 1}
+            <button
+              type="button"
+              class="pick"
+              onclick={() => (moving = { part: 'destination', id: destination.id })}
+              >Move to&hellip;</button
+            >
+          {/if}
           <button type="button" class="pick remove" onclick={() => removeDestination(i)}
             >Remove</button
           >
@@ -274,6 +288,13 @@
         {kafka}
         onadd={add}
         oncancel={() => (adding = null)}
+      />
+      <MoveDialog
+        bind:moving
+        bind:areas
+        dirty={editor.isDirty}
+        readAt={editor.readAtCommit}
+        onmoved={() => void editor.load()}
       />
 
       {#if capturing !== null && captureGroup}

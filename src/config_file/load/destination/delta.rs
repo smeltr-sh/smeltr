@@ -23,6 +23,9 @@ pub struct DeltaDestinationDto {
     /// Absent is zstd.
     #[serde(default = "CompressionDto::zstd", skip_serializing_if = "CompressionDto::is_zstd")]
     pub compression: CompressionDto,
+    /// When absent, the codec's default level is used (`CompressionDto::levels`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression_level: Option<u8>,
     /// Parts of one file uploading at once.
     #[serde(default, skip_serializing_if = "InFlight::is_default")]
     pub in_flight: InFlight,
@@ -52,7 +55,8 @@ impl DestinationSpec for DeltaDestinationDto {
             partition_by,
             access,
             tls,
-            compression: _,
+            compression,
+            compression_level,
             in_flight,
             max_object_bytes,
             buffer_bytes,
@@ -60,6 +64,7 @@ impl DestinationSpec for DeltaDestinationDto {
             file_interval_secs,
         } = self;
         let id = d.id.as_str();
+        check_compression_level(id, *compression, *compression_level, false, errors);
         check_http_delivery(
             &HttpDelivery {
                 id,
@@ -131,6 +136,7 @@ impl DestinationSpec for DeltaDestinationDto {
             access,
             tls,
             compression,
+            compression_level,
             in_flight,
             max_object_bytes,
             buffer_bytes,
@@ -148,7 +154,7 @@ impl DestinationSpec for DeltaDestinationDto {
             }),
             partition_by: partition_by.clone(),
             storage: to_s3_access(access),
-            compression: compression.to_plan(),
+            compression: compression.to_plan(*compression_level),
             tls: to_tls(tls, of, Side::Client),
             in_flight: in_flight.0,
             max_object_bytes: max_object_bytes.0,

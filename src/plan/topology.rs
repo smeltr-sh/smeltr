@@ -2734,14 +2734,15 @@ pub enum Newlines {
     Refuse,
 }
 
-/// A destination's codec: a Kafka batch, an object, or a Parquet file's each column chunk is compressed with it.
+/// A destination's codec, with its level where it takes one. What is compressed with it: a Kafka batch, an object, or
+/// each column chunk of a Parquet file. Only librdkafka's lz4 reads a level; lz4 elsewhere has none.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Compression {
     None,
-    Gzip,
+    Gzip(u8),
     Snappy,
-    Lz4,
-    Zstd,
+    Lz4(u8),
+    Zstd(u8),
 }
 
 impl Compression {
@@ -2749,10 +2750,37 @@ impl Compression {
     pub fn as_property(self) -> &'static str {
         match self {
             Compression::None => "none",
-            Compression::Gzip => "gzip",
+            Compression::Gzip(_) => "gzip",
             Compression::Snappy => "snappy",
-            Compression::Lz4 => "lz4",
-            Compression::Zstd => "zstd",
+            Compression::Lz4(_) => "lz4",
+            Compression::Zstd(_) => "zstd",
+        }
+    }
+
+    /// Every codec, each at its default level.
+    pub const ALL: [Compression; 5] = [
+        Compression::None,
+        Compression::Gzip(6),
+        Compression::Snappy,
+        Compression::Lz4(0),
+        Compression::Zstd(3),
+    ];
+
+    /// The codec's level, where it takes one.
+    pub fn level(self) -> Option<u8> {
+        match self {
+            Compression::Gzip(l) | Compression::Lz4(l) | Compression::Zstd(l) => Some(l),
+            Compression::None | Compression::Snappy => None,
+        }
+    }
+
+    /// The codec at `level`, where it takes one.
+    pub fn at(self, level: u8) -> Compression {
+        match self {
+            Compression::Gzip(_) => Compression::Gzip(level),
+            Compression::Lz4(_) => Compression::Lz4(level),
+            Compression::Zstd(_) => Compression::Zstd(level),
+            Compression::None | Compression::Snappy => self,
         }
     }
 }

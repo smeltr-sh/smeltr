@@ -153,9 +153,10 @@ services:
 
   # A second S3, for `just connector-speed`: SeaweedFS's master, volume, filer and S3 in one process on every core,
   # where LocalStack serves S3 from about one. With no identities configured it takes any request, signed or not.
+  # Its volumes are 256 MB, so a host with little free disk still has room for one per bucket a row makes.
   seaweedfs:
     image: chrislusf/seaweedfs:4.52
-    command: server -s3 -dir=/data -ip.bind=0.0.0.0
+    command: server -s3 -dir=/data -ip.bind=0.0.0.0 -master.volumeSizeLimitMB=256 -volume.max=100
     ports:
       - "8333:8333"
     healthcheck:
