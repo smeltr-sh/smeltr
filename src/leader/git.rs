@@ -11,6 +11,7 @@
 //! builds its tree in memory, and every ref moves by compare-and-swap on what the caller read -- so writers cannot
 //! interleave and none of them holds a lock.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -896,6 +897,16 @@ pub struct OpenTree {
     commit: String,
     /// The root tree, or why `commit` names none.
     root: Result<gix::ObjectId, String>,
+    /// Each directory read so far, by path. A directory is decoded once however many of its files are read, so
+    /// reading every file of one costs its size rather than its size squared.
+    dirs: std::cell::RefCell<HashMap<String, std::rc::Rc<Dir>>>,
+}
+
+/// One directory's entries, in the tree's order, and where each name sits among them.
+#[derive(Default)]
+struct Dir {
+    entries: Vec<(String, gix::objs::tree::EntryMode, gix::ObjectId)>,
+    by_name: HashMap<String, usize>,
 }
 
 /// Opens `commit`, which may name a tree instead, for [`OpenTree::read`] and [`OpenTree::list`].
@@ -906,6 +917,7 @@ pub fn open_tree(repo_path: &Path, commit: &str) -> Result<OpenTree, GitError> {
         repo,
         commit: commit.to_string(),
         root,
+        dirs: Default::default(),
     })
 }
 
@@ -913,53 +925,63 @@ impl OpenTree {
     /// The blob at `path`, `None` when the commit does not hold it.
     pub fn read(&self, path: &str) -> Result<Option<Vec<u8>>, GitError> {
         let commit = &self.commit;
-        let root = self.root.as_ref().map_err(|e| GitError::failed(e.clone()))?;
-        let tree = (self.repo.find_tree(*root)).map_err(|e| GitError::failed(format!("reading {commit}: {e}")))?;
-        let found = tree
-            .lookup_entry_by_path(path)
+        self.root.as_ref().map_err(|e| GitError::failed(e.clone()))?;
+        let (parent, name) = path.rsplit_once('/').unwrap_or(("", path));
+        let dir = self.dir(parent)?;
+        let Some(&at) = dir.by_name.get(name) else {
+            return Ok(None);
+        };
+        let object = (self.repo.find_object(dir.entries[at].2))
             .map_err(|e| GitError::failed(format!("reading {path:?} of {commit}: {e}")))?;
-        Ok(match found {
-            Some(entry) => Some(
-                entry
-                    .object()
-                    .map_err(|e| GitError::failed(format!("reading {path:?} of {commit}: {e}")))?
-                    .detach()
-                    .data,
-            ),
-            None => None,
-        })
+        Ok(Some(object.detach().data))
     }
 
     /// The entries of the directory at `path`, the root when empty. A path that is not a directory here is
     /// "nothing here", which is how an absent `shared/` or `pipelines/` reads.
     pub fn list(&self, path: &str) -> Result<Vec<TreeEntry>, GitError> {
-        let Ok(root) = &self.root else {
+        if self.root.is_err() {
             return Ok(vec![]);
+        }
+        Ok(self
+            .dir(path)?
+            .entries
+            .iter()
+            .map(|(name, mode, _)| TreeEntry {
+                mode: mode_text(*mode),
+                name: name.clone(),
+            })
+            .collect())
+    }
+
+    /// The directory at `path`, decoded on its first read; empty where `path` is not a directory here.
+    fn dir(&self, path: &str) -> Result<std::rc::Rc<Dir>, GitError> {
+        if let Some(dir) = self.dirs.borrow().get(path) {
+            return Ok(dir.clone());
+        }
+        let id = if path.is_empty() {
+            self.root.as_ref().ok().copied()
+        } else {
+            let (parent, name) = path.rsplit_once('/').unwrap_or(("", path));
+            let parent = self.dir(parent)?;
+            parent
+                .by_name
+                .get(name)
+                .map(|&at| &parent.entries[at])
+                .filter(|(_, mode, _)| mode.is_tree())
+                .map(|(_, _, id)| *id)
         };
-        let Ok(mut tree) = self.repo.find_tree(*root) else {
-            return Ok(vec![]);
-        };
-        if !path.is_empty() {
-            let Ok(Some(entry)) = tree.lookup_entry_by_path(path) else {
-                return Ok(vec![]);
-            };
-            let Ok(object) = entry.object() else {
-                return Ok(vec![]);
-            };
-            if object.kind != gix::object::Kind::Tree {
-                return Ok(vec![]);
+        let mut dir = Dir::default();
+        if let Some(tree) = id.and_then(|id| self.repo.find_tree(id).ok()) {
+            for entry in tree.iter() {
+                let entry = entry.map_err(|e| GitError::failed(format!("listing {path:?} of {}: {e}", self.commit)))?;
+                let name = entry.inner.filename.to_string();
+                dir.by_name.insert(name.clone(), dir.entries.len());
+                dir.entries.push((name, entry.inner.mode, entry.inner.oid.to_owned()));
             }
-            tree = object.into_tree();
         }
-        let mut entries = Vec::new();
-        for entry in tree.iter() {
-            let entry = entry.map_err(|e| GitError::failed(format!("listing {path:?} of {}: {e}", self.commit)))?;
-            entries.push(TreeEntry {
-                mode: mode_text(entry.inner.mode),
-                name: entry.inner.filename.to_string(),
-            });
-        }
-        Ok(entries)
+        let dir = std::rc::Rc::new(dir);
+        self.dirs.borrow_mut().insert(path.to_string(), dir.clone());
+        Ok(dir)
     }
 }
 
