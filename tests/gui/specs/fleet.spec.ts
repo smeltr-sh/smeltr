@@ -386,7 +386,7 @@ test('rows in and out are charted over the window the engineer picks', async ({
   });
 });
 
-test("errored rows are counted from the leader's series over the range their own clock picks", async ({
+test("exceptions are counted from the leader's series over the range their own clock picks", async ({
   admin,
   leader,
 }) => {
@@ -421,14 +421,14 @@ test("errored rows are counted from the leader's series over the range their own
 
   await goto(admin, leader, '#/status');
   const errors = admin.locator('section.errors');
-  await expect(errors.getByText('600 rows errored.')).toBeVisible();
+  await expect(errors.getByText('600 exceptions.')).toBeVisible();
   await expect(errors.getByRole('row', { name: /orders\s+3\s+Conversion\s+600/ })).toBeVisible();
   expect(asked).toContainEqual({ by: 'group,pipeline,function,kind', minutes: '60' });
 
   await errors.getByRole('button', { name: 'Chart range' }).click();
   await admin.getByRole('button', { name: '24 hours', exact: true }).click();
   await expect(errors.getByText('Over the last 24 hours')).toBeVisible();
-  await expect(errors.getByText('6,000 rows errored.')).toBeVisible();
+  await expect(errors.getByText('6,000 exceptions.')).toBeVisible();
   await shoot(admin, errors, 'errors-range');
 });
 

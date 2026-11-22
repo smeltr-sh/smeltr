@@ -277,7 +277,7 @@
 
   // A new window, selection or pick reads the chart at once, paused or not.
   $effect(() => fetchCharts(chartAsk));
-  // Likewise the errors panel's own range and the selection.
+  // Likewise the exceptions panel's own range and the selection.
   $effect(fetchErrors);
 
   function pick(row: { group: string; subjectId: string } | null) {
@@ -1369,12 +1369,13 @@
         <div class="panel-head">
           <div>
             <h2>
-              Errors — {selectionLabel}
-              <Help label="Errors"
-                >Rows that failed to parse, compile or run in a pipeline's function.</Help
+              Exceptions — {selectionLabel}
+              <Help label="Exceptions"
+                >Exceptions raised by a pipeline's functions, counted per pipeline, function and
+                kind. A row can raise several, and some, such as a guessed encoding, let it go on.</Help
               >
             </h2>
-            <p class="note">{count(totalErrored, 'row')} errored.</p>
+            <p class="note">{count(totalErrored, 'exception')}.</p>
           </div>
           <div class="controls">
             <span class="dim">Over the last {rangeOfMinutes(errorsMinutes)?.label}</span>
@@ -1386,7 +1387,7 @@
         </div>
         {#if errors}
           <Sparkline
-            series={[{ label: 'rows errored', color: 'var(--error)', points: erroredSeries }]}
+            series={[{ label: 'exceptions', color: 'var(--error)', points: erroredSeries }]}
             times={erroredTimes}
           />
         {:else}<p class="empty">Loading…</p>{/if}
@@ -1402,7 +1403,7 @@
                   ><th aria-sort={erroredSort.aria('kind')}
                     ><SortButton sort={erroredSort} key="kind">Kind</SortButton></th
                   ><th class="num" aria-sort={erroredSort.aria('rows')}
-                    ><SortButton sort={erroredSort} key="rows">Rows</SortButton></th
+                    ><SortButton sort={erroredSort} key="rows">Exceptions</SortButton></th
                   ></tr
                 ></thead
               >
@@ -1415,7 +1416,7 @@
               >
             </table>
           </div>
-        {:else}<p class="empty">No errors recorded.</p>{/if}
+        {:else}<p class="empty">No exceptions recorded.</p>{/if}
       </section>
     </div>
   {/if}
