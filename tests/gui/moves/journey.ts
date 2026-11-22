@@ -300,6 +300,8 @@ async function nameBranch(j: Journey) {
   const name = `edit-${world.made++}`;
   await prompt.getByLabel('branch to edit on').fill(name);
   await prompt.getByRole('button', { name: 'Edit on this branch' }).click();
+  // Until it closes, a dialog the save came from is not the page's only one.
+  await expect(prompt).toBeHidden();
   world.branch = name;
 }
 
