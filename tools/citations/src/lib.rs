@@ -26,6 +26,10 @@ const NOT_DEFINED_HERE: &[(&str, &str)] = &[
         "_RJEM_MALLOC_CONF",
         "the environment jemalloc reads its settings from, under tikv-jemalloc-sys's prefix",
     ),
+    (
+        "MALLCTL_ARENAS_ALL",
+        "jemalloc's arena index that stands for every arena",
+    ),
     ("allOf", "a JSON Schema keyword"),
     ("anyOf", "a JSON Schema keyword"),
     // librdkafka and the rdkafka crate.

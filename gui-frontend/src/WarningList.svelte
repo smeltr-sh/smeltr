@@ -4,6 +4,35 @@
   Normal or Outage, which an editor changes, and folds open on the rows around it against the
   range. The one that holds shows neither until someone answers.
 -->
+<script module lang="ts">
+  import { ask } from './Confirm.svelte';
+  import { dateTime } from './time';
+
+  /** Asks before a warning is marked: the mark decides whether its rows are learned, so one click must not set it
+   * unseen. Resolves to whether to mark it. */
+  export async function askMark(
+    was: 'normal' | 'outage',
+    fromMillis: number,
+    holds: boolean,
+  ): Promise<boolean> {
+    const at = `The warning from ${dateTime(fromMillis / 1000)} becomes info`;
+    const rows = 'the rows while it lasts';
+    return !!(await ask(
+      was === 'normal'
+        ? {
+            title: 'mark the warning normal',
+            body: `${at}, and ${rows} are learned as normal.`,
+            action: 'Mark Normal',
+          }
+        : {
+            title: 'mark the warning an outage',
+            body: `${at}${holds ? ' until it ends' : ''}, and ${rows} are not learned.`,
+            action: 'Mark Outage',
+          },
+    ));
+  }
+</script>
+
 <script lang="ts">
   import ChevronIcon from './ChevronIcon.svelte';
   import RowsChart from './RowsChart.svelte';
@@ -11,7 +40,7 @@
   import StateMark from './StateMark.svelte';
   import { markWarning, type ApiError, type PastSpan, type Sender } from './api';
   import type { Busy } from './busy.svelte';
-  import { dateTime, lasted } from './time';
+  import { lasted } from './time';
 
   let {
     group,
@@ -50,7 +79,8 @@
     });
   }
 
-  function mark(span: PastSpan, was: 'normal' | 'outage') {
+  async function mark(span: PastSpan, was: 'normal' | 'outage', now: string) {
+    if (was === now || !(await askMark(was, span.fromMillis, span.holds ?? false))) return;
     change(() => markWarning(group, source, span.fromMillis, was, sender));
   }
 
@@ -102,7 +132,9 @@
               <Segmented
                 label="Warnings: {when}"
                 options={WAS}
-                bind:value={() => answer as 'normal' | 'outage', (was) => mark(span, was)}
+                bind:value={
+                  () => answer as 'normal' | 'outage', (was) => void mark(span, was, answer)
+                }
               />
             {:else if answer}
               <span class="dim small">{answer === 'normal' ? 'Normal' : 'Outage'}</span>

@@ -1,9 +1,9 @@
-//! The look for a newer smeltr: at startup and once a day after, the leader reads the releases published on GitHub,
+//! The check for a newer smeltr: at startup and once a day after, the leader reads the releases published on GitHub,
 //! through smeltr.sh, and keeps the newest that is newer than its own. The request names this leader's release,
 //! operating system and CPU architecture in its `User-Agent` and nothing else; smeltr.sh counts leaders by them
-//! (`website/worker`). A look that fails says why on Admin -> System -> General and raises nothing, so a leader that
+//! (`website/worker`). A check that fails says why on Admin -> System -> General and raises nothing, so a leader that
 //! cannot reach smeltr.sh is never noisy.
-//! A build that is no release has nothing to compare and never looks.
+//! A build that is not a release has nothing to compare and never checks.
 
 use std::time::Duration;
 
@@ -23,16 +23,16 @@ fn page(release: &str) -> String {
     format!("https://smeltr.sh/releases/{release}")
 }
 
-/// How often the leader looks.
+/// How often the leader checks.
 const EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// How long one look may take.
+/// How long one check may take.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The most a list of releases may hold, notes and all.
 const MAX_LIST: usize = 8 * 1024 * 1024;
 
-/// Whether the leader looks; absent is on.
+/// Whether the leader checks; absent is on.
 pub const CHECK_KEY: &str = "updates.check";
 
 /// A published release newer than this leader's.
@@ -46,10 +46,10 @@ pub struct Newer {
     pub since: i64,
 }
 
-/// What the last look found.
+/// What the last check found.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Looked {
+pub struct Checked {
     /// Unix millis.
     pub checked_at: i64,
     /// Why the list was not read, logged when it was recorded.
@@ -57,30 +57,32 @@ pub struct Looked {
     pub failure: Option<crate::logs::Noted>,
 }
 
-/// The leader's looks: what the last found, and what wakes the timer.
+/// The leader's checks: what the last found, and what wakes the timer.
 #[derive(Default)]
 pub struct Updates {
-    state: std::sync::Mutex<(Option<Newer>, Option<Looked>)>,
-    /// Wakes the timer when the setting changes, so turning it on looks at once.
-    pub settings_changed: tokio::sync::Notify,
+    state: std::sync::Mutex<(Option<Newer>, Option<Checked>)>,
+    /// Wakes the timer to check at once: the setting turned on, or an administrator asked.
+    pub wake: tokio::sync::Notify,
+    /// Told each time a check is recorded.
+    checked: tokio::sync::Notify,
 }
 
 impl Updates {
-    fn held(&self) -> std::sync::MutexGuard<'_, (Option<Newer>, Option<Looked>)> {
+    fn held(&self) -> std::sync::MutexGuard<'_, (Option<Newer>, Option<Checked>)> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The newer release, if the last look that reached GitHub found one.
+    /// The newer release, if the last check that reached GitHub found one.
     pub fn newer(&self) -> Option<Newer> {
         self.held().0.clone()
     }
 
-    /// When the last look was, and why it failed if it did.
-    pub fn looked(&self) -> Option<Looked> {
+    /// When the last check was, and why it failed if it did.
+    pub fn last_check(&self) -> Option<Checked> {
         self.held().1.clone()
     }
 
-    /// A look that read the list. A newer release seen before keeps the time it was first seen.
+    /// A check that read the list. A newer release seen before keeps the time it was first seen.
     fn found(&self, newest: Option<(String, String)>, now: i64) {
         let mut held = self.held();
         let since = |release: &str| {
@@ -99,18 +101,18 @@ impl Updates {
             release,
             url,
         });
-        held.1 = Some(Looked {
+        held.1 = Some(Checked {
             checked_at: now,
             failure: None,
         });
     }
 
-    /// A look that did not read the list. What an earlier look found stands: the release is out whether or not
+    /// A check that did not read the list. What an earlier check found stands: the release is out whether or not
     /// GitHub answered this time.
     fn failed(&self, why: String, now: i64) {
-        self.held().1 = Some(Looked {
+        self.held().1 = Some(Checked {
             checked_at: now,
-            // At info, not warn: a line at warn raises an issue in Status, and a look that fails is no issue.
+            // At info, not warn: a line at warn raises an issue in Status, and a check that fails is no issue.
             failure: Some(crate::noted!(
                 level: INFO, name: "check_failed", target: "updates",
                 "the list of releases could not be read",
@@ -119,18 +121,29 @@ impl Updates {
         });
     }
 
+    /// Wake the timer and wait, up to `limit`, for the next check to be recorded. False if no check was recorded in
+    /// that time.
+    async fn check_now(&self, limit: Duration) -> bool {
+        let checked = self.checked.notified();
+        tokio::pin!(checked);
+        // Waiting before the wake, so a check recorded between the two is not missed.
+        checked.as_mut().enable();
+        self.wake.notify_one();
+        tokio::time::timeout(limit, checked).await.is_ok()
+    }
+
     /// Turned off: nothing found stays, since nothing keeps it current.
     fn forget(&self) {
         *self.held() = (None, None);
     }
 }
 
-/// Whether this leader looks.
+/// Whether this leader checks.
 fn checking(store: &super::store::Store) -> Result<bool, super::store::StoreError> {
     Ok(store.setting(CHECK_KEY)?.as_deref() != Some("false"))
 }
 
-/// Look on the timer for as long as the leader runs. Turned off, it waits for the setting to change.
+/// Check on the timer for as long as the leader runs. Turned off, it waits for the setting to change.
 pub async fn poll(state: AppState) {
     let Some(own) = crate::version::RELEASE else {
         return;
@@ -142,7 +155,7 @@ pub async fn poll(state: AppState) {
         });
         if !checking {
             state.updates.forget();
-            state.updates.settings_changed.notified().await;
+            state.updates.wake.notified().await;
             continue;
         }
         let pass = tracing::trace_span!(target: "updates", "a background pass", task = "check for a newer release");
@@ -151,14 +164,16 @@ pub async fn poll(state: AppState) {
             Ok(newest) => state.updates.found(newest, now),
             Err(why) => state.updates.failed(why, now),
         }
+        state.updates.checked.notify_waiters();
         tokio::select! {
             _ = tokio::time::sleep(EVERY) => {}
-            _ = state.updates.settings_changed.notified() => {}
+            _ = state.updates.wake.notified() => {}
         }
     }
 }
 
-/// What the look names itself: `smeltr/1.2.0 (linux; x86_64)`. smeltr.sh reads this shape (`website/worker`).
+/// What the check sends as its User-Agent: `smeltr/1.2.0 (linux; x86_64)`. smeltr.sh reads this shape
+/// (`website/worker`).
 fn user_agent(own: &str) -> String {
     format!("smeltr/{own} ({}; {})", std::env::consts::OS, std::env::consts::ARCH)
 }
@@ -253,7 +268,7 @@ pub async fn get_settings(State(state): State<AppState>) -> Envelope<UpdateSetti
     UpdateSettings::answer(run_store(state.store, checking).await.map_err(Refusal::from))
 }
 
-/// `PUT /api/settings/updates`. Recorded with who set it, in the transaction that sets it; the timer looks at once
+/// `PUT /api/settings/updates`. Recorded with who set it, in the transaction that sets it; the timer checks at once
 /// when it is turned on.
 pub async fn put_settings(
     State(state): State<AppState>,
@@ -267,8 +282,34 @@ pub async fn put_settings(
         s.put_settings(&[(CHECK_KEY, check.to_string())], Some(&event))
     })
     .await;
-    state.updates.settings_changed.notify_one();
+    state.updates.wake.notify_one();
     UpdateSettings::answer(written.map(|()| check).map_err(Refusal::from))
+}
+
+/// `POST /api/settings/updates/check`: wake the timer to check now, and answer once that check is recorded. If a
+/// check is already under way, it answers the request.
+pub async fn post_check(
+    State(state): State<AppState>,
+    actor: Option<axum::Extension<Actor>>,
+) -> Envelope<UpdateSettings> {
+    if crate::version::RELEASE.is_none() {
+        return Envelope::refused(Refusal::conflict(
+            "this build is not a release, so it never checks for one",
+        ));
+    }
+    match run_store(state.store.clone(), checking).await {
+        Ok(true) => {}
+        Ok(false) => return Envelope::refused(Refusal::conflict("checking for new releases is off")),
+        Err(e) => return Envelope::refused(Refusal::from(e)),
+    }
+    // The check gives up after TIMEOUT and is recorded as failed; the extra 5s is for recording it in the store.
+    if !state.updates.check_now(TIMEOUT + Duration::from_secs(5)).await {
+        return Envelope::refused(Refusal::conflict("the check did not finish in time"));
+    }
+    // A check that finds nothing new changes no setting, so who asked for it is recorded here.
+    let actor = actor.map_or_else(Actor::system, |a| a.0);
+    super::accounts::record_async(state.store.clone(), &actor, "update-check", "", "ok").await;
+    get_settings(State(state)).await
 }
 
 #[cfg(test)]
@@ -289,6 +330,37 @@ mod tests {
             })
             .collect();
         serde_json::to_vec(&entries).unwrap()
+    }
+
+    /// The timer as `poll` runs it, without the network: each wake records a check.
+    fn timer(updates: &std::sync::Arc<Updates>) {
+        let updates = updates.clone();
+        tokio::spawn(async move {
+            loop {
+                updates.wake.notified().await;
+                updates.found(None, 1);
+                updates.checked.notify_waiters();
+            }
+        });
+    }
+
+    #[tokio::test]
+    async fn checking_now_wakes_the_timer_and_answers_once_its_check_is_recorded() {
+        let updates = std::sync::Arc::new(Updates::default());
+        timer(&updates);
+        assert!(updates.check_now(Duration::from_secs(5)).await);
+        assert_eq!(updates.last_check().map(|l| l.checked_at), Some(1));
+        assert!(
+            updates.check_now(Duration::from_secs(5)).await,
+            "a second ask checks again"
+        );
+    }
+
+    #[tokio::test]
+    async fn checking_now_with_no_timer_running_gives_up_at_its_limit() {
+        let updates = Updates::default();
+        assert!(!updates.check_now(Duration::from_millis(50)).await);
+        assert_eq!(updates.last_check(), None);
     }
 
     #[test]
@@ -365,8 +437,8 @@ mod tests {
             "logged, but raises no issue"
         );
         assert_eq!(updates.newer().unwrap().release, "1.3.0", "the release is still out");
-        let looked = updates.looked().unwrap();
-        assert_eq!((looked.checked_at, looked.failure.as_deref()), (30, Some("down")));
+        let checked = updates.last_check().unwrap();
+        assert_eq!((checked.checked_at, checked.failure.as_deref()), (30, Some("down")));
         updates.found(v("1.4.0"), 40);
         assert_eq!(updates.newer().unwrap().since, 40, "another release is news again");
         updates.found(None, 50);
