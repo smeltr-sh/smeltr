@@ -24,7 +24,14 @@
   import Button, { BUSY, SAVE_FIRST } from './Button.svelte';
   import Dialog from './Dialog.svelte';
   import Field from './Field.svelte';
-  import { PART_NAMES, SHARED_SCOPE, currentScope, moveObjects, previewMove, type MoveRow } from './api';
+  import {
+    PART_NAMES,
+    SHARED_SCOPE,
+    currentScope,
+    moveObjects,
+    previewMove,
+    type MoveRow,
+  } from './api';
   import { editableAreas, type Area } from './areas';
   import { reported } from './errors.svelte';
   import { untrack } from 'svelte';
