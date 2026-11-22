@@ -18,9 +18,10 @@ accepted = [
 ]
 
 # The platforms a release is built for. A crate that only ever compiles on
-# one of them still ships on that one, so both are resolved.
+# one of them still ships on that one, so all are resolved.
 targets = [
     "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
     "x86_64-pc-windows-msvc",
 ]
 

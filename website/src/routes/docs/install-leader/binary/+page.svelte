@@ -16,7 +16,8 @@
 >
   <h1>Install the binary</h1>
   <p>
-    <a href="/get#download">Download</a> the Linux archive or the Windows zip.
+    <a href="/get#download">Download</a> the Linux archive for your architecture (x86-64 or Arm64) or
+    the Windows zip.
   </p>
   <h2 id="verify">Verify the executable</h2>
   <p>
@@ -24,6 +25,10 @@
     stop if it differs:
   </p>
   <pre><code>sha256sum smeltr-linux.tar.gz</code></pre>
+  <p>
+    The Arm64 archive is <code>smeltr-linux-arm64.tar.gz</code>; use that name in this command and
+    below.
+  </p>
   <p>
     On Windows use <code>Get-FileHash -Algorithm SHA256 smeltr-windows.zip</code>. The archive holds
     the executable, the cryptography library it loads, the license and the third-party notices.
