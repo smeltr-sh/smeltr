@@ -47,19 +47,20 @@ need-node: (need "node" node_hint) (need "npm" node_hint)
 node_hint := if os_family() == "windows" { "Install Node 26 or later: winget install OpenJS.NodeJS.LTS" } else { "Install Node 26 or later from https://nodejs.org" }
 
 # Tests leave what they make in the temp directory, a few hundred directories each run, which over days of checks
-# fill the disk. Each recipe that runs tests gives them its own temp directory under `target/`, emptied as it starts.
+# fill the disk. Each recipe that runs tests gives them its own temp directory under `target/`, emptied as it starts
+# but for `smeltr-gui-runs`, whose records the GUI tests' setup reads to stop what an interrupted run left running.
 # Unix reads `TMPDIR`; Windows reads `TMP` and `TEMP`, Rust and Node in opposite order.
 check_tmp := justfile_directory() / "target" / "check-tmp"
 
 [private]
 [unix]
 fresh-tmp name:
-    @rm -rf "{{check_tmp / name}}" && mkdir -p "{{check_tmp / name}}"
+    @mkdir -p "{{check_tmp / name}}" && find "{{check_tmp / name}}" -mindepth 1 -maxdepth 1 ! -name smeltr-gui-runs -exec rm -rf {} +
 
 [private]
 [windows]
 fresh-tmp name:
-    @powershell -NoProfile -Command "Remove-Item -Recurse -Force -ErrorAction SilentlyContinue '{{check_tmp / name}}'; New-Item -ItemType Directory -Force '{{check_tmp / name}}' | Out-Null"
+    @powershell -NoProfile -Command "New-Item -ItemType Directory -Force '{{check_tmp / name}}' | Out-Null; Get-ChildItem '{{check_tmp / name}}' -Exclude smeltr-gui-runs | Remove-Item -Recurse -Force"
 
 [private]
 need-nextest: (need "cargo-nextest" "Run: cargo install cargo-nextest --locked")
