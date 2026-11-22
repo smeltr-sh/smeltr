@@ -100,8 +100,9 @@ keeps. More is a duplicate and less is a loss, and either fails the run.
 
 ## What a run runs
 
-- **Cores.** The engine's container gets the first `n` physical cores, set by `ENGINE_CORES`, with every hyperthread
-  of each. The harness runs on the other cores, so it never shares a core with the engine.
+- **Threads.** A row is measured in hardware threads, set by `ENGINE_THREADS`. The engine's container gets them as
+  whole physical cores, the first ones, so the count is a multiple of a core's threads. The harness runs on the other
+  cores, so it never shares a core with the engine.
 - **Memory.** Every container gets the same limit, 4 GB unless `ENGINE_MEMORY_GB` says otherwise.
 - **Disk.** A run fails when less than 5 GB of the disk is free, before or while it runs: NiFi keeps its queues on the
   disk and slows as it fills.

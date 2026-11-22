@@ -523,13 +523,27 @@ fn canonical(value: &Value) -> String {
     sorted(value).to_string()
 }
 
-/// The cores each row may give an engine, from `ENGINE_CORES`.
+/// The physical cores each row gives an engine, from the hardware threads `ENGINE_THREADS` names: whole cores, so
+/// each count is a multiple of a core's threads.
 fn core_counts() -> Vec<usize> {
-    std::env::var("ENGINE_CORES").map_or(vec![1, 2], |t| {
+    let per_core = threads_per_core();
+    std::env::var("ENGINE_THREADS").map_or(vec![1, 2], |t| {
         t.split(',')
-            .map(|n| n.trim().parse().expect("ENGINE_CORES is a list of numbers"))
+            .map(|n| {
+                let n: usize = n.trim().parse().expect("ENGINE_THREADS is a list of numbers");
+                assert!(
+                    n > 0 && n % per_core == 0,
+                    "ENGINE_THREADS: {n} is not whole cores of {per_core} threads"
+                );
+                n / per_core
+            })
             .collect()
     })
+}
+
+/// The hardware threads of each physical core.
+fn threads_per_core() -> usize {
+    cores_by_cpu()[0].len()
 }
 
 /// The online CPUs of each physical core, its hyperthreads together. A row gives an engine whole cores, so every
@@ -1126,7 +1140,8 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
     let push = match ends.take {
         Take::Listen { port, from } => {
             let deadline = Instant::now() + PATIENCE;
-            while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+            let at = engine_address();
+            while std::net::TcpStream::connect((at.as_str(), port)).is_err() {
                 container.check(run);
                 assert!(
                     Instant::now() < deadline,
@@ -1136,7 +1151,7 @@ fn start(engine: Engine, w: &Workload, run: &str, cpus: &[usize], ends: &Ends) -
                 std::thread::sleep(Duration::from_millis(200));
             }
             from.push(engine)
-                .map(|push| (format!("http://127.0.0.1:{port}{}", push.path), push))
+                .map(|push| (format!("http://{at}:{port}{}", push.path), push))
         }
         Take::Kafka { .. } | Take::Queue { .. } => None,
     };
@@ -1741,7 +1756,8 @@ fn speed() {
     let remote = engine_host().is_some();
     assert!(
         most < cores.len() || remote && most == cores.len(),
-        "{most} cores for the engine leave none for the harness"
+        "{} threads for the engine leave none for the harness",
+        most * threads_per_core()
     );
     let on = |n: usize| cores[..n].concat();
     let rest = if remote { cores.concat() } else { cores[most..].concat() };
@@ -1832,11 +1848,12 @@ fn speed() {
                     .map_err(|p| panic_message(&p));
                     match &result {
                         Ok(r) => println!(
-                            "{:<12} {:<6} {:<9} {n:>2} cores {:>9.0} records/s  cpu {:>5.2}  peak {:>6.0} MB  service {:>5.2}  \
+                            "{:<12} {:<6} {:<9} {:>2} threads {:>9.0} records/s  cpu {:>5.2}  peak {:>6.0} MB  service {:>5.2}  \
                              harness {:>3.0}%",
                             w.name,
                             t.label(),
                             e.label(),
+                            n * threads_per_core(),
                             r.rows_per_sec,
                             r.cpu,
                             r.peak as f64 / 1e6,
@@ -1844,10 +1861,11 @@ fn speed() {
                             r.harness * 100.0
                         ),
                         Err(why) => println!(
-                            "{:<12} {:<6} {:<9} {n:>2} cores failed: {why}",
+                            "{:<12} {:<6} {:<9} {:>2} threads failed: {why}",
                             w.name,
                             t.label(),
-                            e.label()
+                            e.label(),
+                            n * threads_per_core()
                         ),
                     }
                     timed.push(((w, t), e, n, result));
@@ -1876,7 +1894,7 @@ fn table(
     refused: &[(Case, Engine, String)],
 ) -> String {
     let mut out = String::from(
-        "| Pipeline | Transport | Engine | Cores | records/s | Spread | records/s per core used | Cores used | Peak memory | \
+        "| Pipeline | Transport | Engine | Threads | records/s | Spread | records/s per thread used | Threads used | Peak memory | \
          Service cores | Harness busy |\n|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|\n",
     );
     let one_line = |why: &str| why.replace('|', "/").replace('\n', " ");
@@ -1884,7 +1902,13 @@ fn table(
         let (w, t) = case;
         for &n in counts {
             for &e in engines {
-                let head = format!("| {} | {} | {} | {n} |", w.name, t.label(), e.label());
+                let head = format!(
+                    "| {} | {} | {} | {} |",
+                    w.name,
+                    t.label(),
+                    e.label(),
+                    n * threads_per_core()
+                );
                 if let Some((_, _, why)) = refused.iter().find(|r| same(r.0, case) && r.1 == e) {
                     out.push_str(&format!("{head} check failed: {} | | | | | | |\n", one_line(why)));
                     continue;
