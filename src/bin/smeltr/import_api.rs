@@ -20,6 +20,7 @@ use smeltr::leader::{blocking, blocking_answer};
 
 use crate::config_api::{Addressed, Naming, Touches, Writing, group_of, merged_file, store_lookup_file};
 use crate::export_api::table_file;
+use crate::move_api::Go;
 
 /// The most entries an export may hold: far more than one pipeline's objects, and few enough to unpack at once.
 const MAX_ENTRIES: usize = 10_000;
@@ -65,13 +66,34 @@ struct TakenAnswer {
     keep: Keep,
 }
 
-/// Import the export in the `file` field into the area and branch the request names. Without an `answers` field it
-/// writes nothing and answers what the export holds; with one, it saves, or answers 409 with what still needs one.
+/// Import the export in the `file` field into the area and branch the request names, by the importer's `answers`
+/// field: it saves, or answers 409 with what still needs an answer.
 pub async fn import(
+    state: State<smeltr::leader::AppState>,
+    actor: Extension<Actor>,
+    at: Addressed,
+    multipart: Multipart,
+) -> Envelope<Import> {
+    received(state, actor, at, multipart, Go::Write).await
+}
+
+/// What the export in the `file` field holds, compared with the area and branch the request names. Writes nothing: a
+/// path under `preview` changes nothing (`policy::changes_nothing`), so the gate holds it to that.
+pub async fn preview_import(
+    state: State<smeltr::leader::AppState>,
+    actor: Extension<Actor>,
+    at: Addressed,
+    multipart: Multipart,
+) -> Envelope<Import> {
+    received(state, actor, at, multipart, Go::List).await
+}
+
+async fn received(
     State(state): State<smeltr::leader::AppState>,
     Extension(actor): Extension<Actor>,
     at: Addressed,
     mut multipart: Multipart,
+    go: Go,
 ) -> Envelope<Import> {
     // Opened first: the zip is unpacked beside the repository, which a first save creates.
     let writing = match blocking(move || at.open()).await {
@@ -121,6 +143,16 @@ pub async fn import(
     }
     if !received {
         return Envelope::refused(Refusal::bad_request("no `file` field in this upload"));
+    }
+    match (go, &answers) {
+        (Go::Write, None) => {
+            let message = "no `answers` field in this upload: preview/imports lists what an export holds";
+            return Envelope::refused(Refusal::bad_request(message));
+        }
+        (Go::List, Some(_)) => {
+            return Envelope::refused(Refusal::bad_request("a preview takes no `answers`: imports saves them"));
+        }
+        _ => {}
     }
     let store = state.store.clone();
     let imported = blocking_answer(move || {

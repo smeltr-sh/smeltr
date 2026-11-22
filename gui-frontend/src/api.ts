@@ -2055,7 +2055,8 @@ export function importExport(
   const body = new FormData();
   body.append('file', file);
   if (answers) body.append('answers', JSON.stringify(answers));
-  return configJson(inArea('/imports', into), { method: 'POST', body }, { base: at ?? null });
+  const path = answers ? '/imports' : '/preview/imports';
+  return configJson(inArea(path, into), { method: 'POST', body }, { base: at ?? null });
 }
 
 /** What a person calls each kind of object, capitalized, as a list of them shows it. */
@@ -2085,18 +2086,22 @@ export type MoveResult = MutationResult & {
   at?: string;
 };
 
-/** What a mover asks: the object, where it goes, what goes with it (absent, the least the move takes), and `go` to
- * write it. What goes replaces whatever the other area holds under its id. */
+/** What a mover asks: the object, where it goes, and what goes with it (absent, the least the move takes). What goes
+ * replaces whatever the other area holds under its id. */
 export interface MoveAsk {
   part: ImportPart;
   id: string;
   to: string;
   also?: { part: ImportPart; id: string }[];
   ticked?: { part: ImportPart; id: string }[];
-  go?: boolean;
 }
 
-/** `ask` from the chip's area: written in one commit against `base` when `ask.go`, and otherwise only listed. */
+/** What moving `ask` from the chip's area would do. Writes nothing. */
+export function previewMove(ask: MoveAsk, base?: string | null): Promise<MoveResult> {
+  return configJson(inArea('/preview/moves'), json('POST', ask), { base });
+}
+
+/** `ask` from the chip's area, written in one commit against `base`. */
 export function moveObjects(ask: MoveAsk, base?: string | null): Promise<MoveResult> {
   return configJson(inArea('/moves'), json('POST', ask), { base });
 }

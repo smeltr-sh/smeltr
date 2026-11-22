@@ -1,6 +1,7 @@
 //! Moving objects from one area to another, the way an export and an import move them between leaders: the mover
 //! sees each object the move would take or break and ticks what goes, and the move is one commit. What goes replaces
-//! whatever the other area holds under its id. Without `go` it writes nothing and answers what the ticks would do.
+//! whatever the other area holds under its id. Asked under `preview/moves`, it writes nothing and answers what the ticks
+//! would do.
 
 use std::collections::BTreeSet;
 
@@ -30,9 +31,6 @@ pub struct MoveAsk {
     /// What goes. Absent, the least the move takes.
     #[serde(default)]
     pub(crate) ticked: Option<Vec<PartId>>,
-    /// Writes the move. Without it, nothing is written.
-    #[serde(default)]
-    pub(crate) go: bool,
 }
 
 /// Each object the move lists, what the ticks leave broken, the commit both areas were read at, and once written,
@@ -49,11 +47,40 @@ pub struct MoveAnswer {
     commit: Option<String>,
 }
 
+/// Moves what `ask` names into the other area, in one commit.
 pub async fn move_objects(
+    actor: Extension<Actor>,
+    access: Extension<smeltr::leader::access::Access>,
+    at: Addressed,
+    ask: Json<MoveAsk>,
+) -> Envelope<MoveAnswer> {
+    asked(actor, access, at, ask, Go::Write).await
+}
+
+/// What moving `ask` would take, and why any tick cannot move. Writes nothing: a path under `preview` changes
+/// nothing (`policy::changes_nothing`), so the gate holds it to that.
+pub async fn preview_move(
+    actor: Extension<Actor>,
+    access: Extension<smeltr::leader::access::Access>,
+    at: Addressed,
+    ask: Json<MoveAsk>,
+) -> Envelope<MoveAnswer> {
+    asked(actor, access, at, ask, Go::List).await
+}
+
+/// Whether a move or an import is written, or only listed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Go {
+    Write,
+    List,
+}
+
+async fn asked(
     Extension(actor): Extension<Actor>,
     Extension(access): Extension<smeltr::leader::access::Access>,
     at: Addressed,
     Json(ask): Json<MoveAsk>,
+    go: Go,
 ) -> Envelope<MoveAnswer> {
     // The gate judged the area moved from, which the path names. The one moved to is in the body.
     let need = crate::policy::Need::Area {
@@ -68,7 +95,7 @@ pub async fn move_objects(
             .open()
             .and_then(|from| Ok((from, Writing::open(&at.branch, at.base.as_deref(), &ask.to)?)));
         match opened {
-            Ok((from, to)) => move_between(from, to, ask, &actor),
+            Ok((from, to)) => move_between(from, to, ask, go, &actor),
             Err(e) => not_written(e),
         }
     })
@@ -80,7 +107,7 @@ fn not_written(e: NotWritten) -> Envelope<MoveAnswer> {
 }
 
 /// [`move_objects`] once both areas are open. Blocking.
-pub(crate) fn move_between(mut from: Writing, mut to: Writing, ask: MoveAsk, author: &Actor) -> Envelope<MoveAnswer> {
+pub(crate) fn move_between(mut from: Writing, mut to: Writing, ask: MoveAsk, go: Go, author: &Actor) -> Envelope<MoveAnswer> {
     let what = format!("{} {:?}", describe(ask.part), ask.id);
     if to.area() == from.area() {
         return Envelope::refused(Refusal::invalid(format!("{what} is in {} already", to.area())));
@@ -132,7 +159,7 @@ pub(crate) fn move_between(mut from: Writing, mut to: Writing, ask: MoveAsk, aut
         at: from.parent.clone(),
         commit: None,
     };
-    if !ask.go {
+    if go == Go::List {
         return Envelope::ok(answer);
     }
     let Some(edits) = edits else {

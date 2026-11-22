@@ -3510,9 +3510,8 @@ mod tests {
             to: to.to_string(),
             also: Vec::new(),
             ticked: None,
-            go: true,
         };
-        crate::move_api::move_between(from, to_writing, ask, &Actor::system())
+        crate::move_api::move_between(from, to_writing, ask, crate::move_api::Go::Write, &Actor::system())
     }
 
     /// The ids of `part` that `area` holds.
