@@ -46,6 +46,22 @@ need-node: (need "node" node_hint) (need "npm" node_hint)
 
 node_hint := if os_family() == "windows" { "Install Node 26 or later: winget install OpenJS.NodeJS.LTS" } else { "Install Node 26 or later from https://nodejs.org" }
 
+# Tests leave what they make in the temp directory, a few hundred directories each run, which over days of checks
+# fill the disk. Each recipe that runs tests gives them its own temp directory under `target/`, emptied as it starts
+# but for `smeltr-gui-runs`, whose records the GUI tests' setup reads to stop what an interrupted run left running.
+# Unix reads `TMPDIR`; Windows reads `TMP` and `TEMP`, Rust and Node in opposite order.
+check_tmp := justfile_directory() / "target" / "check-tmp"
+
+[private]
+[unix]
+fresh-tmp name:
+    @mkdir -p "{{check_tmp / name}}" && find "{{check_tmp / name}}" -mindepth 1 -maxdepth 1 ! -name smeltr-gui-runs -exec rm -rf {} +
+
+[private]
+[windows]
+fresh-tmp name:
+    @powershell -NoProfile -Command "New-Item -ItemType Directory -Force '{{check_tmp / name}}' | Out-Null; Get-ChildItem '{{check_tmp / name}}' -Exclude smeltr-gui-runs | Remove-Item -Recurse -Force"
+
 [private]
 need-nextest: (need "cargo-nextest" "Run: cargo install cargo-nextest --locked")
 
@@ -274,7 +290,10 @@ fmt-check: need-rust
 [private]
 [env("SMELTR_NO_GUI", "1")]
 [env("SMELTR_WORKER_LISTEN_ADDRESS", "127.0.0.1")]
-check-tests filter: need-nextest stable fips-dll
+[env("TMPDIR", check_tmp / "check-tests")]
+[env("TMP", check_tmp / "check-tests")]
+[env("TEMP", check_tmp / "check-tests")]
+check-tests filter: need-nextest stable fips-dll (fresh-tmp "check-tests")
     cargo nextest run --workspace -j {{test_threads}} --no-tests=pass -E "not test(/fuzz/) & ({{filter}})"
 
 # The store steps since the last release that stop an older build opening the store, printed last so a person sees them.
@@ -369,7 +388,10 @@ clippy: stable
 [private]
 [env("SMELTR_NO_GUI", "1")]
 [env("SMELTR_WORKER_LISTEN_ADDRESS", "127.0.0.1")]
-check-rust: need-nextest stable fips-dll
+[env("TMPDIR", check_tmp / "check-rust")]
+[env("TMP", check_tmp / "check-rust")]
+[env("TEMP", check_tmp / "check-rust")]
+check-rust: need-nextest stable fips-dll (fresh-tmp "check-rust")
     cargo fmt --all --check
     cargo nextest run --workspace -j {{test_threads}} -E "not test(/fuzz/)"
     -cargo test --test integration language_tests:: -- --ignored
@@ -379,14 +401,20 @@ check-rust: need-nextest stable fips-dll
 [doc("Every offline fuzzer.")]
 [env("SMELTR_NO_GUI", "1")]
 [env("SMELTR_WORKER_LISTEN_ADDRESS", "127.0.0.1")]
-check-fuzz: need-nextest fips-dll && fuzz-gui fuzz-journey fuzz-pipeline fuzz-demo
+[env("TMPDIR", check_tmp / "check-fuzz")]
+[env("TMP", check_tmp / "check-fuzz")]
+[env("TEMP", check_tmp / "check-fuzz")]
+check-fuzz: need-nextest fips-dll (fresh-tmp "check-fuzz") && fuzz-gui fuzz-journey fuzz-pipeline fuzz-demo
     cargo nextest run --workspace -j {{test_threads}} -E "test(/fuzz/)"
 
 # The GUI fuzzer, `tests/gui/specs/gui-fuzz.spec.ts`, over more seeds than
 # `check-gui` gives it: 64. `SMELTR_FUZZ_SEED=n` replays one.
 [doc("The GUI fuzzer, over many seeds.")]
 [env("SMELTR_FUZZ_SEEDS", "64")]
-fuzz-gui: build-dev
+[env("TMPDIR", check_tmp / "fuzz-gui")]
+[env("TMP", check_tmp / "fuzz-gui")]
+[env("TEMP", check_tmp / "fuzz-gui")]
+fuzz-gui: build-dev (fresh-tmp "fuzz-gui")
     npm --prefix tests/gui install
     cd tests/gui && npx playwright test --project fuzz-coverage
 
@@ -396,7 +424,10 @@ fuzz-gui: build-dev
 [doc("The admin journey fuzzer, over many seeds.")]
 [env("SMELTR_FUZZ_SEEDS", "16")]
 [env("SMELTR_JOURNEY_MOVES", "104")]
-fuzz-journey: build-dev
+[env("TMPDIR", check_tmp / "fuzz-journey")]
+[env("TMP", check_tmp / "fuzz-journey")]
+[env("TEMP", check_tmp / "fuzz-journey")]
+fuzz-journey: build-dev (fresh-tmp "fuzz-journey")
     npm --prefix tests/gui install
     cd tests/gui && npx playwright test --project journey-coverage
 
@@ -406,7 +437,10 @@ fuzz-journey: build-dev
 [doc("The pipeline journey fuzzer, over many seeds.")]
 [env("SMELTR_FUZZ_SEEDS", "16")]
 [env("SMELTR_PIPELINE_MOVES", "100")]
-fuzz-pipeline: build-dev
+[env("TMPDIR", check_tmp / "fuzz-pipeline")]
+[env("TMP", check_tmp / "fuzz-pipeline")]
+[env("TEMP", check_tmp / "fuzz-pipeline")]
+fuzz-pipeline: build-dev (fresh-tmp "fuzz-pipeline")
     npm --prefix tests/gui install
     cd tests/gui && npx playwright test --project pipeline-coverage
 
@@ -414,7 +448,10 @@ fuzz-pipeline: build-dev
 # against its recording: `tests/gui/specs/demo-fuzz.spec.ts`.
 [doc("Everything a visitor can reach in the website demo, against its recording.")]
 [env("SMELTR_FUZZ_DEMO", "1")]
-fuzz-demo: build-dev
+[env("TMPDIR", check_tmp / "fuzz-demo")]
+[env("TMP", check_tmp / "fuzz-demo")]
+[env("TEMP", check_tmp / "fuzz-demo")]
+fuzz-demo: build-dev (fresh-tmp "fuzz-demo")
     npm --prefix tests/gui install
     cd tests/gui && npx playwright test --project demo
 
@@ -756,7 +793,10 @@ run: frontends
 [group("dev")]
 [unix]
 [positional-arguments]
-check-gui *args: build-dev
+[env("TMPDIR", check_tmp / "check-gui")]
+[env("TMP", check_tmp / "check-gui")]
+[env("TEMP", check_tmp / "check-gui")]
+check-gui *args: build-dev (fresh-tmp "check-gui")
     npm --prefix tests/gui install
     npm --prefix tests/gui run format:check
     cd tests/gui && npx playwright test "$@"
