@@ -761,16 +761,18 @@ pub struct RegistryStore {
     /// The senders of the bucket not yet written, and the values whose rows are kept (`senders`). Lock order: taken
     /// after `conn` when both are held.
     senders: Mutex<super::senders::Held>,
-    /// [`RegistryStore::sums_this_bucket`]'s last read of each metric.
-    sums_read: Mutex<std::collections::HashMap<String, SumsRead>>,
+    /// [`RegistryStore::points_this_bucket`]'s reads in the current ten-second bucket.
+    points_read: Mutex<PointsRead>,
 }
 
-/// One metric's sums as read during one ten-second bucket, for one window.
-struct SumsRead {
-    point_ms: i64,
-    since_ms: i64,
+/// A read's metric, whether it counts, point width, offset and start.
+type PointsKey = (String, bool, i64, i64, i64);
+
+/// The reads of one ten-second bucket, each by its [`PointsKey`].
+#[derive(Default)]
+struct PointsRead {
     bucket_ms: i64,
-    sums: std::sync::Arc<Vec<(String, SubjectPoints)>>,
+    reads: std::collections::HashMap<PointsKey, std::sync::Arc<Vec<(String, SubjectPoints)>>>,
 }
 
 /// One stored log, as the leader holds it. Every string here already passed through the heartbeat's
@@ -907,7 +909,7 @@ impl RegistryStore {
             next_maintenance_due_ms: AtomicI64::new(0),
             logs_kept: LOGS_KEPT,
             senders: Mutex::default(),
-            sums_read: Mutex::default(),
+            points_read: Mutex::default(),
         })
     }
 
@@ -1217,7 +1219,7 @@ impl RegistryStore {
     }
 
     /// Every subject of `metric` at `tier` with a point at or after `since_ms`, oldest first within each subject --
-    /// what E2 (`leader::flow_snapshot`) and E6's lag-climbing check both want: every source or destination's
+    /// what E6's lag-climbing check wants: every source or destination's
     /// series at once, not one subject looked up at a time. A subject with nothing in range is missing from the
     /// result outright, the same absence [`RegistryStore::points`] already gives one bucket.
     pub fn series_since(
@@ -1295,44 +1297,37 @@ impl RegistryStore {
             .collect())
     }
 
-    /// [`RegistryStore::series_at`] for a counter: one value per point, their sum.
-    pub fn sums_since(
+    /// [`RegistryStore::points_from`] up to now, asked of the store at most once per ten-second bucket of `now_ms`
+    /// for each metric and window: every open Status page polls faster than data lands, and a window over every
+    /// subject is the costliest read a page makes. What lands later in the same bucket waits for the next one.
+    pub fn points_this_bucket(
         &self,
         metric: &str,
+        counter: bool,
         point_ms: i64,
-        since_ms: i64,
-    ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
-        self.merged_at(metric, point_ms, 0, since_ms, i64::MAX, |sum, value| sum + value)
-    }
-
-    /// [`RegistryStore::sums_since`], asked of the store at most once per ten-second bucket of `now_ms` for each
-    /// metric and window: every open Status page polls faster than data lands, and a window's sums over every
-    /// subject are the costliest read the page makes. What lands later in the same bucket waits for the next one.
-    pub fn sums_this_bucket(
-        &self,
-        metric: &str,
-        point_ms: i64,
+        offset_ms: i64,
         since_ms: i64,
         now_ms: i64,
     ) -> Result<std::sync::Arc<Vec<(String, SubjectPoints)>>, StoreError> {
         let bucket_ms = Tier::TenSeconds.align(now_ms);
-        let fresh = |r: &SumsRead| (r.point_ms, r.since_ms, r.bucket_ms) == (point_ms, since_ms, bucket_ms);
-        if let Some(read) = self.sums_read.lock().unwrap_or_else(|e| e.into_inner()).get(metric)
-            && fresh(read)
+        let key = (metric.to_string(), counter, point_ms, offset_ms, since_ms);
         {
-            return Ok(read.sums.clone());
+            let mut read = self.points_read.lock().unwrap_or_else(|e| e.into_inner());
+            if read.bucket_ms != bucket_ms {
+                *read = PointsRead {
+                    bucket_ms,
+                    ..PointsRead::default()
+                };
+            } else if let Some(points) = read.reads.get(&key) {
+                return Ok(points.clone());
+            }
         }
-        let sums = std::sync::Arc::new(self.sums_since(metric, point_ms, since_ms)?);
-        self.sums_read.lock().unwrap_or_else(|e| e.into_inner()).insert(
-            metric.to_string(),
-            SumsRead {
-                point_ms,
-                since_ms,
-                bucket_ms,
-                sums: sums.clone(),
-            },
-        );
-        Ok(sums)
+        let points = std::sync::Arc::new(self.points_from(metric, counter, point_ms, offset_ms, since_ms, i64::MAX)?);
+        let mut read = self.points_read.lock().unwrap_or_else(|e| e.into_inner());
+        if read.bucket_ms == bucket_ms {
+            read.reads.insert(key, points.clone());
+        }
+        Ok(points)
     }
 
     /// [`RegistryStore::series_at`] for a gauge: one value per point, its highest.
@@ -3291,12 +3286,12 @@ mod tests {
 
     /// A second read in the same ten-second bucket is the first one's answer; the next bucket reads the store again.
     #[test]
-    fn sums_are_read_once_per_bucket() {
+    fn points_are_read_once_per_bucket() {
         let store = memory_store();
         let (point, now) = (Tier::TenSeconds.bucket_ms(), 1_000_000_000_000);
         store.record_delta("m", "s", now, 1.0).unwrap();
         let sum = |now_ms| -> f64 {
-            let read = store.sums_this_bucket("m", point, 0, now_ms).unwrap();
+            let read = store.points_this_bucket("m", true, point, 0, 0, now_ms).unwrap();
             read.iter().flat_map(|(_, points)| points.iter().map(|(_, v)| v)).sum()
         };
         assert_eq!(sum(now), 1.0);

@@ -4182,30 +4182,12 @@ export function regenerateEncryptionKey(): Promise<
 /** The Status page's table over the window: its chart reads the same counters from `getSeries`
  * (`flow.ts`, `FLOW_METRICS`). */
 export type FlowResponseDto = {
-  /** Every source's reading against its normal, whatever window the response is for. */
+  /** Every source's reading against its normal. */
   normals: FlowNormalDto[];
-  /** Every object's counts over the window, per worker, in the points the chart draws. */
-  totals: FlowTotalDto[];
 };
 
-/** What the Status page totals by (`leader::FlowKind`). */
+/** What the Status page's flow table lists. */
 export type FlowKind = 'source' | 'pipeline' | 'route' | 'destination';
-
-/** One object's counts over the window, on one worker. Out is what was handed to destinations,
- * a row sent to two counting twice; a destination's own out is what it delivered. */
-export type FlowTotalDto = {
-  kind: FlowKind;
-  group: string;
-  workerId?: string | null;
-  subjectId: string;
-  /** A route's source and pipeline. */
-  source?: string | null;
-  pipeline?: string | null;
-  rowsIn: number;
-  rowsOut: number;
-  bytesIn: number;
-  bytesOut: number;
-};
 
 /** One source's reading against its normal at the width it is shown at (`throughput::Reading::shown`), in rows
  * per second: its normal holds `low` to `high`. */
@@ -4259,8 +4241,8 @@ export function getLogs(query: string): Promise<LogsResponseDto> {
   return readJson(`/api/logs?${query}`);
 }
 
-export function getFlow(windowMinutes: number): Promise<FlowResponseDto> {
-  return readJson(`/api/flow?windowMinutes=${windowMinutes}`);
+export function getFlow(): Promise<FlowResponseDto> {
+  return readJson('/api/flow');
 }
 
 /** How a counter is drawn: its rate, or what each minute, hour or day added up to (`leader::query::Draw`). */
