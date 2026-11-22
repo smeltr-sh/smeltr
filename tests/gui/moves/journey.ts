@@ -1316,7 +1316,15 @@ const pickPreset: Move = {
       name: senders ? "Senders' preset" : 'Preset',
       exact: true,
     });
-    await picker.getByRole('button', { name, exact: true }).click();
+    const button = picker.getByRole('button', { name, exact: true });
+    // A pick asks first, unless it is the preset already in force.
+    const already = (await button.getAttribute('aria-pressed')) === 'true';
+    await button.click();
+    if (!already)
+      await page
+        .getByRole('dialog')
+        .getByRole('button', { name: `Change to ${name}` })
+        .click();
     await expect(picker.getByRole('button', { name, exact: true })).toHaveAttribute(
       'aria-pressed',
       'true',

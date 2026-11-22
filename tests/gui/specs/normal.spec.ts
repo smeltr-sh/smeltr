@@ -151,6 +151,7 @@ function sent(
 
 async function shoot(page: Page, name: string) {
   if (!SHOTS) return;
+  await page.setViewportSize({ width: 1920, height: 1080 });
   for (const scheme of ['light', 'dark'] as const) {
     await page.emulateMedia({ colorScheme: scheme });
     await page.screenshot({ path: path.join(SHOTS, `${name}-${scheme}.png`) });
@@ -221,6 +222,9 @@ test('a source that drops below its normal is ranked and warned of, and an edito
     'false',
   );
   await was.getByRole('button', { name: 'Outage' }).click();
+  await expect(admin.getByRole('dialog')).toBeVisible();
+  await shoot(admin, '3-ask-outage');
+  await admin.getByRole('dialog').getByRole('button', { name: 'Mark Outage' }).click();
   await expect(row).toContainText('marked Outage by');
   await expect(was.getByRole('button', { name: 'Outage' })).toHaveAttribute('aria-pressed', 'true');
   await shoot(admin, '3-outage');
@@ -269,6 +273,9 @@ test('a source that drops below its normal is ranked and warned of, and an edito
   // Said Normal on the Issues page, it is Normal on History too: the source learns the level it reads now.
   await goto(admin, leader, '#/status/issues');
   await was.getByRole('button', { name: 'Normal' }).click();
+  await expect(admin.getByRole('dialog')).toBeVisible();
+  await shoot(admin, '3c-ask-normal');
+  await admin.getByRole('dialog').getByRole('button', { name: 'Mark Normal' }).click();
   await expect(was.getByRole('button', { name: 'Normal' })).toHaveAttribute('aria-pressed', 'true');
   const past = await api.get('/api/areas/edge/sources/firewall-syslog/past');
   expect(past.warnings[0]).toMatchObject({ holds: true, learned: true });
@@ -344,6 +351,9 @@ test('History lists the quiet spells a sparse source learned, and an editor pick
     'true',
   );
   await preset.getByRole('button', { name: 'Fast' }).click();
+  await expect(admin.getByRole('dialog')).toBeVisible();
+  await shoot(admin, '7a-ask-preset');
+  await admin.getByRole('dialog').getByRole('button', { name: 'Change to Fast' }).click();
   await expect(preset.getByRole('button', { name: 'Fast' })).toHaveAttribute(
     'aria-pressed',
     'true',
@@ -357,6 +367,7 @@ test('History lists the quiet spells a sparse source learned, and an editor pick
   const limit = panel.getByText(/^Warns after .* without a row\.$/);
   await expect(limit).toBeVisible();
   await preset.getByRole('button', { name: 'Off' }).click();
+  await admin.getByRole('dialog').getByRole('button', { name: 'Change to Off' }).click();
   await expect(preset.getByRole('button', { name: 'Off' })).toHaveAttribute('aria-pressed', 'true');
   expect((await api.get(past)).preset).toBe('off');
   await expect(limit).toBeHidden();
@@ -443,6 +454,7 @@ test('senders that stop while their source stays within its normal are warned of
   await expect(fw01).toContainText('1 in 30 days');
   const fw01was = fw01.getByRole('group', { name: 'devname fw-01: the warning that is up' });
   await fw01was.getByRole('button', { name: 'Outage' }).click();
+  await admin.getByRole('dialog').getByRole('button', { name: 'Mark Outage' }).click();
   await expect(fw01).toContainText('Marked by');
 
   // A sender's warning is marked as a source's is, and only that sender's: fw-07's Normal leaves fw-01 an outage.
@@ -453,6 +465,7 @@ test('senders that stop while their source stays within its normal are warned of
     'false',
   );
   await fw07was.getByRole('button', { name: 'Normal' }).click();
+  await admin.getByRole('dialog').getByRole('button', { name: 'Mark Normal' }).click();
   await expect(fw07was.getByRole('button', { name: 'Normal' })).toHaveAttribute(
     'aria-pressed',
     'true',
@@ -536,6 +549,9 @@ test('senders that stop while their source stays within its normal are warned of
     'true',
   );
   await preset.getByRole('button', { name: 'Sensitive' }).click();
+  await expect(admin.getByRole('dialog')).toBeVisible();
+  await shoot(admin, '13a-ask-senders-preset');
+  await admin.getByRole('dialog').getByRole('button', { name: 'Change to Sensitive' }).click();
   await expect(preset.getByRole('button', { name: 'Sensitive' })).toHaveAttribute(
     'aria-pressed',
     'true',
