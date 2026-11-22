@@ -16,6 +16,7 @@
   import Button, { BUSY } from './Button.svelte';
   import Segmented from './Segmented.svelte';
   import { ask } from './Confirm.svelte';
+  import { askMark } from './WarningList.svelte';
   import { holds } from './access';
   import {
     listWarnings,
@@ -69,6 +70,17 @@
     { value: 'normal', label: 'Normal' },
     { value: 'outage', label: 'Outage' },
   ];
+
+  async function markUp(
+    group: string,
+    source: string,
+    since: number,
+    was: 'normal' | 'outage',
+    now: string,
+  ) {
+    if (was === now || !(await askMark(was, since, true, 'source'))) return;
+    await mark(() => markWarning(group, source, since, was));
+  }
 
   async function mark(call: () => Promise<unknown>) {
     await marking.run(async () => {
@@ -255,7 +267,18 @@
                             : warning.severity === 'info'
                               ? 'outage'
                               : '') as 'normal' | 'outage',
-                        (was) => mark(() => markWarning(group, warning.subjectId, since, was))
+                        (was) =>
+                          void markUp(
+                            group,
+                            warning.subjectId,
+                            since,
+                            was,
+                            warning.saidNormal
+                              ? 'normal'
+                              : warning.severity === 'info'
+                                ? 'outage'
+                                : '',
+                          )
                       }
                     />
                   {/if}

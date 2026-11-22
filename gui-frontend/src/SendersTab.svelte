@@ -10,6 +10,7 @@
   import ChevronIcon from './ChevronIcon.svelte';
   import Help from './Help.svelte';
   import PresetPicker from './PresetPicker.svelte';
+  import { askMark } from './WarningList.svelte';
   import RowsChart from './RowsChart.svelte';
   import Segmented from './Segmented.svelte';
   import Sparkline from './Sparkline.svelte';
@@ -139,8 +140,8 @@
     if (errors.length > 0) problem = errorText(errors);
   }
 
-  function mark(sender: Sender, sinceMillis: number, was: 'normal' | 'outage') {
-    if (busy.on) return;
+  async function mark(sender: Sender, sinceMillis: number, was: 'normal' | 'outage', now: string) {
+    if (busy.on || was === now || !(await askMark(was, sinceMillis, true, 'sender'))) return;
     void busy.run(async () => {
       const answer = await markWarning(group, source, sinceMillis, was, sender);
       problem = answer.ok ? '' : errorText(answer.errors);
@@ -304,7 +305,13 @@
   <section>
     {#if preset}
       <div class="preset">
-        <PresetPicker value={preset} label="Senders' preset" {editor} pick={pickPreset} />
+        <PresetPicker
+          value={preset}
+          label="Senders' preset"
+          of="sender"
+          {editor}
+          pick={pickPreset}
+        />
       </div>
     {/if}
     <div class="head">
@@ -422,7 +429,13 @@
                                 () =>
                                   (s.saidNormal ? 'normal' : s.markedBy ? 'outage' : '') as
                                     'normal' | 'outage',
-                                (was) => mark({ field: f.field, value: s.value }, since, was)
+                                (was) =>
+                                  void mark(
+                                    { field: f.field, value: s.value },
+                                    since,
+                                    was,
+                                    s.saidNormal ? 'normal' : s.markedBy ? 'outage' : '',
+                                  )
                               }
                             />
                           {/if}
