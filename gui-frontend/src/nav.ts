@@ -98,7 +98,7 @@ export type Route =
   | { tab: 'build'; page: 'sources'; json: boolean; focus?: string; only?: string[] }
   | { tab: 'build'; page: 'destinations'; json: boolean; focus?: string; only?: string[] }
   | { tab: 'build'; page: 'samples' }
-  | { tab: 'build'; page: 'tests' }
+  | { tab: 'build'; page: 'tests'; only?: string[] }
   // `sample` carries the choice from a sample row's "Run in a pipeline"
   // link, so the list can say which sample opening a pipeline will preview.
   | { tab: 'build'; page: 'pipelines'; sample?: string; only?: string[] }
@@ -612,7 +612,8 @@ export function parseRoute(hash: string): Route {
       if (parts[1] === 'tests' && parts[2] === 'relock' && parts[3]) {
         return { tab: 'build', page: 'lock-test', relock: decodeURIComponent(parts[3]) };
       }
-      if (parts[1] === 'tests' && !parts[2]) return { tab: 'build', page: 'tests' };
+      if (parts[1] === 'tests' && !parts[2])
+        return { tab: 'build', page: 'tests', ...only(search) };
       if (parts[1] === 'tests' && parts[2] === 'lock' && parts[3] && parts[4]) {
         return {
           tab: 'build',

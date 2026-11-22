@@ -653,7 +653,7 @@
     {:else if route.page === 'tests'}
       {#if pages.tests}
         {@const TestsPage = pages.tests}
-        <TestsPage />
+        <TestsPage only={route.only} />
       {/if}
     {:else if route.page === 'pipelines'}
       {#if pages.pipelines}

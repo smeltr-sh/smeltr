@@ -112,7 +112,7 @@
   import { setFunctionUsage } from './usage.svelte';
   import { ask } from './Confirm.svelte';
   import { errors, reported, unreported } from './errors.svelte';
-  import { canonicalJson } from './objectChanges';
+  import { canonicalJson, standingsOf, type Standing } from './objectChanges';
   import SaveConflictPanel from './SaveConflict.svelte';
   import HeldEdit from './HeldEdit.svelte';
   import { hold, verdictFor, drop } from './edits';
@@ -625,6 +625,7 @@
         // Clear the draft under the URL this save was submitted from,
         // including `#/build/pipelines/new` on a new pipeline's first save.
         drop(`pipelines/${savingId}`);
+        void runOwnTests();
         if (back) location.hash = withPipeline(back, targetId);
         else if (id !== targetId) {
           location.hash = `#/build/pipelines/${encodeURIComponent(targetId)}${showJson ? '/json' : ''}`;
@@ -687,6 +688,7 @@
       savedProduces = [...parsed.produces];
       readAtCommit = res.commit ?? null;
       drop(`pipelines/${id}`);
+      void runOwnTests();
       if (back) location.hash = withPipeline(back, targetId);
       else if (id !== targetId) {
         location.hash = `#/build/pipelines/${encodeURIComponent(targetId)}/json`;
@@ -783,6 +785,25 @@
   listTests()
     .then((res) => (tests = res.tests))
     .catch(() => {});
+
+  // Where each of this pipeline's tests stands on the branch, for the sample menu: run when the pipeline opens and
+  // after each save, so the marks are the saved pipeline's. A viewer runs none. A run that fails leaves the marks
+  // off.
+  let standings: Record<string, Standing> | undefined = $state();
+  let standingsRun = 0;
+  async function runOwnTests() {
+    const ids = tests.filter((t) => t.pipeline === pipelineId).map((t) => t.id);
+    const run = ++standingsRun;
+    standings = undefined;
+    if (readOnly || ids.length === 0) return;
+    standings = {};
+    const found = await standingsOf(ids).catch(() => undefined);
+    if (run === standingsRun) standings = found;
+  }
+  $effect(() => {
+    void [tests, pipelineId];
+    untrack(() => void runOwnTests());
+  });
 
   async function captured(id: string) {
     capturing = false;
@@ -1763,6 +1784,7 @@
             tests={tests
               .filter((t) => t.pipeline === pipelineId)
               .map((t) => ({ id: t.id, name: t.name, sample: t.sample }))}
+            {standings}
             test={relocking ? opened!.test : ''}
             ontest={openTest}
             held={choices.menuHeld}

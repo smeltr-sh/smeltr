@@ -7,6 +7,8 @@
   import ChipPicker from './ChipPicker.svelte';
   import SampleIcon from './SampleIcon.svelte';
   import TestIcon from './TestIcon.svelte';
+  import TestStanding from './TestStanding.svelte';
+  import type { Standing } from './objectChanges';
   import { count, dateTime } from './time';
   import { capturedAt, type SampleSummary } from './api';
   import { HELD_NAME } from './sampleChoices.svelte';
@@ -18,6 +20,7 @@
     records,
     held,
     tests = [],
+    standings,
     test = '',
     ontest,
     onpick,
@@ -36,6 +39,9 @@
     /** The tests that run here, each over its sample: a pipeline's in its editor, the end-to-end ones in Route a
      * sample. */
     tests?: { id: string; name: string; sample: string }[];
+    /** Where each of `tests` stands, by id, as its run comes back. Absent where the tests are not run, so the menu
+     * marks none of them. */
+    standings?: Record<string, Standing>;
     /** The test on screen, if there is one: the grid shows its sample's records, with the fields and rows the test
      * checks. */
     test?: string;
@@ -93,6 +99,7 @@
   ]);
 
   let q = $derived(query.trim().toLowerCase());
+  let failing = $derived(tests.filter((t) => standings?.[t.id] === 'failing').length);
   let testName = $derived(tests.find((t) => t.id === test)?.name);
   const sampleName = (id: string) => samples.find((s) => s.id === id)?.name ?? id;
   let foundTests = $derived(
@@ -119,7 +126,15 @@
       <SampleIcon /><span class="visually-hidden">Sample</span>
       <strong class="ellipsis face-name">{selectedName}</strong>
     {/if}
-    {#if records !== null}<span class="dim">{count(records, 'record')}</span>{/if} ▾
+    {#if records !== null}<span class="dim">{count(records, 'record')}</span>{/if}
+    {#if failing > 0 && !testName}
+      <span class="failing"
+        ><span class="dim">·</span>
+        <TestIcon />{failing} failing<span class="visually-hidden">
+          {failing === 1 ? 'test' : 'tests'}</span
+        ></span
+      >
+    {/if} ▾
   {/snippet}
   {#snippet children()}
     <div class="menu">
@@ -156,6 +171,7 @@
               }}
             >
               <span class="name ellipsis">{t.name}</span>
+              {#if standings}<TestStanding standing={standings[t.id]} />{/if}
               <span class="dim">{sampleName(t.sample)}</span>
             </button>
           {/each}
@@ -247,6 +263,15 @@
   .name {
     flex: 1;
     min-width: 0;
+  }
+
+  /* The chip's count of failing tests, in the color a failing test takes everywhere (`TestStanding`). */
+  .failing {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    color: var(--error);
+    font-weight: 600;
   }
 
   /* A long name is cut short before the chip wraps, most of all on a phone. */
