@@ -160,8 +160,6 @@ jobs:
             docker load -i "linux$suffix/smeltr-image$suffix.tar.gz"
             docker tag "smeltr:$name" "$image:$name-$arch"
             docker push "$image:$name-$arch"
-            digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image:$name-$arch")
-            echo "$arch=${digest#*@}" >> "$GITHUB_OUTPUT"
           done
           # `1.2`, `1` and `latest` move only to the newest release they cover on main or a release branch, so a
           # patch to a version that has been passed leaves the newer release's tags where they are, and a stray tag
@@ -195,13 +193,12 @@ jobs:
         env:
           IMAGE: ${{ steps.push.outputs.image }}
           INDEX: ${{ steps.push.outputs.digest }}
-          AMD64: ${{ steps.push.outputs.amd64 }}
-          ARM64: ${{ steps.push.outputs.arm64 }}
         run: |
-          # `--recursive` signs the index and each architecture's image in it.
+          # `--recursive` signs the index and each architecture's image in it. The SBOMs go on the index, the digest a
+          # pull records, so the check the install page gives finds them.
           cosign sign --yes --recursive "$IMAGE@$INDEX"
-          cosign attest --yes --type cyclonedx --predicate linux/smeltr-sbom.cdx.json "$IMAGE@$AMD64"
-          cosign attest --yes --type cyclonedx --predicate linux-arm64/smeltr-sbom-arm64.cdx.json "$IMAGE@$ARM64"
+          cosign attest --yes --type cyclonedx --predicate linux/smeltr-sbom.cdx.json "$IMAGE@$INDEX"
+          cosign attest --yes --type cyclonedx --predicate linux-arm64/smeltr-sbom-arm64.cdx.json "$IMAGE@$INDEX"
       - name: Publish the Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
