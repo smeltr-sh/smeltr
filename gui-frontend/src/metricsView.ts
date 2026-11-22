@@ -2,6 +2,7 @@
 // the agent links one.
 import catalog from '../../website/src/lib/metrics.json';
 import type { SeriesAnswerDto, SeriesDraw } from './api';
+import { lastChartRange } from './map';
 
 export type MetricsView = {
   /** Drawn on one chart, each split and filtered alike; at least one. */
@@ -40,7 +41,7 @@ export function viewFromParams(params: URLSearchParams): MetricsView {
       .map((pair) => pair.split(':'))
       .filter((pair): pair is [string, string] => pair.length === 2 && pair[0] !== ''),
     by: params.get('by') ?? '',
-    windowMinutes: Number.isFinite(minutes) && minutes > 0 ? minutes : DEFAULT_VIEW.windowMinutes,
+    windowMinutes: Number.isFinite(minutes) && minutes > 0 ? minutes : lastChartRange().minutes,
     draw: params.get('draw') === 'totals' ? 'totals' : 'perSecond',
     top: Number.isInteger(top) && top > 0 ? top : DEFAULT_VIEW.top,
     marks: params.get('marks') === '1',
