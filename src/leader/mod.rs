@@ -4019,6 +4019,7 @@ pub fn admin_router() -> Router<AppState> {
             "/api/settings/updates",
             get(updates::get_settings).put(updates::put_settings),
         )
+        .route("/api/settings/updates/check", post(updates::post_check))
         .route(
             "/api/settings/git-remote",
             get(remote::get_settings).put(remote::put_settings),

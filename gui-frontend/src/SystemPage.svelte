@@ -5,7 +5,7 @@
 -->
 <script lang="ts">
   import { Busy } from './busy.svelte';
-  import { BUSY, INCOMPLETE } from './Button.svelte';
+  import Button, { BUSY, INCOMPLETE } from './Button.svelte';
   import { reported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import InlineSaveBar from './InlineSaveBar.svelte';
@@ -31,6 +31,7 @@
     putSessionSettings,
     getSystemInfo,
     getUpdateSettings,
+    checkForRelease,
     putUpdateSettings,
     refused,
     type SessionSettingsDto,
@@ -83,6 +84,15 @@
       })
       .catch(reported);
   });
+
+  const checking = new Busy();
+
+  async function checkNow() {
+    await checking.run(async () => {
+      const result = await checkForRelease();
+      if (result.ok) info = await getSystemInfo();
+    });
+  }
 
   async function saveUpdates(event: SubmitEvent) {
     event.preventDefault();
@@ -215,7 +225,18 @@
               </div>
               <div class="fields">
                 <Field label="Check for new releases" group>
-                  <Toggle bind:checked={checkShown} ariaLabel="Check for new releases" />
+                  <div class="toggle-row">
+                    <Toggle bind:checked={checkShown} ariaLabel="Check for new releases" />
+                    {#if updates.check}
+                      <Button
+                        type="button"
+                        class="compact"
+                        onclick={checkNow}
+                        disabled={checking.on ? BUSY : ''}
+                        >{checking.on ? 'Checking…' : 'Check now'}</Button
+                      >
+                    {/if}
+                  </div>
                 </Field>
                 {#if updates.check && info.releaseCheck}
                   {@const check = info.releaseCheck}
@@ -342,6 +363,12 @@
   .fields {
     display: grid;
     gap: 0.9rem;
+  }
+
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
   }
 
   .checked {

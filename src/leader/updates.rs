@@ -61,8 +61,10 @@ pub struct Looked {
 #[derive(Default)]
 pub struct Updates {
     state: std::sync::Mutex<(Option<Newer>, Option<Looked>)>,
-    /// Wakes the timer when the setting changes, so turning it on looks at once.
-    pub settings_changed: tokio::sync::Notify,
+    /// Wakes the timer to check at once: the setting turned on, or an administrator asked.
+    pub wake: tokio::sync::Notify,
+    /// Told each time a check is recorded.
+    looked: tokio::sync::Notify,
 }
 
 impl Updates {
@@ -119,6 +121,17 @@ impl Updates {
         });
     }
 
+    /// Wake the timer and wait, up to `limit`, for the next check to be recorded. False if no check was recorded in
+    /// that time.
+    async fn check_now(&self, limit: Duration) -> bool {
+        let looked = self.looked.notified();
+        tokio::pin!(looked);
+        // Waiting before the wake, so a check recorded between the two is not missed.
+        looked.as_mut().enable();
+        self.wake.notify_one();
+        tokio::time::timeout(limit, looked).await.is_ok()
+    }
+
     /// Turned off: nothing found stays, since nothing keeps it current.
     fn forget(&self) {
         *self.held() = (None, None);
@@ -142,7 +155,7 @@ pub async fn poll(state: AppState) {
         });
         if !checking {
             state.updates.forget();
-            state.updates.settings_changed.notified().await;
+            state.updates.wake.notified().await;
             continue;
         }
         let pass = tracing::trace_span!(target: "updates", "a background pass", task = "check for a newer release");
@@ -151,9 +164,10 @@ pub async fn poll(state: AppState) {
             Ok(newest) => state.updates.found(newest, now),
             Err(why) => state.updates.failed(why, now),
         }
+        state.updates.looked.notify_waiters();
         tokio::select! {
             _ = tokio::time::sleep(EVERY) => {}
-            _ = state.updates.settings_changed.notified() => {}
+            _ = state.updates.wake.notified() => {}
         }
     }
 }
@@ -267,8 +281,34 @@ pub async fn put_settings(
         s.put_settings(&[(CHECK_KEY, check.to_string())], Some(&event))
     })
     .await;
-    state.updates.settings_changed.notify_one();
+    state.updates.wake.notify_one();
     UpdateSettings::answer(written.map(|()| check).map_err(Refusal::from))
+}
+
+/// `POST /api/settings/updates/check`: wake the timer to check now, and answer once that check is recorded. If a
+/// check is already under way, it answers the request.
+pub async fn post_check(
+    State(state): State<AppState>,
+    actor: Option<axum::Extension<Actor>>,
+) -> Envelope<UpdateSettings> {
+    if crate::version::RELEASE.is_none() {
+        return Envelope::refused(Refusal::conflict(
+            "this build is not a release, so it never checks for one",
+        ));
+    }
+    match run_store(state.store.clone(), checking).await {
+        Ok(true) => {}
+        Ok(false) => return Envelope::refused(Refusal::conflict("checking for new releases is off")),
+        Err(e) => return Envelope::refused(Refusal::from(e)),
+    }
+    // The check gives up after TIMEOUT and is recorded as failed; the extra 5s is for recording it in the store.
+    if !state.updates.check_now(TIMEOUT + Duration::from_secs(5)).await {
+        return Envelope::refused(Refusal::conflict("the check did not finish in time"));
+    }
+    // A check that finds nothing new changes no setting, so who asked for it is recorded here.
+    let actor = actor.map_or_else(Actor::system, |a| a.0);
+    super::accounts::record_async(state.store.clone(), &actor, "update-check", "", "ok").await;
+    get_settings(State(state)).await
 }
 
 #[cfg(test)]
@@ -289,6 +329,37 @@ mod tests {
             })
             .collect();
         serde_json::to_vec(&entries).unwrap()
+    }
+
+    /// The timer as `poll` runs it, without the network: each wake records a check.
+    fn timer(updates: &std::sync::Arc<Updates>) {
+        let updates = updates.clone();
+        tokio::spawn(async move {
+            loop {
+                updates.wake.notified().await;
+                updates.found(None, 1);
+                updates.looked.notify_waiters();
+            }
+        });
+    }
+
+    #[tokio::test]
+    async fn checking_now_wakes_the_timer_and_answers_once_its_check_is_recorded() {
+        let updates = std::sync::Arc::new(Updates::default());
+        timer(&updates);
+        assert!(updates.check_now(Duration::from_secs(5)).await);
+        assert_eq!(updates.looked().map(|l| l.checked_at), Some(1));
+        assert!(
+            updates.check_now(Duration::from_secs(5)).await,
+            "a second ask checks again"
+        );
+    }
+
+    #[tokio::test]
+    async fn checking_now_with_no_timer_running_gives_up_at_its_limit() {
+        let updates = Updates::default();
+        assert!(!updates.check_now(Duration::from_millis(50)).await);
+        assert_eq!(updates.looked(), None);
     }
 
     #[test]
