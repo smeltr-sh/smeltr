@@ -3,6 +3,7 @@
   editor picks one, and anyone else reads it.
 -->
 <script lang="ts">
+  import { ask } from './Confirm.svelte';
   import Help from './Help.svelte';
   import Segmented from './Segmented.svelte';
   import type { Preset } from './api';
@@ -27,6 +28,32 @@
     { value: 'quiet', label: 'Quiet' },
     { value: 'off', label: 'Off' },
   ];
+  /** About how long after a stop each preset warns: its wait in 5-minute readings (`throughput::Preset`). */
+  const STOP_MINUTES: Record<Preset, number | null> = {
+    fast: 5,
+    sensitive: 15,
+    balanced: 20,
+    quiet: 30,
+    off: null,
+  };
+
+  const named = (preset: Preset) => PRESETS.find((p) => p.value === preset)?.label ?? preset;
+
+  /** A pick changes when stops warn, so it is asked first: one click must not change it unseen. */
+  async function choose(to: Preset) {
+    if (to === value) return;
+    const [now, was] = [STOP_MINUTES[to], STOP_MINUTES[value]];
+    const what =
+      now === null
+        ? 'when rows stop, no warning comes'
+        : `when rows stop, a warning comes after about ${now} minutes${was === null ? '' : ` instead of about ${was}`}`;
+    const ok = await ask({
+      title: 'change the preset',
+      body: `From ${named(value)} to ${named(to)}: ${what}.`,
+      action: `Change to ${named(to)}`,
+    });
+    if (ok) pick(to);
+  }
 </script>
 
 <div class="preset">
@@ -47,9 +74,13 @@
     >
   </h3>
   {#if editor}
-    <Segmented {label} options={PRESETS} bind:value={() => value, (preset) => pick(preset)} />
+    <Segmented
+      {label}
+      options={PRESETS}
+      bind:value={() => value, (preset) => void choose(preset)}
+    />
   {:else}
-    <span class="dim small">{PRESETS.find((p) => p.value === value)?.label}</span>
+    <span class="dim small">{named(value)}</span>
   {/if}
 </div>
 

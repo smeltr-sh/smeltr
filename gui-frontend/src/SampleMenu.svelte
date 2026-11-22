@@ -7,6 +7,9 @@
   import ChipPicker from './ChipPicker.svelte';
   import SampleIcon from './SampleIcon.svelte';
   import TestIcon from './TestIcon.svelte';
+  import TestStanding from './TestStanding.svelte';
+  import TestTally from './TestTally.svelte';
+  import type { Standing } from './objectChanges';
   import { count, dateTime } from './time';
   import { capturedAt, type SampleSummary } from './api';
   import { HELD_NAME } from './sampleChoices.svelte';
@@ -18,6 +21,7 @@
     records,
     held,
     tests = [],
+    standings,
     test = '',
     ontest,
     onpick,
@@ -36,6 +40,9 @@
     /** The tests that run here, each over its sample: a pipeline's in its editor, the end-to-end ones in Route a
      * sample. */
     tests?: { id: string; name: string; sample: string }[];
+    /** Where each of `tests` stands, by id, as its run comes back. Absent where the tests are not run, so the menu
+     * marks none of them. */
+    standings?: Record<string, Standing>;
     /** The test on screen, if there is one: the grid shows its sample's records, with the fields and rows the test
      * checks. */
     test?: string;
@@ -93,6 +100,7 @@
   ]);
 
   let q = $derived(query.trim().toLowerCase());
+  let failing = $derived(tests.filter((t) => standings?.[t.id] === 'failing').length);
   let testName = $derived(tests.find((t) => t.id === test)?.name);
   const sampleName = (id: string) => samples.find((s) => s.id === id)?.name ?? id;
   let foundTests = $derived(
@@ -101,25 +109,33 @@
   let found = $derived(
     listed.filter((s) => `${s.name} ${s.source ?? ''}`.toLowerCase().includes(q)),
   );
+  /** The chip's name, which a screen reader reads in place of its face: what it chooses, what is chosen, and what
+   * fails. */
+  let label = $derived(
+    [
+      'Choose a sample',
+      testName ? `chosen: test ${testName}` : selectedName && `chosen: sample ${selectedName}`,
+      failing > 0 && !testName && `${count(failing, 'test')} failing`,
+    ]
+      .filter(Boolean)
+      .join(', '),
+  );
 </script>
 
-<ChipPicker
-  kind="columns"
-  align="left"
-  bind:open
-  ariaLabel="Choose a sample"
-  onopen={() => (query = '')}
->
+<ChipPicker kind="columns" align="left" bind:open ariaLabel={label} onopen={() => (query = '')}>
   {#snippet face()}
-    <!-- The glyph says which it is; the word is still there for a screen reader. -->
+    <!-- The glyph says which it is; `label` says it in words. -->
     {#if testName}
-      <TestIcon /><span class="visually-hidden">Test</span>
+      <TestIcon />
       <strong class="ellipsis face-name">{testName}</strong>
     {:else}
-      <SampleIcon /><span class="visually-hidden">Sample</span>
+      <SampleIcon />
       <strong class="ellipsis face-name">{selectedName}</strong>
     {/if}
-    {#if records !== null}<span class="dim">{count(records, 'record')}</span>{/if} ▾
+    {#if records !== null}<span class="dim">{count(records, 'record')}</span>{/if}
+    {#if failing > 0 && !testName}
+      <span class="glyphed"><span class="dim">·</span> <TestIcon /><TestTally {failing} /></span>
+    {/if} ▾
   {/snippet}
   {#snippet children()}
     <div class="menu">
@@ -156,6 +172,7 @@
               }}
             >
               <span class="name ellipsis">{t.name}</span>
+              {#if standings}<TestStanding standing={standings[t.id]} />{/if}
               <span class="dim">{sampleName(t.sample)}</span>
             </button>
           {/each}

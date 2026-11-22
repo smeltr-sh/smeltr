@@ -102,7 +102,13 @@ describe('metricsView', () => {
       ...answer,
       pointMillis: 300_000,
       fromMillis: answer.fromMillis - week,
-      series: [{ name: 'a', points: [[answer.fromMillis - week, 50]] as [number, number][] }],
+      series: [
+        {
+          name: 'a',
+          values: ['a'],
+          points: [[answer.fromMillis - week, 50]] as [number, number][],
+        },
+      ],
     };
     expect(laidOn(before, answer, 6, week)[0].points).toEqual([10, 10, 10, 10, 10, null]);
   });
@@ -116,6 +122,7 @@ describe('metricsView', () => {
       fromMillis: 100,
       series: ['a', 'b', 'c', 'd'].map((name, i) => ({
         name,
+        values: [name],
         points: [[100 + 10 * i, i + 1] as [number, number]],
       })),
     };

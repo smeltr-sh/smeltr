@@ -80,13 +80,18 @@ body {
   vertical-align: middle;
 }
 
-:where(table.readings > * > tr > th) {
+/* A head, or a `.bandrow` that heads the rows under it. */
+:where(table.readings > * > tr > th, table.readings > * > tr.bandrow > td) {
   white-space: nowrap;
   color: var(--dim);
   font-size: var(--text-micro);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+:where(table.readings > * > tr.bandrow > td) {
+  padding-top: 0.9rem;
 }
 
 :where(table.readings > * > tr > .num) {
@@ -187,6 +192,21 @@ body {
   color: inherit;
   text-decoration: underline dotted;
   cursor: pointer;
+}
+
+/* Where a test stands (`TestStanding`, `TestTally`): what failed, what could not run, what passed. */
+.test-failing {
+  color: var(--error);
+  font-weight: 600;
+}
+
+.test-error {
+  color: var(--warn);
+}
+
+.test-passing {
+  color: var(--added);
+  font-weight: 600;
 }
 
 /* What failed, among ordinary buttons: their shape, in the error's color. A pressed one keeps

@@ -16,7 +16,7 @@ pub const ELASTIC_SECURITY: &str = include_str!("standards/elastic-security.txt"
 /// The OCSF releases smeltr carries, each `ocsf-schema-compiler`'s output cut, newest first. An older one is kept
 /// where a destination reads only up to it.
 const OCSF: [&str; 2] = [
-    include_str!("standards/ocsf-1.9.0.json"),
+    include_str!("standards/ocsf-1.10.0.json"),
     include_str!("standards/ocsf-1.3.0.json"),
 ];
 

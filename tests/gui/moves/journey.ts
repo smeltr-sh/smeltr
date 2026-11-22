@@ -82,7 +82,7 @@ export type World = {
   password: string | null;
   /** The branch the GUI edits on, once a save has named one; `null` on main. */
   branch: string | null;
-  /** The branch exists on the leader: a save went onto it. */
+  /** The branch exists on the leader, and holds a save main lacks. */
   branchSaved: boolean;
   /** What the branch holds, or main when there is none. */
   editing: Config;
@@ -300,6 +300,8 @@ async function nameBranch(j: Journey) {
   const name = `edit-${world.made++}`;
   await prompt.getByLabel('branch to edit on').fill(name);
   await prompt.getByRole('button', { name: 'Edit on this branch' }).click();
+  // Until it closes, a dialog the save came from is not the page's only one.
+  await expect(prompt).toBeHidden();
   world.branch = name;
 }
 
@@ -878,6 +880,8 @@ async function thereAndBack(
   const move = async (from: string, to: string) => {
     await openRowMenu(page, `More actions for ${name}`);
     await page.getByRole('button', { name: 'Move to…' }).click();
+    // On main, the preview the dialog opens with asks for the branch the move will be written on.
+    await nameBranch(j);
     const dialog = page.getByRole('dialog', { name: `move ${part} ${name}` });
     await dialog.getByRole('combobox', { name: 'move to' }).selectOption(to);
     // The leader lists the rows in one answer, and the asked object's own tick is among them.
@@ -894,11 +898,14 @@ async function thereAndBack(
     expect(await holds(from), `${from} keeps none of it`).toEqual(none);
     await editingIsSaved(j);
   };
+  const saved = j.world.branchSaved;
   await goto(page, leader, at);
   await move('shared', 'default');
   await switchScope(page, 'shared', 'default');
   await move('default', 'shared');
   await switchScope(page, 'default', 'shared');
+  // There and back, the branch holds what it held before: nothing to deploy if that was nothing.
+  j.world.branchSaved = saved;
 }
 
 /** Moves a source `shared` declares to `default` and back. Into `default`, the routes starting at it are ticked
@@ -1316,7 +1323,15 @@ const pickPreset: Move = {
       name: senders ? "Senders' preset" : 'Preset',
       exact: true,
     });
-    await picker.getByRole('button', { name, exact: true }).click();
+    const button = picker.getByRole('button', { name, exact: true });
+    // A pick asks first, unless it is the preset already in force.
+    const already = (await button.getAttribute('aria-pressed')) === 'true';
+    await button.click();
+    if (!already)
+      await page
+        .getByRole('dialog')
+        .getByRole('button', { name: `Change to ${name}` })
+        .click();
     await expect(picker.getByRole('button', { name, exact: true })).toHaveAttribute(
       'aria-pressed',
       'true',
@@ -2417,10 +2432,8 @@ const editSample: Move = {
     const raw = draft.some((r) => '_raw' in r.record);
     await goto(page, leader, '#/build');
     if (scope !== 'shared') await switchScope(page, 'shared', scope);
-    await page
-      .getByRole('row', { name: new RegExp(`^${name}\\b`) })
-      .getByRole('button', { name: 'Edit' })
-      .click();
+    await openRowMenu(page, `More actions for ${name}`);
+    await page.getByRole('button', { name: 'Edit', exact: true }).click();
     const editor = page.locator('form').filter({ has: page.getByLabel('Search records') });
     await expect(editor.getByLabel(`Select record ${draft[0].n}`)).toBeVisible();
     const done: string[] = [];
@@ -2583,7 +2596,8 @@ const saveOutputSample: Move = {
       .getByRole('listbox', { name: 'Samples' })
       .getByRole('option', { name: new RegExp(`^${input}\\b`) })
       .click();
-    const saveOutput = page.getByRole('button', { name: 'Save output as sample' });
+    await page.getByRole('button', { name: 'Save or download', exact: true }).click();
+    const saveOutput = page.getByRole('button', { name: /^Save output as sample/ });
     await expect(saveOutput).toBeEnabled();
     await saveOutput.click();
     const dialog = page.getByRole('dialog', { name: 'save output as sample' });
@@ -2738,7 +2752,7 @@ const saveInputSample: Move = {
     // A capture ends at its deadline holding fewer than it asked for, when the source was slow.
     const held = Number((await chip.textContent())?.match(/(\d+) records?/)?.[1]);
 
-    await page.getByRole('button', { name: 'Save as sample', exact: true }).click();
+    await page.getByRole('button', { name: 'Save or download', exact: true }).click();
     await page.getByRole('button', { name: /^Save input as sample/ }).click();
     // Found by what it holds: a branch prompt can open beside it.
     const dialog = page.getByRole('dialog').filter({ has: page.getByLabel('Name') });

@@ -65,7 +65,7 @@ socket2 = "0.6"
 # SCRAM and OAUTHBEARER work at all. `zstd` offers the Zstd codec and costs
 # libclang at build time (`zstd-sys` runs bindgen, and its `bindgen`
 # feature cannot be turned off from here).
-rdkafka = { version = "0.39", features = ["cmake-build", "ssl", "libz-static", "curl-static", "zstd"] }
+rdkafka = { version = "0.40", features = ["cmake-build", "ssl", "libz-static", "curl-static", "zstd"] }
 # What `ssl` builds librdkafka against: AWS-LC's FIPS module, the one `aws-lc-rs` links below, through its
 # OpenSSL API. So Kafka's cryptography is the same module's as everything else's, and no OpenSSL is built.
 openssl-sys = { version = "0.9.118", features = ["aws-lc-fips"] }
@@ -267,7 +267,7 @@ windows-sys = { version = "0.61", features = [
 # linked, and `sasl2-sys` refuses to build there at all. Linux needs Cyrus
 # SASL, and `gssapi-vendored` compiles it and MIT krb5 from source.
 [target.'cfg(target_os = "linux")'.dependencies]
-rdkafka = { version = "0.39", features = ["gssapi-vendored"] }
+rdkafka = { version = "0.40", features = ["gssapi-vendored"] }
 
 [[bin]]
 name = "smeltr"
@@ -359,8 +359,8 @@ inherits = "release"
 lto = "fat"
 codegen-units = 1
 
-# rdkafka-sys 4.10.0 with one change to its build.rs, on smeltr-sh's fork: over AWS-LC, `openssl-sys` names
+# rdkafka-sys 4.11.0 with one change to its build.rs, on smeltr-sh's fork: over AWS-LC, `openssl-sys` names
 # AWS-LC's headers but no root, so librdkafka's CMake found the build host's OpenSSL headers and the link failed.
 # The change hands CMake AWS-LC's headers. Drop this once an rdkafka-sys release does the same.
 [patch.crates-io]
-rdkafka-sys = { git = "https://github.com/smeltr-sh/rust-rdkafka", rev = "1b6590db033e9d17a963e4dd0427ebe3fe40a5d0" }
+rdkafka-sys = { git = "https://github.com/smeltr-sh/rust-rdkafka", rev = "729be129b58b7cd02fd9623a3a07b19e85823130" }

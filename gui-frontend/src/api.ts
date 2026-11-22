@@ -3766,6 +3766,11 @@ export function putUpdateSettings(check: boolean): Promise<UpdateSettingsResult>
   return apiJson('/api/settings/updates', json('PUT', { check }));
 }
 
+/** Looks for a newer release now, answering once the look is recorded. */
+export function checkForRelease(): Promise<UpdateSettingsResult> {
+  return apiJson('/api/settings/updates/check', { method: 'POST' });
+}
+
 /** Why the last sync did not leave `main` at the remote's head. */
 export interface RemoteFailureDto {
   commit: string | null;
@@ -4182,30 +4187,12 @@ export function regenerateEncryptionKey(): Promise<
 /** The Status page's table over the window: its chart reads the same counters from `getSeries`
  * (`flow.ts`, `FLOW_METRICS`). */
 export type FlowResponseDto = {
-  /** Every source's reading against its normal, whatever window the response is for. */
+  /** Every source's reading against its normal. */
   normals: FlowNormalDto[];
-  /** Every object's counts over the window, per worker, in the points the chart draws. */
-  totals: FlowTotalDto[];
 };
 
-/** What the Status page totals by (`leader::FlowKind`). */
+/** What the Status page's flow table lists. */
 export type FlowKind = 'source' | 'pipeline' | 'route' | 'destination';
-
-/** One object's counts over the window, on one worker. Out is what was handed to destinations,
- * a row sent to two counting twice; a destination's own out is what it delivered. */
-export type FlowTotalDto = {
-  kind: FlowKind;
-  group: string;
-  workerId?: string | null;
-  subjectId: string;
-  /** A route's source and pipeline. */
-  source?: string | null;
-  pipeline?: string | null;
-  rowsIn: number;
-  rowsOut: number;
-  bytesIn: number;
-  bytesOut: number;
-};
 
 /** One source's reading against its normal at the width it is shown at (`throughput::Reading::shown`), in rows
  * per second: its normal holds `low` to `high`. */
@@ -4259,15 +4246,16 @@ export function getLogs(query: string): Promise<LogsResponseDto> {
   return readJson(`/api/logs?${query}`);
 }
 
-export function getFlow(windowMinutes: number): Promise<FlowResponseDto> {
-  return readJson(`/api/flow?windowMinutes=${windowMinutes}`);
+export function getFlow(): Promise<FlowResponseDto> {
+  return readJson('/api/flow');
 }
 
 /** How a counter is drawn: its rate, or what each minute, hour or day added up to (`leader::query::Draw`). */
 export type SeriesDraw = 'perSecond' | 'totals';
 
-/** One series of `GET /api/series`: the subjects whose split label holds `name`, added together. */
-export type SeriesSplitDto = { name: string; points: [number, number][] };
+/** One series of `GET /api/series`: the subjects whose split labels hold `values`, added together
+ * (`leader::query::Split`). */
+export type SeriesSplitDto = { name: string; values: string[]; points: [number, number][] };
 
 /** `GET /api/series` (`leader::query::SeriesAnswer`). */
 export type SeriesAnswerDto = {
@@ -4759,11 +4747,13 @@ export type ParserShapeDto = {
 
 type StreamsDto = { parsers: ParserShapeDto[]; unmatched: UnmatchedStreamsDto[] };
 
-/** `GET /api/streams` at the groups that run `scope`: its own group, or every group for `shared`. */
-function streamsAt(scope: string): Promise<StreamsDto> {
+/** `GET /api/streams` at the groups that run `scope`: its own group, or every group for `shared`. A Parser's counts
+ * are those of the last `windowMinutes`, or of every bucket the leader keeps when it is absent. */
+function streamsAt(scope: string, windowMinutes?: number): Promise<StreamsDto> {
   const at = (g: { groupId: string }) => scope === SHARED_SCOPE || g.groupId === scope;
+  const query = windowMinutes === undefined ? '' : `?windowMinutes=${windowMinutes}`;
   // Best-effort everywhere it is read: what production saw is offered, never needed.
-  return apiJson<StreamsDto>('/api/streams', undefined, 'quiet').then((r) => ({
+  return apiJson<StreamsDto>(`/api/streams${query}`, undefined, 'quiet').then((r) => ({
     parsers: r.parsers.filter(at),
     unmatched: r.unmatched.filter(at),
   }));
@@ -4774,9 +4764,10 @@ export function streamsIn(scope: string): Promise<UnmatchedStreamsDto[]> {
   return streamsAt(scope).then((r) => r.unmatched);
 }
 
-/** What the Parser steps of `scope`'s pipelines produced in production, at the groups that run `scope`. */
-export function parsersIn(scope: string): Promise<ParserShapeDto[]> {
-  return streamsAt(scope).then((r) => r.parsers);
+/** What the Parser steps of `scope`'s pipelines produced in production over the last `windowMinutes`, at the groups
+ * that run `scope`. */
+export function parsersIn(scope: string, windowMinutes: number): Promise<ParserShapeDto[]> {
+  return streamsAt(scope, windowMinutes).then((r) => r.parsers);
 }
 
 // -- object stats (design doc "The map": the focus view) -------------------

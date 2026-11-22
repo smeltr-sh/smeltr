@@ -10,6 +10,7 @@
   holds, else on the sample this pipeline last ran over in this browser.
 -->
 <script lang="ts">
+  import { chartRange, lastChartRange } from './map';
   import Button, { BUSY, INCOMPLETE, SAVE_FIRST } from './Button.svelte';
   import StateMark from './StateMark.svelte';
   import ExportDialog from './ExportDialog.svelte';
@@ -112,6 +113,7 @@
   import { ask } from './Confirm.svelte';
   import { errors, reported, unreported } from './errors.svelte';
   import { canonicalJson } from './objectChanges';
+  import { Standings } from './standings.svelte';
   import SaveConflictPanel from './SaveConflict.svelte';
   import HeldEdit from './HeldEdit.svelte';
   import { hold, verdictFor, drop } from './edits';
@@ -614,6 +616,7 @@
         ...(submittedProduces.length > 0 ? { produces: submittedProduces } : {}),
       });
       if (res.ok) {
+        const savedFrom = pipelineId;
         loadedId = targetId;
         saveMessage = 'Saved.';
         savedSignature = editSignatureOf(submittedName, submittedSteps, submittedProduces);
@@ -624,6 +627,8 @@
         // Clear the draft under the URL this save was submitted from,
         // including `#/build/pipelines/new` on a new pipeline's first save.
         drop(`pipelines/${savingId}`);
+        // A save that changes `pipelineId` leaves the tests to the effect on `pipelineId`.
+        if (pipelineId === savedFrom) void runOwnTests();
         if (back) location.hash = withPipeline(back, targetId);
         else if (id !== targetId) {
           location.hash = `#/build/pipelines/${encodeURIComponent(targetId)}${showJson ? '/json' : ''}`;
@@ -676,6 +681,7 @@
       ...(parsed.produces.length > 0 ? { produces: parsed.produces } : {}),
     });
     if (res.ok) {
+      const savedFrom = pipelineId;
       pipelineName = parsed.pipelineName;
       steps = parsed.steps;
       produces = parsed.produces;
@@ -686,6 +692,7 @@
       savedProduces = [...parsed.produces];
       readAtCommit = res.commit ?? null;
       drop(`pipelines/${id}`);
+      if (pipelineId === savedFrom) void runOwnTests();
       if (back) location.hash = withPipeline(back, targetId);
       else if (id !== targetId) {
         location.hash = `#/build/pipelines/${encodeURIComponent(targetId)}/json`;
@@ -782,6 +789,16 @@
   listTests()
     .then((res) => (tests = res.tests))
     .catch(() => {});
+
+  // Where each of this pipeline's tests stands, for the sample menu: run when the pipeline opens and after each save,
+  // so the marks are the saved pipeline's.
+  const standings = new Standings();
+  const runOwnTests = () =>
+    standings.run(tests.filter((t) => t.pipeline === pipelineId).map((t) => t.id));
+  $effect(() => {
+    void [tests, pipelineId];
+    untrack(() => void runOwnTests());
+  });
 
   async function captured(id: string) {
     capturing = false;
@@ -1338,6 +1355,7 @@
 
   let proposalStep: Step | null = $state(null);
   let proposal = $state<FieldProposal | null>(null);
+  let productionRange = $state(lastChartRange().range);
   let selectedSampleName = $derived(choices.name(selectedSample));
 
   /** Writes `path` in the last open eval step, or in a new one at the end, and opens that step for its value. */
@@ -1363,7 +1381,7 @@
     }
     proposal = { loading: true, error: '', result: null, production: null, suggestions: [] };
     // What production saw is offered beside the sample, never in its way: a leader that cannot say shows the sample.
-    const production = parsersIn(currentScope())
+    const production = parsersIn(currentScope(), chartRange(productionRange).minutes)
       .then((shapes) => productionOf(shapes, pipelineId, step.id))
       .catch(() => null);
     let error = '';
@@ -1396,7 +1414,17 @@
 
   let openProposal: OpenProposal | null = $derived(
     proposalStep && proposal
-      ? { step: proposalStep, proposal, sampleName: selectedSampleName, onClose: closeProposal }
+      ? {
+          step: proposalStep,
+          proposal,
+          sampleName: selectedSampleName,
+          range: productionRange,
+          onRange: (range) => {
+            productionRange = range;
+            if (proposalStep) proposeFields(proposalStep);
+          },
+          onClose: closeProposal,
+        }
       : null,
   );
 
@@ -1732,6 +1760,7 @@
         onlock={readOnly ? undefined : goLockTest}
         {relocking}
         onsaveoutput={readOnly ? undefined : (rows) => (savingOutput = rows)}
+        {outputOf}
         saveinput={!readOnly && choices.held && heldSession(selectedSample) === choices.held.session
           ? { records: heldCount(choices.held), onsave: () => (savingInput = true) }
           : undefined}
@@ -1751,6 +1780,7 @@
             tests={tests
               .filter((t) => t.pipeline === pipelineId)
               .map((t) => ({ id: t.id, name: t.name, sample: t.sample }))}
+            standings={standings.of}
             test={relocking ? opened!.test : ''}
             ontest={openTest}
             held={choices.menuHeld}

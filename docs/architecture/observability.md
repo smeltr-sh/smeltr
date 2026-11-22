@@ -331,13 +331,16 @@ source that invented names would grow a heartbeat without bound.
 The worker keeps no baseline. It reports a window and forgets it once the
 leader has it: the heartbeat's window ([What a heartbeat
 carries](#what-a-heartbeat-carries)), so a beat whose answer was lost counts
-nothing twice. The leader sums every window from every worker
-of a group into one row per field and per key, each with when it was first
-and last seen. The same caps hold there, so the
-tables grow with the configuration. That accumulated shape is what a
-proposed declaration, a drift warning and the map's unrouted streams read
-(design doc, Deferred: runtime schema and learning are the leader's, never a
-worker's).
+nothing twice. The leader sums every window from every worker of a group into
+one row per field and per key, each with when it was first and last seen. It
+also adds a Parser's counts to a day row for the Parser and for each of its
+fields; a day row holds a count per five-minute bucket, the way a sender's rows
+are kept, so a proposed declaration reads production over the range its author
+picks. The day rows are kept as long as the registry's longest tier. The caps on
+field names and keys hold for all of these tables, so they grow with the
+configuration and not with the traffic. That accumulated shape is what a proposed
+declaration, a drift warning and the map's unrouted streams read (design doc,
+Deferred: runtime schema and learning are the leader's, never a worker's).
 
 A drift warning says production no longer matches a step's declarations, per
 pipeline of a group: a declared field whose values failed to coerce within the

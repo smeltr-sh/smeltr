@@ -17,7 +17,6 @@
   import ChevronIcon from './ChevronIcon.svelte';
   import { unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
-  import { store, stored } from './stored';
   import PageHeader from './PageHeader.svelte';
   import {
     getConfig,
@@ -80,7 +79,8 @@
     sharedCopies,
     statsHash,
     chartRange,
-    DEFAULT_CHART_RANGE,
+    lastChartRange,
+    rememberChartRange,
     survivors,
     cardKey,
     objectCount,
@@ -671,20 +671,12 @@
   /** The charts' range the last panel showed, so the next one opens on it too. Kept in this
    * browser between visits; a link that names a range still wins, and one that names none, from
    * another page, keeps it. */
-  const RANGE_KEY = 'smeltr.map.chartRange';
-  let lastRange = $state(storedRange());
-  function storedRange(): string {
-    try {
-      return chartRange(stored(RANGE_KEY) ?? undefined).range;
-    } catch {
-      return DEFAULT_CHART_RANGE;
-    }
-  }
+  let lastRange = $state(lastChartRange().range);
   $effect(() => {
     if (!stats || stats.stack || stats.range === undefined) return;
     const shown = chartRange(stats.range).range;
     lastRange = shown;
-    store(RANGE_KEY, shown);
+    rememberChartRange(shown);
   });
 
   /** The link to an object's panel, as wide as the open one is, so moving on from a widened panel

@@ -18,6 +18,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use futures_util::StreamExt;
 use object_store::path::Path;
 use object_store::{GetOptions, GetRange, ObjectStore};
 
@@ -1061,23 +1062,33 @@ fn open_object(
     path: Path,
     version: Option<String>,
 ) -> Result<Box<dyn BufRead + Send>, String> {
-    let head = GetOptions {
-        head: true,
+    // One GET reads the first chunk, and the whole of an object no larger, with the size and version the ranges after
+    // it need. Unranged, since a range of an empty object is refused, and some stores answer a range with all of it.
+    let get = GetOptions {
         version: version.clone(),
         ..GetOptions::default()
     };
-    let meta = within(&runtime, GET_TIMEOUT, store.get_opts(&path, head))?
-        .map_err(|e| e.to_string())?
-        .meta;
+    let first = async {
+        let got = store.get_opts(&path, get).await?;
+        let (meta, mut body, mut chunk) = (got.meta.clone(), got.into_stream(), Vec::new());
+        while (chunk.len() as u64) < CHUNK
+            && let Some(bytes) = body.next().await
+        {
+            chunk.extend_from_slice(&bytes?);
+        }
+        chunk.truncate(CHUNK as usize);
+        Ok::<_, object_store::Error>((meta, chunk))
+    };
+    let (meta, chunk) = within(&runtime, GET_TIMEOUT, first)?.map_err(|e| e.to_string())?;
     let mut raw = Ranges {
         store,
         runtime,
         path,
         e_tag: meta.e_tag,
         version,
-        at: 0,
+        at: chunk.len() as u64,
         size: meta.size,
-        chunk: Vec::new(),
+        chunk,
         taken: 0,
     };
     let magic = raw.fill_buf().map_err(|e| e.to_string())?;

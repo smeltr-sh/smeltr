@@ -14,6 +14,12 @@ set shell := ["cmd.exe", "/c"]
 # which works only in a POSIX shell. `[env]` reaches a recipe's commands
 # from just 1.56.0.
 
+# The vendored C (krb5, SASL, librdkafka, AWS-LC) is written for C17, and GCC 15 defaults to C23. krb5 also promotes
+# warnings to errors, and a newer glibc raises one of them; WARN_CFLAGS stops the promotion. Linux only: Windows
+# builds with MSVC, and macOS's clang defaults to C17. The Dockerfile's builder sets the same two.
+export CFLAGS := env("CFLAGS", if os() == "linux" { "-std=gnu17" } else { "" })
+export WARN_CFLAGS := env("WARN_CFLAGS", if os() == "linux" { "-Wall" } else { "" })
+
 [private]
 default:
     @just --list
@@ -45,6 +51,22 @@ need-node: (need "node" node_hint) (need "npm" node_hint)
     @node -e "if (+process.versions.node.split('.')[0] < 26) { console.error('Node ' + process.versions.node + ' is too old. ' + process.argv[1]); process.exit(1) }" "{{node_hint}}"
 
 node_hint := if os_family() == "windows" { "Install Node 26 or later: winget install OpenJS.NodeJS.LTS" } else { "Install Node 26 or later from https://nodejs.org" }
+
+# Tests leave what they make in the temp directory, a few hundred directories each run, which over days of checks
+# fill the disk. Each recipe that runs tests gives them its own temp directory under `target/`, emptied as it starts
+# but for `smeltr-gui-runs`, whose records the GUI tests' setup reads to stop what an interrupted run left running.
+# Unix reads `TMPDIR`; Windows reads `TMP` and `TEMP`, Rust and Node in opposite order.
+check_tmp := justfile_directory() / "target" / "check-tmp"
+
+[private]
+[unix]
+fresh-tmp name:
+    @mkdir -p "{{check_tmp / name}}" && find "{{check_tmp / name}}" -mindepth 1 -maxdepth 1 ! -name smeltr-gui-runs -exec rm -rf {} +
+
+[private]
+[windows]
+fresh-tmp name:
+    @powershell -NoProfile -Command "New-Item -ItemType Directory -Force '{{check_tmp / name}}' | Out-Null; Get-ChildItem '{{check_tmp / name}}' -Exclude smeltr-gui-runs | Remove-Item -Recurse -Force"
 
 [private]
 need-nextest: (need "cargo-nextest" "Run: cargo install cargo-nextest --locked")
@@ -127,7 +149,8 @@ handoff: need-docker
 
 # A release, from a commit with nothing uncommitted, so its version names a commit anyone can check out:
 # the handoff tarball (binary, license, notices) as `smeltr-linux.tar.gz`, the image built from it as
-# `smeltr-image.tar.gz`, and SHA256SUMS over both. Any branch builds one; the release workflow holds a published
+# `smeltr-image.tar.gz`, and SHA256SUMS over both. An arm64 machine names them `smeltr-linux-arm64.tar.gz` and
+# `smeltr-image-arm64.tar.gz`. Any branch builds one; the release workflow holds a published
 # release to `main`. On Windows, `smeltr-windows.zip` of the binary, the license and the notices, and SHA256SUMS
 # over it. The file names carry no version, so a link to the newest release's file never changes; the release
 # they are attached to, the binary and the image's tags carry it. On a commit tagged `v1.2.0` the image is
@@ -140,11 +163,12 @@ dist: need-docker committed handoff
       && r=$(git tag --points-at HEAD --list 'v[0-9]*') \
       && { test "$(echo "$r" | wc -w)" -le 1 || { echo "more than one v* tag on this commit: $r" >&2; exit 1; }; } \
       && n=${r#v} && n=${n:-$v} \
-      && mv "smeltr-$v.tar.gz" smeltr-linux.tar.gz \
+      && case $(uname -m) in x86_64) a= ;; aarch64) a=-arm64 ;; *) echo "no release for $(uname -m)" >&2; exit 1 ;; esac \
+      && mv "smeltr-$v.tar.gz" "smeltr-linux$a.tar.gz" \
       && docker build --build-arg VERSION="$n" -t smeltr:latest -t "smeltr:$(echo "$n" | tr + -)" handoff \
-      && docker save -o smeltr-image.tar smeltr:latest "smeltr:$(echo "$n" | tr + -)" \
-      && gzip -f smeltr-image.tar \
-      && sha256sum smeltr-linux.tar.gz smeltr-image.tar.gz | tee SHA256SUMS
+      && docker save -o "smeltr-image$a.tar" smeltr:latest "smeltr:$(echo "$n" | tr + -)" \
+      && gzip -f "smeltr-image$a.tar" \
+      && sha256sum "smeltr-linux$a.tar.gz" "smeltr-image$a.tar.gz" | tee SHA256SUMS
 
 # DISA's GPOS SRG (Chainguard's profile for Wolfi), scanned against an image: `stig/report.html` and the rule-by-rule `stig/results.txt`. A
 # report, not a gate. `dist` tags the image it builds `smeltr:latest`.
@@ -161,7 +185,7 @@ cves image="smeltr:latest": need-docker
       image --scanners vuln --format json --output /out/report.json {{image}}
     docker run --rm -v "$PWD/cves:/out" \
       aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
-      convert --format table --output /out/report.txt /out/report.json
+      convert --scanners vuln --format table --output /out/report.txt /out/report.json
 
 # An image's packages and the binary's crates as a CycloneDX SBOM: `sbom/sbom.cdx.json`. The release attests it on
 # the pushed image.
@@ -183,7 +207,7 @@ image-tests image="smeltr:latest": need-docker kerberos-up tls-up
     docker build --target tests-archive --output type=local,dest=target/image-tests .
     cp -r /tmp/krb /tmp/smeltr-tls target/image-tests/ && chmod -R a+rX target/image-tests/krb target/image-tests/smeltr-tls
     export SMELTR_TEST_IMAGE={{image}} SMELTR_TEST_SOURCE="$PWD" SMELTR_TEST_DIR="$PWD/target/image-tests" \
-        CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="$PWD/tools/image-test-runner.sh" \
+        "CARGO_TARGET_$(uname -m | tr a-z A-Z)_UNKNOWN_LINUX_GNU_RUNNER=$PWD/tools/image-test-runner.sh" \
       && run="cargo nextest run --archive-file target/image-tests/tests.tar.zst --workspace-remap . --extract-to target/image-tests/archive --extract-overwrite" \
       && $run \
       && set -a && . /tmp/krb/env && . /tmp/smeltr-tls/env && set +a \
@@ -240,7 +264,7 @@ check: need-checks
 need-checks: need-rust need-nextest need-node need-deny
 
 # Kerberos is not in it, since it needs a KDC: after a change to `Cargo.toml`, `Cargo.lock` or the Kerberos tests,
-# run `just check-kerberos`. `just check-live` adds the live services. Windows is checked nowhere.
+# run `just check-kerberos`. `just check-live` adds the live services. GitHub checks Windows nightly.
 #
 # The five share nothing but `stable`, so `[parallel]` runs them at once: 25s
 # of work in 12s. Two costs. Their output interleaves -- run one by name
@@ -274,7 +298,10 @@ fmt-check: need-rust
 [private]
 [env("SMELTR_NO_GUI", "1")]
 [env("SMELTR_WORKER_LISTEN_ADDRESS", "127.0.0.1")]
-check-tests filter: need-nextest stable fips-dll
+[env("TMPDIR", check_tmp / "check-tests")]
+[env("TMP", check_tmp / "check-tests")]
+[env("TEMP", check_tmp / "check-tests")]
+check-tests filter: need-nextest stable fips-dll (fresh-tmp "check-tests")
     cargo nextest run --workspace -j {{test_threads}} --no-tests=pass -E "not test(/fuzz/) & ({{filter}})"
 
 # The store steps since the last release that stop an older build opening the store, printed last so a person sees them.
@@ -369,7 +396,10 @@ clippy: stable
 [private]
 [env("SMELTR_NO_GUI", "1")]
 [env("SMELTR_WORKER_LISTEN_ADDRESS", "127.0.0.1")]
-check-rust: need-nextest stable fips-dll
+[env("TMPDIR", check_tmp / "check-rust")]
+[env("TMP", check_tmp / "check-rust")]
+[env("TEMP", check_tmp / "check-rust")]
+check-rust: need-nextest stable fips-dll (fresh-tmp "check-rust")
     cargo fmt --all --check
     cargo nextest run --workspace -j {{test_threads}} -E "not test(/fuzz/)"
     -cargo test --test integration language_tests:: -- --ignored
@@ -379,14 +409,20 @@ check-rust: need-nextest stable fips-dll
 [doc("Every offline fuzzer.")]
 [env("SMELTR_NO_GUI", "1")]
 [env("SMELTR_WORKER_LISTEN_ADDRESS", "127.0.0.1")]
-check-fuzz: need-nextest fips-dll && fuzz-gui fuzz-journey fuzz-pipeline fuzz-demo
+[env("TMPDIR", check_tmp / "check-fuzz")]
+[env("TMP", check_tmp / "check-fuzz")]
+[env("TEMP", check_tmp / "check-fuzz")]
+check-fuzz: need-nextest fips-dll (fresh-tmp "check-fuzz") && fuzz-gui fuzz-journey fuzz-pipeline fuzz-demo
     cargo nextest run --workspace -j {{test_threads}} -E "test(/fuzz/)"
 
 # The GUI fuzzer, `tests/gui/specs/gui-fuzz.spec.ts`, over more seeds than
 # `check-gui` gives it: 64. `SMELTR_FUZZ_SEED=n` replays one.
 [doc("The GUI fuzzer, over many seeds.")]
 [env("SMELTR_FUZZ_SEEDS", "64")]
-fuzz-gui: build-dev
+[env("TMPDIR", check_tmp / "fuzz-gui")]
+[env("TMP", check_tmp / "fuzz-gui")]
+[env("TEMP", check_tmp / "fuzz-gui")]
+fuzz-gui: build-dev (fresh-tmp "fuzz-gui")
     npm --prefix tests/gui install
     cd tests/gui && npx playwright test --project fuzz-coverage
 
@@ -396,7 +432,10 @@ fuzz-gui: build-dev
 [doc("The admin journey fuzzer, over many seeds.")]
 [env("SMELTR_FUZZ_SEEDS", "16")]
 [env("SMELTR_JOURNEY_MOVES", "104")]
-fuzz-journey: build-dev
+[env("TMPDIR", check_tmp / "fuzz-journey")]
+[env("TMP", check_tmp / "fuzz-journey")]
+[env("TEMP", check_tmp / "fuzz-journey")]
+fuzz-journey: build-dev (fresh-tmp "fuzz-journey")
     npm --prefix tests/gui install
     cd tests/gui && npx playwright test --project journey-coverage
 
@@ -406,7 +445,10 @@ fuzz-journey: build-dev
 [doc("The pipeline journey fuzzer, over many seeds.")]
 [env("SMELTR_FUZZ_SEEDS", "16")]
 [env("SMELTR_PIPELINE_MOVES", "100")]
-fuzz-pipeline: build-dev
+[env("TMPDIR", check_tmp / "fuzz-pipeline")]
+[env("TMP", check_tmp / "fuzz-pipeline")]
+[env("TEMP", check_tmp / "fuzz-pipeline")]
+fuzz-pipeline: build-dev (fresh-tmp "fuzz-pipeline")
     npm --prefix tests/gui install
     cd tests/gui && npx playwright test --project pipeline-coverage
 
@@ -414,7 +456,10 @@ fuzz-pipeline: build-dev
 # against its recording: `tests/gui/specs/demo-fuzz.spec.ts`.
 [doc("Everything a visitor can reach in the website demo, against its recording.")]
 [env("SMELTR_FUZZ_DEMO", "1")]
-fuzz-demo: build-dev
+[env("TMPDIR", check_tmp / "fuzz-demo")]
+[env("TMP", check_tmp / "fuzz-demo")]
+[env("TEMP", check_tmp / "fuzz-demo")]
+fuzz-demo: build-dev (fresh-tmp "fuzz-demo")
     npm --prefix tests/gui install
     cd tests/gui && npx playwright test --project demo
 
@@ -448,7 +493,7 @@ uap-refresh:
     curl -fsSL https://raw.githubusercontent.com/ua-parser/uap-core/master/regexes.yaml -o src/ops/useragent/regexes.yaml
 
 # The ECS and OCSF releases the Add schema dialog offers built in (`schema::standard`), as
-# `just schemas-refresh 9.5.0 1.9.0 1.3.0`: ECS's fields.csv at that tag, and each OCSF release compiled and cut.
+# `just schemas-refresh 9.5.0 1.10.0 1.3.0`: ECS's fields.csv at that tag, and each OCSF release compiled and cut.
 [private]
 schemas-refresh ecs +ocsf:
     tools/schema-standards/refresh {{ecs}} {{ocsf}}
@@ -504,13 +549,17 @@ live-up: need-docker
     docker compose -f tests/live/compose.live.yaml exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:19092 --create --if-not-exists --topic budget-b --partitions 4 --replication-factor 1
     docker compose -f tests/live/compose.live.yaml exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:19092 --create --if-not-exists --topic budget-c --partitions 4 --replication-factor 1
 
+# `check-all`, then every live test that asserts behavior.
+[group("dev")]
+check-live: check-all live-tests
+
 # `SMELTR_LIVE_TESTS=required`: without it a missing service makes the
 # live tests skip, and a skipped test reports `ok`. Only the suites that
 # assert behavior; the measurement suites assert on timings. The tests
 # share one broker, hence `--test-threads` and one suite at a time.
 # Services stay up afterward; `just down` clears them.
 
-# `check-all`, plus every live test that asserts behavior.
+# Every live test that asserts behavior, without `check-all`. The nightly check runs the two on separate runners.
 [group("dev")]
 [env("KAFKA_TEST_BROKERS", "localhost:19092")]
 [env("ES_TEST_URL", "http://localhost:9200")]
@@ -548,50 +597,53 @@ live-up: need-docker
 [env("SOCKET_SENDER_TEST_IMAGE", "python:3.13-slim@sha256:d0a9e379c0c588befb0e427db17ca9731751d281f32c6cb1a90a1277b680bdad")]
 [env("S2S_FORWARDER_TEST_IMAGE", "splunk/universalforwarder:10.6.0.5@sha256:944fd52a8da3cb5709532a8d8e349732fdccaf6e09c165d1877be7c41f1c88e3")]
 [env("SMELTR_LIVE_TESTS", "required")]
-check-live: live-up check-all
-    cargo test --test integration kafka_tests:: -- --test-threads=4
-    cargo test --test integration kafka_fuzz::
-    cargo test --test integration kafka_destination_fuzz::live_
-    cargo test --test integration kafka_avro_fuzz::live_
-    cargo test --test integration worker_tests:: -- --test-threads=4
-    cargo test --test integration elastic_live_tests:: -- --test-threads=4
-    cargo test --test integration splunk_live_tests:: -- --test-threads=4
-    cargo test --test integration elastic_fuzz::live_
-    cargo test --test integration splunk_fuzz::live_
-    cargo test --test integration http_fuzz::live_
-    cargo test --test integration s2s_live_tests::
-    cargo test --test integration s2s_receiver_fuzz::live_
-    cargo test --test integration objects_live_tests:: -- --test-threads=4
-    cargo test --test integration objects_fuzz::live_ -- --test-threads=4
-    cargo test --test integration object_source_fuzz::live_ -- --test-threads=7
-    cargo test --test integration iceberg_live_tests::
-    cargo test --test integration iceberg_live_fuzz::
-    cargo test --test integration delta_live_tests::
-    cargo test --test integration delta_live_fuzz::
-    cargo test --test integration event_hubs_live_fuzz::
-    cargo test --lib io::sftp::tests::live_ -- --test-threads=4
-    cargo test --test integration git_remote_live_tests:: -- --test-threads=4
-    cargo test --test integration postgres_live_tests:: -- --test-threads=4
-    cargo test --test integration mysql_live_tests:: -- --test-threads=4
-    cargo test --test integration sql_live_fuzz::
-    cargo test --test integration receiver_tests::an_opentelemetry_
-    cargo test --test integration otlp_receiver_fuzz::live_
-    cargo test --test integration otlp_destination_fuzz::live_
-    cargo test --test integration receiver_tests::prometheus_
-    cargo test --test integration remote_write_tests::prometheus_
-    cargo test --test integration prometheus_receiver_fuzz::live_
-    cargo test --test integration remote_write_fuzz::prometheus_
-    cargo test --test integration hec_receiver_fuzz::live_
-    cargo test --test integration http_receiver_fuzz::live_
-    cargo test --test integration receiver_tests::elastic_
-    cargo test --test integration elastic_receiver_fuzz::live_
-    cargo test --test integration syslog_receiver_tests::a_real_
-    cargo test --test integration syslog_receiver_fuzz::live_
-    cargo test --test integration socket_receiver_fuzz::live_
-    cargo test --test integration okta_live_tests:: -- --ignored
-    cargo test --test integration log_analytics_fuzz::live_ -- --ignored
-    cargo test --test integration gate_tests::live_ -- --test-threads=4
-    cargo test --test integration acme_live_tests:: -- --test-threads=1
+live-tests: live-up
+    #!/usr/bin/env bash
+    # Every line runs, whichever failed before it, so one failure hides no other; the recipe fails at the end.
+    failed=()
+    t() { "$@" || failed+=("$*"); }
+    t cargo test --test integration kafka_tests:: -- --test-threads=4
+    t cargo test --test integration kafka_fuzz::
+    t cargo test --test integration kafka_destination_fuzz::live_
+    t cargo test --test integration kafka_avro_fuzz::live_
+    t cargo test --test integration worker_tests:: -- --test-threads=4
+    t cargo test --test integration elastic_live_tests:: -- --test-threads=4
+    t cargo test --test integration splunk_live_tests:: -- --test-threads=4
+    t cargo test --test integration elastic_fuzz::live_
+    t cargo test --test integration splunk_fuzz::live_
+    t cargo test --test integration http_fuzz::live_
+    t cargo test --test integration s2s_live_tests::
+    t cargo test --test integration s2s_receiver_fuzz::live_
+    t cargo test --test integration objects_live_tests:: -- --test-threads=4
+    t cargo test --test integration objects_fuzz::live_ -- --test-threads=4
+    t cargo test --test integration object_source_fuzz::live_ -- --test-threads=7
+    t cargo test --test integration iceberg_live_tests::
+    t cargo test --test integration iceberg_live_fuzz::
+    t cargo test --test integration delta_live_tests::
+    t cargo test --test integration delta_live_fuzz::
+    t cargo test --test integration event_hubs_live_fuzz::
+    t cargo test --lib io::sftp::tests::live_ -- --test-threads=4
+    t cargo test --test integration git_remote_live_tests:: -- --test-threads=4
+    t cargo test --test integration postgres_live_tests:: -- --test-threads=4
+    t cargo test --test integration mysql_live_tests:: -- --test-threads=4
+    t cargo test --test integration sql_live_fuzz::
+    t cargo test --test integration receiver_tests::an_opentelemetry_
+    t cargo test --test integration otlp_receiver_fuzz::live_
+    t cargo test --test integration otlp_destination_fuzz::live_
+    t cargo test --test integration receiver_tests::prometheus_
+    t cargo test --test integration remote_write_tests::prometheus_
+    t cargo test --test integration prometheus_receiver_fuzz::live_
+    t cargo test --test integration remote_write_fuzz::prometheus_
+    t cargo test --test integration hec_receiver_fuzz::live_
+    t cargo test --test integration http_receiver_fuzz::live_
+    t cargo test --test integration receiver_tests::elastic_
+    t cargo test --test integration elastic_receiver_fuzz::live_
+    t cargo test --test integration syslog_receiver_tests::a_real_
+    t cargo test --test integration syslog_receiver_fuzz::live_
+    t cargo test --test integration socket_receiver_fuzz::live_
+    t cargo test --test integration gate_tests::live_ -- --test-threads=4
+    t cargo test --test integration acme_live_tests:: -- --test-threads=1
+    [ ${#failed[@]} = 0 ] || { printf 'failed: %s\n' "${failed[@]}"; exit 1; }
 
 # A KDC and a broker that demands GSSAPI, for the Kerberos tests. Needs
 # `krb5-kdc krb5-admin-server krb5-user` and a JRE; the scripts say what
@@ -611,8 +663,7 @@ check-kerberos: kerberos-up
     set -a && . /tmp/krb/env && set +a && PATH="$PWD/tests/kerberos/no-kinit:$PATH" KRB5CCNAME=MEMORY:smeltr SMELTR_KINIT_RAN=/tmp/krb/kinit-ran SMELTR_LIVE_TESTS=required cargo test --test integration kerberos_tests::
 
 # Reads a real Okta org's System Log, by API token and as a service app with
-# DPoP: the one check of what Okta itself takes. `check-live` runs it too;
-# `check` never does. Needs OKTA_ORG, OKTA_TOKEN, OKTA_CLIENT_ID and
+# DPoP: the one check of what Okta itself takes. No other check runs it. Needs OKTA_ORG, OKTA_TOKEN, OKTA_CLIENT_ID and
 # OKTA_PRIVATE_KEY (PEM, or that PEM in base64 on one line), from an Okta org
 # with an API Services app granted okta.logs.read and the Read-only
 # Administrator role. OKTA_KEY_ID names its key when it holds several.
@@ -620,8 +671,7 @@ check-okta:
     SMELTR_LIVE_TESTS=required cargo test --test integration okta_live_tests:: -- --ignored
 
 # What a real Log Analytics workspace takes from smeltr: rows
-# sent to a data collection rule, queried back. `check-live` runs it too;
-# `check` never does. Needs LOG_ANALYTICS_TEST_ENDPOINT (the rule's logs ingestion
+# sent to a data collection rule, queried back. No other check runs it. Needs LOG_ANALYTICS_TEST_ENDPOINT (the rule's logs ingestion
 # endpoint), LOG_ANALYTICS_TEST_RULE_ID, LOG_ANALYTICS_TEST_STREAM, LOG_ANALYTICS_TEST_TABLE
 # (a table with TimeGenerated, Tag and Message columns, which the stream fills
 # as it is), LOG_ANALYTICS_TEST_WORKSPACE (the workspace's id), and
@@ -756,7 +806,10 @@ run: frontends
 [group("dev")]
 [unix]
 [positional-arguments]
-check-gui *args: build-dev
+[env("TMPDIR", check_tmp / "check-gui")]
+[env("TMP", check_tmp / "check-gui")]
+[env("TEMP", check_tmp / "check-gui")]
+check-gui *args: build-dev (fresh-tmp "check-gui")
     npm --prefix tests/gui install
     npm --prefix tests/gui run format:check
     cd tests/gui && npx playwright test "$@"

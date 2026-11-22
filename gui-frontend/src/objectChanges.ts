@@ -679,6 +679,13 @@ export function outcomeText(o: Outcome, routeName = (id: string) => id): string 
   return [values, sentText(o, routeName)].filter((part) => part !== '').join(' ');
 }
 
+/** Where a test stands after its run: it failed, it could not run, or it passed. Nothing while it has not run. */
+export type Standing = 'failing' | 'error' | 'passing';
+
+export function standingOf(r: TestResult): Standing {
+  return r.error ? 'error' : r.verdict?.passed ? 'passing' : 'failing';
+}
+
 /** "dst, src on 5 rows": what a test checks. */
 export function checksOf(t: { fields: string[]; rows: number }): string {
   return `${t.fields.join(', ')} on ${count(t.rows, 'row')}`;

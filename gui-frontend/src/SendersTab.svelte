@@ -10,6 +10,7 @@
   import ChevronIcon from './ChevronIcon.svelte';
   import Help from './Help.svelte';
   import PresetPicker from './PresetPicker.svelte';
+  import { askMark } from './WarningList.svelte';
   import RowsChart from './RowsChart.svelte';
   import Segmented from './Segmented.svelte';
   import Sparkline from './Sparkline.svelte';
@@ -47,7 +48,7 @@
     source: string;
     nowMillis?: number;
     /** The panel's chart range, which a sender's chart is drawn over, and its picker. */
-    range: { minutes: number; label: string };
+    range: { minutes: number; label: string; spoken: string };
     picker: Snippet;
   } = $props();
 
@@ -139,8 +140,8 @@
     if (errors.length > 0) problem = errorText(errors);
   }
 
-  function mark(sender: Sender, sinceMillis: number, was: 'normal' | 'outage') {
-    if (busy.on) return;
+  async function mark(sender: Sender, sinceMillis: number, was: 'normal' | 'outage', now: string) {
+    if (busy.on || was === now || !(await askMark(was, sinceMillis, true))) return;
     void busy.run(async () => {
       const answer = await markWarning(group, source, sinceMillis, was, sender);
       problem = answer.ok ? '' : errorText(answer.errors);
@@ -256,7 +257,7 @@
       <span class="mono">{sender.field} {sender.value}</span>
     </p>
     <h3 class="with-range">
-      <span>Rows per second, over the last {range.label}</span>{@render picker()}
+      <span>Rows per second, over the last {range.spoken}</span>{@render picker()}
     </h3>
     {#if past?.judgedFromMillis !== undefined}
       <p class="dim small learning">Learning: this sender is judged once it has a week of rows.</p>
@@ -422,7 +423,13 @@
                                 () =>
                                   (s.saidNormal ? 'normal' : s.markedBy ? 'outage' : '') as
                                     'normal' | 'outage',
-                                (was) => mark({ field: f.field, value: s.value }, since, was)
+                                (was) =>
+                                  void mark(
+                                    { field: f.field, value: s.value },
+                                    since,
+                                    was,
+                                    s.saidNormal ? 'normal' : s.markedBy ? 'outage' : '',
+                                  )
                               }
                             />
                           {/if}

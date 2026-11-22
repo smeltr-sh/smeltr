@@ -1,5 +1,6 @@
 // Schemas as the GUI shows them: who uses a schema, a search over their fields, and a schema handed over as a file.
 
+import { fileStem } from './download';
 import type { DestinationDto, ExportFormat, PipelineDto, Requirement, SchemaDto } from './api';
 
 /** A field's requirements, in order: what a schema asks of a row, and OCSF's levels. */
@@ -77,22 +78,10 @@ export function matchesOf(
   return out;
 }
 
-/** A schema's file name as `format` exports it: its id, with what a file name cannot hold made a dash. */
+/** A schema's file name as `format` exports it: its id, as `fileStem` makes it a file name. */
 export function fileName(id: string, format: ExportFormat): string {
   const kind = format === 'json-schema' ? 'schema' : 'mapping';
-  return `${id.replace(/[^A-Za-z0-9._-]+/g, '-')}.${kind}.json`;
-}
-
-/** Hands `value` to the browser as a JSON file named `name`. */
-export function downloadJson(name: string, value: unknown) {
-  const url = URL.createObjectURL(
-    new Blob([JSON.stringify(value, null, 2) + '\n'], { type: 'application/json' }),
-  );
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = name;
-  a.click();
-  URL.revokeObjectURL(url);
+  return `${fileStem(id)}.${kind}.json`;
 }
 
 /** The Elasticsearch type `type` maps to of itself, with no mapping of its own: `dynamic` for a variant, which

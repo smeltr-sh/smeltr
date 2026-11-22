@@ -104,7 +104,12 @@ const LIST: Record<ConnectionKind, string> = {
 /** `kind`'s list, narrowed to `ids`. Tables never appear in a row, so their lists
  * take no `only`. */
 export function listHash(kind: ConnectionKind, ids: string[]): string {
-  return `#/build/${LIST[kind]}?${new URLSearchParams(ids.map((id) => ['only', id]))}`;
+  return narrowedHash(`#/build/${LIST[kind]}`, ids);
+}
+
+/** The list at `hash`, narrowed to `ids` (`Narrowing`). */
+export function narrowedHash(hash: string, ids: string[]): string {
+  return `${hash}?${new URLSearchParams(ids.map((id) => ['only', id]))}`;
 }
 
 /** `id` as one term of the map's search, whatever it holds (`map.ts`'s `parseQuery`). */

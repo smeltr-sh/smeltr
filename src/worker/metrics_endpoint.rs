@@ -139,9 +139,7 @@ impl Settings {
 impl MetricsEndpoint {
     /// Serves `scrape`'s answer at [`PATH`] for the life of the process.
     pub fn serve(self, scrape: impl Fn() -> String + Send + Sync + 'static) -> Result<SocketAddr, String> {
-        let tls = self
-            .tls
-            .map(|tls| axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(tls)));
+        let tls = self.tls.map(Arc::new);
         let state = Arc::new(Scraped {
             scrape: Box::new(scrape),
             basic: self.basic,

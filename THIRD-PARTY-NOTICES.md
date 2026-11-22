@@ -8282,7 +8282,7 @@ Used by:
 - [filetime 0.2.29](https://github.com/alexcrichton/filetime)
 - [flate2 1.1.10](https://github.com/rust-lang/flate2-rs)
 - [fnv 1.0.7](https://github.com/servo/rust-fnv)
-- [form_urlencoded 1.2.2](https://github.com/servo/rust-url)
+- [form_urlencoded 1.2.3](https://github.com/servo/rust-url)
 - [gix-imara-diff 0.3.3](https://github.com/GitoxideLabs/gitoxide)
 - [group 0.14.0](https://github.com/zkcrypto/group)
 - [hash32 0.3.1](https://github.com/japaric/hash32)
@@ -8345,7 +8345,7 @@ Used by:
 - [unicode-bidi 0.3.18](https://github.com/servo/unicode-bidi)
 - [unicode-normalization 0.1.26](https://github.com/unicode-rs/unicode-normalization)
 - [unicode-properties 0.1.5](https://github.com/unicode-rs/unicode-properties)
-- [url 2.5.8](https://github.com/servo/rust-url)
+- [url 2.5.9](https://github.com/servo/rust-url)
 - [uuid 1.29.0](https://github.com/uuid-rs/uuid)
 - [x509-parser 0.18.1](https://github.com/rusticata/x509-parser.git)
 - [yasna 0.6.0](https://github.com/qnighy/yasna.rs)
@@ -13769,7 +13769,7 @@ SOFTWARE.
 
 Used by:
 
-- [rdkafka-sys 4.10.0+2.12.1](https://github.com/fede1024/rust-rdkafka)
+- [rdkafka-sys 4.11.0+2.16.0](https://github.com/fede1024/rust-rdkafka)
 
 ```
 For cJSON.c and cJSON.h:
@@ -13801,7 +13801,7 @@ THE SOFTWARE.
 
 Used by:
 
-- [rdkafka 0.39.0](https://github.com/fede1024/rust-rdkafka)
+- [rdkafka 0.40.0](https://github.com/fede1024/rust-rdkafka)
 
 ```
 MIT License
@@ -14876,7 +14876,7 @@ THE SOFTWARE.
 
 Used by:
 
-- [rdkafka-sys 4.10.0+2.12.1](https://github.com/fede1024/rust-rdkafka)
+- [rdkafka-sys 4.11.0+2.16.0](https://github.com/fede1024/rust-rdkafka)
 
 ```
 The following license applies to the files rdcrc32.c and rdcrc32.h which
@@ -14909,7 +14909,7 @@ THE SOFTWARE.
 
 Used by:
 
-- [rdkafka-sys 4.10.0+2.12.1](https://github.com/fede1024/rust-rdkafka)
+- [rdkafka-sys 4.11.0+2.16.0](https://github.com/fede1024/rust-rdkafka)
 
 ```
 This license covers src/rdhdrhistogram.c which is a C port of
@@ -14946,7 +14946,7 @@ THE SOFTWARE
 
 Used by:
 
-- [rdkafka-sys 4.10.0+2.12.1](https://github.com/fede1024/rust-rdkafka)
+- [rdkafka-sys 4.11.0+2.16.0](https://github.com/fede1024/rust-rdkafka)
 
 ```
 parts of src/rdmurmur2.c: git@github.com:abrandoned/murmur2.git
