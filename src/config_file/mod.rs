@@ -362,10 +362,7 @@ impl LoadedSystem {
                 // A field the source gave is the first step's to fix, which the record enters through.
                 let first = (self.pipelines.iter().find(|p| p.id == route.pipeline))
                     .and_then(|p| p.body.first())
-                    .map(|step| match step {
-                        crate::plan::config::Step::Function(f) => f.id,
-                        crate::plan::config::Step::If { id, .. } => *id,
-                    });
+                    .map(crate::plan::config::Step::id);
                 findings.retain(|f| !known.iter().any(|(p, k)| *p == pipeline && k == f));
                 for told in crate::schema::told(produces, &findings) {
                     let at = (told.keys).and_then(|keys| crate::plan::dictionary::writer(plan, &keys).or(first));

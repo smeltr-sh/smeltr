@@ -183,6 +183,16 @@ pub enum Step {
     },
 }
 
+impl Step {
+    /// The step's own id: a function's, or an `if`'s.
+    pub fn id(&self) -> FunctionId {
+        match self {
+            Step::Function(f) => f.id,
+            Step::If { id, .. } => *id,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct FunctionConfig {
     pub id: FunctionId,

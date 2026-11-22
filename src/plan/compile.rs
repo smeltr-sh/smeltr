@@ -584,7 +584,7 @@ struct Probe {
 
 impl<'p> Compiler<'p> {
     fn new(p: &'p PipelineConfig, ingest: &[(&str, DataType)], probe: Option<std::rc::Rc<Probe>>) -> Compiler<'p> {
-        Compiler {
+        let mut c = Compiler {
             tables: &p.lookup_tables,
             grok_patterns: &p.grok_patterns,
             produces: &p.produces,
@@ -605,6 +605,27 @@ impl<'p> Compiler<'p> {
             pass: Pass::Outside,
             probe,
             chosen: Vec::new(),
+        };
+        if let Some(step) = p.body.first() {
+            c.split_ingest(step.id());
+        }
+        c
+    }
+
+    /// Bind each field the runtime fills with an object as that object's leaves (`bind_element`), since no leaf holds
+    /// an object (Language). The split belongs to the first step, `first`: a pipeline of no steps writes nothing, so it
+    /// splits nothing.
+    fn split_ingest(&mut self, first: FunctionId) {
+        for (name, slot) in self.syms.root().leaves() {
+            if !matches!(self.syms.type_of(slot), DataType::Struct(..)) {
+                continue;
+            }
+            let mut pieces = Vec::new();
+            bind_element(&mut self.syms, &name, slot, &Origin::Ingest, &mut pieces);
+            for (out, ir) in pieces {
+                let ty = ir.ty.clone();
+                self.emit(Op::Eval { ir }, out, ty, first);
+            }
         }
     }
 
@@ -4502,10 +4523,7 @@ impl Compiler<'_> {
 
     fn block(&mut self, body: &[Step], guard: Option<SlotId>) {
         for step in body {
-            self.answer_probe(match step {
-                Step::If { id, .. } => *id,
-                Step::Function(f) => f.id,
-            });
+            self.answer_probe(step.id());
             match step {
                 Step::If { id, cond, then, else_ } => {
                     let Some(cond_ir) = self.expr(cond, *id) else {
@@ -4912,6 +4930,45 @@ mod tests {
             "the value is written on every row: {rows:?}"
         );
         batch.reclaim(&mut pool);
+    }
+
+    /// A field the source fills with an object is that object's leaves, as a parsed object is, whichever source
+    /// declares it: a step writes under it, deletes from it, renames it and writes under it inside an `if` or a loop.
+    #[test]
+    fn an_object_the_source_fills_is_its_leaves() {
+        let open = DataType::Struct(vec![("ip".into(), DataType::Str), ("port".into(), DataType::I64)], true);
+        let nested = DataType::Struct(vec![("geo".into(), open.clone())], false);
+        let declared = SourceMeta::KAFKA
+            .declaring(vec![("destination".into(), open), ("source".into(), nested)])
+            .unwrap();
+        let declared_writes = [
+            r#"destination.geo.cc = "US";"#,
+            r#"destination.ip = "b";"#,
+            "delete(destination.port);",
+            r#"if (destination.port == 1) { destination.geo.cc = "US"; }"#,
+            "for (let i of [1, 2]) { destination.port = destination.port + i; }",
+            r#"destination["zone"] = "dmz";"#,
+            "source.geo.port = 1; source.geo.asn = 2;",
+            "move(destination.ip, source.ip);",
+        ];
+        let metrics = [
+            ("otlp metrics", SourceMeta::otlp(crate::plan::topology::Signal::Metrics)),
+            ("prometheus", SourceMeta::prometheus_receiver()),
+        ];
+        let cases = declared_writes.iter().map(|w| ("declared", &declared, *w)).chain(
+            metrics
+                .iter()
+                .map(|(name, meta)| (*name, meta, "positive.offset = 0; delete(negative.bucketCounts);")),
+        );
+        for (name, meta, body) in cases {
+            let plan = compile(&code_pipeline(body), meta).unwrap_or_else(|e| panic!("{name}: {body}: {e:?}"));
+            for (leaf, slot) in plan.tree.leaves() {
+                assert!(
+                    !matches!(plan.slot_layout[slot], DataType::Struct(..)),
+                    "{name}: {body}: `{leaf}` holds an object"
+                );
+            }
+        }
     }
 
     fn code_pipeline(body: &str) -> PipelineConfig {

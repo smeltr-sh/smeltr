@@ -910,10 +910,7 @@ pub fn run_preview(
     let warn = |e: &CompileError| ApiError::from_compile(e, system.step_id_for(Some(pipeline_cfg.id), e.function));
     let mut warnings: Vec<ApiError> = plan.warnings.iter().map(warn).collect();
     // A field the source gave is warned of at the first step, which the record enters through.
-    let first = pipeline_cfg.body.first().map(|step| match step {
-        plan::config::Step::Function(f) => f.id,
-        plan::config::Step::If { id, .. } => *id,
-    });
+    let first = pipeline_cfg.body.first().map(plan::config::Step::id);
 
     // A pipeline has no answers of its own: it is previewed under the group's.
     let on_exception = &system.topology.on_exception;
@@ -2000,6 +1997,49 @@ mod tests {
         let meta = SourceMeta::of_columns(&sample.columns).unwrap();
         let read = read_sample(&meta, &sample.columns, &sample.records).unwrap();
         assert!(read.warnings.is_empty(), "{:?}", read.warnings);
+    }
+
+    /// A sample holds each object of the output it was saved from as one column. A step writes under that object,
+    /// deletes from it and reads it as it would a parsed one, and the rest of it, unclaimed keys too, stays.
+    #[test]
+    fn a_step_writes_under_an_object_a_sample_holds() {
+        let columns = [crate::heartbeat::CaptureColumn {
+            name: "destination".into(),
+            ty: "{ip: str, port: i64, ...}".into(),
+        }];
+        let body = r#"destination.geo.cc = "US"; destination.ip = "b"; delete(destination.port);
+            if (destination.ip == "b") { destination.seen = true; }"#;
+        let step = format!(r#"{{"id":"u","type":"code","body":{}}},"#, serde_json::json!(body));
+        let config = compiling().replace(
+            r#"{"id":"u","type":"code","body":"u = parseUrl(_raw); n = 1;"},"#,
+            &step,
+        );
+        let record = serde_json::json!({"destination": {"ip": "a", "port": 443, "zone": "dmz"}});
+        let previewed = run_preview(
+            PreviewRequest {
+                config,
+                pipeline: Some("p".into()),
+                sample: Some("firewall".into()),
+                show_internal: false,
+                at_micros: None,
+                filter: None,
+                attribution: false,
+                as_sample: false,
+                dictionary: false,
+                after_dot: None,
+                capture_filter: None,
+            },
+            Default::default(),
+            &columns,
+            vec![record.as_object().unwrap().clone()],
+        );
+        let errors: Vec<_> = previewed.errors.iter().map(|e| &e.message).collect();
+        assert!(previewed.succeeded(), "{errors:?}");
+        let rows = serde_json::to_value(&previewed.body.rows).unwrap();
+        assert_eq!(
+            rows[0]["json"]["destination"],
+            serde_json::json!({"ip": "b", "zone": "dmz", "geo": {"cc": "US"}, "seen": true})
+        );
     }
 
     fn after(text: &str, at: DotAt) -> Option<AfterDot> {
