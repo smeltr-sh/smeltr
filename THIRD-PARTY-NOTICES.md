@@ -13769,7 +13769,7 @@ SOFTWARE.
 
 Used by:
 
-- [rdkafka-sys 4.10.0+2.12.1](https://github.com/fede1024/rust-rdkafka)
+- [rdkafka-sys 4.11.0+2.16.0](https://github.com/fede1024/rust-rdkafka)
 
 ```
 For cJSON.c and cJSON.h:
@@ -13801,7 +13801,7 @@ THE SOFTWARE.
 
 Used by:
 
-- [rdkafka 0.39.0](https://github.com/fede1024/rust-rdkafka)
+- [rdkafka 0.40.0](https://github.com/fede1024/rust-rdkafka)
 
 ```
 MIT License
@@ -14876,7 +14876,7 @@ THE SOFTWARE.
 
 Used by:
 
-- [rdkafka-sys 4.10.0+2.12.1](https://github.com/fede1024/rust-rdkafka)
+- [rdkafka-sys 4.11.0+2.16.0](https://github.com/fede1024/rust-rdkafka)
 
 ```
 The following license applies to the files rdcrc32.c and rdcrc32.h which
@@ -14909,7 +14909,7 @@ THE SOFTWARE.
 
 Used by:
 
-- [rdkafka-sys 4.10.0+2.12.1](https://github.com/fede1024/rust-rdkafka)
+- [rdkafka-sys 4.11.0+2.16.0](https://github.com/fede1024/rust-rdkafka)
 
 ```
 This license covers src/rdhdrhistogram.c which is a C port of
@@ -14946,7 +14946,7 @@ THE SOFTWARE
 
 Used by:
 
-- [rdkafka-sys 4.10.0+2.12.1](https://github.com/fede1024/rust-rdkafka)
+- [rdkafka-sys 4.11.0+2.16.0](https://github.com/fede1024/rust-rdkafka)
 
 ```
 parts of src/rdmurmur2.c: git@github.com:abrandoned/murmur2.git
