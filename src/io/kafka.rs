@@ -577,7 +577,8 @@ impl KafkaSource {
         partition: i32,
         timestamp: Option<i64>,
     ) -> Result<bool, IoError> {
-        if state.exhausted.contains(&(topic.to_string(), partition)) {
+        // Asked of every row read, and the key is a fresh string: skipped while no partition is at its stop.
+        if !state.exhausted.is_empty() && state.exhausted.contains(&(topic.to_string(), partition)) {
             return Ok(true);
         }
         let at_stop = matches!((self.stop, timestamp), (Some(StopPosition::Timestamp(s)), Some(t)) if t >= s);
@@ -743,7 +744,7 @@ impl Source for KafkaSource {
                 // placed is not where it starts: both are dropped unread, and the others read on.
                 let front = state.inbox.front().expect("a front");
                 let (topic, partition, timestamp) = (Arc::clone(&front.topic), front.partition, front.timestamp);
-                if state.unplaced.contains(&(topic.to_string(), partition))
+                if !state.unplaced.is_empty() && state.unplaced.contains(&(topic.to_string(), partition))
                     || self.past_stop(&mut state, &topic, partition, timestamp)?
                 {
                     slot.take(self.consumer(), &mut state);

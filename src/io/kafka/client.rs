@@ -985,7 +985,9 @@ impl Routes {
 
     /// Hands `msg` to the inbox of the source reading its topic. A full inbox pauses that source's partitions.
     fn route(&self, consumer: &BaseConsumer<Routes>, msg: &impl Message) {
-        let Some(slot) = self.slot_for(msg.topic()) else {
+        // Read once: each read of a message's topic measures and checks the name again.
+        let topic = msg.topic();
+        let Some(slot) = self.slot_for(topic) else {
             return;
         };
         let mut state = slot.lock();
@@ -993,7 +995,7 @@ impl Routes {
             raw: msg.payload().unwrap_or(&[]).to_vec(),
             offset: msg.offset(),
             partition: msg.partition(),
-            topic: slot.intern(&state, msg.topic()),
+            topic: slot.intern(&state, topic),
             headers: headers_of(msg, state.keep_headers),
             timestamp: msg.timestamp().to_millis(),
         };
