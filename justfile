@@ -161,7 +161,7 @@ cves image="smeltr:latest": need-docker
       image --scanners vuln --format json --output /out/report.json {{image}}
     docker run --rm -v "$PWD/cves:/out" \
       aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
-      convert --format table --output /out/report.txt /out/report.json
+      convert --scanners vuln --format table --output /out/report.txt /out/report.json
 
 # An image's packages and the binary's crates as a CycloneDX SBOM: `sbom/sbom.cdx.json`. The release attests it on
 # the pushed image.
