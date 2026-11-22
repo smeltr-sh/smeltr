@@ -783,7 +783,12 @@ fn collect_report(
     held: &super::held::Held,
 ) -> Pending {
     super::record_log_counts(registry, "runtime");
-    super::record_memory_gauge(registry, "runtime");
+    let resident = super::record_memory_gauge(registry, "runtime");
+    // The deployment was sized to fill the worker's memory, so pages freed and not yet handed back can carry the
+    // runtime past its limit. Past its size, they are handed back now.
+    if super::memory_to_fit().is_some_and(|fit| resident > fit as u64) {
+        crate::core::buffer::purge_freed();
+    }
     let peeked = registry.peek_delta(crate::metrics::SUBSCRIBER_HEARTBEAT);
     let metrics: Vec<MetricSampleDto> = peeked.iter().cloned().map(MetricSampleDto::from).collect();
     let boot_id = crate::logs::boot_id();

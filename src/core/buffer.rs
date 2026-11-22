@@ -281,6 +281,31 @@ pub fn release_idle() {
     }
 }
 
+/// Hands every page the process has freed back to the OS now, rather than once it has gone unused for jemalloc's
+/// `dirty_decay_ms`. Until then those pages count against a container's memory limit as if they were still held.
+/// Whether the allocator did it.
+pub fn purge_freed() -> bool {
+    // `4096` is jemalloc's `MALLCTL_ARENAS_ALL`: every arena at once.
+    // SAFETY: the name is NUL-terminated, and `arena.<i>.purge` reads and writes nothing through the pointers.
+    #[cfg(unix)]
+    let purged = unsafe {
+        tikv_jemalloc_sys::mallctl(
+            c"arena.4096.purge".as_ptr(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            0,
+        ) == 0
+    };
+    // SAFETY: `mi_collect` takes no pointers and touches only this thread's heap and the arenas it shares.
+    #[cfg(windows)]
+    let purged = {
+        unsafe { libmimalloc_sys::mi_collect(true) };
+        true
+    };
+    purged
+}
+
 /// jemalloc's settings, read once at its start: background threads hand freed pages back to the OS ten seconds after
 /// they go unused, so an idle process holds little more than it allocated. A shorter wait hands back pages the next
 /// batches fault in again, which cost throughput. Its memory comes in huge pages, each faulted in once rather than
@@ -613,6 +638,12 @@ impl BufferPool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn purge_freed_hands_back_what_was_freed() {
+        drop(vec![1u8; 64 << 20]);
+        assert!(purge_freed());
+    }
 
     /// The process total counts a block while it lives, whichever thread frees it.
     #[cfg(unix)]

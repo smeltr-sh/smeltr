@@ -1962,9 +1962,11 @@ pub(crate) fn record_log_counts(registry: &Metrics, process: &str) {
 
 /// What `process` holds in memory, as a gauge in its `registry`, labeled as [`record_log_counts`] labels its own and
 /// for the same reason. The runtime's is what its memory parts (`smeltr_memory_part_bytes`) are checked against.
-pub(crate) fn record_memory_gauge(registry: &Metrics, process: &str) {
+/// Gives the bytes it recorded.
+pub(crate) fn record_memory_gauge(registry: &Metrics, process: &str) -> u64 {
     let bytes = crate::resources::own_memory_bytes();
     registry.gauge("smeltr_process_memory_bytes", &[("process", process)], bytes as f64);
+    bytes
 }
 
 /// The request: `window`, numbered `seq`, with what `about` and `deployed` say of the worker and what it runs now.
