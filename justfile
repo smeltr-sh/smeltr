@@ -14,6 +14,12 @@ set shell := ["cmd.exe", "/c"]
 # which works only in a POSIX shell. `[env]` reaches a recipe's commands
 # from just 1.56.0.
 
+# The vendored C (krb5, SASL, librdkafka, AWS-LC) is written for C17, and GCC 15 defaults to C23. krb5 also promotes
+# warnings to errors, and a newer glibc raises one of them; WARN_CFLAGS stops the promotion. Linux only: Windows
+# builds with MSVC, and macOS's clang defaults to C17. The Dockerfile's builder sets the same two.
+export CFLAGS := env("CFLAGS", if os() == "linux" { "-std=gnu17" } else { "" })
+export WARN_CFLAGS := env("WARN_CFLAGS", if os() == "linux" { "-Wall" } else { "" })
+
 [private]
 default:
     @just --list
