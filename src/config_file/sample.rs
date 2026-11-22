@@ -516,7 +516,8 @@ mod tests {
         );
     }
 
-    /// A value that failed as an open object saves under the object's fields alone, and the sample reads back.
+    /// A value that failed as an open object saves under the object's fields alone, and reading the sample fails each
+    /// of those fields with the value's original text.
     #[test]
     fn a_failed_open_object_saves_under_its_fields() {
         use crate::heartbeat::{CaptureBatch, CaptureColumn, CapturedRow};
