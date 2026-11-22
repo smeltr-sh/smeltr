@@ -23,6 +23,26 @@ pub fn value_at<'v>(object: &'v RecordObject, path: &str) -> Option<&'v serde_js
     Some(value)
 }
 
+/// The value at `path` in `object`, as `value_at` gives it. Err is a value on the way that is neither an object nor a
+/// null: it holds no field.
+fn leaf_at<'v>(object: &'v RecordObject, path: &str) -> Result<Option<&'v serde_json::Value>, &'v serde_json::Value> {
+    let mut keys = crate::plan::tree::segments(path);
+    let Some(mut value) = keys.next().and_then(|key| object.get(key.as_ref())) else {
+        return Ok(None);
+    };
+    for key in keys {
+        value = match value {
+            serde_json::Value::Object(held) => match held.get(key.as_ref()) {
+                Some(value) => value,
+                None => return Ok(None),
+            },
+            serde_json::Value::Null => return Ok(None),
+            unfit => return Err(unfit),
+        };
+    }
+    Ok(Some(value))
+}
+
 /// The keys of the object `object` of `record` that no entry of `fields` claims, by its key there: what that object's
 /// unclaimed fields hold. `None` where every key is claimed, or `record` holds no object there.
 pub fn unclaimed_of(record: &RecordObject, object: &str, fields: &[(Entry, DataType)]) -> Option<serde_json::Value> {
@@ -149,8 +169,15 @@ impl RecordChunk {
             };
             let read: Vec<Option<&serde_json::Value>> = match entry {
                 Entry::Unclaimed(_) => unclaimed.iter().map(Option::as_ref).collect(),
-                Entry::Field(field) => (objects.iter())
-                    .map(|o| value_at(o, field).filter(|v| !v.is_null()))
+                Entry::Field(field) => (objects.iter().enumerate())
+                    .map(|(row, o)| {
+                        // A field under a value that is no object fails, as a source's reader fails it.
+                        let held = leaf_at(o, field).unwrap_or_else(|unfit| {
+                            failed.push((row as u32, i, unfit.to_string()));
+                            None
+                        });
+                        held.filter(|v| !v.is_null())
+                    })
                     .collect(),
             };
             if *ty == DataType::Bytes {

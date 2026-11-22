@@ -169,7 +169,9 @@ fn typed_against_raw() {
         let (t, sink) = time(
             &typed_bundle,
             Box::new(rows),
-            SourceMeta::KAFKA.declaring(fields()).unwrap(),
+            SourceMeta::KAFKA
+                .declaring(fields().into_iter().map(|(entry, ty)| (entry.column(), ty)).collect())
+                .unwrap(),
         );
         typed.push(t);
         typed_doc = sink.kept();

@@ -1159,40 +1159,6 @@ impl SourceMeta {
     }
 }
 
-/// What a record declares, each by its keys: its fields and its open objects. The root's keys are none.
-struct Declared {
-    leaves: Vec<Vec<String>>,
-    open: Vec<Vec<String>>,
-}
-
-/// The name of the first value in `object`, an object at `path` in a record, that no declared field claims and no
-/// open object keeps: a declared field's value is its own, whatever it holds.
-fn undeclared(
-    object: &crate::io::RecordObject,
-    path: &mut Vec<String>,
-    name: &str,
-    declared: &Declared,
-) -> Option<String> {
-    let kept = declared.open.contains(path);
-    object.iter().find_map(|(key, value)| {
-        path.push(key.clone());
-        let above = (declared.leaves.iter().chain(&declared.open)).any(|p| p.starts_with(path));
-        let found = if declared.leaves.contains(path) {
-            None
-        } else {
-            match value.as_object() {
-                Some(inner) if above => undeclared(inner, path, &crate::plan::tree::child(name, key), declared),
-                // A null where an object is declared is that object with none of its fields.
-                None if above && value.is_null() => None,
-                _ if kept && !above => None,
-                _ => Some(crate::plan::tree::child(name, key)),
-            }
-        };
-        path.pop();
-        found
-    })
-}
-
 /// The chunk every one of `records` points into, and each record's row of it. A source hands one poll's rows in one
 /// chunk (`io::SourceRecord::chunk`), and parking keeps a batch's rows in one, so a batch has one.
 fn chunk_rows(records: &[crate::io::SourceRecord]) -> (Option<std::sync::Arc<crate::io::RecordChunk>>, Vec<u32>) {
@@ -4198,8 +4164,11 @@ mod tests {
             meta.record_object(&records[0], ""),
             object(serde_json::json!({"id": 1, "at": "2026-10-10T00:00:00.000000Z"}))
         );
-        let err = meta.read_stored(&[(&raw, &fields)]).unwrap_err();
-        assert!(err.contains("`_raw`"), "{err}");
+        let records = meta.read_stored(&[(&raw, &fields)]).unwrap();
+        assert!(
+            meta.record_object(&records[0], "").is_empty(),
+            "a key its record does not declare is left out"
+        );
 
         // A value its record lists as failed fails again, as it was spelled, though its type would take it; a bytes
         // field's spelling is not read as base64.
@@ -4214,10 +4183,11 @@ mod tests {
             &[(0, 0, r#"{"a":1}"#.to_string()), (0, 1, "true".to_string())]
         );
         let tagged = object(serde_json::json!({"name": "a", "__capture": {"mistyped": "a message"}}));
-        let err = listed.read_stored(&[(&tagged, &fields)]).unwrap_err();
-        assert!(
-            err.contains("`__capture`"),
-            "a string there is not a list of failed fields: {err}"
+        let records = listed.read_stored(&[(&tagged, &fields)]).unwrap();
+        assert_eq!(
+            records[0].chunk.failed(),
+            [],
+            "a string there is not a list of failed fields"
         );
 
         let nested = SourceMeta::KAFKA
@@ -4234,8 +4204,19 @@ mod tests {
             "a path's value is where its path names"
         );
         let extra = object(serde_json::json!({"user": {"name": "ann", "age": 3}}));
-        let err = nested.read_stored(&[(&extra, &fields)]).unwrap_err();
-        assert!(err.contains("`user.age`"), "{err}");
+        let records = nested.read_stored(&[(&extra, &fields)]).unwrap();
+        assert_eq!(
+            nested.record_object(&records[0], ""),
+            object(serde_json::json!({"user": {"name": "ann"}})),
+            "a key its record does not declare is left out"
+        );
+        let flat = object(serde_json::json!({"user": "ann", "labels": {"a.b": 2}}));
+        let records = nested.read_stored(&[(&flat, &fields)]).unwrap();
+        assert_eq!(
+            records[0].chunk.failed(),
+            &[(0, 0, r#""ann""#.to_string())],
+            "a field under a value that is no object fails with that value"
+        );
     }
 
     /// A stored array or object reads as declared all the way down: an array of its elements' type, an object a
@@ -4345,10 +4326,11 @@ mod tests {
             "a null object holds no field"
         );
         let extra = object_of(serde_json::json!({"destination": {"ip": "8.8.8.8", "mac": "aa"}}));
-        let err = meta.read_stored(&[(&extra, &fields)]).unwrap_err();
-        assert!(
-            err.contains("`destination.mac`"),
-            "a closed object holds only its fields: {err}"
+        let read = meta.read_stored(&[(&extra, &fields)]).unwrap();
+        assert_eq!(
+            meta.record_object(&read[0], ""),
+            object_of(serde_json::json!({"destination": {"ip": "8.8.8.8"}})),
+            "a closed object holds only its fields"
         );
 
         for (ty, names) in [

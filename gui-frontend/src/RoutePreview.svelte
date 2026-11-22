@@ -396,7 +396,6 @@
   <InlineError message={error} />
 
   {#if result}
-    {#each result.warnings ?? [] as w (w)}<p class="warn">{w}</p>{/each}
     {#if counts && result.rows.length > 0}
       <RouteDiagram {result} {counts} sampleName={choices.name(ran)} />
     {/if}
@@ -447,9 +446,6 @@
 </div>
 
 <style>
-  .warn {
-    color: var(--warn);
-  }
   .preview {
     border: 1px solid var(--border);
     border-radius: var(--radius-card);
