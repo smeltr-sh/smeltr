@@ -2,7 +2,7 @@
 # Release. `just cut-release` makes the tag; nothing here records, commits or tags. A
 # pre-release tag (`v1.2.0-rc1`) is a trial, run by hand on its tag from the Actions tab or with
 # `gh workflow run release.yml --ref v1.2.0-rc1 -f windows=false`: it needs no fixtures, drafts a pre-release,
-# and pushes only its own image tag. Without Windows, the image is out as soon as Linux is built.
+# and pushes only its own image tags. Without Windows, the image is out as soon as Linux is built.
 #
 # `just check` does not run here: it runs before every push. Actions are
 # pinned to commits, and the jobs that run the build hold no token that can publish.
@@ -57,7 +57,15 @@ jobs:
 
   linux:
     needs: guard
-    runs-on: ubuntu-26.04
+    # Each architecture builds on its own: the vendored C configures by running what it compiled.
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-26.04
+            arch: ''
+          - runner: ubuntu-26.04-arm
+            arch: -arm64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -74,20 +82,20 @@ jobs:
           sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y krb5-kdc krb5-admin-server krb5-user
           just image-tests
       - name: Scan the image against the STIG
-        run: just stig && mv stig/report.html smeltr-stig.html
+        run: just stig && mv stig/report.html smeltr-stig${{ matrix.arch }}.html
       - name: Scan the image for known vulnerabilities
-        run: just cves && mv cves/report.txt smeltr-cves.txt
+        run: just cves && mv cves/report.txt smeltr-cves${{ matrix.arch }}.txt
       - name: List the image's packages as an SBOM
-        run: just sbom && mv sbom/sbom.cdx.json smeltr-sbom.cdx.json
+        run: just sbom && mv sbom/sbom.cdx.json smeltr-sbom${{ matrix.arch }}.cdx.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: linux
+          name: linux${{ matrix.arch }}
           path: |
-            smeltr-stig.html
-            smeltr-cves.txt
-            smeltr-sbom.cdx.json
-            smeltr-linux.tar.gz
-            smeltr-image.tar.gz
+            smeltr-stig${{ matrix.arch }}.html
+            smeltr-cves${{ matrix.arch }}.txt
+            smeltr-sbom${{ matrix.arch }}.cdx.json
+            smeltr-linux${{ matrix.arch }}.tar.gz
+            smeltr-image${{ matrix.arch }}.tar.gz
 
   windows:
     needs: guard
@@ -146,7 +154,15 @@ jobs:
         run: |
           name=${GITHUB_REF_NAME#v}
           image=ghcr.io/${GITHUB_REPOSITORY,,}
-          docker load -i linux/smeltr-image.tar.gz
+          # Each architecture's image goes up under a tag of its own; every release tag names the index of both.
+          for each in amd64: arm64:-arm64; do
+            arch=${each%%:*} suffix=${each#*:}
+            docker load -i "linux$suffix/smeltr-image$suffix.tar.gz"
+            docker tag "smeltr:$name" "$image:$name-$arch"
+            docker push "$image:$name-$arch"
+            digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image:$name-$arch")
+            echo "$arch=${digest#*@}" >> "$GITHUB_OUTPUT"
+          done
           # `1.2`, `1` and `latest` move only to the newest release they cover on main or a release branch, so a
           # patch to a version that has been passed leaves the newer release's tags where they are, and a stray tag
           # moves none of them.
@@ -164,24 +180,28 @@ jobs:
               if [ "$(newest 'v[0-9]*')" = "$GITHUB_REF_NAME" ]; then tags="$tags latest"; else older=true; fi
               ;;
           esac
-          for t in $tags; do
-            docker tag "smeltr:$name" "$image:$t"
-            docker push "$image:$t"
-          done
-          # Every tag names one image, so signing its digest covers them all.
-          digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image:$name")
+          refs=()
+          for t in $tags; do refs+=(-t "$image:$t"); done
+          docker buildx imagetools create "${refs[@]}" "$image:$name-amd64" "$image:$name-arm64"
+          # Every tag names one index, so signing its digest covers them all.
+          digest=$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$image:$name")
           echo "image=$image" >> "$GITHUB_OUTPUT"
           echo "older=${older:-}" >> "$GITHUB_OUTPUT"
-          echo "digest=${digest#*@}" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           cosign-release: v3.1.3
-      - name: Sign the image and attest its SBOM
+      - name: Sign the image and attest its SBOMs
         env:
-          REF: ${{ steps.push.outputs.image }}@${{ steps.push.outputs.digest }}
+          IMAGE: ${{ steps.push.outputs.image }}
+          INDEX: ${{ steps.push.outputs.digest }}
+          AMD64: ${{ steps.push.outputs.amd64 }}
+          ARM64: ${{ steps.push.outputs.arm64 }}
         run: |
-          cosign sign --yes "$REF"
-          cosign attest --yes --type cyclonedx --predicate linux/smeltr-sbom.cdx.json "$REF"
+          # `--recursive` signs the index and each architecture's image in it.
+          cosign sign --yes --recursive "$IMAGE@$INDEX"
+          cosign attest --yes --type cyclonedx --predicate linux/smeltr-sbom.cdx.json "$IMAGE@$AMD64"
+          cosign attest --yes --type cyclonedx --predicate linux-arm64/smeltr-sbom-arm64.cdx.json "$IMAGE@$ARM64"
       - name: Publish the Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -189,14 +209,16 @@ jobs:
           OLDER: ${{ steps.push.outputs.older }}
         run: |
           # The release lists what most people download; the image archive and the reports go in one zip beside them.
-          zip -j smeltr-extras.zip linux/smeltr-image.tar.gz linux/smeltr-sbom.cdx.json linux/smeltr-stig.html linux/smeltr-cves.txt
+          zip -j smeltr-extras.zip linux/smeltr-image.tar.gz linux/smeltr-sbom.cdx.json linux/smeltr-stig.html linux/smeltr-cves.txt \
+            linux-arm64/smeltr-image-arm64.tar.gz linux-arm64/smeltr-sbom-arm64.cdx.json \
+            linux-arm64/smeltr-stig-arm64.html linux-arm64/smeltr-cves-arm64.txt
           # A release's notes are its page on smeltr.sh, as Markdown; a pre-release has none.
           prerelease= notes= latest=
           case "$GITHUB_REF_NAME" in
             *-*) prerelease='--prerelease --draft' ;;
             *) notes=$(node repo/website/scripts/release-notes.js "${GITHUB_REF_NAME#v}") ;;
           esac
-          assets=(linux/smeltr-linux.tar.gz)
+          assets=(linux/smeltr-linux.tar.gz linux-arm64/smeltr-linux-arm64.tar.gz)
           if [ "$WINDOWS" = success ]; then assets+=(windows/smeltr-windows.zip); fi
           # A patch to an older line is not the release GitHub shows as latest.
           if [ -n "$OLDER" ]; then latest=--latest=false; fi
