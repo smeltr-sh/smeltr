@@ -24,6 +24,7 @@ use rdkafka::Message;
 use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use rdkafka::client::DefaultClientContext;
 use rdkafka::consumer::{BaseConsumer, Consumer};
+use rdkafka::error::{KafkaError, RDKafkaErrorCode};
 use rdkafka::mocking::MockCluster;
 use rdkafka::producer::DefaultProducerContext;
 use rdkafka::types::{RDKafkaApiKey, RDKafkaRespErr};
@@ -831,9 +832,16 @@ fn read_back(brokers: &str, topics: &[&str], marker: &str) -> Result<Vec<Read>, 
             return Err(format!("{topic} has no partitions"));
         }
         for p in partitions {
-            let (low, high) = consumer
-                .fetch_watermarks(topic, p, Duration::from_secs(10))
-                .map_err(|e| format!("the end of {topic}/{p}: {e}"))?;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let (low, high) = loop {
+                match consumer.fetch_watermarks(topic, p, Duration::from_secs(10)) {
+                    // A topic the producer only just created may have no leader yet.
+                    Err(KafkaError::MetadataFetch(
+                        RDKafkaErrorCode::NotLeaderForPartition | RDKafkaErrorCode::LeaderNotAvailable,
+                    )) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(200)),
+                    r => break r.map_err(|e| format!("the end of {topic}/{p}: {e}"))?,
+                }
+            };
             if high > low {
                 left.insert((topic.to_string(), p), (low, high));
             }
