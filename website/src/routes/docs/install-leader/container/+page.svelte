@@ -25,8 +25,10 @@
 
   <h2 id="pull">Pull and verify the image</h2>
   <p>
-    The release workflow signs each image and attaches its package list (a CycloneDX SBOM). A tag
-    can move to a newer image, so pull it, then check and run that exact digest:
+    The image runs on x86-64 and Arm64 hosts, and a pull fetches the one for the host. The release
+    workflow signs the image and attaches its package lists (a CycloneDX SBOM for each
+    architecture). A tag can move to a newer image, so pull it, then check and run that exact
+    digest:
   </p>
   <pre><code
       >docker pull {image}:{version}
@@ -34,7 +36,7 @@ image=$(docker image inspect --format '&#123;&#123;index .RepoDigests 0&#125;&#1
     ></pre>
   <p>
     Both checks fail unless that workflow, run for a release tag, made the image. They need cosign 3
-    or later, and the second prints the whole package list, so send it to <code>/dev/null</code>:
+    or later, and the second prints both package lists, so send it to <code>/dev/null</code>:
   </p>
   <pre><code
       >cosign verify "$image" \
@@ -110,6 +112,7 @@ unzip smeltr-extras.zip smeltr-image.tar.gz
 docker load --input smeltr-image.tar.gz
 docker image inspect smeltr:{version} --format '&#123;&#123;.Id&#125;&#125; user=&#123;&#123;.Config.User&#125;&#125;'</code
     ></pre>
+  <p>On an Arm64 host, use <code>smeltr-image-arm64.tar.gz</code> in both commands.</p>
 
   <h2 id="run">Run the container</h2>
   <p>The image runs as UID/GID 1000. Prepare persistent host directories before starting it:</p>
