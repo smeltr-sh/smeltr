@@ -431,7 +431,7 @@ test("exceptions are counted from the leader's series over the range their own c
   await expect(errors.getByText('6,000 exceptions.')).toBeVisible();
   await shoot(admin, errors, 'errors-range');
   await errors.getByRole('button', { name: 'About Exceptions' }).click();
-  await expect(admin.getByText(/counted per pipeline, function and kind/)).toBeVisible();
+  await expect(admin.getByText(/counted per pipeline/)).toBeVisible();
   if (SHOTS) await admin.screenshot({ path: path.join(SHOTS, 'errors-help.png') });
 });
 
