@@ -122,31 +122,45 @@ impl<'a> Object<'a> {
     }
 
     /// Put `col` at the path `segs`, in place of what is there. A new field goes first among its object's fields
-    /// where `first`, else last. An object made on the way inherits its key of the parent's unclaimed fields.
+    /// where `first`, else last.
     fn put(&mut self, segs: &[&str], col: &'a Column, leaves: &mut Vec<Leaf<'a>>, first: bool) {
-        let (head, rest) = segs.split_first().expect("a name has a segment");
+        let (last, path) = segs.split_last().expect("a name has a segment");
+        let o = self.object_at(path, first);
+        o.keys = std::cell::OnceCell::new();
+        leaves.push(Leaf::of(col));
+        let leaf = Field::Leaf(col, leaves.len() - 1);
+        match o.fields.iter().position(|(k, _)| k.raw == *last) {
+            Some(at) => o.fields[at].1 = leaf,
+            None => {
+                let at = if first { 0 } else { o.fields.len() };
+                o.fields.insert(at, (Key::new(last), leaf));
+            }
+        }
+    }
+
+    /// The object at `path`, made where there is none: each object made on the way inherits its key of its parent's
+    /// unclaimed fields, and goes first among its parent's fields where `first`, else last.
+    fn object_at(&mut self, path: &[&str], first: bool) -> &mut Object<'a> {
+        let Some((head, rest)) = path.split_first() else {
+            return self;
+        };
         self.keys = std::cell::OnceCell::new();
         let at = match self.fields.iter().position(|(k, _)| k.raw == *head) {
             Some(i) => i,
             None => {
                 let at = if first { 0 } else { self.fields.len() };
-                let placeholder = Field::Object(Object::new(Unclaimed::Inherit));
-                self.fields.insert(at, (Key::new(head), placeholder));
+                let made = Field::Object(Object::new(Unclaimed::Inherit));
+                self.fields.insert(at, (Key::new(head), made));
                 at
             }
         };
-        if rest.is_empty() {
-            leaves.push(Leaf::of(col));
-            self.fields[at].1 = Field::Leaf(col, leaves.len() - 1);
-            return;
-        }
         if let Field::Leaf(..) = self.fields[at].1 {
             self.fields[at].1 = Field::Object(Object::new(Unclaimed::Inherit));
         }
         let Field::Object(o) = &mut self.fields[at].1 else {
             unreachable!("made an object above")
         };
-        o.put(rest, col, leaves, first);
+        o.object_at(rest, first)
     }
 }
 
@@ -163,22 +177,29 @@ impl<'a> RecordView<'a> {
         Self::build(tree, &column, true)
     }
 
-    /// A record of `fields`, each at its dotted name, its unclaimed fields the one named `tree::UNCLAIMED`, if any.
+    /// A record of `fields`, each at its dotted name, and each object's unclaimed fields the one its
+    /// `tree::unclaimed_entry` names, if any.
     pub fn from_named(fields: impl IntoIterator<Item = (&'a str, &'a Column)>) -> Self {
         let mut s = RecordView {
             root: Object::new(Unclaimed::None),
             leaves: Vec::new(),
         };
         for (name, col) in fields {
-            if name == tree::UNCLAIMED {
-                if let Ok(v) = col.variant() {
-                    s.root.unclaimed = Unclaimed::Slot(v);
-                }
-                continue;
-            }
-            let segs: Vec<Cow<str>> = tree::segments(name).collect();
+            let object = tree::unclaimed_object(name);
+            // The root's name has no key.
+            let segs: Vec<Cow<str>> = match object {
+                Some("") => Vec::new(),
+                _ => tree::segments(object.unwrap_or(name)).collect(),
+            };
             let segs: Vec<&str> = segs.iter().map(AsRef::as_ref).collect();
-            s.root.put(&segs, col, &mut s.leaves, false);
+            match object {
+                Some(_) => {
+                    if let Ok(v) = col.variant() {
+                        s.root.object_at(&segs, false).unclaimed = Unclaimed::Slot(v);
+                    }
+                }
+                None => s.root.put(&segs, col, &mut s.leaves, false),
+            }
         }
         s
     }

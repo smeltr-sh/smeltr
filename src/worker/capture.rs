@@ -941,14 +941,16 @@ fn source_columns(meta: &SourceMeta) -> Vec<CaptureColumn> {
         .map(|(name, ty)| (name.to_string(), ty.clone()));
     record
         .chain(source)
-        .map(|(name, ty)| match name == UNCLAIMED {
-            // Spelled as a destination's open record spells it (`written_columns`).
-            true => CaptureColumn {
-                name,
-                ty: "{...}".to_string(),
+        .map(
+            |(name, ty)| match crate::plan::tree::unclaimed_object(&name).is_some() {
+                // Spelled as a destination's open record spells it (`written_columns`).
+                true => CaptureColumn {
+                    name,
+                    ty: "{...}".to_string(),
+                },
+                false => CaptureColumn { name, ty: ty.spell() },
             },
-            false => CaptureColumn { name, ty: ty.spell() },
-        })
+        )
         .collect()
 }
 
@@ -959,9 +961,9 @@ fn source_row(meta: &SourceMeta, record: &SourceRecord, text: &str, source: &cra
     let fields = meta.record_fields();
     let mut values: Vec<serde_json::Value> = fields
         .iter()
-        .map(|(name, _)| match *name {
-            UNCLAIMED => crate::io::unclaimed_of(&object, &fields).unwrap_or_default(),
-            name => crate::io::value_at(&object, name).cloned().unwrap_or_default(),
+        .map(|(name, _)| match crate::plan::tree::unclaimed_object(name) {
+            Some(at) => crate::io::unclaimed_of(&object, at, &fields).unwrap_or_default(),
+            None => crate::io::value_at(&object, name).cloned().unwrap_or_default(),
         })
         .collect();
     let mut failed = Vec::new();
@@ -2767,6 +2769,63 @@ mod tests {
         assert_eq!(&row.values[..2], [serde_json::json!("true"), serde_json::json!("ann")]);
         assert_eq!(row.failed, [0]);
         assert_eq!(source_columns(&meta)[0].ty, "i64");
+    }
+
+    /// A source that declares an object is captured by its leaves, an open object's other keys as one column, and the
+    /// capture saved as a sample reads back as the record it was.
+    #[test]
+    fn a_declared_object_is_captured_by_its_leaves_and_reads_back() {
+        let home = DataType::Struct(vec![("city".into(), DataType::Str)], true);
+        let meta = SourceMeta::KAFKA
+            .declaring(vec![("id".into(), DataType::I64), ("home".into(), home)])
+            .unwrap();
+        let object = |v: serde_json::Value| v.as_object().unwrap().clone();
+        let none = crate::io::SourceFields::new();
+        let stored = object(serde_json::json!({"id": 1, "home": {"city": "Oslo", "zip": "0150"}}));
+        let records = meta.read_stored(&[(&stored, &none)]).unwrap();
+
+        let captured: Vec<_> = (source_columns(&meta).into_iter())
+            .filter(|c| !c.name.starts_with("__"))
+            .collect();
+        assert_eq!(
+            captured,
+            columns(&[("id", "i64"), ("home.city", "str"), ("home....", "{...}")])
+        );
+        let row = source_row(&meta, &records[0], "", &none);
+        assert_eq!(
+            row.values[..3],
+            [
+                serde_json::json!(1),
+                serde_json::json!("Oslo"),
+                serde_json::json!({"zip": "0150"})
+            ]
+        );
+
+        let sample = SourceMeta::of_columns(&captured).unwrap();
+        assert_eq!(sample.record_fields(), meta.record_fields());
+        let read = sample.read_stored(&[(&stored, &none)]).unwrap();
+        assert_eq!(sample.record_object(&read[0], ""), stored);
+    }
+
+    /// A sample column of an object with no field, as a pipeline that wrote `{}` leaves it, reads as an object that
+    /// holds whatever keys its rows do.
+    #[test]
+    fn a_sample_column_of_an_empty_object_reads_as_an_object() {
+        let sample = SourceMeta::of_columns(&columns(&[("a", "i64"), ("meta", "{}")])).unwrap();
+        let object = |v: serde_json::Value| v.as_object().unwrap().clone();
+        let none = crate::io::SourceFields::new();
+        for stored in [
+            serde_json::json!({"a": 1, "meta": {}}),
+            serde_json::json!({"a": 1, "meta": {"k": true}}),
+        ] {
+            let stored = object(stored);
+            let read = sample.read_stored(&[(&stored, &none)]).unwrap();
+            let mut expected = stored.clone();
+            if expected["meta"] == serde_json::json!({}) {
+                expected.remove("meta");
+            }
+            assert_eq!(sample.record_object(&read[0], ""), expected);
+        }
     }
 
     /// A finished row is shown under the fields its pipeline writes, typed as declared, then where the destination

@@ -441,41 +441,57 @@ pub fn read_sample(
             .map(std::borrow::Cow::into_owned)
     };
     let own = |name: &str| !head(name).is_some_and(|h| crate::plan::tree::is_internal(&h));
-    let captured: Vec<_> = columns.iter().filter(|c| own(&c.name)).collect();
+    let entry = |name: &str| crate::plan::tree::unclaimed_object(name).is_some();
+    // The sample's columns as the fields they declare, as `meta`'s are: an object is its leaves.
+    let own_columns: Vec<_> = columns.iter().filter(|c| own(&c.name)).cloned().collect();
+    let captured: Vec<(String, DataType)> = match own_columns.is_empty() {
+        true => Vec::new(),
+        false => (SourceMeta::of_columns(&own_columns)?.record_fields().into_iter())
+            .filter(|(name, _)| !entry(name))
+            .map(|(name, ty)| (name.to_string(), ty))
+            .collect(),
+    };
     let declared = meta.record_fields();
-    // An open record keeps a top-level field no declared field claims.
-    let kept = |name: &str| meta.is_open() && !declared.iter().any(|(d, _)| head(d) == head(name));
+    let keys = |name: &str| -> Vec<String> {
+        crate::plan::tree::object_keys(crate::plan::tree::unclaimed_object(name).unwrap_or(name))
+            .map(std::borrow::Cow::into_owned)
+            .collect()
+    };
+    // An open object keeps a field under it that no declared field claims by its key there.
+    let kept = |name: &str| {
+        let at = keys(name);
+        declared.iter().filter(|(d, _)| entry(d)).any(|(open, _)| {
+            let object = keys(open);
+            let claimed = |d: &[String]| d.len() > object.len() && d[..=object.len()] == at[..=object.len()];
+            at.len() > object.len() && at.starts_with(&object) && !declared.iter().any(|(d, _)| claimed(&keys(d)))
+        })
+    };
     let mut warnings = Vec::new();
     let mut gone = Vec::new();
     let mut retyped = Vec::new();
     if !captured.is_empty() {
-        for c in &captured {
-            match declared.iter().find(|(name, _)| *name == c.name) {
-                None if c.name == crate::plan::tree::UNCLAIMED || kept(&c.name) => {}
+        for (name, was) in &captured {
+            match declared.iter().find(|(d, _)| d == name) {
+                None if kept(name) => {}
                 None => {
                     warnings.push(format!(
-                        "`{}` was captured, and its source no longer declares it, so it is left out",
-                        c.name
+                        "`{name}` was captured, and its source no longer declares it, so it is left out"
                     ));
-                    gone.push(c.name.as_str());
+                    gone.push(name.as_str());
                 }
-                Some((_, now)) if now.spell() != c.ty && c.name != crate::plan::tree::UNCLAIMED => {
+                Some((_, now)) if now != was => {
                     warnings.push(format!(
-                        "`{}` was captured as {} and its source now declares it {}",
-                        c.name,
-                        c.ty,
+                        "`{name}` was captured as {} and its source now declares it {}",
+                        was.spell(),
                         now.spell()
                     ));
-                    retyped.push(c.name.as_str());
+                    retyped.push(name.as_str());
                 }
                 Some(_) => {}
             }
         }
-        for (name, _) in declared
-            .iter()
-            .filter(|(n, _)| *n != crate::plan::tree::UNCLAIMED && own(n))
-        {
-            if !captured.iter().any(|c| c.name == *name) {
+        for (name, _) in declared.iter().filter(|(n, _)| !entry(n) && own(n)) {
+            if !captured.iter().any(|(c, _)| c == name) {
                 warnings.push(format!("`{name}` is declared and was not captured, so it reads null"));
             }
         }
@@ -2000,6 +2016,73 @@ mod tests {
         let meta = SourceMeta::of_columns(&sample.columns).unwrap();
         let read = read_sample(&meta, &sample.columns, &sample.records).unwrap();
         assert!(read.warnings.is_empty(), "{:?}", read.warnings);
+    }
+
+    /// A pipeline over a saved sample of another pipeline's output writes under an object that output holds: a
+    /// lookup adds `destination.geo.country_iso_code`, a write changes one field, a delete removes one, and the
+    /// object's other fields stay.
+    #[test]
+    fn a_pipeline_on_a_saved_output_sample_writes_under_its_objects() {
+        let config = r#"{"version":1,
+            "lookupTables":[{"id":"countries","type":"inline","headers":["ip","country"],"rows":[["8.8.8.8","US"]]}],
+            "pipelines":[
+                {"id":"ecs","name":"ECS","steps":[{"id":"e","type":"code","body":
+                    "destination = {ip: _raw, port: 443, geo: {city_name: \"Ashburn\"}}; event = {kind: \"event\"};"}]},
+                {"id":"geo","name":"Geo","steps":[
+                    {"id":"l","type":"lookup","input":"destination.ip","table":"countries","matchKind":"exact",
+                     "keyColumn":"ip","outputs":[{"source":"country","field":"destination.geo.country_iso_code"}]},
+                    {"id":"w","type":"code","body":"destination.port = 8443; event.kind = null; event.category = \"network\";"}]}]}"#;
+        let request = |pipeline: &str, as_sample: bool| PreviewRequest {
+            config: config.into(),
+            pipeline: Some(pipeline.into()),
+            sample: None,
+            show_internal: false,
+            at_micros: None,
+            filter: None,
+            attribution: false,
+            as_sample,
+            dictionary: false,
+            after_dot: None,
+            capture_filter: None,
+        };
+        let messages = |p: &Envelope<Preview>| p.errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>();
+        let raw = serde_json::json!({ "_raw": "8.8.8.8" }).as_object().unwrap().clone();
+        let saved = run_preview(request("ecs", true), Default::default(), &[], vec![raw]);
+        assert!(saved.succeeded(), "{:?}", messages(&saved));
+        let sample = saved.body.as_sample.unwrap();
+        let meta = SourceMeta::of_columns(&sample.columns).unwrap();
+        let declared: Vec<_> = meta.record().iter().map(|(name, _)| name.as_ref()).collect();
+        for leaf in [
+            "destination.ip",
+            "destination.port",
+            "destination.geo.city_name",
+            "event.kind",
+        ] {
+            assert!(declared.contains(&leaf), "{leaf}: {declared:?}");
+        }
+        assert!(
+            !declared.contains(&"destination"),
+            "an object is its leaves: {declared:?}"
+        );
+
+        let previewed = run_preview(
+            request("geo", false),
+            Default::default(),
+            &sample.columns,
+            sample.records,
+        );
+        assert!(previewed.succeeded(), "{:?}", messages(&previewed));
+        assert!(previewed.body.warnings.is_empty(), "{:?}", messages(&previewed));
+        let row = previewed.body.rows[0].json.as_ref().unwrap();
+        assert_eq!(
+            row["destination"],
+            serde_json::json!({
+                "ip": "8.8.8.8",
+                "port": 8443,
+                "geo": {"city_name": "Ashburn", "country_iso_code": "US"},
+            })
+        );
+        assert_eq!(row["event"], serde_json::json!({"category": "network"}));
     }
 
     fn after(text: &str, at: DotAt) -> Option<AfterDot> {

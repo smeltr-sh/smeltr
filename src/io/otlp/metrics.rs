@@ -430,15 +430,15 @@ struct Point {
     scale: Option<Cell>,
     zero_count: Option<Cell>,
     zero_threshold: Option<Cell>,
-    positive: Option<Cell>,
-    negative: Option<Cell>,
+    positive: [Option<Cell>; 2],
+    negative: [Option<Cell>; 2],
     quantile_values: Option<Cell>,
     exemplars: Option<Cell>,
 }
 
 /// A point's fields, in `SourceMeta::otlp(Signal::Metrics)`'s order.
 fn row(head: &Head, point: Point) -> Row {
-    Row(vec![
+    Row([
         head.name.clone(),
         head.description.clone(),
         head.unit.clone(),
@@ -460,11 +460,12 @@ fn row(head: &Head, point: Point) -> Row {
         point.scale,
         point.zero_count,
         point.zero_threshold,
-        point.positive,
-        point.negative,
-        point.quantile_values,
-        point.exemplars,
-    ])
+    ]
+    .into_iter()
+    .chain(point.positive)
+    .chain(point.negative)
+    .chain([point.quantile_values, point.exemplars])
+    .collect())
 }
 
 /// A metric's own fields and its points; none for a metric with no data.
@@ -574,8 +575,8 @@ fn exponential_point(p: ExponentialHistogramDataPoint) -> Point {
         scale: Some(Cell::Int(p.scale.into())),
         zero_count: Some(Cell::Float(count(p.zero_count))),
         zero_threshold: (p.zero_threshold != 0.0).then_some(Cell::Float(p.zero_threshold)),
-        positive: p.positive.as_ref().map(buckets),
-        negative: p.negative.as_ref().map(buckets),
+        positive: p.positive.as_ref().map(buckets).unwrap_or_default(),
+        negative: p.negative.as_ref().map(buckets).unwrap_or_default(),
         exemplars: exemplars(&p.exemplars),
         ..Point::default()
     }
@@ -619,16 +620,12 @@ fn put_counts(out: &mut Vec<u8>, counts: &[u64]) {
     end(out, open, counts.len());
 }
 
-/// An exponential histogram's buckets on one side of zero, as `{offset, bucketCounts}`.
-fn buckets(b: &Buckets) -> Cell {
-    Cell::Variant(variant_of(|out| {
-        let open = begin_object(out);
-        put_key(out, "offset");
-        put_i64(out, b.offset.into());
-        put_key(out, "bucketCounts");
-        put_counts(out, &b.bucket_counts);
-        end(out, open, 2);
-    }))
+/// An exponential histogram's buckets on one side of zero, as its `offset` and its `bucketCounts`.
+fn buckets(b: &Buckets) -> [Option<Cell>; 2] {
+    [
+        Some(Cell::Int(b.offset.into())),
+        Some(Cell::Variant(variant_of(|out| put_counts(out, &b.bucket_counts)))),
+    ]
 }
 
 /// `exemplars` as a list of objects, each leaving out what it does not carry; null for none.
@@ -1825,12 +1822,12 @@ mod tests {
     fn a_count_is_a_double() {
         assert_eq!(count(7), 7.0);
         assert_eq!(count(u64::MAX), u64::MAX as f64);
-        let Cell::Variant(b) = buckets(&Buckets {
+        let [Some(Cell::Int(offset)), Some(Cell::Variant(counts))] = buckets(&Buckets {
             offset: 3,
             bucket_counts: vec![2],
         }) else {
             unreachable!()
         };
-        assert_eq!(shown(&b), json!({"offset": 3, "bucketCounts": [2.0]}));
+        assert_eq!((offset, shown(&counts)), (3, json!([2.0])));
     }
 }

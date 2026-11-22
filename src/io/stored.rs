@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use super::{RecordChunk, SourceRecord, elastic_receiver, hec, otlp};
 use crate::core::column::DataType;
-use crate::plan::tree::UNCLAIMED;
 
 /// A record as an object: each of its fields by name, as the source read it. What a sample and a capture hold.
 pub type RecordObject = serde_json::Map<String, serde_json::Value>;
@@ -23,13 +22,28 @@ pub fn value_at<'v>(object: &'v RecordObject, path: &str) -> Option<&'v serde_js
     Some(value)
 }
 
-/// The top-level keys of `object` that no field of `fields` claims, by its first key: what the root's unclaimed
-/// fields hold (`tree::UNCLAIMED`). `None` where every key is claimed.
-pub fn unclaimed_of<N: AsRef<str>>(object: &RecordObject, fields: &[(N, DataType)]) -> Option<serde_json::Value> {
+/// The keys of the object `object` of `record` that no field of `fields` claims, by its key there: what that object's
+/// unclaimed fields hold (`tree::unclaimed_entry`). `None` where every key is claimed, or `record` holds no object
+/// there.
+pub fn unclaimed_of<N: AsRef<str>>(
+    record: &RecordObject,
+    object: &str,
+    fields: &[(N, DataType)],
+) -> Option<serde_json::Value> {
+    use crate::plan::tree;
+    let at: Vec<_> = tree::object_keys(object).collect();
+    let mut held = record;
+    for key in &at {
+        held = held.get(key.as_ref())?.as_object()?;
+    }
     let claimed = |key: &str| {
-        (fields.iter()).any(|(n, _)| crate::plan::tree::segments(n.as_ref()).next().is_some_and(|k| k == key))
+        fields.iter().any(|(name, _)| {
+            let name = name.as_ref();
+            let mut keys = tree::object_keys(tree::unclaimed_object(name).unwrap_or(name));
+            at.iter().all(|k| keys.next().as_ref() == Some(k)) && keys.next().is_some_and(|k| k == key)
+        })
     };
-    let rest: RecordObject = (object.iter())
+    let rest: RecordObject = (held.iter())
         .filter(|(k, _)| !claimed(k))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
@@ -132,15 +146,15 @@ impl RecordChunk {
         let marked = |row: usize, name: &str| failed.get(row).is_some_and(|f| f.iter().any(|n| n == name));
         let mut failed = Vec::new();
         let mut columns = Vec::with_capacity(fields.len());
-        let unclaimed: Vec<Option<serde_json::Value>> = match fields.iter().any(|(n, _)| n.as_ref() == UNCLAIMED) {
-            true => objects.iter().map(|o| unclaimed_of(o, fields)).collect(),
-            false => Vec::new(),
-        };
         for (i, (name, ty)) in fields.iter().enumerate() {
             let name = name.as_ref();
-            let read: Vec<Option<&serde_json::Value>> = match name {
-                UNCLAIMED => unclaimed.iter().map(Option::as_ref).collect(),
-                name => (objects.iter())
+            let object = crate::plan::tree::unclaimed_object(name);
+            let unclaimed: Vec<Option<serde_json::Value>> = object
+                .map(|object| objects.iter().map(|o| unclaimed_of(o, object, fields)).collect())
+                .unwrap_or_default();
+            let read: Vec<Option<&serde_json::Value>> = match object {
+                Some(_) => unclaimed.iter().map(Option::as_ref).collect(),
+                None => (objects.iter())
                     .map(|o| value_at(o, name).filter(|v| !v.is_null()))
                     .collect(),
             };

@@ -278,9 +278,26 @@ fn closed(fields: &[(&str, DataType)]) -> DataType {
     )
 }
 
-/// An exponential histogram's buckets on one side of zero: the index of the first, and each one's count.
-fn exponential_buckets() -> DataType {
-    closed(&[("offset", DataType::I64), ("bucketCounts", array(DataType::F64))])
+/// The fields `name: ty` declares, onto `fields`: itself, or for an object each leaf under it, then the entry of its
+/// unclaimed fields (`tree::unclaimed_entry`) where it is open. Err for an object that declares nothing.
+pub(crate) fn leaves(name: &str, ty: &DataType, fields: &mut Vec<(String, DataType)>) -> Result<(), String> {
+    let DataType::Struct(members, open) = ty else {
+        fields.push((name.to_string(), ty.clone()));
+        return Ok(());
+    };
+    if members.is_empty() && !open {
+        return Err(format!(
+            "`{name}` is declared as `{{}}`, which declares no field: name the fields it holds, or declare it `{{...}}` to \
+             keep whatever keys it has"
+        ));
+    }
+    for (key, member) in members {
+        leaves(&crate::plan::tree::child(name, key), member, fields)?;
+    }
+    if *open {
+        fields.push((crate::plan::tree::unclaimed_entry(name), DataType::Variant));
+    }
+    Ok(())
 }
 
 /// One data point of an OTLP metric, with its metric's name, description, unit and `type`: `gauge`, `sum`,
@@ -291,7 +308,6 @@ fn exponential_buckets() -> DataType {
 /// to 2^53 exactly.
 fn otlp_metric_point() -> RecordFields {
     use std::borrow::Cow::Borrowed;
-    let buckets = exponential_buckets();
     std::borrow::Cow::Owned(vec![
         (Borrowed("name"), DataType::Str),
         (Borrowed("description"), DataType::Str),
@@ -314,8 +330,10 @@ fn otlp_metric_point() -> RecordFields {
         (Borrowed("scale"), DataType::I64),
         (Borrowed("zeroCount"), DataType::F64),
         (Borrowed("zeroThreshold"), DataType::F64),
-        (Borrowed("positive"), buckets.clone()),
-        (Borrowed("negative"), buckets),
+        (Borrowed("positive.offset"), DataType::I64),
+        (Borrowed("positive.bucketCounts"), array(DataType::F64)),
+        (Borrowed("negative.offset"), DataType::I64),
+        (Borrowed("negative.bucketCounts"), array(DataType::F64)),
         (
             Borrowed("quantileValues"),
             array(closed(&[("quantile", DataType::F64), ("value", DataType::F64)])),
@@ -355,7 +373,6 @@ const OTLP_RECEIVER_FIELDS: &[(&str, DataType)] = &[
 /// OTLP has none of, keep their own names; an unknown type is null.
 fn prometheus_record() -> RecordFields {
     use std::borrow::Cow::Borrowed;
-    let buckets = exponential_buckets();
     std::borrow::Cow::Owned(vec![
         (Borrowed("time"), DataType::DateTime),
         (Borrowed("name"), DataType::Str),
@@ -370,8 +387,10 @@ fn prometheus_record() -> RecordFields {
         (Borrowed("scale"), DataType::I64),
         (Borrowed("zeroCount"), DataType::F64),
         (Borrowed("zeroThreshold"), DataType::F64),
-        (Borrowed("positive"), buckets.clone()),
-        (Borrowed("negative"), buckets),
+        (Borrowed("positive.offset"), DataType::I64),
+        (Borrowed("positive.bucketCounts"), array(DataType::F64)),
+        (Borrowed("negative.offset"), DataType::I64),
+        (Borrowed("negative.bucketCounts"), array(DataType::F64)),
         (Borrowed("resetHint"), DataType::Str),
         (Borrowed("exemplars"), DataType::Variant),
         (Borrowed("description"), DataType::Str),
@@ -678,28 +697,36 @@ impl SourceMeta {
         self.record.iter().any(|(n, _)| n == crate::plan::tree::UNCLAIMED)
     }
 
-    /// `declaring`, taking a field under an internal key `internal` allows.
+    /// `declaring`, allowing a field under an internal key where `internal` says so. A field declared as an object is
+    /// its leaves, each a field of the record, and the object's unclaimed fields where it is open (Language).
     fn declare(self, record: Vec<(String, DataType)>, internal: fn(&str) -> bool) -> Result<SourceMeta, String> {
-        let paths: Vec<Vec<String>> = record
-            .iter()
-            .map(|(name, _)| {
-                crate::plan::tree::segments(name)
-                    .map(std::borrow::Cow::into_owned)
-                    .collect()
-            })
-            .collect();
-        for (i, (name, _)) in record.iter().enumerate() {
-            if paths[i]
-                .first()
-                .is_none_or(|key| key.is_empty() || crate::plan::tree::is_internal(key) && !internal(key))
-            {
+        use crate::plan::tree;
+        let mut fields: Vec<(String, DataType)> = Vec::with_capacity(record.len());
+        // Each field's place, by its keys, and the name it was declared under.
+        let mut places: Vec<(Vec<String>, bool, &str)> = Vec::with_capacity(record.len());
+        for (name, ty) in &record {
+            let unfit = |key: &std::borrow::Cow<str>| key.is_empty() || tree::is_internal(key) && !internal(key);
+            if tree::unclaimed_object(name).is_some() || tree::segments(name).next().is_none_or(|key| unfit(&key)) {
                 return Err(format!("`{name}` is not a name a record field can take"));
             }
-            if let Some(j) = (0..i).find(|&j| paths[j].starts_with(&paths[i]) || paths[i].starts_with(&paths[j])) {
-                return Err(format!(
-                    "`{}` and `{name}` are one field, or one holds the other",
-                    record[j].0
-                ));
+            let from = fields.len();
+            leaves(name, ty, &mut fields)?;
+            for (leaf, _) in &fields[from..] {
+                let object = tree::unclaimed_object(leaf);
+                let keys: Vec<String> = tree::segments(object.unwrap_or(leaf))
+                    .map(std::borrow::Cow::into_owned)
+                    .collect();
+                // A leaf holds no other field, and an object's unclaimed fields sit under no leaf.
+                let clash = |(other, others, _): &&(Vec<String>, bool, &str)| match (object.is_some(), *others) {
+                    (false, false) => other.starts_with(&keys) || keys.starts_with(other),
+                    (true, false) => keys.starts_with(other),
+                    (false, true) => other.starts_with(&keys),
+                    (true, true) => *other == keys,
+                };
+                if let Some((_, _, other)) = places.iter().find(clash) {
+                    return Err(format!("`{other}` and `{name}` are one field, or one holds the other"));
+                }
+                places.push((keys, object.is_some(), name));
             }
         }
         // Its chunks are the record's columns, so there is no payload for `__source.bytes` to read.
@@ -708,7 +735,7 @@ impl SourceMeta {
             _ => self.source,
         };
         Ok(SourceMeta {
-            record: record.into_iter().map(|(n, t)| (n.into(), t)).collect(),
+            record: fields.into_iter().map(|(n, t)| (n.into(), t)).collect(),
             source,
             ..self
         })
@@ -721,16 +748,30 @@ impl SourceMeta {
         if columns.is_empty() {
             return Ok(SourceMeta::NONE);
         }
-        let open = columns.iter().any(|c| c.name == crate::plan::tree::UNCLAIMED);
-        let record = columns
-            .iter()
-            .filter(|c| c.name != crate::plan::tree::UNCLAIMED)
-            .map(|c| {
-                crate::expr::parse::parse_type(&c.ty)
-                    .map(|ty| (c.name.clone(), ty))
-                    .map_err(|e| format!("column `{}` has type {:?}, which does not read: {e}", c.name, c.ty))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
+        // An object a pipeline wrote with nothing in it declares no field: here it is an object that holds no key.
+        fn holding(ty: DataType) -> DataType {
+            match ty {
+                DataType::Struct(members, open) => DataType::Struct(
+                    members.iter().map(|(k, t)| (k.clone(), holding(t.clone()))).collect(),
+                    open || members.is_empty(),
+                ),
+                other => other,
+            }
+        }
+        let mut open = false;
+        let mut record = Vec::with_capacity(columns.len());
+        for c in columns {
+            match crate::plan::tree::unclaimed_object(&c.name) {
+                Some("") => open = true,
+                // A column of an object's unclaimed fields declares that object open.
+                Some(object) => record.push((object.to_string(), DataType::Struct(Vec::new(), true))),
+                None => {
+                    let ty = crate::expr::parse::parse_type(&c.ty)
+                        .map_err(|e| format!("column `{}` has type {:?}, which does not read: {e}", c.name, c.ty))?;
+                    record.push((c.name.clone(), holding(ty)));
+                }
+            }
+        }
         // `__live` is the one name a pipeline cannot take a value of from its input: the engine primes it.
         let meta = SourceMeta::NONE.declare(record, |key| key != "__live")?;
         Ok(if open { meta.opened() } else { meta })
@@ -1046,23 +1087,30 @@ impl SourceMeta {
     }
 }
 
-/// The name of the first value in `object`, an object at `path` in a record, that is no declared field of `paths`
-/// and in none: a declared field's value is its own, whatever it holds.
+/// What a record declares, each by its keys: its fields and its open objects. The root's keys are none.
+struct Declared {
+    leaves: Vec<Vec<String>>,
+    open: Vec<Vec<String>>,
+}
+
+/// The name of the first value in `object`, an object at `path` in a record, that no declared field claims and no
+/// open object keeps: a declared field's value is its own, whatever it holds.
 fn undeclared(
     object: &crate::io::RecordObject,
     path: &mut Vec<String>,
     name: &str,
-    paths: &[Vec<String>],
+    declared: &Declared,
 ) -> Option<String> {
+    let kept = declared.open.contains(path);
     object.iter().find_map(|(key, value)| {
         path.push(key.clone());
-        let found = if paths.iter().any(|p| p == path) {
+        let above = (declared.leaves.iter().chain(&declared.open)).any(|p| p.starts_with(path));
+        let found = if declared.leaves.contains(path) {
             None
         } else {
             match value.as_object() {
-                Some(inner) if paths.iter().any(|p| p.starts_with(path)) => {
-                    undeclared(inner, path, &crate::plan::tree::child(name, key), paths)
-                }
+                Some(inner) if above => undeclared(inner, path, &crate::plan::tree::child(name, key), declared),
+                _ if kept && !above => None,
                 _ => Some(crate::plan::tree::child(name, key)),
             }
         };
@@ -4117,8 +4165,8 @@ mod tests {
     }
 
     /// A stored array or object reads as declared all the way down: an array of its elements' type, an object a
-    /// field per member. A value that cannot be its type is failed with its JSON, and an undeclared field's type is
-    /// refused.
+    /// field per member. A value that cannot be its type is failed with its JSON under its own field, and an
+    /// undeclared field's type is refused.
     #[test]
     fn a_stored_array_or_object_reads_as_declared() {
         let object = |v: serde_json::Value| v.as_object().unwrap().clone();
@@ -4152,10 +4200,7 @@ mod tests {
         );
         assert_eq!(
             records[1].chunk.failed(),
-            &[
-                (1, 0, r#"[1,"x"]"#.to_string()),
-                (1, 1, r#"{"at":"never","name":"bo"}"#.to_string())
-            ]
+            &[(1, 0, r#"[1,"x"]"#.to_string()), (1, 2, r#""never""#.to_string())]
         );
         assert_eq!(
             meta.record_object(&records[1], ""),
@@ -4173,6 +4218,76 @@ mod tests {
             blobs,
             "stored bytes are base64, and read back as bytes"
         );
+    }
+
+    /// Declaring an object declares its leaves: each field under it by its own name, and where the object is open, its
+    /// other keys. An object that declares no field and holds no other key is refused.
+    #[test]
+    fn a_declared_object_is_its_leaves() {
+        let object = |fields: &[(&str, DataType)], open| {
+            DataType::Struct(fields.iter().map(|(n, t)| (n.to_string(), t.clone())).collect(), open)
+        };
+        let geo = object(&[("city", DataType::Str)], true);
+        let destination = object(&[("ip", DataType::Str), ("port", DataType::I64), ("geo", geo)], false);
+        let meta = SourceMeta::KAFKA
+            .declaring(vec![
+                ("destination".into(), destination),
+                ("labels".into(), object(&[], true)),
+                ("tags".into(), DataType::Array(Box::new(object(&[], false)))),
+            ])
+            .unwrap();
+        let declared: Vec<_> = (meta.record().iter())
+            .map(|(name, ty)| format!("{name}: {}", ty.spell()))
+            .collect();
+        assert_eq!(
+            declared,
+            [
+                "destination.ip: str",
+                "destination.port: i64",
+                "destination.geo.city: str",
+                "destination.geo....: variant",
+                "labels....: variant",
+                "tags: array<{}>",
+            ]
+        );
+
+        let object_of = |v: serde_json::Value| v.as_object().unwrap().clone();
+        let fields = crate::io::SourceFields::new();
+        let stored = object_of(serde_json::json!({
+            "destination": {"ip": "8.8.8.8", "port": 443, "geo": {"city": "Ashburn", "zip": 20147}},
+            "labels": {"env": "prod"},
+        }));
+        let read = meta.read_stored(&[(&stored, &fields)]).unwrap();
+        assert_eq!(read[0].chunk.failed(), []);
+        assert_eq!(
+            meta.record_object(&read[0], ""),
+            stored,
+            "each leaf and each other key reads back"
+        );
+        let extra = object_of(serde_json::json!({"destination": {"ip": "8.8.8.8", "mac": "aa"}}));
+        let err = meta.read_stored(&[(&extra, &fields)]).unwrap_err();
+        assert!(
+            err.contains("`destination.mac`"),
+            "a closed object holds only its fields: {err}"
+        );
+
+        for (ty, names) in [
+            (object(&[], false), "`meta`"),
+            (object(&[("inner", object(&[], false))], true), "`meta.inner`"),
+        ] {
+            let err = SourceMeta::KAFKA.declaring(vec![("meta".into(), ty)]).unwrap_err();
+            assert!(err.contains(names) && err.contains("{}"), "{err}");
+        }
+        for clash in [
+            vec![
+                ("user".to_string(), object(&[("name", DataType::Str)], true)),
+                ("user.name".to_string(), DataType::Str),
+            ],
+            vec![("...".to_string(), DataType::Variant)],
+            vec![("user....".to_string(), DataType::Variant)],
+        ] {
+            assert!(SourceMeta::KAFKA.declaring(clash.clone()).is_err(), "{clash:?}");
+        }
     }
 
     /// A declared record cannot take the engine's own names, and no field of it is another or holds another.

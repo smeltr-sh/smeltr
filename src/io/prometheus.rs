@@ -309,16 +309,17 @@ mod field {
     pub const SCALE: usize = 10;
     pub const ZERO_COUNT: usize = 11;
     pub const ZERO_THRESHOLD: usize = 12;
+    /// A side's `offset`, with its `bucketCounts` after it.
     pub const POSITIVE: usize = 13;
-    pub const NEGATIVE: usize = 14;
-    pub const RESET_HINT: usize = 15;
-    pub const EXEMPLARS: usize = 16;
-    pub const DESCRIPTION: usize = 17;
-    pub const UNIT: usize = 18;
-    pub const IS_MONOTONIC: usize = 19;
-    pub const START_TIME: usize = 20;
+    pub const NEGATIVE: usize = 15;
+    pub const RESET_HINT: usize = 17;
+    pub const EXEMPLARS: usize = 18;
+    pub const DESCRIPTION: usize = 19;
+    pub const UNIT: usize = 20;
+    pub const IS_MONOTONIC: usize = 21;
+    pub const START_TIME: usize = 22;
     /// How many fields a row holds.
-    pub const ALL: usize = 21;
+    pub const ALL: usize = 23;
 }
 
 /// OTLP's `AGGREGATION_TEMPORALITY_CUMULATIVE`: a counter histogram counts from its series' start.
@@ -779,8 +780,11 @@ impl Series {
         let negative = Side::negative(h)
             .dense()
             .expect("a histogram is checked when its request is scanned");
-        cells[field::POSITIVE] = positive.map(buckets);
-        cells[field::NEGATIVE] = negative.map(buckets);
+        for (side, held) in [(field::POSITIVE, positive), (field::NEGATIVE, negative)] {
+            if let Some(held) = held {
+                buckets(cells, side, held);
+            }
+        }
         row
     }
 }
@@ -881,17 +885,11 @@ fn put_numbers(out: &mut Vec<u8>, values: &[f64]) {
     variant::end(out, open, values.len());
 }
 
-/// One side's buckets as OTLP's `{offset, bucketCounts}`, from the Prometheus index of its first bucket. Prometheus
+/// One side's buckets as OTLP's `offset` and `bucketCounts`, from the Prometheus index of its first bucket. Prometheus
 /// bucket `i` ends at `base^i` and OTLP bucket `i` starts there, so OTLP's index is one less.
-fn buckets((first, counts): (i64, Vec<f64>)) -> Cell {
-    Cell::Variant(variant_of(|out| {
-        let open = variant::begin_object(out);
-        variant::put_key(out, "offset");
-        variant::put_i64(out, first - 1);
-        variant::put_key(out, "bucketCounts");
-        put_numbers(out, &counts);
-        variant::end(out, open, 2);
-    }))
+fn buckets(cells: &mut [Option<Cell>], side: usize, (first, counts): (i64, Vec<f64>)) {
+    cells[side] = Some(Cell::Int(first - 1));
+    cells[side + 1] = Some(numbers(&counts));
 }
 
 /// One side of zero of a histogram: its spans and its counts, as deltas or as they are.
@@ -1916,20 +1914,11 @@ mod tests {
 
     /// A side's buckets as `(offset, bucketCounts)`.
     fn side(row: &Row, at: usize) -> Option<(i64, Vec<f64>)> {
-        let Some(Cell::Variant(v)) = &row.0[at] else {
-            assert_eq!(row.0[at], None);
-            return None;
-        };
-        let variant::Value::Object(entries) = variant::read(v) else {
-            panic!("buckets are an object")
-        };
-        let entries: Vec<_> = entries.collect();
-        assert_eq!(entries.len(), 2);
-        assert_eq!((entries[0].0, entries[1].0), ("offset", "bucketCounts"));
-        let variant::Value::I64(offset) = variant::read(entries[0].1) else {
-            panic!("an offset is an int")
-        };
-        Some((offset, doubles(entries[1].1)))
+        match (&row.0[at], array(row, at + 1)) {
+            (Some(Cell::Int(offset)), Some(counts)) => Some((*offset, counts)),
+            (None, None) => None,
+            other => panic!("a side holds its offset and its counts, or neither: {other:?}"),
+        }
     }
 
     fn refused(h: Histogram) -> String {
@@ -1957,8 +1946,10 @@ mod tests {
             (field::SCALE, "scale"),
             (field::ZERO_COUNT, "zeroCount"),
             (field::ZERO_THRESHOLD, "zeroThreshold"),
-            (field::POSITIVE, "positive"),
-            (field::NEGATIVE, "negative"),
+            (field::POSITIVE, "positive.offset"),
+            (field::POSITIVE + 1, "positive.bucketCounts"),
+            (field::NEGATIVE, "negative.offset"),
+            (field::NEGATIVE + 1, "negative.bucketCounts"),
             (field::RESET_HINT, "resetHint"),
             (field::EXEMPLARS, "exemplars"),
             (field::DESCRIPTION, "description"),

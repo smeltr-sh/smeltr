@@ -78,30 +78,28 @@ impl SourceMeta {
                 .collect())
         } else {
             let fields = &self.record;
-            let paths: Vec<Vec<String>> = fields
-                .iter()
-                .map(|(name, _)| {
-                    crate::plan::tree::segments(name)
-                        .map(std::borrow::Cow::into_owned)
-                        .collect()
+            // Each field's keys, and each open object's: what an object does not declare, it keeps where it is open.
+            let keys = |name: &str| -> Vec<String> {
+                crate::plan::tree::object_keys(name)
+                    .map(std::borrow::Cow::into_owned)
+                    .collect()
+            };
+            let (open, leaves): (Vec<_>, Vec<_>) = (fields.iter())
+                .map(|(name, _)| match crate::plan::tree::unclaimed_object(name) {
+                    Some(object) => (true, keys(object)),
+                    None => (false, keys(name)),
                 })
-                .collect();
+                .partition(|(open, _)| *open);
+            let declared = Declared {
+                leaves: leaves.into_iter().map(|(_, keys)| keys).collect(),
+                open: open.into_iter().map(|(_, keys)| keys).collect(),
+            };
             let mut objects: Vec<crate::io::RecordObject> =
                 stored.iter().map(|(record, _)| (*record).clone()).collect();
             let failed: Vec<Vec<String>> = objects.iter_mut().map(crate::io::take_mistyped).collect();
-            // An open record keeps what it does not declare at its top level; below that, a declared object is closed.
-            let open = self.is_open();
-            if let Some((i, extra)) = objects.iter().enumerate().find_map(|(i, record)| {
-                let undeclared = |record: &crate::io::RecordObject| undeclared(record, &mut Vec::new(), "", &paths);
-                let claimed: crate::io::RecordObject = match open {
-                    true => (record.iter())
-                        .filter(|(k, _)| paths.iter().any(|p| p.first() == Some(*k)))
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect(),
-                    false => (*record).clone(),
-                };
-                undeclared(&claimed).map(|k| (i, k))
-            }) {
+            if let Some((i, extra)) = (objects.iter().enumerate())
+                .find_map(|(i, record)| undeclared(record, &mut Vec::new(), "", &declared).map(|k| (i, k)))
+            {
                 return Err(format!(
                     "record {} has `{extra}`, a field its source does not declare",
                     i + 1

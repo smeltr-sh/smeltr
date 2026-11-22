@@ -1018,18 +1018,49 @@ fn hash(row: &[&Value]) -> String {
     })
 }
 
-/// `rows` as a chunk with a column per field, each read from result column `columns[i]`. A value that cannot be
-/// its field's type is null and counted failed.
+/// `rows` as a chunk with a column per field the record declares, each read from result column `columns[i]`: a field
+/// declared as an object is its leaves (`SourceMeta::declaring`), each read from inside the column's value. A value
+/// that cannot be its field's type is null and counted failed, and so is a leaf under a value that is no object.
 fn chunk(fields: &[(String, DataType)], columns: &[usize], rows: &[Vec<Value>]) -> RecordChunk {
+    use crate::plan::tree;
     let mut pool = crate::core::buffer::BufferPool::new();
     let mut failed = Vec::new();
     let mut out = Vec::with_capacity(fields.len());
-    for (f, ((_, ty), &at)) in fields.iter().zip(columns).enumerate() {
-        let values: Vec<Value> = rows.iter().map(|r| r[at].clone()).collect();
-        let (column, refused) =
-            column(&mut pool, ty, &values).expect("match_fields refuses a type no column is built as");
-        failed.extend(refused.into_iter().map(|row| (row as u32, f, spell(&values[row]))));
-        out.push(column);
+    for ((name, ty), &at) in fields.iter().zip(columns) {
+        let mut leaves = Vec::new();
+        crate::plan::topology::leaves(name, ty, &mut leaves).expect("the record declared these fields");
+        // Each leaf by its keys below the column's value, and whether it is the unclaimed fields of the object there.
+        let below: Vec<(Vec<String>, bool)> = (leaves.iter())
+            .map(|(leaf, _)| {
+                let object = tree::unclaimed_object(leaf);
+                let keys = tree::object_keys(tree::key_under(name, object.unwrap_or(leaf)));
+                (keys.map(|k| k.into_owned()).collect(), object.is_some())
+            })
+            .collect();
+        for ((keys, unclaimed), (_, ty)) in below.iter().zip(&leaves) {
+            let f = out.len();
+            let claimed = |key: &str| {
+                let under = |k: &&(Vec<String>, bool)| k.0.len() > keys.len() && k.0.starts_with(keys);
+                below.iter().filter(under).any(|k| k.0[keys.len()] == key)
+            };
+            let values: Vec<Value> = (rows.iter().enumerate())
+                .map(|(row, r)| {
+                    let held = crate::io::values::at(&r[at], keys);
+                    let held = match (held, unclaimed) {
+                        (Ok(object), true) => crate::io::values::rest(&object, claimed).map_err(spell),
+                        (held, _) => held.map_err(spell),
+                    };
+                    held.unwrap_or_else(|unfit| {
+                        failed.push((row as u32, f, unfit));
+                        Value::Null
+                    })
+                })
+                .collect();
+            let (column, refused) =
+                column(&mut pool, ty, &values).expect("match_fields refuses a type no column is built as");
+            failed.extend(refused.into_iter().map(|row| (row as u32, f, spell(&values[row]))));
+            out.push(column);
+        }
     }
     RecordChunk::new(out, failed)
 }
@@ -1633,6 +1664,44 @@ mod tests {
         assert_eq!(chunk.failed(), [(0, 1, r#"{"a":1}"#.to_string())]);
     }
 
+    /// An open object keeps the keys of its column's value that it declares no field for, and a value that is not an
+    /// object is noted under each field read from inside it.
+    #[test]
+    fn an_open_object_column_keeps_its_other_keys() {
+        let driver = Scripted::default();
+        driver.answer(
+            &["id", "owner"],
+            vec![
+                vec![
+                    Value::Int(1),
+                    json(serde_json::json!({"name": "ann", "age": 4, "home": {"city": "Oslo"}})),
+                ],
+                vec![Value::Int(2), json(serde_json::json!("ann"))],
+            ],
+        );
+        let mut s = source(&driver, by_id(), 100);
+        s.config.fields = Arc::from(vec![
+            ("id".to_string(), DataType::I64),
+            (
+                "owner".to_string(),
+                DataType::Struct(vec![("name".into(), DataType::Str)], true),
+            ),
+        ]);
+        let meta = crate::plan::topology::SourceMeta::POSTGRES
+            .declaring(s.config.fields.to_vec())
+            .unwrap();
+        let records = poll(&mut s, 10);
+        let row =
+            |at: usize| -> serde_json::Value { serde_json::from_slice(&meta.record_json(&records[at], "")).unwrap() };
+        assert_eq!(
+            row(0),
+            serde_json::json!({"id": 1, "owner": {"name": "ann", "age": 4, "home": {"city": "Oslo"}}})
+        );
+        assert_eq!(row(1), serde_json::json!({"id": 2}));
+        let noted = r#""ann""#.to_string();
+        assert_eq!(records[0].chunk.failed(), [(1, 1, noted.clone()), (1, 2, noted)]);
+    }
+
     #[test]
     fn an_array_or_object_column_takes_its_declared_shape() {
         let driver = Scripted::default();
@@ -1655,13 +1724,17 @@ mod tests {
         s.config.fields = Arc::from(vec![
             ("id".to_string(), DataType::I64),
             ("tags".to_string(), DataType::Array(Box::new(DataType::Str))),
-            ("owner".to_string(), owner.clone()),
+            ("owner".to_string(), owner),
         ]);
         let records = poll(&mut s, 10);
         let chunk = &records[0].chunk;
         assert_eq!(chunk.column(1).data_type(), DataType::Array(Box::new(DataType::Str)));
-        assert_eq!(chunk.column(2).data_type(), owner);
-        assert!(chunk.column(1).is_valid(0) && chunk.column(2).is_valid(0));
+        // `owner` is declared as its leaves, each read from inside the `owner` column.
+        assert_eq!(chunk.column(2).data_type(), DataType::I64);
+        assert_eq!(chunk.column(3).data_type(), DataType::Str);
+        assert_eq!(chunk.column(2).i64().unwrap().values[0], 4);
+        assert!(chunk.column(1).is_valid(0) && chunk.column(3).is_valid(0));
+        assert!(!chunk.column(2).is_valid(1) && !chunk.column(3).is_valid(1));
         assert!(!chunk.column(1).is_valid(1), "text is not a list");
         assert_eq!(chunk.failed(), [(1, 1, r#""not a list""#.to_string())]);
     }

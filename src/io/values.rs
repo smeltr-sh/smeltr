@@ -462,29 +462,9 @@ fn build(
             }
             // An open object keeps the members it does not declare, as the language's does.
             let unclaimed = open.then(|| {
-                let rest: Vec<Value> = objects
-                    .iter()
-                    .map(|o| match o {
-                        Some(o) => {
-                            let variant::Value::Object(entries) = variant::read(o) else {
-                                unreachable!("only an object is kept")
-                            };
-                            let mut rest = Vec::new();
-                            let open = variant::begin_object(&mut rest);
-                            let mut count = 0;
-                            for (key, member) in entries.filter(|(k, _)| !members.iter().any(|(m, _)| m == k)) {
-                                variant::put_key(&mut rest, key);
-                                rest.extend_from_slice(member);
-                                count += 1;
-                            }
-                            variant::end(&mut rest, open, count);
-                            match count {
-                                0 => Value::Null,
-                                _ => Value::Json(rest),
-                            }
-                        }
-                        None => Value::Null,
-                    })
+                let declared = |key: &str| members.iter().any(|(m, _)| m == key);
+                let rest: Vec<Value> = (objects.iter())
+                    .map(|o| o.map_or(Value::Null, |o| rest_of(o, declared)))
                     .collect();
                 build(pool, &DataType::Variant, &rest).0
             });
@@ -495,6 +475,60 @@ fn build(
         other => unreachable!("`column` refuses a {} before building", other.spell()),
     };
     (column, refused)
+}
+
+/// The members of `object`, an object in `core::variant`'s encoding, whose key `claimed` does not take, as an object
+/// of their own: null where there are none.
+fn rest_of(object: &[u8], claimed: impl Fn(&str) -> bool) -> Value {
+    let variant::Value::Object(entries) = variant::read(object) else {
+        unreachable!("only an object has members")
+    };
+    let mut rest = Vec::new();
+    let open = variant::begin_object(&mut rest);
+    let mut count = 0;
+    for (key, member) in entries.filter(|(k, _)| !claimed(k)) {
+        variant::put_key(&mut rest, key);
+        rest.extend_from_slice(member);
+        count += 1;
+    }
+    variant::end(&mut rest, open, count);
+    match count {
+        0 => Value::Null,
+        _ => Value::Json(rest),
+    }
+}
+
+/// What `value` holds at `path`, each key a member of the object above it: null where an object on the way is null or
+/// has no such member. Err is the value on the way that is no object.
+pub(crate) fn at<'v>(value: &'v Value, path: &[String]) -> Result<Value, &'v Value> {
+    let Some((first, below)) = path.split_first() else {
+        return Ok(value.clone());
+    };
+    let mut held = match value {
+        Value::Null => return Ok(Value::Null),
+        Value::Json(o) if variant::is_object(o) => o.as_slice(),
+        _ => return Err(value),
+    };
+    for (i, key) in std::iter::once(first).chain(below).enumerate() {
+        match variant::member(held, key) {
+            None => return Ok(Value::Null),
+            Some(member) if i == below.len() => return Ok(from_variant(member)),
+            Some(member) if variant::is_object(member) => held = member,
+            Some(member) if matches!(variant::read(member), variant::Value::Null) => return Ok(Value::Null),
+            Some(_) => return Err(value),
+        }
+    }
+    unreachable!("the last key returns")
+}
+
+/// The members of `value`, an object, whose key `claimed` does not take, as an object of their own: null for none, or
+/// for a null. Err is `value` where it is no object.
+pub(crate) fn rest(value: &Value, claimed: impl Fn(&str) -> bool) -> Result<Value, &Value> {
+    match value {
+        Value::Null => Ok(Value::Null),
+        Value::Json(o) if variant::is_object(o) => Ok(rest_of(o, claimed)),
+        _ => Err(value),
+    }
 }
 
 /// The elements of an array value: a database array's, or a JSON array's.

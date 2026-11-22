@@ -16,15 +16,23 @@ pub fn read(signal: Signal) -> Vec<SchemaFieldDto> {
         Signal::Traces => &["traceId", "spanId"],
     };
     let meta = SourceMeta::otlp(signal);
-    let mut fields = Vec::new();
+    let object = DataType::Struct(Vec::new(), true);
+    let mut fields: Vec<SchemaFieldDto> = Vec::new();
     for (name, ty) in meta.record().iter() {
         let requirement = match required.contains(&name.as_ref()) {
             true => Requirement::Required,
             false => Requirement::Optional,
         };
+        // A leaf of an object the record declares comes under that object's row.
+        let keys: Vec<_> = crate::plan::tree::segments(name).collect();
+        for under in 1..keys.len() {
+            let parent = keys[..under].join(".");
+            if !fields.iter().any(|f| f.field == parent) {
+                rows(&mut fields, &parent, &object, Requirement::Optional);
+            }
+        }
         rows(&mut fields, name, ty, requirement);
     }
-    let object = DataType::Struct(Vec::new(), true);
     let scope = DataType::Struct(
         vec![
             ("name".to_string(), DataType::Str),

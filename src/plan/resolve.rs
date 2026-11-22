@@ -131,7 +131,7 @@ impl SymbolTable {
         // The ingest names sit at their fixed slots, the same ones the batch lays them in -- `_raw` is readable from a
         // `when` for the same reason a route condition can read it.
         for (i, (name, _)) in ingest.iter().enumerate() {
-            if *name != tree::UNCLAIMED && root.get(name).is_none() {
+            if tree::unclaimed_object(name).is_none() && root.get(name).is_none() {
                 root.put(name, Node::Leaf(i));
             }
         }
@@ -188,9 +188,9 @@ impl SymbolTable {
         for (name, ty) in ingest {
             let slot = t.layout.len();
             t.layout.push(ty.clone());
-            match *name {
-                tree::UNCLAIMED => t.root.unclaimed = Some(slot),
-                name => {
+            match tree::unclaimed_object(name) {
+                Some(object) => t.set_unclaimed(object, Some(slot)),
+                None => {
                     t.root.put(name, Node::Leaf(slot));
                 }
             }
