@@ -3,7 +3,7 @@
 name: Set up the checks
 inputs:
   cache:
-    description: Restore the Linux test build's dependencies, which the nightly live job saves
+    description: Restore the test build's dependencies for this runner's system, which main's nightly saves
     default: 'false'
 runs:
   using: composite
@@ -27,6 +27,6 @@ runs:
     - if: inputs.cache == 'true'
       uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       with:
-        shared-key: linux-test
+        shared-key: ${{ runner.os }}-test
         # Only main's nightly writes the cache, so a pull request reads one build of main rather than evicting it.
         save-if: ${{ github.ref == 'refs/heads/main' }}
