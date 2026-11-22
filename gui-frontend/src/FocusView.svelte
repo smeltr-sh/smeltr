@@ -221,7 +221,7 @@
     steps:
       "In the order they run. The bar is each step's share of the time; the counts are the rows it dropped or errored.",
     routes:
-      "A route's condition picks rows from its source; each delivery's condition picks which of them go to that destination. Conditions can overlap, so a source's matches can add up past what it read.",
+      "A route's condition picks rows from its source; each delivery's condition picks which of them go to that destination. On a source, Matched and Share count the rows each route picked over the range in the heading. Conditions can overlap, so matches can add up past what the source read.",
   };
   const WARNINGS_HELP =
     'Rows below normal warnings of the past year. Until it is marked, the one that is up stays a warning. Mark it Outage to turn it into info until it ends, or Normal to turn it into info and learn the level the source reads now. A warning is learned only if it is marked Normal.';
@@ -800,9 +800,11 @@
     />
   {:else if shown === 'routes'}
     <section>
-      <h3>
-        Routes
-        <Help label="Routes">{HELP.routes}</Help>
+      <h3 class:with-range={source}>
+        <span
+          >Routes{#if source}, over the last {chart.label}{/if}
+          <Help label="Routes">{HELP.routes}</Help></span
+        >{#if source}{@render rangePicker()}{/if}
       </h3>
       {#if routes.length === 0}
         <p class="dim small">

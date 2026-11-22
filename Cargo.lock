@@ -4632,9 +4632,9 @@ dependencies = [
 
 [[package]]
 name = "rdkafka"
-version = "0.39.0"
+version = "0.40.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7956f9ac12b5712e50372d9749a3102f4810a8d42481c5eae3748d36d585bcf"
+checksum = "41efe6cce81066ae2e5ece4b64e8eee0602ef0f757506a04c0731c17d9dbd04f"
 dependencies = [
  "futures-channel",
  "futures-util",
@@ -4650,8 +4650,8 @@ dependencies = [
 
 [[package]]
 name = "rdkafka-sys"
-version = "4.10.0+2.12.1"
-source = "git+https://github.com/smeltr-sh/rust-rdkafka?rev=1b6590db033e9d17a963e4dd0427ebe3fe40a5d0#1b6590db033e9d17a963e4dd0427ebe3fe40a5d0"
+version = "4.11.0+2.16.0"
+source = "git+https://github.com/smeltr-sh/rust-rdkafka?rev=729be129b58b7cd02fd9623a3a07b19e85823130#729be129b58b7cd02fd9623a3a07b19e85823130"
 dependencies = [
  "cmake",
  "curl-sys",
