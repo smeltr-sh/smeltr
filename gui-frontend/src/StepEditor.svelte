@@ -479,7 +479,7 @@
             )}{/if}
         {/if}
       </span>
-      {#if production}<RangePicker range={open.range} onpick={open.onRange} />{/if}
+      <RangePicker range={open.range} onpick={open.onRange} />
       {#if addable.length > 0}
         <button
           type="button"
