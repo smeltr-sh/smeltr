@@ -1,6 +1,6 @@
 # Every check on main, at night, when main has moved since the last finished run: the live services, the whole of
-# the GUI specs, every fuzzer, Kerberos and Windows. Sunday's run goes ahead whatever moved, for what changes outside
-# the repository: advisories, npm audit, and new ECS and OCSF releases. A newer run cancels an older one.
+# the GUI specs, every fuzzer, Kerberos, Windows and Linux on arm64. Sunday's run goes ahead whatever moved, for what
+# changes outside the repository: advisories, npm audit, and new ECS and OCSF releases. A newer run cancels an older one.
 name: Nightly
 
 on:
@@ -121,11 +121,16 @@ jobs:
       - run: sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y krb5-kdc krb5-admin-server krb5-user
       - run: just check-kerberos
 
-  # Windows checks out with CRLF line endings, as a Windows clone does.
-  windows:
+  # The crate's checks on each other platform a release is built for. Windows checks out with CRLF line endings, as a
+  # Windows clone does.
+  platforms:
     needs: moved
     if: needs.moved.outputs.run == 'true'
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, ubuntu-26.04-arm]
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -138,7 +143,7 @@ jobs:
   # The cache the jobs above saved, against GitHub's 10 GB a repository holds before it evicts the least recently
   # used. A warning, not a failure: a cache evicted costs one cold build, not a check.
   cache:
-    needs: [moved, all, live, windows]
+    needs: [moved, all, live, platforms]
     if: ${{ !cancelled() && needs.moved.outputs.run == 'true' }}
     runs-on: ubuntu-26.04
     permissions:
