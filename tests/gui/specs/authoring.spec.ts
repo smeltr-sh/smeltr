@@ -2171,7 +2171,7 @@ test('A6: a sample locked as a test passes, and a save that breaks it is allowed
   await goto(admin, leader, '#/build/pipelines');
   await admin
     .getByRole('row', { name: /orders/ })
-    .getByRole('link', { name: /1 failing/ })
+    .getByRole('link', { name: /1 test/ })
     .click();
   await expect(admin).toHaveURL(/#\/build\/tests\?only=/);
   await expect(admin.getByText('Showing 1 of 1')).toBeVisible();

@@ -23,11 +23,9 @@
     type PipelineDto,
     type TestSummary,
   } from './api';
-  import { Standings } from './standings.svelte';
   import { narrowedHash } from './connections';
   import { count } from './time';
   import TestIcon from './TestIcon.svelte';
-  import TestTally from './TestTally.svelte';
   import ExportDialog from './ExportDialog.svelte';
   import ImportDialog from './ImportDialog.svelte';
   import RowMenu from './RowMenu.svelte';
@@ -69,17 +67,14 @@
   let moving = $state<MoveTarget | null>(null);
   let areas: Area[] = $state([]);
 
-  // This area's tests, and where each stands once run, for the Tests column. Loaded with the pipelines, so a
-  // delete or a move counts again. A failure to load them leaves the column without them.
+  // This area's tests, for the Tests column, which counts them and runs none: the list stays as quick with thousands
+  // of tests as with none, and the Tests tab it links to says how they stand. Loaded with the pipelines, so a delete
+  // or a move counts again. A failure to load them leaves the column without them.
   let tests: TestSummary[] = $state([]);
-  const standings = new Standings();
   async function loadTests() {
-    try {
-      tests = (await listTests()).tests;
-    } catch {
-      return;
-    }
-    await standings.run(tests.map((t) => t.id));
+    tests = await listTests()
+      .then((res) => res.tests)
+      .catch(() => []);
   }
 
   /** Pipeline `id`'s tests: each that runs it, its own and the end-to-end ones whose records it takes. */
@@ -90,9 +85,7 @@
   const pipelineColumns = {
     name: (p: PipelineDto) => p.name,
     steps: (p: PipelineDto) => p.steps.length,
-    // By how many fail, then by how many there are.
-    tests: (p: PipelineDto) =>
-      standings.count(testIdsOf(p.id), 'failing') * 1e6 + testIdsOf(p.id).length,
+    tests: (p: PipelineDto) => testIdsOf(p.id).length,
   };
   const narrowing = new Narrowing(() => only);
   const kept = (p: PipelineDto) => narrowing.keeps(p.id);
@@ -232,14 +225,7 @@
                   <span class="dim">none</span>
                 {:else}
                   <a class="glyphed" href={narrowedHash('#/build/tests', ids)}
-                    ><TestIcon />
-                    {#if standings.of && Object.keys(standings.of).length > 0}
-                      <TestTally
-                        failing={standings.count(ids, 'failing')}
-                        errored={standings.count(ids, 'error')}
-                        passing={standings.count(ids, 'passing')}
-                      />
-                    {:else}{count(ids.length, 'test')}{/if}</a
+                    ><TestIcon />{count(ids.length, 'test')}</a
                   >
                 {/if}
               </td>
