@@ -211,7 +211,9 @@ pub fn sample_records(batch: &crate::heartbeat::CaptureBatch) -> impl Iterator<I
                         put_path(&mut record, &tree::child(object, key), value.clone());
                     }
                 }
-                _ => put_path(&mut record, &column.name, value.clone()),
+                // A value that failed as an object holds no key to put back: its failure is on the object's fields.
+                (Some(_), _) => {}
+                (None, _) => put_path(&mut record, &column.name, value.clone()),
             }
         }
         if !row.failed.is_empty() {
@@ -512,6 +514,34 @@ mod tests {
             ["n", "extra", "__source.topic", "__destination.route"],
             "each unclaimed key is a column of its own"
         );
+    }
+
+    /// A value that failed as an open object saves under the object's fields alone, and the sample reads back.
+    #[test]
+    fn a_failed_open_object_saves_under_its_fields() {
+        use crate::heartbeat::{CaptureBatch, CaptureColumn, CapturedRow};
+        let column = |name: &str, ty: &str| CaptureColumn {
+            name: name.to_string(),
+            ty: ty.to_string(),
+        };
+        let batch = CaptureBatch {
+            columns: vec![column("owner.name", "str"), column("owner....", "{...}")],
+            rows: vec![CapturedRow {
+                values: vec![serde_json::json!("\"ann\""), serde_json::json!("\"ann\"")],
+                failed: vec![0, 1],
+                worker: None,
+            }],
+        };
+        let saved: Vec<_> = sample_records(&batch).collect();
+        assert_eq!(saved[0]["owner"], serde_json::json!({"name": "\"ann\""}));
+        let columns = sample_columns(&[batch]);
+        let meta = crate::plan::topology::SourceMeta::of_columns(&columns).unwrap();
+        let mut stored = saved[0].clone();
+        let failed = crate::io::take_mistyped(&mut stored);
+        assert_eq!(failed, ["owner.name", "owner...."]);
+        let fields = crate::io::SourceFields::new();
+        let read = meta.read_stored(&[(&saved[0], &fields)]).unwrap();
+        assert_eq!(read[0].chunk.failed(), [(0, 0, "\"ann\"".to_string())]);
     }
 
     /// Batches of several routes save as one set of columns, unless they type one name two ways.
