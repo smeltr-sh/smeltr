@@ -3766,6 +3766,11 @@ export function putUpdateSettings(check: boolean): Promise<UpdateSettingsResult>
   return apiJson('/api/settings/updates', json('PUT', { check }));
 }
 
+/** Looks for a newer release now, answering once the look is recorded. */
+export function checkForRelease(): Promise<UpdateSettingsResult> {
+  return apiJson('/api/settings/updates/check', { method: 'POST' });
+}
+
 /** Why the last sync did not leave `main` at the remote's head. */
 export interface RemoteFailureDto {
   commit: string | null;

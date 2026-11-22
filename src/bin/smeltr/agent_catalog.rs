@@ -797,6 +797,12 @@ pub const CATALOG: &[Route] = &[
         body: "{ check: boolean }",
     },
     Route {
+        method: "POST",
+        path: "/api/settings/updates/check",
+        what: "Check for a newer smeltr release now; returns the settings once the check is recorded. No query.",
+        body: "",
+    },
+    Route {
         method: "GET",
         path: "/api/settings/oidc",
         what: "OIDC sign-in settings (whether a secret is set, and the redirect URI). No query.",
