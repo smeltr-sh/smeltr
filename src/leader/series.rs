@@ -1356,6 +1356,17 @@ impl RegistryStore {
         self.merged_at(metric, point_ms, offset_ms, since_ms, until_ms, merge)
     }
 
+    /// Whether `metric` is a counter, or `None` when the store holds no series of it.
+    pub fn is_counter(&self, metric: &str) -> Result<Option<bool>, StoreError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let kind: Option<String> = conn
+            .query_row("SELECT kind FROM series WHERE metric = ?1 LIMIT 1", [metric], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        Ok(kind.map(|k| k == COUNTER))
+    }
+
     /// Every metric the store holds a series of, each with every subject it has one for and whether it counts.
     pub fn metric_subjects(&self) -> Result<Vec<(String, String, bool)>, StoreError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());

@@ -140,11 +140,7 @@ pub fn answer(
     let window_minutes = query.window_minutes.clamp(1, MAX_WINDOW_MINUTES);
     // Where the reader's midnight falls past UTC's: a reader east of Greenwich starts the day before UTC does.
     let offset_ms = -query.utc_offset_minutes.clamp(-14 * 60, 14 * 60) * MINUTE_MS;
-    let counter = store
-        .metric_subjects()?
-        .into_iter()
-        .find(|(metric, _, _)| *metric == query.metric)
-        .map(|(_, _, counter)| counter);
+    let counter = store.is_counter(&query.metric)?;
     // A metric nothing has reported yet is a quiet one, not a wrong question: by Prometheus's naming, a counter's
     // name ends `_total`.
     let counter = counter.unwrap_or_else(|| query.metric.ends_with("_total"));

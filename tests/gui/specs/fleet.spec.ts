@@ -423,7 +423,7 @@ test("exceptions are counted from the leader's series over the range their own c
   });
 
   await goto(admin, leader, '#/status');
-  const errors = admin.locator('section.errors');
+  const errors = admin.locator('section.exceptions');
   await expect(errors.getByText('600 exceptions.')).toBeVisible();
   await expect(errors.getByRole('row', { name: /orders\s+3\s+Conversion\s+600/ })).toBeVisible();
   expect(asked).toContainEqual({ by: 'group,pipeline,function,kind', minutes: '60' });

@@ -135,23 +135,23 @@
     return [];
   }
 
-  // -- errors: the leader's own series, over the panel's own range ----------
+  // -- exceptions: the leader's own series, over the panel's own range ----------
 
-  const ERRORED = 'smeltr_rows_errored_total';
+  const EXCEPTIONS_METRIC = 'smeltr_rows_errored_total';
 
-  let errorsMinutes = $state(lastChartRange().minutes);
-  type ErrorsRead = { at: number; total: SeriesAnswerDto; split: SeriesAnswerDto };
-  let errors = $state<ErrorsRead | null>(null);
-  /** The request the newest errors fetch made, so an older answer does not land over it. */
-  let errorsAsked: string | null = null;
+  let exceptionsMinutes = $state(lastChartRange().minutes);
+  type ExceptionsRead = { at: number; total: SeriesAnswerDto; split: SeriesAnswerDto };
+  let exceptions = $state<ExceptionsRead | null>(null);
+  /** The request the newest exceptions fetch made, so an older answer does not land over it. */
+  let exceptionsAsked: string | null = null;
 
-  function fetchErrors() {
+  function fetchExceptions() {
     const ask = seriesQuery(
-      { ...DEFAULT_VIEW, filter: selectionFilter(), windowMinutes: errorsMinutes },
-      ERRORED,
+      { ...DEFAULT_VIEW, filter: selectionFilter(), windowMinutes: exceptionsMinutes },
+      EXCEPTIONS_METRIC,
       0,
     );
-    errorsAsked = ask;
+    exceptionsAsked = ask;
     const by = (labels: string) => {
       const q = new URLSearchParams(ask);
       q.set('by', labels);
@@ -159,28 +159,32 @@
     };
     Promise.all([getSeries(ask), getSeries(by('group,pipeline,function,kind'))])
       .then(([total, split]) => {
-        if (errorsAsked === ask) errors = { at: Date.now(), total, split };
+        if (exceptionsAsked === ask) exceptions = { at: Date.now(), total, split };
       })
       .catch(() => {});
   }
 
-  /** The errored rows' line, per second, up to the last complete point. */
-  let erroredTo = $derived(errors ? lastClosedBucket(errors.total.pointMillis, errors.at) : 0);
-  let erroredSeries = $derived(errors ? denseAnswer(errors.total, erroredTo) : []);
-  let erroredTimes = $derived(
-    errors
-      ? erroredSeries.map((_, i) => errors!.total.fromMillis + i * errors!.total.pointMillis)
+  /** The exceptions' line, per second, up to the last complete point. */
+  let exceptionsTo = $derived(
+    exceptions ? lastClosedBucket(exceptions.total.pointMillis, exceptions.at) : 0,
+  );
+  let exceptionSeries = $derived(exceptions ? denseAnswer(exceptions.total, exceptionsTo) : []);
+  let exceptionTimes = $derived(
+    exceptions
+      ? exceptionSeries.map(
+          (_, i) => exceptions!.total.fromMillis + i * exceptions!.total.pointMillis,
+        )
       : [],
   );
-  /** The errored rows of each pipeline, function and kind over the range; a pipeline is shown by its name. */
-  let erroredRows = $derived.by(() => {
-    if (!errors) return [];
-    const seconds = errors.split.pointMillis / 1000;
+  /** The exceptions of each pipeline, function and kind over the range; a pipeline is shown by its name. */
+  let exceptionRows = $derived.by(() => {
+    if (!exceptions) return [];
+    const seconds = exceptions.split.pointMillis / 1000;
     const rows = new Map<
       string,
       { pipeline: string; function: string; kind: string; total: number }
     >();
-    for (const s of errors.split.series) {
+    for (const s of exceptions.split.series) {
       const [group, pipeline, fn, kind] = s.values;
       const name = names.of(MAIN_BRANCH, group, 'pipelines', pipeline);
       const key = JSON.stringify([name, fn, kind]);
@@ -190,10 +194,10 @@
     }
     return [...rows.values()].map((r) => ({ ...r, total: Math.round(r.total) }));
   });
-  let totalErrored = $derived(erroredRows.reduce((a, r) => a + r.total, 0));
-  const erroredSort = new TableSort<'pipeline' | 'function' | 'kind' | 'rows'>();
-  let sortedErroredRows = $derived(
-    erroredSort.apply(erroredRows, {
+  let totalExceptions = $derived(exceptionRows.reduce((a, r) => a + r.total, 0));
+  const exceptionSort = new TableSort<'pipeline' | 'function' | 'kind' | 'rows'>();
+  let sortedExceptionRows = $derived(
+    exceptionSort.apply(exceptionRows, {
       pipeline: (r) => r.pipeline,
       function: (r) => formatFunction(r.function),
       kind: (r) => r.kind,
@@ -275,7 +279,7 @@
   // A new range, selection or kind reads at once, paused or not.
   $effect(() => fetchReads(flowAsk));
   // Likewise the exceptions panel's own range and the selection.
-  $effect(fetchErrors);
+  $effect(fetchExceptions);
 
   function pick(row: { group: string; subjectId: string } | null) {
     picked = row;
@@ -499,7 +503,7 @@
     const id = setInterval(() => {
       fetchFlow();
       fetchReads(flowAsk);
-      fetchErrors();
+      fetchExceptions();
     }, POLL_MS);
     return () => clearInterval(id);
   });
@@ -768,7 +772,7 @@
     refresh();
     fetchFlow();
     fetchReads(flowAsk);
-    fetchErrors();
+    fetchExceptions();
   }
 
   function chooseWindow(minutes: number) {
@@ -1367,7 +1371,7 @@
     </section>
 
     <div class="lower-grid">
-      <section class="panel errors">
+      <section class="panel exceptions">
         <div class="panel-head">
           <div>
             <h2>
@@ -1377,40 +1381,40 @@
                 kind.</Help
               >
             </h2>
-            <p class="note">{count(totalErrored, 'exception')}.</p>
+            <p class="note">{count(totalExceptions, 'exception')}.</p>
           </div>
           <div class="controls">
-            <span class="dim">Over the last {rangeOfMinutes(errorsMinutes)?.spoken}</span>
+            <span class="dim">Over the last {rangeOfMinutes(exceptionsMinutes)?.spoken}</span>
             <RangePicker
-              range={rangeOfMinutes(errorsMinutes)?.range ?? ''}
-              onpick={(r) => (errorsMinutes = chartRange(r).minutes)}
+              range={rangeOfMinutes(exceptionsMinutes)?.range ?? ''}
+              onpick={(r) => (exceptionsMinutes = chartRange(r).minutes)}
             />
           </div>
         </div>
-        {#if errors}
+        {#if exceptions}
           <Sparkline
-            series={[{ label: 'exceptions', color: 'var(--error)', points: erroredSeries }]}
-            times={erroredTimes}
+            series={[{ label: 'exceptions', color: 'var(--error)', points: exceptionSeries }]}
+            times={exceptionTimes}
           />
         {:else}<p class="empty">Loading…</p>{/if}
-        {#if erroredRows.length > 0}
+        {#if exceptionRows.length > 0}
           <div class="table-wrap">
             <table>
               <thead
                 ><tr
-                  ><th aria-sort={erroredSort.aria('pipeline')}
-                    ><SortButton sort={erroredSort} key="pipeline">Pipeline</SortButton></th
-                  ><th aria-sort={erroredSort.aria('function')}
-                    ><SortButton sort={erroredSort} key="function">Function</SortButton></th
-                  ><th aria-sort={erroredSort.aria('kind')}
-                    ><SortButton sort={erroredSort} key="kind">Kind</SortButton></th
-                  ><th class="num" aria-sort={erroredSort.aria('rows')}
-                    ><SortButton sort={erroredSort} key="rows">Exceptions</SortButton></th
+                  ><th aria-sort={exceptionSort.aria('pipeline')}
+                    ><SortButton sort={exceptionSort} key="pipeline">Pipeline</SortButton></th
+                  ><th aria-sort={exceptionSort.aria('function')}
+                    ><SortButton sort={exceptionSort} key="function">Function</SortButton></th
+                  ><th aria-sort={exceptionSort.aria('kind')}
+                    ><SortButton sort={exceptionSort} key="kind">Kind</SortButton></th
+                  ><th class="num" aria-sort={exceptionSort.aria('rows')}
+                    ><SortButton sort={exceptionSort} key="rows">Exceptions</SortButton></th
                   ></tr
                 ></thead
               >
               <tbody
-                >{#each sortedErroredRows as r (`${r.pipeline} ${r.function} ${r.kind}`)}<tr
+                >{#each sortedExceptionRows as r (`${r.pipeline} ${r.function} ${r.kind}`)}<tr
                     ><td>{r.pipeline}</td><td><code>{formatFunction(r.function)}</code></td><td
                       >{r.kind}</td
                     ><td class="num">{r.total.toLocaleString()}</td></tr
