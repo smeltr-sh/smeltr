@@ -293,6 +293,8 @@
     {#snippet actions(kept, shown)}
       <!-- The rows on screen that have output, by `PreviewRow.row`: a dropped row has none. -->
       {@const outputShown = new Set(kept.filter((r) => !r.dropped).map((r) => r.key))}
+      {#snippet onScreen()}<span class="dim">The {count(outputShown.size, 'row')} on screen</span
+        >{/snippet}
       <ChipPicker kind="columns" compact bind:open={savingOpen}>
         {#snippet face()}{onsaveoutput ? 'Save or download' : 'Download'}
           <span aria-hidden="true">▾</span>{/snippet}
@@ -311,9 +313,7 @@
               class="pick"
               onclick={() => onsaveoutput(outputShown)}
               disabled={outputShown.size === 0 ? INCOMPLETE : ''}
-              >Save output as sample <span class="dim"
-                >The {count(outputShown.size, 'row')} on screen</span
-              ></Button
+              >Save output as sample {@render onScreen()}</Button
             >
             <hr />
           {/if}
@@ -333,8 +333,7 @@
             class="pick"
             onclick={() => downloadOutput(outputShown)}
             disabled={outputShown.size === 0 ? INCOMPLETE : ''}
-            >Download output <span class="dim">The {count(outputShown.size, 'row')} on screen</span
-            ></Button
+            >Download output {@render onScreen()}</Button
           >
         </div>
       </ChipPicker>

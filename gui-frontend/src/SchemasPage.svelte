@@ -39,7 +39,7 @@
     type SchemaFieldDto,
   } from './api';
   import { fileName, matchesOf, userHash, usersOf, type User } from './schemas';
-  import { downloadFile } from './download';
+  import { downloadJson } from './download';
   import { idProblem } from './ids';
   import { count } from './time';
   import { editable } from './access';
@@ -135,12 +135,7 @@
     if (!own) return;
     try {
       const written = await exportSchema($state.snapshot(own), format);
-      if (written.ok)
-        downloadFile(
-          fileName(id, format),
-          JSON.stringify(written.document, null, 2) + '\n',
-          'application/json',
-        );
+      if (written.ok) downloadJson(fileName(id, format), written.document);
       else reported(new Error(written.errors.map((e) => e.message).join(' ')));
     } catch (e) {
       reported(e);

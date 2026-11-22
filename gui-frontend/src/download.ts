@@ -8,6 +8,11 @@ export function downloadFile(name: string, text: string, type: string) {
   URL.revokeObjectURL(url);
 }
 
+/** Hands `value` to the browser as a JSON file named `name`. */
+export function downloadJson(name: string, value: unknown) {
+  downloadFile(name, JSON.stringify(value, null, 2) + '\n', 'application/json');
+}
+
 /** Hands `records` to the browser as `<stem>.ndjson`, one record per line, the file a capture downloads as. */
 export function downloadRecords(stem: string, records: unknown[]) {
   const text = records.map((r) => JSON.stringify(r) + '\n').join('');
