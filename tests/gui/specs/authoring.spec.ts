@@ -2168,7 +2168,13 @@ test('A6: a sample locked as a test passes, and a save that breaks it is allowed
       .getByRole('listbox', { name: 'Tests' })
       .getByRole('option', { name: /orders keep every order/ }),
   ).toContainText('Failing');
-  await admin.keyboard.press('Escape');
+  // Opened, the test keeps the count on the chip.
+  await admin
+    .getByRole('listbox', { name: 'Tests' })
+    .getByRole('option', { name: /orders keep every order/ })
+    .click();
+  await expect(menu).toHaveAccessibleName(/test orders keep every order, 1 test failing/);
+  await expect(menu).toContainText('1 failing');
 
   // The Pipelines list counts it too, and its count opens the Tests tab narrowed to the pipeline's tests.
   await goto(admin, leader, '#/build/pipelines');
