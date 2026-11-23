@@ -1242,9 +1242,10 @@ fn abandon(returns: &Returns, owner: &HashMap<BatchId, Owed>, again: &[(Instant,
 fn note_stall(queue: &Queue, copy: usize, metrics: &MetricsHandle, (id, name): (DestId, &str), e: &IoError) {
     let label = id.to_string();
     metrics.incr("smeltr_destination_stalls_total", &[("destination", label.as_str())], 1);
-    metrics.gauge("smeltr_destination_healthy", &[("destination", label.as_str())], 0.0);
+    // Under the lock, so a copy clearing its stall cannot write healthy over this.
     let mut copies = queue.copies.lock().unwrap();
     copies.each[copy].stalled = true;
+    metrics.gauge("smeltr_destination_healthy", &[("destination", label.as_str())], 0.0);
     if stall_log_due(copies.logged) {
         copies.logged = Some(Instant::now());
         drop(copies);
@@ -1296,11 +1297,10 @@ fn note_level(
         return;
     }
     *reported = Some(now);
-    let total: usize = {
-        let mut copies = queue.copies.lock().unwrap();
-        copies.each[copy].levels[level as usize] = Some(now);
-        copies.each.iter().filter_map(|f| f.levels[level as usize]).sum()
-    };
+    // Written under the lock: a total summed before another copy's and written after it would stand.
+    let mut copies = queue.copies.lock().unwrap();
+    copies.each[copy].levels[level as usize] = Some(now);
+    let total: usize = copies.each.iter().filter_map(|f| f.levels[level as usize]).sum();
     let label = id.to_string();
     metrics.gauge(level.metric(), &[("destination", label.as_str())], total as f64);
 }
@@ -1396,9 +1396,9 @@ fn clear_stall(
         return;
     }
     let recovered = copies.logged.take().is_some();
-    drop(copies);
     let label = id.to_string();
     metrics.gauge("smeltr_destination_healthy", &[("destination", label.as_str())], 1.0);
+    drop(copies);
     if recovered {
         tracing::info!(
             name: "recovered", target: "destinations",
