@@ -1544,13 +1544,27 @@ impl Doc<'_> {
 /// it carries.
 const SENDERS: usize = 256;
 
-/// Records in one request.
-const PER_REQUEST: u64 = 2000;
+/// Records in one request, 2,000 unless `ENGINE_PER_REQUEST` says otherwise.
+fn per_request() -> u64 {
+    static N: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        std::env::var("ENGINE_PER_REQUEST").map_or(2000, |v| v.parse().expect("ENGINE_PER_REQUEST is a number"))
+    })
+}
+
+/// The bodies a `Sender` cycles through: enough that the 1:1 check covers 128,000 records whatever their size.
+fn bodies_count() -> u64 {
+    (128_000 / per_request()).max(64)
+}
 
 /// The request bodies a `Sender` reuses, built before any clock starts: what is measured is the receiver, not the
 /// harness.
 fn bodies(push: &Push) -> Arc<Vec<Vec<u8>>> {
-    Arc::new((0..64).map(|b| (push.body)(b * PER_REQUEST, PER_REQUEST)).collect())
+    Arc::new(
+        (0..bodies_count())
+            .map(|b| (push.body)(b * per_request(), per_request()))
+            .collect(),
+    )
 }
 
 /// Posts the corpus to a receiver on this host from its threads, each request answered once the destination has its
@@ -1604,15 +1618,15 @@ impl Sender {
                 let agent =
                     ureq::Agent::new_with_config(ureq::Agent::config_builder().http_status_as_error(false).build());
                 loop {
-                    let at = next.fetch_add(PER_REQUEST, Ordering::Relaxed);
+                    let at = next.fetch_add(per_request(), Ordering::Relaxed);
                     if at >= to || stop.load(Ordering::Relaxed) {
                         return;
                     }
-                    let count = PER_REQUEST.min(to - at);
+                    let count = per_request().min(to - at);
                     // A short last request is built for its own records, so it sends no more than it is credited.
                     let short;
-                    let which = (at / PER_REQUEST) as usize % bodies.len();
-                    let body = if count == PER_REQUEST {
+                    let which = (at / per_request()) as usize % bodies.len();
+                    let body = if count == per_request() {
                         &bodies[which]
                     } else {
                         short = build(at, count);
@@ -1655,7 +1669,7 @@ impl Sender {
                         std::thread::sleep(wait);
                     }
                     acked.fetch_add(count, Ordering::Relaxed);
-                    if count == PER_REQUEST {
+                    if count == per_request() {
                         sent[which].fetch_add(1, Ordering::Relaxed);
                     }
                     bytes.fetch_add(body.len() as u64, Ordering::Relaxed);
@@ -1719,12 +1733,12 @@ fn stream_syslog(port: u16, from: u64, to: u64) {
                 std::net::TcpStream::connect(("127.0.0.1", port)).expect("the relay"),
             );
             loop {
-                let at = next.fetch_add(PER_REQUEST, Ordering::Relaxed);
+                let at = next.fetch_add(per_request(), Ordering::Relaxed);
                 if at >= to {
                     let _ = socket.flush();
                     return;
                 }
-                for i in at..(at + PER_REQUEST).min(to) {
+                for i in at..(at + per_request()).min(to) {
                     if socket.write_all((syslog_line(i) + "\n").as_bytes()).is_err() {
                         return;
                     }

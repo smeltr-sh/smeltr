@@ -55,7 +55,7 @@ its name, and its transports and settings in `tests/engines/mod.rs`.
 
 ## Transports
 
-- **HTTP** is the receiver case. The harness's sender posts 2,000 records a request, 256 requests at once, to each
+- **HTTP** is the receiver case. The harness's sender posts 2,000 records a request, or the number `ENGINE_PER_REQUEST` names, 256 requests at once, to each
   engine's HTTP listener. Every engine answers a request once it holds its records, before it delivers them: Logstash
   and NiFi cannot answer later, and smeltr and Vector answer on receipt unless told otherwise. A busy answer is
   retried after the time it names, or after a wait that doubles up to a second. Each engine posts what it makes to the

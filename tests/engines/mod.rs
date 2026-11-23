@@ -1644,7 +1644,7 @@ fn time(
         Take::Listen { from: In::Syslog, .. } | Take::Kafka { .. } | Take::Queue { .. } => {
             (keeps(FINITE * rows), kept_of(0, FINITE * rows))
         }
-        Take::Listen { .. } => (keeps(64 * PER_REQUEST), u64::MAX),
+        Take::Listen { .. } => (keeps(bodies_count() * per_request()), u64::MAX),
     };
     let running = start(engine, w, run, cpus, &ends);
     let sender = running.push.as_ref().map(|(url, push)| {
@@ -1714,7 +1714,9 @@ fn time(
     let want = match &sender {
         Some(sender) => {
             sender.stop();
-            let in_body: Vec<u64> = (0..64).map(|b| kept_of(b * PER_REQUEST, PER_REQUEST)).collect();
+            let in_body: Vec<u64> = (0..bodies_count())
+                .map(|b| kept_of(b * per_request(), per_request()))
+                .collect();
             // Every request in flight when it stopped is answered, or the engine never answers it.
             let stopped = Instant::now();
             while sender.running() > 0 {
