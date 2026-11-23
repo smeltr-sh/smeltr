@@ -115,7 +115,7 @@
     [
       'Choose a sample',
       testName ? `chosen: test ${testName}` : selectedName && `chosen: sample ${selectedName}`,
-      failing > 0 && !testName && `${count(failing, 'test')} failing`,
+      failing > 0 && `${count(failing, 'test')} failing`,
     ]
       .filter(Boolean)
       .join(', '),
@@ -133,7 +133,7 @@
       <strong class="ellipsis face-name">{selectedName}</strong>
     {/if}
     {#if records !== null}<span class="dim">{count(records, 'record')}</span>{/if}
-    {#if failing > 0 && !testName}
+    {#if failing > 0}
       <span class="glyphed"><span class="dim">·</span> <TestIcon /><TestTally {failing} /></span>
     {/if} ▾
   {/snippet}
