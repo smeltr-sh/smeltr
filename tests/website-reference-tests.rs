@@ -1249,6 +1249,8 @@ fn the_metrics_table_matches_the_engine() {
         (r#"\.gauge\(\s*"(smeltr_[a-z0-9_]+)""#, "gauge"),
         (r#"incr_per_function\([^;]*?"(smeltr_[a-z0-9_]+)""#, "counter"),
         (r#"registry_gauge\(\s*&?\w+,\s*"(smeltr_[a-z0-9_]+)""#, "gauge"),
+        // A level egress writes as a gauge, named by its `Level`.
+        (r#"Level::\w+ => "(smeltr_[a-z0-9_]+)""#, "gauge"),
         // A name chosen from a list of pairs, then passed to `incr`.
         (r#"\(\s*"(smeltr_[a-z0-9_]+)",\s*o\.\w+\)"#, "counter"),
     ]
