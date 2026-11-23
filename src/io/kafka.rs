@@ -1025,12 +1025,13 @@ impl Completion {
 /// destination filling up, which is why this is close to the heartbeat rather than far above it.
 const STATS_INTERVAL: Duration = Duration::from_secs(2);
 
-/// Publish what librdkafka reports about this producer.
+/// Publish what librdkafka reports about this producer, and give back the bytes it holds: egress publishes those, as
+/// every copy of the destination's together (`Destination::buffered_bytes`).
 ///
 /// Summed across brokers and partitions rather than labeled by either. A `broker` label would multiply every series
 /// by the size of the cluster, which is not this topology's to bound, and the question an operator asks is whether
 /// this destination is being held back -- not by which node.
-fn publish_stats(stats: &Statistics, destination: &str, metrics: &MetricsHandle) {
+fn publish_stats(stats: &Statistics, destination: &str, metrics: &MetricsHandle) -> usize {
     // Broker-enforced quota throttling (KIP-13): the time brokers delayed handling this producer's requests. It is
     // Kafka's whole backpressure signal, and it reaches a client as latency rather than as a refusal.
     //
@@ -1057,11 +1058,6 @@ fn publish_stats(stats: &Statistics, destination: &str, metrics: &MetricsHandle)
         .flat_map(|t| t.partitions.values())
         .map(|p| p.msgq_bytes + p.xmit_msgq_bytes)
         .sum();
-    metrics.gauge(
-        "smeltr_destination_buffered_bytes",
-        &[("destination", destination)],
-        buffered as f64,
-    );
 
     // The link as the producer sees it: the mean round trip over the brokers that answered a request this interval. What `bufferBytes` reaches over it is bytes in flight over this figure, and the leader draws
     // that beside the queue.
@@ -1080,6 +1076,7 @@ fn publish_stats(stats: &Statistics, destination: &str, metrics: &MetricsHandle)
             micros / 1e6,
         );
     }
+    buffered as usize
 }
 
 #[derive(Clone)]
@@ -1094,6 +1091,8 @@ struct DeliveryTracker {
     /// Bytes the queued records cost, by `held_bytes`. Written by `produce` and the delivery reports, both on egress's
     /// thread, since only its polls run them.
     held: Arc<std::sync::atomic::AtomicUsize>,
+    /// What librdkafka holds, as its latest statistics said (`publish_stats`). `None` until the first arrive.
+    buffered: Arc<Mutex<Option<usize>>>,
 }
 
 /// Whether the producer reaches a broker, as its callbacks tell it.
@@ -1172,7 +1171,7 @@ impl ClientContext for DeliveryTracker {
     /// Runs on librdkafka's own thread, not egress's. `MetricsHandle` is two `Arc`s over a locked registry, so both
     /// may write.
     fn stats(&self, stats: Statistics) {
-        publish_stats(&stats, &self.destination, &self.metrics);
+        *self.buffered.lock().unwrap() = Some(publish_stats(&stats, &self.destination, &self.metrics));
         let mut reach = self.reach.lock().unwrap();
         reach.up = any_broker_up(&stats);
         if reach.up {
@@ -1238,6 +1237,8 @@ pub struct KafkaDestination {
     avro: Option<crate::io::avro::AvroWriter>,
     /// Shared with the producer's own `DeliveryTracker`.
     held: Arc<std::sync::atomic::AtomicUsize>,
+    /// Shared with the producer's own `DeliveryTracker`.
+    buffered: Arc<Mutex<Option<usize>>>,
     /// What `held` stays under: the producer's share of `bufferBytes`, or of the most its queue may hold when the
     /// worker sizes this destination. The egress queue in front of it is what paces it; this is the backstop.
     budget: usize,
@@ -1313,10 +1314,12 @@ impl KafkaDestination {
             gzip_to_event_hubs: config.service == crate::plan::topology::KafkaService::EventHubs
                 && matches!(config.compression, crate::plan::topology::Compression::Gzip(_)),
             held: Arc::default(),
+            buffered: Arc::default(),
         };
         let held = tracker.held.clone();
         let state = tracker.state.clone();
         let reach = tracker.reach.clone();
+        let buffered = tracker.buffered.clone();
         let mut producer_config = ClientConfig::new();
         producer_config
             .set("bootstrap.servers", &config.brokers)
@@ -1389,6 +1392,7 @@ impl KafkaDestination {
             seq: 0,
             avro,
             held,
+            buffered,
             budget: config.producer_bytes(),
             _ticket: ticket,
         })
@@ -1578,6 +1582,10 @@ impl Destination for KafkaDestination {
     fn connection_error(&self) -> Option<String> {
         self.reach.lock().unwrap().unreachable()
     }
+
+    fn buffered_bytes(&self) -> Option<usize> {
+        *self.buffered.lock().unwrap()
+    }
 }
 
 #[cfg(test)]
@@ -1649,6 +1657,7 @@ mod tests {
             reach: Arc::default(),
             gzip_to_event_hubs: false,
             held: Arc::default(),
+            buffered: Arc::default(),
         };
         let producer: BaseProducer<DeliveryTracker> = ClientConfig::new()
             .set("bootstrap.servers", "127.0.0.1:1")
@@ -1744,7 +1753,7 @@ mod tests {
 
         let registry = Arc::new(Metrics::new());
         let metrics = MetricsHandle::new(registry.clone(), "egress-3");
-        publish_stats(&stats, "3", &metrics);
+        let buffered = publish_stats(&stats, "3", &metrics);
 
         let find = |name: &str| {
             registry
@@ -1758,11 +1767,7 @@ mod tests {
             "every broker's throttle time counts: {:?}",
             find("smeltr_destination_throttled_seconds_total")
         );
-        assert!(
-            matches!(find("smeltr_destination_buffered_bytes"), Some(MetricValue::Gauge(v)) if v == 132.0),
-            "queued plus ready to transmit, every partition: {:?}",
-            find("smeltr_destination_buffered_bytes")
-        );
+        assert_eq!(buffered, 132, "queued plus ready to transmit, every partition");
 
         assert!(
             matches!(find("smeltr_destination_rtt_seconds"), Some(MetricValue::Gauge(v)) if v == 0.12),
@@ -1770,15 +1775,11 @@ mod tests {
             find("smeltr_destination_rtt_seconds")
         );
 
-        // A second report accumulates the counter and replaces the gauge.
-        publish_stats(&stats, "3", &metrics);
+        // A second report accumulates the counter, and the buffer is a level, not a total.
+        assert_eq!(publish_stats(&stats, "3", &metrics), 132);
         assert!(
             matches!(find("smeltr_destination_throttled_seconds_total"), Some(MetricValue::FloatCounter(v)) if v == 0.084),
             "a window is a delta, so throttle time accumulates"
-        );
-        assert!(
-            matches!(find("smeltr_destination_buffered_bytes"), Some(MetricValue::Gauge(v)) if v == 132.0),
-            "the queue is a level, not a total"
         );
     }
 
@@ -2642,7 +2643,7 @@ mod tests {
             let found = registry
                 .snapshot()
                 .into_iter()
-                .any(|s| s.key.name == "smeltr_destination_buffered_bytes");
+                .any(|s| s.key.name == "smeltr_destination_rtt_seconds");
             if found || Instant::now() >= deadline {
                 break found;
             }
@@ -2652,10 +2653,14 @@ mod tests {
         assert!(published, "librdkafka's statistics never reached the registry");
 
         let labeled = registry.snapshot().into_iter().any(|s| {
-            s.key.name == "smeltr_destination_buffered_bytes"
+            s.key.name == "smeltr_destination_rtt_seconds"
                 && s.key.labels.iter().any(|(k, v)| *k == "destination" && v == "7")
         });
         assert!(labeled, "and they carry this destination's own label");
+        assert!(
+            dest.buffered_bytes().is_some(),
+            "what the producer holds is read from the same statistics"
+        );
     }
 
     /// A commit's answer that names no partition, so it is every source's on the client.

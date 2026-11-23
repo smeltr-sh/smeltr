@@ -361,7 +361,7 @@ pub struct FileConfig {
     /// Set on every data file's upload: content type, storage class. Empty for a table.
     pub attributes: Attributes,
     /// The most encoder threads the destination runs. It starts one, and another whenever every one it has is behind
-    /// and a core is free (`Writer::core_free`), up to this number.
+    /// and a thread is spare (`resources::SpareThread`), up to this number.
     pub encoders: usize,
     /// Parts of one file uploading at once. A take waits for room, so a slow store holds the writer back rather than
     /// growing a queue of parts.
@@ -454,8 +454,7 @@ impl FileDestination {
                     seen: 0,
                     ended: None,
                     finishing: told,
-                    cpu: (Instant::now(), crate::resources::own_cpu_time()),
-                    core_free: false,
+                    spare: crate::resources::SpareThread::new(),
                 };
                 writer.next_commit += writer.shared.config.commit_interval;
                 writer.run(inbox, reports);
@@ -707,10 +706,8 @@ struct Writer {
     ended: Option<u64>,
     /// See `FileDestination::finishing`.
     finishing: Arc<AtomicBool>,
-    /// This process's CPU time when last read, and when, and whether a core of the worker's thread limit was free
-    /// over the reading before.
-    cpu: (Instant, Option<Duration>),
-    core_free: bool,
+    /// Whether a thread of the worker's limit is spare for another encoder.
+    spare: crate::resources::SpareThread,
     /// Each reset's error names its own file, so a reset is told by time: once, then on the interval until a commit
     /// lands.
     reset_said: crate::logs::Repeat,
@@ -810,7 +807,7 @@ impl Writer {
             (None, Some(i))
                 if queued(&self.encoders[i]) < BEHIND_BYTES
                     || self.encoders.len() >= self.shared.config.encoders.max(1)
-                    || !self.core_free() =>
+                    || !self.spare.spare() =>
             {
                 i
             }
@@ -822,24 +819,6 @@ impl Writer {
         (lane.orders.send(Order::Write(partition.clone(), rows))).map_err(|_| "an encoder has stopped".to_string())?;
         self.home.insert(partition, to);
         Ok(())
-    }
-
-    /// Whether the worker left a core of its thread limit unused over the last `MEASURE_EVERY`. An encoder that is
-    /// behind while none is free waits for a core, and another would only share it.
-    fn core_free(&mut self) -> bool {
-        if self.cpu.0.elapsed() >= MEASURE_EVERY {
-            let now = (Instant::now(), crate::resources::own_cpu_time());
-            // A worker that cannot read its CPU time starts encoders as the queues alone say.
-            self.core_free = match (now.1, self.cpu.1) {
-                (Some(cpu), Some(was)) => {
-                    let used = cpu.saturating_sub(was).as_secs_f64() / (now.0 - self.cpu.0).as_secs_f64();
-                    used + 1.0 <= crate::startup_config::worker_thread_limit() as f64
-                }
-                _ => true,
-            };
-            self.cpu = now;
-        }
-        self.core_free
     }
 
     fn start_encoder(&mut self) -> Result<usize, String> {
@@ -859,10 +838,7 @@ impl Writer {
             .map_err(|e| format!("starting an encoder: {e}"))?;
         self.encoders.push(Lane { orders, queued, thread });
         self.shared.started.fetch_add(1, Ordering::Relaxed);
-        // A reading from before this encoder started says nothing about the cores it leaves free: read again, and count
-        // no core free until `MEASURE_EVERY` has passed.
-        self.cpu = (Instant::now(), crate::resources::own_cpu_time());
-        self.core_free = false;
+        self.spare.started();
         Ok(self.encoders.len() - 1)
     }
 

@@ -158,6 +158,55 @@ pub fn own_cpu_time() -> Option<Duration> {
     platform::tree_cpu_time(&[std::process::id()], &mut Default::default())
 }
 
+/// Whether the worker leaves a thread of its limit unused: what a stage that grows by starting threads asks before it
+/// starts another. A thread started while none is spare would only share one.
+pub struct SpareThread {
+    /// This process's CPU time when last read, and when.
+    read: (Instant, Option<Duration>),
+    spare: bool,
+}
+
+/// How long a reading of [`SpareThread`] covers.
+const SPARE_OVER: Duration = Duration::from_secs(1);
+
+impl SpareThread {
+    /// None spare until a reading has covered [`SPARE_OVER`].
+    pub fn new() -> SpareThread {
+        SpareThread {
+            read: (Instant::now(), own_cpu_time()),
+            spare: false,
+        }
+    }
+
+    /// Whether a thread of the worker's limit was unused over the last reading. A worker that cannot read its CPU
+    /// time counts one spare.
+    pub fn spare(&mut self) -> bool {
+        if self.read.0.elapsed() >= SPARE_OVER {
+            let now = (Instant::now(), own_cpu_time());
+            self.spare = match (now.1, self.read.1) {
+                (Some(cpu), Some(was)) => {
+                    let used = cpu.saturating_sub(was).as_secs_f64() / (now.0 - self.read.0).as_secs_f64();
+                    used + 1.0 <= crate::startup_config::worker_thread_limit() as f64
+                }
+                _ => true,
+            };
+            self.read = now;
+        }
+        self.spare
+    }
+
+    /// A thread was started: a reading from before it says nothing about what it leaves spare.
+    pub fn started(&mut self) {
+        *self = SpareThread::new();
+    }
+}
+
+impl Default for SpareThread {
+    fn default() -> Self {
+        SpareThread::new()
+    }
+}
+
 /// Every logical core the host reports, for whichever platform found no real limit to measure
 /// against instead. `1.0` on a host that will not answer, so a caller dividing by it still gets a
 /// number rather than a NaN.

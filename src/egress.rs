@@ -1,5 +1,5 @@
 //! The egress stage: one thread per destination, owning that destination's client and draining a bounded queue every
-//! reader pushes to. Readers reach it through [`EgressHandle`], itself a [`Destination`], so transform's deliver/poll
+//! reader pushes to. A destination whose client works on that thread may run copies of it ([`Egress::copying`]). Readers reach it through [`EgressHandle`], itself a [`Destination`], so transform's deliver/poll
 //! cycle does not know where the work runs.
 //!
 //! Retry belongs here. A unit is kept until its batch is acknowledged and re-sent from here on a delivery failure; a
@@ -9,7 +9,7 @@
 //! lane, and the transform pool goes on serving every other lane; the queue wakes the pool when room returns. A
 //! destination that stops draining therefore stops the sources feeding it and nothing else.
 //!
-//! This thread keeps its own id space for the client it owns and maps each completion back to the `(reader, batch)` it
+//! Each copy keeps its own id space for the client it owns and maps each completion back to the `(reader, batch)` it
 //! came from: the reader half is which return channel answers, the batch half is what that reader tracked.
 //!
 //! A destination set to block keeps what it refuses here too, and sends it again on a clock of its own: the fix for a
@@ -128,6 +128,69 @@ struct Queue {
     captures: OnceLock<Arc<crate::worker::capture::Captures>>,
     /// The deployment is stopping. See [`Egress::finish`].
     finishing: AtomicBool,
+    /// The pacing model, once the queue is paced: one for every copy, since their sends share one link.
+    pacer: Mutex<Option<Pacer>>,
+    /// How another copy of the egress thread starts, for a destination that may run more than one. See
+    /// [`Egress::copying`].
+    copier: OnceLock<Copier>,
+    /// What each copy of the egress thread reports, combined into the destination's gauges.
+    copies: Mutex<Copies>,
+}
+
+/// Builds another client for the destination, for another copy of its egress thread.
+pub type Build = Box<dyn Fn() -> Result<Box<dyn Destination>, IoError> + Send + Sync>;
+
+/// How a destination whose client does its work on the egress thread grows past one thread: by the rule its file
+/// encoders follow. Another copy starts when the queue is full and the copy that pops finds work already waiting,
+/// while a thread of the worker's limit is spare, up to `most`. Each copy has its own client and sends, retries and
+/// acknowledges what it pops; the queue, its budget and its pacing are shared.
+struct Copier {
+    build: Build,
+    most: usize,
+    spare: Mutex<crate::resources::SpareThread>,
+    /// Every copy started past the first, for the queue's owner to join.
+    threads: Mutex<Vec<JoinHandle<()>>>,
+}
+
+/// What the copies of the egress thread report, one entry each, the first copy's first.
+#[derive(Default)]
+struct Copies {
+    each: Vec<Figures>,
+    /// When the stall was last logged, while any copy is stalled: the destination is one, however many copies send.
+    logged: Option<Instant>,
+}
+
+/// What one copy last reported. The destination's gauges are every copy's together.
+#[derive(Clone, Copy, Default)]
+struct Figures {
+    stalled: bool,
+    levels: [Option<usize>; 4],
+}
+
+/// A level each copy reports of its own client and units, which the destination's gauge gives for every copy
+/// together.
+#[derive(Clone, Copy)]
+enum Level {
+    /// Requests the client has open, for a transport that opens them itself.
+    InFlight,
+    /// What its open files buffer that is not yet uploaded.
+    Open,
+    /// What its client holds besides the queue, as a Kafka producer's buffer does.
+    Buffered,
+    /// Rows it refused and keeps, wherever each is: waiting to be sent again, or sent. The leader reads it to know
+    /// which workers a capture at this destination has held rows to wait for.
+    Kept,
+}
+
+impl Level {
+    fn metric(self) -> &'static str {
+        match self {
+            Level::InFlight => "smeltr_destination_in_flight",
+            Level::Open => "smeltr_destination_open_bytes",
+            Level::Buffered => "smeltr_destination_buffered_bytes",
+            Level::Kept => "smeltr_destination_held_rows",
+        }
+    }
 }
 
 /// The bytes every borrowing queue of one deployment may hold above its reserve, together. A deployment has two: one
@@ -293,7 +356,28 @@ impl Queue {
             sender_bytes: OnceLock::new(),
             finishing: AtomicBool::new(false),
             captures: OnceLock::new(),
+            pacer: Mutex::new(None),
+            copier: OnceLock::new(),
+            copies: Mutex::new(Copies {
+                each: vec![Figures::default()],
+                logged: None,
+            }),
         }
+    }
+
+    /// Runs `f` on the pacing model, once the queue is paced.
+    fn pace<T>(&self, f: impl FnOnce(&mut Pacer) -> T) -> Option<T> {
+        self.pacer.lock().unwrap().as_mut().map(f)
+    }
+
+    /// Whether `copy` is stalled.
+    fn stalled(&self, copy: usize) -> bool {
+        self.copies.lock().unwrap().each[copy].stalled
+    }
+
+    /// Whether the destination's stall is due its log.
+    fn stall_log_due(&self) -> bool {
+        stall_log_due(self.copies.lock().unwrap().logged)
     }
 
     /// Whether `bytes` more would fit. An empty queue takes anything: a unit larger than the whole budget goes in
@@ -401,14 +485,14 @@ impl Queue {
     fn pop(&self, timeout: Duration) -> Popped {
         let mut st = self.state.lock().unwrap();
         if let Some(u) = st.units.pop_front() {
-            return Popped::Work(u, self.pressing());
+            return Popped::Work(u, self.pressing(), true);
         }
         if st.closed {
             return Popped::Closed;
         }
         let (mut st, _) = self.work.wait_timeout(st, timeout).unwrap();
         if let Some(u) = st.units.pop_front() {
-            return Popped::Work(u, self.pressing());
+            return Popped::Work(u, self.pressing(), false);
         }
         if st.closed {
             return Popped::Closed;
@@ -462,8 +546,9 @@ impl Queue {
 }
 
 enum Popped {
-    /// A unit, and whether the source was pressing on the queue: refused room since the last.
-    Work(Unit, bool),
+    /// A unit; whether the source was pressing on the queue, refused room since the last; and whether it was waiting
+    /// when asked for, so the copy popping it is behind.
+    Work(Unit, bool, bool),
     Idle,
     Closed,
 }
@@ -514,7 +599,7 @@ impl Egress {
             let name = name.to_string();
             std::thread::Builder::new()
                 .name(format!("egress-{id}"))
-                .spawn(move || run(destination, &queue, &returns, &metrics, id, &name))
+                .spawn(move || run(destination, &queue, &returns, &metrics, (id, &name), 0))
                 .expect("spawning an egress thread")
         };
         Egress {
@@ -574,6 +659,17 @@ impl Egress {
         self
     }
 
+    /// Let up to `most` copies of the egress thread drain this queue, each with a client `build` makes ([`Copier`]).
+    pub fn copying(self, most: usize, build: Build) -> Egress {
+        let _ = self.queue.copier.set(Copier {
+            build,
+            most,
+            spare: Mutex::default(),
+            threads: Mutex::default(),
+        });
+        self
+    }
+
     /// Keep what the destination refuses and send it again, completing a batch only once it lands: the destination is
     /// set to block. Otherwise a refusal goes back with the batch's completion, for the reader's side to answer.
     pub fn holding_refusals(self) -> Egress {
@@ -619,7 +715,46 @@ impl Drop for Egress {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
+        // One at a time: a copy may start another until it sees the queue closed, and pushes it before it ends.
+        if let Some(copier) = self.queue.copier.get() {
+            while let Some(t) = copier.threads.lock().unwrap().pop() {
+                let _ = t.join();
+            }
+        }
     }
+}
+
+/// Start another copy of the egress thread, if the destination may run one more and a thread is spare.
+fn start_copy(queue: &Arc<Queue>, returns: &Arc<Returns>, metrics: &MetricsHandle, (id, name): (DestId, &str)) {
+    let Some(copier) = queue.copier.get() else {
+        return;
+    };
+    let mut copies = queue.copies.lock().unwrap();
+    if copies.each.len() >= copier.most || !copier.spare.lock().unwrap().spare() {
+        return;
+    }
+    let destination = match (copier.build)() {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(
+                name: "copy_failed", target: "destinations",
+                subject = name,
+                error = %e,
+                "a destination could not start another sending thread, so it goes on with those it has"
+            );
+            return;
+        }
+    };
+    copies.each.push(Figures::default());
+    let copy = copies.each.len() - 1;
+    drop(copies);
+    copier.spare.lock().unwrap().started();
+    let (queue, returns, metrics, name) = (queue.clone(), returns.clone(), metrics.clone(), name.to_string());
+    let thread = std::thread::Builder::new()
+        .name(format!("egress-{id}.{copy}"))
+        .spawn(move || run(destination, &queue, &returns, &metrics, (id, &name), copy))
+        .expect("spawning an egress thread");
+    copier.threads.lock().unwrap().push(thread);
 }
 
 /// Backoff bounds between re-sends of a unit the destination would not take: short enough to clear a blip, capped so an
@@ -633,14 +768,14 @@ fn stall_log_due(stalled: Option<Instant>) -> bool {
     stalled.is_none_or(|at| at.elapsed() >= crate::logs::RELOG_EVERY)
 }
 
-/// The egress thread. Owns the client for its whole life.
+/// One copy of the egress thread, `copy` of the destination's. Owns its client for its whole life.
 fn run(
     mut destination: Box<dyn Destination>,
     queue: &Arc<Queue>,
-    returns: &Returns,
+    returns: &Arc<Returns>,
     metrics: &MetricsHandle,
-    id: DestId,
-    name: &str,
+    (id, name): (DestId, &str),
+    copy: usize,
 ) {
     // Lends the destination to every line this thread says while it is kept at trace. It opens once, so a line at
     // trace names its destination itself too, for when trace is turned on after the thread started.
@@ -651,23 +786,22 @@ fn run(
     // Units to send again, each with when: ones that failed to land, and refused rows kept.
     let mut again: Vec<(Instant, Unit)> = Vec::new();
     let mut backoff = RETRY_MIN;
-    // When the stall was last logged; `None` while the destination is healthy.
-    let mut stalled: Option<Instant> = None;
     // Whether the client's own report of no reachable broker is what last marked this destination down. A failed send
     // takes the stall over, so only a landed send clears it, not a broker coming back.
     let mut cut_off = false;
     // Written on change, not every pass: the loop turns on POLL_INTERVAL whether or not anything moved.
-    let mut reported: Option<usize> = None;
+    let mut in_flight_reported: Option<usize> = None;
+    let mut buffered_reported: Option<usize> = None;
     // The same discipline for the queue's fill, which moves far more often than anything reads it.
     let mut held_reported: Option<usize> = None;
     let mut held_reported_at = Instant::now();
     // The rows refused and kept, written on change.
-    let mut kept_reported: Option<u64> = None;
+    let mut kept_reported: Option<usize> = None;
     let mut open_reported: Option<usize> = None;
     // Held while any are kept, so a capture at this destination waits to be shown them.
     let mut holding: Option<crate::worker::capture::Holding> = None;
-    // The pacing model, once the queue is paced. Its target is the queue's budget, and so what is in flight.
-    let mut pacer: Option<Pacer> = None;
+    // Whether this copy has seen the queue paced. The model's target is the queue's budget, and so what is in flight.
+    let mut paced = false;
     let mut finishing = false;
 
     loop {
@@ -675,14 +809,16 @@ fn run(
             finishing = true;
             destination.finish();
         }
-        if pacer.is_none()
-            && let Some(&floor) = queue.paced.get()
-        {
+        if !paced && let Some(&floor) = queue.paced.get() {
+            paced = true;
             if queue.sender_bytes.get().is_some() {
                 let queue = queue.clone();
                 destination.lend_senders(Box::new(move || queue.take_sender()));
             }
-            pacer = Some(Pacer::new(floor, queue, metrics, id));
+            let mut pacer = queue.pacer.lock().unwrap();
+            if pacer.is_none() {
+                *pacer = Some(Pacer::new(floor, queue, metrics, id));
+            }
         }
         // Here, not only where the queue is polled: a unit that keeps failing is re-sent forever without asking for new
         // work.
@@ -701,8 +837,11 @@ fn run(
             None => match queue.pop(POLL_INTERVAL) {
                 Popped::Closed => break,
                 Popped::Idle => None,
-                Popped::Work(u, pressed) => {
+                Popped::Work(u, pressed, behind) => {
                     pressing = pressed;
+                    if pressed && behind {
+                        start_copy(queue, returns, metrics, (id, name));
+                    }
                     Some(u)
                 }
             },
@@ -733,13 +872,12 @@ fn run(
             // Once the destination has taken it: a Kafka producer at its bound holds `deliver` until it has room,
             // and that wait is this side's, not the link's round trip. A batch it did not take was never in flight.
             let taken = matches!(delivered, Ok((Dispatched::Complete | Dispatched::InFlight, _)));
-            let paced = pacer
-                .as_mut()
-                .filter(|_| taken)
-                .map(|p| p.dispatched(unit.bytes, app_limited));
+            let paced = taken
+                .then(|| queue.pace(|p| p.dispatched(unit.bytes, app_limited)))
+                .flatten();
             match delivered {
                 Err(e) => {
-                    note_stall(metrics, id, name, &e, &mut stalled);
+                    note_stall(queue, copy, metrics, (id, name), &e);
                     cut_off = false;
                     // This unit alone: the ones in flight are answered for by `poll_completions`.
                     again.push(failed(unit));
@@ -753,10 +891,10 @@ fn run(
                     if failing(&owner, &again) {
                         backoff = RETRY_MIN;
                     } else {
-                        clear_stall(metrics, id, name, &mut stalled, &mut backoff);
+                        clear_stall(queue, copy, metrics, (id, name), &mut backoff);
                     }
-                    if let (Some(p), Some(c)) = (&mut pacer, paced) {
-                        p.completed(queue, c);
+                    if let Some(c) = paced {
+                        queue.pace(|p| p.completed(queue, c));
                     }
                     finish(queue, returns, metrics, (id, name), unit, rejections, &mut again);
                 }
@@ -779,7 +917,7 @@ fn run(
                 // failure here, retried like any other.
                 Ok((Dispatched::NoRoom { .. }, _)) => {
                     let e = IoError::transient("destination client would not take the batch");
-                    note_stall(metrics, id, name, &e, &mut stalled);
+                    note_stall(queue, copy, metrics, (id, name), &e);
                     cut_off = false;
                     again.push(failed(unit));
                     queue.sleep_unless_closed(backoff);
@@ -810,24 +948,19 @@ fn run(
                     );
                     owed.rejections.extend(c.rejections);
                     if let Some(undelivered) = c.undelivered.filter(|u| !u.rows.is_empty()) {
-                        note_stall(metrics, id, name, &undelivered.error, &mut stalled);
+                        note_stall(queue, copy, metrics, (id, name), &undelivered.error);
                         failures = true;
                         let rest = remainder(queue, metrics, id, owed.unit, owed.rejections, &undelivered.rows);
-                        if let (Some(p), Some(paced)) = (&mut pacer, owed.paced) {
-                            p.abandoned(paced, paced.bytes.saturating_sub(rest.bytes));
+                        if let Some(paced) = owed.paced {
+                            queue.pace(|p| p.abandoned(paced, paced.bytes.saturating_sub(rest.bytes)));
                         }
                         again.push(failed(rest));
                         continue;
                     }
                     landed = true;
-                    if let (Some(p), Some(paced)) = (&mut pacer, owed.paced) {
-                        p.completed(
-                            queue,
-                            Completion {
-                                throttled: c.throttled,
-                                ..paced
-                            },
-                        );
+                    if let Some(paced) = owed.paced {
+                        let throttled = c.throttled;
+                        queue.pace(|p| p.completed(queue, Completion { throttled, ..paced }));
                     }
                     finish(
                         queue,
@@ -847,7 +980,7 @@ fn run(
                     if failures || failing(&owner, &again) {
                         backoff = RETRY_MIN;
                     } else {
-                        clear_stall(metrics, id, name, &mut stalled, &mut backoff);
+                        clear_stall(queue, copy, metrics, (id, name), &mut backoff);
                     }
                 } else if failures {
                     // Nothing landed: the destination is down as a whole, so it backs off as a whole.
@@ -856,27 +989,31 @@ fn run(
                 }
             }
             Err(e) => {
-                note_stall(metrics, id, name, &e, &mut stalled);
+                note_stall(queue, copy, metrics, (id, name), &e);
                 cut_off = false;
-                take_back_all(&mut owner, &mut again, &mut pacer);
+                take_back_all(&mut owner, &mut again, queue);
                 queue.sleep_unless_closed(backoff);
                 backoff = (backoff * 2).min(RETRY_MAX);
             }
         }
 
-        note_cut_off(
-            metrics,
-            id,
-            name,
-            destination.connection_error(),
-            &mut cut_off,
-            &mut stalled,
-            &mut backoff,
+        let here = (queue.as_ref(), copy, metrics, id);
+        note_cut_off(here, name, destination.connection_error(), &mut cut_off, &mut backoff);
+        note_level(
+            here,
+            Level::InFlight,
+            destination.concurrency(),
+            &mut in_flight_reported,
         );
-        note_concurrency(metrics, id, destination.concurrency(), &mut reported);
-        note_open(metrics, id, destination.open_bytes(), &mut open_reported);
+        note_level(here, Level::Open, destination.open_bytes(), &mut open_reported);
+        note_level(
+            here,
+            Level::Buffered,
+            destination.buffered_bytes(),
+            &mut buffered_reported,
+        );
         if queue.holds_refusals.load(Ordering::Relaxed) {
-            note_kept(metrics, id, &owner, &again, &mut kept_reported);
+            note_level(here, Level::Kept, Some(kept(&owner, &again)), &mut kept_reported);
         }
         if let Some(captures) = queue.captures.get() {
             let keeps = kept_reported.is_some_and(|kept| kept > 0);
@@ -1070,10 +1207,10 @@ fn failing(owner: &HashMap<BatchId, Owed>, again: &[(Instant, Unit)]) -> bool {
 
 /// Take every sent-but-unacknowledged batch back to be sent again. The pacing model is told of each, so it no longer
 /// counts it in flight.
-fn take_back_all(owner: &mut HashMap<BatchId, Owed>, again: &mut Vec<(Instant, Unit)>, pacer: &mut Option<Pacer>) {
+fn take_back_all(owner: &mut HashMap<BatchId, Owed>, again: &mut Vec<(Instant, Unit)>, queue: &Queue) {
     for (_, o) in owner.drain() {
-        if let (Some(p), Some(paced)) = (pacer.as_mut(), o.paced) {
-            p.abandoned(paced, 0);
+        if let Some(paced) = o.paced {
+            queue.pace(|p| p.abandoned(paced, 0));
         }
         again.push(failed(o.unit));
     }
@@ -1099,14 +1236,16 @@ fn abandon(returns: &Returns, owner: &HashMap<BatchId, Owed>, again: &[(Instant,
 }
 
 /// Count a failure, mark the destination unhealthy, and log the stall, again every [`crate::logs::RELOG_EVERY`]
-/// while it lasts. This thread owns the client, so it is the only writer of `smeltr_destination_healthy` and
-/// `smeltr_destination_stalls_total`.
-fn note_stall(metrics: &MetricsHandle, id: DestId, name: &str, e: &IoError, stalled: &mut Option<Instant>) {
+/// while any copy of its egress thread is stalled.
+fn note_stall(queue: &Queue, copy: usize, metrics: &MetricsHandle, (id, name): (DestId, &str), e: &IoError) {
     let label = id.to_string();
     metrics.incr("smeltr_destination_stalls_total", &[("destination", label.as_str())], 1);
     metrics.gauge("smeltr_destination_healthy", &[("destination", label.as_str())], 0.0);
-    if stall_log_due(*stalled) {
-        *stalled = Some(Instant::now());
+    let mut copies = queue.copies.lock().unwrap();
+    copies.each[copy].stalled = true;
+    if stall_log_due(copies.logged) {
+        copies.logged = Some(Instant::now());
+        drop(copies);
         tracing::warn!(
             name: "stalled", target: "destinations",
             subject = name,
@@ -1121,86 +1260,57 @@ fn note_stall(metrics: &MetricsHandle, id: DestId, name: &str, e: &IoError, stal
 /// up again once the client says it reaches a broker, unless a failed send has marked it down since. Batches in flight
 /// stay with the client: it is still sending them, and only a failed send takes them back.
 fn note_cut_off(
-    metrics: &MetricsHandle,
-    id: DestId,
+    (queue, copy, metrics, id): (&Queue, usize, &MetricsHandle, DestId),
     name: &str,
     error: Option<String>,
     cut_off: &mut bool,
-    stalled: &mut Option<Instant>,
     backoff: &mut Duration,
 ) {
     match error {
-        // On `stalled`, not `cut_off`: a landed send clears the stall while the client may still say it reaches
+        // On the stall, not `cut_off`: a landed send clears the stall while the client may still say it reaches
         // nothing. A cut-off stall is told again once its log is due; a failed send's is told by its retries.
-        Some(e) if stalled.is_none() || (*cut_off && stall_log_due(*stalled)) => {
+        Some(e) if !queue.stalled(copy) || (*cut_off && queue.stall_log_due()) => {
             *cut_off = true;
-            note_stall(metrics, id, name, &IoError::transient(e), stalled);
+            note_stall(queue, copy, metrics, (id, name), &IoError::transient(e));
         }
         None if *cut_off => {
             *cut_off = false;
-            clear_stall(metrics, id, name, stalled, backoff);
+            clear_stall(queue, copy, metrics, (id, name), backoff);
         }
         _ => {}
     }
 }
 
-/// Report the requests the destination has open. This thread owns the client, so it is the only
-/// writer of `smeltr_destination_in_flight`. A destination that reports no figure leaves the series absent rather than
-/// publishing a zero, which would read as a stalled destination.
-fn note_concurrency(metrics: &MetricsHandle, id: DestId, now: Option<usize>, reported: &mut Option<usize>) {
-    let Some(level) = now else { return };
-    if *reported == Some(level) {
-        return;
-    }
-    *reported = Some(level);
-    let label = id.to_string();
-    metrics.gauge(
-        "smeltr_destination_in_flight",
-        &[("destination", label.as_str())],
-        level as f64,
-    );
-}
-
-/// Report what the destination's open files buffer, written on change.
-fn note_open(metrics: &MetricsHandle, id: DestId, now: Option<usize>, reported: &mut Option<usize>) {
-    let Some(bytes) = now else { return };
-    if *reported == Some(bytes) {
-        return;
-    }
-    *reported = Some(bytes);
-    let label = id.to_string();
-    metrics.gauge(
-        "smeltr_destination_open_bytes",
-        &[("destination", label.as_str())],
-        bytes as f64,
-    );
-}
-
-/// Publish how many rows the destination refused and keeps, wherever each is: waiting to be sent again, or sent. The
-/// leader reads it to know which workers a capture at this destination has held rows to wait for.
-fn note_kept(
-    metrics: &MetricsHandle,
-    id: DestId,
-    owner: &HashMap<BatchId, Owed>,
-    again: &[(Instant, Unit)],
-    reported: &mut Option<u64>,
+/// Write `level` as every copy's together, when this copy's figure, `now`, moved. A destination that reports no figure
+/// leaves the series absent rather than publishing a zero, which would read as a stalled destination.
+fn note_level(
+    (queue, copy, metrics, id): (&Queue, usize, &MetricsHandle, DestId),
+    level: Level,
+    now: Option<usize>,
+    reported: &mut Option<usize>,
 ) {
-    // A DLQ's carrier stands for its riders too: each is a row of its own.
+    let Some(now) = now else { return };
+    if *reported == Some(now) {
+        return;
+    }
+    *reported = Some(now);
+    let total: usize = {
+        let mut copies = queue.copies.lock().unwrap();
+        copies.each[copy].levels[level as usize] = Some(now);
+        copies.each.iter().filter_map(|f| f.levels[level as usize]).sum()
+    };
+    let label = id.to_string();
+    metrics.gauge(level.metric(), &[("destination", label.as_str())], total as f64);
+}
+
+/// The rows this copy refused and keeps ([`Level::Kept`]). A DLQ's carrier stands for its riders too: each is a row
+/// of its own.
+fn kept(owner: &HashMap<BatchId, Owed>, again: &[(Instant, Unit)]) -> usize {
     let held = |u: &Unit| match u.held {
         Some(_) => u.rows.iter().map(OwnedRecord::rows).sum(),
         None => 0,
     };
-    let kept = again.iter().map(|(_, u)| held(u)).sum::<u64>() + owner.values().map(|o| held(&o.unit)).sum::<u64>();
-    if *reported == Some(kept) {
-        return;
-    }
-    *reported = Some(kept);
-    let label = id.to_string();
-    metrics.gauge(
-        "smeltr_destination_held_rows",
-        &[("destination", label.as_str())],
-        kept as f64,
-    );
+    (again.iter().map(|(_, u)| held(u)).sum::<u64>() + owner.values().map(|o| held(&o.unit)).sum::<u64>()) as usize
 }
 
 /// The shortest gap between two writes of the queue's fill. The loop turns every [`POLL_INTERVAL`], far oftener than
@@ -1267,13 +1377,27 @@ fn note_delivered(metrics: &MetricsHandle, id: DestId, rows: u64, bytes: u64) {
     }
 }
 
-/// Mark the destination healthy again. Called before the batch is reported: a reader released by that report may read
-/// the gauge, and it must not see the stalled value of a send that has already landed.
-fn clear_stall(metrics: &MetricsHandle, id: DestId, name: &str, stalled: &mut Option<Instant>, backoff: &mut Duration) {
+/// Mark this copy healthy again, and the destination once no copy is stalled. Called before the batch is reported: a
+/// reader released by that report may read the gauge, and it must not see the stalled value of a send that has
+/// already landed.
+fn clear_stall(
+    queue: &Queue,
+    copy: usize,
+    metrics: &MetricsHandle,
+    (id, name): (DestId, &str),
+    backoff: &mut Duration,
+) {
     *backoff = RETRY_MIN;
+    let mut copies = queue.copies.lock().unwrap();
+    copies.each[copy].stalled = false;
+    if copies.each.iter().any(|f| f.stalled) {
+        return;
+    }
+    let recovered = copies.logged.take().is_some();
+    drop(copies);
     let label = id.to_string();
     metrics.gauge("smeltr_destination_healthy", &[("destination", label.as_str())], 1.0);
-    if stalled.take().is_some() {
+    if recovered {
         tracing::info!(
             name: "recovered", target: "destinations",
             subject = name,
@@ -1537,7 +1661,7 @@ mod tests {
     fn a_refusal_marks_the_next_unit_as_pressed_and_a_quiet_source_does_not() {
         let queue = Queue::new(4);
         let pressed = |p| match p {
-            Popped::Work(_, pressed) => pressed,
+            Popped::Work(_, pressed, _) => pressed,
             _ => panic!("a unit was queued"),
         };
         // A quiet source: one unit, nothing refused, nothing behind it.

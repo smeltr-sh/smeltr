@@ -1788,6 +1788,16 @@ impl DestinationKind {
         )
     }
 
+    /// The most egress threads that may send to this destination at once, each with its own client. One for a kind
+    /// that spreads its own work over threads, as files do over encoders and HTTP over senders; the worker's thread
+    /// limit for Kafka, whose client does its per-record work on the thread that sends.
+    pub fn copies(&self) -> usize {
+        match self {
+            DestinationKind::Kafka(_) => crate::startup_config::worker_thread_limit(),
+            _ => 1,
+        }
+    }
+
     /// The destination's `bufferBytes`: all it holds of what it has not yet delivered, egress's queue and, for Kafka,
     /// librdkafka's own queue together.
     pub fn buffer_bytes(&self) -> usize {

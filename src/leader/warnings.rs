@@ -438,7 +438,7 @@ const DESTINATION_LAST_REFUSAL: &str = "smeltr_destination_last_refusal";
 const DESTINATION_HEALTHY: &str = "smeltr_destination_healthy";
 /// Messages a queue-backed source has finished, which is what drains its lag.
 const MESSAGES_FINISHED: &str = "smeltr_source_messages_finished_total";
-/// The wire name `egress::note_kept` gauges a destination's refused rows with, kept to send again.
+/// The wire name `egress::note_level` gauges a destination's refused rows with, kept to send again.
 const DESTINATION_HELD_ROWS: &str = "smeltr_destination_held_rows";
 /// A fact last evidenced longer ago than this no longer counts as current: long enough that one delayed heartbeat --
 /// `HeartbeatClient::send` already retries a failed one once -- does not flap a warning, short enough that a real

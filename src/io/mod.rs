@@ -1292,6 +1292,12 @@ pub trait Destination: Send {
         None
     }
 
+    /// What its client holds besides the egress queue, for one that holds its own copy: a Kafka producer's buffer.
+    /// `None` for one that holds none, or has not said yet.
+    fn buffered_bytes(&self) -> Option<usize> {
+        None
+    }
+
     /// Why this destination reaches nothing right now, when its client knows before any send fails: a broker that
     /// does not resolve, refuses the connection, or rejects the credentials. `None` for one that is reachable, or a
     /// kind that learns it only from a send. Asked by the egress thread on every pass.

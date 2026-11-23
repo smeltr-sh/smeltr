@@ -1416,3 +1416,79 @@ fn a_destination_where_nothing_lands_backs_off_as_a_whole() {
     dest.complete(dest.units()[4].0);
     assert_eq!(completions_within(&mut h, timeout()).len(), 1);
 }
+
+/// A client that takes a while over each batch, and notes which thread sent it.
+struct Slow {
+    inner: FakeDestination,
+    senders: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+}
+
+impl Destination for Slow {
+    fn deliver(
+        &mut self,
+        batch: BatchId,
+        rows: Cow<'_, [OwnedRecord]>,
+    ) -> Result<(Dispatched, Vec<smeltr::io::Rejection>), smeltr::io::IoError> {
+        std::thread::sleep(Duration::from_millis(5));
+        let name = std::thread::current().name().unwrap_or_default().to_string();
+        self.senders.lock().unwrap().insert(name);
+        self.inner.deliver(batch, rows)
+    }
+
+    fn flush(&mut self) -> Result<(), smeltr::io::IoError> {
+        self.inner.flush()
+    }
+}
+
+/// A destination that may run more than one egress thread starts another, with a client of its own, when its queue
+/// is full and the thread draining it falls behind; it never starts more than it may, and every batch still comes back
+/// to its reader.
+#[test]
+fn a_full_queue_starts_another_copy_with_its_own_client() {
+    let sent = FakeDestination::new();
+    let senders = Arc::default();
+    let built = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let slow = |sent: &FakeDestination, senders: &Arc<_>| Slow {
+        inner: sent.clone(),
+        senders: Arc::clone(senders),
+    };
+    let first = Box::new(slow(&sent, &senders));
+    let build = {
+        let (sent, senders, built) = (sent.clone(), Arc::clone(&senders), built.clone());
+        Box::new(move || {
+            built.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(Box::new(slow(&sent, &senders)) as Box<dyn Destination>)
+        })
+    };
+    let row = vec![b'x'; 1000];
+    // Four rows fill the queue, so the reader is refused room while the one copy sends.
+    let mut egress = Egress::start(0, "d", first, timeout(), 4 * row.len(), metrics()).copying(3, build);
+    let mut h = egress.handle();
+
+    // Long enough for a thread to be found spare twice: each reading covers a second.
+    let until = std::time::Instant::now() + Duration::from_millis(3500);
+    let mut handed = 0u64;
+    let mut done = 0;
+    while std::time::Instant::now() < until {
+        match hand(&mut h, handed, &[OutgoingRecord::new(&row)]) {
+            Dispatched::NoRoom { .. } => std::thread::sleep(Duration::from_millis(1)),
+            _ => handed += 1,
+        }
+        done += h.poll_completions().unwrap().len();
+    }
+    h.flush().unwrap();
+    done += h.poll_completions().unwrap().len();
+
+    let built = built.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        (1..=2).contains(&built),
+        "copies past the first, up to three in all: {built}"
+    );
+    assert_eq!(
+        senders.lock().unwrap().len(),
+        built + 1,
+        "each copy sends with its own client"
+    );
+    assert_eq!(done as u64, handed, "every batch came back to its reader");
+    assert_eq!(sent.sent().len() as u64, handed);
+}

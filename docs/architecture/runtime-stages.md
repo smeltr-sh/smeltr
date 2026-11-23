@@ -11,7 +11,7 @@ ingest         one reader per source
    |  batch: records + ack tokens            one bounded queue per source
 transform      one pool, sized by cores
    |  one delivery unit per destination      one bounded queue per destination
-egress         one thread per destination
+egress         one thread per destination, or more
    |  completion: what landed, what was refused
 commit         one tracker per source, on the reader
 ```
@@ -118,7 +118,12 @@ either side: it is polled, delivered and committed once, whatever its slices.
 ## Egress
 
 Egress is one thread per destination, owning that destination's client and
-draining a queue every reader pushes to. A destination that writes files also
+draining a queue every reader pushes to. A destination whose client does its
+work on that thread, as a Kafka producer does, may run more copies of it, each
+with a client of its own over the one queue, its budget and its pacing: another
+starts when the queue is full and the copy popping from it finds work already
+waiting, while a thread of the worker's limit is spare, up to that limit. A
+destination that writes files also
 encodes on threads of its own, because encoding is CPU work: it starts one
 encoder, and another whenever every one it has has a poll's worth of rows
 waiting, up to the transform pool's size. A commit closes every encoder's
