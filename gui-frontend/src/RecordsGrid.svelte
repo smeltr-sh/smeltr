@@ -24,7 +24,7 @@
 
   /** A chip in the find box: the rows it keeps. */
   export type FindChip =
-    | { kind: 'failing' | 'dropped' | 'changed' }
+    | { kind: 'failing' | 'dropped' | 'changed' | 'differs' }
     | { kind: 'has'; path: string }
     | {
         kind: 'rows';
@@ -72,6 +72,7 @@
   import FoldAllButton from './FoldAllButton.svelte';
   import { TableSort } from './sort.svelte';
   import { formatDiffValue } from './diff';
+  import { differences, type RowDifference } from './testDiff';
   import { RECOMMENDED_NAMED } from './schemas';
   import ShowAll from './ShowAll.svelte';
   import {
@@ -515,6 +516,19 @@
     untrack(() => showTest(dto, rowOf));
   });
 
+  /** How each row on screen differs from what the test locks, by key, once the test's own sample has run. */
+  let diffs = $derived.by((): Map<number, RowDifference> | null => {
+    if (!testRead || !test?.ready || !rows) return null;
+    const rowOf = test.rowOf ?? ((row: GridRow) => row.key);
+    const all = rows.map((row, i) => ({
+      key: row.key,
+      at: rowOf(row),
+      dropped: row.dropped,
+      leaves: rowsMaps[i].after,
+    }));
+    return differences(testRead, all);
+  });
+
   /** Shows what `test` checks: its fields the rows still hold and nothing else, and a chip keeping its rows unless it
    * checks every row. A field it checks that the rows no longer hold is left out and named; if it was renamed, the
    * reader chooses it under its new name. */
@@ -573,6 +587,7 @@
     if (c.kind === 'rows') return c.keeps(row);
     if (c.kind === 'failing') return row.exceptions.length > 0;
     if (c.kind === 'dropped') return row.dropped;
+    if (c.kind === 'differs') return diffs?.has(row.key) ?? false;
     return rowChanged(i);
   }
 
@@ -582,6 +597,7 @@
     failing: 'Failing',
     dropped: '⌫ Dropped',
     changed: '~ Changed by a step',
+    differs: 'Differs from the test',
   } as const;
 
   // What the find box offers: the kinds of row a chip keeps, with how many there are, narrowed to what is typed.
@@ -593,6 +609,7 @@
       failing: () => failingCount,
       dropped: () => all.filter((r) => r.dropped).length,
       changed: () => all.filter((_, i) => rowChanged(i)).length,
+      differs: () => diffs?.size ?? 0,
     };
     return (Object.keys(CHIP_LABELS) as (keyof typeof CHIP_LABELS)[])
       .filter((kind) => !chips.some((c) => c.kind === kind))
@@ -833,7 +850,13 @@
                 {@const m = rowsMaps[i]}
                 {@const open = expanded.has(row.key)}
                 {@const failing = row.exceptions.length > 0}
-                <tr class="grid-row" class:dropped={row.dropped} class:open class:failing>
+                <tr
+                  class="grid-row"
+                  class:dropped={row.dropped}
+                  class:open
+                  class:failing
+                  class:differs={diffs?.has(row.key)}
+                >
                   <td class="fold-cell">
                     <button
                       type="button"
@@ -876,6 +899,7 @@
 
                 {#if open}
                   {@const marks = rowMarks(m)}
+                  {@const differs = diffs?.get(row.key)}
                   <!-- Named apart from its row, which is named by its fold button. -->
                   <tr
                     class="expanded-row"
@@ -904,6 +928,13 @@
                             <span class="badge dropped-badge">dropped</span>
                           {/if}
                         </div>
+                        {#if differs?.whole}
+                          <p class="differs-note">
+                            {differs.whole === 'kept'
+                              ? 'The test locked this row as dropped; this run kept it.'
+                              : 'The test locked a document here; this run dropped it.'}
+                          </p>
+                        {/if}
                         {#each row.exceptions as a}
                           <p class="exception">
                             {#if a.by}<button
@@ -924,8 +955,16 @@
                           fullPaths={view.fullPaths}
                           showTypes={view.showTypes}
                           touched={touched?.(row.key)}
+                          locked={differs?.fields}
                           {onjump}
                         />
+                        <!-- The fields the test locks that this run does not make, which have no line above. -->
+                        {#each [...(differs?.fields ?? [])].filter(([path]) => !m.after.has(path)) as [path, f] (path)}
+                          <div class="line differs-line mono">
+                            <span class="key">{path}</span>
+                            <span class="locks">the test locks: {formatDiffValue(f.locked)}</span>
+                          </div>
+                        {/each}
                         {#each lackingBySchema as [schema, { required, recommended }] (schema)}
                           <div class="missing-fields">
                             {#if required.length > 0}
@@ -1137,6 +1176,23 @@
 
   .grid-row.failing .index-cell {
     color: var(--error);
+  }
+
+  /* A row that differs from what the open test locks: a rule, so the run's own colors stay readable. */
+  .grid-row.differs .index-cell {
+    box-shadow: inset 3px 0 0 var(--error);
+  }
+
+  .differs-note,
+  .locks {
+    color: var(--error);
+  }
+
+  .differs-line {
+    display: flex;
+    gap: 1ch;
+    padding: 0.1rem 0;
+    background: color-mix(in oklch, var(--error) 10%, transparent);
   }
 
   .index-cell :global(.state-mark) {

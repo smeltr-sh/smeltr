@@ -51,6 +51,7 @@
     fullPaths = false,
     showTypes = true,
     touched,
+    locked,
     onjump,
   }: {
     before: unknown;
@@ -66,6 +67,8 @@
     /** The steps that touched a field on this record, in the order they ran,
      * each with its number in the step list. Without it no step is shown. */
     touched?: (path: string) => NumberedStep[];
+    /** The fields a test locks otherwise than this record holds them, by path: each line says what the test locks. */
+    locked?: Map<string, { locked?: unknown }>;
     onjump?: (step: Step) => void;
   } = $props();
 
@@ -217,7 +220,8 @@
 {#snippet field(line: Extract<RecordLine, { kind: 'field' }>, mark: RunMark<Touched>)}
   {@const inline = line.state === 'changed' && changeFitsInline(line.before, line.after)}
   {@const body = formatDiffValue(line.state === 'removed' ? line.before : line.after)}
-  <div class="line state-{line.state}" class:run-start={mark.start}>
+  {@const lock = locked?.get(line.path)}
+  <div class="line state-{line.state}" class:run-start={mark.start} class:differs={!!lock}>
     {@render run(mark)}
     <span class="key">
       <span class="name" style:padding-left={`${line.depth * INDENT_CH}ch`}>
@@ -244,6 +248,11 @@
         label={line.path}
         gone={line.state === 'removed'}
       />
+    {/if}
+    {#if lock}
+      <span class="locks"
+        >the test locks: {'locked' in lock ? formatDiffValue(lock.locked) : 'no value'}</span
+      >
     {/if}
   </div>
   {#if line.state === 'changed' && !inline}
@@ -359,6 +368,16 @@
     display: flex;
     align-items: baseline;
     gap: 0.5rem;
+  }
+
+  /* A field the open test locks otherwise: what it locks stands beside what this run made. */
+  .line.differs {
+    background: color-mix(in oklch, var(--error) 10%, transparent);
+  }
+
+  .locks {
+    color: var(--error);
+    white-space: nowrap;
   }
 
   /* Runs apart by a gap, so two in a row read as two. */

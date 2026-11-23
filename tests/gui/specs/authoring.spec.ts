@@ -2122,6 +2122,74 @@ test('A4: a save pressed from a code field saves its layout', async ({ admin, le
   expect(saved.steps[0].body).toBe('x = 2;');
 });
 
+// A6, a failing test opened in the editor: its rows that differ are marked, found, and say what the test locks.
+test('A6: a test opened in the editor marks the rows that differ from what it locks', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  const pipeline = (body: string) =>
+    api.put(`/api/areas/shared/pipelines/orders${ON}`, {
+      id: 'orders',
+      name: 'orders',
+      steps: [
+        {
+          type: 'parser',
+          id: 'body',
+          input: '_raw',
+          kind: { type: 'json' },
+          declared: [
+            { name: 'id', type: 'i64' },
+            { name: 'total', type: 'f64' },
+          ],
+        },
+        { type: 'code', id: 'code-1', filter: 'true', disabled: false, body },
+      ],
+    });
+  await pipeline('tax = total * 0.1;');
+  await api.put(`/api/areas/shared/samples/orders-sample${ON}`, {
+    id: 'orders-sample',
+    name: 'orders',
+    records: ['{"id":1,"total":20}', '{"id":2,"total":0}', '{"id":3,"total":12}'].map((_raw) => ({
+      _raw,
+    })),
+  });
+  await api.put(`/api/areas/shared/tests/orders-tax${ON}`, {
+    name: 'orders are taxed at 10%',
+    pipeline: 'orders',
+    sample: 'orders-sample',
+    lockedAt: Date.now(),
+  });
+  // Twice the tax: the rows with a total differ, the one without does not.
+  await pipeline('tax = total * 0.2;');
+
+  await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample?test=orders-tax');
+  await expect(admin.locator('tr.grid-row.differs')).toHaveCount(2, { timeout: 30_000 });
+  await expect(admin.locator('tr.grid-row.differs .index-cell')).toHaveText(['0', '2']);
+
+  // Open, the row says what the test locks beside what this run made.
+  const record = admin.getByRole('row', { name: 'record 0' });
+  await expect(record).toBeVisible();
+  await expect(record.getByText('the test locks: 2')).toBeVisible();
+
+  // The find box narrows to them.
+  const search = admin.getByRole('combobox', { name: 'Search the output' });
+  await search.click();
+  await admin
+    .getByRole('listbox', { name: 'Suggestions' })
+    .getByRole('option', { name: /Differs from the test\s*2/ })
+    .click();
+  await expect(admin.getByText('2 of 3 rows')).toBeVisible();
+
+  // Fixed, nothing differs.
+  await pipeline('tax = total * 0.1;');
+  await admin.reload();
+  await expect(admin.getByRole('button', { name: 'Lock this test again' })).toBeEnabled({
+    timeout: 30_000,
+  });
+  await expect(admin.locator('tr.grid-row.differs')).toHaveCount(0);
+});
+
 // A6, samples become tests.
 test('A6: a sample locked as a test passes, and a save that breaks it is allowed and shows it failing', async ({
   admin,
