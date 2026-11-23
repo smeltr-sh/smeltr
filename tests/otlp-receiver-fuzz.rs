@@ -1077,8 +1077,8 @@ struct PointT {
     scale: Option<T>,
     zero_count: Option<T>,
     zero_threshold: Option<T>,
-    positive: Option<T>,
-    negative: Option<T>,
+    positive: Option<[T; 2]>,
+    negative: Option<[T; 2]>,
     quantile_values: Option<T>,
 }
 
@@ -1107,14 +1107,11 @@ fn metric_fields(metric: &Metric) -> Vec<Vec<(&'static str, T)>> {
     let floats = |xs: &[f64]| list_t(xs, |x| T::float(*x));
     let counts = |xs: &[u64]| list_t(xs, |n| count_t(*n));
     let buckets = |b: &Option<Buckets>| {
-        b.as_ref().map_or(T::Null, |b| {
-            T::Object(vec![
-                ("offset".into(), T::Int(b.offset.into())),
-                (
-                    "bucketCounts".into(),
-                    T::List(b.counts.iter().map(|n| count_t(*n)).collect()),
-                ),
-            ])
+        b.as_ref().map(|b| {
+            [
+                T::Int(b.offset.into()),
+                T::List(b.counts.iter().map(|n| count_t(*n)).collect()),
+            ]
         })
     };
     // Each point's base, value, exemplars and own fields.
@@ -1153,8 +1150,8 @@ fn metric_fields(metric: &Metric) -> Vec<Vec<(&'static str, T)>> {
                     scale: Some(T::Int(p.scale.into())),
                     zero_count: Some(count_t(p.zero_count)),
                     zero_threshold: (p.zero_threshold != 0.0).then_some(T::float(p.zero_threshold)),
-                    positive: Some(buckets(&p.positive)),
-                    negative: Some(buckets(&p.negative)),
+                    positive: buckets(&p.positive),
+                    negative: buckets(&p.negative),
                     ..PointT::default()
                 };
                 (&p.base, T::Null, list_t(&p.exemplars, exemplar), own)
@@ -1178,6 +1175,8 @@ fn metric_fields(metric: &Metric) -> Vec<Vec<(&'static str, T)>> {
     let null = |t: Option<T>| t.unwrap_or(T::Null);
     (points.into_iter())
         .map(|(base, value, exemplars, own)| {
+            let [positive_offset, positive_counts] = own.positive.unwrap_or([T::Null, T::Null]);
+            let [negative_offset, negative_counts] = own.negative.unwrap_or([T::Null, T::Null]);
             vec![
                 ("name", text_t(&metric.name)),
                 ("description", text_t(&metric.description)),
@@ -1200,8 +1199,10 @@ fn metric_fields(metric: &Metric) -> Vec<Vec<(&'static str, T)>> {
                 ("scale", null(own.scale)),
                 ("zeroCount", null(own.zero_count)),
                 ("zeroThreshold", null(own.zero_threshold)),
-                ("positive", null(own.positive)),
-                ("negative", null(own.negative)),
+                ("positive.offset", positive_offset),
+                ("positive.bucketCounts", positive_counts),
+                ("negative.offset", negative_offset),
+                ("negative.bucketCounts", negative_counts),
                 ("quantileValues", null(own.quantile_values)),
                 ("exemplars", exemplars),
             ]

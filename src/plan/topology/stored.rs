@@ -16,9 +16,10 @@ impl SourceMeta {
         }
     }
 
-    /// The records `stored` holds, each a record object and its `__source` object as a sample or a capture stores
-    /// them, as this meta's source would have read them, each field a record lists as failed (`io::take_mistyped`) read
-    /// as failed (`RecordChunk::from_objects`). Err where a record object is not what this meta's record is.
+    /// The records `stored` holds, as this meta's source would have read them. `stored` has each record as an object
+    /// beside its `__source` object, as a sample or a capture stores them. A field it lists as failed
+    /// (`io::take_mistyped`) is read as failed (`RecordChunk::from_objects`). A key this meta's record does not declare
+    /// is left out, unless an open object keeps it. Err where a record object cannot be read as this meta's record.
     ///
     /// A source that `reads_bytes` reads each payload from the `__source` object's `bytes`, the base64 `objects`
     /// writes. A stored record without one, from before `objects` kept it or written by hand, is its `_raw` text's
@@ -78,35 +79,9 @@ impl SourceMeta {
                 .collect())
         } else {
             let fields = &self.record;
-            let paths: Vec<Vec<String>> = fields
-                .iter()
-                .map(|(name, _)| {
-                    crate::plan::tree::segments(name)
-                        .map(std::borrow::Cow::into_owned)
-                        .collect()
-                })
-                .collect();
             let mut objects: Vec<crate::io::RecordObject> =
                 stored.iter().map(|(record, _)| (*record).clone()).collect();
             let failed: Vec<Vec<String>> = objects.iter_mut().map(crate::io::take_mistyped).collect();
-            // An open record keeps what it does not declare at its top level; below that, a declared object is closed.
-            let open = self.is_open();
-            if let Some((i, extra)) = objects.iter().enumerate().find_map(|(i, record)| {
-                let undeclared = |record: &crate::io::RecordObject| undeclared(record, &mut Vec::new(), "", &paths);
-                let claimed: crate::io::RecordObject = match open {
-                    true => (record.iter())
-                        .filter(|(k, _)| paths.iter().any(|p| p.first() == Some(*k)))
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect(),
-                    false => (*record).clone(),
-                };
-                undeclared(&claimed).map(|k| (i, k))
-            }) {
-                return Err(format!(
-                    "record {} has `{extra}`, a field its source does not declare",
-                    i + 1
-                ));
-            }
             let objects: Vec<&crate::io::RecordObject> = objects.iter().collect();
             let chunk = std::sync::Arc::new(crate::io::RecordChunk::from_objects(fields, &objects, &failed)?);
             Ok(stored

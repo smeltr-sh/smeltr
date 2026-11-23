@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::bundle::{BundleError, FileSet, slugify};
-use crate::plan::tree::UNCLAIMED;
+use crate::plan::tree;
 
 /// Where samples live inside a bundle, beside `pipelines/`.
 pub const SAMPLES_DIR: &str = "samples";
@@ -195,8 +195,8 @@ pub fn list_samples(files: &mut dyn FileSet) -> (Vec<SampleSummary>, Vec<(String
 }
 
 /// A batch's rows as a sample stores them: each column in the record by its path, `__source` and `__destination`
-/// columns included, and the keys of an open record's unclaimed column (`UNCLAIMED`) back in the record. A null is a
-/// field the row did not have. A failed value is its original text, and the record lists its field under
+/// columns included, and the keys of an open object's unclaimed column (`tree::unclaimed_entry`) back in the object.
+/// A null is a field the row did not have. A failed value is its original text, and the record lists its field under
 /// `io::MISTYPED_FIELDS` (`io::take_mistyped`), so a preview of the sample fails it as the pipeline did.
 pub fn sample_records(batch: &crate::heartbeat::CaptureBatch) -> impl Iterator<Item = crate::io::RecordObject> + '_ {
     batch.rows.iter().map(|row| {
@@ -205,9 +205,15 @@ pub fn sample_records(batch: &crate::heartbeat::CaptureBatch) -> impl Iterator<I
             if value.is_null() {
                 continue;
             }
-            match (column.name.as_str(), value) {
-                (UNCLAIMED, serde_json::Value::Object(keys)) => record.extend(keys.clone()),
-                _ => put_path(&mut record, &column.name, value.clone()),
+            match (tree::unclaimed_object(&column.name), value) {
+                (Some(object), serde_json::Value::Object(keys)) => {
+                    for (key, value) in keys {
+                        put_path(&mut record, &tree::child(object, key), value.clone());
+                    }
+                }
+                // A value that failed as an object holds no key to put back: its failure is on the object's fields.
+                (Some(_), _) => {}
+                (None, _) => put_path(&mut record, &column.name, value.clone()),
             }
         }
         if !row.failed.is_empty() {
@@ -223,15 +229,15 @@ pub fn sample_records(batch: &crate::heartbeat::CaptureBatch) -> impl Iterator<I
 }
 
 /// The one set of columns a sample of `batches` holds: each column of every batch, in the order first seen. An open
-/// record's unclaimed column (`UNCLAIMED`) becomes one column for each key its rows hold, typed as a variant, which
-/// holds a value of any type. Batches differ where workers run different builds, or where a destination is fed by
-/// several routes; a name they type differently becomes a variant.
+/// object's unclaimed column (`tree::unclaimed_entry`) becomes one column for each key its rows hold, typed as a
+/// variant, which holds a value of any type. Batches differ where workers run different builds, or where a
+/// destination is fed by several routes; a name they type differently becomes a variant.
 pub fn sample_columns(batches: &[crate::heartbeat::CaptureBatch]) -> Vec<crate::heartbeat::CaptureColumn> {
-    let unclaimed = |batch: &crate::heartbeat::CaptureBatch, at: usize| {
+    let unclaimed = |batch: &crate::heartbeat::CaptureBatch, at: usize, object: &str| {
         let mut keys: Vec<crate::heartbeat::CaptureColumn> = Vec::new();
         for row in &batch.rows {
-            if let Some(serde_json::Value::Object(object)) = row.values.get(at) {
-                for key in object.keys().map(|k| crate::plan::tree::spell(k).into_owned()) {
+            if let Some(serde_json::Value::Object(held)) = row.values.get(at) {
+                for key in held.keys().map(|k| tree::child(object, k)) {
                     if !keys.iter().any(|c| c.name == key) {
                         keys.push(crate::heartbeat::CaptureColumn {
                             name: key,
@@ -247,9 +253,9 @@ pub fn sample_columns(batches: &[crate::heartbeat::CaptureBatch]) -> Vec<crate::
         b.columns
             .iter()
             .enumerate()
-            .flat_map(move |(at, c)| match c.name == UNCLAIMED {
-                true => unclaimed(b, at),
-                false => vec![c.clone()],
+            .flat_map(move |(at, c)| match tree::unclaimed_object(&c.name) {
+                Some(object) => unclaimed(b, at, object),
+                None => vec![c.clone()],
             })
     });
     let mut columns: Vec<crate::heartbeat::CaptureColumn> = Vec::new();
@@ -479,7 +485,7 @@ mod tests {
         let batch = CaptureBatch {
             columns: vec![
                 column("n", "i64"),
-                column(UNCLAIMED, "{...}"),
+                column(tree::UNCLAIMED, "{...}"),
                 column("__source.topic", "str"),
                 column("__destination.route", "str"),
             ],
@@ -508,6 +514,35 @@ mod tests {
             ["n", "extra", "__source.topic", "__destination.route"],
             "each unclaimed key is a column of its own"
         );
+    }
+
+    /// A value that failed as an open object saves under the object's fields alone, and reading the sample fails each
+    /// of those fields with the value's original text.
+    #[test]
+    fn a_failed_open_object_saves_under_its_fields() {
+        use crate::heartbeat::{CaptureBatch, CaptureColumn, CapturedRow};
+        let column = |name: &str, ty: &str| CaptureColumn {
+            name: name.to_string(),
+            ty: ty.to_string(),
+        };
+        let batch = CaptureBatch {
+            columns: vec![column("owner.name", "str"), column("owner....", "{...}")],
+            rows: vec![CapturedRow {
+                values: vec![serde_json::json!("\"ann\""), serde_json::json!("\"ann\"")],
+                failed: vec![0, 1],
+                worker: None,
+            }],
+        };
+        let saved: Vec<_> = sample_records(&batch).collect();
+        assert_eq!(saved[0]["owner"], serde_json::json!({"name": "\"ann\""}));
+        let columns = sample_columns(&[batch]);
+        let meta = crate::plan::topology::SourceMeta::of_columns(&columns).unwrap();
+        let mut stored = saved[0].clone();
+        let failed = crate::io::take_mistyped(&mut stored);
+        assert_eq!(failed, ["owner.name", "owner...."]);
+        let fields = crate::io::SourceFields::new();
+        let read = meta.read_stored(&[(&saved[0], &fields)]).unwrap();
+        assert_eq!(read[0].chunk.failed(), [(0, 0, "\"ann\"".to_string())]);
     }
 
     /// Batches of several routes save as one set of columns, unless they type one name two ways.

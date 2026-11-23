@@ -20,7 +20,7 @@ const ROWS: u64 = 400_000;
 const BATCH: usize = 5_000;
 const RUNS: usize = 7;
 
-fn fields() -> Vec<(String, DataType)> {
+fn fields() -> Vec<(smeltr::plan::topology::Entry, DataType)> {
     [
         ("id", DataType::I64),
         ("service", DataType::Str),
@@ -29,7 +29,7 @@ fn fields() -> Vec<(String, DataType)> {
         ("status", DataType::I64),
     ]
     .into_iter()
-    .map(|(n, t)| (n.to_string(), t))
+    .map(|(n, t)| (smeltr::plan::topology::Entry::Field(n.into()), t))
     .collect()
 }
 
@@ -169,7 +169,9 @@ fn typed_against_raw() {
         let (t, sink) = time(
             &typed_bundle,
             Box::new(rows),
-            SourceMeta::KAFKA.declaring(fields()).unwrap(),
+            SourceMeta::KAFKA
+                .declaring(fields().into_iter().map(|(entry, ty)| (entry.column(), ty)).collect())
+                .unwrap(),
         );
         typed.push(t);
         typed_doc = sink.kept();

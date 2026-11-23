@@ -392,6 +392,70 @@ fn an_open_record_keeps_the_top_level_fields_no_field_claims() {
     );
 }
 
+/// A declared object reads as its leaves, from a record or from a map: an open one keeps the keys it declares no field
+/// for, and a closed one leaves them.
+#[test]
+fn a_declared_object_reads_its_leaves_and_an_open_one_keeps_its_other_keys() {
+    let fake = Fake::default();
+    let schema = r#"{"type":"record","name":"R","fields":[
+        {"name":"id","type":"long"},
+        {"name":"home","type":{"type":"record","name":"Home","fields":[
+            {"name":"city","type":"string"},{"name":"zip","type":"string"}]}},
+        {"name":"labels","type":{"type":"map","values":"string"}},
+        {"name":"limits","type":{"type":"map","values":"long"}}
+    ]}"#;
+    let id = fake.hold("r-value", schema, serde_json::json!([]));
+    let object = |fields: &[(&str, DataType)], open| {
+        DataType::Struct(fields.iter().map(|(n, t)| (n.to_string(), t.clone())).collect(), open)
+    };
+    let (mut reader, meta) = reader(
+        &fake.serve(),
+        &[
+            ("id", DataType::I64),
+            ("home", object(&[("city", DataType::Str)], true)),
+            ("labels", object(&[("env", DataType::Str)], true)),
+            ("limits", object(&[("cpu", DataType::I64)], false)),
+        ],
+    );
+    let names: Vec<_> = meta.record().iter().map(|(entry, _)| entry.to_string()).collect();
+    assert_eq!(
+        names,
+        ["id", "home.city", "home.*", "labels.env", "labels.*", "limits.cpu"]
+    );
+    let map = |entries: &[(&str, Avro)]| Avro::Map(entries.iter().map(|(k, v)| (k.to_string(), v.clone())).collect());
+    let value = Avro::Record(vec![
+        ("id".into(), Avro::Long(1)),
+        (
+            "home".into(),
+            Avro::Record(vec![
+                ("city".into(), Avro::String("Oslo".into())),
+                ("zip".into(), Avro::String("0150".into())),
+            ]),
+        ),
+        (
+            "labels".into(),
+            map(&[("env", Avro::String("prod".into())), ("team", Avro::String("a".into()))]),
+        ),
+        (
+            "limits".into(),
+            map(&[("cpu", Avro::Long(4)), ("memory", Avro::Long(8))]),
+        ),
+    ]);
+    let payload = written(id, &Schema::parse_str(schema).unwrap(), value);
+    reader.ask(id).unwrap();
+    let read = reader.read(poll(&[payload]));
+    assert_eq!(read[0].chunk.failed(), []);
+    assert_eq!(
+        rows(&meta, &read),
+        vec![serde_json::json!({
+            "id": 1,
+            "home": { "city": "Oslo", "zip": "0150" },
+            "labels": { "env": "prod", "team": "a" },
+            "limits": { "cpu": 4 },
+        })]
+    );
+}
+
 /// `values` written to a container file by Avro's own writer, compressed with `codec`.
 fn container_file(codec: apache_avro::Codec, values: &[i64]) -> Vec<u8> {
     let schema = Schema::parse_str(r#"{"type":"record","name":"R","fields":[{"name":"n","type":"long"}]}"#).unwrap();

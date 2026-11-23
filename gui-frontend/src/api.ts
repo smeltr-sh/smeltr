@@ -2821,9 +2821,6 @@ export interface RoutePreviewResult {
   /** What happens to a row no route matched, with the destination by its author's id. */
   unmatched: Answer;
   rows: RoutePreviewRow[];
-  /** How the columns the sample was captured under differ from what its source
-   * declares now. */
-  warnings?: string[];
 }
 
 /** Routes `sample`, a saved sample's id or a held capture's choice (`heldChoice`), through `config`.

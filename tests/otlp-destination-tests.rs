@@ -270,6 +270,38 @@ fn metric_points_arrive_as_they_were_received() {
     assert_eq!(arrived, received);
 }
 
+/// A pipeline writes and removes a field under an object a point declares, and the object's other field stays.
+#[test]
+fn a_pipeline_writes_under_a_points_buckets() {
+    let metrics = json!({"resourceMetrics": [{"scopeMetrics": [{"metrics": [
+        {"name": "size", "exponentialHistogram": {"aggregationTemporality": 2, "dataPoints": [{
+            "timeUnixNano": "1700000060000000000", "count": "6", "scale": 3,
+            "positive": {"offset": -2, "bucketCounts": ["1", "0", "5"]},
+            "negative": {"offset": 1, "bucketCounts": ["0"]}}]}},
+    ]}]}]});
+    let at = free_loopback();
+    let mut source = receiver(at, Signal::Metrics);
+    let body = metrics.to_string().into_bytes();
+    let sent = std::thread::spawn(move || post(at, Signal::Metrics, "application/json", &body));
+    let received = take(&mut source, 1);
+    assert_eq!(sent.join().unwrap(), 200);
+
+    let meta = SourceMeta::otlp(Signal::Metrics);
+    let step = "positive.offset = positive.offset + 1; negative.offset = null;";
+    let plan = compile_ok_for(meta.clone(), vec![code(0, step)]);
+    let mut env = Env::new();
+    let mut columns = Batch::new(&plan.slot_layout, received.len(), 0);
+    let none: &[&str] = &[];
+    meta.ingest(&mut columns, &received, none, Some("in"), |_| true, &mut env.pool);
+    let rows = env.run_json(&plan, &mut columns);
+    assert_eq!(
+        rows[0]["positive"],
+        json!({"offset": -1, "bucketCounts": [1.0, 0.0, 5.0]})
+    );
+    assert_eq!(rows[0]["negative"], json!({"bucketCounts": [0.0]}));
+    columns.reclaim(&mut env.pool);
+}
+
 /// A row without the fields it came under is sent under an empty resource and scope, and one OTLP has no place for
 /// is refused naming why, while the rest land.
 #[test]

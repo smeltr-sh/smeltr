@@ -44,12 +44,13 @@ pub fn parse(src: &str, fid: Option<FunctionId>) -> Result<Expr, CompileError> {
         .map_err(|e| CompileError::new(fid, format!("parse error in `{src}`: {}", e.message)))
 }
 
-/// The names the runtime fills, in slot order: `core::batch`'s prefix, the record's fields, then the source's
+/// The places the runtime fills, in slot order: `core::batch`'s prefix, the record's entries, then the source's
 /// `__source` fields.
-pub fn ingest_fields(meta: &SourceMeta) -> Vec<(&str, DataType)> {
-    let mut fields: Vec<(&str, DataType)> = prefix_names().collect();
-    fields.extend(meta.record_fields());
-    fields.extend(meta.source_fields().iter().map(|(n, t)| (*n, t.clone())));
+pub fn ingest_fields(meta: &SourceMeta) -> Vec<(Place, DataType)> {
+    let leaf = |(name, ty): (&str, DataType)| (Place::Leaf(name.to_string()), ty);
+    let mut fields: Vec<(Place, DataType)> = prefix_names().map(leaf).collect();
+    fields.extend(meta.record().iter().map(|(entry, ty)| (entry.place(), ty.clone())));
+    fields.extend(meta.source_fields().iter().map(|(n, t)| leaf((n, t.clone()))));
     fields
 }
 
@@ -583,7 +584,7 @@ struct Probe {
 }
 
 impl<'p> Compiler<'p> {
-    fn new(p: &'p PipelineConfig, ingest: &[(&str, DataType)], probe: Option<std::rc::Rc<Probe>>) -> Compiler<'p> {
+    fn new(p: &'p PipelineConfig, ingest: &[(Place, DataType)], probe: Option<std::rc::Rc<Probe>>) -> Compiler<'p> {
         Compiler {
             tables: &p.lookup_tables,
             grok_patterns: &p.grok_patterns,

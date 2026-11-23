@@ -122,7 +122,7 @@ impl SymbolTable {
     pub fn over_plan_output(
         layout: &[DataType],
         tree: &Object,
-        ingest: &[(&str, DataType)],
+        ingest: &[(Place, DataType)],
         // Names laid over the tree at slots past the plan's own -- the route's tag field, written over whatever the row
         // holds there. A read is the slot's value where it holds one, else the row's own (`SymbolTable::laid`).
         laid: &[(&str, SlotId)],
@@ -130,8 +130,10 @@ impl SymbolTable {
         let mut root = tree.clone();
         // The ingest names sit at their fixed slots, the same ones the batch lays them in -- `_raw` is readable from a
         // `when` for the same reason a route condition can read it.
-        for (i, (name, _)) in ingest.iter().enumerate() {
-            if *name != tree::UNCLAIMED && root.get(name).is_none() {
+        for (i, (place, _)) in ingest.iter().enumerate() {
+            if let Place::Leaf(name) = place
+                && root.get(name).is_none()
+            {
                 root.put(name, Node::Leaf(i));
             }
         }
@@ -168,7 +170,7 @@ impl SymbolTable {
         }
     }
 
-    pub fn new(ingest: &[(&str, DataType)]) -> SymbolTable {
+    pub fn new(ingest: &[(Place, DataType)]) -> SymbolTable {
         let mut t = SymbolTable {
             root: Object::default(),
             layout: Vec::new(),
@@ -185,18 +187,18 @@ impl SymbolTable {
             under: Object::default(),
             reads_only: false,
         };
-        for (name, ty) in ingest {
+        for (place, ty) in ingest {
             let slot = t.layout.len();
             t.layout.push(ty.clone());
-            match *name {
-                tree::UNCLAIMED => t.root.unclaimed = Some(slot),
-                name => {
+            match place {
+                Place::Unclaimed(object) => t.set_unclaimed(object, Some(slot)),
+                Place::Leaf(name) => {
                     t.root.put(name, Node::Leaf(slot));
                 }
             }
             t.origins.push(SlotOrigin {
                 slot,
-                name: name.to_string(),
+                name: place.to_string(),
                 ty: ty.clone(),
                 origin: Origin::Ingest,
             });
@@ -2211,11 +2213,12 @@ mod tests {
     use crate::ops::testing::rows_of;
 
     fn table() -> SymbolTable {
+        let leaf = |name: &str, ty| (Place::Leaf(name.to_string()), ty);
         SymbolTable::new(&[
-            ("__live", DataType::Bool),
-            ("__source.offset", DataType::I64),
-            ("_raw", DataType::Str),
-            ("__source.topic", DataType::Str),
+            leaf("__live", DataType::Bool),
+            leaf("__source.offset", DataType::I64),
+            leaf("_raw", DataType::Str),
+            leaf("__source.topic", DataType::Str),
         ])
     }
 

@@ -501,7 +501,7 @@ async fn capture_filter(State(service): State<Service>, Json(body): Json<Capture
                     Ok(filter) => filter,
                     Err(e) => return Envelope::refused(Refusal::invalid(e)),
                 };
-            let read = match smeltr::leader::preview::read_sample(&meta, &body.sample.columns, &body.sample.records) {
+            let read = match smeltr::leader::preview::read_sample(&meta, &body.sample.records) {
                 Ok(read) => read,
                 Err(e) => return Envelope::refused(Refusal::invalid(e)),
             };

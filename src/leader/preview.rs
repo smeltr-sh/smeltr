@@ -369,10 +369,6 @@ pub struct RoutePreview {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unmatched: Option<config_file::AnswerDto>,
     pub rows: Vec<RoutePreviewRow>,
-    /// How the columns the sample was captured under differ from what its source declares now: the rows are read as
-    /// the source declares.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub warnings: Vec<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -417,91 +413,22 @@ pub struct SampleRead {
     pub records: Vec<crate::io::SourceRecord>,
     /// Each record's `_raw` as the sample holds it, already decoded; a record with none, its bytes read as UTF-8.
     pub texts: Vec<String>,
-    /// A sentence for each way the sample's columns differ from the meta's record.
-    pub warnings: Vec<String>,
 }
 
-/// `records`, a sample's, as `meta` reads them, and a sentence for each way `columns`, what they were captured as,
-/// differ from `meta`'s record. A column `meta` no longer declares is left out, one it declares and the sample lacks
-/// reads null, and a column whose type changed reads under the new type, its failed marks dropped: a value that
-/// failed one type is judged afresh by another. A sample with no columns is read as it stands.
+/// `records`, a sample's, as `meta` reads them (`SourceMeta::read_stored`): each field `meta` declares is read from
+/// the record under `meta`'s type for it, whatever the sample was captured under.
 ///
-/// Only a record's own fields are compared: an internal one (`plan::tree::is_internal`) is the engine's, not its
-/// source's. Where `meta` is a source's, the source sets its own internal fields, so the sample's are not read; where
-/// it is the sample's own (`SourceMeta::of_columns`), they are columns of the record like any other.
-pub fn read_sample(
-    meta: &SourceMeta,
-    columns: &[crate::heartbeat::CaptureColumn],
-    records: &[crate::io::RecordObject],
-) -> Result<SampleRead, String> {
+/// Where `meta` is a source's, the source sets its own internal fields (`plan::tree::is_internal`), so the sample's
+/// are not read. A value the sample lists as failed is judged by the type `meta` declares. Where `meta` is the
+/// sample's own (`SourceMeta::of_columns`), its internal fields are columns of the record like any other.
+pub fn read_sample(meta: &SourceMeta, records: &[crate::io::RecordObject]) -> Result<SampleRead, String> {
     let from_source = !meta.source_fields().is_empty();
-    let head = |name: &str| {
-        crate::plan::tree::segments(name)
-            .next()
-            .map(std::borrow::Cow::into_owned)
-    };
-    let own = |name: &str| !head(name).is_some_and(|h| crate::plan::tree::is_internal(&h));
-    let captured: Vec<_> = columns.iter().filter(|c| own(&c.name)).collect();
-    let declared = meta.record_fields();
-    // An open record keeps a top-level field no declared field claims.
-    let kept = |name: &str| meta.is_open() && !declared.iter().any(|(d, _)| head(d) == head(name));
-    let mut warnings = Vec::new();
-    let mut gone = Vec::new();
-    let mut retyped = Vec::new();
-    if !captured.is_empty() {
-        for c in &captured {
-            match declared.iter().find(|(name, _)| *name == c.name) {
-                None if c.name == crate::plan::tree::UNCLAIMED || kept(&c.name) => {}
-                None => {
-                    warnings.push(format!(
-                        "`{}` was captured, and its source no longer declares it, so it is left out",
-                        c.name
-                    ));
-                    gone.push(c.name.as_str());
-                }
-                Some((_, now)) if now.spell() != c.ty && c.name != crate::plan::tree::UNCLAIMED => {
-                    warnings.push(format!(
-                        "`{}` was captured as {} and its source now declares it {}",
-                        c.name,
-                        c.ty,
-                        now.spell()
-                    ));
-                    retyped.push(c.name.as_str());
-                }
-                Some(_) => {}
-            }
-        }
-        for (name, _) in declared
-            .iter()
-            .filter(|(n, _)| *n != crate::plan::tree::UNCLAIMED && own(n))
-        {
-            if !captured.iter().any(|c| c.name == *name) {
-                warnings.push(format!("`{name}` is declared and was not captured, so it reads null"));
-            }
-        }
-    }
     let objects: Vec<crate::io::RecordObject> = records
         .iter()
         .map(|r| {
             let mut object = r.clone();
             if from_source {
                 object.retain(|key, _| !crate::plan::tree::is_internal(key));
-            }
-            for name in &gone {
-                remove_at(&mut object, name);
-            }
-            let mut failed = crate::io::take_mistyped(&mut object);
-            failed.retain(|f| !gone.contains(&f.as_str()) && !retyped.contains(&f.as_str()));
-            if !failed.is_empty() {
-                let (outer, inner) = crate::io::MISTYPED_FIELDS
-                    .split_once('.')
-                    .expect("the failed list nests one level");
-                if let serde_json::Value::Object(tag) = object
-                    .entry(outer)
-                    .or_insert_with(|| serde_json::Value::Object(Default::default()))
-                {
-                    tag.insert(inner.to_string(), serde_json::json!(failed));
-                }
             }
             object
         })
@@ -517,33 +444,7 @@ pub fn read_sample(
             _ => String::from_utf8_lossy(meta.read_bytes(read).unwrap_or_default()).into_owned(),
         })
         .collect();
-    Ok(SampleRead {
-        records: read,
-        texts,
-        warnings,
-    })
-}
-
-/// Remove the value at `path`, a record field's name, from `object`, and each object it leaves empty.
-fn remove_at(object: &mut crate::io::RecordObject, path: &str) {
-    fn remove(object: &mut crate::io::RecordObject, keys: &[std::borrow::Cow<'_, str>]) {
-        match keys {
-            [] => {}
-            [last] => {
-                object.remove(last.as_ref());
-            }
-            [key, rest @ ..] => {
-                if let Some(serde_json::Value::Object(inner)) = object.get_mut(key.as_ref()) {
-                    remove(inner, rest);
-                    if inner.is_empty() {
-                        object.remove(key.as_ref());
-                    }
-                }
-            }
-        }
-    }
-    let keys: Vec<_> = crate::plan::tree::segments(path).collect();
-    remove(object, &keys);
+    Ok(SampleRead { records: read, texts })
 }
 
 /// Every lookup table `config` declares, mapped to `at` -- the ordinary case, a bundle read from one place with no
@@ -593,11 +494,7 @@ pub fn run_route_preview(
 
     // A sample's byte records hold their text already decoded, so nothing decodes. A record with no coordinates gets
     // the empty ones a pasted record has; the source's own `SourceMeta` decides whether a route may read them at all.
-    let SampleRead {
-        records,
-        texts,
-        warnings,
-    } = match read_sample(&compiled.meta_for(source.id), &sample.columns, &sample.records) {
+    let SampleRead { records, texts } = match read_sample(&compiled.meta_for(source.id), &sample.records) {
         Ok(read) => read,
         Err(e) => return Envelope::refused(Refusal::invalid(e)),
     };
@@ -639,7 +536,6 @@ pub fn run_route_preview(
             .map(|d| (d.id, d.name.clone()))
             .collect(),
         unmatched: Some(system.answer_by_name(system.topology.on_exception.answer(&ExceptionKind::Unmatched))),
-        warnings,
         rows: previewed
             .into_iter()
             .map(|row| RoutePreviewRow {
@@ -886,8 +782,7 @@ pub fn run_preview(
     let SampleRead {
         records: sourced,
         texts,
-        ..
-    } = match read_sample(&meta, columns, &records) {
+    } = match read_sample(&meta, &records) {
         Ok(read) => read,
         Err(e) => return Preview::failed("sample", vec![ApiError::new(e)], pipeline_names),
     };
@@ -1297,10 +1192,13 @@ fn touched<'p>(plan: &'p Plan, batch: &Batch) -> Touched<'p> {
             None => vec![true; rows],
             Some(was) => differs(was, now).unwrap_or_else(|| {
                 // Unclaimed fields serialize as an object's own keys, under no name.
-                let field = if name.ends_with('*') { tree::UNCLAIMED } else { "v" };
+                let place = match name.ends_with('*') {
+                    true => tree::Place::Unclaimed(String::new()),
+                    false => tree::Place::Leaf("v".to_string()),
+                };
                 let (was, now) = (
-                    RecordView::from_named([(field, was)]),
-                    RecordView::from_named([(field, now)]),
+                    RecordView::from_places([(place.clone(), was)]),
+                    RecordView::from_places([(place, now)]),
                 );
                 (0..rows).map(|row| was.row(row) != now.row(row)).collect()
             }),
@@ -1889,8 +1787,7 @@ mod tests {
         assert!(!named("__destination") && !named("__live"), "{:?}", sample.columns);
 
         let meta = SourceMeta::of_columns(&sample.columns).unwrap();
-        let read = read_sample(&meta, &sample.columns, &sample.records).unwrap();
-        assert!(read.warnings.is_empty(), "{:?}", read.warnings);
+        read_sample(&meta, &sample.records).expect("the sample reads back by its own columns");
     }
 
     /// A JSON or key-value parse converts a key a produced schema types as it lays it: a value that does not fit is
@@ -1998,8 +1895,74 @@ mod tests {
         assert!(named.contains(&"__capture.pipeline"), "{named:?}");
 
         let meta = SourceMeta::of_columns(&sample.columns).unwrap();
-        let read = read_sample(&meta, &sample.columns, &sample.records).unwrap();
-        assert!(read.warnings.is_empty(), "{:?}", read.warnings);
+        read_sample(&meta, &sample.records).expect("the sample reads back by its own columns");
+    }
+
+    /// A pipeline over a saved sample of another pipeline's output writes under an object that output holds: a
+    /// lookup adds `destination.geo.country_iso_code`, a write changes one field, a delete removes one, and the
+    /// object's other fields stay.
+    #[test]
+    fn a_pipeline_on_a_saved_output_sample_writes_under_its_objects() {
+        let config = r#"{"version":1,
+            "lookupTables":[{"id":"countries","type":"inline","headers":["ip","country"],"rows":[["8.8.8.8","US"]]}],
+            "pipelines":[
+                {"id":"ecs","name":"ECS","steps":[{"id":"e","type":"code","body":
+                    "destination = {ip: _raw, port: 443, geo: {city_name: \"Ashburn\"}}; event = {kind: \"event\"};"}]},
+                {"id":"geo","name":"Geo","steps":[
+                    {"id":"l","type":"lookup","input":"destination.ip","table":"countries","matchKind":"exact",
+                     "keyColumn":"ip","outputs":[{"source":"country","field":"destination.geo.country_iso_code"}]},
+                    {"id":"w","type":"code","body":"destination.port = 8443; event.kind = null; event.category = \"network\";"}]}]}"#;
+        let request = |pipeline: &str, as_sample: bool| PreviewRequest {
+            config: config.into(),
+            pipeline: Some(pipeline.into()),
+            sample: None,
+            show_internal: false,
+            at_micros: None,
+            filter: None,
+            attribution: false,
+            as_sample,
+            dictionary: false,
+            after_dot: None,
+            capture_filter: None,
+        };
+        let messages = |p: &Envelope<Preview>| p.errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>();
+        let raw = serde_json::json!({ "_raw": "8.8.8.8" }).as_object().unwrap().clone();
+        let saved = run_preview(request("ecs", true), Default::default(), &[], vec![raw]);
+        assert!(saved.succeeded(), "{:?}", messages(&saved));
+        let sample = saved.body.as_sample.unwrap();
+        let meta = SourceMeta::of_columns(&sample.columns).unwrap();
+        let declared: Vec<_> = meta.fields().map(|(name, _)| name).collect();
+        for leaf in [
+            "destination.ip",
+            "destination.port",
+            "destination.geo.city_name",
+            "event.kind",
+        ] {
+            assert!(declared.contains(&leaf), "{leaf}: {declared:?}");
+        }
+        assert!(
+            !declared.contains(&"destination"),
+            "an object is its leaves: {declared:?}"
+        );
+
+        let previewed = run_preview(
+            request("geo", false),
+            Default::default(),
+            &sample.columns,
+            sample.records,
+        );
+        assert!(previewed.succeeded(), "{:?}", messages(&previewed));
+        assert!(previewed.body.warnings.is_empty(), "{:?}", messages(&previewed));
+        let row = previewed.body.rows[0].json.as_ref().unwrap();
+        assert_eq!(
+            row["destination"],
+            serde_json::json!({
+                "ip": "8.8.8.8",
+                "port": 8443,
+                "geo": {"city_name": "Ashburn", "country_iso_code": "US"},
+            })
+        );
+        assert_eq!(row["event"], serde_json::json!({"category": "network"}));
     }
 
     fn after(text: &str, at: DotAt) -> Option<AfterDot> {

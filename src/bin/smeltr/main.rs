@@ -2573,12 +2573,7 @@ mod tests {
     fn a_captured_sample_reads_by_its_own_columns() {
         let (columns, records) = captured();
         let meta = smeltr::plan::topology::SourceMeta::of_columns(&columns).unwrap();
-        let smeltr::leader::preview::SampleRead {
-            records: read,
-            warnings,
-            ..
-        } = smeltr::leader::preview::read_sample(&meta, &columns, &records).unwrap();
-        assert!(warnings.is_empty(), "{warnings:?}");
+        let read = smeltr::leader::preview::read_sample(&meta, &records).unwrap().records;
         let chunk = &read[1].chunk;
         assert_eq!(chunk.failed(), &[(1, 0, "1".to_string()), (1, 1, "bo".to_string())]);
         assert_eq!(
@@ -2590,8 +2585,8 @@ mod tests {
     }
 
     /// A sample's internal fields -- where a record was read from, why a block held it, how it was captured -- are its
-    /// fields like any other: a pipeline previewed over the sample reads them, and a route preview, which reads the
-    /// record as its live source sets it, checks only the record's own fields and says nothing of them.
+    /// fields like any other: a pipeline previewed over the sample reads them. A route preview reads the record as its
+    /// live source sets it, the record's own fields alone.
     #[test]
     fn a_sample_s_internal_fields_are_read_as_any_field() {
         let (mut columns, mut records) = captured();
@@ -2605,8 +2600,7 @@ mod tests {
             record.insert("__capture".to_string(), serde_json::json!({"group": "west"}));
         }
         let own = smeltr::plan::topology::SourceMeta::of_columns(&columns).unwrap();
-        let read = smeltr::leader::preview::read_sample(&own, &columns, &records).unwrap();
-        assert!(read.warnings.is_empty(), "{:?}", read.warnings);
+        let read = smeltr::leader::preview::read_sample(&own, &records).unwrap();
         let object = own.record_object(&read.records[0], "");
         assert_eq!(
             object["__exception"],
@@ -2620,39 +2614,50 @@ mod tests {
                 ("user.name".into(), smeltr::core::column::DataType::Str),
             ])
             .unwrap();
-        let read = smeltr::leader::preview::read_sample(&live, &columns, &records).unwrap();
-        assert!(read.warnings.is_empty(), "{:?}", read.warnings);
+        let read = smeltr::leader::preview::read_sample(&live, &records).unwrap();
+        assert_eq!(
+            live.record_object(&read.records[0], ""),
+            *serde_json::json!({"id": 1, "user": {"name": "ann"}})
+                .as_object()
+                .unwrap()
+        );
     }
 
-    /// A route preview reads a sample as its source declares now, and says how that differs from what was captured.
+    /// A sample is read as the source declares now, whatever it was captured under: a field under its new type, a
+    /// field the source no longer declares left out, a field the source has declared since reads as null. A value the
+    /// sample lists as failed is judged by the type declared now.
     #[test]
-    fn a_sample_read_under_a_changed_source_says_what_changed() {
-        let (columns, records) = captured();
-        let now = smeltr::plan::topology::SourceMeta::KAFKA
-            .declaring(vec![
-                ("id".into(), smeltr::core::column::DataType::Str),
-                ("region".into(), smeltr::core::column::DataType::Str),
-            ])
-            .unwrap();
-        let smeltr::leader::preview::SampleRead {
-            records: read,
-            warnings,
-            ..
-        } = smeltr::leader::preview::read_sample(&now, &columns, &records).unwrap();
+    fn a_sample_reads_as_its_source_declares_now() {
+        let (_, records) = captured();
+        let read_as = |declared: Vec<(String, smeltr::core::column::DataType)>| {
+            let now = smeltr::plan::topology::SourceMeta::KAFKA.declaring(declared).unwrap();
+            let read = smeltr::leader::preview::read_sample(&now, &records).unwrap().records;
+            let failed = read[0].chunk.failed().to_vec();
+            let rows: Vec<_> = (read.iter())
+                .map(|r| serde_json::Value::Object(now.record_object(r, "")))
+                .collect();
+            (rows, failed)
+        };
+        use smeltr::core::column::DataType;
+        let (rows, failed) = read_as(vec![("id".into(), DataType::Str), ("region".into(), DataType::Str)]);
+        assert_eq!(rows, [serde_json::json!({"id": "1"}), serde_json::json!({"id": "1"})]);
+        assert_eq!(failed, [], "a number reads as its text under str");
+
+        // A sample captured with an object as its leaves reads as one value where the source now declares one, and
+        // the other way round.
+        let (rows, failed) = read_as(vec![("user".into(), DataType::Variant)]);
+        assert_eq!(rows[0], serde_json::json!({"user": {"name": "ann"}}));
+        assert_eq!(failed, []);
+        let (rows, failed) = read_as(vec![
+            ("id.high".into(), DataType::I64),
+            ("user.name".into(), DataType::Str),
+        ]);
+        assert_eq!(rows[1], serde_json::json!({"user": {"name": "bo"}}));
         assert_eq!(
-            warnings,
-            [
-                "`id` was captured as i64 and its source now declares it str",
-                "`user.name` was captured, and its source no longer declares it, so it is left out",
-                "`region` is declared and was not captured, so it reads null",
-            ]
+            failed,
+            [(0, 0, "1".to_string()), (1, 0, r#""1""#.to_string())],
+            "a field under a value that is no object fails with that value"
         );
-        assert!(
-            read[0].chunk.failed().is_empty(),
-            "a number reads as its text under str, and the second `id`'s mark is dropped"
-        );
-        let ids: Vec<serde_json::Value> = read.iter().map(|r| now.record_object(r, "")["id"].clone()).collect();
-        assert_eq!(ids, [serde_json::json!("1"), serde_json::json!("1")]);
     }
 
     /// A capture keeps the payload as read and the text its source decoded: a Latin-1 `café` previews as `café`, its
@@ -2667,7 +2672,7 @@ mod tests {
                 .clone(),
         ];
         let meta = smeltr::plan::topology::SourceMeta::of_columns(&columns).unwrap();
-        let read = smeltr::leader::preview::read_sample(&meta, &columns, &records).unwrap();
+        let read = smeltr::leader::preview::read_sample(&meta, &records).unwrap();
         assert_eq!(read.texts, ["caf\u{e9}"]);
         assert_eq!(bytes_of(&read.records[0]), b"caf\xe9");
     }
@@ -2685,7 +2690,7 @@ mod tests {
                 .unwrap()
                 .clone(),
         ];
-        let read = smeltr::leader::preview::read_sample(&meta, &columns, &records).unwrap();
+        let read = smeltr::leader::preview::read_sample(&meta, &records).unwrap();
         assert_eq!(bytes_of(&read.records[0]), b"caf\xe9");
     }
 
@@ -2834,12 +2839,7 @@ mod tests {
     fn a_sample_with_no_columns_reads_as_raw_text() {
         let meta = smeltr::plan::topology::SourceMeta::of_columns(&[]).unwrap();
         let records = vec![smeltr::io::raw_object("a line")];
-        let smeltr::leader::preview::SampleRead {
-            records: read,
-            warnings,
-            ..
-        } = smeltr::leader::preview::read_sample(&meta, &[], &records).unwrap();
-        assert!(warnings.is_empty());
+        let read = smeltr::leader::preview::read_sample(&meta, &records).unwrap().records;
         assert_eq!(read[0].bytes(), Some(&b"a line"[..]));
     }
 

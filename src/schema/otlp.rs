@@ -16,15 +16,23 @@ pub fn read(signal: Signal) -> Vec<SchemaFieldDto> {
         Signal::Traces => &["traceId", "spanId"],
     };
     let meta = SourceMeta::otlp(signal);
-    let mut fields = Vec::new();
-    for (name, ty) in meta.record().iter() {
-        let requirement = match required.contains(&name.as_ref()) {
+    let object = DataType::Struct(Vec::new(), true);
+    let mut fields: Vec<SchemaFieldDto> = Vec::new();
+    for (name, ty) in meta.fields() {
+        let requirement = match required.contains(&name) {
             true => Requirement::Required,
             false => Requirement::Optional,
         };
+        // A leaf of an object the record declares comes under that object's row.
+        let keys: Vec<_> = crate::plan::tree::segments(name).collect();
+        for under in 1..keys.len() {
+            let parent = keys[..under].join(".");
+            if !fields.iter().any(|f| f.field == parent) {
+                rows(&mut fields, &parent, &object, Requirement::Optional);
+            }
+        }
         rows(&mut fields, name, ty, requirement);
     }
-    let object = DataType::Struct(Vec::new(), true);
     let scope = DataType::Struct(
         vec![
             ("name".to_string(), DataType::Str),
@@ -86,8 +94,8 @@ mod tests {
                 ..Default::default()
             };
             crate::schema::read(&dto).unwrap_or_else(|e| panic!("{}: {e}", signal.name()));
-            for (name, _) in SourceMeta::otlp(signal).record().iter() {
-                assert!(fields.iter().any(|f| f.field == *name), "{}: {name}", signal.name());
+            for (name, _) in SourceMeta::otlp(signal).fields() {
+                assert!(fields.iter().any(|f| f.field == name), "{}: {name}", signal.name());
             }
         }
     }
@@ -103,13 +111,7 @@ mod tests {
             };
             let schema = crate::schema::read(&dto).unwrap();
             let meta = SourceMeta::otlp(signal);
-            let record = DataType::Struct(
-                meta.record_fields()
-                    .into_iter()
-                    .map(|(n, t)| (n.to_string(), t))
-                    .collect(),
-                false,
-            );
+            let record = DataType::Struct(meta.fields().map(|(n, t)| (n.to_string(), t.clone())).collect(), false);
             assert_eq!(schema.check(&record), [], "{}", signal.name());
         }
     }

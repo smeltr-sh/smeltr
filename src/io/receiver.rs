@@ -877,7 +877,9 @@ fn rows_chunk(taken: Vec<Queued>, meta: &SourceMeta) -> Vec<SourceRecord> {
             Payload::Chunk(..) => unreachable!("a poll's records are all of one protocol"),
         })
         .collect();
-    let mismatch = |name: &str, ty: &DataType| -> ! { unreachable!("{name} is a {ty}, and a row gave it otherwise") };
+    let mismatch = |name: &crate::plan::topology::Entry, ty: &DataType| -> ! {
+        unreachable!("{name} is a {ty}, and a row gave it otherwise")
+    };
     let columns = (meta.record().iter().enumerate())
         .map(|(at, (name, ty))| {
             let cells = rows.iter().map(|r| r.0[at].as_ref());
