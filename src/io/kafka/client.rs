@@ -417,11 +417,8 @@ fn run(consumer: &BaseConsumer<Routes>, routes: &Routes, stop: &AtomicBool, clie
                 // A fetch that returned a real record proves this broker is reachable. The other proof, a completed
                 // assignment, clears from `Routes::post_rebalance`.
                 routes.clear_error();
-                if let Some(slot) = routes.route(consumer, &msg)
-                    && !unwoken.iter().any(|s| Arc::ptr_eq(s, &slot))
-                {
-                    unwoken.push(slot);
-                }
+                // A source listed twice is woken twice, which costs nothing.
+                unwoken.extend(routes.route(consumer, &msg));
                 record = true;
             }
             // The client instance is unusable: every source on it says so on its next poll.
@@ -446,9 +443,6 @@ fn run(consumer: &BaseConsumer<Routes>, routes: &Routes, stop: &AtomicBool, clie
             }
             routed = 0;
         }
-    }
-    for slot in unwoken {
-        slot.arrived.notify_all();
     }
 }
 
