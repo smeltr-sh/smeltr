@@ -41,6 +41,7 @@ import {
   type Pki,
 } from './certificates';
 import { historyRow } from './change';
+import { recordsOf } from '../samples';
 
 /** What one branch or deploy holds of what the moves add: the ids of sources, destinations, lookup tables, grok
  * patterns, schemas and worker groups, the names of pipelines and samples, each eval step as its pipeline and the field
@@ -2423,8 +2424,9 @@ const editSample: Move = {
     const read = async () => {
       // Read where the GUI edits now: saving the edit on main names a branch.
       const on = `branch=${encodeURIComponent(world.branch ?? 'main')}`;
-      return (await api.get(`/api/areas/${scope}/samples/${encodeURIComponent(id!)}?${on}`)).sample
-        .records as Record<string, unknown>[];
+      return recordsOf(
+        (await api.get(`/api/areas/${scope}/samples/${encodeURIComponent(id!)}?${on}`)).sample,
+      );
     };
     // Each record by the number the editor gives it, which it keeps while others go.
     let draft = (await read()).map((record, i) => ({ n: i + 1, record }));
@@ -2583,8 +2585,8 @@ const saveOutputSample: Move = {
       const on = `branch=${encodeURIComponent(world.branch ?? 'main')}`;
       const { samples } = await api.get(`/api/areas/shared/samples?${on}`);
       const id = samples.find((s: { name: string }) => s.name === n).id;
-      return (await api.get(`/api/areas/shared/samples/${encodeURIComponent(id)}?${on}`))
-        .sample as { source?: string; records: Record<string, unknown>[] };
+      const { sample } = await api.get(`/api/areas/shared/samples/${encodeURIComponent(id)}?${on}`);
+      return { source: sample.source as string | undefined, records: recordsOf(sample) };
     };
     const records = (await sampleNamed(input)).records;
 

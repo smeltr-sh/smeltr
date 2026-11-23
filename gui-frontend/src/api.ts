@@ -52,6 +52,7 @@ import { editedBy, suggestBranchName } from './branchNames';
 import { store, stored, storedJson } from './stored';
 import { csrf, recheck, session, signedOut, type AccessDto, type AccessLevel } from './session';
 import { bareError, errors, Reported, type Call, type Weight } from './errors.svelte';
+import { tableRecords } from './capture';
 
 export function errorText(errors: ApiError[]): string {
   return errors.map((e) => e.message).join('; ');
@@ -2108,7 +2109,7 @@ export function moveObjects(ask: MoveAsk, base?: string | null): Promise<MoveRes
 
 // -- samples ----------------------------------------------------------------
 //
-// Records under a name, saved beside the config they are authored against
+// A capture's table under a name, saved beside the config it is authored against
 // (`config_file::sample`). A paste and an uploaded file both land here, so a
 // preview always runs over a saved sample rather than over whatever was in a
 // text box.
@@ -2117,9 +2118,7 @@ export function moveObjects(ask: MoveAsk, base?: string | null): Promise<MoveRes
  * under `__source` every field its source set. A byte source's record is
  * `{ _raw: text }`. A pasted record was read from nowhere and has no
  * `__source`. One captured at a destination also has the `__destination`
- * fields it was sent with. A value that failed its type is kept as the
- * source spelled it, its field listed under `__capture.mistyped`, and fails
- * again when the sample is read. */
+ * fields it was sent with. */
 export type SampleRecordDto = Record<string, unknown>;
 
 /** Whether the root key of `path`, a field's path, is internal: smeltr's own, starting `__`, as
@@ -2150,17 +2149,14 @@ export function recordLine(record: Record<string, unknown>): string {
   return JSON.stringify(record);
 }
 
-export interface SampleDto {
+/** A sample is its capture's table under a name. */
+export interface SampleDto extends CaptureBatchDto {
   /** Stable across renames; the filename is its slug. */
   id: string;
   name: string;
   /** The source these records stand for. Routing selects on a source, so a
    * sample naming none can be run through a pipeline but not through a route. */
   source?: string;
-  /** The columns a captured sample was taken under, each named and typed once.
-   * A pasted sample has none. */
-  columns?: { name: string; type: string }[];
-  records: SampleRecordDto[];
 }
 
 /** When `sample` was captured, in unix milliseconds, if it was. */
@@ -2350,11 +2346,9 @@ export interface PreviewResult {
   as_sample?: AsSample;
 }
 
-/** A sample's columns and records, without its name, and each record's `PreviewRow.row`. */
-export interface AsSample {
-  columns: { name: string; type: string }[];
-  records: SampleRecordDto[];
-  rows: number[];
+/** A sample's table, without its name, and each of its rows' `PreviewRow.row`. */
+export interface AsSample extends CaptureBatchDto {
+  shown: number[];
 }
 
 /** A field a schema requires or recommends that a pipeline's rows lack (`schema::Missing`). */
@@ -3067,12 +3061,12 @@ export interface CaptureBatchDto {
   rows: CapturedRowDto[];
 }
 
-/** A record a capture holds, as a sample of it holds it (`config_file::sample_records`), and the worker that sent
- * it. A value that failed its type is kept as its source spelled it, its field listed under `__capture.mistyped`;
- * a record a block holds says why under `__exception.message`. */
+/** A record a capture holds, to show, and the worker that sent it. A value that failed its type is as its source
+ * spelled it, its column named in `failed`; a record a block holds says why under `__exception.message`. */
 export interface HeldRecord {
   worker?: string;
   record: SampleRecordDto;
+  failed?: string[];
 }
 
 /** One worker in a capture, and where it stands. */
@@ -3171,14 +3165,14 @@ async function withRecords(
 
 /** What `session` holds so far, running or over. */
 async function heldRecords(session: string): Promise<Pick<CaptureStatus, 'columns' | 'records'>> {
-  const res: {
-    ok: boolean;
-    errors: ApiError[];
-    columns?: CaptureStatus['columns'];
-    records?: HeldRecord[];
-  } = await apiJson(`/api/captures/${encodeURIComponent(session)}/records`, undefined, 'quiet');
+  const res: { ok: boolean; errors: ApiError[] } & Partial<CaptureBatchDto> = await apiJson(
+    `/api/captures/${encodeURIComponent(session)}/records`,
+    undefined,
+    'quiet',
+  );
   if (!res.ok) throw new Error(errorText(res.errors) || "the capture's records could not be read");
-  return { columns: res.columns ?? [], records: res.records ?? [] };
+  const table = { columns: res.columns ?? [], rows: res.rows ?? [] };
+  return { columns: table.columns, records: tableRecords(table) };
 }
 
 export interface SaveCaptureResult {
@@ -3248,15 +3242,9 @@ export function holdPaste(
   return withRecords(post('/api/captures/paste', { group: scope, source, records }, 'quiet'));
 }
 
-/** A finished capture's records, as a sample holds them. */
+/** A capture's records. */
 export async function capturedRecords(session: string): Promise<SampleRecordDto[]> {
-  const res = await fetch(captureDownloadUrl(session));
-  if (!res.ok) throw new Error(`the capture's records could not be read (${res.status})`);
-  const text = await res.text();
-  return text
-    .split('\n')
-    .filter((line) => line.trim() !== '')
-    .map((line) => JSON.parse(line) as SampleRecordDto);
+  return (await heldRecords(session)).records.map((held) => held.record);
 }
 
 /** Where `session` stands. Its records are read again only when they changed
@@ -3309,12 +3297,6 @@ export function saveCapture(
     // A capture says what went wrong in its own flow, from start to save.
     { base, weight: 'quiet' },
   );
-}
-
-/** A finished capture's records as NDJSON. A plain link rather than a fetch: the browser names the file and puts it
- * where downloads go. */
-export function captureDownloadUrl(session: string): string {
-  return `/api/captures/${encodeURIComponent(session)}/download`;
 }
 
 export function discardCapture(session: string): Promise<{ ok: boolean }> {

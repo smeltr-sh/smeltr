@@ -2746,6 +2746,18 @@ mod tests {
         sent
     }
 
+    /// The table of `records` pasted, each with `fields` as what its source set.
+    fn pasted(records: &[(&crate::io::RecordObject, &crate::io::SourceFields)]) -> crate::heartbeat::CaptureBatch {
+        let whole = records.iter().map(|(record, fields)| {
+            let mut record = (*record).clone();
+            if !fields.is_empty() {
+                record.insert("__source".to_string(), serde_json::Value::Object((*fields).clone()));
+            }
+            record
+        });
+        crate::heartbeat::CaptureBatch::pasted(whole.collect())
+    }
+
     /// A row a typed source could not read as its type is captured as the source spelled it, and marked failed.
     #[test]
     fn a_value_that_failed_its_type_is_captured_as_spelled() {
@@ -2755,7 +2767,7 @@ mod tests {
         let object = |v: serde_json::Value| v.as_object().unwrap().clone();
         let none = crate::io::SourceFields::new();
         let stored = [object(serde_json::json!({"id": true, "name": "ann"}))];
-        let records = meta.read_stored(&[(&stored[0], &none)]).unwrap();
+        let records = meta.read_table(&pasted(&[(&stored[0], &none)])).unwrap();
 
         let row = source_row(&meta, &records[0], "", &none);
         assert_eq!(&row.values[..2], [serde_json::json!("true"), serde_json::json!("ann")]);
@@ -2774,7 +2786,7 @@ mod tests {
         let object = |v: serde_json::Value| v.as_object().unwrap().clone();
         let none = crate::io::SourceFields::new();
         let stored = object(serde_json::json!({"id": 1, "home": {"city": "Oslo", "zip": "0150"}}));
-        let records = meta.read_stored(&[(&stored, &none)]).unwrap();
+        let records = meta.read_table(&pasted(&[(&stored, &none)])).unwrap();
 
         let captured: Vec<_> = (source_columns(&meta).into_iter())
             .filter(|c| !c.name.starts_with("__"))
@@ -2795,7 +2807,7 @@ mod tests {
 
         let sample = SourceMeta::of_columns(&captured).unwrap();
         assert_eq!(sample.record(), meta.record());
-        let read = sample.read_stored(&[(&stored, &none)]).unwrap();
+        let read = sample.read_table(&pasted(&[(&stored, &none)])).unwrap();
         assert_eq!(sample.record_object(&read[0], ""), stored);
     }
 
@@ -2811,7 +2823,7 @@ mod tests {
             serde_json::json!({"a": 1, "meta": {"k": true}}),
         ] {
             let stored = object(stored);
-            let read = sample.read_stored(&[(&stored, &none)]).unwrap();
+            let read = sample.read_table(&pasted(&[(&stored, &none)])).unwrap();
             let mut expected = stored.clone();
             if expected["meta"] == serde_json::json!({}) {
                 expected.remove("meta");

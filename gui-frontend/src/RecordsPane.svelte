@@ -35,8 +35,10 @@
     type PreviewResult,
     type PreviewRow,
     heldSession,
+    type CaptureBatchDto,
     type SampleRecordDto,
   } from './api';
+  import { tableRecords } from './capture';
 
   let {
     pipelineId,
@@ -102,7 +104,7 @@
     /** The input's record count and its save action, given while the input is a capture not saved yet. */
     saveinput?: { records: number; onsave: () => void };
     /** The output rows `rows`, by `PreviewRow.row`, each with every field, as a sample holds them. */
-    outputOf: (rows: Set<number>) => Promise<{ records: SampleRecordDto[] }>;
+    outputOf: (rows: Set<number>) => Promise<CaptureBatchDto>;
     onjump: (step: Step) => void;
     /** Writes a field in an eval step; absent where the pipeline is read only. */
     onassign?: (path: string) => void;
@@ -251,7 +253,10 @@
 
   async function downloadOutput(rows: Set<number>) {
     try {
-      downloadRecords(`${pipelineId}-output`, (await outputOf(rows)).records);
+      downloadRecords(
+        `${pipelineId}-output`,
+        tableRecords(await outputOf(rows)).map((held) => held.record),
+      );
     } catch (e) {
       reported(e);
     }

@@ -1355,6 +1355,24 @@ impl CaptureBatch {
         self.header_size() + self.rows.iter().map(CapturedRow::size).sum::<usize>()
     }
 
+    /// The table of `records` a person pasted, each a record object: one column, the root's unclaimed fields, which
+    /// holds each whole.
+    pub fn pasted(records: Vec<crate::io::RecordObject>) -> CaptureBatch {
+        let rows = (records.into_iter())
+            .map(|record| CapturedRow {
+                values: vec![serde_json::Value::Object(record)],
+                ..CapturedRow::default()
+            })
+            .collect();
+        CaptureBatch {
+            columns: vec![CaptureColumn {
+                name: crate::plan::tree::UNCLAIMED.to_string(),
+                ty: crate::core::column::DataType::Variant.spell(),
+            }],
+            rows,
+        }
+    }
+
     /// The column named `name`.
     pub fn column(&self, name: &str) -> Option<usize> {
         self.columns.iter().position(|c| c.name == name)

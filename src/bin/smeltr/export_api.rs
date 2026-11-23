@@ -352,8 +352,11 @@ mod tests {
                     }),
             );
         }
-        let sample: config_file::SampleDto =
-            serde_json::from_value(json!({"id": "s1", "name": "one", "records": [{"_raw": "x"}]})).unwrap();
+        let sample: config_file::SampleDto = serde_json::from_value(
+            json!({"id": "s1", "name": "one", "columns": [{"name": "...", "type": "variant"}],
+                "rows": [{"values": [{"_raw": "x"}]}]}),
+        )
+        .unwrap();
         let test: config_file::TestDto = serde_json::from_value(json!({"id": "t1", "name": "t", "pipeline": "audit",
             "sample": "s1", "lockedAt": 0, "rowsIn": 1, "fields": [], "rows": [{"row": 0}]}))
         .unwrap();

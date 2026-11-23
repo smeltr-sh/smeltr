@@ -82,8 +82,8 @@ pub use load::{
 pub use merge::{ObjectConflict, SectionMerge, Side, is_section_file, merge_section, text_merge_keeps_each_side};
 pub use moving::{MoveRow, Moving};
 pub use sample::{
-    MAX_SAMPLE_RECORDS, SAMPLES_DIR, SampleDto, SampleSummary, list_samples, put_path, read_sample, record_source,
-    refuse_sample_size, sample_bytes, sample_columns, sample_path, sample_records,
+    MAX_SAMPLE_RECORDS, SAMPLES_DIR, SampleDto, SampleSummary, list_samples, put_path, read_sample, refuse_sample_size,
+    sample_bytes, sample_path, sample_table,
 };
 pub use test::{
     Difference, Lock, Locked, Made, Outcome, RowsIn, Sent, TESTS_DIR, TestDto, TestSummary, Verdict, compare,

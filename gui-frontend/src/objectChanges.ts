@@ -14,11 +14,13 @@ import {
   type FileConfigDto,
   type Outcome,
   type SampleDto,
+  type SampleRecordDto,
   type TestDto,
   type TestResult,
   type TestSummary,
   type UndoTarget,
 } from './api';
+import { tableRecords } from './capture';
 import { diffObjects, type DiffEntry } from './diff';
 import { count } from './time';
 import { partsWidth, stepParts, stepSummary, stepsFromDto, type Step } from './pipeline';
@@ -656,7 +658,7 @@ function present(fields: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined));
 }
 
-function recordCells(record: SampleDto['records'][number], sourced: boolean): string[] {
+function recordCells(record: SampleRecordDto, sourced: boolean): string[] {
   return sourced
     ? [recordLine(record), sampleSource(record) ? JSON.stringify(sampleSource(record)) : '']
     : [recordLine(record)];
@@ -713,8 +715,10 @@ export function fileChange(
   if (file.kind === SAMPLES) {
     const fieldsOf = (s: SampleDto | undefined) => s && present({ name: s.name, source: s.source });
     change.fields = diffObjects(fieldsOf(file.before), fieldsOf(file.after));
-    const was = file.before?.records ?? [];
-    const now = file.after?.records ?? [];
+    const recordsOf = (s: SampleDto | undefined) =>
+      s ? tableRecords(s).map((held) => held.record) : [];
+    const was = recordsOf(file.before);
+    const now = recordsOf(file.after);
     const sourced = [...was, ...now].some((r) => sampleSource(r) !== undefined);
     change.headers = sourced ? ['record', 'source fields'] : ['record'];
     change.rows = compareRows(

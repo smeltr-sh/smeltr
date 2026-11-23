@@ -2249,7 +2249,7 @@ pub async fn put_sample(
     Json(mut sample): Json<config_file::SampleDto>,
 ) -> Envelope<Save> {
     sample.id = id;
-    if let Err(message) = config_file::refuse_sample_size(sample.records.len()) {
+    if let Err(message) = config_file::refuse_sample_size(sample.table.rows.len()) {
         return Envelope::refused(Refusal::invalid(message));
     }
     blocking_save(move || {
@@ -3484,7 +3484,7 @@ mod tests {
             })
         };
         let sample: config_file::SampleDto =
-            serde_json::from_str(r#"{"id":"logins","name":"logins","records":[{"_raw":"{}"}]}"#).unwrap();
+            serde_json::from_str(r#"{"id":"logins","name":"logins","columns":[{"name":"...","type":"variant"}],"rows":[{"values":[{"_raw":"{}"}]}]}"#).unwrap();
         seed(
             &data,
             "shared",
@@ -3930,8 +3930,9 @@ mod tests {
             id: "orders-west, ordinary hour".to_string(),
             name: "orders-west, ordinary hour".to_string(),
             source: Some("orders-west".to_string()),
-            records: vec![smeltr::io::raw_object(r#"{"order_id":"A-88120"}"#.to_string())],
-            columns: Vec::new(),
+            table: smeltr::heartbeat::CaptureBatch::pasted(vec![smeltr::io::raw_object(
+                r#"{"order_id":"A-88120"}"#.to_string(),
+            )]),
         };
 
         let writing = Writing::open_in(&data, "work", None, "shared").unwrap();
@@ -3951,10 +3952,7 @@ mod tests {
         let read = config_file::read_sample(&mut reading.files(), &sample.id)
             .unwrap()
             .expect("the sample reads back");
-        assert_eq!(
-            read.records[0]["_raw"].as_str().unwrap(),
-            sample.records[0]["_raw"].as_str().unwrap()
-        );
+        assert_eq!(read.table, sample.table);
         assert_eq!(read.source.as_deref(), Some("orders-west"));
 
         let (mut listed, unreadable) = config_file::list_samples(&mut reading.files());
@@ -3981,7 +3979,7 @@ mod tests {
             .commit(
                 vec![git::FileEdit {
                     path: config_file::sample_path("some records").unwrap(),
-                    content: Some(br#"{"id":"some records","name":"some records","records":[{"_raw":"{}"}]}"#.to_vec()),
+                    content: Some(br#"{"id":"some records","name":"some records","columns":[{"name":"...","type":"variant"}],"rows":[{"values":[{"_raw":"{}"}]}]}"#.to_vec()),
                 }],
                 "save sample",
                 &Actor::system(),
@@ -4000,8 +3998,7 @@ mod tests {
             id: id.to_string(),
             name: id.to_string(),
             source: None,
-            records: vec![],
-            columns: Vec::new(),
+            table: smeltr::heartbeat::CaptureBatch::pasted(vec![]),
         }
     }
 
@@ -4058,7 +4055,7 @@ mod tests {
             .expect("the sample lands");
 
         let mut updated = original;
-        updated.records.push(smeltr::io::raw_object("{}".to_string()));
+        updated.table.rows.push(Default::default());
         let writing = Writing::open_in(&data, "work", None, "shared").unwrap();
         let content = Some(config_file::sample_bytes(&updated));
         refuse_sample_collision(&mut writing.files(), &path, &updated.id, &content)
@@ -4782,7 +4779,7 @@ mod tests {
     #[test]
     fn a_sample_the_branch_deleted_comes_back_as_one_save() {
         let data = main_with_routes("undo-sample");
-        let sample = br#"{"id": "s", "name": "s", "records": ["x"]}"#;
+        let sample = br#"{"id": "s", "name": "s", "columns": [], "rows": []}"#;
         commit_to(&data, git::MAIN_BRANCH, &[("samples/s.json", sample.to_vec())]);
         edit_work(&data, "samples/s.json", None);
 

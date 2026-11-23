@@ -530,7 +530,7 @@ mod tests {
         Objects {
             file,
             samples: vec![
-                serde_json::from_value(json!({"id": "s-fw", "name": "fw", "source": "fw", "records": []})).unwrap(),
+                serde_json::from_value(json!({"id": "s-fw", "name": "fw", "source": "fw", "columns": [], "rows": []})).unwrap(),
             ],
             tests: vec![
                 serde_json::from_value(

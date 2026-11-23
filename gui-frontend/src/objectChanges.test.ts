@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { pastedTable } from './capture';
 import type { FileConfigDto, Outcome, TestResult, TestSummary } from './api';
 import {
   canonicalJson,
@@ -327,7 +328,7 @@ describe('sample and test cards', () => {
     id: 'orders',
     name,
     source: 'kafka',
-    records: raws.map((raw) => ({ _raw: raw })),
+    ...pastedTable(raws.map((raw) => ({ _raw: raw }))),
   });
   const test = (rows: Outcome[], fields = ['a']) => ({
     id: 'orders-out',

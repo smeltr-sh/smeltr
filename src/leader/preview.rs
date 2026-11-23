@@ -177,13 +177,13 @@ pub struct Preview {
     pub as_sample: Option<AsSample>,
 }
 
-/// A sample's columns and records, without its name, and the row each record is in the preview, so a caller can keep
-/// the records of the rows it shows.
+/// A sample's table, without its name, and the row of the preview each of its rows is, so a caller can keep the rows
+/// it shows.
 #[derive(serde::Serialize)]
 pub struct AsSample {
-    pub columns: Vec<crate::heartbeat::CaptureColumn>,
-    pub records: Vec<crate::io::RecordObject>,
-    pub rows: Vec<u32>,
+    #[serde(flatten)]
+    pub table: crate::heartbeat::CaptureBatch,
+    pub shown: Vec<u32>,
 }
 
 /// The record by its compiled types alone, and with the sample's output filling what only a row knows. `sampled` is
@@ -415,33 +415,21 @@ pub struct SampleRead {
     pub texts: Vec<String>,
 }
 
-/// `records`, a sample's, as `meta` reads them (`SourceMeta::read_stored`): each field `meta` declares is read from
-/// the record under `meta`'s type for it, whatever the sample was captured under.
-///
-/// Where `meta` is a source's, the source sets its own internal fields (`plan::tree::is_internal`), so the sample's
-/// are not read. A value the sample lists as failed is judged by the type `meta` declares. Where `meta` is the
-/// sample's own (`SourceMeta::of_columns`), its internal fields are columns of the record like any other.
-pub fn read_sample(meta: &SourceMeta, records: &[crate::io::RecordObject]) -> Result<SampleRead, String> {
-    let from_source = !meta.source_fields().is_empty();
-    let objects: Vec<crate::io::RecordObject> = records
-        .iter()
-        .map(|r| {
-            let mut object = r.clone();
-            if from_source {
-                object.retain(|key, _| !crate::plan::tree::is_internal(key));
+/// `table`, a sample's, as `meta` reads it (`SourceMeta::read_table`): each field `meta` declares is read from the
+/// row under `meta`'s type for it, whatever the sample was captured under.
+pub fn read_sample(meta: &SourceMeta, table: &crate::heartbeat::CaptureBatch) -> Result<SampleRead, String> {
+    let read = meta.read_table(table)?;
+    let raw = plan::topology::Entry::Field("_raw".into());
+    let texts = (table.rows.iter().zip(&read))
+        .map(|(row, read)| {
+            let cells = crate::io::Cells {
+                columns: &table.columns,
+                row,
+            };
+            match cells.of(&raw, &[]) {
+                Ok(Some(text)) if text.is_string() => text.as_str().unwrap_or_default().to_string(),
+                _ => String::from_utf8_lossy(meta.read_bytes(read).unwrap_or_default()).into_owned(),
             }
-            object
-        })
-        .collect();
-    let sources: Vec<_> = records.iter().map(config_file::record_source).collect();
-    let stored: Vec<_> = objects.iter().zip(&sources).collect();
-    let read = meta.read_stored(&stored)?;
-    let texts = records
-        .iter()
-        .zip(&read)
-        .map(|(r, read)| match r.get("_raw") {
-            Some(serde_json::Value::String(text)) => text.clone(),
-            _ => String::from_utf8_lossy(meta.read_bytes(read).unwrap_or_default()).into_owned(),
         })
         .collect();
     Ok(SampleRead { records: read, texts })
@@ -494,7 +482,7 @@ pub fn run_route_preview(
 
     // A sample's byte records hold their text already decoded, so nothing decodes. A record with no coordinates gets
     // the empty ones a pasted record has; the source's own `SourceMeta` decides whether a route may read them at all.
-    let SampleRead { records, texts } = match read_sample(&compiled.meta_for(source.id), &sample.records) {
+    let SampleRead { records, texts } = match read_sample(&compiled.meta_for(source.id), &sample.table) {
         Ok(read) => read,
         Err(e) => return Envelope::refused(Refusal::invalid(e)),
     };
@@ -716,8 +704,7 @@ fn after_dot(
 pub fn run_preview(
     req: PreviewRequest,
     declared_at: config_file::DeclaredAt,
-    columns: &[crate::heartbeat::CaptureColumn],
-    records: Vec<crate::io::RecordObject>,
+    table: &crate::heartbeat::CaptureBatch,
 ) -> Envelope<Preview> {
     let system = match config_file::load_str_at(&req.config, &declared_at) {
         Ok(system) => system,
@@ -746,7 +733,7 @@ pub fn run_preview(
     }
 
     if let Some(asked) = &req.after_dot {
-        return match after_dot(asked, &system, req.pipeline.as_deref(), columns) {
+        return match after_dot(asked, &system, req.pipeline.as_deref(), &table.columns) {
             Ok(after_dot) => Envelope::ok(Preview {
                 pipeline_names,
                 after_dot,
@@ -775,14 +762,14 @@ pub fn run_preview(
     // A pipeline preview is of the pipeline alone, over the columns its sample was captured under, each read from the
     // record as it was stored, `__source` fields included. Not the metadata of a source that routes to this pipeline,
     // which would make `__source.topic` compile here and read null against records that never carried one.
-    let meta = match SourceMeta::of_columns(columns) {
+    let meta = match SourceMeta::of_columns(&table.columns) {
         Ok(meta) => meta,
         Err(e) => return Preview::failed("sample", vec![ApiError::new(e)], pipeline_names),
     };
     let SampleRead {
         records: sourced,
         texts,
-    } = match read_sample(&meta, &records) {
+    } = match read_sample(&meta, table) {
         Ok(read) => read,
         Err(e) => return Preview::failed("sample", vec![ApiError::new(e)], pipeline_names),
     };
@@ -830,7 +817,7 @@ pub fn run_preview(
             }
         }
     };
-    if records.is_empty() {
+    if table.rows.is_empty() {
         let (found, fixes, missing) = schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &record, first);
         warnings.extend(found.iter().map(warn));
         return Envelope::ok(Preview {
@@ -863,7 +850,7 @@ pub fn run_preview(
     // Budgeted: the leader is also what serves the GUI, the config API and every worker's heartbeat, and a pipeline
     // that unrolls an array asks for far more than the sample weighs.
     let previewed = buffer::catch_over_budget(|| {
-        let mut batch = Batch::new(&plan.delivery_layout(), records.len(), 0);
+        let mut batch = Batch::new(&plan.delivery_layout(), table.rows.len(), 0);
 
         // A byte record's `_raw` is text (`core::batch`), and a sample's records are text by the time they are
         // stored -- a paste arrives as text and a capture decodes with its source's encoding, so nothing decodes here.
@@ -886,7 +873,7 @@ pub fn run_preview(
             filter.as_ref(),
         );
         // An unroll makes rows of its own, which no longer line up with the sample's.
-        let touched = (req.attribution && batch.rows() == records.len()).then(|| touched(&plan, &batch));
+        let touched = (req.attribution && batch.rows() == table.rows.len()).then(|| touched(&plan, &batch));
         let sample = req.as_sample.then(|| {
             let made = crate::leader::capture::output_fields(
                 at_micros.unwrap_or_else(crate::core::ctx::wall_clock_micros),
@@ -1058,22 +1045,20 @@ fn as_sample(
         numbers.push(shown.row);
     }
     // How the output was made stands in for how its input was captured, because these records are no longer a capture.
-    let mut columns = config_file::sample_columns(&taken);
-    columns.retain(|c| !c.name.starts_with("__capture."));
-    columns.extend(made.iter().map(|(c, _)| c.clone()));
-    let mut capture = serde_json::Map::new();
+    let mut table = config_file::sample_table(&taken);
+    let captured: Vec<usize> = (0..table.columns.len())
+        .rev()
+        .filter(|&c| table.columns[c].name.starts_with("__capture."))
+        .collect();
+    for c in captured {
+        table.columns.remove(c);
+        table.rows.iter_mut().for_each(|row| drop(row.values.remove(c)));
+    }
     for (column, value) in made {
-        capture.insert(column.name["__capture.".len()..].to_string(), value.clone());
+        table.columns.push(column.clone());
+        table.rows.iter_mut().for_each(|row| row.values.push(value.clone()));
     }
-    let mut records: Vec<_> = taken.iter().flat_map(config_file::sample_records).collect();
-    for record in &mut records {
-        record.insert("__capture".to_string(), serde_json::Value::Object(capture.clone()));
-    }
-    AsSample {
-        columns,
-        records,
-        rows: numbers,
-    }
+    AsSample { table, shown: numbers }
 }
 
 /// The schemas the pipeline produces (`schema::check`) as `record`, the fields `plan` writes, breaks them, in three
@@ -1450,16 +1435,9 @@ fn run_made(
 ) -> Result<(usize, Vec<config_file::Made>), String> {
     let sample =
         sample?.ok_or_else(|| format!("this test runs over the sample {sample_id:?}, which is not on this branch"))?;
-    let rows_in = sample.records.len();
+    let rows_in = sample.table.rows.len();
     let made = match pipeline {
-        Some(pipeline) => run_pipeline_actual(
-            pipeline,
-            config,
-            locked_at,
-            declared_at.clone(),
-            &sample.columns,
-            sample.records,
-        ),
+        Some(pipeline) => run_pipeline_actual(pipeline, config, locked_at, declared_at.clone(), &sample.table),
         None => run_route_actual(config, locked_at, declared_at.clone(), sample),
     }?;
     Ok((rows_in, made))
@@ -1471,8 +1449,7 @@ pub fn run_pipeline_actual(
     config: &str,
     locked_at: i64,
     declared_at: config_file::DeclaredAt,
-    columns: &[crate::heartbeat::CaptureColumn],
-    records: Vec<crate::io::RecordObject>,
+    table: &crate::heartbeat::CaptureBatch,
 ) -> Result<Vec<config_file::Made>, String> {
     let previewed = run_preview(
         PreviewRequest {
@@ -1489,8 +1466,7 @@ pub fn run_pipeline_actual(
             capture_filter: None,
         },
         declared_at,
-        columns,
-        records,
+        table,
     );
     if let Some(why) = previewed.why_failed() {
         return Err(why);
@@ -1606,6 +1582,19 @@ mod tests {
             )
     }
 
+    fn cells(table: &crate::heartbeat::CaptureBatch, row: usize) -> crate::io::Cells<'_> {
+        crate::io::Cells {
+            columns: &table.columns,
+            row: &table.rows[row],
+        }
+    }
+
+    /// What row `row` of `table` holds at `path`, null where it holds nothing.
+    fn cell(table: &crate::heartbeat::CaptureBatch, row: usize, path: &str) -> serde_json::Value {
+        let held = cells(table, row).of(&plan::topology::Entry::Field(path.to_string().into()), &[]);
+        held.unwrap().map(|v| v.into_owned()).unwrap_or_default()
+    }
+
     fn warnings_of(config: String, columns: &[crate::heartbeat::CaptureColumn]) -> Vec<(Option<String>, String)> {
         (previewed(config, columns).warnings.iter())
             .map(|w| (w.step.clone(), w.message.clone()))
@@ -1628,8 +1617,10 @@ mod tests {
                 capture_filter: None,
             },
             Default::default(),
-            columns,
-            Vec::new(),
+            &crate::heartbeat::CaptureBatch {
+                columns: columns.to_vec(),
+                rows: Vec::new(),
+            },
         )
         .body
     }
@@ -1764,8 +1755,7 @@ mod tests {
                 capture_filter: None,
             },
             Default::default(),
-            &[],
-            records,
+            &crate::heartbeat::CaptureBatch::pasted(records),
         );
         assert!(
             previewed.succeeded(),
@@ -1773,21 +1763,25 @@ mod tests {
             previewed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
         let sample = previewed.body.as_sample.unwrap();
-        assert_eq!(sample.records.len(), 1, "only the row the filter leaves");
-        assert_eq!(sample.rows, [0]);
-        assert_eq!(sample.records[0]["x"], serde_json::json!(1));
-        assert_eq!(sample.records[0]["u"]["path"], serde_json::json!("/x"));
-        let x = sample.columns.iter().find(|c| c.name == "x").unwrap();
+        assert_eq!(sample.table.rows.len(), 1, "only the row the filter leaves");
+        assert_eq!(sample.shown, [0]);
+        assert_eq!(cell(&sample.table, 0, "x"), serde_json::json!(1));
+        assert_eq!(cell(&sample.table, 0, "u.path"), serde_json::json!("/x"));
+        let x = sample.table.columns.iter().find(|c| c.name == "x").unwrap();
         assert_eq!(x.ty, "i64", "typed as the pipeline writes it");
-        let named = |name: &str| sample.columns.iter().any(|c| c.name.starts_with(name));
+        let named = |name: &str| sample.table.columns.iter().any(|c| c.name.starts_with(name));
         assert!(
             named("__source."),
             "the `__` fields the pipeline holds, as a capture carries them"
         );
-        assert!(!named("__destination") && !named("__live"), "{:?}", sample.columns);
+        assert!(
+            !named("__destination") && !named("__live"),
+            "{:?}",
+            sample.table.columns
+        );
 
-        let meta = SourceMeta::of_columns(&sample.columns).unwrap();
-        read_sample(&meta, &sample.records).expect("the sample reads back by its own columns");
+        let meta = SourceMeta::of_columns(&sample.table.columns).unwrap();
+        read_sample(&meta, &sample.table).expect("the sample reads back by its own columns");
     }
 
     /// A JSON or key-value parse converts a key a produced schema types as it lays it: a value that does not fit is
@@ -1824,8 +1818,7 @@ mod tests {
                     capture_filter: None,
                 },
                 Default::default(),
-                &[],
-                records,
+                &crate::heartbeat::CaptureBatch::pasted(records),
             );
             let errors: Vec<_> = previewed.errors.iter().map(|e| &e.message).collect();
             assert!(previewed.succeeded(), "{body}: {errors:?}");
@@ -1838,15 +1831,11 @@ mod tests {
             });
             assert!(refused, "{body}: {}", rows[1]["exceptions"]);
             let sample = previewed.body.as_sample.unwrap();
-            let first = &sample.records[0];
-            assert_eq!(first["time"], serde_json::json!(42), "{body}: {first:?}");
-            assert_eq!(first["user"]["name"], serde_json::json!("7"), "{body}: {first:?}");
-            assert_eq!(first["other"], serde_json::json!("5"), "{body}: no schema types it");
-            assert!(
-                sample.records[1].get("time").is_none_or(|t| t.is_null()),
-                "{body}: {:?}",
-                sample.records[1]
-            );
+            let first = |path: &str| cell(&sample.table, 0, path);
+            assert_eq!(first("time"), serde_json::json!(42), "{body}");
+            assert_eq!(first("user.name"), serde_json::json!("7"), "{body}");
+            assert_eq!(first("other"), serde_json::json!("5"), "{body}: no schema types it");
+            assert!(cell(&sample.table, 1, "time").is_null(), "{body}");
         }
     }
 
@@ -1858,15 +1847,21 @@ mod tests {
             name: name.into(),
             ty: ty.into(),
         };
-        let columns = [
-            column("_raw", "str"),
-            column("__capture.timestamp", "datetime"),
-            column("__capture.source", "str"),
-        ];
-        let captured = serde_json::json!({
-            "_raw": "http://a/x",
-            "__capture": {"timestamp": "2026-10-25T13:57:12.000000Z", "source": "orders-west"},
-        });
+        let captured = crate::heartbeat::CaptureBatch {
+            columns: vec![
+                column("_raw", "str"),
+                column("__capture.timestamp", "datetime"),
+                column("__capture.source", "str"),
+            ],
+            rows: vec![crate::heartbeat::CapturedRow {
+                values: vec![
+                    "http://a/x".into(),
+                    "2026-10-25T13:57:12.000000Z".into(),
+                    "orders-west".into(),
+                ],
+                ..Default::default()
+            }],
+        };
         let previewed = run_preview(
             PreviewRequest {
                 config: compiling(),
@@ -1882,20 +1877,19 @@ mod tests {
                 capture_filter: None,
             },
             Default::default(),
-            &columns,
-            vec![captured.as_object().unwrap().clone()],
+            &captured,
         );
         let sample = previewed.body.as_sample.unwrap();
         assert_eq!(
-            sample.records[0]["__capture"],
+            serde_json::Value::Object(cells(&sample.table, 0).under("__capture")),
             serde_json::json!({"timestamp": "2023-11-14T22:13:20.000000Z", "pipeline": "p", "sample": "orders"}),
         );
-        let named: Vec<_> = sample.columns.iter().map(|c| c.name.as_str()).collect();
+        let named: Vec<_> = sample.table.columns.iter().map(|c| c.name.as_str()).collect();
         assert!(!named.contains(&"__capture.source"), "{named:?}");
         assert!(named.contains(&"__capture.pipeline"), "{named:?}");
 
-        let meta = SourceMeta::of_columns(&sample.columns).unwrap();
-        read_sample(&meta, &sample.records).expect("the sample reads back by its own columns");
+        let meta = SourceMeta::of_columns(&sample.table.columns).unwrap();
+        read_sample(&meta, &sample.table).expect("the sample reads back by its own columns");
     }
 
     /// A pipeline over a saved sample of another pipeline's output writes under an object that output holds: a
@@ -1927,10 +1921,14 @@ mod tests {
         };
         let messages = |p: &Envelope<Preview>| p.errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>();
         let raw = serde_json::json!({ "_raw": "8.8.8.8" }).as_object().unwrap().clone();
-        let saved = run_preview(request("ecs", true), Default::default(), &[], vec![raw]);
+        let saved = run_preview(
+            request("ecs", true),
+            Default::default(),
+            &crate::heartbeat::CaptureBatch::pasted(vec![raw]),
+        );
         assert!(saved.succeeded(), "{:?}", messages(&saved));
         let sample = saved.body.as_sample.unwrap();
-        let meta = SourceMeta::of_columns(&sample.columns).unwrap();
+        let meta = SourceMeta::of_columns(&sample.table.columns).unwrap();
         let declared: Vec<_> = meta.fields().map(|(name, _)| name).collect();
         for leaf in [
             "destination.ip",
@@ -1945,12 +1943,7 @@ mod tests {
             "an object is its leaves: {declared:?}"
         );
 
-        let previewed = run_preview(
-            request("geo", false),
-            Default::default(),
-            &sample.columns,
-            sample.records,
-        );
+        let previewed = run_preview(request("geo", false), Default::default(), &sample.table);
         assert!(previewed.succeeded(), "{:?}", messages(&previewed));
         assert!(previewed.body.warnings.is_empty(), "{:?}", messages(&previewed));
         let row = previewed.body.rows[0].json.as_ref().unwrap();
@@ -1989,8 +1982,7 @@ mod tests {
                 capture_filter: None,
             },
             Default::default(),
-            &[],
-            Vec::new(),
+            &Default::default(),
         );
         assert!(
             previewed.succeeded(),
@@ -2085,8 +2077,7 @@ mod tests {
                     }),
                 },
                 Default::default(),
-                &[],
-                Vec::new(),
+                &Default::default(),
             );
             assert!(previewed.succeeded());
             previewed.body.capture_filter.unwrap()
@@ -2126,8 +2117,7 @@ mod tests {
                 capture_filter: None,
             },
             Default::default(),
-            &[],
-            Vec::new(),
+            &Default::default(),
         );
         assert!(!previewed.succeeded());
     }
@@ -2163,8 +2153,7 @@ mod tests {
                 capture_filter: None,
             },
             Default::default(),
-            &[],
-            vec![record],
+            &crate::heartbeat::CaptureBatch::pasted(vec![record]),
         );
         assert!(previewed.succeeded(), "{:?}", previewed.errors);
         assert_eq!(previewed.body.rows.len(), 40);

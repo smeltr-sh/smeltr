@@ -63,7 +63,7 @@ fn refuse_oversized<'a>(
     }
     samples
         .into_iter()
-        .try_for_each(|s| config_file::refuse_sample_size(s.records.len()))
+        .try_for_each(|s| config_file::refuse_sample_size(s.table.rows.len()))
         .map_err(too_large)
 }
 
@@ -210,7 +210,7 @@ async fn preview(State(service): State<Service>, Json(body): Json<PreviewBody>) 
                 Ok(config) => config,
                 Err(e) => return Envelope::refused(Refusal::internal(e.to_string())),
             };
-            let (columns, records) = body.sample.map(|s| (s.columns, s.records)).unwrap_or_default();
+            let table = body.sample.map(|s| s.table).unwrap_or_default();
             let req = PreviewRequest {
                 config,
                 pipeline,
@@ -224,7 +224,7 @@ async fn preview(State(service): State<Service>, Json(body): Json<PreviewBody>) 
                 after_dot: body.after_dot,
                 capture_filter: body.capture_filter,
             };
-            run_preview(req, declared_at, &columns, records)
+            run_preview(req, declared_at, &table)
         })
         .await
 }
@@ -501,7 +501,7 @@ async fn capture_filter(State(service): State<Service>, Json(body): Json<Capture
                     Ok(filter) => filter,
                     Err(e) => return Envelope::refused(Refusal::invalid(e)),
                 };
-            let read = match smeltr::leader::preview::read_sample(&meta, &body.sample.records) {
+            let read = match smeltr::leader::preview::read_sample(&meta, &body.sample.table) {
                 Ok(read) => read,
                 Err(e) => return Envelope::refused(Refusal::invalid(e)),
             };
@@ -783,7 +783,11 @@ mod tests {
     }
 
     fn sample(records: serde_json::Value) -> serde_json::Value {
-        serde_json::json!({"id": "s", "name": "s", "records": records})
+        let table = smeltr::heartbeat::CaptureBatch::pasted(serde_json::from_value(records).unwrap());
+        let mut sample = serde_json::to_value(table).unwrap();
+        sample["id"] = "s".into();
+        sample["name"] = "s".into();
+        sample
     }
 
     async fn previewed(service: &Service, mut body: serde_json::Value) -> serde_json::Value {

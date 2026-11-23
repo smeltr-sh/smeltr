@@ -673,8 +673,7 @@ mod tests {
             id: id.to_string(),
             name: id.to_string(),
             source: source.map(str::to_string),
-            records: vec![smeltr::io::raw_object("{}".to_string())],
-            columns: Vec::new(),
+            table: smeltr::heartbeat::CaptureBatch::pasted(vec![smeltr::io::raw_object("{}".to_string())]),
         }
     }
 
@@ -759,15 +758,8 @@ mod tests {
         let at = config_file::BundleAt::Dir(dir.clone());
         let declared_at = crate::single_origin_declared_at(PIPELINE_CONFIG, &at);
 
-        let made = run_pipeline_actual(
-            "audit",
-            PIPELINE_CONFIG,
-            0,
-            declared_at.clone(),
-            &[],
-            sample.records.clone(),
-        )
-        .expect("the pipeline preview runs cleanly");
+        let made = run_pipeline_actual("audit", PIPELINE_CONFIG, 0, declared_at.clone(), &sample.table)
+            .expect("the pipeline preview runs cleanly");
         let fields = vec!["seen".to_string()];
         let mut test = TestDto {
             id: "marks-it".to_string(),
@@ -1273,7 +1265,7 @@ mod tests {
 
         // `work` adds a record to `edited`, rewrites `broken` and changes nothing else.
         let mut edited = one_record_sample("edited", None);
-        edited.records.push(edited.records[0].clone());
+        edited.table.rows.push(edited.table.rows[0].clone());
         let edits = vec![
             file_edit(
                 config_file::sample_path(&edited.id).unwrap(),

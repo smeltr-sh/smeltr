@@ -38,6 +38,7 @@
     type Outcome,
     type SaveConflict,
   } from './api';
+  import { tableRecords } from './capture';
   import { count } from './time';
   import { formatDiffValue } from './diff';
   import { announcePipelineNames, testHash } from './nav';
@@ -132,7 +133,7 @@
         );
       sampleName = sampleRes.sample.name;
       sampleSource = sampleRes.sample.source ?? '';
-      sampleRecords = sampleRes.sample.records.map((r) => recordLine(r));
+      sampleRecords = tableRecords(sampleRes.sample).map((held) => recordLine(held.record));
 
       atMicros = Date.now() * 1000;
       const res = await previewLock(lockOf(false));

@@ -97,7 +97,7 @@
     type LookupTableDto,
     type PipelineDto,
     type Connected,
-    type SampleDto,
+    type CaptureBatchDto,
     type SampleRecordDto,
     type TestSummary,
     type SaveConflict,
@@ -119,7 +119,7 @@
   import { hold, verdictFor, drop } from './edits';
   import type { ChangeRow } from './diff';
   import AddSampleDialog from './AddSampleDialog.svelte';
-  import { heldCount } from './capture';
+  import { heldCount, heldTable } from './capture';
   import RecordsPane, { type PauseRun } from './RecordsPane.svelte';
   import { RECOMPUTE_MS } from './FindBox.svelte';
   import SampleMenu from './SampleMenu.svelte';
@@ -1071,12 +1071,13 @@
 
   /** The output rows `rows` names, as a sample holds them. It re-runs the steps the grid ran, at the instant it ran
    * them, so the rows are the ones on screen. */
-  async function outputOf(rows: Set<number>): Promise<Pick<SampleDto, 'columns' | 'records'>> {
+  async function outputOf(rows: Set<number>): Promise<CaptureBatchDto> {
     const { at, steps: ran } = pause && pauseRun ? pauseRan : lastGoodRun;
     const res = await fetchPreview(ran, lastSample, { at, asSample: true });
     if (!res.ok || !res.as_sample) throw new Error(previewFailure(res));
-    const { columns, records, rows: of } = res.as_sample;
-    return { columns, records: records.filter((_, i) => rows.has(of[i])) };
+    const { columns, rows: made } = heldTable(res.as_sample);
+    const of = res.as_sample.shown;
+    return { columns, rows: made.filter((_, i) => rows.has(of[i])) };
   }
   let savingOutput = $state<Set<number> | null>(null);
   /** The dialog is open to save the held capture, the input run over, as a sample. */

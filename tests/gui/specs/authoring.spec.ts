@@ -15,6 +15,7 @@ import {
   type Api,
   type Leader,
 } from '../fleet';
+import { pasted, recordsOf } from '../samples';
 import { openRowMenu } from '../moves/admin';
 import type { Download, Page } from '@playwright/test';
 import fs from 'node:fs';
@@ -49,7 +50,7 @@ test('A1: a sample that does not load is listed on the Samples page and can be d
   await api.put(`/api/areas/shared/samples/old${ON}`, {
     id: 'old',
     name: 'old',
-    records: [{ a: 1 }],
+    ...pasted([{ a: 1 }]),
   });
   // Rewritten straight into the leader's repository, since no route saves a sample it cannot read.
   const clone = fs.mkdtempSync(path.join(os.tmpdir(), 'old-sample-'));
@@ -1085,7 +1086,7 @@ async function jsonPipeline(
     id: sample.id,
     name: sample.name,
     source: sample.source,
-    records: sample.records.map((raw) => ({ _raw: raw })),
+    ...pasted(sample.records.map((raw) => ({ _raw: raw }))),
   });
 }
 
@@ -1122,7 +1123,7 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
       { name: '__source.name', type: 'str' },
       { name: '__source.type', type: 'str' },
     ],
-    records: ORDERS.map((raw, i) => ({ _raw: raw, __source: read(i, 100 + i, raw) })),
+    ...pasted(ORDERS.map((raw, i) => ({ _raw: raw, __source: read(i, 100 + i, raw) }))),
   });
   await api.put(`/api/areas/shared/pipelines/orders${ON}`, {
     id: 'orders',
@@ -1189,7 +1190,7 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
   );
 
   const saved = (await api.get(`/api/areas/shared/samples/busy-hour${ON}`)).sample;
-  expect(saved.records).toEqual([
+  expect(recordsOf(saved)).toEqual([
     { _raw: ORDERS[0], __source: read(0, 100, ORDERS[0]) },
     // The bytes a byte record is read from are the edited text.
     { _raw: '{"id":3,"total":13}', __source: read(2, 102, '{"id":3,"total":13}') },
@@ -1206,7 +1207,7 @@ test('a sample of more than 100 records shows the first 100 until Show all', asy
     id: 'many',
     name: 'many records',
     columns: [{ name: '_raw', type: 'str' }],
-    records: Array.from({ length: 150 }, (_, i) => ({ _raw: `record ${i}` })),
+    ...pasted(Array.from({ length: 150 }, (_, i) => ({ _raw: `record ${i}` }))),
   });
   await goto(admin, leader, '#/build');
   await openRowMenu(admin, 'More actions for many records');
@@ -1226,7 +1227,6 @@ test('A1: a SQL sample is edited a column at a time, and a value fixed to its ty
   leader,
   api,
 }) => {
-  const db = { name: 'billing-db', type: 'postgres', database: 'billing' };
   await api.put(`/api/areas/shared/samples/invoices${ON}`, {
     id: 'invoices',
     name: 'invoices',
@@ -1236,10 +1236,7 @@ test('A1: a SQL sample is edited a column at a time, and a value fixed to its ty
       { name: 'amount', type: 'f64' },
       { name: '__source.database', type: 'str' },
     ],
-    records: [
-      { invoice_id: 1, amount: 'n/a', __capture: { mistyped: ['amount'] }, __source: db },
-      { invoice_id: 2, amount: 3.5, __source: db },
-    ],
+    rows: [{ values: [1, 'n/a', 'billing'], failed: [1] }, { values: [2, 3.5, 'billing'] }],
   });
 
   await goto(admin, leader, '#/build');
@@ -1261,7 +1258,8 @@ test('A1: a SQL sample is edited a column at a time, and a value fixed to its ty
   await expect(records).toBeHidden();
 
   const saved = (await api.get(`/api/areas/shared/samples/invoices${ON}`)).sample;
-  expect(saved.records[0]).toEqual({ invoice_id: 1, amount: 20, __source: db });
+  expect(saved.rows[0]).toEqual({ values: [1, 20] });
+  expect(saved.columns[2]).toMatchObject({ name: '__source.database', value: 'billing' });
 });
 
 // A2, schema from a sample.
@@ -1471,7 +1469,7 @@ test('A2: a sample is picked from the Sample menu, its output searched by keywor
   await api.put(`/api/areas/shared/samples/other${ON}`, {
     id: 'other',
     name: 'other',
-    records: [{ _raw: '{}' }],
+    ...pasted([{ _raw: '{}' }]),
   });
   await api.put(`/api/areas/shared/tests/orders-parse${ON}`, {
     name: 'orders parse',
@@ -1649,7 +1647,7 @@ test('A2: a field shown from the Fields menu stays shown on a sample that would 
     await api.put(`/api/areas/shared/samples/${encodeURIComponent(id)}${ON}`, {
       id,
       name: id,
-      records: [0, 1, 2].map((i) => ({ _raw: JSON.stringify(record(rare, i)) })),
+      ...pasted([0, 1, 2].map((i) => ({ _raw: JSON.stringify(record(rare, i)) }))),
     });
 
   const grid = admin.getByRole('table');
@@ -1719,7 +1717,7 @@ test('A4: a route preview shows each output row, the route it matched and the de
   await api.put(`/api/areas/shared/samples/pasted${ON}`, {
     id: 'pasted',
     name: 'pasted errors',
-    records: [{ _raw: '{"status":503}' }],
+    ...pasted([{ _raw: '{"status":503}' }]),
   });
   await admin.reload();
   await admin.getByRole('button', { name: 'Choose a sample' }).click();
@@ -1770,7 +1768,7 @@ test('A4: an end-to-end test opened from Tests shows its fields the documents st
     id: 'quiet-sample',
     name: 'quiet hour',
     source: 'storefront',
-    records: [{ _raw: '{"status":204}' }],
+    ...pasted([{ _raw: '{"status":204}' }]),
   });
   await api.put(`/api/areas/shared/tests/quiet${ON}`, {
     name: 'quiet',
@@ -1865,7 +1863,7 @@ test('A4: a compile error is written once, on its step, and the error chip jumps
   await api.put(`/api/areas/shared/samples/orders-sample${ON}`, {
     id: 'orders-sample',
     name: 'orders',
-    records: ORDERS.map((raw) => ({ _raw: raw })),
+    ...pasted(ORDERS.map((raw) => ({ _raw: raw }))),
   });
 
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
@@ -1912,7 +1910,7 @@ test('◎ pauses the records after a step', async ({ admin, leader, api }) => {
   await api.put(`/api/areas/shared/samples/orders-sample${ON}`, {
     id: 'orders-sample',
     name: 'orders',
-    records: ORDERS.map((raw) => ({ _raw: raw })),
+    ...pasted(ORDERS.map((raw) => ({ _raw: raw }))),
   });
 
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
@@ -1980,11 +1978,11 @@ test('A3: a field names the steps that touched it, a step card counts what it dr
   await api.put(`/api/areas/shared/samples/web${ON}`, {
     id: 'web',
     name: 'web hour',
-    records: [
+    ...pasted([
       { _raw: '{"status": 200, "path": "/a"}' },
       { _raw: '{"status": "oops", "path": "/b"}' },
       { _raw: '{"status": 200, "path": "/health"}' },
-    ],
+    ]),
   });
 
   await goto(admin, leader, '#/build/pipelines/web/for/web');
@@ -2038,7 +2036,7 @@ test('A4: after a refused save, a new compile error is still shown', async ({
   await api.put(`/api/areas/shared/samples/orders-sample${ON}`, {
     id: 'orders-sample',
     name: 'orders',
-    records: ORDERS.map((raw) => ({ _raw: raw })),
+    ...pasted(ORDERS.map((raw) => ({ _raw: raw }))),
   });
 
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
@@ -2076,7 +2074,7 @@ test('A4: a code field is laid out when it is left, and a warning is written on 
   await api.put(`/api/areas/shared/samples/orders-sample${ON}`, {
     id: 'orders-sample',
     name: 'orders',
-    records: ORDERS.map((raw) => ({ _raw: raw })),
+    ...pasted(ORDERS.map((raw) => ({ _raw: raw }))),
   });
 
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
@@ -2376,10 +2374,11 @@ test('A6: the output rows on screen are saved as a sample that another pipeline 
   expect(made.source).toBeUndefined();
   const saved = (await api.get(`/api/areas/shared/samples/${made.id}${ON}`)).sample;
   expect(saved.columns).toContainEqual({ name: 'total', type: 'f64' });
-  expect(saved.records.map((r: { id: number }) => r.id)).toEqual([1, 3]);
+  const rows = recordsOf(saved);
+  expect(rows.map((r) => r.id)).toEqual([1, 3]);
   // The fields say how the pipeline made these records from the sample: the leader writes them in place of a
   // capture's.
-  const how = saved.records[0].__capture;
+  const how = rows[0].__capture;
   expect(how).toMatchObject({ pipeline: 'orders', sample: 'orders-sample' });
 
   // Typed as the first pipeline wrote it, so `total` compares as a number.
@@ -2496,7 +2495,7 @@ async function storesPipeline(api: Api, table: string, keyColumn: string, valueC
   await api.put(`/api/areas/shared/samples/stores-sample${ON}`, {
     id: 'stores-sample',
     name: 'sales',
-    records: ['{"store":"s1"}', '{"store":"s2"}', '{"store":"s9"}'].map((raw) => ({ _raw: raw })),
+    ...pasted(['{"store":"s1"}', '{"store":"s2"}', '{"store":"s9"}'].map((raw) => ({ _raw: raw }))),
   });
 }
 
@@ -2597,7 +2596,7 @@ test('a grok pattern added on its page is named by a grok step in a pipeline', a
   await api.put(`/api/areas/shared/samples/stores-sample${ON}`, {
     id: 'stores-sample',
     name: 'sales',
-    records: [{ _raw: 'store-7' }],
+    ...pasted([{ _raw: 'store-7' }]),
   });
   await goto(admin, leader, '#/build/pipelines/stores/for/stores-sample');
   const grid = admin.getByRole('table').filter({ hasText: 'store' }).last();
@@ -4306,7 +4305,7 @@ test('A6: the lock page shows five rows a side, and a button shows the rest', as
   await api.put(`/api/areas/shared/samples/orders-sample${ON}`, {
     id: 'orders-sample',
     name: 'orders',
-    records: Array.from({ length: 8 }, (_, i) => ({ _raw: `{"id":${i + 1}}` })),
+    ...pasted(Array.from({ length: 8 }, (_, i) => ({ _raw: `{"id":${i + 1}}` }))),
   });
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
   const lock = admin.getByRole('button', { name: 'Lock this as a test' });

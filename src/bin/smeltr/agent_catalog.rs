@@ -330,19 +330,13 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/captures/:session/records",
-        what: "What a capture holds so far, running or over, as batches of records. Read it once the capture is done, or again when the `revision` in its status moves. No query.",
+        what: "What a capture holds so far, running or over, as one table: its columns, and each row's values under them. Read it once the capture is done, or again when the `revision` in its status moves. No query.",
         body: "",
     },
     Route {
         method: "POST",
         path: "/api/captures/:session/stop",
         what: "End a running capture and keep what it holds. No query.",
-        body: "",
-    },
-    Route {
-        method: "GET",
-        path: "/api/captures/:session/download",
-        what: "A finished capture's records as NDJSON, as a sample would hold them; the capture stays. No query.",
         body: "",
     },
     Route {

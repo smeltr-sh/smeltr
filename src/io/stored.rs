@@ -1,13 +1,14 @@
-//! Records as a sample, a capture and the test API store them: a record object of its fields, and its `__source`
-//! object. They are read once per request, or at most a capture's bound of rows, so `serde_json` holds them.
+//! Records as a sample and a capture hold them: rows of cells under a table's columns. They are read once per request,
+//! or at most a capture's bound of rows, so `serde_json` holds them.
 
 use std::sync::Arc;
 
 use super::{RecordChunk, SourceRecord, elastic_receiver, hec, otlp};
 use crate::core::column::DataType;
+use crate::heartbeat::{CaptureColumn, CapturedRow};
 use crate::plan::topology::Entry;
 
-/// A record as an object: each of its fields by name, as the source read it. What a sample and a capture hold.
+/// A record as an object: each of its fields by name, as the source read it.
 pub type RecordObject = serde_json::Map<String, serde_json::Value>;
 
 /// A record's `__source` object: every field its source set, by name below `__source`.
@@ -23,24 +24,98 @@ pub fn value_at<'v>(object: &'v RecordObject, path: &str) -> Option<&'v serde_js
     Some(value)
 }
 
-/// The value at `path` in `object`, as `value_at` gives it. Err is a value on the way that is neither an object nor a
-/// null: it holds no field.
-fn leaf_at<'v>(object: &'v RecordObject, path: &str) -> Result<Option<&'v serde_json::Value>, &'v serde_json::Value> {
-    let mut keys = crate::plan::tree::segments(path);
-    let Some(mut value) = keys.next().and_then(|key| object.get(key.as_ref())) else {
-        return Ok(None);
+/// One row of a capture's table, under the table's columns.
+#[derive(Clone, Copy)]
+pub struct Cells<'a> {
+    pub columns: &'a [CaptureColumn],
+    pub row: &'a CapturedRow,
+}
+
+/// The keys `entry` claims of `held`, the object it is under, left out.
+fn unclaimed(held: &RecordObject, at: &[String], fields: &[(Entry, DataType)]) -> RecordObject {
+    let claimed = |key: &str| {
+        fields.iter().any(|(entry, _)| {
+            let keys = entry.keys();
+            keys.len() > at.len() && keys.starts_with(at) && keys[at.len()] == key
+        })
     };
-    for key in keys {
-        value = match value {
-            serde_json::Value::Object(held) => match held.get(key.as_ref()) {
-                Some(value) => value,
-                None => return Ok(None),
-            },
-            serde_json::Value::Null => return Ok(None),
-            unfit => return Err(unfit),
+    (held.iter())
+        .filter(|(k, _)| !claimed(k))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
+impl<'a> Cells<'a> {
+    /// What this row holds for `entry` of `fields`: the cell of the entry's own column, or the value at its place in
+    /// the nearest column above it, an object's whole value or its unclaimed fields, the root's last. `None` where
+    /// the row holds nothing there. Err is the text of a cell that failed its type, or of a value on the way that
+    /// holds no field.
+    pub fn of(
+        &self,
+        entry: &Entry,
+        fields: &[(Entry, DataType)],
+    ) -> Result<Option<std::borrow::Cow<'a, serde_json::Value>>, String> {
+        use serde_json::Value;
+        let keys = entry.keys();
+        let held = (self.columns.iter().enumerate())
+            .filter_map(|(c, column)| {
+                let (above, rest): (Vec<String>, bool) = match crate::plan::tree::unclaimed_object(&column.name) {
+                    Some(object) => (crate::plan::tree::object_keys(object).map(Into::into).collect(), true),
+                    None => (
+                        crate::plan::tree::segments(&column.name).map(Into::into).collect(),
+                        false,
+                    ),
+                };
+                let own = above.len() == keys.len() && rest == entry.field().is_none();
+                keys.starts_with(&above).then_some(((own, above.len()), c))
+            })
+            .max();
+        let Some(((_, depth), c)) = held else {
+            return Ok(None);
         };
+        let mut value = self.row.values.get(c).unwrap_or(&Value::Null);
+        if self.row.failed.contains(&c) {
+            // Stored as the source spelled it.
+            return Err(value.as_str().map_or_else(|| value.to_string(), str::to_string));
+        }
+        for key in &keys[depth..] {
+            value = match value {
+                Value::Object(held) => match held.get(key) {
+                    Some(value) => value,
+                    None => return Ok(None),
+                },
+                Value::Null => return Ok(None),
+                unfit => return Err(unfit.to_string()),
+            };
+        }
+        match (entry, value) {
+            (_, Value::Null) => Ok(None),
+            (Entry::Field(_), value) => Ok(Some(std::borrow::Cow::Borrowed(value))),
+            (Entry::Unclaimed(_), Value::Object(held)) => {
+                let rest = unclaimed(held, &keys, fields);
+                Ok((!rest.is_empty()).then_some(std::borrow::Cow::Owned(Value::Object(rest))))
+            }
+            (Entry::Unclaimed(_), unfit) => Err(unfit.to_string()),
+        }
     }
-    Ok(Some(value))
+
+    /// The fields this row holds under `object`, a root key: what its place above holds, then each column below it.
+    pub fn under(&self, object: &'static str) -> RecordObject {
+        let mut held = match self.of(&Entry::Field(object.into()), &[]) {
+            Ok(Some(value)) => value.as_object().cloned().unwrap_or_default(),
+            _ => RecordObject::new(),
+        };
+        for (c, column) in self.columns.iter().enumerate() {
+            let below = column.name.strip_prefix(object).and_then(|rest| rest.strip_prefix('.'));
+            match (below, self.row.values.get(c)) {
+                (Some(below), Some(value)) if !value.is_null() && !self.row.failed.contains(&c) => {
+                    crate::config_file::put_path(&mut held, below, value.clone())
+                }
+                _ => {}
+            }
+        }
+        held
+    }
 }
 
 /// The keys of the object `object` of `record` that no entry of `fields` claims, by its key there: what that object's
@@ -51,52 +126,8 @@ pub fn unclaimed_of(record: &RecordObject, object: &str, fields: &[(Entry, DataT
     for key in &at {
         held = held.get(key)?.as_object()?;
     }
-    let claimed = |key: &str| {
-        fields.iter().any(|(entry, _)| {
-            let keys = entry.keys();
-            keys.len() > at.len() && keys.starts_with(&at) && keys[at.len()] == key
-        })
-    };
-    let rest: RecordObject = (held.iter())
-        .filter(|(k, _)| !claimed(k))
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
+    let rest = unclaimed(held, &at, fields);
     (!rest.is_empty()).then_some(serde_json::Value::Object(rest))
-}
-
-/// Where a stored record lists the fields whose values failed their type when it was taken: beside the record's other
-/// `__capture` fields, which say how it was taken.
-pub const MISTYPED_FIELDS: &str = "__capture.mistyped";
-
-/// The fields `record` lists as failed under `MISTYPED_FIELDS`, `{"__capture": {"mistyped": ["id"]}}`, taken out of
-/// it: a stored record's own field reads as the record, and this list as which of its values failed their type when it
-/// was taken (`RecordChunk::from_objects`). Anything else there is left as a field.
-pub fn take_mistyped(record: &mut RecordObject) -> Vec<String> {
-    take_list(record, MISTYPED_FIELDS).unwrap_or_default()
-}
-
-fn split(path: &str) -> (&str, &str) {
-    path.split_once('.').expect("the failed list nests one level")
-}
-
-/// The list of names at `path`, two keys deep, taken out of `record`; `None`, leaving it, where it is not one.
-fn take_list(record: &mut RecordObject, path: &str) -> Option<Vec<String>> {
-    let (outer, inner) = split(path);
-    let serde_json::Value::Object(tag) = record.get_mut(outer)? else {
-        return None;
-    };
-    let serde_json::Value::Array(items) = tag.get(inner)? else {
-        return None;
-    };
-    let names: Vec<String> = items
-        .iter()
-        .map(|v| v.as_str().map(str::to_string))
-        .collect::<Option<_>>()?;
-    tag.remove(inner);
-    if tag.is_empty() {
-        record.remove(outer);
-    }
-    Some(names)
 }
 
 /// A byte record's object: `{"_raw": text}`.
@@ -135,15 +166,14 @@ impl SourceRecord {
 }
 
 impl RecordChunk {
-    /// A chunk of `objects`, each a record object as a sample or a capture stores it, read as `fields` declare. A
-    /// value that is not its field's type is null and counted failed, as a source counts one. So is a value whose
-    /// field `failed` names for its object (`take_mistyped`), a value that failed when it was taken: its text is how the
-    /// source spelled it, which its type may well accept. `failed` may be shorter than `objects`. A `bytes` field is
-    /// stored as its base64, as a capture writes it. Err for a field of a type a stored record object cannot carry.
-    pub fn from_objects(
+    /// A chunk of `rows` of a capture's table under `columns`, read as `fields` declare (`Cells::of`). A value that is
+    /// not its field's type is null and counted failed, as a source counts one, and so is a cell its row lists as
+    /// failed. A `bytes` field is stored as its base64, as a capture writes it. Err for a field of a type a capture
+    /// cannot carry.
+    pub fn from_cells(
         fields: &[(Entry, DataType)],
-        objects: &[&RecordObject],
-        failed: &[Vec<String>],
+        columns: &[CaptureColumn],
+        rows: &[CapturedRow],
     ) -> Result<RecordChunk, String> {
         use crate::io::values::{self, Value};
         if let Some((name, ty)) = fields
@@ -152,34 +182,26 @@ impl RecordChunk {
             .find_map(|(name, ty)| Some((name, values::unbuilt(ty)?)))
         {
             return Err(format!(
-                "field `{name}` is declared {}, which a stored record cannot hold",
+                "field `{name}` is declared {}, which a capture cannot hold",
                 ty.spell()
             ));
         }
         let mut pool = crate::core::buffer::BufferPool::new();
-        let marked = |row: usize, name: &str| failed.get(row).is_some_and(|f| f.iter().any(|n| n == name));
         let mut failed = Vec::new();
-        let mut columns = Vec::with_capacity(fields.len());
+        let mut out = Vec::with_capacity(fields.len());
         for (i, (entry, ty)) in fields.iter().enumerate() {
-            // A stored record lists a failed value by its column's name.
-            let name = &entry.column();
-            let unclaimed: Vec<Option<serde_json::Value>> = match entry {
-                Entry::Unclaimed(object) => objects.iter().map(|o| unclaimed_of(o, object, fields)).collect(),
-                Entry::Field(_) => Vec::new(),
-            };
-            let read: Vec<Option<&serde_json::Value>> = match entry {
-                Entry::Unclaimed(_) => unclaimed.iter().map(Option::as_ref).collect(),
-                Entry::Field(field) => (objects.iter().enumerate())
-                    .map(|(row, o)| {
-                        // A field under a value that is no object fails, as a source's reader fails it.
-                        let held = leaf_at(o, field).unwrap_or_else(|unfit| {
-                            failed.push((row as u32, i, unfit.to_string()));
-                            None
-                        });
-                        held.filter(|v| !v.is_null())
-                    })
-                    .collect(),
-            };
+            let cells: Vec<_> = (rows.iter())
+                .map(|row| Cells { columns, row }.of(entry, fields))
+                .collect();
+            let read: Vec<Option<&serde_json::Value>> = (cells.iter().enumerate())
+                .map(|(row, cell)| match cell {
+                    Ok(value) => value.as_deref(),
+                    Err(text) => {
+                        failed.push((row as u32, i, text.clone()));
+                        None
+                    }
+                })
+                .collect();
             if *ty == DataType::Bytes {
                 let mut b =
                     crate::core::column::StrBuilder::new(&mut pool, crate::core::column::VarType::Bytes, read.len());
@@ -188,10 +210,7 @@ impl RecordChunk {
                     bytes.clear();
                     let text = v.and_then(|v| v.as_str());
                     match text {
-                        Some(t)
-                            if !marked(row, name)
-                                && crate::format::bytes_text::BytesForm::Base64.read(t.as_bytes(), &mut bytes) =>
-                        {
+                        Some(t) if crate::format::bytes_text::BytesForm::Base64.read(t.as_bytes(), &mut bytes) => {
                             b.push_grow(&mut pool, &bytes)
                         }
                         _ => {
@@ -202,19 +221,12 @@ impl RecordChunk {
                         }
                     }
                 }
-                columns.push(b.finish());
+                out.push(b.finish());
                 continue;
             }
             let given: Vec<Value> = read
                 .iter()
-                .enumerate()
-                .map(|(row, v)| match v {
-                    Some(v) if marked(row, name) => {
-                        // Stored as the source spelled it.
-                        let text = v.as_str().map_or_else(|| v.to_string(), str::to_string);
-                        failed.push((row as u32, i, text));
-                        Value::Null
-                    }
+                .map(|v| match v {
                     Some(v) => {
                         let mut encoded = Vec::new();
                         put_variant(&mut encoded, v);
@@ -228,9 +240,9 @@ impl RecordChunk {
                 let v = read[row].expect("a refused value is present");
                 failed.push((row as u32, i, v.to_string()));
             }
-            columns.push(column);
+            out.push(column);
         }
-        Ok(RecordChunk::new(columns, failed))
+        Ok(RecordChunk::new(out, failed))
     }
 }
 

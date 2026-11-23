@@ -560,17 +560,7 @@ impl Captures {
         records: Vec<crate::io::RecordObject>,
     ) -> Result<(), String> {
         crate::config_file::refuse_sample_size(records.len())?;
-        let mut batch = CaptureBatch::new(vec![crate::heartbeat::CaptureColumn {
-            name: crate::plan::tree::UNCLAIMED.to_string(),
-            ty: crate::core::column::DataType::Variant.spell(),
-        }]);
-        batch.rows = records
-            .into_iter()
-            .map(|record| CapturedRow {
-                values: vec![serde_json::Value::Object(record)],
-                ..CapturedRow::default()
-            })
-            .collect();
+        let batch = CaptureBatch::pasted(records);
         let bytes = batch.size();
         if bytes > SESSION_BYTES_CEILING {
             return Err(format!(

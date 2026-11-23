@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { pastedTable } from '../capture';
 import {
   DEMO_REFUSAL,
   DemoLeader,
@@ -127,10 +128,6 @@ function recording(): Recorded {
             rows: [row('w1', 'a'), row('w2', 'b'), row('w1', 'c'), row('w2', 'd')],
           },
         ],
-        sample: {
-          columns: [{ name: '_raw', type: 'str' }],
-          records: [{ _raw: 'a' }, { _raw: 'b' }, { _raw: 'c' }, { _raw: 'd' }],
-        },
       },
     },
     parts: {},
@@ -194,9 +191,9 @@ describe('DemoLeader', () => {
     const records = async () =>
       (
         (await leader.answer('GET', at(`/api/captures/${session}/records`), null)).body as {
-          records: { worker?: string; record: Record<string, unknown> }[];
+          rows: { worker?: string }[];
         }
-      ).records;
+      ).rows;
     expect((await status()).done).toBe(false);
     now += 60_000;
     const done = await status();
@@ -418,21 +415,19 @@ describe('DemoLeader', () => {
     vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ ok: true, errors: [] })));
     const r = recording();
     r.captures['network/destination/es'] = {
-      ...r.captures['network/source/fw'],
-      sample: {
-        columns: [{ name: 'event', type: 'str' }],
-        records: [{ event: 'a' }, { event: 'b' }],
-      },
+      batches: [
+        {
+          columns: [
+            { name: 'event', type: 'str' },
+            { name: '__capture.group', type: 'str', value: 'recorded' },
+          ],
+          rows: [
+            { values: ['a'], worker: 'w1' },
+            { values: ['b'], worker: 'w1' },
+          ],
+        },
+      ],
     };
-    r.captures['network/destination/es'].batches = [
-      {
-        columns: [{ name: 'event', type: 'str' }],
-        rows: [
-          { values: ['a'], worker: 'w1' },
-          { values: ['b'], worker: 'w1' },
-        ],
-      },
-    ];
     let now = RECORDED;
     const leader = demoLeader(r, () => now);
     const started = (await leader.answer(
@@ -453,7 +448,18 @@ describe('DemoLeader', () => {
       at('/api/areas/network/samples/sent?branch=mine'),
       null,
     );
-    expect(sample.body).toMatchObject({ sample: { records: [{ event: 'a' }, { event: 'b' }] } });
+    expect(sample.body).toMatchObject({
+      sample: {
+        columns: [
+          { name: 'event' },
+          { name: '__capture.timestamp' },
+          { name: '__capture.destination', value: 'es' },
+          { name: '__capture.group', value: 'network' },
+          { name: '__capture.config' },
+        ],
+        rows: [{ values: ['a'] }, { values: ['b'] }],
+      },
+    });
   });
   it('starts a branch at main, lists it before its first save, and deletes it', async () => {
     const leader = demoLeader(recording(), () => RECORDED);
@@ -792,7 +798,7 @@ describe('DemoLeader', () => {
   });
   it('answers a sample read at a commit the tab holds, as a review reads both ends of a change', async () => {
     const r = recording();
-    const sample = { id: 's1', name: 'one', records: [{ _raw: 'a' }] };
+    const sample = { id: 's1', name: 'one', ...pastedTable([{ _raw: 'a' }]) };
     r.answers['/api/areas/network/samples/s1?branch=main'] = config({ sample });
     const leader = demoLeader(r, () => RECORDED);
     const read = await leader.answer(

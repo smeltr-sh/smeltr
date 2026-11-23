@@ -8607,12 +8607,12 @@ mod tests {
         write(
             &dir,
             "shared/samples/orders.json",
-            r#"{"id":"orders","name":"orders","records":[]}"#,
+            r#"{"id":"orders","name":"orders","columns":[],"rows":[]}"#,
         );
         write(
             &dir,
             "groups/west/samples/west.json",
-            r#"{"id":"west","name":"west","records":[]}"#,
+            r#"{"id":"west","name":"west","columns":[],"rows":[]}"#,
         );
         write(&dir, "groups/west/tests/west.json", "{}");
         let after = commit(&dir, "samples and a test");

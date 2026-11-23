@@ -330,7 +330,7 @@ mod tests {
             "schemas": [{"id": "network"}]
         }))
         .unwrap();
-        let sample = serde_json::from_value(json!({"id": "s-fw", "name": "s-fw", "records": []})).unwrap();
+        let sample = serde_json::from_value(json!({"id": "s-fw", "name": "s-fw", "columns": [], "rows": []})).unwrap();
         let test = serde_json::from_value(json!({
             "id": "t-fw", "name": "t-fw", "pipeline": "fw-normalize", "sample": "s-fw",
             "lockedAt": 0, "rowsIn": 0, "fields": [], "rows": []
