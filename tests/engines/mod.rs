@@ -1621,6 +1621,41 @@ struct Timed {
     harness: f64,
 }
 
+/// A row faster than this share of the harness's ceiling ([`ceiling`]) may be the harness's speed rather than the
+/// engine's, so it is reported as harness-bound instead of as the engine's.
+const HEADROOM: f64 = 0.7;
+
+/// The most input records a second the harness can send `push`'s way on its `rest` cores. Its sender posts to its
+/// own sink, which answers at once from the `apart` cores, so what `rest` spends is the sending alone, as in a row,
+/// where the engine answers each request and posts what it makes in batches. The ceiling is the rate it reaches over
+/// how busy that left `rest`: the rate with every one of them busy.
+fn ceiling(push: &Push, apart: &[usize], rest: &[usize]) -> f64 {
+    // The sink's threads keep the cores of the thread that starts them.
+    set_affinity(0, apart);
+    let sink = Sink::start();
+    set_affinity(0, rest);
+    let senders = env_or("ENGINE_SENDERS", SENDERS);
+    let sender = Sender::start(
+        &format!("http://127.0.0.1:{}{}", sink.port, push.path),
+        push,
+        &bodies(push),
+        senders,
+        0,
+        u64::MAX / 2,
+    );
+    std::thread::sleep(Duration::from_secs(2));
+    let (from, at, idle_before) = (sink.rows(), Instant::now(), idle(rest));
+    std::thread::sleep(Duration::from_secs(5));
+    let wall = at.elapsed().as_secs_f64();
+    let rate = (sink.rows() - from) as f64 / wall;
+    let busy = 1.0 - (idle(rest) - idle_before) / wall / rest.len() as f64;
+    sender.stop();
+    while sender.running() > 0 {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    rate / busy.max(0.01)
+}
+
 /// Times `engine` running `workload` over `transport` on `cpus`, the harness on `rest`.
 fn time(
     engine: Engine,
@@ -1809,6 +1844,28 @@ fn speed() {
         .then(|| announced::Objects::start(&format!("es-objects-{id}"), &rest));
     let services = Services { broker, objects };
 
+    // Each way input is pushed, before any engine runs. The sink takes every engine's body for one alike.
+    let mut ceilings: Vec<(In, f64)> = Vec::new();
+    // Its sink on the cores the engines will have; with the engine on a host of its own, it shares the harness's, and
+    // the ceiling is lower than it is.
+    let apart = if remote { rest.clone() } else { on(most) };
+    for &(_, t) in &cases {
+        if ceilings.iter().any(|c| c.0 == t.from) {
+            continue;
+        }
+        if let Some(push) = engines.iter().find_map(|&e| t.from.push(e)) {
+            let c = ceiling(&push, &apart, &rest);
+            println!(
+                "{:<12} {:<6} {:<9} harness ceiling {c:>9.0} records/s",
+                "",
+                t.from.label(),
+                ""
+            );
+            ceilings.push((t.from, c));
+        }
+    }
+    let ceiling_of = |t: Transport| ceilings.iter().find(|c| c.0 == t.from).map(|c| c.1);
+
     // Checked once each, on the fewest cores: an engine that makes other documents is not timed.
     let mut refused: Vec<(Case, Engine, String)> = Vec::new();
     for &(w, t) in &cases {
@@ -1851,7 +1908,7 @@ fn speed() {
                     match &result {
                         Ok(r) => println!(
                             "{:<12} {:<6} {:<9} {:>2} threads {:>9.0} records/s  cpu {:>5.2}  peak {:>6.0} MB  service {:>5.2}  \
-                             harness {:>3.0}%",
+                             harness {:>3.0}%{}",
                             w.name,
                             t.label(),
                             e.label(),
@@ -1860,7 +1917,11 @@ fn speed() {
                             r.cpu,
                             r.peak as f64 / 1e6,
                             r.broker,
-                            r.harness * 100.0
+                            r.harness * 100.0,
+                            ceiling_of(t).map_or(String::new(), |c| format!(
+                                "  of ceiling {:>3.0}%",
+                                r.rows_per_sec / c * 100.0
+                            ))
                         ),
                         Err(why) => println!(
                             "{:<12} {:<6} {:<9} {:>2} threads failed: {why}",
@@ -1875,7 +1936,7 @@ fn speed() {
             }
         }
     }
-    println!("\n{}", table(&cases, &engines, &counts, &timed, &refused));
+    println!("\n{}", table(&cases, &engines, &counts, &timed, &refused, &ceilings));
     let failed = timed.iter().filter(|t| t.3.is_err()).count() + refused.len();
     assert_eq!(
         failed, 0,
@@ -1894,10 +1955,11 @@ fn table(
     counts: &[usize],
     timed: &[(Case, Engine, usize, Result<Timed, String>)],
     refused: &[(Case, Engine, String)],
+    ceilings: &[(In, f64)],
 ) -> String {
     let mut out = String::from(
         "| Pipeline | Transport | Engine | Threads | records/s | Spread | records/s per thread used | Threads used | Peak memory | \
-         Service cores | Harness busy |\n|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|\n",
+         Service cores | Harness busy | Of harness ceiling |\n|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n",
     );
     let one_line = |why: &str| why.replace('|', "/").replace('\n', " ");
     for &case in cases {
@@ -1912,7 +1974,7 @@ fn table(
                     n * threads_per_core()
                 );
                 if let Some((_, _, why)) = refused.iter().find(|r| same(r.0, case) && r.1 == e) {
-                    out.push_str(&format!("{head} check failed: {} | | | | | | |\n", one_line(why)));
+                    out.push_str(&format!("{head} check failed: {} | | | | | | | |\n", one_line(why)));
                     continue;
                 }
                 let runs: Vec<&Result<Timed, String>> = timed
@@ -1921,7 +1983,7 @@ fn table(
                     .map(|r| &r.3)
                     .collect();
                 if let Some(Err(why)) = runs.iter().find(|r| r.is_err()) {
-                    out.push_str(&format!("{head} failed: {} | | | | | | |\n", one_line(why)));
+                    out.push_str(&format!("{head} failed: {} | | | | | | | |\n", one_line(why)));
                     continue;
                 }
                 let mut ok: Vec<&Timed> = runs.iter().filter_map(|r| r.as_ref().ok()).collect();
@@ -1936,9 +1998,18 @@ fn table(
                 } else {
                     String::new()
                 };
+                // A harness-bound row says so where its speed would be: it is not the engine's.
+                let share = ceilings
+                    .iter()
+                    .find(|c| c.0 == t.from)
+                    .map(|c| median.rows_per_sec / c.1);
+                let speed = match share {
+                    Some(s) if s > HEADROOM => format!("harness-bound, {:.0}", median.rows_per_sec),
+                    _ => format!("{:.0}", median.rows_per_sec),
+                };
+                let share = share.map_or(String::new(), |s| format!("{:.0}%", s * 100.0));
                 out.push_str(&format!(
-                    "{head} {:.0} | {:.0}% | {:.0} | {:.2} | {:.0} MB | {broker} | {:.0}% |\n",
-                    median.rows_per_sec,
+                    "{head} {speed} | {:.0}% | {:.0} | {:.2} | {:.0} MB | {broker} | {:.0}% | {share} |\n",
                     spread * 100.0,
                     median.rows_per_sec / median.cpu,
                     median.cpu,

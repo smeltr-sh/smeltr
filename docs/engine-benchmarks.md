@@ -102,7 +102,12 @@ keeps. More is a duplicate and less is a loss, and either fails the run.
 
 - **Threads.** A row is measured in hardware threads, set by `ENGINE_THREADS`. The engine's container gets them as
   whole physical cores, the first ones, so the count is a multiple of a core's threads. The harness runs on the other
-  cores, so it never shares a core with the engine.
+  cores, so it never shares a core with the engine. Published runs give the engine a host of its own, named by
+  `ENGINE_DOCKER_HOST`, so the harness has every core of the other.
+- **The harness's ceiling.** Before any engine runs, the harness measures, for each way input is pushed, the most
+  records a second its cores can send: its sender posts to its own sink, which answers at once from the engine's
+  cores, and the rate it reaches is scaled to every harness core busy. A row faster than 70% of that may be the
+  harness's speed, so it is reported as harness-bound, not as the engine's.
 - **Memory.** Every container gets the same limit, 4 GB unless `ENGINE_MEMORY_GB` says otherwise.
 - **Disk.** A run fails when less than 5 GB of the disk is free, before or while it runs: NiFi keeps its queues on the
   disk and slows as it fills.
@@ -135,12 +140,13 @@ The engines are built differently, and some of the difference cannot be set away
 
 - **records/s** is input records a second, the median of the rounds. **Spread** is the fastest round minus the
   slowest, divided by the median.
-- **records/s per core used** divides by the cores the container used, as its cgroup counts them.
+- **records/s per thread used** divides by the hardware threads the container used, as its cgroup counts them.
 - **Peak memory** is the most the container held, page cache included, as its cgroup counts it.
-- **Broker cores** is what the Kafka broker used. Near the number of cores the harness has, the broker set the run's
-  speed.
-- **Harness busy** is how busy the harness's cores were, the broker included. Near 100%, the harness, not the engine,
-  set the run's speed.
+- **Service cores** is what the service at the other end used: the Kafka broker, or the object store. Near the number
+  of cores the harness has, the service set the run's speed.
+- **Harness busy** is how busy the harness's cores were, the broker included.
+- **Of harness ceiling** is the row's records/s as a share of the harness's ceiling for its input. Over 70%, the row
+  reads harness-bound.
 
 ## Results
 
