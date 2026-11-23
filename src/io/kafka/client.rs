@@ -382,6 +382,11 @@ fn run(consumer: &BaseConsumer<Routes>, routes: &Routes, stop: &AtomicBool, clie
     let mut stalls_checked = Instant::now();
     // A poll failing: said once per change and on the interval, not per poll.
     let mut polling = crate::logs::Relog::default();
+    // Sources with records routed since their reader last waited, and how many records that is. A reader is woken
+    // once librdkafka holds nothing more, rather than by the first record: woken by the first, it would take a batch
+    // of a fetch's first few records, and every stage after it pays per batch.
+    let mut unwoken: Vec<Arc<Slot>> = Vec::new();
+    let mut routed = 0;
     while !stop.load(Ordering::Relaxed) {
         routes.resubscribe_if_due(consumer);
         routes.refetch_if_due(consumer);
@@ -398,14 +403,26 @@ fn run(consumer: &BaseConsumer<Routes>, routes: &Routes, stop: &AtomicBool, clie
                 clients.note_cluster(routes, cluster);
             }
         }
-        match consumer.poll(Timeout::from(CLIENT_POLL)) {
+        // No wait while a reader is owed a wake: what librdkafka already holds is routed first.
+        let wait = if unwoken.is_empty() {
+            CLIENT_POLL
+        } else {
+            Duration::ZERO
+        };
+        let mut record = false;
+        match consumer.poll(Timeout::from(wait)) {
             // The timeout, or an event the client handled on the way: a rebalance, a commit's answer, an error.
             None => {}
             Some(Ok(msg)) => {
                 // A fetch that returned a real record proves this broker is reachable. The other proof, a completed
                 // assignment, clears from `Routes::post_rebalance`.
                 routes.clear_error();
-                routes.route(consumer, &msg);
+                if let Some(slot) = routes.route(consumer, &msg)
+                    && !unwoken.iter().any(|s| Arc::ptr_eq(s, &slot))
+                {
+                    unwoken.push(slot);
+                }
+                record = true;
             }
             // The client instance is unusable: every source on it says so on its next poll.
             Some(Err(KafkaError::MessageConsumptionFatal(code))) => {
@@ -421,6 +438,17 @@ fn run(consumer: &BaseConsumer<Routes>, routes: &Routes, stop: &AtomicBool, clie
                 }
             }
         }
+        routed += usize::from(record);
+        // Bounded at a batch's rows, so records arriving as fast as they are routed still reach their reader.
+        if !record || routed >= crate::worker::TICK_MAX_ROWS {
+            for slot in unwoken.drain(..) {
+                slot.arrived.notify_all();
+            }
+            routed = 0;
+        }
+    }
+    for slot in unwoken {
+        slot.arrived.notify_all();
     }
 }
 
@@ -984,12 +1012,11 @@ impl Routes {
     }
 
     /// Hands `msg` to the inbox of the source reading its topic. A full inbox pauses that source's partitions.
-    fn route(&self, consumer: &BaseConsumer<Routes>, msg: &impl Message) {
+    /// Answers the source when its reader waits on an empty inbox, for the caller to wake.
+    fn route(&self, consumer: &BaseConsumer<Routes>, msg: &impl Message) -> Option<Arc<Slot>> {
         // Read once: each read of a message's topic measures and checks the name again.
         let topic = msg.topic();
-        let Some(slot) = self.slot_for(topic) else {
-            return;
-        };
+        let slot = self.slot_for(topic)?;
         let mut state = slot.lock();
         let record = Pending {
             raw: msg.payload().unwrap_or(&[]).to_vec(),
@@ -999,7 +1026,7 @@ impl Routes {
             headers: headers_of(msg, state.keep_headers),
             timestamp: msg.timestamp().to_millis(),
         };
-        // A reader waits only on an empty inbox, so only the first record into one needs to wake it.
+        // A reader waits only on an empty inbox, so only the first record into one owes it a wake.
         let wake = state.inbox.is_empty();
         state.bytes += record.size();
         state.inbox.push_back(record);
@@ -1010,9 +1037,7 @@ impl Routes {
             }
         }
         drop(state);
-        if wake {
-            slot.arrived.notify_all();
-        }
+        wake.then_some(slot)
     }
 
     /// The client is unusable.
