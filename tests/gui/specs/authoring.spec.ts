@@ -74,7 +74,7 @@ test('A1: a sample that does not load is listed on the Samples page and can be d
 
   await goto(admin, leader, '#/build');
   const unreadable = admin.getByRole('alert').filter({ hasText: 'shared/samples/old.json' });
-  await expect(unreadable).toContainText('expected a map');
+  await expect(unreadable).toContainText('missing field `columns`');
   await expect(unreadable.getByRole('link', { name: 'Edit' })).toBeVisible();
   await admin.screenshot({ path: 'results/unreadable-sample.png' });
   await unreadable.getByRole('link', { name: 'Edit' }).click();
@@ -125,7 +125,7 @@ test("A1: a sample, and a pipeline's input and output, download as files of one 
   await api.put(`/api/areas/shared/samples/access${ON}`, {
     id: 'access',
     name: 'access log',
-    records,
+    ...pasted(records),
   });
   await api.put(`/api/areas/shared/pipelines/tag${ON}`, {
     id: 'tag',
@@ -160,7 +160,7 @@ test("A1: a sample, and a pipeline's input and output, download as files of one 
   await api.put(`/api/areas/shared/samples/access${ON}`, {
     id: 'access',
     name: 'access log',
-    records,
+    ...pasted(records),
   });
 
   await goto(admin, leader, '#/build/pipelines/tag/for/access');
@@ -293,7 +293,7 @@ test('A1: a viewer captures a deployed source from the map and downloads it', as
 
   const captured = viewer.getByRole('dialog', { name: 'Captured from own-metrics' });
   await expect(captured).toBeVisible({ timeout: 60_000 });
-  await expect(captured.getByRole('link', { name: 'Download' })).toBeVisible();
+  await expect(captured.getByRole('button', { name: 'Download' })).toBeVisible();
   await expect(captured.getByRole('button', { name: 'Save sample' })).toHaveCount(0);
   await expect(captured.getByLabel('Save as')).toHaveCount(0);
 
@@ -1007,9 +1007,12 @@ test('A1: a receiver is captured as sent, warned of, and downloaded', async ({
   await expect(capture.getByText(/3\s*of 3/)).toBeVisible();
   await expect(capture.getByText(/may hold passwords or tokens/)).toBeVisible();
 
-  const download = capture.getByRole('link', { name: 'Download' });
-  const href = await download.getAttribute('href');
-  const lines = (await (await admin.request.get(new URL(href!, leader.url).toString())).text())
+  const [download] = await Promise.all([
+    admin.waitForEvent('download'),
+    capture.getByRole('button', { name: 'Download' }).click(),
+  ]);
+  const lines = fs
+    .readFileSync(await download.path(), 'utf8')
     .trim()
     .split('\n')
     .map((l) => JSON.parse(l));
@@ -1123,7 +1126,9 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
       { name: '__source.name', type: 'str' },
       { name: '__source.type', type: 'str' },
     ],
-    ...pasted(ORDERS.map((raw, i) => ({ _raw: raw, __source: read(i, 100 + i, raw) }))),
+    rows: ORDERS.map((raw, i) => ({
+      values: [raw, 'orders', i, 100 + i, btoa(raw), 'orders-west', 'kafka'],
+    })),
   });
   await api.put(`/api/areas/shared/pipelines/orders${ON}`, {
     id: 'orders',
