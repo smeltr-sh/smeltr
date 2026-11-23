@@ -629,7 +629,7 @@ test('a test locked again opens on its fields the rows still hold, and its rows'
   await relock.click();
   await expect(admin.getByRole('heading', { name: 'Lock this test again' })).toBeVisible();
   await admin.getByRole('button', { name: 'Lock the test' }).click();
-  await expect(admin).toHaveURL(/#\/changes\/review\/renamed/);
+  await expect(admin).toHaveURL(/#\/build\/pipelines\/.*[?&]test=orders-keep-id\b/);
   const { test } = await api.get(`/api/areas/shared/tests/orders-keep-id${on}`);
   expect(test.fields.sort()).toEqual(['kind', 'order_id']);
   // Locked anew, at the instant it was locked again.

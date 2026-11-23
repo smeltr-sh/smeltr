@@ -165,8 +165,7 @@
     await saving.run(async () => {
       const res = await putTest(relock ?? name.trim(), lockOf(true));
       if (res.ok) {
-        // Back past the editor the choice was made in, to where Lock again was pressed.
-        if (relock) history.go(-2);
+        if (relock) history.back();
         else location.hash = '#/build/tests';
       } else if (res.conflict) {
         conflict = res.conflict;
