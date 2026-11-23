@@ -68,7 +68,10 @@ describe('differenceNote', () => {
     expect(differenceNote({ row: 0, expected: doc, actual: dropped })).toBe(
       'The test locked a document here; this run dropped it.',
     );
-    const sent = (route: string) => ({ ...doc, sent: { route, destinations: ['d'] } });
+    const sent = (route: string) => ({
+      ...doc,
+      sent: { pipeline: 'p', route, destinations: ['d'] },
+    });
     expect(differenceNote({ row: 0, expected: sent('a'), actual: sent('b') })).toBe(
       'This run sent the document elsewhere.',
     );

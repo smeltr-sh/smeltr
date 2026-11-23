@@ -24,7 +24,7 @@ export function rowDifferences(marks: TestMark[], rows: TestedRow[]): Map<number
     const keys = shown.get(mark.row);
     if (!keys) continue;
     const key = keys[Math.min(mark.document, keys.length - 1)];
-    const into = out.get(key) ?? { fields: new Map(), notes: [] };
+    const into: RowDifference = out.get(key) ?? { fields: new Map(), notes: [] };
     out.set(key, into);
     const note = differenceNote(mark);
     if (note) into.notes.push(note);
