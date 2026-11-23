@@ -364,8 +364,8 @@ pub(crate) fn leaves(name: &str, ty: &DataType, fields: &mut Vec<(Entry, DataTyp
     };
     if members.is_empty() && !open {
         return Err(format!(
-            "`{name}` is declared as `{{}}`, which declares no field: name the fields it holds, or declare it `{{...}}` to \
-             keep whatever keys it has"
+            "`{name}` is declared as `{{}}`, which holds no field. Name its fields, or declare it `{{...}}` to keep \
+             whatever keys it has."
         ));
     }
     for (key, member) in members {
