@@ -715,9 +715,11 @@ impl Drop for Egress {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
-        // One at a time: a copy may start another until it sees the queue closed, and pushes it before it ends.
+        // One at a time: a copy may start another until it sees the queue closed, and pushes it before it ends, so the
+        // list is not held while joining.
         if let Some(copier) = self.queue.copier.get() {
-            while let Some(t) = copier.threads.lock().unwrap().pop() {
+            let next = || copier.threads.lock().unwrap().pop();
+            while let Some(t) = next() {
                 let _ = t.join();
             }
         }
