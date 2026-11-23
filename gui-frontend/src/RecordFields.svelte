@@ -21,6 +21,8 @@
 -->
 <script lang="ts">
   import ChevronIcon from './ChevronIcon.svelte';
+  import { tick } from 'svelte';
+  import type { FieldDifference } from './api';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { formatDiffValue } from './diff';
   import type { NumberedStep, Step } from './pipeline';
@@ -67,8 +69,8 @@
     /** The steps that touched a field on this record, in the order they ran,
      * each with its number in the step list. Without it no step is shown. */
     touched?: (path: string) => NumberedStep[];
-    /** The fields a test locks otherwise than this record holds them, by path: each line says what the test locks. */
-    locked?: Map<string, { locked?: unknown }>;
+    /** The values this record holds differently from what the test locks, by path; each line says what the test locks. */
+    locked?: Map<string, FieldDifference>;
     onjump?: (step: Step) => void;
   } = $props();
 
@@ -113,6 +115,8 @@
   // Ahead of every name, its sign and then a group's chevron, so names at one depth line up.
   const LEAD_CH = 4;
   const NAME_CH = 34;
+  /** How many of an array's differing elements its line links to; the rest are a "next difference" away. */
+  const JUMPS = 5;
   const nameWidth = (l: RecordLine) =>
     l.kind === 'more' ? 0 : l.depth * INDENT_CH + LEAD_CH + l.label.length;
 
@@ -154,7 +158,44 @@
     else opened.add(path);
   }
 
-  const count = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
+  const count = (n: number, one: string) =>
+    `${n.toLocaleString('en-US')} ${one}${n === 1 ? '' : 's'}`;
+
+  /** The children of the group at `path` that hold a value differing from what the test locks, by key, in the order
+   * the record holds them: `[4]` for an array's element. */
+  function differing(path: string): string[] {
+    const keys = new Set<string>();
+    for (const p of locked?.keys() ?? []) {
+      if (!p.startsWith(path) || (p[path.length] !== '[' && p[path.length] !== '.')) continue;
+      const rest = p.slice(path.length);
+      keys.add(
+        rest[0] === '[' ? rest.slice(0, rest.indexOf(']') + 1) : rest.slice(1).split(/[.[]/)[0],
+      );
+    }
+    const index = (k: string) => (/^\[\d+\]$/.test(k) ? Number(k.slice(1, -1)) : -1);
+    return [...keys].sort((a, b) => index(a) - index(b));
+  }
+  /** The elements of an array that differ, by index. */
+  const differingElements = (path: string) =>
+    differing(path)
+      .filter((k) => /^\[\d+\]$/.test(k))
+      .map((k) => Number(k.slice(1, -1)));
+
+  /** The values the test locks that this run does not make, which have no line of their own. */
+  let unmade = $derived([...(locked ?? [])].filter(([, f]) => !f.made));
+
+  let fieldsEl = $state<HTMLElement>();
+  /** Opens the array at `path` far enough to draw its element `index`, and scrolls to it. */
+  async function jump(path: string, index: number) {
+    const target = `${path}[${index}]`;
+    folds.set(path, true);
+    for (let tries = 0; tries <= index / PAGE_LINES + 1; tries++) {
+      await tick();
+      const line = fieldsEl?.querySelector(`[data-path="${CSS.escape(target)}"]`);
+      if (line) return line.scrollIntoView({ block: 'center' });
+      pages.set(path, (pages.get(path) ?? 0) + 1);
+    }
+  }
 </script>
 
 {#snippet name(label: string)}
@@ -162,11 +203,20 @@
   {#each label.split('.') as part, k}{#if k > 0}.<wbr />{/if}{part}{/each}
 {/snippet}
 
-{#snippet more(depth: number, shown: number, total: number, onmore: () => void)}
+{#snippet more(
+  depth: number,
+  shown: number,
+  total: number,
+  onmore: () => void,
+  next?: () => void,
+  nextLabel?: string,
+)}
   <div class="line">
     <span class="dim" style:margin-left={`${depth * INDENT_CH + LEAD_CH}ch`}
-      >{shown} of {total} shown ·&nbsp;</span
+      >{shown.toLocaleString('en-US')} of {total.toLocaleString('en-US')} shown ·&nbsp;</span
     ><button type="button" class="more" onclick={onmore}>show more</button>
+    {#if next}<span class="dim">·</span>
+      <button type="button" class="more" onclick={next}>next difference: {nextLabel}</button>{/if}
   </div>
 {/snippet}
 
@@ -221,7 +271,12 @@
   {@const inline = line.state === 'changed' && changeFitsInline(line.before, line.after)}
   {@const body = formatDiffValue(line.state === 'removed' ? line.before : line.after)}
   {@const lock = locked?.get(line.path)}
-  <div class="line state-{line.state}" class:run-start={mark.start} class:differs={!!lock}>
+  <div
+    class="line state-{line.state}"
+    class:run-start={mark.start}
+    class:differs={!!lock}
+    data-path={line.path}
+  >
     {@render run(mark)}
     <span class="key">
       <span class="name" style:padding-left={`${line.depth * INDENT_CH}ch`}>
@@ -280,50 +335,119 @@
   <span class="dim">no change at this step</span>
 {:else}
   <!-- A character's slack, so a name that just fits does not wrap on a rounding. -->
-  <div class="fields" style:--name-w={`${nameCh + 1}ch`} style:--type-w={`${typeCh}ch`}>
+  <div
+    class="fields"
+    style:--name-w={`${nameCh + 1}ch`}
+    style:--type-w={`${typeCh}ch`}
+    bind:this={fieldsEl}
+  >
     {#each lines as line, i (line.kind + line.path + line.depth)}
       {@const mark = marks[i]}
       {#if line.kind === 'group'}
-        <button
-          type="button"
-          class:run-start={mark.start}
-          class="line group"
-          aria-expanded={line.open}
-          onclick={() => folds.set(line.path, !line.open)}
-        >
-          {@render run(mark)}
-          <span class="key">
-            <span class="name" style:padding-left={`${line.depth * INDENT_CH}ch`}
-              >{@render sign(mark, null)}<span class="chevron"
-                ><ChevronIcon open={line.open} /></span
-              >{@render name(line.label)}</span
+        {@const differs = differing(line.path)}
+        {#if differs.length > 0}
+          {@const elements = line.branch === 'array' ? differingElements(line.path) : []}
+          <!-- The jumps sit beside the fold button, not in it: a button holds no other button. -->
+          <div class="line differs group-row">
+            <button
+              type="button"
+              class:run-start={mark.start}
+              class="line group"
+              aria-expanded={line.open}
+              onclick={() => folds.set(line.path, !line.open)}
             >
-            {#if showTypes}<span class="type">{line.type ?? ''}</span>{/if}
-          </span>
-          <span class="group-marks">
-            {#if line.branch === 'array'}
-              <span class="dim">{count(line.size, 'element')}</span>
-            {:else if !line.open}
-              <span class="dim">{count(line.size, 'field')}</span>
-            {/if}
-            {#if !line.open}
-              {#if line.marks.added > 0}<span class="mark added">+{line.marks.added}</span>{/if}
-              {#if line.marks.changed > 0}<span class="mark changed">~{line.marks.changed}</span
-                >{/if}
-              {#if line.marks.removed > 0}<span class="mark removed"
-                  >&minus;{line.marks.removed}</span
-                >{/if}
-            {/if}
-          </span>
-        </button>
+              {@render run(mark)}
+              <span class="key">
+                <span class="name" style:padding-left={`${line.depth * INDENT_CH}ch`}
+                  >{@render sign(mark, null)}<span class="chevron"
+                    ><ChevronIcon open={line.open} /></span
+                  >{@render name(line.label)}</span
+                >
+                {#if showTypes}<span class="type">{line.type ?? ''}</span>{/if}
+              </span>
+              <span class="group-marks">
+                {#if line.branch === 'array'}
+                  <span class="dim">{count(line.size, 'element')}</span>
+                {:else if !line.open}
+                  <span class="dim">{count(line.size, 'field')}</span>
+                {/if}
+                {#if !line.open}
+                  {#if line.marks.added > 0}<span class="mark added">+{line.marks.added}</span>{/if}
+                  {#if line.marks.changed > 0}<span class="mark changed">~{line.marks.changed}</span
+                    >{/if}
+                  {#if line.marks.removed > 0}<span class="mark removed"
+                      >&minus;{line.marks.removed}</span
+                    >{/if}
+                {/if}
+              </span>
+            </button>
+            <span class="locks"
+              >{differs.length}
+              {differs.length === 1 ? 'differs' : 'differ'}{elements.length > 0 ? ':' : ''}</span
+            >
+            {#each elements.slice(0, JUMPS) as index (index)}
+              <button type="button" class="more" onclick={() => jump(line.path, index)}
+                >[{index}]</button
+              >
+            {/each}
+          </div>
+        {:else}
+          <button
+            type="button"
+            class:run-start={mark.start}
+            class="line group"
+            aria-expanded={line.open}
+            onclick={() => folds.set(line.path, !line.open)}
+          >
+            {@render run(mark)}
+            <span class="key">
+              <span class="name" style:padding-left={`${line.depth * INDENT_CH}ch`}
+                >{@render sign(mark, null)}<span class="chevron"
+                  ><ChevronIcon open={line.open} /></span
+                >{@render name(line.label)}</span
+              >
+              {#if showTypes}<span class="type">{line.type ?? ''}</span>{/if}
+            </span>
+            <span class="group-marks">
+              {#if line.branch === 'array'}
+                <span class="dim">{count(line.size, 'element')}</span>
+              {:else if !line.open}
+                <span class="dim">{count(line.size, 'field')}</span>
+              {/if}
+              {#if !line.open}
+                {#if line.marks.added > 0}<span class="mark added">+{line.marks.added}</span>{/if}
+                {#if line.marks.changed > 0}<span class="mark changed">~{line.marks.changed}</span
+                  >{/if}
+                {#if line.marks.removed > 0}<span class="mark removed"
+                    >&minus;{line.marks.removed}</span
+                  >{/if}
+              {/if}
+            </span>
+          </button>
+        {/if}
       {:else if line.kind === 'more'}
         {@const path = line.path}
-        {@render more(line.depth, line.shown, line.total, () =>
-          pages.set(path, (pages.get(path) ?? 0) + 1),
+        {@const next = changedOnly
+          ? undefined
+          : differingElements(path).find((index) => index >= line.shown)}
+        {@render more(
+          line.depth,
+          line.shown,
+          line.total,
+          () => pages.set(path, (pages.get(path) ?? 0) + 1),
+          next === undefined ? undefined : () => jump(path, next),
+          `[${next}]`,
         )}
       {:else}
         {@render field(line, mark)}
       {/if}
+    {/each}
+    <!-- What the test locks that this run does not make: no line above holds it. -->
+    {#each unmade as [path, f] (path)}
+      <div class="line differs" data-path={path}>
+        <span class="key"><span class="name">{path}</span></span>
+        <span class="locks">the test locks: {formatDiffValue(f.locked)}</span>
+      </div>
     {/each}
     {#if split.removed.length > 0}
       <button
@@ -378,6 +502,10 @@
   .locks {
     color: var(--error);
     white-space: nowrap;
+  }
+
+  .group-row > .group {
+    width: auto;
   }
 
   /* Runs apart by a gap, so two in a row read as two. */

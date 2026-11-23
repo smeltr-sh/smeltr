@@ -798,7 +798,13 @@ mod tests {
         let marks = test_differences(&test, ROUTED_CONFIG, Ok(Some(sample)), &declared_at).expect("it runs");
         let found: Vec<_> = marks
             .iter()
-            .map(|m| (m.difference.row, m.document, m.fields.clone()))
+            .map(|m| {
+                (
+                    m.difference.row,
+                    m.document,
+                    m.fields.iter().map(|f| f.path.clone()).collect::<Vec<_>>(),
+                )
+            })
             .collect();
         assert_eq!(found, [(0, 0, vec!["seen".to_string()])]);
     }

@@ -2736,9 +2736,13 @@ export function testAt(
 
 /** What locking `lock` would hold on this branch, written nowhere. */
 /** One document of a run that differs from what its test locks: which of its row's documents it is, counted from 0,
- * and the fields whose values differ in it. The fields are none where only one side made the document, or where both
- * made it and only the route or destinations it was sent to differ. */
-export type TestMark = Difference & { document: number; fields: string[] };
+ * and the values that differ in it. There are no values where only one side made the document, or where both made it
+ * and only the route or destinations it was sent to differ. */
+export type TestMark = Difference & { document: number; fields: FieldDifference[] };
+
+/** A value that differs from what a test locked, by its path; an array names each element that differs. `locked` is
+ * absent where the test locked no value, and `made` says whether the run made one. */
+export type FieldDifference = { path: string; locked?: unknown; made: boolean };
 
 export type TestMarksResult = { ok: boolean; errors: ApiError[]; marks?: TestMark[] };
 

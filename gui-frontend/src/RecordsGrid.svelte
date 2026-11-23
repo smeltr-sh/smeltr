@@ -958,13 +958,6 @@
                           locked={differs?.fields}
                           {onjump}
                         />
-                        <!-- The fields the test locks that this run does not make, which have no line above. -->
-                        {#each [...(differs?.fields ?? [])].filter(([path]) => !m.after.has(path)) as [path, f] (path)}
-                          <div class="line differs-line mono">
-                            <span class="key">{path}</span>
-                            <span class="locks">the test locks: {formatDiffValue(f.locked)}</span>
-                          </div>
-                        {/each}
                         {#each lackingBySchema as [schema, { required, recommended }] (schema)}
                           <div class="missing-fields">
                             {#if required.length > 0}
@@ -1183,16 +1176,8 @@
     box-shadow: inset 3px 0 0 var(--error);
   }
 
-  .differs-note,
-  .locks {
+  .differs-note {
     color: var(--error);
-  }
-
-  .differs-line {
-    display: flex;
-    gap: 1ch;
-    padding: 0.1rem 0;
-    background: color-mix(in oklch, var(--error) 10%, transparent);
   }
 
   .index-cell :global(.state-mark) {

@@ -1,11 +1,10 @@
-import type { Difference, TestMark } from './api';
+import type { Difference, FieldDifference, TestMark } from './api';
 import { sentText } from './objectChanges';
 
 /** How one row on screen differs from what the open test locks. */
 export type RowDifference = {
-  /** Each field the test locks that the row holds otherwise, by path: the locked value, or absent where the test
-   * locks the field as missing. */
-  fields: Map<string, { locked?: unknown }>;
+  /** Each value the test locks that the row holds otherwise, by path: an array's by element. */
+  fields: Map<string, FieldDifference>;
   /** What differs of a whole document on the row, a sentence each. */
   notes: string[];
 };
@@ -28,14 +27,9 @@ export function rowDifferences(marks: TestMark[], rows: TestedRow[]): Map<number
     out.set(key, into);
     const note = differenceNote(mark);
     if (note) into.notes.push(note);
-    else for (const path of mark.fields) into.fields.set(path, lockedOf(mark, path));
+    else for (const f of mark.fields) into.fields.set(f.path, f);
   }
   return out;
-}
-
-function lockedOf(mark: TestMark, path: string): { locked?: unknown } {
-  const values = mark.expected?.values ?? {};
-  return Object.hasOwn(values, path) ? { locked: values[path] } : {};
 }
 
 /** What differs of a whole document, as a sentence: null where both sides made a document and sent it to the same

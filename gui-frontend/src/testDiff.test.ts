@@ -10,21 +10,22 @@ const rows = [
 ];
 
 describe('rowDifferences', () => {
-  it('marks the fields that differ with the value the test locks, or none where it locks the field missing', () => {
+  it('keeps each value that differs by its path, as the leader names it', () => {
     const marks: TestMark[] = [
       {
         row: 0,
         document: 0,
-        fields: ['tax', 'coupon'],
+        fields: [
+          { path: 'tax', locked: 2, made: true },
+          { path: 'coupon', made: true },
+        ],
         expected: { row: 0, values: { tax: 2 } },
         actual: { row: 0, values: { tax: 3, coupon: 'X' } },
       },
     ];
     const d = rowDifferences(marks, rows).get(10)!;
-    expect([...d.fields]).toEqual([
-      ['tax', { locked: 2 }],
-      ['coupon', {}],
-    ]);
+    expect([...d.fields.keys()]).toEqual(['tax', 'coupon']);
+    expect(d.fields.get('tax')).toEqual({ path: 'tax', locked: 2, made: true });
     expect(d.notes).toEqual([]);
   });
 
@@ -33,7 +34,7 @@ describe('rowDifferences', () => {
       {
         row: 1,
         document: 1,
-        fields: ['id'],
+        fields: [{ path: 'id', locked: 1, made: false }],
         expected: { row: 1, values: { id: 1 } },
         actual: { row: 1, values: {} },
       },

@@ -2190,6 +2190,60 @@ test('A6: a test opened in the editor marks the rows that differ from what it lo
   await expect(admin.locator('tr.grid-row.differs')).toHaveCount(0);
 });
 
+// A6, a long array that differs from the test: its line names the elements that differ and jumps to each.
+test('A6: an array that differs from the test names its elements and jumps to each', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  const pipeline = (body: string) =>
+    api.put(`/api/areas/shared/pipelines/orders${ON}`, {
+      id: 'orders',
+      name: 'orders',
+      steps: [
+        {
+          type: 'parser',
+          id: 'body',
+          input: '_raw',
+          kind: { type: 'json' },
+          declared: [
+            { name: 'id', type: 'i64' },
+            { name: 'scores', type: { type: 'array', of: 'i64' } },
+          ],
+        },
+        ...(body ? [{ type: 'code', id: 'code-1', filter: 'true', disabled: false, body }] : []),
+      ],
+    });
+  await pipeline('');
+  const scores = Array.from({ length: 1000 }, (_, i) => i * 3);
+  await api.put(`/api/areas/shared/samples/orders-sample${ON}`, {
+    id: 'orders-sample',
+    name: 'orders',
+    records: [{ _raw: JSON.stringify({ id: 1, scores }) }],
+  });
+  await api.put(`/api/areas/shared/tests/orders-scores${ON}`, {
+    name: 'orders keep their scores',
+    pipeline: 'orders',
+    sample: 'orders-sample',
+    lockedAt: Date.now(),
+  });
+  await pipeline('scores[4] = 13; scores[17] = 52; scores[912] = 2737;');
+
+  await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample?test=orders-scores');
+  const record = admin.getByRole('row', { name: 'record 0' });
+  const row = record.locator('.group-row');
+  await expect(row).toContainText('3 differ:', { timeout: 30_000 });
+  const scoresGroup = row.getByRole('button', { name: /scores/ });
+  if ((await scoresGroup.getAttribute('aria-expanded')) !== 'true') await scoresGroup.click();
+  await expect(record.locator('[data-path="scores[4]"]')).toContainText('the test locks: 12');
+  await expect(record.getByRole('button', { name: 'next difference: [912]' })).toBeVisible();
+
+  await row.getByRole('button', { name: '[912]' }).click();
+  const far = record.locator('[data-path="scores[912]"]');
+  await expect(far).toContainText('the test locks: 2736');
+  await expect(far).toBeInViewport();
+});
+
 // A6, samples become tests.
 test('A6: a sample locked as a test passes, and a save that breaks it is allowed and shows it failing', async ({
   admin,

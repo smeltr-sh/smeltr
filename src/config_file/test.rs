@@ -336,7 +336,20 @@ pub struct Mark {
     pub difference: Difference,
     /// Counted from 0 in the order the row's documents were made, or locked where the run made fewer.
     pub document: usize,
-    pub fields: Vec<String>,
+    pub fields: Vec<FieldDifference>,
+}
+
+/// A value that differs from what a test locked, by its path in the document. An array is followed into its elements,
+/// and an element's own members, so a long array names only the elements that differ.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FieldDifference {
+    pub path: String,
+    /// What the test locked there; absent where it locked no value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locked: Option<Value>,
+    /// Whether the run made a value there.
+    pub made: bool,
 }
 
 /// Every document of `made` that differs from what `test` locked, row by checked row in the test's order, each row's
@@ -368,9 +381,9 @@ pub fn differences(test: &TestDto, made: &[Made]) -> Vec<Mark> {
 }
 
 impl Difference {
-    /// The test's fields whose values differ, where both sides made a document: a field one side holds and the other
-    /// lacks is one of them.
-    fn fields(&self) -> Vec<String> {
+    /// The values that differ, where both sides made a document: a value one side holds and the other lacks is one of
+    /// them.
+    fn fields(&self) -> Vec<FieldDifference> {
         let (Some(Some(a)), Some(Some(b))) = (
             self.expected.as_ref().map(|o| o.values.as_ref()),
             self.actual.as_ref().map(|o| o.values.as_ref()),
@@ -378,11 +391,41 @@ impl Difference {
             return Vec::new();
         };
         let names: BTreeSet<&String> = a.keys().chain(b.keys()).collect();
-        names
-            .into_iter()
-            .filter(|k| !matches!((a.get(*k), b.get(*k)), (Some(x), Some(y)) if same(x, y)))
-            .cloned()
-            .collect()
+        let mut found = Vec::new();
+        for name in names {
+            differing(&mut name.clone(), a.get(name), b.get(name), &mut found);
+        }
+        found
+    }
+}
+
+/// Each value under `path` where `locked` and `made` differ, into `found`: arrays element by element and objects member
+/// by member, at any depth.
+fn differing(path: &mut String, locked: Option<&Value>, made: Option<&Value>, found: &mut Vec<FieldDifference>) {
+    let len = path.len();
+    match (locked, made) {
+        (Some(Value::Array(x)), Some(Value::Array(y))) => {
+            for i in 0..x.len().max(y.len()) {
+                path.push_str(&format!("[{i}]"));
+                differing(path, x.get(i), y.get(i), found);
+                path.truncate(len);
+            }
+        }
+        (Some(Value::Object(x)), Some(Value::Object(y))) if !x.is_empty() && !y.is_empty() => {
+            let keys: BTreeSet<&String> = x.keys().chain(y.keys()).collect();
+            for key in keys {
+                crate::plan::tree::push_key(path, key);
+                differing(path, x.get(key), y.get(key), found);
+                path.truncate(len);
+            }
+        }
+        (Some(x), Some(y)) if same(x, y) => {}
+        (None, None) => {}
+        (locked, made) => found.push(FieldDifference {
+            path: path.clone(),
+            locked: locked.cloned(),
+            made: made.is_some(),
+        }),
     }
 }
 
@@ -606,7 +649,13 @@ mod tests {
         let found = differences(&test, &made);
         let rows: Vec<_> = found
             .iter()
-            .map(|m| (m.difference.row, m.document, m.fields.clone()))
+            .map(|m| {
+                (
+                    m.difference.row,
+                    m.document,
+                    m.fields.iter().map(|f| f.path.clone()).collect::<Vec<_>>(),
+                )
+            })
             .collect();
         assert_eq!(
             rows,
@@ -619,6 +668,38 @@ mod tests {
         assert_eq!(
             compare(&test, test.rows_in, &made).first_difference,
             found.into_iter().next().map(|m| m.difference)
+        );
+    }
+
+    /// An array that differs names only the elements that differ, and the members that differ in an element.
+    #[test]
+    fn differences_name_the_elements_of_an_array_that_differ() {
+        let test = locked(
+            "lists",
+            &["scores", "items"],
+            &[row(0, json!({"scores": [0, 3, 6, 9], "items": [{"a": 1, "b": 2}]}))],
+        );
+        let made = [row(0, json!({"scores": [0, 4, 6.0], "items": [{"a": 1, "b": 3}]}))];
+        let found = differences(&test, &made);
+        assert_eq!(
+            found[0].fields,
+            [
+                FieldDifference {
+                    path: "items[0].b".to_string(),
+                    locked: Some(json!(2)),
+                    made: true
+                },
+                FieldDifference {
+                    path: "scores[1]".to_string(),
+                    locked: Some(json!(3)),
+                    made: true
+                },
+                FieldDifference {
+                    path: "scores[3]".to_string(),
+                    locked: Some(json!(9)),
+                    made: false
+                },
+            ]
         );
     }
 
