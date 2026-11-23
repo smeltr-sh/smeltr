@@ -27,7 +27,7 @@ const MARGIN = 8;
 
 /** Places `el`, a shown popover, at the anchor `at` gives: under it, or over it where less than the floor fits under
  * it and more fits over it. Its height is capped to the room on that side, under the cap its own style sets, and it
- * is kept inside the window across. It is placed again as the anchor moves, for a scroll or for the page shifting
+ * is kept inside the window. It is placed again as the anchor moves, for a scroll or for the page shifting
  * under it, as the window resizes and as `el` changes size, until `stop` is called. `place` places it again, for an
  * anchor that moves on its own: a caret. */
 export function follow(
@@ -64,10 +64,11 @@ export function follow(
     const above = a.top - GAP - MARGIN;
     const height = el.scrollHeight;
     const under = below >= Math.min(options.floor ?? height, height) || below >= above;
-    const room = Math.max(0, under ? below : above);
+    // An anchor the page has moved out of the window leaves the piece at the window's edge, where it can be reached.
+    const room = Math.min(Math.max(0, under ? below : above), window.innerHeight - 2 * MARGIN);
     el.style.maxHeight = cap === 'none' ? `${room}px` : `min(${cap}, ${room}px)`;
-    el.style.top = under ? `${a.bottom + GAP}px` : 'auto';
-    el.style.bottom = under ? 'auto' : `${window.innerHeight - a.top + GAP}px`;
+    el.style.top = under ? `${Math.max(MARGIN, a.bottom + GAP)}px` : 'auto';
+    el.style.bottom = under ? 'auto' : `${Math.max(MARGIN, window.innerHeight - a.top + GAP)}px`;
     const width = el.offsetWidth;
     const left = options.edge === 'right' ? a.right - width : a.left;
     el.style.left = `${Math.max(MARGIN, Math.min(left, window.innerWidth - width - MARGIN))}px`;
