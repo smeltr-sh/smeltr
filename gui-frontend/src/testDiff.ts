@@ -36,7 +36,7 @@ export function differences(test: TestDto, rows: TestedRow[]): Map<number, RowDi
       continue;
     }
     for (const path of test.fields) {
-      const [has, now] = [path in want.values, row.leaves.has(path)];
+      const [has, now] = [Object.hasOwn(want.values, path), row.leaves.has(path)];
       if (!has && !now) continue;
       if (has && now && same(want.values[path], row.leaves.get(path))) continue;
       fields.set(path, has ? { locked: want.values[path] } : {});

@@ -1741,7 +1741,7 @@
         {pipelineId}
         test={opened && {
           test: opened.test,
-          ready: !!result?.ok && lastSample === opened.sample,
+          ready: !!result?.ok && lastSample === opened.sample && !pause,
         }}
         {steps}
         {signature}
