@@ -191,7 +191,13 @@
     folds.set(path, true);
     for (let tries = 0; tries <= index / PAGE_LINES + 1; tries++) {
       await tick();
-      const line = fieldsEl?.querySelector(`[data-path="${CSS.escape(target)}"]`);
+      // An element that is an object draws as a group, or as its member's line when it has one; the jump looks for
+      // either.
+      const holds = (p: string) =>
+        p === target ||
+        (p.startsWith(target) && (p[target.length] === '.' || p[target.length] === '['));
+      const lines = fieldsEl?.querySelectorAll<HTMLElement>('[data-path]') ?? [];
+      const line = [...lines].find((l) => holds(l.dataset.path!));
       if (line) return line.scrollIntoView({ block: 'center' });
       pages.set(path, (pages.get(path) ?? 0) + 1);
     }
@@ -353,6 +359,7 @@
               type="button"
               class:run-start={mark.start}
               class="line group"
+              data-path={line.path}
               aria-expanded={line.open}
               onclick={() => folds.set(line.path, !line.open)}
             >
@@ -396,6 +403,7 @@
             type="button"
             class:run-start={mark.start}
             class="line group"
+            data-path={line.path}
             aria-expanded={line.open}
             onclick={() => folds.set(line.path, !line.open)}
           >
