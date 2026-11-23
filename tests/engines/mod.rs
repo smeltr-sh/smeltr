@@ -532,7 +532,7 @@ fn core_counts() -> Vec<usize> {
             .map(|n| {
                 let n: usize = n.trim().parse().expect("ENGINE_THREADS is a list of numbers");
                 assert!(
-                    n > 0 && n % per_core == 0,
+                    n > 0 && n.is_multiple_of(per_core),
                     "ENGINE_THREADS: {n} is not whole cores of {per_core} threads"
                 );
                 n / per_core
