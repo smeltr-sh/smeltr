@@ -25,6 +25,8 @@
     heldSession,
     chooseLock,
     routePreview,
+    checkTest,
+    type TestMark,
     listTests,
     errorText,
     type TestSummary,
@@ -78,6 +80,21 @@
    * test. */
   let opened = $state(untrack(() => test));
   let relocking = $derived(!!opened && selected === opened.sample);
+  /** Where the open test, run by the leader over the routes last run on its sample, differs from what it locks. */
+  let judged = $state<{ test: string; marks: TestMark[] } | null>(null);
+  /** Asks the leader where test `id` differs over the routes last run, and keeps the answer while those routes and
+   * that test are still the ones on screen. */
+  async function judge(id: string) {
+    const on = ranOn;
+    const res = await checkTest(on, id);
+    if (opened?.test !== id || ranOn !== on) return;
+    judged = res.ok ? { test: id, marks: res.marks ?? [] } : null;
+  }
+  // A test opened over its sample's run is judged without another run.
+  $effect(() => {
+    const id = opened?.test;
+    if (id && untrack(() => result && ran === opened!.sample)) void judge(id);
+  });
   // The end-to-end tests, for the sample menu. A failure to load them only leaves them out of the menu.
   let tests: TestSummary[] = $state([]);
   listTests()
@@ -131,6 +148,7 @@
         result = res;
         ran = sample;
         ranOn = sent;
+        if (opened?.sample === sample) void judge(opened.test);
       }
     } catch (e) {
       error = unreported(e);
@@ -440,6 +458,7 @@
         test: opened.test,
         ready: !!table && ran === opened.sample && sampleRecords.length > 0,
         rowOf: (row) => records.get(row.key) ?? -1,
+        marks: judged?.test === opened.test ? judged.marks : undefined,
       }}
     />
   {/if}

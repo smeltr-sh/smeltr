@@ -1419,6 +1419,25 @@ pub fn run_test(
     result
 }
 
+/// Every place the same run [`run_test`] makes differs from what `test` locked (`config_file::differences`), for marking
+/// the rows a grid shows. The sample's record count is not judged here: it fails the test without marking a row.
+pub fn test_differences(
+    test: &config_file::TestDto,
+    config: &str,
+    sample: Result<Option<config_file::SampleDto>, String>,
+    declared_at: &config_file::DeclaredAt,
+) -> Result<Vec<config_file::Mark>, String> {
+    let (_, made) = run_made(
+        test.pipeline.as_deref(),
+        &test.sample,
+        test.locked_at,
+        config,
+        sample,
+        declared_at,
+    )?;
+    Ok(config_file::differences(test, &made))
+}
+
 /// What locking `lock` holds: the same run [`run_test`] compares, so a test passes the moment it is locked. `sample`
 /// is as [`run_test`] takes it.
 pub fn lock_test(

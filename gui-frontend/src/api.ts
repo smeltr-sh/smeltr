@@ -2735,6 +2735,19 @@ export function testAt(
 }
 
 /** What locking `lock` would hold on this branch, written nowhere. */
+/** One document of a run that differs from what its test locks: which of its row's documents it is, counted from 0,
+ * and the fields whose values differ in it. The fields are none where only one side made the document, or where both
+ * made it and only the route or destinations it was sent to differ. */
+export type TestMark = Difference & { document: number; fields: string[] };
+
+export type TestMarksResult = { ok: boolean; errors: ApiError[]; marks?: TestMark[] };
+
+/** Runs test `test` over `config`, steps the page has not saved, as a test run runs it, and says where it differs from
+ * what it locks. */
+export function checkTest(config: string, test: string): Promise<TestMarksResult> {
+  return post(branched(inArea('/preview/test-check')), { config, test }, 'quiet');
+}
+
 export function previewLock(lock: Lock): Promise<LockedResult> {
   return post(branched(inArea('/preview/test-lock')), lock, 'quiet');
 }

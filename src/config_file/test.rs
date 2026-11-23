@@ -23,6 +23,8 @@
 //! function of the config alone; re-running against the instant the test was locked at is what makes two runs
 //! comparable. A pipeline that reads no clock is unaffected by it.
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -313,19 +315,7 @@ pub struct RowsIn {
 /// down to the test's fields; a row the run never reached made nothing, like a dropped one. A row the test does not
 /// check is never read.
 pub fn compare(test: &TestDto, rows_in: usize, made: &[Made]) -> Verdict {
-    let first = test.rows_checked().into_iter().find_map(|row| {
-        let mut want = test.rows.iter().filter(|o| o.row == row).cloned();
-        let mut got = made_on(row, &test.fields, made).into_iter();
-        loop {
-            match (want.next(), got.next()) {
-                (None, None) => return None,
-                (Some(w), Some(g)) if w.matches(&g) => continue,
-                (expected, actual) => {
-                    return Some(Difference { row, expected, actual });
-                }
-            }
-        }
-    });
+    let first = differences(test, made).into_iter().next().map(|m| m.difference);
     let rows_in = (rows_in != test.rows_in).then_some(RowsIn {
         locked: test.rows_in,
         now: rows_in,
@@ -334,6 +324,65 @@ pub fn compare(test: &TestDto, rows_in: usize, made: &[Made]) -> Verdict {
         passed: first.is_none() && rows_in.is_none(),
         first_difference: first,
         rows_in,
+    }
+}
+
+/// One document that differs from what a test locked: the difference, which of its row's documents it is, and the
+/// fields that differ in it.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Mark {
+    #[serde(flatten)]
+    pub difference: Difference,
+    /// Counted from 0 in the order the row's documents were made, or locked where the run made fewer.
+    pub document: usize,
+    pub fields: Vec<String>,
+}
+
+/// Every document of `made` that differs from what `test` locked, row by checked row in the test's order, each row's
+/// documents in the order they were made: the first is what [`compare`] reports.
+pub fn differences(test: &TestDto, made: &[Made]) -> Vec<Mark> {
+    let mut found = Vec::new();
+    for row in test.rows_checked() {
+        let want = test.rows.iter().filter(|o| o.row == row).cloned().map(Some);
+        let got = made_on(row, &test.fields, made).into_iter().map(Some);
+        let pairs = want
+            .chain(std::iter::repeat(None))
+            .zip(got.chain(std::iter::repeat(None)));
+        for (document, pair) in pairs.enumerate() {
+            match pair {
+                (None, None) => break,
+                (Some(w), Some(g)) if w.matches(&g) => continue,
+                (expected, actual) => {
+                    let difference = Difference { row, expected, actual };
+                    found.push(Mark {
+                        fields: difference.fields(),
+                        document,
+                        difference,
+                    });
+                }
+            }
+        }
+    }
+    found
+}
+
+impl Difference {
+    /// The test's fields whose values differ, where both sides made a document: a field one side holds and the other
+    /// lacks is one of them.
+    fn fields(&self) -> Vec<String> {
+        let (Some(Some(a)), Some(Some(b))) = (
+            self.expected.as_ref().map(|o| o.values.as_ref()),
+            self.actual.as_ref().map(|o| o.values.as_ref()),
+        ) else {
+            return Vec::new();
+        };
+        let names: BTreeSet<&String> = a.keys().chain(b.keys()).collect();
+        names
+            .into_iter()
+            .filter(|k| !matches!((a.get(*k), b.get(*k)), (Some(x), Some(y)) if same(x, y)))
+            .cloned()
+            .collect()
     }
 }
 
@@ -532,6 +581,44 @@ mod tests {
                 &[row(0, json!({"id": 1})), row(1, json!({"id": 2}))]
             )
             .passed
+        );
+    }
+
+    /// Every row that differs is found, not only the first, each with the fields whose values differ in it.
+    #[test]
+    fn differences_finds_every_row_and_field_that_differs() {
+        let test = locked(
+            "tax",
+            &["id", "tax", "coupon"],
+            &[
+                row(0, json!({"id": 1, "tax": 2.0})),
+                row(1, json!({"id": 2, "tax": 0.0})),
+                row(2, json!({"id": 3, "tax": 1.5, "coupon": "X"})),
+                row(3, json!({"id": 4})),
+            ],
+        );
+        let made = [
+            row(0, json!({"id": 1, "tax": 4.0})),
+            row(1, json!({"id": 2, "tax": 0.0})),
+            row(2, json!({"id": 3, "tax": 1.5})),
+            dropped(3),
+        ];
+        let found = differences(&test, &made);
+        let rows: Vec<_> = found
+            .iter()
+            .map(|m| (m.difference.row, m.document, m.fields.clone()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (0, 0, vec!["tax".to_string()]),
+                (2, 0, vec!["coupon".to_string()]),
+                (3, 0, vec![])
+            ]
+        );
+        assert_eq!(
+            compare(&test, test.rows_in, &made).first_difference,
+            found.into_iter().next().map(|m| m.difference)
         );
     }
 

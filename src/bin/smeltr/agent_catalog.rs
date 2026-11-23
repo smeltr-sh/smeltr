@@ -426,6 +426,12 @@ pub const CATALOG: &[Route] = &[
         body: "the PUT tests/:id body",
     },
     Route {
+        method: "POST",
+        path: "/api/areas/:area/preview/test-check",
+        what: "Run a test over steps not yet saved, as a test run runs it, and say where it differs from what it locked: { marks: { row, expected?, actual?, fields: string[] }[] }. Query: branch.",
+        body: "{ config: the scope's own bundle as a preview sends it, test: id }",
+    },
+    Route {
         method: "GET",
         path: "/api/areas/:area/tests/:id",
         what: "One test. Query: branch, at.",

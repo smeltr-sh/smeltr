@@ -83,6 +83,8 @@
     SHARED_SCOPE,
     previewFailure,
     previewPipeline,
+    checkTest,
+    type TestMark,
     afterDot,
     type AskAt,
     type DictionaryOut,
@@ -905,6 +907,21 @@
     return result.errors.filter((e) => !placed.has(e));
   });
 
+  /** The scope's bundle as the editor holds it, with `steps` as this pipeline's steps: what each preview sends. */
+  function fileConfig(steps: Step[]): string {
+    return JSON.stringify(
+      buildFileConfig(
+        pipelineId,
+        pipelineName,
+        steps,
+        ownPipelines,
+        ownLookupTables,
+        ownGrokPatterns,
+        produces,
+      ),
+    );
+  }
+
   /** One `/api/areas/:area/preview/pipeline` call over `stepsSubset`: the whole tree for a
    * Run, a truncated one for each side of a per-step diff. Goes through
    * `previewPipeline`, like every other config call, so it carries the
@@ -935,19 +952,8 @@
     } = {},
   ): Promise<PreviewResult> {
     const held = unfinished.hold(stepsSubset);
-    const config = JSON.stringify(
-      buildFileConfig(
-        pipelineId,
-        pipelineName,
-        held.steps,
-        ownPipelines,
-        ownLookupTables,
-        ownGrokPatterns,
-        produces,
-      ),
-    );
     const res = await previewPipeline({
-      config,
+      config: fileConfig(held.steps),
       pipeline: pipelineId,
       sample: sample || undefined,
       // Always: whether an internal field is shown is the Columns choice.
@@ -1009,17 +1015,7 @@
    * sample's columns. */
   const askAt: AskAt = (at) => (text, dot) =>
     afterDot({
-      config: JSON.stringify(
-        buildFileConfig(
-          pipelineId,
-          pipelineName,
-          unfinished.hold(steps).steps,
-          ownPipelines,
-          ownLookupTables,
-          ownGrokPatterns,
-          produces,
-        ),
-      ),
+      config: fileConfig(unfinished.hold(steps).steps),
       pipeline: pipelineId,
       sample: lastSample || undefined,
       at,
@@ -1040,6 +1036,7 @@
       result = res;
       if (res.ok) [lastGoodResult, lastGoodRun] = [res, { at, steps: ran }];
       lastSample = sample;
+      if (res.ok && opened?.sample === sample) void judge(opened.test);
       if (res.ok && proposedSteps && at >= proposedSteps.at) {
         if (proposedSteps.signature === signatureOf(ran)) takeSchemaTypes(steps, res.fixes ?? []);
         proposedSteps = null;
@@ -1056,6 +1053,22 @@
    * test. */
   let opened = $state(untrack(() => test));
   let relocking = $derived(!!opened && selectedSample === opened.sample);
+
+  /** Where the open test, run by the leader over the steps last run on its sample, differs from what it locks. */
+  let judged = $state<{ test: string; marks: TestMark[] } | null>(null);
+  /** Asks the leader where test `id` differs over the steps last run, and keeps the answer while those steps and that
+   * test are still the ones on screen. */
+  async function judge(id: string) {
+    const ran = lastGoodRun.steps;
+    const res = await checkTest(fileConfig(unfinished.hold(ran).steps), id);
+    if (opened?.test !== id || lastGoodRun.steps !== ran) return;
+    judged = res.ok ? { test: id, marks: res.marks ?? [] } : null;
+  }
+  // A test opened over its sample's run is judged without another run.
+  $effect(() => {
+    const id = opened?.test;
+    if (id && untrack(() => result?.ok && lastSample === opened!.sample)) void judge(id);
+  });
 
   // Locking a test needs a saved pipeline to attach it to, a saved sample to
   // name, and a run that actually produced the output being locked. The lock
@@ -1742,6 +1755,7 @@
         test={opened && {
           test: opened.test,
           ready: !!result?.ok && lastSample === opened.sample && !pause,
+          marks: judged?.test === opened.test ? judged.marks : undefined,
         }}
         {steps}
         {signature}

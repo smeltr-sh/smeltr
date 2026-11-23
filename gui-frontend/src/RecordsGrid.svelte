@@ -7,6 +7,7 @@
 -->
 <script module lang="ts">
   import type { NumberedStep, Step } from './pipeline';
+  import type { TestMark } from './api';
 
   /** One row: a record on either side of what was done to it. */
   export type GridRow = {
@@ -48,7 +49,13 @@
   /** The test on screen. When it is `ready`, on its sample's run, the grid shows what the test checks, one
    * time; after that the fields and rows are the reader's. `rowOf` numbers a row as the test does; without it, a row
    * is numbered by its key. */
-  export type TestOnScreen = { test: string; ready: boolean; rowOf?: (row: GridRow) => number };
+  export type TestOnScreen = {
+    test: string;
+    ready: boolean;
+    rowOf?: (row: GridRow) => number;
+    /** Where the leader's run of the test over the steps on screen differs from what it locks. */
+    marks?: TestMark[];
+  };
 
   /** The steps that touched a field, in the order they ran, each with its number in the step list. */
   export type Touched = (path: string) => NumberedStep[];
@@ -72,7 +79,7 @@
   import FoldAllButton from './FoldAllButton.svelte';
   import { TableSort } from './sort.svelte';
   import { formatDiffValue } from './diff';
-  import { differences, type RowDifference } from './testDiff';
+  import { rowDifferences, type RowDifference } from './testDiff';
   import { RECOMMENDED_NAMED } from './schemas';
   import ShowAll from './ShowAll.svelte';
   import {
@@ -516,17 +523,14 @@
     untrack(() => showTest(dto, rowOf));
   });
 
-  /** How each row on screen differs from what the test locks, by key, once the test's own sample has run. */
+  /** How each row on screen differs from what the test locks, by key, once the leader has run the test over it. */
   let diffs = $derived.by((): Map<number, RowDifference> | null => {
-    if (!testRead || !test?.ready || !rows) return null;
+    if (!test?.ready || !test.marks || !rows) return null;
     const rowOf = test.rowOf ?? ((row: GridRow) => row.key);
-    const all = rows.map((row, i) => ({
-      key: row.key,
-      at: rowOf(row),
-      dropped: row.dropped,
-      leaves: rowsMaps[i].after,
-    }));
-    return differences(testRead, all);
+    return rowDifferences(
+      test.marks,
+      rows.map((row) => ({ key: row.key, at: rowOf(row) })),
+    );
   });
 
   /** Shows what `test` checks: its fields the rows still hold and nothing else, and a chip keeping its rows unless it
@@ -928,13 +932,9 @@
                             <span class="badge dropped-badge">dropped</span>
                           {/if}
                         </div>
-                        {#if differs?.whole}
-                          <p class="differs-note">
-                            {differs.whole === 'kept'
-                              ? 'The test locked this row as dropped; this run kept it.'
-                              : 'The test locked a document here; this run dropped it.'}
-                          </p>
-                        {/if}
+                        {#each differs?.notes ?? [] as note}
+                          <p class="differs-note">{note}</p>
+                        {/each}
                         {#each row.exceptions as a}
                           <p class="exception">
                             {#if a.by}<button

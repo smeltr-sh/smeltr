@@ -89,13 +89,8 @@ fn route_preview_on(
     match sample_to_run(&reading, given, req.sample.as_deref()) {
         Ok(Some(mut sample)) => {
             sample.source = sample.source.or(req.source.clone());
-            match own_bundle(&req.config).and_then(|own| reading.runnable(own).ok()) {
-                Some(run) => run_route_preview(&run.config, sample, run.declared_at, req.at_micros),
-                None => {
-                    let declared_at = single_origin_declared_at(&req.config, &reading.at());
-                    run_route_preview(&req.config, sample, declared_at, req.at_micros)
-                }
-            }
+            let (config, declared_at) = preview_config(&reading, req.config, None);
+            run_route_preview(&config, sample, declared_at, req.at_micros)
         }
         Ok(None) => Envelope::refused(Refusal::invalid("name a sample or a held capture to route")),
         Err(refusal) => Envelope::refused(refusal),
@@ -655,6 +650,42 @@ fn merge_shared_into(req: &mut PreviewRequest, reading: &config_api::Reading) ->
     let run = reading.runnable(own).ok()?;
     req.config = run.config;
     Some(run.declared_at)
+}
+
+/// `config`, a scope's own bundle as a page sent it, made runnable as its preview runs it: with the branch's schemas it
+/// names, merged with `shared/`, and the lookup tables of each origin found where they are. `pipeline` is the one it
+/// runs, `None` routing a sample end to end.
+fn preview_config(
+    reading: &config_api::Reading,
+    config: String,
+    pipeline: Option<String>,
+) -> (String, config_file::DeclaredAt) {
+    if pipeline.is_none() {
+        return match own_bundle(&config).and_then(|own| reading.runnable(own).ok()) {
+            Some(run) => (run.config, run.declared_at),
+            None => {
+                let declared_at = single_origin_declared_at(&config, &reading.at());
+                (config, declared_at)
+            }
+        };
+    }
+    let mut req = PreviewRequest {
+        config,
+        pipeline,
+        sample: None,
+        show_internal: false,
+        at_micros: None,
+        filter: None,
+        attribution: false,
+        as_sample: false,
+        dictionary: false,
+        after_dot: None,
+        capture_filter: None,
+    };
+    with_branch_schemas(&mut req, reading);
+    let declared_at =
+        merge_shared_into(&mut req, reading).unwrap_or_else(|| single_origin_declared_at(&req.config, &reading.at()));
+    (req.config, declared_at)
 }
 
 /// `config`, a scope's own bundle as the editor sent it. `None` when it does not parse.
@@ -2262,6 +2293,7 @@ async fn run_leader() {
         )
         .route("/api/areas/:area/test-runs", post(test_api::run_tests))
         .route("/api/areas/:area/preview/test-lock", post(test_api::preview_lock))
+        .route("/api/areas/:area/preview/test-check", post(test_api::check_test))
         .route("/api/branches/:name/tests", get(test_api::list_change_tests))
         .route("/api/branches/:name/test-runs", post(test_api::run_change_tests))
         .route("/api/areas/:area", get(config_api::get_config))

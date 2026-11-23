@@ -1,79 +1,76 @@
 import { describe, expect, it } from 'vitest';
-import type { TestDto } from './api';
-import { differences, same } from './testDiff';
+import type { TestMark } from './api';
+import { differenceNote, rowDifferences } from './testDiff';
 
-const test: TestDto = {
-  id: 't',
-  name: 't',
-  pipeline: 'p',
-  sample: 's',
-  lockedAt: 0,
-  rowsIn: 3,
-  fields: ['id', 'tax', 'coupon'],
-  rows: [
-    { row: 0, values: { id: 1, tax: 2 } },
-    { row: 1, values: { id: 2, tax: 3.5, coupon: 'X' } },
-    { row: 2 },
-  ],
-};
+const rows = [
+  { key: 10, at: 0 },
+  { key: 11, at: 1 },
+  { key: 12, at: 1 },
+  { key: 13, at: 2 },
+];
 
-const row = (key: number, leaves: Record<string, unknown>, dropped = false) => ({
-  key,
-  at: key,
-  dropped,
-  leaves: new Map(Object.entries(leaves)),
-});
-
-describe('differences', () => {
-  it('passes over a row that holds what the test locks, and one the test does not check', () => {
-    const d = differences(test, [row(0, { id: 1, tax: 2, other: 9 }), row(7, { id: 9 })]);
-    expect(d.size).toBe(0);
+describe('rowDifferences', () => {
+  it('marks the fields that differ with the value the test locks, or none where it locks the field missing', () => {
+    const marks: TestMark[] = [
+      {
+        row: 0,
+        document: 0,
+        fields: ['tax', 'coupon'],
+        expected: { row: 0, values: { tax: 2 } },
+        actual: { row: 0, values: { tax: 3, coupon: 'X' } },
+      },
+    ];
+    const d = rowDifferences(marks, rows).get(10)!;
+    expect([...d.fields]).toEqual([
+      ['tax', { locked: 2 }],
+      ['coupon', {}],
+    ]);
+    expect(d.notes).toEqual([]);
   });
 
-  it('names each field that differs, with what the test locks', () => {
-    const d = differences(test, [
-      row(0, { id: 1, tax: 4, coupon: 'Y' }),
-      row(1, { id: 2, tax: 3.5 }),
+  it("puts a mark on its row's document, and a document the run did not make on the row's last", () => {
+    const marks: TestMark[] = [
+      {
+        row: 1,
+        document: 1,
+        fields: ['id'],
+        expected: { row: 1, values: { id: 1 } },
+        actual: { row: 1, values: {} },
+      },
+      { row: 1, document: 2, fields: [], expected: { row: 1, values: { id: 2 } } },
+    ];
+    const d = rowDifferences(marks, rows);
+    expect([...d.keys()]).toEqual([12]);
+    expect(d.get(12)!.notes).toEqual([
+      'The test locks another document on this row; this run made none.',
     ]);
-    expect(d.get(0)?.fields).toEqual(
-      new Map<string, { locked?: unknown }>([
-        ['tax', { locked: 2 }],
-        ['coupon', {}],
-      ]),
+  });
+
+  it('passes over a mark on a row not on screen', () => {
+    const marks: TestMark[] = [{ row: 7, document: 0, fields: [], expected: { row: 7 } }];
+    expect(rowDifferences(marks, rows).size).toBe(0);
+  });
+});
+
+describe('differenceNote', () => {
+  it('says what differs of a whole document, and nothing where only fields differ', () => {
+    const doc = { row: 0, values: { a: 1 } };
+    const dropped = { row: 0 };
+    expect(
+      differenceNote({ row: 0, expected: doc, actual: { row: 0, values: { a: 2 } } }),
+    ).toBeNull();
+    expect(differenceNote({ row: 0, actual: doc })).toBe(
+      'The test locks no more documents on this row; this run made another.',
     );
-    expect(d.get(1)?.fields).toEqual(new Map([['coupon', { locked: 'X' }]]));
-  });
-
-  it('tells a row the test locks as dropped from one it locks a document on', () => {
-    const d = differences(test, [
-      row(0, {}, true),
-      row(2, { id: 3 }),
-      row(1, { id: 2, tax: 3.5, coupon: 'X' }),
-    ]);
-    expect(d.get(0)?.whole).toBe('dropped');
-    expect(d.get(2)?.whole).toBe('kept');
-    expect(d.has(1)).toBe(false);
-  });
-
-  it('matches the documents one record made in order, and marks one past what the test locks', () => {
-    const two = { ...test, rows: [{ row: 0, values: { id: 1 } }] };
-    const d = differences(two, [
-      { ...row(10, { id: 1 }), at: 0 },
-      { ...row(11, { id: 1 }), at: 0 },
-    ]);
-    expect(d.has(10)).toBe(false);
-    expect(d.get(11)?.whole).toBe('kept');
-  });
-});
-
-describe('same', () => {
-  it('holds integers exact and other numbers within the tolerance', () => {
-    expect(same(1, 1)).toBe(true);
-    expect(same(10, 11)).toBe(false);
-    expect(same(2.4000000000000004, 2.4)).toBe(true);
-    expect(same(2.4, 2.5)).toBe(false);
-    expect(same({ a: [1, 0.1 + 0.2] }, { a: [1, 0.3] })).toBe(true);
-    expect(same({ a: 1 }, { a: 1, b: 2 })).toBe(false);
-    expect(same('1', 1)).toBe(false);
+    expect(differenceNote({ row: 0, expected: dropped, actual: doc })).toBe(
+      'The test locked this row as dropped; this run kept it.',
+    );
+    expect(differenceNote({ row: 0, expected: doc, actual: dropped })).toBe(
+      'The test locked a document here; this run dropped it.',
+    );
+    const sent = (route: string) => ({ ...doc, sent: { route, destinations: ['d'] } });
+    expect(differenceNote({ row: 0, expected: sent('a'), actual: sent('b') })).toBe(
+      'This run sent the document elsewhere.',
+    );
   });
 });

@@ -18,7 +18,7 @@ use smeltr::config_file::{self, Impact, Lock, Locked, TestDto, TestSummary, Verd
 use smeltr::leader::access::{Access, Level};
 use smeltr::leader::deploy_checks::FailingTest;
 use smeltr::leader::envelope::{ApiError, Envelope, Refusal};
-use smeltr::leader::preview::{TestResult, lock_test, run_test};
+use smeltr::leader::preview::{TestResult, lock_test, run_test, test_differences};
 use smeltr::leader::store::Actor;
 use smeltr::leader::{blocking, blocking_answer};
 use smeltr::startup_config::leader_data_dir;
@@ -188,6 +188,52 @@ pub async fn preview_lock(
             .into()
     })
     .await
+}
+
+/// A test run over steps not yet saved: the editor's or Route a sample's config, as its preview sends it.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestCheck {
+    /// The scope's own bundle as the page holds it, a single-file `config_file` document.
+    config: String,
+    /// The test to run, by id, as the branch holds it.
+    test: String,
+}
+
+/// Where a run of the test differs from what it locked: each difference, with the fields that differ in it.
+#[derive(Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestMarks {
+    marks: Vec<config_file::Mark>,
+}
+
+/// Runs a test over steps the page has not saved, as a test run would run it -- at the instant it was locked, merged
+/// with `shared/` -- and says where it differs from what it locked, so the page marks the rows it shows.
+pub async fn check_test(
+    AxPath(area): AxPath<String>,
+    Query(q): Query<BranchQuery>,
+    Json(check): Json<TestCheck>,
+) -> Envelope<TestMarks> {
+    blocking_answer(move || marks_on(q.name(), &area, check).into()).await
+}
+
+/// Where `check`'s test, run over its config on `branch` in `area`, differs from what it locked.
+fn marks_on(branch: &str, area: &str, check: TestCheck) -> Result<TestMarks, Refusal> {
+    let reading = config_api::Reading::open(branch, area)?;
+    let test = match config_file::read_test(&mut reading.files(), &check.test) {
+        Ok(Some(test)) => test,
+        Ok(None) => {
+            return Err(Refusal::not_found(format!(
+                "there is no test {:?} on this branch",
+                check.test
+            )));
+        }
+        Err(e) => return Err(Refusal::internal(e.to_string())),
+    };
+    let (config, declared_at) = crate::preview_config(&reading, check.config, test.pipeline.clone());
+    let sample = config_file::read_sample(&mut reading.files(), &test.sample).map_err(|e| e.to_string());
+    let marks = test_differences(&test, &config, sample, &declared_at).map_err(Refusal::invalid)?;
+    Ok(TestMarks { marks })
 }
 
 /// What locking `lock` holds of a run over the branch and scope `reading` reads.
@@ -747,6 +793,14 @@ mod tests {
         let verdict = failing.verdict.expect("it still runs, it just no longer matches");
         assert!(!verdict.passed);
         assert_eq!(verdict.first_difference.unwrap().row, 0);
+
+        // The editor's marks come from the same run: the row and the field that differ.
+        let marks = test_differences(&test, ROUTED_CONFIG, Ok(Some(sample)), &declared_at).expect("it runs");
+        let found: Vec<_> = marks
+            .iter()
+            .map(|m| (m.difference.row, m.document, m.fields.clone()))
+            .collect();
+        assert_eq!(found, [(0, 0, vec!["seen".to_string()])]);
     }
 
     /// A pipeline test checks the fields it names on its rows: what it locked passes, and a locked value the run no
