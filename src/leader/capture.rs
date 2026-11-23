@@ -96,7 +96,7 @@ pub struct CaptureStatus {
     /// order. No worker leaves the list for the capture's life.
     pub workers: Vec<CaptureWorker>,
     /// What every worker sent, folded: one batch per distinct column list, each row naming its worker. Left out of
-    /// the status a caller polls, which counts them in `records`: they are read on their own (`HeldRecords`).
+    /// the status a caller polls, which counts them in `records`: they are read on their own (`capture_records`).
     #[serde(skip)]
     pub batches: Vec<CaptureBatch>,
     /// How many records the capture holds, across its batches.
