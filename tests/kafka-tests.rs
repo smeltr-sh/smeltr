@@ -455,6 +455,54 @@ fn live_a_partial_batch_returns_without_waiting_out_the_timeout() {
     );
 }
 
+/// A reader with nothing to read is woken once the client has routed what librdkafka already holds, not by the first
+/// record: woken by the first, it would hand out a batch of a fetch's first few records, and every stage after it pays
+/// per batch.
+#[test]
+fn live_a_reader_waiting_for_records_takes_a_whole_fetch_as_one_batch() {
+    let Some(brokers) = live_brokers("live_a_reader_waiting_for_records_takes_a_whole_fetch_as_one_batch") else {
+        return;
+    };
+    const RECORDS: usize = 2_000;
+    let topic = unique("whole-fetch");
+    let mut dest = dest_for(&brokers, &topic);
+    let values: Vec<String> = (0..RECORDS).map(|i| format!("record {i}")).collect();
+    let rows: Vec<OutgoingRecord<'_>> = values.iter().map(|v| OutgoingRecord::new(v.as_bytes())).collect();
+    hand(&mut dest, &rows);
+    dest.flush().unwrap();
+
+    let mut source = KafkaSource::new(
+        &KafkaSourceConfig {
+            service: smeltr::plan::topology::KafkaService::Kafka,
+            encoding: Encoding::Auto,
+            fetch_bytes: 64 * 1024 * 1024,
+            brokers,
+            topics: vec![topic],
+            group_id: unique("group"),
+            tls: None,
+            start: StartPosition::Earliest,
+            stop: None,
+            deployed_at: 0,
+            member: None,
+            rack: None,
+            props: Default::default(),
+            avro: None,
+        },
+        &Default::default(),
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let batch = loop {
+        let batch = source
+            .poll_batch(4_000, 64 * 1024 * 1024, Duration::from_secs(20))
+            .unwrap();
+        if !batch.is_empty() || Instant::now() > deadline {
+            break batch;
+        }
+    };
+    assert_eq!(batch.len(), RECORDS, "the first batch took only part of the fetch");
+}
+
 /// The actual point of the `offset + 1` translation in `KafkaSource::commit`
 /// (see its own doc): a second consumer in the *same* group should resume
 /// exactly where an explicit partial commit left off -- not redeliver
