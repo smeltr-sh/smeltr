@@ -309,9 +309,10 @@ mod field {
     pub const SCALE: usize = 10;
     pub const ZERO_COUNT: usize = 11;
     pub const ZERO_THRESHOLD: usize = 12;
-    /// A side's `offset`, with its `bucketCounts` after it.
-    pub const POSITIVE: usize = 13;
-    pub const NEGATIVE: usize = 15;
+    pub const POSITIVE_OFFSET: usize = 13;
+    pub const POSITIVE_BUCKET_COUNTS: usize = 14;
+    pub const NEGATIVE_OFFSET: usize = 15;
+    pub const NEGATIVE_BUCKET_COUNTS: usize = 16;
     pub const RESET_HINT: usize = 17;
     pub const EXEMPLARS: usize = 18;
     pub const DESCRIPTION: usize = 19;
@@ -780,10 +781,13 @@ impl Series {
         let negative = Side::negative(h)
             .dense()
             .expect("a histogram is checked when its request is scanned");
-        for (side, held) in [(field::POSITIVE, positive), (field::NEGATIVE, negative)] {
-            if let Some(held) = held {
-                buckets(cells, side, held);
-            }
+        if let Some((offset, counts)) = positive.map(buckets) {
+            cells[field::POSITIVE_OFFSET] = Some(offset);
+            cells[field::POSITIVE_BUCKET_COUNTS] = Some(counts);
+        }
+        if let Some((offset, counts)) = negative.map(buckets) {
+            cells[field::NEGATIVE_OFFSET] = Some(offset);
+            cells[field::NEGATIVE_BUCKET_COUNTS] = Some(counts);
         }
         row
     }
@@ -887,9 +891,8 @@ fn put_numbers(out: &mut Vec<u8>, values: &[f64]) {
 
 /// One side's buckets as OTLP's `offset` and `bucketCounts`, from the Prometheus index of its first bucket. Prometheus
 /// bucket `i` ends at `base^i` and OTLP bucket `i` starts there, so OTLP's index is one less.
-fn buckets(cells: &mut [Option<Cell>], side: usize, (first, counts): (i64, Vec<f64>)) {
-    cells[side] = Some(Cell::Int(first - 1));
-    cells[side + 1] = Some(numbers(&counts));
+fn buckets((first, counts): (i64, Vec<f64>)) -> (Cell, Cell) {
+    (Cell::Int(first - 1), numbers(&counts))
 }
 
 /// One side of zero of a histogram: its spans and its counts, as deltas or as they are.
@@ -1912,9 +1915,12 @@ mod tests {
         }
     }
 
+    const POSITIVE: (usize, usize) = (field::POSITIVE_OFFSET, field::POSITIVE_BUCKET_COUNTS);
+    const NEGATIVE: (usize, usize) = (field::NEGATIVE_OFFSET, field::NEGATIVE_BUCKET_COUNTS);
+
     /// A side's buckets as `(offset, bucketCounts)`.
-    fn side(row: &Row, at: usize) -> Option<(i64, Vec<f64>)> {
-        match (&row.0[at], array(row, at + 1)) {
+    fn side(row: &Row, (offset, counts): (usize, usize)) -> Option<(i64, Vec<f64>)> {
+        match (&row.0[offset], array(row, counts)) {
             (Some(Cell::Int(offset)), Some(counts)) => Some((*offset, counts)),
             (None, None) => None,
             other => panic!("a side holds its offset and its counts, or neither: {other:?}"),
@@ -1946,10 +1952,10 @@ mod tests {
             (field::SCALE, "scale"),
             (field::ZERO_COUNT, "zeroCount"),
             (field::ZERO_THRESHOLD, "zeroThreshold"),
-            (field::POSITIVE, "positive.offset"),
-            (field::POSITIVE + 1, "positive.bucketCounts"),
-            (field::NEGATIVE, "negative.offset"),
-            (field::NEGATIVE + 1, "negative.bucketCounts"),
+            (field::POSITIVE_OFFSET, "positive.offset"),
+            (field::POSITIVE_BUCKET_COUNTS, "positive.bucketCounts"),
+            (field::NEGATIVE_OFFSET, "negative.offset"),
+            (field::NEGATIVE_BUCKET_COUNTS, "negative.bucketCounts"),
             (field::RESET_HINT, "resetHint"),
             (field::EXEMPLARS, "exemplars"),
             (field::DESCRIPTION, "description"),
@@ -1990,8 +1996,8 @@ mod tests {
         assert_eq!(float(row, field::ZERO_COUNT), Some(6.0));
         assert_eq!(float(row, field::ZERO_THRESHOLD), Some(0.001));
         // Prometheus bucket 2 is OTLP bucket 1.
-        assert_eq!(side(row, field::POSITIVE), Some((1, vec![3.0, 2.0, 0.0, 4.0])));
-        assert_eq!(side(row, field::NEGATIVE), Some((-2, vec![5.0])));
+        assert_eq!(side(row, POSITIVE), Some((1, vec![3.0, 2.0, 0.0, 4.0])));
+        assert_eq!(side(row, NEGATIVE), Some((-2, vec![5.0])));
         assert_eq!(array(row, field::BUCKET_COUNTS), None);
         assert_eq!(array(row, field::EXPLICIT_BOUNDS), None);
     }
@@ -2007,8 +2013,8 @@ mod tests {
         };
         let row = &rows(&histograms(vec![h]))[0];
         assert_eq!(float(row, field::COUNT), Some(7.5));
-        assert_eq!(side(row, field::POSITIVE), Some((-1, vec![1.5, 6.0])));
-        assert_eq!(side(row, field::NEGATIVE), None, "a side with no buckets is null");
+        assert_eq!(side(row, POSITIVE), Some((-1, vec![1.5, 6.0])));
+        assert_eq!(side(row, NEGATIVE), None, "a side with no buckets is null");
         assert_eq!(float(row, field::ZERO_COUNT), None);
         assert_eq!(float(row, field::ZERO_THRESHOLD), None, "a zero threshold of 0 is null");
     }
@@ -2047,8 +2053,10 @@ mod tests {
             field::SCALE,
             field::ZERO_COUNT,
             field::ZERO_THRESHOLD,
-            field::POSITIVE,
-            field::NEGATIVE,
+            field::POSITIVE_OFFSET,
+            field::POSITIVE_BUCKET_COUNTS,
+            field::NEGATIVE_OFFSET,
+            field::NEGATIVE_BUCKET_COUNTS,
         ] {
             assert_eq!(row.0[at], None, "field {at}");
         }
