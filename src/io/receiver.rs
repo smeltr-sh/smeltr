@@ -3907,6 +3907,20 @@ mod tests {
         assert!(answered(&mut second));
     }
 
+    /// A lone small request waits for more before it is handed over, so small requests make batches of many rows.
+    #[test]
+    fn a_lone_small_request_waits_for_a_batchs_worth() {
+        let shared = Shared::default();
+        // Twice: the first admit pays for first use, about as long as the wait itself.
+        for _ in 0..2 {
+            let sent = Instant::now();
+            admit(&shared, records(1));
+            assert_eq!(shared.take(10, 1 << 20, Duration::ZERO).len(), 1);
+            let waited = sent.elapsed();
+            assert!(waited >= SMALL_BATCH_WAIT, "handed over after {waited:?}");
+        }
+    }
+
     /// A stopping receiver takes nothing new, hands over what it holds, and answers its senders once that lands.
     #[test]
     fn a_stopping_receiver_refuses_new_requests_and_hands_over_the_rest() {
