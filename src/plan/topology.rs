@@ -822,16 +822,6 @@ impl SourceMeta {
         if columns.iter().all(|c| c.name == crate::plan::tree::UNCLAIMED) {
             return Ok(SourceMeta::NONE);
         }
-        // An object a pipeline wrote with nothing in it declares no field: here it is an object that holds no key.
-        fn holding(ty: DataType) -> DataType {
-            match ty {
-                DataType::Struct(members, open) => DataType::Struct(
-                    members.iter().map(|(k, t)| (k.clone(), holding(t.clone()))).collect(),
-                    open || members.is_empty(),
-                ),
-                other => other,
-            }
-        }
         let mut open = false;
         let mut record = Vec::with_capacity(columns.len());
         for c in columns {
@@ -842,7 +832,7 @@ impl SourceMeta {
                 None => {
                     let ty = crate::expr::parse::parse_type(&c.ty)
                         .map_err(|e| format!("column `{}` has type {:?}, which does not read: {e}", c.name, c.ty))?;
-                    record.push((c.name.clone(), holding(ty)));
+                    record.push((c.name.clone(), ty));
                 }
             }
         }
