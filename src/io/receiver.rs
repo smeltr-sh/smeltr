@@ -58,6 +58,7 @@ use crate::format::json_scan::{Next, Reader};
 use crate::plan::topology::{
     ApiRecords, ConnectionLimits, HeldSecrets, Listen, Receiver, ReceiverConfig, Signal, SourceMeta, Transport,
 };
+use crate::worker::LEAST_BATCH_BYTES;
 
 /// Where a receiver answers whether it takes requests: 200 while it does, 503 while it is busy, blocked or stopping.
 /// What a balancer's health check or a Kubernetes readiness probe asks.
@@ -66,6 +67,10 @@ pub const HEALTH_PATH: &str = "/health";
 /// What a receiver holds that its reader has not taken. One request may be as large as this
 /// (`MaxRequestBytes::MAX`), so a receiver with room takes any request it may be sent.
 pub const INBOX_BYTES: usize = 64 * 1024 * 1024;
+
+/// How long a reader waits, after a request arrives, for a batch's worth (`LEAST_BATCH_BYTES`) to arrive too: the
+/// longest a record waits on it while traffic is light.
+const SMALL_BATCH_WAIT: Duration = Duration::from_millis(1);
 
 /// How long a sender has to send a request's whole body. One that sends slower holds read budget other senders need.
 const BODY_READ_SECS: u64 = 30;
@@ -1027,6 +1032,8 @@ struct Inbox {
     queued: VecDeque<Request>,
     /// What `queued` holds in memory, taken from the receiver's holdings.
     queued_bytes: Counted,
+    /// When the oldest of `queued` arrived, while it holds any.
+    since: Option<Instant>,
     /// The offset the next record takes. One sequence per receiver, so the watermark is one number.
     next_offset: i64,
     /// Each request whose records are all taken, by the offset of its last record.
@@ -1044,9 +1051,17 @@ impl Inbox {
         !self.closed && !self.blocked && !self.stopping
     }
 
-    fn queue(&mut self, request: Request) {
+    /// Queues a request. Whether a reader waiting on `arrived` needs waking: the inbox was empty, or now holds a batch
+    /// worth handing over.
+    fn queue(&mut self, request: Request) -> bool {
+        let empty = self.queued.is_empty();
+        if empty {
+            self.since = Some(Instant::now());
+        }
+        let before = self.queued_bytes.total();
         self.queued_bytes.add(request.bytes);
         self.queued.push_back(request);
+        empty || (before < LEAST_BATCH_BYTES && self.queued_bytes.total() >= LEAST_BATCH_BYTES)
     }
 }
 
@@ -1308,14 +1323,16 @@ impl Shared {
                 None => return Admitted::Busy,
             },
         };
-        inbox.queue(Request {
+        let wake = inbox.queue(Request {
             records,
             bytes: charge.keep(),
             remote,
             answer,
         });
         drop(inbox);
-        self.arrived.notify_all();
+        if wake {
+            self.arrived.notify_all();
+        }
         admitted
     }
 
@@ -1351,9 +1368,11 @@ impl Shared {
                     return Err(Closed);
                 }
                 if inbox.open() {
-                    inbox.queue(request);
+                    let wake = inbox.queue(request);
                     drop(inbox);
-                    self.arrived.notify_all();
+                    if wake {
+                        self.arrived.notify_all();
+                    }
                     return Ok(delivered);
                 }
             }
@@ -1362,7 +1381,8 @@ impl Shared {
     }
 
     /// Up to `max_rows` records and `max_bytes` of them, the first whatever its size, waiting up to `timeout` for
-    /// the first to arrive. Nothing while blocked: a blocked source stops supplying.
+    /// the first to arrive, and then up to [`SMALL_BATCH_WAIT`] after it for a batch's worth. Nothing while blocked: a
+    /// blocked source stops supplying.
     fn take(&self, max_rows: usize, max_bytes: usize, timeout: Duration) -> Vec<Queued> {
         let deadline = Instant::now() + timeout;
         let mut inbox = self.state.lock().unwrap();
@@ -1372,6 +1392,18 @@ impl Shared {
                 return Vec::new();
             }
             inbox = self.arrived.wait_timeout(inbox, left).unwrap().0;
+        }
+        // Small requests would otherwise make batches of a few rows, whose own work outweighs them.
+        let handed_by = inbox.since.expect("a request is queued") + SMALL_BATCH_WAIT;
+        while inbox.queued_bytes.total() < LEAST_BATCH_BYTES {
+            let left = handed_by.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            inbox = self.arrived.wait_timeout(inbox, left).unwrap().0;
+        }
+        if inbox.queued.is_empty() {
+            return Vec::new();
         }
         let inbox = &mut *inbox;
         let mut taken = Vec::new();
