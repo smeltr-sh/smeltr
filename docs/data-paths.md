@@ -177,16 +177,16 @@ flowchart TD
   B --> C["Take back every unacknowledged unit. Retry with backoff. Mark the destination stalled"]
   C --> A
   C --> D["The egress queue fills"]
-  D --> E["deliver gets no room. The batch is parked on its lane. The pool serves the other lanes"]
+  D --> E["No room. The batch is parked on its lane with the rows its pipelines made. The pool serves the other lanes"]
   E --> F{"Waited past the destination's stall time?"}
   F -- no --> E
   F -- yes --> G["Report Block. The reader pauses the source's partitions, those the group assigns later included, and keeps polling empty, so it stays in the group"]
   G --> H["No commit past the batch. Lag grows"]
-  H --> I["Room returns. The parked batch runs again from the start"]
-  I --> J["Destinations that already took it get duplicates: at-least-once"]
-  J --> K["The tracker empties. The source is released"]
+  H --> I["Room returns. The parked rows are handed to the destinations still owed them, without running the pipelines again"]
+  I --> K["The tracker empties. The source is released"]
 ```
 
 - A stalled destination stops only the sources that feed it.
+- Room is asked for before rows are handed over, since a full queue drops what it refuses. When room is taken between the asking and the handing, the rows are gone, and the batch runs again from the start once there is room; destinations that already took it get duplicates: at-least-once.
 - A reader whose batches stop coming back reaches its in-flight limit, or its lane's handoff queue fills, and it takes no more work. Past `MEMBERSHIP_AFTER` of that it keeps its source's membership in place of polling: `keep_membership` polls with every partition paused, so the group's rebalances do not wait on it and it is not evicted.
 - A failed credential and throttling count as unreachable: they get fixed, then retried.

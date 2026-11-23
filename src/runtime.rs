@@ -243,9 +243,19 @@ struct Undelivered {
     blocking: Vec<(usize, String)>,
     /// The capture admissions already shown `blocking`. Each is shown it once.
     shown: HashSet<u64>,
+    /// What its pipelines already made, while it waits only for room: handed over again without running them.
+    processed: Option<Processed>,
     /// While `held`: that this worker holds records for a capture of the source, until the batch is gone. Kept for its
     /// drop.
     _hold: Option<crate::worker::capture::Holding>,
+}
+
+/// What one run of a batch's pipelines made and has not handed over yet.
+struct Processed {
+    /// The destinations still to be handed their rows, in hand-off order.
+    dests: Vec<DestId>,
+    rows: HashMap<DestId, Vec<OwnedRecord>>,
+    outcomes: Outcomes,
 }
 
 /// A batch waiting for room on one destination's queue. The lane is skipped by the pool until the queue has room for
@@ -265,8 +275,8 @@ struct Waiting {
 
 /// What a lane had for the pool.
 enum ParkedTake {
-    /// A batch to run, whether it is already unprocessable, and since when it has been waiting for room, if it was.
-    Batch(BatchId, Vec<SourceRecord>, bool, Option<std::time::Instant>),
+    /// A batch to run, or to hand over again. Boxed: it carries its rows, and the other answers are small.
+    Batch(Box<Undelivered>),
     /// The oldest parked batch waits on a queue with no room, so nothing on this lane may run: it is older than
     /// everything behind it, and a batch behind it would meet the same queue.
     Waiting(Waiting),
@@ -277,8 +287,8 @@ enum ParkedTake {
 
 /// How a batch left `hand_off`.
 enum HandOff {
-    /// Every destination took its rows; the acknowledgments are owed.
-    Delivered,
+    /// Every destination took its rows; the acknowledgments are owed. What the run did is the caller's to count.
+    Delivered(Outcomes),
     /// A destination's queue had no room. The batch is parked on its lane and nothing was reported: a wait is not a
     /// hold until it has lasted.
     Parked,
@@ -395,8 +405,7 @@ impl Lane {
         {
             return ParkedTake::Waiting(w);
         }
-        let u = parked.retry.pop_front().expect("front was just seen");
-        ParkedTake::Batch(u.batch, u.records, u.unprocessable, u.waiting.map(|w| w.since))
+        ParkedTake::Batch(Box::new(parked.retry.pop_front().expect("front was just seen")))
     }
 
     /// Record that the reader has been told, if the oldest parked batch is still the one waiting on `dest` since
@@ -423,6 +432,7 @@ impl Lane {
             unprocessable,
             blocking: Vec::new(),
             shown: HashSet::new(),
+            processed: None,
             _hold: None,
         });
         self.batches.ready().signal();
@@ -467,13 +477,21 @@ impl Lane {
             unprocessable: false,
             blocking,
             shown: HashSet::new(),
+            processed: None,
             _hold: hold,
         });
     }
 
-    /// Kept until `waiting.dest` has room. No signal: the queue wakes the pool when it frees room, and waking it now
-    /// would only have it find the same full queue.
-    fn park_waiting(&self, batch: BatchId, mut records: Vec<SourceRecord>, waiting: Waiting, unprocessable: bool) {
+    /// Kept until `waiting.dest` has room, with what its pipelines made if they ran clean. No signal: the queue wakes
+    /// the pool when it frees room, and waking it now would only have it find the same full queue.
+    fn park_waiting(
+        &self,
+        batch: BatchId,
+        mut records: Vec<SourceRecord>,
+        waiting: Waiting,
+        unprocessable: bool,
+        processed: Option<Processed>,
+    ) {
         crate::io::own_rows(&mut records);
         self.parked.lock().unwrap().retry.push_front(Undelivered {
             batch,
@@ -483,6 +501,7 @@ impl Lane {
             unprocessable,
             blocking: Vec::new(),
             shown: HashSet::new(),
+            processed,
             _hold: None,
         });
     }
@@ -565,6 +584,8 @@ struct Turn {
     unprocessable: bool,
     /// When the batch first found a queue full, if it has been waiting for room.
     waiting_since: Option<std::time::Instant>,
+    /// What its pipelines made, when they already ran and the rows waited only for room.
+    processed: Option<Processed>,
 }
 
 /// One range of a batch's records and the route it resumes at. Routes before `resume_from` have their rows in the
@@ -947,13 +968,14 @@ impl Transform {
                     .is_none_or(|d| d.destination.has_room(bytes))
             };
             match self.lanes[i].take_parked(has_room) {
-                ParkedTake::Batch(batch, records, unprocessable, waiting_since) => {
+                ParkedTake::Batch(u) => {
                     return Some(Turn {
                         lane: i,
-                        batch,
-                        records,
-                        unprocessable,
-                        waiting_since,
+                        batch: u.batch,
+                        records: u.records,
+                        unprocessable: u.unprocessable,
+                        waiting_since: u.waiting.map(|w| w.since),
+                        processed: u.processed,
                     });
                 }
                 ParkedTake::Waiting(w) => {
@@ -988,6 +1010,7 @@ impl Transform {
                     records: b.records,
                     unprocessable: false,
                     waiting_since: None,
+                    processed: None,
                 });
             }
         }
@@ -998,7 +1021,7 @@ impl Transform {
     /// One turn: take a batch -- an undelivered one, or the next off some lane's queue -- run it, hand the rows on,
     /// and report to the lane it came from.
     pub fn step(&mut self, pop_timeout: Duration) -> Result<usize, IoError> {
-        let Some(turn) = self.take_next(pop_timeout) else {
+        let Some(mut turn) = self.take_next(pop_timeout) else {
             // An idle turn is what collects completions.
             self.collect()?;
             return Ok(0);
@@ -1019,105 +1042,116 @@ impl Transform {
         )
         .entered();
 
-        let process_start = std::time::Instant::now();
-        let mut out = Output::default();
-        let outcome = catch_unwind(AssertUnwindSafe(|| self.process_batch(&lane, &turn.records, &mut out)));
-        self.metrics.incr_seconds(
-            "smeltr_tick_process_seconds_total",
-            &[("source", source_label.as_str())],
-            process_start.elapsed().as_secs_f64(),
-        );
-        self.metrics
-            .incr("smeltr_tick_batches_total", &[("source", source_label.as_str())], 1);
-        if let Some(limit) = self.memory.limit() {
-            self.metrics
-                .gauge("smeltr_memory_peak_bytes", &[], self.memory.peak() as f64);
-            self.metrics.gauge("smeltr_memory_budget_bytes", &[], limit as f64);
-        }
         let row_count = turn.records.len();
-        match outcome {
-            Ok(Ok(())) => {
-                tracing::trace!(
-                    name: "transformed", target: "pipelines",
-                    rows = row_count,
-                    out = out.rows.values().map(Vec::len).sum::<usize>(),
-                    destinations = out.rows.len(),
-                    "a batch ran through its routes and pipelines"
-                );
-                let t = std::time::Instant::now();
-                let dests = lane.destinations();
-                match self.hand_off(turn, &dests, out.rows) {
-                    Err(e) => {
-                        reports.send(Report::Block(BlockCause::Waiting, undeliverable(&e)));
-                        return Err(e);
-                    }
-                    // Parked, not blocked: the reader learns of a wait only once it has become a stall.
-                    Ok(HandOff::Parked) => {
-                        tracing::trace!(
-                            name: "parked", target: "pipelines",
-                            "a destination has no room, so the batch waits for it"
-                        );
-                        self.metrics.incr(
-                            "smeltr_batches_waiting_for_room_total",
-                            &[("source", source_label.as_str())],
-                            1,
-                        );
-                        return Ok(0);
-                    }
-                    Ok(HandOff::Delivered) => {}
-                }
-                if dests.is_empty() {
-                    reports.send(Report::Acked { batch, dest: TRANSFORM });
-                }
-                if let (Some(streams), Some(name)) = (&self.streams, &lane.source_name) {
-                    streams.saw_senders(name, std::mem::take(&mut out.outcomes.senders));
-                }
-                self.count_outcomes(&source_label, out.outcomes);
+        let processed = match turn.processed.take() {
+            // Its pipelines ran clean already; the rows waited only for room.
+            Some(processed) => processed,
+            None => {
+                let process_start = std::time::Instant::now();
+                let mut out = Output::default();
+                let outcome = catch_unwind(AssertUnwindSafe(|| self.process_batch(&lane, &turn.records, &mut out)));
                 self.metrics.incr_seconds(
-                    "smeltr_tick_flush_seconds_total",
+                    "smeltr_tick_process_seconds_total",
                     &[("source", source_label.as_str())],
-                    t.elapsed().as_secs_f64(),
+                    process_start.elapsed().as_secs_f64(),
                 );
-                reports.send(Report::Release);
-            }
-            // Only a new config clears it: the same rows meet the same routes and pipelines, and block the same way.
-            Ok(Err(held)) => {
-                tracing::trace!(
-                    name: "held", target: "pipelines",
-                    rows = row_count,
-                    "a pipeline blocked a batch, so it is held until a new config is deployed"
-                );
-                lane.park_held(
-                    batch,
-                    turn.records,
-                    std::mem::take(&mut out.blocking),
-                    self.captures.as_ref(),
-                );
-                reports.send(Report::Block(BlockCause::Held, held.message.clone()));
-                return Err(held);
-            }
-            Err(panic) => {
-                // The same records meet the same pipelines, so a second attempt would panic the same way. What the
-                // routes produced before the panic goes with `out`. The panic itself is logged by the hook; this is
-                // what became of the batch.
                 self.metrics
-                    .incr("smeltr_batches_poisoned_total", &[("source", source_label.as_str())], 1);
-                let panic = crate::logs::panic_text(&*panic);
-                tracing::error!(
-                    name: "batch_poisoned", target: "pipelines",
-                    subject = lane.source_name.as_deref().unwrap_or(&source_label),
-                    rows = turn.records.len(),
-                    %panic,
-                    "a batch made the pipelines panic, so it is answered as unprocessable rather than tried again"
-                );
-                let turn = Turn {
-                    waiting_since: None,
-                    ..turn
-                };
-                return self.divert_unprocessable(turn);
+                    .incr("smeltr_tick_batches_total", &[("source", source_label.as_str())], 1);
+                if let Some(limit) = self.memory.limit() {
+                    self.metrics
+                        .gauge("smeltr_memory_peak_bytes", &[], self.memory.peak() as f64);
+                    self.metrics.gauge("smeltr_memory_budget_bytes", &[], limit as f64);
+                }
+                match outcome {
+                    Ok(Ok(())) => {
+                        tracing::trace!(
+                            name: "transformed", target: "pipelines",
+                            rows = row_count,
+                            out = out.rows.values().map(Vec::len).sum::<usize>(),
+                            destinations = out.rows.len(),
+                            "a batch ran through its routes and pipelines"
+                        );
+                        Processed {
+                            dests: lane.destinations(),
+                            rows: out.rows,
+                            outcomes: out.outcomes,
+                        }
+                    }
+                    // Only a new config clears it: the same rows meet the same routes and pipelines, and block the
+                    // same way.
+                    Ok(Err(held)) => {
+                        tracing::trace!(
+                            name: "held", target: "pipelines",
+                            rows = row_count,
+                            "a pipeline blocked a batch, so it is held until a new config is deployed"
+                        );
+                        lane.park_held(
+                            batch,
+                            turn.records,
+                            std::mem::take(&mut out.blocking),
+                            self.captures.as_ref(),
+                        );
+                        reports.send(Report::Block(BlockCause::Held, held.message.clone()));
+                        return Err(held);
+                    }
+                    Err(panic) => {
+                        // The same records meet the same pipelines, so a second attempt would panic the same way.
+                        // What the routes produced before the panic goes with `out`. The panic itself is logged by the
+                        // hook; this is what became of the batch.
+                        self.metrics
+                            .incr("smeltr_batches_poisoned_total", &[("source", source_label.as_str())], 1);
+                        let panic = crate::logs::panic_text(&*panic);
+                        tracing::error!(
+                            name: "batch_poisoned", target: "pipelines",
+                            subject = lane.source_name.as_deref().unwrap_or(&source_label),
+                            rows = row_count,
+                            %panic,
+                            "a batch made the pipelines panic, so it is answered as unprocessable rather than tried again"
+                        );
+                        let turn = Turn {
+                            waiting_since: None,
+                            ..turn
+                        };
+                        return self.divert_unprocessable(turn);
+                    }
+                }
             }
+        };
+        let t = std::time::Instant::now();
+        let routed_nowhere = processed.dests.is_empty();
+        let mut outcomes = match self.hand_off(turn, processed) {
+            Err(e) => {
+                reports.send(Report::Block(BlockCause::Waiting, undeliverable(&e)));
+                return Err(e);
+            }
+            // Parked, not blocked: the reader learns of a wait only once it has become a stall.
+            Ok(HandOff::Parked) => {
+                tracing::trace!(
+                    name: "parked", target: "pipelines",
+                    "a destination has no room, so the batch waits for it"
+                );
+                self.metrics.incr(
+                    "smeltr_batches_waiting_for_room_total",
+                    &[("source", source_label.as_str())],
+                    1,
+                );
+                return Ok(0);
+            }
+            Ok(HandOff::Delivered(outcomes)) => outcomes,
+        };
+        if routed_nowhere {
+            reports.send(Report::Acked { batch, dest: TRANSFORM });
         }
-
+        if let (Some(streams), Some(name)) = (&self.streams, &lane.source_name) {
+            streams.saw_senders(name, std::mem::take(&mut outcomes.senders));
+        }
+        self.count_outcomes(&source_label, outcomes);
+        self.metrics.incr_seconds(
+            "smeltr_tick_flush_seconds_total",
+            &[("source", source_label.as_str())],
+            t.elapsed().as_secs_f64(),
+        );
+        reports.send(Report::Release);
         self.collect()?;
         Ok(row_count)
     }
@@ -1135,24 +1169,26 @@ impl Transform {
         Ok(())
     }
 
-    /// Hand each of `dests` its rows of this batch without waiting for the acknowledgment: once, in one call, the turn
-    /// having ended clean. A routed batch asks every destination its lane reaches, including ones it has nothing for:
-    /// `track` put all of them on the batch's waiting list at poll time, and one handed nothing completes at once. An
-    /// unprocessable one asks only where its answer sends it: the reader has stopped waiting on the rest.
-    fn hand_off(
-        &mut self,
-        turn: Turn,
-        dests: &[DestId],
-        mut rows: HashMap<DestId, Vec<OwnedRecord>>,
-    ) -> Result<HandOff, IoError> {
+    /// Hand each of `processed.dests` its rows of this batch without waiting for the acknowledgment: once, in one
+    /// call, the turn having ended clean. A routed batch asks every destination its lane reaches, including ones it
+    /// has nothing for: `track` put all of them on the batch's waiting list at poll time, and one handed nothing
+    /// completes at once. An unprocessable one asks only where its answer sends it: the reader has stopped waiting on
+    /// the rest.
+    fn hand_off(&mut self, turn: Turn, processed: Processed) -> Result<HandOff, IoError> {
         let Turn {
             lane,
             batch: id,
             records,
             unprocessable,
             waiting_since,
+            processed: _,
         } = turn;
-        for &dest_id in dests {
+        let Processed {
+            dests,
+            mut rows,
+            outcomes,
+        } = processed;
+        for (at, &dest_id) in dests.iter().enumerate() {
             let Some(i) = self.destinations.iter().position(|d| d.id == dest_id) else {
                 // `deploy` gives every thread a handle for every destination, so this is a worker built by hand with a
                 // short list. Parked like any other failed hand-over: the batch is tracked, and dropping it here
@@ -1164,22 +1200,35 @@ impl Transform {
             };
             let these = rows.remove(&dest_id).unwrap_or_default();
             let count = these.len() as u64;
+            let bytes = crate::io::held_bytes(&these);
+            let destination = &self.destinations[i].destination;
+            let waiting = Waiting {
+                dest: dest_id,
+                bytes,
+                since: waiting_since.unwrap_or_else(std::time::Instant::now),
+                stall_after: destination.stall_after(),
+                hold_reported: false,
+            };
+            // Asked before `deliver`, which drops the rows it has no room for: kept, they wait for room without the
+            // pipelines running again. Every pool thread is woken when room frees, so a batch run again for each
+            // would be run once per thread. An unprocessable batch keeps none: its answer is made again cheaply.
+            if !these.is_empty() && !destination.has_room(bytes) {
+                rows.insert(dest_id, these);
+                let processed = (!unprocessable).then(|| Processed {
+                    dests: dests[at..].to_vec(),
+                    rows,
+                    outcomes,
+                });
+                self.lanes[lane].park_waiting(id, records, waiting, unprocessable, processed);
+                return Ok(HandOff::Parked);
+            }
             match self.destinations[i].destination.deliver(id, Cow::Owned(these)) {
-                // No room: keep the batch for when there is. A destination earlier in this loop may already hold it,
-                // and the re-run duplicates there -- at-least-once, as specified.
-                Ok((Dispatched::NoRoom { bytes, stall_after }, _)) => {
-                    self.lanes[lane].park_waiting(
-                        id,
-                        records,
-                        Waiting {
-                            dest: dest_id,
-                            bytes,
-                            since: waiting_since.unwrap_or_else(std::time::Instant::now),
-                            stall_after,
-                            hold_reported: false,
-                        },
-                        unprocessable,
-                    );
+                // Room taken since it was asked: the rows are gone, so the batch runs again once there is room. A
+                // destination earlier in this loop may already hold it, and the re-run duplicates there --
+                // at-least-once, as specified.
+                Ok((Dispatched::NoRoom { bytes }, _)) => {
+                    let waiting = Waiting { bytes, ..waiting };
+                    self.lanes[lane].park_waiting(id, records, waiting, unprocessable, None);
                     return Ok(HandOff::Parked);
                 }
                 Ok((dispatched, refused)) => self.handed(lane, id, dest_id, dispatched, refused),
@@ -1197,7 +1246,7 @@ impl Transform {
                 }
             }
         }
-        Ok(HandOff::Delivered)
+        Ok(HandOff::Delivered(outcomes))
     }
 
     /// `dest` took its unit of `batch`. In flight, it is owed until its completion. Refusals it answered with at once
@@ -2148,7 +2197,12 @@ impl Transform {
                 self.place_delivered(&mut out, &targets, &these, &lane, None, DROPPED_UNPROCESSABLE);
                 drop(these);
                 turn.unprocessable = true;
-                match self.hand_off(turn, &to, out.rows) {
+                let processed = Processed {
+                    dests: to.clone(),
+                    rows: out.rows,
+                    outcomes: out.outcomes,
+                };
+                let outcomes = match self.hand_off(turn, processed) {
                     Err(e) => {
                         lane.reports.send(Report::Block(BlockCause::Waiting, undeliverable(&e)));
                         return Err(e);
@@ -2161,8 +2215,8 @@ impl Transform {
                         );
                         return Ok(0);
                     }
-                    Ok(HandOff::Delivered) => {}
-                }
+                    Ok(HandOff::Delivered(outcomes)) => outcomes,
+                };
                 // Labeled with where it went, not just where it came from: the leader draws this edge from the metric
                 // alone, so joining it back to whatever the config currently names would let a redeploy re-attribute a
                 // batch to a destination it never reached.
@@ -2174,7 +2228,7 @@ impl Transform {
                         1,
                     );
                 }
-                self.count_outcomes(&source_label, out.outcomes);
+                self.count_outcomes(&source_label, outcomes);
             }
         }
         // Nothing of this batch is left here: a source blocked by an earlier failed hand-over of it may resume.
