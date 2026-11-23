@@ -31,7 +31,7 @@ pub struct Cells<'a> {
     pub row: &'a CapturedRow,
 }
 
-/// The keys `entry` claims of `held`, the object it is under, left out.
+/// `held`, the object at keys `at`, without the keys an entry of `fields` claims under it.
 fn unclaimed(held: &RecordObject, at: &[String], fields: &[(Entry, DataType)]) -> RecordObject {
     let claimed = |key: &str| {
         fields.iter().any(|(entry, _)| {
@@ -46,10 +46,11 @@ fn unclaimed(held: &RecordObject, at: &[String], fields: &[(Entry, DataType)]) -
 }
 
 impl<'a> Cells<'a> {
-    /// What this row holds for `entry` of `fields`: the cell of the entry's own column, or the value at its place in
-    /// the nearest column above it, an object's whole value or its unclaimed fields, the root's last. `None` where
-    /// the row holds nothing there. Err is the text of a cell that failed its type, or of a value on the way that
-    /// holds no field.
+    /// What this row holds for `entry` of `fields`. The entry's own column is read first. Where the table has none,
+    /// the value is read from the entry's place inside the nearest column above it: an object's own column or the
+    /// column of its unclaimed fields, the deepest object first and the root's column last. `None` where the row
+    /// holds nothing there. Err is the text of a cell that failed its type, or of a value on the way that holds no
+    /// field.
     pub fn of(
         &self,
         entry: &Entry,

@@ -405,8 +405,9 @@ mod tests {
         assert_eq!(sample_path("Orders West!").unwrap(), "samples/orders-west.json");
     }
 
-    /// A sample of a capture reads back as the capture held it: each cell under its column, and a cell that failed
-    /// failed again with its text, a value that failed as an open object with no field of its own among them.
+    /// A sample of a capture reads back as the capture held it: each cell under its column. A cell that failed
+    /// fails again with its text; a value that failed as an open object is kept as that text, under none of the
+    /// object's fields.
     #[test]
     fn a_sample_reads_back_as_its_capture_held_it() {
         let batch = CaptureBatch {

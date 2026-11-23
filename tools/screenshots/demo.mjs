@@ -232,8 +232,8 @@ for (let i = 0; i < 12; i++) {
 }
 
 // What each source reads and each destination is sent: one capture of each on main, as the GUI's Capture asks for
-// it, kept as the table it held. A destination's is what main's pipelines send it, which is what a fleet's workers
-// run whatever branch is open.
+// it, kept as the table it held. A destination's is what main's pipelines send it; a fleet's workers run those
+// pipelines whatever branch is open.
 const POOL = 200;
 const captures = {};
 const capture = (group, what) =>

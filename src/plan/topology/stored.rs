@@ -73,7 +73,8 @@ impl SourceMeta {
         Ok((chunk.finish().into_iter().zip(&sources))
             .map(|(record, fields)| {
                 let mut record = crate::io::SourceRecord::read(record.chunk, record.row, fields);
-                // A Kafka record's headers are its own; none pasted is none, never what a receiver files.
+                // A Kafka record's headers come from the record. A pasted record has none, and takes none from a
+                // receiver.
                 if self.field_type("__source.headers").is_some() && !fields.contains_key("headers") {
                     record.headers = Some(Vec::new());
                 }

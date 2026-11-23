@@ -2587,8 +2587,8 @@ mod tests {
         held
     }
 
-    /// A captured sample reads by the columns it was captured under, each value typed and each one its row lists
-    /// as failed failed again as the source spelled it, though its type would take that text.
+    /// A captured sample reads by the columns it was captured under: each value typed, and a value its row lists as
+    /// failed fails again, as the source spelled it, though its type would take that text.
     #[test]
     fn a_captured_sample_reads_by_its_own_columns() {
         let held = captured();
@@ -2641,8 +2641,8 @@ mod tests {
     }
 
     /// A sample read under a source takes each field the source declares from the column that holds it: a value
-    /// under the type declared now, a failed cell failed still, a field no column holds null, a column the source
-    /// declares no field for left out.
+    /// under the type declared now, a failed cell still failed, a field no column holds read as null, and a column
+    /// the source declares no field for left out.
     #[test]
     fn a_sample_reads_as_its_source_declares_now() {
         let held = captured();
