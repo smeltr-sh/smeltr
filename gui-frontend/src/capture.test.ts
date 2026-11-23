@@ -95,7 +95,7 @@ describe('heldCount', () => {
 });
 
 describe('tableRecords', () => {
-  it('shows each row as a record: a constant on every row, unclaimed fields beside the named, a failed cell named', () => {
+  it('shows each row as a record: a constant on every row, unclaimed fields beside the named, a failed cell named and its text no field', () => {
     const table = {
       columns: [
         { name: 'id', type: 'i64' },
@@ -107,6 +107,7 @@ describe('tableRecords', () => {
       rows: [
         { values: ['x', 'ann', { age: 3 }, { extra: true }], failed: [0], worker: 'w-a' },
         { values: [2, null, null, null] },
+        { values: [3, 'ann', 'ann', null], failed: [1, 2] },
       ],
     };
     expect(tableRecords(table)).toEqual([
@@ -121,6 +122,10 @@ describe('tableRecords', () => {
         worker: 'w-a',
       },
       { record: { id: 2, __source: { topic: 'orders' } } },
+      {
+        record: { id: 3, __source: { topic: 'orders' }, user: { name: 'ann' } },
+        failed: ['user.name', 'user....'],
+      },
     ]);
     expect(tableRecords(pastedTable([{ _raw: 'a' }]))).toEqual([{ record: { _raw: 'a' } }]);
   });

@@ -62,8 +62,8 @@ export function tableRecords(batch: CaptureBatchDto): HeldRecord[] {
       const last = places[i].unclaimed ? undefined : keys.pop();
       let at = record;
       for (const key of keys) at = (at[key] ??= {}) as SampleRecordDto;
-      if (last === undefined) Object.assign(at, value);
-      else at[last] = value;
+      if (last !== undefined) at[last] = value;
+      else if (typeof value === 'object') Object.assign(at, value);
     });
     const failed = (row.failed ?? []).map((f) => columns[f].name);
     return { record, ...(row.worker && { worker: row.worker }), ...(failed.length && { failed }) };
