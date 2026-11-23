@@ -168,9 +168,8 @@ text in one spelling, base64 (`format::bytes_text`), wherever they are written
 as text.
 
 A source whose data arrives already in typed columns, as a query's rows do,
-declares a field per column, and its chunk has a column per field of its
-record. Where it declares a column as an object, its reader reads each leaf
-from inside that column's value. It has no `__source.bytes`. Ingest copies each
+declares a field per column, and its chunk has those columns. It has no
+`__source.bytes`. Ingest copies each
 field's rows out of the chunk, with nothing parsed. A value that is not its
 field's type is null, and its row carries the exception naming the field.
 
