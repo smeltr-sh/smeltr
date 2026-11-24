@@ -31,12 +31,8 @@ const ALL: &[&Pipeline] = &[
 ];
 
 fn maps(p: &Pipeline) {
-    maps_keeping(p, 8);
-}
-
-/// `maps`, checking the first `keep` documents.
-fn maps_keeping(p: &Pipeline, keep: usize) {
-    let (r, sink) = reference::run(&(p.bundle)(), p.line, 2_000, 500, keep);
+    // Enough documents that each pipeline's rarer shapes are among them.
+    let (r, sink) = reference::run(&(p.bundle)(), p.line, 2_000, 500, 300);
     let kept: Vec<serde_json::Value> = sink
         .kept()
         .iter()
@@ -83,8 +79,7 @@ fn asa_maps() {
 
 #[test]
 fn suricata_maps() {
-    // Every event type and both outcomes of every lookup are among the first few hundred.
-    maps_keeping(&reference::suricata::PIPELINE, 300);
+    maps(&reference::suricata::PIPELINE);
 }
 
 /// One run of the pipeline `BENCH_PIPELINE` names, printed as the line the
