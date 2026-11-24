@@ -71,7 +71,7 @@ pub struct Scratch<'d> {
 pub fn parse_object<'d>(bytes: &'d [u8], scratch: &mut Scratch<'d>, sink: &mut impl Sink<'d>) -> bool {
     // One check of the whole row: checking each string costs more in calls than in bytes. Any byte that is not UTF-8
     // would fail the row anyway, inside a string or out.
-    let Ok(text) = std::str::from_utf8(bytes) else {
+    let Ok(text) = simdutf8::basic::from_utf8(bytes) else {
         scratch.lost = Lost::default();
         return false;
     };
@@ -684,7 +684,7 @@ impl<'d> Reader<'d> {
     /// `bytes`, at their first value. `Malformed` where they are not UTF-8: one check of the whole document, as
     /// `parse_object` makes.
     pub fn new(bytes: &'d [u8]) -> Result<Reader<'d>, Malformed> {
-        Ok(Reader::of_str(std::str::from_utf8(bytes).map_err(|_| Malformed)?))
+        Ok(Reader::of_str(simdutf8::basic::from_utf8(bytes).map_err(|_| Malformed)?))
     }
 
     /// `text`, at its first value: for a document read in parts, each part from where the last one ended, without
