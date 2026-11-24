@@ -312,9 +312,7 @@ pub fn row_tag(col: &Column, row: usize) -> Option<Tag<'_>> {
         DataType::F64 => Tag::F64(col.f64().ok()?.values[row]),
         DataType::Duration => Tag::Duration(col.duration().ok()?.values[row]),
         DataType::DateTime => Tag::DateTime(col.datetime().ok()?.values[row]),
-        DataType::Str => Tag::Str(Cow::Borrowed(
-            std::str::from_utf8(col.var().ok()?.get(row)).expect("a str column is UTF-8"),
-        )),
+        DataType::Str => Tag::Str(Cow::Borrowed(col.str().ok()?.get(row))),
         DataType::Bytes => Tag::Bytes(Cow::Borrowed(col.var().ok()?.get(row))),
         DataType::Variant => return decode(col.variant().ok()?.get(row)),
         DataType::Array(_) => {

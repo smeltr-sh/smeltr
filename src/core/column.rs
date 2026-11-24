@@ -185,6 +185,20 @@ impl<'a> VarLen<'a> {
     }
 }
 
+/// A `Str` column's rows. Its bytes were checked as UTF-8 once, when the column was sealed (`StrBuilder::finish`), so
+/// a row is read as text with no check of its own.
+#[derive(Debug)]
+pub struct StrRows<'a>(VarLen<'a>);
+
+impl<'a> StrRows<'a> {
+    #[inline]
+    pub fn get(&self, row: usize) -> &'a str {
+        // SAFETY: only a sealed `Str` column makes a `StrRows`, and sealing one checked its whole buffer as UTF-8.
+        // Offsets fall on row boundaries, and each row was pushed whole, so a row is UTF-8 too.
+        unsafe { std::str::from_utf8_unchecked(self.0.get(row)) }
+    }
+}
+
 #[derive(Debug)]
 pub struct List<'a> {
     pub offsets: &'a [u32],
@@ -557,6 +571,16 @@ impl Column {
         match &self.storage {
             Storage::VarLen { var_type, .. } if *var_type != VarType::Variant => self.varlen(),
             _ => Err(self.wrong("Str or Bytes")),
+        }
+    }
+
+    /// A `Str` column's rows, as text.
+    pub fn str(&self) -> Result<StrRows<'_>, TypeError> {
+        match &self.storage {
+            Storage::VarLen {
+                var_type: VarType::Str, ..
+            } => self.varlen().map(StrRows),
+            _ => Err(self.wrong("Str")),
         }
     }
 

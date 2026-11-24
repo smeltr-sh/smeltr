@@ -190,9 +190,9 @@ impl StrBuilder {
         self.len = self.row;
         let validity = std::mem::replace(&mut self.validity, Validity::alloc(pool, self.row));
         validity.reclaim(pool);
-        // A reader's bytes are decoded before any string operation reads them, so nothing asks whether they are ASCII
-        // and the scan would be a pass over every byte read for nothing. `false` claims nothing.
-        self.seal(false)
+        // A reader's bytes are decoded before any string operation reads them, so only text is worth the scan.
+        let ascii = self.var_type == VarType::Str && self.checked_text();
+        self.seal(ascii)
     }
 
     /// Seal the column. Every row must have been pushed or nulled.
@@ -203,9 +203,25 @@ impl StrBuilder {
              requires every row to be pushed or nulled",
             self.row, self.len
         );
-        // Once over the whole buffer, not once per push: `is_ascii` runs a word at a time.
-        let ascii = self.data.as_slice::<u8>()[..self.pos as usize].is_ascii();
+        let ascii = match self.var_type {
+            VarType::Str => self.checked_text(),
+            // Once over the whole buffer, not once per push: `is_ascii` runs a word at a time.
+            VarType::Bytes | VarType::Variant => self.data.as_slice::<u8>()[..self.pos as usize].is_ascii(),
+        };
         self.seal(ascii)
+    }
+
+    /// Whether a text column's bytes are all ASCII, having checked once, over the whole buffer, that they are UTF-8:
+    /// what lets `Column::str` hand out its rows unchecked. Bytes that are not UTF-8 in a text column are a bug in
+    /// the step that wrote them.
+    fn checked_text(&self) -> bool {
+        let bytes = &self.data.as_slice::<u8>()[..self.pos as usize];
+        let ascii = bytes.is_ascii();
+        assert!(
+            ascii || simdutf8::basic::from_utf8(bytes).is_ok(),
+            "a str column holds UTF-8"
+        );
+        ascii
     }
 
     fn seal(self, ascii: bool) -> Column {
