@@ -2808,6 +2808,30 @@ mod tests {
         assert_eq!(sample.record_object(&read[0], ""), stored);
     }
 
+    /// Two routes into one destination: one declares `id`, the other passes it through undeclared. A sample of both
+    /// holds a column for each, and a row reads its `id` from whichever its route filled.
+    #[test]
+    fn a_row_reads_a_field_from_its_unclaimed_fields_where_its_batch_had_no_column() {
+        let batch = |spelled: &[(&str, &str)], value: serde_json::Value| crate::heartbeat::CaptureBatch {
+            columns: columns(spelled),
+            rows: vec![CapturedRow {
+                values: vec![value],
+                failed: Vec::new(),
+                worker: None,
+            }],
+        };
+        let declared = batch(&[("id", "i64")], serde_json::json!(7));
+        let passed = batch(&[(UNCLAIMED, "{...}")], serde_json::json!({"id": 1, "x": 2}));
+        let table = crate::config_file::sample_table(&[declared, passed]);
+        let sample = SourceMeta::of_columns(&table.columns).unwrap();
+        let read = sample.read_table(&table).unwrap();
+        assert_eq!(sample.record_object(&read[0], ""), object(serde_json::json!({"id": 7})));
+        assert_eq!(
+            sample.record_object(&read[1], ""),
+            object(serde_json::json!({"id": 1, "x": 2}))
+        );
+    }
+
     /// A finished row is shown under the fields its pipeline writes, typed as declared, then where the destination
     /// files it and the route that made it.
     #[test]

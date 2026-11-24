@@ -46,11 +46,12 @@ fn unclaimed(held: &RecordObject, at: &[String], fields: &[(Entry, DataType)]) -
 }
 
 impl<'a> Cells<'a> {
-    /// What this row holds for `entry` of `fields`. The entry's own column is read first. Where the table has none,
-    /// the value is read from the entry's place inside the nearest column above it: an object's own column or the
-    /// column of its unclaimed fields, the deepest object first and the root's column last. `None` where the row
-    /// holds nothing there. Err is the text of a cell that failed its type, or of a value on the way that holds no
-    /// field.
+    /// What this row holds for `entry` of `fields`. The entry's own column is read first. Where the table has none, or
+    /// the row holds nothing in it, the value is read from the entry's place inside the nearest column above it: an
+    /// object's own column or the column of its unclaimed fields, the deepest object first and the root's column
+    /// last. A row holds nothing in a column its batch did not have (`config_file::sample_table`). `None` where the
+    /// row holds nothing there. Err is the text of a cell that failed its type, or of a value on the way that holds
+    /// no field.
     pub fn of(
         &self,
         entry: &Entry,
@@ -58,7 +59,7 @@ impl<'a> Cells<'a> {
     ) -> Result<Option<std::borrow::Cow<'a, serde_json::Value>>, String> {
         use serde_json::Value;
         let keys = entry.keys();
-        let held = (self.columns.iter().enumerate())
+        let mut held: Vec<_> = (self.columns.iter().enumerate())
             .filter_map(|(c, column)| {
                 let (above, rest): (Vec<String>, bool) = match crate::plan::tree::unclaimed_object(&column.name) {
                     Some(object) => (crate::plan::tree::object_keys(object).map(Into::into).collect(), true),
@@ -70,34 +71,40 @@ impl<'a> Cells<'a> {
                 let own = above.len() == keys.len() && rest == entry.field().is_none();
                 keys.starts_with(&above).then_some(((own, above.len()), c))
             })
-            .max();
-        let Some(((_, depth), c)) = held else {
-            return Ok(None);
-        };
-        let mut value = self.row.values.get(c).unwrap_or(&Value::Null);
-        if self.row.failed.contains(&c) {
-            // Stored as the source spelled it.
-            return Err(value.as_str().map_or_else(|| value.to_string(), str::to_string));
-        }
-        for key in &keys[depth..] {
-            value = match value {
-                Value::Object(held) => match held.get(key) {
-                    Some(value) => value,
-                    None => return Ok(None),
-                },
-                Value::Null => return Ok(None),
-                unfit => return Err(unfit.to_string()),
-            };
-        }
-        match (entry, value) {
-            (_, Value::Null) => Ok(None),
-            (Entry::Field(_), value) => Ok(Some(std::borrow::Cow::Borrowed(value))),
-            (Entry::Unclaimed(_), Value::Object(held)) => {
-                let rest = unclaimed(held, &keys, fields);
-                Ok((!rest.is_empty()).then_some(std::borrow::Cow::Owned(Value::Object(rest))))
+            .collect();
+        held.sort_unstable_by(|a, b| b.cmp(a));
+        'column: for (nearest, ((_, depth), c)) in held.into_iter().enumerate() {
+            let mut value = self.row.values.get(c).unwrap_or(&Value::Null);
+            if self.row.failed.contains(&c) {
+                if nearest > 0 {
+                    continue;
+                }
+                // Stored as the source spelled it.
+                return Err(value.as_str().map_or_else(|| value.to_string(), str::to_string));
             }
-            (Entry::Unclaimed(_), unfit) => Err(unfit.to_string()),
+            for key in &keys[depth..] {
+                value = match value {
+                    Value::Object(held) => match held.get(key) {
+                        Some(value) => value,
+                        None => continue 'column,
+                    },
+                    Value::Null => continue 'column,
+                    unfit => return Err(unfit.to_string()),
+                };
+            }
+            match (entry, value) {
+                (_, Value::Null) => {}
+                (Entry::Field(_), value) => return Ok(Some(std::borrow::Cow::Borrowed(value))),
+                (Entry::Unclaimed(_), Value::Object(held)) => {
+                    let rest = unclaimed(held, &keys, fields);
+                    if !rest.is_empty() {
+                        return Ok(Some(std::borrow::Cow::Owned(Value::Object(rest))));
+                    }
+                }
+                (Entry::Unclaimed(_), unfit) => return Err(unfit.to_string()),
+            }
         }
+        Ok(None)
     }
 
     /// The fields this row holds under `object`, a root key: what its place above holds, then each column below it.
