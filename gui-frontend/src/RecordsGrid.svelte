@@ -53,6 +53,9 @@
     test: string;
     ready: boolean;
     rowOf?: (row: GridRow) => number;
+    /** Each test row's documents in the order a test lists them: the key of the row that shows each, or none where it
+     * is not on screen. Without it, each row is one document. */
+    documents?: Map<number, (number | undefined)[]>;
     /** Where the leader's run of the test over the steps on screen differs from what it locks. */
     marks?: TestMark[];
   };
@@ -526,10 +529,9 @@
   /** How each row on screen differs from what the test locks, by key, once the leader has run the test over it. */
   let diffs = $derived.by((): Map<number, RowDifference> | null => {
     if (!test?.ready || !test.marks || !rows) return null;
-    const rowOf = test.rowOf ?? ((row: GridRow) => row.key);
     return rowDifferences(
       test.marks,
-      rows.map((row) => ({ key: row.key, at: rowOf(row) })),
+      test.documents ?? new Map(rows.map((row) => [row.key, [row.key]])),
     );
   });
 

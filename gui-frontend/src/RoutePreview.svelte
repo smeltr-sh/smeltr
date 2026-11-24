@@ -209,6 +209,8 @@
     const leads = new Map<number, Lead>();
     const records = new Map<number, number>();
     const rows: GridRow[] = [];
+    const documents = new Map<number, (number | undefined)[]>();
+    const firsts = new Map<number, number>();
     const add = (record: number, after: unknown, lead: Lead, exceptions: GridRow['exceptions']) => {
       const key = rows.length;
       leads.set(key, lead);
@@ -226,6 +228,11 @@
       ids.map((d) => result?.destination_names[d] ?? String(d)).join(', ');
     for (const row of result.rows) {
       const sample = sampleRecords[row.row] ?? {};
+      // Its documents as a test lists them: each document each route made, by the row here that shows it, or none
+      // where it went to no destination; where no route made one, the record's first row.
+      const made: (number | undefined)[] = [];
+      documents.set(row.row, made);
+      firsts.set(row.row, rows.length);
       if (row.matched.length === 0) {
         const answer = nameOf(result.unmatched);
         const to = typeof result.unmatched === 'object' ? result.unmatched.deliver.join(', ') : '';
@@ -271,7 +278,9 @@
             exceptions,
           );
         }
-        for (const doc of sent) {
+        for (const doc of t.documents) {
+          made.push(doc.destinations.length > 0 ? rows.length : undefined);
+          if (doc.destinations.length === 0) continue;
           add(
             row.row,
             parsed(doc.document),
@@ -304,7 +313,8 @@
         );
       }
     }
-    return { rows, leads, records };
+    for (const [record, made] of documents) if (made.length === 0) made.push(firsts.get(record));
+    return { rows, leads, records, documents };
   });
   let records = $derived(table?.records ?? new Map<number, number>());
 
@@ -448,6 +458,7 @@
         test: opened.test,
         ready: !!table && ran === opened.sample && sampleRecords.length > 0,
         rowOf: (row) => records.get(row.key) ?? -1,
+        documents: table?.documents,
         marks: judged === opened.test ? result?.marks : undefined,
       }}
     />

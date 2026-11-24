@@ -2,12 +2,12 @@ import { describe, expect, it } from 'vitest';
 import type { TestMark } from './api';
 import { differenceNote, rowDifferences } from './testDiff';
 
-const rows = [
-  { key: 10, at: 0 },
-  { key: 11, at: 1 },
-  { key: 12, at: 1 },
-  { key: 13, at: 2 },
-];
+// Test row 1 made three documents: the first two on rows 11 and 12, the third sent nowhere and not on screen.
+const documents = new Map<number, (number | undefined)[]>([
+  [0, [10]],
+  [1, [11, 12, undefined]],
+  [2, [13]],
+]);
 
 describe('rowDifferences', () => {
   it('keeps each value that differs by its path, as the leader names it', () => {
@@ -23,7 +23,7 @@ describe('rowDifferences', () => {
         actual: { row: 0, values: { tax: 3, coupon: 'X' } },
       },
     ];
-    const d = rowDifferences(marks, rows).get(10)!;
+    const d = rowDifferences(marks, documents).get(10)!;
     expect([...d.fields.keys()]).toEqual(['tax', 'coupon']);
     expect(d.fields.get('tax')).toEqual({ path: 'tax', locked: 2, made: true });
     expect(d.notes).toEqual([]);
@@ -38,18 +38,27 @@ describe('rowDifferences', () => {
         expected: { row: 1, values: { id: 1 } },
         actual: { row: 1, values: {} },
       },
-      { row: 1, document: 2, fields: [], expected: { row: 1, values: { id: 2 } } },
+      { row: 1, document: 3, fields: [], expected: { row: 1, values: { id: 2 } } },
     ];
-    const d = rowDifferences(marks, rows);
+    const d = rowDifferences(marks, documents);
     expect([...d.keys()]).toEqual([12]);
     expect(d.get(12)!.notes).toEqual([
       'The test locks another document on this row; this run made none.',
     ]);
   });
 
-  it('passes over a mark on a row not on screen', () => {
-    const marks: TestMark[] = [{ row: 7, document: 0, fields: [], expected: { row: 7 } }];
-    expect(rowDifferences(marks, rows).size).toBe(0);
+  it('passes over a mark on a row or a document not on screen', () => {
+    const marks: TestMark[] = [
+      { row: 7, document: 0, fields: [], expected: { row: 7 } },
+      {
+        row: 1,
+        document: 2,
+        fields: [{ path: 'id', locked: 3, made: true }],
+        expected: { row: 1, values: { id: 3 } },
+        actual: { row: 1, values: { id: 4 } },
+      },
+    ];
+    expect(rowDifferences(marks, documents).size).toBe(0);
   });
 });
 

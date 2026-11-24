@@ -9,20 +9,19 @@ export type RowDifference = {
   notes: string[];
 };
 
-/** A row on screen, with the number the test gives it. */
-export type TestedRow = { key: number; at: number };
-
-/** The leader's `marks`, on the rows on screen that show them, by key. A test row's documents are the rows on screen
- * with that number, in the order the run made them. A document the test locks and the run did not make is marked on
- * the last of them. */
-export function rowDifferences(marks: TestMark[], rows: TestedRow[]): Map<number, RowDifference> {
-  const shown = new Map<number, number[]>();
-  for (const { key, at } of rows) shown.set(at, [...(shown.get(at) ?? []), key]);
+/** The leader's `marks`, on the rows on screen that show them, by key. `documents` holds each test row's documents in
+ * the order a test lists them, by the key of the row that shows each, or none where it is not on screen. A document
+ * the test locks and the run did not make is marked on the last on-screen row of its test row's documents. */
+export function rowDifferences(
+  marks: TestMark[],
+  documents: Map<number, (number | undefined)[]>,
+): Map<number, RowDifference> {
   const out = new Map<number, RowDifference>();
   for (const mark of marks) {
-    const keys = shown.get(mark.row);
-    if (!keys) continue;
-    const key = keys[Math.min(mark.document, keys.length - 1)];
+    const keys = documents.get(mark.row) ?? [];
+    const key =
+      mark.document < keys.length ? keys[mark.document] : keys.findLast((k) => k !== undefined);
+    if (key === undefined) continue;
     const into: RowDifference = out.get(key) ?? { fields: new Map(), notes: [] };
     out.set(key, into);
     const note = differenceNote(mark);
