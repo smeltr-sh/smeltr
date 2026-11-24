@@ -5,7 +5,7 @@ logs
 npm-debug.log*
 
 node_modules
-# The bundler's output. Not committed: build.rs refuses a release build
+# The bundler's output. Not committed: build.rs refuses an optimized build
 # against a stale one, and `just build` is what regenerates it.
 dist
 dist-demo

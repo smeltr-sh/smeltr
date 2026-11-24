@@ -120,10 +120,10 @@ fn embed(manifest: &Path, frontend: &Frontend, how: &Embed, no_gui: bool, src: &
     }
 }
 
-/// An output older than its sources is an error on a release build and a warning otherwise. `cargo build` does not run
+/// An output older than its sources is an error on an optimized build and a warning otherwise. `cargo build` does not run
 /// the bundlers: that would put node on the path of every `cargo check`, and a script that writes to a path it watches
 /// rebuilds forever. A stale build is silent where a missing one announces itself, which is why only staleness is
-/// promoted on release. `SMELTR_ALLOW_STALE_FRONTENDS=1` keeps it a warning.
+/// promoted on an optimized build. `SMELTR_ALLOW_STALE_FRONTENDS=1` keeps it a warning.
 fn warn_if_stale(manifest: &Path, frontend: &Frontend) {
     println!("cargo:rerun-if-env-changed=SMELTR_ALLOW_STALE_FRONTENDS");
 
@@ -143,14 +143,15 @@ fn warn_if_stale(manifest: &Path, frontend: &Frontend) {
     }
 
     let output = format!("{}/{}", frontend.dir, frontend.output);
-    let release = std::env::var("PROFILE").as_deref() == Ok("release");
+    // Cargo names every profile that inherits `release` "release" here: `optimized` and `dist` alike.
+    let optimized = std::env::var("PROFILE").as_deref() == Ok("release");
     let overridden = std::env::var("SMELTR_ALLOW_STALE_FRONTENDS").is_ok_and(|v| !v.is_empty());
-    if release && !overridden {
+    if optimized && !overridden {
         panic!(
-            "{output} is older than its sources, so this release binary would embed the PREVIOUS \
+            "{output} is older than its sources, so this optimized binary would embed the PREVIOUS \
              build of it.\n\
              \n\
-             Build both, in order:    just build\n\
+             Rebuild the frontends and the binary with:    just build\n\
              \n\
              Set SMELTR_ALLOW_STALE_FRONTENDS=1 to build anyway (profiling, benchmarks -- anything \
              that does not care about the GUI or its docs). A debug build only warns."
@@ -159,7 +160,7 @@ fn warn_if_stale(manifest: &Path, frontend: &Frontend) {
     println!(
         "cargo:warning={output} is older than its sources, so this binary will embed the PREVIOUS \
          build of it. Run `just build-dev` and build again. (cargo does not run the bundlers for \
-         you -- see build.rs.) A release build refuses outright rather than warning."
+         you -- see build.rs.) An optimized build refuses outright rather than warning."
     );
 }
 
