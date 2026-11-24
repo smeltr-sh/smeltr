@@ -2698,14 +2698,14 @@ Software.
 
 Used by:
 
-- [arrow-array 60.1.0](https://github.com/apache/arrow-rs)
-- [arrow-buffer 60.1.0](https://github.com/apache/arrow-rs)
-- [arrow-cmp 60.1.0](https://github.com/apache/arrow-rs)
-- [arrow-data 60.1.0](https://github.com/apache/arrow-rs)
-- [arrow-ipc 60.1.0](https://github.com/apache/arrow-rs)
-- [arrow-schema 60.1.0](https://github.com/apache/arrow-rs)
-- [arrow-select 60.1.0](https://github.com/apache/arrow-rs)
-- [parquet 60.1.0](https://github.com/apache/arrow-rs)
+- [arrow-array 60.2.0](https://github.com/apache/arrow-rs)
+- [arrow-buffer 60.2.0](https://github.com/apache/arrow-rs)
+- [arrow-cmp 60.2.0](https://github.com/apache/arrow-rs)
+- [arrow-data 60.2.0](https://github.com/apache/arrow-rs)
+- [arrow-ipc 60.2.0](https://github.com/apache/arrow-rs)
+- [arrow-schema 60.2.0](https://github.com/apache/arrow-rs)
+- [arrow-select 60.2.0](https://github.com/apache/arrow-rs)
+- [parquet 60.2.0](https://github.com/apache/arrow-rs)
 
 ```
 
@@ -14147,7 +14147,7 @@ SOFTWARE.
 
 Used by:
 
-- [arrow-array 60.1.0](https://github.com/apache/arrow-rs)
+- [arrow-array 60.2.0](https://github.com/apache/arrow-rs)
 
 ```
 MIT License
