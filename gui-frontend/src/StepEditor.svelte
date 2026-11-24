@@ -46,7 +46,8 @@
   import {
     STEP_LABELS,
     shownInto,
-    stepSummary,
+    stepFilter,
+    stepAction,
     MATCH_KINDS,
     MULTIPLICITIES,
     MULTIPLICITY_LABELS,
@@ -671,7 +672,10 @@
           <StepGlyph type={step.type} />
           <span class="type-name">{STEP_LABELS[step.type]}</span>
         </span>
-        <span class="summary ellipsis">{stepSummary(step, pipelineNames)}</span>
+        <span class="summary ellipsis"
+          >{#if stepFilter(step) !== null}<span class="step-filter">when {stepFilter(step)}:</span
+            >{' '}{/if}{stepAction(step, pipelineNames)}</span
+        >
         {#if stepErrors.length > 0 || stepWarningMessages.length > 0}
           <StateMark state={stepErrors.length === 0 ? 'warning' : 'error'} size={15} />
         {/if}
@@ -1716,6 +1720,11 @@
   .count.failed {
     color: var(--error);
     font-weight: 600;
+  }
+
+  /* Dimmed as the Routes page dims a route's condition, so where the step runs reads apart from what it does. */
+  .step-filter {
+    color: var(--dim);
   }
 
   .summary {
