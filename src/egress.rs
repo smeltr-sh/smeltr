@@ -142,11 +142,13 @@ pub type Build = Box<dyn Fn() -> Result<Box<dyn Destination>, IoError> + Send + 
 
 /// How a destination whose client does its work on the egress thread grows past one thread: by the rule its file
 /// encoders follow. Another copy starts when the queue is full and the copy that pops finds work already waiting,
-/// while a thread of the worker's limit is spare, up to `most`. Each copy has its own client and sends, retries and
-/// acknowledges what it pops; the queue, its budget and its pacing are shared.
+/// while a thread of the worker's limit is spare and no copy is stalled, up to `most`. Each copy has its own client
+/// and sends, retries and acknowledges what it pops; the queue, its budget and its pacing are shared. A copy past the
+/// first ends once it has found no work waiting for a while ([`COPY_IDLE`]), and what it sent has landed.
 struct Copier {
     build: Build,
     most: usize,
+    idle: Duration,
     spare: Mutex<crate::resources::SpareThread>,
     /// Every copy started past the first, for the queue's owner to join.
     threads: Mutex<Vec<JoinHandle<()>>>,
@@ -156,6 +158,8 @@ struct Copier {
 #[derive(Default)]
 struct Copies {
     each: Vec<Figures>,
+    /// The places of copies that have ended, for the next to take.
+    ended: Vec<usize>,
     /// When the stall was last logged, while any copy is stalled: the destination is one, however many copies send.
     logged: Option<Instant>,
 }
@@ -183,6 +187,8 @@ enum Level {
 }
 
 impl Level {
+    const ALL: [Level; 4] = [Level::InFlight, Level::Open, Level::Buffered, Level::Kept];
+
     fn metric(self) -> &'static str {
         match self {
             Level::InFlight => "smeltr_destination_in_flight",
@@ -360,7 +366,7 @@ impl Queue {
             copier: OnceLock::new(),
             copies: Mutex::new(Copies {
                 each: vec![Figures::default()],
-                logged: None,
+                ..Copies::default()
             }),
         }
     }
@@ -660,10 +666,12 @@ impl Egress {
     }
 
     /// Let up to `most` copies of the egress thread drain this queue, each with a client `build` makes ([`Copier`]).
-    pub fn copying(self, most: usize, build: Build) -> Egress {
+    /// A copy past the first ends after `idle` finding no work waiting: [`COPY_IDLE`] but in a test.
+    pub fn copying(self, most: usize, idle: Duration, build: Build) -> Egress {
         let _ = self.queue.copier.set(Copier {
             build,
             most,
+            idle,
             spare: Mutex::default(),
             threads: Mutex::default(),
         });
@@ -732,31 +740,61 @@ fn start_copy(queue: &Arc<Queue>, returns: &Arc<Returns>, metrics: &MetricsHandl
         return;
     };
     let mut copies = queue.copies.lock().unwrap();
-    if copies.each.len() >= copier.most || !copier.spare.lock().unwrap().spare() {
+    // A stalled destination is behind for want of its link, not of threads.
+    if copies.each.len() - copies.ended.len() >= copier.most
+        || copies.each.iter().any(|f| f.stalled)
+        || !copier.spare.lock().unwrap().spare()
+    {
         return;
     }
-    let destination = match (copier.build)() {
-        Ok(d) => d,
-        Err(e) => {
-            tracing::warn!(
-                name: "copy_failed", target: "destinations",
-                subject = name,
-                error = %e,
-                "a destination could not start another sending thread, so it goes on with those it has"
-            );
-            return;
-        }
-    };
-    copies.each.push(Figures::default());
-    let copy = copies.each.len() - 1;
+    let copy = copies.ended.pop().unwrap_or_else(|| {
+        copies.each.push(Figures::default());
+        copies.each.len() - 1
+    });
     drop(copies);
     copier.spare.lock().unwrap().started();
     let (queue, returns, metrics, name) = (queue.clone(), returns.clone(), metrics.clone(), name.to_string());
+    // The client is built on its own thread: building one may ask the destination first, and the copies sending
+    // meanwhile wait on none of it.
     let thread = std::thread::Builder::new()
         .name(format!("egress-{id}.{copy}"))
-        .spawn(move || run(destination, &queue, &returns, &metrics, (id, &name), copy))
+        .spawn(move || {
+            match (queue
+                .copier
+                .get()
+                .expect("a queue that starts copies has a copier")
+                .build)()
+            {
+                Ok(destination) => run(destination, &queue, &returns, &metrics, (id, &name), copy),
+                Err(e) => {
+                    tracing::warn!(
+                        name: "copy_failed", target: "destinations",
+                        subject = name,
+                        error = %e,
+                        "a destination could not start another sending thread, so it goes on with those it has"
+                    );
+                    end_copy(&queue, copy, &metrics, id);
+                }
+            }
+        })
         .expect("spawning an egress thread");
-    copier.threads.lock().unwrap().push(thread);
+    let mut threads = copier.threads.lock().unwrap();
+    threads.retain(|t| !t.is_finished());
+    threads.push(thread);
+}
+
+/// How long a copy past the first goes finding no work waiting before it ends: long enough that a lull between bursts
+/// keeps it.
+pub const COPY_IDLE: Duration = Duration::from_secs(30);
+
+/// Give up `copy`'s place for the next copy to take, and write each level it reported without it.
+fn end_copy(queue: &Queue, copy: usize, metrics: &MetricsHandle, id: DestId) {
+    let mut copies = queue.copies.lock().unwrap();
+    let figures = std::mem::take(&mut copies.each[copy]);
+    copies.ended.push(copy);
+    for level in Level::ALL.into_iter().filter(|&l| figures.levels[l as usize].is_some()) {
+        write_level(&copies, level, metrics, id);
+    }
 }
 
 /// Backoff bounds between re-sends of a unit the destination would not take: short enough to clear a blip, capped so an
@@ -805,6 +843,9 @@ fn run(
     // Whether this copy has seen the queue paced. The model's target is the queue's budget, and so what is in flight.
     let mut paced = false;
     let mut finishing = false;
+    // When this copy last found work waiting. A copy past the first that has gone its copier's `idle` without stops
+    // taking work, and ends once what it has sent lands.
+    let mut behind_at = Instant::now();
 
     loop {
         if !finishing && queue.finishing.load(Ordering::Relaxed) {
@@ -834,13 +875,25 @@ fn run(
         // A re-send that is due before anything new: it is older.
         let now = Instant::now();
         let mut pressing = true;
+        let ending = copy > 0 && queue.copier.get().is_some_and(|c| behind_at.elapsed() >= c.idle);
         let next = match again.iter().position(|(at, _)| *at <= now) {
             Some(i) => Some(again.swap_remove(i).1),
+            None if ending => {
+                if owner.is_empty() && again.is_empty() && !queue.stalled(copy) {
+                    break;
+                }
+                // Not on the queue's wakeup, which a push gives one waiting copy: a copy taking work must get it.
+                std::thread::sleep(POLL_INTERVAL);
+                None
+            }
             None => match queue.pop(POLL_INTERVAL) {
                 Popped::Closed => break,
                 Popped::Idle => None,
                 Popped::Work(u, pressed, behind) => {
                     pressing = pressed;
+                    if behind {
+                        behind_at = Instant::now();
+                    }
                     if pressed && behind {
                         start_copy(queue, returns, metrics, (id, name));
                     }
@@ -1037,6 +1090,9 @@ fn run(
 
     // Rows nobody will deliver. None of it was committed, so it is redelivered when the deployment comes back.
     abandon(returns, &owner, &again);
+    if copy > 0 {
+        end_copy(queue, copy, metrics, id);
+    }
 }
 
 /// A unit the destination has answered for. Each refusal gets its document back. A destination set to block keeps the
@@ -1300,6 +1356,11 @@ fn note_level(
     // Written under the lock: a total summed before another copy's and written after it would stand.
     let mut copies = queue.copies.lock().unwrap();
     copies.each[copy].levels[level as usize] = Some(now);
+    write_level(&copies, level, metrics, id);
+}
+
+/// Write `level` as every copy's together. Under the copies lock, which `copies` holds.
+fn write_level(copies: &Copies, level: Level, metrics: &MetricsHandle, id: DestId) {
     let total: usize = copies.each.iter().filter_map(|f| f.levels[level as usize]).sum();
     let label = id.to_string();
     metrics.gauge(level.metric(), &[("destination", label.as_str())], total as f64);

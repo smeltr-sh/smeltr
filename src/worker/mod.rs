@@ -1350,6 +1350,7 @@ fn deploy(
             topology.records.get(&d.id),
         )
         .map_err(|e| format!("destination {:?} could not be built: {e}", d.name))?;
+        let copier = client.copier();
         let stage = Egress::start(
             d.id,
             &d.name,
@@ -1360,18 +1361,9 @@ fn deploy(
         )
         .with_pool(ready.clone())
         .with_captures(captures.clone());
-        let stage = match d.kind.copies() {
-            1 => stage,
-            most => {
-                let (kind, id, name, secrets) = (kind.into_owned(), d.id, d.name.clone(), secrets.clone());
-                let records = topology.records.get(&d.id).cloned();
-                stage.copying(
-                    most,
-                    Box::new(move || {
-                        crate::io::build_destination(&kind, id, &name, handle.clone(), &secrets, records.as_ref())
-                    }),
-                )
-            }
+        let stage = match copier {
+            Some(build) => stage.copying(thread_limit, crate::egress::COPY_IDLE, build),
+            None => stage,
         };
         let stage = match borrows(d) {
             Some(pool) => stage

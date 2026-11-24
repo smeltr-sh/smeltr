@@ -1242,6 +1242,8 @@ pub struct KafkaDestination {
     /// What `held` stays under: the producer's share of `bufferBytes`, or of the most its queue may hold when the
     /// worker sizes this destination. The egress queue in front of it is what paces it; this is the backstop.
     budget: usize,
+    /// Builds another producer as this one was built, sized for the broker as this one learned it.
+    again: Arc<dyn Fn() -> Result<KafkaDestination, IoError> + Send + Sync>,
     /// The Kerberos ticket the producer signs in with, renewed while this lives. Last, so it outlives the producer.
     _ticket: Option<kerberos::Held>,
 }
@@ -1306,6 +1308,18 @@ impl KafkaDestination {
         metrics: MetricsHandle,
         secrets: &HeldSecrets,
     ) -> Result<KafkaDestination, IoError> {
+        KafkaDestination::sized(config, id, metrics, secrets, None)
+    }
+
+    /// A producer whose requests are sized for a broker ceiling already `known`, or for the one it asks for.
+    fn sized(
+        config: &KafkaDestinationConfig,
+        id: DestId,
+        metrics: MetricsHandle,
+        secrets: &HeldSecrets,
+        known: Option<(usize, &'static str)>,
+    ) -> Result<KafkaDestination, IoError> {
+        let (again_config, again_metrics, again_secrets) = (config.clone(), metrics.clone(), secrets.clone());
         let tracker = DeliveryTracker {
             state: Arc::new(Mutex::new(Completion::default())),
             metrics,
@@ -1359,10 +1373,13 @@ impl KafkaDestination {
         // refuses a request over its ceiling. An operator's own `batch.size` or `message.max.bytes` stands. Asked
         // before the producer exists, because librdkafka fixes its sizes when a client is built, and under the
         // producer's own configuration, so a secured broker answers.
-        let (ceiling, ceiling_from) =
-            message_ceiling(&producer_config, &config.default_topic).unwrap_or((DEFAULT_BATCH_BYTES, "default"));
+        let (ceiling, ceiling_from) = known
+            .or_else(|| message_ceiling(&producer_config, &config.default_topic))
+            .unwrap_or((DEFAULT_BATCH_BYTES, "default"));
         let (message_bytes, batch_bytes) = request_sizes(ceiling);
-        tracing::info!(
+        // Once a destination: a copy is sized as the producer it copies was.
+        if known.is_none() {
+            tracing::info!(
             name: "message_ceiling", target: "destinations",
             destination = %id,
             topic = %config.default_topic,
@@ -1371,7 +1388,8 @@ impl KafkaDestination {
             message_bytes,
             batch_bytes,
             "sized the producer's requests for its broker"
-        );
+            );
+        }
         for (key, bytes) in [("message.max.bytes", message_bytes), ("batch.size", batch_bytes)] {
             if producer_config.get(key).is_none() {
                 producer_config.set(key, bytes.to_string());
@@ -1394,6 +1412,16 @@ impl KafkaDestination {
             held,
             buffered,
             budget: config.producer_bytes(),
+            again: Arc::new(move || {
+                let metrics = again_metrics.clone();
+                KafkaDestination::sized(
+                    &again_config,
+                    id,
+                    metrics,
+                    &again_secrets,
+                    Some((ceiling, ceiling_from)),
+                )
+            }),
             _ticket: ticket,
         })
     }
@@ -1485,6 +1513,11 @@ fn avro_values(
 }
 
 impl Destination for KafkaDestination {
+    fn copier(&self) -> Option<crate::egress::Build> {
+        let again = self.again.clone();
+        Some(Box::new(move || Ok(Box::new(again()?) as Box<dyn Destination>)))
+    }
+
     fn deliver(
         &mut self,
         batch: BatchId,

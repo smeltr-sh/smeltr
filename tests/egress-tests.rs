@@ -1462,7 +1462,8 @@ fn a_full_queue_starts_another_copy_with_its_own_client() {
     };
     let row = vec![b'x'; 1000];
     // Four rows fill the queue, so the reader is refused room while the one copy sends.
-    let mut egress = Egress::start(0, "d", first, timeout(), 4 * row.len(), metrics()).copying(3, build);
+    let mut egress =
+        Egress::start(0, "d", first, timeout(), 4 * row.len(), metrics()).copying(3, smeltr::egress::COPY_IDLE, build);
     let mut h = egress.handle();
 
     // Long enough for a thread to be found spare twice: each reading covers a second.
@@ -1489,6 +1490,88 @@ fn a_full_queue_starts_another_copy_with_its_own_client() {
         built + 1,
         "each copy sends with its own client"
     );
+    assert_eq!(done as u64, handed, "every batch came back to its reader");
+    assert_eq!(sent.sent().len() as u64, handed);
+}
+
+/// A client that counts itself ended when it is dropped.
+struct Counted {
+    inner: Slow,
+    ended: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Destination for Counted {
+    fn deliver(
+        &mut self,
+        batch: BatchId,
+        rows: Cow<'_, [OwnedRecord]>,
+    ) -> Result<(Dispatched, Vec<smeltr::io::Rejection>), smeltr::io::IoError> {
+        self.inner.deliver(batch, rows)
+    }
+
+    fn flush(&mut self) -> Result<(), smeltr::io::IoError> {
+        self.inner.flush()
+    }
+}
+
+impl Drop for Counted {
+    fn drop(&mut self) {
+        self.ended.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// A copy past the first ends once it goes its idle time finding no work waiting, and copies start again when the
+/// queue fills again; the first copy stays, and every batch comes back to its reader.
+#[test]
+fn an_idle_copy_ends_and_another_starts_under_load() {
+    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+    let sent = FakeDestination::new();
+    let (built, ended) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let client = |sent: &FakeDestination, ended: &Arc<AtomicUsize>| Counted {
+        inner: Slow {
+            inner: sent.clone(),
+            senders: Arc::default(),
+        },
+        ended: ended.clone(),
+    };
+    let first = Box::new(client(&sent, &ended));
+    let build = {
+        let (sent, built, ended) = (sent.clone(), built.clone(), ended.clone());
+        Box::new(move || {
+            built.fetch_add(1, Relaxed);
+            Ok(Box::new(client(&sent, &ended)) as Box<dyn Destination>)
+        })
+    };
+    let row = vec![b'x'; 1000];
+    let idle = Duration::from_millis(300);
+    let mut egress = Egress::start(0, "d", first, timeout(), 4 * row.len(), metrics()).copying(3, idle, build);
+    let mut h = egress.handle();
+    let (mut handed, mut done) = (0u64, 0);
+    // Long enough for a thread to be found spare: a reading covers a second.
+    let mut load = |h: &mut smeltr::egress::EgressHandle, until: std::time::Instant| {
+        while std::time::Instant::now() < until {
+            match hand(h, handed, &[OutgoingRecord::new(&row)]) {
+                Dispatched::NoRoom { .. } => std::thread::sleep(Duration::from_millis(1)),
+                _ => handed += 1,
+            }
+            done += h.poll_completions().unwrap().len();
+        }
+    };
+    load(&mut h, std::time::Instant::now() + Duration::from_millis(2500));
+    let started = built.load(Relaxed);
+    assert!(started >= 1, "a copy started under load");
+
+    std::thread::sleep(idle * 3);
+    assert_eq!(
+        ended.load(Relaxed),
+        started,
+        "every copy past the first ended, and the first stays"
+    );
+
+    load(&mut h, std::time::Instant::now() + Duration::from_millis(2500));
+    assert!(built.load(Relaxed) > started, "copies start again under load");
+    h.flush().unwrap();
+    done += h.poll_completions().unwrap().len();
     assert_eq!(done as u64, handed, "every batch came back to its reader");
     assert_eq!(sent.sent().len() as u64, handed);
 }

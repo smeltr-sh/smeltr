@@ -1275,6 +1275,13 @@ pub trait Destination: Send {
     /// that spawns none ignores it.
     fn lend_senders(&mut self, _lend: Lend) {}
 
+    /// What builds another client like this one, for a destination whose client does its work on the egress thread:
+    /// egress runs copies of that thread, each with its own ([`crate::egress::Egress::copying`]). `None` from one that
+    /// grows by its own senders or encoders.
+    fn copier(&self) -> Option<crate::egress::Build> {
+        None
+    }
+
     /// Its deployment is stopping: from now on, finish what it holds as soon as it can, rather than when its own
     /// interval says. Returns at once; what lands is reported by `poll_completions`. The default does nothing: a
     /// destination that acknowledges as it delivers has nothing to finish sooner.
