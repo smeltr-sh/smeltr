@@ -415,6 +415,10 @@
     font-weight: 400;
     font-size: var(--text-note);
   }
+  /* A cell is as wide closed as open, so the headers of other columns cannot squeeze its text into a strip. */
+  td.mono:not(.num) {
+    min-width: 6rem;
+  }
   td input:not([type='checkbox']) {
     width: 100%;
     min-width: 6rem;

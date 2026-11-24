@@ -74,7 +74,8 @@ function setAt(values: unknown[], column: EditColumn, value: unknown) {
 }
 
 /** A sample's table as the editor holds it, every row with every value, and the columns it shows: each of the
- * table's, and for one of unclaimed fields every field any row has there. */
+ * table's that some row has a value in, and for one of unclaimed fields every field any row has there. A sample of no
+ * rows shows every column. */
 export function editTable(sample: SampleDto): {
   columns: CaptureColumnDto[];
   rows: CapturedRowDto[];
@@ -82,7 +83,8 @@ export function editTable(sample: SampleDto): {
 } {
   const { columns, rows } = heldTable(sample);
   const shown = columns.flatMap((c, at): EditColumn[] => {
-    if (!c.name.endsWith('...')) return [{ ...c, at }];
+    if (!c.name.endsWith('...'))
+      return rows.length === 0 || rows.some((row) => row.values[at] != null) ? [{ ...c, at }] : [];
     const fields: string[] = [];
     for (const row of rows)
       for (const k of recordColumns(held(row, at) ?? {})) if (!fields.includes(k)) fields.push(k);
@@ -178,8 +180,14 @@ function rowOf(columns: CaptureColumnDto[], record: SampleRecordDto): CapturedRo
   // The deepest object first, so the one above it holds what is left.
   const unclaimed = columns.flatMap((c, at) => (c.name.endsWith('...') ? [{ c, at }] : []));
   for (const { c, at } of unclaimed.sort((a, b) => b.c.name.length - a.c.name.length)) {
-    const rest = take(c.name.slice(0, -3).replace(/\.$/, ''));
-    values[at] = rest !== null && Object.keys(rest as object).length > 0 ? rest : null;
+    const under = c.name.slice(0, -3);
+    const rest = take(under.replace(/\.$/, ''));
+    // A key a column under this object claims is that column's, as a capture leaves it out (`io::unclaimed_of`).
+    const claimed = columns
+      .filter((o) => o !== c && o.name.startsWith(under))
+      .map((o) => keySpans(o.name.slice(under.length))[0]?.key);
+    const kept = Object.entries((rest ?? {}) as object).filter(([key]) => !claimed.includes(key));
+    values[at] = kept.length > 0 ? Object.fromEntries(kept) : null;
   }
   return { values };
 }

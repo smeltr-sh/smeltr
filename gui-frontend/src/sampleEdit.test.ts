@@ -22,7 +22,8 @@ const kafka: SampleDto = {
   ]),
 };
 
-// A capture, as it travels: `status` is the same on every row, and the first row's `amount` failed.
+// A capture, as it travels: `status` is the same on every row, the first row's `amount` failed, and no row has a
+// `refund`.
 const sql: SampleDto = {
   id: 's',
   name: 'invoices',
@@ -31,9 +32,13 @@ const sql: SampleDto = {
     { name: 'invoice_id', type: 'i64' },
     { name: 'status', type: 'str', value: 'open' },
     { name: 'amount', type: 'f64' },
+    { name: 'refund', type: 'f64' },
     { name: 'labels....', type: 'variant' },
   ],
-  rows: [{ values: [1, 'n/a', { env: 'prod' }], failed: [1] }, { values: [2, 3.5, null] }],
+  rows: [
+    { values: [1, 'n/a', null, { env: 'prod' }], failed: [1] },
+    { values: [2, 3.5, null, null] },
+  ],
 };
 
 const edit = (sample: SampleDto) => {
@@ -43,12 +48,12 @@ const edit = (sample: SampleDto) => {
 };
 
 describe('editTable', () => {
-  it("shows each column, and a column of unclaimed fields as a column per field, an internal object's by path", () => {
+  it("shows each column a row has a value in, and a column of unclaimed fields as a column per field, an internal object's by path", () => {
     expect(edit(sql).shown).toEqual([
       { name: 'invoice_id', type: 'i64', at: 0 },
       { name: 'status', type: 'str', at: 1 },
       { name: 'amount', type: 'f64', at: 2 },
-      { name: 'labels.env', at: 3, field: 'env' },
+      { name: 'labels.env', at: 4, field: 'env' },
     ]);
     expect(edit(kafka).shown.map((c) => c.name)).toEqual([
       '_raw',
@@ -62,8 +67,8 @@ describe('editTable', () => {
   it('holds every value on every row, a failed cell still its column', () => {
     const { rows, column } = edit(sql);
     expect(rows.map((r) => r.values)).toEqual([
-      [1, 'open', 'n/a', { env: 'prod' }],
-      [2, 'open', 3.5, null],
+      [1, 'open', 'n/a', null, { env: 'prod' }],
+      [2, 'open', 3.5, null, null],
     ]);
     expect(cellText(rows[0], column('amount'))).toBe('n/a');
     expect(cellMistyped(rows[0], column('amount'))).toBe(true);
@@ -133,10 +138,21 @@ describe('pastedRows', () => {
     const { columns, shown } = edit(sql);
     const pasted = '[{"invoice_id":3,"labels":{"env":"dev"},"extra":1},{"status":"paid"}]';
     expect(pastedRows(pasted, columns, shown)).toEqual({
-      rows: [{ values: [3, null, null, { env: 'dev' }] }, { values: [null, 'paid', null, null] }],
+      rows: [
+        { values: [3, null, null, null, { env: 'dev' }] },
+        { values: [null, 'paid', null, null, null] },
+      ],
     });
     expect(pastedRows('{\n  "invoice_id": 3\n}', columns, shown)).toEqual({
-      rows: [{ values: [3, null, null, null] }],
+      rows: [{ values: [3, null, null, null, null] }],
+    });
+    // A field under an object is its column's: the object it leaves empty is no unclaimed field.
+    const nested = [
+      { name: 'user.name', type: 'str' },
+      { name: '...', type: 'variant' },
+    ];
+    expect(pastedRows('{"user":{"name":"ann","age":3},"extra":1}', nested, [])).toEqual({
+      rows: [{ values: ['ann', { extra: 1 }] }],
     });
     expect(pastedRows('{"invoice_id":3}\nnope', columns, shown)).toEqual({
       error: 'line 2 is not a JSON object',
