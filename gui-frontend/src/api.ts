@@ -2234,6 +2234,8 @@ export function deleteSample(id: string): Promise<MutationResult> {
 export interface PreviewRequest {
   /** A whole `FileConfigDto` bundle, serialized. */
   config: string;
+  /** A test, by id, to judge the run by: the result carries its `marks`. */
+  test?: string;
   /** Defaults to the config's first pipeline. */
   pipeline?: string;
   /** A saved sample, by id, or a capture the caller holds, as `heldChoice` names it. Omitted runs no records. */
@@ -2324,6 +2326,8 @@ export interface PreviewResult {
   stage: string | null;
   errors: ApiError[];
   rows: PreviewRow[];
+  /** Where the request's test, run over its config, differs from what it locks. */
+  marks?: TestMark[];
   /** How many rows there were before the request's filter. Absent with no filter. */
   unfiltered?: number;
   /** One entry per parser step, in run order -- what the field-declaration
@@ -2413,6 +2417,7 @@ export function previewPipeline(req: PreviewRequest): Promise<PreviewResult> {
       dictionary: true,
       after_dot: req.afterDot ?? null,
       capture_filter: req.captureFilter ?? null,
+      test: req.test ?? null,
     },
     'quiet',
   );
@@ -2744,14 +2749,6 @@ export type TestMark = Difference & { document: number; fields: FieldDifference[
  * absent where the test locked no value, and `made` says whether the run made one. */
 export type FieldDifference = { path: string; locked?: unknown; made: boolean };
 
-export type TestMarksResult = { ok: boolean; errors: ApiError[]; marks?: TestMark[] };
-
-/** Runs test `test` over `config`, steps the page has not saved, as a test run runs it, and says where it differs from
- * what it locks. */
-export function checkTest(config: string, test: string): Promise<TestMarksResult> {
-  return post(branched(inArea('/preview/test-check')), { config, test }, 'quiet');
-}
-
 export function previewLock(lock: Lock): Promise<LockedResult> {
   return post(branched(inArea('/preview/test-lock')), lock, 'quiet');
 }
@@ -2823,6 +2820,8 @@ export interface RoutePreviewRow {
 export interface RoutePreviewResult {
   ok: boolean;
   errors: ApiError[];
+  /** Where the request's test, run over its config, differs from what it locks. */
+  marks?: TestMark[];
   /** The pipeline each route dispatches to, by route index. */
   route_pipelines: string[];
   /** The id of the pipeline each route dispatches to, position-parallel to
@@ -2850,7 +2849,7 @@ export interface RoutePreviewResult {
 export function routePreview(
   config: string,
   sample: string,
-  { atMicros, source }: { atMicros?: number; source?: string } = {},
+  { atMicros, source, test }: { atMicros?: number; source?: string; test?: string } = {},
 ): Promise<RoutePreviewResult> {
   const capture = heldSession(sample);
   return post(
@@ -2861,6 +2860,7 @@ export function routePreview(
       capture: capture ?? null,
       source: source ?? null,
       at_micros: atMicros ?? null,
+      test: test ?? null,
     },
     'quiet',
   );

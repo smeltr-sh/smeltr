@@ -58,17 +58,17 @@ async fn route_preview(
     axum::extract::Extension(access): axum::extract::Extension<smeltr::leader::access::Access>,
     axum::extract::Path(area): axum::extract::Path<String>,
     axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
-    Json(body): Json<OverCapture<RoutePreviewRequest>>,
+    Json(body): Json<Asked<RoutePreviewRequest>>,
 ) -> Envelope<RoutePreview> {
-    let OverCapture { req, capture } = body;
+    let Asked { req, capture, test } = body;
     let held = |session: String| capture_api::held_for_preview(&state.captures, &access, &actor, &session);
     let given = match capture.map(held).transpose() {
         Ok(given) => given,
         Err(message) => return Envelope::refused(Refusal::conflict(message)),
     };
     let branch = q.name().to_string();
-    blocking_answer(move || route_preview_on(&smeltr::startup_config::leader_data_dir(), &branch, &area, req, given))
-        .await
+    let data = smeltr::startup_config::leader_data_dir();
+    blocking_answer(move || route_preview_on(&data, &branch, &area, req, given, test)).await
 }
 
 /// The route preview of `req.config` on `branch`, over `given` or else its sample read from that branch. A group's
@@ -81,6 +81,7 @@ fn route_preview_on(
     scope: &str,
     req: RoutePreviewRequest,
     given: Option<config_file::SampleDto>,
+    test: Option<String>,
 ) -> Envelope<RoutePreview> {
     let reading = match config_api::Reading::open_in(data_dir, branch, scope) {
         Ok(reading) => reading,
@@ -89,8 +90,17 @@ fn route_preview_on(
     match sample_to_run(&reading, given, req.sample.as_deref()) {
         Ok(Some(mut sample)) => {
             sample.source = sample.source.or(req.source.clone());
-            let (config, declared_at) = preview_config(&reading, req.config, None);
-            run_route_preview(&config, sample, declared_at, req.at_micros)
+            let (config, declared_at) = match own_bundle(&req.config).and_then(|own| reading.runnable(own).ok()) {
+                Some(run) => (run.config, run.declared_at),
+                None => {
+                    let declared_at = single_origin_declared_at(&req.config, &reading.at());
+                    (req.config, declared_at)
+                }
+            };
+            let marks = test.and_then(|id| judged(&reading, &id, &config, &declared_at));
+            let mut answer = run_route_preview(&config, sample, declared_at, req.at_micros);
+            answer.body.marks = marks;
+            answer
         }
         Ok(None) => Envelope::refused(Refusal::invalid("name a sample or a held capture to route")),
         Err(refusal) => Envelope::refused(refusal),
@@ -445,14 +455,19 @@ async fn line_breaker(Json(req): Json<LineBreakerRequest>) -> Envelope {
     line_breaker_verdict(req)
 }
 
-/// A preview's request. It may name a capture the leader holds in place of a saved sample.
+/// A preview's request, and what the leader holds that it names: a capture in place of a saved sample, and a test to
+/// judge the run by.
 #[derive(serde::Deserialize)]
-struct OverCapture<T> {
+struct Asked<T> {
     #[serde(flatten)]
     req: T,
     /// A finished capture the caller opened, by its session id.
     #[serde(default)]
     capture: Option<String>,
+    /// A test on the branch, by id: the answer carries where a run of it over the request's config differs from what
+    /// it locked.
+    #[serde(default)]
+    test: Option<String>,
 }
 
 async fn preview(
@@ -461,9 +476,9 @@ async fn preview(
     axum::extract::Extension(access): axum::extract::Extension<smeltr::leader::access::Access>,
     axum::extract::Path(area): axum::extract::Path<String>,
     axum::extract::Query(q): axum::extract::Query<config_api::BranchQuery>,
-    Json(body): Json<OverCapture<PreviewRequest>>,
+    Json(body): Json<Asked<PreviewRequest>>,
 ) -> Envelope<Preview> {
-    let OverCapture { req, capture } = body;
+    let Asked { req, capture, test } = body;
     let held = |session: String| capture_api::held_for_preview(&state.captures, &access, &actor, &session);
     let given = match capture.map(held).transpose() {
         Ok(given) => given,
@@ -471,7 +486,8 @@ async fn preview(
     };
     // Reading the branch reads the repository from disk, so it goes off the async executor.
     let branch = q.name().to_string();
-    blocking_answer(move || preview_on(&smeltr::startup_config::leader_data_dir(), &branch, &area, req, given)).await
+    let data = smeltr::startup_config::leader_data_dir();
+    blocking_answer(move || preview_on(&data, &branch, &area, req, given, test)).await
 }
 
 /// A preview of what the editor is looking at on `branch`: its sample and any lookup path in it resolve the same way
@@ -485,6 +501,7 @@ fn preview_on(
     scope: &str,
     mut req: PreviewRequest,
     given: Option<config_file::SampleDto>,
+    test: Option<String>,
 ) -> Envelope<Preview> {
     let reading = match config_api::Reading::open_in(data_dir, branch, scope) {
         Ok(reading) => reading,
@@ -499,7 +516,9 @@ fn preview_on(
             let produced = produced_in(&req);
             let declared_at = merge_shared_into(&mut req, &reading)
                 .unwrap_or_else(|| single_origin_declared_at(&req.config, &reading.at()));
+            let marks = test.and_then(|id| judged(&reading, &id, &req.config, &declared_at));
             let mut answer = run_preview(req, declared_at, &columns, records);
+            answer.body.marks = marks;
             if let Some((pipeline, produces)) = produced {
                 refused_on_branch(&mut answer, data_dir, &reading, &pipeline, &produces);
             }
@@ -507,6 +526,19 @@ fn preview_on(
         }
         Err(refusal) => Preview::failed("sample", vec![ApiError::new(refusal.message())], vec![]),
     }
+}
+
+/// Where test `id`, read from the branch `reading` and run over `config` as a test run runs it, differs from what it
+/// locked. `None` for a test that cannot be read or run: it marks nothing, and the test's own run says why.
+fn judged(
+    reading: &config_api::Reading,
+    id: &str,
+    config: &str,
+    declared_at: &config_file::DeclaredAt,
+) -> Option<Vec<config_file::Mark>> {
+    let test = config_file::read_test(&mut reading.files(), id).ok()??;
+    let sample = config_file::read_sample(&mut reading.files(), &test.sample).map_err(|e| e.to_string());
+    smeltr::leader::preview::test_differences(&test, config, sample, declared_at).ok()
 }
 
 /// A schema imported by a pipeline: `pipeline` of `config` run over the records of `text`, an uploaded file, on
@@ -562,6 +594,7 @@ async fn import_schema(
                 columns: Vec::new(),
                 records,
             }),
+            None,
         );
         if !preview.succeeded() {
             return Envelope::refused(Refusal::all(preview.status, preview.errors));
@@ -650,42 +683,6 @@ fn merge_shared_into(req: &mut PreviewRequest, reading: &config_api::Reading) ->
     let run = reading.runnable(own).ok()?;
     req.config = run.config;
     Some(run.declared_at)
-}
-
-/// `config`, a scope's own bundle as a page sent it, made runnable as its preview runs it: with the branch's schemas it
-/// names, merged with `shared/`, and the lookup tables of each origin found where they are. `pipeline` is the one it
-/// runs, `None` routing a sample end to end.
-fn preview_config(
-    reading: &config_api::Reading,
-    config: String,
-    pipeline: Option<String>,
-) -> (String, config_file::DeclaredAt) {
-    if pipeline.is_none() {
-        return match own_bundle(&config).and_then(|own| reading.runnable(own).ok()) {
-            Some(run) => (run.config, run.declared_at),
-            None => {
-                let declared_at = single_origin_declared_at(&config, &reading.at());
-                (config, declared_at)
-            }
-        };
-    }
-    let mut req = PreviewRequest {
-        config,
-        pipeline,
-        sample: None,
-        show_internal: false,
-        at_micros: None,
-        filter: None,
-        attribution: false,
-        as_sample: false,
-        dictionary: false,
-        after_dot: None,
-        capture_filter: None,
-    };
-    with_branch_schemas(&mut req, reading);
-    let declared_at =
-        merge_shared_into(&mut req, reading).unwrap_or_else(|| single_origin_declared_at(&req.config, &reading.at()));
-    (req.config, declared_at)
 }
 
 /// `config`, a scope's own bundle as the editor sent it. `None` when it does not parse.
@@ -2293,7 +2290,6 @@ async fn run_leader() {
         )
         .route("/api/areas/:area/test-runs", post(test_api::run_tests))
         .route("/api/areas/:area/preview/test-lock", post(test_api::preview_lock))
-        .route("/api/areas/:area/preview/test-check", post(test_api::check_test))
         .route("/api/branches/:name/tests", get(test_api::list_change_tests))
         .route("/api/branches/:name/test-runs", post(test_api::run_change_tests))
         .route("/api/areas/:area", get(config_api::get_config))
@@ -3377,6 +3373,7 @@ mod tests {
                 capture_filter: None,
             },
             None,
+            None,
         );
 
         assert!(
@@ -3414,6 +3411,7 @@ mod tests {
                 after_dot: None,
                 capture_filter: None,
             },
+            None,
             None,
         );
         assert!(!response.succeeded(), "{} rows", response.rows.len());
@@ -3466,6 +3464,7 @@ mod tests {
                 after_dot: None,
                 capture_filter: None,
             },
+            None,
             None,
         );
 
@@ -3539,6 +3538,7 @@ mod tests {
                     capture_filter: None,
                 },
                 None,
+                None,
             );
             assert!(response.succeeded(), "{:?}", response.errors);
             (response.warnings.iter())
@@ -3598,6 +3598,7 @@ mod tests {
                 at_micros: None,
             },
             None,
+            None,
         );
 
         assert!(
@@ -3632,10 +3633,10 @@ mod tests {
             id: "c1".to_string(),
             ..sample.clone()
         };
-        let captured = super::route_preview_on(&data, "work", "west", request(None), Some(held.clone()));
+        let captured = super::route_preview_on(&data, "work", "west", request(None), Some(held.clone()), None);
         assert_eq!(captured.route_ids, vec!["audit-orders"]);
         assert_eq!(captured.rows[0].through.len(), 1, "the held capture was routed");
-        let neither = super::route_preview_on(&data, "work", "west", request(None), None);
+        let neither = super::route_preview_on(&data, "work", "west", request(None), None, None);
         assert!(!neither.succeeded());
 
         // Records that name no source, as a capture at a destination holds, route from the source the request names;
@@ -3644,18 +3645,18 @@ mod tests {
             source: None,
             ..held.clone()
         };
-        let unnamed = super::route_preview_on(&data, "work", "west", request(None), Some(sourceless.clone()));
+        let unnamed = super::route_preview_on(&data, "work", "west", request(None), Some(sourceless.clone()), None);
         assert!(
             !unnamed.succeeded(),
             "with no source anywhere, routing has nothing to select on"
         );
-        let named = super::route_preview_on(&data, "work", "west", request(Some("orders")), Some(sourceless));
+        let named = super::route_preview_on(&data, "work", "west", request(Some("orders")), Some(sourceless), None);
         assert_eq!(
             named.rows[0].through.len(),
             1,
             "routed from the source the request names"
         );
-        let kept = super::route_preview_on(&data, "work", "west", request(Some("elsewhere")), Some(held));
+        let kept = super::route_preview_on(&data, "work", "west", request(Some("elsewhere")), Some(held), None);
         assert_eq!(kept.rows[0].through.len(), 1, "the sample's own source wins");
         std::fs::remove_dir_all(&data).ok();
     }

@@ -175,6 +175,9 @@ pub struct Preview {
     /// Answers `PreviewRequest::as_sample`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub as_sample: Option<AsSample>,
+    /// Where the test the request names, run over this config, differs from what it locked ([`test_differences`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub marks: Option<Vec<config_file::Mark>>,
 }
 
 /// A sample's columns and records, without its name, and the row each record is in the preview, so a caller can keep
@@ -369,6 +372,9 @@ pub struct RoutePreview {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unmatched: Option<config_file::AnswerDto>,
     pub rows: Vec<RoutePreviewRow>,
+    /// Where the test the request names, run over this config, differs from what it locked ([`test_differences`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub marks: Option<Vec<config_file::Mark>>,
 }
 
 #[derive(serde::Serialize)]
@@ -566,6 +572,7 @@ pub fn run_route_preview(
                 refused: row.refused,
             })
             .collect(),
+        marks: None,
     })
 }
 
@@ -851,6 +858,7 @@ pub fn run_preview(
             schema_findings: found.len() as u32,
             fixes,
             missing,
+            marks: None,
         });
     }
 
@@ -994,6 +1002,7 @@ pub fn run_preview(
         fixes,
         missing,
         as_sample,
+        marks: None,
     })
 }
 

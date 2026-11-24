@@ -204,13 +204,7 @@ fn in_area(method: &Method, within: &[&str]) -> Option<Level> {
 
         // Samples, and what a preview of them shows.
         (Method::GET | Method::HEAD, ["samples"])
-        | (
-            Method::POST,
-            [
-                "preview",
-                "pipeline" | "routes" | "schema-import" | "test-lock" | "test-check",
-            ],
-        ) => Level::Viewer,
+        | (Method::POST, ["preview", "pipeline" | "routes" | "schema-import" | "test-lock"]) => Level::Viewer,
         (Method::GET | Method::HEAD | Method::PUT | Method::DELETE, ["samples", _]) => read,
         (Method::POST, ["samples"]) => Level::Editor,
         _ => return None,
