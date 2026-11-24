@@ -167,14 +167,15 @@ fn event_type(i: u64) -> &'static str {
 
 /// Suricata's own timestamp: microseconds and a `+0000` offset.
 fn stamp(c: &Clock, plus_us: u64) -> String {
-    let at = Clock::at(c.unix + (c.nanos as u64 / 1000 + plus_us) as i64 / 1_000_000, 0);
+    let us = c.nanos as u64 / 1000 + plus_us;
+    let at = Clock::at(c.unix + (us / 1_000_000) as i64, 0);
     format!(
         "{}-{:02}-{:02}T{}.{:06}+0000",
         at.year,
         at.month,
         at.day,
         at.hms(),
-        (c.nanos as u64 / 1000 + plus_us) % 1_000_000
+        us % 1_000_000
     )
 }
 
