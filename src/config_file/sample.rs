@@ -31,6 +31,10 @@ pub const SAMPLES_DIR: &str = "samples";
 /// would take the whole library down with it.
 pub const MAX_SAMPLE_RECORDS: usize = 1000;
 
+/// The most a sample's records hold in memory: what a person's request may carry, so a sample pasted whole is one that
+/// reads back.
+pub const MAX_SAMPLE_BYTES: usize = 1 << 30;
+
 /// `Err` with what to tell the author when a sample of `records` records cannot be stored: none, or more than
 /// [`MAX_SAMPLE_RECORDS`].
 pub fn refuse_sample_size(records: usize) -> Result<(), String> {
@@ -66,7 +70,7 @@ pub struct SampleDto {
     /// destination its `__destination` fields, and then its `__capture` fields, how the capture was taken
     /// (`leader::capture::Captures::capture_fields`) or how a pipeline's output was made
     /// (`leader::capture::output_fields`). Pasted records are `CaptureBatch::pasted`.
-    #[serde(flatten)]
+    #[serde(flatten, deserialize_with = "crate::heartbeat::sample_table")]
     pub table: crate::heartbeat::CaptureBatch,
 }
 
@@ -237,6 +241,32 @@ pub fn put_path(object: &mut serde_json::Map<String, serde_json::Value>, path: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sample of the same large record a thousand times is stored once, as a constant, and reads back: a sample
+    /// holds more than a capture does.
+    #[test]
+    fn a_sample_of_one_large_record_many_times_reads_back() {
+        let record = crate::io::raw_object("x".repeat(70 * 1024));
+        let sample = SampleDto {
+            id: "big".into(),
+            name: "big".into(),
+            source: None,
+            table: crate::heartbeat::CaptureBatch::pasted(vec![record; MAX_SAMPLE_RECORDS]),
+        };
+        let stored = sample_bytes(&sample);
+        assert!(stored.len() < 200 * 1024, "{} bytes", stored.len());
+        let read: SampleDto = serde_json::from_slice(&stored).unwrap();
+        assert_eq!(read.table.rows.len(), MAX_SAMPLE_RECORDS);
+
+        // Two megabytes on each of a thousand rows is past what a sample holds.
+        let file = serde_json::json!({
+            "id": "bomb", "name": "bomb",
+            "columns": [{"name": "_raw", "type": "str", "value": "x".repeat(2 << 20)}],
+            "rows": vec![serde_json::json!({"values": []}); MAX_SAMPLE_RECORDS],
+        });
+        let refused = serde_json::from_value::<SampleDto>(file).unwrap_err().to_string();
+        assert!(refused.contains("more than a sample may"), "{refused}");
+    }
     use crate::config_file::DirFileSet;
     use crate::heartbeat::{CaptureBatch, CaptureColumn, CapturedRow};
 
