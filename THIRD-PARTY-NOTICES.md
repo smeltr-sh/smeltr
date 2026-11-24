@@ -1547,7 +1547,7 @@ requirements of the license of GCC.
 
 ## Rust crates
 
-- Apache License 2.0 (391)
+- Apache License 2.0 (393)
 - MIT License (94)
 - Unicode License v3 (21)
 - BSD 3-Clause "New" or "Revised" License (13)
@@ -2032,16 +2032,17 @@ Used by:
 Used by:
 
 - [cmov 0.5.4](https://github.com/RustCrypto/utils)
-- [ctutils 0.4.7](https://github.com/RustCrypto/utils)
+- [ctutils 0.4.8](https://github.com/RustCrypto/utils)
 - [encoding_rs 0.8.44](https://github.com/hsivonen/encoding_rs)
 - [multiversion_no_op 1.0.0](https://github.com/hsivonen/multiversion_no_op)
 - [siphasher 1.0.4](https://github.com/jedisct1/rust-siphash)
 - [static_assertions 1.1.0](https://github.com/nvzqz/static-assertions-rs)
 - [tinyvec 1.13.3](https://github.com/Lokathor/tinyvec)
-- [ureq-proto 0.6.5](https://github.com/algesten/ureq-proto)
+- [ureq-proto 0.7.1](https://github.com/algesten/ureq-proto)
 - [utf8_iter 1.1.0](https://github.com/hsivonen/utf8_iter)
 - [utf_types 1.0.0](https://github.com/hsivonen/utf_types)
 - [zeroize 1.9.1](https://github.com/RustCrypto/utils)
+- [zeroize_derive 1.5.0](https://github.com/RustCrypto/utils)
 
 ```
 
@@ -4000,7 +4001,7 @@ Used by:
 - [email-encoding 0.4.3](https://github.com/lettre/email-encoding)
 - [instant-acme 0.8.5](https://github.com/djc/instant-acme)
 - [rustls-platform-verifier 0.7.1](https://github.com/rustls/rustls-platform-verifier)
-- [ureq 3.5.0](https://github.com/algesten/ureq)
+- [ureq 3.5.1](https://github.com/algesten/ureq)
 
 ```
                                  Apache License
@@ -4423,12 +4424,12 @@ Used by:
 
 Used by:
 
-- [serde_spanned 1.1.2](https://github.com/toml-rs/toml)
-- [toml 1.1.8+spec-1.1.0](https://github.com/toml-rs/toml)
-- [toml_datetime 1.1.2+spec-1.1.0](https://github.com/toml-rs/toml)
-- [toml_edit 0.25.17+spec-1.1.0](https://github.com/toml-rs/toml)
+- [serde_spanned 1.1.3](https://github.com/toml-rs/toml)
+- [toml 1.2.1+spec-1.1.0](https://github.com/toml-rs/toml)
+- [toml_datetime 1.1.3+spec-1.1.0](https://github.com/toml-rs/toml)
+- [toml_edit 0.25.19+spec-1.1.0](https://github.com/toml-rs/toml)
 - [toml_parser 1.1.5+spec-1.1.0](https://github.com/toml-rs/toml)
-- [toml_writer 1.1.3+spec-1.1.0](https://github.com/toml-rs/toml)
+- [toml_writer 1.2.0+spec-1.1.0](https://github.com/toml-rs/toml)
 
 ```
                                  Apache License
@@ -8251,7 +8252,7 @@ limitations under the License.
 Used by:
 
 - [ahash 0.8.12](https://github.com/tkaitchuck/ahash)
-- [arc-swap 1.9.3](https://github.com/vorner/arc-swap)
+- [arc-swap 1.9.4](https://github.com/vorner/arc-swap)
 - [arrayvec 0.7.8](https://github.com/bluss/arrayvec)
 - [asn1-rs-derive 0.6.0](https://github.com/rusticata/asn1-rs.git)
 - [asn1-rs 0.7.2](https://github.com/rusticata/asn1-rs.git)
@@ -8280,7 +8281,7 @@ Used by:
 - [errno 0.3.14](https://github.com/lambda-fairy/rust-errno)
 - [fastrand 2.5.0](https://github.com/smol-rs/fastrand)
 - [filetime 0.2.29](https://github.com/alexcrichton/filetime)
-- [flate2 1.1.10](https://github.com/rust-lang/flate2-rs)
+- [flate2 1.1.11](https://github.com/rust-lang/flate2-rs)
 - [fnv 1.0.7](https://github.com/servo/rust-fnv)
 - [form_urlencoded 1.2.3](https://github.com/servo/rust-url)
 - [gix-imara-diff 0.3.3](https://github.com/GitoxideLabs/gitoxide)
@@ -8305,7 +8306,7 @@ Used by:
 - [linux-raw-sys 0.12.1](https://github.com/sunfishcode/linux-raw-sys)
 - [lock_api 0.4.14](https://github.com/Amanieu/parking_lot)
 - [log 0.4.35](https://github.com/rust-lang/log)
-- [mime 0.3.17](https://github.com/hyperium/mime)
+- [mime 0.3.18](https://github.com/hyperium/mime)
 - [mysql_async 0.37.1](https://github.com/blackbeam/mysql_async)
 - [mysql_common 0.37.3](https://github.com/blackbeam/rust_mysql_common)
 - [num-bigint 0.4.8](https://github.com/rust-num/num-bigint)
@@ -8334,7 +8335,7 @@ Used by:
 - [rustls-native-certs 0.8.5](https://github.com/rustls/rustls-native-certs)
 - [rustls 0.23.46](https://github.com/rustls/rustls)
 - [scopeguard 1.2.0](https://github.com/bluss/scopeguard)
-- [smallvec 1.16.4](https://github.com/servo/rust-smallvec)
+- [smallvec 1.16.5](https://github.com/servo/rust-smallvec)
 - [socket2 0.6.5](https://github.com/rust-lang/socket2)
 - [stable_deref_trait 1.2.1](https://github.com/storyyeller/stable_deref_trait)
 - [tempfile 3.27.0](https://github.com/Stebalien/tempfile)
@@ -8346,7 +8347,7 @@ Used by:
 - [unicode-normalization 0.1.26](https://github.com/unicode-rs/unicode-normalization)
 - [unicode-properties 0.1.5](https://github.com/unicode-rs/unicode-properties)
 - [url 2.5.9](https://github.com/servo/rust-url)
-- [uuid 1.29.0](https://github.com/uuid-rs/uuid)
+- [uuid 1.29.2](https://github.com/uuid-rs/uuid)
 - [x509-parser 0.18.1](https://github.com/rusticata/x509-parser.git)
 - [yasna 0.6.0](https://github.com/qnighy/yasna.rs)
 
@@ -9420,7 +9421,7 @@ Used by:
 - [cpubits 0.1.1](https://github.com/RustCrypto/utils)
 - [cpufeatures 0.2.17](https://github.com/RustCrypto/utils)
 - [cpufeatures 0.3.1](https://github.com/RustCrypto/utils)
-- [crypto-bigint 0.7.10](https://github.com/RustCrypto/crypto-bigint)
+- [crypto-bigint 0.7.11](https://github.com/RustCrypto/crypto-bigint)
 - [crypto-common 0.1.7](https://github.com/RustCrypto/traits)
 - [crypto-common 0.2.2](https://github.com/RustCrypto/traits)
 - [ctr 0.10.1](https://github.com/RustCrypto/block-modes)
@@ -9432,7 +9433,7 @@ Used by:
 - [hex-literal 1.1.0](https://github.com/RustCrypto/utils)
 - [hmac 0.13.0](https://github.com/RustCrypto/MACs)
 - [hybrid-array 0.4.15](https://github.com/RustCrypto/hybrid-array)
-- [inout 0.2.5](https://github.com/RustCrypto/utils)
+- [inout 0.2.6](https://github.com/RustCrypto/utils)
 - [keccak 0.2.2](https://github.com/RustCrypto/sponges)
 - [md-5 0.11.0](https://github.com/RustCrypto/hashes)
 - [ml-kem 0.3.4](https://github.com/RustCrypto/KEMs)
@@ -11223,6 +11224,7 @@ Used by:
 - [aws-lc-sys 0.47.0](https://github.com/aws/aws-lc-rs)
 - [bon-macros 3.10.3](https://github.com/elastio/bon)
 - [bon 3.10.3](https://github.com/elastio/bon)
+- [constant_time_eq 0.6.1](https://codeberg.org/cesarb/constant_time_eq)
 - [delegate 0.13.5](https://github.com/kobzol/rust-delegate)
 - [dunce 1.0.5](https://gitlab.com/kornelski/dunce)
 - [enum_dispatch 0.3.13](https://gitlab.com/antonok/enum_dispatch)
@@ -11280,7 +11282,7 @@ Used by:
 - [gix 0.90.0](https://github.com/GitoxideLabs/gitoxide)
 - [half 2.7.1](https://github.com/VoidStarKat/half-rs)
 - [ident_case 1.0.1](https://github.com/TedDriggs/ident_case)
-- [itoa 1.0.18](https://github.com/dtolnay/itoa)
+- [itoa 1.0.19](https://github.com/dtolnay/itoa)
 - [kem 0.3.0](https://github.com/RustCrypto/traits)
 - [krb5-src 0.3.4](https://github.com/MaterializeInc/rust-krb5-src)
 - [libc 0.2.191](https://github.com/rust-lang/libc)
@@ -11298,7 +11300,7 @@ Used by:
 - [prettyplease 0.3.0](https://github.com/dtolnay/prettyplease)
 - [proc-macro2-diagnostics 0.10.1](https://github.com/SergioBenitez/proc-macro2-diagnostics)
 - [proc-macro2 1.0.107](https://github.com/dtolnay/proc-macro2)
-- [psl 2.1.246](https://github.com/addr-rs/psl)
+- [psl 2.1.249](https://github.com/addr-rs/psl)
 - [quote 1.0.47](https://github.com/dtolnay/quote)
 - [rand 0.10.3](https://github.com/rust-random/rand)
 - [rcgen 0.14.10](https://github.com/rustls/rcgen)
@@ -11318,7 +11320,7 @@ Used by:
 - [serde_urlencoded 0.7.1](https://github.com/nox/serde_urlencoded)
 - [simdutf8 0.1.5](https://github.com/rusticstuff/simdutf8)
 - [syn 2.0.119](https://github.com/dtolnay/syn)
-- [syn 3.0.9](https://github.com/dtolnay/syn)
+- [syn 3.0.10](https://github.com/dtolnay/syn)
 - [sync_wrapper 1.0.2](https://github.com/Actyx/sync_wrapper)
 - [tagptr 0.2.0](https://github.com/oliver-giersch/tagptr.git)
 - [thiserror-impl 2.0.21](https://github.com/dtolnay/thiserror)
@@ -12454,14 +12456,13 @@ Used by:
 - [aws-lc-sys 0.47.0](https://github.com/aws/aws-lc-rs)
 
 ```
-ISC License:
+ISC License
 
-Copyright (c) 2004-2010 by Internet Systems Consortium, Inc. ("ISC")
-Copyright (c) 1995-2003 by Internet Software Consortium
+Copyright <year> <owner> 
 
 Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted, provided that the above copyright notice and this permission notice appear in all copies.
 
-THE SOFTWARE IS PROVIDED "AS IS" AND ISC DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL ISC BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ```
 
@@ -14334,7 +14335,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- [winnow 1.0.4](https://github.com/winnow-rs/winnow)
+- [winnow 1.0.5](https://github.com/winnow-rs/winnow)
 
 ```
 Permission is hereby granted, free of charge, to any person obtaining
@@ -14394,7 +14395,7 @@ SOFTWARE.
 Used by:
 
 - [tracing-core 0.1.36](https://github.com/tokio-rs/tracing)
-- [zip 9.4.1](https://github.com/zip-rs/zip2)
+- [zip 9.5.0](https://github.com/zip-rs/zip2)
 
 ```
 The MIT License (MIT)
@@ -14458,10 +14459,10 @@ Used by:
 
 - [aho-corasick 1.1.5](https://github.com/BurntSushi/aho-corasick)
 - [byteorder 1.5.0](https://github.com/BurntSushi/byteorder)
-- [jiff-core 0.1.1](https://github.com/BurntSushi/jiff)
+- [jiff-core 0.1.4](https://github.com/BurntSushi/jiff)
 - [jiff-tzdb-platform 0.1.3](https://github.com/BurntSushi/jiff)
 - [jiff-tzdb 0.1.9](https://github.com/BurntSushi/jiff)
-- [jiff 0.2.38](https://github.com/BurntSushi/jiff)
+- [jiff 0.2.41](https://github.com/BurntSushi/jiff)
 - [memchr 2.8.3](https://github.com/BurntSushi/memchr)
 - [walkdir 2.5.0](https://github.com/BurntSushi/walkdir)
 
