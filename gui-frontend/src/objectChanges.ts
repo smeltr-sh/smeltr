@@ -13,6 +13,7 @@ import {
   type ConfigSection,
   type FileConfigDto,
   type Outcome,
+  type HeldRecord,
   type SampleDto,
   type SampleRecordDto,
   type TestDto,
@@ -717,16 +718,21 @@ export function fileChange(
   if (file.kind === SAMPLES) {
     const fieldsOf = (s: SampleDto | undefined) => s && present({ name: s.name, source: s.source });
     change.fields = diffObjects(fieldsOf(file.before), fieldsOf(file.after));
-    const recordsOf = (s: SampleDto | undefined) =>
-      s ? tableRecords(s).map((held) => held.record) : [];
-    const was = recordsOf(file.before);
-    const now = recordsOf(file.after);
-    const sourced = [...was, ...now].some((r) => sampleSource(r) !== undefined);
-    change.headers = sourced ? ['record', 'source fields'] : ['record'];
-    change.rows = compareRows(
-      was.map((r) => recordCells(r, sourced)),
-      now.map((r) => recordCells(r, sourced)),
-    );
+    const was = file.before ? tableRecords(file.before) : [];
+    const now = file.after ? tableRecords(file.after) : [];
+    const sourced = [...was, ...now].some((r) => sampleSource(r.record) !== undefined);
+    // A cell that failed its type reads differently from one that did not, though its text is the same.
+    const failed = [...was, ...now].some((r) => r.failed);
+    change.headers = [
+      'record',
+      ...(sourced ? ['source fields'] : []),
+      ...(failed ? ['failed'] : []),
+    ];
+    const cells = (r: HeldRecord) => [
+      ...recordCells(r.record, sourced),
+      ...(failed ? [(r.failed ?? []).join(', ')] : []),
+    ];
+    change.rows = compareRows(was.map(cells), now.map(cells));
   } else {
     const fieldsOf = (t: TestDto | undefined) =>
       t &&

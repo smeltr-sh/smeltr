@@ -1494,15 +1494,31 @@ impl TryFrom<WireBatch> for CaptureBatch {
     /// what it sends by that, so only a report no worker made gets there, and it would be read before anything checks
     /// who sent it.
     fn try_from(w: WireBatch) -> Result<CaptureBatch, String> {
+        w.held("capture", crate::leader::capture::MAX_BYTES_CEILING)
+    }
+}
+
+/// A sample's table, read from its file or a person's request. Refused where its constants, copied onto every row,
+/// would cost more than a sample may hold (`config_file::MAX_SAMPLE_BYTES`).
+pub fn sample_table<'de, D: serde::Deserializer<'de>>(from: D) -> Result<CaptureBatch, D::Error> {
+    let held = WireBatch::deserialize(from)?.held("sample", crate::config_file::MAX_SAMPLE_BYTES);
+    held.map_err(serde::de::Error::custom)
+}
+
+impl WireBatch {
+    /// The batch with every value on every row. Err where its constants, copied onto every row, would cost more than
+    /// `ceiling`, what a `holder` may hold: a batch of a few bytes would otherwise be read into any amount of memory.
+    fn held(self, holder: &str, ceiling: usize) -> Result<CaptureBatch, String> {
+        let w = self;
         let constants: usize = w
             .columns
             .iter()
             .filter_map(|c| c.value.as_ref())
             .map(|v| CapturedRow::value_size(v) + EXPANDED_VALUE_COST)
             .sum();
-        if constants.saturating_mul(w.rows.len()) > crate::leader::capture::MAX_BYTES_CEILING {
+        if constants.saturating_mul(w.rows.len()) > ceiling {
             return Err(format!(
-                "a batch whose constants over its {} rows would hold more than a capture may",
+                "a batch whose constants over its {} rows would hold more than a {holder} may",
                 w.rows.len()
             ));
         }
