@@ -50,7 +50,7 @@ fi
 [ -f state/sessions.json ] || { echo "no fleet staged here: run $0 without \`capture\` first" >&2; exit 1; }
 if [ "${1:-}" = demo ]; then
     # A recording is of these generators only if they staged the fleet and write its traffic.
-    current=$("${CARGO_TARGET_DIR:-$REPO/target}/release/examples/demo-traffic" fingerprint)
+    current=$("${CARGO_TARGET_DIR:-$REPO/target}/optimized/examples/demo-traffic" fingerprint)
     if [ "$(cat state/fingerprint 2>/dev/null)" != "$current" ] || [ "$(cat .traffic.fingerprint 2>/dev/null)" != "$current" ]; then
         echo "the fleet is from older generators: run.sh stop, then run.sh demo" >&2
         exit 1
