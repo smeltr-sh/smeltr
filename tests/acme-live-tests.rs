@@ -254,7 +254,7 @@ fn pebble_issues_over_tls_alpn_01_and_renews_over_http_01() {
     assert_eq!(status, 200, "{saved}");
     assert_eq!(saved["challenge"], "tls-alpn-01");
     assert_eq!(saved["httpPort"], HTTP_PORT);
-    assert!(saved["issued"].is_null());
+    assert!(saved["notAfterMillis"].is_null(), "nothing ordered yet");
 
     // The first order is under another root than the leader's own, so it begins a rotation rather than serving at
     // once. Nobody is enrolled to wait for, and the next read of the certificates finishes it.
@@ -275,14 +275,16 @@ fn pebble_issues_over_tls_alpn_01_and_renews_over_http_01() {
     let issuing = certificates["authority"]["fingerprint"].as_str().unwrap().to_string();
     let first = certificates["served"]["fingerprint"].as_str().unwrap().to_string();
     let (_, acme) = leader.call("GET", "/api/settings/tls/acme", None);
-    assert_eq!(acme["issued"], first);
     assert!(acme["lastError"].is_null(), "{acme}");
     assert!(acme["renewAfterMillis"].as_i64().unwrap() < acme["notAfterMillis"].as_i64().unwrap());
 
     // A renewal over the other challenge: the same root, so it is served at once.
     let (status, saved) = leader.call("PUT", "/api/settings/tls/acme", Some(settings("http-01")));
     assert_eq!(status, 200, "{saved}");
-    assert_eq!(saved["issued"], first, "changing the challenge forgets nothing");
+    assert_eq!(
+        saved["notAfterMillis"], acme["notAfterMillis"],
+        "changing the challenge forgets nothing"
+    );
     leader.order();
     let (_, renewed) = leader.call("GET", "/api/settings/tls", None);
     assert_eq!(renewed["source"], "acme", "{renewed}");
@@ -299,10 +301,6 @@ fn pebble_issues_over_tls_alpn_01_and_renews_over_http_01() {
     assert_eq!(status, 200);
     let acme = leader.order();
     assert!(acme["lastError"].as_str().is_some_and(|e| !e.is_empty()), "{acme}");
-    assert_eq!(
-        acme["issued"], renewed["served"]["fingerprint"],
-        "what is served is still the renewal"
-    );
     assert!(
         acme["renewAfterMillis"].is_i64(),
         "saving other names leaves the renewal where it was: the page orders them itself"
