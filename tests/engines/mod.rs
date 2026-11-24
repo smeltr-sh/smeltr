@@ -904,6 +904,75 @@ impl Broker {
             .sum()
     }
 
+    /// The most records a second the broker on the `rest` cores passes from `from` to another topic: what a stand-in
+    /// for an engine on the `apart` cores moves, over how busy that left `rest`. The stand-in does nothing else: a
+    /// consumer and a producer for each of its hyperthreads, every write acknowledged as the engines' are, `from` read
+    /// again from its start whenever it runs out.
+    fn ceiling(&self, from: &str, apart: &[usize], rest: &[usize]) -> f64 {
+        use rdkafka::consumer::Consumer;
+        use rdkafka::error::KafkaError;
+        use rdkafka::producer::{BaseProducer, BaseRecord, Producer};
+        use rdkafka::{Message, Offset, TopicPartitionList};
+        let to = format!("{from}-ceiling");
+        self.create(&to);
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // Its threads keep the cores of the thread that starts them.
+        set_affinity(0, apart);
+        let n = apart.len();
+        let threads: Vec<_> = (0..n as i32)
+            .map(|k| {
+                let (brokers, from, to, stop) = (self.brokers.clone(), from.to_string(), to.clone(), stop.clone());
+                std::thread::spawn(move || {
+                    let consumer: rdkafka::consumer::BaseConsumer = rdkafka::ClientConfig::new()
+                        .set("bootstrap.servers", &brokers)
+                        .set("group.id", "engine-speed-ceiling")
+                        .set("enable.partition.eof", "true")
+                        .create()
+                        .expect("a Kafka consumer");
+                    let mut mine = TopicPartitionList::new();
+                    for p in (k..partitions()).step_by(n) {
+                        mine.add_partition_offset(&from, p, Offset::Beginning).unwrap();
+                    }
+                    consumer.assign(&mine).expect("the assignment");
+                    let producer: BaseProducer = rdkafka::ClientConfig::new()
+                        .set("bootstrap.servers", &brokers)
+                        .set("acks", "all")
+                        .create()
+                        .expect("a Kafka producer");
+                    while !stop.load(Ordering::Relaxed) {
+                        match consumer.poll(Duration::from_millis(100)) {
+                            Some(Ok(m)) => {
+                                let mut record =
+                                    BaseRecord::<(), [u8]>::to(&to).payload(m.payload().unwrap_or_default());
+                                while let Err((_, r)) = producer.send(record) {
+                                    producer.poll(Duration::from_millis(10));
+                                    record = r;
+                                }
+                                producer.poll(Duration::ZERO);
+                            }
+                            Some(Err(KafkaError::PartitionEOF(p))) => {
+                                let _ = consumer.seek(&from, p, Offset::Beginning, Duration::from_secs(10));
+                            }
+                            _ => {}
+                        }
+                    }
+                    let _ = producer.flush(Duration::from_secs(10));
+                })
+            })
+            .collect();
+        set_affinity(0, rest);
+        let consumer = self.consumer();
+        // Bounded by records too: what it writes stays on the broker's tmpfs until the topic goes.
+        let (rate, busy) = window(|| self.count(&consumer, &to), 4_000_000, rest);
+        stop.store(true, Ordering::Relaxed);
+        for t in threads {
+            let _ = t.join();
+        }
+        self.delete(&to);
+        // The stand-in pays librdkafka's cost for each record, as an engine does, so it may be slower than the broker.
+        rate / busy.max(0.01)
+    }
+
     /// Every record in `topic`, which holds `count` of them, as documents.
     fn read(&self, topic: &str, count: u64) -> Vec<Value> {
         use rdkafka::Message;
@@ -1625,11 +1694,26 @@ struct Timed {
 /// engine's, so it is reported as harness-bound instead of as the engine's.
 const HEADROOM: f64 = 0.7;
 
+/// How fast `count` grows while a stand-in for an engine takes input, after a second's warm-up, and how busy that
+/// keeps the harness's `rest` cores. The window closes after five seconds or `most` more records, whichever is first,
+/// so a stand-in that keeps what it delivers holds no more than that.
+fn window(count: impl Fn() -> u64, most: u64, rest: &[usize]) -> (f64, f64) {
+    std::thread::sleep(Duration::from_secs(1));
+    let (from, at, idle_before) = (count(), Instant::now(), idle(rest));
+    while at.elapsed() < Duration::from_secs(5) && count() < from.saturating_add(most) {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let wall = at.elapsed().as_secs_f64();
+    let busy = 1.0 - (idle(rest) - idle_before) / wall / rest.len() as f64;
+    ((count() - from) as f64 / wall, busy)
+}
+
 /// The most input records a second the harness can send `push`'s way on its `rest` cores. Its sender posts to its
 /// own sink, which answers at once from the `apart` cores, so what `rest` spends is the sending alone, as in a row,
-/// where the engine answers each request and posts what it makes in batches. The ceiling is the rate it reaches over
-/// how busy that left `rest`: the rate with every one of them busy.
-fn ceiling(push: &Push, apart: &[usize], rest: &[usize]) -> f64 {
+/// where the engine answers each request and posts what it makes in batches. A request costs the sink what it costs
+/// an engine, so the sink may be slower than the sender: the ceiling is the rate it reaches over how busy that left
+/// `rest`, the rate with every one of them busy.
+fn http_ceiling(push: &Push, apart: &[usize], rest: &[usize]) -> f64 {
     // The sink's threads keep the cores of the thread that starts them.
     set_affinity(0, apart);
     let sink = Sink::start();
@@ -1643,17 +1727,53 @@ fn ceiling(push: &Push, apart: &[usize], rest: &[usize]) -> f64 {
         0,
         u64::MAX / 2,
     );
-    std::thread::sleep(Duration::from_secs(2));
-    let (from, at, idle_before) = (sink.rows(), Instant::now(), idle(rest));
-    std::thread::sleep(Duration::from_secs(5));
-    let wall = at.elapsed().as_secs_f64();
-    let rate = (sink.rows() - from) as f64 / wall;
-    let busy = 1.0 - (idle(rest) - idle_before) / wall / rest.len() as f64;
+    let (rate, busy) = window(|| sink.rows(), u64::MAX, rest);
     sender.stop();
     while sender.running() > 0 {
         std::thread::sleep(Duration::from_millis(10));
     }
     rate / busy.max(0.01)
+}
+
+/// The most syslog records a second the harness streams on its cores: to a listener on the `apart` cores that counts
+/// the lines and drops them.
+fn syslog_ceiling(apart: &[usize], rest: &[usize]) -> f64 {
+    use std::io::Read;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (lines, stop) = (
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    );
+    // Its threads keep the cores of the thread that starts them.
+    set_affinity(0, apart);
+    let (l, s) = (lines.clone(), stop.clone());
+    std::thread::spawn(move || {
+        for socket in listener.incoming() {
+            if s.load(Ordering::Relaxed) {
+                return;
+            }
+            let Ok(mut socket) = socket else { continue };
+            let (l, s) = (l.clone(), s.clone());
+            std::thread::spawn(move || {
+                let mut buf = vec![0; 1 << 20];
+                while !s.load(Ordering::Relaxed) {
+                    match socket.read(&mut buf) {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => l.fetch_add(memchr::memchr_iter(b'\n', &buf[..n]).count() as u64, Ordering::Relaxed),
+                    };
+                }
+            });
+        }
+    });
+    set_affinity(0, rest);
+    // Ends once the listener closes its connections.
+    stream_syslog(port, 0, u64::MAX / 2);
+    let (rate, _) = window(|| lines.load(Ordering::Relaxed), u64::MAX, rest);
+    stop.store(true, Ordering::Relaxed);
+    // Wakes the listener to see it.
+    let _ = std::net::TcpStream::connect(("127.0.0.1", port));
+    rate
 }
 
 /// Times `engine` running `workload` over `transport` on `cpus`, the harness on `rest`.
@@ -1846,15 +1966,21 @@ fn speed() {
 
     // Each way input is pushed, before any engine runs. The sink takes every engine's body for one alike.
     let mut ceilings: Vec<(In, f64)> = Vec::new();
-    // Its sink on the cores the engines will have; with the engine on a host of its own, it shares the harness's, and
-    // the ceiling is lower than it is.
+    // Each stand-in for an engine on the cores the engines will have; with the engine on a host of its own, it shares
+    // the harness's, and the ceiling is lower than it is.
     let apart = if remote { rest.clone() } else { on(most) };
     for &(_, t) in &cases {
         if ceilings.iter().any(|c| c.0 == t.from) {
             continue;
         }
-        if let Some(push) = engines.iter().find_map(|&e| t.from.push(e)) {
-            let c = ceiling(&push, &apart, &rest);
+        let c = match (t.from, engines.iter().find_map(|&e| t.from.push(e))) {
+            (_, Some(push)) => Some(http_ceiling(&push, &apart, &rest)),
+            (In::Syslog, None) => Some(syslog_ceiling(&apart, &rest)),
+            (In::Kafka, None) => services.broker.as_ref().map(|b| b.ceiling(INPUT_TOPIC, &apart, &rest)),
+            (In::S3Sqs, None) => services.objects.as_ref().map(|o| o.ceiling(&apart, &rest)),
+            _ => None,
+        };
+        if let Some(c) = c {
             println!(
                 "{:<12} {:<6} {:<9} harness ceiling {c:>9.0} records/s",
                 "",
@@ -2509,6 +2635,53 @@ mod announced {
                 );
             }
             queue
+        }
+
+        /// The most records a second LocalStack hands out as an engine asks: a stand-in for one on the `apart` cores
+        /// that takes the announcements of its own queue, fetches each object and deletes the announcement, eight at a
+        /// time for each of its hyperthreads, and does nothing with what it fetched.
+        pub fn ceiling(&self, apart: &[usize], rest: &[usize]) -> f64 {
+            let queue = self.announce("engine-speed-ceiling", FINITE * rows());
+            let (fetched, stop) = (
+                Arc::new(AtomicU64::new(0)),
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            );
+            // Its threads keep the cores of the thread that starts them.
+            set_affinity(0, apart);
+            let rate = std::thread::scope(|scope| {
+                for _ in 0..apart.len() * 8 {
+                    let (queue, fetched, stop) = (&queue, &fetched, &stop);
+                    scope.spawn(move || {
+                        while !stop.load(Ordering::Relaxed) {
+                            let got = self.sqs(
+                                "ReceiveMessage",
+                                json!({"QueueUrl": queue, "MaxNumberOfMessages": 10, "WaitTimeSeconds": 1}),
+                            );
+                            let mut done = Vec::new();
+                            for m in got["Messages"].as_array().into_iter().flatten() {
+                                let event: Value = serde_json::from_str(m["Body"].as_str().unwrap_or("{}")).unwrap();
+                                let key = event["Records"][0]["s3"]["object"]["key"].as_str().unwrap_or_default();
+                                if stores::fetch("GET", &format!("{}/{BUCKET}/{key}", self.url), &[], Vec::new())
+                                    .is_some()
+                                {
+                                    fetched.fetch_add(FILE_ROWS, Ordering::Relaxed);
+                                }
+                                done.push(json!({"Id": done.len().to_string(), "ReceiptHandle": m["ReceiptHandle"]}));
+                            }
+                            if !done.is_empty() {
+                                self.sqs("DeleteMessageBatch", json!({"QueueUrl": queue, "Entries": done}));
+                            }
+                        }
+                    });
+                }
+                set_affinity(0, rest);
+                let (rate, _) = window(|| fetched.load(Ordering::Relaxed), u64::MAX, rest);
+                stop.store(true, Ordering::Relaxed);
+                rate
+            });
+            // Once every reader is done with it.
+            self.sqs("DeleteQueue", json!({"QueueUrl": queue}));
+            rate
         }
 
         fn sqs(&self, action: &str, body: Value) -> Value {

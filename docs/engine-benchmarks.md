@@ -104,10 +104,19 @@ keeps. More is a duplicate and less is a loss, and either fails the run.
   whole physical cores, the first ones, so the count is a multiple of a core's threads. The harness runs on the other
   cores, so it never shares a core with the engine. Published runs give the engine a host of its own, named by
   `ENGINE_DOCKER_HOST`, so the harness has every core of the other.
-- **The harness's ceiling.** Before any engine runs, the harness measures, for each way input is pushed, the most
-  records a second its cores can send: its sender posts to its own sink, which answers at once from the engine's
-  cores, and the rate it reaches is scaled to every harness core busy. A row faster than 70% of that may be the
-  harness's speed, so it is reported as harness-bound, not as the engine's.
+- **The harness's ceiling.** Before any engine runs, the harness measures, for each way input reaches an engine, the
+  most records a second it can supply. A stand-in for an engine, on the engine's cores, takes the input and does
+  nothing else with it:
+  - pushed over HTTP, the harness's own sink answers each request. A request costs it what it costs an engine, so its
+    rate is scaled to every harness core busy;
+  - over syslog, a listener counts the lines;
+  - over Kafka, a consumer and a producer for each hyperthread copy the input topic to another, every write
+    acknowledged. Each record costs it what it costs an engine's client, so its rate is scaled to every harness core
+    busy;
+  - over S3 and SQS, eight readers for each hyperthread take each announcement, fetch its object and delete it.
+
+  A row faster than 70% of its ceiling may be the harness's speed, so it is reported as harness-bound, not as the
+  engine's.
 - **Memory.** Every container gets the same limit, 4 GB unless `ENGINE_MEMORY_GB` says otherwise.
 - **Disk.** A run fails when less than 5 GB of the disk is free, before or while it runs: NiFi keeps its queues on the
   disk and slows as it fills.
