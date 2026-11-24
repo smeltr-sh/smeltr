@@ -27,10 +27,16 @@ const ALL: &[&Pipeline] = &[
     &reference::nginx::PIPELINE,
     &reference::cloudtrail::PIPELINE,
     &reference::asa::PIPELINE,
+    &reference::suricata::PIPELINE,
 ];
 
 fn maps(p: &Pipeline) {
-    let (r, sink) = reference::run(&(p.bundle)(), p.line, 2_000, 500, 8);
+    maps_keeping(p, 8);
+}
+
+/// `maps`, checking the first `keep` documents.
+fn maps_keeping(p: &Pipeline, keep: usize) {
+    let (r, sink) = reference::run(&(p.bundle)(), p.line, 2_000, 500, keep);
     let kept: Vec<serde_json::Value> = sink
         .kept()
         .iter()
@@ -73,6 +79,12 @@ fn cloudtrail_maps() {
 #[test]
 fn asa_maps() {
     maps(&reference::asa::PIPELINE);
+}
+
+#[test]
+fn suricata_maps() {
+    // Every event type and both outcomes of every lookup are among the first few hundred.
+    maps_keeping(&reference::suricata::PIPELINE, 300);
 }
 
 /// One run of the pipeline `BENCH_PIPELINE` names, printed as the line the
