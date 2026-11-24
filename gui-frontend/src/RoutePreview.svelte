@@ -16,6 +16,7 @@
   import { unreported } from './errors.svelte';
   import InlineError from './InlineError.svelte';
   import RouteDiagram from './RouteDiagram.svelte';
+  import LockTestDialog from './LockTestDialog.svelte';
   import { routeCounts } from './routeCounts';
   import SampleMenu from './SampleMenu.svelte';
   import { editable } from './access';
@@ -23,7 +24,8 @@
   import { recordsOf, SampleChoices } from './sampleChoices.svelte';
   import {
     heldSession,
-    chooseLock,
+    putTest,
+    type LockChoice,
     routePreview,
     listTests,
     errorText,
@@ -80,12 +82,14 @@
   let relocking = $derived(!!opened && selected === opened.sample);
   // The end-to-end tests, for the sample menu. A failure to load them only leaves them out of the menu.
   let tests: TestSummary[] = $state([]);
-  listTests()
-    .then((res) => {
-      tests = res.tests.filter((t) => !t.pipeline);
-      void standings.run(tests.map((t) => t.id));
-    })
-    .catch(() => {});
+  const loadTests = () =>
+    listTests()
+      .then((res) => {
+        tests = res.tests.filter((t) => !t.pipeline);
+        void standings.run(tests.map((t) => t.id));
+      })
+      .catch(() => {});
+  void loadTests();
 
   // Where each of those tests stands, for the sample menu.
   const standings = new Standings();
@@ -106,15 +110,29 @@
               : '',
   );
 
-  /** Locks the fields and records on screen: a record's rows share its number. */
+  /** The fields and records on screen when Lock this as a test was pressed, while its dialog is open: a record's rows
+   * share its number. */
+  let locking = $state<LockChoice | null>(null);
   function goLockTest() {
     const { rows, fields } = grid?.onScreen() ?? { rows: [], fields: [] };
-    chooseLock(
-      { fields, rows: rows.map((r) => records.get(r.key) ?? -1).filter((r) => r >= 0) },
-      relocking
-        ? `#/build/tests/relock/${encodeURIComponent(opened!.test)}`
-        : `#/build/tests/lock-e2e/${encodeURIComponent(ran)}`,
-    );
+    const numbers = rows.map((r) => records.get(r.key) ?? -1).filter((r) => r >= 0);
+    locking = { fields, rows: [...new Set(numbers)] };
+  }
+  async function lockShown(name: string) {
+    if (!locking) return;
+    const id = relocking ? opened!.test : name;
+    const res = await putTest(id, {
+      name,
+      sample: ran,
+      fields: locking.fields,
+      rows: locking.rows,
+    });
+    if (!res.ok) return;
+    await loadTests();
+    opened = { test: id, sample: ran };
+    addressTest(opened);
+    // Closed last, so whoever waits on the dialog finds the test opened.
+    locking = null;
   }
 
   async function run() {
@@ -444,6 +462,16 @@
     />
   {/if}
 </div>
+
+<LockTestDialog
+  open={locking !== null}
+  {relocking}
+  name={relocking ? (tests.find((t) => t.id === opened?.test)?.name ?? '') : ''}
+  fields={locking?.fields.length ?? 0}
+  rows={locking?.rows.length ?? 0}
+  onlock={lockShown}
+  oncancel={() => (locking = null)}
+/>
 
 <style>
   .preview {

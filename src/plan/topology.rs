@@ -817,9 +817,13 @@ impl SourceMeta {
 
     /// The meta of a sample captured under `columns`: each column a field of its record, read from the record object by
     /// its path and typed as spelled, `__source` and `__destination` columns as much as any other. A sample that names
-    /// no field, a paste, is `_raw` text.
+    /// no field, a paste, is `_raw` text; the instant it was taken at is the preview's, not a field of its records.
     pub fn of_columns(columns: &[crate::heartbeat::CaptureColumn]) -> Result<SourceMeta, String> {
-        if columns.iter().all(|c| c.name == crate::plan::tree::UNCLAIMED) {
+        let taken_at = |c: &crate::heartbeat::CaptureColumn| c.name == crate::heartbeat::CaptureBatch::TAKEN_AT;
+        if columns
+            .iter()
+            .all(|c| c.name == crate::plan::tree::UNCLAIMED || taken_at(c))
+        {
             return Ok(SourceMeta::NONE);
         }
         let mut open = false;

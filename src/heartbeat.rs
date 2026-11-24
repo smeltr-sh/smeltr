@@ -1355,6 +1355,34 @@ impl CaptureBatch {
         self.header_size() + self.rows.iter().map(CapturedRow::size).sum::<usize>()
     }
 
+    /// The column every capture's rows carry the instant it was taken in.
+    pub const TAKEN_AT: &'static str = "__capture.timestamp";
+
+    /// What `now()` reads over these rows: the instant they were taken. Every preview of them, and every test over them,
+    /// runs at that one instant, so a run of them is a function of the config alone.
+    pub fn instant(&self) -> Option<i64> {
+        let column = self.column(Self::TAKEN_AT)?;
+        crate::ops::timeparse::parse_auto(self.rows.first()?.values.get(column)?.as_str()?)
+    }
+
+    /// These rows taken at `micros`, unless they say when they were taken already: what saving a paste stamps it with.
+    pub fn stamped(mut self, micros: i64) -> CaptureBatch {
+        if self.column(Self::TAKEN_AT).is_some() {
+            return self;
+        }
+        let mut text = Vec::new();
+        crate::ops::datetime::write_iso8601_micros_bare(micros, &mut text);
+        let text = serde_json::Value::String(String::from_utf8(text).expect("an instant is written as ASCII"));
+        self.columns.push(CaptureColumn {
+            name: Self::TAKEN_AT.to_string(),
+            ty: crate::core::column::DataType::DateTime.spell(),
+        });
+        for row in &mut self.rows {
+            row.values.push(text.clone());
+        }
+        self
+    }
+
     /// The table of `records` a person pasted, each a record object: one column, the root's unclaimed fields, which
     /// holds each whole.
     pub fn pasted(records: Vec<crate::io::RecordObject>) -> CaptureBatch {

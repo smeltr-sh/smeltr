@@ -49,10 +49,10 @@ export interface MutationResult {
 }
 
 import { editedBy, suggestBranchName } from './branchNames';
-import { store, stored, storedJson } from './stored';
+import { store, stored } from './stored';
 import { csrf, recheck, session, signedOut, type AccessDto, type AccessLevel } from './session';
 import { bareError, errors, Reported, type Call, type Weight } from './errors.svelte';
-import { tableRecords } from './capture';
+import { heldTable, tableRecords } from './capture';
 
 export function errorText(errors: ApiError[]): string {
   return errors.map((e) => e.message).join('; ');
@@ -2223,9 +2223,8 @@ export function deleteSample(id: string): Promise<MutationResult> {
 // -- pipeline preview ---------------------------------------------------
 //
 // Runs one pipeline over a saved sample in memory (`leader::preview::run_preview`).
-// Nothing is saved. `atMicros` is what `now()` and a reference-less
-// `parseTime` read; a fresh one is an ordinary preview, a locked one is
-// how a test re-runs against the instant it was captured at.
+// Nothing is saved. `now()` reads the instant the sample was taken, so a
+// preview and a test over one sample read the same instant.
 
 export interface PreviewRequest {
   /** A whole `FileConfigDto` bundle, serialized. */
@@ -2236,8 +2235,6 @@ export interface PreviewRequest {
   sample?: string;
   /** Show `__`-prefixed control variables in the output. */
   showInternal?: boolean;
-  /** Unix microseconds. Omitted reads the wall clock. */
-  atMicros?: number;
   /** A Bool over the pipeline's output: only the rows it is true for come back.
    * One that does not parse fails at the `filterParse` stage, and one that parses but does not compile at the
    * `filter` stage. */
@@ -2252,6 +2249,8 @@ export interface PreviewRequest {
   /** A capture filter at a destination to check against each route delivering there. Asked, the preview answers it
    * instead of running a sample. */
   captureFilter?: { text: string; destination: string };
+  /** A test of this pipeline over this sample, by id: the rows are compared with it (`PreviewResult.verdict`). */
+  test?: string;
 }
 
 /** Where an expression sits, which decides what its names read: at the start
@@ -2336,6 +2335,8 @@ export interface PreviewResult {
   after_dot?: DotAnswer;
   /** The answer to `PreviewRequest.captureFilter`. */
   capture_filter?: CaptureFilterCheck;
+  /** What these rows make of `PreviewRequest.test`. Absent over another sample than the test's. */
+  verdict?: Verdict;
   /** What compiles but is likely a mistake, each placed at its step as an error is. */
   warnings?: ApiError[];
   /** How many of `warnings` are where the rows break the schemas the pipeline produces. */
@@ -2400,7 +2401,6 @@ export function previewPipeline(req: PreviewRequest): Promise<PreviewResult> {
       sample: (!capture && req.sample) || null,
       capture: capture || null,
       show_internal: req.showInternal ?? false,
-      at_micros: req.atMicros ?? null,
       filter: req.filter ?? null,
       attribution: req.attribution ?? false,
       as_sample: req.asSample ?? false,
@@ -2559,16 +2559,47 @@ export type TestDto = {
    * preview, which needs `SampleDto.source`. */
   pipeline?: string;
   sample: string;
-  /** The instant the test was first locked, in unix microseconds: what `now()`
-   * reads on every run, and on every lock again. */
-  lockedAt: number;
   /** Records the sample held when this was locked. */
   rowsIn: number;
-  /** The fields checked, named as the records grid names its columns. */
-  fields: string[];
-  /** What the run made of each checked row, in the order it made them. */
-  rows: Outcome[];
+  /** The rows checked, under the fields checked, each field named as the records grid names its column and
+   * typed as the run typed it. A field a row lacks is null, and so is every field of a row that made none. */
+  table: CaptureBatchDto;
+  /** Each row of `table`, in its order. */
+  shown: Shown[];
 };
+
+/** Which row of a run a test's table row is, and how it was made. Mirrors `config_file::Shown`. */
+export type Shown = {
+  row: number;
+  /** The row made no document: a pipeline dropped it, or no route kept it. */
+  dropped?: boolean;
+  /** End-to-end only: where the document went. */
+  sent?: Sent;
+};
+
+/** The fields `test` checks. */
+export function testFields(test: TestDto): string[] {
+  return test.table.columns.map((c) => c.name);
+}
+
+/** What `test` checks of each row, as a run's documents are cut down to its fields: `TestDto::outcomes`. */
+export function testOutcomes(test: TestDto): Outcome[] {
+  const { columns, rows } = heldTable(test.table);
+  return test.shown.map((shown, i) => ({
+    row: shown.row,
+    ...(shown.dropped
+      ? {}
+      : {
+          values: Object.fromEntries(
+            columns.flatMap((c, j) => {
+              const value = rows[i]?.values[j];
+              return value == null ? [] : [[c.name, value]];
+            }),
+          ),
+        }),
+    ...(shown.sent ? { sent: shown.sent } : {}),
+  }));
+}
 
 /** What locking a test asks for: a `TestDto` without what the run made. The leader makes that itself from
  * the same run a test run compares, so a test passes the moment it is locked. Mirrors `config_file::Lock`. */
@@ -2577,38 +2608,19 @@ export type Lock = {
   /** Absent routes the sample by its source, as `TestDto.pipeline`. */
   pipeline?: string;
   sample: string;
-  lockedAt: number;
   /** Absent checks every field the run made. */
   fields?: string[];
   /** Absent checks every row the run made. */
   rows?: number[];
 };
 
-/** What a lock holds of a run: a `TestDto`'s `rowsIn`, `fields` and `rows`. Mirrors `config_file::Locked`. */
-export type Locked = { rowsIn: number; fields: string[]; rows: Outcome[] };
+/** What a lock holds of a run: a `TestDto`'s `rowsIn`, `table` and `shown`. Mirrors `config_file::Locked`. */
+export type Locked = { rowsIn: number; table: CaptureBatchDto; shown: Shown[] };
 
 export type LockedResult = Partial<Locked> & { ok: boolean; errors: ApiError[] };
 
-/** What Lock this as a test locks: the fields and rows on screen when it was pressed. */
+/** What Lock this as a test locks: the fields and rows on screen when it was pressed, `__` fields shown included. */
 export type LockChoice = { fields: string[]; rows: number[] };
-
-const LOCK_CHOICE_KEY = 'smeltr-lock-choice';
-
-/** Hands `choice` to the lock page at `hash` and opens it. The choice is kept in this tab, so a reload of that page
- * still has it, and only for that page, so another lock page opened later by its address locks everything. A field
- * under `__` is never delivered, so no test checks one. */
-export function chooseLock(choice: LockChoice, hash: string): void {
-  const fields = choice.fields.filter((f) => !isInternal(f));
-  const rows = [...new Set(choice.rows)];
-  store(LOCK_CHOICE_KEY, JSON.stringify({ fields, rows, hash }), 'session');
-  location.hash = hash;
-}
-
-/** What `chooseLock` handed this page, or null when it handed nothing here. */
-export function lockChoice(): LockChoice | null {
-  const kept = storedJson<(LockChoice & { hash: string }) | null>(LOCK_CHOICE_KEY, null, 'session');
-  return kept && kept.hash === location.hash ? { fields: kept.fields, rows: kept.rows } : null;
-}
 
 /** Where a run first stopped matching what a test locks, on one checked row: what the test expects there and
  * what the run made, one document at a time. Either side is absent past its own end. */
@@ -2618,10 +2630,18 @@ export type Difference = {
   actual?: Outcome;
 };
 
+/** A field a run types otherwise than the test locked it: its values may read the same and still differ, as `10`
+ * and `10.0` do. */
+export type Retyped = { field: string; locked: string; now: string };
+
 /** What a run made of a test: whether it passed, and where it first did not. */
 export type Verdict = {
   passed: boolean;
   firstDifference?: Difference;
+  /** Every checked row that differs, by its row number in the run, for an editor to mark. */
+  differs?: number[];
+  /** Each field the run types otherwise than the test locked it. */
+  retyped?: Retyped[];
   /** Present when the sample no longer holds the records it held at lock: a
    * changed input, which fails the test whatever the output says. */
   rowsIn?: { locked: number; now: number };
@@ -2728,12 +2748,8 @@ export function testAt(
   return apiJson(`${inArea(`/tests/${encodeURIComponent(id)}`, inScope)}?${q}`);
 }
 
-/** What locking `lock` would hold on this branch, written nowhere. */
-export function previewLock(lock: Lock): Promise<LockedResult> {
-  return post(branched(inArea('/preview/test-lock')), lock, 'quiet');
-}
-
-/** Lock test `id`, or replace the one under that id, holding what a run of it makes now on this branch. */
+/** Lock test `id`, or replace the one under that id, holding the fields and rows of the preview on screen. Locking
+ * needs the pipeline saved, so the branch runs what the preview ran. */
 export function putTest(id: string, lock: Lock): Promise<MutationResult> {
   return configJson(inArea(`/tests/${encodeURIComponent(id)}`), json('PUT', lock));
 }
@@ -2820,14 +2836,12 @@ export interface RoutePreviewResult {
 /** Routes `sample`, a saved sample's id or a held capture's choice (`heldChoice`), through `config`.
  *
  * `config` is the whole bundle as the editor has it, so unsaved route edits
- * are what gets previewed. `atMicros` pins `now()` and a reference-less
- * `parseTime`, the way a locked test re-runs against the instant it locked
- * at; an ordinary preview omits it and reads the wall clock. `source` is the
- * source the records stand for where the sample names none. */
+ * are what gets previewed. `source` is the source the records stand for where
+ * the sample names none. */
 export function routePreview(
   config: string,
   sample: string,
-  { atMicros, source }: { atMicros?: number; source?: string } = {},
+  { source }: { source?: string } = {},
 ): Promise<RoutePreviewResult> {
   const capture = heldSession(sample);
   return post(
@@ -2837,7 +2851,6 @@ export function routePreview(
       sample: capture ? null : sample,
       capture: capture ?? null,
       source: source ?? null,
-      at_micros: atMicros ?? null,
     },
     'quiet',
   );

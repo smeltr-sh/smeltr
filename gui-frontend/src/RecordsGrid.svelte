@@ -91,6 +91,7 @@
     type MissingField,
     type PreviewResult,
     type TestDto,
+    testFields,
   } from './api';
 
   let {
@@ -521,10 +522,11 @@
   function showTest(test: TestDto, rowOf: (row: GridRow) => number) {
     clearFind();
     chosenFields.clear();
-    const held = new Set(test.fields.filter((f) => allColumns.includes(f)));
-    gone = test.fields.filter((f) => !held.has(f));
+    const fields = testFields(test);
+    const held = new Set(fields.filter((f) => allColumns.includes(f)));
+    gone = fields.filter((f) => !held.has(f));
     for (const { path } of menuFields) chosenFields.set(path, held.has(path));
-    const checked = new Set(test.rows.map((o) => o.row));
+    const checked = new Set(test.shown.map((s) => s.row));
     if (rows?.every((row) => checked.has(rowOf(row)))) return;
     addChip({
       kind: 'rows',

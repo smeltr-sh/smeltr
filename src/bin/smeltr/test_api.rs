@@ -147,7 +147,8 @@ pub async fn get_test(AxPath((area, id)): AxPath<(String, String)>, Query(q): Qu
 
 // -- locking ------------------------------------------------------------
 
-/// Lock a test, or replace one under the same id, holding what a run of it makes now on the branch. What it expects is
+/// Lock a test, or replace one under the same id, holding what the preview on screen shows: a run of the branch, which
+/// the editor saved before it locks, over the sample's instant, as the preview ran. What it expects is
 /// committed, which is what makes "change the config or change the test" a decision a reviewer sees rather than a
 /// silent edit.
 pub async fn put_test(
@@ -172,20 +173,6 @@ pub async fn put_test(
                 &actor,
             )
         })
-    })
-    .await
-}
-
-/// What locking `lock` on the branch would hold, written nowhere: what the lock page shows before it locks.
-pub async fn preview_lock(
-    AxPath(area): AxPath<String>,
-    Query(q): Query<BranchQuery>,
-    Json(lock): Json<Lock>,
-) -> Envelope<Locked> {
-    blocking_answer(move || {
-        config_api::Reading::open(q.name(), &area)
-            .and_then(|reading| locked_on(&reading, &lock))
-            .into()
     })
     .await
 }
@@ -493,7 +480,10 @@ fn failure_text(verdict: &Verdict) -> String {
             "its sample held {} records when locked, now {}",
             rows_in.locked, rows_in.now
         ),
-        (None, None) => "its output differs from what it locked".to_string(),
+        (None, None) => match verdict.retyped.first() {
+            Some(r) => format!("its field {} was {} when locked, now {}", r.field, r.locked, r.now),
+            None => "its output differs from what it locked".to_string(),
+        },
     }
 }
 
@@ -618,6 +608,19 @@ mod tests {
         );
     }
 
+    /// Test `id`, locking `fields` on every row `run` made, as locking it from the preview does.
+    fn locking(id: &str, pipeline: Option<&str>, sample: &str, fields: &[&str], run: &config_file::Run) -> TestDto {
+        let lock = Lock {
+            name: id.to_string(),
+            pipeline: pipeline.map(str::to_string),
+            sample: sample.to_string(),
+            fields: Some(fields.iter().map(|f| f.to_string()).collect()),
+            rows: None,
+        };
+        let locked = lock.locked(1, run);
+        lock.test(id.to_string(), locked)
+    }
+
     /// `bytes` put in `repo`'s lookup store, as the pointer a commit holds for them.
     fn stored(repo: &std::path::Path, bytes: &[u8]) -> Vec<u8> {
         let mut incoming = smeltr::lookup::store::Incoming::new(repo).unwrap();
@@ -686,21 +689,10 @@ mod tests {
         let at = config_file::BundleAt::Dir(dir.clone());
         let declared_at = crate::single_origin_declared_at(ROUTED_CONFIG, &at);
 
-        let made = run_route_actual(ROUTED_CONFIG, 0, declared_at.clone(), sample.clone())
+        let run = run_route_actual(ROUTED_CONFIG, declared_at.clone(), sample.clone())
             .expect("the route preview runs cleanly");
-        assert_eq!(made.len(), 1, "one record through one route producing one document");
-        let fields = vec!["seen".to_string()];
-
-        let mut test = TestDto {
-            id: "routes-it".to_string(),
-            name: "routes it".to_string(),
-            pipeline: None,
-            sample: sample.id.clone(),
-            locked_at: 0,
-            rows_in: 1,
-            rows: made.iter().map(|m| m.cut(&fields)).collect(),
-            fields,
-        };
+        assert_eq!(run.made.len(), 1, "one record through one route producing one document");
+        let mut test = locking("routes-it", None, &sample.id, &["seen"], &run);
 
         let passing = run_one(
             &test,
@@ -732,10 +724,7 @@ mod tests {
         assert_eq!(verdict.rows_in, Some(config_file::RowsIn { locked: 2, now: 1 }));
 
         // What was locked no longer describes what a run produces.
-        test.rows[0].values = Some(serde_json::Map::from_iter([(
-            "seen".to_string(),
-            serde_json::json!(false),
-        )]));
+        test.table.rows[0].values[0] = serde_json::json!(false);
         let failing = run_one(
             &test,
             "west",
@@ -758,20 +747,14 @@ mod tests {
         let at = config_file::BundleAt::Dir(dir.clone());
         let declared_at = crate::single_origin_declared_at(PIPELINE_CONFIG, &at);
 
-        let made = run_pipeline_actual("audit", PIPELINE_CONFIG, 0, declared_at.clone(), &sample.table)
+        let made = run_pipeline_actual("audit", PIPELINE_CONFIG, declared_at.clone(), &sample.table)
             .expect("the pipeline preview runs cleanly");
-        let fields = vec!["seen".to_string()];
-        let mut test = TestDto {
-            id: "marks-it".to_string(),
-            name: "marks it".to_string(),
-            pipeline: Some("audit".to_string()),
-            sample: sample.id.clone(),
-            locked_at: 0,
-            rows_in: 1,
-            rows: made.iter().map(|m| m.cut(&fields)).collect(),
-            fields,
-        };
-        assert_eq!(test.rows[0].values.as_ref().unwrap()["seen"], serde_json::json!(true));
+        let mut test = locking("marks-it", Some("audit"), &sample.id, &["seen"], &made);
+        assert_eq!(test.table.rows[0].values, [serde_json::json!(true)]);
+        assert_eq!(
+            test.table.columns[0].ty, "bool",
+            "a field is typed as the preview typed it"
+        );
         let run = |test: &TestDto| {
             run_one(
                 test,
@@ -785,10 +768,7 @@ mod tests {
         };
         assert!(run(&test).passed);
 
-        test.rows[0].values = Some(serde_json::Map::from_iter([(
-            "seen".to_string(),
-            serde_json::json!(false),
-        )]));
+        test.table.rows[0].values[0] = serde_json::json!(false);
         let verdict = run(&test);
         assert!(!verdict.passed);
         assert_eq!(verdict.first_difference.unwrap().row, 0);
@@ -829,10 +809,9 @@ mod tests {
             name: "dup test".to_string(),
             pipeline: Some("audit".to_string()),
             sample: sample.id.clone(),
-            locked_at: 0,
             rows_in: 1,
-            fields: vec![],
-            rows: vec![],
+            table: Default::default(),
+            shown: vec![],
         };
         let manifest = config_file::manifest_bytes(&config_file::FileConfig {
             version: config_file::CURRENT_VERSION,
@@ -1060,10 +1039,9 @@ mod tests {
             name: "audit test".to_string(),
             pipeline: Some("audit".to_string()),
             sample: sample.id.clone(),
-            locked_at: 0,
             rows_in: 1,
-            fields: vec![],
-            rows: vec![],
+            table: Default::default(),
+            shown: vec![],
         };
         let fixture_files = vec![
             git::FileEdit {
@@ -1109,13 +1087,15 @@ mod tests {
             name: id.to_string(),
             pipeline: Some(pipeline.to_string()),
             sample: sample.id.clone(),
-            locked_at: 0,
             rows_in: 1,
-            fields: vec![],
             // The pipeline keeps the one record, so locking it dropped is a lock it no longer matches.
-            rows: vec![config_file::Outcome {
+            table: smeltr::heartbeat::CaptureBatch {
+                columns: vec![],
+                rows: vec![Default::default()],
+            },
+            shown: vec![config_file::Shown {
                 row: 0,
-                values: None,
+                dropped: true,
                 sent: None,
             }],
         };
@@ -1233,10 +1213,9 @@ mod tests {
             name: format!("{} test", sample.id),
             pipeline: Some("audit".to_string()),
             sample: sample.id.clone(),
-            locked_at: 0,
             rows_in: 1,
-            fields: vec![],
-            rows: vec![],
+            table: Default::default(),
+            shown: vec![],
         };
         let file_edit = |path: String, content: Vec<u8>| git::FileEdit {
             path: format!("groups/west/{path}"),
@@ -1312,10 +1291,9 @@ mod tests {
             name: "west test".to_string(),
             pipeline: Some("audit".to_string()),
             sample: sample.id.clone(),
-            locked_at: 0,
             rows_in: 1,
-            fields: vec![],
-            rows: vec![],
+            table: Default::default(),
+            shown: vec![],
         };
         let files = vec![
             git::FileEdit {

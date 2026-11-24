@@ -462,7 +462,6 @@ test('a deployed commit that fails its own tests is deployed, and flagged on the
     name: 'orders keep their id',
     pipeline: 'orders',
     sample: 'orders-sample',
-    lockedAt: 0,
     fields: ['id'],
     rows: [0],
   });
@@ -513,7 +512,6 @@ test('a review shows what each test checks, and a failing one says which row and
     name: 'orders keep their id',
     pipeline: 'orders',
     sample: 'orders-sample',
-    lockedAt: 0,
     fields: ['id'],
     rows: [0],
   });
@@ -569,7 +567,6 @@ test('a test locked again opens on its fields the rows still hold, and its rows'
     name: 'orders keep their id',
     pipeline: 'orders',
     sample: 'orders-sample',
-    lockedAt: 0,
     fields: ['id', 'kind'],
     rows: [0],
   });
@@ -628,13 +625,16 @@ test('a test locked again opens on its fields the rows still hold, and its rows'
   await admin.keyboard.press('Escape');
   await expect(admin.getByText('The 2 fields on 1 row on screen')).toBeVisible();
   await relock.click();
-  await expect(admin.getByRole('heading', { name: 'Lock this test again' })).toBeVisible();
-  await admin.getByRole('button', { name: 'Lock the test' }).click();
+  const dialog = admin.getByRole('dialog', { name: 'Lock this test again' });
+  await expect(dialog.getByRole('textbox', { name: 'Name' })).toHaveValue('orders keep their id');
+  await dialog.getByRole('button', { name: 'Lock' }).click();
+  await expect(dialog).toHaveCount(0);
   await expect(admin).toHaveURL(/#\/build\/pipelines\/.*[?&]test=orders-keep-id\b/);
   const { test } = await api.get(`/api/areas/shared/tests/orders-keep-id${on}`);
-  expect(test.fields.sort()).toEqual(['kind', 'order_id']);
-  // Locked anew, at the instant it was locked again.
-  expect(test.lockedAt).toBeGreaterThan(0);
+  expect(test.table.columns.map((c: { name: string }) => c.name).sort()).toEqual([
+    'kind',
+    'order_id',
+  ]);
 });
 
 test('History shows who changed what, who deployed it, and when', async ({
@@ -701,7 +701,6 @@ test('the dock’s count of tests opens the Tests tab', async ({ admin, api, lea
     name: 't',
     pipeline: 'p',
     sample: 's',
-    lockedAt: 0,
     fields: [],
     rows: [0],
   });

@@ -39,11 +39,6 @@ pub struct PreviewRequest {
     /// Show `__`-prefixed control variables in the output.
     #[serde(default)]
     pub show_internal: bool,
-    /// What `now()` reads, in unix microseconds. A test re-runs against the instant it was locked at, because
-    /// `now()` and a reference-less `parseTime` put the clock into the output -- two runs of one pipeline over one
-    /// sample agree only if they are given one instant. An ordinary preview sends none and reads the clock.
-    #[serde(default)]
-    pub at_micros: Option<i64>,
     /// A Bool over the pipeline's output, typed as a filter on a destination capture is: only the rows it is true
     /// for are returned. One that does not compile fails the preview at the `filter` stage.
     #[serde(default)]
@@ -67,6 +62,14 @@ pub struct PreviewRequest {
     /// instead of running the sample, and `Preview::capture_filter` holds the answer.
     #[serde(default)]
     pub capture_filter: Option<CaptureFilterRequest>,
+    /// A test of this pipeline over this sample, by id: the preview compares its rows against what the test locked
+    /// (`Preview::verdict`).
+    #[serde(default)]
+    pub test: Option<String>,
+    /// The test `test` names, as the handler read it. Absent when the preview runs over another sample than the
+    /// test's.
+    #[serde(skip)]
+    pub locked: Option<config_file::TestDto>,
 }
 
 /// A capture filter's text, and the destination, by its id, it would run at.
@@ -175,6 +178,9 @@ pub struct Preview {
     /// Answers `PreviewRequest::as_sample`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub as_sample: Option<AsSample>,
+    /// What these rows make of `PreviewRequest::test`: the run on screen is the test's run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<config_file::Verdict>,
 }
 
 /// A sample's table, without its name, and the row of the preview each of its rows is, so a caller can keep the rows
@@ -342,11 +348,6 @@ pub struct RoutePreviewRequest {
     /// capture at a destination. A sample that names one keeps its own.
     #[serde(default)]
     pub source: Option<String>,
-    /// What `now()` reads, in unix microseconds. A run re-run against the instant it was locked at agrees with the
-    /// first, because `now()` and a reference-less `parseTime` put the clock into the output -- two runs over one
-    /// sample agree only if they are given one instant. An ordinary preview sends none and reads the clock.
-    #[serde(default)]
-    pub at_micros: Option<i64>,
 }
 
 #[derive(Default, serde::Serialize)]
@@ -444,11 +445,16 @@ pub fn single_origin_declared_at(config: &str, at: &config_file::BundleAt) -> co
         .unwrap_or_default()
 }
 
+/// What `now()` reads in a run over `table`: the instant its rows were taken, so a preview and a test of them read one
+/// instant. Rows that say none, saved before samples carried it, read the clock.
+fn taken_at(table: &crate::heartbeat::CaptureBatch) -> i64 {
+    table.instant().unwrap_or_else(crate::core::ctx::wall_clock_micros)
+}
+
 pub fn run_route_preview(
     config: &str,
     sample: config_file::SampleDto,
     declared_at: config_file::DeclaredAt,
-    at_micros: Option<i64>,
 ) -> Envelope<RoutePreview> {
     let Some(source_name) = sample.source.clone() else {
         return Envelope::refused(Refusal::invalid(
@@ -495,7 +501,7 @@ pub fn run_route_preview(
             texts: &texts,
         },
         crate::runtime::preview_memory_budget(),
-        at_micros.unwrap_or_else(crate::core::ctx::wall_clock_micros),
+        taken_at(&sample.table),
     );
 
     // By id, not by position: `load` assigns pipeline ids from its own map, and reading the list positionally
@@ -826,6 +832,7 @@ pub fn run_preview(
             after_dot: None,
             capture_filter: None,
             as_sample: None,
+            verdict: None,
             rows: vec![],
             unfiltered: filter.as_ref().map(|_| 0),
             parsers: vec![],
@@ -845,7 +852,7 @@ pub fn run_preview(
     let mut errors = ErrorSink::new();
     // Outside the budget guard, like the errors: a refusal still leaves whatever the parse got to say.
     let mut tally = crate::core::tally::FieldTally::new();
-    let at_micros = req.at_micros;
+    let at_micros = taken_at(table);
 
     // Budgeted: the leader is also what serves the GUI, the config API and every worker's heartbeat, and a pipeline
     // that unrolls an array asks for far more than the sample weighs.
@@ -859,27 +866,19 @@ pub fn run_preview(
         // Each record's `__source` fields are its own columns, so no source names the batch.
         meta.ingest(&mut batch, &sourced, &text, None, |_| true, &mut pool);
 
-        let mut ctx = match at_micros {
-            Some(at) => Ctx::at(&mut pool, &mut errors, at),
-            None => Ctx::new(&mut pool, &mut errors),
-        }
-        .tallying(&mut tally);
+        let mut ctx = Ctx::at(&mut pool, &mut errors, at_micros).tallying(&mut tally);
         let rows = run_to_json_marked(
             &plan,
             on_exception,
             &mut batch,
             &mut ctx,
-            req.show_internal,
+            req.show_internal || req.locked.is_some(),
             filter.as_ref(),
         );
         // An unroll makes rows of its own, which no longer line up with the sample's.
         let touched = (req.attribution && batch.rows() == table.rows.len()).then(|| touched(&plan, &batch));
         let sample = req.as_sample.then(|| {
-            let made = crate::leader::capture::output_fields(
-                at_micros.unwrap_or_else(crate::core::ctx::wall_clock_micros),
-                &pipeline_id,
-                req.sample.as_deref(),
-            );
+            let made = crate::leader::capture::output_fields(at_micros, &pipeline_id, req.sample.as_deref());
             as_sample(&plan, &on_exception.tag_field, &batch, &rows, &made)
         });
         batch.reclaim(&mut pool);
@@ -955,6 +954,25 @@ pub fn run_preview(
 
     // The dictionary is of every row: a filter chooses what is shown, not what the pipeline writes.
     let sampled = plan::dictionary::with_sample(&record, rows.iter().filter_map(|(r, _)| r.json.as_ref()));
+    // Every row, as a test runs, whatever the filter keeps on screen.
+    let verdict = req.locked.as_ref().map(|test| {
+        let run = config_file::Run {
+            made: (rows.iter())
+                .map(|(r, _)| config_file::Made {
+                    row: r.row as usize,
+                    document: r.json.clone(),
+                    sent: None,
+                })
+                .collect(),
+            types: plan::dictionary::fields(&sampled).into_iter().collect(),
+        };
+        config_file::compare(test, table.rows.len(), &run)
+    });
+    if req.locked.is_some() && !req.show_internal {
+        for object in rows.iter_mut().filter_map(|(r, _)| r.json.as_mut()?.as_object_mut()) {
+            object.retain(|key, _| !crate::plan::tree::is_internal(key));
+        }
+    }
     let (found, fixes, missing) = schema_warnings(system.produced_by(pipeline_cfg.id), &plan, &sampled, first);
     warnings.extend(found.iter().map(warn));
     let unfiltered = filter.as_ref().map(|_| rows.len() as u32);
@@ -981,6 +999,7 @@ pub fn run_preview(
         fixes,
         missing,
         as_sample,
+        verdict,
     })
 }
 
@@ -1390,15 +1409,8 @@ pub fn run_test(
         verdict: None,
         error: None,
     };
-    match run_made(
-        test.pipeline.as_deref(),
-        &test.sample,
-        test.locked_at,
-        config,
-        sample,
-        declared_at,
-    ) {
-        Ok((rows_in, made)) => result.verdict = Some(config_file::compare(test, rows_in, &made)),
+    match run_made(test.pipeline.as_deref(), &test.sample, config, sample, declared_at) {
+        Ok((rows_in, run)) => result.verdict = Some(config_file::compare(test, rows_in, &run)),
         Err(message) => result.error = Some(message),
     }
     result
@@ -1412,58 +1424,51 @@ pub fn lock_test(
     sample: Result<Option<config_file::SampleDto>, String>,
     declared_at: &config_file::DeclaredAt,
 ) -> Result<config_file::Locked, String> {
-    let (rows_in, made) = run_made(
-        lock.pipeline.as_deref(),
-        &lock.sample,
-        lock.locked_at,
-        config,
-        sample,
-        declared_at,
-    )?;
-    Ok(lock.locked(rows_in, &made))
+    let (rows_in, run) = run_made(lock.pipeline.as_deref(), &lock.sample, config, sample, declared_at)?;
+    Ok(lock.locked(rows_in, &run))
 }
 
-/// How many records the sample `sample_id` holds, and every document a test's run over it makes at `locked_at`:
-/// `pipeline`'s preview, or with none the route preview.
+/// How many records the sample `sample_id` holds, and what a test's run over it makes: `pipeline`'s preview, or with
+/// none the route preview.
 fn run_made(
     pipeline: Option<&str>,
     sample_id: &str,
-    locked_at: i64,
     config: &str,
     sample: Result<Option<config_file::SampleDto>, String>,
     declared_at: &config_file::DeclaredAt,
-) -> Result<(usize, Vec<config_file::Made>), String> {
+) -> Result<(usize, config_file::Run), String> {
     let sample =
         sample?.ok_or_else(|| format!("this test runs over the sample {sample_id:?}, which is not on this branch"))?;
     let rows_in = sample.table.rows.len();
-    let made = match pipeline {
-        Some(pipeline) => run_pipeline_actual(pipeline, config, locked_at, declared_at.clone(), &sample.table),
-        None => run_route_actual(config, locked_at, declared_at.clone(), sample),
+    let run = match pipeline {
+        Some(pipeline) => run_pipeline_actual(pipeline, config, declared_at.clone(), &sample.table),
+        None => run_route_actual(config, declared_at.clone(), sample),
     }?;
-    Ok((rows_in, made))
+    Ok((rows_in, run))
 }
 
-/// A pipeline test's run: the pipeline preview over the sample's records, pinned to the instant the test locked.
+/// A pipeline test's run: the pipeline preview over the sample's records, as the editor shows it, its `__` fields too,
+/// each field typed as its dictionary types it.
 pub fn run_pipeline_actual(
     pipeline: &str,
     config: &str,
-    locked_at: i64,
     declared_at: config_file::DeclaredAt,
     table: &crate::heartbeat::CaptureBatch,
-) -> Result<Vec<config_file::Made>, String> {
+) -> Result<config_file::Run, String> {
     let previewed = run_preview(
         PreviewRequest {
             config: config.to_string(),
             pipeline: Some(pipeline.to_string()),
             sample: None,
-            show_internal: false,
-            at_micros: Some(locked_at),
+            show_internal: true,
             filter: None,
             attribution: false,
             as_sample: false,
-            dictionary: false,
+            dictionary: true,
             after_dot: None,
             capture_filter: None,
+            test: None,
+            locked: None,
         },
         declared_at,
         table,
@@ -1471,28 +1476,28 @@ pub fn run_pipeline_actual(
     if let Some(why) = previewed.why_failed() {
         return Err(why);
     }
-    Ok(previewed
-        .body
-        .rows
-        .into_iter()
+    let types = (previewed.body.dictionary.and_then(|d| d.sampled))
+        .map(|d| d.fields.into_iter().collect())
+        .unwrap_or_default();
+    let made = (previewed.body.rows.into_iter())
         .map(|r| config_file::Made {
             row: r.row as usize,
             document: r.json,
             sent: None,
         })
-        .collect())
+        .collect();
+    Ok(config_file::Run { made, types })
 }
 
 /// An end-to-end test's run: the route preview over the sample, flattened per record, per route that carried it, per
-/// document, each document with where it went. A record that made no document is one entry making none, so a test
+/// document, each document with where it went, and each field typed as its JSON is. A record that made no document is one entry making none, so a test
 /// can check that too.
 pub fn run_route_actual(
     config: &str,
-    locked_at: i64,
     declared_at: config_file::DeclaredAt,
     sample: config_file::SampleDto,
-) -> Result<Vec<config_file::Made>, String> {
-    let resp = run_route_preview(config, sample, declared_at, Some(locked_at));
+) -> Result<config_file::Run, String> {
+    let resp = run_route_preview(config, sample, declared_at);
     if let Some(why) = resp.why_failed() {
         return Err(why);
     }
@@ -1536,7 +1541,11 @@ pub fn run_route_actual(
             });
         }
     }
-    Ok(made)
+    // A document is sent as JSON, so its types are what its JSON says, as a destination reads it.
+    let open = DataType::Struct(Vec::new(), true);
+    let sent = plan::dictionary::with_sample(&open, made.iter().filter_map(|m| m.document.as_ref()));
+    let types = plan::dictionary::fields(&sent).into_iter().collect();
+    Ok(config_file::Run { made, types })
 }
 
 #[cfg(test)]
@@ -1608,13 +1617,14 @@ mod tests {
                 pipeline: Some("p".into()),
                 sample: None,
                 show_internal: false,
-                at_micros: None,
                 filter: None,
                 attribution: false,
                 as_sample: false,
                 dictionary: false,
                 after_dot: None,
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             Default::default(),
             &crate::heartbeat::CaptureBatch {
@@ -1746,13 +1756,14 @@ mod tests {
                 pipeline: Some("p".into()),
                 sample: None,
                 show_internal: true,
-                at_micros: None,
                 filter: Some(r#"u.path == "/x""#.into()),
                 attribution: false,
                 as_sample: true,
                 dictionary: false,
                 after_dot: None,
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             Default::default(),
             &crate::heartbeat::CaptureBatch::pasted(records),
@@ -1809,13 +1820,14 @@ mod tests {
                     pipeline: Some("p".into()),
                     sample: None,
                     show_internal: false,
-                    at_micros: None,
                     filter: None,
                     attribution: false,
                     as_sample: true,
                     dictionary: false,
                     after_dot: None,
                     capture_filter: None,
+                    test: None,
+                    locked: None,
                 },
                 Default::default(),
                 &crate::heartbeat::CaptureBatch::pasted(records),
@@ -1868,13 +1880,14 @@ mod tests {
                 pipeline: Some("p".into()),
                 sample: Some("orders".into()),
                 show_internal: false,
-                at_micros: Some(1_700_000_000_000_000),
                 filter: None,
                 attribution: false,
                 as_sample: true,
                 dictionary: false,
                 after_dot: None,
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             Default::default(),
             &captured,
@@ -1882,7 +1895,8 @@ mod tests {
         let sample = previewed.body.as_sample.unwrap();
         assert_eq!(
             serde_json::Value::Object(cells(&sample.table, 0).under("__capture")),
-            serde_json::json!({"timestamp": "2023-11-14T22:13:20.000000Z", "pipeline": "p", "sample": "orders"}),
+            serde_json::json!({"timestamp": "2026-10-25T13:57:12.000000Z", "pipeline": "p", "sample": "orders"}),
+            "the output was made at the instant its input was taken",
         );
         let named: Vec<_> = sample.table.columns.iter().map(|c| c.name.as_str()).collect();
         assert!(!named.contains(&"__capture.source"), "{named:?}");
@@ -1911,13 +1925,14 @@ mod tests {
             pipeline: Some(pipeline.into()),
             sample: None,
             show_internal: false,
-            at_micros: None,
             filter: None,
             attribution: false,
             as_sample,
             dictionary: false,
             after_dot: None,
             capture_filter: None,
+            test: None,
+            locked: None,
         };
         let messages = |p: &Envelope<Preview>| p.errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>();
         let raw = serde_json::json!({ "_raw": "8.8.8.8" }).as_object().unwrap().clone();
@@ -1969,7 +1984,6 @@ mod tests {
                 pipeline: Some("p".into()),
                 sample: None,
                 show_internal: false,
-                at_micros: None,
                 filter: None,
                 attribution: false,
                 as_sample: false,
@@ -1980,6 +1994,8 @@ mod tests {
                     at,
                 }),
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             Default::default(),
             &Default::default(),
@@ -2065,7 +2081,6 @@ mod tests {
                     pipeline: None,
                     sample: None,
                     show_internal: false,
-                    at_micros: None,
                     filter: None,
                     attribution: false,
                     as_sample: false,
@@ -2075,6 +2090,8 @@ mod tests {
                         text: text.into(),
                         destination: "both".into(),
                     }),
+                    test: None,
+                    locked: None,
                 },
                 Default::default(),
                 &Default::default(),
@@ -2104,7 +2121,6 @@ mod tests {
                 pipeline: None,
                 sample: None,
                 show_internal: false,
-                at_micros: None,
                 filter: None,
                 attribution: false,
                 as_sample: false,
@@ -2115,6 +2131,8 @@ mod tests {
                     at: DotAt::Source("nope".into()),
                 }),
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             Default::default(),
             &Default::default(),
@@ -2144,13 +2162,14 @@ mod tests {
                 pipeline: Some("p".into()),
                 sample: None,
                 show_internal: true,
-                at_micros: None,
                 filter: None,
                 attribution: false,
                 as_sample: false,
                 dictionary: false,
                 after_dot: None,
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             Default::default(),
             &crate::heartbeat::CaptureBatch::pasted(vec![record]),

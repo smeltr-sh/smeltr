@@ -16,6 +16,8 @@ import {
   type SampleDto,
   type SampleRecordDto,
   type TestDto,
+  testFields,
+  testOutcomes,
   type TestResult,
   type TestSummary,
   type UndoTarget,
@@ -733,13 +735,12 @@ export function fileChange(
         pipeline: t.pipeline,
         sample: t.sample,
         rowsIn: t.rowsIn,
-        lockedAt: t.lockedAt,
-        checks: t.fields.join(', '),
+        checks: testFields(t).join(', '),
       });
     change.fields = diffObjects(fieldsOf(file.before), fieldsOf(file.after));
     change.headers = ['checks'];
     const lines = (t: TestDto | undefined) =>
-      (t?.rows ?? []).map((o) => [`row ${o.row}: ${outcomeText(o, routeName)}`]);
+      (t ? testOutcomes(t) : []).map((o) => [`row ${o.row}: ${outcomeText(o, routeName)}`]);
     change.rows = compareRows(lines(file.before), lines(file.after));
   }
   change.fields = change.fields.filter((f) => f.kind !== 'unchanged');

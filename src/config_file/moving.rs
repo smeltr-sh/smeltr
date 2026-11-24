@@ -142,7 +142,7 @@ impl<'a> Moving<'a> {
             let by = || (Part::Test, t.id.clone());
             add(by(), Part::Sample, &t.sample, "runs over");
             t.pipeline.iter().for_each(|p| add(by(), Part::Pipeline, p, "runs"));
-            let routes: BTreeSet<&String> = (t.rows.iter())
+            let routes: BTreeSet<&String> = (t.shown.iter())
                 .filter_map(|o| o.sent.as_ref().map(|s| &s.route))
                 .collect();
             routes.into_iter().for_each(|r| add(by(), Part::Route, r, "runs"));
@@ -333,7 +333,7 @@ mod tests {
         let sample = serde_json::from_value(json!({"id": "s-fw", "name": "s-fw", "columns": [], "rows": []})).unwrap();
         let test = serde_json::from_value(json!({
             "id": "t-fw", "name": "t-fw", "pipeline": "fw-normalize", "sample": "s-fw",
-            "lockedAt": 0, "rowsIn": 0, "fields": [], "rows": []
+            "rowsIn": 0, "table": {"columns": [], "rows": []}, "shown": []
         }))
         .unwrap();
         Objects {

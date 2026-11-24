@@ -65,10 +65,9 @@ export function keyOf(url: URL): string {
 
 /** Times the recording holds, by key, that are not milliseconds. */
 const SECONDS = new Set(['time', 'lastSave', 'opened', 'updated']);
-const MICROS = new Set(['lockedAt']);
 
 /** `value` with every time in it moved on by `deltaMs`: a millisecond count by its size, which nothing but a time
- * reaches, and seconds and microseconds by their key. An answer that names its buckets' width (`bucketMillis` below
+ * reaches, and seconds by their key. An answer that names its buckets' width (`bucketMillis` below
  * a time's size) moves by a whole number of buckets, so its points stay on the grid its charts read them from. */
 export function shifted(value: unknown, deltaMs: number, key?: string): unknown {
   if (Array.isArray(value)) return value.map((v) => shifted(v, deltaMs, key));
@@ -83,9 +82,6 @@ export function shifted(value: unknown, deltaMs: number, key?: string): unknown 
   if (typeof value !== 'number' || !Number.isInteger(value)) return value;
   if (key !== undefined && SECONDS.has(key) && value > 1e9 && value < 1e10) {
     return value + Math.round(deltaMs / 1000);
-  }
-  if (key !== undefined && MICROS.has(key) && value > 1e15 && value < 1e16) {
-    return value + deltaMs * 1000;
   }
   if (value > 1.5e12 && value < 2.5e12) return value + deltaMs;
   return value;
@@ -181,10 +177,9 @@ interface TestDto {
   name: string;
   pipeline?: string;
   sample: string;
-  lockedAt: number;
   rowsIn: number;
-  fields: string[];
-  rows: unknown[];
+  table: unknown;
+  shown: unknown[];
 }
 
 interface Capture {
@@ -856,16 +851,15 @@ export class DemoLeader {
       const answer = await this.lockTest(name, scope, lock);
       const held = answer.body as LockedResult;
       if (!held.ok) return answer;
-      const { name: testName, pipeline, sample, lockedAt } = lock;
+      const { name: testName, pipeline, sample } = lock;
       const locked: TestDto = {
         id,
         name: testName,
         ...(pipeline ? { pipeline } : {}),
         sample,
-        lockedAt,
         rowsIn: held.rowsIn ?? 0,
-        fields: held.fields ?? [],
-        rows: held.rows ?? [],
+        table: held.table ?? { columns: [], rows: [] },
+        shown: held.shown ?? [],
       };
       return this.write(
         name,
@@ -944,7 +938,6 @@ export class DemoLeader {
     if (method === 'POST') {
       if (within === '/preview/pipeline') return this.preview(name, scope, json());
       if (within === '/preview/routes') return this.routePreview(name, scope, json());
-      if (within === '/preview/test-lock') return this.lockTest(name, scope, json());
       if (within === '/samples') {
         const { capture, ...save } = json() as {
           capture: string;
@@ -1032,7 +1025,7 @@ export class DemoLeader {
     return run ? ok({ results }) : ok({ tests });
   }
 
-  /** What locking `lock` on branch `name` holds, as the leader runs it (`test_api::preview_lock`). */
+  /** What locking `lock` on branch `name` holds, as the leader runs it (`test_api::put_test`). */
   private async lockTest(name: string, scope: string, lock: Lock): Promise<Answer> {
     const branch = this.branch(name) ?? this.state.branches.main;
     return this.ask('/test-lock', {
@@ -1416,7 +1409,6 @@ export class DemoLeader {
       pipeline: string | null;
       sample: string | null;
       show_internal: boolean;
-      at_micros: number | null;
       filter: string | null;
       attribution?: boolean;
       as_sample?: boolean;
@@ -1438,7 +1430,6 @@ export class DemoLeader {
       // the network.
       sample: sample && req.after_dot ? { ...sample, rows: sample.rows.slice(0, 1) } : sample,
       showInternal: req.show_internal,
-      atMicros: req.at_micros,
       filter: req.filter,
       attribution: req.attribution ?? false,
       asSample: req.as_sample ?? false,
@@ -1450,7 +1441,7 @@ export class DemoLeader {
   private async routePreview(
     name: string,
     scope: string,
-    req: { config: string; sample: string; source: string | null; at_micros: number | null },
+    req: { config: string; sample: string; source: string | null },
   ): Promise<Answer> {
     const branch = this.branch(name) ?? this.state.branches.main;
     const sample = this.sampleOn(branch, scope, req.sample);
@@ -1461,7 +1452,6 @@ export class DemoLeader {
     return this.ask('/route-preview', {
       ...this.bundleOf(branch, scope, JSON.parse(req.config)),
       sample: { ...sample, source: sample.source ?? req.source ?? undefined },
-      atMicros: req.at_micros,
     });
   }
 

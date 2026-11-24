@@ -51,7 +51,6 @@ test('a pipeline is exported with the pipeline it calls, and its routes when ask
     name: 'firewall lines',
     pipeline: 'firewall',
     sample: 'lines',
-    lockedAt: 0,
     fields: [],
     rows: [0],
   });
