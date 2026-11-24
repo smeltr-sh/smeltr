@@ -79,7 +79,7 @@ the `SMELTR_LIVE_TESTS=required` and service variables the recipe sets for
 them. Start the Docker daemon first, then `just live-up`.
 
 While building, run the app with `just build-dev` or `just run-dev`, and take screenshots from it. `just build` and
-`just run` are for checking how a release build behaves.
+`just run` are for checking how an optimized build behaves.
 
 A machine builds into one `target/`, the main checkout's. A worktree or second clone sets `CARGO_TARGET_DIR` to
 it, so dependencies build once and a new checkout recompiles only smeltr. Cargo commands on one `target/` run one

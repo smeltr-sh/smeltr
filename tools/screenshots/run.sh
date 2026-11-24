@@ -36,10 +36,10 @@ SETUP
 }
 [ -d node_modules/playwright ] || npm ci
 # The traffic, the samples, the lookup tables (bundle.py) and the recording's fingerprint.
-(cd "$REPO" && cargo build --release --example demo-traffic)
+(cd "$REPO" && cargo build --profile optimized --example demo-traffic)
 
 if [ "${1:-}" = "" ] || { [ "${1:-}" = demo ] && ! curl -sk -o /dev/null https://127.0.0.1:8443/; }; then
-    [ -x "${CARGO_TARGET_DIR:-$REPO/target}/release/smeltr" ] || { echo "no release binary: just build" >&2; exit 1; }
+    [ -x "${CARGO_TARGET_DIR:-$REPO/target}/optimized/smeltr" ] || { echo "no optimized binary: run \`just build\`" >&2; exit 1; }
     docker compose -f "$REPO/tests/live/compose.live.yaml" up -d --wait kafka elasticsearch elasticsearch-2 splunk localstack
     python3 stage.py traffic
     python3 -u stage.py

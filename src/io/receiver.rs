@@ -3836,7 +3836,7 @@ mod tests {
     /// What a receiver's reader thread can take, and what its handlers spend admitting: requests of a thousand
     /// 275-byte lines, polled as a worker's reader polls them, with the commit map it keeps.
     #[test]
-    #[ignore = "a measurement: `cargo test --release --lib receiver::tests::reader_speed -- --ignored --nocapture`"]
+    #[ignore = "a measurement: `cargo test --profile optimized --lib receiver::tests::reader_speed -- --ignored --nocapture`"]
     fn reader_speed() {
         let shared = Arc::new(Shared::default());
         let mut source = ReceiverSource {
