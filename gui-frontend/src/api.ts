@@ -2407,6 +2407,7 @@ export function previewPipeline(req: PreviewRequest): Promise<PreviewResult> {
       dictionary: true,
       after_dot: req.afterDot ?? null,
       capture_filter: req.captureFilter ?? null,
+      test: req.test ?? null,
     },
     'quiet',
   );
