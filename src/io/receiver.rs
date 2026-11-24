@@ -1394,7 +1394,14 @@ impl Shared {
             inbox = self.arrived.wait_timeout(inbox, left).unwrap().0;
         }
         // Small requests would otherwise make batches of a few rows, whose own work outweighs them.
-        let handed_by = inbox.since.expect("a request is queued") + SMALL_BATCH_WAIT;
+        // BENCHMARK ONLY, not for main: the wait from SMELTR_SMALL_BATCH_WAIT_US, to compare lengths in one build.
+        static WAIT: std::sync::LazyLock<Duration> = std::sync::LazyLock::new(|| {
+            std::env::var("SMELTR_SMALL_BATCH_WAIT_US")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .map_or(SMALL_BATCH_WAIT, Duration::from_micros)
+        });
+        let handed_by = inbox.since.expect("a request is queued") + *WAIT;
         while inbox.queued_bytes.total() < LEAST_BATCH_BYTES {
             let left = handed_by.saturating_duration_since(Instant::now());
             if left.is_zero() {
