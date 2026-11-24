@@ -70,7 +70,7 @@ pub const INBOX_BYTES: usize = 64 * 1024 * 1024;
 
 /// How long a reader waits, after a request arrives, for a batch's worth (`LEAST_BATCH_BYTES`) to arrive too: the
 /// longest a record waits on it while traffic is light.
-const SMALL_BATCH_WAIT: Duration = Duration::from_millis(1);
+const SMALL_BATCH_WAIT: Duration = Duration::from_millis(2);
 
 /// How long a sender has to send a request's whole body. One that sends slower holds read budget other senders need.
 const BODY_READ_SECS: u64 = 30;
