@@ -348,6 +348,37 @@ describe('sample and test cards', () => {
     expect(fileOf('samples/nested/x.json')).toBeNull();
   });
 
+  it('shows a cell that stops failing its type as a change to its record', () => {
+    const invoices = (failed: number[]) => ({
+      id: 'invoices',
+      name: 'invoices',
+      columns: [{ name: 'note', type: 'str' }],
+      rows: [{ values: ['late'], failed }, { values: ['ok'] }],
+    });
+    const [card] = objectChanges([
+      {
+        scope: 'shared',
+        before: side,
+        after: side,
+        files: [
+          {
+            kind: 'samples',
+            id: 'invoices',
+            status: 'M',
+            before: invoices([0]),
+            after: invoices([]),
+          },
+        ],
+      },
+    ]);
+    expect(card.headers).toEqual(['record', 'failed']);
+    expect(card.rows).toEqual([
+      { status: 'added', cells: ['{"note":"late"}', ''] },
+      { status: 'same', cells: ['{"note":"ok"}', ''] },
+      { status: 'removed', cells: ['{"note":"late"}', 'note'] },
+    ]);
+  });
+
   it('shows a changed sample by its fields and the records it added and removed, after the sections', () => {
     const route = { id: 'r', source: 's', condition: null, pipeline: 'p' };
     const changes = objectChanges([
