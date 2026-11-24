@@ -95,7 +95,9 @@ receiver answers a new request busy at once; a streaming connection stops
 reading instead, and its sender's window fills. A request's records are cut
 on the handler thread that received it, before it reaches the inbox, so the
 reader only hands them out and a busy receiver's senders cut theirs side by
-side.
+side. Small requests would make batches of a few records, whose own work
+outweighs them, so once a request arrives the reader waits a moment for a
+batch's worth before it hands out what the inbox holds.
 
 ## Transform
 
