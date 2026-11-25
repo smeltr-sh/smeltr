@@ -24,6 +24,7 @@ use smeltr::plan::topology::{ConnectionLimits, HecReceiverConfig, Receiver, Sour
 use crate::harness::docker::{Container, Hook, Scratch, container_logs, share};
 use crate::harness::fuzz::{self, Coverage, Rng};
 use crate::harness::receiver::{self, Answer, Pki, Presents, Request, Tls, commit};
+use crate::harness::wait_for;
 
 /// One receiver's settings, as an operator could save them.
 struct Settings {
@@ -1189,22 +1190,24 @@ fn every_setting_answers_random_hec_requests_as_hec_does() {
             let query = ack_query(acker.expect("an ackId was given"), channel);
             let heard_true = heard.heard_true.get(channel).cloned().unwrap_or_default();
             for id in ids {
-                let deadline = Instant::now() + Duration::from_secs(10);
-                let read = loop {
-                    let answer = exchange(settings.connect, settings.tls, &pki, &query, &ack_body(&[*id]));
-                    let json: Value = serde_json::from_str(&answer.body).unwrap_or(Value::Null);
-                    let read = json["acks"][id.to_string()].clone();
-                    if read == !heard_true.contains(id) || Instant::now() > deadline {
-                        break read;
-                    }
-                    std::thread::sleep(Duration::from_millis(50));
-                };
-                if read != !heard_true.contains(id) {
-                    return Err(format!(
-                        "asked after {id} on {channel} once delivered, heard true before: {}; read {read}",
+                let want = !heard_true.contains(id);
+                let mut read = Value::Null;
+                wait_for(
+                    &format!("ackId {id} on {channel} to read {want}"),
+                    Duration::from_secs(10),
+                    || {
+                        let answer = exchange(settings.connect, settings.tls, &pki, &query, &ack_body(&[*id]));
+                        let json: Value = serde_json::from_str(&answer.body).unwrap_or(Value::Null);
+                        read = json["acks"][id.to_string()].clone();
+                        (read == want).then_some(())
+                    },
+                )
+                .map_err(|late| {
+                    format!(
+                        "{late}: asked after {id} on {channel} once delivered, heard true before: {}; read {read}",
                         heard_true.contains(id)
-                    ));
-                }
+                    )
+                })?;
                 if read == true {
                     cov.reach("an ackId read true");
                 }

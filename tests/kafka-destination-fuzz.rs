@@ -833,16 +833,18 @@ fn read_back(brokers: &str, topics: &[&str], marker: &str) -> Result<Vec<Read>, 
             return Err(format!("{topic} has no partitions"));
         }
         for p in partitions {
-            let deadline = Instant::now() + Duration::from_secs(10);
-            let (low, high) = loop {
-                match consumer.fetch_watermarks(topic, p, Duration::from_secs(10)) {
+            let (low, high) = crate::harness::wait_for(
+                &format!("{topic}/{p} to have a leader"),
+                Duration::from_secs(10),
+                || match consumer.fetch_watermarks(topic, p, Duration::from_secs(10)) {
                     // A topic the producer only just created may have no leader yet.
                     Err(KafkaError::MetadataFetch(
                         RDKafkaErrorCode::NotLeaderForPartition | RDKafkaErrorCode::LeaderNotAvailable,
-                    )) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(200)),
-                    r => break r.map_err(|e| format!("the end of {topic}/{p}: {e}"))?,
-                }
-            };
+                    )) => None,
+                    r => Some(r),
+                },
+            )?
+            .map_err(|e| format!("the end of {topic}/{p}: {e}"))?;
             if high > low {
                 left.insert((topic.to_string(), p), (low, high));
             }
