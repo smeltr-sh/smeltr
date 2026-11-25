@@ -9,13 +9,13 @@ use std::time::{Duration, Instant};
 
 use smeltr::io::framing::Framing;
 use smeltr::io::senders::{Fingerprint, Hash};
-use smeltr::io::{CommitMap, Source, SourceRecord, TopicPartition, build_source};
+use smeltr::io::{Source, SourceRecord, build_source};
 use smeltr::plan::topology::{
     HeldSecrets, Receiver, ReceiverConfig, Senders, SocketReceiverConfig, SourceKind, Tls, Transport,
 };
 
 use crate::certs::{Authority, Issued};
-use crate::harness::receiver::free_loopback;
+use crate::harness::receiver::{self, commit, free_loopback};
 use crate::live;
 
 /// A syslog receiver on `listen` admitting senders from `allow_from`, reading messages of up to `max` bytes.
@@ -68,13 +68,9 @@ fn datagram_sender(to: SocketAddr) -> UdpSocket {
     sender
 }
 
+/// At least `n` records polled from `source`, and committed.
 fn poll_until(source: &mut Box<dyn Source>, n: usize) -> Vec<SourceRecord> {
-    let mut records = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while records.len() < n {
-        assert!(Instant::now() < deadline, "only {} records arrived", records.len());
-        records.extend(source.poll_batch(100, 1 << 20, Duration::from_millis(100)).unwrap());
-    }
+    let records = receiver::poll_until(source, n);
     commit(source, &records);
     records
 }
@@ -82,16 +78,6 @@ fn poll_until(source: &mut Box<dyn Source>, n: usize) -> Vec<SourceRecord> {
 fn nothing_arrives(source: &mut Box<dyn Source>) {
     let polled = source.poll_batch(100, 1 << 20, Duration::from_millis(300)).unwrap();
     assert!(polled.is_empty(), "{} records arrived", polled.len());
-}
-
-fn commit(source: &mut Box<dyn Source>, records: &[SourceRecord]) {
-    let mut done = CommitMap::new();
-    for r in records {
-        let at = TopicPartition::new(r.topic.clone(), r.partition);
-        let o = done.entry(at).or_insert(r.offset);
-        *o = (*o).max(r.offset);
-    }
-    source.commit(&done).unwrap();
 }
 
 fn text(records: &[SourceRecord]) -> Vec<String> {

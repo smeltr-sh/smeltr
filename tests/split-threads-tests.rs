@@ -426,15 +426,8 @@ fn spawn(w: Worker) -> Running {
     }
 }
 
-fn until(what: &str, mut done: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        if done() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    panic!("timed out waiting for {what}");
+fn until(what: &str, done: impl FnMut() -> bool) {
+    crate::harness::wait_until(what, Duration::from_secs(5), done);
 }
 
 #[test]

@@ -403,6 +403,16 @@ pub fn opened(config: ReceiverConfig, secrets: &HeldSecrets) -> Box<dyn Source> 
     build_source(&SourceKind::Receiver(config), &registry, &subjects, secrets, None).expect("opens")
 }
 
+/// At least `n` records polled from `source`, waiting up to ten seconds for them.
+pub fn poll_until(source: &mut Box<dyn Source>, n: usize) -> Vec<SourceRecord> {
+    let mut records = Vec::new();
+    super::wait_until("the records to arrive", Duration::from_secs(10), || {
+        records.extend(source.poll_batch(100, 1 << 20, Duration::from_millis(100)).unwrap());
+        records.len() >= n
+    });
+    records
+}
+
 /// Commits every record of `records`, as far as each partition's last.
 pub fn commit(source: &mut Box<dyn Source>, records: &[SourceRecord]) {
     let mut done = CommitMap::new();
