@@ -313,26 +313,16 @@ impl Table {
 
     /// Polls, as egress does, until a completion comes or `within` passes: what came.
     fn completions_within(&mut self, within: Duration) -> Result<Vec<BatchCompletion>, IoError> {
-        let deadline = Instant::now() + within;
-        loop {
-            let got = self.d.poll_completions()?;
-            if !got.is_empty() || Instant::now() >= deadline {
-                return Ok(got);
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        crate::harness::wait_for("a batch to finish", within, || match self.d.poll_completions() {
+            Ok(got) if got.is_empty() => None,
+            answer => Some(answer),
+        })
+        .unwrap_or(Ok(Vec::new()))
     }
 
     /// Polls until `poll_completions` errs or `within` passes.
     fn error_within(&mut self, within: Duration) -> Option<IoError> {
-        let deadline = Instant::now() + within;
-        loop {
-            match self.d.poll_completions() {
-                Err(e) => return Some(e),
-                Ok(_) if Instant::now() >= deadline => return None,
-                Ok(_) => std::thread::sleep(Duration::from_millis(20)),
-            }
-        }
+        crate::harness::wait_for("the destination to fail", within, || self.d.poll_completions().err()).ok()
     }
 
     /// The batches that complete, waiting up to `DEADLINE` for `n` of them.
@@ -484,10 +474,9 @@ fn open_files_report_what_they_buffer_until_the_commit_closes_them() {
     assert!(t.deliver(7, &rows(&schema, &["one", "two"])).is_empty());
     // The writer thread measures after it takes the batch.
     let open = |t: &Table, held: fn(usize) -> bool| {
-        let deadline = Instant::now() + DEADLINE;
-        while !held(t.d.open_bytes().unwrap()) && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        let _ = crate::harness::wait_for("the writer to report the bytes its open files hold", DEADLINE, || {
+            held(t.d.open_bytes().unwrap()).then_some(())
+        });
         t.d.open_bytes().unwrap()
     };
     assert!(open(&t, |b| b > 0) > 0, "nothing reported open before the commit");
