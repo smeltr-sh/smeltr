@@ -726,7 +726,9 @@ impl Source for KafkaSource {
         self.place_held()?;
 
         let deadline = Instant::now() + timeout;
-        let mut out = crate::io::RecordChunkBuilder::new();
+        // Records are moved out under the slot's lock and copied into the batch after it: the client thread routes
+        // every record under that lock, and waits on it while the reader holds it.
+        let (mut taken, mut taken_bytes) = (Vec::new(), 0);
         let slot = Arc::clone(&self.slot);
         let mut state = slot.lock();
         'poll: loop {
@@ -738,7 +740,7 @@ impl Source for KafkaSource {
             if self.note_rebalance(&mut state)? {
                 break;
             }
-            if out.is_empty() && !state.inbox.is_empty() {
+            if taken.is_empty() && !state.inbox.is_empty() {
                 let left = state.wait_left();
                 if !left.is_zero() {
                     state = slot.arrived.wait_timeout(state, left).0;
@@ -746,11 +748,11 @@ impl Source for KafkaSource {
                 }
             }
             // The first always goes out, however large, as a fresh one would; the rest only while they fit.
-            while !state.refetch && out.len() < max_rows {
+            while !state.refetch && taken.len() < max_rows {
                 let Some(len) = state.inbox.front().map(client::Pending::size) else {
                     break;
                 };
-                if !out.is_empty() && out.size() + len > max_bytes {
+                if !taken.is_empty() && taken_bytes + len > max_bytes {
                     break;
                 }
                 // A record at or past its partition's stop ends that partition, and one from a partition not yet
@@ -772,28 +774,32 @@ impl Source for KafkaSource {
                     state = slot.lock();
                     match asked {
                         Ok(()) => continue 'poll,
-                        Err(_) if !out.is_empty() => break 'poll,
+                        Err(_) if !taken.is_empty() => break 'poll,
                         Err(e) => return Err(e),
                     }
                 }
-                let record = slot.take(self.consumer(), &mut state).expect("a front");
-                out.push_stamped(
-                    &record.raw,
-                    record.offset,
-                    record.partition,
-                    record.topic,
-                    record.headers,
-                    record.timestamp.and_then(|millis| millis.checked_mul(1000)),
-                );
+                taken.push(slot.take(self.consumer(), &mut state).expect("a front"));
+                taken_bytes += len;
             }
             // Records in hand go out: the inbox held a batch's worth, or its oldest waited its time.
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if !out.is_empty() || remaining.is_zero() {
+            if !taken.is_empty() || remaining.is_zero() {
                 break;
             }
             state = slot.arrived.wait_timeout(state, remaining).0;
         }
         drop(state);
+        let mut out = crate::io::RecordChunkBuilder::new();
+        for record in taken {
+            out.push_stamped(
+                &record.raw,
+                record.offset,
+                record.partition,
+                record.topic,
+                record.headers,
+                record.timestamp.and_then(|millis| millis.checked_mul(1000)),
+            );
+        }
         let records = out.finish();
         Ok(match &self.avro {
             Some(avro) if !records.is_empty() => avro.read(records),
