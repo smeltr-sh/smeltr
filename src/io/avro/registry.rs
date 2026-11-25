@@ -80,6 +80,7 @@ struct Registered {
     id: u32,
 }
 
+#[derive(Clone)]
 pub struct Registry {
     /// Without a trailing `/`.
     url: String,

@@ -9,7 +9,7 @@
 //! lane, and the transform pool goes on serving every other lane; the queue wakes the pool when room returns. A
 //! destination that stops draining therefore stops the sources feeding it and nothing else.
 //!
-//! Each copy keeps its own id space for the client it owns and maps each completion back to the `(reader, batch)` it
+//! Each copy keeps its own id space for the client it sends through and maps each completion back to the `(reader, batch)` it
 //! came from: the reader half is which return channel answers, the batch half is what that reader tracked.
 //!
 //! A destination set to block keeps what it refuses here too, and sends it again on a clock of its own: the fix for a
@@ -137,13 +137,14 @@ struct Queue {
     copies: Mutex<Copies>,
 }
 
-/// Builds another client for the destination, for another copy of its egress thread.
+/// Gives another copy of a destination's egress thread its client: a new one, or a handle on one the copies share.
 pub type Build = Box<dyn Fn() -> Result<Box<dyn Destination>, IoError> + Send + Sync>;
 
 /// How a destination whose client does its work on the egress thread grows past one thread: by the rule its file
-/// encoders follow. Another copy starts when the queue is full and the copy that pops finds work already waiting,
-/// while a thread of the worker's limit is spare and no copy is stalled, up to `most`. Each copy has its own client
-/// and sends, retries and acknowledges what it pops; the queue, its budget and its pacing are shared. A copy past the
+/// encoders follow. Another copy starts when the queue is full and the copy that pops ran for most of the last second
+/// ([`crate::resources::BusyThread`]), while a thread of the worker's limit is spare and no copy is stalled, up to
+/// `most`: a queue full only because the destination is slow starts none. Each copy sends, retries and acknowledges
+/// what it pops through the client `build` gave it; the queue, its budget and its pacing are shared. A copy past the
 /// first ends once it has found no work waiting for a while ([`COPY_IDLE`]), and what it sent has landed.
 struct Copier {
     build: Build,
@@ -846,6 +847,7 @@ fn run(
     // When this copy last found work waiting. A copy past the first that has gone its copier's `idle` without stops
     // taking work, and ends once what it has sent lands.
     let mut behind_at = Instant::now();
+    let mut busy = crate::resources::BusyThread::new();
 
     loop {
         if !finishing && queue.finishing.load(Ordering::Relaxed) {
@@ -894,7 +896,7 @@ fn run(
                     if behind {
                         behind_at = Instant::now();
                     }
-                    if pressed && behind {
+                    if pressed && busy.busy() {
                         start_copy(queue, returns, metrics, (id, name));
                     }
                     Some(u)

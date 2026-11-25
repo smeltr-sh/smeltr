@@ -120,10 +120,11 @@ either side: it is polled, delivered and committed once, whatever its slices.
 Egress is one thread per destination, owning that destination's client and
 draining a queue every reader pushes to. A destination whose client does its
 work on that thread, as a Kafka producer does, may run more copies of it, each
-with a client of its own over the one queue, its budget and its pacing: another
-starts when the queue is full and the copy popping from it finds work already
-waiting, while a thread of the worker's limit is spare and no copy is stalled,
-up to that limit. A copy past the first ends once it goes a while finding no
+over the one queue, its budget and its pacing, each with the client the
+destination gives it: Kafka's copies share its one producer. Another starts
+when the queue is full and the copy popping from it was busy for most of the
+last second, while a thread of the worker's limit is spare and no copy is
+stalled, up to that limit. A copy past the first ends once it goes a while finding no
 work waiting and what it sent has landed. A destination that writes files also
 encodes on threads of its own, because encoding is CPU work: it starts one
 encoder, and another whenever every one it has has a poll's worth of rows

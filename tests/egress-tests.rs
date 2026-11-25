@@ -1417,10 +1417,12 @@ fn a_destination_where_nothing_lands_backs_off_as_a_whole() {
     assert_eq!(completions_within(&mut h, timeout()).len(), 1);
 }
 
-/// A client that takes a while over each batch, and notes which thread sent it.
+/// A client that takes a while over each batch, and notes which thread sent it. One that `waits` is slow for its
+/// destination's sake, idling its thread; one that does not is slow for its own, keeping its thread busy.
 struct Slow {
     inner: FakeDestination,
     senders: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+    waits: bool,
 }
 
 impl Destination for Slow {
@@ -1429,7 +1431,13 @@ impl Destination for Slow {
         batch: BatchId,
         rows: Cow<'_, [OwnedRecord]>,
     ) -> Result<(Dispatched, Vec<smeltr::io::Rejection>), smeltr::io::IoError> {
-        std::thread::sleep(Duration::from_millis(5));
+        let until = std::time::Instant::now() + Duration::from_millis(5);
+        if self.waits {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        while std::time::Instant::now() < until {
+            std::hint::spin_loop();
+        }
         let name = std::thread::current().name().unwrap_or_default().to_string();
         self.senders.lock().unwrap().insert(name);
         self.inner.deliver(batch, rows)
@@ -1451,6 +1459,7 @@ fn a_full_queue_starts_another_copy_with_its_own_client() {
     let slow = |sent: &FakeDestination, senders: &Arc<_>| Slow {
         inner: sent.clone(),
         senders: Arc::clone(senders),
+        waits: false,
     };
     let first = Box::new(slow(&sent, &senders));
     let build = {
@@ -1531,6 +1540,7 @@ fn an_idle_copy_ends_and_another_starts_under_load() {
         inner: Slow {
             inner: sent.clone(),
             senders: Arc::default(),
+            waits: false,
         },
         ended: ended.clone(),
     };
@@ -1574,4 +1584,45 @@ fn an_idle_copy_ends_and_another_starts_under_load() {
     done += h.poll_completions().unwrap().len();
     assert_eq!(done as u64, handed, "every batch came back to its reader");
     assert_eq!(sent.sent().len() as u64, handed);
+}
+
+/// A queue full only because its destination is slow to answer starts no copy: the thread draining it waits, so another
+/// would only wait beside it.
+#[test]
+fn a_full_queue_behind_a_slow_destination_starts_no_copy() {
+    let sent = FakeDestination::new();
+    let built = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let first = Box::new(Slow {
+        inner: sent.clone(),
+        senders: Arc::default(),
+        waits: true,
+    });
+    let build = {
+        let (sent, built) = (sent.clone(), built.clone());
+        Box::new(move || {
+            built.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(Box::new(Slow {
+                inner: sent.clone(),
+                senders: Arc::default(),
+                waits: true,
+            }) as Box<dyn Destination>)
+        })
+    };
+    let row = vec![b'x'; 1000];
+    let mut egress =
+        Egress::start(0, "d", first, timeout(), 4 * row.len(), metrics()).copying(3, smeltr::egress::COPY_IDLE, build);
+    let mut h = egress.handle();
+    let until = std::time::Instant::now() + Duration::from_millis(2500);
+    let (mut handed, mut done) = (0u64, 0);
+    while std::time::Instant::now() < until {
+        match hand(&mut h, handed, &[OutgoingRecord::new(&row)]) {
+            Dispatched::NoRoom { .. } => std::thread::sleep(Duration::from_millis(1)),
+            _ => handed += 1,
+        }
+        done += h.poll_completions().unwrap().len();
+    }
+    h.flush().unwrap();
+    done += h.poll_completions().unwrap().len();
+    assert_eq!(built.load(std::sync::atomic::Ordering::Relaxed), 0, "no copy started");
+    assert_eq!(done as u64, handed, "every batch came back to its reader");
 }

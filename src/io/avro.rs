@@ -832,6 +832,7 @@ fn value_at(array: &dyn Array, row: usize) -> Avro {
 }
 
 /// One record's schema as a Kafka destination writes it: parsed, and its id under each topic it was registered for.
+#[derive(Clone)]
 struct Written {
     arrow: SchemaRef,
     /// Its text, as registered, and parsed.
@@ -842,6 +843,7 @@ struct Written {
 
 /// How a Kafka destination writes its rows as Avro: the registry it registers each record's schema with, and every
 /// schema it has registered.
+#[derive(Clone)]
 pub struct AvroWriter {
     registry: Registry,
     written: Vec<Written>,

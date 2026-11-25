@@ -207,6 +207,48 @@ impl Default for SpareThread {
     }
 }
 
+/// Whether the thread asking has kept busy: what a stage that grows by starting threads asks to know that its own
+/// thread, not what it waits on, is what holds it back. Read on the thread it measures.
+pub struct BusyThread {
+    /// The thread's CPU time when last read, and when.
+    read: (Instant, Option<Duration>),
+    busy: bool,
+}
+
+/// The share of [`SPARE_OVER`] a thread must have run for to count busy.
+const BUSY_SHARE: f64 = 0.9;
+
+impl BusyThread {
+    /// Not busy until a reading has covered [`SPARE_OVER`].
+    pub fn new() -> BusyThread {
+        BusyThread {
+            read: (Instant::now(), platform::thread_cpu_time()),
+            busy: false,
+        }
+    }
+
+    /// Whether this thread ran for most of the last reading. A thread that cannot read its CPU time counts busy.
+    pub fn busy(&mut self) -> bool {
+        if self.read.0.elapsed() >= SPARE_OVER {
+            let now = (Instant::now(), platform::thread_cpu_time());
+            self.busy = match (now.1, self.read.1) {
+                (Some(cpu), Some(was)) => {
+                    cpu.saturating_sub(was).as_secs_f64() >= BUSY_SHARE * (now.0 - self.read.0).as_secs_f64()
+                }
+                _ => true,
+            };
+            self.read = now;
+        }
+        self.busy
+    }
+}
+
+impl Default for BusyThread {
+    fn default() -> Self {
+        BusyThread::new()
+    }
+}
+
 /// Every logical core the host reports, for whichever platform found no real limit to measure
 /// against instead. `1.0` on a host that will not answer, so a caller dividing by it still gets a
 /// number rather than a NaN.
@@ -367,6 +409,14 @@ mod platform {
             }
         };
         (cpu, memory)
+    }
+
+    /// The calling thread's CPU time.
+    pub(super) fn thread_cpu_time() -> Option<std::time::Duration> {
+        let mut at = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: one out-parameter of the type asked for.
+        let ok = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut at) } == 0;
+        ok.then(|| std::time::Duration::new(at.tv_sec as u64, at.tv_nsec as u32))
     }
 
     /// Every process in `tree`'s CPU time, for a cgroup that holds more than this worker or a host
@@ -1498,7 +1548,9 @@ mod platform {
         GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX2,
     };
     use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
-    use windows_sys::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentThread, GetProcessTimes, GetThreadTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
 
     /// Job-object CPU and memory limits -- what a Windows container's own limits are -- are not
     /// read yet. This measures this process's tree against the whole host, the same as any
@@ -1613,6 +1665,18 @@ mod platform {
     }
 
     pub use super::Carried;
+
+    /// The calling thread's CPU time.
+    pub(super) fn thread_cpu_time() -> Option<std::time::Duration> {
+        let mut creation = FILETIME::default();
+        let mut exit = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        // SAFETY: the calling thread's pseudo-handle, which needs no closing, and four out-parameters of the type
+        // asked for.
+        let ok = unsafe { GetThreadTimes(GetCurrentThread(), &mut creation, &mut exit, &mut kernel, &mut user) };
+        (ok != 0).then(|| std::time::Duration::from_nanos((ticks(kernel) + ticks(user)) * 100))
+    }
 
     /// Every process in `tree`'s CPU time, and what `carried` holds of those that have left it.
     /// `None` when any process could not be read, which leaves `carried` as it was.
