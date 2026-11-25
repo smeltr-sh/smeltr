@@ -61,6 +61,10 @@
     <code>smeltr-image-arm64.tar.gz</code>, <code>smeltr-sbom-arm64.cdx.json</code>,
     <code>smeltr-stig-arm64.html</code> and <code>smeltr-cves-arm64.txt</code>.
   </p>
+  <p>
+    The extras also hold <code>smeltr-sbom-windows.cdx.json</code>, the SBOM of the libraries built into
+    the Windows binary, <code>smeltr.exe</code>.
+  </p>
 
   <h2 id="reports">Read the reports</h2>
   <p>

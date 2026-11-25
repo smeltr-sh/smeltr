@@ -187,13 +187,17 @@ cves image="smeltr:latest": need-docker
       aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
       convert --scanners vuln --format table --output /out/report.txt /out/report.json
 
-# An image's packages and the binary's crates as a CycloneDX SBOM: `sbom/sbom.cdx.json`. The release attests it on
+# A CycloneDX SBOM, `sbom/sbom.cdx.json`, of an image (its packages and its binary's crates) or of a folder (the
+# crates of the executables in it; Trivy skips files not marked executable). The release attests an image's SBOM on
 # the pushed image.
 [unix]
-sbom image="smeltr:latest": need-docker
-    mkdir -p sbom && docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/sbom:/out" \
-      aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
-      image --format cyclonedx --output /out/sbom.cdx.json {{image}}
+sbom target="smeltr:latest": need-docker
+    mkdir -p sbom && if [ -d '{{target}}' ]; then \
+        kind=rootfs scan=/scan mount="$(realpath '{{target}}'):/scan:ro"; \
+      else kind=image scan='{{target}}' mount=/var/run/docker.sock:/var/run/docker.sock; fi \
+      && docker run --rm -v "$mount" -v "$PWD/sbom:/out" \
+        aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
+        "$kind" --format cyclonedx --output /out/sbom.cdx.json "$scan"
 
 # The integration tests, run in an image's own root, so code that needs something the image lacks fails here and
 # not at a site. They are built in the image's builder (`Dockerfile`'s `tests` stage), so they link the glibc the
