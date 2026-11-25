@@ -1391,8 +1391,7 @@ struct LeaderLookupsFileConfig {
 
 /// The listen address. Pure, so the decision is testable without a socket.
 ///
-/// Every bind is allowed now. What used to make a non-loopback one dangerous was a config API that answered
-/// anonymously without a token; every operator route requires a session, whatever this binds.
+/// Every bind is allowed: every operator route requires a session, whatever this binds.
 fn resolve_listen_addr(bind: &str, port: u16) -> Result<std::net::SocketAddr, String> {
     let ip: std::net::IpAddr = bind
         .parse()
@@ -3631,8 +3630,7 @@ mod tests {
 
     use super::{gate, origin_hosts, reached_at, resolve_listen_addr, resolve_origin};
 
-    /// Every bind is allowed. What used to make a public one dangerous was a config API that answered without a
-    /// credential; every operator route needs a session now, whatever this binds.
+    /// Every bind is allowed: every operator route needs a session, whatever this binds.
     #[test]
     fn any_address_may_be_bound() {
         let addr = resolve_listen_addr("127.0.0.1", 4000).unwrap();

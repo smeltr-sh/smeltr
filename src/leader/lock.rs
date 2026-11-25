@@ -2,7 +2,7 @@
 //!
 //! Two leaders on one directory share a SQLite file, a git repository and a set of refs, and race on all three:
 //! the symptom is a worker group that vanishes, or an account created by one process and invisible to the other.
-//! Nothing detected it before, so the first sign was the damage.
+//! Nothing else detects it, so without the lock the first sign is the damage.
 //!
 //! The lock is an advisory lock the operating system holds on an open file, released when the process exits --
 //! including when it crashes, which is what a lock file holding a pid cannot manage. It grants nothing and

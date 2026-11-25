@@ -1,9 +1,8 @@
 //! What a log costs the thread that raises one.
 //!
 //! `tracing::error!` sits on reader, transform and egress threads, so the question is what a call site pays
-//! before its thread carries on. Unlike the measurement this replaces, the field values and the message are built
-//! inside the timed loop, because that is what a real site pays: the earlier figures timed the handoff alone and
-//! were quoted as though they were the whole cost.
+//! before its thread carries on. The field values and the message are built inside the timed loop, because that is
+//! what a real site pays: the handoff alone is not the whole cost.
 //!
 //! Ignored by default; `just measure` runs it in release.
 

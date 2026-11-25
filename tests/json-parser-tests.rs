@@ -443,9 +443,9 @@ fn a_missing_array_field_stays_null_across_rows_that_do_have_it() {
     b.reclaim(&mut env.pool);
 }
 
-/// Selecting a branch isn't the same as that branch having a value: `select_list` used to mark a row valid just
-/// because the condition picked it, even when the picked branch's own row was null (a declared array field the
-/// document didn't have) -- serializing an empty array where the row should stay null and be omitted entirely.
+/// Selecting a branch isn't the same as that branch having a value: a row is valid only when the picked branch's own
+/// row is. Where that is null (a declared array field the document didn't have) the row stays null and is omitted,
+/// rather than serialized as an empty array.
 #[test]
 fn a_ternary_over_arrays_stays_null_when_the_selected_branch_is_itself_null() {
     let plan = compile_ok(vec![
