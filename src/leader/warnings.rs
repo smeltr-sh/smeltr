@@ -2055,7 +2055,7 @@ pub fn outside_normal_warnings(
             };
             let since_millis = starts.get(&outside_key(r, side)).copied();
             let answer = marks
-                .answer(&r.group, &r.source, None, since_millis)
+                .answer(throughput::Subject::source(&r.group, &r.source), since_millis)
                 .filter(|_| side == throughput::Outside::Below);
             let said_normal = answer.is_some_and(|a| a.was == Was::Normal);
             let severity = match answer {
@@ -2136,7 +2136,12 @@ pub fn senders_below_warnings(
         .map(|((group, source, since), below)| {
             let answers: Vec<(&Sender, &Mark)> = below
                 .iter()
-                .filter_map(|&s| Some((s, marks.answer(group, source, Some(s), Some(since))?)))
+                .filter_map(|&s| {
+                    Some((
+                        s,
+                        marks.answer(throughput::Subject::new(group, source, Some(s)), Some(since))?,
+                    ))
+                })
                 .collect();
             let severity = match answers.len() == below.len() {
                 true => Severity::Info,
