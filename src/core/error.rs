@@ -136,9 +136,8 @@ impl ExceptionKind {
     }
 }
 
-/// The `function` label of `smeltr_rows_errored_total` for an exception from ingest, which no step raised. The number
-/// must not change: released workers send it, and the GUI shows it as "ingest" (`gui-frontend/src/metrics.ts`).
-pub const INGEST_LABEL: &str = "4294967295";
+/// The `function` label of `smeltr_rows_errored_total` for an exception from ingest, which no step raised.
+pub const INGEST_LABEL: &str = "ingest";
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Exception {
