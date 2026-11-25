@@ -1,5 +1,5 @@
 //! Array kernels: `length`, `split` (by string or regex), `match`, `push`, the JS `Array` surface (`slice`, `at`,
-//! `includes`, `indexOf`, `join`, `concat`), and the `Array` arm of `ops::logic::take`.
+//! `includes`, `indexOf`, `join`, `concat`), and `build`, which `ops::logic::take` uses to build its rows.
 //!
 //! `push` reads a null array as zero elements, so a guarded `x = push(x, v)` works on the first assignment.
 
@@ -454,43 +454,6 @@ pub fn array_resize(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     Column::list_from_parts(offsets_buf, built, validity, len)
 }
 
-/// `take` over arrays: row `r` is the whole array of the one source whose `takes` holds `r`, and null where none does
-/// or where that source's own row is null. `takes` says which rows a source won; its list says what it holds there.
-pub fn take_list<'a>(
-    ctx: &mut Ctx,
-    sources: &[&'a Column],
-    takes: &[&[u64]],
-    elem_ty: &DataType,
-    rows: usize,
-) -> Column {
-    let lists: Vec<Option<List<'a>>> = sources.iter().map(|c| c.list().ok()).collect();
-    let taker = bits::index_of_set(takes, rows);
-    let source = |row: usize| taker[row].map(|k| &lists[k as usize]);
-
-    let mut offsets = vec![0u32; rows + 1];
-    let mut validity = Validity::alloc_null(ctx.pool, rows);
-    let mut total = 0usize;
-    for row in 0..rows {
-        if let Some((s, e)) = source(row).and_then(|l| span_of(l, row)) {
-            total += e - s;
-            validity.set_valid(row, true);
-        }
-        offsets[row + 1] = total as u32;
-    }
-
-    let pieces = |row: usize, out: &mut Vec<Piece<'a>>| {
-        if let Some(l) = source(row)
-            && let Some((s, e)) = span_of(l, row)
-        {
-            out.push(Piece::Span(l.as_ref().unwrap().child, s, e));
-        }
-    };
-    let child = build_from_pieces(ctx, elem_ty, rows, total, &pieces);
-    let mut offsets_buf = ctx.pool.take((rows + 1) * 4);
-    offsets_buf.as_mut_slice::<u32>().copy_from_slice(&offsets);
-    Column::list_from_parts(offsets_buf, child, validity, rows)
-}
-
 /// One piece of the elements being built: a run of rows of a column, one row of a column, or nulls.
 #[derive(Clone, Copy)]
 pub enum Piece<'a> {
@@ -554,7 +517,7 @@ pub(crate) fn build_from_pieces<'a>(
 /// `ty` -- an unbound one, the null a literal gave -- is null elements. A source is never a constant: every caller
 /// hands the builder rows. An element that is an array or a struct is built by the same walk one level down, so the
 /// column nests as deep as its type. A `null` type holds no value: its column is `Empty`.
-fn build<'a>(pool: &mut BufferPool, ty: &DataType, pieces: &[Piece<'a>], total: usize) -> Column {
+pub(crate) fn build<'a>(pool: &mut BufferPool, ty: &DataType, pieces: &[Piece<'a>], total: usize) -> Column {
     match ty {
         DataType::Null => Column::empty(DataType::Null, total),
         DataType::Array(inner) => build_list_elements(pool, inner, pieces, total),
