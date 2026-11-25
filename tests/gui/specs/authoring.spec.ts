@@ -2296,6 +2296,12 @@ test('A6: an array that differs from the test names its elements and jumps to ea
   const far = record.locator('[data-path="scores[912]"]');
   await expect(far).toContainText('the test locks: 2736');
   await expect(far).toBeInViewport();
+  // Only the page that holds the element is drawn, with a line before and a line after for the others.
+  await expect(record.getByText('[0] to [879] not shown')).toBeVisible();
+  await expect(record.getByText('[920] to [999] not shown')).toBeVisible();
+  await expect(record.locator('[data-path="scores[4]"]')).toHaveCount(0);
+  await record.getByRole('button', { name: 'show earlier' }).click();
+  await expect(record.getByText('[0] to [839] not shown')).toBeVisible();
 });
 
 // A6, samples become tests.

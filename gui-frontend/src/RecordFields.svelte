@@ -102,9 +102,14 @@
 
   let folds = $state(new SvelteMap<string, boolean>());
   let pages = $state(new SvelteMap<string, number>());
+  let starts = $state(new SvelteMap<string, number>());
 
   let lines = $derived.by(() => {
-    const choices = { open: (p: string) => folds.get(p), pages: (p: string) => pages.get(p) };
+    const choices = {
+      open: (p: string) => folds.get(p),
+      pages: (p: string) => pages.get(p),
+      from: (p: string) => starts.get(p),
+    };
     return fullPaths
       ? pathLines(tree, choices, changedOnly)
       : recordLines(tree, choices, changedOnly);
@@ -175,23 +180,35 @@
   let unmade = $derived([...(locked ?? [])].filter(([, f]) => !f.made));
 
   let fieldsEl = $state<HTMLElement>();
-  /** Opens the array at `path` far enough to draw its element `index`, and scrolls to it. */
+  /** Opens the array at `path` on the page that holds its element `index`, and scrolls to it. */
   async function jump(path: string, index: number) {
     const target = `${path}[${index}]`;
-    folds.set(path, true);
-    for (let tries = 0; tries <= index / PAGE_LINES + 1; tries++) {
+    // An element that is an object draws as a group, or as its member's line when it has one; the jump looks for
+    // either.
+    const holds = (p: string) =>
+      p === target ||
+      (p.startsWith(target) && (p[target.length] === '.' || p[target.length] === '['));
+    const find = async () => {
       await tick();
-      // An element that is an object draws as a group, or as its member's line when it has one; the jump looks for
-      // either.
-      const holds = (p: string) =>
-        p === target ||
-        (p.startsWith(target) && (p[target.length] === '.' || p[target.length] === '['));
       const lines = fieldsEl?.querySelectorAll<HTMLElement>('[data-path]') ?? [];
-      const line = [...lines].find((l) => holds(l.dataset.path!));
-      if (line) return line.scrollIntoView({ block: 'center' });
-      pages.set(path, (pages.get(path) ?? 0) + 1);
+      return [...lines].find((l) => holds(l.dataset.path!));
+    };
+    folds.set(path, true);
+    pages.set(path, 0);
+    starts.set(path, index - (index % PAGE_LINES));
+    let line = await find();
+    // Elements longer than a line can fill the page before the element is drawn; the page then starts at the element
+    // itself.
+    if (!line) {
+      starts.set(path, index);
+      line = await find();
     }
+    line?.scrollIntoView({ block: 'center' });
   }
+
+  /** "[920] to [999]", or "[999]" for one. */
+  const span = (first: number, last: number) =>
+    first === last ? `[${first}]` : `[${first}] to [${last}]`;
 </script>
 
 {#snippet name(label: string)}
@@ -200,17 +217,21 @@
 {/snippet}
 
 {#snippet more(
-  depth: number,
-  shown: number,
-  total: number,
+  line: Extract<RecordLine, { kind: 'more' }>,
   onmore: () => void,
   next?: () => void,
   nextLabel?: string,
 )}
+  {@const { depth, shown, total } = line}
   <div class="line">
     <span class="dim" style:margin-left={`${depth * INDENT_CH + LEAD_CH}ch`}
-      >{shown.toLocaleString('en-US')} of {total.toLocaleString('en-US')} shown ·&nbsp;</span
-    ><button type="button" class="more" onclick={onmore}>show more</button>
+      >{#if !line.indexed}{shown.toLocaleString('en-US')} of {total.toLocaleString('en-US')} shown{:else if line.side === 'before'}{span(
+          0,
+          shown - 1,
+        )} not shown{:else}{span(shown, total - 1)} not shown{/if} ·&nbsp;</span
+    ><button type="button" class="more" onclick={onmore}
+      >{line.side === 'before' ? 'show earlier' : 'show more'}</button
+    >
     {#if next}<span class="dim">·</span>
       <button type="button" class="more" onclick={next}>next difference: {nextLabel}</button>{/if}
   </div>
@@ -370,7 +391,7 @@
     style:--type-w={`${typeCh}ch`}
     bind:this={fieldsEl}
   >
-    {#each lines as line, i (line.kind + line.path + line.depth)}
+    {#each lines as line, i (line.kind + line.path + line.depth + (line.kind === 'more' ? line.side : ''))}
       {@const mark = marks[i]}
       {#if line.kind === 'group'}
         {@const differs = line.branch === 'array' ? differing(line.path) : []}
@@ -401,14 +422,18 @@
         {/if}
       {:else if line.kind === 'more'}
         {@const path = line.path}
-        {@const next = changedOnly
-          ? undefined
-          : differing(path).find((index) => index >= line.shown)}
+        {@const next =
+          changedOnly || line.side === 'before'
+            ? undefined
+            : differing(path).find((index) => index >= line.shown)}
         {@render more(
-          line.depth,
-          line.shown,
-          line.total,
-          () => pages.set(path, (pages.get(path) ?? 0) + 1),
+          line,
+          line.side === 'before'
+            ? () => {
+                starts.set(path, Math.max(0, line.shown - PAGE_LINES));
+                pages.set(path, (pages.get(path) ?? 0) + 1);
+              }
+            : () => pages.set(path, (pages.get(path) ?? 0) + 1),
           next === undefined ? undefined : () => jump(path, next),
           `[${next}]`,
         )}
@@ -439,7 +464,18 @@
         {#if line.kind === 'field'}{@render field(line, removedMarks[i])}{/if}
       {/each}
       {#if removed.length < removedAll.length}
-        {@render more(0, removed.length, removedAll.length, () => removedPages++)}
+        {@render more(
+          {
+            kind: 'more',
+            path: '',
+            depth: 0,
+            side: 'after',
+            shown: removed.length,
+            total: removedAll.length,
+            indexed: false,
+          },
+          () => removedPages++,
+        )}
       {/if}
     {/if}
   </div>
