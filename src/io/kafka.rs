@@ -5,7 +5,6 @@ use crate::sync::Mutex;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use rdkafka::ClientContext;
@@ -941,16 +940,16 @@ struct Completion {
     /// Unreported records per send-sequence. Keyed by sequence rather than batch id: records are counted before they
     /// are queued, and the hand-over is sealed under its batch after.
     outstanding: HashMap<Seq, u64>,
-    /// Sealed sequences, with the copy that sealed each and its batch id. A sequence not here is still accumulating
-    /// and must not be reported complete.
-    sealed: HashMap<Seq, (usize, BatchId)>,
+    /// Sealed sequences and their batch ids. A sequence not here is still accumulating and must not be reported
+    /// complete.
+    sealed: HashMap<Seq, BatchId>,
     /// What each sequence's records that did not land said.
     failed: HashMap<Seq, Failed>,
     /// Sequences a hand-over that failed part way left records queued under. Its batch goes again whole, under a
     /// sequence of its own, so what is reported for these answers for nothing.
     abandoned: HashSet<Seq>,
-    /// Sealed and wholly reported, waiting to be returned to the copy that sealed each.
-    done: HashMap<usize, Vec<BatchCompletion>>,
+    /// Sealed and wholly reported, waiting to be returned.
+    done: Vec<BatchCompletion>,
 }
 
 /// What a sequence's records that did not land said.
@@ -1007,10 +1006,10 @@ impl Completion {
             self.outstanding.remove(&seq);
             return;
         }
-        if let Some((copy, batch)) = self.sealed.remove(&seq) {
+        if let Some(batch) = self.sealed.remove(&seq) {
             self.outstanding.remove(&seq);
             let failed = self.failed.remove(&seq).unwrap_or_default();
-            self.done.entry(copy).or_default().push(BatchCompletion {
+            self.done.push(BatchCompletion {
                 batch,
                 rejections: failed.refused,
                 throttled: false,
@@ -1097,8 +1096,8 @@ struct DeliveryTracker {
     reach: Arc<Mutex<Reach>>,
     /// Whether this producer sends gzip to Event Hubs, whose Basic and Standard tiers refuse it.
     gzip_to_event_hubs: bool,
-    /// Bytes the queued records cost, by `held_bytes`. Written by `produce` and the delivery reports, both on the
-    /// egress threads, since only their polls run them.
+    /// Bytes the queued records cost, by `held_bytes`. Written by `produce` and the delivery reports, both on egress's
+    /// thread, since only its polls run them.
     held: Arc<std::sync::atomic::AtomicUsize>,
     /// What librdkafka holds, as its latest statistics said (`publish_stats`). `None` until the first arrive.
     buffered: Arc<Mutex<Option<usize>>>,
@@ -1231,11 +1230,10 @@ impl ProducerContext for DeliveryTracker {
 /// `BaseProducer`, not `ThreadedProducer`: the threaded one's background poll races `flush`'s for the same delivery
 /// events. Nothing polls this producer except `deliver`, `poll_completions` and `flush`.
 ///
-/// Every copy of the egress thread sends through the one producer ([`Destination::copier`]): copies add threads that
-/// produce, not clients, so the broker sees the batches one producer makes. A delivery report runs on whichever copy
-/// polls, and each copy takes back its own batches alone.
+/// Each copy of the egress thread ([`Destination::copier`]) sends through a producer of its own, built as this one
+/// was: threads sharing one producer contend inside librdkafka on every record, and move fewer than one thread does.
 pub struct KafkaDestination {
-    producer: Arc<BaseProducer<DeliveryTracker>>,
+    producer: BaseProducer<DeliveryTracker>,
     default_topic: Arc<str>,
     /// Budget for one `flush`, and for one record blocked on a full queue.
     stall_after: Duration,
@@ -1243,14 +1241,9 @@ pub struct KafkaDestination {
     state: Arc<Mutex<Completion>>,
     /// Shared with the producer's own `DeliveryTracker`.
     reach: Arc<Mutex<Reach>>,
-    /// The send-sequence the batch being handed over tags its records with, taken from `seqs`.
+    /// The send-sequence records are tagged with. Bumped once a hand-over is sealed, so every record of one batch
+    /// shares one tag.
     seq: Seq,
-    /// The next send-sequence, for whichever copy hands over next.
-    seqs: Arc<AtomicU32>,
-    /// Which copy this is; the first, 0, is the one built.
-    copy: usize,
-    /// The next copy's number.
-    copies: Arc<AtomicUsize>,
     /// How its rows are written, where they are written as Avro.
     avro: Option<crate::io::avro::AvroWriter>,
     /// Shared with the producer's own `DeliveryTracker`.
@@ -1260,8 +1253,10 @@ pub struct KafkaDestination {
     /// What `held` stays under: the producer's share of `bufferBytes`, or of the most its queue may hold when the
     /// worker sizes this destination. The egress queue in front of it is what paces it; this is the backstop.
     budget: usize,
+    /// Builds another producer as this one was built, sized for the broker as this one learned it.
+    again: Arc<dyn Fn() -> Result<KafkaDestination, IoError> + Send + Sync>,
     /// The Kerberos ticket the producer signs in with, renewed while this lives. Last, so it outlives the producer.
-    _ticket: Arc<Option<kerberos::Held>>,
+    _ticket: Option<kerberos::Held>,
 }
 
 /// Bytes one consumer fetch may carry: half of `fetchBytes`, so a fetch always lands with room behind it.
@@ -1324,6 +1319,18 @@ impl KafkaDestination {
         metrics: MetricsHandle,
         secrets: &HeldSecrets,
     ) -> Result<KafkaDestination, IoError> {
+        KafkaDestination::sized(config, id, metrics, secrets, None)
+    }
+
+    /// A producer whose requests are sized for a broker ceiling already `known`, or for the one it asks for.
+    fn sized(
+        config: &KafkaDestinationConfig,
+        id: DestId,
+        metrics: MetricsHandle,
+        secrets: &HeldSecrets,
+        known: Option<(usize, &'static str)>,
+    ) -> Result<KafkaDestination, IoError> {
+        let (again_config, again_metrics, again_secrets) = (config.clone(), metrics.clone(), secrets.clone());
         let tracker = DeliveryTracker {
             state: Arc::new(Mutex::new(Completion::default())),
             metrics,
@@ -1377,10 +1384,13 @@ impl KafkaDestination {
         // refuses a request over its ceiling. An operator's own `batch.size` or `message.max.bytes` stands. Asked
         // before the producer exists, because librdkafka fixes its sizes when a client is built, and under the
         // producer's own configuration, so a secured broker answers.
-        let (ceiling, ceiling_from) =
-            message_ceiling(&producer_config, &config.default_topic).unwrap_or((DEFAULT_BATCH_BYTES, "default"));
+        let (ceiling, ceiling_from) = known
+            .or_else(|| message_ceiling(&producer_config, &config.default_topic))
+            .unwrap_or((DEFAULT_BATCH_BYTES, "default"));
         let (message_bytes, batch_bytes) = request_sizes(ceiling);
-        tracing::info!(
+        // Once a destination: a copy is sized as the producer it copies was.
+        if known.is_none() {
+            tracing::info!(
             name: "message_ceiling", target: "destinations",
             destination = %id,
             topic = %config.default_topic,
@@ -1389,7 +1399,8 @@ impl KafkaDestination {
             message_bytes,
             batch_bytes,
             "sized the producer's requests for its broker"
-        );
+            );
+        }
         for (key, bytes) in [("message.max.bytes", message_bytes), ("batch.size", batch_bytes)] {
             if producer_config.get(key).is_none() {
                 producer_config.set(key, bytes.to_string());
@@ -1402,7 +1413,7 @@ impl KafkaDestination {
         // The first token now, so the first delivery does not wait on a sign-in. Later ones come through its polls.
         entra::sign_in_unpolled(producer.client(), producer_config.get("sasl.oauthbearer.config"));
         Ok(KafkaDestination {
-            producer: Arc::new(producer),
+            producer,
             default_topic: Arc::from(config.default_topic.as_str()),
             stall_after: config.stall_after,
             state,
@@ -1412,40 +1423,22 @@ impl KafkaDestination {
             held,
             buffered,
             budget: config.producer_bytes(),
-            copy: 0,
-            seqs: Arc::default(),
-            copies: Arc::new(AtomicUsize::new(1)),
-            _ticket: Arc::new(ticket),
+            again: Arc::new(move || {
+                let metrics = again_metrics.clone();
+                KafkaDestination::sized(
+                    &again_config,
+                    id,
+                    metrics,
+                    &again_secrets,
+                    Some((ceiling, ceiling_from)),
+                )
+            }),
+            _ticket: ticket,
         })
     }
 }
 
 impl KafkaDestination {
-    /// Another copy over this one's producer, for another egress thread.
-    fn copy(&self) -> KafkaDestination {
-        KafkaDestination {
-            producer: self.producer.clone(),
-            default_topic: self.default_topic.clone(),
-            stall_after: self.stall_after,
-            state: self.state.clone(),
-            reach: self.reach.clone(),
-            seq: 0,
-            seqs: self.seqs.clone(),
-            copy: self.copies.fetch_add(1, Ordering::Relaxed),
-            copies: self.copies.clone(),
-            avro: self.avro.clone(),
-            held: self.held.clone(),
-            buffered: self.buffered.clone(),
-            budget: self.budget,
-            _ticket: self._ticket.clone(),
-        }
-    }
-
-    /// Whether a batch this copy handed over is still waiting on a delivery report.
-    fn owes(&self) -> bool {
-        self.state.lock().sealed.values().any(|&(copy, _)| copy == self.copy)
-    }
-
     /// Takes `records` that will never be reported off the count `deliver` makes up front.
     fn uncount(&mut self, records: u64) {
         let mut state = self.state.lock();
@@ -1473,21 +1466,17 @@ impl KafkaDestination {
             // A record larger than the whole budget goes alone, rather than never.
             let queued = self.held.load(Relaxed);
             if queued == 0 || queued + held <= self.budget {
-                // Added before the send: another copy's poll may run its delivery report before this one returns.
-                self.held.fetch_add(held, Relaxed);
                 match self.producer.send(record) {
-                    Ok(()) => return Ok(()),
-                    Err((KafkaError::MessageProduction(RDKafkaErrorCode::QueueFull), rejected)) => {
-                        self.held.fetch_sub(held, Relaxed);
-                        record = rejected;
+                    // Added here, not before: only this thread's polls run delivery reports.
+                    Ok(()) => {
+                        self.held.fetch_add(held, Relaxed);
+                        return Ok(());
                     }
+                    Err((KafkaError::MessageProduction(RDKafkaErrorCode::QueueFull), rejected)) => record = rejected,
                     // Refused synchronously, before queuing: a rejection of this record (`is_rejection`), distinct
                     // from a delivery failure reported through `DeliveryTracker`. No callback will come for it, so
                     // `deliver` takes the count back off.
-                    Err((e, _)) => {
-                        self.held.fetch_sub(held, Relaxed);
-                        return Err(e.into());
-                    }
+                    Err((e, _)) => return Err(e.into()),
                 }
             }
             // A full queue is ordinarily momentary backpressure: poll to drain, since `BaseProducer` has no thread of
@@ -1536,10 +1525,8 @@ fn avro_values(
 
 impl Destination for KafkaDestination {
     fn copier(&self) -> Option<crate::egress::Build> {
-        let first = Mutex::new(self.copy());
-        Some(Box::new(move || {
-            Ok(Box::new(first.lock().copy()) as Box<dyn Destination>)
-        }))
+        let again = self.again.clone();
+        Some(Box::new(move || Ok(Box::new(again()?) as Box<dyn Destination>)))
     }
 
     fn deliver(
@@ -1547,7 +1534,6 @@ impl Destination for KafkaDestination {
         batch: BatchId,
         rows: Cow<'_, [OwnedRecord]>,
     ) -> Result<(Dispatched, Vec<Rejection>), IoError> {
-        self.seq = self.seqs.fetch_add(1, Ordering::Relaxed);
         let mut rejections = Vec::new();
         let encoded = match &mut self.avro {
             Some(avro) => Some(avro_values(avro, &self.default_topic, &rows)?),
@@ -1590,16 +1576,18 @@ impl Destination for KafkaDestination {
                 Err(e) => {
                     self.uncount(unsent + 1);
                     self.state.lock().abandon(self.seq);
+                    self.seq = self.seq.wrapping_add(1);
                     return Err(e);
                 }
             }
         }
         {
             let mut state = self.state.lock();
-            state.sealed.insert(self.seq, (self.copy, batch));
+            state.sealed.insert(self.seq, batch);
             // A batch acknowledged before it was sealed, or one that sent nothing, is already done.
             state.settle(self.seq);
         }
+        self.seq = self.seq.wrapping_add(1);
         self.producer.poll(Duration::ZERO);
         Ok((Dispatched::InFlight, rejections))
     }
@@ -1611,8 +1599,7 @@ impl Destination for KafkaDestination {
         // Not `BaseProducer::flush`: it polls in 100ms slices and `poll` waits out each one, so every flush with
         // anything in flight would cost at least 100ms.
         let deadline = Instant::now() + self.stall_after;
-        // Until this copy's own batches are reported: under load, another copy's records keep the producer busy.
-        while self.producer.in_flight_count() > 0 && self.owes() {
+        while self.producer.in_flight_count() > 0 {
             if Instant::now() >= deadline {
                 return Err(KafkaError::Flush(RDKafkaErrorCode::OperationTimedOut).into());
             }
@@ -1620,9 +1607,6 @@ impl Destination for KafkaDestination {
         }
         // The barrier form: everything sent so far is reported, so settle whatever is still waiting. A record that
         // failed comes back with its batch's completion.
-        if self.producer.in_flight_count() > 0 {
-            return Ok(());
-        }
         let mut state = self.state.lock();
         state.outstanding.clear();
         state.abandoned.clear();
@@ -1635,7 +1619,7 @@ impl Destination for KafkaDestination {
 
     fn poll_completions(&mut self) -> Result<Vec<BatchCompletion>, IoError> {
         self.producer.poll(Duration::ZERO);
-        Ok(self.state.lock().done.remove(&self.copy).unwrap_or_default())
+        Ok(std::mem::take(&mut self.state.lock().done))
     }
 
     /// Set by the producer's own error callback, which `poll_completions` runs.
@@ -1643,9 +1627,8 @@ impl Destination for KafkaDestination {
         self.reach.lock().unreachable()
     }
 
-    /// The producer's, from its first copy alone: egress adds up what every copy reports.
     fn buffered_bytes(&self) -> Option<usize> {
-        (self.copy == 0).then(|| *self.buffered.lock()).flatten()
+        *self.buffered.lock()
     }
 }
 
@@ -2388,9 +2371,9 @@ mod tests {
         state.reported(0, 1, Some(Failure::Undelivered("timed out".into())));
         state.reported(0, 2, Some(Failure::Refused("too large".into())));
         assert!(state.done.is_empty(), "not before it is sealed");
-        state.sealed.insert(0, (0, 7));
+        state.sealed.insert(0, 7);
         state.settle(0);
-        let done = state.done.remove(&0).unwrap_or_default();
+        let done = std::mem::take(&mut state.done);
         assert_eq!(done.len(), 1);
         assert_eq!(done[0].batch, 7);
         assert_eq!(done[0].rejections.iter().map(|r| r.doc).collect::<Vec<_>>(), vec![2]);
@@ -2403,9 +2386,9 @@ mod tests {
         state.abandon(1);
         state.reported(1, 1, None);
         state.outstanding.insert(2, 1);
-        state.sealed.insert(2, (0, 8));
+        state.sealed.insert(2, 8);
         state.reported(2, 0, None);
-        let done = state.done.remove(&0).unwrap_or_default();
+        let done = std::mem::take(&mut state.done);
         assert_eq!(done.iter().map(|c| c.batch).collect::<Vec<_>>(), vec![8]);
         assert!(
             done[0].undelivered.is_none(),
@@ -2512,10 +2495,10 @@ mod tests {
         assert!(refused.message.contains("not draining"), "{}", refused.message);
     }
 
-    /// Copies of the egress thread send through the destination's one producer, and each takes back its own
-    /// batches alone, whichever copy's poll ran their delivery reports. A copy's flush waits on its own batches.
+    /// Each copy of the egress thread sends through a producer of its own, built as the first was, and takes back
+    /// only its own batches.
     #[test]
-    fn copies_share_the_producer_and_each_takes_back_its_own_batches() {
+    fn each_copy_sends_through_its_own_producer_and_takes_back_its_own_batches() {
         let mock = mock_cluster_with_topic("copies-topic");
         let mut first = KafkaDestination::new(
             &KafkaDestinationConfig {
@@ -2543,23 +2526,18 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         first.deliver(1, Cow::Owned(rows(3))).unwrap();
-        copy.deliver(1, Cow::Owned(rows(2))).unwrap();
-        first.deliver(2, Cow::Owned(rows(1))).unwrap();
-        assert!(Arc::ptr_eq(&first.producer, &first.copy().producer), "one producer");
+        copy.deliver(2, Cow::Owned(rows(2))).unwrap();
+        first.deliver(3, Cow::Owned(rows(1))).unwrap();
 
-        // The copy flushes first: its poll runs the first copy's reports too, which wait for the first to take them.
+        let batches = |done: Vec<BatchCompletion>| {
+            let mut batches = done.iter().map(|c| c.batch).collect::<Vec<_>>();
+            batches.sort();
+            batches
+        };
         copy.flush().unwrap();
-        let mine = |done: Vec<BatchCompletion>| done.iter().map(|c| c.batch).collect::<Vec<_>>();
-        assert_eq!(mine(copy.poll_completions().unwrap()), vec![1]);
+        assert_eq!(batches(copy.poll_completions().unwrap()), vec![2]);
         first.flush().unwrap();
-        let mut batches = mine(first.poll_completions().unwrap());
-        batches.sort();
-        assert_eq!(batches, vec![1, 2]);
-        assert_eq!(
-            copy.buffered_bytes(),
-            None,
-            "the first copy alone reports the producer's buffer"
-        );
+        assert_eq!(batches(first.poll_completions().unwrap()), vec![1, 3]);
     }
 
     /// Produces `n` one-byte records to `topic` on `mock` and waits for every delivery.

@@ -128,7 +128,8 @@ Egress is one thread per destination, owning that destination's client and
 draining a queue every reader pushes to. A destination whose client does its
 work on that thread, as a Kafka producer does, may run more copies of it, each
 over the one queue, its budget and its pacing, each with the client the
-destination gives it: Kafka's copies share its one producer. Another starts
+destination gives it: each Kafka copy has a producer of its own, since threads
+sharing one contend inside it on every record. Another starts
 when the queue is full and the copy popping from it was busy for most of the
 last second, while a thread of the worker's limit is spare and no copy is
 stalled, up to that limit. A copy past the first ends once it goes a while finding no
