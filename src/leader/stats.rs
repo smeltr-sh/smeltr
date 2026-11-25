@@ -379,11 +379,7 @@ pub fn build(
                 routes: route_shares(system, source.id, group, &totals(ROUTE_MATCHED_METRIC)),
                 expected: series_store
                     .map(|store| {
-                        let subject = throughput::Subject {
-                            group,
-                            source: id,
-                            sender: None,
-                        };
+                        let subject = throughput::Subject::source(group, id);
                         throughput::expected_over(store, subject, since_ms, now_ms, point_ms, &live.learning)
                     })
                     .transpose()

@@ -22,7 +22,7 @@ use super::envelope::{Empty, Envelope, Refusal};
 use super::senders::Sender;
 use super::series::YEAR_MS;
 use super::store::{Actor, Store};
-use super::throughput::{self, Preset, Presets};
+use super::throughput::{self, Preset, Presets, Subject};
 use super::warnings::{self, Condition, SubjectKind};
 use crate::heartbeat::SenderFields;
 
@@ -65,9 +65,7 @@ pub struct Mark {
 /// The answer to `group`'s `source`'s rows warning, or its `sender`'s, that began at `since_millis`, among `answers`.
 pub(super) fn answer<'a>(
     answers: &'a [Mark],
-    group: &str,
-    source: &str,
-    sender: Option<&Sender>,
+    Subject { group, source, sender }: Subject,
     since_millis: Option<i64>,
 ) -> Option<&'a Mark> {
     answers.iter().find(|m| {
@@ -169,20 +167,14 @@ impl Marks {
 
     /// The answer to `group`'s `source`'s rows warning, or its `sender`'s, that began at `since_millis`, if an editor
     /// gave one.
-    pub fn answer(
-        &self,
-        group: &str,
-        source: &str,
-        sender: Option<&Sender>,
-        since_millis: Option<i64>,
-    ) -> Option<&Mark> {
-        answer(&self.answers, group, source, sender, since_millis)
+    pub fn answer(&self, subject: Subject, since_millis: Option<i64>) -> Option<&Mark> {
+        answer(&self.answers, subject, since_millis)
     }
 
     /// Whether an editor answered `group`'s `source`'s below-normal warning, or its `sender`'s, that began at
     /// `since_millis` was normal.
-    pub fn said_normal(&self, group: &str, source: &str, sender: Option<&Sender>, since_millis: i64) -> bool {
-        self.answer(group, source, sender, Some(since_millis))
+    pub fn said_normal(&self, subject: Subject, since_millis: i64) -> bool {
+        self.answer(subject, Some(since_millis))
             .is_some_and(|m| m.was == Was::Normal)
     }
 
@@ -242,9 +234,7 @@ impl Marks {
 /// `group`'s `source`'s below-normal warnings, or its `sender`'s, that held at or after `since_ms`.
 fn below(
     state: &AppState,
-    group: &str,
-    source: &str,
-    sender: Option<&Sender>,
+    Subject { group, source, sender }: Subject,
     since_ms: i64,
 ) -> Result<Vec<warnings::WarningSpan>, Refusal> {
     let Some(store) = state.registry.series() else {
@@ -502,9 +492,13 @@ impl Marking {
     async fn write_mark(self, state: AppState, actor: Option<axum::Extension<Actor>>, marked: Marked) -> Envelope {
         let read = state.clone();
         self.write(state, actor, move |marks, m, actor, now_ms| {
-            let began = below(&read, &m.group, &m.source, m.sender.as_ref(), now_ms - YEAR_MS)?
-                .iter()
-                .any(|s| s.started_millis == marked.since_millis);
+            let began = below(
+                &read,
+                Subject::new(&m.group, &m.source, m.sender.as_ref()),
+                now_ms - YEAR_MS,
+            )?
+            .iter()
+            .any(|s| s.started_millis == marked.since_millis);
             if !began {
                 return Err(Refusal::not_found(format!(
                     "{} in {} has no warning of the past year that began then",
@@ -603,11 +597,7 @@ async fn chart_of(
         let now_ms = warnings::now_millis();
         throughput::chart(
             store,
-            throughput::Subject {
-                group: &group,
-                source: &source,
-                sender: sender.as_ref(),
-            },
+            throughput::Subject::new(&group, &source, sender.as_ref()),
             asked.from_millis,
             asked.to_millis,
             now_ms,
@@ -630,7 +620,7 @@ async fn past_of(state: AppState, group: String, source: String, sender: Option<
         };
         let answer = || -> Result<throughput::Past, Refusal> {
             let now_ms = warnings::now_millis();
-            let mut past = throughput::past(store, &group, &source, sender.as_ref(), now_ms, &learning)?;
+            let mut past = throughput::past(store, Subject::new(&group, &source, sender.as_ref()), now_ms, &learning)?;
             // At Off the gap never warns, so there is no limit to show.
             if sender.is_none() && learning.presets_of(&group, &source).rows.warns() {
                 past.quiet_limit_millis = state
@@ -666,8 +656,9 @@ mod tests {
         let now = YEAR_MS;
         let mut marks = Marks::default();
         let john = Actor::system();
-        let was =
-            |marks: &Marks, sender: Option<&Sender>, since| marks.answer("g", "s", sender, Some(since)).map(|m| m.was);
+        let was = |marks: &Marks, sender: Option<&Sender>, since| {
+            marks.answer(Subject::new("g", "s", sender), Some(since)).map(|m| m.was)
+        };
         marks.said(&of(None), &marked(10, Was::Normal), &john, now);
         marks.said(&of(Some(fw.clone())), &marked(30, Was::Outage), &john, now);
         assert_eq!(was(&marks, None, 10), Some(Was::Normal));
@@ -675,7 +666,7 @@ mod tests {
         assert_eq!(was(&marks, Some(&fw), 10), None, "a sender's warnings are its own");
         assert_eq!(was(&marks, Some(&fw), 30), Some(Was::Outage));
         assert_eq!(was(&marks, None, 30), None);
-        assert_eq!(marks.answer("g", "s", None, None), None);
+        assert_eq!(marks.answer(Subject::source("g", "s"), None), None);
         marks.said(&of(None), &marked(10, Was::Outage), &john, now);
         assert_eq!(was(&marks, None, 10), Some(Was::Outage));
         assert_eq!(marks.answers.len(), 2, "answered twice, kept once");
@@ -696,7 +687,7 @@ mod tests {
         let before = r#"{"lowered":[{"group":"g","source":"s","sinceMillis":5,"by":"John"}],"reset":[]}"#;
         store.put_settings(&[(MARKS_KEY, before.into())], None).unwrap();
         let marks = Marks::read(&store);
-        let answer = marks.answer("g", "s", None, Some(5)).unwrap();
+        let answer = marks.answer(Subject::source("g", "s"), Some(5)).unwrap();
         assert_eq!((answer.was, answer.by.as_str()), (Was::Outage, "John"));
         let text = serde_json::to_string(&marks).unwrap();
         assert!(!text.contains("lowered"), "{text}");
