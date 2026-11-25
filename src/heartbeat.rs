@@ -1365,6 +1365,15 @@ impl CaptureBatch {
         crate::ops::timeparse::parse_auto(self.rows.first()?.values.get(column)?.as_str()?)
     }
 
+    /// Whether every row says when it was taken.
+    pub fn is_stamped(&self) -> bool {
+        self.column(Self::TAKEN_AT).is_some_and(|c| {
+            self.rows
+                .iter()
+                .all(|row| row.values.get(c).is_some_and(|v| !v.is_null()))
+        })
+    }
+
     /// These rows, each saying when it was taken: a row that does not says the table's [`CaptureBatch::instant`], else
     /// `micros`. What saving a sample stamps it with, so a row added to a capture or a paste reads the same `now()`.
     pub fn stamped(mut self, micros: i64) -> CaptureBatch {

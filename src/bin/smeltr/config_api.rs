@@ -2249,8 +2249,6 @@ pub async fn put_sample(
     Json(mut sample): Json<config_file::SampleDto>,
 ) -> Envelope<Save> {
     sample.id = id;
-    // A paste says nothing of when it was taken, and every run over it reads that instant as `now()`.
-    sample.table = sample.table.stamped(smeltr::core::ctx::wall_clock_micros());
     if let Err(message) = config_file::refuse_sample_size(sample.table.rows.len()) {
         return Envelope::refused(Refusal::invalid(message));
     }
@@ -3954,7 +3952,9 @@ mod tests {
         let read = config_file::read_sample(&mut reading.files(), &sample.id)
             .unwrap()
             .expect("the sample reads back");
-        assert_eq!(read.table, sample.table);
+        // Stamped with the instant it was written at, which every run over it reads as `now()`.
+        let at = read.table.instant().expect("a written sample says when it was taken");
+        assert_eq!(read.table, sample.table.clone().stamped(at));
         assert_eq!(read.source.as_deref(), Some("orders-west"));
 
         let (mut listed, unreadable) = config_file::list_samples(&mut reading.files());

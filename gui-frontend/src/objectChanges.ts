@@ -17,7 +17,6 @@ import {
   type SampleDto,
   type SampleRecordDto,
   type TestDto,
-  testFields,
   testOutcomes,
   type TestResult,
   type TestSummary,
@@ -741,7 +740,8 @@ export function fileChange(
         pipeline: t.pipeline,
         sample: t.sample,
         rowsIn: t.rowsIn,
-        checks: testFields(t).join(', '),
+        // With its type: a relock that changes only a type changes what the test accepts.
+        checks: t.table.columns.map((c) => `${c.name} ${c.type}`).join(', '),
       });
     change.fields = diffObjects(fieldsOf(file.before), fieldsOf(file.after));
     change.headers = ['checks'];
