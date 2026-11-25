@@ -86,6 +86,31 @@ impl Validity {
         }
     }
 
+    /// Grows to `len` rows: the rows it had are kept, and the rows added are valid.
+    pub fn grow(&mut self, pool: &mut BufferPool, len: usize) {
+        debug_assert!(len >= self.len);
+        let old = self.len;
+        self.bitmap.grow(pool, bits::bytes_for(len));
+        let b = &mut self.bitmap.as_mut_slice::<u64>()[..bits::words_for(len)];
+        // The bits past the old length in its last word are 0, and the words after that word come from the pool as
+        // they were left, so both are set valid here.
+        if !old.is_multiple_of(64) {
+            b[old / 64] |= !0u64 << (old % 64);
+        }
+        b[old.div_ceil(64)..].fill(!0u64);
+        bits::mask_tail(b, len);
+        self.valid_count += len - old;
+        self.len = len;
+    }
+
+    /// Keeps only the first `len` rows.
+    pub fn truncate(&mut self, len: usize) {
+        debug_assert!(len <= self.len);
+        self.len = len;
+        bits::mask_tail(self.bits_mut(), len);
+        self.recount();
+    }
+
     pub fn set_all_valid(&mut self) {
         let len = self.len;
         let words = bits::words_for(len);

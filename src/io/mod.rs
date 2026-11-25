@@ -354,7 +354,7 @@ impl RecordChunkBuilder {
             let mut home = self.home.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let bytes = self.size - self.at.iter().map(|at| headers_size(&at.3)).sum::<usize>();
             (home.rows, home.bytes) = (self.at.len(), bytes);
-            let column = self.raw.finish_growing(&mut home.pool);
+            let column = self.raw.finish_growing();
             // Frees what the polls before outgrew: the next poll reserves its room up front.
             home.pool.trim();
             column
