@@ -1801,6 +1801,52 @@ test('A4: an end-to-end test opened from Tests shows its fields the documents st
   await expect(admin).toHaveURL(/sample=quiet-sample.*test=quiet/);
 });
 
+// A4, an end-to-end test that no longer matches: the documents that differ are marked where they show.
+test('A4: an end-to-end test opened in Route a sample marks the documents that differ from it', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await webRoutes(api, ['{"status":200}', '{"status":503}']);
+  await api.put(`/api/areas/shared/tests/alerts${ON}`, {
+    name: 'alerts',
+    sample: 'web-sample',
+    fields: ['status'],
+    rows: [0, 1],
+  });
+  await api.put(`/api/areas/shared/pipelines/web${ON}`, {
+    id: 'web',
+    name: 'web',
+    steps: [
+      {
+        type: 'parser',
+        id: 'body',
+        input: '_raw',
+        kind: { type: 'json' },
+        declared: [{ name: 'status', type: 'i64' }],
+      },
+      {
+        type: 'code',
+        id: 'code-1',
+        filter: 'true',
+        disabled: false,
+        body: 'if (status == 503) { status = 504; }',
+      },
+    ],
+  });
+
+  await goto(admin, leader, '#/build/tests');
+  await admin
+    .getByRole('row', { name: /alerts/ })
+    .getByRole('link', { name: 'Open' })
+    .click({ timeout: 30_000 });
+  const table = admin.getByRole('table');
+  const second = table.getByRole('row', { name: /^row 1 / });
+  await expect(second.first()).toHaveClass(/differs/, { timeout: 30_000 });
+  await expect(table.locator('tr.grid-row.differs')).toHaveCount(await second.count());
+  await expect(table.getByRole('row', { name: /^row 0 / }).first()).not.toHaveClass(/differs/);
+});
+
 // A1 and A4: records pasted are held as a capture is, route from the source chosen for them, and save with none.
 test('A4: pasted records are held unsaved and route from the source chosen for them', async ({
   admin,
@@ -2124,6 +2170,132 @@ test('A4: a save pressed from a code field saves its layout', async ({ admin, le
   await expect(admin.getByText('Unsaved', { exact: true })).toHaveCount(0);
   const saved = (await api.get(`/api/areas/shared/pipelines/orders${ON}`)).pipeline;
   expect(saved.steps[0].body).toBe('x = 2;');
+});
+
+// A6, a failing test opened in the editor: its rows that differ are marked, found, and say what the test locks.
+test('A6: a test opened in the editor marks the rows that differ from what it locks', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  const pipeline = (body: string) =>
+    api.put(`/api/areas/shared/pipelines/orders${ON}`, {
+      id: 'orders',
+      name: 'orders',
+      steps: [
+        {
+          type: 'parser',
+          id: 'body',
+          input: '_raw',
+          kind: { type: 'json' },
+          declared: [
+            { name: 'id', type: 'i64' },
+            { name: 'total', type: 'f64' },
+          ],
+        },
+        { type: 'code', id: 'code-1', filter: 'true', disabled: false, body },
+      ],
+    });
+  await pipeline('tax = total * 0.1;');
+  await api.put(`/api/areas/shared/samples/orders-sample${ON}`, {
+    id: 'orders-sample',
+    name: 'orders',
+    ...pasted(
+      ['{"id":1,"total":20}', '{"id":2,"total":0}', '{"id":3,"total":12}'].map((_raw) => ({
+        _raw,
+      })),
+    ),
+  });
+  await api.put(`/api/areas/shared/tests/orders-tax${ON}`, {
+    name: 'orders are taxed at 10%',
+    pipeline: 'orders',
+    sample: 'orders-sample',
+    fields: ['id', 'tax', 'total'],
+    rows: [0, 1, 2],
+  });
+  // Twice the tax: the rows with a total differ, the one without does not.
+  await pipeline('tax = total * 0.2;');
+
+  await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample?test=orders-tax');
+  await expect(admin.locator('tr.grid-row.differs')).toHaveCount(2, { timeout: 30_000 });
+  await expect(admin.locator('tr.grid-row.differs .index-cell')).toHaveText(['0', '2']);
+
+  // Open, the row says what the test locks beside what this run made.
+  const record = admin.getByRole('row', { name: 'record 0' });
+  await expect(record).toBeVisible();
+  await expect(record.getByText('the test locks: 2')).toBeVisible();
+
+  // The find box narrows to them.
+  const search = admin.getByRole('combobox', { name: 'Search the output' });
+  await search.click();
+  await admin
+    .getByRole('listbox', { name: 'Suggestions' })
+    .getByRole('option', { name: /Differs from the test\s*2/ })
+    .click();
+  await expect(admin.getByText('2 of 3 rows')).toBeVisible();
+
+  // Fixed, nothing differs.
+  await pipeline('tax = total * 0.1;');
+  await admin.reload();
+  await expect(admin.getByRole('button', { name: 'Lock this test again' })).toBeEnabled({
+    timeout: 30_000,
+  });
+  await expect(admin.locator('tr.grid-row.differs')).toHaveCount(0);
+});
+
+// A6, a long array that differs from the test: its line names the elements that differ and jumps to each.
+test('A6: an array that differs from the test names its elements and jumps to each', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  const pipeline = (body: string) =>
+    api.put(`/api/areas/shared/pipelines/orders${ON}`, {
+      id: 'orders',
+      name: 'orders',
+      steps: [
+        {
+          type: 'parser',
+          id: 'body',
+          input: '_raw',
+          kind: { type: 'json' },
+          declared: [
+            { name: 'id', type: 'i64' },
+            { name: 'scores', type: { type: 'array', of: 'i64' } },
+          ],
+        },
+        ...(body ? [{ type: 'code', id: 'code-1', filter: 'true', disabled: false, body }] : []),
+      ],
+    });
+  await pipeline('');
+  const scores = Array.from({ length: 1000 }, (_, i) => i * 3);
+  await api.put(`/api/areas/shared/samples/orders-sample${ON}`, {
+    id: 'orders-sample',
+    name: 'orders',
+    ...pasted([{ _raw: JSON.stringify({ id: 1, scores }) }]),
+  });
+  await api.put(`/api/areas/shared/tests/orders-scores${ON}`, {
+    name: 'orders keep their scores',
+    pipeline: 'orders',
+    sample: 'orders-sample',
+    fields: ['id', 'scores'],
+    rows: [0],
+  });
+  await pipeline('scores[4] = 13; scores[17] = 52; scores[912] = 2737;');
+
+  await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample?test=orders-scores');
+  const record = admin.getByRole('row', { name: 'record 0' });
+  const row = record.locator('.group-row');
+  await expect(row).toContainText('3 differ:', { timeout: 30_000 });
+  const scoresGroup = row.getByRole('button', { name: /scores/ });
+  if ((await scoresGroup.getAttribute('aria-expanded')) !== 'true') await scoresGroup.click();
+  await expect(record.locator('[data-path="scores[4]"]')).toContainText('the test locks: 12');
+  await expect(record.getByRole('button', { name: 'next difference: [912]' })).toBeVisible();
+
+  await row.getByRole('button', { name: '[912]' }).click();
+  const far = record.locator('[data-path="scores[912]"]');
+  await expect(far).toContainText('the test locks: 2736');
+  await expect(far).toBeInViewport();
 });
 
 // A6, samples become tests.
