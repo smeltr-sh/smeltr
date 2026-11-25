@@ -1348,7 +1348,7 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
     let metrics = smeltr::metrics::MetricsHandle::new(registry.clone(), "fuzz");
     let built = smeltr::io::build_destination(
         &DestinationKind::Elasticsearch(c.clone()),
-        DestId(0),
+        DestId::new(0),
         "d",
         metrics,
         &secrets,
@@ -1928,7 +1928,7 @@ fn live_seed(seed: u64, url: &str, reached: &mut Reached, pki: &Pki) -> Result<(
     let metrics = smeltr::metrics::MetricsHandle::new(Arc::new(smeltr::metrics::Metrics::new()), "fuzz");
     let mut d = smeltr::io::build_destination(
         &DestinationKind::Elasticsearch(c.clone()),
-        DestId(0),
+        DestId::new(0),
         "d",
         metrics,
         &secrets,

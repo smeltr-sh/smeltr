@@ -782,7 +782,7 @@ fn fuzz_one(seed: u64, receivers: &mut [Ends], coverage: &mut Coverage) -> Resul
     };
     let unwritten = Unwritten::new(
         smeltr::metrics::MetricsHandle::new(Arc::new(smeltr::metrics::Metrics::new()), "otlp-destination-fuzz"),
-        DestId(0),
+        DestId::new(0),
         "d",
     );
     let mut d = HttpDestination::new(service, Otlp::new(&config).with_unwritten(unwritten))
@@ -1164,7 +1164,7 @@ fn live_a_collector_passes_on_what_the_fuzzed_destination_sends() {
         let system = smeltr::config_file::load_str(&json).map_err(|e| format!("does not load: {e}\n{json}"))?;
         let kind = &system.topology.destinations[0].kind;
         let metrics = smeltr::metrics::MetricsHandle::new(Arc::new(smeltr::metrics::Metrics::new()), "otlp-live");
-        let mut d = smeltr::io::build_destination(kind, DestId(0), "collector", metrics, &secrets, None)
+        let mut d = smeltr::io::build_destination(kind, DestId::new(0), "collector", metrics, &secrets, None)
             .map_err(|e| format!("does not build: {e}\n{json}"))?;
         let rows = given.clone();
         // The collector answers each request once the receiver has committed what it passed on, so the receiver is

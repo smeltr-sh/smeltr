@@ -418,7 +418,7 @@ fn a_busy_ack_endpoint_counts_as_throttled() {
     );
     let mut d = destination(t, Acknowledgement::Indexer).with_metrics(
         smeltr::metrics::MetricsHandle::new(registry.clone(), "egress-2"),
-        DestId(2),
+        DestId::new(2),
     );
     assert!(deliver(&mut d, vec![row(b"{}")]).unwrap().is_empty());
     let throttled = registry

@@ -34,7 +34,14 @@ fn hand(h: &mut dyn Destination, batch: u64, rows: &[OutgoingRecord<'_>]) -> Dis
 #[test]
 fn every_reader_shares_one_destination_client() {
     let dest = FakeDestination::new();
-    let mut egress = Egress::start(DestId(0), "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        metrics(),
+    );
 
     let mut readers: Vec<_> = (0..3).map(|_| egress.handle()).collect();
     for (i, h) in readers.iter_mut().enumerate() {
@@ -56,7 +63,14 @@ fn every_reader_shares_one_destination_client() {
 #[test]
 fn completions_go_back_to_the_reader_that_dispatched_them() {
     let dest = AsyncDestination::new();
-    let mut egress = Egress::start(DestId(0), "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        metrics(),
+    );
 
     let mut first = egress.handle();
     let mut second = egress.handle();
@@ -98,7 +112,14 @@ fn completions_go_back_to_the_reader_that_dispatched_them() {
 #[test]
 fn a_finishing_destination_acknowledges_what_it_holds_without_waiting() {
     let dest = AsyncDestination::new();
-    let mut egress = Egress::start(DestId(0), "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        metrics(),
+    );
     let mut reader = egress.handle();
     hand(&mut reader, 1, &[OutgoingRecord::new(b"held")]);
     for _ in 0..200 {
@@ -124,7 +145,14 @@ fn a_finishing_destination_acknowledges_what_it_holds_without_waiting() {
 #[test]
 fn a_batch_with_no_rows_for_this_destination_stays_off_the_queue() {
     let dest = FakeDestination::new();
-    let mut egress = Egress::start(DestId(0), "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        metrics(),
+    );
     let mut h = egress.handle();
 
     assert!(matches!(hand(&mut h, 1, &[]), smeltr::io::Dispatched::Complete));
@@ -139,7 +167,7 @@ fn a_batch_with_no_rows_for_this_destination_stays_off_the_queue() {
 fn a_destination_that_never_drains_fails_the_reader() {
     let dest = FakeDestination::always_failing();
     let mut egress = Egress::start(
-        DestId(0),
+        DestId::new(0),
         "d",
         Box::new(dest),
         Duration::from_millis(200),
@@ -163,7 +191,7 @@ fn a_transient_failure_is_re_sent_from_here_not_re_run_upstream() {
     // The first two attempts at this row fail; the third works.
     dest.fail_next_sends(2);
     let mut egress = Egress::start(
-        DestId(0),
+        DestId::new(0),
         "d",
         Box::new(dest.clone()),
         Duration::from_secs(5),
@@ -193,7 +221,7 @@ fn each_destination_holds_its_own_budget() {
     let big = vec![b'x'; budget / 2];
     let dest = AsyncDestination::new();
     let mut egress = Egress::start(
-        DestId(0),
+        DestId::new(0),
         "d",
         Box::new(dest.clone()),
         Duration::from_millis(300),
@@ -232,7 +260,7 @@ fn freed_room_wakes_the_pool() {
     let dest = AsyncDestination::new();
     let pool = Arc::new(Ready::new());
     let mut egress =
-        Egress::start(DestId(0), "d", Box::new(dest.clone()), timeout(), 1, metrics()).with_pool(pool.clone());
+        Egress::start(DestId::new(0), "d", Box::new(dest.clone()), timeout(), 1, metrics()).with_pool(pool.clone());
     let mut h = egress.handle();
 
     hand(&mut h, 1, &[OutgoingRecord::new(b"fills the budget alone")]);
@@ -267,7 +295,7 @@ fn rows_sent_but_not_acknowledged_still_count_against_the_budget() {
     let big = vec![b'x'; BUDGET / 2];
     let dest = AsyncDestination::new();
     let mut egress = Egress::start(
-        DestId(0),
+        DestId::new(0),
         "d",
         Box::new(dest.clone()),
         Duration::from_millis(300),
@@ -311,7 +339,7 @@ fn rows_sent_but_not_acknowledged_still_count_against_the_budget() {
 fn dropping_the_stage_releases_a_waiting_reader() {
     let dest = AsyncDestination::new();
     let mut egress = Egress::start(
-        DestId(0),
+        DestId::new(0),
         "d",
         Box::new(dest),
         Duration::from_secs(30),
@@ -341,7 +369,14 @@ fn dropping_the_stage_releases_a_waiting_reader() {
 #[test]
 fn a_batch_acknowledged_while_the_queue_is_idle_still_comes_back() {
     let dest = AsyncDestination::new();
-    let mut egress = Egress::start(DestId(0), "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        metrics(),
+    );
     let mut h = egress.handle();
 
     hand(&mut h, 3, &[OutgoingRecord::new(b"row")]);
@@ -373,7 +408,7 @@ fn a_refused_record_comes_back_as_a_rejection_not_a_failed_batch() {
     let dest = FakeDestination::new();
     dest.reject_next_sends(1);
     let mut egress = Egress::start(
-        DestId(0),
+        DestId::new(0),
         "d",
         Box::new(dest.clone()),
         Duration::from_millis(500),
@@ -431,7 +466,7 @@ fn the_requests_a_destination_has_open_are_reported_and_only_when_it_opens_its_o
     let level = Arc::new(std::sync::Mutex::new(Some(7)));
     let registry = Arc::new(Metrics::new());
     let mut egress = Egress::start(
-        DestId(0),
+        DestId::new(0),
         "d",
         Box::new(Reporting(level.clone())),
         timeout(),
@@ -452,7 +487,7 @@ fn the_requests_a_destination_has_open_are_reported_and_only_when_it_opens_its_o
     // A destination with no loop of its own leaves the series absent.
     let quiet = Arc::new(Metrics::new());
     let mut egress = Egress::start(
-        DestId(1),
+        DestId::new(1),
         "d",
         Box::new(Reporting(Arc::new(std::sync::Mutex::new(None)))),
         timeout(),
@@ -475,7 +510,7 @@ fn a_stall_and_its_recovery_are_reported_on_the_destination_gauge() {
     let dest = FakeDestination::new();
     dest.fail_next_sends(2);
     let mut egress = Egress::start(
-        DestId(0),
+        DestId::new(0),
         "d",
         Box::new(dest.clone()),
         Duration::from_secs(5),
@@ -514,7 +549,7 @@ fn a_client_that_reaches_no_broker_marks_its_destination_down_until_it_does() {
     let registry = Arc::new(Metrics::new());
     let dest = AsyncDestination::new();
     let mut egress = Egress::start(
-        DestId(0),
+        DestId::new(0),
         "d",
         Box::new(dest.clone()),
         timeout(),
@@ -555,7 +590,7 @@ fn neither_a_landed_send_nor_a_broker_coming_back_clears_the_other_cause() {
     let registry = Arc::new(Metrics::new());
     let dest = AsyncDestination::new();
     let mut egress = Egress::start(
-        DestId(0),
+        DestId::new(0),
         "d",
         Box::new(dest.clone()),
         timeout(),
@@ -612,7 +647,7 @@ fn an_in_flight_dispatch_alone_never_reports_recovered() {
     let registry = Arc::new(Metrics::new());
     let dest = AsyncDestination::new();
     let mut egress = Egress::start(
-        DestId(0),
+        DestId::new(0),
         "d",
         Box::new(dest.clone()),
         timeout(),
@@ -684,7 +719,14 @@ fn an_in_flight_dispatch_alone_never_reports_recovered() {
 #[test]
 fn a_completion_that_arrived_before_the_stage_stopped_is_not_lost() {
     let dest = AsyncDestination::new();
-    let mut egress = Egress::start(DestId(0), "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        metrics(),
+    );
     let mut h = egress.handle();
 
     hand(&mut h, 4, &[OutgoingRecord::new(b"row")]);
@@ -717,7 +759,7 @@ fn a_destination_reports_what_its_queue_holds_and_what_it_may_hold() {
     let registry = Arc::new(Metrics::new());
     let dest = AsyncDestination::new();
     let _egress = Egress::start(
-        DestId(0),
+        DestId::new(0),
         "d",
         Box::new(dest.clone()),
         timeout(),
@@ -757,7 +799,7 @@ fn a_queue_holding_an_unacknowledged_batch_reports_the_bytes() {
     let registry = Arc::new(Metrics::new());
     let dest = AsyncDestination::new();
     let mut egress = Egress::start(
-        DestId(0),
+        DestId::new(0),
         "d",
         Box::new(dest.clone()),
         timeout(),
@@ -795,7 +837,7 @@ fn a_rows_salvage_plan_counts_against_the_budget() {
     let registry = Arc::new(Metrics::new());
     let dest = AsyncDestination::new();
     let mut egress = Egress::start(
-        DestId(0),
+        DestId::new(0),
         "d",
         Box::new(dest.clone()),
         timeout(),
@@ -810,7 +852,7 @@ fn a_rows_salvage_plan_counts_against_the_budget() {
     };
     let plan: Vec<SalvageTarget> = (1..=3u32)
         .map(|dlq| SalvageTarget {
-            dlq: DestId(dlq),
+            dlq: DestId::new(dlq),
             doc_id: Some("k".repeat(1000)),
             reached: false,
         })
@@ -847,7 +889,14 @@ fn completions_within(handle: &mut smeltr::egress::EgressHandle, within: Duratio
 fn a_refusal_comes_back_with_its_document() {
     let dest = FakeDestination::new();
     dest.reject_next_sends(1);
-    let mut egress = Egress::start(DestId(0), "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        metrics(),
+    );
     let mut h = egress.handle();
     hand(
         &mut h,
@@ -877,8 +926,15 @@ fn a_refusal_comes_back_with_its_document() {
 fn a_blocking_destination_holds_its_refusals_and_sends_them_again() {
     let dest = FakeDestination::new();
     dest.reject_next_sends(1);
-    let mut egress =
-        Egress::start(DestId(0), "d", Box::new(dest.clone()), timeout(), BUDGET, metrics()).holding_refusals();
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        metrics(),
+    )
+    .holding_refusals();
     let mut h = egress.handle();
     hand(
         &mut h,
@@ -916,8 +972,15 @@ fn a_blocking_destination_holds_its_refusals_and_sends_them_again() {
 fn a_blocking_dlq_holds_a_salvaged_row_it_refuses() {
     let dest = FakeDestination::new();
     dest.reject_next_sends(1);
-    let mut egress =
-        Egress::start(DestId(0), "d", Box::new(dest.clone()), timeout(), BUDGET, metrics()).holding_refusals();
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        metrics(),
+    )
+    .holding_refusals();
     let mut h = egress.handle();
     hand(&mut h, 4, &[OutgoingRecord::new(b"salvaged").salvaged()]);
 
@@ -941,7 +1004,7 @@ fn dropping_an_egress_ends_the_capture_at_its_destination() {
 
     let captures = Arc::new(Captures::default());
     let egress = Egress::start(
-        DestId(0),
+        DestId::new(0),
         "es",
         Box::new(FakeDestination::new()),
         timeout(),
@@ -993,7 +1056,7 @@ fn a_capture_at_a_blocking_destination_sees_its_held_rows_once() {
         })
     };
     let mut egress = Egress::start(
-        DestId(0),
+        DestId::new(0),
         "es",
         Box::new(dest.clone()),
         timeout(),
@@ -1117,7 +1180,7 @@ fn a_paced_queue_grows_from_one_batch_while_its_source_presses() {
     let pool = smeltr::egress::QueuePool::new(64 * 1024 * 1024);
     let dest = AsyncDestination::new();
     let mut egress = Egress::start(
-        DestId(0),
+        DestId::new(0),
         "d",
         Box::new(dest.clone()),
         timeout(),
@@ -1237,7 +1300,14 @@ fn paced_queues_on_one_pool_settle_near_an_equal_share_and_a_stall_starves_neith
 #[test]
 fn only_the_rows_that_did_not_land_are_sent_again() {
     let dest = AsyncDestination::new();
-    let mut egress = Egress::start(DestId(0), "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        metrics(),
+    );
     let mut h = egress.handle();
     hand(
         &mut h,
@@ -1301,7 +1371,14 @@ fn only_the_rows_that_did_not_land_are_sent_again() {
 #[test]
 fn a_batch_the_destination_would_not_take_is_sent_again_alone() {
     let dest = AsyncDestination::new();
-    let mut egress = Egress::start(DestId(0), "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        metrics(),
+    );
     let mut h = egress.handle();
     let units_within = |n: usize| {
         let deadline = std::time::Instant::now() + timeout();
@@ -1373,7 +1450,7 @@ fn a_route_that_keeps_failing_holds_the_stall_and_backs_off_alone() {
     let registry = Arc::new(Metrics::new());
     let dest = AsyncDestination::new();
     let mut egress = Egress::start(
-        DestId(0),
+        DestId::new(0),
         "d",
         Box::new(dest.clone()),
         timeout(),
@@ -1434,7 +1511,14 @@ fn a_route_that_keeps_failing_holds_the_stall_and_backs_off_alone() {
 #[test]
 fn a_destination_where_nothing_lands_backs_off_as_a_whole() {
     let dest = AsyncDestination::new();
-    let mut egress = Egress::start(DestId(0), "d", Box::new(dest.clone()), timeout(), BUDGET, metrics());
+    let mut egress = Egress::start(
+        DestId::new(0),
+        "d",
+        Box::new(dest.clone()),
+        timeout(),
+        BUDGET,
+        metrics(),
+    );
     let mut h = egress.handle();
     hand(&mut h, 1, &[OutgoingRecord::new(b"row")]);
     taken_within(&dest, 1);
