@@ -168,10 +168,16 @@ function rowOf(columns: CaptureColumnDto[], record: SampleRecordDto): CapturedRo
   const take = (path: string): unknown => {
     const keys = keySpans(path).map((span) => span.key);
     const last = keys.pop();
+    // Only what the record itself holds: a path may name something every object inherits, like `__proto__`.
+    const own = (at: unknown, key: string) =>
+      at !== null && typeof at === 'object' && Object.hasOwn(at, key)
+        ? (at as SampleRecordDto)[key]
+        : null;
     let at: unknown = left;
-    for (const key of keys) at = (at as SampleRecordDto | null)?.[key];
+    for (const key of keys) at = own(at, key);
     if (at === null || typeof at !== 'object') return null;
     if (last === undefined) return at;
+    if (!Object.hasOwn(at, last)) return null;
     const value = (at as SampleRecordDto)[last];
     delete (at as SampleRecordDto)[last];
     return value ?? null;

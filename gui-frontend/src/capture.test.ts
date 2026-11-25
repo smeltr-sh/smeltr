@@ -95,6 +95,22 @@ describe('heldCount', () => {
 });
 
 describe('tableRecords', () => {
+  it('keeps a field named as something every object inherits in its record', () => {
+    const table = {
+      columns: [
+        { name: '__proto__.probe', type: 'str' },
+        { name: '...', type: '{...}' },
+      ],
+      rows: [
+        { values: ['x', { a: 2 }] },
+        { values: [null, JSON.parse('{"__proto__": {"other": 1}}')] },
+      ],
+    };
+    const records = tableRecords(table).map((held) => JSON.stringify(held.record));
+    expect(records).toEqual(['{"__proto__":{"probe":"x"},"a":2}', '{"__proto__":{"other":1}}']);
+    expect(({} as Record<string, unknown>).probe).toBeUndefined();
+  });
+
   it('shows each row as a record: a constant on every row, unclaimed fields beside the named, a failed cell named and its text no field', () => {
     const table = {
       columns: [
