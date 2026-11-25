@@ -11,6 +11,7 @@
 //!
 //! Live, the same draws, pointed at the Splunk `just live-up` runs, land there and are searched back.
 
+use smeltr::core::id::DestId;
 use smeltr::sync::Mutex;
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -1084,8 +1085,15 @@ fn mismatch_option(c: &SplunkHecDestinationConfig) -> &'static str {
 
 fn build(c: &SplunkHecDestinationConfig, secrets: &HeldSecrets) -> Result<Box<dyn Destination>, String> {
     let metrics = smeltr::metrics::MetricsHandle::new(Arc::new(smeltr::metrics::Metrics::new()), "fuzz");
-    smeltr::io::build_destination(&DestinationKind::SplunkHec(c.clone()), 0, "d", metrics, secrets, None)
-        .map_err(|e| e.to_string())
+    smeltr::io::build_destination(
+        &DestinationKind::SplunkHec(c.clone()),
+        DestId(0),
+        "d",
+        metrics,
+        secrets,
+        None,
+    )
+    .map_err(|e| e.to_string())
 }
 
 // -- the collector in this process -------------------------------------------------------------------------------

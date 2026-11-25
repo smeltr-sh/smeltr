@@ -10,6 +10,7 @@
 //! a payload diff rather than a word about partitions, so
 //! `tests/live/compose.live.yaml` pins it.
 
+use smeltr::core::id::{DestId, SourceId};
 use std::time::{Duration, Instant};
 
 use std::sync::Arc;
@@ -64,7 +65,7 @@ fn dest_for(brokers: &str, topic: &str) -> KafkaDestination {
             props: Default::default(),
             avro: None,
         },
-        0,
+        DestId(0),
         kafka_metrics(),
         &Default::default(),
     )
@@ -177,7 +178,7 @@ fn operator_properties_reach_the_producer() {
             props,
             avro: None,
         },
-        0,
+        DestId(0),
         kafka_metrics(),
         &Default::default(),
     );
@@ -216,7 +217,7 @@ fn a_credential_this_worker_cannot_obtain_is_a_clear_error() {
             props,
             avro: None,
         },
-        0,
+        DestId(0),
         kafka_metrics(),
         &Default::default(),
     );
@@ -259,7 +260,7 @@ fn a_stored_credential_the_leader_has_not_sent_yet_is_a_clear_error() {
                 props: props.clone(),
                 avro: None,
             },
-            0,
+            DestId(0),
             kafka_metrics(),
             &held,
         );
@@ -289,7 +290,7 @@ fn kafka_destination_construction_does_not_require_a_reachable_broker() {
         props: Default::default(),
         avro: None,
     };
-    KafkaDestination::new(&config, 0, kafka_metrics(), &Default::default())
+    KafkaDestination::new(&config, DestId(0), kafka_metrics(), &Default::default())
         .expect("construction goes ahead without the broker");
 }
 
@@ -1084,7 +1085,7 @@ fn the_producer_buffer_bound_reaches_librdkafka() {
             props: Default::default(),
             avro: None,
         },
-        0,
+        DestId(0),
         kafka_metrics(),
         &Default::default(),
     );
@@ -1105,7 +1106,7 @@ fn the_producer_buffer_bound_reaches_librdkafka() {
             props: Default::default(),
             avro: None,
         },
-        0,
+        DestId(0),
         kafka_metrics(),
         &Default::default(),
     );
@@ -1210,7 +1211,7 @@ fn live_a_reader_at_its_in_flight_limit_still_lets_its_group_rebalance() {
         let source = KafkaSource::new(&config, &Default::default()).unwrap();
         // Nothing acknowledges what this reader hands over, as when its destination is down.
         let limit = if at_limit { 1 } else { usize::MAX };
-        let mut reader = Reader::new(0, Box::new(source), vec![0], limit, kafka_metrics());
+        let mut reader = Reader::new(SourceId(0), Box::new(source), vec![DestId(0)], limit, kafka_metrics());
         let handoff = Handoff::new();
         let (_reports, acks) = reports();
         let step = |reader: &mut Reader| {
@@ -1941,7 +1942,7 @@ fn live_an_event_hubs_source_reads_and_commits_through_the_kafka_endpoint() {
             props,
             avro: None,
         },
-        0,
+        DestId(0),
         kafka_metrics(),
         &Default::default(),
     )
@@ -2216,7 +2217,7 @@ fn live_an_event_hubs_start_moved_to_a_time_skips_what_came_before() {
             props,
             avro: None,
         },
-        0,
+        DestId(0),
         kafka_metrics(),
         &Default::default(),
     )

@@ -162,7 +162,7 @@ mod tests {
         m
     }
 
-    fn track_one(t: &mut CommitTracker, offset: i64, waiting: &[u32]) -> BatchId {
+    fn track_one(t: &mut CommitTracker, offset: i64, waiting: &[DestId]) -> BatchId {
         let id = t.next_id();
         t.track(id, tokens(0, offset), waiting.iter().copied().collect(), 0);
         id
@@ -176,10 +176,10 @@ mod tests {
         let id = t.next_id();
         let mut both = tokens(0, 100);
         both.extend(tokens(1, 50));
-        t.track(id, both, [0].into_iter().collect(), 0);
+        t.track(id, both, [DestId(0)].into_iter().collect(), 0);
 
         t.forget(&TopicPartition::new("t".into(), 0));
-        t.acknowledge(id, 0);
+        t.acknowledge(id, DestId(0));
         let retired = t.retire().expect("the batch still retires");
         assert_eq!(retired.tokens, tokens(1, 50), "partition 0 is someone else's now");
     }
@@ -189,17 +189,17 @@ mod tests {
     fn a_batch_dispatched_first_cannot_commit_past_an_earlier_one() {
         let mut t = CommitTracker::new();
         // Polled in offset order, as one reader always polls them.
-        let first = track_one(&mut t, 100, &[0]);
-        let second = track_one(&mut t, 200, &[0]);
+        let first = track_one(&mut t, 100, &[DestId(0)]);
+        let second = track_one(&mut t, 200, &[DestId(0)]);
 
         // Reached its destination first, and finished first.
-        t.acknowledge(second, 0);
+        t.acknowledge(second, DestId(0));
         assert!(
             t.retire().is_none(),
             "offset 200 committed while 100 was still outstanding"
         );
 
-        t.acknowledge(first, 0);
+        t.acknowledge(first, DestId(0));
         let retired = t.retire().expect("both are done");
         assert_eq!(retired.batches, 2);
         assert_eq!(
@@ -214,15 +214,15 @@ mod tests {
     #[test]
     fn an_abandoned_batch_waits_for_where_it_was_sent_instead() {
         let mut t = CommitTracker::new();
-        let first = track_one(&mut t, 10, &[0, 1, 2]);
-        t.abandon(first, &[2]);
+        let first = track_one(&mut t, 10, &[DestId(0), DestId(1), DestId(2)]);
+        t.abandon(first, &[DestId(2)]);
         assert!(t.retire().is_none(), "destination 2 still has it");
-        t.acknowledge(first, 2);
+        t.acknowledge(first, DestId(2));
         assert_eq!(t.retire().expect("2 has acknowledged").batches, 1);
 
-        let second = track_one(&mut t, 20, &[0, 1, 2]);
-        t.acknowledge(second, 2);
-        t.abandon(second, &[2]);
+        let second = track_one(&mut t, 20, &[DestId(0), DestId(1), DestId(2)]);
+        t.acknowledge(second, DestId(2));
+        t.abandon(second, &[DestId(2)]);
         assert_eq!(
             t.retire()
                 .expect("an acknowledgment before the abandonment counts")
@@ -235,10 +235,10 @@ mod tests {
     #[test]
     fn an_abandoned_batch_commits_in_its_own_place() {
         let mut t = CommitTracker::new();
-        let poisoned = track_one(&mut t, 10, &[0]);
-        let after = track_one(&mut t, 20, &[0]);
+        let poisoned = track_one(&mut t, 10, &[DestId(0)]);
+        let after = track_one(&mut t, 20, &[DestId(0)]);
 
-        t.acknowledge(after, 0);
+        t.acknowledge(after, DestId(0));
         assert!(t.retire().is_none(), "the poisoned batch is still ahead");
 
         t.abandon(poisoned, &[]);
@@ -259,12 +259,12 @@ mod tests {
     #[test]
     fn one_silent_destination_holds_the_whole_batch() {
         let mut t = CommitTracker::new();
-        let id = track_one(&mut t, 10, &[0, 1]);
+        let id = track_one(&mut t, 10, &[DestId(0), DestId(1)]);
 
-        t.acknowledge(id, 0);
+        t.acknowledge(id, DestId(0));
         assert!(t.retire().is_none());
 
-        t.acknowledge(id, 1);
+        t.acknowledge(id, DestId(1));
         assert_eq!(t.retire().expect("now").batches, 1);
     }
 
@@ -272,15 +272,15 @@ mod tests {
     #[test]
     fn a_completion_for_a_batch_that_was_never_tracked_is_ignored() {
         let mut t = CommitTracker::new();
-        let live = track_one(&mut t, 20, &[0]);
+        let live = track_one(&mut t, 20, &[DestId(0)]);
 
-        t.acknowledge(live + 999, 0);
+        t.acknowledge(live + 999, DestId(0));
         assert!(
             t.retire().is_none(),
             "an acknowledgment for an unknown batch must not retire a live one"
         );
 
-        t.acknowledge(live, 0);
+        t.acknowledge(live, DestId(0));
         assert_eq!(t.retire().expect("the live batch").batches, 1);
     }
 
@@ -288,8 +288,8 @@ mod tests {
     #[test]
     fn batch_ids_are_never_reused() {
         let mut t = CommitTracker::new();
-        let first = track_one(&mut t, 10, &[1]);
-        t.acknowledge(first, 1);
+        let first = track_one(&mut t, 10, &[DestId(1)]);
+        t.acknowledge(first, DestId(1));
         assert_eq!(t.retire().expect("done").batches, 1);
         let second = track_one(&mut t, 20, &[]);
         assert_ne!(first, second, "a retired id must not come round again");

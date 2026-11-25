@@ -13,7 +13,7 @@ use crate::core::buffer::{self, BufferPool};
 use crate::core::column::{Column, DataType, Validity};
 use crate::core::ctx::Ctx;
 use crate::core::error::{ErrorSink, ExceptionKind};
-use crate::core::id::{FunctionId, SlotId};
+use crate::core::id::{DestId, FunctionId, SlotId};
 use crate::format::record::RecordView;
 use crate::leader::envelope::{ApiError, Envelope, Refusal};
 use crate::plan;
@@ -364,7 +364,7 @@ pub struct RoutePreview {
     /// `route_pipelines`.
     pub route_names: Vec<String>,
     /// Destination names by id.
-    pub destination_names: HashMap<u32, String>,
+    pub destination_names: HashMap<DestId, String>,
     /// The answer to `Unmatched`, with each destination by its author's id. Absent only on failure.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unmatched: Option<config_file::AnswerDto>,
@@ -403,7 +403,7 @@ pub struct RoutePreviewException {
 #[derive(serde::Serialize)]
 pub struct RoutePreviewDocument {
     pub document: String,
-    pub destinations: Vec<u32>,
+    pub destinations: Vec<DestId>,
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub destination: std::collections::BTreeMap<&'static str, String>,
 }

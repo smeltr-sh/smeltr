@@ -1321,6 +1321,7 @@ impl Protocol for RemoteWrite {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::id::DestId;
     use crate::io::Payload;
 
     fn protocol() -> RemoteWrite {
@@ -2514,7 +2515,11 @@ mod tests {
     #[test]
     fn a_2_0_store_writing_part_of_a_request_counts_the_rest_unwritten() {
         let registry = Arc::new(crate::metrics::Metrics::new());
-        let unwritten = Unwritten::new(crate::metrics::MetricsHandle::new(registry.clone(), "egress-7"), 7, "d");
+        let unwritten = Unwritten::new(
+            crate::metrics::MetricsHandle::new(registry.clone(), "egress-7"),
+            DestId(7),
+            "d",
+        );
         let v2 = protocol_of(RemoteWriteVersion::V2).with_unwritten(unwritten);
         let mut items = samples(3);
         items.push(

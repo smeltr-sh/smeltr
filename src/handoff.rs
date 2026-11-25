@@ -418,11 +418,21 @@ mod tests {
         let (tx, rx) = reports();
         assert!(rx.drain().is_empty());
         tx.send(Report::Block(BlockCause::Held, "stop".into()));
-        tx.send(Report::Acked { batch: 4, dest: 1 });
+        tx.send(Report::Acked {
+            batch: 4,
+            dest: DestId(1),
+        });
         let got = rx.drain();
         assert_eq!(got.len(), 2);
         assert!(matches!(&got[0], Report::Block(_, w) if w == "stop"));
-        assert!(matches!(got[1], Report::Acked { batch: 4, dest: 1, .. }));
+        assert!(matches!(
+            got[1],
+            Report::Acked {
+                batch: 4,
+                dest: DestId(1),
+                ..
+            }
+        ));
     }
 
     #[test]

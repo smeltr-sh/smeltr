@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use smeltr::config_file::KafkaSourceDto;
 use smeltr::core::buffer::MemoryBudget;
-use smeltr::core::id::{DestId, FunctionId};
+use smeltr::core::id::{DestId, FunctionId, SourceId};
 use smeltr::egress::Egress;
 use smeltr::handoff::{Handed, Handoff, Ready, Report, reports};
 use smeltr::io::fake::{AsyncDestination, FakeSource};
@@ -43,10 +43,10 @@ fn worker(source: &FakeSource, dest: &AsyncDestination) -> Worker {
     let routes = vec![RouteConfig {
         id: "r".to_string(),
         name: "r".to_string(),
-        source: 0,
+        source: SourceId(0),
         cond: None,
         pipeline: 0,
-        deliver: deliver_to(&[0]),
+        deliver: deliver_to(&[DestId(0)]),
         on_exception: Default::default(),
     }];
     let pipelines = vec![PipelineConfig {
@@ -60,7 +60,7 @@ fn worker(source: &FakeSource, dest: &AsyncDestination) -> Worker {
     }];
     let topology = compile_topology(&routes, &pipelines).unwrap();
     let mut w = Worker::new(
-        0,
+        SourceId(0),
         Box::new(source.clone()),
         topology,
         Vec::new(),
@@ -68,7 +68,7 @@ fn worker(source: &FakeSource, dest: &AsyncDestination) -> Worker {
         MetricsHandle::new(Arc::new(Metrics::new()), "t0"),
     );
     w.add_destination(DestinationTarget {
-        id: 0,
+        id: DestId(0),
         name: "0".to_string(),
         destination: Box::new(dest.clone()),
         on_reject: Answer::Drop,
@@ -89,7 +89,7 @@ fn two_lanes_to(
     dests: Vec<DestinationTarget>,
     to: [Vec<DestId>; 2],
 ) -> (Transform, Vec<Arc<Lane>>, Vec<smeltr::handoff::Acks>) {
-    let routes: Vec<RouteConfig> = [0u32, 1]
+    let routes: Vec<RouteConfig> = [SourceId(0), SourceId(1)]
         .into_iter()
         .map(|source| RouteConfig {
             id: format!("route-{source}"),
@@ -97,7 +97,7 @@ fn two_lanes_to(
             source,
             cond: None,
             pipeline: 0,
-            deliver: deliver_to(&to[source as usize]),
+            deliver: deliver_to(&to[source.index()]),
             on_exception: Default::default(),
         })
         .collect();
@@ -115,14 +115,14 @@ fn two_lanes_to(
 
     let mut lanes = Vec::new();
     let mut acks = Vec::new();
-    for source_id in [0u32, 1] {
+    for source_id in [SourceId(0), SourceId(1)] {
         let (tx, rx) = reports();
         lanes.push(Arc::new(Lane::new(
             source_id,
             Some(format!("source-{source_id}")),
             topology.meta_for(source_id),
             Handoff::watched(ready.clone(), 8_000_000),
-            to[source_id as usize].clone(),
+            to[source_id.index()].clone(),
             tx,
         )));
         acks.push(rx);
@@ -174,7 +174,7 @@ fn push(lane: &Lane, batch: u64, value: &[u8]) {
 #[test]
 fn a_pool_reports_each_lane_s_batch_to_that_lane_s_reader() {
     let dest = AsyncDestination::new();
-    let (mut transform, lanes, acks) = two_lanes(vec![async_target(0, &dest)]);
+    let (mut transform, lanes, acks) = two_lanes(vec![async_target(DestId(0), &dest)]);
 
     // One batch per lane, with ids that would have collided under the old
     // per-reader numbering.
@@ -209,7 +209,8 @@ fn a_pool_reports_each_lane_s_batch_to_that_lane_s_reader() {
 #[test]
 fn rows_of_a_failed_batch_do_not_ride_out_in_another_lane_s() {
     let (first, second) = (AsyncDestination::new(), AsyncDestination::new());
-    let (mut transform, lanes, _acks) = two_lanes(vec![async_target(0, &first), async_target(1, &second)]);
+    let (mut transform, lanes, _acks) =
+        two_lanes(vec![async_target(DestId(0), &first), async_target(DestId(1), &second)]);
 
     // Lane A's batch: destination 0 refuses the seal, so `hand_off` never reaches destination 1, which is left
     // holding A's rows.
@@ -266,7 +267,7 @@ fn a_lane_waiting_on_a_full_destination_leaves_the_pool_to_the_others() {
     let fast = AsyncDestination::new();
     let stall_after = Duration::from_millis(200);
     let mut egress = Egress::start(
-        0,
+        DestId(0),
         "d",
         Box::new(slow.clone()),
         stall_after,
@@ -274,13 +275,16 @@ fn a_lane_waiting_on_a_full_destination_leaves_the_pool_to_the_others() {
         MetricsHandle::new(Arc::new(Metrics::new()), "egress-0"),
     );
     let slow_handle = DestinationTarget {
-        id: 0,
+        id: DestId(0),
         name: "0".to_string(),
         destination: Box::new(egress.handle()),
         on_reject: Answer::Drop,
         placement: Some(smeltr::plan::topology::Placement::Topic),
     };
-    let (mut transform, lanes, acks) = two_lanes_to(vec![slow_handle, async_target(1, &fast)], [vec![0], vec![1]]);
+    let (mut transform, lanes, acks) = two_lanes_to(
+        vec![slow_handle, async_target(DestId(1), &fast)],
+        [vec![DestId(0)], vec![DestId(1)]],
+    );
 
     // Lane 0's first batch fills the slow destination's whole budget and is never acknowledged; its second finds no
     // room and is parked.
@@ -669,10 +673,10 @@ fn capturing(dest: &AsyncDestination, captures: &Arc<smeltr::worker::capture::Ca
         RouteConfig {
             id: "orders".to_string(),
             name: "orders".to_string(),
-            source: 0,
+            source: SourceId(0),
             cond: None,
             pipeline: 0,
-            deliver: deliver_to(&[0]),
+            deliver: deliver_to(&[DestId(0)]),
             on_exception: Default::default(),
         },
     )
@@ -716,11 +720,11 @@ fn capturing_routes(
     let ready = Arc::new(Ready::new());
     let (tx, _rx) = reports();
     let lane = Arc::new(Lane::new(
-        0,
+        SourceId(0),
         Some("source-0".to_string()),
-        topology.meta_for(0),
+        topology.meta_for(SourceId(0)),
         Handoff::watched(ready.clone(), 8_000_000),
-        vec![0],
+        vec![DestId(0)],
         tx,
     ));
     let transform = Transform::new(
@@ -728,7 +732,7 @@ fn capturing_routes(
         ready,
         0,
         topology,
-        vec![async_target(0, dest)],
+        vec![async_target(DestId(0), dest)],
         MemoryBudget::unlimited(),
         MetricsHandle::new(Arc::new(Metrics::new()), "transform-0"),
     )
@@ -814,10 +818,10 @@ fn a_destination_filter_reads_the_routes_it_compiles_on() {
     let route = |id: &str, pipeline| RouteConfig {
         id: id.to_string(),
         name: id.to_string(),
-        source: 0,
+        source: SourceId(0),
         cond: None,
         pipeline,
-        deliver: deliver_to(&[0]),
+        deliver: deliver_to(&[DestId(0)]),
         on_exception: Default::default(),
     };
     let (mut transform, lane) = capturing_routes(
@@ -962,10 +966,10 @@ fn a_capture_of_a_blocked_source_is_shown_the_records_that_blocked() {
     let route = RouteConfig {
         id: "orders".to_string(),
         name: "orders".to_string(),
-        source: 0,
+        source: SourceId(0),
         cond: None,
         pipeline: 0,
-        deliver: deliver_to(&[0]),
+        deliver: deliver_to(&[DestId(0)]),
         on_exception: smeltr::plan::config::OnException::every(Answer::Block),
     };
     let (mut transform, lane) = capturing_route(&dest, &captures, route);
@@ -994,10 +998,10 @@ fn a_capture_of_a_source_blocked_on_unmatched_records_is_shown_them() {
     let route = RouteConfig {
         id: "orders".to_string(),
         name: "orders".to_string(),
-        source: 0,
+        source: SourceId(0),
         cond: Some("__source.offset == 0".to_string()),
         pipeline: 0,
-        deliver: deliver_to(&[0]),
+        deliver: deliver_to(&[DestId(0)]),
         on_exception: Default::default(),
     };
     let (mut transform, lane) = capturing_route(&dest, &captures, route);

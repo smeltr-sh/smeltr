@@ -16,6 +16,7 @@
 //! the mapping of the record its documents are, so a document the mapping refuses and one that is not JSON are
 //! refused by the cluster itself, and the documents read back through the search API are the ones sent.
 
+use smeltr::core::id::DestId;
 use smeltr::sync::Mutex;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{Read, Write};
@@ -1348,7 +1349,7 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
     let metrics = smeltr::metrics::MetricsHandle::new(registry.clone(), "fuzz");
     let built = smeltr::io::build_destination(
         &DestinationKind::Elasticsearch(c.clone()),
-        0,
+        DestId(0),
         "d",
         metrics,
         &secrets,
@@ -1928,7 +1929,7 @@ fn live_seed(seed: u64, url: &str, reached: &mut Reached, pki: &Pki) -> Result<(
     let metrics = smeltr::metrics::MetricsHandle::new(Arc::new(smeltr::metrics::Metrics::new()), "fuzz");
     let mut d = smeltr::io::build_destination(
         &DestinationKind::Elasticsearch(c.clone()),
-        0,
+        DestId(0),
         "d",
         metrics,
         &secrets,

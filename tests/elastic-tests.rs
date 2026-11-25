@@ -8,6 +8,7 @@
 //! recorded anywhere. None of that needs a live cluster to test — a canned
 //! response body exercises every branch of it exactly.
 
+use smeltr::core::id::DestId;
 use smeltr::sync::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
@@ -766,7 +767,7 @@ fn a_document_a_failure_store_took_lands_and_counts_unwritten() {
     let registry = Arc::new(smeltr::metrics::Metrics::new());
     let unwritten = smeltr::io::http::Unwritten::new(
         smeltr::metrics::MetricsHandle::new(registry.clone(), "egress-4"),
-        4,
+        DestId(4),
         "d",
     );
     let answer = Response {

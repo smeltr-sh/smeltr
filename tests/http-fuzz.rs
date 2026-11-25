@@ -13,6 +13,7 @@
 //! Live, the same draws, pointed at Splunk's HEC raw endpoint and signed with its token, land there and are searched
 //! back.
 
+use smeltr::core::id::DestId;
 use smeltr::sync::Mutex;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::TcpListener;
@@ -1113,7 +1114,14 @@ impl Script {
 
 fn build(c: &HttpDestinationConfig, secrets: &HeldSecrets) -> Result<Box<dyn Destination>, IoError> {
     let metrics = smeltr::metrics::MetricsHandle::new(Arc::new(smeltr::metrics::Metrics::new()), "fuzz");
-    smeltr::io::build_destination(&DestinationKind::Http(c.clone()), 0, "d", metrics, secrets, None)
+    smeltr::io::build_destination(
+        &DestinationKind::Http(c.clone()),
+        DestId(0),
+        "d",
+        metrics,
+        secrets,
+        None,
+    )
 }
 
 /// The content type a request under `c` says its body is.
