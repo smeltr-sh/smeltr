@@ -85,7 +85,7 @@ fn worker(
     });
     let registry = Arc::new(Metrics::new());
     let w = Worker::new(
-        SourceId(0),
+        SourceId::new(0),
         Box::new(source.clone()),
         topology,
         Vec::new(),
@@ -112,10 +112,10 @@ fn catch_all(pipeline_id: usize) -> RouteConfig {
     RouteConfig {
         id: format!("route-{pipeline_id}"),
         name: format!("route-{pipeline_id}"),
-        source: SourceId(0),
+        source: SourceId::new(0),
         cond: None,
         pipeline: pipeline_id,
-        deliver: deliver_to(&[DestId(0)]),
+        deliver: deliver_to(&[DestId::new(0)]),
         on_exception: Default::default(),
     }
 }
@@ -163,7 +163,7 @@ fn an_ordinary_batch_runs_far_below_the_default_budget() {
         budget.clone(),
     );
     let dest = FakeDestination::new();
-    w.add_destination(target(DestId(0), &dest));
+    w.add_destination(target(DestId::new(0), &dest));
 
     assert_eq!(tick(&mut w), 4000);
 
@@ -193,7 +193,7 @@ fn a_batch_that_does_not_fit_is_split_until_it_does() {
     // One slice, so the whole batch asks for more than the budget holds.
     w.transform.slice_bytes = usize::MAX;
     let dest = FakeDestination::new();
-    w.add_destination(target(DestId(0), &dest));
+    w.add_destination(target(DestId::new(0), &dest));
 
     assert_eq!(tick(&mut w), 8, "every record committed");
     assert_eq!(
@@ -223,12 +223,12 @@ fn a_record_that_will_not_fit_alone_goes_where_unprocessable_rows_go_by_itself()
     let (mut w, registry) = worker(vec![catch_all(0)], vec![unrolling_pipeline(0)], &src, budget);
     let dest = FakeDestination::new();
     let dlq = FakeDestination::new();
-    w.add_destination(target(DestId(0), &dest));
-    w.add_destination(target(DestId(1), &dlq));
+    w.add_destination(target(DestId::new(0), &dest));
+    w.add_destination(target(DestId::new(1), &dlq));
     Arc::get_mut(&mut w.transform.topology)
         .expect("a test worker's topology is its own")
         .on_exception
-        .answers[ExceptionKind::Unprocessable.index()] = Answer::Deliver(vec![DestId(1)]);
+        .answers[ExceptionKind::Unprocessable.index()] = Answer::Deliver(vec![DestId::new(1)]);
 
     assert_eq!(tick(&mut w), 5, "every record committed");
 
@@ -255,7 +255,7 @@ fn a_record_that_will_not_fit_alone_under_block_holds_its_batch() {
     let src = FakeSource::new(records);
     let (mut w, registry) = worker(vec![catch_all(0)], vec![unrolling_pipeline(0)], &src, budget);
     let dest = FakeDestination::new();
-    w.add_destination(target(DestId(0), &dest));
+    w.add_destination(target(DestId::new(0), &dest));
 
     for _ in 0..3 {
         let _ = w.tick(4000, 256 * 1024 * 1024, Duration::from_millis(50));
@@ -279,19 +279,19 @@ fn a_later_routes_refusal_does_not_re_send_an_earlier_routes_rows() {
         RouteConfig {
             id: "route-0".to_string(),
             name: "route-0".to_string(),
-            source: SourceId(0),
+            source: SourceId::new(0),
             cond: None,
             pipeline: 0,
-            deliver: deliver_to(&[DestId(0)]),
+            deliver: deliver_to(&[DestId::new(0)]),
             on_exception: Default::default(),
         },
         RouteConfig {
             id: "route-1".to_string(),
             name: "route-1".to_string(),
-            source: SourceId(0),
+            source: SourceId::new(0),
             cond: None,
             pipeline: 1,
-            deliver: deliver_to(&[DestId(1)]),
+            deliver: deliver_to(&[DestId::new(1)]),
             on_exception: Default::default(),
         },
     ];
@@ -311,8 +311,8 @@ fn a_later_routes_refusal_does_not_re_send_an_earlier_routes_rows() {
     w.transform.slice_bytes = usize::MAX;
     let first = FakeDestination::new();
     let second = FakeDestination::new();
-    w.add_destination(target(DestId(0), &first));
-    w.add_destination(target(DestId(1), &second));
+    w.add_destination(target(DestId::new(0), &first));
+    w.add_destination(target(DestId::new(1), &second));
 
     tick(&mut w);
 
@@ -355,7 +355,7 @@ fn the_largest_realistic_single_record_fits_the_default_budget() {
     let src = FakeSource::new(vec![fanning_record(200_000, 0)]);
     let (mut w, registry) = worker(vec![catch_all(0)], vec![unrolling_pipeline(0)], &src, budget.clone());
     let dest = FakeDestination::new();
-    w.add_destination(target(DestId(0), &dest));
+    w.add_destination(target(DestId::new(0), &dest));
 
     tick(&mut w);
 
@@ -396,7 +396,7 @@ fn a_record_refused_beside_idle_buffers_runs_again_without_them() {
         &FakeSource::new(vec![big()]),
         alone.clone(),
     );
-    w.add_destination(target(DestId(0), &FakeDestination::new()));
+    w.add_destination(target(DestId::new(0), &FakeDestination::new()));
     tick(&mut w);
 
     let budget = MemoryBudget::new(limit);
@@ -406,7 +406,7 @@ fn a_record_refused_beside_idle_buffers_runs_again_without_them() {
     // One slice: what the pool keeps idle follows the slice, which otherwise follows this machine's L2.
     w.transform.slice_bytes = usize::MAX;
     let dest = FakeDestination::new();
-    w.add_destination(target(DestId(0), &dest));
+    w.add_destination(target(DestId::new(0), &dest));
     tick(&mut w);
     let idle = budget.used();
     assert!(

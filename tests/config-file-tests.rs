@@ -642,7 +642,11 @@ fn the_reference_bundle_example_loads_compiles_and_runs() {
     assert_eq!(system.topology.destinations.len(), 2);
     assert_eq!(system.topology.routes.len(), 3);
     for route in &system.topology.routes {
-        let to_out = route.deliver.iter().filter(|rule| rule.to == vec![DestId(0)]).count();
+        let to_out = route
+            .deliver
+            .iter()
+            .filter(|rule| rule.to == vec![DestId::new(0)])
+            .count();
         assert_eq!(to_out, 1, "every route delivers to `kafka-out`: {:?}", route.deliver);
     }
     let main = system
@@ -1553,7 +1557,7 @@ fn a_missing_credential_environment_variable_is_refused_at_construction() {
             stall_after: std::time::Duration::from_secs(30),
         });
     let metrics = smeltr::metrics::MetricsHandle::new(std::sync::Arc::new(smeltr::metrics::Metrics::new()), "test");
-    let Err(e) = smeltr::io::build_destination(&cfg, DestId(0), "d", metrics, &Default::default(), None) else {
+    let Err(e) = smeltr::io::build_destination(&cfg, DestId::new(0), "d", metrics, &Default::default(), None) else {
         panic!("an unset credential variable must not construct one");
     };
     assert!(e.to_string().contains("SMELTR_ES_AUTH_DEFINITELY_NOT_SET"), "{e}");
@@ -2152,8 +2156,8 @@ fn a_route_preview_says_where_each_record_would_go() {
         .flat_map(|t| t.documents.iter().map(|d| d.destinations.clone()))
         .collect();
     assert_eq!(reached.len(), 2, "both routes kept it");
-    assert_eq!(reached[0], vec![DestId(0)], "the orders route delivers to es-prod");
-    assert_eq!(reached[1], vec![DestId(1)], "and the catch-all to kafka-audit");
+    assert_eq!(reached[0], vec![DestId::new(0)], "the orders route delivers to es-prod");
+    assert_eq!(reached[1], vec![DestId::new(1)], "and the catch-all to kafka-audit");
     assert!(rows[0].through[0].documents[0].document.contains("\"total\":250"));
 
     // On `other`, so only the catch-all matches -- and its pipeline drops a total under 100.
@@ -2318,7 +2322,7 @@ fn a_record_no_route_matches_is_distinguishable_from_a_dropped_one() {
         .unwrap_or_else(|e| panic!("compile: {}", join_errors(&e)));
     // A source no route names: nothing can match.
     let unrouted = smeltr::plan::topology::SourceConfig {
-        id: smeltr::core::id::SourceId(u32::MAX),
+        id: smeltr::core::id::SourceId::new(u32::MAX),
         ..system.topology.sources[0].clone()
     };
     let records = sample_records(&[("orders", r#"{"total":250}"#)]);

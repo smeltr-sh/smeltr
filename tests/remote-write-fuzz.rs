@@ -1100,7 +1100,7 @@ fn fuzz_one(seed: u64, coverage: &mut Coverage) -> Result<(), String> {
     };
     let unwritten = Unwritten::new(
         smeltr::metrics::MetricsHandle::new(Arc::new(smeltr::metrics::Metrics::new()), "remote-write-fuzz"),
-        DestId(0),
+        DestId::new(0),
         "d",
     );
     let mut d = HttpDestination::new(store, RemoteWrite::new(&config).with_unwritten(unwritten))
@@ -1328,7 +1328,7 @@ fn live_run(seed: u64, base: &str, out_of_order: bool, coverage: &mut Coverage) 
     let registry = Arc::new(smeltr::metrics::Metrics::new());
     let unwritten = Unwritten::new(
         smeltr::metrics::MetricsHandle::new(Arc::clone(&registry), "live"),
-        DestId(0),
+        DestId::new(0),
         "d",
     );
     let mut d = HttpDestination::new(

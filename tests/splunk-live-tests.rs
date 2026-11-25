@@ -65,7 +65,7 @@ fn open(config: SplunkHecDestinationConfig, token: &str) -> Box<dyn Destination>
     let metrics = smeltr::metrics::MetricsHandle::new(std::sync::Arc::new(smeltr::metrics::Metrics::new()), "live");
     smeltr::io::build_destination(
         &DestinationKind::SplunkHec(config),
-        DestId(0),
+        DestId::new(0),
         "d",
         metrics,
         &secrets,

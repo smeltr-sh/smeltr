@@ -1116,7 +1116,7 @@ fn build(c: &HttpDestinationConfig, secrets: &HeldSecrets) -> Result<Box<dyn Des
     let metrics = smeltr::metrics::MetricsHandle::new(Arc::new(smeltr::metrics::Metrics::new()), "fuzz");
     smeltr::io::build_destination(
         &DestinationKind::Http(c.clone()),
-        DestId(0),
+        DestId::new(0),
         "d",
         metrics,
         secrets,

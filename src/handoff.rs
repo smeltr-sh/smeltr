@@ -421,18 +421,12 @@ mod tests {
         tx.send(Report::Block(BlockCause::Held, "stop".into()));
         tx.send(Report::Acked {
             batch: 4,
-            by: WaitsOn::Destination(DestId(1)),
+            by: WaitsOn::Destination(DestId::new(1)),
         });
         let got = rx.drain();
         assert_eq!(got.len(), 2);
         assert!(matches!(&got[0], Report::Block(_, w) if w == "stop"));
-        assert!(matches!(
-            got[1],
-            Report::Acked {
-                batch: 4,
-                by: WaitsOn::Destination(DestId(1)),
-            }
-        ));
+        assert!(matches!(got[1], Report::Acked { batch: 4, by } if by == WaitsOn::Destination(DestId::new(1))));
     }
 
     #[test]
