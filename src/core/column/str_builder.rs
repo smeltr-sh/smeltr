@@ -1,6 +1,6 @@
 //! Builds a variable-length column.
 
-use super::{Column, Storage, Validity, VarType};
+use super::{Column, SealedRows, Storage, Validity, VarType};
 use crate::core::buffer::{Buffer, BufferPool};
 use crate::core::variant::{self, Encoded};
 
@@ -109,6 +109,26 @@ impl StrBuilder {
     #[inline]
     pub(crate) unsafe fn push_checked(&mut self, s: &[u8]) {
         self.put(s);
+    }
+
+    /// `push` of text known to be UTF-8, so a text column need not check it again.
+    #[inline]
+    pub(crate) fn push_text(&mut self, s: &str) {
+        self.unchecked |= self.var_type != VarType::Str;
+        self.put(s.as_bytes());
+    }
+
+    /// `push` of row `row` of `from`, so a builder of `from`'s type need not check it again.
+    #[inline]
+    pub(crate) fn push_row(&mut self, from: &SealedRows, row: usize) {
+        self.unchecked |= from.var_type != self.var_type;
+        self.put(from.get(row));
+    }
+
+    /// `push_grow` of row `row` of `from`, as `push_row`.
+    pub(crate) fn push_row_grow(&mut self, pool: &mut BufferPool, from: &SealedRows, row: usize) {
+        self.unchecked |= from.var_type != self.var_type;
+        self.put_parts_grow(pool, &[from.get(row)]);
     }
 
     #[inline]

@@ -583,7 +583,7 @@ impl<'d> Spread<'d> {
                     self.copy().0.extend_from_slice(v.bytes());
                     self.copied();
                 }
-                Step::Refused => self.refused(|out| out.extend_from_slice(v.bytes())),
+                Step::Refused => self.refused(v),
                 Step::Skip => {}
             }
             self.leave();
@@ -611,11 +611,10 @@ impl<'d> Spread<'d> {
         hit
     }
 
-    /// The value of the key `enter` just refused, which `encode` writes encoded.
-    pub fn refused(&mut self, encode: impl FnOnce(&mut Vec<u8>)) {
-        let mut bytes = Vec::new();
-        encode(&mut bytes);
-        self.not_objects.last_mut().expect("a refused key").3 = Some(tag::json_text(Encoded::check(&bytes)));
+    /// The value that arrived at the key `enter` just refused, where the schema declares an object: kept so the row's
+    /// mark can show it.
+    pub fn refused(&mut self, value: Encoded) {
+        self.not_objects.last_mut().expect("a refused key").3 = Some(tag::json_text(value));
     }
 
     fn contradicted(&mut self) {

@@ -364,11 +364,7 @@ fn write_value_at(col: &Column, ty: &DataType, row: usize, depth: usize, out: &m
         }
         // A struct holding unclaimed fields is written from the row's whole object: its fields, then those keys.
         DataType::Struct(..) if col.unclaimed_fields().is_some() => match crate::format::tag::row_tag(col, row) {
-            Some(tag) => {
-                let mut bytes = Vec::new();
-                crate::format::tag::encode(&tag, &mut bytes);
-                write_variant(Encoded::check(&bytes), out)
-            }
+            Some(tag) => write_variant(crate::format::tag::encoded(&tag).get(), out),
             None => false,
         },
         DataType::Struct(fields, _) => {

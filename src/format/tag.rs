@@ -12,7 +12,7 @@ use crate::core::buffer::BufferPool;
 use crate::core::column::{Column, DataType, StrBuilder, VarType};
 use crate::core::keys::Keys;
 use crate::core::tally::TagCounts;
-use crate::core::variant::{self, Encoded, Value};
+use crate::core::variant::{self, Encoded, EncodedBuf, Value};
 use crate::format::typed::Failed;
 use crate::ops::timeparse::{is_epoch_count, reads_as_time};
 
@@ -196,6 +196,14 @@ pub fn encode(tag: &Tag<'_>, out: &mut Vec<u8>) {
         Tag::Bytes(b) => variant::put_bytes(out, b),
         Tag::Array(_) | Tag::Object(_) => encode_container(tag, out),
     }
+}
+
+/// `tag`'s encoding, as a value whose text is known to be UTF-8.
+pub fn encoded(tag: &Tag<'_>) -> EncodedBuf {
+    let mut out = Vec::new();
+    encode(tag, &mut out);
+    // SAFETY: `encode` writes a tag's strings and keys, each a `str`, and moves them only whole.
+    unsafe { EncodedBuf::unchecked(out) }
 }
 
 /// `encode` for an array or an object, out of line: `encode` inlines into the walk's loops for the scalars.

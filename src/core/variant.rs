@@ -76,6 +76,12 @@ impl EncodedBuf {
         EncodedBuf(b)
     }
 
+    /// # Safety
+    /// Every string and key in the value `b` starts with must be UTF-8.
+    pub(crate) unsafe fn unchecked(b: Vec<u8>) -> EncodedBuf {
+        EncodedBuf(b)
+    }
+
     pub fn get(&self) -> Encoded<'_> {
         Encoded(&self.0)
     }
@@ -276,14 +282,16 @@ impl<'a> Iterator for Entries<'a> {
             return None;
         }
         let klen = u32_at(self.rest, 0) as usize;
-        // SAFETY (both): the entries are inside an `Encoded` object, whose strings and keys are all UTF-8.
+        // SAFETY: the entries are inside an `Encoded` object, whose strings and keys are all UTF-8.
         let key = unsafe { std::str::from_utf8_unchecked(&self.rest[4..4 + klen]) };
         let after = &self.rest[4 + klen..];
         let n = len_of(after);
         let (value, rest) = after.split_at(n);
         self.rest = rest;
         self.left -= 1;
-        Some((key, unsafe { Encoded::unchecked(value) }))
+        // SAFETY: as for the key.
+        let value = unsafe { Encoded::unchecked(value) };
+        Some((key, value))
     }
 }
 

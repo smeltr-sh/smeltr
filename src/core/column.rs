@@ -216,10 +216,31 @@ impl<'a> VariantRows<'a> {
         // keys.
         unsafe { Encoded::unchecked(self.rows.get(row)) }
     }
+}
 
-    /// The rows as bytes, for a step that copies them whole.
-    pub(crate) fn bytes(self) -> VarLen<'a> {
-        self.rows
+/// A sealed column's rows as bytes, with the type of the column they came from, so a builder of that type copies them
+/// with no check of their text.
+#[derive(Debug)]
+pub(crate) struct SealedRows<'a> {
+    var_type: VarType,
+    rows: VarLen<'a>,
+    pub validity: &'a Validity,
+}
+
+impl<'a> SealedRows<'a> {
+    #[inline]
+    pub fn get(&self, row: usize) -> &'a [u8] {
+        self.rows.get(row)
+    }
+
+    #[inline]
+    pub fn row_len(&self, row: usize) -> usize {
+        self.rows.row_len(row)
+    }
+
+    /// Total bytes across all rows.
+    pub fn total_bytes(&self) -> usize {
+        self.rows.total_bytes()
     }
 }
 
@@ -293,17 +314,29 @@ impl Column {
                 }
                 c
             }
-            Scalar::Str(text) => Column::repeated(pool, VarType::Str, text.as_bytes(), len),
-            Scalar::Bytes(bytes) => Column::repeated(pool, VarType::Bytes, bytes, len),
-            Scalar::Variant(value) => Column::repeated(pool, VarType::Variant, value.get().bytes(), len),
+            Scalar::Str(text) => Column::repeated(pool, VarType::Str, text.len(), len, |b, _| b.push_text(text)),
+            Scalar::Bytes(bytes) => Column::repeated(pool, VarType::Bytes, bytes.len(), len, |b, _| b.push(bytes)),
+            Scalar::Variant(value) => {
+                let v = value.get();
+                Column::repeated(pool, VarType::Variant, v.bytes().len(), len, |b, pool| {
+                    b.push_encoded(pool, v)
+                })
+            }
         }
     }
 
-    fn repeated(pool: &mut BufferPool, var_type: VarType, bytes: &[u8], len: usize) -> Column {
+    /// `len` rows of `row_bytes` bytes each, each written by `push`.
+    fn repeated(
+        pool: &mut BufferPool,
+        var_type: VarType,
+        row_bytes: usize,
+        len: usize,
+        push: impl Fn(&mut StrBuilder, &mut BufferPool),
+    ) -> Column {
         let mut b = StrBuilder::new(pool, var_type, len);
-        b.reserve(pool, bytes.len() * len);
+        b.reserve(pool, row_bytes * len);
         for _ in 0..len {
-            b.push(bytes);
+            push(&mut b, pool);
         }
         b.finish()
     }
@@ -653,6 +686,18 @@ impl Column {
         }
     }
 
+    /// The rows of any variable-length column, to copy into a builder (`StrBuilder::push_row`).
+    pub(crate) fn sealed_rows(&self) -> Result<SealedRows<'_>, TypeError> {
+        match &self.storage {
+            Storage::VarLen { var_type, .. } => self.varlen().map(|rows| SealedRows {
+                var_type: *var_type,
+                validity: rows.validity,
+                rows,
+            }),
+            _ => Err(self.wrong("Str, Bytes or Variant")),
+        }
+    }
+
     /// The rows of any variable-length column, whatever its bytes mean. For code that moves rows and reads none.
     pub fn varlen(&self) -> Result<VarLen<'_>, TypeError> {
         match &self.storage {
@@ -939,16 +984,14 @@ impl Column {
             }
 
             Storage::VarLen { var_type, .. } => {
-                let v = self.varlen().expect("VarLen storage matched varlen()");
+                let v = self.sealed_rows().expect("VarLen storage matched sealed_rows()");
                 let total: usize = indices.iter().map(|&r| v.row_len(r as usize)).sum();
                 let mut b = StrBuilder::new(pool, *var_type, n);
                 b.reserve(pool, total);
                 for &r in indices {
                     let r = r as usize;
                     if v.validity.is_valid(r) {
-                        // SAFETY: the column is sealed, so its text was checked, and a row is one whole push. The
-                        // builder is of the column's type.
-                        unsafe { b.push_checked(v.get(r)) };
+                        b.push_row(&v, r);
                     } else {
                         b.push_null();
                     }

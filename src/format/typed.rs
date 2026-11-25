@@ -266,9 +266,7 @@ impl TypedBuilder {
                 tag::emit(b, &mut Slot::new(self, row, pool))
             }
             Cell::Tag(t @ (Tag::Array(_) | Tag::Object(_))) => {
-                let mut bytes = Vec::new();
-                tag::encode(t, &mut bytes);
-                self.set(row, Cell::Variant(Encoded::check(&bytes)), pool);
+                self.set(row, Cell::Variant(tag::encoded(t).get()), pool);
             }
             cell => self.put(row, cell, pool),
         }
@@ -283,13 +281,12 @@ impl TypedBuilder {
         let (fits, kind) = self.write(row, cell, pool);
         self.close_row(row, fits, kind);
         if !fits {
-            let mut bytes = Vec::new();
-            match cell {
-                Cell::Text { text, .. } => tag::encode(&Tag::Str(text.into()), &mut bytes),
-                Cell::Tag(t) => tag::encode(t, &mut bytes),
-                Cell::Variant(b) => bytes.extend_from_slice(b.bytes()),
-            }
-            self.failed.last_mut().expect("close_row kept it").1 = Some(tag::json_text(Encoded::check(&bytes)));
+            let text = match cell {
+                Cell::Text { text, .. } => tag::json_text(tag::encoded(&Tag::Str(text.into())).get()),
+                Cell::Tag(t) => tag::json_text(tag::encoded(t).get()),
+                Cell::Variant(b) => tag::json_text(b),
+            };
+            self.failed.last_mut().expect("close_row kept it").1 = Some(text);
         }
     }
 
@@ -406,17 +403,10 @@ impl TypedBuilder {
                 (false, arrived(cell, false, Kind::Object))
             }
             Store::Variant(texts) => {
-                let mut bytes = Vec::new();
                 match cell {
                     Cell::Variant(b) => texts.push_encoded(b, pool),
-                    Cell::Tag(t) => {
-                        tag::encode(t, &mut bytes);
-                        texts.push(Some(&bytes), pool);
-                    }
-                    Cell::Text { text, .. } => {
-                        variant::put_str(&mut bytes, text);
-                        texts.push(Some(&bytes), pool);
-                    }
+                    Cell::Tag(t) => texts.push_encoded(tag::encoded(t).get(), pool),
+                    Cell::Text { text, .. } => texts.push_encoded(tag::encoded(&Tag::Str(text.into())).get(), pool),
                 }
                 (true, arrived(cell, false, Kind::Str))
             }

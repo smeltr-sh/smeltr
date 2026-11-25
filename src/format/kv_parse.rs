@@ -75,7 +75,7 @@ fn lay<'d>(row: usize, pairs: &mut Vec<kv_scan::Pair<'d>>, spread: &mut Spread<'
         match spread.enter(Cow::Borrowed(pair.key), false) {
             Step::Whole => spread.text(&pair.value, pair.quoted, pool),
             Step::Copy => spread.copy_text(&pair.value, pair.quoted),
-            Step::Refused => spread.refused(|out| tag::encode(&Tag::Str(pair.value.as_ref().into()), out)),
+            Step::Refused => spread.refused(tag::encoded(&Tag::Str(pair.value.as_ref().into())).get()),
             Step::Into | Step::Skip => {}
         }
         spread.leave();

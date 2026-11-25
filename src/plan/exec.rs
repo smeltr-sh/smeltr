@@ -1253,7 +1253,7 @@ fn fold_var(
     keep: &impl Fn(usize) -> bool,
     pool: &mut BufferPool,
 ) -> Column {
-    let sv = seed_col.var().unwrap();
+    let sv = seed_col.sealed_rows().unwrap();
     let mv = mapped.var().unwrap();
     let var_type = if matches!(mapped.data_type(), DataType::Bytes) {
         VarType::Bytes
@@ -1268,7 +1268,7 @@ fn fold_var(
             continue;
         }
         if !(start..end).any(keep) {
-            b.push_grow(pool, sv.get(row));
+            b.push_row_grow(pool, &sv, row);
             continue;
         }
         let mut valid = true;
