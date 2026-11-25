@@ -23,11 +23,12 @@ const UNCLAIMED = '...';
 export function heldTable(batch: CaptureBatchDto): CaptureBatchDto {
   const carried = batch.columns.flatMap((c, i) => (c.value == null ? [i] : []));
   if (carried.length === batch.columns.length) return batch;
+  const at = batch.columns.map((_, i) => carried.indexOf(i));
   return {
     columns: batch.columns.map(({ name, type }) => ({ name, type })),
     rows: batch.rows.map((row) => ({
       ...row,
-      values: batch.columns.map((c, i) => c.value ?? row.values[carried.indexOf(i)]),
+      values: batch.columns.map((c, i) => c.value ?? row.values[at[i]]),
       failed: row.failed?.map((f) => carried[f]),
     })),
   };
