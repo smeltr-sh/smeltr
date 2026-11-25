@@ -19,7 +19,6 @@ const LOAD = {
   schemas: () => import('./SchemasPage.svelte'),
   routes: () => import('./RoutesPage.svelte'),
   pipeline: () => import('./PipelineEditor.svelte'),
-  'lock-test': () => import('./LockTestPage.svelte'),
   file: () => import('./FilePage.svelte'),
   changes: () => import('./BranchesPage.svelte'),
   review: () => import('./ChangeDetailPage.svelte'),

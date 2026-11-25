@@ -179,13 +179,13 @@ pub const CATALOG: &[Route] = &[
         method: "POST",
         path: "/api/areas/:area/preview/pipeline",
         what: "Run a draft bundle's pipeline over a saved sample or a held capture and show the rows; with `dictionary: true`, also the pipeline's dictionary (large). Nothing is written. Query: branch.",
-        body: "{ config: string (bundle JSON as a string), pipeline?: id, sample?: id, capture?: string (a held capture's session id, in place of sample), show_internal?: bool, at_micros?: number, dictionary?: bool }",
+        body: "{ config: string (bundle JSON as a string), pipeline?: id, sample?: id, capture?: string (a held capture's session id, in place of sample), show_internal?: bool, dictionary?: bool, test?: id (compare the rows with this test, over its own sample: `verdict`) }",
     },
     Route {
         method: "POST",
         path: "/api/areas/:area/preview/routes",
         what: "Route a saved sample or a held capture through a draft bundle's routes and pipelines; nothing is written. Query: branch.",
-        body: "{ config: string (bundle JSON as a string), sample?: id, capture?: string (a held capture's session id, in place of sample), source?: string (the source the records stand for, where the sample or capture names none), at_micros?: number }",
+        body: "{ config: string (bundle JSON as a string), sample?: id, capture?: string (a held capture's session id, in place of sample), source?: string (the source the records stand for, where the sample or capture names none) }",
     },
     Route {
         method: "POST",
@@ -330,19 +330,13 @@ pub const CATALOG: &[Route] = &[
     Route {
         method: "GET",
         path: "/api/captures/:session/records",
-        what: "What a capture holds so far, running or over, as batches of records. Read it once the capture is done, or again when the `revision` in its status moves. No query.",
+        what: "What a capture holds so far, running or over, as one table: its columns, and each row's values under them. Read it once the capture is done, or again when the `revision` in its status moves. No query.",
         body: "",
     },
     Route {
         method: "POST",
         path: "/api/captures/:session/stop",
         what: "End a running capture and keep what it holds. No query.",
-        body: "",
-    },
-    Route {
-        method: "GET",
-        path: "/api/captures/:session/download",
-        what: "A finished capture's records as NDJSON, as a sample would hold them; the capture stays. No query.",
         body: "",
     },
     Route {
@@ -417,13 +411,7 @@ pub const CATALOG: &[Route] = &[
         method: "PUT",
         path: "/api/areas/:area/tests/:id",
         what: "Lock (create or replace) a test on a branch: the leader runs it and stores what the run makes of the fields and rows named. Query: branch.",
-        body: "{ name, pipeline?: id (absent = end-to-end by sample source), sample: id, lockedAt: micros, fields?: string[] (leaf names as the records grid names them; absent = every field the run made), rows?: number[] (absent = every row) }",
-    },
-    Route {
-        method: "POST",
-        path: "/api/areas/:area/preview/test-lock",
-        what: "What locking a test would store, written nowhere: { rowsIn, fields, rows: { row, values? (absent = no document), sent? (end-to-end only) }[] }. Query: branch.",
-        body: "the PUT tests/:id body",
+        body: "{ name, pipeline?: id (absent = end-to-end by sample source), sample: id, fields?: string[] (leaf names as the records grid names them; absent = every field the run made), rows?: number[] (absent = every row) }",
     },
     Route {
         method: "GET",

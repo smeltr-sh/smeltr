@@ -72,7 +72,7 @@ pub mod trust;
 pub mod values;
 pub mod vended;
 
-pub use stored::{MISTYPED_FIELDS, RecordObject, SourceFields, raw_object, take_mistyped, unclaimed_of, value_at};
+pub use stored::{Cells, RecordObject, SourceFields, raw_object, unclaimed_of, value_at};
 
 /// Opens `kind` as a live source. `secrets` is what this worker can obtain a credential from; one it cannot is an
 /// error here, never a connection that silently fails to authenticate. A metrics source labels its subjects by the

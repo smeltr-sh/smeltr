@@ -96,7 +96,7 @@ pub struct CaptureStatus {
     /// order. No worker leaves the list for the capture's life.
     pub workers: Vec<CaptureWorker>,
     /// What every worker sent, folded: one batch per distinct column list, each row naming its worker. Left out of
-    /// the status a caller polls, which counts them in `records`: they are read on their own (`HeldRecords`).
+    /// the status a caller polls, which counts them in `records`: they are read on their own (`capture_records`).
     #[serde(skip)]
     pub batches: Vec<CaptureBatch>,
     /// How many records the capture holds, across its batches.
@@ -560,17 +560,7 @@ impl Captures {
         records: Vec<crate::io::RecordObject>,
     ) -> Result<(), String> {
         crate::config_file::refuse_sample_size(records.len())?;
-        let mut batch = CaptureBatch::new(vec![crate::heartbeat::CaptureColumn {
-            name: crate::plan::tree::UNCLAIMED.to_string(),
-            ty: crate::core::column::DataType::Variant.spell(),
-        }]);
-        batch.rows = records
-            .into_iter()
-            .map(|record| CapturedRow {
-                values: vec![serde_json::Value::Object(record)],
-                ..CapturedRow::default()
-            })
-            .collect();
+        let batch = CaptureBatch::pasted(records).stamped(crate::core::ctx::wall_clock_micros());
         let bytes = batch.size();
         if bytes > SESSION_BYTES_CEILING {
             return Err(format!(

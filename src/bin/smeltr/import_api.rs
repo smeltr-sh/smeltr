@@ -637,7 +637,7 @@ mod tests {
                               "delimiter": ",", "headers": ["ip", "site"]}]}))
         .unwrap();
         let sample: config_file::SampleDto =
-            serde_json::from_value(json!({"id": "s1", "name": "one", "records": []})).unwrap();
+            serde_json::from_value(json!({"id": "s1", "name": "one", "columns": [], "rows": []})).unwrap();
         let mut files = config_file::bundle_files(&file).unwrap();
         files.push(("lookups/848eac143ba4496d-sites.csv".into(), SITES.to_vec()));
         files.push((
