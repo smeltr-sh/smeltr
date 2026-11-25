@@ -904,8 +904,8 @@ mod tests {
         assert!(held_for_preview(&captures, &own, &person("alice"), "c1").is_ok());
     }
 
-    /// A paste is held in place of its owner's capture and reads back as written: no columns of its own, no
-    /// `__capture` fields, and the source it was given.
+    /// A paste is held in place of its owner's capture and reads back as written, stamped with when it was held: no
+    /// columns of its own, and the source it was given.
     #[test]
     fn a_paste_replaces_its_owner_s_capture_and_runs_as_written() {
         let (captures, own, _) = payments_capture();
@@ -929,7 +929,8 @@ mod tests {
             "the paste replaced the capture"
         );
         let sample = held_for_preview(&captures, &own, &alice, "p1").unwrap();
-        let pasted = smeltr::heartbeat::CaptureBatch::pasted(vec![record("a"), record("b")]);
+        let held = sample.table.instant().expect("a held paste says when it was taken");
+        let pasted = smeltr::heartbeat::CaptureBatch::pasted(vec![record("a"), record("b")]).stamped(held);
         assert_eq!(sample.table, pasted);
         assert_eq!(sample.source.as_deref(), Some("orders"));
         // The records the GUI reads are those a sample holds; a paste was sent by no worker.
