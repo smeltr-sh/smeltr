@@ -684,7 +684,9 @@ impl<'d> Reader<'d> {
     /// `bytes`, at their first value. `Malformed` where they are not UTF-8: one check of the whole document, as
     /// `parse_object` makes.
     pub fn new(bytes: &'d [u8]) -> Result<Reader<'d>, Malformed> {
-        Ok(Reader::of_str(simdutf8::basic::from_utf8(bytes).map_err(|_| Malformed)?))
+        Ok(Reader::of_str(
+            simdutf8::basic::from_utf8(bytes).map_err(|_| Malformed)?,
+        ))
     }
 
     /// `text`, at its first value: for a document read in parts, each part from where the last one ended, without
