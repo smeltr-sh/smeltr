@@ -105,6 +105,7 @@
     type ParserProposal,
     parsersIn,
     putTest,
+    type MutationResult,
     type ShownCut,
   } from './api';
   import ChipPicker from './ChipPicker.svelte';
@@ -1084,21 +1085,23 @@
   function goLockTest(choice: ShownCut) {
     locking = choice;
   }
-  async function lockShown(name: string) {
-    if (!locking) return;
+  async function lockShown(name: string): Promise<MutationResult> {
+    const cut = locking;
+    if (!cut) return { ok: false, errors: [] };
     const id = relocking ? opened!.test : name;
     const res = await putTest(id, {
       name,
       pipeline: loadedId,
       sample: selectedSample,
-      fields: locking.fields,
-      rows: locking.rows,
+      fields: cut.fields,
+      rows: cut.rows,
     });
-    if (!res.ok) return;
+    if (!res.ok) return res;
     await loadTests();
     openTest(id);
     // Closed last, so whoever waits on the dialog finds the test opened.
     locking = null;
+    return res;
   }
 
   // The output is not an action. It follows the steps and the sample, one

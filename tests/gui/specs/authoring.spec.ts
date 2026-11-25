@@ -2275,6 +2275,43 @@ test('A11: a test locks the fields and rows on screen, and a change to anything 
   await expect(testRow).toContainText('Failing', { timeout: 15_000 });
 });
 
+// A11, a lock refused because the branch moved says so in the dialog, as any save does.
+test('A11: a lock the branch moved under says so in its dialog, and locks once reloaded', async ({
+  admin,
+  leader,
+  api,
+}) => {
+  await jsonPipeline(api, 'orders', [{ name: 'id', type: 'i64' }], {
+    id: 'orders-sample',
+    name: 'orders',
+    records: ORDERS,
+  });
+  await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
+  const lock = admin.getByRole('button', { name: 'Lock this as a test' });
+  await expect(lock).toBeEnabled({ timeout: 15_000 });
+  // Someone else saves the branch.
+  await api.put(`/api/areas/shared/samples/other${ON}`, {
+    id: 'other',
+    name: 'other',
+    ...pasted([{ _raw: '{"id":9}' }]),
+  });
+  await lock.click();
+  const dialog = admin.getByRole('dialog', { name: 'Lock this as a test' });
+  await dialog.getByRole('textbox', { name: 'Name' }).fill('orders keep their id');
+  await dialog.getByRole('button', { name: 'Lock' }).click();
+  await expect(dialog.getByText('This branch moved while you were editing.')).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Lock' })).toHaveCount(0);
+  // Reloaded past their save, the lock goes through.
+  await dialog.getByRole('button', { name: /^Discard mine, reload/ }).click();
+  await expect(lock).toBeEnabled({ timeout: 15_000 });
+  await lock.click();
+  await dialog.getByRole('textbox', { name: 'Name' }).fill('orders keep their id');
+  await dialog.getByRole('button', { name: 'Lock' }).click();
+  await expect(dialog).toHaveCount(0);
+  const { tests } = await api.get(`/api/areas/shared/tests${ON}`);
+  expect(tests.map((t: { name: string }) => t.name)).toEqual(['orders keep their id']);
+});
+
 // A11, what a test locks is what the leader made: a float with no fraction stays a float, and a long integer keeps
 // every digit, so the test passes the moment it is locked.
 test('A11: a test locking a whole float and a long integer passes at once', async ({

@@ -441,6 +441,22 @@ describe('sample and test cards', () => {
     ]);
   });
 
+  it('shows a test locked again over a field whose type changed, though its values read the same', () => {
+    const before = test([{ row: 0, values: { a: 10 } }]);
+    const after = { ...before, table: { ...before.table, columns: [{ name: 'a', type: 'f64' }] } };
+    const [card] = objectChanges([
+      {
+        scope: 'north',
+        before: side,
+        after: side,
+        files: [{ kind: 'tests', id: 'orders-out', status: 'M', before, after }],
+      },
+    ]);
+    expect(card.fields).toEqual([
+      { key: 'checks', kind: 'changed', before: 'a i64', after: 'a f64' },
+    ]);
+  });
+
   it('lays out a checked row by its fields, and an end-to-end one by where it went', () => {
     expect(outcomeText({ row: 2, values: { act: 'deny', severity: 'critical' } })).toBe(
       'act "deny", severity "critical"',

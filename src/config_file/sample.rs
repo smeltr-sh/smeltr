@@ -125,8 +125,21 @@ pub fn sample_path(id: &str) -> Result<String, BundleError> {
     Ok(format!("{SAMPLES_DIR}/{}.json", slugify(id)))
 }
 
-/// A DTO is plain string-and-number data; serializing it cannot fail.
+/// The file `sample` is stored as. Every row says when it was taken ([`CaptureBatch::stamped`]): a row that does not
+/// is stamped now, so every write of a sample, by any path, gives its runs one `now()`.
 pub fn sample_bytes(sample: &SampleDto) -> Vec<u8> {
+    let stamped;
+    let sample = match sample.table.is_stamped() {
+        true => sample,
+        false => {
+            stamped = SampleDto {
+                table: sample.table.clone().stamped(crate::core::ctx::wall_clock_micros()),
+                ..sample.clone()
+            };
+            &stamped
+        }
+    };
+    // A DTO is plain string-and-number data; serializing it cannot fail.
     serde_json::to_vec_pretty(sample).expect("a sample always serializes")
 }
 
