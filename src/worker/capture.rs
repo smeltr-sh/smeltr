@@ -925,35 +925,41 @@ impl Captures {
 /// field of the record, so a sample's preview leaves it out.
 pub const EXCEPTION_MESSAGE: &str = "__exception.message";
 
-/// A source batch's columns: the record's fields, then the `__source` fields, each as the source declares it.
-fn source_columns(meta: &SourceMeta) -> Vec<CaptureColumn> {
-    let record = meta.record().iter().map(|(entry, ty)| CaptureColumn {
+/// The columns of a record of `fields`, at a source and at a destination alike: each field under its path, and each
+/// object's unclaimed fields under theirs.
+fn record_columns(fields: &[(Entry, DataType)]) -> impl Iterator<Item = CaptureColumn> {
+    fields.iter().map(|(entry, ty)| CaptureColumn {
         name: entry.column(),
         ty: match entry {
             Entry::Field(_) => ty.spell(),
-            // Spelled as a destination's open record spells it (`written_columns`).
             Entry::Unclaimed(_) => "{...}".to_string(),
         },
-    });
+    })
+}
+
+/// `object`, a record of `fields`, as its values under `record_columns(fields)`.
+fn record_values(fields: &[(Entry, DataType)], object: &crate::io::RecordObject) -> Vec<serde_json::Value> {
+    (fields.iter())
+        .map(|(entry, _)| match entry {
+            Entry::Unclaimed(at) => crate::io::unclaimed_of(object, at, fields).unwrap_or_default(),
+            Entry::Field(name) => crate::io::value_at(object, name).cloned().unwrap_or_default(),
+        })
+        .collect()
+}
+
+/// A source batch's columns: the record's fields, then the `__source` fields, each as the source declares it.
+fn source_columns(meta: &SourceMeta) -> Vec<CaptureColumn> {
     let source = meta.source_fields().iter().map(|(name, ty)| CaptureColumn {
         name: name.to_string(),
         ty: ty.spell(),
     });
-    record.chain(source).collect()
+    record_columns(meta.record()).chain(source).collect()
 }
 
 /// One record as a row of `source_columns(meta)`: its fields from its record object, a value that failed its type as
 /// the source spelled it, then its `__source` fields from `source`, the record's `__source` object.
 fn source_row(meta: &SourceMeta, record: &SourceRecord, text: &str, source: &crate::io::SourceFields) -> CapturedRow {
-    let object = meta.record_object(record, text);
-    let fields = meta.record();
-    let mut values: Vec<serde_json::Value> = fields
-        .iter()
-        .map(|(entry, _)| match entry {
-            Entry::Unclaimed(at) => crate::io::unclaimed_of(&object, at, fields).unwrap_or_default(),
-            Entry::Field(name) => crate::io::value_at(&object, name).cloned().unwrap_or_default(),
-        })
-        .collect();
+    let mut values = record_values(meta.record(), &meta.record_object(record, text));
     let mut failed = Vec::new();
     for (_, field, original) in record.chunk.failed().iter().filter(|(r, _, _)| *r == record.row) {
         values[*field] = serde_json::Value::String(original.clone());
@@ -1112,24 +1118,31 @@ pub struct AtDestination {
 /// The column an open record's unclaimed keys go in, as one object.
 pub use crate::plan::tree::UNCLAIMED;
 
-/// The fields a pipeline writes (`plan::dictionary::record_type`), each as a column, and [`UNCLAIMED`] for the keys
-/// an open record leaves unclaimed. None for a record that is not a struct: its rows are shown by their own keys.
-pub fn written_columns(record: &DataType) -> Vec<CaptureColumn> {
-    let mut written: Vec<CaptureColumn> = match record {
-        DataType::Struct(fields, _) => fields
-            .iter()
-            .map(|(name, ty)| CaptureColumn {
-                name: name.clone(),
-                ty: ty.spell(),
-            })
-            .collect(),
-        _ => Vec::new(),
-    };
-    if matches!(record, DataType::Struct(_, true)) {
-        written.push(CaptureColumn {
-            name: UNCLAIMED.to_string(),
-            ty: "{...}".to_string(),
-        });
+/// The fields a pipeline writes (`plan::dictionary::record_type`), as a source's record declares its own: each leaf,
+/// and each open object's unclaimed fields. None for a record that is not a struct: its rows are shown by their own
+/// keys.
+pub fn written_fields(record: &DataType) -> Vec<(Entry, DataType)> {
+    // An object a pipeline wrote with nothing in it declares no field: here it is an object that holds whatever
+    // keys it has.
+    fn holding(ty: &DataType) -> DataType {
+        match ty {
+            DataType::Struct(members, open) => DataType::Struct(
+                members.iter().map(|(k, t)| (k.clone(), holding(t))).collect(),
+                *open || members.is_empty(),
+            ),
+            other => other.clone(),
+        }
+    }
+    let mut written = Vec::new();
+    if let DataType::Struct(members, open) = holding(record) {
+        for (key, ty) in &members {
+            // A root key is a field's name as a path spells it, so a key holding a `.` stays one key.
+            crate::plan::topology::leaves(&crate::plan::tree::spell(key), ty, &mut written)
+                .expect("every object holds a field or is open");
+        }
+        if open && !members.is_empty() {
+            written.push((Entry::Unclaimed("".into()), DataType::Variant));
+        }
     }
     written
 }
@@ -1168,7 +1181,7 @@ fn tapped_value(doc: Option<&[u8]>) -> serde_json::Value {
 /// document as sent to a destination leaves out.
 pub struct Finished<'a> {
     plan: &'a crate::plan::compile::Plan,
-    written: Vec<CaptureColumn>,
+    written: Vec<(Entry, DataType)>,
     internal: Vec<(CaptureColumn, crate::core::id::SlotId)>,
 }
 
@@ -1178,7 +1191,7 @@ impl<'a> Finished<'a> {
         let record = crate::plan::dictionary::record_type(plan, tag_field);
         Finished {
             plan,
-            written: written_columns(&record),
+            written: written_fields(&record),
             internal: internal_columns(plan),
         }
     }
@@ -1216,48 +1229,32 @@ pub fn place(
     }
 }
 
-/// One row a pipeline finished: `object`, the row's document, under `written` (`written_columns`), then `fields`, its
-/// values of `internal` (`internal_columns`). Returns the columns and the row under them.
+/// One row a pipeline finished. `object` is the row's document, read under `written` (`written_fields`), and `fields`
+/// holds the row's values of `internal` (`internal_columns`). Returns the columns and the row under them.
 ///
 /// A document `written` does not describe is shown by its own keys, each a variant.
 fn finished_row(
-    mut object: crate::io::RecordObject,
-    written: &[CaptureColumn],
+    object: crate::io::RecordObject,
+    written: &[(Entry, DataType)],
     internal: &[(CaptureColumn, crate::core::id::SlotId)],
     fields: Vec<serde_json::Value>,
 ) -> (Vec<CaptureColumn>, CapturedRow) {
-    let fits =
-        written.iter().any(|c| c.name == UNCLAIMED) || object.keys().all(|k| written.iter().any(|c| &c.name == k));
-    let (mut columns, mut values) = match fits && !written.is_empty() {
-        true => {
-            let mut values: Vec<serde_json::Value> = written
-                .iter()
-                .filter(|c| c.name != UNCLAIMED)
-                .map(|c| object.remove(&c.name).unwrap_or_default())
-                .collect();
-            if written.iter().any(|c| c.name == UNCLAIMED) {
-                values.push(match object.is_empty() {
-                    true => serde_json::Value::Null,
-                    false => serde_json::Value::Object(object),
-                });
-            }
-            (written.to_vec(), values)
-        }
-        false => {
-            let columns = object
-                .keys()
-                .map(|k| CaptureColumn {
-                    name: k.clone(),
-                    ty: "variant".to_string(),
-                })
-                .collect();
-            (columns, object.into_iter().map(|(_, v)| v).collect())
-        }
+    let described = |key: &String| {
+        written
+            .iter()
+            .any(|(entry, _)| entry.keys().first().is_none_or(|k| k == key))
     };
-    // A root key is a column's name as a path spells it, so a key holding a `.` stays one key when the row is read back.
-    for column in columns.iter_mut().filter(|c| c.name != UNCLAIMED) {
-        column.name = crate::plan::tree::spell(&column.name).into_owned();
-    }
+    let (mut columns, mut values): (Vec<_>, Vec<_>) = match !written.is_empty() && object.keys().all(described) {
+        true => (record_columns(written).collect(), record_values(written, &object)),
+        // A root key is a column's name as a path spells it, so a key holding a `.` stays one key.
+        false => (object.into_iter())
+            .map(|(key, value)| {
+                let name = crate::plan::tree::spell(&key).into_owned();
+                let ty = "variant".to_string();
+                (CaptureColumn { name, ty }, value)
+            })
+            .unzip(),
+    };
     columns.extend(internal.iter().map(|(c, _)| c.clone()));
     values.extend(fields);
     (
@@ -1737,6 +1734,7 @@ pub fn source_kind_of(dto: crate::config_file::SourceDto) -> Result<crate::plan:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::heartbeat::pasted_from;
 
     /// A deployment reading `sources`.
     fn deployed(sources: &[&str]) -> Arc<crate::metrics::Subjects> {
@@ -2737,7 +2735,7 @@ mod tests {
             Some(route.to_string()),
             Some(format!("{route} name")),
         ];
-        let mut sent = finished_row(object(v), &columns(written), &[], Vec::new());
+        let mut sent = finished_row(object(v), &written_fields(&record(written)), &[], Vec::new());
         place(&mut sent, destination);
         sent
     }
@@ -2751,7 +2749,7 @@ mod tests {
         let object = |v: serde_json::Value| v.as_object().unwrap().clone();
         let none = crate::io::SourceFields::new();
         let stored = [object(serde_json::json!({"id": true, "name": "ann"}))];
-        let records = meta.read_stored(&[(&stored[0], &none)]).unwrap();
+        let records = meta.read_table(&pasted_from(&[(&stored[0], &none)])).unwrap();
 
         let row = source_row(&meta, &records[0], "", &none);
         assert_eq!(&row.values[..2], [serde_json::json!("true"), serde_json::json!("ann")]);
@@ -2770,7 +2768,7 @@ mod tests {
         let object = |v: serde_json::Value| v.as_object().unwrap().clone();
         let none = crate::io::SourceFields::new();
         let stored = object(serde_json::json!({"id": 1, "home": {"city": "Oslo", "zip": "0150"}}));
-        let records = meta.read_stored(&[(&stored, &none)]).unwrap();
+        let records = meta.read_table(&pasted_from(&[(&stored, &none)])).unwrap();
 
         let captured: Vec<_> = (source_columns(&meta).into_iter())
             .filter(|c| !c.name.starts_with("__"))
@@ -2791,29 +2789,32 @@ mod tests {
 
         let sample = SourceMeta::of_columns(&captured).unwrap();
         assert_eq!(sample.record(), meta.record());
-        let read = sample.read_stored(&[(&stored, &none)]).unwrap();
+        let read = sample.read_table(&pasted_from(&[(&stored, &none)])).unwrap();
         assert_eq!(sample.record_object(&read[0], ""), stored);
     }
 
-    /// A sample column of an object with no field, as a pipeline that wrote `{}` leaves it, reads as an object that
-    /// holds whatever keys its rows do.
+    /// Two routes into one destination: one declares `id`, the other passes it through undeclared. A sample of both
+    /// holds a column for each, and a row reads its `id` from whichever its route filled.
     #[test]
-    fn a_sample_column_of_an_empty_object_reads_as_an_object() {
-        let sample = SourceMeta::of_columns(&columns(&[("a", "i64"), ("meta", "{}")])).unwrap();
-        let object = |v: serde_json::Value| v.as_object().unwrap().clone();
-        let none = crate::io::SourceFields::new();
-        for stored in [
-            serde_json::json!({"a": 1, "meta": {}}),
-            serde_json::json!({"a": 1, "meta": {"k": true}}),
-        ] {
-            let stored = object(stored);
-            let read = sample.read_stored(&[(&stored, &none)]).unwrap();
-            let mut expected = stored.clone();
-            if expected["meta"] == serde_json::json!({}) {
-                expected.remove("meta");
-            }
-            assert_eq!(sample.record_object(&read[0], ""), expected);
-        }
+    fn a_row_reads_a_field_from_its_unclaimed_fields_where_its_batch_had_no_column() {
+        let batch = |spelled: &[(&str, &str)], value: serde_json::Value| crate::heartbeat::CaptureBatch {
+            columns: columns(spelled),
+            rows: vec![CapturedRow {
+                values: vec![value],
+                failed: Vec::new(),
+                worker: None,
+            }],
+        };
+        let declared = batch(&[("id", "i64")], serde_json::json!(7));
+        let passed = batch(&[(UNCLAIMED, "{...}")], serde_json::json!({"id": 1, "x": 2}));
+        let table = crate::config_file::sample_table(&[declared, passed]);
+        let sample = SourceMeta::of_columns(&table.columns).unwrap();
+        let read = sample.read_table(&table).unwrap();
+        assert_eq!(sample.record_object(&read[0], ""), object(serde_json::json!({"id": 7})));
+        assert_eq!(
+            sample.record_object(&read[1], ""),
+            object(serde_json::json!({"id": 1, "x": 2}))
+        );
     }
 
     /// A finished row is shown under the fields its pipeline writes, typed as declared, then where the destination
@@ -2840,14 +2841,14 @@ mod tests {
     /// An open record's keys its pipeline does not declare go in one column, as one object.
     #[test]
     fn an_open_record_s_unclaimed_keys_are_one_column() {
-        let written = &[("b", "str"), (UNCLAIMED, "{...}")];
-        let (_, row) = sent(serde_json::json!({"b": "x", "c": true}), written, "db");
+        let written = written_fields(&DataType::Struct(vec![("b".to_string(), DataType::Str)], true));
+        let row = |v: serde_json::Value| finished_row(object(v), &written, &[], Vec::new()).1;
         assert_eq!(
-            row.values[..2],
+            row(serde_json::json!({"b": "x", "c": true})).values,
             [serde_json::json!("x"), serde_json::json!({"c": true})]
         );
-        let (_, row) = sent(serde_json::json!({"b": "x"}), written, "db");
-        assert_eq!(row.values[1], serde_json::Value::Null, "nothing unclaimed is null");
+        let none = row(serde_json::json!({"b": "x"}));
+        assert_eq!(none.values[1], serde_json::Value::Null, "nothing unclaimed is null");
     }
 
     /// A document that is not what its route declares is shown by its own keys, not cut to the route's.
@@ -2863,15 +2864,48 @@ mod tests {
         assert_eq!(columns[0].name, r#"["a.b"]"#, "a key with a `.` is one key");
     }
 
-    /// The written columns are the record type's fields, and an open record adds the unclaimed column.
+    /// The closed record type of `fields`, each typed as spelled.
+    fn record(fields: &[(&str, &str)]) -> DataType {
+        let typed = |(name, ty): &(&str, &str)| (name.to_string(), crate::expr::parse::parse_type(ty).unwrap());
+        DataType::Struct(fields.iter().map(typed).collect(), false)
+    }
+
+    /// A pipeline's record is written as a source's is declared: each leaf a column, an open object's unclaimed
+    /// fields one more, and an object written with nothing in it holds whatever keys it has.
     #[test]
-    fn a_closed_record_writes_its_fields_and_an_open_one_adds_the_rest() {
-        let fields = vec![("a".to_string(), DataType::I64)];
-        let closed = written_columns(&DataType::Struct(fields.clone(), false));
-        assert_eq!(closed, columns(&[("a", "i64")]));
-        let open = written_columns(&DataType::Struct(fields, true));
-        assert_eq!(open, columns(&[("a", "i64"), (UNCLAIMED, "{...}")]));
-        assert!(written_columns(&DataType::Variant).is_empty());
+    fn a_written_record_is_its_leaves_and_each_open_object_s_unclaimed_fields() {
+        let written = record(&[
+            ("a", "i64"),
+            ("user", "{name: str, ...}"),
+            ("made", "{}"),
+            ("x.y", "str"),
+        ]);
+        let DataType::Struct(fields, _) = &written else {
+            unreachable!()
+        };
+        let names =
+            |record: &DataType| -> Vec<String> { record_columns(&written_fields(record)).map(|c| c.name).collect() };
+        assert_eq!(
+            names(&written),
+            ["a", "user.name", "user....", "made....", r#"["x.y"]"#]
+        );
+        let open = DataType::Struct(fields.clone(), true);
+        assert_eq!(names(&open).last().map(String::as_str), Some(UNCLAIMED));
+        assert!(written_fields(&DataType::Variant).is_empty());
+
+        let doc = serde_json::json!({"a": 1, "user": {"name": "ann", "age": 3}, "made": {"k": true}, "x.y": "z"});
+        let (columns, row) = finished_row(object(doc), &written_fields(&written), &[], Vec::new());
+        assert_eq!(columns.len(), 5);
+        assert_eq!(
+            row.values,
+            [
+                serde_json::json!(1),
+                "ann".into(),
+                serde_json::json!({"age": 3}),
+                serde_json::json!({"k": true}),
+                "z".into()
+            ]
+        );
     }
 
     /// Only an open capture at a destination is served to the transform threads, with its filter and what it still

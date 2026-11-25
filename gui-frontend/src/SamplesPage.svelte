@@ -33,6 +33,7 @@
     type SampleSummary,
     type TestSummary,
   } from './api';
+  import { tableRecords } from './capture';
 
   const readOnly = !editable();
 
@@ -94,7 +95,11 @@
   async function download(s: SampleSummary) {
     try {
       const { sample } = await getSample(s.id);
-      if (sample) downloadRecords(s.name, sample.records);
+      if (sample)
+        downloadRecords(
+          s.name,
+          tableRecords(sample).map((held) => held.record),
+        );
     } catch (e) {
       reported(e);
     }

@@ -89,7 +89,7 @@ describe('what a finished fill declares', () => {
       [],
       status({
         columns: [{ name: '_raw', type: 'str' }],
-        records: [held({ _raw: 'no schema 2', __capture: { mistyped: ['_raw'] } })],
+        records: [{ ...held({ _raw: 'no schema 2' }), failed: ['_raw'] }],
       }),
     );
     expect(fill).toEqual({ error: 'no schema 2' });
