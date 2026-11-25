@@ -137,6 +137,7 @@
     });
     if (!res.ok) return res;
     await loadTests();
+    judged = undefined;
     opened = { test: id, sample: ran };
     addressTest(opened);
     // Closed last, so whoever waits on the dialog finds the test opened.
