@@ -36,8 +36,7 @@
     the image's operating system packages and the libraries built into Smeltr. The published image
     carries its SBOM, signed; see
     <a href="/docs/install-leader/container#pull">Pull and verify the image</a>. The Windows SBOM
-    lists the libraries built into <code>smeltr.exe</code>; Windows has no image, CVE report or STIG
-    report.
+    lists the libraries built into <code>smeltr.exe</code>.
   </p>
 
   <h3>CVE report</h3>
