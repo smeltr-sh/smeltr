@@ -669,12 +669,8 @@ fn fetch_deployed_with_budget(
     connection.set_transport_options(Box::new(git_http_options(token, git_roots, budget)));
     // The bearer token above is this worker's only credential, so a 401 is not answered by trying harder: without
     // this, gix's default is the same cascade `git credential` runs -- helpers from whatever gitconfig this host
-    // has, ending in a terminal prompt -- and nothing here reads a worker's console. `GIT_TERMINAL_PROMPT=0` was
-    // the same refusal for the git binary; offering nothing is refusing every stage of the cascade, not only the
-    // prompt at its end.
-    // `gix_credentials::protocol::Error` is gix's own type, sized for a helper subprocess's failure modes rather
-    // than this closure's, which has none.
-    #[allow(clippy::result_large_err)]
+    // has, ending in a terminal prompt -- and nothing here reads a worker's console. Offering nothing
+    // refuses every stage of the cascade, not only the prompt at its end.
     connection.set_credentials(|_action| Ok(None));
     connection
         .prepare_fetch(gix::progress::Discard, Default::default())
@@ -820,7 +816,8 @@ fn hold_running(repo_dir: &Path, commit: &str) {
 /// How long one poll blocks before the thread checks `stop`.
 pub const TICK_TIMEOUT: Duration = Duration::from_millis(500);
 /// Rows in one batch, whichever of this and [`TICK_MAX_BYTES`] is reached first. A source hands over what is ready
-/// rather than wait to fill a batch, so this binds only under load.
+/// rather than wait to fill a batch (a receiver waits a moment for [`LEAST_BATCH_BYTES`]), so this binds only under
+/// load.
 pub(crate) const TICK_MAX_ROWS: usize = 4000;
 
 /// Raw bytes in one batch, whatever the row size.
@@ -3727,7 +3724,7 @@ impl Supervisor {
         let mut failing: Option<String> = None;
         loop {
             // What the leader deploys is this worker's to follow only once it has checked in. After that this schedule is its own:
-            // a heartbeat that fails cancels no discovery, where before they were the same turn of one loop.
+            // a heartbeat that fails cancels no discovery.
             if self.contacted() && self.cue_confirms_fetched() {
                 let mut supervising = self.supervising.lock().unwrap();
                 supervising.attempted_ms = Some(now_ms());
@@ -7741,8 +7738,7 @@ mod tests {
     }
 
     /// What the runtime counted rides the heartbeat beside the thread it counted it on. The extend that carries it
-    /// sits after the label resolution and was once lost to a reformat, silently: nothing else fails when a
-    /// runtime's counters simply stop appearing.
+    /// sits after the label resolution, and nothing else fails when a runtime's counters simply stop appearing.
     #[test]
     fn a_runtime_s_metrics_ride_the_heartbeat_under_their_thread() {
         let supervisor = supervisor_for(temp_dir("metrics-ride"));

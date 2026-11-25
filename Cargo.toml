@@ -9,6 +9,9 @@ license = "BUSL-1.1"
 autotests = false
 
 # `tools/citations` checks the tree's documents without building smeltr.
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
 [workspace]
 members = ["tools/citations", "tools/check-scope"]
 
@@ -340,7 +343,7 @@ debug = false
 
 # Argon2 is deliberately slow, and an unoptimized build of it is slow by a further order of magnitude: the test
 # suite hashes dozens of times and spent twenty seconds doing it. Optimizing the hash and its compression function
-# leaves every other crate debuggable and changes nothing a release build does.
+# leaves every other crate debuggable and changes nothing an optimized build does.
 [profile.dev.package.argon2]
 opt-level = 3
 
@@ -352,8 +355,14 @@ opt-level = 3
 [profile.dev.package.aws-lc-fips-sys]
 opt-level = 3
 
-# What ships: the whole program, `std` included, optimized as one. Parse runs a few percent faster than `release`, and
-# what is inlined no longer moves with unrelated edits. A build takes about twice as long.
+# Every optimized build but the one that ships: `just build`, the benchmarks and the demo. Thin LTO over 16 codegen
+# units keeps every core busy, where `dist` spends most of its build on one.
+[profile.optimized]
+inherits = "release"
+lto = "thin"
+
+# What ships: the whole program, `std` included, optimized as one. It runs about 2% faster overall than `optimized`,
+# and 10% on fortigate, and what is inlined no longer moves with unrelated edits. A build takes about twice as long.
 [profile.dist]
 inherits = "release"
 lto = "fat"

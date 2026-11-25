@@ -248,14 +248,11 @@ fn install_crypto_provider() {
 /// against a listener still winding down.
 fn wait_until_port_refuses(port: u16, within: Duration) {
     let addr: std::net::SocketAddr = ([127, 0, 0, 1], port).into();
-    let deadline = Instant::now() + within;
-    while Instant::now() < deadline {
-        if std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_err() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    panic!("port {port} still accepts connections {within:?} after the leader was shut down");
+    crate::harness::wait_until(
+        &format!("port {port} to refuse connections, the leader having been shut down"),
+        within,
+        || std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_err(),
+    );
 }
 
 /// The leader is on this host, which a proxy in the test's environment cannot reach, so the agent takes none.
@@ -1400,6 +1397,7 @@ fn a_signaled_worker_stops_its_runtime_before_it_exits() {
             .running_runtime(Duration::from_secs(40))
             .ok_or("the worker never reported a running runtime")?;
 
+        // SAFETY: `kill` takes two numbers and reads no memory of this process's.
         unsafe { libc::kill(standalone.process.id() as libc::pid_t, libc::SIGTERM) };
 
         let deadline = Instant::now() + Duration::from_secs(60);
@@ -1414,6 +1412,7 @@ fn a_signaled_worker_stops_its_runtime_before_it_exits() {
         };
         // Asked with signal 0, which delivers nothing: a runtime still there -- an orphan draining alone, or one
         // nobody reaped -- answers it.
+        // SAFETY: `kill` takes two numbers and reads no memory of this process's.
         if unsafe { libc::kill(runtime as libc::pid_t, 0) } == 0 {
             return Err(format!("the runtime ({runtime}) outlived the worker that ran it"));
         }
@@ -1440,6 +1439,7 @@ fn a_signaled_runtime_drains_and_is_replaced() {
             .running_runtime(Duration::from_secs(40))
             .ok_or("the worker never reported a running runtime")?;
 
+        // SAFETY: `kill` takes two numbers and reads no memory of this process's.
         unsafe { libc::kill(runtime as libc::pid_t, libc::SIGTERM) };
 
         let deadline = Instant::now() + Duration::from_secs(60);

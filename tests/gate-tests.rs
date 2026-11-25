@@ -297,8 +297,8 @@ fn a_refusal_is_json_rather_than_the_apps_html() {
     assert_eq!(body["ok"], serde_json::Value::Bool(false));
 }
 
-/// An API path nothing serves used to return `index.html` with a `200`, because the SPA fallback covered every
-/// unmatched path. A caller then parsed a web page as its data.
+/// An API path nothing serves is outside the SPA fallback, which answers every other unmatched path with
+/// `index.html` and a `200`: a caller would parse a web page as its data.
 #[test]
 fn an_unknown_api_path_is_a_json_404_rather_than_the_app() {
     let leader = start("unknown");
@@ -1890,7 +1890,7 @@ fn only_a_required_change_skips_the_current_password() {
 }
 
 /// A username is whatever was sent, valid or not, and it reaches a throttle bucket. One whose bound falls inside a
-/// multibyte character used to panic the handler.
+/// multibyte character must not panic the handler.
 #[test]
 fn a_sign_in_with_an_awkward_username_is_answered_rather_than_dropped() {
     let leader = start("awkward-username");
@@ -3442,12 +3442,8 @@ fn a_deployer_approves_any_change_their_own_too() {
 const QUICK_REFRESH: (&str, &str) = ("SMELTR_OIDC_REFRESH_INTERVAL_MS", "200");
 
 /// Waits for `holds` to come true, a refresh or two at [`QUICK_REFRESH`].
-fn eventually(what: &str, mut holds: impl FnMut() -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    while !holds() {
-        assert!(std::time::Instant::now() < deadline, "{what} never happened");
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+fn eventually(what: &str, holds: impl FnMut() -> bool) {
+    crate::harness::wait_until(what, std::time::Duration::from_secs(15), holds);
 }
 
 /// Whether `session` still stands for somebody.

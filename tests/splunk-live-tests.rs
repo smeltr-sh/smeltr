@@ -74,6 +74,9 @@ fn deliver(d: &mut dyn Destination, rows: Vec<OwnedRecord>) -> Result<Vec<Reject
     let deadline = Instant::now() + Duration::from_secs(90);
     loop {
         if let Some(c) = d.poll_completions()?.into_iter().find(|c| c.batch == 1) {
+            if let Some(undelivered) = c.undelivered {
+                return Err(undelivered.error);
+            }
             refused.extend(c.rejections);
             return Ok(refused);
         }

@@ -264,6 +264,7 @@ mod imp {
             // SAFETY: the cache, principal and credentials above, all live.
             code = unsafe { krb5_cc_initialize(context, cache, client) };
             if code == 0 {
+                // SAFETY: the cache and credentials above, both live.
                 code = unsafe { krb5_cc_store_cred(context, cache, &mut creds) };
             }
             // SAFETY: the cache opened above.

@@ -288,7 +288,7 @@ impl Weekly {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::super::{Marks, Preset, WIDTHS, normal};
+    use super::super::{Marks, Preset, Subject, WIDTHS, normal};
     use super::*;
 
     const FIVE: i64 = 5 * 60 * 1000;
@@ -303,7 +303,7 @@ mod tests {
     }
 
     fn nothing_warned() -> Warned {
-        Warned::new("g", "s", None, Vec::new(), Vec::new(), &Marks::default())
+        Warned::new(Subject::source("g", "s"), Vec::new(), Vec::new(), &Marks::default())
     }
 
     /// 100 rows a bucket from 06:00 to 20:00 UTC on a working day, a fifth of that at the weekend, and 10 at night.

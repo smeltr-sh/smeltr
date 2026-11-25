@@ -172,6 +172,7 @@ impl Contained {
         {
             // `waitid` rather than `waitpid`, because `WNOWAIT` is its flag alone: it is what leaves the child
             // waitable, so this observes the exit without consuming it and `reap` still answers the status.
+            // SAFETY: a `siginfo_t` is integers and pointers, and all zeroes is a value of each.
             let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
             // SAFETY: a zeroed `siginfo_t` is what `waitid` fills, and the child id is this process's own.
             let answered = unsafe {

@@ -285,7 +285,7 @@ fn spawn_worker(base: &str, code: &str, state_dir: &std::path::Path) -> std::pro
 /// `/api/health` is built from heartbeats received, so an entry there is a request this worker made, over TLS it
 /// verified, that the leader accepted. `/api/workers` is the wrong question: it lists every worker that ever
 /// enrolled, heartbeating or not, so it reads as success for a worker whose every heartbeat is failing the
-/// handshake -- which is exactly the bug that shipped past an earlier version of this helper.
+/// handshake.
 fn heartbeating(base: &str, ca_pem: &[u8], within: Duration) -> bool {
     let agent = smeltr::heartbeat::agent_trusting(Some(ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
     let deadline = Instant::now() + within;
@@ -412,7 +412,9 @@ fn a_worker_that_says_it_is_stopping_is_not_reported_silent() {
             std::thread::sleep(Duration::from_millis(200));
         };
 
+        // SAFETY: `kill` takes two numbers and reads no memory of this process's.
         unsafe { libc::kill(killed.id() as libc::pid_t, libc::SIGKILL) };
+        // SAFETY: `kill` takes two numbers and reads no memory of this process's.
         unsafe { libc::kill(told.id() as libc::pid_t, libc::SIGTERM) };
         let deadline = Instant::now() + Duration::from_secs(60);
         let status = loop {
@@ -537,6 +539,7 @@ fn a_forgotten_ephemeral_worker_enrolls_again_as_a_new_one() {
         };
 
         // Stopped on a signal, it says so, and the leader forgets it at once.
+        // SAFETY: `kill` takes two numbers and reads no memory of this process's.
         unsafe { libc::kill(worker.id() as libc::pid_t, libc::SIGTERM) };
         if exit_code(&mut worker, Duration::from_secs(60))? != Some(0) {
             return Err("the signaled worker did not exit cleanly".to_string());
@@ -700,7 +703,7 @@ fn a_second_worker_cannot_spend_an_enrollment_code_minted_for_one() {
 }
 
 /// A leader that answers is a leader that is up. Waiting out its answer is waiting for an address to change
-/// itself, which is what a first boot against a mistyped URL used to do.
+/// itself, as on a first boot against a mistyped URL.
 #[test]
 fn a_worker_pointed_at_the_wrong_address_stops_rather_than_waiting() {
     let _alone = alone();

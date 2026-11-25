@@ -8,7 +8,7 @@ import subprocess
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # The reference generators' driver (`examples/demo-traffic.rs`): the live traffic, the samples and the lookup tables
 # all come from it, so a pipeline here joins on what the logs carry.
-TRAFFIC = os.path.join(REPO, os.environ.get("CARGO_TARGET_DIR", "target"), "release", "examples", "demo-traffic")
+TRAFFIC = os.path.join(REPO, os.environ.get("CARGO_TARGET_DIR", "target"), "optimized", "examples", "demo-traffic")
 
 
 def traffic(*args):

@@ -1839,9 +1839,9 @@ mod tests {
         assert_eq!(count(&status), 1, "with what did arrive");
     }
 
-    /// The bug this replaced: `done` keyed on the set of workers that happened to have heartbeated, so the first
-    /// worker to be invited and answer finished the capture -- and `invitations_for` then skipped it forever, so a
-    /// worker that had not heartbeated yet was never asked at all. The sample was silently one worker's.
+    /// `done` is not keyed on the workers that happen to have heartbeated: the first worker to be invited and answer
+    /// would then finish the capture, a worker that had not heartbeated yet would never be asked, and the sample
+    /// would silently be one worker's.
     #[test]
     fn a_capture_is_not_finished_by_the_first_worker_to_answer() {
         let captures = Captures::default();

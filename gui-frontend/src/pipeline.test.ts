@@ -870,3 +870,19 @@ describe('a Call step summary', () => {
     expect(stepSummary(call(''), {})).toBe('(no pipeline chosen)');
   });
 });
+
+describe('a step summary', () => {
+  it('leads with the filter that limits the step to some records', () => {
+    const remove = (filter: string): Step => ({
+      type: 'remove',
+      id: 'r',
+      filter,
+      disabled: false,
+      fields: ['_raw'],
+    });
+    expect(stepSummary(remove(' event_type == "alert" '), {})).toBe(
+      'when event_type == "alert": 1 name: _raw',
+    );
+    expect(stepSummary(remove(' '), {})).toBe('1 name: _raw');
+  });
+});

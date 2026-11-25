@@ -1,7 +1,7 @@
 //! What a typed record costs against the same data arriving as `_raw` JSON: one source's rows, once as
 //! a chunk handing `id`, `service`, `message`, `total` and `status` as typed columns, and once as the JSON
 //! text a parse step reads those fields out of. The same eval runs after either, and both make the same documents.
-//! `cargo test --profile dist --test record-cost -- --ignored --nocapture`.
+//! `cargo test --profile optimized --test record-cost -- --ignored --nocapture`.
 
 mod panos;
 mod reference;

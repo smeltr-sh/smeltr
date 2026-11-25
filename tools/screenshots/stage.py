@@ -32,7 +32,7 @@ TRAFFIC_PIDS = os.path.join(DIR, ".traffic.pid")
 # samples and tables made. A recording is of these generators only when both are the current build's.
 TRAFFIC_FINGERPRINT = os.path.join(DIR, ".traffic.fingerprint")
 STAGED_FINGERPRINT = os.path.join(STATE, "fingerprint")
-BINARY = os.path.join(REPO, os.environ.get("CARGO_TARGET_DIR", "target"), "release", "smeltr")
+BINARY = os.path.join(REPO, os.environ.get("CARGO_TARGET_DIR", "target"), "optimized", "smeltr")
 PACE = float(os.environ.get("PACE", "1"))
 
 # A throwaway leader on loopback: these open nothing a run does not create and then discard.
