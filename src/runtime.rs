@@ -12,7 +12,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::commit::{CommitTracker, Holder};
+use crate::commit::{CommitTracker, WaitsOn};
 use crate::core::batch::{Batch, SLOT_LIVE, SLOT_RAW};
 use crate::core::bits;
 use crate::core::buffer::{self, BufferPool, MemoryBudget};
@@ -1142,7 +1142,7 @@ impl Transform {
         if routed_nowhere {
             reports.send(Report::Acked {
                 batch,
-                by: Holder::Transform,
+                by: WaitsOn::Transform,
             });
         }
         if let (Some(streams), Some(name)) = (&self.streams, &lane.source_name) {
@@ -1337,7 +1337,7 @@ impl Transform {
         }
         self.lanes[lane].reports.send(Report::Acked {
             batch,
-            by: Holder::Destination(dest),
+            by: WaitsOn::Destination(dest),
         });
     }
 

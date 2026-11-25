@@ -17,7 +17,7 @@ use crate::io::{BatchId, CommitMap, TopicPartition};
 struct Tracked {
     id: BatchId,
     tokens: CommitMap,
-    waiting: HashSet<Holder>,
+    waiting: HashSet<WaitsOn>,
     /// What the batch read from its source.
     bytes: usize,
 }
@@ -40,7 +40,7 @@ fn next_batch_id() -> BatchId {
 
 /// What a batch waits on before its offsets may commit.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum Holder {
+pub enum WaitsOn {
     /// Transform, until it has finished with the batch. A batch that reaches no destination waits on this: waiting
     /// on nothing, it would retire at poll time, and a batch transform holds would commit and release its source.
     Transform,
@@ -68,11 +68,11 @@ impl CommitTracker {
     /// past an outstanding earlier one.
     ///
     /// `waiting` is every destination reachable from this source: all of them are dispatched, and one with nothing
-    /// outstanding completes immediately. Empty, the batch waits on [`Holder::Transform`]. `bytes` is what the batch read.
+    /// outstanding completes immediately. Empty, the batch waits on [`WaitsOn::Transform`]. `bytes` is what the batch read.
     pub fn track(&mut self, id: BatchId, tokens: CommitMap, waiting: HashSet<DestId>, bytes: usize) {
-        let mut waiting: HashSet<Holder> = waiting.into_iter().map(Holder::Destination).collect();
+        let mut waiting: HashSet<WaitsOn> = waiting.into_iter().map(WaitsOn::Destination).collect();
         if waiting.is_empty() {
-            waiting.insert(Holder::Transform);
+            waiting.insert(WaitsOn::Transform);
         }
         self.bytes += bytes;
         self.in_flight.push_back(Tracked {
@@ -89,19 +89,19 @@ impl CommitTracker {
     pub fn abandon(&mut self, id: BatchId, waits_on: &[DestId]) {
         if let Some(f) = self.in_flight.iter_mut().find(|f| f.id == id) {
             f.waiting
-                .retain(|h| matches!(h, Holder::Destination(d) if waits_on.contains(d)));
+                .retain(|h| matches!(h, WaitsOn::Destination(d) if waits_on.contains(d)));
         }
     }
 
     /// `batch` waits on `dest` again, for rows sealed there after the batch was dispatched. Unknown ids are ignored.
     pub fn owe(&mut self, batch: BatchId, dest: DestId) {
         if let Some(f) = self.in_flight.iter_mut().find(|f| f.id == batch) {
-            f.waiting.insert(Holder::Destination(dest));
+            f.waiting.insert(WaitsOn::Destination(dest));
         }
     }
 
     /// `by` has finished with `batch`. Unknown ids are ignored.
-    pub fn acknowledge(&mut self, batch: BatchId, by: Holder) {
+    pub fn acknowledge(&mut self, batch: BatchId, by: WaitsOn) {
         if let Some(f) = self.in_flight.iter_mut().find(|f| f.id == batch) {
             f.waiting.remove(&by);
         }
@@ -169,8 +169,8 @@ mod tests {
         m
     }
 
-    fn dest(n: u32) -> Holder {
-        Holder::Destination(DestId(n))
+    fn dest(n: u32) -> WaitsOn {
+        WaitsOn::Destination(DestId(n))
     }
 
     fn track_one(t: &mut CommitTracker, offset: i64, waiting: &[DestId]) -> BatchId {
@@ -324,7 +324,7 @@ mod tests {
         let mut t = CommitTracker::new();
         let id = track_one(&mut t, 10, &[]);
         assert!(t.retire().is_none(), "not done on arrival");
-        t.acknowledge(id, Holder::Transform);
+        t.acknowledge(id, WaitsOn::Transform);
         assert_eq!(t.retire().expect("done once transform is").batches, 1);
     }
 
@@ -336,7 +336,7 @@ mod tests {
         let mut m = tokens(0, 10);
         m.insert(TopicPartition::new("t".into(), 1), 99);
         t.track(id, m, HashSet::new(), 0);
-        t.acknowledge(id, Holder::Transform);
+        t.acknowledge(id, WaitsOn::Transform);
 
         let r = t.retire().expect("done");
         assert_eq!(r.tokens[&TopicPartition::new("t".into(), 0)], 10);
