@@ -3442,12 +3442,8 @@ fn a_deployer_approves_any_change_their_own_too() {
 const QUICK_REFRESH: (&str, &str) = ("SMELTR_OIDC_REFRESH_INTERVAL_MS", "200");
 
 /// Waits for `holds` to come true, a refresh or two at [`QUICK_REFRESH`].
-fn eventually(what: &str, mut holds: impl FnMut() -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    while !holds() {
-        assert!(std::time::Instant::now() < deadline, "{what} never happened");
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+fn eventually(what: &str, holds: impl FnMut() -> bool) {
+    crate::harness::wait_until(what, std::time::Duration::from_secs(15), holds);
 }
 
 /// Whether `session` still stands for somebody.
