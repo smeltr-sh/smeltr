@@ -2318,7 +2318,7 @@ fn a_record_no_route_matches_is_distinguishable_from_a_dropped_one() {
         .unwrap_or_else(|e| panic!("compile: {}", join_errors(&e)));
     // A source no route names: nothing can match.
     let unrouted = smeltr::plan::topology::SourceConfig {
-        id: smeltr::core::id::SourceId::MAX,
+        id: smeltr::core::id::SourceId(u32::MAX),
         ..system.topology.sources[0].clone()
     };
     let records = sample_records(&[("orders", r#"{"total":250}"#)]);
