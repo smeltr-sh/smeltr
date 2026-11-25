@@ -1400,6 +1400,7 @@ fn a_signaled_worker_stops_its_runtime_before_it_exits() {
             .running_runtime(Duration::from_secs(40))
             .ok_or("the worker never reported a running runtime")?;
 
+        // SAFETY: `kill` takes two numbers and reads no memory of this process's.
         unsafe { libc::kill(standalone.process.id() as libc::pid_t, libc::SIGTERM) };
 
         let deadline = Instant::now() + Duration::from_secs(60);
@@ -1414,6 +1415,7 @@ fn a_signaled_worker_stops_its_runtime_before_it_exits() {
         };
         // Asked with signal 0, which delivers nothing: a runtime still there -- an orphan draining alone, or one
         // nobody reaped -- answers it.
+        // SAFETY: `kill` takes two numbers and reads no memory of this process's.
         if unsafe { libc::kill(runtime as libc::pid_t, 0) } == 0 {
             return Err(format!("the runtime ({runtime}) outlived the worker that ran it"));
         }
@@ -1440,6 +1442,7 @@ fn a_signaled_runtime_drains_and_is_replaced() {
             .running_runtime(Duration::from_secs(40))
             .ok_or("the worker never reported a running runtime")?;
 
+        // SAFETY: `kill` takes two numbers and reads no memory of this process's.
         unsafe { libc::kill(runtime as libc::pid_t, libc::SIGTERM) };
 
         let deadline = Instant::now() + Duration::from_secs(60);

@@ -1350,8 +1350,8 @@ mod tests {
             started.elapsed() < Duration::from_secs(5),
             "confirming a reported exit took longer than the hard budget"
         );
-        // SAFETY: signal 0 delivers nothing and only asks whether the id is still addressable.
         let gone = (0..200).any(|_| {
+            // SAFETY: signal 0 delivers nothing and only asks whether the id is still addressable.
             let alive = unsafe { libc::kill(pid, 0) } == 0;
             if alive {
                 std::thread::sleep(Duration::from_millis(10));

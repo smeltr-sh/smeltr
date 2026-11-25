@@ -412,7 +412,9 @@ fn a_worker_that_says_it_is_stopping_is_not_reported_silent() {
             std::thread::sleep(Duration::from_millis(200));
         };
 
+        // SAFETY: `kill` takes two numbers and reads no memory of this process's.
         unsafe { libc::kill(killed.id() as libc::pid_t, libc::SIGKILL) };
+        // SAFETY: `kill` takes two numbers and reads no memory of this process's.
         unsafe { libc::kill(told.id() as libc::pid_t, libc::SIGTERM) };
         let deadline = Instant::now() + Duration::from_secs(60);
         let status = loop {
@@ -537,6 +539,7 @@ fn a_forgotten_ephemeral_worker_enrolls_again_as_a_new_one() {
         };
 
         // Stopped on a signal, it says so, and the leader forgets it at once.
+        // SAFETY: `kill` takes two numbers and reads no memory of this process's.
         unsafe { libc::kill(worker.id() as libc::pid_t, libc::SIGTERM) };
         if exit_code(&mut worker, Duration::from_secs(60))? != Some(0) {
             return Err("the signaled worker did not exit cleanly".to_string());
