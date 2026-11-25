@@ -1274,7 +1274,7 @@ impl Cut<'_> {
         let mut b = StrBuilder::new(pool, VarType::Variant, values.len());
         for v in values {
             match v {
-                Some(v) => b.push_grow(pool, v.bytes()),
+                Some(v) => b.push_encoded(pool, *v),
                 None => b.push_null(),
             }
         }

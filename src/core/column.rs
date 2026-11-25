@@ -186,10 +186,10 @@ impl<'a> VarLen<'a> {
     }
 }
 
-/// A `Str` column's rows. Its bytes were checked as UTF-8 once, when the column was sealed (`StrBuilder::finish`), so
-/// a row is read as text with no check of its own.
+/// A `Str` column's rows. Its bytes were checked as UTF-8 once, when the column was sealed (`StrBuilder`'s `finish`
+/// or `finish_growing`), so a row is read as text with no check of its own.
 #[derive(Debug)]
-pub struct StrRows<'a>(VarLen<'a>);
+pub(crate) struct StrRows<'a>(VarLen<'a>);
 
 impl<'a> StrRows<'a> {
     #[inline]
@@ -201,7 +201,7 @@ impl<'a> StrRows<'a> {
 }
 
 /// A variant column's rows. Their strings and keys were checked as UTF-8 once, when the column was sealed
-/// (`StrBuilder::finish`), so a row is read with no check of its own.
+/// (`StrBuilder`'s `finish` or `finish_growing`), so a row is read with no check of its own.
 #[derive(Debug)]
 pub struct VariantRows<'a> {
     rows: VarLen<'a>,
@@ -217,7 +217,7 @@ impl<'a> VariantRows<'a> {
     }
 
     /// The rows as bytes, for a step that copies them whole.
-    pub fn bytes(self) -> VarLen<'a> {
+    pub(crate) fn bytes(self) -> VarLen<'a> {
         self.rows
     }
 }
@@ -598,7 +598,7 @@ impl Column {
     }
 
     /// A `Str` column's rows, as text.
-    pub fn str(&self) -> Result<StrRows<'_>, TypeError> {
+    pub(crate) fn str(&self) -> Result<StrRows<'_>, TypeError> {
         match &self.storage {
             Storage::VarLen {
                 var_type: VarType::Str, ..
@@ -945,7 +945,9 @@ impl Column {
                 for &r in indices {
                     let r = r as usize;
                     if v.validity.is_valid(r) {
-                        b.push(v.get(r));
+                        // SAFETY: the column is sealed, so its text was checked, and a row is one whole push. The
+                        // builder is of the column's type.
+                        unsafe { b.push_checked(v.get(r)) };
                     } else {
                         b.push_null();
                     }

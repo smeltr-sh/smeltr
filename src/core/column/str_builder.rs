@@ -2,7 +2,7 @@
 
 use super::{Column, Storage, Validity, VarType};
 use crate::core::buffer::{Buffer, BufferPool};
-use crate::core::variant;
+use crate::core::variant::{self, Encoded};
 
 // ---------------------------------------------------------------------------
 // StrBuilder
@@ -33,6 +33,8 @@ pub struct StrBuilder {
     cap: usize,
     /// Whether `len` grows with the rows pushed (`growing`).
     growing: bool,
+    /// Whether a push wrote bytes not known to be checked, so sealing checks the text.
+    unchecked: bool,
 }
 
 impl StrBuilder {
@@ -49,6 +51,7 @@ impl StrBuilder {
             len,
             cap: 0,
             growing: false,
+            unchecked: false,
         }
     }
 
@@ -95,6 +98,21 @@ impl StrBuilder {
     /// Panics if the reserved space runs out; a kernel that measured correctly never lands there.
     #[inline]
     pub fn push(&mut self, s: &[u8]) {
+        self.unchecked = true;
+        self.put(s);
+    }
+
+    /// `push` of a row whose text is already checked, so sealing need not check it again.
+    ///
+    /// # Safety
+    /// `s` must be UTF-8 for a `str` builder, and one `variant::Encoded` value for a variant builder.
+    #[inline]
+    pub(crate) unsafe fn push_checked(&mut self, s: &[u8]) {
+        self.put(s);
+    }
+
+    #[inline]
+    fn put(&mut self, s: &[u8]) {
         debug_assert!(self.row < self.len, "pushed more rows than the column holds");
         if self.pos as usize + s.len() > self.cap {
             let requested = self.pos as usize + s.len();
@@ -117,6 +135,18 @@ impl StrBuilder {
 
     /// `push_grow` of `parts` written one after another as one row, so a caller joins them without a copy of its own.
     pub fn push_parts_grow(&mut self, pool: &mut BufferPool, parts: &[&[u8]]) {
+        self.unchecked = true;
+        self.put_parts_grow(pool, parts);
+    }
+
+    /// `push_grow` of a variant whose text is already checked, so sealing a variant column need not check it again.
+    pub(crate) fn push_encoded(&mut self, pool: &mut BufferPool, v: Encoded) {
+        // `v`'s bytes hold checked text only in a variant column; in any other they are unchecked.
+        self.unchecked |= self.var_type != VarType::Variant;
+        self.put_parts_grow(pool, &[v.bytes()]);
+    }
+
+    fn put_parts_grow(&mut self, pool: &mut BufferPool, parts: &[&[u8]]) {
         self.room_for(pool, parts.iter().map(|p| p.len()).sum());
         for part in parts {
             self.data.as_mut_slice::<u8>()[self.pos as usize..self.pos as usize + part.len()].copy_from_slice(part);
@@ -129,6 +159,7 @@ impl StrBuilder {
     /// `push_grow` of a row of `len` bytes that `write` fills in place, so a row larger than its input is held to the
     /// pool's budget before it is written, not after a copy of it is.
     pub fn push_written_grow(&mut self, pool: &mut BufferPool, len: usize, write: impl FnOnce(&mut [u8])) {
+        self.unchecked = true;
         self.room_for(pool, len);
         let start = self.pos as usize;
         write(&mut self.data.as_mut_slice::<u8>()[start..start + len]);
@@ -208,13 +239,16 @@ impl StrBuilder {
         self.seal(ascii)
     }
 
-    /// Whether the column's bytes are all ASCII, having checked once that its text is UTF-8: a text column's whole
-    /// buffer, a variant column's strings and keys. That check is what lets `Column::str` and `Column::variant` hand
-    /// out their rows unchecked. Text that is not UTF-8 is a bug in the step that wrote it.
+    /// Whether the column's bytes are all ASCII. Finding that also checks, once, that the text is UTF-8: a text
+    /// column's whole buffer, a variant column's strings and keys. That check is what lets `Column::str` and
+    /// `Column::variant` hand out their rows unchecked. Text that is not UTF-8 is a bug in the step that wrote it.
     fn checked(&self) -> bool {
         let bytes = &self.data.as_slice::<u8>()[..self.pos as usize];
         // Once over the whole buffer, not once per push: `is_ascii` runs a word at a time.
         let ascii = bytes.is_ascii();
+        if !self.unchecked {
+            return ascii;
+        }
         match self.var_type {
             VarType::Str => assert!(
                 ascii || simdutf8::basic::from_utf8(bytes).is_ok(),

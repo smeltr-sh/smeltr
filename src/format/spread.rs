@@ -660,7 +660,7 @@ impl<'d> Spread<'d> {
                 }
             } else {
                 match o.prior.and_then(|p| p.variant().ok()) {
-                    Some(v) if v.validity.is_valid(self.row) => o.builder.push_grow(pool, v.get(self.row).bytes()),
+                    Some(v) if v.validity.is_valid(self.row) => o.builder.push_encoded(pool, v.get(self.row)),
                     _ => o.builder.push_null(),
                 }
             }

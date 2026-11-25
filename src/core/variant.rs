@@ -55,7 +55,7 @@ impl<'a> Encoded<'a> {
     }
 
     /// # Safety
-    /// Every string and key in the value `b` starts with is UTF-8.
+    /// Every string and key in the value `b` starts with must be UTF-8.
     pub(crate) unsafe fn unchecked(b: &'a [u8]) -> Encoded<'a> {
         Encoded(b)
     }
@@ -213,7 +213,9 @@ pub enum Key<'k> {
     Element(i64),
 }
 
-/// The value at `key` inside `v`. `None` where `v` holds nothing there or null, a key of the other kind among it.
+/// The value at `key` inside `v`. `None` where:
+/// - `v` holds no value at `key`, or null there;
+/// - `key` is a member and `v` is no object, or `key` is an element and `v` is no array.
 pub fn at<'a>(v: Encoded<'a>, key: Key) -> Option<Encoded<'a>> {
     match (read(v), key) {
         (Value::Object(entries), Key::Member(key)) => {
@@ -300,7 +302,7 @@ pub fn at_column<'k>(col: &Column, key_of: impl Fn(usize) -> Option<Key<'k>>, po
             for row in 0..col.len() {
                 let value = v.validity.is_valid(row).then(|| key_of(row)).flatten();
                 match value.and_then(|key| at(v.get(row), key)) {
-                    Some(v) => b.push_grow(pool, v.bytes()),
+                    Some(v) => b.push_encoded(pool, v),
                     None => b.push_null(),
                 }
             }

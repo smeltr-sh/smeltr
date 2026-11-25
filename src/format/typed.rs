@@ -115,6 +115,9 @@ struct Texts {
     /// One entry more than the rows written.
     offsets: Vec<u32>,
     valid: Vec<bool>,
+    /// What every row pushed is known to be, so sealing the column need not check it: UTF-8, or one `Encoded`.
+    all_text: bool,
+    all_encoded: bool,
 }
 
 impl Texts {
@@ -124,11 +127,31 @@ impl Texts {
             len: 0,
             offsets: vec![0],
             valid: Vec::new(),
+            all_text: true,
+            all_encoded: true,
         }
     }
 
     /// Unwinds with `OverBudget` when the pool's budget refuses the bytes.
     fn push(&mut self, bytes: Option<&[u8]>, pool: &mut BufferPool) {
+        if bytes.is_some() {
+            self.all_text = false;
+            self.all_encoded = false;
+        }
+        self.put(bytes, pool);
+    }
+
+    fn push_text(&mut self, text: &str, pool: &mut BufferPool) {
+        self.all_encoded = false;
+        self.put(Some(text.as_bytes()), pool);
+    }
+
+    fn push_encoded(&mut self, v: Encoded, pool: &mut BufferPool) {
+        self.all_text = false;
+        self.put(Some(v.bytes()), pool);
+    }
+
+    fn put(&mut self, bytes: Option<&[u8]>, pool: &mut BufferPool) {
         if let Some(b) = bytes {
             let end = self.len + b.len();
             let data = match &mut self.data {
@@ -163,9 +186,17 @@ impl Texts {
         let mut b = StrBuilder::new(pool, var_type, rows);
         b.reserve(pool, self.len);
         let data = self.data.as_ref().map_or(&[][..], |d| &d.as_slice::<u8>()[..self.len]);
+        let checked = match var_type {
+            VarType::Str => self.all_text,
+            VarType::Variant => self.all_encoded,
+            VarType::Bytes => false,
+        };
         for (row, &valid) in self.valid.iter().enumerate() {
+            let bytes = &data[self.offsets[row] as usize..self.offsets[row + 1] as usize];
             match valid {
-                true => b.push(&data[self.offsets[row] as usize..self.offsets[row + 1] as usize]),
+                // SAFETY: every row of a text column was pushed as a str, and of a variant column as an `Encoded`.
+                true if checked => unsafe { b.push_checked(bytes) },
+                true => b.push(bytes),
                 false => b.push_null(),
             }
         }
@@ -349,7 +380,7 @@ impl TypedBuilder {
                     Cell::Tag(t) => tag::stringify_scalar(t),
                     Cell::Variant(b) => tag::json_text(b).into(),
                 };
-                texts.push(Some(text.as_bytes()), pool);
+                texts.push_text(&text, pool);
                 (true, arrived(cell, false, Kind::Str))
             }
             // Text reads as `parseBytes` reads it, in base64.
@@ -377,7 +408,7 @@ impl TypedBuilder {
             Store::Variant(texts) => {
                 let mut bytes = Vec::new();
                 match cell {
-                    Cell::Variant(b) => texts.push(Some(b.bytes()), pool),
+                    Cell::Variant(b) => texts.push_encoded(b, pool),
                     Cell::Tag(t) => {
                         tag::encode(t, &mut bytes);
                         texts.push(Some(&bytes), pool);
