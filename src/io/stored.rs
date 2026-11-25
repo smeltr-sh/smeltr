@@ -53,6 +53,8 @@ pub struct Place<'f> {
     /// Each column that may hold the entry, nearest first, with how many of the entry's keys the column's name spells.
     /// The keys after those are read inside the column's value.
     held: Vec<(usize, usize)>,
+    /// Each column below a field, with its path from the field and whether it holds unclaimed fields there.
+    below: Vec<(usize, String, bool)>,
 }
 
 impl<'f> Place<'f> {
@@ -60,19 +62,24 @@ impl<'f> Place<'f> {
     /// each an object's own column or the column of its unclaimed fields, the deepest object first and the root's last.
     pub fn of(columns: &[CaptureColumn], entry: &'f Entry, fields: &'f [(Entry, DataType)]) -> Place<'f> {
         let keys = entry.keys();
-        let mut held: Vec<_> = (columns.iter().enumerate())
-            .filter_map(|(c, column)| {
-                let (above, rest): (Vec<String>, bool) = match crate::plan::tree::unclaimed_object(&column.name) {
-                    Some(object) => (crate::plan::tree::object_keys(object).map(Into::into).collect(), true),
-                    None => (
-                        crate::plan::tree::segments(&column.name).map(Into::into).collect(),
-                        false,
-                    ),
-                };
+        let (mut held, mut below) = (Vec::new(), Vec::new());
+        for (c, column) in columns.iter().enumerate() {
+            let (above, rest): (Vec<String>, bool) = match crate::plan::tree::unclaimed_object(&column.name) {
+                Some(object) => (crate::plan::tree::object_keys(object).map(Into::into).collect(), true),
+                None => (
+                    crate::plan::tree::segments(&column.name).map(Into::into).collect(),
+                    false,
+                ),
+            };
+            if keys.starts_with(&above) {
                 let own = above.len() == keys.len() && rest == entry.field().is_none();
-                keys.starts_with(&above).then_some(((own, above.len()), c))
-            })
-            .collect();
+                held.push(((own, above.len()), c));
+            } else if entry.field().is_some() && above.starts_with(&keys) {
+                let path =
+                    (above[keys.len()..].iter()).fold(String::new(), |at, key| crate::plan::tree::child(&at, key));
+                below.push((c, path, rest));
+            }
+        }
         held.sort_unstable_by(|a, b| b.cmp(a));
         let held = held.into_iter().map(|((_, depth), c)| (depth, c)).collect();
         Place {
@@ -80,13 +87,38 @@ impl<'f> Place<'f> {
             fields,
             keys,
             held,
+            below,
         }
     }
 
+    /// `held`, a field's object, with what `row` holds in each column below the field. `None` where `held` is empty and
+    /// the row holds nothing in any of them.
+    fn with_below<'a>(
+        &self,
+        mut held: RecordObject,
+        row: &CapturedRow,
+    ) -> Option<std::borrow::Cow<'a, serde_json::Value>> {
+        use crate::config_file::put_path;
+        for (c, path, rest) in &self.below {
+            match row.values.get(*c) {
+                Some(serde_json::Value::Object(keys)) if *rest && !row.failed.contains(c) => {
+                    for (key, value) in keys {
+                        put_path(&mut held, &crate::plan::tree::child(path, key), value.clone());
+                    }
+                }
+                Some(value) if !rest && !value.is_null() && !row.failed.contains(c) => {
+                    put_path(&mut held, path, value.clone())
+                }
+                _ => {}
+            }
+        }
+        (!held.is_empty()).then_some(std::borrow::Cow::Owned(serde_json::Value::Object(held)))
+    }
+
     /// What `row` holds here: the nearest column's value, or where the row holds nothing in it, the value at the
-    /// entry's place inside the next. A row holds nothing in a column its batch did not have
-    /// (`config_file::sample_table`). `None` where the row holds nothing in any. Err is the text of a cell that failed
-    /// its type, or of a value on the way that holds no field.
+    /// entry's place inside the next. A field's object also takes what the row holds in each column below the field. A
+    /// row holds nothing in a column its batch did not have (`config_file::sample_table`). `None` where the row holds
+    /// nothing in any. `Err` is the text of a cell that failed its type, or of a value on the way that holds no field.
     pub fn read<'a>(&self, row: &'a CapturedRow) -> Result<Option<std::borrow::Cow<'a, serde_json::Value>>, String> {
         use serde_json::Value;
         'column: for (nearest, &(depth, c)) in self.held.iter().enumerate() {
@@ -110,6 +142,9 @@ impl<'f> Place<'f> {
             }
             match (self.entry, value) {
                 (_, Value::Null) => {}
+                (Entry::Field(_), Value::Object(held)) if !self.below.is_empty() => {
+                    return Ok(self.with_below(held.clone(), row));
+                }
                 (Entry::Field(_), value) => return Ok(Some(std::borrow::Cow::Borrowed(value))),
                 (Entry::Unclaimed(_), Value::Object(held)) => {
                     let rest = unclaimed(held, &self.keys, self.fields);
@@ -120,7 +155,7 @@ impl<'f> Place<'f> {
                 (Entry::Unclaimed(_), unfit) => return Err(unfit.to_string()),
             }
         }
-        Ok(None)
+        Ok(self.with_below(RecordObject::new(), row))
     }
 }
 
@@ -136,20 +171,10 @@ impl<'a> Cells<'a> {
 
     /// The fields this row holds under `object`, a root key: what its place above holds, then each column below it.
     pub fn under(&self, object: &'static str) -> RecordObject {
-        let mut held = match self.of(&Entry::Field(object.into()), &[]) {
+        match self.of(&Entry::Field(object.into()), &[]) {
             Ok(Some(value)) => value.as_object().cloned().unwrap_or_default(),
             _ => RecordObject::new(),
-        };
-        for (c, column) in self.columns.iter().enumerate() {
-            let below = column.name.strip_prefix(object).and_then(|rest| rest.strip_prefix('.'));
-            match (below, self.row.values.get(c)) {
-                (Some(below), Some(value)) if !value.is_null() && !self.row.failed.contains(&c) => {
-                    crate::config_file::put_path(&mut held, below, value.clone())
-                }
-                _ => {}
-            }
         }
-        held
     }
 }
 

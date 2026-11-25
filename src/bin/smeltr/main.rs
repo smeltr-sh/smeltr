@@ -2669,6 +2669,12 @@ mod tests {
         );
         assert_eq!(failed, [(1, 0, "1".to_string())]);
 
+        // A sample captured with an object's leaves as columns reads as one value where the source now declares the
+        // object as one value.
+        let (rows, failed) = read_as(vec![("user".into(), DataType::Variant)]);
+        assert_eq!(rows[0], serde_json::json!({"user": {"name": "ann"}}));
+        assert_eq!(failed, []);
+
         // A field under a column's value reads from inside it, and fails with that value where it is no object.
         let (rows, failed) = read_as(vec![
             ("id.high".into(), DataType::I64),
