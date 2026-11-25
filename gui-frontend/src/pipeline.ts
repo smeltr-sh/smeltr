@@ -743,7 +743,7 @@ export function partsWidth(steps: Step[]): number {
 export function stepFilter(step: Step): string | null {
   if (step.type === 'if' || step.type === 'comment') return null;
   const filter = step.filter.trim();
-  return filter === '' ? null : filter;
+  return filter === '' || filter === 'true' ? null : filter;
 }
 
 /** What `step` does, in one line, led by the filter that limits it to some records, a Call step naming the pipeline
