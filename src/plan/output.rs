@@ -123,7 +123,7 @@ pub fn run_to_json_marked<'a>(
         let messages = by_row.entry(a.row).or_default();
         // Two different coercions on one row are two different facts; dedup on the message, not the kind.
         if !messages.iter().any(|(_, m, _)| *m == message) {
-            let step = plan.step_ids.get(a.function.index()).cloned();
+            let step = a.function.and_then(|f| plan.step_ids.get(f.index())).cloned();
             messages.push((on_exception.answer(&a.kind).label(), message, step));
         }
     }
@@ -287,7 +287,7 @@ pub fn row_exceptions<'a>(
     let mut out: HashMap<u32, Vec<RowException>> = HashMap::new();
     for a in entries {
         let exception = RowException {
-            step: step_ids.get(a.function.index()).cloned(),
+            step: a.function.and_then(|f| step_ids.get(f.index())).cloned(),
             kind: a.kind.label(),
             message: a.message(slot_names),
         };
