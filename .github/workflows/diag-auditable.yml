@@ -6,6 +6,10 @@ permissions:
   contents: read
 jobs:
   diag:
+    strategy:
+      fail-fast: false
+      matrix:
+        flags: ['-W linker_messages -C link-arg=/VERBOSE:REF', '-C lto=off -W linker_messages']
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -19,28 +23,26 @@ jobs:
         with:
           tool: just,cargo-auditable@0.7.7
       - run: choco install nasm ninja --no-progress -y
-      - run: cargo install rust-audit-info --locked
-      - name: just dist, verbose
-        env:
-          CARGO_TERM_VERBOSE: 'true'
+      - run: just frontends
+      - name: build
+        shell: pwsh
         run: |
           $env:PATH = "C:\Program Files\NASM;$env:PATH"
-          just dist *> "$env:RUNNER_TEMP\dist.log"
+          cargo auditable rustc --locked --profile dist --bin smeltr -- ${{ matrix.flags }} *> "$env:RUNNER_TEMP\build.log"
           Write-Output "exit $LASTEXITCODE"
-      - name: what was linked
+      - name: look
         if: always()
         shell: bash
         run: |
-          grep -n "Running .*--crate-name smeltr .*--crate-type bin" "$RUNNER_TEMP/dist.log" | head -2 | cut -c1-600
-          grep -o "link-arg=[^ ']*audit[^ ']*\|/INCLUDE:[A-Z_]*" "$RUNNER_TEMP/dist.log" | sort | uniq -c
-          grep -n -i "cargo-auditable\|WARNING" "$RUNNER_TEMP/dist.log" | head -20
-          ls -la target/dist/deps/*audit* || true
-          rust-audit-info target/dist/smeltr.exe | head -c 300; echo
-          tail -5 "$RUNNER_TEMP/dist.log"
-      - name: sections
-        if: always()
-        run: |
-          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
-          $dumpbin = Get-ChildItem -Recurse "$vs\VC\Tools\MSVC" -Filter dumpbin.exe | Where-Object FullName -like '*Hostx64\x64*' | Select-Object -First 1
-          & $dumpbin.FullName /headers target/dist/smeltr.exe | Select-String 'name|SECTION HEADER'
-          Get-ChildItem target/dist/deps -Filter '*audit*' | ForEach-Object { & $dumpbin.FullName /headers /symbols $_.FullName | Select-String 'dep-v0|AUDITABLE|flags' }
+          set +e
+          L="$RUNNER_TEMP/build.log"
+          wc -l "$L"
+          grep -n -i "audit\|dep-v0\|LNK\|warning" "$L" | grep -v "Discarded\|^\s*$" | cut -c1-400 | head -60
+          find target -iname '*audit_data*' | head
+          tail -5 "$L"
+          python -c "
+          import struct,sys
+          f=open('target/dist/smeltr.exe','rb').read()
+          pe=struct.unpack_from('<I',f,0x3c)[0];n=struct.unpack_from('<H',f,pe+6)[0];o=struct.unpack_from('<H',f,pe+20)[0];s=pe+24+o
+          print([f[s+i*40:s+i*40+8].rstrip(b'\0') for i in range(n)])
+          "
