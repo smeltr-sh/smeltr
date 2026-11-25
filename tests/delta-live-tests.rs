@@ -146,7 +146,7 @@ fn live_rows_are_committed_to_a_delta_log_it_creates() {
     let build = || {
         smeltr::io::build_destination(
             &DestinationKind::Delta(config.clone()),
-            DestId(0),
+            DestId::new(0),
             "d",
             metrics.clone(),
             &secrets,
@@ -338,7 +338,7 @@ fn live_a_unity_catalog_table_is_written_with_the_credentials_it_vends() {
     let records = smeltr::plan::topology::Records::from([(None, record)]);
     let mut d = smeltr::io::build_destination(
         &DestinationKind::Delta(config),
-        DestId(0),
+        DestId::new(0),
         "d",
         metrics,
         &secrets,

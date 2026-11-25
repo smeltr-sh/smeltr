@@ -692,7 +692,7 @@ fn seed(
     let metrics = smeltr::metrics::MetricsHandle::new(Arc::new(smeltr::metrics::Metrics::new()), "fuzz");
     let mut d = smeltr::io::build_destination(
         &DestinationKind::Kafka(destination_config),
-        DestId(0),
+        DestId::new(0),
         "d",
         metrics,
         &secrets,

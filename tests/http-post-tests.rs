@@ -483,7 +483,7 @@ fn a_credential_holding_a_line_break_is_refused_when_built() {
     let mut secrets = HeldSecrets::default();
     secrets.set_stored([("dd".to_string(), 1, "k-123\n".to_string())]);
     let metrics = smeltr::metrics::MetricsHandle::new(Arc::new(smeltr::metrics::Metrics::new()), "test");
-    let Err(e) = smeltr::io::build_destination(&DestinationKind::Http(c), DestId(0), "d", metrics, &secrets, None)
+    let Err(e) = smeltr::io::build_destination(&DestinationKind::Http(c), DestId::new(0), "d", metrics, &secrets, None)
     else {
         panic!("a header value holding a line break must not build");
     };

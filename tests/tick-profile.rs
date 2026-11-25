@@ -93,7 +93,7 @@ fn produce_with(brokers: &str, topic: &str, n: usize, row: impl Fn(usize) -> Vec
             props: Default::default(),
             avro: None,
         },
-        DestId(0),
+        DestId::new(0),
         kafka_metrics(),
         &Default::default(),
     )

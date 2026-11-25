@@ -4282,7 +4282,7 @@ mod tests {
     fn a_record_no_rule_takes_shows_its_routes_unmatched_answer() {
         for (answer, unmatched) in [
             (Answer::Drop, r#""drop""#),
-            (Answer::Deliver(vec![DestId(1)]), r#"{ "deliver": ["dlq"] }"#),
+            (Answer::Deliver(vec![DestId::new(1)]), r#"{ "deliver": ["dlq"] }"#),
             (Answer::Block, r#""block""#),
         ] {
             let json = format!(
@@ -4319,7 +4319,7 @@ mod tests {
             assert_eq!(route.answer, answer, "{unmatched}");
             match answer {
                 Answer::Drop => assert!(route.documents.is_empty() && rows[0].refused.is_none()),
-                Answer::Deliver(_) => assert_eq!(route.documents[0].destinations, vec![DestId(1)]),
+                Answer::Deliver(_) => assert_eq!(route.documents[0].destinations, vec![DestId::new(1)]),
                 _ => {
                     let why = rows[0].refused.as_deref().expect("a blocked record says why");
                     assert!(why.contains("no condition"), "{why}");
@@ -4487,7 +4487,7 @@ mod tests {
     }
 
     fn bare_reader(metrics: MetricsHandle) -> Reader {
-        Reader::new(SourceId(7), Box::new(NullSource), vec![], MAX_IN_FLIGHT, metrics)
+        Reader::new(SourceId::new(7), Box::new(NullSource), vec![], MAX_IN_FLIGHT, metrics)
     }
 
     /// A source whose `connection_error` is fixed at construction (E4), to exercise `Reader::connection_error_fact`
@@ -4649,7 +4649,7 @@ mod tests {
     fn a_sources_connection_error_reaches_a_heartbeat_fact() {
         let registry = Arc::new(crate::metrics::Metrics::new());
         let mut healthy = Reader::new(
-            SourceId(7),
+            SourceId::new(7),
             Box::new(FlakySource { error: None }),
             vec![],
             MAX_IN_FLIGHT,
@@ -4662,7 +4662,7 @@ mod tests {
 
         let reason = "kafka-nowhere.invalid:9092/bootstrap: Failed to resolve".to_string();
         let mut unreachable = Reader::new(
-            SourceId(7),
+            SourceId::new(7),
             Box::new(FlakySource {
                 error: Some(reason.clone()),
             }),
@@ -4681,7 +4681,7 @@ mod tests {
         ));
 
         let mut rambling = Reader::new(
-            SourceId(7),
+            SourceId::new(7),
             Box::new(FlakySource {
                 error: Some("x".repeat(10 * MAX_TEXT_LEN)),
             }),
@@ -4719,7 +4719,7 @@ mod tests {
     fn a_failed_poll_is_counted_and_a_landed_one_ends_it() {
         let registry = Arc::new(crate::metrics::Metrics::new());
         let mut reader = Reader::new(
-            SourceId(7),
+            SourceId::new(7),
             Box::new(DownSource { down: true }),
             vec![],
             MAX_IN_FLIGHT,
@@ -4766,7 +4766,7 @@ mod tests {
         let size = record(0).size();
         let registry = Arc::new(crate::metrics::Metrics::new());
         let mut reader = Reader::new(
-            SourceId(7),
+            SourceId::new(7),
             Box::new(crate::io::fake::FakeSource::new((0..3).map(record))),
             vec![],
             MAX_IN_FLIGHT,
@@ -4823,7 +4823,7 @@ mod tests {
     fn messages_finished_are_counted_for_the_source() {
         let registry = Arc::new(crate::metrics::Metrics::new());
         let mut reader = Reader::new(
-            SourceId(7),
+            SourceId::new(7),
             Box::new(FinishingSource),
             vec![],
             MAX_IN_FLIGHT,
@@ -4854,9 +4854,9 @@ mod tests {
     fn the_refusal_ring_drops_the_oldest_entry_past_its_cap() {
         let ring = RefusalRing::default();
         for i in 0..REFUSAL_RING_CAP + 5 {
-            ring.record(DestId(1), &format!("refusal {i}"));
+            ring.record(DestId::new(1), &format!("refusal {i}"));
         }
-        let kept = ring.snapshot(DestId(1));
+        let kept = ring.snapshot(DestId::new(1));
         assert_eq!(kept.len(), REFUSAL_RING_CAP, "capped, not one entry per call");
         assert_eq!(
             kept.first().unwrap().message,
@@ -4872,8 +4872,8 @@ mod tests {
     #[test]
     fn the_refusal_ring_truncates_an_overlong_message() {
         let ring = RefusalRing::default();
-        ring.record(DestId(1), &"x".repeat(MAX_TEXT_LEN + 50));
-        let kept = ring.snapshot(DestId(1));
+        ring.record(DestId::new(1), &"x".repeat(MAX_TEXT_LEN + 50));
+        let kept = ring.snapshot(DestId::new(1));
         assert_eq!(
             kept[0].message.chars().count(),
             MAX_TEXT_LEN + 1,
@@ -4885,8 +4885,8 @@ mod tests {
     #[test]
     fn a_destination_with_no_refusals_has_an_empty_ring() {
         let ring = RefusalRing::default();
-        assert!(ring.snapshot(DestId(9)).is_empty());
-        assert!(ring.heartbeat_facts(DestId(9)).is_empty());
+        assert!(ring.snapshot(DestId::new(9)).is_empty());
+        assert!(ring.heartbeat_facts(DestId::new(9)).is_empty());
     }
 
     /// A batch can refuse thousands of rows at once for the same underlying cause; `smeltr_rows_rejected_total` already
@@ -4898,9 +4898,9 @@ mod tests {
         let ring = RefusalRing::default();
         let rows: Vec<(usize, String)> = (0..500).map(|i| (i, "same cause every time".to_string())).collect();
 
-        report_rejections(&metrics, &ring, SourceId(0), DestId(2), "d", &rows);
+        report_rejections(&metrics, &ring, SourceId::new(0), DestId::new(2), "d", &rows);
 
-        let kept = ring.snapshot(DestId(2));
+        let kept = ring.snapshot(DestId::new(2));
         assert_eq!(kept.len(), 1, "one call, one exemplar");
         assert_eq!(kept[0].message, "same cause every time");
     }

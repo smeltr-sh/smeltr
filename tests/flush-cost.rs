@@ -53,7 +53,7 @@ fn dest(brokers: &str, topic: &str, props: &[(&str, &str)]) -> KafkaDestination 
             },
             avro: None,
         },
-        DestId(0),
+        DestId::new(0),
         kafka_metrics(),
         &Default::default(),
     )

@@ -2519,7 +2519,7 @@ mod tests {
         let registry = Arc::new(crate::metrics::Metrics::new());
         let unwritten = Unwritten::new(
             crate::metrics::MetricsHandle::new(registry.clone(), "egress-7"),
-            DestId(7),
+            DestId::new(7),
             "d",
         );
         let v2 = protocol_of(RemoteWriteVersion::V2).with_unwritten(unwritten);

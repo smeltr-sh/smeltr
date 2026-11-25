@@ -593,7 +593,7 @@ mod tests {
         let registry = Arc::new(crate::metrics::Metrics::new());
         let otlp = protocol(Signal::Traces).with_unwritten(Unwritten::new(
             crate::metrics::MetricsHandle::new(registry.clone(), "egress-7"),
-            DestId(7),
+            DestId::new(7),
             "otlp",
         ));
         let items = admitted(
