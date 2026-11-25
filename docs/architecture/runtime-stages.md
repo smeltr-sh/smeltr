@@ -42,6 +42,13 @@ queue, and its response is to **block**: stop supplying, stay connected, keep
 whatever membership the source protocol requires. A stalled destination never
 costs a source its membership.
 
+A source whose records wait in memory for its reader, as a receiver's and a
+shared client's do, hands the reader a batch once it holds a batch's worth,
+or once its oldest record has waited a moment. Records arriving a few at a
+time would otherwise make batches of a few records, whose own work in every
+stage after outweighs them, and a reader that keeps up with arrivals would
+cut every batch that small.
+
 A source whose protocol divides its shards among a group's members joins the
 group through a client the worker shares with every source of the same
 group and connection. The worker pays for one connection, one membership
@@ -95,9 +102,7 @@ receiver answers a new request busy at once; a streaming connection stops
 reading instead, and its sender's window fills. A request's records are cut
 on the handler thread that received it, before it reaches the inbox, so the
 reader only hands them out and a busy receiver's senders cut theirs side by
-side. Small requests would make batches of a few records, whose own work
-outweighs them, so once a request arrives the reader waits a moment for a
-batch's worth before it hands out what the inbox holds.
+side.
 
 ## Transform
 

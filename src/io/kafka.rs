@@ -738,6 +738,13 @@ impl Source for KafkaSource {
             if self.note_rebalance(&mut state)? {
                 break;
             }
+            if out.is_empty() && !state.inbox.is_empty() {
+                let left = state.wait_left();
+                if !left.is_zero() {
+                    state = slot.arrived.wait_timeout(state, left).0;
+                    continue;
+                }
+            }
             // The first always goes out, however large, as a fresh one would; the rest only while they fit.
             while !state.refetch && out.len() < max_rows {
                 let Some(len) = state.inbox.front().map(client::Pending::size) else {
@@ -779,7 +786,7 @@ impl Source for KafkaSource {
                     record.timestamp.and_then(|millis| millis.checked_mul(1000)),
                 );
             }
-            // Records in hand go out once nothing more has arrived: waiting to fill the batch would only delay them.
+            // Records in hand go out: the inbox held a batch's worth, or its oldest waited its time.
             let remaining = deadline.saturating_duration_since(Instant::now());
             if !out.is_empty() || remaining.is_zero() {
                 break;
