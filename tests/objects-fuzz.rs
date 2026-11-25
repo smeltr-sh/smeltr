@@ -1119,7 +1119,7 @@ fn live_fuzz(
         let parquet = c.format.writes_columns();
         let mut d = smeltr::io::build_destination(
             &DestinationKind::Objects(c.clone()),
-            DestId(0),
+            DestId::new(0),
             "d",
             metrics,
             &secrets,

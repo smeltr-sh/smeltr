@@ -240,7 +240,7 @@ fn a_store_asking_to_wait_gets_the_request_again() {
     let (d, sent) = scripted(&[503, 429, 204]);
     let mut d = d.with_metrics(
         smeltr::metrics::MetricsHandle::new(registry.clone(), "egress-4"),
-        DestId(4),
+        DestId::new(4),
     );
     let rows = vec![sample("x", "a", 1.0, "2026-10-11T18:00:00.000000Z")];
     assert!(deliver(&mut d, rows).unwrap().is_empty());

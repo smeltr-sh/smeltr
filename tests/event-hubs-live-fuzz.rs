@@ -182,7 +182,8 @@ fn write(
         return Err(format!("loaded as {:?}", config.service));
     }
     let metrics = smeltr::metrics::MetricsHandle::new(Arc::new(smeltr::metrics::Metrics::new()), "fuzz");
-    let mut dest = KafkaDestination::new(config, DestId(0), metrics, secrets).map_err(|e| format!("building: {e}"))?;
+    let mut dest =
+        KafkaDestination::new(config, DestId::new(0), metrics, secrets).map_err(|e| format!("building: {e}"))?;
 
     let marker = format!("{}-{seed}:", std::process::id());
     // Every row taken, by value, with the hub it must be on.

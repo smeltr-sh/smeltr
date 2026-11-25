@@ -9,10 +9,12 @@ macro_rules! id {
         #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
         #[derive(serde::Serialize, serde::Deserialize)]
         #[serde(transparent)]
-        pub struct $name(pub u32);
+        pub struct $name(u32);
 
         impl $name {
-            pub const MAX: Self = Self(u32::MAX);
+            pub const fn new(n: u32) -> Self {
+                Self(n)
+            }
 
             /// Its place in a list that holds one entry per id.
             pub fn index(self) -> usize {

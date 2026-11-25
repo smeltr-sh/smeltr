@@ -457,7 +457,7 @@ fn standalone_leader_runs_its_own_embedded_worker() {
             props: Default::default(),
             avro: None,
         },
-        DestId(0),
+        DestId::new(0),
         kafka_metrics(),
         &Default::default(),
     )
@@ -588,7 +588,7 @@ fn a_restarted_worker_runs_nothing_until_the_leader_answers() {
             props: Default::default(),
             avro: None,
         },
-        DestId(0),
+        DestId::new(0),
         kafka_metrics(),
         &Default::default(),
     )
@@ -772,7 +772,7 @@ fn a_revoked_worker_keeps_processing_records_after_revocation() {
             props: Default::default(),
             avro: None,
         },
-        DestId(0),
+        DestId::new(0),
         kafka_metrics(),
         &Default::default(),
     )
