@@ -51,6 +51,17 @@ function columnPath(name: string): { path: string; unclaimed: boolean } {
     : { path: name, unclaimed: false };
 }
 
+/** Sets `object`'s own `key`. A field may be named as something every object inherits, like `__proto__`, and
+ * assigning to that name would set the object's prototype instead of a key. */
+function put(object: SampleRecordDto, key: string, value: unknown) {
+  Object.defineProperty(object, key, {
+    value,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+}
+
 /** Each row of `batch` as a record to show, and the names of the columns whose value failed its type on it. */
 export function tableRecords(batch: CaptureBatchDto): HeldRecord[] {
   const { columns, rows } = heldTable(batch);
@@ -62,9 +73,12 @@ export function tableRecords(batch: CaptureBatchDto): HeldRecord[] {
       const keys = keySpans(places[i].path).map((span) => span.key);
       const last = places[i].unclaimed ? undefined : keys.pop();
       let at = record;
-      for (const key of keys) at = (at[key] ??= {}) as SampleRecordDto;
-      if (last !== undefined) at[last] = value;
-      else if (typeof value === 'object') Object.assign(at, value);
+      for (const key of keys) {
+        if (!Object.hasOwn(at, key)) put(at, key, {});
+        at = at[key] as SampleRecordDto;
+      }
+      if (last !== undefined) put(at, last, value);
+      else if (typeof value === 'object') for (const [k, v] of Object.entries(value)) put(at, k, v);
     });
     const failed = (row.failed ?? []).map((f) => columns[f].name);
     return { record, ...(row.worker && { worker: row.worker }), ...(failed.length && { failed }) };

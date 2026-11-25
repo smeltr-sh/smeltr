@@ -122,6 +122,14 @@ describe('parseCell', () => {
 });
 
 describe('pastedRows', () => {
+  it('takes only what a pasted record itself holds', () => {
+    const columns = [{ name: '__proto__.toString', type: 'str' }];
+    expect(pastedRows('{"a":1}', columns, [{ ...columns[0], at: 0 }])).toEqual({
+      rows: [{ values: [null] }],
+    });
+    expect(typeof Object.prototype.toString).toBe('function');
+  });
+
   it('takes a whole record as it is, internal fields and all, and anything else as text', () => {
     const { columns, shown } = edit(kafka);
     const record = '{"_raw":"a","__source":{"offset":9}}';
