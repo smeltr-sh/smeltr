@@ -1,5 +1,6 @@
 <!--
-  Why a test fails: how the sample changed under it, and the first row that differs from what it locks.
+  Why a test fails: how the sample changed under it, each field whose type changed, and the first row that differs
+  from what it locks.
 -->
 <script lang="ts">
   import { type Verdict } from './api';
@@ -72,13 +73,22 @@
     };
   }
 
+  /** "Field total was i64 when locked, now f64.": a field whose values may read the same, typed otherwise. */
+  function retypedText(v: Verdict): string[] {
+    return (v.retyped ?? []).map(
+      (r) => `Field ${r.field} was ${r.locked} when locked, now ${r.now}.`,
+    );
+  }
+
   let info = $derived(failInfo(verdict));
   let rowsIn = $derived(rowsInText(verdict));
+  let retyped = $derived(retypedText(verdict));
 </script>
 
-{#if rowsIn || info}
+{#if rowsIn || info || retyped.length > 0}
   <div class="fail-card">
     {#if rowsIn}<p class="fail-headline">{rowsIn}</p>{/if}
+    {#each retyped as line (line)}<p class="fail-headline">{line}</p>{/each}
     {#if info}<p class="fail-headline">{info.headline}</p>{/if}
     {#if info?.note}
       <p>{info.note}</p>

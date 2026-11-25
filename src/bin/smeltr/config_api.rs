@@ -2249,6 +2249,8 @@ pub async fn put_sample(
     Json(mut sample): Json<config_file::SampleDto>,
 ) -> Envelope<Save> {
     sample.id = id;
+    // A paste says nothing of when it was taken, and every run over it reads that instant as `now()`.
+    sample.table = sample.table.stamped(smeltr::core::ctx::wall_clock_micros());
     if let Err(message) = config_file::refuse_sample_size(sample.table.rows.len()) {
         return Envelope::refused(Refusal::invalid(message));
     }
@@ -3480,7 +3482,7 @@ mod tests {
         let test = |id: &str, sample: &str| {
             serde_json::json!({
                 "id": id, "name": id, "pipeline": "passthrough", "sample": sample,
-                "lockedAt": 0, "rowsIn": 1, "fields": [], "rows": [],
+                "rowsIn": 1, "table": {"columns": [], "rows": []}, "shown": [],
             })
         };
         let sample: config_file::SampleDto =
@@ -3603,7 +3605,7 @@ mod tests {
         let data = a_shared_repo("move-sample");
         let own = serde_json::json!({
             "id": "t1", "name": "west's t1", "pipeline": "passthrough", "sample": "logins",
-            "lockedAt": 0, "rowsIn": 1, "fields": [], "rows": [],
+            "rowsIn": 1, "table": {"columns": [], "rows": []}, "shown": [],
         });
         seed(&data, "west", serde_json::json!({ "tests/t1.json": own }));
         let response = move_to(&data, "shared", "west", Part::Sample, "logins");

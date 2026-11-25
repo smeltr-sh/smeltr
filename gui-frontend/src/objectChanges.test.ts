@@ -330,15 +330,18 @@ describe('sample and test cards', () => {
     source: 'kafka',
     ...pastedTable(raws.map((raw) => ({ _raw: raw }))),
   });
+  /** A test locking `rows`, as the leader stores it: its fields as columns, a row it lacks a field on holding null. */
   const test = (rows: Outcome[], fields = ['a']) => ({
     id: 'orders-out',
     name: 'Orders out',
     pipeline: 'p',
     sample: 'orders',
-    lockedAt: 1,
     rowsIn: 2,
-    fields,
-    rows,
+    table: {
+      columns: fields.map((name) => ({ name, type: 'i64' })),
+      rows: rows.map((o) => ({ values: fields.map((f) => o.values?.[f] ?? null) })),
+    },
+    shown: rows.map((o) => ({ row: o.row, ...(o.values ? {} : { dropped: true }) })),
   });
 
   it('reads a sample or test from its path within a bundle, and nothing else', () => {

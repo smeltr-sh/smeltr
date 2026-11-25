@@ -90,10 +90,10 @@ fn route_preview_on(
         Ok(Some(mut sample)) => {
             sample.source = sample.source.or(req.source.clone());
             match own_bundle(&req.config).and_then(|own| reading.runnable(own).ok()) {
-                Some(run) => run_route_preview(&run.config, sample, run.declared_at, req.at_micros),
+                Some(run) => run_route_preview(&run.config, sample, run.declared_at),
                 None => {
                     let declared_at = single_origin_declared_at(&req.config, &reading.at());
-                    run_route_preview(&req.config, sample, declared_at, req.at_micros)
+                    run_route_preview(&req.config, sample, declared_at)
                 }
             }
         }
@@ -495,6 +495,11 @@ fn preview_on(
         Ok(reading) => reading,
         Err(e) => return Envelope::refused(e),
     };
+    // A test is compared only over its own sample: over another, its rows are other rows.
+    req.locked = (req.test.as_deref())
+        .filter(|_| given.is_none())
+        .and_then(|id| config_file::read_test(&mut reading.files(), id).ok().flatten())
+        .filter(|test| Some(&test.sample) == req.sample.as_ref() && test.pipeline == req.pipeline);
     // An editor with no sample chosen yet previews over none.
     let sample =
         sample_to_run(&reading, given, req.sample.as_deref()).map(|sample| sample.map(|s| s.table).unwrap_or_default());
@@ -552,13 +557,14 @@ async fn import_schema(
                 pipeline: Some(req.pipeline),
                 sample: None,
                 show_internal: false,
-                at_micros: None,
                 filter: None,
                 attribution: false,
-                as_sample: false,
+                as_sample: None,
                 dictionary: false,
                 after_dot: None,
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             Some(config_file::SampleDto {
                 id: req.id.clone(),
@@ -2259,7 +2265,6 @@ async fn run_leader() {
                 .delete(test_api::delete_test),
         )
         .route("/api/areas/:area/test-runs", post(test_api::run_tests))
-        .route("/api/areas/:area/preview/test-lock", post(test_api::preview_lock))
         .route("/api/branches/:name/tests", get(test_api::list_change_tests))
         .route("/api/branches/:name/test-runs", post(test_api::run_change_tests))
         .route("/api/areas/:area", get(config_api::get_config))
@@ -2732,13 +2737,14 @@ mod tests {
                 pipeline: None,
                 sample: None,
                 show_internal: false,
-                at_micros: None,
                 filter: None,
                 attribution: false,
-                as_sample: false,
+                as_sample: None,
                 dictionary: false,
                 after_dot: None,
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             Default::default(),
             &table(
@@ -2779,13 +2785,14 @@ mod tests {
                 pipeline: None,
                 sample: None,
                 show_internal: false,
-                at_micros: None,
                 filter: None,
                 attribution: true,
-                as_sample: false,
+                as_sample: None,
                 dictionary: false,
                 after_dot: None,
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             Default::default(),
             &table(
@@ -2822,13 +2829,14 @@ mod tests {
                 pipeline: Some("p".to_string()),
                 sample: None,
                 show_internal: false,
-                at_micros: None,
                 filter: None,
                 attribution: true,
-                as_sample: false,
+                as_sample: None,
                 dictionary: false,
                 after_dot: None,
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             Default::default(),
             &table(
@@ -2883,13 +2891,14 @@ mod tests {
                 pipeline: None,
                 sample: None,
                 show_internal: false,
-                at_micros: None,
                 filter: None,
                 attribution: false,
-                as_sample: false,
+                as_sample: None,
                 dictionary: false,
                 after_dot: None,
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             Default::default(),
             &table(columns, serde_json::from_str(records).unwrap()),
@@ -2907,13 +2916,14 @@ mod tests {
                 pipeline: None,
                 sample: None,
                 show_internal: false,
-                at_micros: None,
                 filter: Some(filter.to_string()),
                 attribution: false,
-                as_sample: false,
+                as_sample: None,
                 dictionary: true,
                 after_dot: None,
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             Default::default(),
             &table(&[], serde_json::from_str(records).unwrap()),
@@ -2933,6 +2943,66 @@ mod tests {
         assert!(sampled.iter().any(|(name, _)| name == "y"), "{sampled:?}");
     }
 
+    /// A preview asked for a test compares every row against it, the rows its filter hides and the `__` fields it does
+    /// not show too, and marks each row that differs.
+    #[test]
+    fn a_preview_compares_every_row_with_its_test() {
+        use smeltr::config_file;
+        let config = |code: &str| {
+            format!(
+                r#"{{"version":1,"sources":[],"destinations":[],"routes":[],
+                "pipelines":[{{"id":"p","name":"p","steps":[{{"id":"c","type":"code","body":{code:?}}}]}}]}}"#
+            )
+        };
+        let records = table(
+            &[],
+            serde_json::from_str(r#"[{"_raw":"a"},{"_raw":"b"},{"_raw":"c"}]"#).unwrap(),
+        );
+        let run = smeltr::leader::preview::run_pipeline_actual(
+            "p",
+            &config("x = _raw; __k = 1;"),
+            Default::default(),
+            &records,
+        )
+        .unwrap();
+        let lock = config_file::Lock {
+            name: "t".to_string(),
+            pipeline: Some("p".to_string()),
+            sample: "s".to_string(),
+            fields: Some(vec!["x".to_string(), "__k".to_string()]),
+            rows: None,
+        };
+        let locked = lock.locked(3, &run);
+        let test = lock.test("t".to_string(), locked);
+
+        let previewed = super::run_preview(
+            super::PreviewRequest {
+                config: config(r#"x = _raw; if (_raw != "a") { __k = 2; } else { __k = 1; }"#),
+                pipeline: Some("p".to_string()),
+                sample: Some("s".to_string()),
+                show_internal: false,
+                filter: Some(r#"x != "c""#.to_string()),
+                attribution: false,
+                as_sample: None,
+                dictionary: false,
+                after_dot: None,
+                capture_filter: None,
+                test: Some("t".to_string()),
+                locked: Some(test),
+            },
+            Default::default(),
+            &records,
+        );
+        assert!(previewed.succeeded(), "{:?}", previewed.errors);
+        let verdict = previewed.verdict.as_ref().expect("a verdict");
+        assert_eq!(verdict.differs, [1, 2]);
+        assert_eq!(verdict.first_difference.as_ref().map(|d| d.row), Some(1));
+        let shown: Vec<u32> = previewed.rows.iter().map(|r| r.row).collect();
+        assert_eq!(shown, [0, 1]);
+        let row = previewed.rows[0].json.as_ref().unwrap();
+        assert!(row.get("__k").is_none(), "{row}");
+    }
+
     /// The dictionary comes only when asked: it is the largest part of an answer.
     #[test]
     fn a_preview_returns_the_dictionary_only_when_asked() {
@@ -2944,13 +3014,14 @@ mod tests {
                 pipeline: None,
                 sample: None,
                 show_internal: false,
-                at_micros: None,
                 filter: None,
                 attribution: false,
-                as_sample: false,
+                as_sample: None,
                 dictionary: false,
                 after_dot: None,
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             Default::default(),
             &table(&[], serde_json::from_str(r#"[{"_raw":"a"}]"#).unwrap()),
@@ -2999,13 +3070,14 @@ mod tests {
                 pipeline: Some("pipeline-b".to_string()),
                 sample: None,
                 show_internal: false,
-                at_micros: None,
                 filter: None,
                 attribution: false,
-                as_sample: false,
+                as_sample: None,
                 dictionary: false,
                 after_dot: None,
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             Default::default(),
             &table(&[], serde_json::from_str(r#"[{"_raw":"{}"}]"#).unwrap()),
@@ -3352,13 +3424,14 @@ mod tests {
                 pipeline: None,
                 sample: Some(sample.id.clone()),
                 show_internal: false,
-                at_micros: None,
                 filter: None,
                 attribution: false,
-                as_sample: false,
+                as_sample: None,
                 dictionary: false,
                 after_dot: None,
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             None,
         );
@@ -3390,13 +3463,14 @@ mod tests {
                 pipeline: None,
                 sample: Some(sample.id.clone()),
                 show_internal: false,
-                at_micros: None,
                 filter: None,
                 attribution: false,
-                as_sample: false,
+                as_sample: None,
                 dictionary: false,
                 after_dot: None,
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             None,
         );
@@ -3441,13 +3515,14 @@ mod tests {
                 pipeline: None,
                 sample: Some(sample.id.clone()),
                 show_internal: false,
-                at_micros: None,
                 filter: None,
                 attribution: false,
-                as_sample: false,
+                as_sample: None,
                 dictionary: false,
                 after_dot: None,
                 capture_filter: None,
+                test: None,
+                locked: None,
             },
             None,
         );
@@ -3512,13 +3587,14 @@ mod tests {
                     pipeline: None,
                     sample: Some(sample.id.clone()),
                     show_internal: false,
-                    at_micros: None,
                     filter: None,
                     attribution: false,
-                    as_sample: false,
+                    as_sample: None,
                     dictionary: false,
                     after_dot: None,
                     capture_filter: None,
+                    test: None,
+                    locked: None,
                 },
                 None,
             );
@@ -3576,7 +3652,6 @@ mod tests {
                 config: serde_json::to_string(&group).unwrap(),
                 sample: Some(sample.id.clone()),
                 source: None,
-                at_micros: None,
             },
             None,
         );
@@ -3607,7 +3682,6 @@ mod tests {
             config: serde_json::to_string(&group).unwrap(),
             sample: None,
             source: source.map(str::to_string),
-            at_micros: None,
         };
         let held = config_file::SampleDto {
             id: "c1".to_string(),
@@ -4025,7 +4099,7 @@ mod tests {
         let at = config_file::BundleAt::Dir(std::path::PathBuf::from("."));
         let declared_at = super::single_origin_declared_at(config, &at);
 
-        let response = super::run_route_preview(config, sample, declared_at, None);
+        let response = super::run_route_preview(config, sample, declared_at);
 
         assert!(
             response.succeeded(),

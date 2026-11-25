@@ -179,13 +179,11 @@ struct PreviewBody {
     #[serde(default)]
     show_internal: bool,
     #[serde(default)]
-    at_micros: Option<i64>,
-    #[serde(default)]
     filter: Option<String>,
     #[serde(default)]
     attribution: bool,
     #[serde(default)]
-    as_sample: bool,
+    as_sample: Option<smeltr::leader::preview::ShownCut>,
     #[serde(default)]
     dictionary: bool,
     after_dot: Option<AfterDotRequest>,
@@ -216,13 +214,14 @@ async fn preview(State(service): State<Service>, Json(body): Json<PreviewBody>) 
                 pipeline,
                 sample: None,
                 show_internal: body.show_internal,
-                at_micros: body.at_micros,
                 filter: body.filter,
                 attribution: body.attribution,
                 as_sample: body.as_sample,
                 dictionary: body.dictionary,
                 after_dot: body.after_dot,
                 capture_filter: body.capture_filter,
+                test: None,
+                locked: None,
             };
             run_preview(req, declared_at, &table)
         })
@@ -235,8 +234,6 @@ struct RoutePreviewBody {
     #[serde(flatten)]
     bundle: Bundle,
     sample: SampleDto,
-    #[serde(default)]
-    at_micros: Option<i64>,
 }
 
 async fn route_preview(State(service): State<Service>, Json(body): Json<RoutePreviewBody>) -> Envelope<RoutePreview> {
@@ -246,7 +243,7 @@ async fn route_preview(State(service): State<Service>, Json(body): Json<RoutePre
     let s = service.clone();
     service
         .run(unavailable, move || match s.runnable(body.bundle) {
-            Ok((config, declared_at)) => run_route_preview(&config, body.sample, declared_at, body.at_micros),
+            Ok((config, declared_at)) => run_route_preview(&config, body.sample, declared_at),
             Err(e) => Envelope::refused(e),
         })
         .await
@@ -981,20 +978,13 @@ mod tests {
                 {"id": "c", "type": "code", "body": body}]}]})
         };
         let service = service("tests");
-        let at = 1_790_000_000_000_000_i64;
-        let locked = previewed(
-            &service,
-            serde_json::json!({"shared": bundle("from = \"a\";"), "atMicros": at}),
-        )
-        .await;
-        let rows: Vec<_> = locked["rows"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|r| serde_json::json!({"row": r["row"], "values": {"from": r["json"]["from"]}}))
-            .collect();
-        let test = serde_json::json!({"id": "t", "name": "t", "pipeline": "p", "sample": "s", "lockedAt": at,
-            "rowsIn": 1, "fields": ["from"], "rows": rows});
+        let locked = previewed(&service, serde_json::json!({"shared": bundle("from = \"a\";")})).await;
+        let rows = locked["rows"].as_array().unwrap();
+        let table = serde_json::json!({"columns": [{"name": "from", "type": "str"}],
+            "rows": rows.iter().map(|r| serde_json::json!({"values": [r["json"]["from"]]})).collect::<Vec<_>>()});
+        let shown: Vec<_> = rows.iter().map(|r| serde_json::json!({"row": r["row"]})).collect();
+        let test = serde_json::json!({"id": "t", "name": "t", "pipeline": "p", "sample": "s",
+            "rowsIn": 1, "table": table, "shown": shown});
         let run = |body: &str| {
             let request = serde_json::json!({"shared": bundle(body), "tests": [test.clone()],
                 "samples": [sample(serde_json::json!([{"_raw": "ann"}]))], "run": ["t"]});

@@ -358,7 +358,7 @@ mod tests {
         )
         .unwrap();
         let test: config_file::TestDto = serde_json::from_value(json!({"id": "t1", "name": "t", "pipeline": "audit",
-            "sample": "s1", "lockedAt": 0, "rowsIn": 1, "fields": [], "rows": [{"row": 0}]}))
+            "sample": "s1", "rowsIn": 1, "table": {"columns": [], "rows": [{"values": []}]}, "shown": [{"row": 0}]}))
         .unwrap();
         edits.extend([
             git::FileEdit {
