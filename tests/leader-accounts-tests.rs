@@ -5,10 +5,11 @@
 //! observable from inside one process.
 
 use crate::harness::receiver::free_loopback;
+use smeltr::sync::Mutex;
 use std::io::BufRead;
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 
 /// A directory no other test in this binary can name. A counter rather than the clock: these run in parallel and
 /// share a pid, and two leaders in one data directory is the thing under test rather than an accident to have.
@@ -41,7 +42,7 @@ impl Drop for Leader {
 impl Leader {
     /// Everything read from stderr so far.
     fn said(&self) -> String {
-        self.stderr.lock().unwrap().clone()
+        self.stderr.lock().clone()
     }
 
     /// The port [`port`] named was taken by another process between asking and binding, so this leader refused
@@ -138,7 +139,7 @@ fn start(data_dir: &std::path::Path, extra: &[(&str, &str)]) -> Leader {
     let pipe = child.stderr.take().expect("stderr is piped");
     std::thread::spawn(move || {
         for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
-            let mut held = sink.lock().unwrap();
+            let mut held = sink.lock();
             held.push_str(&line);
             held.push('\n');
         }

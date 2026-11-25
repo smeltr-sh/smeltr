@@ -5,7 +5,8 @@
 //! a node that does not answer is passed over for [`DEAD_FOR`]. With no node to send to, a request goes to `url`, so
 //! sniffing never holds a row back that `url` alone would have delivered.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use crate::sync::Mutex;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -102,8 +103,8 @@ impl Nodes {
         })
     }
 
-    fn state(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    fn state(&self) -> crate::sync::MutexGuard<'_, State> {
+        self.state.lock()
     }
 
     /// The address the next request goes to, learning the nodes first when that is due and `deadline` allows.

@@ -2,9 +2,10 @@
 //! barrier, and a batch complete only once its commit lands. Against an in-memory store, a recording committer and a
 //! partitioner by the row's text.
 
+use smeltr::sync::Mutex;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use arrow_array::cast::AsArray;
@@ -72,7 +73,7 @@ fn key(columns: &Columns) -> (usize, u32) {
 /// `rows`, with each row's text registered for `ByFirstChar`.
 fn partitioned_rows(schema: &Schema, texts: &[&str]) -> Vec<OwnedRecord> {
     let rows = rows(schema, texts);
-    let mut registry = TEXTS.lock().unwrap();
+    let mut registry = TEXTS.lock();
     for (row, text) in rows.iter().zip(texts) {
         registry.insert(key(row.columns.as_ref().unwrap()), text.to_string());
     }
@@ -90,7 +91,6 @@ impl Partitioner for ByFirstChar {
         };
         let text = TEXTS
             .lock()
-            .unwrap()
             .get(&key(columns))
             .cloned()
             .expect("a row of a registered chunk");
@@ -160,12 +160,12 @@ impl Committer for Recording {
             path.push_str(segment);
         }
         path.push_str(&format!("/{id}.parquet"));
-        self.record.lock().unwrap().paths.push(path.clone());
+        self.record.lock().paths.push(path.clone());
         path
     }
 
     fn commit(&mut self, files: &[DataFile]) -> Result<(), CommitError> {
-        let mut record = self.record.lock().unwrap();
+        let mut record = self.record.lock();
         record.commits.push(files.to_vec());
         record.committed_at.push(Instant::now());
         drop(record);
@@ -215,7 +215,7 @@ impl ObjectStore for Unsteady {
         payload: PutPayload,
         opts: PutOptions,
     ) -> object_store::Result<PutResult> {
-        let put = self.puts.lock().unwrap().pop_front().unwrap_or(Put::Fine);
+        let put = self.puts.lock().pop_front().unwrap_or(Put::Fine);
         match put {
             Put::Fine => self.inner.put_opts(location, payload, opts).await,
             Put::Fail => Err(object_store::Error::Generic {
@@ -348,7 +348,7 @@ impl Table {
     }
 
     fn commits(&self) -> Vec<Vec<DataFile>> {
-        self.record.lock().unwrap().commits.clone()
+        self.record.lock().commits.clone()
     }
 
     /// Every object in the store, by path.
@@ -721,7 +721,7 @@ fn a_conflict_is_retried_at_once_and_the_commit_carries_every_file() {
     assert!(t.deliver(1, &rows).is_empty());
     assert_eq!(t.completed(1), vec![1]);
     // A retry with backoff waits at least BACKOFF_MIN; two retries at once come sooner than one such wait.
-    let at = t.record.lock().unwrap().committed_at.clone();
+    let at = t.record.lock().committed_at.clone();
     let retried = at[at.len() - 1] - at[0];
     assert!(retried < BACKOFF_MIN, "a conflict waited: {retried:?}");
 
@@ -1123,7 +1123,7 @@ fn one_put_of_three_goes_wrong(put: Put, encoders: usize) {
     c.stall_after = Duration::from_secs(1);
     c.encoders = encoders;
     let mut t = table(c, &[]);
-    *t.store.puts.lock().unwrap() = VecDeque::from([Put::Fine, put, Put::Fine]);
+    *t.store.puts.lock() = VecDeque::from([Put::Fine, put, Put::Fine]);
     // Each batch is more than a poll's worth, so with encoders to spare each goes to one of its own.
     for (batch, first) in ["a", "b", "c"].into_iter().enumerate() {
         let text = format!("{first}{}", "x".repeat(1024 * 1024));

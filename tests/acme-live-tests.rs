@@ -7,9 +7,10 @@
 //! DNS-01 is ordered from a second Pebble that asks challtestsrv for every name. The order is placed through the
 //! library rather than a leader process, against a stand-in for Cloudflare's API that publishes into challtestsrv.
 
+use smeltr::sync::Mutex;
 use std::io::BufRead;
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::live;
 
@@ -76,7 +77,7 @@ fn serve(dir: &std::path::Path) -> Leader {
     let pipe = child.stderr.take().unwrap();
     std::thread::spawn(move || {
         for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
-            let mut held = sink.lock().unwrap();
+            let mut held = sink.lock();
             held.push_str(&line);
             held.push('\n');
         }
@@ -102,7 +103,7 @@ fn serve(dir: &std::path::Path) -> Leader {
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
-        let said = leader.console.lock().unwrap().clone();
+        let said = leader.console.lock().clone();
         if said.contains("one-time password:") && std::net::TcpStream::connect(("127.0.0.1", TLS_PORT)).is_ok() {
             leader.password = said
                 .lines()
@@ -362,9 +363,8 @@ async fn cloudflare_into(management: String) -> (String, Arc<Mutex<Vec<(String, 
                 .await;
                 every
                     .lock()
-                    .unwrap()
                     .push((name.clone(), asked["content"].as_str().unwrap().to_string()));
-                let mut held = adding.lock().unwrap();
+                let mut held = adding.lock();
                 let id = format!("r{}", held.len() + 1);
                 held.insert(id.clone(), name);
                 ok(serde_json::json!({ "id": id }))
@@ -373,11 +373,7 @@ async fn cloudflare_into(management: String) -> (String, Arc<Mutex<Vec<(String, 
         .route(
             "/zones/z1/dns_records/:id",
             delete(move |Path(id): Path<String>| async move {
-                let name = removing
-                    .lock()
-                    .unwrap()
-                    .remove(&id)
-                    .expect("a record this stand-in added");
+                let name = removing.lock().remove(&id).expect("a record this stand-in added");
                 challtestsrv(
                     &remove_at,
                     "clear-txt",
@@ -454,7 +450,7 @@ fn pebble_issues_over_dns_01_and_every_record_is_removed() {
             assert!(carried.contains(name), "{name} is not among {carried:?}");
         }
         // One record for each name, at the name the authority asks, and none left once the order is over.
-        let added = added.lock().unwrap().clone();
+        let added = added.lock().clone();
         let mut asked: Vec<String> = added.iter().map(|(name, _)| name.clone()).collect();
         asked.sort();
         assert_eq!(

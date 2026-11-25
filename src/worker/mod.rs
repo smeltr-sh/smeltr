@@ -15,10 +15,11 @@
 //! Every thread in one process belongs to the one group named in `WorkerConfig::group_id`, which is why the
 //! leader's answer is one policy for the process rather than one directive per thread.
 
+use crate::sync::{Condvar, Mutex};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -1047,7 +1048,7 @@ fn run_reader_loop(
             .map(|(topic, partition)| PartitionRef { topic, partition })
             .collect();
         let (held, connection_error) = (reader.blocked_fact(), reader.connection_error_fact());
-        let mut published = report.lock().unwrap();
+        let mut published = report.lock();
         published.partitions = current;
         published.held = held;
         published.connection_error = connection_error;
@@ -1237,14 +1238,12 @@ fn spawn_reader(
         let (captures, name) = (shared.captures.clone(), source_name.to_string());
         move || read || captures.watching(&name)
     });
-    let handle = std::thread::Builder::new()
-        .name(format!("smeltr-{thread_id}"))
-        .spawn({
-            let (lane, stop, report) = (lane.clone(), stop.clone(), report.clone());
-            let batch_bytes = depth.batch_bytes;
-            move || run_reader_loop(reader, lane, acks, stop, report, batch_bytes)
-        })
-        .map_err(|e| e.to_string())?;
+    let handle = crate::sync::spawn(format!("smeltr-{thread_id}"), {
+        let (lane, stop, report) = (lane.clone(), stop.clone(), report.clone());
+        let batch_bytes = depth.batch_bytes;
+        move || run_reader_loop(reader, lane, acks, stop, report, batch_bytes)
+    })
+    .map_err(|e| e.to_string())?;
 
     Ok((
         ReaderHandle {
@@ -1493,7 +1492,7 @@ fn deploy(
             .with_streams(streams.clone())
             .with_threads(thread_limit);
             let stop = Arc::new(Stop::default());
-            let handle = std::thread::Builder::new().name(format!("smeltr-{thread_id}")).spawn({
+            let handle = crate::sync::spawn(format!("smeltr-{thread_id}"), {
                 let stop = stop.clone();
                 move || run_transform_loop(transform, stop)
             });
@@ -2299,21 +2298,13 @@ pub fn run_worker(mut config: WorkerConfig) {
     // return, and a worker whose heartbeat and discovery were behind that join could not be told to run anything
     // else -- which is the state this separation exists to make unreachable.
     let discovering = supervisor.clone();
-    std::thread::Builder::new()
-        .name("smeltr-discovery".to_string())
-        .spawn(move || discovering.discover_forever())
-        .expect("spawn the discovery thread");
+    crate::sync::spawn("smeltr-discovery", move || discovering.discover_forever()).expect("spawn the discovery thread");
     let deploying = supervisor.clone();
-    std::thread::Builder::new()
-        .name("smeltr-deployer".to_string())
-        .spawn(move || deploying.deploy_forever())
-        .expect("spawn the deployment thread");
+    crate::sync::spawn("smeltr-deployer", move || deploying.deploy_forever()).expect("spawn the deployment thread");
     // A fourth, for the one thing a worker sends that is not on anybody's clock: a capture is as big as the
     // leader allowed, and neither schedule above may wait behind it.
     let uploading = supervisor.clone();
-    std::thread::Builder::new()
-        .name("smeltr-capture-upload".to_string())
-        .spawn(move || uploading.upload_forever())
+    crate::sync::spawn("smeltr-capture-upload", move || uploading.upload_forever())
         .expect("spawn the capture upload thread");
     // The heartbeat keeps this thread, which is the one the process was given: a worker that stopped heartbeating
     // has stopped being a worker, whatever else is still running.
@@ -2367,7 +2358,7 @@ fn trim_outbox(outbox: &mut Vec<crate::heartbeat::CaptureReport>) {
 /// is what a concurrent `owe_captures` sees and counts against the cap, so a slow batch never leaves the outbox
 /// holding more than the reports still queued behind it.
 fn next_upload_batch(outbox: &Mutex<Vec<crate::heartbeat::CaptureReport>>) -> Vec<crate::heartbeat::CaptureReport> {
-    let mut outbox = outbox.lock().unwrap();
+    let mut outbox = outbox.lock();
     let take = CAPTURE_UPLOADS_AT_ONCE.min(outbox.len());
     outbox.drain(..take).collect()
 }
@@ -2554,8 +2545,8 @@ const HOLD_RETRY_MAX: Duration = Duration::from_secs(300);
 struct Relayed<T>(Mutex<(T, bool)>);
 
 impl<T: Clone + PartialEq> Relayed<T> {
-    fn held(&self) -> std::sync::MutexGuard<'_, (T, bool)> {
-        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    fn held(&self) -> crate::sync::MutexGuard<'_, (T, bool)> {
+        self.0.lock()
     }
 
     /// Keep `value`, for the runtime to be told. Returns whether it differs from what was kept.
@@ -2857,7 +2848,7 @@ impl Supervisor {
     /// own work against the object store, so this refuses before anything is torn down.
     fn validate(&self, commit: &str) -> Result<Validated, String> {
         let lookup_files = self.fetch_lookup_files(commit)?;
-        let held = self.secrets.lock().unwrap().clone();
+        let held = self.secrets.lock().clone();
         let (system, _, _) = load_target(&self.repo_dir, commit, &self.config.group_id, &held)?;
         let listening: Vec<heartbeat::Listening> = system
             .topology
@@ -2897,7 +2888,7 @@ impl Supervisor {
         let mut prefixes = vec![crate::config_file::SHARED_DIR.to_string()];
         prefixes.extend(crate::config_file::group_subtree(&self.config.group_id));
         let pointers = crate::leader::tree::lookup_pointers(&self.repo_dir, commit, &prefixes)?;
-        let client = self.client.lock().unwrap().clone();
+        let client = self.client.lock().clone();
         store::fetch_missing(&self.repo_dir, pointers.keys(), |pointer| {
             client.lookup_file(&pointer.oid).map_err(|e| e.to_string())
         })?;
@@ -2907,7 +2898,7 @@ impl Supervisor {
     /// Say what the deployer is doing now. The time is when this phase began, so a phase that does not move is
     /// visible as one whose start recedes.
     fn phase(&self, phase: &str) {
-        let mut supervising = self.supervising.lock().unwrap();
+        let mut supervising = self.supervising.lock();
         if supervising.phase.as_deref() != Some(phase) {
             supervising.phase = Some(phase.to_string());
             supervising.phase_since_ms = Some(now_ms());
@@ -2916,13 +2907,12 @@ impl Supervisor {
 
     /// Why the last attempt did not run, or `None` once one has. Cut to the length every reported string is.
     fn note_failure(&self, failure: Option<&str>) {
-        self.supervising.lock().unwrap().failure =
-            failure.map(|f| crate::runtime::truncate(f, heartbeat::MAX_TEXT_LEN));
+        self.supervising.lock().failure = failure.map(|f| crate::runtime::truncate(f, heartbeat::MAX_TEXT_LEN));
     }
 
     /// Whether the leader has ever answered. Until it has, this worker runs nothing.
     fn contacted(&self) -> bool {
-        self.last_contact.lock().unwrap().is_some()
+        self.last_contact.lock().is_some()
     }
 
     /// Takes the authority the leader is serving now, for a worker running inside that leader's own process.
@@ -2949,7 +2939,7 @@ impl Supervisor {
                 return;
             }
         };
-        if self.trusting.lock().unwrap().as_deref() == Some(materials.ca_pem.as_slice()) {
+        if self.trusting.lock().as_deref() == Some(materials.ca_pem.as_slice()) {
             return;
         }
 
@@ -2989,9 +2979,9 @@ impl Supervisor {
             return;
         }
         // Together, so no beat reports one authority's expiry while sending under another's.
-        let mut expires_millis = self.authority_expires_millis.lock().unwrap();
-        let mut trusting = self.trusting.lock().unwrap();
-        let mut client = self.client.lock().unwrap();
+        let mut expires_millis = self.authority_expires_millis.lock();
+        let mut trusting = self.trusting.lock();
+        let mut client = self.client.lock();
         *expires_millis = expires(&materials.ca_pem);
         *trusting = Some(materials.ca_pem);
         *client = Arc::new(rebuilt);
@@ -3008,7 +2998,7 @@ impl Supervisor {
     /// restart reads back. Without it this worker verifies the new authority until it stops and the old one
     /// afterward, against a leader that has by then signed under the new one.
     fn take_authority(&self, pem: Vec<u8>) {
-        if self.trusting.lock().unwrap().as_deref() == Some(pem.as_slice()) {
+        if self.trusting.lock().as_deref() == Some(pem.as_slice()) {
             return;
         }
         let rebuilt = match HeartbeatClient::new(
@@ -3054,9 +3044,9 @@ impl Supervisor {
             );
             return;
         }
-        let mut expires_millis = self.authority_expires_millis.lock().unwrap();
-        let mut trusting = self.trusting.lock().unwrap();
-        let mut client = self.client.lock().unwrap();
+        let mut expires_millis = self.authority_expires_millis.lock();
+        let mut trusting = self.trusting.lock();
+        let mut client = self.client.lock();
         *expires_millis = expires(&pem);
         *trusting = Some(pem);
         *client = Arc::new(rebuilt);
@@ -3071,7 +3061,7 @@ impl Supervisor {
     fn heartbeat_forever(&self) -> ! {
         loop {
             // Read before the beat is built, so the notice carries what the drain left the leader owed.
-            let stopping = *self.exit.lock().unwrap() >= Exit::Notice;
+            let stopping = *self.exit.lock() >= Exit::Notice;
             // Every beat, rather than only when one fails. A connection already open keeps succeeding across a
             // certificate change, because only a new handshake sees the new one -- while git opens a connection
             // per fetch and is refused by the authority this worker still holds. Waiting for a failed heartbeat
@@ -3085,7 +3075,7 @@ impl Supervisor {
             warn_if_heartbeat_body_large(&req);
             // Cloned out rather than held: a beat that took the lock for the length of its request would be one
             // an upload could not replace the client behind, and the reverse is the stall that matters more.
-            let client = self.client.lock().unwrap().clone();
+            let client = self.client.lock().clone();
             let answered = client.send(&req);
             if stopping {
                 match &answered {
@@ -3107,11 +3097,11 @@ impl Supervisor {
                     std::thread::park();
                 }
             }
-            *self.deployed_cue.lock().unwrap() = answered.as_ref().ok().and_then(|resp| resp.deployed.clone());
+            *self.deployed_cue.lock() = answered.as_ref().ok().and_then(|resp| resp.deployed.clone());
             match answered {
                 Ok(resp) => {
                     self.heartbeat_answered(&resp);
-                    *self.last_contact.lock().unwrap() = Some(Instant::now());
+                    *self.last_contact.lock() = Some(Instant::now());
                     self.window_answered();
 
                     // Whatever this worker's group needs and did not hold. An empty answer is the steady state and
@@ -3120,8 +3110,8 @@ impl Supervisor {
                     // value. A certificate runs at its newest version, so a new version of one the deployment
                     // presents restarts it, which is how a replacement reaches the fleet
                     // (`docs/architecture/security.md`, A certificate travels with its key).
-                    let replaced = self.secrets.lock().unwrap().take(resp.secrets);
-                    let presenting = self.presenting.lock().unwrap();
+                    let replaced = self.secrets.lock().take(resp.secrets);
+                    let presenting = self.presenting.lock();
                     let renewed: Vec<&String> = replaced.iter().filter(|c| presenting.contains(c)).collect();
                     if !renewed.is_empty() {
                         tracing::info!(
@@ -3170,7 +3160,7 @@ impl Supervisor {
             }
             // The interval, or less once the notice is due: a worker on its way out is inside a grace period
             // somebody else set.
-            let exit = self.exit.lock().unwrap();
+            let exit = self.exit.lock();
             let _ = self
                 .exit_changed
                 .wait_timeout_while(exit, self.heartbeat_interval(), |exit| *exit < Exit::Notice);
@@ -3180,7 +3170,7 @@ impl Supervisor {
     /// A heartbeat the leader did not answer: said once per change and on the interval, not on every beat, and the
     /// recovery says how long it was.
     fn heartbeat_failed(&self, error: String) {
-        let mut failing = self.heartbeat_failing.lock().unwrap_or_else(|e| e.into_inner());
+        let mut failing = self.heartbeat_failing.lock();
         failing.1.get_or_insert_with(Instant::now);
         if let Some(error) = failing.0.fail_due(error) {
             tracing::warn!(
@@ -3193,7 +3183,7 @@ impl Supervisor {
 
     /// A heartbeat the leader answered.
     fn heartbeat_answered(&self, resp: &heartbeat::HeartbeatResponse) {
-        let mut failing = self.heartbeat_failing.lock().unwrap_or_else(|e| e.into_inner());
+        let mut failing = self.heartbeat_failing.lock();
         if failing.0.clear() {
             let down_for_secs = failing.1.take().map_or(0, |since| since.elapsed().as_secs());
             tracing::info!(name: "recovered", target: "heartbeats", down_for_secs, "the leader answers heartbeats again");
@@ -3216,16 +3206,10 @@ impl Supervisor {
         crate::logs::report_losses();
         record_memory_gauge(&self.registry, "supervisor");
         // Read before the window's lock, which the supervisor's loop takes too: sampling reads files.
-        let commit = self.commit.lock().unwrap().clone();
-        let supervising = self.supervising.lock().unwrap().clone();
-        let resources = self.resources.lock().unwrap().sample();
-        let authority_fingerprints = self
-            .trusting
-            .lock()
-            .unwrap()
-            .as_deref()
-            .map(fingerprints)
-            .unwrap_or_default();
+        let commit = self.commit.lock().clone();
+        let supervising = self.supervising.lock().clone();
+        let resources = self.resources.lock().sample();
+        let authority_fingerprints = self.trusting.lock().as_deref().map(fingerprints).unwrap_or_default();
         let about = Reporting {
             worker_id: &self.worker_id,
             group_id: &self.config.group_id,
@@ -3233,19 +3217,19 @@ impl Supervisor {
             supervising: Some(supervising),
             resources: Some(heartbeat::ResourceReport::from(resources)),
             stop_after_unreachable_secs: self.config.stop_after_unreachable_secs,
-            authority_expires_millis: *self.authority_expires_millis.lock().unwrap(),
+            authority_expires_millis: *self.authority_expires_millis.lock(),
             authority_fingerprints,
             // The leader is this worker's source of trust: it is handed what the leader rotates to, or, inside the
             // leader's own process, reads it off the leader's disk each beat.
             takes_authority: self.config.leader_ca_pem.is_none() || self.config.leader_authority_dir.is_some(),
             stopping,
             accepts: self.accepts(),
-            took: self.took.lock().unwrap().clone(),
+            took: self.took.lock().clone(),
         };
         // The window still owed, or a new one. What the runtime last said is read under the lock; the deployment
         // it describes is another process, so nothing here can be waiting on one that is stopping.
-        let mut owed = self.owed.lock().unwrap();
-        let mut runtime = self.runtime.lock().unwrap();
+        let mut owed = self.owed.lock();
+        let mut runtime = self.runtime.lock();
         if let Some(window) = owed.window.as_mut() {
             // Nothing follows the notice, so the progress the drain committed since the window was taken goes with
             // it. The leader applies progress by item, so a window it already recorded takes this too.
@@ -3274,14 +3258,14 @@ impl Supervisor {
             deployed.as_ref(),
             owed.window.as_ref().expect("taken above"),
             seq,
-            &self.secrets.lock().unwrap(),
+            &self.secrets.lock(),
         )
     }
 
     /// The leader has the window owed: the registry's cursor passes its samples, and the log buffer drops its logs.
     /// The runtime's had already left its report when the window took them.
     fn window_answered(&self) {
-        if let Some(window) = self.owed.lock().unwrap().window.take() {
+        if let Some(window) = self.owed.lock().window.take() {
             // Against the process's registry, so a worker with nothing deployed commits what it still reported.
             heartbeat::commit_for_heartbeat(&self.registry, &window.own);
             crate::logs::delivered(window.own_logs);
@@ -3294,12 +3278,12 @@ impl Supervisor {
     /// Observability). Progress is not part of that trade: it goes back to the runtime's report, ahead of what has
     /// come since, and its cap keeps it inside the next window.
     fn drop_window(&self, req: &HeartbeatRequest) {
-        let Some(window) = self.owed.lock().unwrap().window.take() else {
+        let Some(window) = self.owed.lock().window.take() else {
             return;
         };
         heartbeat::commit_for_heartbeat(&self.registry, &window.own);
         crate::logs::delivered(window.own_logs);
-        if let Some(held) = self.runtime.lock().unwrap().as_mut() {
+        if let Some(held) = self.runtime.lock().as_mut() {
             let since = std::mem::replace(&mut held.gathered.progress, window.progress);
             held.gathered.progress.extend(since);
         }
@@ -3325,7 +3309,7 @@ impl Supervisor {
     /// next beat: a restart is the deployer's to carry out, and a shutdown ends with the notice that says so.
     fn follow_directive(&self, directive: heartbeat::Directive) {
         use heartbeat::DirectiveAction;
-        let mut took = self.took.lock().unwrap();
+        let mut took = self.took.lock();
         if took.as_deref() == Some(directive.id.as_str()) {
             tracing::trace!(
                 name: "directive_repeated", target: "deploy",
@@ -3380,13 +3364,12 @@ impl Supervisor {
         let listed: HashSet<String> = invited.iter().map(|i| i.session().to_string()).collect();
         // Held from the let-go to the queue: the deployer decides under this lock, and admits under it when it
         // serves an invitation itself, so this process never admits a session after the answer that let it go.
-        let mut held = self.invitations.lock().unwrap();
+        let mut held = self.invitations.lock();
         self.captures.drop_unlisted(&listed);
         // A progress report the leader would drop goes; a final stays -- it is this worker's answer, and the leader
         // still takes its reason.
         self.outbox
             .lock()
-            .unwrap()
             .retain(|r| r.finished.is_some() || listed.contains(&r.session));
 
         let inv = &mut *held;
@@ -3437,7 +3420,7 @@ impl Supervisor {
     /// Take the leader's holds, which are whole on every answer, for the deployer to hand the runtime.
     /// A change in which sources are held supersedes a ledger fetch in flight.
     fn follow_holds(&self, holds: Vec<heartbeat::Hold>) {
-        let mut held = self.holds.lock().unwrap();
+        let mut held = self.holds.lock();
         let keys = |list: &[heartbeat::Hold]| list.iter().map(|h| h.key.clone()).collect::<HashSet<_>>();
         if keys(&held.listed) != keys(&holds) {
             held.epoch += 1;
@@ -3451,7 +3434,7 @@ impl Supervisor {
     /// runtime admitted before then keeps filling until an answer leaves the session out: that answer moves the
     /// listing, and the deployer's next turn tells the runtime.
     fn answered(&self, session: &str) {
-        let mut held = self.invitations.lock().unwrap();
+        let mut held = self.invitations.lock();
         if held.listed.contains(session) {
             held.answered.insert(session.to_string());
         }
@@ -3483,7 +3466,7 @@ impl Supervisor {
         if reports.is_empty() {
             return;
         }
-        let mut outbox = self.outbox.lock().unwrap();
+        let mut outbox = self.outbox.lock();
         merge_owed(&mut outbox, reports);
         trim_outbox(&mut outbox);
     }
@@ -3515,7 +3498,7 @@ impl Supervisor {
             // one after another.
             // Cloned out once for the whole batch: an upload runs for minutes, and holding the lock across one
             // would be the heartbeat waiting behind a capture -- the stall the separate schedules rule out.
-            let client = self.client.lock().unwrap().clone();
+            let client = self.client.lock().clone();
             let mut failed = std::thread::scope(|scope| {
                 let mut running = Vec::new();
                 let mut unstarted = Vec::new();
@@ -3576,7 +3559,7 @@ impl Supervisor {
             // replacing it. Capped again on the way back: a leader refusing every batch would otherwise add one
             // each pass.
             {
-                let mut outbox = self.outbox.lock().unwrap();
+                let mut outbox = self.outbox.lock();
                 let arrived = std::mem::take(&mut *outbox);
                 merge_owed(&mut failed, arrived);
                 *outbox = failed;
@@ -3600,14 +3583,14 @@ impl Supervisor {
             return;
         };
         {
-            let mut tried = self.enrolled_again_at.lock().unwrap();
+            let mut tried = self.enrolled_again_at.lock();
             if tried.is_some_and(|at| at.elapsed() < ENROLL_AGAIN_EVERY) {
                 return;
             }
             *tried = Some(Instant::now());
         }
         let worker_id = generate_worker_id();
-        let trusting = self.trusting.lock().unwrap().clone();
+        let trusting = self.trusting.lock().clone();
         let token = match enroll(
             &self.config.leader_url,
             code,
@@ -3666,12 +3649,8 @@ impl Supervisor {
         let Some(limit) = self.config.stop_after_unreachable_secs.map(Duration::from_secs) else {
             return;
         };
-        let overdue = self
-            .last_contact
-            .lock()
-            .unwrap()
-            .is_some_and(|last| last.elapsed() > limit);
-        if overdue && self.commit.lock().unwrap().is_some() {
+        let overdue = self.last_contact.lock().is_some_and(|last| last.elapsed() > limit);
+        if overdue && self.commit.lock().is_some() {
             self.offline_stop.store(true, Ordering::Relaxed);
         }
     }
@@ -3726,11 +3705,11 @@ impl Supervisor {
             // What the leader deploys is this worker's to follow only once it has checked in. After that this schedule is its own:
             // a heartbeat that fails cancels no discovery.
             if self.contacted() && self.cue_confirms_fetched() {
-                let mut supervising = self.supervising.lock().unwrap();
+                let mut supervising = self.supervising.lock();
                 supervising.attempted_ms = Some(now_ms());
                 supervising.discovered_ms = supervising.attempted_ms;
             } else if self.contacted() {
-                self.supervising.lock().unwrap().attempted_ms = Some(now_ms());
+                self.supervising.lock().attempted_ms = Some(now_ms());
                 let began = std::time::Instant::now();
                 match fetch_deployed(&self.repo_dir, &self.config.leader_url, &self.token, &self.git_roots) {
                     Ok(head) => {
@@ -3748,7 +3727,7 @@ impl Supervisor {
                         }
                         // Distinct from having looked: a worker whose fetches all fail keeps trying and learns
                         // nothing, and only one of these two moves while that is true.
-                        let mut supervising = self.supervising.lock().unwrap();
+                        let mut supervising = self.supervising.lock();
                         supervising.discovered_ms = Some(now_ms());
                         supervising.desired_commit = Some(head.clone());
                         drop(supervising);
@@ -3783,15 +3762,15 @@ impl Supervisor {
     /// fetch is a new connection to the leader, and this is what keeps one off every interval of a fleet that is not
     /// being deployed to.
     fn cue_confirms_fetched(&self) -> bool {
-        let cue = self.deployed_cue.lock().unwrap().clone();
-        cue.is_some() && cue == self.supervising.lock().unwrap().desired_commit
+        let cue = self.deployed_cue.lock().clone();
+        cue.is_some() && cue == self.supervising.lock().desired_commit
     }
 
     /// Record `commit` as the newest thing seen, and wake the deployer. Only a commit that differs from the last
     /// one observed counts as a new observation: re-reporting the same head every interval would be a stream of
     /// targets that change nothing.
     fn publish(&self, commit: String) {
-        let mut target = self.target.lock().unwrap();
+        let mut target = self.target.lock();
         if target.as_ref().is_some_and(|t| t.commit == commit) {
             return;
         }
@@ -3890,7 +3869,7 @@ impl Supervisor {
 
     /// Reports `commit` as what the running runtime represents, and holds it against garbage collection.
     fn represent(&self, s: &mut Schedule, commit: &str) {
-        *self.commit.lock().unwrap() = Some(commit.to_string());
+        *self.commit.lock() = Some(commit.to_string());
         self.succeeded(s);
         hold_running(&self.repo_dir, commit);
     }
@@ -4146,7 +4125,7 @@ impl Supervisor {
                 Some((was, was_content)) => {
                     // Once, and only for a commit that started here before. What the leader is told is still why
                     // the target did not start, since the target is what this worker is not running.
-                    let why = self.supervising.lock().unwrap().failure.clone();
+                    let why = self.supervising.lock().failure.clone();
                     tracing::warn!(
                         name: "restoring", target: "deploy",
                         subject = %was,
@@ -4193,29 +4172,26 @@ impl Supervisor {
                     ..Default::default()
                 }));
                 {
-                    let mut supervising = self.supervising.lock().unwrap();
+                    let mut supervising = self.supervising.lock();
                     supervising.incarnation = Some(s.incarnation);
                     supervising.listens = validated.listening.clone();
                 }
                 // It holds nothing yet. Its first turn tells it what the leader holds here, each ledger
                 // fetched afresh: the last runtime's reports have moved them since.
-                self.holds.lock().unwrap().restarted();
+                self.holds.lock().restarted();
                 self.log_levels.restarted();
                 self.sender_fields.restarted();
                 s.last_good = Some((commit.clone(), arriving.clone()));
-                *self.commit.lock().unwrap() = Some(commit.clone());
+                *self.commit.lock() = Some(commit.clone());
                 hold_running(&self.repo_dir, &commit);
                 // What the runtime that started names and nothing else: a version it does not quote is of no
                 // further use here, and a worker that kept everything it had ever been sent would hold a
                 // growing pile of dead credentials.
-                self.secrets
-                    .lock()
-                    .unwrap()
-                    .keep_only(&validated.named, &validated.presented);
+                self.secrets.lock().keep_only(&validated.named, &validated.presented);
                 // The runtime it replaced is gone, so nothing maps a file this one does not name.
                 crate::lookup::store::keep_only(&self.repo_dir, &validated.lookup_files);
                 // Nor listens on an address this one does not.
-                self.receiver_sockets.lock().unwrap().keep_only(&validated.listens);
+                self.receiver_sockets.lock().keep_only(&validated.listens);
                 if restored {
                     // The target is not retried on a timer: a commit that would not start fails the same way
                     // next time, and each try would stop the deployment that works. A new target or a restart
@@ -4232,10 +4208,10 @@ impl Supervisor {
             }
             Begun::Refused(vacant) => {
                 self.retired(&inbox);
-                self.presenting.lock().unwrap().clear();
+                self.presenting.lock().clear();
                 // Nothing runs, so nothing may look as if it listens: a sender is refused at once rather than
                 // left waiting in a queue nobody takes from. The retry binds again.
-                self.receiver_sockets.lock().unwrap().keep_only(&[]);
+                self.receiver_sockets.lock().keep_only(&[]);
                 // The same target again once the backoff has run: a broker that was not up and a secret that
                 // had not arrived are both answered by asking again, not by waiting for another deploy.
                 s.back_off();
@@ -4263,7 +4239,7 @@ impl Supervisor {
         self.phase("starting");
         // Before the runtime is handed its certificates, so a new version arriving while it starts restarts it
         // rather than leaving it on the one it was handed.
-        *self.presenting.lock().unwrap() = validated.presented.iter().map(|c| c.name.clone()).collect();
+        *self.presenting.lock() = validated.presented.iter().map(|c| c.name.clone()).collect();
         let spec = child::StartSpec {
             state_dir: self.config.state_dir.clone(),
             repo_dir: self.repo_dir.clone(),
@@ -4278,7 +4254,6 @@ impl Supervisor {
             secrets: self
                 .secrets
                 .lock()
-                .unwrap()
                 .deliveries_for(&validated.named, &validated.presented),
             incarnation,
         };
@@ -4287,7 +4262,7 @@ impl Supervisor {
         if arrived_unchecked(&validated.checked, &spec.secrets) {
             self.restart_due.store(true, Ordering::Relaxed);
         }
-        let mut sockets = self.receiver_sockets.lock().unwrap();
+        let mut sockets = self.receiver_sockets.lock();
         sockets.hold(&validated.listens);
         // Only what this target serves: a socket a runtime adopts stays open for its life.
         let started = vacant.start(spec, inbox, &sockets, &validated.listens);
@@ -4310,7 +4285,7 @@ impl Supervisor {
             if inbox.ready.load(Ordering::Relaxed) {
                 return Begun::Started(handle);
             }
-            if let Some(reason) = inbox.failed.lock().unwrap().clone() {
+            if let Some(reason) = inbox.failed.lock().clone() {
                 tracing::warn!(
                     name: "commit_refused", target: "deploy",
                     subject = %target.commit,
@@ -4370,7 +4345,7 @@ impl Supervisor {
     /// its logs are added to whatever the leader has not taken yet; what its threads are doing is replaced, since
     /// that is a description of now.
     fn absorb(&self, inbox: &child::RuntimeInbox) {
-        let Some(mut arrived) = inbox.report.lock().unwrap().take() else {
+        let Some(mut arrived) = inbox.report.lock().take() else {
             return;
         };
         // Resolved here, against the names the runtime that wrote them sent alongside. A sample labels its source
@@ -4386,7 +4361,7 @@ impl Supervisor {
                 .cloned()
                 .filter_map(heartbeat::MetricSampleDto::into_sample),
         );
-        let mut held = self.runtime.lock().unwrap();
+        let mut held = self.runtime.lock();
         *held = Some(match held.take() {
             Some(previous) => previous.followed_by(arrived),
             None => arrived,
@@ -4398,7 +4373,7 @@ impl Supervisor {
     /// their sum, and a gauge both set as this process's own.
     fn scrape(&self) -> String {
         let mut own = self.registry.snapshot();
-        if let Some(held) = self.runtime.lock().unwrap().as_ref() {
+        if let Some(held) = self.runtime.lock().as_ref() {
             for sample in &mut own {
                 held.state.subjects.resolve(&mut sample.key.labels);
             }
@@ -4409,7 +4384,7 @@ impl Supervisor {
     /// Stop reporting a runtime that is no longer there. A stale report would have the leader believe threads are
     /// running for the life of this process, and a stale incarnation would have it believe a dead process exists.
     fn forget_runtime(&self) {
-        if let Some(held) = self.runtime.lock().unwrap().as_mut() {
+        if let Some(held) = self.runtime.lock().as_mut() {
             // Its threads are gone, so nothing is reported about them. What it counted and said before it went is
             // still owed to the leader, and is carried by the beats that follow.
             held.state = child::RuntimeState::default();
@@ -4417,13 +4392,13 @@ impl Supervisor {
             // later beat no longer names this runtime's commit.
             held.gathered.streams = None;
         }
-        if let Some(window) = self.owed.lock().unwrap().window.as_mut() {
+        if let Some(window) = self.owed.lock().window.as_mut() {
             window.streams = None;
         }
         self.registry.forget_mirrored();
-        *self.commit.lock().unwrap() = None;
+        *self.commit.lock() = None;
         {
-            let mut supervising = self.supervising.lock().unwrap();
+            let mut supervising = self.supervising.lock();
             supervising.incarnation = None;
             supervising.listens.clear();
         }
@@ -4432,12 +4407,12 @@ impl Supervisor {
 
     /// Whether this process has been asked to end.
     fn exiting(&self) -> bool {
-        *self.exit.lock().unwrap() >= Exit::Draining
+        *self.exit.lock() >= Exit::Draining
     }
 
     /// Moves this process on its way out, never back.
     fn exit_to(&self, step: Exit) {
-        let mut exit = self.exit.lock().unwrap();
+        let mut exit = self.exit.lock();
         if *exit < step {
             *exit = step;
             self.exit_changed.notify_all();
@@ -4447,13 +4422,13 @@ impl Supervisor {
     /// Waits until this process is at `step` on its way out, for at most `budget`. `false` is the budget spent.
     fn exit_reaches(&self, step: Exit, budget: Duration) -> bool {
         let deadline = Instant::now() + budget;
-        let mut exit = self.exit.lock().unwrap();
+        let mut exit = self.exit.lock();
         while *exit < step {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 return false;
             }
-            exit = self.exit_changed.wait_timeout(exit, left).unwrap().0;
+            exit = self.exit_changed.wait_timeout(exit, left).0;
         }
         true
     }
@@ -4515,7 +4490,7 @@ impl Supervisor {
     ///
     /// `true` is a control pipe that would not take the frame, as for [`Supervisor::route_invitations`].
     fn mirror_to(&self, running: Option<&mut child::RuntimeHandle>) -> bool {
-        let mut logs_mirror = self.logs_mirror.lock().unwrap();
+        let mut logs_mirror = self.logs_mirror.lock();
         let Some(handle) = running else {
             *logs_mirror = None;
             return false;
@@ -4573,7 +4548,7 @@ impl Supervisor {
     /// to drop, so it says so and leaves ending the runtime to the deploy loop.
     fn route_invitations(&self, mut running: Option<&mut child::RuntimeHandle>) -> bool {
         let (waiting, listing) = {
-            let mut held = self.invitations.lock().unwrap();
+            let mut held = self.invitations.lock();
             let waiting = std::mem::take(&mut held.queued);
             let listing = std::mem::take(&mut held.changed).then(|| {
                 let mut sessions: Vec<String> = held.listed.iter().cloned().collect();
@@ -4610,7 +4585,7 @@ impl Supervisor {
             // while this process admits, so what it serves itself is never served after either. A forward is
             // written after it is released and admitted on the runtime's own thread, so it can land after either;
             // the next listing that leaves its session out ends it there.
-            let held = self.invitations.lock().unwrap();
+            let held = self.invitations.lock();
             if !held.wants(&session) {
                 continue;
             }
@@ -4635,13 +4610,13 @@ impl Supervisor {
                     }
                 }
                 None => {
-                    let secrets = self.secrets.lock().unwrap().clone();
+                    let secrets = self.secrets.lock().clone();
                     serve_capture(&self.captures, invitation, &self.registry, &secrets);
                 }
             }
         }
         if !requeue.is_empty() {
-            let mut held = self.invitations.lock().unwrap();
+            let mut held = self.invitations.lock();
             let inv = &mut *held;
             for invitation in requeue {
                 if inv.wants(&invitation.session) && !inv.queued.iter().any(|q| q.session == invitation.session) {
@@ -4662,13 +4637,12 @@ impl Supervisor {
         let (holding, applied) = self
             .runtime
             .lock()
-            .unwrap()
             .as_ref()
             .map(|r| (r.state.holding.clone(), r.state.holds_applied))
             .unwrap_or_default();
         let now = Instant::now();
         let (seq, frame) = {
-            let mut holds = self.holds.lock().unwrap();
+            let mut holds = self.holds.lock();
             let fetched = holds.fetched.take();
             let frame = match fetched {
                 Some((epoch, frame)) if epoch == holds.epoch => frame,
@@ -4707,7 +4681,7 @@ impl Supervisor {
         let holding: Vec<held::Holding> = frame.iter().map(|(h, _)| h.clone()).collect();
         match handle.holds(seq, holding) {
             Ok(()) => {
-                self.holds.lock().unwrap().sent(seq, &frame, now);
+                self.holds.lock().sent(seq, &frame, now);
                 false
             }
             Err(e) => {
@@ -4759,13 +4733,13 @@ impl Supervisor {
         // What the owed window took waits for the leader as much as what the runtime's report still holds. Both
         // under the window's lock, taken first as `next_beat` takes it, so no progress moves between the two reads.
         let weight = {
-            let owed = self.owed.lock().unwrap();
-            let runtime = self.runtime.lock().unwrap();
+            let owed = self.owed.lock();
+            let runtime = self.runtime.lock();
             owed.window.as_ref().map_or(0, |w| held::backlog(&w.progress))
                 + runtime.as_ref().map_or(0, |r| held::backlog(&r.gathered.progress))
         };
         let full = {
-            let mut holds = self.holds.lock().unwrap();
+            let mut holds = self.holds.lock();
             let full = held::backlogged(holds.backlogged, weight);
             if full != holds.backlogged {
                 holds.backlogged = full;
@@ -4792,7 +4766,7 @@ impl Supervisor {
         let Some(handle) = running else { return false };
         match handle.backlogged(full) {
             Ok(()) => {
-                self.holds.lock().unwrap().told_backlogged = Some(full);
+                self.holds.lock().told_backlogged = Some(full);
                 false
             }
             Err(e) => {
@@ -4811,7 +4785,7 @@ impl Supervisor {
     /// backoff. A frame whose epoch has moved on by the time it is ready is thrown away with its files.
     fn fetch_ledgers(&self, epoch: u64, plan: Vec<(heartbeat::Hold, Offer)>) {
         let holds = self.holds.clone();
-        let client = self.client.lock().unwrap().clone();
+        let client = self.client.lock().clone();
         let dir = self.config.state_dir.join("ledgers");
         let spawned =
             std::thread::Builder::new()
@@ -4839,7 +4813,7 @@ impl Supervisor {
                         }
                     })
                     .collect();
-                    let mut held = holds.lock().unwrap();
+                    let mut held = holds.lock();
                     if held.fetching == Some(epoch) {
                         held.fetching = None;
                     }
@@ -4857,7 +4831,7 @@ impl Supervisor {
                 error = %e,
                 "could not start the thread that fetches ledgers, so the sources waiting on one are not read yet"
             );
-            self.holds.lock().unwrap().fetching = None;
+            self.holds.lock().fetching = None;
         }
     }
 
@@ -4866,7 +4840,7 @@ impl Supervisor {
     fn drain_captured(&self, inbox: &child::RuntimeInbox) {
         // The runtime counted these delivered when it wrote them to this process, so from here the outbox is what
         // is holding them: a leader briefly unreachable costs a round trip rather than the records.
-        let finished = std::mem::take(&mut *inbox.captured.lock().unwrap());
+        let finished = std::mem::take(&mut *inbox.captured.lock());
         self.owe_captures(finished);
     }
 
@@ -4880,7 +4854,7 @@ impl Supervisor {
             let due = retry_at.is_some_and(|at| Instant::now() >= at);
             held.as_ref().filter(|t| Some(t.generation) != acted || due).cloned()
         };
-        let held = self.target.lock().unwrap();
+        let held = self.target.lock();
         if let Some(target) = ready(&held) {
             return Some(target);
         }
@@ -4890,7 +4864,7 @@ impl Supervisor {
             .map(|at| at.saturating_duration_since(Instant::now()))
             .unwrap_or(IDLE_POLL)
             .min(IDLE_POLL);
-        let (held, _) = self.arrived.wait_timeout(held, wait).unwrap();
+        let (held, _) = self.arrived.wait_timeout(held, wait);
         ready(&held)
     }
 
@@ -4907,10 +4881,7 @@ impl Supervisor {
         let Some(limit) = self.config.stop_after_unreachable_secs.map(Duration::from_secs) else {
             return false;
         };
-        self.last_contact
-            .lock()
-            .unwrap()
-            .is_none_or(|last| last.elapsed() > limit)
+        self.last_contact.lock().is_none_or(|last| last.elapsed() > limit)
     }
 }
 
@@ -6199,7 +6170,7 @@ mod tests {
         let facts = d.facts();
         child::RuntimeReport {
             state: child::RuntimeState {
-                readers: facts.readers.iter().map(|r| r.lock().unwrap().clone()).collect(),
+                readers: facts.readers.iter().map(|r| r.lock().clone()).collect(),
                 pool_thread_ids: facts.pool_thread_ids.clone(),
                 egress_ids: facts.egress_ids.clone(),
                 egress_refusals: facts
@@ -6283,7 +6254,7 @@ mod tests {
         let mut supervisor = supervisor_for(temp_dir("offline-canceled"));
         supervisor.config.stop_after_unreachable_secs = Some(3600);
         supervisor.offline_stop.store(true, Ordering::Relaxed);
-        *supervisor.last_contact.lock().unwrap() = Some(Instant::now());
+        *supervisor.last_contact.lock() = Some(Instant::now());
         assert!(
             !supervisor.take_offline_stop(),
             "a stop queued for an outage that has ended still stopped the runtime"
@@ -6294,7 +6265,7 @@ mod tests {
         );
 
         supervisor.offline_stop.store(true, Ordering::Relaxed);
-        *supervisor.last_contact.lock().unwrap() = None;
+        *supervisor.last_contact.lock() = None;
         assert!(supervisor.take_offline_stop(), "a stop during an outage is a stop");
     }
 
@@ -6307,7 +6278,7 @@ mod tests {
             "a worker that has never heard from its leader is out of contact"
         );
 
-        *supervisor.last_contact.lock().unwrap() = Some(Instant::now());
+        *supervisor.last_contact.lock() = Some(Instant::now());
         // Zero seconds: any elapsed time is past it, which is what makes this deterministic rather than a sleep.
         std::thread::sleep(Duration::from_millis(5));
         assert!(supervisor.out_of_contact(), "an outage past the limit is an outage");
@@ -6367,7 +6338,6 @@ mod tests {
         supervisor
             .secrets
             .lock()
-            .unwrap()
             .take([deliver(1, rcgen::ExtendedKeyUsagePurpose::ServerAuth)]);
         let checked = supervisor.validate(&head).expect("a server certificate serves");
         assert_eq!(checked.checked.get("rx"), Some(&1));
@@ -6375,7 +6345,6 @@ mod tests {
         supervisor
             .secrets
             .lock()
-            .unwrap()
             .take([deliver(2, rcgen::ExtendedKeyUsagePurpose::ClientAuth)]);
         let Err(refused) = supervisor.validate(&head) else {
             panic!("a client certificate cannot serve")
@@ -6388,9 +6357,9 @@ mod tests {
     #[test]
     fn a_fetch_waits_on_a_cue_that_names_something_new() {
         let supervisor = supervisor_for(temp_dir("deployed-cue"));
-        let cue = |c: Option<&str>| *supervisor.deployed_cue.lock().unwrap() = c.map(str::to_string);
+        let cue = |c: Option<&str>| *supervisor.deployed_cue.lock() = c.map(str::to_string);
         assert!(!supervisor.cue_confirms_fetched(), "nothing fetched yet");
-        supervisor.supervising.lock().unwrap().desired_commit = Some("abc".to_string());
+        supervisor.supervising.lock().desired_commit = Some("abc".to_string());
         cue(None);
         assert!(!supervisor.cue_confirms_fetched(), "no answer");
         cue(Some("def"));
@@ -6413,7 +6382,7 @@ mod tests {
         };
         supervisor.follow_directive(restart("a"));
         assert!(supervisor.restart_due.swap(false, Ordering::Relaxed));
-        assert_eq!(supervisor.took.lock().unwrap().as_deref(), Some("a"));
+        assert_eq!(supervisor.took.lock().as_deref(), Some("a"));
         supervisor.follow_directive(restart("a"));
         assert!(
             !supervisor.restart_due.load(Ordering::Relaxed),
@@ -6507,23 +6476,17 @@ mod tests {
 
         // What a runtime finished, arriving on its pipe.
         let inbox = child::RuntimeInbox::default();
-        inbox.captured.lock().unwrap().push(report("from-runtime"));
+        inbox.captured.lock().push(report("from-runtime"));
         supervisor.drain_captured(&inbox);
         assert!(
-            inbox.captured.lock().unwrap().is_empty(),
+            inbox.captured.lock().is_empty(),
             "the runtime's inbox still holds a capture nothing is going to offer again"
         );
 
         // And what the supervisor served cold itself.
         supervisor.owe_captures(vec![report("from-supervisor")]);
 
-        let waiting: Vec<String> = supervisor
-            .outbox
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|r| r.session.clone())
-            .collect();
+        let waiting: Vec<String> = supervisor.outbox.lock().iter().map(|r| r.session.clone()).collect();
         assert_eq!(waiting, vec!["from-runtime", "from-supervisor"], "oldest first");
     }
 
@@ -6629,7 +6592,7 @@ mod tests {
         supervisor.owe_captures(vec![report("s2", crate::heartbeat::CaptureEnd::Bytes)]);
         supervisor.owe_captures(vec![report("s1", crate::heartbeat::CaptureEnd::Matches)]);
 
-        let outbox = supervisor.outbox.lock().unwrap();
+        let outbox = supervisor.outbox.lock();
         assert_eq!(
             outbox.len(),
             2,
@@ -6687,7 +6650,7 @@ mod tests {
         // the outbox, with nothing from the leader yet acknowledging it.
         supervisor.hand_back_captures();
         assert_eq!(
-            supervisor.outbox.lock().unwrap().len(),
+            supervisor.outbox.lock().len(),
             1,
             "a finished session was not offered to the outbox"
         );
@@ -6711,7 +6674,7 @@ mod tests {
         }
         supervisor.follow_captures(vec![invited("s1"), invited("s2")]);
 
-        let held = supervisor.invitations.lock().unwrap();
+        let held = supervisor.invitations.lock();
         let sessions: Vec<&str> = held.queued.iter().map(|i| i.session.as_str()).collect();
         assert_eq!(sessions, vec!["s1", "s2"], "a repeated invitation was queued again");
     }
@@ -6741,14 +6704,14 @@ mod tests {
             sql: None,
             avro: Vec::new(),
         };
-        *supervisor.outbox.lock().unwrap() = vec![
+        *supervisor.outbox.lock() = vec![
             report("s1", None),
             report("s3", Some(crate::heartbeat::CaptureEnd::Deadline)),
             report("s2", None),
         ];
         supervisor.follow_captures(vec![invited("s1"), invited("s2")]);
         {
-            let mut held = supervisor.invitations.lock().unwrap();
+            let mut held = supervisor.invitations.lock();
             let queued: Vec<&str> = held.queued.iter().map(|i| i.session.as_str()).collect();
             assert_eq!(queued, vec!["s1", "s2"]);
             // As the deployer's turn leaves it, so each answer below must set it on its own.
@@ -6766,20 +6729,14 @@ mod tests {
             "a finished session was let go before its report was sent"
         );
         {
-            let mut held = supervisor.invitations.lock().unwrap();
+            let mut held = supervisor.invitations.lock();
             let queued: Vec<&str> = held.queued.iter().map(|i| i.session.as_str()).collect();
             assert_eq!(queued, vec!["s2"], "an unlisted session's invitation stayed queued");
             assert_eq!(held.listed, HashSet::from(["s2".to_string()]));
             assert!(held.changed, "a runtime would not be told the list moved");
             held.changed = false;
         }
-        let owed: Vec<String> = supervisor
-            .outbox
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|r| r.session.clone())
-            .collect();
+        let owed: Vec<String> = supervisor.outbox.lock().iter().map(|r| r.session.clone()).collect();
         assert_eq!(
             owed,
             vec!["s3", "s2"],
@@ -6787,7 +6744,7 @@ mod tests {
         );
 
         supervisor.follow_captures(vec![]);
-        let held = supervisor.invitations.lock().unwrap();
+        let held = supervisor.invitations.lock();
         assert!(held.queued.is_empty(), "an empty list left an invitation queued");
         assert!(held.listed.is_empty());
         assert!(held.changed, "a runtime would not be told the list emptied");
@@ -6844,13 +6801,12 @@ mod tests {
         let queued: Vec<String> = supervisor
             .invitations
             .lock()
-            .unwrap()
             .queued
             .iter()
             .map(|i| i.session.clone())
             .collect();
         assert_eq!(queued, vec!["s1"]);
-        let owed = supervisor.outbox.lock().unwrap().clone();
+        let owed = supervisor.outbox.lock().clone();
         assert_eq!(
             owed.len(),
             1,
@@ -6861,11 +6817,11 @@ mod tests {
             matches!(&owed[0].finished, Some(crate::heartbeat::CaptureEnd::Failed(why)) if why.contains("cannot read"))
         );
 
-        supervisor.outbox.lock().unwrap().clear();
+        supervisor.outbox.lock().clear();
         supervisor.answered("s2");
         supervisor.follow_captures(vec![unreadable()]);
         assert!(
-            supervisor.outbox.lock().unwrap().is_empty(),
+            supervisor.outbox.lock().is_empty(),
             "answered again after the leader had it"
         );
     }
@@ -6911,7 +6867,7 @@ mod tests {
         let mut handle = dead_pipe_runtime(&inbox);
 
         let supervisor = supervisor_for(temp_dir("dead-pipe-capture"));
-        *supervisor.invitations.lock().unwrap() = Invitations {
+        *supervisor.invitations.lock() = Invitations {
             listed: ["s1".to_string()].into(),
             queued: vec![capture_invitation("s1")],
             ..Default::default()
@@ -6929,7 +6885,7 @@ mod tests {
     /// With no runtime, no logs are kept for one.
     #[test]
     fn metrics_and_logs_are_mirrored_once_per_heartbeat_and_stay_owed_until_sent() {
-        let _taps = crate::logs::TAPS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _taps = crate::logs::TAPS_LOCK.lock();
         let inbox = Arc::new(child::RuntimeInbox::default());
         let mut handle = dead_pipe_runtime(&inbox);
         let supervisor = supervisor_for(temp_dir("dead-pipe-mirror"));
@@ -6969,7 +6925,6 @@ mod tests {
         let owed_logs = supervisor
             .logs_mirror
             .lock()
-            .unwrap()
             .as_ref()
             .expect("a runtime is running, so the logs mirror is open")
             .drain(usize::MAX);
@@ -6980,7 +6935,7 @@ mod tests {
 
         assert!(!supervisor.mirror_to(None));
         assert!(
-            supervisor.logs_mirror.lock().unwrap().is_none(),
+            supervisor.logs_mirror.lock().is_none(),
             "logs are kept for a runtime that is not running"
         );
     }
@@ -6998,7 +6953,7 @@ mod tests {
             sources: vec!["orders".to_string()],
             ..Default::default()
         }));
-        *supervisor.invitations.lock().unwrap() = Invitations {
+        *supervisor.invitations.lock() = Invitations {
             listed: ["s1".to_string(), "s2".to_string()].into(),
             queued: vec![capture_invitation("s1"), capture_invitation("s2")],
             ..Default::default()
@@ -7010,7 +6965,6 @@ mod tests {
         let queued: Vec<String> = supervisor
             .invitations
             .lock()
-            .unwrap()
             .queued
             .iter()
             .map(|i| i.session.clone())
@@ -7125,7 +7079,7 @@ mod tests {
             !supervisor.captures.open(&admitted[1]) && supervisor.captures.holds("s2"),
             "s2 is finished and still held"
         );
-        *supervisor.invitations.lock().unwrap() = Invitations {
+        *supervisor.invitations.lock() = Invitations {
             listed: ["s1".to_string(), "s2".to_string()].into(),
             queued: vec![capture_invitation("s1"), capture_invitation("s2")],
             ..Default::default()
@@ -7136,7 +7090,7 @@ mod tests {
             "a session this process holds, filling or finished, was forwarded to the runtime"
         );
         assert!(
-            supervisor.invitations.lock().unwrap().queued.is_empty(),
+            supervisor.invitations.lock().queued.is_empty(),
             "a session this process holds was queued again"
         );
     }
@@ -7148,7 +7102,7 @@ mod tests {
         let mut handle = dead_pipe_runtime(&inbox);
 
         let supervisor = supervisor_for(temp_dir("dead-pipe-listing"));
-        *supervisor.invitations.lock().unwrap() = Invitations {
+        *supervisor.invitations.lock() = Invitations {
             changed: true,
             ..Default::default()
         };
@@ -7166,7 +7120,7 @@ mod tests {
     fn an_invitation_taken_before_the_answer_that_let_it_go_is_not_served() {
         let supervisor = supervisor_for(temp_dir("capture-taken-then-unlisted"));
         // The deployer's copy of the queue, and the listing as the heartbeat left it after.
-        *supervisor.invitations.lock().unwrap() = Invitations {
+        *supervisor.invitations.lock() = Invitations {
             queued: vec![capture_invitation("s1")],
             ..Default::default()
         };
@@ -7195,13 +7149,13 @@ mod tests {
 
         supervisor.follow_captures(vec![invited("s1")]);
         assert!(
-            supervisor.invitations.lock().unwrap().queued.is_empty(),
+            supervisor.invitations.lock().queued.is_empty(),
             "an answer that crossed the acknowledgment queued the session again"
         );
 
         supervisor.follow_captures(vec![]);
         assert!(
-            supervisor.invitations.lock().unwrap().answered.is_empty(),
+            supervisor.invitations.lock().answered.is_empty(),
             "an answered session was remembered past the last answer that listed it"
         );
     }
@@ -7215,7 +7169,7 @@ mod tests {
         let mut handle = dead_pipe_runtime(&inbox);
 
         let supervisor = supervisor_for(temp_dir("capture-answered-runtime"));
-        *supervisor.invitations.lock().unwrap() = Invitations {
+        *supervisor.invitations.lock() = Invitations {
             listed: ["s1".to_string()].into(),
             queued: vec![capture_invitation("s1")],
             answered: ["s1".to_string()].into(),
@@ -7243,7 +7197,7 @@ mod tests {
                 avro: Vec::new(),
             }]);
         }
-        let outbox = supervisor.outbox.lock().unwrap();
+        let outbox = supervisor.outbox.lock();
         assert_eq!(outbox.len(), CAPTURES_WAITING, "the outbox grew past what it may hold");
         assert_eq!(outbox[0].session, "s4", "it dropped the newest rather than the oldest");
     }
@@ -7313,7 +7267,7 @@ mod tests {
         );
         assert_eq!(batch[0].session, "s0", "the oldest was not what a batch took first");
         assert_eq!(
-            outbox.lock().unwrap().len(),
+            outbox.lock().len(),
             CAPTURES_WAITING - CAPTURE_UPLOADS_AT_ONCE,
             "what a batch left behind is what the cap must still count -- taking the whole outbox at once left \
              nothing for a concurrent arrival to be capped against"
@@ -7390,7 +7344,7 @@ mod tests {
             .unwrap()
         };
         let inbox = child::RuntimeInbox::default();
-        *inbox.report.lock().unwrap() = Some(report(2, "a1", said(0..first_said)));
+        *inbox.report.lock() = Some(report(2, "a1", said(0..first_said)));
         supervisor.absorb(&inbox);
         let first = supervisor.next_beat(false);
         assert_eq!(first.streams_window, Some(1));
@@ -7408,14 +7362,14 @@ mod tests {
         );
 
         // Unanswered; the runtime says more before the next beat, and more again before the one after.
-        *inbox.report.lock().unwrap() = Some(report(3, "a2", said(first_said..first_said + 1)));
+        *inbox.report.lock() = Some(report(3, "a2", said(first_said..first_said + 1)));
         supervisor.absorb(&inbox);
         assert_eq!(
             window(&supervisor.next_beat(false)),
             window(&first),
             "the owed window changed"
         );
-        *inbox.report.lock().unwrap() = Some(report(4, "a3", said(first_said + 1..first_said + 2)));
+        *inbox.report.lock() = Some(report(4, "a3", said(first_said + 1..first_said + 2)));
         supervisor.absorb(&inbox);
         supervisor.window_answered();
 
@@ -7457,7 +7411,7 @@ mod tests {
             }],
         };
         let said = |inbox: &child::RuntimeInbox, rows| {
-            *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
+            *inbox.report.lock() = Some(child::RuntimeReport {
                 state: child::RuntimeState::default(),
                 gathered: child::Gathered {
                     streams: Some(unmatched(rows)),
@@ -7493,7 +7447,7 @@ mod tests {
     fn a_stopping_beat_carries_the_drain_s_progress_with_the_owed_window() {
         let supervisor = supervisor_for(temp_dir("window-stopping"));
         let inbox = child::RuntimeInbox::default();
-        *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
+        *inbox.report.lock() = Some(child::RuntimeReport {
             gathered: child::Gathered {
                 progress: vec![progress_of("a", 1, "a1")],
                 ..Default::default()
@@ -7503,7 +7457,7 @@ mod tests {
         supervisor.absorb(&inbox);
         let owed = supervisor.next_beat(false);
 
-        *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
+        *inbox.report.lock() = Some(child::RuntimeReport {
             gathered: child::Gathered {
                 progress: vec![progress_of("a", 1, "a2")],
                 ..Default::default()
@@ -7681,7 +7635,7 @@ mod tests {
             .registry
             .incr("smeltr_capture_records_total", &[("thread", "capture")], 2);
         let inbox = child::RuntimeInbox::default();
-        *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
+        *inbox.report.lock() = Some(child::RuntimeReport {
             gathered: child::Gathered {
                 progress: vec![progress_of("a", 1, "a1")],
                 ..Default::default()
@@ -7690,7 +7644,7 @@ mod tests {
         });
         supervisor.absorb(&inbox);
         let refused = supervisor.next_beat(false);
-        *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
+        *inbox.report.lock() = Some(child::RuntimeReport {
             gathered: child::Gathered {
                 progress: vec![progress_of("a", 1, "a2")],
                 ..Default::default()
@@ -7724,7 +7678,7 @@ mod tests {
     fn a_beat_with_nothing_new_from_the_runtime_still_reports_its_threads() {
         let supervisor = supervisor_for(temp_dir("window-keeps-threads"));
         let inbox = child::RuntimeInbox::default();
-        *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
+        *inbox.report.lock() = Some(child::RuntimeReport {
             state: child::RuntimeState {
                 pool_thread_ids: vec!["pool-0".to_string()],
                 ..Default::default()
@@ -7750,7 +7704,7 @@ mod tests {
     fn a_runtime_s_metrics_ride_the_heartbeat_under_their_thread() {
         let supervisor = supervisor_for(temp_dir("metrics-ride"));
         let inbox = child::RuntimeInbox::default();
-        *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
+        *inbox.report.lock() = Some(child::RuntimeReport {
             state: child::RuntimeState {
                 pool_thread_ids: vec!["pool-0".to_string()],
                 ..Default::default()
@@ -7810,7 +7764,7 @@ mod tests {
         };
         let inbox = child::RuntimeInbox::default();
         for (rows, depth) in [(9, 4.0), (5, 1.0)] {
-            *inbox.report.lock().unwrap() = Some(report(rows, depth));
+            *inbox.report.lock() = Some(report(rows, depth));
             supervisor.absorb(&inbox);
         }
         let text = supervisor.scrape();
@@ -7825,7 +7779,7 @@ mod tests {
         let text = supervisor.scrape();
         assert!(!text.contains("smeltr_queue_depth"), "{text}");
         assert!(text.contains("smeltr_rows_in_total{thread=\"pool-0\"} 14\n"), "{text}");
-        *inbox.report.lock().unwrap() = Some(report(3, 2.0));
+        *inbox.report.lock() = Some(report(3, 2.0));
         supervisor.absorb(&inbox);
         assert!(
             supervisor
@@ -7876,7 +7830,7 @@ mod tests {
         let supervisor = supervisor_for(temp_dir("progress-cap"));
         let cap = heartbeat::LEDGER_PER_HEARTBEAT;
         let inbox = child::RuntimeInbox::default();
-        *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
+        *inbox.report.lock() = Some(child::RuntimeReport {
             state: child::RuntimeState {
                 single_worker: vec![source_key("a"), source_key("b")],
                 ..Default::default()
@@ -7897,7 +7851,7 @@ mod tests {
         assert_eq!(sent.single_worker, vec![source_key("a"), source_key("b")]);
 
         // More arrives from the runtime, and the beat is not answered: the next carries the same again.
-        *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
+        *inbox.report.lock() = Some(child::RuntimeReport {
             gathered: child::Gathered {
                 progress: vec![progress_of("a", 1, "a3")],
                 ..Default::default()
@@ -7919,7 +7873,7 @@ mod tests {
     fn forgetting_a_runtime_keeps_its_progress_and_forgets_its_sources() {
         let supervisor = supervisor_for(temp_dir("forget-progress"));
         let inbox = child::RuntimeInbox::default();
-        *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
+        *inbox.report.lock() = Some(child::RuntimeReport {
             state: child::RuntimeState {
                 single_worker: vec![source_key("a")],
                 ..Default::default()
@@ -7931,7 +7885,7 @@ mod tests {
         });
         supervisor.absorb(&inbox);
         supervisor.forget_runtime();
-        let held = supervisor.runtime.lock().unwrap().clone().unwrap();
+        let held = supervisor.runtime.lock().clone().unwrap();
         assert_eq!(held.gathered.progress, vec![progress_of("a", 2, "a1")]);
         assert!(
             held.state.single_worker.is_empty(),
@@ -8072,10 +8026,7 @@ mod tests {
         // A fetch the next answer supersedes hands nothing over.
         supervisor.follow_holds(vec![hold_of("c", "c1")]);
         assert!(!supervisor.route_holds(Some(&mut handle)));
-        assert!(
-            supervisor.holds.lock().unwrap().fetching.is_some(),
-            "no fetch began for a grant"
-        );
+        assert!(supervisor.holds.lock().fetching.is_some(), "no fetch began for a grant");
         supervisor.follow_holds(vec![hold_of("d", "c1")]);
         let frames = routed_until(&supervisor, &mut handle, &file, 2);
         assert!(frames[1].contains(r#""source":"d""#), "{}", frames[1]);
@@ -8090,7 +8041,7 @@ mod tests {
         assert!(frames[2].ends_with(r#""holds":[]}"#), "{}", frames[2]);
         std::thread::sleep(Duration::from_millis(200));
         assert!(!supervisor.route_holds(Some(&mut handle)));
-        assert!(supervisor.holds.lock().unwrap().told.is_empty());
+        assert!(supervisor.holds.lock().told.is_empty());
         assert_eq!(
             routed_until(&supervisor, &mut handle, &file, 3).len(),
             3,
@@ -8130,7 +8081,7 @@ mod tests {
         let inbox = Arc::new(child::RuntimeInbox::default());
         let mut handle = recording_runtime(&file, &inbox);
         let supervisor = supervisor_for(temp_dir("runtime-restart-holds-supervisor"));
-        *supervisor.client.lock().unwrap() =
+        *supervisor.client.lock() =
             Arc::new(HeartbeatClient::new(format!("http://127.0.0.1:{port}"), "t", None, true).unwrap());
 
         supervisor.follow_holds(vec![hold_of("a", "c1")]);
@@ -8143,7 +8094,7 @@ mod tests {
         assert_eq!(fetches.load(Ordering::SeqCst), 1);
 
         // The same answer, heard again by a runtime that has just started.
-        supervisor.holds.lock().unwrap().restarted();
+        supervisor.holds.lock().restarted();
         supervisor.follow_holds(vec![hold_of("a", "c1")]);
         let frames = routed_until(&supervisor, &mut handle, &file, 2);
         assert!(
@@ -8222,7 +8173,7 @@ mod tests {
         assert_eq!(frames(1), [r#"{"kind":"backlogged","full":false}"#]);
         assert!(!supervisor.route_backlog(Some(&mut handle)));
 
-        *supervisor.runtime.lock().unwrap() = Some(child::RuntimeReport {
+        *supervisor.runtime.lock() = Some(child::RuntimeReport {
             gathered: child::Gathered {
                 progress: vec![progress_of("a", held::BACKLOG_FULL, "a1")],
                 ..Default::default()
@@ -8235,26 +8186,18 @@ mod tests {
 
         // Drained to between the marks: still full.
         let entries = held::BACKLOG_EASED + 1;
-        supervisor.runtime.lock().unwrap().as_mut().unwrap().gathered.progress = vec![progress_of("a", entries, "a1")];
+        supervisor.runtime.lock().as_mut().unwrap().gathered.progress = vec![progress_of("a", entries, "a1")];
         assert!(!supervisor.route_backlog(Some(&mut handle)));
-        supervisor
-            .runtime
-            .lock()
-            .unwrap()
-            .as_mut()
-            .unwrap()
-            .gathered
-            .progress
-            .clear();
+        supervisor.runtime.lock().as_mut().unwrap().gathered.progress.clear();
         assert!(!supervisor.route_backlog(Some(&mut handle)));
         assert_eq!(frames(3)[2], r#"{"kind":"backlogged","full":false}"#);
 
-        supervisor.holds.lock().unwrap().restarted();
+        supervisor.holds.lock().restarted();
         assert!(!supervisor.route_backlog(Some(&mut handle)));
         assert_eq!(frames(4).len(), 4, "a runtime that started was not told");
 
         // What the owed window took waits for the leader too.
-        supervisor.owed.lock().unwrap().window = Some(Window {
+        supervisor.owed.lock().window = Some(Window {
             progress: vec![progress_of("a", held::BACKLOG_FULL, "a1")],
             ..Default::default()
         });
@@ -8301,7 +8244,7 @@ mod tests {
         });
         let supervisor = supervisor_for(temp_dir("progress-503"));
         let inbox = child::RuntimeInbox::default();
-        *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
+        *inbox.report.lock() = Some(child::RuntimeReport {
             gathered: child::Gathered {
                 progress: vec![progress_of("a", 2, "a1")],
                 ..Default::default()
@@ -8315,7 +8258,7 @@ mod tests {
         let client = HeartbeatClient::new(format!("http://127.0.0.1:{port}"), "t", None, true).unwrap();
         assert!(client.send(&req).is_err(), "a 503 was taken for an answer");
 
-        *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
+        *inbox.report.lock() = Some(child::RuntimeReport {
             gathered: child::Gathered {
                 progress: vec![progress_of("a", 1, "a2")],
                 ..Default::default()
@@ -8380,15 +8323,15 @@ mod tests {
     #[test]
     fn forgetting_a_runtime_keeps_what_it_still_owes_and_claims_nothing_else() {
         let supervisor = supervisor_for(temp_dir("forget"));
-        supervisor.supervising.lock().unwrap().incarnation = Some(4);
-        supervisor.supervising.lock().unwrap().listens = vec![heartbeat::Listening {
+        supervisor.supervising.lock().incarnation = Some(4);
+        supervisor.supervising.lock().listens = vec![heartbeat::Listening {
             source: "in".to_string(),
             transport: crate::plan::topology::Transport::Tcp,
             address: "[::]:8088".parse().unwrap(),
         }];
-        *supervisor.commit.lock().unwrap() = Some("c0ffee".to_string());
+        *supervisor.commit.lock() = Some("c0ffee".to_string());
         let inbox = child::RuntimeInbox::default();
-        *inbox.report.lock().unwrap() = Some(child::RuntimeReport {
+        *inbox.report.lock() = Some(child::RuntimeReport {
             state: child::RuntimeState {
                 pool_thread_ids: vec!["pool-0".to_string()],
                 ..Default::default()
@@ -8406,18 +8349,18 @@ mod tests {
 
         supervisor.forget_runtime();
 
-        assert_eq!(supervisor.commit.lock().unwrap().clone(), None);
+        assert_eq!(supervisor.commit.lock().clone(), None);
         assert_eq!(
-            supervisor.supervising.lock().unwrap().incarnation,
+            supervisor.supervising.lock().incarnation,
             None,
             "a dead runtime was still being named"
         );
         assert!(
-            supervisor.supervising.lock().unwrap().listens.is_empty(),
+            supervisor.supervising.lock().listens.is_empty(),
             "a dead runtime's receivers were still being named"
         );
 
-        let runtime = supervisor.runtime.lock().unwrap();
+        let runtime = supervisor.runtime.lock();
         let (req, _) = beat_from(
             Reporting {
                 worker_id: "w1",
@@ -8863,7 +8806,6 @@ mod tests {
         supervisor
             .secrets
             .lock()
-            .unwrap()
             .set_stored([("t".to_string(), 1, "T".to_string())]);
 
         let listening = supervisor.validate(&head).unwrap().listening;
@@ -8940,10 +8882,7 @@ mod tests {
                  "exceptions":{"kinds":{"Unmatched":"block"}}}]"#,
         );
         assert!(
-            deployment
-                .readers
-                .iter()
-                .any(|r| r.report.lock().unwrap().held.is_some()),
+            deployment.readers.iter().any(|r| r.report.lock().held.is_some()),
             "no source was blocked"
         );
 

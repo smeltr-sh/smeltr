@@ -19,8 +19,9 @@
 //! given the root that signed it and nothing about serving it is new. What this module keeps is under `tls/acme/`:
 //! the account, and when the next order is due.
 
+use crate::sync::Mutex;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -477,16 +478,16 @@ pub struct Progress(Mutex<Option<(Step, i64)>>);
 
 impl Progress {
     pub fn set(&self, step: Step) {
-        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some((step, crate::leader::warnings::now_millis()));
+        *self.0.lock() = Some((step, crate::leader::warnings::now_millis()));
     }
 
     pub fn clear(&self) {
-        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.0.lock() = None;
     }
 
     /// The step and when it began, in milliseconds.
     pub fn now(&self) -> Option<(Step, i64)> {
-        *self.0.lock().unwrap_or_else(|e| e.into_inner())
+        *self.0.lock()
     }
 }
 
@@ -746,7 +747,7 @@ impl Proving {
                         Arc<Mutex<std::collections::HashMap<String, String>>>,
                     >,
                      axum::extract::Path(token): axum::extract::Path<String>| async move {
-                        let found = tokens.lock().unwrap_or_else(|e| e.into_inner()).get(&token).cloned();
+                        let found = tokens.lock().get(&token).cloned();
                         match found {
                             Some(key_authorization) => (
                                 axum::http::StatusCode::OK,
@@ -787,7 +788,6 @@ impl Prover for Proving {
         self.listen().await?;
         self.tokens
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
             .insert(token.to_string(), key_authorization.to_string());
         Ok(())
     }
@@ -798,7 +798,7 @@ impl Prover for Proving {
 
     async fn done(&self) {
         self.resolver.done();
-        self.tokens.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.tokens.lock().clear();
         if let Some(listening) = self.listener.lock().await.take() {
             let _ = listening.stop.send(());
             // Until the port is free again, so a renewal that follows at once can bind it. A validator still mid-

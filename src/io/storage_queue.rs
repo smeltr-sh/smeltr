@@ -5,8 +5,9 @@
 //! A Storage queue has no dead-letter queue of its own. A message received more than `max_deliveries` times is moved
 //! to `<queue>-poison`, as Azure Functions does, so an unreadable blob stops coming back without being lost.
 
+use crate::sync::Mutex;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::time::Duration;
 
 use http::Method;
@@ -110,7 +111,7 @@ impl StorageQueue {
     /// Moves a message's `text` to the poison queue, making that queue first if this source has not. The message
     /// itself is deleted by the caller once this succeeds.
     fn poison(&self, text: &str) -> Result<(), String> {
-        let mut made = self.poison_made.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut made = self.poison_made.lock();
         if !*made {
             // Made once and kept: 201 when new, 204 when it already exists.
             self.call(Method::PUT, &self.poison_url, String::new())
@@ -210,8 +211,8 @@ impl StorageQueue {
         }
     }
 
-    fn receipts(&self) -> std::sync::MutexGuard<'_, HashMap<String, String>> {
-        self.receipts.lock().unwrap_or_else(PoisonError::into_inner)
+    fn receipts(&self) -> crate::sync::MutexGuard<'_, HashMap<String, String>> {
+        self.receipts.lock()
     }
 }
 

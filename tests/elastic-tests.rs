@@ -9,7 +9,8 @@
 //! response body exercises every branch of it exactly.
 
 use smeltr::core::id::DestId;
-use std::sync::{Arc, Mutex};
+use smeltr::sync::Mutex;
+use std::sync::Arc;
 use std::time::Duration;
 
 use smeltr::io::elastic::{Elastic, PendingDoc, bulk_body, classify_response};
@@ -221,7 +222,7 @@ fn a_request_refused_whole_is_split_down_to_the_documents_at_fault() {
             "{}",
             rejections[0].reason
         );
-        let sent = sent.lock().unwrap();
+        let sent = sent.lock();
         let carried = |i: usize| {
             (0..4)
                 .filter(|n| sent[i].contains(&format!(r#"{{"n":{n}}}"#)))
@@ -253,7 +254,7 @@ fn a_document_the_mapping_refuses_is_rejected_alone() {
         OutgoingRecord::new(br#"{"b":1}"#),
     ];
     let rejections = deliver(&mut d, &rows).expect("the documents that fit landed, so the hand-over succeeded");
-    assert_eq!(sent.lock().unwrap().len(), 1, "a refusal is never retried");
+    assert_eq!(sent.lock().len(), 1, "a refusal is never retried");
     let refused: Vec<(usize, &str, &[u8])> = rejections
         .iter()
         .map(|r| (r.doc, r.reason.as_str(), r.record.as_ref().unwrap().value.as_slice()))
@@ -295,10 +296,7 @@ struct ScriptedTransport {
 
 impl Transport for ScriptedTransport {
     fn post(&mut self, _path: &str, body: &[u8], _budget: Duration) -> Result<Response, IoError> {
-        self.sent
-            .lock()
-            .unwrap()
-            .push(String::from_utf8_lossy(body).into_owned());
+        self.sent.lock().push(String::from_utf8_lossy(body).into_owned());
         match self.responses.remove(0) {
             Ok(r) => Ok(r),
             Err(e) => Err(IoError::transient(e)),
@@ -354,11 +352,11 @@ fn a_clean_hand_over_posts_once() {
         &[OutgoingRecord::new(br#"{"a":1}"#), OutgoingRecord::new(br#"{"b":2}"#)],
     )
     .unwrap();
-    assert_eq!(sent.lock().unwrap().len(), 1);
+    assert_eq!(sent.lock().len(), 1);
     // A batch with nothing in it must not post an empty body.
     deliver(&mut d, &[]).unwrap();
     d.flush().unwrap();
-    assert_eq!(sent.lock().unwrap().len(), 1);
+    assert_eq!(sent.lock().len(), 1);
 }
 
 /// The retry carries only the documents that failed. Resending the ones
@@ -385,7 +383,7 @@ fn a_retry_resends_only_the_failed_documents() {
     )
     .unwrap();
 
-    let sent = sent.lock().unwrap();
+    let sent = sent.lock();
     assert_eq!(sent.len(), 2);
     assert!(sent[0].contains(r#"{"n":1}"#) && sent[0].contains(r#"{"n":3}"#));
     assert!(
@@ -418,7 +416,7 @@ fn a_permanent_failure_is_reported_as_a_rejection_not_a_flush_error() {
         &[OutgoingRecord::new(br#"{"a":1}"#), OutgoingRecord::new(br#"{"a":2}"#)],
     )
     .expect("the good document landed, so the hand-over succeeded");
-    assert_eq!(sent.lock().unwrap().len(), 1, "no retry");
+    assert_eq!(sent.lock().len(), 1, "no retry");
 
     assert_eq!(rejections.len(), 1);
     assert_eq!(rejections[0].doc, 1, "the second document handed over");
@@ -480,7 +478,7 @@ fn a_document_holding_a_newline_is_refused_rather_than_breaking_the_request() {
     assert_eq!(rejections[0].doc, 1);
     assert!(rejections[0].reason.contains("newline"), "{}", rejections[0].reason);
 
-    let body = sent.lock().unwrap()[0].clone();
+    let body = sent.lock()[0].clone();
     assert_eq!(
         body, "{\"create\":{\"_index\":\"logs\"}}\n{\"a\":1}\n{\"create\":{\"_index\":\"logs\"}}\n{\"a\":3}\n",
         "the refused document is absent and the pairs around it are intact"
@@ -533,7 +531,7 @@ fn retries_stop_at_the_flush_budget() {
         "the budget bounds the whole hand-over, not one attempt: {elapsed:?}"
     );
     assert!(
-        sent.lock().unwrap().len() > 1,
+        sent.lock().len() > 1,
         "it should have retried at least once before giving up"
     );
 }
@@ -552,7 +550,7 @@ fn a_placement_picks_the_index() {
         ],
     )
     .unwrap();
-    let sent = sent.lock().unwrap();
+    let sent = sent.lock();
     assert!(sent[0].contains(r#""_index":"logs-2026-08-29""#), "{}", sent[0]);
     assert!(sent[0].contains(r#""_index":"fallback""#), "{}", sent[0]);
 }
@@ -568,7 +566,7 @@ fn a_transport_failure_fails_the_hand_over_and_keeps_nothing() {
     assert!(!e.is_rejection(), "no answer is worth another try: {e}");
     deliver(&mut d, &rows).unwrap();
 
-    let sent = sent.lock().unwrap();
+    let sent = sent.lock();
     assert_eq!(sent.len(), 2, "the second hand-over posts again");
     for doc in [r#"{"a":1}"#, r#"{"a":2}"#] {
         assert_eq!(sent[1].matches(doc).count(), 1, "{doc} goes once: {}", sent[1]);
@@ -589,7 +587,7 @@ fn a_batch_past_the_bulk_size_is_posted_in_rounds() {
         ],
     )
     .unwrap();
-    let sent = sent.lock().unwrap();
+    let sent = sent.lock();
     assert_eq!(sent.len(), 2);
     assert!(
         sent[0].contains("0123456789") && !sent[0].contains(r#"{"b":1}"#),
@@ -614,7 +612,7 @@ fn a_row_with_no_doc_id_gets_a_generated_one() {
         ],
     )
     .unwrap();
-    let sent = sent.lock().unwrap();
+    let sent = sent.lock();
     let lines: Vec<&str> = sent[0].lines().collect();
     assert_eq!(lines[0], r#"{"create":{"_index":"logs","_id":"has-one"}}"#);
     assert_eq!(lines[2], r#"{"create":{"_index":"logs"}}"#);
@@ -632,9 +630,9 @@ fn a_document_id_is_not_a_partition_key() {
     let mut d = HttpDestination::new(t, Elastic::new("logs"));
     deliver(&mut d, &[OutgoingRecord::new(b"{}").with_key(Some(b"partition-key"))]).unwrap();
     assert!(
-        !sent.lock().unwrap()[0].contains("partition-key"),
+        !sent.lock()[0].contains("partition-key"),
         "a partition key is not a document identity: {}",
-        sent.lock().unwrap()[0]
+        sent.lock()[0]
     );
 }
 

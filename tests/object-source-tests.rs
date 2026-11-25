@@ -1,8 +1,9 @@
 //! The object source's core (`io::object_source`) over `object_store`'s in-memory store and a queue held in memory:
 //! how objects become records, and when a message is extended and deleted.
 
+use smeltr::sync::Mutex;
 use std::io::Write;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use object_store::memory::InMemory;
@@ -37,16 +38,16 @@ impl Queue for FakeQueue {
     }
 
     fn receive(&self, max: usize, _: Duration, _: Duration) -> Result<Vec<Message>, IoError> {
-        let delay = self.0.lock().unwrap().delay;
+        let delay = self.0.lock().delay;
         std::thread::sleep(delay);
-        let mut calls = self.0.lock().unwrap();
+        let mut calls = self.0.lock();
         calls.receives += 1;
         let n = calls.inbox.len().min(max);
         Ok(calls.inbox.drain(..n).collect())
     }
 
     fn extend(&self, handles: &[String], visibility: Duration) -> Vec<(String, String)> {
-        let mut calls = self.0.lock().unwrap();
+        let mut calls = self.0.lock();
         let to = if visibility.is_zero() {
             &mut calls.shown
         } else {
@@ -57,12 +58,12 @@ impl Queue for FakeQueue {
     }
 
     fn delete(&self, handles: &[String]) -> Vec<(String, String)> {
-        self.0.lock().unwrap().deleted.extend_from_slice(handles);
+        self.0.lock().deleted.extend_from_slice(handles);
         Vec::new()
     }
 
     fn depth(&self) -> Option<Result<PartitionLag, Unread>> {
-        let depth = self.0.lock().unwrap().depth.clone()?;
+        let depth = self.0.lock().depth.clone()?;
         Some(depth.map_err(Unread::Failed).map(|lag| PartitionLag {
             partition: TopicPartition::new(Arc::from("orders"), 0),
             lag,
@@ -101,7 +102,7 @@ impl Setup {
                 version: None,
             })
             .collect();
-        self.queue.0.lock().unwrap().inbox.push(Message {
+        self.queue.0.lock().inbox.push(Message {
             handle: handle.to_string(),
             objects: Ok(objects),
         });
@@ -125,7 +126,7 @@ impl Setup {
     }
 
     fn deleted(&self) -> Vec<String> {
-        self.queue.0.lock().unwrap().deleted.clone()
+        self.queue.0.lock().deleted.clone()
     }
 }
 
@@ -148,7 +149,7 @@ fn poll_briefly(source: &mut ObjectSource) -> Vec<SourceRecord> {
 fn extended(s: &Setup) -> Vec<String> {
     let deadline = Instant::now() + WAIT;
     loop {
-        let extended = s.queue.0.lock().unwrap().extended.clone();
+        let extended = s.queue.0.lock().extended.clone();
         if !extended.is_empty() || Instant::now() > deadline {
             return extended;
         }
@@ -461,11 +462,11 @@ fn an_unreadable_object_leaves_its_message_on_the_queue() {
     s.announce("missing", &["good", "nowhere"]);
     s.announce("corrupt", &["corrupt.gz"]);
     s.announce("fine", &["good"]);
-    s.queue.0.lock().unwrap().inbox.push(Message {
+    s.queue.0.lock().inbox.push(Message {
         handle: "stranger".to_string(),
         objects: Err("no notification".to_string()),
     });
-    s.queue.0.lock().unwrap().inbox.push(Message {
+    s.queue.0.lock().inbox.push(Message {
         handle: "test-event".to_string(),
         objects: Ok(Vec::new()),
     });
@@ -522,11 +523,11 @@ fn a_dropped_source_shows_what_it_holds_again_once_its_receive_answers() {
     s.announce("m", &["a"]);
     let mut source = s.source(Framing::Lines, HOUR);
     assert_eq!(raw(&poll(&mut source)), ["1"]);
-    s.queue.0.lock().unwrap().delay = POLL * 4;
+    s.queue.0.lock().delay = POLL * 4;
     s.announce("late", &["a"]);
     assert!(poll_briefly(&mut source).is_empty(), "the receive is still under way");
     drop(source);
-    let calls = s.queue.0.lock().unwrap();
+    let calls = s.queue.0.lock();
     assert_eq!(calls.shown, ["late", "m"]);
     assert!(calls.extended.is_empty() && calls.deleted.is_empty());
 }
@@ -541,21 +542,14 @@ fn a_held_message_is_extended_past_half_its_time_and_while_blocked() {
     let records = poll(&mut source);
     assert_eq!(records.len(), 1);
     source.keep_membership(POLL).unwrap();
-    assert!(
-        s.queue.0.lock().unwrap().extended.is_empty(),
-        "more than half its time is left"
-    );
+    assert!(s.queue.0.lock().extended.is_empty(), "more than half its time is left");
 
     source.block().unwrap();
     s.announce("later", &["a"]);
     // Extended with no read under way: a read blocked on the store does not hold it back.
     assert_eq!(extended(&s), ["m"]);
     assert!(poll_briefly(&mut source).is_empty());
-    assert_eq!(
-        s.queue.0.lock().unwrap().receives,
-        1,
-        "a blocked source receives nothing"
-    );
+    assert_eq!(s.queue.0.lock().receives, 1, "a blocked source receives nothing");
 
     source.release().unwrap();
     assert_eq!(raw(&poll(&mut source)), ["1"]);
@@ -644,7 +638,7 @@ fn lag(source: &mut ObjectSource) -> Vec<PartitionLag> {
 #[test]
 fn a_queues_depth_is_its_lag_and_each_deleted_message_is_finished() {
     let s = Setup::new();
-    s.queue.0.lock().unwrap().depth = Some(Ok(7));
+    s.queue.0.lock().depth = Some(Ok(7));
     s.put("a.log", b"one\n");
     s.announce("m1", &["a.log"]);
     let mut source = s.source(Framing::Lines, HOUR);
@@ -668,7 +662,7 @@ fn a_queues_depth_is_its_lag_and_each_deleted_message_is_finished() {
 fn a_queue_that_cannot_count_or_did_not_reports_no_lag() {
     for depth in [None, Some(Err("refused".to_string()))] {
         let s = Setup::new();
-        s.queue.0.lock().unwrap().depth = depth.clone();
+        s.queue.0.lock().depth = depth.clone();
         let mut source = s.source(Framing::Lines, HOUR);
         std::thread::sleep(POLL);
         assert!(source.lag().is_empty(), "{depth:?}");

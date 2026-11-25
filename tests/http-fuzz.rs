@@ -14,9 +14,10 @@
 //! back.
 
 use smeltr::core::id::DestId;
+use smeltr::sync::Mutex;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::TcpListener;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -1360,7 +1361,7 @@ fn offline_seed(seed: u64, reached: &mut Reached) -> Result<(), String> {
     let delivered = destination::write(d.as_mut(), &batches, Duration::from_secs(60));
     drop(d);
     drop(service);
-    let script = script.lock().unwrap();
+    let script = script.lock();
     if let Some(status) = stall {
         check_requests(&c, &credentials, &sent, &script).map_err(context)?;
         reached.reach("answer.stall");

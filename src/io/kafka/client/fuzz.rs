@@ -792,7 +792,7 @@ impl World {
     }
 
     fn by_topic(&self, n: usize) -> HashMap<String, Arc<Slot>> {
-        self.nodes[n].routes.0.by_topic.lock().unwrap().clone()
+        self.nodes[n].routes.0.by_topic.lock().clone()
     }
 
     /// Attaches a source on `topics` through node `n`, and checks it is refused exactly when it names a topic its own

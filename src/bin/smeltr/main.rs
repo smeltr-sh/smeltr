@@ -904,7 +904,7 @@ fn spawn_embedded_worker(
     let code = smeltr::worker::needs_an_enrollment_code(&state_dir)
         .then(|| mint_embedded_enrollment_code(&store, &group_id, &smeltr::leader::tls::dir_of(data_dir)));
 
-    std::thread::spawn(move || {
+    smeltr::sync::spawn("smeltr-worker", move || {
         start_worker(
             leader_url,
             leader_ca_pem,
@@ -914,7 +914,8 @@ fn spawn_embedded_worker(
             code,
             true,
         )
-    });
+    })
+    .expect("start the worker's thread");
 }
 
 /// An enrollment code for the worker inside this process.
@@ -1099,16 +1100,34 @@ async fn setup_leader(
     };
     state.deploy_checks.set_runner(Arc::new(test_api::failing_at));
     smeltr::leader::log_levels::keep_stored(&state).await;
-    tokio::spawn(smeltr::leader::remote::poll(state.clone()));
-    tokio::spawn(smeltr::leader::updates::poll(state.clone()));
-    tokio::spawn(smeltr::leader::alerts::run(state.clone()));
-    tokio::spawn(smeltr::leader::housekeeping::run(state.clone()));
-    tokio::spawn(smeltr::leader::remote::push_saves(state.clone()));
+    smeltr::sync::keep_running("git-sync", {
+        let state = state.clone();
+        move || smeltr::leader::remote::poll(state.clone())
+    });
+    smeltr::sync::keep_running("update-check", {
+        let state = state.clone();
+        move || smeltr::leader::updates::poll(state.clone())
+    });
+    smeltr::sync::keep_running("alerts", {
+        let state = state.clone();
+        move || smeltr::leader::alerts::run(state.clone())
+    });
+    smeltr::sync::keep_running("housekeeping", {
+        let state = state.clone();
+        move || smeltr::leader::housekeeping::run(state.clone())
+    });
+    smeltr::sync::keep_running("git-push", {
+        let state = state.clone();
+        move || smeltr::leader::remote::push_saves(state.clone())
+    });
     // Without a worker in this process, what the leader's threads did not raise is the leader's too.
     if !smeltr::startup_config::worker_enabled() {
         smeltr::logs::runs_no_worker();
     }
-    tokio::spawn(smeltr::leader::keep_own_logs(state.clone()));
+    smeltr::sync::keep_running("leader-logs", {
+        let state = state.clone();
+        move || smeltr::leader::keep_own_logs(state.clone())
+    });
 
     // A cutover changes the files and then withdraws the enrollment codes that named the root it retired. A process
     // that stopped between the two came back to a finished cutover with no rotation left to notice it, so the same
@@ -2438,12 +2457,21 @@ async fn run_leader() {
     // What an agent's calls go through: this router, gate and all.
     auth.chats.serve(app.clone());
 
-    tokio::spawn(chat_api::sweep(auth.clone()));
-    tokio::spawn(refresh_oidc_sessions(auth.clone()));
+    smeltr::sync::keep_running("chat-sweep", {
+        let auth = auth.clone();
+        move || chat_api::sweep(auth.clone())
+    });
+    smeltr::sync::keep_running("oidc-refresh", {
+        let auth = auth.clone();
+        move || refresh_oidc_sessions(auth.clone())
+    });
     if let Some(serving) = certificates {
-        tokio::spawn(certificates_api::keep_renewed(auth.clone(), serving, list));
+        let auth = auth.clone();
+        smeltr::sync::keep_running("certificate-renewal", move || {
+            certificates_api::keep_renewed(auth.clone(), serving.clone(), list.clone())
+        });
     }
-    tokio::spawn(sweep_sessions(auth));
+    smeltr::sync::keep_running("session-sweep", move || sweep_sessions(auth.clone()));
 
     match tls {
         Some((resolver, _ca_pem)) => {

@@ -13,9 +13,10 @@
 //! Live, the same draws, pointed at the emulators `just live-up` runs, read objects there through the real queue and
 //! store.
 
+use smeltr::sync::Mutex;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use object_store::memory::InMemory;
@@ -1617,7 +1618,7 @@ impl Queue for FakeQueue {
     }
 
     fn receive(&self, max: usize, _: Duration, _: Duration) -> Result<Vec<Message>, IoError> {
-        let mut calls = self.0.lock().unwrap();
+        let mut calls = self.0.lock();
         let n = calls.inbox.len().min(max);
         Ok(calls.inbox.drain(..n).collect())
     }
@@ -1627,7 +1628,7 @@ impl Queue for FakeQueue {
     }
 
     fn delete(&self, handles: &[String]) -> Vec<(String, String)> {
-        self.0.lock().unwrap().deleted.extend_from_slice(handles);
+        self.0.lock().deleted.extend_from_slice(handles);
         Vec::new()
     }
 }
@@ -1643,7 +1644,7 @@ impl Announcer for FakeAnnouncer {
     fn send(&mut self, _: &Note, objects: Vec<ObjectRef>) -> Result<(), String> {
         let handle = format!("m{}", self.sent.len());
         self.sent.insert(handle.clone());
-        self.queue.0.lock().unwrap().inbox.push(Message {
+        self.queue.0.lock().inbox.push(Message {
             handle,
             objects: Ok(objects),
         });
@@ -1651,7 +1652,7 @@ impl Announcer for FakeAnnouncer {
     }
 
     fn left(&mut self) -> Result<usize, String> {
-        let deleted: BTreeSet<String> = self.queue.0.lock().unwrap().deleted.iter().cloned().collect();
+        let deleted: BTreeSet<String> = self.queue.0.lock().deleted.iter().cloned().collect();
         Ok(self.sent.difference(&deleted).count())
     }
 

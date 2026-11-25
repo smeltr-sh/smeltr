@@ -17,8 +17,9 @@
 //!   W->>S: a data commit raises the mark a block when what is left runs low
 //! ```
 
+use crate::sync::Mutex;
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::time::Instant;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
@@ -188,7 +189,7 @@ impl Sequences {
     /// has, or every one that has is out of values. Err when the table's identity columns are no longer these.
     pub fn raised(&self, metadata: &Metadata) -> Result<Option<Raised>, String> {
         let low: Vec<usize> = {
-            let reserves = self.reserves.lock().unwrap_or_else(PoisonError::into_inner);
+            let reserves = self.reserves.lock();
             (0..self.columns.len()).filter(|&i| reserves[i].free < LOW).collect()
         };
         if low.is_empty() {
@@ -221,7 +222,7 @@ impl Sequences {
 
     /// Takes the blocks of `raised`, committed: their values are this writer's to give out.
     pub fn reserved(&self, raised: Raised) {
-        let mut reserves = self.reserves.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut reserves = self.reserves.lock();
         for (i, block) in raised.blocks {
             reserves[i].free += block.left;
             reserves[i].blocks.push_back(block);
@@ -246,7 +247,7 @@ impl Sequences {
     }
 
     fn take_free(&self, i: usize) -> bool {
-        let mut reserves = self.reserves.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut reserves = self.reserves.lock();
         let free = &mut reserves[i].free;
         *free > 0 && {
             *free -= 1;
@@ -306,7 +307,7 @@ impl Sequences {
     /// The next `rows` values of column `i`, each set aside by a row admitted.
     fn take(&self, i: usize, rows: usize) -> Vec<i64> {
         let step = self.columns[i].step as i128;
-        let mut reserves = self.reserves.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut reserves = self.reserves.lock();
         let reserve = &mut reserves[i];
         let mut values = Vec::with_capacity(rows);
         while values.len() < rows {

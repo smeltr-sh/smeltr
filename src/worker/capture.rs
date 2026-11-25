@@ -16,9 +16,10 @@
 //! At a destination, the transform thread copies each row a route's pipeline finished for it, as the pipeline left it,
 //! before it is handed to egress. Its filter reads that row, compiled exactly as a `deliver` rule's `when` is.
 
+use crate::sync::Mutex;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::core::batch::{Batch, SLOT_LIVE};
@@ -410,8 +411,8 @@ pub struct Holding {
 
 impl Drop for Holding {
     fn drop(&mut self) {
-        let mut sessions = self.captures.sessions.lock().unwrap();
-        let mut holders = self.captures.holders.lock().unwrap();
+        let mut sessions = self.captures.sessions.lock();
+        let mut holders = self.captures.holders.lock();
         let Some(count) = holders.get_mut(&self.at) else {
             return;
         };
@@ -444,7 +445,7 @@ impl Captures {
     ///
     /// Returns the sessions that were new, for the caller to open a source for where one is needed.
     pub fn admit(&self, invitations: &[CaptureInvitation]) -> Vec<Admitted> {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         let mut started = Vec::new();
         for invitation in invitations {
             if !sessions.contains_key(&invitation.session) {
@@ -452,7 +453,7 @@ impl Captures {
                 let mut session = Session::new(invitation.clone(), admission);
                 session.awaiting_held = session
                     .held_at()
-                    .is_some_and(|at| self.holders.lock().unwrap().contains_key(&at));
+                    .is_some_and(|at| self.holders.lock().contains_key(&at));
                 sessions.insert(invitation.session.clone(), session);
                 started.push(Admitted {
                     invitation: invitation.clone(),
@@ -475,7 +476,7 @@ impl Captures {
     /// One that already reached a bound is a finished answer and stays: it is what the leader asked for, nothing
     /// else is going to produce it, and the session it belongs to may expire before a replacement could.
     pub fn set_deployed(&self, deployed: &Arc<crate::metrics::Subjects>) {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         sessions.retain(|_, s| {
             !s.open()
                 || !s
@@ -484,12 +485,12 @@ impl Captures {
                     .is_some_and(|source| deployed.sources.contains(&source.id))
         });
         self.recount(&sessions);
-        *self.deployed.lock().unwrap() = deployed.clone();
+        *self.deployed.lock() = deployed.clone();
     }
 
     /// Note that something here holds rows a block keeps at `at`, until the returned [`Holding`] is dropped.
     pub fn holding(self: &Arc<Self>, at: HeldAt) -> Holding {
-        *self.holders.lock().unwrap().entry(at.clone()).or_default() += 1;
+        *self.holders.lock().entry(at.clone()).or_default() += 1;
         Holding {
             captures: self.clone(),
             at,
@@ -498,14 +499,14 @@ impl Captures {
 
     /// Note that an egress thread here sends to `destination`, so a capture there reads what it takes.
     pub fn send_to(&self, destination: &str) {
-        self.sending.lock().unwrap().insert(destination.to_string());
+        self.sending.lock().insert(destination.to_string());
     }
 
     /// Note that nothing here sends to `destination` any more. A capture still filling there ends with what it has:
     /// it would otherwise wait out its deadline on a destination nothing feeds.
     pub fn stop_sending_to(&self, destination: &str) {
-        self.sending.lock().unwrap().remove(destination);
-        for s in self.sessions.lock().unwrap().values_mut() {
+        self.sending.lock().remove(destination);
+        for s in self.sessions.lock().values_mut() {
             if s.open() && s.sends(destination) {
                 s.end = Some(CaptureEnd::Failed(format!(
                     "this worker stopped sending to destination {destination:?}"
@@ -516,7 +517,7 @@ impl Captures {
 
     /// Whether an egress thread here sends to `destination`.
     pub fn sends_to(&self, destination: &str) -> bool {
-        self.sending.lock().unwrap().contains(destination)
+        self.sending.lock().contains(destination)
     }
 
     /// Every capture at a destination still taking rows. Asked by a transform thread on every attempt, so a worker
@@ -525,7 +526,7 @@ impl Captures {
         if self.at_destinations.load(Ordering::Relaxed) == 0 {
             return Vec::new();
         }
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         sessions
             .iter_mut()
             .filter_map(|(id, s)| {
@@ -544,7 +545,7 @@ impl Captures {
 
     /// Offer `rows`, each under its columns, to `at`'s session, while it is still that admission.
     pub fn offer_sent(&self, at: &AtDestination, rows: Vec<(Vec<CaptureColumn>, CapturedRow)>) {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         let Some(s) = admitted_session(&mut sessions, &at.session, at.admission) else {
             return;
         };
@@ -584,7 +585,7 @@ impl Captures {
             .enumerate()
             .map(|(i, row)| held_row(row, why.get(i).map_or("", String::as_str)))
             .collect();
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         for (session, admission) in &owed {
             let Some(s) = admitted_session(&mut sessions, session, *admission) else {
                 continue;
@@ -602,7 +603,7 @@ impl Captures {
     /// The open sessions `at` picks whose admission is not in `shown`, by id and admission: those held rows are still
     /// owed to. An admission no longer open leaves `shown`.
     fn owed(&self, shown: &mut HashSet<u64>, at: impl Fn(&Session) -> bool) -> Vec<(String, u64)> {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         let mut open = HashSet::new();
         let owed = sessions
             .iter_mut()
@@ -621,7 +622,7 @@ impl Captures {
     /// End `at`'s session with `why`, for a filter that will not compile against a route feeding its destination. A
     /// later admission under the same id is left alone.
     pub fn fail_at(&self, at: &AtDestination, why: String) {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         if let Some(s) = admitted_session(&mut sessions, &at.session, at.admission) {
             s.end = Some(CaptureEnd::Failed(why));
         }
@@ -646,7 +647,7 @@ impl Captures {
     /// Offer `read` to every open session `at` names.
     fn offer_raw(&self, at: &RawAt, read: crate::io::raw::RawRead<'_>) {
         let (columns, row) = raw_row(read, at.source());
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         for session in sessions.values_mut().filter(|s| at.takes(s)) {
             session.offer(&columns, row.clone(), false);
         }
@@ -654,7 +655,7 @@ impl Captures {
 
     /// Whether a deployment is reading `source` right now.
     pub fn is_deployed(&self, source: &str) -> bool {
-        self.deployed.lock().unwrap().sources.iter().any(|s| s == source)
+        self.deployed.lock().sources.iter().any(|s| s == source)
     }
 
     /// Whether `admitted` needs no reader of its own: it names no source, so it was admitted finished, or a
@@ -670,11 +671,7 @@ impl Captures {
         if self.reading.load(Ordering::Relaxed) == 0 {
             return false;
         }
-        self.sessions
-            .lock()
-            .unwrap()
-            .values_mut()
-            .any(|s| s.open() && s.reads(source))
+        self.sessions.lock().values_mut().any(|s| s.open() && s.reads(source))
     }
 
     /// Offer one batch to every session watching `source`, each keeping what its own filter matches.
@@ -684,7 +681,7 @@ impl Captures {
     /// capture never makes a worker decode twice.
     pub fn tap(&self, source: &str, records: &[SourceRecord], text: &[&str]) {
         let watching: Vec<(String, u64)> = {
-            let mut sessions = self.sessions.lock().unwrap();
+            let mut sessions = self.sessions.lock();
             sessions
                 .iter_mut()
                 .filter_map(|(id, s)| (s.reads(source) && s.open()).then(|| (id.clone(), s.admission)))
@@ -699,7 +696,6 @@ impl Captures {
     pub fn owed_held(&self, source: &str, shown: &HashSet<u64>) -> bool {
         self.sessions
             .lock()
-            .unwrap()
             .values_mut()
             .any(|s| s.open() && s.reads(source) && !shown.contains(&s.admission))
     }
@@ -719,7 +715,7 @@ impl Captures {
         for (session, admission) in &watching {
             self.fill(session, *admission, records, text, Some(why));
         }
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         for (session, admission) in &watching {
             if let Some(s) = admitted_session(&mut sessions, session, *admission) {
                 s.awaiting_held = false;
@@ -742,7 +738,7 @@ impl Captures {
     /// `why`, for records a block holds, says why each blocked, and is kept beside it as [`EXCEPTION_MESSAGE`].
     fn fill(&self, session: &str, admission: u64, records: &[SourceRecord], text: &[&str], why: Option<&[String]>) {
         let filter = {
-            let mut sessions = self.sessions.lock().unwrap();
+            let mut sessions = self.sessions.lock();
             let Some(s) = admitted_session(&mut sessions, session, admission) else {
                 return;
             };
@@ -756,7 +752,7 @@ impl Captures {
         };
         let keep = filter.keeps(records, text);
 
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         let Some(s) = admitted_session(&mut sessions, session, admission) else {
             return;
         };
@@ -810,14 +806,14 @@ impl Captures {
     /// Whether `admitted` is still held and still wants records. The cold driver's loop condition: false once its
     /// session is let go, even while a later admission holds the same id.
     pub fn open(&self, admitted: &Admitted) -> bool {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         admitted_session(&mut sessions, &admitted.invitation.session, admitted.admission).is_some_and(|s| s.open())
     }
 
     /// Keep what Run found out about `admitted`'s query. `meta`, where given, is the record the worker declared from
     /// the query's columns for a source that declared none, and the session's filter is compiled against it.
     pub fn describe(&self, admitted: &Admitted, run: crate::heartbeat::SqlRun, meta: Option<SourceMeta>) {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         let Some(s) = admitted_session(&mut sessions, &admitted.invitation.session, admitted.admission) else {
             return;
         };
@@ -834,7 +830,7 @@ impl Captures {
     /// Mark `admitted` finished with `reason`, for a source that would not open or a poll that failed. A later
     /// admission under the same id is left alone.
     pub fn fail(&self, admitted: &Admitted, reason: impl Into<String>) {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         if let Some(s) = admitted_session(&mut sessions, &admitted.invitation.session, admitted.admission) {
             s.end = Some(CaptureEnd::Failed(reason.into()));
         }
@@ -843,7 +839,7 @@ impl Captures {
     /// End `admitted` with what it has, for a capture that has read all its source gives it. It ends as at its match
     /// count, the bound a leader already knows: the sample is as large as it will get.
     pub fn end(&self, admitted: &Admitted) {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         if let Some(s) = admitted_session(&mut sessions, &admitted.invitation.session, admitted.admission)
             && s.open()
         {
@@ -855,7 +851,7 @@ impl Captures {
     /// worth more delivered short than lost with the process, and a leader that invites the session again gets a
     /// fresh one in the replacement, never these.
     pub fn end_all(&self, reason: &str) {
-        for s in self.sessions.lock().unwrap().values_mut() {
+        for s in self.sessions.lock().values_mut() {
             if s.open() {
                 s.end = Some(CaptureEnd::Failed(reason.to_string()));
             }
@@ -870,7 +866,7 @@ impl Captures {
     /// rest, so sending one twice cannot double a sample. A session still unacknowledged [`REPORT_GRACE`] past its
     /// deadline is dropped.
     pub fn finished(&self, worker_id: &str) -> Vec<CaptureReport> {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         sessions.retain(|_, s| s.started.elapsed() < Duration::from_secs(s.invitation.deadline_secs) + REPORT_GRACE);
         self.recount(&sessions);
 
@@ -894,7 +890,7 @@ impl Captures {
     /// something new. Polled on the same schedule as [`Captures::finished`]; a session with nothing new since its
     /// last progress report is left out rather than repeating a list nothing changed.
     pub fn progress(&self, worker_id: &str) -> Vec<CaptureReport> {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         sessions
             .iter_mut()
             .filter_map(|(id, s)| s.progress(id, worker_id))
@@ -903,7 +899,7 @@ impl Captures {
 
     /// Forget a session the leader has acknowledged.
     pub fn sent(&self, session: &str) {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         sessions.remove(session);
         self.recount(&sessions);
     }
@@ -914,14 +910,14 @@ impl Captures {
     /// source and its copy of the lent credentials; the invitation, and what it lent, go with the session. A finished
     /// session stays until its report is sent: it is this worker's answer, and the leader still takes its reason.
     pub fn drop_unlisted(&self, listed: &HashSet<String>) {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock();
         sessions.retain(|id, s| !s.open() || listed.contains(id));
         self.recount(&sessions);
     }
 
     /// Whether this process holds `session`, filling or finished and waiting for its report to be sent.
     pub fn holds(&self, session: &str) -> bool {
-        self.sessions.lock().unwrap().contains_key(session)
+        self.sessions.lock().contains_key(session)
     }
 }
 
@@ -1438,7 +1434,7 @@ pub fn run_cold_capture(
 
     // A metrics or logs source reads the process this runs in: the runtime when one was running as the capture
     // arrived, the supervisor otherwise.
-    let subjects = captures.deployed.lock().unwrap().clone();
+    let subjects = captures.deployed.lock().clone();
     let mut source = match crate::io::build_source(&kind, registry, &subjects, &secrets, None) {
         Ok(source) => source,
         Err(e) => {
@@ -1857,7 +1853,7 @@ mod tests {
 
     /// What `session` holds so far.
     fn held(captures: &Captures, session: &str) -> Vec<CaptureBatch> {
-        captures.sessions.lock().unwrap()[session].batches.clone()
+        captures.sessions.lock()[session].batches.clone()
     }
 
     /// Records as a broker delivers them: consecutive offsets from `base`, which is what tells one apart from
@@ -2607,7 +2603,7 @@ mod tests {
     /// A cold logs capture the leader stops listing ends, and its end closes its queue.
     #[test]
     fn a_cold_logs_capture_closes_its_queue_when_the_leader_stops_listing_it() {
-        let _taps = crate::logs::TAPS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _taps = crate::logs::TAPS_LOCK.lock();
 
         let captures = Arc::new(Captures::default());
         let mut inv = invitation("s1", 10, 1_000_000, 30);

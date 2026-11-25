@@ -56,9 +56,10 @@
 //! | 415 to 2.0 | the destination stalls: the store takes 1.0 alone |
 //! | anything else | the destination stalls, naming the status |
 
+use crate::sync::Mutex;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use prost::Message;
 
@@ -881,7 +882,7 @@ impl RemoteWrite {
     /// `timeseries` as a 2.0 request, its strings each once in its table, and each series carrying its family's
     /// metadata where this destination knows it, `items`' own the latest.
     fn v2(&self, items: &[Item], timeseries: Vec<TimeSeries>) -> RequestV2 {
-        let mut families = self.families.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut families = self.families.lock();
         // The request's own metadata goes whatever the remembered families' bounds evict.
         let mut own: HashMap<&str, &MetricMetadata> = HashMap::new();
         for metadata in items.iter().filter_map(|item| item.metadata.as_ref()) {
@@ -2449,7 +2450,7 @@ mod tests {
             })
             .collect();
         protocol.body(&items);
-        let families = protocol.families.lock().unwrap();
+        let families = protocol.families.lock();
         assert_eq!(families.by_name.len(), FAMILIES);
         assert!(
             families.by_name.contains_key(&format!("f{FAMILIES}")),
@@ -2468,7 +2469,7 @@ mod tests {
             })
             .collect();
         protocol.body(&items);
-        let families = protocol.families.lock().unwrap();
+        let families = protocol.families.lock();
         assert!(families.bytes <= FAMILY_BYTES, "{}", families.bytes);
         assert!(families.by_name.len() < 20);
         assert!(families.by_name.contains_key("f19"), "the latest family is remembered");
@@ -2486,10 +2487,7 @@ mod tests {
             format!(r#"{{"time":"1970-01-01T00:00:02Z","name":"up","value":1,"type":"gauge","description":"{help}"}}"#);
         let (_, series) = sent_v2(&protocol, &[protocol.admit(&row(&json)).unwrap()]);
         assert_eq!(series[0].2.as_ref().map(|m| m.1.len()), Some(FAMILY_BYTES + 1));
-        assert!(
-            protocol.families.lock().unwrap().by_name.is_empty(),
-            "too large to remember"
-        );
+        assert!(protocol.families.lock().by_name.is_empty(), "too large to remember");
     }
 
     #[test]

@@ -74,8 +74,9 @@ pub mod updates;
 pub mod upload_pack;
 pub mod warnings;
 
+use crate::sync::Mutex;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
@@ -129,7 +130,7 @@ pub struct AppState {
 /// What each group's bundle quotes, remembered per commit. The answer changes only when the bundle does, so it is
 /// computed when a deploy moves the fleet rather than on every heartbeat.
 #[derive(Default)]
-pub struct Entitlements(std::sync::Mutex<std::collections::HashMap<String, (String, Quoted)>>);
+pub struct Entitlements(crate::sync::Mutex<std::collections::HashMap<String, (String, Quoted)>>);
 
 /// One credential a bundle quotes: its name, and the version that bundle runs.
 pub type SecretAt = (String, i64);
@@ -162,7 +163,7 @@ pub fn at_newest(quoted: &Quoted, newest: &std::collections::HashMap<String, i64
 /// [`Entitlements`] makes, about the same commit. Keyed by commit rather than overwritten in place: a group
 /// mid-rollout has workers on two commits at once, and each needs its own answer.
 #[derive(Default)]
-pub struct Expiries(std::sync::Mutex<std::collections::HashMap<(String, String), Vec<DeployedTls>>>);
+pub struct Expiries(crate::sync::Mutex<std::collections::HashMap<(String, String), Vec<DeployedTls>>>);
 
 /// What each of `groups` is deployed at, as [`git::ContentId::key`] names it. Empty with nothing deployed.
 ///
@@ -246,7 +247,7 @@ fn entitled(data_dir: &std::path::Path, cache: &Entitlements, group_id: &str) ->
     let Some(head) = git::deployed(&repo) else {
         return Quoted::default();
     };
-    if let Some((at, names)) = cache.0.lock().unwrap_or_else(|e| e.into_inner()).get(group_id)
+    if let Some((at, names)) = cache.0.lock().get(group_id)
         && at == &head
     {
         return names.clone();
@@ -255,11 +256,7 @@ fn entitled(data_dir: &std::path::Path, cache: &Entitlements, group_id: &str) ->
         tracing::debug!(name: "bundle_unentitled", target: "deploy", group = %group_id, commit = %head, error = %e, "a group's bundle does not load at the deployed commit, so it is entitled to no secret");
         Default::default()
     });
-    cache
-        .0
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(group_id.to_string(), (head, names.clone()));
+    cache.0.lock().insert(group_id.to_string(), (head, names.clone()));
     names
 }
 
@@ -1317,7 +1314,7 @@ fn deployed_certificates(
 
     // Rebuilt rather than pruned in place: a commit no worker is running any more must not linger and grow this
     // cache forever, and the fleet moves on from one every time it redeploys.
-    let mut cached = cache.0.lock().unwrap_or_else(|e| e.into_inner());
+    let mut cached = cache.0.lock();
     let mut fresh = std::collections::HashMap::with_capacity(running.len());
     let mut out = Vec::new();
     for (group, commit) in running {
@@ -2091,11 +2088,7 @@ async fn enroll(State(state): State<AppState>, Json(req): Json<EnrollRequest>) -
 /// A fault a request path meets on every request while it lasts, said once per change and on the interval
 /// (`logs::Relog`): what is due its log now, with the fault under way as `why`.
 fn relog(failing: &'static Mutex<crate::logs::Relog>, why: String) -> Option<String> {
-    failing
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .fail_due(why)
-        .map(str::to_string)
+    failing.lock().fail_due(why).map(str::to_string)
 }
 
 const fn relogged() -> Mutex<crate::logs::Relog> {
@@ -2377,14 +2370,14 @@ const VERIFY_WINDOW: Duration = Duration::from_secs(60);
 /// Verify is an oracle: it answers a question about a value. Bounding the rate is what keeps it from being a way to
 /// guess a value one try at a time. Per secret rather than per caller, so more accounts do not buy more guesses.
 #[derive(Default)]
-pub struct VerifyLimiter(std::sync::Mutex<std::collections::HashMap<String, Vec<std::time::Instant>>>);
+pub struct VerifyLimiter(crate::sync::Mutex<std::collections::HashMap<String, Vec<std::time::Instant>>>);
 
 impl VerifyLimiter {
     /// Whether `name` may be asked again, counting the attempt when it may. An attempt refused still counts as
     /// asking, so a caller cannot spend the window and then wait out only the refusals.
     fn allow(&self, name: &str, now: std::time::Instant) -> bool {
         let fresh = |t: &std::time::Instant| now.duration_since(*t) < VERIFY_WINDOW;
-        let mut attempts = self.0.lock().unwrap();
+        let mut attempts = self.0.lock();
         // A name is whatever the URL carried, including secrets that do not exist, so an entry that has aged out
         // goes with its attempts rather than keeping a row for a name nobody will ask about again.
         attempts.retain(|_, recent| recent.iter().any(fresh));
@@ -2397,7 +2390,7 @@ impl VerifyLimiter {
 
     #[cfg(test)]
     fn tracked(&self) -> usize {
-        self.0.lock().unwrap().len()
+        self.0.lock().len()
     }
 }
 

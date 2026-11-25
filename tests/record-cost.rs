@@ -6,7 +6,8 @@
 mod panos;
 mod reference;
 
-use std::sync::{Arc, Mutex};
+use smeltr::sync::Mutex;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use smeltr::core::buffer::MemoryBudget;
@@ -66,7 +67,7 @@ struct Rows(Arc<Mutex<(Vec<Arc<RecordChunk>>, u64)>>);
 
 impl Source for Rows {
     fn poll_batch(&mut self, max_rows: usize, _max_bytes: usize, _t: Duration) -> Result<Vec<SourceRecord>, IoError> {
-        let mut g = self.0.lock().unwrap();
+        let mut g = self.0.lock();
         let (chunks, next) = &mut *g;
         if *next >= ROWS {
             return Ok(Vec::new());
@@ -92,7 +93,7 @@ impl Source for Rows {
     }
 
     fn is_exhausted(&self) -> bool {
-        self.0.lock().unwrap().1 >= ROWS
+        self.0.lock().1 >= ROWS
     }
 }
 

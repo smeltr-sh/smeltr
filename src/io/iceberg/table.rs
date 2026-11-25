@@ -18,8 +18,9 @@
 //! Only tables in S3, or a store that speaks its API, are written. Storage is signed with what the destination names,
 //! else with what the catalog vends, renewed before it expires, else with the host's credentials.
 
+use crate::sync::Mutex;
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use object_store::aws::{AwsCredential, AwsCredentialProvider};
@@ -538,7 +539,7 @@ fn storage(
     let catalog = Mutex::new(catalog(config, secrets, runtime)?);
     let (namespace, table) = (config.namespace.clone(), config.table.clone());
     let renew = move || {
-        let mut catalog = catalog.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut catalog = catalog.lock();
         let found = match catalog.credentials(&namespace, &table).map_err(|e| e.to_string())? {
             Some(vended) if !vended.is_empty() => vended_credential(&vended, &BTreeMap::new(), &data, &meta)?,
             _ => {
@@ -1179,7 +1180,7 @@ mod tests {
                 let mut body = vec![0; length];
                 reader.read_exact(&mut body).unwrap();
                 let (status, answer) = {
-                    let mut fake = fake.lock().unwrap();
+                    let mut fake = fake.lock();
                     if line.starts_with("POST /v1/oauth/tokens ") {
                         fake.token_asks.push(String::from_utf8_lossy(&body).into_owned());
                         (
@@ -1526,7 +1527,7 @@ mod tests {
             &Arc::new(InMemory::new()),
         );
 
-        let table = fake.lock().unwrap().table.clone().unwrap();
+        let table = fake.lock().table.clone().unwrap();
         assert_eq!(table.properties.get("format-version").map(String::as_str), Some("2"));
         let spec = table.spec().unwrap();
         let fields: Vec<_> = spec
@@ -1565,7 +1566,7 @@ mod tests {
             &store,
         );
 
-        let table = fake.lock().unwrap().table.clone().unwrap();
+        let table = fake.lock().table.clone().unwrap();
         assert_eq!(table.schemas.len(), 2);
         assert_eq!(table.last_column_id, 2);
         assert_eq!(wider.schema.schema_id, 1);
@@ -1594,7 +1595,7 @@ mod tests {
         let record = st(&[("a", DataType::Str)]);
         committer(&url, &config, &record, &Arc::new(InMemory::new()));
 
-        fake.lock().unwrap().table.as_mut().unwrap().format_version = 4;
+        fake.lock().table.as_mut().unwrap().format_version = 4;
         let Err(e) = open(&mut client(&url), "d", &config, &record) else {
             panic!("a version 4 table must be refused");
         };
@@ -1603,7 +1604,7 @@ mod tests {
             "{e}"
         );
 
-        fake.lock().unwrap().table.as_mut().unwrap().format_version = 1;
+        fake.lock().table.as_mut().unwrap().format_version = 1;
         let Err(e) = open(&mut client(&url), "d", &config, &record) else {
             panic!("a version 1 table must be refused");
         };
@@ -1613,7 +1614,7 @@ mod tests {
             "{e}"
         );
 
-        let mut held = fake.lock().unwrap();
+        let mut held = fake.lock();
         let table = held.table.as_mut().unwrap();
         table.format_version = 2;
         table.properties.insert("encryption.key-id".into(), "k".into());
@@ -1623,7 +1624,7 @@ mod tests {
         };
         assert!(e.message.contains("encrypted"), "{e}");
 
-        let mut held = fake.lock().unwrap();
+        let mut held = fake.lock();
         let table = held.table.as_mut().unwrap();
         table.format_version = 3;
         table.properties.clear();
@@ -1637,7 +1638,7 @@ mod tests {
         };
         assert!(e.message.contains("encrypted"), "{e}");
 
-        let mut held = fake.lock().unwrap();
+        let mut held = fake.lock();
         let table = held.table.as_mut().unwrap();
         table.other.clear();
         table.partition_specs[0].fields.push(PartitionField {
@@ -1669,7 +1670,7 @@ mod tests {
         // Upgraded from version 2 after a first snapshot, which keeps no row ids.
         committer.commit(&[file(&committer, &[], 3)]).unwrap();
         {
-            let mut fake = fake.lock().unwrap();
+            let mut fake = fake.lock();
             let table = fake.table.as_mut().unwrap();
             table.format_version = 3;
             table.next_row_id = Some(100);
@@ -1684,7 +1685,7 @@ mod tests {
             .unwrap();
         committer.commit(&[file(&committer, &[], 6)]).unwrap();
 
-        let table = fake.lock().unwrap().table.clone().unwrap();
+        let table = fake.lock().table.clone().unwrap();
         let rows: Vec<_> = table.snapshots.iter().map(|s| (s.first_row_id, s.added_rows)).collect();
         // The second snapshot gives row ids to its own 9 rows and to the first snapshot's 3. The third gives them to
         // its own 6, and to the manifest it merges the second's two into, whose files keep the ones they have.
@@ -1720,7 +1721,7 @@ mod tests {
         let second = [file(&committer, &[("host", "a")], 5)];
         committer.commit(&second).unwrap();
 
-        let table = fake.lock().unwrap().table.clone().unwrap();
+        let table = fake.lock().table.clone().unwrap();
         assert_eq!(table.snapshots.len(), 2);
         assert_eq!(
             table.snapshots[1].parent_snapshot_id,
@@ -1757,11 +1758,11 @@ mod tests {
             main.max_snapshot_age_ms = Some(3_600_000);
             main.max_ref_age_ms = Some(86_400_000);
         };
-        retention(fake.lock().unwrap().table.as_mut().unwrap().refs.get_mut(MAIN).unwrap());
+        retention(fake.lock().table.as_mut().unwrap().refs.get_mut(MAIN).unwrap());
         committer.reload().unwrap();
 
         committer.commit(&[file(&committer, &[], 4)]).unwrap();
-        let table = fake.lock().unwrap().table.clone().unwrap();
+        let table = fake.lock().table.clone().unwrap();
         let mut expected = SnapshotRef {
             snapshot_id: table.snapshots[1].snapshot_id,
             kind: "branch".into(),
@@ -1785,7 +1786,7 @@ mod tests {
         let files = [file(&loser, &[], 2)];
         assert_eq!(loser.commit(&files), Err(CommitError::Conflict));
         loser.commit(&files).unwrap();
-        let table = fake.lock().unwrap().table.clone().unwrap();
+        let table = fake.lock().table.clone().unwrap();
         assert_eq!(
             table.snapshots[1].parent_snapshot_id,
             Some(table.snapshots[0].snapshot_id)
@@ -1806,11 +1807,11 @@ mod tests {
             &Arc::new(InMemory::new()),
         );
         let files = [file(&committer, &[], 1)];
-        fake.lock().unwrap().faults.push(Fault::Lost);
+        fake.lock().faults.push(Fault::Lost);
 
         // Looked for at once, and found.
         committer.commit(&files).unwrap();
-        let fake = fake.lock().unwrap();
+        let fake = fake.lock();
         assert_eq!(fake.commits, 1);
         assert_eq!(fake.table.as_ref().unwrap().snapshots.len(), 1);
     }
@@ -1826,12 +1827,12 @@ mod tests {
             &Arc::new(InMemory::new()),
         );
         let files = [file(&committer, &[], 1)];
-        fake.lock().unwrap().faults.push(Fault::Late);
+        fake.lock().faults.push(Fault::Late);
 
         assert!(matches!(committer.commit(&files), Err(CommitError::Unknown(_))));
         // The retry's own commit meets the late one: a conflict, which the reload shows is these files.
         committer.commit(&files).unwrap();
-        let fake = fake.lock().unwrap();
+        let fake = fake.lock();
         assert_eq!(fake.commits, 1);
         assert_eq!(fake.table.as_ref().unwrap().snapshots.len(), 1);
     }
@@ -1847,14 +1848,14 @@ mod tests {
             &Arc::new(InMemory::new()),
         );
         let first = [file(&committer, &[], 1)];
-        fake.lock().unwrap().faults.push(Fault::Late);
+        fake.lock().faults.push(Fault::Late);
         assert!(matches!(committer.commit(&first), Err(CommitError::Unknown(_))));
 
         // The destination gave up on those; these are other files, committed on top of the late one.
         let second = [file(&committer, &[], 2)];
         assert_eq!(committer.commit(&second), Err(CommitError::Conflict));
         committer.commit(&second).unwrap();
-        assert_eq!(fake.lock().unwrap().table.as_ref().unwrap().snapshots.len(), 2);
+        assert_eq!(fake.lock().table.as_ref().unwrap().snapshots.len(), 2);
     }
 
     #[test]
@@ -2193,7 +2194,7 @@ mod tests {
         let before = st(&[("host", DataType::Str), ("gone", DataType::Str)]);
         committer(&url, &config, &before, &store);
         {
-            let mut fake = fake.lock().unwrap();
+            let mut fake = fake.lock();
             let table = fake.table.as_mut().unwrap();
             let mut schema = table.schemas[0].clone();
             schema.schema_id = 1;
@@ -2237,7 +2238,7 @@ mod tests {
             };
             assert!(e.message.contains(term), "{e}");
         }
-        assert!(fake.lock().unwrap().table.is_none());
+        assert!(fake.lock().table.is_none());
     }
 
     #[test]

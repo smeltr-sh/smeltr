@@ -71,7 +71,7 @@ pub(super) struct Handler {
     /// How long a sender may go quiet before a line breaker's held bytes are taken as its last messages.
     quiet: Duration,
     /// The datagrams it truncated.
-    truncations: std::sync::Mutex<Truncations>,
+    truncations: crate::sync::Mutex<Truncations>,
 }
 
 impl Handler {
@@ -80,7 +80,7 @@ impl Handler {
             max_message_bytes,
             framing: config.framing.clone(),
             quiet: QUIET,
-            truncations: std::sync::Mutex::default(),
+            truncations: crate::sync::Mutex::default(),
         }
     }
 
@@ -137,10 +137,7 @@ impl Handler {
         };
         if message.len() > self.max_message_bytes {
             message = &message[..self.max_message_bytes];
-            let mut truncations = self
-                .truncations
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut truncations = self.truncations.lock();
             truncations.count += 1;
             if let Some(truncated) = truncations.due(false) {
                 tracing::warn!(

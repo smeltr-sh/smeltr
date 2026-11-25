@@ -13,11 +13,12 @@
 //! everything else it holds open. When the budget is spent, a new connection takes the place of the connection idle
 //! longest on any receiver, by the same rule.
 
+use crate::sync::Mutex;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, OnceLock, Weak};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
@@ -89,7 +90,7 @@ struct Shut {
 impl Shut {
     fn close(&self) {
         self.closed.store(true, Ordering::Relaxed);
-        if let Some(waker) = self.waiting.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        if let Some(waker) = self.waiting.lock().take() {
             waker.wake();
         }
     }
@@ -206,17 +207,17 @@ impl Budget {
     /// its own lock.
     fn close_idlest(&self) -> Option<IpAddr> {
         let receivers: Vec<Arc<Mutex<Connections>>> = {
-            let mut receivers = self.receivers.lock().unwrap_or_else(|e| e.into_inner());
+            let mut receivers = self.receivers.lock();
             receivers.retain(|r| r.strong_count() > 0);
             receivers.iter().filter_map(Weak::upgrade).collect()
         };
         let (receiver, id, _) = (receivers.iter())
             .filter_map(|r| {
-                let (id, idle) = r.lock().unwrap_or_else(|e| e.into_inner()).idlest(None)?;
+                let (id, idle) = r.lock().idlest(None)?;
                 Some((r, id, idle))
             })
             .max_by_key(|(_, _, idle)| *idle)?;
-        let mut receiver = receiver.lock().unwrap_or_else(|e| e.into_inner());
+        let mut receiver = receiver.lock();
         // It may have read since it was found, so it is checked again before it is closed.
         match receiver.idle_for(id)? >= EVICTABLE_AFTER {
             true => receiver.close(id),
@@ -249,7 +250,7 @@ impl Connections {
             next: 0,
             open: HashMap::new(),
         }));
-        let mut receivers = budget.receivers.lock().unwrap_or_else(|e| e.into_inner());
+        let mut receivers = budget.receivers.lock();
         receivers.retain(|r| r.strong_count() > 0);
         receivers.push(Arc::downgrade(&open));
         open
@@ -276,7 +277,7 @@ impl Connections {
         peer: IpAddr,
     ) -> (Vec<(IpAddr, Closed)>, Result<Place, Refused>) {
         let (mut closed, id, budget) = {
-            let mut c = open.lock().unwrap_or_else(|e| e.into_inner());
+            let mut c = open.lock();
             let (closed, id) = c.make_room(peer);
             let id = match id {
                 Ok(id) => id,
@@ -289,12 +290,12 @@ impl Connections {
             match budget.close_idlest() {
                 Some(gone) => closed.push((gone, Closed::ForNewOnWorker)),
                 None => {
-                    open.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+                    open.lock().remove(id);
                     return (closed, Err(Refused::WorkerFull));
                 }
             }
         }
-        let c = open.lock().unwrap_or_else(|e| e.into_inner());
+        let c = open.lock();
         let Some(admitted) = c.open.get(&id) else {
             return (closed, Err(Refused::WorkerFull));
         };
@@ -458,7 +459,7 @@ impl<S> Marked<S> {
 
 impl<S> Drop for Marked<S> {
     fn drop(&mut self) {
-        self.open.lock().unwrap_or_else(|e| e.into_inner()).ended(self.id);
+        self.open.lock().ended(self.id);
     }
 }
 
@@ -479,7 +480,7 @@ impl<S: AsyncRead + Unpin> AsyncRead for Marked<S> {
                         .store(self.epoch.elapsed().as_millis() as u64, Ordering::Relaxed);
                     self.waiting = true;
                 }
-                let mut waiting = self.shut.waiting.lock().unwrap_or_else(|e| e.into_inner());
+                let mut waiting = self.shut.waiting.lock();
                 if !waiting.as_ref().is_some_and(|w| w.will_wake(cx.waker())) {
                     *waiting = Some(cx.waker().clone());
                 }
@@ -590,7 +591,7 @@ mod tests {
 
     /// Ages connection `id` by `by`, as though it read nothing that long.
     fn age(c: &Arc<Mutex<Connections>>, id: u64, by: Duration) {
-        let mut c = c.lock().unwrap();
+        let mut c = c.lock();
         // The clock runs `by` ahead, and every other connection reads at its new now.
         c.epoch -= by;
         for (other, o) in &c.open {
@@ -629,7 +630,7 @@ mod tests {
         let (closed, place) = admit(&c, ip(3));
         assert_eq!(closed, vec![(ip(1), Closed::ForNew)]);
         assert!(place.is_ok());
-        assert_eq!(c.lock().unwrap().open.len(), 2);
+        assert_eq!(c.lock().open.len(), 2);
     }
 
     #[test]
@@ -644,7 +645,7 @@ mod tests {
         let (closed, place) = admit(&c, ip(1));
         assert_eq!(closed, vec![(ip(1), Closed::ForNewFromSender)]);
         assert!(place.is_ok());
-        assert!(c.lock().unwrap().open.contains_key(&other.id));
+        assert!(c.lock().open.contains_key(&other.id));
     }
 
     #[test]
@@ -657,7 +658,7 @@ mod tests {
         let quiet = admit(&c, ip(1)).1.unwrap();
         admit(&c, ip(2)).1.unwrap();
         age(&c, quiet.id, Duration::from_secs(30));
-        let mut c = c.lock().unwrap();
+        let mut c = c.lock();
         assert_eq!(c.close_idle(), vec![ip(1)]);
         assert_eq!(c.open.len(), 1);
     }
@@ -672,8 +673,8 @@ mod tests {
         });
         let busy = admit(&c, ip(1)).1.unwrap();
         busy.read.store(BUSY, Ordering::Relaxed);
-        c.lock().unwrap().epoch -= EVICTABLE_AFTER * 2;
-        assert!(c.lock().unwrap().close_idle().is_empty());
+        c.lock().epoch -= EVICTABLE_AFTER * 2;
+        assert!(c.lock().close_idle().is_empty());
         assert_eq!(admit(&c, ip(2)).1.err(), Some(Refused::Full));
     }
 
@@ -682,7 +683,7 @@ mod tests {
         let c = alone(limits(10, None));
         let quiet = admit(&c, ip(1)).1.unwrap();
         age(&c, quiet.id, Duration::from_secs(86_400));
-        let mut c = c.lock().unwrap();
+        let mut c = c.lock();
         assert!(c.close_idle().is_empty());
         assert!(c.idle_check().is_none());
     }
@@ -705,8 +706,8 @@ mod tests {
         let (closed, place) = admit(&b, ip(4));
         assert_eq!(closed, vec![(ip(1), Closed::ForNewOnWorker)]);
         assert!(place.is_ok());
-        assert_eq!(a.lock().unwrap().open.len(), 1);
-        assert_eq!(b.lock().unwrap().open.len(), 2);
+        assert_eq!(a.lock().open.len(), 1);
+        assert_eq!(b.lock().open.len(), 2);
         assert_eq!(budget.held.load(Ordering::Relaxed), 3);
     }
 
@@ -717,7 +718,7 @@ mod tests {
         let a = Connections::within(ConnectionLimits::default(), &budget);
         let place = admit(&a, ip(1)).1.unwrap();
         assert_eq!(admit(&a, ip(2)).1.err(), Some(Refused::WorkerFull));
-        a.lock().unwrap().ended(place.id);
+        a.lock().ended(place.id);
         assert!(admit(&a, ip(2)).1.is_ok());
     }
 
