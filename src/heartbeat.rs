@@ -1365,20 +1365,26 @@ impl CaptureBatch {
         crate::ops::timeparse::parse_auto(self.rows.first()?.values.get(column)?.as_str()?)
     }
 
-    /// These rows taken at `micros`, unless they say when they were taken already: what saving a paste stamps it with.
+    /// These rows, each saying when it was taken: a row that does not says the table's [`CaptureBatch::instant`], else
+    /// `micros`. What saving a sample stamps it with, so a row added to a capture or a paste reads the same `now()`.
     pub fn stamped(mut self, micros: i64) -> CaptureBatch {
-        if self.column(Self::TAKEN_AT).is_some() {
-            return self;
-        }
-        let mut text = Vec::new();
-        crate::ops::datetime::write_iso8601_micros_bare(micros, &mut text);
-        let text = serde_json::Value::String(String::from_utf8(text).expect("an instant is written as ASCII"));
-        self.columns.push(CaptureColumn {
-            name: Self::TAKEN_AT.to_string(),
-            ty: crate::core::column::DataType::DateTime.spell(),
+        let column = self.column(Self::TAKEN_AT).unwrap_or_else(|| {
+            self.columns.push(CaptureColumn {
+                name: Self::TAKEN_AT.to_string(),
+                ty: crate::core::column::DataType::DateTime.spell(),
+            });
+            self.rows
+                .iter_mut()
+                .for_each(|row| row.values.push(serde_json::Value::Null));
+            self.columns.len() - 1
         });
-        for row in &mut self.rows {
-            row.values.push(text.clone());
+        let mut text = Vec::new();
+        crate::ops::datetime::write_iso8601_micros_bare(self.instant().unwrap_or(micros), &mut text);
+        let at = serde_json::Value::String(String::from_utf8(text).expect("an instant is written as ASCII"));
+        for cell in self.rows.iter_mut().filter_map(|row| row.values.get_mut(column)) {
+            if cell.is_null() {
+                *cell = at.clone();
+            }
         }
         self
     }
@@ -1404,6 +1410,37 @@ impl CaptureBatch {
     /// The column named `name`.
     pub fn column(&self, name: &str) -> Option<usize> {
         self.columns.iter().position(|c| c.name == name)
+    }
+
+    /// Keeps column `i` where `kept[i]`, with each row's value and failed mark under it.
+    pub fn keep_columns(&mut self, kept: &[bool]) {
+        // Where each kept column lands.
+        let mut at = Vec::with_capacity(kept.len());
+        let mut next = 0;
+        for &k in kept {
+            at.push(k.then_some(next));
+            next += usize::from(k);
+        }
+        let keep = |i: usize| kept.get(i).copied().unwrap_or(false);
+        self.columns = std::mem::take(&mut self.columns)
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| keep(*i))
+            .map(|(_, c)| c)
+            .collect();
+        for row in &mut self.rows {
+            row.values = std::mem::take(&mut row.values)
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| keep(*i))
+                .map(|(_, v)| v)
+                .collect();
+            row.failed = row
+                .failed
+                .iter()
+                .filter_map(|&c| at.get(c).copied().flatten())
+                .collect();
+        }
     }
 }
 
@@ -1938,6 +1975,44 @@ mod trust_tests {
 
 #[cfg(test)]
 mod tests {
+    /// A row added to a stamped table takes the table's instant; a table with none takes the one given.
+    #[test]
+    fn a_stamped_table_holds_one_instant_on_every_row() {
+        let pasted = CaptureBatch::pasted(vec![serde_json::Map::new()]).stamped(1_000_000);
+        let at = pasted.instant();
+        assert_eq!(at, Some(1_000_000));
+        let mut grown = pasted.clone();
+        grown.rows.push(CapturedRow {
+            values: vec![serde_json::json!({}), serde_json::Value::Null],
+            ..CapturedRow::default()
+        });
+        let grown = grown.stamped(2_000_000);
+        let column = grown.column(CaptureBatch::TAKEN_AT).unwrap();
+        assert_eq!(grown.rows[1].values[column], grown.rows[0].values[column]);
+        assert_eq!(grown.instant(), at);
+    }
+
+    /// A column kept keeps its failed marks, moved to where it lands.
+    #[test]
+    fn kept_columns_keep_their_failed_marks() {
+        let column = |name: &str| CaptureColumn {
+            name: name.into(),
+            ty: "i64".into(),
+        };
+        let mut batch = CaptureBatch {
+            columns: vec![column("a"), column("b"), column("c")],
+            rows: vec![CapturedRow {
+                values: vec![1.into(), "x".into(), "y".into()],
+                failed: vec![1, 2],
+                worker: None,
+            }],
+        };
+        batch.keep_columns(&[false, true, false]);
+        assert_eq!(batch.columns, [column("b")]);
+        assert_eq!(batch.rows[0].values, [serde_json::json!("x")]);
+        assert_eq!(batch.rows[0].failed, [0]);
+    }
+
     /// A build that knew no index names sent a bare `indexed`; a leader that reads them must still read it.
     #[test]
     fn an_indexed_verdict_without_its_fields_still_reads() {

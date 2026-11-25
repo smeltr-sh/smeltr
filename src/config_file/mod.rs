@@ -87,7 +87,7 @@ pub use sample::{
 };
 pub use test::{
     Difference, Lock, Locked, Made, Outcome, Retyped, RowsIn, Run, Sent, Shown, TESTS_DIR, TestDto, TestSummary,
-    Verdict, compare, list_tests, read_test, test_bytes, test_path,
+    Verdict, compare, kept, list_tests, read_test, test_bytes, test_path,
 };
 
 /// The `"version"` this build writes and reads. A change to the format bumps it and adds a converter from the

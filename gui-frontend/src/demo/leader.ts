@@ -1411,7 +1411,7 @@ export class DemoLeader {
       show_internal: boolean;
       filter: string | null;
       attribution?: boolean;
-      as_sample?: boolean;
+      as_sample?: { fields: string[]; rows: number[] } | null;
       after_dot: unknown;
       capture_filter: unknown;
     },
@@ -1432,7 +1432,7 @@ export class DemoLeader {
       showInternal: req.show_internal,
       filter: req.filter,
       attribution: req.attribution ?? false,
-      asSample: req.as_sample ?? false,
+      asSample: req.as_sample ?? null,
       afterDot: req.after_dot ?? undefined,
       captureFilter: req.capture_filter ?? undefined,
     });

@@ -429,7 +429,9 @@ test('a sample the branch deleted is put back from its card on the change page',
     .click();
   await expect(admin.getByText('No objects changed.')).toBeVisible();
   const { sample } = await api.get('/api/areas/shared/samples/keep?branch=tidy');
-  expect(recordsOf(sample)).toEqual([{ _raw: 'a line' }]);
+  expect(recordsOf(sample)).toEqual([
+    { _raw: 'a line', __capture: { timestamp: expect.any(String) } },
+  ]);
 });
 
 test('a deployed commit that fails its own tests is deployed, and flagged on the Issues page', async ({

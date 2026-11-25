@@ -146,7 +146,9 @@ test("A1: a sample, and a pipeline's input and output, download as files of one 
     admin.getByRole('button', { name: 'Download', exact: true }).click(),
   ]);
   expect(sample.suggestedFilename()).toBe('access-log.ndjson');
-  expect(await lines(sample)).toEqual(records);
+  // Each with the instant the paste was saved at, which a preview's now() reads.
+  const at = { __capture: { timestamp: expect.any(String) } };
+  expect(await lines(sample)).toEqual(records.map((r) => ({ ...r, ...at })));
   // A sample gone since the page loaded downloads nothing, and the refusal is shown.
   await api.delete(`/api/areas/shared/samples/access${ON}`);
   let downloaded = false;
@@ -176,7 +178,7 @@ test("A1: a sample, and a pipeline's input and output, download as files of one 
     admin.getByRole('button', { name: /^Download input/ }).click(),
   ]);
   expect(input.suggestedFilename()).toBe('tag-input.ndjson');
-  expect(await lines(input)).toEqual(records);
+  expect(await lines(input)).toEqual(records.map((r) => ({ ...r, ...at })));
   await menu.click();
   await expect(admin.getByRole('button', { name: /^Download output/ })).toContainText(
     'The 1 row on screen',
@@ -186,7 +188,7 @@ test("A1: a sample, and a pipeline's input and output, download as files of one 
     admin.getByRole('button', { name: /^Download output/ }).click(),
   ]);
   expect(output.suggestedFilename()).toBe('tag-output.ndjson');
-  // As Save output as sample saves them, with where each came from.
+  // Each with every field, and where it came from.
   const [row] = await lines(output);
   expect(row).toMatchObject({ _raw: 'GET /b 404', seen: true, __capture: { sample: 'access' } });
   expect(await lines(output)).toHaveLength(1);
@@ -477,7 +479,7 @@ test('A1: an editor runs a pipeline over a capture without saving it, then saves
 
   await admin.getByRole('button', { name: 'Save or download', exact: true }).click();
   await expect(admin.getByRole('button', { name: /^Save output as sample/ })).toContainText(
-    'The 3 rows on screen',
+    /on 3 rows on screen/,
   );
   await admin.getByRole('button', { name: /^Save input as sample/ }).click();
   const saving = admin.getByRole('dialog');
@@ -1194,11 +1196,13 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
   );
 
   const saved = (await api.get(`/api/areas/shared/samples/busy-hour${ON}`)).sample;
+  // Each with the instant the sample was first saved at, which a preview's now() reads.
+  const at = { __capture: { timestamp: expect.any(String) } };
   expect(recordsOf(saved)).toEqual([
-    { _raw: ORDERS[0], __source: read(0, 100, ORDERS[0]) },
+    { _raw: ORDERS[0], __source: read(0, 100, ORDERS[0]), ...at },
     // The bytes a byte record is read from are the edited text.
-    { _raw: '{"id":3,"total":13}', __source: read(2, 102, '{"id":3,"total":13}') },
-    { _raw: '{"id":4,"total":1}' },
+    { _raw: '{"id":3,"total":13}', __source: read(2, 102, '{"id":3,"total":13}'), ...at },
+    { _raw: '{"id":4,"total":1}', ...at },
   ]);
 });
 
@@ -1497,7 +1501,8 @@ test('A2: a sample is picked from the Sample menu, its output searched by keywor
     admin.getByRole('listbox', { name: 'Tests' }).getByRole('option', { name: /^orders parse/ }),
   ).toBeVisible();
   const saved = admin.getByRole('listbox', { name: 'Samples' });
-  await saved.getByRole('option', { name: /\borders 3 records$/ }).click();
+  // A saved paste names the instant it was saved at.
+  await saved.getByRole('option', { name: /\borders 3 records · / }).click();
   await expect(sampleMenu).toContainText('3 records');
   const search = admin.getByRole('combobox', { name: 'Search the output' });
   await search.fill('SPRING');
@@ -2327,7 +2332,7 @@ test('A11: a test locking a whole float and a long integer passes at once', asyn
 });
 
 // A6, a pipeline's output as a sample, for another pipeline, such as an enrichment, to run over and lock a test on.
-test('A6: the output rows on screen are saved as a sample that another pipeline runs over', async ({
+test('A6: the output fields and rows on screen are saved as a sample that another pipeline runs over', async ({
   admin,
   leader,
   api,
@@ -2352,6 +2357,10 @@ test('A6: the output rows on screen are saved as a sample that another pipeline 
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
   await admin.getByRole('combobox', { name: 'Search the output' }).fill('SPRING');
   await expect(admin.getByText('2 of 3 rows')).toBeVisible();
+  await admin.getByRole('button', { name: 'Choose fields' }).click();
+  await admin.getByRole('searchbox', { name: 'Find a field' }).fill('coupon');
+  await admin.getByRole('group', { name: 'Fields' }).getByRole('checkbox').uncheck();
+  await admin.keyboard.press('Escape');
   const dialog = admin.getByRole('dialog');
 
   // Loading the rows saves nothing, so Cancel is live while they load, and their late answer is dropped.
@@ -2383,6 +2392,8 @@ test('A6: the output rows on screen are saved as a sample that another pipeline 
   expect(made.source).toBeUndefined();
   const saved = (await api.get(`/api/areas/shared/samples/${made.id}${ON}`)).sample;
   expect(saved.columns).toContainEqual({ name: 'total', type: 'f64' });
+  // The fields on screen, and no others.
+  expect(saved.columns.map((c: { name: string }) => c.name)).not.toContain('coupon');
   const rows = recordsOf(saved);
   expect(rows.map((r) => r.id)).toEqual([1, 3]);
   // The fields say how the pipeline made these records from the sample: the leader writes them in place of a

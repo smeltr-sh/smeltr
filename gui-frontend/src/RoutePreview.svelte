@@ -25,7 +25,7 @@
   import {
     heldSession,
     putTest,
-    type LockChoice,
+    type ShownCut,
     routePreview,
     listTests,
     errorText,
@@ -112,7 +112,7 @@
 
   /** The fields and records on screen when Lock this as a test was pressed, while its dialog is open: a record's rows
    * share its number. */
-  let locking = $state<LockChoice | null>(null);
+  let locking = $state<ShownCut | null>(null);
   function goLockTest() {
     const { rows, fields } = grid?.onScreen() ?? { rows: [], fields: [] };
     const numbers = rows.map((r) => records.get(r.key) ?? -1).filter((r) => r >= 0);

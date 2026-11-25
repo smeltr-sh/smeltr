@@ -2242,8 +2242,9 @@ export interface PreviewRequest {
   /** Say which steps changed each row's fields and dropped it. The leader
    * runs the pipeline once more per step for it. */
   attribution?: boolean;
-  /** Also return the rows as a sample holds them (`PreviewResult.as_sample`), to save as one. */
-  asSample?: boolean;
+  /** Also return these fields and rows of the output as a sample holds them (`PreviewResult.as_sample`), to save as
+   * one. */
+  asSample?: { rows: number[]; fields?: string[] };
   /** Asks what may follow a `.` instead of running the sample. */
   afterDot?: { text: string; dot: number; at: DotAt };
   /** A capture filter at a destination to check against each route delivering there. Asked, the preview answers it
@@ -2344,12 +2345,7 @@ export interface PreviewResult {
   /** The fields the schemas the pipeline produces require or recommend and its rows lack. */
   missing?: MissingField[];
   /** Answers `PreviewRequest.asSample`. */
-  as_sample?: AsSample;
-}
-
-/** A sample's table, without its name, and each of its rows' `PreviewRow.row`. */
-export interface AsSample extends CaptureBatchDto {
-  shown: number[];
+  as_sample?: CaptureBatchDto;
 }
 
 /** A field a schema requires or recommends that a pipeline's rows lack (`schema::Missing`). */
@@ -2403,7 +2399,7 @@ export function previewPipeline(req: PreviewRequest): Promise<PreviewResult> {
       show_internal: req.showInternal ?? false,
       filter: req.filter ?? null,
       attribution: req.attribution ?? false,
-      as_sample: req.asSample ?? false,
+      as_sample: req.asSample ?? null,
       dictionary: true,
       after_dot: req.afterDot ?? null,
       capture_filter: req.captureFilter ?? null,
@@ -2620,8 +2616,8 @@ export type Locked = { rowsIn: number; table: CaptureBatchDto; shown: Shown[] };
 
 export type LockedResult = Partial<Locked> & { ok: boolean; errors: ApiError[] };
 
-/** What Lock this as a test locks: the fields and rows on screen when it was pressed, `__` fields shown included. */
-export type LockChoice = { fields: string[]; rows: number[] };
+/** The fields and rows on screen, `__` fields shown included: what Lock locks and Save output as sample saves. */
+export type ShownCut = { fields: string[]; rows: number[] };
 
 /** Where a run first stopped matching what a test locks, on one checked row: what the test expects there and
  * what the run made, one document at a time. Either side is absent past its own end. */

@@ -132,6 +132,32 @@ impl Made {
     }
 }
 
+/// `document` holding only `fields`, named as [`leaves_of`] names them, in the document's own shape. An object left
+/// with none of them is gone.
+pub fn kept(document: &Value, fields: &[String]) -> Map<String, Value> {
+    fn keep(value: &Value, path: &mut String, fields: &[String]) -> Option<Value> {
+        match value {
+            Value::Object(object) if !object.is_empty() => {
+                let mut out = Map::new();
+                for (key, v) in object {
+                    let len = path.len();
+                    crate::plan::tree::push_key(path, key);
+                    if let Some(v) = keep(v, path, fields) {
+                        out.insert(key.clone(), v);
+                    }
+                    path.truncate(len);
+                }
+                (!out.is_empty()).then_some(Value::Object(out))
+            }
+            _ => fields.contains(path).then(|| value.clone()),
+        }
+    }
+    match keep(document, &mut String::new(), fields) {
+        Some(Value::Object(object)) => object,
+        _ => Map::new(),
+    }
+}
+
 /// Every leaf of `value` under `path`, by its name, as the records grid names its columns: an object's keys are
 /// walked, and anything else is a leaf -- an array, a scalar, and an empty object, which has no leaves of its own.
 fn leaves_of(value: &Value, path: &mut String, into: &mut Map<String, Value>) {

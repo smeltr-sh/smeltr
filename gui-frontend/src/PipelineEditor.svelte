@@ -105,7 +105,7 @@
     type ParserProposal,
     parsersIn,
     putTest,
-    type LockChoice,
+    type ShownCut,
   } from './api';
   import ChipPicker from './ChipPicker.svelte';
   import JumpLinks from './JumpLinks.svelte';
@@ -925,8 +925,8 @@
       filter?: string;
       /** Which steps touched, dropped and failed each row. */
       attribution?: boolean;
-      /** Return the rows as a sample holds them too (`PreviewRequest.asSample`). */
-      asSample?: boolean;
+      /** Return these fields and rows as a sample holds them too (`PreviewRequest.asSample`). */
+      asSample?: { rows: number[]; fields?: string[] };
       /** Compare the rows with this test (`PreviewRequest.test`). */
       test?: string;
     } = {},
@@ -1068,21 +1068,20 @@
 
   /** The output rows `rows` names, as a sample holds them. It re-runs the steps the grid ran, so the rows are the
    * ones on screen. */
-  async function outputOf(rows: Set<number>): Promise<CaptureBatchDto> {
+  /** The output's `rows` as a sample holds them, cut to `fields`, else with every field. */
+  async function outputOf(rows: number[], fields?: string[]): Promise<CaptureBatchDto> {
     const ran = pause && pauseRun ? pauseRan : lastGoodRun;
-    const res = await fetchPreview(ran, lastSample, { asSample: true });
+    const res = await fetchPreview(ran, lastSample, { asSample: { rows, fields } });
     if (!res.ok || !res.as_sample) throw new Error(previewFailure(res));
-    const { columns, rows: made } = heldTable(res.as_sample);
-    const of = res.as_sample.shown;
-    return { columns, rows: made.filter((_, i) => rows.has(of[i])) };
+    return heldTable(res.as_sample);
   }
-  let savingOutput = $state<Set<number> | null>(null);
+  let savingOutput = $state<ShownCut | null>(null);
   /** The dialog is open to save the held capture, the input run over, as a sample. */
   let savingInput = $state(false);
 
   /** The fields and rows on screen when Lock this as a test was pressed, while its dialog is open. */
-  let locking = $state<LockChoice | null>(null);
-  function goLockTest(choice: LockChoice) {
+  let locking = $state<ShownCut | null>(null);
+  function goLockTest(choice: ShownCut) {
     locking = choice;
   }
   async function lockShown(name: string) {
@@ -1820,7 +1819,7 @@
       start={capturing ? 'capture' : savingOutput ? 'output' : savingInput ? 'input' : undefined}
       target={captureAt ?? captureTarget}
       onuse={useCapture}
-      output={savingOutput ? () => outputOf(savingOutput!) : undefined}
+      output={savingOutput ? () => outputOf(savingOutput!.rows, savingOutput!.fields) : undefined}
       input={savingInput && choices.held ? choices.held : undefined}
       oncancel={() => {
         capturing = false;

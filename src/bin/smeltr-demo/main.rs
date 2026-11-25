@@ -183,7 +183,7 @@ struct PreviewBody {
     #[serde(default)]
     attribution: bool,
     #[serde(default)]
-    as_sample: bool,
+    as_sample: Option<smeltr::leader::preview::ShownCut>,
     #[serde(default)]
     dictionary: bool,
     after_dot: Option<AfterDotRequest>,
