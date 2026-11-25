@@ -188,9 +188,10 @@ impl StrBuilder {
     /// Grow, as `push_grow` does, so one more row of `len` bytes fits.
     fn room_for(&mut self, pool: &mut BufferPool, len: usize) {
         if self.growing && self.row == self.len {
-            self.len = (self.len * 2).max(64);
-            self.offsets.grow(pool, (self.len + 1) * 4);
-            self.validity.grow(pool, self.len);
+            let len = (self.len * 2).max(64);
+            self.offsets.grow(pool, (len + 1) * 4);
+            self.validity.grow(pool, len);
+            self.len = len;
         }
         debug_assert!(self.row < self.len, "pushed more rows than the column holds");
         let need = self.pos as usize + len;
