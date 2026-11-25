@@ -14,6 +14,7 @@
 //! Live, draws without TLS, SASL, a fault or a break are pointed at the broker at `KAFKA_TEST_BROKERS`, and
 //! deliver to topics each seed makes and reads back.
 
+use smeltr::core::id::DestId;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -1001,7 +1002,14 @@ fn offline_seed(seed: u64, reached: &mut Reached, pki: &Pki) -> Result<(), Strin
     let secrets = secrets_held(&draw, pki);
     let build = || {
         let metrics = smeltr::metrics::MetricsHandle::new(Arc::new(smeltr::metrics::Metrics::new()), "fuzz");
-        smeltr::io::build_destination(&DestinationKind::Kafka(c.clone()), 0, "d", metrics, &secrets, None)
+        smeltr::io::build_destination(
+            &DestinationKind::Kafka(c.clone()),
+            DestId(0),
+            "d",
+            metrics,
+            &secrets,
+            None,
+        )
     };
     if draw.unheld {
         // Refused before it reaches for a broker, naming where the credential was to come from.
@@ -1227,8 +1235,15 @@ fn live_seed(seed: u64, brokers: &str, reached: &mut Reached, pki: &Pki) -> Resu
     let checked = (|| {
         let secrets = secrets_held(&draw, pki);
         let metrics = smeltr::metrics::MetricsHandle::new(Arc::new(smeltr::metrics::Metrics::new()), "fuzz");
-        let mut d = smeltr::io::build_destination(&DestinationKind::Kafka(c.clone()), 0, "d", metrics, &secrets, None)
-            .map_err(|e| format!("does not build: {e:?}"))?;
+        let mut d = smeltr::io::build_destination(
+            &DestinationKind::Kafka(c.clone()),
+            DestId(0),
+            "d",
+            metrics,
+            &secrets,
+            None,
+        )
+        .map_err(|e| format!("does not build: {e:?}"))?;
         let marker = format!("{run}:");
         let sent = batches(&mut rng, reached, &c, &marker, &other_topic);
         let (refused, _) = write(d.as_mut(), &sent, Duration::from_secs(60))?;

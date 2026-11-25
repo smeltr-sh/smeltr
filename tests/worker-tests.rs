@@ -2,6 +2,7 @@
 //! own authority) and as a worker subprocess -- enrollment, heartbeat, a
 //! git-fetched bundle, real Kafka records. Needs `KAFKA_TEST_BROKERS`.
 
+use smeltr::core::id::DestId;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::sync::{Arc, Once};
@@ -459,7 +460,7 @@ fn standalone_leader_runs_its_own_embedded_worker() {
             props: Default::default(),
             avro: None,
         },
-        0,
+        DestId(0),
         kafka_metrics(),
         &Default::default(),
     )
@@ -590,7 +591,7 @@ fn a_restarted_worker_runs_nothing_until_the_leader_answers() {
             props: Default::default(),
             avro: None,
         },
-        0,
+        DestId(0),
         kafka_metrics(),
         &Default::default(),
     )
@@ -774,7 +775,7 @@ fn a_revoked_worker_keeps_processing_records_after_revocation() {
             props: Default::default(),
             avro: None,
         },
-        0,
+        DestId(0),
         kafka_metrics(),
         &Default::default(),
     )
