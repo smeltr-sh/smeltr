@@ -739,8 +739,22 @@ export function partsWidth(steps: Step[]): number {
   return Math.max(0, ...lefts.map((l) => (l || '…').length));
 }
 
-/** What `step` does, in one line, a Call step naming the pipeline it runs by `pipelineNames`. */
+/** The filter that limits `step` to some records, or `null` when it runs on every record. */
+export function stepFilter(step: Step): string | null {
+  if (step.type === 'if' || step.type === 'comment') return null;
+  const filter = step.filter.trim();
+  return filter === '' ? null : filter;
+}
+
+/** What `step` does, in one line, led by the filter that limits it to some records, a Call step naming the pipeline
+ * it runs by `pipelineNames`. */
 export function stepSummary(step: Step, pipelineNames: PipelineNames): string {
+  const filter = stepFilter(step);
+  return `${filter === null ? '' : `when ${filter}: `}${stepAction(step, pipelineNames)}`;
+}
+
+/** What `step` does, in one line, without its filter. */
+export function stepAction(step: Step, pipelineNames: PipelineNames): string {
   switch (step.type) {
     case 'if':
       return `if ${step.condition || '…'}`;

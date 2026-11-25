@@ -16,11 +16,11 @@ use smeltr::leader::{AppState, router};
 /// name, for a `data_dir` or a clone destination.
 ///
 /// A counter, not the clock: these tests run in parallel and share a pid, so
-/// `SystemTime::now()` was the only thing keeping two of them apart -- and on
+/// `SystemTime::now()` would be the only thing keeping two of them apart -- and on
 /// Windows it advances in ~15 ms steps, not nanoseconds. Two leaders that
-/// started inside one tick got the same `data_dir`, and then raced on
-/// `git init --bare` for the same worker group; the loser's group was never
-/// created, which surfaced much later as an empty group list.
+/// start inside one tick would get the same `data_dir`, and then race on
+/// `git init --bare` for the same worker group; the loser's group is never
+/// created, which surfaces much later as an empty group list.
 fn scratch_dir(prefix: &str) -> std::path::PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);

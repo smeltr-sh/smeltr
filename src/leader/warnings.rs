@@ -6564,8 +6564,8 @@ mod tests {
         assert!(msg.contains("reader capacity") || msg.contains("reduce"), "{msg}");
     }
 
-    /// The defect this fixes: two groups running a source of the same id used to share one lag series, so a climb
-    /// in one was indistinguishable from a climb in the other.
+    /// Two groups running a source of the same id keep a lag series each, so a climb in one is told from a climb in
+    /// the other.
     #[test]
     fn two_groups_reporting_lag_for_the_same_source_id_are_two_series_and_two_warnings() {
         let g1 = store_with_lag_in("g1", &[100.0, 200.0, 300.0, 400.0, 500.0, 600.0]);
@@ -6714,10 +6714,10 @@ mod tests {
         assert!(json.contains(r#""sinceMillis":null"#), "{json}");
     }
 
-    // -- group scoping (defect fix: a source or destination id is unique only within its group) ------------------
+    // -- group scoping (a source or destination id is unique only within its group) ------------------
 
     /// Two groups running a source of the same id must not collapse into one warning: source ids are unique only
-    /// within a group plus `shared/`, and `or_insert_with` used to keep whichever worker's report sorted first.
+    /// within a group plus `shared/`.
     #[test]
     fn two_groups_running_a_source_of_the_same_id_are_two_separate_warnings() {
         let snapshot = vec![

@@ -9,6 +9,9 @@ license = "BUSL-1.1"
 autotests = false
 
 # `tools/citations` checks the tree's documents without building smeltr.
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
 [workspace]
 members = ["tools/citations", "tools/check-scope"]
 

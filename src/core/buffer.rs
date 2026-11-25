@@ -218,24 +218,28 @@ unsafe impl GlobalAlloc for Counting {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         count(layout.size() as isize);
+        // SAFETY: the caller keeps `GlobalAlloc::alloc`'s contract, which is the underlying allocator's own.
         unsafe { Underlying.alloc(layout) }
     }
 
     #[inline]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         count(layout.size() as isize);
+        // SAFETY: the caller keeps `GlobalAlloc::alloc_zeroed`'s contract, which is the underlying allocator's own.
         unsafe { Underlying.alloc_zeroed(layout) }
     }
 
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         count(-(layout.size() as isize));
+        // SAFETY: the caller keeps `GlobalAlloc::dealloc`'s contract, which is the underlying allocator's own.
         unsafe { Underlying.dealloc(ptr, layout) }
     }
 
     #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         count(new_size as isize - layout.size() as isize);
+        // SAFETY: the caller keeps `GlobalAlloc::realloc`'s contract, which is the underlying allocator's own.
         unsafe { Underlying.realloc(ptr, layout, new_size) }
     }
 }
