@@ -1,0 +1,47 @@
+[
+  {
+    "name": "each field under its path; a quoted key is one key",
+    "columns": [
+      { "name": "id", "type": "i64" },
+      { "name": "user.name", "type": "str" },
+      { "name": "labels[\"a.b\"]", "type": "str" }
+    ],
+    "rows": [{ "values": [1, "ann", "x"] }, { "values": [2, null, null] }],
+    "records": [{ "id": 1, "user": { "name": "ann" }, "labels": { "a.b": "x" } }, { "id": 2 }]
+  },
+  {
+    "name": "an object's unclaimed fields beside its named ones; the root's hold the root keys no column names",
+    "columns": [
+      { "name": "id", "type": "i64" },
+      { "name": "user.name", "type": "str" },
+      { "name": "user....", "type": "{...}" },
+      { "name": "...", "type": "{...}" }
+    ],
+    "rows": [
+      { "values": [1, "ann", { "age": 3 }, { "extra": true }] },
+      { "values": [2, null, { "age": 4 }, null] },
+      { "values": [3, "bo", null, { "n": { "deep": [1, 2] } }] }
+    ],
+    "records": [
+      { "id": 1, "user": { "name": "ann", "age": 3 }, "extra": true },
+      { "id": 2, "user": { "age": 4 } },
+      { "id": 3, "user": { "name": "bo" }, "n": { "deep": [1, 2] } }
+    ]
+  },
+  {
+    "name": "pasted records, each whole in the root's unclaimed fields",
+    "columns": [{ "name": "...", "type": "variant" }],
+    "rows": [{ "values": [{ "_raw": "a line" }] }, { "values": [{ "_raw": "{\"a\":1}" }] }],
+    "records": [{ "_raw": "a line" }, { "_raw": "{\"a\":1}" }]
+  },
+  {
+    "name": "what a source set, under __source",
+    "columns": [
+      { "name": "n", "type": "i64" },
+      { "name": "__source.topic", "type": "str" },
+      { "name": "__source.offset", "type": "i64" }
+    ],
+    "rows": [{ "values": [7, "orders", 12] }],
+    "records": [{ "n": 7, "__source": { "topic": "orders", "offset": 12 } }]
+  }
+]

@@ -6,6 +6,7 @@ import {
   filterHelp,
   heldRows,
   pastedTable,
+  recordRow,
   tableRecords,
   heldCount,
   progressText,
@@ -13,6 +14,7 @@ import {
   shownRecords,
   workerChips,
 } from './capture';
+import cases from '../../tests/fixtures/table-records.json';
 
 const columns = [
   { name: '_raw', type: 'str' },
@@ -95,6 +97,12 @@ describe('heldCount', () => {
 });
 
 describe('tableRecords', () => {
+  // The leader reads a table by the same rule (`a_table_reads_as_the_records_the_gui_shows`): both read these cases.
+  it.each(cases)('reads a table as its records, and a record back as its row: $name', (c) => {
+    expect(tableRecords(c).map((held) => held.record)).toEqual(c.records);
+    expect(c.records.map((record) => recordRow(c.columns, record))).toEqual(c.rows);
+  });
+
   it('keeps a field named as something every object inherits in its record', () => {
     const table = {
       columns: [
