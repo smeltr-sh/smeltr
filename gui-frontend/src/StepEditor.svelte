@@ -673,7 +673,8 @@
           <span class="type-name">{STEP_LABELS[step.type]}</span>
         </span>
         <span class="summary ellipsis"
-          >{#if stepFilter(step) !== null}<span class="step-filter">when {stepFilter(step)}:</span
+          >{#if stepFilter(step) !== null}<span class="step-filter" title={stepFilter(step)}
+              ><span class="filter-text ellipsis">when {stepFilter(step)}</span>:</span
             >{' '}{/if}{stepAction(step, pipelineNames)}</span
         >
         {#if stepErrors.length > 0 || stepWarningMessages.length > 0}
@@ -1725,6 +1726,13 @@
   /* Dimmed as the Routes page dims a route's condition, so where the step runs reads apart from what it does. */
   .step-filter {
     color: var(--dim);
+  }
+
+  /* A long filter is cut short here, so the line still shows what the step does. */
+  .filter-text {
+    display: inline-block;
+    max-width: 40%;
+    vertical-align: bottom;
   }
 
   .summary {
