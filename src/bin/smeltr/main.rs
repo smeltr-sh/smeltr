@@ -1882,13 +1882,14 @@ fn start() {
     } else {
         stop_on_signal
     };
-    ctrlc::set_handler(on_signal).expect("install the signal handler (called exactly once, at startup)");
 
     // Before any thread exists: `backfill_env` mutates the environment.
     if !runtime_child {
         load_and_apply_config_file();
         smeltr::startup_config::check_lazy_settings();
     }
+    // After the environment is set: `ctrlc` starts a thread, and `set_var` must run before any thread exists.
+    ctrlc::set_handler(on_signal).expect("install the signal handler (called exactly once, at startup)");
 
     // Before either role starts, so nothing this process has to say about itself predates somewhere to say it.
     smeltr::logs::start();

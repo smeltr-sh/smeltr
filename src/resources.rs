@@ -177,7 +177,9 @@ fn host_cores() -> f64 {
 fn disk_space(dir: &Path) -> Option<(u64, u64)> {
     use std::os::unix::ffi::OsStrExt;
     let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
+    // SAFETY: a `statvfs` is integers, and all zeroes is a value of each.
     let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `path` is a NUL-terminated string and `stat` a `statvfs`, and both outlive the call.
     if unsafe { libc::statvfs(path.as_ptr(), &mut stat) } != 0 {
         return None;
     }
@@ -197,6 +199,8 @@ fn disk_space(dir: &Path) -> Option<(u64, u64)> {
     let wide: Vec<u16> = dir.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
     let mut free = 0u64;
     let mut total = 0u64;
+    // SAFETY: `wide` is a NUL-terminated string that outlives the call, and each out-pointer is a live `u64` or the
+    // null the call allows.
     let ok = unsafe {
         windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW(
             wide.as_ptr(),
@@ -328,6 +332,7 @@ mod platform {
     /// into a parent already read and is missed, which `None` reports, rather than being counted
     /// in both. `None` too when any process could not be read.
     pub(super) fn tree_cpu_time(tree: &[u32], _: &mut Carried) -> Option<std::time::Duration> {
+        // SAFETY: `sysconf` takes a number and reads no memory of this process's.
         let ticks_per_second = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
         if ticks_per_second <= 0 {
             return None;
@@ -728,6 +733,7 @@ mod platform {
         /// [`cap_by_cpuset`]'s no-quota branch needs a count untouched by the very restriction it
         /// is trying to detect.
         fn raw_host_cores() -> f64 {
+            // SAFETY: `sysconf` takes a number and reads no memory of this process's.
             let n = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) };
             if n > 0 { n as f64 } else { 1.0 }
         }
@@ -1585,8 +1591,10 @@ mod platform {
     }
 
     fn host_memory_total() -> Option<u64> {
+        // SAFETY: a `MEMORYSTATUSEX` is integers, and all zeroes is a value of each.
         let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
         status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+        // SAFETY: `status` is a live `MEMORYSTATUSEX` whose `dwLength` is set, as the call requires.
         let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
         (ok != 0).then_some(status.ullTotalPhys)
     }
