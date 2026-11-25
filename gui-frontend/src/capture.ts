@@ -6,6 +6,8 @@ import { count } from './time';
 import { keySpans } from './names';
 import type {
   CaptureBatchDto,
+  CaptureColumnDto,
+  CapturedRowDto,
   CaptureStatus,
   CaptureWorkerDto,
   HeldRecord,
@@ -44,7 +46,7 @@ export function pastedTable(records: SampleRecordDto[]): CaptureBatchDto {
 }
 
 /** The column's place in a record object: the path of its field, or of the object whose unclaimed fields it holds. */
-function columnPath(name: string): { path: string; unclaimed: boolean } {
+export function columnPath(name: string): { path: string; unclaimed: boolean } {
   if (name === UNCLAIMED) return { path: '', unclaimed: true };
   return name.endsWith(`.${UNCLAIMED}`)
     ? { path: name.slice(0, -UNCLAIMED.length - 1), unclaimed: true }
@@ -83,6 +85,47 @@ export function tableRecords(batch: CaptureBatchDto): HeldRecord[] {
     const failed = (row.failed ?? []).map((f) => columns[f].name);
     return { record, ...(row.worker && { worker: row.worker }), ...(failed.length && { failed }) };
   });
+}
+
+/** `record` as a row under `columns`, which `tableRecords` reads back as the record: each field's column takes its
+ * value from its path, and each column of unclaimed fields what is left of its object once the columns under it have
+ * theirs. */
+export function recordRow(columns: CaptureColumnDto[], record: SampleRecordDto): CapturedRowDto {
+  const left = structuredClone(record);
+  const keysOf = (path: string) => keySpans(path).map((span) => span.key);
+  const take = (keys: string[]): unknown => {
+    const last = keys.pop();
+    // Only what the record itself holds: a path may name something every object inherits, like `__proto__`.
+    const own = (at: unknown, key: string) =>
+      at !== null && typeof at === 'object' && Object.hasOwn(at, key)
+        ? (at as SampleRecordDto)[key]
+        : null;
+    let at: unknown = left;
+    for (const key of keys) at = own(at, key);
+    if (at === null || typeof at !== 'object') return null;
+    if (last === undefined) return at;
+    if (!Object.hasOwn(at, last)) return null;
+    const value = (at as SampleRecordDto)[last];
+    delete (at as SampleRecordDto)[last];
+    return value ?? null;
+  };
+  const places = columns.map((c) => ({
+    ...columnPath(c.name),
+    keys: keysOf(columnPath(c.name).path),
+  }));
+  const values: unknown[] = places.map((p) => (p.unclaimed ? null : take([...p.keys])));
+  // The deepest object first, so the one above it holds what is left.
+  const unclaimed = places.flatMap((p, at) => (p.unclaimed ? [{ p, at }] : []));
+  for (const { p, at } of unclaimed.sort((a, b) => b.p.keys.length - a.p.keys.length)) {
+    const rest = take([...p.keys]);
+    // A key a column under this object claims is that column's, as a capture leaves it out (`io::unclaimed_of`).
+    const claimed = places
+      .filter((o) => o !== p && p.keys.every((key, i) => o.keys[i] === key))
+      .map((o) => o.keys[p.keys.length]);
+    const kept = Object.entries((rest ?? {}) as object).filter(([key]) => !claimed.includes(key));
+    values[at] = kept.length > 0 ? Object.fromEntries(kept) : null;
+  }
+  return { values };
 }
 
 /** One worker in the capture, and how many of the held records it sent. */

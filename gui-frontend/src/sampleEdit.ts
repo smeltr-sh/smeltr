@@ -12,7 +12,7 @@ import {
   type SampleDto,
   type SampleRecordDto,
 } from './api';
-import { heldTable } from './capture';
+import { columnPath, heldTable, recordRow } from './capture';
 
 /** One column of the editor: column `at` of the table, or `field` of the object that column's cells hold. */
 export interface EditColumn {
@@ -83,12 +83,13 @@ export function editTable(sample: SampleDto): {
 } {
   const { columns, rows } = heldTable(sample);
   const shown = columns.flatMap((c, at): EditColumn[] => {
-    if (!c.name.endsWith('...'))
+    const { path, unclaimed } = columnPath(c.name);
+    if (!unclaimed)
       return rows.length === 0 || rows.some((row) => row.values[at] != null) ? [{ ...c, at }] : [];
     const fields: string[] = [];
     for (const row of rows)
       for (const k of recordColumns(held(row, at) ?? {})) if (!fields.includes(k)) fields.push(k);
-    return fields.map((field) => ({ name: c.name.slice(0, -3) + field, at, field }));
+    return fields.map((field) => ({ name: path === '' ? field : `${path}.${field}`, at, field }));
   });
   return { columns, rows, shown };
 }
@@ -161,43 +162,6 @@ function base64(text: string): string {
   return btoa(binary);
 }
 
-/** `record` as a row under `columns`: each named column's value from its path, and each column of unclaimed fields
- * what is left of its object once the columns under it have theirs. */
-function rowOf(columns: CaptureColumnDto[], record: SampleRecordDto): CapturedRowDto {
-  const left = structuredClone(record);
-  const take = (path: string): unknown => {
-    const keys = keySpans(path).map((span) => span.key);
-    const last = keys.pop();
-    // Only what the record itself holds: a path may name something every object inherits, like `__proto__`.
-    const own = (at: unknown, key: string) =>
-      at !== null && typeof at === 'object' && Object.hasOwn(at, key)
-        ? (at as SampleRecordDto)[key]
-        : null;
-    let at: unknown = left;
-    for (const key of keys) at = own(at, key);
-    if (at === null || typeof at !== 'object') return null;
-    if (last === undefined) return at;
-    if (!Object.hasOwn(at, last)) return null;
-    const value = (at as SampleRecordDto)[last];
-    delete (at as SampleRecordDto)[last];
-    return value ?? null;
-  };
-  const values: unknown[] = columns.map((c) => (c.name.endsWith('...') ? null : take(c.name)));
-  // The deepest object first, so the one above it holds what is left.
-  const unclaimed = columns.flatMap((c, at) => (c.name.endsWith('...') ? [{ c, at }] : []));
-  for (const { c, at } of unclaimed.sort((a, b) => b.c.name.length - a.c.name.length)) {
-    const under = c.name.slice(0, -3);
-    const rest = take(under.replace(/\.$/, ''));
-    // A key a column under this object claims is that column's, as a capture leaves it out (`io::unclaimed_of`).
-    const claimed = columns
-      .filter((o) => o !== c && o.name.startsWith(under))
-      .map((o) => keySpans(o.name.slice(under.length))[0]?.key);
-    const kept = Object.entries((rest ?? {}) as object).filter(([key]) => !claimed.includes(key));
-    values[at] = kept.length > 0 ? Object.fromEntries(kept) : null;
-  }
-  return { values };
-}
-
 /** Records pasted into a sample of `columns`, read as Add sample reads a paste (`recordsFromText`): one JSON value,
  * an array's elements a record, or else a line a record. A sample that holds `_raw` takes a whole record, an object
  * with a `_raw` field, as it is, and anything else as `_raw` text; one that does not takes each as a JSON object of
@@ -207,7 +171,9 @@ export function pastedRows(
   columns: CaptureColumnDto[],
   shown: EditColumn[],
 ): { rows: CapturedRowDto[] } | { error: string } {
-  const rows = (records: SampleRecordDto[]) => ({ rows: records.map((r) => rowOf(columns, r)) });
+  const rows = (records: SampleRecordDto[]) => ({
+    rows: records.map((r) => recordRow(columns, r)),
+  });
   if (shown.some((c) => c.name === '_raw')) return rows(recordsFromText(text));
   const isObject = (v: unknown) => v !== null && typeof v === 'object' && !Array.isArray(v);
   const elements = pastedElements(text);

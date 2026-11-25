@@ -4109,6 +4109,27 @@ mod tests {
         assert_eq!(meta.field_bytes(&records[0], SOURCE_BYTES), Some(read));
     }
 
+    /// The GUI reads a table as records by the same rule (`gui-frontend/src/capture.ts`): both read these cases.
+    #[test]
+    fn a_table_reads_as_the_records_the_gui_shows() {
+        #[derive(serde::Deserialize)]
+        struct Case {
+            name: String,
+            #[serde(flatten)]
+            table: crate::heartbeat::CaptureBatch,
+            records: Vec<crate::io::RecordObject>,
+        }
+        let cases: Vec<Case> = serde_json::from_str(include_str!("../../tests/fixtures/table-records.json")).unwrap();
+        for case in cases {
+            let meta = SourceMeta::of_columns(&case.table.columns).unwrap();
+            let read = crate::leader::preview::read_sample(&meta, &case.table).unwrap();
+            let records: Vec<_> = (read.records.iter().zip(&read.texts))
+                .map(|(record, text)| meta.record_object(record, text))
+                .collect();
+            assert_eq!(records, case.records, "{}", case.name);
+        }
+    }
+
     /// A stored `__source` object keeps the payload as base64 `bytes`, so a record reads back byte for byte, whether
     /// its source decodes it or not.
     #[test]
