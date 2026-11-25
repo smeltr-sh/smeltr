@@ -17,7 +17,7 @@ use crate::io::{BatchId, CommitMap, TopicPartition};
 struct Tracked {
     id: BatchId,
     tokens: CommitMap,
-    waiting: HashSet<DestId>,
+    waiting: HashSet<Holder>,
     /// What the batch read from its source.
     bytes: usize,
 }
@@ -38,9 +38,14 @@ fn next_batch_id() -> BatchId {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-/// What a batch that reaches no destination waits on instead: transform, until it has finished with the batch. Waiting on
-/// nothing, the batch would retire at poll time, and a batch transform holds would commit and release its source.
-pub const TRANSFORM: DestId = DestId::MAX;
+/// What a batch waits on before its offsets may commit.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Holder {
+    /// Transform, until it has finished with the batch. A batch that reaches no destination waits on this: waiting
+    /// on nothing, it would retire at poll time, and a batch transform holds would commit and release its source.
+    Transform,
+    Destination(DestId),
+}
 
 /// One retirement: the merged watermark to commit and how many batches it covers.
 pub struct Retired {
@@ -63,10 +68,11 @@ impl CommitTracker {
     /// past an outstanding earlier one.
     ///
     /// `waiting` is every destination reachable from this source: all of them are dispatched, and one with nothing
-    /// outstanding completes immediately. Empty, the batch waits on [`TRANSFORM`]. `bytes` is what the batch read.
-    pub fn track(&mut self, id: BatchId, tokens: CommitMap, mut waiting: HashSet<DestId>, bytes: usize) {
+    /// outstanding completes immediately. Empty, the batch waits on [`Holder::Transform`]. `bytes` is what the batch read.
+    pub fn track(&mut self, id: BatchId, tokens: CommitMap, waiting: HashSet<DestId>, bytes: usize) {
+        let mut waiting: HashSet<Holder> = waiting.into_iter().map(Holder::Destination).collect();
         if waiting.is_empty() {
-            waiting.insert(TRANSFORM);
+            waiting.insert(Holder::Transform);
         }
         self.bytes += bytes;
         self.in_flight.push_back(Tracked {
@@ -82,21 +88,22 @@ impl CommitTracker {
     /// riding on whatever comes next. A destination in `waits_on` that has already acknowledged stays done.
     pub fn abandon(&mut self, id: BatchId, waits_on: &[DestId]) {
         if let Some(f) = self.in_flight.iter_mut().find(|f| f.id == id) {
-            f.waiting.retain(|d| waits_on.contains(d));
+            f.waiting
+                .retain(|h| matches!(h, Holder::Destination(d) if waits_on.contains(d)));
         }
     }
 
     /// `batch` waits on `dest` again, for rows sealed there after the batch was dispatched. Unknown ids are ignored.
     pub fn owe(&mut self, batch: BatchId, dest: DestId) {
         if let Some(f) = self.in_flight.iter_mut().find(|f| f.id == batch) {
-            f.waiting.insert(dest);
+            f.waiting.insert(Holder::Destination(dest));
         }
     }
 
-    /// `dest` has finished with `batch`. Unknown ids are ignored.
-    pub fn acknowledge(&mut self, batch: BatchId, dest: DestId) {
+    /// `by` has finished with `batch`. Unknown ids are ignored.
+    pub fn acknowledge(&mut self, batch: BatchId, by: Holder) {
         if let Some(f) = self.in_flight.iter_mut().find(|f| f.id == batch) {
-            f.waiting.remove(&dest);
+            f.waiting.remove(&by);
         }
     }
 
@@ -162,6 +169,10 @@ mod tests {
         m
     }
 
+    fn dest(n: u32) -> Holder {
+        Holder::Destination(DestId(n))
+    }
+
     fn track_one(t: &mut CommitTracker, offset: i64, waiting: &[DestId]) -> BatchId {
         let id = t.next_id();
         t.track(id, tokens(0, offset), waiting.iter().copied().collect(), 0);
@@ -179,7 +190,7 @@ mod tests {
         t.track(id, both, [DestId(0)].into_iter().collect(), 0);
 
         t.forget(&TopicPartition::new("t".into(), 0));
-        t.acknowledge(id, DestId(0));
+        t.acknowledge(id, dest(0));
         let retired = t.retire().expect("the batch still retires");
         assert_eq!(retired.tokens, tokens(1, 50), "partition 0 is someone else's now");
     }
@@ -193,13 +204,13 @@ mod tests {
         let second = track_one(&mut t, 200, &[DestId(0)]);
 
         // Reached its destination first, and finished first.
-        t.acknowledge(second, DestId(0));
+        t.acknowledge(second, dest(0));
         assert!(
             t.retire().is_none(),
             "offset 200 committed while 100 was still outstanding"
         );
 
-        t.acknowledge(first, DestId(0));
+        t.acknowledge(first, dest(0));
         let retired = t.retire().expect("both are done");
         assert_eq!(retired.batches, 2);
         assert_eq!(
@@ -217,11 +228,11 @@ mod tests {
         let first = track_one(&mut t, 10, &[DestId(0), DestId(1), DestId(2)]);
         t.abandon(first, &[DestId(2)]);
         assert!(t.retire().is_none(), "destination 2 still has it");
-        t.acknowledge(first, DestId(2));
+        t.acknowledge(first, dest(2));
         assert_eq!(t.retire().expect("2 has acknowledged").batches, 1);
 
         let second = track_one(&mut t, 20, &[DestId(0), DestId(1), DestId(2)]);
-        t.acknowledge(second, DestId(2));
+        t.acknowledge(second, dest(2));
         t.abandon(second, &[DestId(2)]);
         assert_eq!(
             t.retire()
@@ -238,7 +249,7 @@ mod tests {
         let poisoned = track_one(&mut t, 10, &[DestId(0)]);
         let after = track_one(&mut t, 20, &[DestId(0)]);
 
-        t.acknowledge(after, DestId(0));
+        t.acknowledge(after, dest(0));
         assert!(t.retire().is_none(), "the poisoned batch is still ahead");
 
         t.abandon(poisoned, &[]);
@@ -261,10 +272,10 @@ mod tests {
         let mut t = CommitTracker::new();
         let id = track_one(&mut t, 10, &[DestId(0), DestId(1)]);
 
-        t.acknowledge(id, DestId(0));
+        t.acknowledge(id, dest(0));
         assert!(t.retire().is_none());
 
-        t.acknowledge(id, DestId(1));
+        t.acknowledge(id, dest(1));
         assert_eq!(t.retire().expect("now").batches, 1);
     }
 
@@ -274,13 +285,13 @@ mod tests {
         let mut t = CommitTracker::new();
         let live = track_one(&mut t, 20, &[DestId(0)]);
 
-        t.acknowledge(live + 999, DestId(0));
+        t.acknowledge(live + 999, dest(0));
         assert!(
             t.retire().is_none(),
             "an acknowledgment for an unknown batch must not retire a live one"
         );
 
-        t.acknowledge(live, DestId(0));
+        t.acknowledge(live, dest(0));
         assert_eq!(t.retire().expect("the live batch").batches, 1);
     }
 
@@ -289,7 +300,7 @@ mod tests {
     fn batch_ids_are_never_reused() {
         let mut t = CommitTracker::new();
         let first = track_one(&mut t, 10, &[DestId(1)]);
-        t.acknowledge(first, DestId(1));
+        t.acknowledge(first, dest(1));
         assert_eq!(t.retire().expect("done").batches, 1);
         let second = track_one(&mut t, 20, &[]);
         assert_ne!(first, second, "a retired id must not come round again");
@@ -313,7 +324,7 @@ mod tests {
         let mut t = CommitTracker::new();
         let id = track_one(&mut t, 10, &[]);
         assert!(t.retire().is_none(), "not done on arrival");
-        t.acknowledge(id, TRANSFORM);
+        t.acknowledge(id, Holder::Transform);
         assert_eq!(t.retire().expect("done once transform is").batches, 1);
     }
 
@@ -325,7 +336,7 @@ mod tests {
         let mut m = tokens(0, 10);
         m.insert(TopicPartition::new("t".into(), 1), 99);
         t.track(id, m, HashSet::new(), 0);
-        t.acknowledge(id, TRANSFORM);
+        t.acknowledge(id, Holder::Transform);
 
         let r = t.retire().expect("done");
         assert_eq!(r.tokens[&TopicPartition::new("t".into(), 0)], 10);

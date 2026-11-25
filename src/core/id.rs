@@ -12,8 +12,6 @@ macro_rules! id {
         pub struct $name(pub u32);
 
         impl $name {
-            pub const MAX: Self = Self(u32::MAX);
-
             /// Its place in a list that holds one entry per id.
             pub fn index(self) -> usize {
                 self.0 as usize

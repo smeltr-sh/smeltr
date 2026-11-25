@@ -12,7 +12,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::commit::{CommitTracker, TRANSFORM};
+use crate::commit::{CommitTracker, Holder};
 use crate::core::batch::{Batch, SLOT_LIVE, SLOT_RAW};
 use crate::core::bits;
 use crate::core::buffer::{self, BufferPool, MemoryBudget};
@@ -1140,7 +1140,10 @@ impl Transform {
             Ok(HandOff::Delivered(outcomes)) => outcomes,
         };
         if routed_nowhere {
-            reports.send(Report::Acked { batch, dest: TRANSFORM });
+            reports.send(Report::Acked {
+                batch,
+                by: Holder::Transform,
+            });
         }
         if let (Some(streams), Some(name)) = (&self.streams, &lane.source_name) {
             streams.saw_senders(name, std::mem::take(&mut outcomes.senders));
@@ -1332,7 +1335,10 @@ impl Transform {
         if owed.outstanding.is_empty() {
             self.owed.remove(&batch);
         }
-        self.lanes[lane].reports.send(Report::Acked { batch, dest });
+        self.lanes[lane].reports.send(Report::Acked {
+            batch,
+            by: Holder::Destination(dest),
+        });
     }
 
     /// `dest` refused rows of `batch` and keeps them to send again, since it is set to block: the source blocks until
@@ -2822,7 +2828,7 @@ impl Reader {
     pub fn apply(&mut self, reports: Vec<Report>) {
         for r in reports {
             match r {
-                Report::Acked { batch, dest } => self.commits.acknowledge(batch, dest),
+                Report::Acked { batch, by } => self.commits.acknowledge(batch, by),
                 Report::Owes { batch, dest } => self.commits.owe(batch, dest),
                 Report::Abandoned { batch, waits_on } => self.commits.abandon(batch, &waits_on),
                 Report::Block(cause, why) => self.enter_block(cause, &why),
