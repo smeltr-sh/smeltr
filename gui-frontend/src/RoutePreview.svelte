@@ -25,6 +25,7 @@
   import {
     heldSession,
     putTest,
+    type MutationResult,
     type ShownCut,
     routePreview,
     listTests,
@@ -118,21 +119,23 @@
     const numbers = rows.map((r) => records.get(r.key) ?? -1).filter((r) => r >= 0);
     locking = { fields, rows: [...new Set(numbers)] };
   }
-  async function lockShown(name: string) {
-    if (!locking) return;
+  async function lockShown(name: string): Promise<MutationResult> {
+    const cut = locking;
+    if (!cut) return { ok: false, errors: [] };
     const id = relocking ? opened!.test : name;
     const res = await putTest(id, {
       name,
       sample: ran,
-      fields: locking.fields,
-      rows: locking.rows,
+      fields: cut.fields,
+      rows: cut.rows,
     });
-    if (!res.ok) return;
+    if (!res.ok) return res;
     await loadTests();
     opened = { test: id, sample: ran };
     addressTest(opened);
     // Closed last, so whoever waits on the dialog finds the test opened.
     locking = null;
+    return res;
   }
 
   async function run() {
