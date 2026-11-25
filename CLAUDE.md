@@ -48,7 +48,7 @@ Fixing or extending a mechanism that already exists is ordinary work and needs n
 - An invariant lives in a type. When only one variant can reach a line, give that line a type that holds only that
   variant. `unreachable!` is for what the compiler cannot be told.
 - An id is a type of its own, so one kind cannot be passed for another. A time or a duration that crosses a function
-  boundary is a type too; a unit in a name, like `_ms`, belongs where the value is stored or sent.
+  boundary is a type too; a unit in a name, like `since_ms`, belongs where the value is stored or sent.
 - A mutex's type decides what a poisoned lock means for the data it guards, so the policy is chosen where the mutex
   is declared.
 - Every `unsafe` block has a `// SAFETY:` line that says why it is sound.
