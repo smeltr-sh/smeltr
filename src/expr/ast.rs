@@ -33,8 +33,8 @@ impl Span {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
-/// Every flag here reaches the regex engine. A flag that did nothing was worse than no flag: `/x/y` read as if it
-/// meant something. `replaceFirst` and `replaceAll` name what `g` used to decide.
+/// Every flag here reaches the regex engine: one that did nothing would read as if it meant something. `replaceFirst`
+/// and `replaceAll` say how many matches are replaced, so no flag does.
 pub struct RegexFlags {
     pub case_insensitive: bool,
     pub multi_line: bool,

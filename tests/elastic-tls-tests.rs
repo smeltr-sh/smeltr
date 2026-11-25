@@ -136,7 +136,7 @@ fn post(url: &str, tls: Option<&Tls>, secrets: &HeldSecrets) -> Result<Vec<u8>, 
 }
 
 /// A connector's certificate reaches the far end, and its authority is what the far end is checked against.
-/// Neither is true of the default agent this replaced.
+/// Neither is true of a default agent.
 #[test]
 fn a_certificate_completes_a_mutual_tls_handshake() {
     let authority = certs::Authority::new("Acme Root CA");

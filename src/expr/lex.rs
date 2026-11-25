@@ -862,9 +862,8 @@ mod tests {
         }
     }
 
-    /// Every flag the lexer takes reaches the regex engine. `g` chose an
-    /// overload -- `replaceFirst`/`replaceAll` name that now -- and `d`, `u`,
-    /// `v` and `y` never did anything at all.
+    /// Every flag the lexer takes reaches the regex engine. `replaceFirst` and `replaceAll` say how many matches are
+    /// replaced, so `g` is refused, as are `d`, `u`, `v` and `y`, which would do nothing.
     #[test]
     fn a_flag_that_does_nothing_is_rejected() {
         for src in ["/x/g", "/x/d", "/x/u", "/x/v", "/x/y"] {

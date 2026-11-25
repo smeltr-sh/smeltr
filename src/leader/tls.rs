@@ -3322,7 +3322,7 @@ pub(crate) mod tests {
         let issuer = rcgen::Issuer::new(issuing, key);
         let served = leaf.signed_by(&leaf_key, &issuer).unwrap();
 
-        // Outgoing first, which is the order that used to decide it.
+        // Outgoing first: the order they are listed in does not decide it.
         let bundle = format!("{}{}", outgoing.pem(), incoming.pem());
         let named = signing_root(bundle.as_bytes(), served.pem().as_bytes()).expect("a root");
         let expected = describe(incoming.pem().as_bytes(), "the renewed root").unwrap();
