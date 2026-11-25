@@ -668,3 +668,25 @@ fn row_sizes_count_what_each_row_holds() {
     }
     assert_eq!(sizes, [2 + (1 + 2) + (2 + 8), 3 + 3 + 8]);
 }
+
+#[test]
+#[should_panic(expected = "a str column holds UTF-8")]
+fn a_str_column_refuses_a_character_split_between_two_rows() {
+    let mut p = BufferPool::new();
+    let mut b = StrBuilder::new(&mut p, VarType::Str, 2);
+    b.reserve(&mut p, 2);
+    // "é" whole across the buffer, but neither row is UTF-8 alone.
+    b.push(&[0xc3]);
+    b.push(&[0xa9]);
+    b.finish();
+}
+
+#[test]
+#[should_panic(expected = "StrBuilder finished with 1 of 2 rows written")]
+fn a_str_column_with_a_row_never_pushed_is_refused() {
+    let mut p = BufferPool::new();
+    let mut b = StrBuilder::new(&mut p, VarType::Str, 2);
+    b.reserve(&mut p, 1);
+    b.push(b"a");
+    b.finish();
+}

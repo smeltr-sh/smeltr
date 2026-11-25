@@ -194,8 +194,8 @@ pub(crate) struct StrRows<'a>(VarLen<'a>);
 impl<'a> StrRows<'a> {
     #[inline]
     pub fn get(&self, row: usize) -> &'a str {
-        // SAFETY: only a sealed `Str` column makes a `StrRows`, and sealing one checked its whole buffer as UTF-8.
-        // Offsets fall on row boundaries, and each row was pushed whole, so a row is UTF-8 too.
+        // SAFETY: only a sealed `Str` column makes a `StrRows`. Sealing one checked that its whole buffer is UTF-8 and
+        // that each row starts on a character boundary, so each row is UTF-8 too.
         unsafe { std::str::from_utf8_unchecked(self.0.get(row)) }
     }
 }
@@ -212,7 +212,8 @@ impl<'a> VariantRows<'a> {
     /// A valid row's value. A null row has no bytes, and reading it panics.
     #[inline]
     pub fn get(&self, row: usize) -> Encoded<'a> {
-        // SAFETY: only a sealed variant column makes a `VariantRows`, and sealing one checked each row's strings and keys.
+        // SAFETY: only a sealed variant column makes a `VariantRows`, and sealing one checked each row's strings and
+        // keys.
         unsafe { Encoded::unchecked(self.rows.get(row)) }
     }
 
