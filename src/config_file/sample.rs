@@ -87,7 +87,7 @@ pub struct SampleSummary {
     /// fills it from `config.git`'s history; a sample is not stored with it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub written: Option<i64>,
-    /// When its records were captured: the first row's `__capture.timestamp`. A sample pasted or uploaded has none.
+    /// When its records were taken: the first row's `__capture.timestamp`, which a paste is stamped with when it is saved.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub captured: Option<String>,
     /// The file it was read from, within its bundle.
@@ -103,7 +103,7 @@ impl SampleDto {
             source: self.source.clone(),
             records: self.table.rows.len(),
             written: None,
-            captured: (self.table.column("__capture.timestamp"))
+            captured: (self.table.column(crate::heartbeat::CaptureBatch::TAKEN_AT))
                 .and_then(|c| self.table.rows.first()?.values.get(c)?.as_str())
                 .map(str::to_string),
             path: String::new(),

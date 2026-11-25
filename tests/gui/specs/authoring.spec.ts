@@ -146,7 +146,9 @@ test("A1: a sample, and a pipeline's input and output, download as files of one 
     admin.getByRole('button', { name: 'Download', exact: true }).click(),
   ]);
   expect(sample.suggestedFilename()).toBe('access-log.ndjson');
-  expect(await lines(sample)).toEqual(records);
+  // Each with the instant the paste was saved at, which a preview's now() reads.
+  const at = { __capture: { timestamp: expect.any(String) } };
+  expect(await lines(sample)).toEqual(records.map((r) => ({ ...r, ...at })));
   // A sample gone since the page loaded downloads nothing, and the refusal is shown.
   await api.delete(`/api/areas/shared/samples/access${ON}`);
   let downloaded = false;
@@ -176,7 +178,7 @@ test("A1: a sample, and a pipeline's input and output, download as files of one 
     admin.getByRole('button', { name: /^Download input/ }).click(),
   ]);
   expect(input.suggestedFilename()).toBe('tag-input.ndjson');
-  expect(await lines(input)).toEqual(records);
+  expect(await lines(input)).toEqual(records.map((r) => ({ ...r, ...at })));
   await menu.click();
   await expect(admin.getByRole('button', { name: /^Download output/ })).toContainText(
     'The 1 row on screen',
@@ -186,7 +188,7 @@ test("A1: a sample, and a pipeline's input and output, download as files of one 
     admin.getByRole('button', { name: /^Download output/ }).click(),
   ]);
   expect(output.suggestedFilename()).toBe('tag-output.ndjson');
-  // As Save output as sample saves them, with where each came from.
+  // Each with every field, and where it came from.
   const [row] = await lines(output);
   expect(row).toMatchObject({ _raw: 'GET /b 404', seen: true, __capture: { sample: 'access' } });
   expect(await lines(output)).toHaveLength(1);
@@ -477,7 +479,7 @@ test('A1: an editor runs a pipeline over a capture without saving it, then saves
 
   await admin.getByRole('button', { name: 'Save or download', exact: true }).click();
   await expect(admin.getByRole('button', { name: /^Save output as sample/ })).toContainText(
-    'The 3 rows on screen',
+    /on 3 rows on screen/,
   );
   await admin.getByRole('button', { name: /^Save input as sample/ }).click();
   const saving = admin.getByRole('dialog');
@@ -1139,7 +1141,6 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
     name: 'orders parse',
     pipeline: 'orders',
     sample: 'busy-hour',
-    lockedAt: 0,
     fields: [],
     rows: [0, 1, 2],
   });
@@ -1195,11 +1196,13 @@ test('A1: a saved sample is edited where its row is, and keeps where each record
   );
 
   const saved = (await api.get(`/api/areas/shared/samples/busy-hour${ON}`)).sample;
+  // Each with the instant the sample was first saved at, which a preview's now() reads.
+  const at = { __capture: { timestamp: expect.any(String) } };
   expect(recordsOf(saved)).toEqual([
-    { _raw: ORDERS[0], __source: read(0, 100, ORDERS[0]) },
+    { _raw: ORDERS[0], __source: read(0, 100, ORDERS[0]), ...at },
     // The bytes a byte record is read from are the edited text.
-    { _raw: '{"id":3,"total":13}', __source: read(2, 102, '{"id":3,"total":13}') },
-    { _raw: '{"id":4,"total":1}' },
+    { _raw: '{"id":3,"total":13}', __source: read(2, 102, '{"id":3,"total":13}'), ...at },
+    { _raw: '{"id":4,"total":1}', ...at },
   ]);
 });
 
@@ -1480,7 +1483,6 @@ test('A2: a sample is picked from the Sample menu, its output searched by keywor
     name: 'orders parse',
     pipeline: 'orders',
     sample: 'orders-sample',
-    lockedAt: 0,
     fields: [],
     rows: [0, 1, 2],
   });
@@ -1499,7 +1501,8 @@ test('A2: a sample is picked from the Sample menu, its output searched by keywor
     admin.getByRole('listbox', { name: 'Tests' }).getByRole('option', { name: /^orders parse/ }),
   ).toBeVisible();
   const saved = admin.getByRole('listbox', { name: 'Samples' });
-  await saved.getByRole('option', { name: /\borders 3 records$/ }).click();
+  // A saved paste names the instant it was saved at.
+  await saved.getByRole('option', { name: /\borders 3 records · / }).click();
   await expect(sampleMenu).toContainText('3 records');
   const search = admin.getByRole('combobox', { name: 'Search the output' });
   await search.fill('SPRING');
@@ -1743,7 +1746,6 @@ test('A4: an end-to-end test opened from Tests shows its fields the documents st
   await api.put(`/api/areas/shared/tests/alerts${ON}`, {
     name: 'alerts',
     sample: 'web-sample',
-    lockedAt: 0,
     fields: ['status', 'gone', 'a', 'b', 'c'],
     rows: [1],
   });
@@ -1778,7 +1780,6 @@ test('A4: an end-to-end test opened from Tests shows its fields the documents st
   await api.put(`/api/areas/shared/tests/quiet${ON}`, {
     name: 'quiet',
     sample: 'quiet-sample',
-    lockedAt: 0,
     fields: ['status'],
     rows: [0],
   });
@@ -2142,11 +2143,14 @@ test('A6: a sample locked as a test passes, and a save that breaks it is allowed
   await expect(lock).toBeEnabled({ timeout: 15_000 });
   await lock.click();
 
-  await expect(admin.getByRole('heading', { name: 'Lock this as a test' })).toBeVisible();
-  await expect(admin.getByText('4 fields on 3 rows')).toBeVisible();
-  await admin.getByRole('textbox', { name: 'Name' }).fill('orders keep every order');
-  await admin.getByRole('button', { name: 'Lock the test' }).click();
+  const dialog = admin.getByRole('dialog', { name: 'Lock this as a test' });
+  await expect(dialog.getByText('4 fields on 3 rows')).toBeVisible();
+  await dialog.getByRole('textbox', { name: 'Name' }).fill('orders keep every order');
+  await dialog.getByRole('button', { name: 'Lock' }).click();
+  // Locked, the test is open where it was locked.
+  await expect(admin.getByRole('button', { name: 'Lock this test again' })).toBeEnabled();
 
+  await goto(admin, leader, '#/build/tests');
   const testRow = admin.getByRole('row', { name: /orders keep every order/ });
   await expect(testRow).toContainText('_raw, coupon, id, total on 3 rows');
   await expect(testRow).toContainText('Passing', { timeout: 15_000 });
@@ -2243,9 +2247,12 @@ test('A11: a test locks the fields and rows on screen, and a change to anything 
   await expect(admin.getByText('The 1 field on 2 rows on screen')).toBeVisible();
   await admin.getByRole('button', { name: 'Lock this as a test' }).click();
 
-  await expect(admin.getByText('1 field on 2 rows', { exact: true })).toBeVisible();
-  await admin.getByRole('textbox', { name: 'Name' }).fill('spring orders keep their id');
-  await admin.getByRole('button', { name: 'Lock the test' }).click();
+  const dialog = admin.getByRole('dialog', { name: 'Lock this as a test' });
+  await expect(dialog.getByText('1 field on 2 rows', { exact: true })).toBeVisible();
+  await dialog.getByRole('textbox', { name: 'Name' }).fill('spring orders keep their id');
+  await dialog.getByRole('button', { name: 'Lock' }).click();
+  await expect(dialog).toHaveCount(0);
+  await goto(admin, leader, '#/build/tests');
   const testRow = admin.getByRole('row', { name: /spring orders keep their id/ });
   await expect(testRow).toContainText('id on 2 rows');
   await expect(testRow).toContainText('Passing', { timeout: 15_000 });
@@ -2254,12 +2261,9 @@ test('A11: a test locks the fields and rows on screen, and a change to anything 
       `/api/areas/shared/tests/${encodeURIComponent('spring orders keep their id')}${ON}`,
     )
   ).test;
-  expect([locked.fields, locked.rows]).toEqual([
-    ['id'],
-    [
-      { row: 0, values: { id: 1 } },
-      { row: 2, values: { id: 3 } },
-    ],
+  expect([locked.table, locked.shown]).toEqual([
+    { columns: [{ name: 'id', type: 'i64' }], rows: [{ values: [1] }, { values: [3] }] },
+    [{ row: 0 }, { row: 2 }],
   ]);
 
   // A field it does not check, and a row it does not check, change: it still passes.
@@ -2308,12 +2312,11 @@ test('A11: a test locking a whole float and a long integer passes at once', asyn
   const lock = admin.getByRole('button', { name: 'Lock this as a test' });
   await expect(lock).toBeEnabled({ timeout: 15_000 });
   await lock.click();
-  // Until the lock page is up, 'Name' would find the editor's "pipeline name" box.
-  await expect(admin.getByRole('heading', { name: 'Lock this as a test' })).toBeVisible();
-  await admin.getByRole('textbox', { name: 'Name' }).fill('orders keep their numbers');
-  await expect(admin.getByRole('columnheader', { name: 'whole' })).toBeVisible();
-  await admin.screenshot({ path: test.info().outputPath('lock-numbers.png') });
-  await admin.getByRole('button', { name: 'Lock the test' }).click();
+  const dialog = admin.getByRole('dialog', { name: 'Lock this as a test' });
+  await dialog.getByRole('textbox', { name: 'Name' }).fill('orders keep their numbers');
+  await dialog.getByRole('button', { name: 'Lock' }).click();
+  await expect(dialog).toHaveCount(0);
+  await goto(admin, leader, '#/build/tests');
 
   const testRow = admin.getByRole('row', { name: /orders keep their numbers/ });
   await expect(testRow).toContainText('big');
@@ -2324,12 +2327,12 @@ test('A11: a test locking a whole float and a long integer passes at once', asyn
       `/api/areas/shared/tests/${encodeURIComponent('orders keep their numbers')}${ON}`,
     )
   ).text();
-  expect(stored).toContain('"big":9007199254740993');
-  expect(stored).toContain('"whole":10.0');
+  expect(stored).toContain('{"name":"big","type":"i64","value":9007199254740993}');
+  expect(stored).toContain('{"name":"whole","type":"f64","value":10.0}');
 });
 
 // A6, a pipeline's output as a sample, for another pipeline, such as an enrichment, to run over and lock a test on.
-test('A6: the output rows on screen are saved as a sample that another pipeline runs over', async ({
+test('A6: the output fields and rows on screen are saved as a sample that another pipeline runs over', async ({
   admin,
   leader,
   api,
@@ -2354,6 +2357,10 @@ test('A6: the output rows on screen are saved as a sample that another pipeline 
   await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
   await admin.getByRole('combobox', { name: 'Search the output' }).fill('SPRING');
   await expect(admin.getByText('2 of 3 rows')).toBeVisible();
+  await admin.getByRole('button', { name: 'Choose fields' }).click();
+  await admin.getByRole('searchbox', { name: 'Find a field' }).fill('coupon');
+  await admin.getByRole('group', { name: 'Fields' }).getByRole('checkbox').uncheck();
+  await admin.keyboard.press('Escape');
   const dialog = admin.getByRole('dialog');
 
   // Loading the rows saves nothing, so Cancel is live while they load, and their late answer is dropped.
@@ -2385,6 +2392,8 @@ test('A6: the output rows on screen are saved as a sample that another pipeline 
   expect(made.source).toBeUndefined();
   const saved = (await api.get(`/api/areas/shared/samples/${made.id}${ON}`)).sample;
   expect(saved.columns).toContainEqual({ name: 'total', type: 'f64' });
+  // The fields on screen, and no others.
+  expect(saved.columns.map((c: { name: string }) => c.name)).not.toContain('coupon');
   const rows = recordsOf(saved);
   expect(rows.map((r) => r.id)).toEqual([1, 3]);
   // The fields say how the pipeline made these records from the sample: the leader writes them in place of a
@@ -4293,44 +4302,6 @@ test('A10: a logs source never offers trace, and one set to trace shows debug', 
   await admin.getByRole('button', { name: 'About min level' }).click();
   await expect(admin.getByText('never reads trace')).toBeVisible();
   await admin.screenshot({ path: test.info().outputPath('logs-min-level.png'), fullPage: true });
-});
-
-test('A6: the lock page shows five rows a side, and a button shows the rest', async ({
-  admin,
-  api,
-  leader,
-}) => {
-  await api.put(`/api/areas/shared/pipelines/orders${ON}`, {
-    id: 'orders',
-    name: 'orders',
-    steps: [
-      {
-        type: 'parser',
-        id: 'body',
-        input: '_raw',
-        kind: { type: 'json' },
-        declared: [{ name: 'id', type: 'i64' }],
-      },
-    ],
-  });
-  await api.put(`/api/areas/shared/samples/orders-sample${ON}`, {
-    id: 'orders-sample',
-    name: 'orders',
-    ...pasted(Array.from({ length: 8 }, (_, i) => ({ _raw: `{"id":${i + 1}}` }))),
-  });
-  await goto(admin, leader, '#/build/pipelines/orders/for/orders-sample');
-  const lock = admin.getByRole('button', { name: 'Lock this as a test' });
-  await expect(lock).toBeEnabled({ timeout: 15_000 });
-  await lock.click();
-
-  const more = admin.getByRole('button', { name: '3 more rows', exact: true });
-  await expect(more).toHaveCount(2);
-  await expect(admin.getByText('{"id":8}', { exact: true })).toHaveCount(0);
-  await more.first().click();
-  await expect(admin.getByText('{"id":8}', { exact: true })).toBeVisible();
-  await more.click();
-  await expect(more).toHaveCount(0);
-  await expect(admin.getByRole('row', { name: '7 {"id":8} 8', exact: true })).toBeVisible();
 });
 
 test('A1: a capture shows every record it holds, each opening on its fields', async ({

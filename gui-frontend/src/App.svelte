@@ -701,15 +701,6 @@
           test={route.test}
         />
       {/if}
-    {:else if route.page === 'lock-test'}
-      {#if pages['lock-test']}
-        {@const LockTestPage = pages['lock-test']}
-        {#if 'relock' in route}
-          <LockTestPage relock={route.relock} />
-        {:else}
-          <LockTestPage pipeline={route.pipeline} sample={route.sample} />
-        {/if}
-      {/if}
     {:else if route.page === 'file'}
       {#if pages.file}
         {@const FilePage = pages.file}

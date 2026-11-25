@@ -22,14 +22,13 @@ describe('keyOf', () => {
 });
 
 describe('shifted', () => {
-  it('moves milliseconds by size, and seconds and microseconds by their key', () => {
+  it('moves milliseconds by size, and seconds by their key', () => {
     const day = 86_400_000;
     expect(
       shifted(
         {
           lastSeenMillis: RECORDED,
           lastSave: RECORDED / 1000,
-          lockedAt: RECORDED * 1000,
           rate: 29.3,
           offset: RECORDED / 1000,
         },
@@ -38,7 +37,6 @@ describe('shifted', () => {
     ).toEqual({
       lastSeenMillis: RECORDED + day,
       lastSave: RECORDED / 1000 + 86_400,
-      lockedAt: (RECORDED + day) * 1000,
       rate: 29.3,
       offset: RECORDED / 1000,
     });
@@ -259,7 +257,6 @@ describe('DemoLeader', () => {
       name: 't',
       pipeline: 'p',
       sample: 's',
-      lockedAt: 0,
       rowsIn: 1,
       expected: [],
     };
@@ -810,7 +807,7 @@ describe('DemoLeader', () => {
 
     // A test is read by the file it is stored in, whose name is its id slugged.
     vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ ok: true, errors: [] })));
-    const test = { name: 'Proto as text', sample: 's1', lockedAt: 0, rowsIn: 1, expected: [] };
+    const test = { name: 'Proto as text', sample: 's1', rowsIn: 1, expected: [] };
     await leader.answer(
       'PUT',
       at(`/api/areas/network/tests/${encodeURIComponent('Proto as text')}?branch=mine`),
