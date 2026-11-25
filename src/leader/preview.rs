@@ -1080,7 +1080,12 @@ fn as_sample(
     table.keep_columns(&keep);
     // A `__` column can hold an object, as `__source.headers` does, whose leaves show as fields of their own.
     if let Some(fields) = &cut.fields {
-        for (i, column) in table.columns.iter().enumerate().filter(|(_, c)| tree::is_internal(&c.name)) {
+        for (i, column) in table
+            .columns
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| tree::is_internal(&c.name))
+        {
             for row in &mut table.rows {
                 row.values[i] = config_file::kept_under(&row.values[i], &column.name, fields).unwrap_or_default();
             }
@@ -1854,7 +1859,10 @@ mod tests {
             previewed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
         let sample = previewed.body.as_sample.unwrap();
-        assert_eq!(cell(&sample, 0, "__source.headers"), serde_json::json!({ "trace": "t1" }));
+        assert_eq!(
+            cell(&sample, 0, "__source.headers"),
+            serde_json::json!({ "trace": "t1" })
+        );
     }
 
     /// A JSON or key-value parse converts a key a produced schema types as it lays it: a value that does not fit is
