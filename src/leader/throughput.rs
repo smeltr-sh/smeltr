@@ -1433,20 +1433,24 @@ pub struct Chart {
     pub expected: Vec<ExpectedPoint>,
 }
 
-/// `group`'s `source`'s rows, or its `sender`'s, from the point `from_ms` is in until `to_ms`, against its range
-/// ([`expected_over`]), as of `now_ms`. Its points are as wide as a chart of that span draws them
-/// ([`super::series::chart_point_ms`]), and no finer than the rows kept from then: five minutes for the past four
-/// weeks, an hour before.
+/// A source, or one of its senders: whose rows and range a chart draws.
+#[derive(Debug, Clone, Copy)]
+pub struct Subject<'a> {
+    pub group: &'a str,
+    pub source: &'a str,
+    pub sender: Option<&'a Sender>,
+}
+
+/// `subject`'s rows from the point `from_ms` is in until `to_ms`, against its range ([`expected_over`]), as of
+/// `now_ms`. Its points are as wide as a chart of that span draws them ([`super::series::chart_point_ms`]), and no
+/// finer than the rows kept from then: five minutes for the past four weeks, an hour before.
 ///
 /// Given the `window_ms` of one of [`WIDTHS`], each point is instead the rate over that width ending where the point
 /// ends, against that width's range, as that width judged it; its points are then no wider than the width. A point
 /// whose width reaches a bucket nothing was kept for in five minutes has none.
-#[allow(clippy::too_many_arguments)]
 pub fn chart(
     store: &RegistryStore,
-    group: &str,
-    source: &str,
-    sender: Option<&Sender>,
+    subject: Subject,
     from_ms: i64,
     to_ms: i64,
     now_ms: i64,
@@ -1463,6 +1467,7 @@ pub fn chart(
     let point_ms = width.map_or(point_ms, |w| point_ms.min(w.ms()).max(kept));
     let since = from_ms.div_euclid(point_ms) * point_ms;
     let read_from = since - width.map_or(0, Width::ms);
+    let Subject { group, source, sender } = subject;
     let rows = match sender {
         Some(_) => rows_of(store, group, source, sender, read_from)?,
         None => history(store, Tier::OneHour.and_finer(), BUCKET, read_from)?
@@ -1488,27 +1493,8 @@ pub fn chart(
         }
     };
     let expected = match width {
-        Some(width) => expected_at(
-            store,
-            group,
-            source,
-            sender,
-            since,
-            to_ms.min(now_ms),
-            point_ms,
-            width,
-            learning,
-        )?,
-        None => expected_over(
-            store,
-            group,
-            source,
-            sender,
-            since,
-            to_ms.min(now_ms),
-            point_ms,
-            learning,
-        )?,
+        Some(width) => expected_at(store, subject, since, to_ms.min(now_ms), point_ms, width, learning)?,
+        None => expected_over(store, subject, since, to_ms.min(now_ms), point_ms, learning)?,
     };
     Ok(Chart {
         point_millis: point_ms,
@@ -1527,27 +1513,32 @@ pub struct ExpectedPoint {
     pub high: f64,
 }
 
-/// `group`'s `source`'s range, or its `sender`'s, as rows per second, for each point of a chart drawn in points
-/// `point_ms` wide ([`super::series::chart_point_ms`]), from the point `since_ms` is in to the point `now_ms` is in. A
-/// point's range is the one judged at the widest width no wider than it, as of its hour. For a source's point finer
-/// than five minutes, it is the source's swings at the point's own width ([`record_swings`]); a sender's rows are kept
-/// no finer than five minutes, so its chart is drawn no finer. A point where that width does not judge it has none.
-/// The range reads only past days, so the point still filling has one too.
-#[allow(clippy::too_many_arguments)]
+/// `subject`'s range, as rows per second, for each point of a chart drawn in points `point_ms` wide
+/// ([`super::series::chart_point_ms`]), from the point `since_ms` is in to the point `now_ms` is in. A point's range is
+/// the one judged at the widest width no wider than it, as of its hour. For a source's point finer than five minutes,
+/// it is the source's swings at the point's own width ([`record_swings`]); a sender's rows are kept no finer than five
+/// minutes, so its chart is drawn no finer. A point where that width does not judge it has none. The range reads only
+/// past days, so the point still filling has one too.
 pub fn expected_over(
     store: &RegistryStore,
-    group: &str,
-    source: &str,
-    sender: Option<&Sender>,
+    subject: Subject,
     since_ms: i64,
     now_ms: i64,
     point_ms: i64,
     learning: &Marks,
 ) -> Result<Vec<ExpectedPoint>, super::store::StoreError> {
     if point_ms < BUCKET.bucket_ms() {
-        return match sender {
+        return match subject.sender {
             Some(_) => Ok(Vec::new()),
-            None => swung_over(store, group, source, since_ms, now_ms, point_ms, learning),
+            None => swung_over(
+                store,
+                subject.group,
+                subject.source,
+                since_ms,
+                now_ms,
+                point_ms,
+                learning,
+            ),
         };
     }
     let width = WIDTHS
@@ -1555,18 +1546,13 @@ pub fn expected_over(
         .rev()
         .find(|w| w.ms() <= point_ms)
         .unwrap_or(WIDTHS[0]);
-    expected_at(
-        store, group, source, sender, since_ms, now_ms, point_ms, width, learning,
-    )
+    expected_at(store, subject, since_ms, now_ms, point_ms, width, learning)
 }
 
 /// [`expected_over`] at `width`, whatever its points' width.
-#[allow(clippy::too_many_arguments)]
 fn expected_at(
     store: &RegistryStore,
-    group: &str,
-    source: &str,
-    sender: Option<&Sender>,
+    Subject { group, source, sender }: Subject,
     since_ms: i64,
     now_ms: i64,
     point_ms: i64,
@@ -1973,9 +1959,11 @@ mod tests {
         let half_hour = WINDOW.as_millis() as i64;
         let at = chart(
             &store,
-            "g",
-            "s",
-            None,
+            Subject {
+                group: "g",
+                source: "s",
+                sender: None,
+            },
             END - 2 * HOUR,
             END,
             END,
@@ -2222,9 +2210,11 @@ mod tests {
         let (store, dropped) = two_senders_dropped();
         let hour = chart(
             &store,
-            "g",
-            "s",
-            Some(&fw("fw-01")),
+            Subject {
+                group: "g",
+                source: "s",
+                sender: Some(&fw("fw-01")),
+            },
             END - HOUR,
             END,
             END,
@@ -2241,9 +2231,11 @@ mod tests {
         );
         let before = chart(
             &store,
-            "g",
-            "s",
-            Some(&fw("fw-01")),
+            Subject {
+                group: "g",
+                source: "s",
+                sender: Some(&fw("fw-01")),
+            },
             dropped - DAY_MS,
             dropped,
             END,
@@ -2745,8 +2737,15 @@ mod tests {
         );
     }
 
+    /// Source `s` of group `g`, which most of these tests read.
+    const SUBJECT: Subject = Subject {
+        group: "g",
+        source: "s",
+        sender: None,
+    };
+
     fn expected(store: &RegistryStore, since_ms: i64, point_ms: i64) -> Vec<ExpectedPoint> {
-        expected_over(store, "g", "s", None, since_ms, END + 1000, point_ms, &Marks::default()).unwrap()
+        expected_over(store, SUBJECT, since_ms, END + 1000, point_ms, &Marks::default()).unwrap()
     }
 
     #[test]
@@ -2798,9 +2797,11 @@ mod tests {
         let store = store_with(7, |_| Some(100.0));
         let none = expected_over(
             &store,
-            "g",
-            "other",
-            None,
+            Subject {
+                group: "g",
+                source: "other",
+                sender: None,
+            },
             END - HOUR,
             END + 1000,
             BUCKET.bucket_ms(),
@@ -2892,8 +2893,7 @@ mod tests {
     fn a_fine_chart_has_the_range_its_points_swung_in() {
         let store = swung_since(END - 8 * DAY_MS);
         for (width, band) in [(10_000, (4.0, 16.0)), (60_000, (8.0, 12.0))] {
-            let points =
-                expected_over(&store, "g", "s", None, END - HOUR, END + 1000, width, &Marks::default()).unwrap();
+            let points = expected_over(&store, SUBJECT, END - HOUR, END + 1000, width, &Marks::default()).unwrap();
             assert_eq!(points.len(), 13);
             assert!(points.iter().all(|p| (p.low, p.high) == band), "at {width}: {points:?}");
         }
@@ -2903,7 +2903,7 @@ mod tests {
     #[test]
     fn a_fine_chart_has_no_range_until_its_swings_reach_back_a_week() {
         let fine = |store: &RegistryStore| {
-            expected_over(store, "g", "s", None, END - HOUR, END + 1000, 10_000, &Marks::default()).unwrap()
+            expected_over(store, SUBJECT, END - HOUR, END + 1000, 10_000, &Marks::default()).unwrap()
         };
         assert_eq!(fine(&swung_since(END - JUDGED_AFTER_MS - HOUR)).len(), 13);
         let half = fine(&swung_since(END - JUDGED_AFTER_MS - HOUR / 2));

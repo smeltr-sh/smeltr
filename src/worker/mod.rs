@@ -672,9 +672,6 @@ fn fetch_deployed_with_budget(
     // has, ending in a terminal prompt -- and nothing here reads a worker's console. `GIT_TERMINAL_PROMPT=0` was
     // the same refusal for the git binary; offering nothing is refusing every stage of the cascade, not only the
     // prompt at its end.
-    // `gix_credentials::protocol::Error` is gix's own type, sized for a helper subprocess's failure modes rather
-    // than this closure's, which has none.
-    #[allow(clippy::result_large_err)]
     connection.set_credentials(|_action| Ok(None));
     connection
         .prepare_fetch(gix::progress::Discard, Default::default())

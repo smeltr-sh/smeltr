@@ -603,9 +603,11 @@ async fn chart_of(
         let now_ms = warnings::now_millis();
         throughput::chart(
             store,
-            &group,
-            &source,
-            sender.as_ref(),
+            throughput::Subject {
+                group: &group,
+                source: &source,
+                sender: sender.as_ref(),
+            },
             asked.from_millis,
             asked.to_millis,
             now_ms,
