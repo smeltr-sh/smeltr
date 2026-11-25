@@ -2623,20 +2623,23 @@ export type ShownCut = { fields: string[]; rows: number[] };
  * what the run made, one document at a time. Either side is absent past its own end. */
 export type Difference = {
   row: number;
+  /** Which of the row's documents, counted from 0 in the order they were made. */
+  document: number;
   expected?: Outcome;
   actual?: Outcome;
+  /** The values that differ, where both sides made a document. */
+  fields?: FieldDifference[];
 };
 
 /** A field a run types otherwise than the test locked it: its values may read the same and still differ, as `10`
  * and `10.0` do. */
 export type Retyped = { field: string; locked: string; now: string };
 
-/** What a run made of a test: whether it passed, and where it first did not. */
+/** What a run made of a test: whether it passed, and where it did not. */
 export type Verdict = {
   passed: boolean;
-  firstDifference?: Difference;
-  /** Every checked row that differs, by its row number in the run, for an editor to mark. */
-  differs?: number[];
+  /** Every document that differs, row by checked row, each row's documents in the order they were made. */
+  differences?: Difference[];
   /** Each field the run types otherwise than the test locked it. */
   retyped?: Retyped[];
   /** Present when the sample no longer holds the records it held at lock: a
@@ -2745,6 +2748,10 @@ export function testAt(
   return apiJson(`${inArea(`/tests/${encodeURIComponent(id)}`, inScope)}?${q}`);
 }
 
+/** A value that differs from what a test locked, by its path; an array names each element that differs. `locked` is
+ * absent where the test locked no value, and `made` says whether the run made one. */
+export type FieldDifference = { path: string; locked?: unknown; made: boolean };
+
 /** Lock test `id`, or replace the one under that id, holding the fields and rows of the preview on screen. Locking
  * needs the pipeline saved, so the branch runs what the preview ran. */
 export function putTest(id: string, lock: Lock): Promise<MutationResult> {
@@ -2813,6 +2820,8 @@ export interface RoutePreviewRow {
 export interface RoutePreviewResult {
   ok: boolean;
   errors: ApiError[];
+  /** What this run made of the request's test (`routePreview`'s `test`). */
+  verdict?: Verdict;
   /** The pipeline each route dispatches to, by route index. */
   route_pipelines: string[];
   /** The id of the pipeline each route dispatches to, position-parallel to
@@ -2838,7 +2847,7 @@ export interface RoutePreviewResult {
 export function routePreview(
   config: string,
   sample: string,
-  { source }: { source?: string } = {},
+  { source, test }: { source?: string; test?: string } = {},
 ): Promise<RoutePreviewResult> {
   const capture = heldSession(sample);
   return post(
@@ -2848,6 +2857,7 @@ export function routePreview(
       sample: capture ? null : sample,
       capture: capture ?? null,
       source: source ?? null,
+      test: test ?? null,
     },
     'quiet',
   );

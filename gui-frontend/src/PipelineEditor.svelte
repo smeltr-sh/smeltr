@@ -1032,10 +1032,12 @@
     const at = Date.now() * 1000;
     try {
       const ran = $state.snapshot(steps);
-      const res = await fetchPreview(ran, sample, { attribution: true, test: opened?.test });
+      const judging = opened?.test;
+      const res = await fetchPreview(ran, sample, { attribution: true, test: judging });
       // A run of a sample put away while it ran answers for nothing on screen.
       if (sample !== selectedSample) return;
       result = res;
+      judged = judging;
       if (res.ok) [lastGoodResult, lastGoodRun] = [res, ran];
       lastSample = sample;
       if (res.ok && proposedSteps && at >= proposedSteps.at) {
@@ -1054,6 +1056,13 @@
    * test. */
   let opened = $state(untrack(() => test));
   let relocking = $derived(!!opened && selectedSample === opened.sample);
+  /** The test `result` was judged by, whose marks it carries. */
+  let judged = $state<string>();
+  // A test opened over its sample's run runs the sample again, so that the test judges the run.
+  $effect(() => {
+    if (opened && untrack(() => opened!.sample === lastSample && opened!.test !== judged))
+      untrack(run);
+  });
 
   // Locking a test needs a saved pipeline to attach it to, a saved sample to
   // name, and a run that actually produced the output being locked. The lock
@@ -1098,6 +1107,7 @@
     });
     if (!res.ok) return res;
     await loadTests();
+    judged = undefined;
     openTest(id);
     // Closed last, so whoever waits on the dialog finds the test opened.
     locking = null;
@@ -1752,7 +1762,8 @@
         {pipelineId}
         test={opened && {
           test: opened.test,
-          ready: !!result?.ok && lastSample === opened.sample,
+          ready: !!result?.ok && lastSample === opened.sample && !pause,
+          differences: judged === opened.test ? result?.verdict?.differences : undefined,
         }}
         {steps}
         {signature}

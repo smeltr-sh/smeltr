@@ -47,7 +47,7 @@ use smeltr::config_file;
 use smeltr::leader::envelope::{ApiError, Envelope, Refusal};
 use smeltr::leader::preview::{
     FormatRequest, Formatted, LineBreakerRequest, Preview, PreviewRequest, RoutePreview, RoutePreviewRequest,
-    format_code, line_breaker_verdict, run_preview, run_route_preview, single_origin_declared_at,
+    format_code, line_breaker_verdict, route_run, run_preview, run_route_preview, single_origin_declared_at,
 };
 use smeltr::leader::sessions;
 use smeltr::leader::{blocking, blocking_answer};
@@ -86,16 +86,30 @@ fn route_preview_on(
         Ok(reading) => reading,
         Err(e) => return Envelope::refused(e),
     };
+    // A test is compared only over its own sample: over another, its rows are other rows.
+    let locked = (req.test.as_deref())
+        .filter(|_| given.is_none())
+        .and_then(|id| config_file::read_test(&mut reading.files(), id).ok().flatten())
+        .filter(|test| Some(&test.sample) == req.sample.as_ref() && test.pipeline.is_none());
     match sample_to_run(&reading, given, req.sample.as_deref()) {
         Ok(Some(mut sample)) => {
             sample.source = sample.source.or(req.source.clone());
-            match own_bundle(&req.config).and_then(|own| reading.runnable(own).ok()) {
+            let rows_in = sample.table.rows.len();
+            let mut answer = match own_bundle(&req.config).and_then(|own| reading.runnable(own).ok()) {
                 Some(run) => run_route_preview(&run.config, sample, run.declared_at),
                 None => {
                     let declared_at = single_origin_declared_at(&req.config, &reading.at());
                     run_route_preview(&req.config, sample, declared_at)
                 }
+            };
+            if answer.succeeded()
+                && let Some(test) = locked
+            {
+                answer.body.verdict = route_run(&answer)
+                    .ok()
+                    .map(|run| config_file::compare(&test, rows_in, &run));
             }
+            answer
         }
         Ok(None) => Envelope::refused(Refusal::invalid("name a sample or a held capture to route")),
         Err(refusal) => Envelope::refused(refusal),
@@ -3001,8 +3015,8 @@ mod tests {
         );
         assert!(previewed.succeeded(), "{:?}", previewed.errors);
         let verdict = previewed.verdict.as_ref().expect("a verdict");
-        assert_eq!(verdict.differs, [1, 2]);
-        assert_eq!(verdict.first_difference.as_ref().map(|d| d.row), Some(1));
+        let rows: Vec<usize> = verdict.differences.iter().map(|d| d.row).collect();
+        assert_eq!(rows, [1, 2]);
         let shown: Vec<u32> = previewed.rows.iter().map(|r| r.row).collect();
         assert_eq!(shown, [0, 1]);
         let row = previewed.rows[0].json.as_ref().unwrap();
@@ -3658,6 +3672,7 @@ mod tests {
                 config: serde_json::to_string(&group).unwrap(),
                 sample: Some(sample.id.clone()),
                 source: None,
+                test: None,
             },
             None,
         );
@@ -3688,6 +3703,7 @@ mod tests {
             config: serde_json::to_string(&group).unwrap(),
             sample: None,
             source: source.map(str::to_string),
+            test: None,
         };
         let held = config_file::SampleDto {
             id: "c1".to_string(),

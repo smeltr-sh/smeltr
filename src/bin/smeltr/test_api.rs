@@ -474,7 +474,7 @@ pub fn failing_at(data_dir: &Path, commit: &str) -> Vec<FailingTest> {
 
 /// What a failed verdict comes to, in a few words: that the sample changed, or the row where the run first differs.
 fn failure_text(verdict: &Verdict) -> String {
-    match (&verdict.first_difference, &verdict.rows_in) {
+    match (verdict.differences.first(), &verdict.rows_in) {
         (Some(d), _) => format!("row {} differs from what it locked", d.row),
         (None, Some(rows_in)) => format!(
             "its sample held {} records when locked, now {}",
@@ -702,7 +702,7 @@ mod tests {
             &declared_at,
         );
         let verdict = passing.verdict.expect("the route preview runs cleanly");
-        assert!(verdict.passed, "{:?}", verdict.first_difference);
+        assert!(verdict.passed, "{:?}", verdict.differences);
         assert_eq!(passing.pipeline, None, "an end-to-end test names no pipeline");
         assert_eq!(passing.area, "west", "the area it was run in travels with the result");
 
@@ -734,7 +734,7 @@ mod tests {
         );
         let verdict = failing.verdict.expect("it still runs, it just no longer matches");
         assert!(!verdict.passed);
-        assert_eq!(verdict.first_difference.unwrap().row, 0);
+        assert_eq!(verdict.differences[0].row, 0);
     }
 
     /// A pipeline test checks the fields it names on its rows: what it locked passes, and a locked value the run no
@@ -771,7 +771,7 @@ mod tests {
         test.table.rows[0].values[0] = serde_json::json!(false);
         let verdict = run(&test);
         assert!(!verdict.passed);
-        assert_eq!(verdict.first_difference.unwrap().row, 0);
+        assert_eq!(verdict.differences[0].row, 0);
     }
 
     /// `SampleDto.source` is `Option`, so a test naming no pipeline and a sample naming no source cannot be routed

@@ -277,7 +277,15 @@ describe('recordLines', () => {
     const lines = recordLines(tree, { open: (p) => ['e', 'e[0]', 'e[0][0]'].includes(p) });
     // Each opened level draws one page, then a line for the rest.
     expect(lines.length).toBeLessThan(4 * PAGE_LINES);
-    expect(lines.at(-1)).toEqual({ kind: 'more', path: 'e', depth: 1, shown: 40, total: 50 });
+    expect(lines.at(-1)).toEqual({
+      kind: 'more',
+      path: 'e',
+      depth: 1,
+      side: 'after',
+      shown: 40,
+      total: 50,
+      indexed: true,
+    });
   });
 
   it('draws a page more for each one asked for', () => {
@@ -287,13 +295,37 @@ describe('recordLines', () => {
     expect(lines.at(-1)).toMatchObject({ kind: 'more', shown: 2 * PAGE_LINES, total: 100 });
   });
 
+  it('draws an array from the element its page starts at, with a line before for the elements ahead and a line after for those past it', () => {
+    const tags = Array.from({ length: 1000 }, (_, i) => i);
+    const tree = diffTree(null, { tags });
+    const lines = recordLines(tree, {
+      open: () => true,
+      from: (p) => (p === 'tags' ? 880 : undefined),
+    });
+    const more = lines.filter((l) => l.kind === 'more');
+    expect(more).toMatchObject([
+      { side: 'before', shown: 880, total: 1000, indexed: true },
+      { side: 'after', shown: 920, total: 1000, indexed: true },
+    ]);
+    const fields = lines.filter((l) => l.kind === 'field');
+    expect(fields[0]).toMatchObject({ path: 'tags[880]' });
+  });
+
   it('draws one child of a page however long it is, and pages its fields', () => {
     const huge = Object.fromEntries(Array.from({ length: 100 }, (_, k) => [`f${k}`, k]));
     const tree = diffTree(null, { e: [huge, huge] });
     const lines = recordLines(tree, { open: (p) => p === 'e' || p === 'e[0]' });
     expect(lines.filter((l) => l.kind === 'field')).toHaveLength(PAGE_LINES);
     expect(lines.filter((l) => l.kind === 'more')).toEqual([
-      { kind: 'more', path: 'e[0]', depth: 2, shown: 40, total: 100 },
+      {
+        kind: 'more',
+        path: 'e[0]',
+        depth: 2,
+        side: 'after',
+        shown: 40,
+        total: 100,
+        indexed: false,
+      },
     ]);
     // Its sibling, too big for what is left, starts folded.
     expect(lines.at(-1)).toMatchObject({ kind: 'group', path: 'e[1]', open: false });
@@ -303,7 +335,15 @@ describe('recordLines', () => {
     const wide = Object.fromEntries(Array.from({ length: 200 }, (_, k) => [`f${k}`, k]));
     const lines = recordLines(diffTree(null, wide));
     expect(lines).toHaveLength(PAGE_LINES + 1);
-    expect(lines.at(-1)).toEqual({ kind: 'more', path: '', depth: 0, shown: 40, total: 200 });
+    expect(lines.at(-1)).toEqual({
+      kind: 'more',
+      path: '',
+      depth: 0,
+      side: 'after',
+      shown: 40,
+      total: 200,
+      indexed: false,
+    });
   });
 
   it('keeps a page for the siblings of what the reader opened', () => {
@@ -342,7 +382,15 @@ describe('pathLines', () => {
   it('draws a page at a time', () => {
     const tags = Array.from({ length: 100 }, (_, i) => i);
     const lines = pathLines(diffTree(null, { tags }), {}, true);
-    expect(lines.at(-1)).toEqual({ kind: 'more', path: '', depth: 0, shown: 40, total: 100 });
+    expect(lines.at(-1)).toEqual({
+      kind: 'more',
+      path: '',
+      depth: 0,
+      side: 'after',
+      shown: 40,
+      total: 100,
+      indexed: false,
+    });
   });
 });
 
