@@ -35,7 +35,8 @@ fn deliver_to(destinations: &[DestId]) -> Vec<DeliverRule> {
     }]
 }
 
-fn code(id: FunctionId, body: &str) -> Step {
+fn code(id: u32, body: &str) -> Step {
+    let id = FunctionId::new(id);
     Step::Function(FunctionConfig::new(id, FunctionKind::Code { body: body.into() }))
 }
 

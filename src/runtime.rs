@@ -3478,7 +3478,7 @@ fn marked_block(
     let slot_names = plan.slot_names();
     let exception = |a: &crate::core::error::Exception| {
         let what = a.message(&slot_names);
-        match plan.step_ids.get(a.function as usize) {
+        match plan.step_ids.get(a.function.index()) {
             Some(step) => format!("at step {step}: {what}"),
             None => format!("with: {what}"),
         }
@@ -3995,6 +3995,7 @@ mod tests {
     use crate::config_file;
     use crate::core::column::Scalar;
     use crate::core::error::{Exception, ExceptionKind};
+    use crate::core::id::FunctionId;
     use crate::plan::output::{RowException, row_exceptions};
 
     #[test]
@@ -4026,7 +4027,7 @@ mod tests {
     fn ann(row: u32, field: Option<SlotId>, kind: ExceptionKind) -> Exception {
         Exception {
             row,
-            function: 0,
+            function: FunctionId::new(0),
             field,
             kind,
             read: Vec::new(),

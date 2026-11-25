@@ -293,7 +293,7 @@ impl LoadedSystem {
             .iter()
             .find(|p| p.id == pipeline_id)?
             .step_ids
-            .get(function_id as usize)
+            .get(function_id.index())
             .cloned()
     }
 
@@ -771,7 +771,7 @@ mod tests {
         let errors = validation_of(&two_pipeline_json("1 +"));
         assert!(
             errors.iter().any(|e| e.pipeline.as_deref() == Some("second")
-                && e.function == Some(1)
+                && e.function == Some(FunctionId::new(1))
                 && e.step.as_deref() == Some("e2")),
             "{errors:?}"
         );
@@ -820,7 +820,7 @@ mod tests {
         let errors = validation_of(call_expansion_json());
         assert!(
             errors.iter().any(|e| e.pipeline.as_deref() == Some("main")
-                && e.function == Some(2)
+                && e.function == Some(FunctionId::new(2))
                 && e.step.as_deref() == Some("c-bad")),
             "{errors:?}"
         );
@@ -1009,10 +1009,10 @@ mod tests {
     #[test]
     fn step_id_for_resolves_none_rather_than_panicking_out_of_range() {
         let system = load_str(example_json()).unwrap();
-        assert_eq!(system.step_id_for(None, Some(0)), None);
+        assert_eq!(system.step_id_for(None, Some(FunctionId::new(0))), None);
         assert_eq!(system.step_id_for(Some(0), None), None);
-        assert_eq!(system.step_id_for(Some(0), Some(u32::MAX)), None);
-        assert_eq!(system.step_id_for(Some(usize::MAX), Some(0)), None);
+        assert_eq!(system.step_id_for(Some(0), Some(FunctionId::new(u32::MAX))), None);
+        assert_eq!(system.step_id_for(Some(usize::MAX), Some(FunctionId::new(0))), None);
     }
 
     /// A blank assignment is a structural error -- caught before compilation, unlike the call-inlining case above --

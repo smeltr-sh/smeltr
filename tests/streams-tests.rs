@@ -16,7 +16,8 @@ use smeltr::plan::topology::{DeliverRule, RouteConfig, compile_topology};
 use smeltr::runtime::{DestinationTarget, Lane, Transform};
 use smeltr::streams::{SenderEdits, Streams};
 
-fn code(id: FunctionId, body: &str) -> Step {
+fn code(id: u32, body: &str) -> Step {
+    let id = FunctionId::new(id);
     Step::Function(FunctionConfig::new(id, FunctionKind::Code { body: body.into() }))
 }
 

@@ -15,7 +15,8 @@ use smeltr::plan::config::{Answer, FunctionConfig, FunctionKind, PipelineConfig,
 use smeltr::plan::topology::{DeliverRule, RouteConfig, SourceMeta, SourceMetas, compile_topology_with};
 use smeltr::runtime::{DestinationTarget, Worker};
 
-fn code(id: FunctionId, body: &str) -> Step {
+fn code(id: u32, body: &str) -> Step {
+    let id = FunctionId::new(id);
     Step::Function(FunctionConfig::new(id, FunctionKind::Code { body: body.into() }))
 }
 
