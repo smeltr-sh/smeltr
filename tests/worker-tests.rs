@@ -772,7 +772,7 @@ fn a_revoked_worker_keeps_processing_records_after_revocation() {
     assert_eq!(revoked["ok"], true, "{revoked:?}");
 
     // Long enough for several heartbeats to fail with 401, which takes the same "unreachable" path as the worker's
-    // own offline handling (see that function's doc).
+    // own offline handling.
     std::thread::sleep(A_FEW_BEATS);
 
     let mut dest = KafkaDestination::new(
