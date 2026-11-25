@@ -6,7 +6,7 @@ pub type FunctionId = u32;
 macro_rules! id {
     ($(#[$doc:meta])* $name:ident) => {
         $(#[$doc])*
-        #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+        #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
         #[derive(serde::Serialize, serde::Deserialize)]
         #[serde(transparent)]
         pub struct $name(pub u32);
