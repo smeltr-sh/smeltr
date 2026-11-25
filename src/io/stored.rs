@@ -45,21 +45,22 @@ fn unclaimed(held: &RecordObject, at: &[String], fields: &[(Entry, DataType)]) -
         .collect()
 }
 
-impl<'a> Cells<'a> {
-    /// What this row holds for `entry` of `fields`. The entry's own column is read first. Where the table has none, or
-    /// the row holds nothing in it, the value is read from the entry's place inside the nearest column above it: an
-    /// object's own column or the column of its unclaimed fields, the deepest object first and the root's column
-    /// last. A row holds nothing in a column its batch did not have (`config_file::sample_table`). `None` where the
-    /// row holds nothing there. Err is the text of a cell that failed its type, or of a value on the way that holds
-    /// no field.
-    pub fn of(
-        &self,
-        entry: &Entry,
-        fields: &[(Entry, DataType)],
-    ) -> Result<Option<std::borrow::Cow<'a, serde_json::Value>>, String> {
-        use serde_json::Value;
+/// Where a table's rows hold one entry of a record: found once for the table, then read from each row.
+pub struct Place<'f> {
+    entry: &'f Entry,
+    fields: &'f [(Entry, DataType)],
+    keys: Vec<String>,
+    /// Each column that may hold the entry, nearest first, with how many of the entry's keys the column's name spells.
+    /// The keys after those are read inside the column's value.
+    held: Vec<(usize, usize)>,
+}
+
+impl<'f> Place<'f> {
+    /// The place of `entry` of `fields` under `columns`. Its own column is nearest. After it come the columns above it,
+    /// each an object's own column or the column of its unclaimed fields, the deepest object first and the root's last.
+    pub fn of(columns: &[CaptureColumn], entry: &'f Entry, fields: &'f [(Entry, DataType)]) -> Place<'f> {
         let keys = entry.keys();
-        let mut held: Vec<_> = (self.columns.iter().enumerate())
+        let mut held: Vec<_> = (columns.iter().enumerate())
             .filter_map(|(c, column)| {
                 let (above, rest): (Vec<String>, bool) = match crate::plan::tree::unclaimed_object(&column.name) {
                     Some(object) => (crate::plan::tree::object_keys(object).map(Into::into).collect(), true),
@@ -73,16 +74,31 @@ impl<'a> Cells<'a> {
             })
             .collect();
         held.sort_unstable_by(|a, b| b.cmp(a));
-        'column: for (nearest, ((_, depth), c)) in held.into_iter().enumerate() {
-            let mut value = self.row.values.get(c).unwrap_or(&Value::Null);
-            if self.row.failed.contains(&c) {
+        let held = held.into_iter().map(|((_, depth), c)| (depth, c)).collect();
+        Place {
+            entry,
+            fields,
+            keys,
+            held,
+        }
+    }
+
+    /// What `row` holds here: the nearest column's value, or where the row holds nothing in it, the value at the
+    /// entry's place inside the next. A row holds nothing in a column its batch did not have
+    /// (`config_file::sample_table`). `None` where the row holds nothing in any. Err is the text of a cell that failed
+    /// its type, or of a value on the way that holds no field.
+    pub fn read<'a>(&self, row: &'a CapturedRow) -> Result<Option<std::borrow::Cow<'a, serde_json::Value>>, String> {
+        use serde_json::Value;
+        'column: for (nearest, &(depth, c)) in self.held.iter().enumerate() {
+            let mut value = row.values.get(c).unwrap_or(&Value::Null);
+            if row.failed.contains(&c) {
                 if nearest > 0 {
                     continue;
                 }
                 // Stored as the source spelled it.
                 return Err(value.as_str().map_or_else(|| value.to_string(), str::to_string));
             }
-            for key in &keys[depth..] {
+            for key in &self.keys[depth..] {
                 value = match value {
                     Value::Object(held) => match held.get(key) {
                         Some(value) => value,
@@ -92,11 +108,11 @@ impl<'a> Cells<'a> {
                     unfit => return Err(unfit.to_string()),
                 };
             }
-            match (entry, value) {
+            match (self.entry, value) {
                 (_, Value::Null) => {}
                 (Entry::Field(_), value) => return Ok(Some(std::borrow::Cow::Borrowed(value))),
                 (Entry::Unclaimed(_), Value::Object(held)) => {
-                    let rest = unclaimed(held, &keys, fields);
+                    let rest = unclaimed(held, &self.keys, self.fields);
                     if !rest.is_empty() {
                         return Ok(Some(std::borrow::Cow::Owned(Value::Object(rest))));
                     }
@@ -105,6 +121,17 @@ impl<'a> Cells<'a> {
             }
         }
         Ok(None)
+    }
+}
+
+impl<'a> Cells<'a> {
+    /// What this row holds for `entry` of `fields` (`Place::read`).
+    pub fn of(
+        &self,
+        entry: &Entry,
+        fields: &[(Entry, DataType)],
+    ) -> Result<Option<std::borrow::Cow<'a, serde_json::Value>>, String> {
+        Place::of(self.columns, entry, fields).read(self.row)
     }
 
     /// The fields this row holds under `object`, a root key: what its place above holds, then each column below it.
@@ -198,9 +225,8 @@ impl RecordChunk {
         let mut failed = Vec::new();
         let mut out = Vec::with_capacity(fields.len());
         for (i, (entry, ty)) in fields.iter().enumerate() {
-            let cells: Vec<_> = (rows.iter())
-                .map(|row| Cells { columns, row }.of(entry, fields))
-                .collect();
+            let place = Place::of(columns, entry, fields);
+            let cells: Vec<_> = rows.iter().map(|row| place.read(row)).collect();
             let read: Vec<Option<&serde_json::Value>> = (cells.iter().enumerate())
                 .map(|(row, cell)| match cell {
                     Ok(value) => value.as_deref(),
