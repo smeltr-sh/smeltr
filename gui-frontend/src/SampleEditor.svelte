@@ -22,16 +22,17 @@
     getSample,
     previewPipeline,
     putSample,
+    type CaptureColumnDto,
+    type CapturedRowDto,
     type SampleDto,
-    type SampleRecordDto,
   } from './api';
   import { buildFileConfig } from './pipeline';
   import {
     cellMistyped,
     cellText,
-    editColumns,
+    editTable,
     matches,
-    pastedRecords,
+    pastedRows,
     withCell,
     type EditColumn,
   } from './sampleEdit';
@@ -50,13 +51,15 @@
   } = $props();
 
   /** A draft record, keyed so a row keeps its tick and its place while others are removed. */
-  type Row = { key: number; record: SampleRecordDto; changed: boolean };
+  type Row = { key: number; row: CapturedRowDto; changed: boolean };
 
   let sample: SampleDto | null = $state(null);
   let loadFailed = $state(false);
   let name = $state('');
   let source = $state('');
   let rows: Row[] = $state([]);
+  /** The table's columns, and those the editor shows of them. */
+  let table: CaptureColumnDto[] = $state([]);
   let columns: EditColumn[] = $state([]);
   let selected: Set<number> = $state(new Set());
   let editing: number | null = $state(null);
@@ -79,9 +82,11 @@
       sample = got.sample;
       name = got.sample.name;
       source = got.sample.source ?? '';
-      rows = got.sample.records.map((record, key) => ({ key, record, changed: false }));
+      const held = editTable(got.sample);
+      table = held.columns;
+      columns = held.shown;
+      rows = held.rows.map((row, key) => ({ key, row, changed: false }));
       saved = rows.length;
-      columns = editColumns(got.sample);
     } catch (e) {
       loadFailed = true;
       reported(e);
@@ -100,12 +105,12 @@
   const keeps = (r: Row) =>
     find.kind === 'expression'
       ? find.rows.has(r.key)
-      : find.kind !== 'keyword' || matches(r.record, find.text);
+      : find.kind !== 'keyword' || matches(r.row, find.text);
   let found = $derived(rows.filter(keeps));
   let shown = $derived(showAll ? found : found.slice(0, SHOWN));
-  let adding = $derived(pastedRecords(pasted, columns));
+  let adding = $derived(pastedRows(pasted, table, columns));
   let pasteError = $derived('error' in adding ? adding.error : '');
-  let total = $derived(rows.length + ('records' in adding ? adding.records.length : 0));
+  let total = $derived(rows.length + ('rows' in adding ? adding.rows.length : 0));
   let allShownTicked = $derived(shown.length > 0 && shown.every((r) => selected.has(r.key)));
 
   function tick(keys: number[], on: boolean) {
@@ -142,7 +147,7 @@
 
   function setCell(key: number, column: EditColumn, text: string) {
     rows = rows.map((r) =>
-      r.key === key ? { ...r, record: withCell(r.record, column, text), changed: true } : r,
+      r.key === key ? { ...r, row: withCell(r.row, columns, column, text), changed: true } : r,
     );
   }
 
@@ -154,7 +159,8 @@
         ...saved,
         name: name.trim(),
         source: source.trim() || undefined,
-        records: [...rows.map((r) => r.record), ...adding.records],
+        columns: table,
+        rows: [...rows.map((r) => r.row), ...adding.rows],
       });
       // A refusal is the error bar's to say.
       if (res.ok) onsaved();
@@ -272,8 +278,8 @@
                       <input
                         class="mono"
                         aria-label={`${c.name}, record ${r.key + 1}`}
-                        aria-invalid={cellMistyped(r.record, c.name)}
-                        value={cellText(r.record, c.name)}
+                        aria-invalid={cellMistyped(r.row, c)}
+                        value={cellText(r.row, c)}
                         onchange={(e) => setCell(r.key, c, e.currentTarget.value)}
                         onkeydown={(e) => {
                           // Enter settles the cell, as in a grid, rather than saving the whole sample.
@@ -284,12 +290,12 @@
                       />
                     </td>
                   {:else}
-                    {@const text = cellText(r.record, c.name)}
+                    {@const text = cellText(r.row, c)}
                     {@const at = `${r.key}/${c.name}`}
                     <td
                       class="mono"
                       class:long={text.length > LONG}
-                      class:error={cellMistyped(r.record, c.name)}
+                      class:error={cellMistyped(r.row, c)}
                     >
                       <Clamped
                         {text}
@@ -408,6 +414,10 @@
     font-family: var(--mono);
     font-weight: 400;
     font-size: var(--text-note);
+  }
+  /* A cell is as wide closed as open, so the headers of other columns cannot squeeze its text into a strip. */
+  td.mono:not(.num) {
+    min-width: 6rem;
   }
   td input:not([type='checkbox']) {
     width: 100%;

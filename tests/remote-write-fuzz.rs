@@ -9,11 +9,12 @@
 //! The last fuzzer runs the destination against a real Prometheus, where what it sends is read back by a query.
 
 use smeltr::core::id::DestId;
+use smeltr::sync::Mutex;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
@@ -84,7 +85,7 @@ const WRITTEN_HEADERS: [&str; 3] = [
 
 impl Transport for FuzzStore {
     fn post(&mut self, _path: &str, body: &[u8], _budget: Duration) -> Result<Response, IoError> {
-        self.sent.lock().unwrap().push(body.to_vec());
+        self.sent.lock().push(body.to_vec());
         // The answer follows from the body and how often it was sent, not from how many requests came before it:
         // how many a batch makes before its stall deadline is timing.
         let mut hasher = DefaultHasher::new();
@@ -94,7 +95,7 @@ impl Transport for FuzzStore {
         *attempt += 1;
         let rng = &mut Rng::seeded(self.seed ^ key ^ *attempt);
         let mut headers = Vec::new();
-        let mut answered = self.answered.lock().unwrap();
+        let mut answered = self.answered.lock();
         let status = match rng.below(100) {
             0..=57 => {
                 // A 2.0 store names what it wrote, and one of only 1.0 names nothing.
@@ -413,7 +414,7 @@ fn settle(json: &str, secrets: &HeldSecrets) -> Result<Reached, String> {
     if !refused.is_empty() {
         return Err(format!("a sample was refused: {}", refused[0].reason));
     }
-    for body in sent.lock().unwrap().iter() {
+    for body in sent.lock().iter() {
         read_back(body, c.version).map_err(|e| format!("the receiver cannot read what was sent: {e}"))?;
     }
     Ok(Reached::Delivered)
@@ -426,7 +427,7 @@ struct Lands {
 
 impl Transport for Lands {
     fn post(&mut self, _path: &str, body: &[u8], _budget: Duration) -> Result<Response, IoError> {
-        self.sent.lock().unwrap().push(body.to_vec());
+        self.sent.lock().push(body.to_vec());
         Ok(Response {
             status: 204,
             headers: vec![(WRITTEN_HEADERS[0].to_string(), "1".to_string())],
@@ -1147,11 +1148,11 @@ fn fuzz_one(seed: u64, coverage: &mut Coverage) -> Result<(), String> {
             Ok(Err(e)) => return Err(format!("failed a batch for another reason: {e:?}")),
         }
     }
-    for answer in answered.lock().unwrap().iter() {
+    for answer in answered.lock().iter() {
         coverage.reach(*answer);
     }
     let v = named(version);
-    for body in sent.lock().unwrap().iter() {
+    for body in sent.lock().iter() {
         match catch_unwind(|| read_back(body, version)) {
             Err(_) => {
                 return Err(format!(

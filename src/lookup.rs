@@ -370,18 +370,14 @@ impl RowTable {
         let built = index(match_kind, key, headers.len(), &file, cells)?;
         // A store that refuses the index costs every later compile a build, not this one its table.
         // Every compile that opens the file meets the same refusal, so it is said once per change and on the interval.
-        static NOT_KEPT: std::sync::Mutex<crate::logs::Relog> = std::sync::Mutex::new(crate::logs::Relog::new());
+        static NOT_KEPT: crate::sync::Mutex<crate::logs::Relog> = crate::sync::Mutex::new(crate::logs::Relog::new());
         let index = match kept.map(|at| store::derive(&at, &built)) {
             Some(Ok(index)) => {
-                NOT_KEPT.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                NOT_KEPT.lock().clear();
                 index
             }
             Some(Err(e)) => {
-                if let Some(error) = NOT_KEPT
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .fail_due(e.to_string())
-                {
+                if let Some(error) = NOT_KEPT.lock().fail_due(e.to_string()) {
                     tracing::warn!(name: "index_not_kept", target: "pipelines", file = shown, error, "a lookup file's index could not be stored, so it is built again at every compile");
                 }
                 anon(&built)?

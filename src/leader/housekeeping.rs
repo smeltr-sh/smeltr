@@ -31,9 +31,9 @@ pub async fn tick(state: &AppState, now_ms: i64) {
         .registry
         .issue_look_due(now_ms, crate::startup_config::leader_heartbeat_interval())
     {
-        static SAID: std::sync::Mutex<crate::logs::Repeat> = std::sync::Mutex::new(crate::logs::Repeat::new());
+        static SAID: crate::sync::Mutex<crate::logs::Repeat> = crate::sync::Mutex::new(crate::logs::Repeat::new());
         let looked = catalog(state).await;
-        let mut said = SAID.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut said = SAID.lock();
         match looked {
             Ok(_) => said.clear(),
             Err(e) if said.due() => {

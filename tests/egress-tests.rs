@@ -438,7 +438,7 @@ fn a_refused_record_comes_back_as_a_rejection_not_a_failed_batch() {
 fn the_requests_a_destination_has_open_are_reported_and_only_when_it_opens_its_own() {
     /// Reports whatever it is told to, so this test is about egress reading the figure, not about what sets it.
     #[derive(Clone)]
-    struct Reporting(Arc<std::sync::Mutex<Option<usize>>>);
+    struct Reporting(Arc<smeltr::sync::Mutex<Option<usize>>>);
 
     impl Destination for Reporting {
         fn deliver(
@@ -452,7 +452,7 @@ fn the_requests_a_destination_has_open_are_reported_and_only_when_it_opens_its_o
             Ok(())
         }
         fn concurrency(&mut self) -> Option<usize> {
-            *self.0.lock().unwrap()
+            *self.0.lock()
         }
     }
 
@@ -463,7 +463,7 @@ fn the_requests_a_destination_has_open_are_reported_and_only_when_it_opens_its_o
         })
     };
 
-    let level = Arc::new(std::sync::Mutex::new(Some(7)));
+    let level = Arc::new(smeltr::sync::Mutex::new(Some(7)));
     let registry = Arc::new(Metrics::new());
     let mut egress = Egress::start(
         DestId::new(0),
@@ -489,7 +489,7 @@ fn the_requests_a_destination_has_open_are_reported_and_only_when_it_opens_its_o
     let mut egress = Egress::start(
         DestId::new(1),
         "d",
-        Box::new(Reporting(Arc::new(std::sync::Mutex::new(None)))),
+        Box::new(Reporting(Arc::new(smeltr::sync::Mutex::new(None)))),
         timeout(),
         BUDGET,
         MetricsHandle::new(quiet.clone(), "egress-1"),
@@ -1537,7 +1537,7 @@ fn a_destination_where_nothing_lands_backs_off_as_a_whole() {
 /// destination's sake, idling its thread; one that does not is slow for its own, keeping its thread busy.
 struct Slow {
     inner: FakeDestination,
-    senders: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+    senders: Arc<smeltr::sync::Mutex<std::collections::BTreeSet<String>>>,
     waits: bool,
 }
 
@@ -1555,7 +1555,7 @@ impl Destination for Slow {
             std::hint::spin_loop();
         }
         let name = std::thread::current().name().unwrap_or_default().to_string();
-        self.senders.lock().unwrap().insert(name);
+        self.senders.lock().insert(name);
         self.inner.deliver(batch, rows)
     }
 
@@ -1618,11 +1618,7 @@ fn a_full_queue_starts_another_copy_with_its_own_client() {
         (1..=2).contains(&built),
         "copies past the first, up to three in all: {built}"
     );
-    assert_eq!(
-        senders.lock().unwrap().len(),
-        built + 1,
-        "each copy sends with its own client"
-    );
+    assert_eq!(senders.lock().len(), built + 1, "each copy sends with its own client");
     assert_eq!(done as u64, handed, "every batch came back to its reader");
     assert_eq!(sent.sent().len() as u64, handed);
 }

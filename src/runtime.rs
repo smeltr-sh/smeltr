@@ -6,10 +6,11 @@
 //! loops over the same lanes.
 //! Both call the same `step`, so a test that ticks and a deployment that threads run the same code.
 
+use crate::sync::Mutex;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::commit::{CommitTracker, WaitsOn};
@@ -382,18 +383,18 @@ impl Lane {
 
     /// Every destination a batch of this source's records is dispatched to.
     fn destinations(&self) -> Vec<DestId> {
-        self.destinations.lock().unwrap().clone()
+        self.destinations.lock().clone()
     }
 
     fn add_destination(&self, id: DestId) {
-        self.destinations.lock().unwrap().push(id);
+        self.destinations.lock().push(id);
     }
 
     /// The next parked batch. Taken under the lock, so two threads serving this source cannot run the same batch
     /// twice. `has_room` answers for the destination an undelivered batch waits on; a batch it says no to stays, and
     /// so does everything behind it.
     fn take_parked(&self, has_room: impl Fn(DestId, usize) -> bool) -> ParkedTake {
-        let mut parked = self.parked.lock().unwrap();
+        let mut parked = self.parked.lock();
         let Some(front) = parked.retry.front() else {
             return ParkedTake::Nothing;
         };
@@ -411,7 +412,7 @@ impl Lane {
     /// Record that the reader has been told, if the oldest parked batch is still the one waiting on `dest` since
     /// `since`. A batch that went through and was parked again is a new wait, told anew.
     fn note_hold_reported(&self, dest: DestId, since: std::time::Instant) {
-        let mut parked = self.parked.lock().unwrap();
+        let mut parked = self.parked.lock();
         if let Some(w) = parked.retry.front_mut().and_then(|u| u.waiting.as_mut())
             && w.dest == dest
             && w.since == since
@@ -424,7 +425,7 @@ impl Lane {
     /// has not delivered.
     fn park_retry(&self, batch: BatchId, mut records: Vec<SourceRecord>, unprocessable: bool) {
         crate::io::own_rows(&mut records);
-        self.parked.lock().unwrap().retry.push_front(Undelivered {
+        self.parked.lock().retry.push_front(Undelivered {
             batch,
             records,
             waiting: None,
@@ -441,7 +442,7 @@ impl Lane {
     /// Show the records the held batch blocked on to each capture of `name` that has not been shown them. Under the
     /// lock, so two threads serving this source cannot show a capture the same records twice.
     fn show_held(&self, captures: &crate::worker::capture::Captures, name: &str) {
-        let mut parked = self.parked.lock().unwrap();
+        let mut parked = self.parked.lock();
         let Some(held) = parked.retry.front_mut().filter(|u| u.held) else {
             return;
         };
@@ -469,7 +470,7 @@ impl Lane {
         let hold = captures
             .zip(self.source_name.as_ref())
             .map(|(c, name)| c.holding(crate::worker::capture::HeldAt::Source(name.clone())));
-        self.parked.lock().unwrap().retry.push_front(Undelivered {
+        self.parked.lock().retry.push_front(Undelivered {
             batch,
             records,
             waiting: None,
@@ -493,7 +494,7 @@ impl Lane {
         processed: Option<Processed>,
     ) {
         crate::io::own_rows(&mut records);
-        self.parked.lock().unwrap().retry.push_front(Undelivered {
+        self.parked.lock().retry.push_front(Undelivered {
             batch,
             records,
             waiting: Some(waiting),
@@ -2433,7 +2434,7 @@ impl RefusalRing {
             at_millis: now_millis(),
             message: truncate(exemplar, MAX_TEXT_LEN),
         };
-        let mut by_dest = self.by_dest.lock().unwrap();
+        let mut by_dest = self.by_dest.lock();
         let ring = by_dest.entry(dest).or_default();
         ring.push_back(entry);
         while ring.len() > REFUSAL_RING_CAP {
@@ -2443,7 +2444,7 @@ impl RefusalRing {
 
     /// Whether `dest`'s refusals are due their line now.
     fn due(&self, dest: DestId) -> bool {
-        let mut said = self.said.lock().unwrap_or_else(|e| e.into_inner());
+        let mut said = self.said.lock();
         said.entry(dest).or_default().due()
     }
 
@@ -2451,7 +2452,6 @@ impl RefusalRing {
     pub fn snapshot(&self, dest: DestId) -> Vec<Refusal> {
         self.by_dest
             .lock()
-            .unwrap()
             .get(&dest)
             .map(|ring| ring.iter().cloned().collect())
             .unwrap_or_default()
@@ -3995,6 +3995,7 @@ mod tests {
     use crate::config_file;
     use crate::core::column::Scalar;
     use crate::core::error::{Exception, ExceptionKind};
+    use crate::heartbeat::pasted_from;
     use crate::plan::output::{RowException, row_exceptions};
 
     #[test]
@@ -4373,7 +4374,7 @@ mod tests {
         let objects: Vec<crate::io::RecordObject> = objects.iter().map(|o| o.as_object().unwrap().clone()).collect();
         let fields = crate::io::SourceFields::new();
         let stored: Vec<_> = objects.iter().map(|o| (o, &fields)).collect();
-        let records = meta.read_stored(&stored).unwrap();
+        let records = meta.read_table(&pasted_from(&stored)).unwrap();
 
         let rows = preview_routes(&compiled, source, &records, preview_memory_budget());
 
@@ -4403,7 +4404,7 @@ mod tests {
             .unwrap();
         let object = serde_json::json!({"id": 7, "name": "a"}).as_object().unwrap().clone();
         let fields = crate::io::SourceFields::new();
-        let records = meta.read_stored(&[(&object, &fields)]).unwrap();
+        let records = meta.read_table(&pasted_from(&[(&object, &fields)])).unwrap();
         let form =
             |payload: Payload| source_form(&payload, &meta, &records[0], "").map(|v| String::from_utf8(v).unwrap());
 

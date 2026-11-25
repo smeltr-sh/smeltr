@@ -2,9 +2,10 @@
 //! receiver's tap before it frames any of it; and a listener that a capture opens on a receiver's address, which
 //! answers nothing.
 
+use smeltr::sync::Mutex;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use smeltr::io::raw::{RawRead, RawTap};
@@ -37,7 +38,7 @@ impl RawTap for Kept {
     }
 
     fn offer(&self, read: RawRead<'_>) {
-        self.0.lock().unwrap().push(Offered {
+        self.0.lock().push(Offered {
             remote: read.remote.to_string(),
             transport: read.transport,
             tls: read.tls,
@@ -51,10 +52,10 @@ impl Kept {
     /// What it was offered once `done` holds of it, waiting up to ten seconds.
     fn until(&self, done: impl Fn(&[Offered]) -> bool) -> Vec<Offered> {
         crate::harness::wait_for("the awaited bytes to be offered", Duration::from_secs(10), || {
-            let offered = self.0.lock().unwrap().clone();
+            let offered = self.0.lock().clone();
             done(&offered).then_some(offered)
         })
-        .unwrap_or_else(|late| panic!("{late}: {:?}", self.0.lock().unwrap()))
+        .unwrap_or_else(|late| panic!("{late}: {:?}", self.0.lock()))
     }
 
     /// Every byte it was offered, in order.

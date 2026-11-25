@@ -11,10 +11,11 @@
 //! them, and says which records the receiver must give. A deterministic PRNG over a seed range, from `harness::fuzz`:
 //! a failure names its seed, and the fuzzer checks that its seeds reached every option it knows.
 
+use smeltr::sync::Mutex;
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -1596,7 +1597,7 @@ impl Heard {
         let error = if self.next.is_some_and(|next| next != first) || first > last {
             Some(format!("acked {first}..={last}, after {:?}", self.through))
         } else {
-            let undelivered = undelivered.lock().unwrap();
+            let undelivered = undelivered.lock();
             (first..=last)
                 .find(|id| undelivered.get(id).is_some_and(|n| *n > 0))
                 .map(|id| format!("acked {first}..={last}, though a record holding {id}'s bytes was not delivered"))
@@ -1684,10 +1685,10 @@ fn forward(
             Some(std::thread::spawn(move || {
                 loop {
                     match read_ack(&mut tcp) {
-                        Ok(Some(range)) => heard.lock().unwrap().take(range, &undelivered),
+                        Ok(Some(range)) => heard.lock().take(range, &undelivered),
                         Ok(None) => return,
                         Err(e) => {
-                            heard.lock().unwrap().error.get_or_insert(e);
+                            heard.lock().error.get_or_insert(e);
                             return;
                         }
                     }
@@ -1712,14 +1713,14 @@ fn forward(
     if plan.must_ack {
         let (_, last) = plan.ids.expect("ids were sent");
         let deadline = Instant::now() + Duration::from_secs(60);
-        while heard.lock().unwrap().through.is_none_or(|through| through < last) {
+        while heard.lock().through.is_none_or(|through| through < last) {
             if Instant::now() > deadline {
-                return Err(format!("acked through {:?} of {last}", heard.lock().unwrap().through));
+                return Err(format!("acked through {:?} of {last}", heard.lock().through));
             }
             match reader {
                 Some(_) => std::thread::sleep(Duration::from_millis(5)),
                 None => match read_ack(&mut wire)? {
-                    Some(range) => heard.lock().unwrap().take(range, undelivered),
+                    Some(range) => heard.lock().take(range, undelivered),
                     None => return Err("closed the connection before acking every id".into()),
                 },
             }
@@ -1730,7 +1731,7 @@ fn forward(
         Some(reader) => reader.join().unwrap(),
         None if acks => {
             while let Some(range) = read_ack(&mut wire)? {
-                heard.lock().unwrap().take(range, undelivered);
+                heard.lock().take(range, undelivered);
             }
         }
         None => {
@@ -1745,7 +1746,7 @@ fn forward(
             }
         }
     }
-    let heard = heard.lock().unwrap();
+    let heard = heard.lock();
     match &heard.error {
         Some(error) => Err(error.clone()),
         None => Ok(()),
@@ -1793,7 +1794,7 @@ fn check_connection(
     let drained = receiver::drain(source, Duration::from_millis(20), quiet, deadline, |batch| {
         let finished = forwarder.is_finished();
         let ids = matching.take(batch, SourceMeta::S2S_RECEIVER)?;
-        let mut held = undelivered.lock().unwrap();
+        let mut held = undelivered.lock();
         for id in ids {
             *held.get_mut(&id).unwrap() -= 1;
         }
@@ -2541,7 +2542,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Warned {
                 fields.0
             );
             eprintln!("{warning}");
-            self.0.lock().unwrap().push(warning);
+            self.0.lock().push(warning);
         }
     }
 }
@@ -2702,7 +2703,7 @@ fn live_universal_forwarders_send_random_outputs_as_an_indexer_breaks_them() {
         if panicked.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(format!("{what}: a receiver panicked"));
         }
-        let warned = std::mem::take(&mut *warnings.lock().unwrap());
+        let warned = std::mem::take(&mut *warnings.lock());
         if !warned.is_empty() {
             return Err(format!("{what}: the receivers warned: {warned:#?}"));
         }

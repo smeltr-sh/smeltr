@@ -15,8 +15,9 @@
 //! An object handed out [`MAX_LAPSES`] times and never committed is unreadable, and no longer offered until it changes:
 //! the listing's own redrive. Kept, it goes into the ledger as read; deleted or moved, it stays in the bucket.
 
+use crate::sync::{Condvar, Mutex, MutexGuard};
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use object_store::path::Path;
@@ -224,7 +225,7 @@ impl Listing {
 
     fn state(&self) -> MutexGuard<'_, State> {
         // Each field is whole at every point the lock is released.
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.lock()
     }
 
     /// Up to `max` of what the last listing found, each in flight for `visibility` from now.

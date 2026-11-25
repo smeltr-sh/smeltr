@@ -931,7 +931,7 @@ fn kafka_destination_fuzz() {
     let pki = pki();
     let seeds: Vec<u64> = fuzz::seeds(0..SEEDS).collect();
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let done = std::sync::Mutex::new(BTreeMap::new());
+    let done = smeltr::sync::Mutex::new(BTreeMap::new());
     std::thread::scope(|scope| {
         for _ in 0..WORKERS {
             scope.spawn(|| {
@@ -946,12 +946,12 @@ fn kafka_destination_fuzz() {
                             .unwrap_or_default();
                         Err(format!("panicked: {why}"))
                     });
-                    done.lock().unwrap().insert(seed, (checked, reached));
+                    done.lock().insert(seed, (checked, reached));
                 }
             });
         }
     });
-    let mut done = done.into_inner().unwrap();
+    let mut done = done.into_inner();
     let mut cov = Coverage::new(OPTIONS.iter().copied());
     fuzz::run(0..SEEDS, |seed| {
         let (checked, reached) = done.remove(&seed).expect("every seed was checked");

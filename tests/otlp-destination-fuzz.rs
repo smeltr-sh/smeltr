@@ -11,12 +11,13 @@
 //! and the second receiver.
 
 use smeltr::core::id::DestId;
+use smeltr::sync::Mutex;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
@@ -379,7 +380,7 @@ fn settle(json: &str, secrets: &HeldSecrets) -> Result<Reached, String> {
     if !refused.is_empty() {
         return Err(format!("a row was refused: {}", refused[0].reason));
     }
-    let landed = landed.lock().unwrap();
+    let landed = landed.lock();
     if landed.len() != 1 {
         return Err(format!("{} requests landed of one row", landed.len()));
     }
@@ -418,7 +419,7 @@ struct Takes {
 impl Transport for Takes {
     fn post(&mut self, path: &str, body: &[u8], _budget: Duration) -> Result<Response, IoError> {
         let body = opened(path, self.signal, self.gzip, body);
-        self.landed.lock().unwrap().push(body);
+        self.landed.lock().push(body);
         Ok(Response {
             status: 200,
             headers: Vec::new(),
@@ -542,13 +543,13 @@ impl Transport for FuzzService {
         let rng = &mut Rng::seeded(self.seed ^ key ^ *attempt);
         let plain = opened(path, self.signal, self.gzip, body);
         if plain.len() > self.max_request_bytes && read_back(self.signal, &plain).unwrap_or(0) > 1 {
-            self.oversized.lock().unwrap().push(plain.len());
+            self.oversized.lock().push(plain.len());
         }
-        let mut answered = self.answered.lock().unwrap();
+        let mut answered = self.answered.lock();
         let mut answer = Vec::new();
         let status = match rng.below(100) {
             0..=59 => {
-                self.landed.lock().unwrap().push(plain);
+                self.landed.lock().push(plain);
                 match rng.below(4) {
                     0 => {
                         answered.push("answer 2xx with a partial success");
@@ -820,7 +821,7 @@ fn fuzz_one(seed: u64, receivers: &mut [Ends], coverage: &mut Coverage) -> Resul
 
         // What landed is what the second receiver takes, each body whole.
         let mut arrived = Vec::new();
-        for body in std::mem::take(&mut *landed.lock().unwrap()) {
+        for body in std::mem::take(&mut *landed.lock()) {
             let (status, records) = exchange(second, *to, signal, body.clone());
             if status != 200 {
                 return Err(format!(
@@ -889,10 +890,10 @@ fn fuzz_one(seed: u64, receivers: &mut [Ends], coverage: &mut Coverage) -> Resul
             Err(e) => return Err(format!("failed a batch for another reason: {e:?}")),
         }
     }
-    for answer in answered.lock().unwrap().iter() {
+    for answer in answered.lock().iter() {
         coverage.reach(*answer);
     }
-    let oversized = oversized.lock().unwrap();
+    let oversized = oversized.lock();
     if !oversized.is_empty() {
         return Err(format!(
             "sent requests of {oversized:?} bytes, past maxRequestBytes {max_request_bytes}"

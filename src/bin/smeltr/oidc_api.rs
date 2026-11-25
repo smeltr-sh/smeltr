@@ -21,8 +21,8 @@
 //! two alike. Local sign-in never depends on anything here: an administrator holding a password can always get in
 //! to fix a provider that is down or misconfigured.
 
+use smeltr::sync::{Mutex, MutexGuard};
 use std::collections::HashMap;
-use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use axum::Json;
@@ -150,11 +150,11 @@ impl Oidc {
     }
 
     fn cache(&self) -> MutexGuard<'_, Cache> {
-        self.cache.lock().unwrap_or_else(|e| e.into_inner())
+        self.cache.lock()
     }
 
     fn hold(&self, state: String, flow: Flow) {
-        let mut flows = self.flows.lock().unwrap_or_else(|e| e.into_inner());
+        let mut flows = self.flows.lock();
         let now = Instant::now();
         flows.retain(|_, f| now.duration_since(f.started) < FLOW_LIFE);
         if flows.len() >= MOST_FLOWS
@@ -167,7 +167,7 @@ impl Oidc {
 
     /// The flow `state` names, once: a callback replayed finds nothing.
     fn take(&self, state: &str) -> Option<Flow> {
-        let flow = self.flows.lock().unwrap_or_else(|e| e.into_inner()).remove(state)?;
+        let flow = self.flows.lock().remove(state)?;
         (flow.started.elapsed() < FLOW_LIFE).then_some(flow)
     }
 

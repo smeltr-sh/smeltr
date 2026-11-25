@@ -25,9 +25,9 @@
 //! expires. A bucket nothing landed in is a bucket with no row: there is nothing to promote and nothing to delete, so
 //! an outage reads as absent rather than as a zero.
 
+use crate::sync::Mutex;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
@@ -740,16 +740,7 @@ pub struct LatestState {
 /// The registry's durable half: `latest_state`, `fact_clock`, and `series_points`, behind one connection guarded
 /// by one `Mutex` -- the same shape `store::Store` uses for `leader.db`, in a file of its own.
 pub struct RegistryStore {
-    /// Taken with `unwrap_or_else(|e| e.into_inner())`, so poisoning is recovered from rather than propagated --
-    /// the one place this store differs from `store::Store`, which holds the configuration and is
-    /// right to fail loudly.
-    ///
-    /// Every method here answers a `Result`, and this lock is the only way any of them could panic instead; a
-    /// caller already has the error path. A panic under the lock is reported where it happened, and poisoning is
-    /// only its aftermath: refusing to work afterward would turn one bug into a leader that has permanently
-    /// stopped answering `/api/health`, `/api/warnings`, `/api/flow` and `/api/areas/:area/stats`, none of which it
-    /// touched.
-    /// Recovery is sound because a `Transaction` rolls back as it drops, so what comes back is consistent.
+    /// A panic that held this lock leaves the data consistent: a `Transaction` rolls back as it drops.
     conn: Mutex<Connection>,
     /// When [`RegistryStore::maybe_maintain`] should next actually run `maintain` -- epoch milliseconds. Rollup and
     /// expiry cost a table scan per promoting tier; throttling them to once per fine bucket, the same cadence data
@@ -917,7 +908,7 @@ impl RegistryStore {
 
     /// Every thread's last report, unordered.
     pub fn load_latest_state(&self) -> Result<Vec<LatestState>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT worker_id, thread_id, report_json, stop_after_unreachable_secs, commit_sha, smeltr_version,
                     supervising_json, authority_expires_ms, stopped_at_ms, last_seen_ms, release
@@ -945,7 +936,7 @@ impl RegistryStore {
 
     /// Drops every row a worker has. What the registry mirrors when the leader forgets one.
     pub fn forget_worker(&self, worker_id: &str) -> Result<(), StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         conn.execute(FORGET_WORKER_ROWS, params![worker_id])?;
         // Its last window, which only that worker's next beat would be checked against.
         conn.execute("DELETE FROM windows WHERE worker_id = ?1", params![worker_id])?;
@@ -967,7 +958,7 @@ impl RegistryStore {
         if removed.is_empty() && inserted.is_empty() {
             return Ok(());
         }
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         for (entry, subject) in removed {
             conn.execute(
                 "INSERT OR IGNORE INTO fact_history (entry, subject, started_ms, ended_ms, reason) \
@@ -991,7 +982,7 @@ impl RegistryStore {
     /// Keeps why each of `reasons`' facts began: (entry, subject, reason). A fact keeps the first reason given while it
     /// holds, as of the reading that began it or the first after; one not active yet is given its reason on a later call.
     pub fn keep_reasons(&self, reasons: &[(String, String, String)]) -> Result<(), StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut keep = conn
             .prepare_cached("UPDATE fact_clock SET reason = ?3 WHERE entry = ?1 AND subject = ?2 AND reason IS NULL")?;
         for (entry, subject, reason) in reasons {
@@ -1002,7 +993,7 @@ impl RegistryStore {
 
     /// Every currently-active fact's true start: (entry, subject, started).
     pub fn load_fact_clock(&self) -> Result<Vec<(String, String, i64)>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT entry, subject, started_ms FROM fact_clock")?;
         let rows = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
@@ -1012,7 +1003,7 @@ impl RegistryStore {
 
     /// When each of `entries` held for `subject` and overlapped the time since `since_ms`, oldest first.
     pub fn fact_spans(&self, entries: &[&str], subject: &str, since_ms: i64) -> Result<Vec<FactSpan>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let span = |r: &rusqlite::Row| {
             Ok(FactSpan {
                 entry: r.get(0)?,
@@ -1040,7 +1031,7 @@ impl RegistryStore {
 
     /// The subject of each fact of `entry` that began at `started_ms` and has ended.
     pub fn facts_started(&self, entry: &str, started_ms: i64) -> Result<Vec<String>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         // A fact ends after it began, so the index on its end reads only the facts that ended since.
         let mut stmt = conn.prepare_cached(
             "SELECT subject FROM fact_history WHERE ended_ms >= ?2 AND entry = ?1 AND started_ms = ?2",
@@ -1086,7 +1077,7 @@ impl RegistryStore {
         counter: bool,
         value: f64,
     ) -> Result<(), StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         write_point(
             &conn,
             &SeriesPoint {
@@ -1113,7 +1104,7 @@ impl RegistryStore {
     /// Streams that will not write are the exception, left out and said: they fail on what they hold, so the same
     /// window sent again would fail again, and the worker could never be heard.
     pub fn record_heartbeat(&self, beat: &HeartbeatRows<'_>) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.conn.lock();
         let mut tx = conn.transaction()?;
         let unseen;
         {
@@ -1205,7 +1196,7 @@ impl RegistryStore {
     /// Every point of one series at one tier, oldest first. A bucket nothing landed in has no row and so no entry
     /// here -- absence, not a zero.
     pub fn points(&self, metric: &str, subject_key: &str, tier: Tier) -> Result<Vec<(i64, f64)>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT p.bucket_ms, p.value FROM series s JOIN series_points p ON p.series_id = s.id \
              WHERE p.tier = ?1 AND s.metric = ?2 AND s.labels_json = ?3 ORDER BY p.bucket_ms",
@@ -1228,7 +1219,7 @@ impl RegistryStore {
         tier: Tier,
         since_ms: i64,
     ) -> Result<Vec<(String, SubjectPoints)>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         series_since_on(&conn, metric, tier, since_ms)
     }
 
@@ -1240,7 +1231,7 @@ impl RegistryStore {
         tiers: &[Tier],
         since_ms: i64,
     ) -> Result<Vec<Vec<(String, SubjectPoints)>>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         tiers
             .iter()
             .map(|tier| series_since_on(&conn, metric, *tier, since_ms))
@@ -1312,7 +1303,7 @@ impl RegistryStore {
         let bucket_ms = Tier::TenSeconds.align(now_ms);
         let key = (metric.to_string(), counter, point_ms, offset_ms, since_ms);
         {
-            let mut read = self.points_read.lock().unwrap_or_else(|e| e.into_inner());
+            let mut read = self.points_read.lock();
             if read.bucket_ms != bucket_ms {
                 *read = PointsRead {
                     bucket_ms,
@@ -1323,7 +1314,7 @@ impl RegistryStore {
             }
         }
         let points = std::sync::Arc::new(self.points_from(metric, counter, point_ms, offset_ms, since_ms, i64::MAX)?);
-        let mut read = self.points_read.lock().unwrap_or_else(|e| e.into_inner());
+        let mut read = self.points_read.lock();
         if read.bucket_ms == bucket_ms {
             read.reads.insert(key, points.clone());
         }
@@ -1358,7 +1349,7 @@ impl RegistryStore {
 
     /// Whether `metric` is a counter, or `None` when the store holds no series of it.
     pub fn is_counter(&self, metric: &str) -> Result<Option<bool>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let kind: Option<String> = conn
             .query_row("SELECT kind FROM series WHERE metric = ?1 LIMIT 1", [metric], |r| {
                 r.get(0)
@@ -1369,7 +1360,7 @@ impl RegistryStore {
 
     /// Every metric the store holds a series of, each with every subject it has one for and whether it counts.
     pub fn metric_subjects(&self) -> Result<Vec<(String, String, bool)>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare("SELECT metric, labels_json, kind FROM series ORDER BY metric, labels_json")?;
         let rows = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, String>(2)? == COUNTER)))?
@@ -1405,7 +1396,7 @@ impl RegistryStore {
 
     /// Write `swings`, each over any already held for its source, width and bucket.
     pub fn record_swings(&self, swings: &[Swing]) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         {
             let mut write = tx.prepare_cached(
@@ -1428,7 +1419,7 @@ impl RegistryStore {
         width_ms: i64,
         since_ms: i64,
     ) -> Result<Vec<Swing>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare_cached(
             "SELECT bucket_ms, low, high FROM swings \
              WHERE group_id = ?1 AND source = ?2 AND width_ms = ?3 AND bucket_ms >= ?4 ORDER BY bucket_ms",
@@ -1450,7 +1441,7 @@ impl RegistryStore {
 
     /// The start of the newest bucket any swing is held for.
     pub fn last_swing_ms(&self) -> Result<Option<i64>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         Ok(conn.query_row("SELECT MAX(bucket_ms) FROM swings", [], |r| r.get(0))?)
     }
 
@@ -1461,7 +1452,7 @@ impl RegistryStore {
         watches: &[((String, String), Watch)],
         silences: &[Silence],
     ) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         {
             let mut watch = tx.prepare_cached(
@@ -1484,7 +1475,7 @@ impl RegistryStore {
 
     /// How far each source's rows have been read for its quiet spells.
     pub fn watches(&self) -> Result<BTreeMap<(String, String), Watch>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut stmt =
             conn.prepare_cached("SELECT group_id, source, watched_ms, read_ms, row_ms, quiet_ms FROM silence_watch")?;
         let rows = stmt
@@ -1505,7 +1496,7 @@ impl RegistryStore {
 
     /// `group`'s `source`'s quiet spells that began from `since_ms` on, oldest first, as (ended, length).
     pub fn source_silences(&self, group: &str, source: &str, since_ms: i64) -> Result<Vec<(i64, i64)>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare_cached(
             "SELECT ended_ms, length_ms FROM silences WHERE group_id = ?1 AND source = ?2 AND ended_ms - length_ms >= ?3 \
              ORDER BY ended_ms",
@@ -1529,7 +1520,7 @@ impl RegistryStore {
         if events.is_empty() {
             return Ok(());
         }
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         {
             // `OR IGNORE` against the unique key: a heartbeat whose answer was lost is sent again with the same
@@ -1649,7 +1640,7 @@ impl RegistryStore {
         });
         args.push(Box::new(limit as i64));
 
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(&sql)?;
         let mut rows: Vec<StoredLog> = stmt
             .query_map(rusqlite::params_from_iter(args.iter().map(|a| a.as_ref())), |r| {
@@ -1717,7 +1708,7 @@ impl RegistryStore {
         args.push(Box::new(since_ms));
         args.push(Box::new(until_ms));
 
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt
             .query_map(rusqlite::params_from_iter(args.iter().map(|a| a.as_ref())), |r| {
@@ -1747,7 +1738,7 @@ impl RegistryStore {
         let _pass =
             tracing::trace_span!(target: "status", "a background pass", task = "trim the registry's logs and series")
                 .entered();
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
 
         for tier in [Tier::TenSeconds, Tier::OneMinute, Tier::FiveMinutes] {
@@ -1992,7 +1983,7 @@ impl RegistryStore {
         config: Option<&str>,
         now_ms: i64,
     ) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         write_streams(
             &tx,
@@ -2014,7 +2005,7 @@ impl RegistryStore {
     /// Adds a beat's `senders`, of the group named with them, to the bucket `now_ms` falls in, once the bucket held
     /// before is written. A bucket that cannot be written is logged and dropped: its senders read as not counted in it.
     fn count_senders(&self, conn: &mut Connection, senders: Option<(&str, &[SenderCounts])>, now_ms: i64) {
-        let mut held = self.senders.lock().unwrap_or_else(|e| e.into_inner());
+        let mut held = self.senders.lock();
         let bucket = super::senders::TIER.align(now_ms);
         if held.pending.bucket_ms != bucket {
             let ended = std::mem::replace(
@@ -2038,12 +2029,12 @@ impl RegistryStore {
 
     /// From the next bucket written on, keeps the rows of the `watched` values only (`senders::keep`).
     pub fn watch_senders(&self, watched: HashSet<SenderKey>) {
-        self.senders.lock().unwrap_or_else(|e| e.into_inner()).watched = Some(watched);
+        self.senders.lock().watched = Some(watched);
     }
 
     /// Every sender field's days from `since_day_ms`, by group, source and name.
     pub fn sender_fields_since(&self, since_day_ms: i64) -> Result<BTreeMap<FieldKey, FieldDays>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut stmt = conn
             .prepare("SELECT group_id, source, field, day_ms, counted, over FROM sender_fields WHERE day_ms >= ?1")?;
         let mut rows = stmt.query(params![since_day_ms])?;
@@ -2066,7 +2057,7 @@ impl RegistryStore {
         since_day_ms: i64,
         mut each: impl FnMut(&FieldKey, &str, Days),
     ) -> Result<(), StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         // In the order of `sender_values_by_value`: no sort.
         let mut stmt = conn.prepare(
             "SELECT group_id, source, field, value, day_ms, sent FROM sender_values WHERE day_ms >= ?1 \
@@ -2101,7 +2092,7 @@ impl RegistryStore {
         field: &str,
         since_day_ms: i64,
     ) -> Result<Days, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare_cached(
             "SELECT day_ms, counted FROM sender_fields \
              WHERE group_id = ?1 AND source = ?2 AND field = ?3 AND day_ms >= ?4 ORDER BY day_ms",
@@ -2122,7 +2113,7 @@ impl RegistryStore {
         source: &str,
         since_day_ms: i64,
     ) -> Result<Vec<(String, i64, Buckets)>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare_cached(
             "SELECT field, day_ms, sent FROM sender_values WHERE group_id = ?1 AND source = ?2 AND day_ms >= ?3",
         )?;
@@ -2142,7 +2133,7 @@ impl RegistryStore {
         field: &str,
         value: &str,
     ) -> Result<Vec<(i64, Rows)>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare_cached(
             "SELECT day_ms, rows FROM sender_values \
              WHERE group_id = ?1 AND source = ?2 AND field = ?3 AND value = ?4 AND rows IS NOT NULL ORDER BY day_ms",
@@ -2161,7 +2152,7 @@ impl RegistryStore {
         values_before_ms: i64,
         kept_before_ms: i64,
     ) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         {
             let kept: Vec<SenderKey> = tx
@@ -2574,7 +2565,7 @@ impl RegistryStore {
     /// in key order. A Parser's counts are those of the buckets from `since_ms` on: a Parser that read nothing since
     /// is left out, and so is a field it neither declares nor has held since.
     pub fn streams(&self, since_ms: i64) -> Result<StoredStreams, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut parsers: Vec<StoredParserShape> = conn
             .prepare(
                 "SELECT group_id, source, route, pipeline, step, rows, fields_dropped, first_seen_ms, last_seen_ms \
@@ -2718,7 +2709,7 @@ impl RegistryStore {
 
     /// Forgets what every source outside `kept`, by `(group, source)`, showed of its streams.
     pub fn forget_streams_except(&self, kept: &std::collections::HashSet<(String, String)>) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         let held: Vec<(String, String)> = tx
             .prepare(
@@ -2754,7 +2745,7 @@ impl RegistryStore {
         since_ms: i64,
         deployed: impl Fn(&str) -> Option<String>,
     ) -> Result<Vec<UnroutedSource>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let mut sources: Vec<UnroutedSource> = conn
             .prepare(
                 "SELECT group_id, source, unrouted_since_ms, config FROM stream_unmatched WHERE last_seen_ms >= ?1 \
@@ -2793,7 +2784,7 @@ impl RegistryStore {
     /// Every declared field of every Parser shape, with when its step last read rows, it was last present and it
     /// last failed: what a drift warning reads.
     pub fn declared_fields(&self) -> Result<Vec<DeclaredField>, StoreError> {
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = self.conn.lock();
         let fields = conn
             .prepare(
                 "SELECT f.group_id, f.pipeline, f.step, f.field, f.suggested, p.read_last_ms, f.present_last_ms, \
@@ -3215,7 +3206,6 @@ mod tests {
         store
             .conn
             .lock()
-            .unwrap()
             .execute_batch(
                 "CREATE TRIGGER refused BEFORE INSERT ON stream_fields BEGIN SELECT RAISE(ABORT, 'refused'); END",
             )
@@ -3348,7 +3338,6 @@ mod tests {
         store
             .conn
             .lock()
-            .unwrap()
             .query_row("SELECT COUNT(*) FROM logs", [], |r| r.get(0))
             .unwrap()
     }
@@ -3370,7 +3359,6 @@ mod tests {
         let groups: Vec<Option<String>> = store
             .conn
             .lock()
-            .unwrap()
             .prepare("SELECT group_id FROM logs ORDER BY worker_id")
             .unwrap()
             .query_map([], |r| r.get(0))
@@ -3733,7 +3721,6 @@ mod tests {
         let newest: String = store
             .conn
             .lock()
-            .unwrap()
             .query_row("SELECT type FROM logs ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
             .unwrap();
         assert_eq!(newest, "line_9", "and the end it keeps is the recent one");
@@ -3789,7 +3776,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         {
             let store = RegistryStore::open(&path).unwrap();
-            let conn = store.conn.lock().unwrap();
+            let conn = store.conn.lock();
             let journal: String = conn.pragma_query_value(None, "journal_mode", |r| r.get(0)).unwrap();
             let level: i64 = conn.pragma_query_value(None, "synchronous", |r| r.get(0)).unwrap();
             let vacuum: i64 = conn.pragma_query_value(None, "auto_vacuum", |r| r.get(0)).unwrap();
@@ -3818,12 +3805,11 @@ mod tests {
 
         std::thread::scope(|s| {
             let panicked = s.spawn(|| {
-                let _held = store.conn.lock().unwrap();
+                let _held = store.conn.lock();
                 panic!("a bug under the lock");
             });
             assert!(panicked.join().is_err());
         });
-        assert!(store.conn.is_poisoned());
 
         assert_eq!(
             store.points("smeltr_rows_polled_total", "k", Tier::TenSeconds).unwrap(),
@@ -4289,7 +4275,6 @@ mod tests {
         let series: i64 = store
             .conn
             .lock()
-            .unwrap()
             .query_row("SELECT COUNT(*) FROM series", [], |r| r.get(0))
             .unwrap();
         assert_eq!(series, 0, "a series with no point left is gone too");
@@ -4620,7 +4605,7 @@ mod tests {
         }
         assert!(!super::super::steps::is_additive(STEPS[9]), "a rename is breaking");
         let store = RegistryStore::open(&path).unwrap();
-        let conn = store.conn.lock().unwrap();
+        let conn = store.conn.lock();
         assert!(!claim_window(&conn, "w1", 7, 1).unwrap());
         assert!(claim_window(&conn, "w1", 7, 2).unwrap());
         drop(conn);

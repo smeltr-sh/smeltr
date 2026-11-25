@@ -293,7 +293,8 @@ pub fn monitor_resource(url: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use crate::sync::Mutex;
+    use std::sync::Arc;
 
     use serde_json::json;
 
@@ -354,7 +355,7 @@ mod tests {
         let headers = entra.authorize(&agent(), timeout, "https://x").unwrap();
         assert_eq!(headers, vec![("Authorization".to_string(), "Bearer one".to_string())]);
         assert_eq!(entra.authorize(&agent(), timeout, "https://x").unwrap(), headers);
-        let seen = seen.lock().unwrap();
+        let seen = seen.lock();
         assert_eq!(seen.len(), 1);
         assert!(seen[0].contains("client_secret=s3cr%26t"), "{}", seen[0]);
         assert!(
@@ -398,7 +399,7 @@ mod tests {
         let headers = entra.authorize(&agent(), timeout, "https://x").unwrap();
         assert_eq!(headers[0].1, "Bearer m1");
         entra.authorize(&agent(), timeout, "https://x").unwrap();
-        let seen = seen.lock().unwrap();
+        let seen = seen.lock();
         assert_eq!(seen.len(), 1, "a token with a lifetime is kept");
         assert_eq!(
             seen[0],
@@ -450,7 +451,7 @@ mod tests {
             !entra.refused(&answer(401)),
             "a new token refused is the refusal to show"
         );
-        assert_eq!(seen.lock().unwrap().len(), 2);
+        assert_eq!(seen.lock().len(), 2);
     }
 
     #[test]

@@ -1,10 +1,11 @@
 //! Kafka `Source` and `Destination` on `rdkafka`'s blocking clients (`BaseConsumer`, `BaseProducer`): no async runtime
 //! in the data plane.
 
+use crate::sync::Mutex;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rdkafka::ClientContext;
@@ -784,7 +785,7 @@ impl Source for KafkaSource {
             if !out.is_empty() || remaining.is_zero() {
                 break;
             }
-            state = slot.arrived.wait_timeout(state, remaining).unwrap().0;
+            state = slot.arrived.wait_timeout(state, remaining).0;
         }
         drop(state);
         let records = out.finish();
@@ -1172,8 +1173,8 @@ impl ClientContext for DeliveryTracker {
     /// Runs on librdkafka's own thread, not egress's. `MetricsHandle` is two `Arc`s over a locked registry, so both
     /// may write.
     fn stats(&self, stats: Statistics) {
-        *self.buffered.lock().unwrap() = Some(publish_stats(&stats, &self.destination, &self.metrics));
-        let mut reach = self.reach.lock().unwrap();
+        *self.buffered.lock() = Some(publish_stats(&stats, &self.destination, &self.metrics));
+        let mut reach = self.reach.lock();
         reach.up = any_broker_up(&stats);
         if reach.up {
             reach.error = None;
@@ -1184,7 +1185,7 @@ impl ClientContext for DeliveryTracker {
     /// out. The most recent error wins, as on a Kafka source's client (`client::Routes`).
     fn error(&self, error: KafkaError, reason: &str) {
         if is_connection_error(&error) {
-            self.reach.lock().unwrap().error = Some(format!("{error}: {reason}"));
+            self.reach.lock().error = Some(format!("{error}: {reason}"));
         }
     }
 }
@@ -1214,7 +1215,7 @@ impl ProducerContext for DeliveryTracker {
                 Failure::Undelivered(why)
             }
         });
-        self.state.lock().unwrap().reported(seq, row, failure);
+        self.state.lock().reported(seq, row, failure);
     }
 }
 
@@ -1435,17 +1436,12 @@ impl KafkaDestination {
 
     /// Whether a batch this copy handed over is still waiting on a delivery report.
     fn owes(&self) -> bool {
-        self.state
-            .lock()
-            .unwrap()
-            .sealed
-            .values()
-            .any(|&(copy, _)| copy == self.copy)
+        self.state.lock().sealed.values().any(|&(copy, _)| copy == self.copy)
     }
 
     /// Takes `records` that will never be reported off the count `deliver` makes up front.
     fn uncount(&mut self, records: u64) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         if let Some(n) = state.outstanding.get_mut(&self.seq) {
             *n = n.saturating_sub(records);
         }
@@ -1535,7 +1531,7 @@ impl Destination for KafkaDestination {
     fn copier(&self) -> Option<crate::egress::Build> {
         let first = Mutex::new(self.copy());
         Some(Box::new(move || {
-            Ok(Box::new(first.lock().unwrap().copy()) as Box<dyn Destination>)
+            Ok(Box::new(first.lock().copy()) as Box<dyn Destination>)
         }))
     }
 
@@ -1556,7 +1552,7 @@ impl Destination for KafkaDestination {
             .filter(|&i| rows[i].unfit.is_none() && encoded.as_ref().is_none_or(|e| e[i].is_ok()))
             .count() as u64;
         if to_send > 0 {
-            self.state.lock().unwrap().outstanding.insert(self.seq, to_send);
+            self.state.lock().outstanding.insert(self.seq, to_send);
         }
         let mut unsent = to_send;
         for (i, row) in rows.iter().enumerate() {
@@ -1586,13 +1582,13 @@ impl Destination for KafkaDestination {
                 // The batch goes again whole, so what is already queued of it answers for nothing.
                 Err(e) => {
                     self.uncount(unsent + 1);
-                    self.state.lock().unwrap().abandon(self.seq);
+                    self.state.lock().abandon(self.seq);
                     return Err(e);
                 }
             }
         }
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             state.sealed.insert(self.seq, (self.copy, batch));
             // A batch acknowledged before it was sealed, or one that sent nothing, is already done.
             state.settle(self.seq);
@@ -1620,7 +1616,7 @@ impl Destination for KafkaDestination {
         if self.producer.in_flight_count() > 0 {
             return Ok(());
         }
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         state.outstanding.clear();
         state.abandoned.clear();
         let sealed: Vec<Seq> = state.sealed.keys().copied().collect();
@@ -1632,17 +1628,17 @@ impl Destination for KafkaDestination {
 
     fn poll_completions(&mut self) -> Result<Vec<BatchCompletion>, IoError> {
         self.producer.poll(Duration::ZERO);
-        Ok(self.state.lock().unwrap().done.remove(&self.copy).unwrap_or_default())
+        Ok(self.state.lock().done.remove(&self.copy).unwrap_or_default())
     }
 
     /// Set by the producer's own error callback, which `poll_completions` runs.
     fn connection_error(&self) -> Option<String> {
-        self.reach.lock().unwrap().unreachable()
+        self.reach.lock().unreachable()
     }
 
     /// The producer's, from its first copy alone: egress adds up what every copy reports.
     fn buffered_bytes(&self) -> Option<usize> {
-        (self.copy == 0).then(|| *self.buffered.lock().unwrap()).flatten()
+        (self.copy == 0).then(|| *self.buffered.lock()).flatten()
     }
 }
 
@@ -3102,7 +3098,7 @@ mod tests {
         const ENABLE_REFRESH_OAUTH_TOKEN: bool = true;
 
         fn generate_oauth_token(&self, config: Option<&str>) -> Result<OAuthToken, Box<dyn std::error::Error>> {
-            self.0.lock().unwrap().push(config.map(str::to_string));
+            self.0.lock().push(config.map(str::to_string));
             Err("asked".into())
         }
     }
@@ -3129,11 +3125,11 @@ mod tests {
         assert_eq!(config.get("https.ca.pem"), None, "librdkafka asks no token endpoint");
         let consumer: BaseConsumer<Asked> = config.create_with_context(Asked::default()).expect("builds");
         let deadline = Instant::now() + Duration::from_secs(5);
-        while consumer.context().0.lock().unwrap().is_empty() && Instant::now() < deadline {
+        while consumer.context().0.lock().is_empty() && Instant::now() < deadline {
             consumer.poll(Duration::from_millis(50));
         }
         assert_eq!(
-            consumer.context().0.lock().unwrap().first(),
+            consumer.context().0.lock().first(),
             Some(&Some(
                 "smeltr.workload.scope=https://acme.servicebus.windows.net/.default".to_string()
             ))

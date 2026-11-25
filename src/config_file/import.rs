@@ -357,7 +357,7 @@ impl Objects {
         let sent = self
             .tests
             .iter_mut()
-            .flat_map(|t| t.rows.iter_mut().filter_map(|o| o.sent.as_mut()));
+            .flat_map(|t| t.shown.iter_mut().filter_map(|o| o.sent.as_mut()));
         for named in sent.map(name).filter(|n| *n == from) {
             *named = to.to_string();
         }
@@ -530,17 +530,17 @@ mod tests {
         Objects {
             file,
             samples: vec![
-                serde_json::from_value(json!({"id": "s-fw", "name": "fw", "source": "fw", "records": []})).unwrap(),
+                serde_json::from_value(json!({"id": "s-fw", "name": "fw", "source": "fw", "columns": [], "rows": []})).unwrap(),
             ],
             tests: vec![
                 serde_json::from_value(
                     json!({"id": "t-common", "name": "common", "pipeline": "common", "sample": "s-fw",
-                                              "lockedAt": 0, "rowsIn": 0, "fields": [], "rows": []}),
+                                              "rowsIn": 0, "table": {"columns": [], "rows": []}, "shown": []}),
                 )
                 .unwrap(),
                 serde_json::from_value(
-                    json!({"id": "t-end", "name": "end", "sample": "s-fw", "lockedAt": 0, "rowsIn": 1,
-                                              "fields": [], "rows": [{"row": 0, "values": {},
+                    json!({"id": "t-end", "name": "end", "sample": "s-fw", "rowsIn": 1,
+                                              "table": {"columns": [], "rows": [{"values": []}]}, "shown": [{"row": 0,
                                                   "sent": {"route": "r-fw", "pipeline": "fw-normalize", "destinations": []}}]}),
                 )
                 .unwrap(),
@@ -635,7 +635,7 @@ mod tests {
         }
         assert!(file.contains("%{FW_ADDR:src}"));
         assert_eq!(objects.file.routes[0].source, "fw-in");
-        let sent = objects.tests[1].rows[0].sent.as_ref().unwrap();
+        let sent = objects.tests[1].shown[0].sent.as_ref().unwrap();
         assert_eq!((sent.route.as_str(), sent.pipeline.as_str()), ("r-fw", "fw-2"));
         assert!(!tests.contains("s-fw") && !samples.contains("s-fw") && samples.contains("\"source\":\"fw-in\""));
     }

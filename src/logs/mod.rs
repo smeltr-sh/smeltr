@@ -35,10 +35,11 @@ pub(crate) use console::{render_fields, render_value, stamp};
 pub(crate) use layer::LogLayer;
 pub use layer::library_said;
 
+use crate::sync::{Condvar, Mutex};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
-use std::sync::{Condvar, LazyLock, Mutex, OnceLock};
+use std::sync::{LazyLock, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 pub use event::{Event, Value};
@@ -69,7 +70,7 @@ pub(crate) fn said(f: impl FnOnce()) -> Vec<Said> {
         fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
             let mut fields = Fields(Vec::new());
             event.record(&mut fields);
-            self.0.lock().unwrap().push((
+            self.0.lock().push((
                 *event.metadata().level(),
                 event.metadata().target().to_string(),
                 event.metadata().name().to_string(),
@@ -80,7 +81,7 @@ pub(crate) fn said(f: impl FnOnce()) -> Vec<Said> {
     let catch = Catch::default();
     let seen = catch.0.clone();
     tracing::subscriber::with_default(tracing_subscriber::registry().with(catch), f);
-    seen.lock().unwrap().clone()
+    seen.lock().clone()
 }
 
 /// Events held between drains. Reached only when the drain thread is behind, so it buys time rather than storage.
@@ -416,18 +417,12 @@ pub fn leader_pending_map<T>(limit: usize, f: impl FnMut(&Event) -> T) -> Vec<T>
 }
 
 fn map_queue<T>(queue: &Mutex<VecDeque<Event>>, limit: usize, f: impl FnMut(&Event) -> T) -> Vec<T> {
-    queue
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .take(limit)
-        .map(f)
-        .collect()
+    queue.lock().iter().take(limit).map(f).collect()
 }
 
 /// How many the leader has not acknowledged.
 pub fn pending_len() -> usize {
-    PENDING.lock().unwrap_or_else(|e| e.into_inner()).len()
+    PENDING.lock().len()
 }
 
 /// Drop the `count` oldest: the leader has them. Called only on a heartbeat the leader answered.
@@ -441,7 +436,7 @@ pub fn leader_delivered(count: usize) {
 }
 
 fn drop_oldest(queue: &Mutex<VecDeque<Event>>, count: usize) {
-    let mut pending = queue.lock().unwrap_or_else(|e| e.into_inner());
+    let mut pending = queue.lock();
     let take = count.min(pending.len());
     pending.drain(..take);
 }
@@ -454,7 +449,7 @@ fn drop_oldest(queue: &Mutex<VecDeque<Event>>, count: usize) {
 /// accumulates for a reader that has gone.
 pub fn tap() -> Tap {
     let id = NEXT_TAP.fetch_add(1, Ordering::Relaxed);
-    LOGS.lock().unwrap_or_else(|e| e.into_inner()).push(Queue {
+    LOGS.lock().push(Queue {
         tap: id,
         opened: SystemTime::now(),
         events: VecDeque::new(),
@@ -469,7 +464,7 @@ impl Tap {
     /// Up to `limit`, oldest first, taken. Unlike the leader's queue these are gone once read: the pipeline that
     /// reads them is the one that decides what at-least-once means from here.
     pub fn drain(&self, limit: usize) -> Vec<Event> {
-        let mut logs = LOGS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut logs = LOGS.lock();
         let Some(queue) = logs.iter_mut().find(|q| q.tap == self.0) else {
             return Vec::new();
         };
@@ -484,7 +479,7 @@ impl Tap {
     /// The queue is still bounded: what no longer fits is refused here exactly as it would have been on the way
     /// in, and counted the same way.
     pub fn put_back(&self, events: Vec<Event>) {
-        let mut logs = LOGS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut logs = LOGS.lock();
         let Some(queue) = logs.iter_mut().find(|q| q.tap == self.0) else {
             return;
         };
@@ -500,9 +495,7 @@ impl Tap {
 
 impl Drop for Tap {
     fn drop(&mut self) {
-        LOGS.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .retain(|q| q.tap != self.0);
+        LOGS.lock().retain(|q| q.tap != self.0);
     }
 }
 
@@ -513,7 +506,7 @@ pub fn mirror(events: impl IntoIterator<Item = Event>) {
     let worker = worker();
     // Collected before the lock: whatever produces them may log, and a log here with no drain thread takes it.
     let events: Vec<Event> = events.into_iter().collect();
-    let mut logs = LOGS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut logs = LOGS.lock();
     for mut event in events {
         event.worker = worker;
         // A mirror arrives up to a heartbeat after what it carries was said, so a reader opened in between would
@@ -557,7 +550,6 @@ pub fn unwritable() -> u64 {
 pub fn written_by_type() -> Vec<(Option<String>, String, u64)> {
     WRITTEN
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
         .iter()
         .map(|((class, kind), n)| (class.as_deref().map(str::to_string), kind.to_string(), *n))
         .collect()
@@ -584,7 +576,7 @@ pub fn mark_leader_thread() {
 pub fn report_losses() {
     static LAST: Mutex<([u64; 4], Relog)> = Mutex::new(([0; 4], Relog::new()));
     let now = [dropped(), undelivered(), unread(), unwritable()];
-    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    let mut last = LAST.lock();
     let since: Vec<u64> = now.iter().zip(last.0).map(|(n, l)| n.saturating_sub(l)).collect();
     let (dropped, undelivered, unread, unwritable) = (since[0], since[1], since[2], since[3]);
     if since.iter().any(|n| *n > 0) {
@@ -686,9 +678,7 @@ pub fn start() {
     if SENDER.set(sender).is_err() {
         return;
     }
-    std::thread::Builder::new()
-        .name("smeltr-logs".into())
-        .spawn(move || drain(receiver))
+    crate::sync::spawn("smeltr-logs", move || drain(receiver))
         .expect("start the logs drain thread (called once, at startup)");
 
     // Until the fleet's levels arrive: the leader reads them as it starts, a worker on its first heartbeat.
@@ -744,7 +734,7 @@ pub fn stop() {
     }
 
     let (written, wake) = &FLUSHED;
-    let guard = written.lock().unwrap_or_else(|e| e.into_inner());
+    let guard = written.lock();
     let remaining = deadline.saturating_duration_since(Instant::now());
     let _ = wake.wait_timeout_while(guard, remaining, |written| !*written);
 }
@@ -762,7 +752,7 @@ fn drain(receiver: Receiver<Message>) {
     }
 
     let (written, wake) = &FLUSHED;
-    *written.lock().unwrap_or_else(|e| e.into_inner()) = true;
+    *written.lock() = true;
     wake.notify_all();
 }
 
@@ -788,7 +778,6 @@ fn take(event: Event, leader: bool) {
         // The key is borrowed for everything smeltr says itself, so the common path neither allocates nor copies.
         *WRITTEN
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
             .entry((event.class.clone(), event.r#type.clone()))
             .or_default() += 1;
     } else {
@@ -802,7 +791,7 @@ fn take(event: Event, leader: bool) {
     }
 
     // Every open reader. Taken first because a reader is the consumer that can be told to stop.
-    offer(LOGS.lock().unwrap_or_else(|e| e.into_inner()).iter_mut(), &event);
+    offer(LOGS.lock().iter_mut(), &event);
 
     // A worker queues for the leader, whose heartbeat is the one path to one, and a leader queues for its own
     // store. A process running both roles keeps the two apart, so each is stored under its own name.
@@ -813,7 +802,7 @@ fn take(event: Event, leader: bool) {
     } else {
         return;
     };
-    let mut pending = queue.lock().unwrap_or_else(|e| e.into_inner());
+    let mut pending = queue.lock();
     if pending.len() < PENDING_CAPACITY {
         pending.push_back(event);
     } else {
@@ -828,7 +817,7 @@ pub(crate) static TAPS_LOCK: Mutex<()> = Mutex::new(());
 /// How many readers have a queue open.
 #[cfg(test)]
 pub(crate) fn taps_open() -> usize {
-    LOGS.lock().unwrap_or_else(|e| e.into_inner()).len()
+    LOGS.lock().len()
 }
 
 #[cfg(test)]
@@ -837,14 +826,13 @@ mod tests {
 
     fn queue_len(tap: &Tap) -> usize {
         LOGS.lock()
-            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .find(|q| q.tap == tap.0)
             .map_or(0, |q| q.events.len())
     }
 
     fn push(seq: u64) {
-        offer(LOGS.lock().unwrap_or_else(|e| e.into_inner()).iter_mut(), &event(seq));
+        offer(LOGS.lock().iter_mut(), &event(seq));
     }
 
     fn event(seq: u64) -> Event {
@@ -864,11 +852,7 @@ mod tests {
     }
 
     fn queued(queue: &Mutex<VecDeque<Event>>, site: &str) -> bool {
-        queue
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .any(|e| e.r#type == site)
+        queue.lock().iter().any(|e| e.r#type == site)
     }
 
     #[test]
@@ -923,7 +907,7 @@ mod tests {
     /// stays bounded across that return: it refuses on the way back exactly as it would on the way in.
     #[test]
     fn a_return_goes_in_front_of_what_came_since_and_is_refused_when_full() {
-        let _taps = TAPS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _taps = TAPS_LOCK.lock();
         let tap = tap();
         for seq in 0..4 {
             push(seq);
@@ -963,7 +947,7 @@ mod tests {
     /// own queue and leaves the other's.
     #[test]
     fn every_reader_gets_every_event_and_closes_only_its_own_queue() {
-        let _taps = TAPS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _taps = TAPS_LOCK.lock();
         let first = tap();
         let second = tap();
         push(1);
@@ -987,7 +971,7 @@ mod tests {
     /// nowhere else: that process has already written it to its console and queued it for the leader.
     #[test]
     fn a_mirrored_event_reaches_the_readers_only() {
-        let _taps = TAPS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _taps = TAPS_LOCK.lock();
         let site = "mirror_readers_only_test";
         let mirrored = || Event {
             timestamp: SystemTime::now(),
@@ -1015,7 +999,7 @@ mod tests {
     /// once it was open, as it would have been had the other process been this one.
     #[test]
     fn a_mirrored_event_said_before_a_reader_opened_is_not_that_readers() {
-        let _taps = TAPS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _taps = TAPS_LOCK.lock();
         let said_before = Event {
             timestamp: SystemTime::now() - Duration::from_secs(5),
             r#type: "mirror_before_open_test".into(),

@@ -6,7 +6,7 @@
 //! Its second half declares PostgreSQL, MySQL and MariaDB sources from any options a file can hold, sound or not: each loads or is
 //! refused, and none panics.
 
-use std::sync::Mutex;
+use crate::sync::Mutex;
 
 use super::*;
 use crate::fuzz::{self, Coverage, Rng};
@@ -88,14 +88,14 @@ impl Driver for Fake {
     }
 
     fn run(&mut self, statement: &Statement, values: &[Value]) -> Result<Rows, String> {
-        let fault = self.db.lock().unwrap().fault.take();
+        let fault = self.db.lock().fault.take();
         match fault {
             Some(Fault::Fails) => return Err("server closed the connection unexpectedly".into()),
             Some(Fault::TooLarge) => return Err(too_large()),
             Some(Fault::Late) => std::thread::sleep(Duration::from_millis(3)),
             _ => {}
         }
-        let db = self.db.lock().unwrap();
+        let db = self.db.lock();
         // MySQL binds a value once for each place it stands; each binds the same.
         let bound = |bind: &Bind| {
             statement
@@ -183,7 +183,7 @@ impl Driver for Fake {
     fn plan(&mut self, _: &Statement, _: &[Value]) -> Result<Verdict, String> {
         Ok(Verdict::FullScan {
             relation: "events".into(),
-            rows: self.db.lock().unwrap().rows.len() as u64,
+            rows: self.db.lock().rows.len() as u64,
         })
     }
 }
@@ -376,7 +376,7 @@ impl Run<'_> {
 
     fn change(&mut self) {
         let db = self.db.clone();
-        let mut db = db.lock().unwrap();
+        let mut db = db.lock();
         let mut floor = None;
         let n = db.rows.len();
         match self.rng.below(if self.case.updates { 4 } else { 2 }) {
@@ -417,7 +417,7 @@ impl Run<'_> {
         if faults && self.rng.chance(5) {
             let fault = *self.rng.pick(&FAULTS);
             self.coverage.reach(format!("fault {fault:?}"));
-            self.db.lock().unwrap().fault = Some(fault);
+            self.db.lock().fault = Some(fault);
         }
         // A backoff lasts seconds, and a blocked source sleeps its timeout: those polls wait no time.
         let mut timeout = match faults && self.rng.chance(3) {
@@ -526,7 +526,7 @@ impl Run<'_> {
     fn drain(&mut self) {
         self.source.release().unwrap();
         {
-            let mut db = self.db.lock().unwrap();
+            let mut db = self.db.lock();
             db.fault = None;
             db.now += i64::from(db.settle.unwrap_or(0)) + 1;
         }
@@ -615,7 +615,7 @@ fn engine_seed(seed: u64, coverage: &mut Coverage) -> Result<(), String> {
         match run.rng.below(20) {
             0..=4 => run.change(),
             5 => {
-                let mut db = run.db.lock().unwrap();
+                let mut db = run.db.lock();
                 db.now += 1 + run.rng.below(3) as i64;
             }
             6..=12 => {
@@ -639,7 +639,7 @@ fn check(mut run: Run<'_>) -> Result<(), String> {
     let batch = run.case.batch as usize;
     if matches!(run.case.mode, Mode::EveryPoll) {
         run.source.release().unwrap();
-        run.db.lock().unwrap().fault = None;
+        run.db.lock().fault = None;
         // What was read before is handed out first; then one poll of the table as it stands.
         while run.source.pending.is_some() || run.source.running.is_some() {
             run.poll(false);
@@ -654,7 +654,7 @@ fn check(mut run: Run<'_>) -> Result<(), String> {
                 break;
             }
         }
-        let rows = run.db.lock().unwrap().rows.clone();
+        let rows = run.db.lock().rows.clone();
         if rows.len() > batch {
             run.coverage.reach("every poll over its batch");
             return match run.source.connection_error() {
@@ -684,7 +684,7 @@ fn check(mut run: Run<'_>) -> Result<(), String> {
             ));
         }
     }
-    let rows = run.db.lock().unwrap().rows.clone();
+    let rows = run.db.lock().rows.clone();
     let first = run.config.position().first().cloned();
     // Without a tie-break, rows sharing one value past twice the batch are skipped, by design.
     if run.config.position().len() == 1 && first.as_deref() == Some("t") && run.sharing.values().any(|n| *n > 2 * batch)

@@ -63,8 +63,6 @@ function stored(file) {
   return out.map(({ id, ...s }) => s);
 }
 
-/** The branch the capture pools are saved on: the recorder's, not the fleet's. */
-const POOLS = 'demo-capture-pools';
 const answers = {};
 const browser = await chromium.launch({ args: ['--no-sandbox'] });
 const ctx = await browser.newContext({
@@ -159,7 +157,7 @@ const lookups = path.join(path.dirname(out), 'lookups');
 fs.mkdirSync(lookups, { recursive: true });
 const reader = await ctx.newPage();
 await reader.goto(`${BASE}/#/map`, { waitUntil: 'networkidle' });
-const listed = answers['/api/branches'].body.branches.map((b) => b.name).filter((b) => b !== POOLS);
+const listed = answers['/api/branches'].body.branches.map((b) => b.name);
 for (const [branch, scope] of ['main', ...listed].flatMap((b) =>
   ['shared', 'network', 'apps'].map((s) => [b, s]),
 )) {
@@ -234,14 +232,13 @@ for (let i = 0; i < 12; i++) {
 }
 
 // What each source reads and each destination is sent: one capture of each on main, as the GUI's Capture asks for
-// it. Each is kept both as the capture showed it and as the sample a save made of it, row for record; the saves land
-// on a branch of their own. A destination's is what main's pipelines send it, which is what a fleet's workers run
-// whatever branch is open. One that caught nothing has no sample.
+// it, kept as the table it held. A destination's is what main's pipelines send it; a fleet's workers run those
+// pipelines whatever branch is open.
 const POOL = 200;
 const captures = {};
-const capture = (group, what, branch) =>
+const capture = (group, what) =>
   api.evaluate(
-    async ([group, what, max, branch]) => {
+    async ([group, what, max]) => {
       const { csrf } = await fetch('/api/auth/session').then((r) => r.json());
       const send = (method, u, body) =>
         fetch(u, {
@@ -261,52 +258,30 @@ const capture = (group, what, branch) =>
         await new Promise((r) => setTimeout(r, 1000));
         const { capture } = await fetch(`/api/captures/${started.session}`).then((r) => r.json());
         if (!capture.done) continue;
-        // The demo's leader keeps a pool as one batch of the rows it held, each with the worker that sent it.
-        const { columns, records } = await fetch(`/api/captures/${started.session}/records`).then(
+        // The demo's leader keeps a pool as one batch: the table the capture held.
+        const { columns, rows } = await fetch(`/api/captures/${started.session}/records`).then(
           (r) => r.json(),
         );
-        const batches = [{ columns, rows: records }];
-        if (batches.every((b) => !b.rows.length)) {
-          await send('DELETE', `/api/captures/${started.session}`);
-          return { batches };
-        }
-        const id = `pool-${what.source?.id ?? what.destination}-${Date.now()}`;
-        const samples = `/api/areas/${group}/samples`;
-        const saved = await post(`${samples}?branch=${branch}`, {
-          capture: started.session,
-          id,
-          name: id,
-          source: what.source?.id,
-        });
-        if (!saved.ok) throw new Error(JSON.stringify(saved.errors));
-        const { sample } = await fetch(`${samples}/${id}?branch=${branch}`).then((r) => r.json());
-        return {
-          batches,
-          sample: { columns: sample.columns, records: sample.records },
-        };
+        await send('DELETE', `/api/captures/${started.session}`);
+        return { batches: [{ columns, rows }] };
       }
     },
-    [group, what, POOL, branch],
+    [group, what, POOL],
   );
 for (const scope of ['network', 'apps']) {
   const { config } = answers[`/api/areas/${scope}?branch=main`].body;
   for (const source of config.sources) {
-    const pool = await capture(scope, { source }, POOLS);
+    const pool = await capture(scope, { source });
     captures[`${scope}/source/${source.id}`] = pool;
-    console.log(`${scope}/${source.id}: ${pool.sample?.records.length ?? 0} records captured`);
+    console.log(`${scope}/${source.id}: ${pool.batches[0].rows.length} records captured`);
   }
   for (const { id } of config.destinations) {
-    const pool = await capture(scope, { destination: id }, POOLS);
+    const pool = await capture(scope, { destination: id });
     captures[`${scope}/destination/${id}`] = pool;
-    console.log(
-      `${scope}/${id}: ${pool.batches.reduce((n, b) => n + b.rows.length, 0)} records captured`,
-    );
+    console.log(`${scope}/${id}: ${pool.batches[0].rows.length} records captured`);
   }
 }
 
-// The branch the pools were saved on is the recorder's, not the fleet's.
-const branches = answers['/api/branches'].body;
-branches.branches = branches.branches.filter((b) => b.name !== POOLS);
 // The demo answers a branch it holds no answer on with main's, so an answer on `work` that is main's is left out.
 for (const key of Object.keys(answers)) {
   const url = new URL(key, BASE);

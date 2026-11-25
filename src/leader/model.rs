@@ -1339,7 +1339,8 @@ fn compatible_reply(answer: Value) -> Result<Reply, String> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use crate::sync::Mutex;
+    use std::sync::Arc;
 
     use super::*;
 
@@ -1357,8 +1358,8 @@ mod tests {
                 move |headers: axum::http::HeaderMap, axum::Json(body): axum::Json<Value>| {
                     let (kept, answers) = (kept.clone(), answers.clone());
                     async move {
-                        kept.lock().unwrap().push((headers, body));
-                        let next = answers.lock().unwrap().next().expect("an answer for each request");
+                        kept.lock().push((headers, body));
+                        let next = answers.lock().next().expect("an answer for each request");
                         match next.get("status_code").and_then(Value::as_u64) {
                             Some(code) => (
                                 axum::http::StatusCode::from_u16(code as u16).unwrap(),
@@ -1466,7 +1467,7 @@ mod tests {
         assert_eq!(second.text, "orders runs in shared.");
         assert_eq!(second.stop, Stop::Done);
 
-        let seen = seen.lock().unwrap();
+        let seen = seen.lock();
         let (headers, body) = &seen[1];
         assert_eq!(headers["x-api-key"], "k-1");
         assert_eq!(headers["anthropic-version"], ANTHROPIC_VERSION);
@@ -1528,7 +1529,7 @@ mod tests {
             })
             .await
             .unwrap();
-        let messages = seen.lock().unwrap()[0].1["messages"].clone();
+        let messages = seen.lock()[0].1["messages"].clone();
         assert_eq!(messages.as_array().unwrap().len(), 2);
         assert_eq!(messages[0]["content"][0], summary);
     }
@@ -1607,7 +1608,7 @@ mod tests {
         assert_eq!(reply.stop, Stop::Compacted);
         assert_eq!(reply.text, "They asked about shared.");
         assert_eq!(reply.usage.output, 40);
-        let edit = seen.lock().unwrap()[0].1["context_management"]["edits"][0].clone();
+        let edit = seen.lock()[0].1["context_management"]["edits"][0].clone();
         assert_eq!(edit["pause_after_compaction"], true);
         assert_eq!(edit["instructions"], SUMMARIZE);
 
@@ -1653,7 +1654,7 @@ mod tests {
         ];
         let model = model(endpoint(Provider::OpenAi, &base)).unwrap();
         model.ask(short(&turns)).await.unwrap();
-        let input = seen.lock().unwrap()[0].1["input"].clone();
+        let input = seen.lock()[0].1["input"].clone();
         assert_eq!(input, json!([summary, {"role": "user", "content": "And else?"}]));
     }
 
@@ -1754,8 +1755,8 @@ mod tests {
             axum::routing::post(move |axum::Json(body): axum::Json<Value>| {
                 let (kept, streams) = (kept.clone(), streams.clone());
                 async move {
-                    kept.lock().unwrap().push(body);
-                    let events = streams.lock().unwrap().next().expect("a stream for each request");
+                    kept.lock().push(body);
+                    let events = streams.lock().next().expect("a stream for each request");
                     let text: String = events
                         .iter()
                         .map(|e| match e.as_str() {
@@ -1776,7 +1777,7 @@ mod tests {
     /// `model` asked "Hi" with a tool, the answer it gave, and the text it was heard writing.
     async fn streamed(model: &dyn Model) -> (Result<Reply, String>, String) {
         let heard = Mutex::new(String::new());
-        let ear = |text: &str| heard.lock().unwrap().push_str(text);
+        let ear = |text: &str| heard.lock().push_str(text);
         let turns = [Turn::Asked(vec![Said::Text("Hi".to_string())])];
         let reply = model
             .ask(Request {
@@ -1792,7 +1793,7 @@ mod tests {
                 heard: Some(Heard(&ear)),
             })
             .await;
-        let heard = heard.lock().unwrap().clone();
+        let heard = heard.lock().clone();
         (reply, heard)
     }
 
@@ -1844,7 +1845,7 @@ mod tests {
         };
         assert_eq!(reply.unwrap(), expected);
         assert_eq!(heard, "Let me look.");
-        assert_eq!(seen.lock().unwrap()[0]["stream"], true);
+        assert_eq!(seen.lock()[0]["stream"], true);
         // A stream cut off part way is no answer.
         let (cut, _) = streamed(model.as_ref()).await;
         assert!(cut.unwrap_err().contains("ended before its answer did"));
@@ -1913,10 +1914,7 @@ mod tests {
             ..compatible_reply(whole).unwrap()
         };
         assert_eq!((reply.unwrap(), heard.as_str()), (expected, "Looking."));
-        assert_eq!(
-            seen.lock().unwrap()[0]["stream_options"],
-            json!({"include_usage": true})
-        );
+        assert_eq!(seen.lock()[0]["stream_options"], json!({"include_usage": true}));
     }
 
     #[test]
@@ -2001,7 +1999,7 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let seen = seen.lock().unwrap();
+        let seen = seen.lock();
         // A summary keeps the last answer before it.
         assert_eq!(
             seen[0].1["messages"],
@@ -2071,7 +2069,7 @@ mod tests {
             (reply.model.as_deref(), reply.context),
             (Some("m-1"), Some(DEFAULT_CONTEXT))
         );
-        let seen = seen.lock().unwrap();
+        let seen = seen.lock();
         assert_eq!(seen[0].1["context_management"]["edits"][0]["type"], "compact_20260112");
         assert!(seen[1].1.get("context_management").is_none());
         assert!(seen[1].0.get("anthropic-beta").is_none());
@@ -2102,7 +2100,7 @@ mod tests {
         assert_eq!(second.text, "orders runs in shared.");
         assert_eq!(second.stop, Stop::Done);
 
-        let seen = seen.lock().unwrap();
+        let seen = seen.lock();
         let (headers, body) = &seen[1];
         assert_eq!(headers["authorization"], "Bearer k-1");
         assert_eq!(body["store"], false);
@@ -2139,7 +2137,7 @@ mod tests {
         assert_eq!(first.usage, Usage { input: 11, output: 6 });
         assert_eq!(second.text, "orders runs in shared.");
 
-        let seen = seen.lock().unwrap();
+        let seen = seen.lock();
         let (headers, body) = &seen[1];
         assert_eq!(headers["authorization"], "Bearer k-1");
         assert_eq!(body["messages"][0], json!({"role": "system", "content": "Be brief."}));

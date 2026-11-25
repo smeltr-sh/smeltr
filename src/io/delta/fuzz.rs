@@ -1766,7 +1766,7 @@ impl Run {
 
     /// Writes the create whose answer was lost, where none is.
     fn land(&mut self) {
-        let late = self.table.store.late.lock().unwrap().take();
+        let late = self.table.store.late.lock().take();
         if let Some((path, payload)) = late {
             // A version the bucket held and no longer does was expired by cleanup, past what any reader reads.
             if let Name::Commit(version) = Name::of(path.filename().unwrap_or_default())
