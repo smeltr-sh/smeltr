@@ -374,13 +374,22 @@
       {@const mark = marks[i]}
       {#if line.kind === 'group'}
         {@const differs = line.branch === 'array' ? differing(line.path) : []}
-        {#if differs.length > 0}
+        {@const lock = locked?.get(line.path)}
+        {#if differs.length > 0 || lock}
           <!-- The jumps sit beside the fold button, not in it: a button holds no other button. -->
           <div class="line differs group-row">
             {@render group(line, mark)}
-            <span class="locks"
-              >{differs.length} {differs.length === 1 ? 'differs' : 'differ'}:</span
-            >
+            {#if lock}
+              <span class="locks"
+                >the test locks: {'locked' in lock
+                  ? formatDiffValue(lock.locked)
+                  : 'no value'}</span
+              >
+            {:else}
+              <span class="locks"
+                >{differs.length} {differs.length === 1 ? 'differs' : 'differ'}:</span
+              >
+            {/if}
             {#each differs.slice(0, JUMPS) as index (index)}
               <button type="button" class="more" onclick={() => jump(line.path, index)}
                 >[{index}]</button
