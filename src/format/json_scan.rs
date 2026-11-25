@@ -849,6 +849,7 @@ impl<'d> Reader<'d> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::variant::Encoded;
     use crate::plan::tree;
 
     /// Every value at its name, flattened, last write winning per name: a sink that enters each object. A value is kept
@@ -911,7 +912,7 @@ mod tests {
     }
 
     fn decoded(got: Vec<(String, Vec<u8>)>) -> Vec<(String, Tag<'static>)> {
-        let decode = |b: Vec<u8>| tag::decode(Box::leak(b.into_boxed_slice())).expect("a value");
+        let decode = |b: Vec<u8>| tag::decode(Encoded::check(Box::leak(b.into_boxed_slice()))).expect("a value");
         got.into_iter().map(|(name, b)| (name, decode(b))).collect()
     }
 
@@ -943,7 +944,7 @@ mod tests {
             return None;
         }
         let bytes = Box::leak(sink.0.into_boxed_slice());
-        Some(sink.1.then(|| tag::decode(bytes)).flatten())
+        Some(sink.1.then(|| tag::decode(Encoded::check(bytes))).flatten())
     }
 
     #[test]
@@ -1402,9 +1403,9 @@ mod tests {
 
     #[test]
     fn the_reader_copies_a_value_as_a_variant() {
-        fn shown(b: &[u8]) -> serde_json::Value {
+        fn shown(v: Encoded) -> serde_json::Value {
             use crate::core::variant::{self, Value as V};
-            match variant::read(b) {
+            match variant::read(v) {
                 V::Null => serde_json::Value::Null,
                 V::Bool(b) => b.into(),
                 V::I64(i) => i.into(),
@@ -1420,7 +1421,7 @@ mod tests {
             Reader::new(doc.as_bytes())
                 .unwrap()
                 .variant(&mut out)
-                .map(|()| shown(&out))
+                .map(|()| shown(Encoded::check(&out)))
         };
         assert_eq!(
             copied(r#"{"b":1,"a":[null,{}],"n":null,"b":2.5}"#),

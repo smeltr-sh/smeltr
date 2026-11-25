@@ -19,7 +19,7 @@ use std::io::Write as _;
 
 use crate::core::bits;
 use crate::core::column::{Column, DataType, Scalar};
-use crate::core::variant::{self, Value};
+use crate::core::variant::{self, Encoded, Value};
 use crate::format::bytes_text::BytesForm;
 use crate::format::record::{At, Field, Leaf, Object, RecordView, View};
 
@@ -60,14 +60,14 @@ impl RecordView<'_> {
 /// unclaimed fields hold at this object's key. `depth` is the level of this object's keys, 1 at the row's own object.
 pub(crate) fn write_object(
     o: &Object,
-    inherited: Option<&[u8]>,
+    inherited: Option<Encoded>,
     leaves: &[Leaf],
     row: usize,
     depth: usize,
     out: &mut Vec<u8>,
 ) -> bool {
     let own = o.unclaimed_at(row, inherited);
-    let own_object = own.filter(|v| variant::is_object(v));
+    let own_object = own.filter(|v| variant::is_object(*v));
     let start = out.len();
     out.push(b'{');
     let mut wrote_any = false;
@@ -124,8 +124,8 @@ fn write_leaf(col: &Column, leaf: &Leaf, row: usize, depth: usize, out: &mut Vec
 
 /// One variant as JSON, as it arrived. `false`, writing nothing, where there is nothing to write: a null, a
 /// float JSON cannot hold, or an object with nothing in it, as an object of null fields is omitted.
-pub(crate) fn write_variant(b: &[u8], out: &mut Vec<u8>) -> bool {
-    match variant::read(b) {
+pub(crate) fn write_variant(v: Encoded, out: &mut Vec<u8>) -> bool {
+    match variant::read(v) {
         Value::Null => false,
         Value::Bool(v) => {
             out.extend_from_slice(if v { b"true" } else { b"false" });
@@ -180,7 +180,7 @@ pub(crate) fn write_variant(b: &[u8], out: &mut Vec<u8>) -> bool {
 /// The members of a variant object `claimed` leaves, as one JSON object. `false`, writing nothing, where none has a
 /// value.
 pub(crate) fn write_members_object<'v>(
-    entries: impl Iterator<Item = (&'v str, &'v [u8])>,
+    entries: impl Iterator<Item = (&'v str, Encoded<'v>)>,
     claimed: impl Fn(&str) -> bool,
     out: &mut Vec<u8>,
 ) -> bool {
@@ -197,7 +197,7 @@ pub(crate) fn write_members_object<'v>(
 /// The members of a variant object `claimed` leaves, each `"key":value`, a comma before each where `wrote_any` or one
 /// came before it. A member with no value is left out. Whether anything was written, counting `wrote_any`.
 fn write_members<'v>(
-    entries: impl Iterator<Item = (&'v str, &'v [u8])>,
+    entries: impl Iterator<Item = (&'v str, Encoded<'v>)>,
     claimed: impl Fn(&str) -> bool,
     mut wrote_any: bool,
     out: &mut Vec<u8>,
@@ -367,7 +367,7 @@ fn write_value_at(col: &Column, ty: &DataType, row: usize, depth: usize, out: &m
             Some(tag) => {
                 let mut bytes = Vec::new();
                 crate::format::tag::encode(&tag, &mut bytes);
-                write_variant(&bytes, out)
+                write_variant(Encoded::check(&bytes), out)
             }
             None => false,
         },
@@ -397,7 +397,7 @@ pub(crate) fn write_scalar(value: &Scalar, out: &mut Vec<u8>) -> bool {
         Scalar::Duration(x) => crate::ops::datetime::write_duration_micros_bare(*x, out),
         Scalar::Str(s) => write_json_string(s.as_bytes(), out),
         Scalar::Bytes(b) => write_base64_string(b, out),
-        Scalar::Variant(v) => return write_variant(v, out),
+        Scalar::Variant(v) => return write_variant(v.get(), out),
     }
     true
 }
@@ -414,7 +414,7 @@ pub fn scalar_text(col: &Column, row: usize) -> Option<String> {
         DataType::Array(_) | DataType::Struct(..) => None,
         DataType::Variant => {
             if let Some(Scalar::Variant(value)) = col.constant_value() {
-                return variant_text(value);
+                return variant_text(value.get());
             }
             let v = col.variant().ok()?;
             variant_text(v.validity.is_valid(row).then(|| v.get(row))?)
@@ -440,14 +440,14 @@ pub fn scalar_text(col: &Column, row: usize) -> Option<String> {
 }
 
 /// `scalar_text` for one variant.
-fn variant_text(b: &[u8]) -> Option<String> {
-    match variant::read(b) {
+fn variant_text(v: Encoded) -> Option<String> {
+    match variant::read(v) {
         Value::Str(s) => Some(s.to_string()),
         Value::Bytes(b) => Some(BytesForm::Base64.text(b)),
         Value::Array(_) | Value::Object(_) => None,
         _ => {
             let mut out = Vec::new();
-            write_variant(b, &mut out).then(|| String::from_utf8_lossy(&out).into_owned())
+            write_variant(v, &mut out).then(|| String::from_utf8_lossy(&out).into_owned())
         }
     }
 }

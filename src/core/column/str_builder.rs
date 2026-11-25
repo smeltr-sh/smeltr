@@ -2,6 +2,7 @@
 
 use super::{Column, Storage, Validity, VarType};
 use crate::core::buffer::{Buffer, BufferPool};
+use crate::core::variant;
 
 // ---------------------------------------------------------------------------
 // StrBuilder
@@ -190,8 +191,8 @@ impl StrBuilder {
         self.len = self.row;
         let validity = std::mem::replace(&mut self.validity, Validity::alloc(pool, self.row));
         validity.reclaim(pool);
-        // A reader's bytes are decoded before any string operation reads them, so only text is worth the scan.
-        let ascii = self.var_type == VarType::Str && self.checked_text();
+        // A reader's bytes are decoded before any string operation reads them, so they are not worth the scan.
+        let ascii = self.var_type != VarType::Bytes && self.checked();
         self.seal(ascii)
     }
 
@@ -203,24 +204,33 @@ impl StrBuilder {
              requires every row to be pushed or nulled",
             self.row, self.len
         );
-        let ascii = match self.var_type {
-            VarType::Str => self.checked_text(),
-            // Once over the whole buffer, not once per push: `is_ascii` runs a word at a time.
-            VarType::Bytes | VarType::Variant => self.data.as_slice::<u8>()[..self.pos as usize].is_ascii(),
-        };
+        let ascii = self.checked();
         self.seal(ascii)
     }
 
-    /// Whether a text column's bytes are all ASCII, having checked once, over the whole buffer, that they are UTF-8:
-    /// what lets `Column::str` hand out its rows unchecked. Bytes that are not UTF-8 in a text column are a bug in
-    /// the step that wrote them.
-    fn checked_text(&self) -> bool {
+    /// Whether the column's bytes are all ASCII, having checked once that its text is UTF-8: a text column's whole
+    /// buffer, a variant column's strings and keys. That check is what lets `Column::str` and `Column::variant` hand
+    /// out their rows unchecked. Text that is not UTF-8 is a bug in the step that wrote it.
+    fn checked(&self) -> bool {
         let bytes = &self.data.as_slice::<u8>()[..self.pos as usize];
+        // Once over the whole buffer, not once per push: `is_ascii` runs a word at a time.
         let ascii = bytes.is_ascii();
-        assert!(
-            ascii || simdutf8::basic::from_utf8(bytes).is_ok(),
-            "a str column holds UTF-8"
-        );
+        match self.var_type {
+            VarType::Str => assert!(
+                ascii || simdutf8::basic::from_utf8(bytes).is_ok(),
+                "a str column holds UTF-8"
+            ),
+            VarType::Variant if !ascii => {
+                for span in self.offsets.as_slice::<u32>()[..=self.row].windows(2) {
+                    let row = &bytes[span[0] as usize..span[1] as usize];
+                    assert!(
+                        row.is_empty() || variant::text_is_utf8(row),
+                        "a variant's strings and keys are UTF-8"
+                    );
+                }
+            }
+            VarType::Bytes | VarType::Variant => {}
+        }
         ascii
     }
 

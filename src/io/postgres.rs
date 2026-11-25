@@ -38,7 +38,7 @@ use super::sql_source::{
 };
 use super::values::Value;
 use crate::core::column::DataType;
-use crate::core::variant;
+use crate::core::variant::{self, Encoded};
 use crate::ops::civil::MICROS_PER_DAY;
 use crate::plan::topology::{HeldSecrets, SecretRef, Tls};
 
@@ -270,7 +270,7 @@ impl Driver for PostgresDriver {
                     Some([Value::Json(plan)]) => plan.clone(),
                     _ => return Err("EXPLAIN returned no plan".to_string().into()),
                 };
-                let mut scans = scans(&plan);
+                let mut scans = scans(plan.get());
                 // A scan's own estimate is what passes its filter; the relation's size is what it reads.
                 for scan in &mut scans {
                     if let Some(schema) = &scan.schema {
@@ -288,8 +288,8 @@ impl Driver for PostgresDriver {
                 tx.commit().await.map_err(failed)?;
                 Ok(Verdict::of(
                     scans.iter().map(Scan::read),
-                    indexes(&plan),
-                    returned(&plan),
+                    indexes(plan.get()),
+                    returned(plan.get()),
                 ))
             })
         })
@@ -1123,7 +1123,7 @@ fn encode(number: usize, ty: &Type, value: &Value) -> Result<Vec<u8>, BoxError> 
     } else if *ty == Type::JSON || *ty == Type::JSONB {
         let mut text = Vec::new();
         match value {
-            Value::Json(j) => crate::io::values::json_text(j, &mut text),
+            Value::Json(j) => crate::io::values::json_text(j.get(), &mut text),
             _ => return Err(cannot()),
         }
         // jsonb's binary form is a version byte, 1, then the text.
@@ -1175,7 +1175,7 @@ impl Scan {
 }
 
 /// The number at `key` in the plan node `node`.
-fn number_at(node: &[u8], key: &str) -> Option<f64> {
+fn number_at(node: Encoded, key: &str) -> Option<f64> {
     match variant::read(variant::member(node, key)?) {
         variant::Value::I64(i) => Some(i as f64),
         variant::Value::F64(f) => Some(f),
@@ -1184,7 +1184,7 @@ fn number_at(node: &[u8], key: &str) -> Option<f64> {
 }
 
 /// The elements of the list `list`, none where it is no list.
-fn items(list: Option<&[u8]>) -> impl Iterator<Item = &[u8]> {
+fn items(list: Option<Encoded>) -> impl Iterator<Item = Encoded> {
     list.and_then(|l| match variant::read(l) {
         variant::Value::Array(items) => Some(items),
         _ => None,
@@ -1194,8 +1194,8 @@ fn items(list: Option<&[u8]>) -> impl Iterator<Item = &[u8]> {
 }
 
 /// Every sequential scan in `EXPLAIN (FORMAT JSON)` output, at any depth, with the planner's row estimate.
-fn scans(explained: &[u8]) -> Vec<Scan> {
-    fn walk(node: &[u8], found: &mut Vec<Scan>) {
+fn scans(explained: Encoded) -> Vec<Scan> {
+    fn walk(node: Encoded, found: &mut Vec<Scan>) {
         if text_at(node, "Node Type") == Some("Seq Scan")
             && let Some(name) = text_at(node, "Relation Name")
         {
@@ -1219,8 +1219,8 @@ fn scans(explained: &[u8]) -> Vec<Scan> {
 }
 
 /// Each index `EXPLAIN (FORMAT JSON)` output reads through, by name, in plan order, once.
-fn indexes(explained: &[u8]) -> Vec<String> {
-    fn walk(node: &[u8], found: &mut Vec<String>) {
+fn indexes(explained: Encoded) -> Vec<String> {
+    fn walk(node: Encoded, found: &mut Vec<String>) {
         let reads_index = matches!(
             text_at(node, "Node Type"),
             Some("Index Scan" | "Index Only Scan" | "Bitmap Index Scan")
@@ -1245,7 +1245,7 @@ fn indexes(explained: &[u8]) -> Vec<String> {
 }
 
 /// The planner's estimate of the rows the statement returns: its top node's.
-fn returned(explained: &[u8]) -> u64 {
+fn returned(explained: Encoded) -> u64 {
     (items(Some(explained)).next())
         .and_then(|statement| variant::member(statement, "Plan"))
         .and_then(|plan| number_at(plan, "Plan Rows"))
@@ -1255,9 +1255,10 @@ fn returned(explained: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::variant::EncodedBuf;
 
     /// `explained` as a plan reads, in `core::variant`'s encoding.
-    fn plan(explained: serde_json::Value) -> Vec<u8> {
+    fn plan(explained: serde_json::Value) -> EncodedBuf {
         match crate::io::values::json(&serde_json::to_vec(&explained).unwrap()).unwrap() {
             Value::Json(plan) => plan,
             other => panic!("not JSON: {other:?}"),
@@ -1536,7 +1537,7 @@ mod tests {
                 }]
             }
         }]));
-        let found = scans(&explained);
+        let found = scans(explained.get());
         assert_eq!(found.len(), 3);
         assert_eq!(
             Verdict::of(found.iter().map(Scan::read), Vec::new(), 100),
@@ -1573,12 +1574,12 @@ mod tests {
                 }]
             }
         }]));
-        assert!(scans(&explained).is_empty());
+        assert!(scans(explained.get()).is_empty());
         assert_eq!(
             Verdict::of(
-                scans(&explained).iter().map(Scan::read),
-                indexes(&explained),
-                returned(&explained)
+                scans(explained.get()).iter().map(Scan::read),
+                indexes(explained.get()),
+                returned(explained.get())
             ),
             Verdict::Indexed {
                 indexes: vec!["orders_pkey".into(), "lines_order".into()],

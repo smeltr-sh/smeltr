@@ -23,7 +23,7 @@ use crate::core::error::{ExceptionKind, Read};
 use crate::core::id::SlotId;
 use crate::core::keys::Keys;
 use crate::core::tally::FieldSeen;
-use crate::core::variant::{self, Value};
+use crate::core::variant::{self, Encoded, Value};
 use crate::format::json::MAX_NESTING;
 use crate::format::tag::{self, Suggestion, Tag};
 use crate::format::typed::{self, Cell, Slot, TypedBuilder};
@@ -135,15 +135,15 @@ impl Discovered {
     }
 
     /// Each leaf of the encoded value `b`, at `name` and the names under it.
-    fn saw_all(&mut self, name: String, b: &[u8]) {
-        match variant::read(b) {
+    fn saw_all(&mut self, name: String, v: Encoded) {
+        match variant::read(v) {
             Value::Object(entries) => {
                 for (k, v) in entries {
                     self.saw_all(tree::child(&name, k), v);
                 }
             }
             _ => {
-                if let Some(tag) = tag::decode(b) {
+                if let Some(tag) = tag::decode(v) {
                     self.saw(name, &tag);
                 }
             }
@@ -495,7 +495,7 @@ impl<'d> Spread<'d> {
             let name = spelled(&self.keys);
             match &guess {
                 Some(g) => discovered.saw(name, g),
-                None => discovered.saw_all(name, &self.arena[range.clone()]),
+                None => discovered.saw_all(name, Encoded::check(&self.arena[range.clone()])),
             }
         }
         if f.tally_only {
@@ -519,7 +519,7 @@ impl<'d> Spread<'d> {
     /// Converts the value at `range` of the arena in place to `to`, the schema's type for the walk's key. A value that
     /// does not fit becomes null and is a misfit on the row. A value already of type `to` is left as it is.
     fn convert(&mut self, range: Range<usize>, to: &DataType) -> Range<usize> {
-        let Some(tag) = tag::decode(&self.arena[range.clone()]) else {
+        let Some(tag) = tag::decode(Encoded::check(&self.arena[range.clone()])) else {
             return range;
         };
         let already = matches!(
@@ -535,7 +535,7 @@ impl<'d> Spread<'d> {
         }
         let mut out = Vec::new();
         if !typed::encode_as(&tag, to, &mut self.hint, self.now, &mut out) {
-            let value = tag::json_text(&self.arena[range.clone()]);
+            let value = tag::json_text(Encoded::check(&self.arena[range.clone()]));
             self.misfits.push((self.row, spelled(&self.keys), value, to.clone()));
         }
         self.arena.truncate(range.start);
@@ -580,10 +580,10 @@ impl<'d> Spread<'d> {
                 }
                 Step::Whole => tag::emit(v, &mut self.whole(pool)),
                 Step::Copy => {
-                    self.copy().0.extend_from_slice(v);
+                    self.copy().0.extend_from_slice(v.bytes());
                     self.copied();
                 }
-                Step::Refused => self.refused(|out| out.extend_from_slice(v)),
+                Step::Refused => self.refused(|out| out.extend_from_slice(v.bytes())),
                 Step::Skip => {}
             }
             self.leave();
@@ -615,7 +615,7 @@ impl<'d> Spread<'d> {
     pub fn refused(&mut self, encode: impl FnOnce(&mut Vec<u8>)) {
         let mut bytes = Vec::new();
         encode(&mut bytes);
-        self.not_objects.last_mut().expect("a refused key").3 = Some(tag::json_text(&bytes));
+        self.not_objects.last_mut().expect("a refused key").3 = Some(tag::json_text(Encoded::check(&bytes)));
     }
 
     fn contradicted(&mut self) {
@@ -660,7 +660,7 @@ impl<'d> Spread<'d> {
                 }
             } else {
                 match o.prior.and_then(|p| p.variant().ok()) {
-                    Some(v) if v.validity.is_valid(self.row) => o.builder.push_grow(pool, v.get(self.row)),
+                    Some(v) if v.validity.is_valid(self.row) => o.builder.push_grow(pool, v.get(self.row).bytes()),
                     _ => o.builder.push_null(),
                 }
             }
@@ -898,14 +898,22 @@ fn stage_path<'k, 'd>(keys: &'k [Cow<'d, str>], home_depth: usize) -> Cow<'k, [C
 #[derive(Clone)]
 enum Bytes<'d> {
     Arena(Range<usize>),
-    Ref(&'d [u8]),
+    Ref(Encoded<'d>),
 }
 
 impl<'d> Bytes<'d> {
     fn get<'a>(&'a self, arena: &'a [u8]) -> &'a [u8] {
         match self {
             Bytes::Arena(r) => &arena[r.clone()],
-            Bytes::Ref(b) => b,
+            Bytes::Ref(v) => v.bytes(),
+        }
+    }
+
+    /// The value, to read. Bytes in the arena are a source's to write, so they are checked here.
+    fn read<'a>(&'a self, arena: &'a [u8]) -> Encoded<'a> {
+        match self {
+            Bytes::Arena(r) => Encoded::check(&arena[r.clone()]),
+            Bytes::Ref(v) => *v,
         }
     }
 }
@@ -928,17 +936,17 @@ impl<'d> Stage<'d> {
         let mut stage = Stage::default();
         match b {
             Bytes::Ref(r) => {
-                if let Value::Object(entries) = variant::read(r) {
+                if let Value::Object(entries) = variant::read(*r) {
                     for (k, v) in entries {
                         stage.push(Cow::Borrowed(k), fresh, Held::Bytes(Bytes::Ref(v)));
                     }
                 }
             }
             Bytes::Arena(range) => {
-                if let Value::Object(entries) = variant::read(&arena[range.clone()]) {
+                if let Value::Object(entries) = variant::read(Encoded::check(&arena[range.clone()])) {
                     for (k, v) in entries {
-                        let at = v.as_ptr() as usize - arena.as_ptr() as usize;
-                        let held = Held::Bytes(Bytes::Arena(at..at + v.len()));
+                        let at = v.bytes().as_ptr() as usize - arena.as_ptr() as usize;
+                        let held = Held::Bytes(Bytes::Arena(at..at + v.bytes().len()));
                         stage.push(Cow::Owned(k.to_string()), fresh, held);
                     }
                 }
@@ -970,7 +978,7 @@ impl<'d> Stage<'d> {
                 let (_, (fresh, held)) = self.keys.at_mut(i).expect("a found key is held");
                 let mut hit = false;
                 if let Held::Bytes(b) = held {
-                    hit = *fresh && !variant::is_object(b.get(arena));
+                    hit = *fresh && !variant::is_object(b.read(arena));
                     *held = Held::Object(Stage::of(b, *fresh, arena));
                 }
                 *fresh = true;
@@ -993,7 +1001,7 @@ impl<'d> Stage<'d> {
             _ if rest.is_empty() => true,
             Held::Object(inner) => inner.holds(rest, arena),
             Held::Bytes(b) => {
-                let mut b = b.get(arena);
+                let mut b = b.read(arena);
                 for k in rest {
                     match variant::member(b, k) {
                         Some(m) => b = m,

@@ -44,7 +44,7 @@ use parquet::schema::types::{SchemaDescriptor, Type as ParquetType, TypePtr};
 use crate::core::bits;
 use crate::core::buffer::BufferPool;
 use crate::core::column::{Column, DataType, Scalar, StrBuilder, VarType};
-use crate::core::variant::{self, Value};
+use crate::core::variant::{self, Encoded, Value};
 use crate::format::json;
 use crate::format::record::{self, RecordView};
 use crate::format::tag;
@@ -599,7 +599,10 @@ fn parquet_variant(variants: &BinaryArray, fields: &Fields) -> ArrayRef {
     let mut value = arrow_array::builder::BinaryBuilder::new();
     let mut valid = Vec::with_capacity(variants.len());
     for v in variants {
-        match v.filter(|v| !matches!(variant::read(v), Value::Null)) {
+        match v
+            .map(Encoded::check)
+            .filter(|v| !matches!(variant::read(*v), Value::Null))
+        {
             Some(v) => {
                 let (m, b) = crate::io::parquet_variant::encode(v);
                 metadata.append_value(m);
@@ -1186,18 +1189,18 @@ impl Cut<'_> {
         &mut self,
         o: &record::Object<'_>,
         view: &RecordView<'_>,
-        inherited: &[Option<&[u8]>],
+        inherited: &[Option<Encoded>],
         s: &Struct,
         path: &str,
         pool: &mut BufferPool,
     ) -> Vec<ArrayRef> {
-        let own: Vec<Option<&[u8]>> = self
+        let own: Vec<Option<Encoded>> = self
             .rows
             .iter()
             .zip(inherited)
             .map(|(&row, inherited)| o.unclaimed_at(row as usize, *inherited))
             .collect();
-        let own_object: Vec<Option<&[u8]>> = own.iter().map(|v| v.filter(|v| variant::is_object(v))).collect();
+        let own_object: Vec<Option<Encoded>> = own.iter().map(|v| v.filter(|v| variant::is_object(*v))).collect();
         let mut children: Vec<ArrayRef> = Vec::with_capacity(s.fields.len() + 1);
         for (name, node) in &s.fields {
             let path = at(path, name);
@@ -1236,7 +1239,7 @@ impl Cut<'_> {
         // Where nothing is written and the unclaimed fields hold a value that is no object, the JSON writer writes that
         // value in the object's place, and no struct holds it.
         for (i, own) in own.iter().enumerate() {
-            if let Some(v) = own.filter(|v| !variant::is_object(v))
+            if let Some(v) = own.filter(|v| !variant::is_object(*v))
                 && !children.iter().any(|c| c.is_valid(i))
             {
                 let mut doc = Vec::new();
@@ -1264,14 +1267,14 @@ impl Cut<'_> {
     }
 
     /// `values`, one variant per row of the cut, as `node`.
-    fn members(&mut self, values: &[Option<&[u8]>], node: &Node, path: &str, pool: &mut BufferPool) -> ArrayRef {
+    fn members(&mut self, values: &[Option<Encoded>], node: &Node, path: &str, pool: &mut BufferPool) -> ArrayRef {
         if values.iter().all(Option::is_none) {
             return new_null_array(&node.arrow, values.len());
         }
         let mut b = StrBuilder::new(pool, VarType::Variant, values.len());
         for v in values {
             match v {
-                Some(v) => b.push_grow(pool, v),
+                Some(v) => b.push_grow(pool, v.bytes()),
                 None => b.push_null(),
             }
         }
@@ -1319,7 +1322,7 @@ fn direct(col: &Column, node: &Node, rows: &[u32]) -> ArrayRef {
     }
     if let Some(value) = col.constant_value() {
         return match (&node.kind, value) {
-            (Kind::VariantBytes, Scalar::Variant(v)) => Arc::new(BinaryArray::from(vec![v.as_slice(); rows.len()])),
+            (Kind::VariantBytes, Scalar::Variant(v)) => Arc::new(BinaryArray::from(vec![v.get().bytes(); rows.len()])),
             _ => repeated(value, rows.len()),
         };
     }
@@ -1379,7 +1382,7 @@ fn direct(col: &Column, node: &Node, rows: &[u32]) -> ArrayRef {
             let v = col.variant().expect("a variant column");
             Arc::new(
                 rows.iter()
-                    .map(|r| valid(r).then(|| v.get(*r as usize)))
+                    .map(|r| valid(r).then(|| v.get(*r as usize).bytes()))
                     .collect::<BinaryArray>(),
             )
         }
@@ -1463,10 +1466,10 @@ fn variant_bytes(node: &Node) -> Option<Node> {
 
 /// What `o` holds on `row`, as one value: what `json::write_object` writes of it, each value of its own type. None
 /// where that writes nothing.
-fn object_tag<'v>(o: &'v record::Object<'_>, inherited: Option<&'v [u8]>, row: usize) -> Option<tag::Tag<'v>> {
+fn object_tag<'v>(o: &'v record::Object<'_>, inherited: Option<Encoded<'v>>, row: usize) -> Option<tag::Tag<'v>> {
     use std::borrow::Cow;
     let own = o.unclaimed_at(row, inherited);
-    let own_object = own.filter(|v| variant::is_object(v));
+    let own_object = own.filter(|v| variant::is_object(*v));
     let mut fields: Vec<(Cow<'v, str>, tag::Tag<'v>)> = Vec::new();
     for (key, field) in &o.fields {
         let value = match field {
@@ -1480,7 +1483,7 @@ fn object_tag<'v>(o: &'v record::Object<'_>, inherited: Option<&'v [u8]>, row: u
         fields.extend(unclaimed.filter_map(|(key, v)| Some((Cow::Borrowed(key), tag::decode(v)?))));
     }
     if fields.is_empty() {
-        return own.filter(|v| !variant::is_object(v)).and_then(tag::decode);
+        return own.filter(|v| !variant::is_object(*v)).and_then(tag::decode);
     }
     Some(tag::Tag::Object(fields))
 }
@@ -1500,7 +1503,7 @@ fn json_text<T>(items: impl IntoIterator<Item = T>, mut write: impl FnMut(T, &mu
 }
 
 /// An open struct's `rest` column: each row's unclaimed object minus the keys `claimed` names.
-fn rest<'v>(own: impl IntoIterator<Item = Option<&'v [u8]>>, claimed: impl Fn(&str) -> bool) -> ArrayRef {
+fn rest<'v>(own: impl IntoIterator<Item = Option<Encoded<'v>>>, claimed: impl Fn(&str) -> bool) -> ArrayRef {
     json_text(own, |own, doc| match own.map(variant::read) {
         Some(Value::Object(entries)) => json::write_members_object(entries, &claimed, doc),
         _ => false,
@@ -1516,7 +1519,7 @@ fn repeated(value: &Scalar, n: usize) -> ArrayRef {
         Scalar::F64(v) => Arc::new(Float64Array::from(vec![Some(*v).filter(|v| v.is_finite()); n])),
         Scalar::Str(v) => Arc::new(StringArray::from(vec![v.as_str(); n])),
         Scalar::Bytes(v) => Arc::new(BinaryArray::from(vec![v.as_slice(); n])),
-        Scalar::Variant(v) => json_text(0..n, |_, doc| json::write_variant(v, doc)),
+        Scalar::Variant(v) => json_text(0..n, |_, doc| json::write_variant(v.get(), doc)),
     }
 }
 

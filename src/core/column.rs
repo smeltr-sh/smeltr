@@ -29,6 +29,7 @@ pub use validity::Validity;
 use crate::core::{
     bits,
     buffer::{Buffer, BufferPool},
+    variant::{Encoded, EncodedBuf},
 };
 
 // ---------------------------------------------------------------------------
@@ -91,7 +92,7 @@ pub enum Scalar {
     Str(String),
     Bytes(Vec<u8>),
     /// One variant value, in its encoded form.
-    Variant(Vec<u8>),
+    Variant(EncodedBuf),
 }
 
 impl Scalar {
@@ -199,6 +200,28 @@ impl<'a> StrRows<'a> {
     }
 }
 
+/// A variant column's rows. Their strings and keys were checked as UTF-8 once, when the column was sealed
+/// (`StrBuilder::finish`), so a row is read with no check of its own.
+#[derive(Debug)]
+pub struct VariantRows<'a> {
+    rows: VarLen<'a>,
+    pub validity: &'a Validity,
+}
+
+impl<'a> VariantRows<'a> {
+    /// A valid row's value. A null row has no bytes, and reading it panics.
+    #[inline]
+    pub fn get(&self, row: usize) -> Encoded<'a> {
+        // SAFETY: only a sealed variant column makes a `VariantRows`, and sealing one checked each row's strings and keys.
+        unsafe { Encoded::unchecked(self.rows.get(row)) }
+    }
+
+    /// The rows as bytes, for a step that copies them whole.
+    pub fn bytes(self) -> VarLen<'a> {
+        self.rows
+    }
+}
+
 #[derive(Debug)]
 pub struct List<'a> {
     pub offsets: &'a [u32],
@@ -271,7 +294,7 @@ impl Column {
             }
             Scalar::Str(text) => Column::repeated(pool, VarType::Str, text.as_bytes(), len),
             Scalar::Bytes(bytes) => Column::repeated(pool, VarType::Bytes, bytes, len),
-            Scalar::Variant(value) => Column::repeated(pool, VarType::Variant, value, len),
+            Scalar::Variant(value) => Column::repeated(pool, VarType::Variant, value.get().bytes(), len),
         }
     }
 
@@ -585,12 +608,15 @@ impl Column {
     }
 
     /// A variant column's rows, each one encoded value (`core::variant`).
-    pub fn variant(&self) -> Result<VarLen<'_>, TypeError> {
+    pub fn variant(&self) -> Result<VariantRows<'_>, TypeError> {
         match &self.storage {
             Storage::VarLen {
                 var_type: VarType::Variant,
                 ..
-            } => self.varlen(),
+            } => self.varlen().map(|rows| VariantRows {
+                validity: rows.validity,
+                rows,
+            }),
             _ => Err(self.wrong("Variant")),
         }
     }

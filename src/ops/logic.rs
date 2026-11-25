@@ -267,7 +267,7 @@ fn take_varlen(ctx: &mut Ctx, ins: &[&Column], takes: &[&[u64]], ty: &DataType, 
         .map(|c| match var_type {
             VarType::Variant => c.variant().ok().map(|v| {
                 let validity = v.validity;
-                Side::Rows(v, validity)
+                Side::Rows(v.bytes(), validity)
             }),
             _ => side::var(c),
         })

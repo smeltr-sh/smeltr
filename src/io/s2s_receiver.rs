@@ -1834,7 +1834,7 @@ mod tests {
         let raw = br#"r9,1,"a,""b"" c""#;
         let event = decoded(&[0x13, 6, b'q', b'u', b'o', b't', b'e', b'd', 6, 9], 1, raw);
         let got = filed(&event).unwrap();
-        let encoded = &got.iter().find(|(k, _)| k == hec::FIELDS).unwrap().1;
+        let encoded = crate::core::variant::Encoded::check(&got.iter().find(|(k, _)| k == hec::FIELDS).unwrap().1);
         let member = crate::core::variant::member(encoded, "quoted").unwrap();
         assert_eq!(
             format!("{:?}", crate::core::variant::read(member)),
@@ -1874,7 +1874,7 @@ mod tests {
         assert_eq!(text("sourcetype").as_deref(), Some("access"));
         assert_eq!(text("index").as_deref(), Some("main"));
         assert_eq!(text("time").as_deref(), Some("1700000000123000"));
-        let encoded = &got.iter().find(|(k, _)| k == hec::FIELDS).unwrap().1;
+        let encoded = crate::core::variant::Encoded::check(&got.iter().find(|(k, _)| k == hec::FIELDS).unwrap().1);
         let read = |key: &str| {
             let member = crate::core::variant::member(encoded, key)?;
             Some(format!("{:?}", crate::core::variant::read(member)))
