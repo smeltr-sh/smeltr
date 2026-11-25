@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { pastedTable } from './capture';
 import type { FileConfigDto, Outcome, TestResult, TestSummary } from './api';
 import {
   canonicalJson,
@@ -327,17 +328,20 @@ describe('sample and test cards', () => {
     id: 'orders',
     name,
     source: 'kafka',
-    records: raws.map((raw) => ({ _raw: raw })),
+    ...pastedTable(raws.map((raw) => ({ _raw: raw }))),
   });
+  /** A test locking `rows`, as the leader stores it: its fields as columns, a row it lacks a field on holding null. */
   const test = (rows: Outcome[], fields = ['a']) => ({
     id: 'orders-out',
     name: 'Orders out',
     pipeline: 'p',
     sample: 'orders',
-    lockedAt: 1,
     rowsIn: 2,
-    fields,
-    rows,
+    table: {
+      columns: fields.map((name) => ({ name, type: 'i64' })),
+      rows: rows.map((o) => ({ values: fields.map((f) => o.values?.[f] ?? null) })),
+    },
+    shown: rows.map((o) => ({ row: o.row, ...(o.values ? {} : { dropped: true }) })),
   });
 
   it('reads a sample or test from its path within a bundle, and nothing else', () => {
@@ -345,6 +349,37 @@ describe('sample and test cards', () => {
     expect(fileOf('tests/orders-out.json')).toEqual({ kind: 'tests', id: 'orders-out' });
     expect(fileOf('pipelines.json')).toBeNull();
     expect(fileOf('samples/nested/x.json')).toBeNull();
+  });
+
+  it('shows a cell that stops failing its type as a change to its record', () => {
+    const invoices = (failed: number[]) => ({
+      id: 'invoices',
+      name: 'invoices',
+      columns: [{ name: 'note', type: 'str' }],
+      rows: [{ values: ['late'], failed }, { values: ['ok'] }],
+    });
+    const [card] = objectChanges([
+      {
+        scope: 'shared',
+        before: side,
+        after: side,
+        files: [
+          {
+            kind: 'samples',
+            id: 'invoices',
+            status: 'M',
+            before: invoices([0]),
+            after: invoices([]),
+          },
+        ],
+      },
+    ]);
+    expect(card.headers).toEqual(['record', 'failed']);
+    expect(card.rows).toEqual([
+      { status: 'added', cells: ['{"note":"late"}', ''] },
+      { status: 'same', cells: ['{"note":"ok"}', ''] },
+      { status: 'removed', cells: ['{"note":"late"}', 'note'] },
+    ]);
   });
 
   it('shows a changed sample by its fields and the records it added and removed, after the sections', () => {
@@ -403,6 +438,22 @@ describe('sample and test cards', () => {
       { status: 'added', cells: ['row 0: a 2'] },
       { status: 'same', cells: ['row 1: dropped'] },
       { status: 'removed', cells: ['row 0: a 1'] },
+    ]);
+  });
+
+  it('shows a test locked again over a field whose type changed, though its values read the same', () => {
+    const before = test([{ row: 0, values: { a: 10 } }]);
+    const after = { ...before, table: { ...before.table, columns: [{ name: 'a', type: 'f64' }] } };
+    const [card] = objectChanges([
+      {
+        scope: 'north',
+        before: side,
+        after: side,
+        files: [{ kind: 'tests', id: 'orders-out', status: 'M', before, after }],
+      },
+    ]);
+    expect(card.fields).toEqual([
+      { key: 'checks', kind: 'changed', before: 'a i64', after: 'a f64' },
     ]);
   });
 

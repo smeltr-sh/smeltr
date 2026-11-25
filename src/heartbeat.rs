@@ -1355,10 +1355,114 @@ impl CaptureBatch {
         self.header_size() + self.rows.iter().map(CapturedRow::size).sum::<usize>()
     }
 
+    /// The column every capture's rows carry the instant it was taken in.
+    pub const TAKEN_AT: &'static str = "__capture.timestamp";
+
+    /// What `now()` reads over these rows: the instant they were taken. Every preview of them, and every test over them,
+    /// runs at that one instant, so a run of them is a function of the config alone.
+    pub fn instant(&self) -> Option<i64> {
+        let column = self.column(Self::TAKEN_AT)?;
+        crate::ops::timeparse::parse_auto(self.rows.first()?.values.get(column)?.as_str()?)
+    }
+
+    /// Whether every row says when it was taken.
+    pub fn is_stamped(&self) -> bool {
+        self.column(Self::TAKEN_AT).is_some_and(|c| {
+            self.rows
+                .iter()
+                .all(|row| row.values.get(c).is_some_and(|v| !v.is_null()))
+        })
+    }
+
+    /// These rows, each saying when it was taken: a row that does not says the table's [`CaptureBatch::instant`], else
+    /// `micros`. What saving a sample stamps it with, so a row added to a capture or a paste reads the same `now()`.
+    pub fn stamped(mut self, micros: i64) -> CaptureBatch {
+        let column = self.column(Self::TAKEN_AT).unwrap_or_else(|| {
+            self.columns.push(CaptureColumn {
+                name: Self::TAKEN_AT.to_string(),
+                ty: crate::core::column::DataType::DateTime.spell(),
+            });
+            self.rows
+                .iter_mut()
+                .for_each(|row| row.values.push(serde_json::Value::Null));
+            self.columns.len() - 1
+        });
+        let mut text = Vec::new();
+        crate::ops::datetime::write_iso8601_micros_bare(self.instant().unwrap_or(micros), &mut text);
+        let at = serde_json::Value::String(String::from_utf8(text).expect("an instant is written as ASCII"));
+        for cell in self.rows.iter_mut().filter_map(|row| row.values.get_mut(column)) {
+            if cell.is_null() {
+                *cell = at.clone();
+            }
+        }
+        self
+    }
+
+    /// The table of `records` a person pasted, each a record object: one column, the root's unclaimed fields, which
+    /// holds each whole.
+    pub fn pasted(records: Vec<crate::io::RecordObject>) -> CaptureBatch {
+        let rows = (records.into_iter())
+            .map(|record| CapturedRow {
+                values: vec![serde_json::Value::Object(record)],
+                ..CapturedRow::default()
+            })
+            .collect();
+        CaptureBatch {
+            columns: vec![CaptureColumn {
+                name: crate::plan::tree::UNCLAIMED.to_string(),
+                ty: crate::core::column::DataType::Variant.spell(),
+            }],
+            rows,
+        }
+    }
+
     /// The column named `name`.
     pub fn column(&self, name: &str) -> Option<usize> {
         self.columns.iter().position(|c| c.name == name)
     }
+
+    /// Keeps column `i` where `kept[i]`, with each row's value and failed mark under it.
+    pub fn keep_columns(&mut self, kept: &[bool]) {
+        // Where each kept column lands.
+        let mut at = Vec::with_capacity(kept.len());
+        let mut next = 0;
+        for &k in kept {
+            at.push(k.then_some(next));
+            next += usize::from(k);
+        }
+        let keep = |i: usize| kept.get(i).copied().unwrap_or(false);
+        self.columns = std::mem::take(&mut self.columns)
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| keep(*i))
+            .map(|(_, c)| c)
+            .collect();
+        for row in &mut self.rows {
+            row.values = std::mem::take(&mut row.values)
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| keep(*i))
+                .map(|(_, v)| v)
+                .collect();
+            row.failed = row
+                .failed
+                .iter()
+                .filter_map(|&c| at.get(c).copied().flatten())
+                .collect();
+        }
+    }
+}
+
+/// The table of `records` pasted (`CaptureBatch::pasted`), each with `fields` as what its source set.
+pub fn pasted_from(records: &[(&crate::io::RecordObject, &crate::io::SourceFields)]) -> CaptureBatch {
+    let whole = records.iter().map(|(record, fields)| {
+        let mut record = (*record).clone();
+        if !fields.is_empty() {
+            record.insert("__source".to_string(), serde_json::Value::Object((*fields).clone()));
+        }
+        record
+    });
+    CaptureBatch::pasted(whole.collect())
 }
 
 impl CapturedRow {
@@ -1448,16 +1552,37 @@ impl TryFrom<WireBatch> for CaptureBatch {
     /// what it sends by that, so only a report no worker made gets there, and it would be read before anything checks
     /// who sent it.
     fn try_from(w: WireBatch) -> Result<CaptureBatch, String> {
+        w.held("capture", crate::leader::capture::MAX_BYTES_CEILING)
+    }
+}
+
+/// A sample's table, read from its file or a person's request. Refused where its constants, copied onto every row,
+/// would cost more than a sample may hold (`config_file::MAX_SAMPLE_BYTES`).
+pub fn sample_table<'de, D: serde::Deserializer<'de>>(from: D) -> Result<CaptureBatch, D::Error> {
+    let held = WireBatch::deserialize(from)?.held("sample", crate::config_file::MAX_SAMPLE_BYTES);
+    held.map_err(serde::de::Error::custom)
+}
+
+impl WireBatch {
+    /// The batch with every value on every row. Err where its constants, copied onto every row, would cost more than
+    /// `ceiling`, what a `holder` may hold: a batch of a few bytes would otherwise be read into any amount of memory.
+    fn held(self, holder: &str, ceiling: usize) -> Result<CaptureBatch, String> {
+        let w = self;
         let constants: usize = w
             .columns
             .iter()
             .filter_map(|c| c.value.as_ref())
             .map(|v| CapturedRow::value_size(v) + EXPANDED_VALUE_COST)
             .sum();
-        if constants.saturating_mul(w.rows.len()) > crate::leader::capture::MAX_BYTES_CEILING {
+        if constants.saturating_mul(w.rows.len()) > ceiling {
+            let limit = match ceiling >> 30 {
+                0 => format!("{} MiB", ceiling >> 20),
+                gib => format!("{gib} GiB"),
+            };
             return Err(format!(
-                "a batch whose constants over its {} rows would hold more than a capture may",
-                w.rows.len()
+                "this {holder} holds too much: the values it repeats on each of its {} rows would take more than \
+                 {limit} of memory",
+                crate::leader::throughput::grouped(w.rows.len() as f64)
             ));
         }
         let carried: Vec<usize> = (0..w.columns.len()).filter(|c| w.columns[*c].value.is_none()).collect();
@@ -1876,6 +2001,44 @@ mod trust_tests {
 
 #[cfg(test)]
 mod tests {
+    /// A row added to a stamped table takes the table's instant; a table with none takes the one given.
+    #[test]
+    fn a_stamped_table_holds_one_instant_on_every_row() {
+        let pasted = CaptureBatch::pasted(vec![serde_json::Map::new()]).stamped(1_000_000);
+        let at = pasted.instant();
+        assert_eq!(at, Some(1_000_000));
+        let mut grown = pasted.clone();
+        grown.rows.push(CapturedRow {
+            values: vec![serde_json::json!({}), serde_json::Value::Null],
+            ..CapturedRow::default()
+        });
+        let grown = grown.stamped(2_000_000);
+        let column = grown.column(CaptureBatch::TAKEN_AT).unwrap();
+        assert_eq!(grown.rows[1].values[column], grown.rows[0].values[column]);
+        assert_eq!(grown.instant(), at);
+    }
+
+    /// A column kept keeps its failed marks, moved to where it lands.
+    #[test]
+    fn kept_columns_keep_their_failed_marks() {
+        let column = |name: &str| CaptureColumn {
+            name: name.into(),
+            ty: "i64".into(),
+        };
+        let mut batch = CaptureBatch {
+            columns: vec![column("a"), column("b"), column("c")],
+            rows: vec![CapturedRow {
+                values: vec![1.into(), "x".into(), "y".into()],
+                failed: vec![1, 2],
+                worker: None,
+            }],
+        };
+        batch.keep_columns(&[false, true, false]);
+        assert_eq!(batch.columns, [column("b")]);
+        assert_eq!(batch.rows[0].values, [serde_json::json!("x")]);
+        assert_eq!(batch.rows[0].failed, [0]);
+    }
+
     /// A build that knew no index names sent a bare `indexed`; a leader that reads them must still read it.
     #[test]
     fn an_indexed_verdict_without_its_fields_still_reads() {
@@ -2479,7 +2642,10 @@ mod tests {
             "rows": rows,
         });
         let err = serde_json::from_value::<CaptureBatch>(wire).unwrap_err();
-        assert!(err.to_string().contains("more than a capture may"), "{err}");
+        assert!(
+            err.to_string().contains("would take more than 64 MiB of memory"),
+            "{err}"
+        );
 
         let empties = serde_json::json!({
             "columns": (0..100_000).map(|i| serde_json::json!({"name": format!("c{i}"), "type": "str", "value": ""}))

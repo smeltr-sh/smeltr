@@ -135,9 +135,9 @@ describe('polling a capture', () => {
     revision = 1;
     vi.stubGlobal('fetch', (url: string) => {
       calls.push(url);
-      const records = [{ worker: 'w1', record: { _raw: 'a' } }];
+      const rows = [{ worker: 'w1', values: ['a'] }];
       const body = url.endsWith('/records')
-        ? { ok: true, errors: [], columns: [{ name: '_raw', type: 'str' }], records }
+        ? { ok: true, errors: [], columns: [{ name: '_raw', type: 'str' }], rows }
         : { ok: true, errors: [], capture: { session: 'c1', records: 1, revision } };
       return Promise.resolve(new Response(JSON.stringify(body)));
     });

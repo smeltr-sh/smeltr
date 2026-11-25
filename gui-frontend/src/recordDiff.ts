@@ -53,7 +53,18 @@ export type RecordLine =
       fields: () => string[];
     }
   | ({ kind: 'field'; depth: number; label: string; type: string | null } & FieldLeaf)
-  | { kind: 'more'; path: string; depth: number; shown: number; total: number };
+  | {
+      kind: 'more';
+      path: string;
+      depth: number;
+      /** Where it stands: `before` the children drawn, holding those ahead of the first drawn, or `after` them,
+       * holding those from the first not drawn on. */
+      side: 'before' | 'after';
+      shown: number;
+      total: number;
+      /** The children are an array's elements, each at its own index. */
+      indexed: boolean;
+    };
 
 /** A value that is not a plain object is a leaf, arrays included: the table
  * draws a list in one cell, and only an opened record unfolds it
@@ -440,10 +451,12 @@ function leavesOf(n: DiffNode): string[] {
 export const PAGE_LINES = 40;
 
 /** What the reader chose, by a struct's or an array's path: whether it is
- * open, and how many pages past its first it draws. */
+ * open, how many pages past its first it draws, and the child its first page
+ * starts at. */
 export interface Choices {
   open?: (path: string) => boolean | undefined;
   pages?: (path: string) => number | undefined;
+  from?: (path: string) => number | undefined;
 }
 
 /** A struct holding exactly one thing, absorbed into that thing's name as far
@@ -485,18 +498,39 @@ export function recordLines(
   const children = (n: DiffNode, depth: number): number => {
     const budget = pagesOf(n.path);
     const kids = changedOnly ? n.children.filter(changed) : n.children;
+    const indexed = n.kind === 'array' && !changedOnly;
+    const from = indexed ? Math.min(choices.from?.(n.path) ?? 0, kids.length - 1) : 0;
     let used = 0;
-    let i = 0;
+    if (from > 0) {
+      out.push({
+        kind: 'more',
+        path: n.path,
+        depth,
+        side: 'before',
+        shown: from,
+        total: kids.length,
+        indexed,
+      });
+    }
+    let i = from;
     for (; i < kids.length; i++) {
       // At least one, however long: a page is never empty.
-      if (i > 0 && used >= budget) break;
+      if (i > from && used >= budget) break;
       used += draw(kids[i], depth, budget - used);
     }
     if (i < kids.length) {
-      out.push({ kind: 'more', path: n.path, depth, shown: i, total: kids.length });
+      out.push({
+        kind: 'more',
+        path: n.path,
+        depth,
+        side: 'after',
+        shown: i,
+        total: kids.length,
+        indexed,
+      });
       used++;
     }
-    return used;
+    return from > 0 ? used + 1 : used;
   };
 
   // Says how many lines the child takes from its parent's page. One the reader
@@ -553,7 +587,15 @@ export function pathLines(
     .slice(0, shown)
     .map((n) => ({ ...n.leaf!, kind: 'field', depth: 0, label: fromRecord(n.path), type: n.type }));
   if (shown < fields.length)
-    out.push({ kind: 'more', path: root.path, depth: 0, shown, total: fields.length });
+    out.push({
+      kind: 'more',
+      path: root.path,
+      depth: 0,
+      side: 'after',
+      shown,
+      total: fields.length,
+      indexed: false,
+    });
   return out;
 }
 

@@ -138,7 +138,10 @@ fn typed_against_raw() {
     let corpus: Vec<RecordObject> = (0..50_000).map(object).collect();
     let chunks: Vec<Arc<RecordChunk>> = corpus
         .chunks(BATCH)
-        .map(|c| Arc::new(RecordChunk::from_objects(&fields(), &c.iter().collect::<Vec<_>>(), &[]).unwrap()))
+        .map(|c| {
+            let table = smeltr::heartbeat::CaptureBatch::pasted(c.to_vec());
+            Arc::new(RecordChunk::from_cells(&fields(), &table.columns, &table.rows).unwrap())
+        })
         .collect();
     let lines: fn(u64) -> String = |i| serde_json::Value::Object(object(i)).to_string();
 

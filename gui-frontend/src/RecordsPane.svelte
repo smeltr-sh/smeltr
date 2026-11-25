@@ -31,12 +31,14 @@
   import { type Declared } from './recordDiff';
   import {
     sampleSource,
-    type LockChoice,
+    type ShownCut,
     type PreviewResult,
     type PreviewRow,
     heldSession,
+    type CaptureBatchDto,
     type SampleRecordDto,
   } from './api';
+  import { tableRecords } from './capture';
 
   let {
     pipelineId,
@@ -94,15 +96,15 @@
     lockBlocked: string;
     /** Locks the fields and rows on screen as a test, by `PreviewRow.row`; absent where the pipeline is read
      * only. */
-    onlock?: (choice: LockChoice) => void;
+    onlock?: (choice: ShownCut) => void;
     /** Locking replaces a test rather than making one. */
     relocking?: boolean;
     /** Saves the output rows on screen as a sample, by `PreviewRow.row`; absent where no sample may be saved. */
-    onsaveoutput?: (rows: Set<number>) => void;
+    onsaveoutput?: (cut: ShownCut) => void;
     /** The input's record count and its save action, given while the input is a capture not saved yet. */
     saveinput?: { records: number; onsave: () => void };
     /** The output rows `rows`, by `PreviewRow.row`, each with every field, as a sample holds them. */
-    outputOf: (rows: Set<number>) => Promise<{ records: SampleRecordDto[] }>;
+    outputOf: (rows: number[], fields?: string[]) => Promise<CaptureBatchDto>;
     onjump: (step: Step) => void;
     /** Writes a field in an eval step; absent where the pipeline is read only. */
     onassign?: (path: string) => void;
@@ -249,9 +251,12 @@
   /** The menu of the input's and the output's saves and downloads is open. */
   let savingOpen = $state(false);
 
-  async function downloadOutput(rows: Set<number>) {
+  async function downloadOutput(rows: number[]) {
     try {
-      downloadRecords(`${pipelineId}-output`, (await outputOf(rows)).records);
+      downloadRecords(
+        `${pipelineId}-output`,
+        tableRecords(await outputOf(rows)).map((held) => held.record),
+      );
     } catch (e) {
       reported(e);
     }
@@ -292,8 +297,9 @@
     {/snippet}
     {#snippet actions(kept, shown)}
       <!-- The rows on screen that have output, by `PreviewRow.row`: a dropped row has none. -->
-      {@const outputShown = new Set(kept.filter((r) => !r.dropped).map((r) => r.key))}
-      {#snippet onScreen()}<span class="dim">The {count(outputShown.size, 'row')} on screen</span
+      {@const output = { fields: shown, rows: kept.filter((r) => !r.dropped).map((r) => r.key) }}
+      {#snippet rowsOnScreen()}<span class="dim"
+          >The {count(output.rows.length, 'row')} on screen</span
         >{/snippet}
       <ChipPicker kind="columns" compact bind:open={savingOpen}>
         {#snippet face()}{onsaveoutput ? 'Save or download' : 'Download'}
@@ -311,9 +317,11 @@
             <Button
               type="button"
               class="pick"
-              onclick={() => onsaveoutput(outputShown)}
-              disabled={outputShown.size === 0 ? INCOMPLETE : ''}
-              >Save output as sample {@render onScreen()}</Button
+              onclick={() => onsaveoutput(output)}
+              disabled={output.rows.length === 0 ? INCOMPLETE : ''}
+              >Save output as sample <span class="dim"
+                >The {count(shown.length, 'field')} on {count(output.rows.length, 'row')} on screen</span
+              ></Button
             >
             <hr />
           {/if}
@@ -331,9 +339,9 @@
           <Button
             type="button"
             class="pick"
-            onclick={() => downloadOutput(outputShown)}
-            disabled={outputShown.size === 0 ? INCOMPLETE : ''}
-            >Download output {@render onScreen()}</Button
+            onclick={() => downloadOutput(output.rows)}
+            disabled={output.rows.length === 0 ? INCOMPLETE : ''}
+            >Download output {@render rowsOnScreen()}</Button
           >
         </div>
       </ChipPicker>

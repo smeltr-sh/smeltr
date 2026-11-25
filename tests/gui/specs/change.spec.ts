@@ -1,6 +1,7 @@
 // Change and deploy (W1-W11) and reading the history (S4): editing on a branch, opening a change, reviewing
 // it, bringing it current, deploying it, closing it, rolling back, and the branch list.
 import { test, expect, addAccount, goto, type Api, type Leader } from '../fleet';
+import { pasted, recordsOf } from '../samples';
 import type { Page } from '@playwright/test';
 import { historyRow } from '../moves/change';
 
@@ -411,7 +412,7 @@ test('a sample the branch deleted is put back from its card on the change page',
   await api.put('/api/areas/shared/samples/keep?branch=seed', {
     id: 'keep',
     name: 'keep',
-    records: [{ _raw: 'a line' }],
+    ...pasted([{ _raw: 'a line' }]),
   });
   await api.openChange('seed', 'Add a sample');
   await api.deploy('seed');
@@ -428,7 +429,9 @@ test('a sample the branch deleted is put back from its card on the change page',
     .click();
   await expect(admin.getByText('No objects changed.')).toBeVisible();
   const { sample } = await api.get('/api/areas/shared/samples/keep?branch=tidy');
-  expect(sample.records).toEqual([{ _raw: 'a line' }]);
+  expect(recordsOf(sample)).toEqual([
+    { _raw: 'a line', __capture: { timestamp: expect.any(String) } },
+  ]);
 });
 
 test('a deployed commit that fails its own tests is deployed, and flagged on the Issues page', async ({
@@ -454,21 +457,20 @@ test('a deployed commit that fails its own tests is deployed, and flagged on the
   await api.put(`/api/areas/shared/samples/orders-sample${on}`, {
     id: 'orders-sample',
     name: 'orders',
-    records: [{ _raw: '{"id":2}' }],
+    ...pasted([{ _raw: '{"id":2}' }]),
   });
   // Locked over a sample whose order is 2, which then becomes 1, so the test fails at every commit with the changed sample.
   await api.put(`/api/areas/shared/tests/orders-keep-id${on}`, {
     name: 'orders keep their id',
     pipeline: 'orders',
     sample: 'orders-sample',
-    lockedAt: 0,
     fields: ['id'],
     rows: [0],
   });
   await api.put(`/api/areas/shared/samples/orders-sample${on}`, {
     id: 'orders-sample',
     name: 'orders',
-    records: [{ _raw: '{"id":1}' }],
+    ...pasted([{ _raw: '{"id":1}' }]),
   });
   await api.openChange('broken-orders', 'Lock a test that fails');
   await api.deploy('broken-orders');
@@ -505,21 +507,20 @@ test('a review shows what each test checks, and a failing one says which row and
   await api.put(`/api/areas/shared/samples/orders-sample${on}`, {
     id: 'orders-sample',
     name: 'orders',
-    records: [{ _raw: '{"id":2}' }],
+    ...pasted([{ _raw: '{"id":2}' }]),
   });
   // Locked over a sample whose order is 2, which then becomes 1, so the test fails.
   await api.put(`/api/areas/shared/tests/orders-keep-id${on}`, {
     name: 'orders keep their id',
     pipeline: 'orders',
     sample: 'orders-sample',
-    lockedAt: 0,
     fields: ['id'],
     rows: [0],
   });
   await api.put(`/api/areas/shared/samples/orders-sample${on}`, {
     id: 'orders-sample',
     name: 'orders',
-    records: [{ _raw: '{"id":1}' }],
+    ...pasted([{ _raw: '{"id":1}' }]),
   });
   await api.openChange('checked', 'Check the order id');
 
@@ -557,18 +558,17 @@ test('a test locked again opens on its fields the rows still hold, and its rows'
   await api.put(`/api/areas/shared/samples/orders-sample${on}`, {
     id: 'orders-sample',
     name: 'orders',
-    records: [{ _raw: '{"id":2,"kind":"new"}' }],
+    ...pasted([{ _raw: '{"id":2,"kind":"new"}' }]),
   });
   await api.put(`/api/areas/shared/samples/returns-sample${on}`, {
     id: 'returns-sample',
     name: 'returns',
-    records: [{ _raw: '{"id":3}' }, { _raw: '{"id":4}' }],
+    ...pasted([{ _raw: '{"id":3}' }, { _raw: '{"id":4}' }]),
   });
   await api.put(`/api/areas/shared/tests/orders-keep-id${on}`, {
     name: 'orders keep their id',
     pipeline: 'orders',
     sample: 'orders-sample',
-    lockedAt: 0,
     fields: ['id', 'kind'],
     rows: [0],
   });
@@ -627,13 +627,16 @@ test('a test locked again opens on its fields the rows still hold, and its rows'
   await admin.keyboard.press('Escape');
   await expect(admin.getByText('The 2 fields on 1 row on screen')).toBeVisible();
   await relock.click();
-  await expect(admin.getByRole('heading', { name: 'Lock this test again' })).toBeVisible();
-  await admin.getByRole('button', { name: 'Lock the test' }).click();
+  const dialog = admin.getByRole('dialog', { name: 'Lock this test again' });
+  await expect(dialog.getByRole('textbox', { name: 'Name' })).toHaveValue('orders keep their id');
+  await dialog.getByRole('button', { name: 'Lock' }).click();
+  await expect(dialog).toHaveCount(0);
   await expect(admin).toHaveURL(/#\/build\/pipelines\/.*[?&]test=orders-keep-id\b/);
   const { test } = await api.get(`/api/areas/shared/tests/orders-keep-id${on}`);
-  expect(test.fields.sort()).toEqual(['kind', 'order_id']);
-  // Locked anew, at the instant it was locked again.
-  expect(test.lockedAt).toBeGreaterThan(0);
+  expect(test.table.columns.map((c: { name: string }) => c.name).sort()).toEqual([
+    'kind',
+    'order_id',
+  ]);
 });
 
 test('History shows who changed what, who deployed it, and when', async ({
@@ -671,7 +674,7 @@ test('a review shows a sample no test uses as any other object, and the deploy k
   await api.put(`/api/areas/shared/samples/tried${on}`, {
     id: 'tried',
     name: 'capture 14:20',
-    records: [{ _raw: 'a' }],
+    ...pasted([{ _raw: 'a' }]),
   });
   await api.openChange('scratch', 'A capture');
 
@@ -694,13 +697,12 @@ test('the dock’s count of tests opens the Tests tab', async ({ admin, api, lea
   await api.put(`/api/areas/shared/samples/s${on}`, {
     id: 's',
     name: 's',
-    records: [{ _raw: 'a' }],
+    ...pasted([{ _raw: 'a' }]),
   });
   await api.put(`/api/areas/shared/tests/t${on}`, {
     name: 't',
     pipeline: 'p',
     sample: 's',
-    lockedAt: 0,
     fields: [],
     rows: [0],
   });

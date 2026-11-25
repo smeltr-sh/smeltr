@@ -135,12 +135,6 @@ export type Route =
       back?: string;
       test?: OpenTest;
     }
-  // `pipeline` absent locks an end-to-end test instead: the sample routed
-  // by its source, not one pipeline's output.
-  | { tab: 'build'; page: 'lock-test'; pipeline?: string; sample: string }
-  // A failing test locked again: its pipeline, sample, name and lock instant
-  // are read from the test, so the hash carries only its id.
-  | { tab: 'build'; page: 'lock-test'; relock: string }
   // One file's raw text, by its full path in the repository: the way to a file that does not
   // load, which no section editor can open. `back` is the page that sent you.
   | { tab: 'build'; page: 'file'; path: string; back: string }
@@ -399,7 +393,6 @@ const SECTION_OF: Record<Route['page'], string | null> = {
   grok: 'Resources',
   schemas: 'Resources',
   pipeline: 'Pipelines',
-  'lock-test': 'Resources',
   file: null,
   changes: 'Branches',
   review: 'Branches',
@@ -438,7 +431,6 @@ const SCOPED_PAGES: ReadonlySet<Route['page']> = new Set([
   'lookups',
   'grok',
   'schemas',
-  'lock-test',
 ]);
 
 export function showsScope(route: Route): boolean {
@@ -601,27 +593,8 @@ export function parseRoute(hash: string): Route {
           ...testFrom(params, params.get('sample')),
         };
       }
-      // The pipeline (or, for an end-to-end lock, nothing) and the sample
-      // are given, not chosen here, so both travel in the hash rather than
-      // being typed into the screen. An end-to-end lock needs its own
-      // marker word: `parts[3]` is read unconditionally as the pipeline
-      // below, so a sample alone at that position would be misread as one.
-      if (parts[1] === 'tests' && parts[2] === 'lock-e2e' && parts[3]) {
-        return { tab: 'build', page: 'lock-test', sample: decodeURIComponent(parts[3]) };
-      }
-      if (parts[1] === 'tests' && parts[2] === 'relock' && parts[3]) {
-        return { tab: 'build', page: 'lock-test', relock: decodeURIComponent(parts[3]) };
-      }
       if (parts[1] === 'tests' && !parts[2])
         return { tab: 'build', page: 'tests', ...only(search) };
-      if (parts[1] === 'tests' && parts[2] === 'lock' && parts[3] && parts[4]) {
-        return {
-          tab: 'build',
-          page: 'lock-test',
-          pipeline: decodeURIComponent(parts[3]),
-          sample: decodeURIComponent(parts[4]),
-        };
-      }
       if (parts[1] === 'pipelines') {
         if (!parts[2]) return { tab: 'build', page: 'pipelines', ...only(search) };
         // `for` is reserved the same way `json` is: it says a sample
@@ -752,21 +725,6 @@ function drilledInto(route: Route, names: PipelineNames): Crumb[] {
       return [{ label: schemasTab.label }];
     case 'pipeline':
       return [{ label: pipelineCrumb(route.id, names) }];
-    case 'lock-test':
-      if ('relock' in route) return [{ label: 'lock a test again' }];
-      return route.pipeline
-        ? [
-            {
-              label: pipelineCrumb(route.pipeline, names),
-              hash: `#/build/pipelines/${encodeURIComponent(route.pipeline)}`,
-            },
-            { label: 'lock a test' },
-          ]
-        : [
-            { label: 'routes', hash: '#/build/routes' },
-            { label: 'route a sample', hash: '#/build/routes/sample' },
-            { label: 'lock a test' },
-          ];
     case 'review':
       return [{ label: route.branch }];
     case 'file':
@@ -812,16 +770,14 @@ export function trail(route: Route, names: PipelineNames = {}): Crumb[] {
 /** Where a page drilled into one thing goes back to, or `undefined` on a
  * page that is not drilled into, which the rail already places. That is the
  * trail's parent crumb, except a file, which goes back to the page that sent
- * you to it. A re-lock is opened from a change's tests, which no crumb names,
- * so it offers none and leaves the way back to its own Cancel. */
+ * you to it. */
 export function exitOf(route: Route, crumbs: Crumb[]): string | undefined {
   if (route.page === 'file') return route.back;
-  if (route.page === 'lock-test' && 'relock' in route) return undefined;
   if (!DRILL_INS.has(route.page)) return undefined;
   return crumbs.at(-2)?.hash;
 }
 
-const DRILL_INS = new Set<Route['page']>(['pipeline', 'review', 'lock-test']);
+const DRILL_INS = new Set<Route['page']>(['pipeline', 'review']);
 
 /** The five section files, by the Build page that edits each. */
 /** Where an unsaved edit `edits.ts` is holding gets edited. Its names are the

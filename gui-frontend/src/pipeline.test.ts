@@ -884,5 +884,6 @@ describe('a step summary', () => {
       'when event_type == "alert": 1 name: _raw',
     );
     expect(stepSummary(remove(' '), {})).toBe('1 name: _raw');
+    expect(stepSummary(remove(' true '), {})).toBe('1 name: _raw');
   });
 });

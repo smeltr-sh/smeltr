@@ -4,7 +4,7 @@
 -->
 <script module lang="ts">
   import type { AvroField, CaptureStatus, SqlField, StreamReadFormat } from './api';
-  import { mistyped, valueAt } from './capture';
+  import { valueAt } from './capture';
 
   /** What a source reading payloads holds that its format decides: Avro refuses an encoding and a framing beside
    * it. */
@@ -44,7 +44,7 @@
     if (failed) return { error: failed.failed.trim() };
     // A message that did not read holds why in its first field.
     const first = status.columns[0]?.name;
-    const unread = first === undefined ? undefined : held.find((r) => mistyped(r.record, first));
+    const unread = first === undefined ? undefined : held.find((r) => r.failed?.includes(first));
     if (unread && first !== undefined) return { error: String(valueAt(unread.record, first)) };
     if (held.length)
       return { error: 'The message’s schema is not a record, so it has no fields to fill.' };

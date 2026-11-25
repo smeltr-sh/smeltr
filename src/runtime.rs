@@ -3996,6 +3996,7 @@ mod tests {
     use crate::core::column::Scalar;
     use crate::core::error::{Exception, ExceptionKind};
     use crate::core::id::FunctionId;
+    use crate::heartbeat::pasted_from;
     use crate::plan::output::{RowException, row_exceptions};
 
     #[test]
@@ -4374,7 +4375,7 @@ mod tests {
         let objects: Vec<crate::io::RecordObject> = objects.iter().map(|o| o.as_object().unwrap().clone()).collect();
         let fields = crate::io::SourceFields::new();
         let stored: Vec<_> = objects.iter().map(|o| (o, &fields)).collect();
-        let records = meta.read_stored(&stored).unwrap();
+        let records = meta.read_table(&pasted_from(&stored)).unwrap();
 
         let rows = preview_routes(&compiled, source, &records, preview_memory_budget());
 
@@ -4404,7 +4405,7 @@ mod tests {
             .unwrap();
         let object = serde_json::json!({"id": 7, "name": "a"}).as_object().unwrap().clone();
         let fields = crate::io::SourceFields::new();
-        let records = meta.read_stored(&[(&object, &fields)]).unwrap();
+        let records = meta.read_table(&pasted_from(&[(&object, &fields)])).unwrap();
         let form =
             |payload: Payload| source_form(&payload, &meta, &records[0], "").map(|v| String::from_utf8(v).unwrap());
 

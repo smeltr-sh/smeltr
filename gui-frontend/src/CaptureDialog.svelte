@@ -18,7 +18,8 @@
   import Figure from './Figure.svelte';
   import Figures from './Figures.svelte';
   import { heldCount, heldRows, progressText, shownRecords, workerChips } from './capture';
-  import { captureDownloadUrl, captureEndText, type CaptureStatus } from './api';
+  import { captureEndText, type CaptureStatus } from './api';
+  import { downloadRecords } from './download';
   import { NOT_IN_DEMO } from './access';
 
   let {
@@ -212,11 +213,15 @@
     {#if done}
       <Button type="button" onclick={ondiscard} disabled={busy ? BUSY : ''}>Discard</Button>
       {#if session && held > 0}
-        {#if NOT_IN_DEMO}<Button type="button" disabled={NOT_IN_DEMO}>Download</Button>{:else}<a
-            class="btn"
-            href={captureDownloadUrl(session)}
-            download>Download</a
-          >{/if}
+        <Button
+          type="button"
+          disabled={NOT_IN_DEMO}
+          onclick={() =>
+            downloadRecords(
+              `capture-${session}`,
+              (status?.records ?? []).map((held) => held.record),
+            )}>Download</Button
+        >
       {/if}
       {#if onsave}
         <Button
