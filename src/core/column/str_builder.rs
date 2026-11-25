@@ -245,7 +245,6 @@ impl StrBuilder {
         self.pos = self.offsets.as_slice::<u32>()[rows];
     }
 
-
     /// Seal a `growing` builder's column, which holds the rows pushed.
     pub fn finish_growing(mut self) -> Column {
         debug_assert!(self.growing, "a builder of known length finishes with `finish`");
