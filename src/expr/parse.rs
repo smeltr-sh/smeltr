@@ -2831,7 +2831,7 @@ mod tests {
     }
 
     /// Runs `f` on a thread of its own with a 4 MiB stack: at the nesting limit a debug build needs about the whole of
-    /// a test thread's 2 MiB stack, a release build a quarter of that.
+    /// a test thread's 2 MiB stack, an optimized build a quarter of that.
     fn on_a_big_stack(f: fn()) {
         std::thread::Builder::new()
             .stack_size(4 << 20)

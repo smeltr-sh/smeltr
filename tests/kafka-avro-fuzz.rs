@@ -16,6 +16,7 @@
 //! Event Hubs emulator at `EVENT_HUBS_TEST_BROKERS`. The emulator's hubs are fixed and outlive each run, so there a
 //! seed's ids are its own and it reads past what it did not write.
 
+use smeltr::core::id::DestId;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -691,7 +692,7 @@ fn seed(
     let metrics = smeltr::metrics::MetricsHandle::new(Arc::new(smeltr::metrics::Metrics::new()), "fuzz");
     let mut d = smeltr::io::build_destination(
         &DestinationKind::Kafka(destination_config),
-        0,
+        DestId(0),
         "d",
         metrics,
         &secrets,

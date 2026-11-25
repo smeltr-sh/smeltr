@@ -2,7 +2,7 @@
 //! of the rows take it: writes that hash and rewrite `_raw`, and a loop and a parse the block computes ahead of its
 //! writes. Nothing a guard takes no row of is computed, so such a guard costs its condition and nothing of its body;
 //! one that takes any row costs the whole body.
-//! `cargo test --profile dist --test guard-cost -- --ignored --nocapture`.
+//! `cargo test --profile optimized --test guard-cost -- --ignored --nocapture`.
 
 // The harness mints certificates for the fuzzers it serves; this binary only sizes guards.
 #[allow(dead_code)]
@@ -93,7 +93,7 @@ fn measure(what: &str, body: &str) {
 }
 
 #[test]
-#[ignore = "a measurement: `cargo test --profile dist --test guard-cost -- --ignored --nocapture`"]
+#[ignore = "a measurement: `cargo test --profile optimized --test guard-cost -- --ignored --nocapture`"]
 fn a_guard_that_takes_no_row_skips_its_body() {
     measure(
         "guarded writes",
@@ -107,7 +107,7 @@ fn a_guard_that_takes_no_row_skips_its_body() {
 
 /// What a guarded block computes ahead of its writes: a loop's array, and a parser's input and the parse.
 #[test]
-#[ignore = "a measurement: `cargo test --profile dist --test guard-cost -- --ignored --nocapture`"]
+#[ignore = "a measurement: `cargo test --profile optimized --test guard-cost -- --ignored --nocapture`"]
 fn a_guard_that_takes_no_row_skips_what_its_body_computes_first() {
     measure(
         "a guarded loop and parse",

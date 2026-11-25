@@ -13,6 +13,7 @@
 //! transform on separate threads over the same `step`s, so what this
 //! measures is each stage's cost, not the pair's overlap.
 
+use smeltr::core::id::DestId;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -92,7 +93,7 @@ fn produce_with(brokers: &str, topic: &str, n: usize, row: impl Fn(usize) -> Vec
             props: Default::default(),
             avro: None,
         },
-        0,
+        DestId(0),
         kafka_metrics(),
         &Default::default(),
     )

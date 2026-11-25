@@ -25,15 +25,15 @@
     "prettier-plugin-svelte": "^4.1.1",
     "svelte": "^5.56.10",
     "svelte-check": "^4.7.6",
-    "turndown": "^7.2.4",
+    "turndown": "^7.2.5",
     "typescript": "~6.0.2",
     "vite": "^8.2.2",
-    "wrangler": "^4.15.2"
+    "wrangler": "^4.158.0"
   },
   "allowScripts": {
     "sharp@0.33.5": true,
     "esbuild@0.28.2": true,
-    "workerd@1.20261101.1": true
+    "workerd@1.20261104.1": true
   },
   "overrides": {
     "sharp": "0.35.5",

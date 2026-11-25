@@ -364,6 +364,7 @@ pub fn open(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::id::DestId;
     use crate::io::otlp::{Cell, Export};
     use crate::plan::config::Payload;
     use crate::plan::topology::HttpDestinationConfig;
@@ -592,7 +593,7 @@ mod tests {
         let registry = Arc::new(crate::metrics::Metrics::new());
         let otlp = protocol(Signal::Traces).with_unwritten(Unwritten::new(
             crate::metrics::MetricsHandle::new(registry.clone(), "egress-7"),
-            7,
+            DestId(7),
             "otlp",
         ));
         let items = admitted(

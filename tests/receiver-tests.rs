@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::live;
 
-use crate::harness::receiver::free_loopback;
+use crate::harness::receiver::{free_loopback, poll_until};
 use smeltr::io::line_breaker::LineBreaker;
 use smeltr::io::{CommitMap, Source, SourceRecord, TopicPartition, build_source};
 use smeltr::plan::topology::{
@@ -88,20 +88,6 @@ fn request(mut stream: impl Read + Write, method: &str, path: &str, headers: &st
 
 fn send(at: SocketAddr, path: &str, token: Option<&str>, body: &[u8]) -> (u16, String) {
     exchange(TcpStream::connect(at).unwrap(), "POST", path, token, body)
-}
-
-fn poll_until(source: &mut Box<dyn Source>, n: usize) -> Vec<SourceRecord> {
-    let mut records = Vec::new();
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while records.len() < n {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "only {} records arrived",
-            records.len()
-        );
-        records.extend(source.poll_batch(100, 1 << 20, Duration::from_millis(100)).unwrap());
-    }
-    records
 }
 
 fn commit(source: &mut Box<dyn Source>, records: &[SourceRecord]) {

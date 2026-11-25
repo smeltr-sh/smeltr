@@ -216,12 +216,11 @@ fn a_second_parser_declaring_a_bound_field_blends_it_by_presence() {
     assert!(matches!(&blend.op, Op::Eval { .. }), "{:?}", blend.op);
 }
 
-/// A bare `null` assigned inside a guarded region used to silently retype the field: `resolve_typed` has to
-/// concretize an untyped null literal to *some* `DataType` before it reaches here, and it defaults to `I64`,
-/// regardless of what the field is everywhere else the guard does not run. A field
-/// reassigned to `null` from inside an `if` -- exactly the "clear this out" pattern a guarded region is for -- kept
-/// its real type only by accident of whichever slot a later read happened to resolve against. `guarded_value` now
-/// recognizes the literal null token and adopts the field's prior type instead of unifying the placeholder.
+/// A bare `null` assigned inside a guarded region keeps the field's type. `resolve_typed` has to concretize an
+/// untyped null literal to *some* `DataType` before it reaches here, and it defaults to `I64`, regardless of what
+/// the field is everywhere else the guard does not run. So `guarded_value` recognizes the literal null token and
+/// adopts the field's prior type instead of unifying the placeholder: a field reassigned to `null` from inside an
+/// `if` is exactly the "clear this out" pattern a guarded region is for.
 #[test]
 fn a_bare_null_inside_a_guard_keeps_the_fields_prior_type() {
     let p = ok(vec![json("flag: bool; s: str;"), code(1, "if (flag) { s = null; }")]);
@@ -229,7 +228,7 @@ fn a_bare_null_inside_a_guard_keeps_the_fields_prior_type() {
     assert_eq!(s.ty, DataType::Str);
 }
 
-/// The other side of the same fix: a guarded reassignment to a genuinely incompatible type is a compile error
+/// The other side of the same rule: a guarded reassignment to a genuinely incompatible type is a compile error
 /// naming the field, not a silent retype discovered later at some unrelated read.
 #[test]
 fn a_type_mismatch_inside_a_guard_is_a_compile_error() {

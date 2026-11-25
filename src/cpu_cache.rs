@@ -109,6 +109,7 @@ mod platform {
     pub fn l2_per_thread() -> Option<usize> {
         let mut len = 0u32;
         // Asked once with no buffer for the length it needs.
+        // SAFETY: a null buffer with a length of zero is how the call is asked for the length, and it writes only `len`.
         unsafe { GetLogicalProcessorInformationEx(RelationCache, std::ptr::null_mut(), &mut len) };
         if len == 0 {
             return None;
@@ -117,6 +118,7 @@ mod platform {
         // holds every kind, so a whole struct's worth more keeps a reference to the last record inside the buffer.
         let mut buffer = vec![0u64; (len as usize + size_of::<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>()).div_ceil(8)];
         let at = buffer.as_mut_ptr().cast::<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>();
+        // SAFETY: `at` is the start of a buffer of at least `len` bytes, aligned for the records the call writes.
         if unsafe { GetLogicalProcessorInformationEx(RelationCache, at, &mut len) } == 0 {
             return None;
         }
@@ -138,10 +140,13 @@ mod platform {
             if record.Relationship != RelationCache {
                 continue;
             }
+            // SAFETY: the record is a `RelationCache` one, so `Cache` is the member the call wrote.
             let cache = unsafe { &record.Anonymous.Cache };
             if cache.Level != 2 || cache.Type == CacheInstruction {
                 continue;
             }
+            // SAFETY: `GroupMask` and `GroupMasks` lay the first group's mask over the same bytes, so it reads whichever
+            // the call wrote.
             let sharing = (unsafe { cache.Anonymous.GroupMask.Mask }.count_ones() as usize).max(1);
             let per_thread = cache.CacheSize as usize / sharing;
             least = Some(least.map_or(per_thread, |l| l.min(per_thread)));

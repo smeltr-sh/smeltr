@@ -5,7 +5,7 @@
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use smeltr::io::raw::{RawRead, RawTap};
 use smeltr::io::{Source, build_source};
@@ -50,15 +50,11 @@ impl RawTap for Kept {
 impl Kept {
     /// What it was offered once `done` holds of it, waiting up to ten seconds.
     fn until(&self, done: impl Fn(&[Offered]) -> bool) -> Vec<Offered> {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
+        crate::harness::wait_for("the awaited bytes to be offered", Duration::from_secs(10), || {
             let offered = self.0.lock().unwrap().clone();
-            if done(&offered) {
-                return offered;
-            }
-            assert!(Instant::now() < deadline, "never offered what was awaited: {offered:?}");
-            std::thread::sleep(Duration::from_millis(20));
-        }
+            done(&offered).then_some(offered)
+        })
+        .unwrap_or_else(|late| panic!("{late}: {:?}", self.0.lock().unwrap()))
     }
 
     /// Every byte it was offered, in order.

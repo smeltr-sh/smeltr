@@ -80,7 +80,7 @@ need-docker: (need "docker" "Install Docker from https://docs.docker.com/get-doc
 # Frontends, then an optimized binary embedding them. Quick to rebuild; `dist` builds what you ship.
 [group("dev")]
 build: need-rust frontends
-    cargo build --release --bin smeltr
+    cargo build --profile optimized --bin smeltr
 
 # What the GUI tests and screenshots run: the frontends, the demo site and unoptimized binaries embedding them. They
 # share `target/debug` with the Rust tests, so the dependencies build once, and a GUI edit rebuilds in less than half
@@ -107,7 +107,7 @@ fips-dll: need-rust
 # gui-frontend/dist-demo, and the preview service it asks.
 [group("dev")]
 demo: need-rust (frontends "gui" "docs" "demo")
-    cargo build --release --bin smeltr-demo
+    cargo build --profile optimized --bin smeltr-demo
 
 # Builds the frontends `tools/frontends.json` names, or each one the binary embeds when none is named, each only when
 # stale -- what to run when build.rs says one is stale.
@@ -712,9 +712,9 @@ check-tls: tls-up
 [env("ES_TEST_URL", "http://localhost:9200")]
 [env("SMELTR_ALLOW_STALE_FRONTENDS", "1")]
 measure:
-    cargo test --profile dist --test panos-ecs-profile --test logs-cost --test memory-budget-cost --test record-cost --test guard-cost -- --ignored --nocapture --test-threads=1
+    cargo test --profile optimized --test panos-ecs-profile --test logs-cost --test memory-budget-cost --test record-cost --test guard-cost -- --ignored --nocapture --test-threads=1
     just live-up
-    cargo test --profile dist --test tick-profile --test flush-cost -- --test-threads=1 --nocapture
+    cargo test --profile optimized --test tick-profile --test flush-cost -- --test-threads=1 --nocapture
 
 # The transform's work alone at each count of threads in `BENCH_THREADS` (1,2,4 when unset), each a copy of a
 # reference pipeline: whether this host's hyperthreads add throughput. Needs no services.
@@ -722,7 +722,7 @@ measure:
 [group("dev")]
 [env("SMELTR_ALLOW_STALE_FRONTENDS", "1")]
 thread-scaling:
-    cargo test --profile dist --test thread-scaling -- --ignored --exact thread_scaling --nocapture
+    cargo test --profile optimized --test thread-scaling -- --ignored --exact thread_scaling --nocapture
 
 # A row per reference pipeline in the log `BENCH_LOG` names, HEAD against the
 # pinned reference, and the ratio chart beside it as an .svg. Run daily.
@@ -762,7 +762,7 @@ bench-log:
 [env("SMELTR_LIVE_TESTS", "required")]
 [env("SMELTR_ALLOW_STALE_FRONTENDS", "1")]
 connector-speed: live-up
-    cargo test --profile dist --test connector-speed -- --ignored --exact speed --nocapture
+    cargo test --profile optimized --test connector-speed -- --ignored --exact speed --nocapture
 
 # Stop the live services and the Kerberos and TLS brokers, and discard their
 # data. A line that fails, for a rig that is not up or a Docker that is not
@@ -790,14 +790,14 @@ run-dev: build-dev
 # Frontends, then an optimized binary, started.
 [unix]
 run: frontends
-    cargo run --release --bin smeltr
+    cargo run --profile optimized --bin smeltr
 
 # Windows loads the AWS-LC FIPS module from a DLL beside the binary (`tools/fips-dll.ps1`).
 [windows]
 run: frontends
-    cargo build --release --bin smeltr
-    powershell -NoProfile -ExecutionPolicy Bypass -File tools/fips-dll.ps1 "{{ env('CARGO_TARGET_DIR', 'target') }}/release"
-    cargo run --release --bin smeltr
+    cargo build --profile optimized --bin smeltr
+    powershell -NoProfile -ExecutionPolicy Bypass -File tools/fips-dll.ps1 "{{ env('CARGO_TARGET_DIR', 'target') }}/optimized"
+    cargo run --profile optimized --bin smeltr
 
 # Each test starts its own leader and workers from empty data directories, so
 # they run side by side. Arguments go to Playwright: a file, `-g <title>`,

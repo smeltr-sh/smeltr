@@ -1,6 +1,7 @@
 //! The HTTP destination's protocol (`io::http_post`) over the HTTP core: how rows make a body, what each answer means,
 //! and what goes on the wire.
 
+use smeltr::core::id::DestId;
 use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -482,7 +483,8 @@ fn a_credential_holding_a_line_break_is_refused_when_built() {
     let mut secrets = HeldSecrets::default();
     secrets.set_stored([("dd".to_string(), 1, "k-123\n".to_string())]);
     let metrics = smeltr::metrics::MetricsHandle::new(Arc::new(smeltr::metrics::Metrics::new()), "test");
-    let Err(e) = smeltr::io::build_destination(&DestinationKind::Http(c), 0, "d", metrics, &secrets, None) else {
+    let Err(e) = smeltr::io::build_destination(&DestinationKind::Http(c), DestId(0), "d", metrics, &secrets, None)
+    else {
         panic!("a header value holding a line break must not build");
     };
     assert!(

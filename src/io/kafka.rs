@@ -2345,7 +2345,7 @@ mod tests {
                 props: Default::default(),
                 avro: None,
             },
-            7,
+            DestId(7),
             MetricsHandle::new(Arc::new(crate::metrics::Metrics::new()), "egress-7"),
             &Default::default(),
         )
@@ -2436,7 +2436,7 @@ mod tests {
                 },
                 avro: None,
             },
-            7,
+            DestId(7),
             MetricsHandle::new(Arc::new(crate::metrics::Metrics::new()), "egress-7"),
             &Default::default(),
         )
@@ -2491,7 +2491,7 @@ mod tests {
                 props: Default::default(),
                 avro: None,
             },
-            7,
+            DestId(7),
             MetricsHandle::new(Arc::new(crate::metrics::Metrics::new()), "egress-7"),
             &Default::default(),
         )
@@ -2736,7 +2736,7 @@ mod tests {
                 props: Default::default(),
                 avro: None,
             },
-            7,
+            DestId(7),
             MetricsHandle::new(registry.clone(), "egress-7"),
             &Default::default(),
         )

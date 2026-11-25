@@ -8,6 +8,7 @@
 //!
 //! The last fuzzer runs the destination against a real Prometheus, where what it sends is read back by a query.
 
+use smeltr::core::id::DestId;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -1098,7 +1099,7 @@ fn fuzz_one(seed: u64, coverage: &mut Coverage) -> Result<(), String> {
     };
     let unwritten = Unwritten::new(
         smeltr::metrics::MetricsHandle::new(Arc::new(smeltr::metrics::Metrics::new()), "remote-write-fuzz"),
-        0,
+        DestId(0),
         "d",
     );
     let mut d = HttpDestination::new(store, RemoteWrite::new(&config).with_unwritten(unwritten))
@@ -1326,7 +1327,7 @@ fn live_run(seed: u64, base: &str, out_of_order: bool, coverage: &mut Coverage) 
     let registry = Arc::new(smeltr::metrics::Metrics::new());
     let unwritten = Unwritten::new(
         smeltr::metrics::MetricsHandle::new(Arc::clone(&registry), "live"),
-        0,
+        DestId(0),
         "d",
     );
     let mut d = HttpDestination::new(

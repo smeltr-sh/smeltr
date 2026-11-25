@@ -8,6 +8,7 @@
 //! recorded anywhere. None of that needs a live cluster to test — a canned
 //! response body exercises every branch of it exactly.
 
+use smeltr::core::id::DestId;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -456,7 +457,7 @@ fn a_rejection_index_survives_a_retry_compaction() {
 /// action/document pair after it would be read against the wrong partner -- a whole request misfiled, from one
 /// record. Refused at hand-over, which is where the destination gets to look at it.
 ///
-/// Reachable now that a row can be delivered without a pipeline: an unmatched destination and the poison DLQ hand over the
+/// Reachable because a row can be delivered without a pipeline: an unmatched destination and the poison DLQ hand over the
 /// record's own bytes, and a multi-line record is ordinary.
 #[test]
 fn a_document_holding_a_newline_is_refused_rather_than_breaking_the_request() {
@@ -768,7 +769,7 @@ fn a_document_a_failure_store_took_lands_and_counts_unwritten() {
     let registry = Arc::new(smeltr::metrics::Metrics::new());
     let unwritten = smeltr::io::http::Unwritten::new(
         smeltr::metrics::MetricsHandle::new(registry.clone(), "egress-4"),
-        4,
+        DestId(4),
         "d",
     );
     let answer = Response {

@@ -1311,8 +1311,8 @@ mod tests {
         cleanup_registry_db(&path);
     }
 
-    /// The two defects the durable registry closes: a restart used to reset a warning's start time, and could not
-    /// tell a worker that had never heartbeated from one that was heartbeating right up until the leader restarted.
+    /// What makes the registry durable: across a restart a warning keeps its start time, and a worker that never
+    /// heartbeated is told from one that was heartbeating right up until the leader restarted.
     #[test]
     fn latest_state_and_the_fact_clock_survive_a_reopen() {
         let path = temp_registry_path("reopen");
@@ -1753,7 +1753,7 @@ mod tests {
         assert_eq!(key, r#"[["group","g"],["partition","3"],["source","orders"]]"#);
     }
 
-    /// The defect this closes: two groups running a source of the same id used to aggregate into one series.
+    /// Two groups running a source of the same id are two series.
     #[test]
     fn subject_key_differs_between_groups_for_the_same_labels() {
         let labels = [("source".to_string(), "7".to_string())];

@@ -3909,8 +3909,11 @@ mod tests {
     /// Which of `records` the condition `meta` gives `key` takes, run as a route on `meta`'s source.
     fn taken_by_stream(meta: SourceMeta, key: &str, records: &[crate::io::SourceRecord]) -> Vec<bool> {
         let cond = meta.stream_condition(key).expect("a condition");
-        let routes = compile_routes(&[route(0, Some(&cond), 0)], &SourceMetas::from([(0, meta.clone())]))
-            .unwrap_or_else(|e| panic!("`{cond}` compiles: {e:?}"));
+        let routes = compile_routes(
+            &[route(SourceId(0), Some(&cond), 0)],
+            &SourceMetas::from([(SourceId(0), meta.clone())]),
+        )
+        .unwrap_or_else(|e| panic!("`{cond}` compiles: {e:?}"));
         let layout: Vec<DataType> = crate::plan::compile::ingest_fields(&meta)
             .into_iter()
             .map(|(_, t)| t)
@@ -3924,7 +3927,7 @@ mod tests {
         bits::fill_valid(live.bool_mut().unwrap().values, records.len());
         batch.put(SLOT_LIVE, live, &mut pool);
         let mut ctx = Ctx::new(&mut pool, &mut errors);
-        let masks = route_masks(&routes, 0, &mut batch, &mut ctx);
+        let masks = route_masks(&routes, SourceId(0), &mut batch, &mut ctx);
         let mask = masks[0].1.bool().unwrap().values;
         let taken = (0..records.len()).map(|r| bits::get_row(mask, r)).collect();
         batch.reclaim(&mut pool);
@@ -4559,9 +4562,13 @@ mod tests {
     /// refused a cycle.
     #[test]
     fn a_dlq_chain_follows_every_dlq_once() {
-        let named = std::collections::HashMap::from([(0, vec![1, 2]), (1, vec![3, 2]), (3, vec![0])]);
-        assert_eq!(dlq_chain(&named, 0), vec![1, 2, 3]);
-        assert_eq!(dlq_chain(&named, 2), Vec::<DestId>::new());
+        let named = std::collections::HashMap::from([
+            (DestId(0), vec![DestId(1), DestId(2)]),
+            (DestId(1), vec![DestId(3), DestId(2)]),
+            (DestId(3), vec![DestId(0)]),
+        ]);
+        assert_eq!(dlq_chain(&named, DestId(0)), vec![DestId(1), DestId(2), DestId(3)]);
+        assert_eq!(dlq_chain(&named, DestId(2)), Vec::<DestId>::new());
     }
 
     /// A bundle naming `reference` for `what`.
@@ -4808,9 +4815,9 @@ mod tests {
             grok_patterns: Default::default(),
             produces: Vec::new(),
         }];
-        let metas = SourceMetas::from([(0, SourceMeta::KAFKA), (1, SourceMeta::KAFKA)]);
+        let metas = SourceMetas::from([(SourceId(0), SourceMeta::KAFKA), (SourceId(1), SourceMeta::KAFKA)]);
         let compiled = compile_topology_with(
-            &[route(0, None, 7), route(1, None, 7)],
+            &[route(SourceId(0), None, 7), route(SourceId(1), None, 7)],
             &pipelines,
             OnException::default(),
             &metas,
@@ -4819,13 +4826,13 @@ mod tests {
 
         assert_eq!(compiled.pipelines.len(), 1, "one plan, not one per source");
         // Both sources still reach it.
-        assert!(compiled.plan_for(0, 7).is_some());
-        assert!(compiled.plan_for(1, 7).is_some());
+        assert!(compiled.plan_for(SourceId(0), 7).is_some());
+        assert!(compiled.plan_for(SourceId(1), 7).is_some());
 
         // Declaring different fields is what forces a second plan.
-        let mixed = SourceMetas::from([(0, SourceMeta::KAFKA), (1, SourceMeta::METRICS)]);
+        let mixed = SourceMetas::from([(SourceId(0), SourceMeta::KAFKA), (SourceId(1), SourceMeta::METRICS)]);
         let compiled = compile_topology_with(
-            &[route(0, None, 7), route(1, None, 7)],
+            &[route(SourceId(0), None, 7), route(SourceId(1), None, 7)],
             &pipelines,
             OnException::default(),
             &mixed,
@@ -4861,19 +4868,22 @@ mod tests {
         };
 
         let compiled = CompiledTopology {
-            routes: vec![mk(0, vec![2]), mk(1, vec![7])],
+            routes: vec![mk(SourceId(0), vec![DestId(2)]), mk(SourceId(1), vec![DestId(7)])],
             pipelines: std::collections::HashMap::new(),
             metas: SourceMetas::new(),
             on_exception: {
                 let mut group = OnException::default();
-                for (kind, to) in [(ExceptionKind::Unmatched, 4), (ExceptionKind::Unprocessable, 8)] {
+                for (kind, to) in [
+                    (ExceptionKind::Unmatched, DestId(4)),
+                    (ExceptionKind::Unprocessable, DestId(8)),
+                ] {
                     group.answers[kind.index()] = Answer::Deliver(vec![to]);
                 }
                 group
             },
             // Destination 2 salvages its refusals to 5, and 8 to 3. `dlq_of` holds whole chains, so reachability reads
             // one entry per destination.
-            dlq_of: std::collections::HashMap::from([(2, vec![5]), (8, vec![3])]),
+            dlq_of: std::collections::HashMap::from([(DestId(2), vec![DestId(5)]), (DestId(8), vec![DestId(3)])]),
             records: HashMap::new(),
             native_variants: Default::default(),
             payloads: HashMap::new(),
@@ -4882,17 +4892,26 @@ mod tests {
 
         // Source 0: its own delivery target plus the DLQ that target salvages to -- a source can write to a
         // destination no route names.
-        assert_eq!(compiled.destinations_reachable_from(0), vec![2, 3, 4, 5, 8]);
+        assert_eq!(
+            compiled.destinations_reachable_from(SourceId(0)),
+            vec![DestId(2), DestId(3), DestId(4), DestId(5), DestId(8)]
+        );
         // Source 1 reaches neither of those.
-        assert_eq!(compiled.destinations_reachable_from(1), vec![3, 4, 7, 8]);
+        assert_eq!(
+            compiled.destinations_reachable_from(SourceId(1)),
+            vec![DestId(3), DestId(4), DestId(7), DestId(8)]
+        );
         // A source with no routes reaches only where its unmatched and unprocessable rows go, and the chain behind
         // them.
-        assert_eq!(compiled.destinations_reachable_from(9), vec![3, 4, 8]);
+        assert_eq!(
+            compiled.destinations_reachable_from(SourceId(9)),
+            vec![DestId(3), DestId(4), DestId(8)]
+        );
 
         // Where the flow goes: the delivery targets alone, no DLQ of any kind.
-        assert_eq!(compiled.delivery_destinations_from(0), vec![2]);
-        assert_eq!(compiled.delivery_destinations_from(1), vec![7]);
-        assert_eq!(compiled.delivery_destinations_from(9), Vec::<DestId>::new());
+        assert_eq!(compiled.delivery_destinations_from(SourceId(0)), vec![DestId(2)]);
+        assert_eq!(compiled.delivery_destinations_from(SourceId(1)), vec![DestId(7)]);
+        assert_eq!(compiled.delivery_destinations_from(SourceId(9)), Vec::<DestId>::new());
     }
 
     /// The metadata `seed_batch`'s layout assumes, for a route condition over `__source.offset`.
@@ -4941,13 +4960,13 @@ mod tests {
 
     #[test]
     fn a_single_route_with_no_condition_catches_everything() {
-        let routes = compile_routes(&[route(0, None, 7)], &SourceMetas::new()).unwrap();
+        let routes = compile_routes(&[route(SourceId(0), None, 7)], &SourceMetas::new()).unwrap();
         let mut pool = BufferPool::new();
         let mut errors = ErrorSink::new();
         let mut batch = seed_batch(&mut pool, &["a", "b", "c"]);
         let mut ctx = Ctx::new(&mut pool, &mut errors);
 
-        let masks = route_masks(&routes, 0, &mut batch, &mut ctx);
+        let masks = route_masks(&routes, SourceId(0), &mut batch, &mut ctx);
         assert_eq!(masks.len(), 1);
         let rows: Vec<bool> = (0..3)
             .map(|r| bits::get_row(masks[0].1.bool().unwrap().values, r))
@@ -4959,13 +4978,13 @@ mod tests {
 
     #[test]
     fn routes_for_a_different_source_are_skipped() {
-        let routes = compile_routes(&[route(1, None, 7)], &SourceMetas::new()).unwrap();
+        let routes = compile_routes(&[route(SourceId(1), None, 7)], &SourceMetas::new()).unwrap();
         let mut pool = BufferPool::new();
         let mut errors = ErrorSink::new();
         let mut batch = seed_batch(&mut pool, &["a"]);
         let mut ctx = Ctx::new(&mut pool, &mut errors);
 
-        let masks = route_masks(&routes, 0, &mut batch, &mut ctx);
+        let masks = route_masks(&routes, SourceId(0), &mut batch, &mut ctx);
         assert!(masks.is_empty(), "route belongs to source 1, not 0");
         batch.reclaim(&mut pool);
     }
@@ -4975,8 +4994,11 @@ mod tests {
         // Route on __source.offset (here just the row index -- see seed_batch) rather than a parsed field, since routes only
         // see ingest fields. Row 0 matches both routes, so it runs both pipelines.
         let routes = compile_routes(
-            &[route(0, Some("__source.offset == 0"), 1), route(0, None, 2)],
-            &kafka_metas(0),
+            &[
+                route(SourceId(0), Some("__source.offset == 0"), 1),
+                route(SourceId(0), None, 2),
+            ],
+            &kafka_metas(SourceId(0)),
         )
         .unwrap();
         let mut pool = BufferPool::new();
@@ -4984,7 +5006,7 @@ mod tests {
         let mut batch = seed_batch(&mut pool, &["x", "yy"]);
         let mut ctx = Ctx::new(&mut pool, &mut errors);
 
-        let masks = route_masks(&routes, 0, &mut batch, &mut ctx);
+        let masks = route_masks(&routes, SourceId(0), &mut batch, &mut ctx);
         let rows = |m: &Column| {
             (0..2)
                 .map(|r| bits::get_row(m.bool().unwrap().values, r))
@@ -5012,7 +5034,7 @@ mod tests {
 
     #[test]
     fn a_non_bool_route_condition_is_a_compile_error() {
-        let err = compile_routes(&[route(0, Some("_raw"), 1)], &SourceMetas::new());
+        let err = compile_routes(&[route(SourceId(0), Some("_raw"), 1)], &SourceMetas::new());
         assert!(err.is_err());
     }
 
@@ -5025,8 +5047,8 @@ mod tests {
     fn a_route_condition_using_a_regex_literal_actually_matches() {
         let routes = compile_routes(
             &[
-                route(0, Some("test(_raw, /^x/)"), 1),
-                route(0, None, 2), // catch-all
+                route(SourceId(0), Some("test(_raw, /^x/)"), 1),
+                route(SourceId(0), None, 2), // catch-all
             ],
             &SourceMetas::new(),
         )
@@ -5036,7 +5058,7 @@ mod tests {
         let mut batch = seed_batch(&mut pool, &["x1", "y2"]);
         let mut ctx = Ctx::new(&mut pool, &mut errors);
 
-        let masks = route_masks(&routes, 0, &mut batch, &mut ctx);
+        let masks = route_masks(&routes, SourceId(0), &mut batch, &mut ctx);
         let (_, m0) = &masks[0];
         assert_eq!(
             (0..2)
