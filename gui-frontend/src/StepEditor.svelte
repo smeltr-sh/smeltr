@@ -1728,7 +1728,8 @@
     color: var(--dim);
   }
 
-  /* A long filter is cut short here, so the line still shows what the step does. */
+  /* A long filter is cut short at 40% of the line, so the line still shows what the step does; the whole filter
+     shows on hover. */
   .filter-text {
     display: inline-block;
     max-width: 40%;
