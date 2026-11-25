@@ -5,6 +5,7 @@
 
 mod live;
 
+use smeltr::core::id::DestId;
 use smeltr::io::kafka::KafkaDestination;
 use smeltr::io::{Destination, OutgoingRecord, OwnedRecord};
 use smeltr::plan::topology::{KafkaDestinationConfig, KafkaProps};
@@ -52,7 +53,7 @@ fn dest(brokers: &str, topic: &str, props: &[(&str, &str)]) -> KafkaDestination 
             },
             avro: None,
         },
-        0,
+        DestId(0),
         kafka_metrics(),
         &Default::default(),
     )

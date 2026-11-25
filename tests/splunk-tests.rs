@@ -1,6 +1,7 @@
 //! The Splunk HEC protocol (`io::splunk`) over the HTTP core: the envelope each row goes in, how an answer is read,
 //! and indexer acknowledgement, against a transport that answers by path.
 
+use smeltr::core::id::DestId;
 use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -415,8 +416,10 @@ fn a_busy_ack_endpoint_counts_as_throttled() {
             answer(200, r#"{"acks":{"7":true}}"#),
         ],
     );
-    let mut d = destination(t, Acknowledgement::Indexer)
-        .with_metrics(smeltr::metrics::MetricsHandle::new(registry.clone(), "egress-2"), 2);
+    let mut d = destination(t, Acknowledgement::Indexer).with_metrics(
+        smeltr::metrics::MetricsHandle::new(registry.clone(), "egress-2"),
+        DestId(2),
+    );
     assert!(deliver(&mut d, vec![row(b"{}")]).unwrap().is_empty());
     let throttled = registry
         .snapshot()

@@ -17,6 +17,7 @@
 use crate::harness;
 use crate::harness::fuzz::{self, Coverage, Rng};
 use crate::live;
+use smeltr::core::id::DestId;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -649,7 +650,7 @@ fn run(s3: &str, seed: u64, case: &Case) -> Seen {
     let build = || {
         smeltr::io::build_destination(
             &DestinationKind::Delta(config.clone()),
-            0,
+            DestId(0),
             "d",
             metrics.clone(),
             &secrets,

@@ -5153,6 +5153,7 @@ fn without_timings(error: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::core::id::DestId;
     /// A pinned fetch keeps one certificate, not the file it arrived in. An answer carrying the real authority
     /// beside an attacker's own would otherwise leave the worker trusting both -- after which the attacker is a
     /// leader this worker accepts.
@@ -5688,10 +5689,10 @@ mod tests {
     fn a_dlq_does_not_hold_the_reader_at_the_floor() {
         use crate::core::error::ExceptionKind;
         use crate::plan::config::{Answer, OnException};
-        let to_kafka = || Answer::Deliver(vec![2]);
+        let to_kafka = || Answer::Deliver(vec![DestId(2)]);
         use crate::plan::topology::*;
         let elastic = DestinationConfig {
-            id: 1,
+            id: DestId(1),
             name: "es".into(),
             kind: DestinationKind::Elasticsearch(ElasticDestinationConfig {
                 url: "http://es:9200".into(),
@@ -5711,7 +5712,7 @@ mod tests {
             on_reject: to_kafka(),
         };
         let kafka_dlq = DestinationConfig {
-            id: 2,
+            id: DestId(2),
             name: "dlq".into(),
             kind: DestinationKind::Kafka(KafkaDestinationConfig {
                 payload: crate::plan::config::Payload::Record,
@@ -5734,7 +5735,7 @@ mod tests {
         let route = |to: Vec<crate::core::id::DestId>| CompiledRoute {
             id: "r".into(),
             name: "r".into(),
-            source: 0,
+            source: SourceId(0),
             cond: None,
             pipeline: 0,
             deliver: vec![CompiledDeliverRule {
@@ -5746,7 +5747,7 @@ mod tests {
             on_exception: Default::default(),
         };
         let mut topology = CompiledTopology {
-            routes: vec![route(vec![1])],
+            routes: vec![route(vec![DestId(1)])],
             pipelines: std::collections::HashMap::new(),
             metas: SourceMetas::new(),
             on_exception: {
@@ -5756,7 +5757,7 @@ mod tests {
                 }
                 group
             },
-            dlq_of: std::collections::HashMap::from([(1, vec![2])]),
+            dlq_of: std::collections::HashMap::from([(DestId(1), vec![DestId(2)])]),
             records: std::collections::HashMap::new(),
             native_variants: Default::default(),
             payloads: std::collections::HashMap::new(),
@@ -5768,19 +5769,22 @@ mod tests {
         // it for every batch, and its buffer holds four polls, but the flow goes to Elasticsearch and that queue is
         // what sizes the reader.
         assert_eq!(
-            reader_depth(&topology, &destinations, 0, |d| d.kind.queue_bytes()),
+            reader_depth(&topology, &destinations, SourceId(0), |d| d.kind.queue_bytes()),
             64 * 1024 * 1024
         );
         // Deliver to it as well and it is a destination like any other: the largest queue rules, so a destination
         // that acknowledges late can fill before the reader stops, and the smaller queue still binds on its own.
-        topology.routes = vec![route(vec![1, 2])];
+        topology.routes = vec![route(vec![DestId(1), DestId(2)])];
         assert!(destinations[1].kind.queue_bytes() < 64 * 1024 * 1024);
         assert_eq!(
-            reader_depth(&topology, &destinations, 0, |d| d.kind.queue_bytes()),
+            reader_depth(&topology, &destinations, SourceId(0), |d| d.kind.queue_bytes()),
             64 * 1024 * 1024
         );
         // A source with no routes has no flow to size for: its batch floor alone binds.
-        assert_eq!(reader_depth(&topology, &destinations, 5, |d| d.kind.queue_bytes()), 0);
+        assert_eq!(
+            reader_depth(&topology, &destinations, SourceId(5), |d| d.kind.queue_bytes()),
+            0
+        );
     }
 
     /// A fact goes to the leader under its subject's name, as every sample does: its owner labels it by position,
@@ -5800,8 +5804,8 @@ mod tests {
                     held: Some(fact("source", "smeltr_source_blocked_reason")),
                     connection_error: Some(fact("source", "smeltr_source_connection_error")),
                 }],
-                egress_ids: vec![0],
-                egress_refusals: vec![(0, vec![fact("destination", "smeltr_destination_last_refusal")])],
+                egress_ids: vec![DestId(0)],
+                egress_refusals: vec![(DestId(0), vec![fact("destination", "smeltr_destination_last_refusal")])],
                 subjects: crate::metrics::Subjects {
                     sources: vec!["own-metrics".to_string()],
                     destinations: vec!["es-prod".to_string()],

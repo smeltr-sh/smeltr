@@ -10,6 +10,7 @@
 
 use crate::harness;
 use crate::live;
+use smeltr::core::id::DestId;
 
 use std::borrow::Cow;
 use std::time::{Duration, Instant};
@@ -148,7 +149,7 @@ fn live_rows_are_committed_as_snapshots_of_a_table_it_creates() {
     let records = smeltr::plan::topology::Records::from([(None, record)]);
     let mut d = smeltr::io::build_destination(
         &DestinationKind::Iceberg(config),
-        0,
+        DestId(0),
         "d",
         metrics,
         &secrets,
@@ -325,7 +326,7 @@ fn live_a_table_made_with_narrower_columns_takes_rows_as_its_types() {
     let records = smeltr::plan::topology::Records::from([(None, record)]);
     let mut d = smeltr::io::build_destination(
         &DestinationKind::Iceberg(config),
-        0,
+        DestId(0),
         "d",
         metrics,
         &secrets,

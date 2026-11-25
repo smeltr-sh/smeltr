@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use smeltr::core::buffer::MemoryBudget;
 use smeltr::core::error::ExceptionKind;
-use smeltr::core::id::{DestId, FunctionId};
+use smeltr::core::id::{DestId, FunctionId, SourceId};
 use smeltr::egress::Egress;
 use smeltr::format::encoding::Encoding;
 use smeltr::handoff::{BlockCause, Handoff, reports};
@@ -106,7 +106,7 @@ fn route_cfg(cond: Option<&str>, pipeline: usize, deliver: Vec<DeliverRule>) -> 
     RouteConfig {
         id: "r".to_string(),
         name: "r".to_string(),
-        source: 0,
+        source: SourceId(0),
         cond: cond.map(str::to_string),
         pipeline,
         deliver,
@@ -116,7 +116,7 @@ fn route_cfg(cond: Option<&str>, pipeline: usize, deliver: Vec<DeliverRule>) -> 
 
 /// One catch-all route from source 0 through pipeline 0 to destination 0.
 fn plain_route() -> Vec<RouteConfig> {
-    vec![route_with_deliver(deliver_to(&[0]))]
+    vec![route_with_deliver(deliver_to(&[DestId(0)]))]
 }
 
 fn route_with_deliver(deliver: Vec<DeliverRule>) -> RouteConfig {
@@ -126,8 +126,8 @@ fn route_with_deliver(deliver: Vec<DeliverRule>) -> RouteConfig {
 /// Tagged rows to destination 1 instead of destination 0: the tag field decides, like any other field.
 fn diverting_route() -> Vec<RouteConfig> {
     vec![route_with_deliver(vec![
-        rule(Some("smeltr.exception == null"), &[0]),
-        rule(Some("smeltr.exception != null"), &[1]),
+        rule(Some("smeltr.exception == null"), &[DestId(0)]),
+        rule(Some("smeltr.exception != null"), &[DestId(1)]),
     ])]
 }
 
@@ -176,7 +176,7 @@ fn worker_decoding(
     source: &FakeSource,
     encoding: Encoding,
 ) -> Worker {
-    let metas = SourceMetas::from([(0, SourceMeta::KAFKA.with_encoding(encoding))]);
+    let metas = SourceMetas::from([(SourceId(0), SourceMeta::KAFKA.with_encoding(encoding))]);
     let topology = compile_topology_with(&routes, &pipelines, OnException::default(), &metas).unwrap_or_else(|e| {
         panic!(
             "topology compile failed: {}",
@@ -184,7 +184,7 @@ fn worker_decoding(
         )
     });
     Worker::new(
-        0,
+        SourceId(0),
         Box::new(source.clone()),
         topology,
         Vec::new(),
@@ -200,12 +200,12 @@ fn worker_with_unmatched(
     source: &FakeSource,
     unmatched: Answer,
 ) -> Worker {
-    let metas = SourceMetas::from([(0, SourceMeta::KAFKA)]);
+    let metas = SourceMetas::from([(SourceId(0), SourceMeta::KAFKA)]);
     let mut on_exception = OnException::default();
     on_exception.answers[ExceptionKind::Unmatched.index()] = unmatched;
     let topology = compile_topology_with(&routes, &pipelines, on_exception, &metas).expect("topology compiles");
     Worker::new(
-        0,
+        SourceId(0),
         Box::new(source.clone()),
         topology,
         Vec::new(),
@@ -248,7 +248,7 @@ fn set_unprocessable(w: &mut Worker, answer: Answer) {
 /// A catch-all route through an empty pipeline to `dest` as destination 0.
 fn async_worker(dest: &AsyncDestination, source: &FakeSource) -> Worker {
     let mut w = worker(plain_route(), vec![pipeline(0, vec![])], source);
-    w.add_destination(target_with(0, dest.clone(), Answer::Drop));
+    w.add_destination(target_with(DestId(0), dest.clone(), Answer::Drop));
     w
 }
 
@@ -351,7 +351,7 @@ fn run_on_text_flags(steps: Vec<Step>) -> (Worker, Vec<serde_json::Value>) {
     let src = FakeSource::new([record(r#"{"flag":"yes"}"#, 0, 0), record(r#"{"flag":"no"}"#, 1, 0)]);
     let mut w = worker(plain_route(), vec![pipeline(0, steps)], &src);
     let dest = FakeDestination::new();
-    w.add_destination(target(0, dest.clone()));
+    w.add_destination(target(DestId(0), dest.clone()));
     tick(&mut w).unwrap();
     let sent = dest.sent().iter().map(|r| body(&r.value)).collect();
     (w, sent)
@@ -393,7 +393,7 @@ impl Source for LagFakeSource {
 fn a_source_that_cannot_report_lag_emits_no_lag_metric() {
     let src = FakeSource::new([record("a", 0, 0)]);
     let mut w = worker(plain_route(), vec![pipeline(0, vec![])], &src);
-    w.add_destination(target(0, FakeDestination::new()));
+    w.add_destination(target(DestId(0), FakeDestination::new()));
 
     tick(&mut w).unwrap();
 
@@ -414,7 +414,7 @@ fn a_lag_sample_becomes_a_gauge_labeled_by_source_topic_and_partition() {
     };
     let topology = compile_topology(&plain_route(), &[pipeline(0, vec![])]).unwrap();
     let mut w = Worker::new(
-        0,
+        SourceId(0),
         Box::new(source),
         topology,
         Vec::new(),
@@ -445,7 +445,7 @@ fn a_batch_run_in_slices_is_delivered_whole_and_in_order() {
     let mut w = worker(plain_route(), pipelines, &src);
     w.transform.slice_bytes = 4;
     let dest = FakeDestination::new();
-    w.add_destination(target(0, dest.clone()));
+    w.add_destination(target(DestId(0), dest.clone()));
 
     assert_eq!(tick(&mut w).unwrap(), 5);
     let sent: Vec<String> = dest.sent().iter().map(|r| body(&r.value)["_raw"].to_string()).collect();
@@ -470,7 +470,7 @@ fn a_catch_all_route_delivers_every_row_and_commits_once() {
     let src = FakeSource::new([record("a", 10, 0), record("b", 11, 0)]);
     let mut w = worker(plain_route(), pipelines, &src);
     let dest = FakeDestination::new();
-    w.add_destination(target(0, dest.clone()));
+    w.add_destination(target(DestId(0), dest.clone()));
 
     let n = tick(&mut w).unwrap();
     let sent = dest.sent();
@@ -516,15 +516,15 @@ fn a_catch_all_route_delivers_every_row_and_commits_once() {
 #[test]
 fn a_route_that_delivers_nowhere_is_not_an_error() {
     let other_source = RouteConfig {
-        source: 1,
-        ..route_with_deliver(deliver_to(&[0]))
+        source: SourceId(1),
+        ..route_with_deliver(deliver_to(&[DestId(0)]))
     };
     let no_rules = dropping_declined(vec![route_with_deliver(Vec::new())]).remove(0);
     for (label, route, unrouted) in [("another source", other_source, None), ("no rules", no_rules, Some(1))] {
         let src = FakeSource::new([record("a", 0, 0)]);
         let mut w = worker_with_unmatched(vec![route], vec![pipeline(0, vec![])], &src, Answer::Drop);
         let dest = FakeDestination::new();
-        w.add_destination(target(0, dest.clone()));
+        w.add_destination(target(DestId(0), dest.clone()));
 
         tick(&mut w).unwrap();
         assert!(dest.sent().is_empty(), "{label}");
@@ -555,7 +555,7 @@ fn a_row_no_rule_takes_meets_its_routes_unmatched_answer() {
         on_exception.answers[ExceptionKind::Unmatched.index()] = answer;
         answering(
             on_exception,
-            vec![route_with_deliver(vec![rule(Some(r#"_raw == "x""#), &[0])])],
+            vec![route_with_deliver(vec![rule(Some(r#"_raw == "x""#), &[DestId(0)])])],
         )
     };
     let run = |answer: Answer| {
@@ -568,13 +568,13 @@ fn a_row_no_rule_takes_meets_its_routes_unmatched_answer() {
             Answer::Drop,
         );
         let (taken, leftovers) = (FakeDestination::new(), FakeDestination::new());
-        w.add_destination(target(0, taken.clone()));
-        w.add_destination(target(1, leftovers.clone()));
+        w.add_destination(target(DestId(0), taken.clone()));
+        w.add_destination(target(DestId(1), leftovers.clone()));
         let ticked = tick(&mut w);
         (w, src, taken, leftovers, ticked)
     };
 
-    let (w, src, taken, leftovers, ticked) = run(Answer::Deliver(vec![1]));
+    let (w, src, taken, leftovers, ticked) = run(Answer::Deliver(vec![DestId(1)]));
     ticked.unwrap();
     assert_eq!(text(&taken.sent()[0].value), r#"{"_raw":"x","via":"p"}"#);
     let left = leftovers.sent();
@@ -618,8 +618,8 @@ fn a_row_no_rule_takes_meets_its_routes_unmatched_answer() {
 #[test]
 fn a_row_two_routes_match_runs_both_pipelines() {
     let routes = vec![
-        route_cfg(Some("__source.offset == 0"), 0, deliver_to(&[0])),
-        route_cfg(None, 1, deliver_to(&[1])),
+        route_cfg(Some("__source.offset == 0"), 0, deliver_to(&[DestId(0)])),
+        route_cfg(None, 1, deliver_to(&[DestId(1)])),
     ];
     let pipelines = vec![
         pipeline(0, vec![code(0, r#"via = "a";"#)]),
@@ -628,8 +628,8 @@ fn a_row_two_routes_match_runs_both_pipelines() {
     let src = FakeSource::new([record("x", 0, 0), record("y", 1, 0)]);
     let mut w = worker(routes, pipelines, &src);
     let (a, b) = (FakeDestination::new(), FakeDestination::new());
-    w.add_destination(target(0, a.clone()));
-    w.add_destination(target(1, b.clone()));
+    w.add_destination(target(DestId(0), a.clone()));
+    w.add_destination(target(DestId(1), b.clone()));
 
     tick(&mut w).unwrap();
     let a_sent = a.sent();
@@ -642,8 +642,8 @@ fn a_row_two_routes_match_runs_both_pipelines() {
 #[test]
 fn a_route_condition_on_topic_splits_a_poll_and_offsets_commit_per_topic() {
     let routes = vec![
-        route_cfg(Some("__source.topic == \"orders\""), 0, deliver_to(&[0])),
-        route_cfg(Some("__source.topic != \"orders\""), 1, deliver_to(&[1])),
+        route_cfg(Some("__source.topic == \"orders\""), 0, deliver_to(&[DestId(0)])),
+        route_cfg(Some("__source.topic != \"orders\""), 1, deliver_to(&[DestId(1)])),
     ];
     let pipelines = vec![
         pipeline(0, vec![code(0, "came_from = __source.topic;")]),
@@ -656,8 +656,8 @@ fn a_route_condition_on_topic_splits_a_poll_and_offsets_commit_per_topic() {
     ]);
     let mut w = worker(routes, pipelines, &src);
     let (orders, other) = (FakeDestination::new(), FakeDestination::new());
-    w.add_destination(target(0, orders.clone()));
-    w.add_destination(target(1, other.clone()));
+    w.add_destination(target(DestId(0), orders.clone()));
+    w.add_destination(target(DestId(1), other.clone()));
 
     tick(&mut w).unwrap();
 
@@ -695,15 +695,18 @@ fn a_source_declaring_no_metadata_refuses_a_pipeline_that_reads_it() {
 /// Rules are additive from one pipeline run, a destination named twice gets one copy, and one this worker lacks is skipped.
 #[test]
 fn deliver_rules_fan_out_additively_once_per_held_destination() {
-    let routes = vec![route_with_deliver(vec![rule(None, &[0]), rule(None, &[0, 2, 3])])];
+    let routes = vec![route_with_deliver(vec![
+        rule(None, &[DestId(0)]),
+        rule(None, &[DestId(0), DestId(2), DestId(3)]),
+    ])];
     let pipelines = vec![pipeline(0, vec![code(0, "x = 1;")])];
     let src = FakeSource::new([record("a", 10, 0)]);
     let mut w = worker(routes, pipelines, &src);
     // Out of id order and missing id 3: nothing promises
     // `destinations[i].id == i`.
     let (a, c) = (FakeDestination::new(), FakeDestination::new());
-    w.add_destination(target(2, c.clone()));
-    w.add_destination(target(0, a.clone()));
+    w.add_destination(target(DestId(2), c.clone()));
+    w.add_destination(target(DestId(0), a.clone()));
 
     tick(&mut w).unwrap();
 
@@ -720,13 +723,16 @@ fn deliver_rules_fan_out_additively_once_per_held_destination() {
 /// A destination id is a position in the bundle, not a bit: one past any word width delivers like any other.
 #[test]
 fn a_destination_id_past_a_word_width_delivers() {
-    let routes = vec![route_with_deliver(vec![rule(None, &[70]), rule(None, &[3])])];
+    let routes = vec![route_with_deliver(vec![
+        rule(None, &[DestId(70)]),
+        rule(None, &[DestId(3)]),
+    ])];
     let pipelines = vec![pipeline(0, vec![code(0, "x = 1;")])];
     let src = FakeSource::new([record("a", 10, 0), record("b", 11, 0)]);
     let mut w = worker(routes, pipelines, &src);
     let (far, near) = (FakeDestination::new(), FakeDestination::new());
-    w.add_destination(target(70, far.clone()));
-    w.add_destination(target(3, near.clone()));
+    w.add_destination(target(DestId(70), far.clone()));
+    w.add_destination(target(DestId(3), near.clone()));
 
     tick(&mut w).unwrap();
 
@@ -742,8 +748,8 @@ fn a_destination_id_past_a_word_width_delivers() {
 #[test]
 fn a_deliver_condition_selects_rows_by_a_computed_field() {
     let routes = dropping_declined(vec![route_with_deliver(vec![
-        rule(Some("sev > 2"), &[0]),
-        rule(Some("sev > 6"), &[1]),
+        rule(Some("sev > 2"), &[DestId(0)]),
+        rule(Some("sev > 6"), &[DestId(1)]),
     ])]);
     let pipelines = vec![pipeline(
         0,
@@ -760,8 +766,8 @@ fn a_deliver_condition_selects_rows_by_a_computed_field() {
     ]);
     let mut w = worker(routes, pipelines, &src);
     let (a, b) = (FakeDestination::new(), FakeDestination::new());
-    w.add_destination(target(0, a.clone()));
-    w.add_destination(target(1, b.clone()));
+    w.add_destination(target(DestId(0), a.clone()));
+    w.add_destination(target(DestId(1), b.clone()));
 
     tick(&mut w).unwrap();
 
@@ -782,7 +788,7 @@ fn a_dropped_row_is_delivered_nowhere_and_counted_under_its_function() {
     let src = FakeSource::new([record("a", 0, 0), record("b", 1, 0)]);
     let mut w = worker(plain_route(), pipelines, &src);
     let dest = FakeDestination::new();
-    w.add_destination(target(0, dest.clone()));
+    w.add_destination(target(DestId(0), dest.clone()));
 
     tick(&mut w).unwrap();
 
@@ -811,7 +817,7 @@ fn an_ifs_condition_is_counted_under_the_if() {
     )];
     let src = FakeSource::new([record("a", 0, 0), record("", 1, 0)]);
     let mut w = worker(plain_route(), pipelines, &src);
-    w.add_destination(target(0, FakeDestination::new()));
+    w.add_destination(target(DestId(0), FakeDestination::new()));
 
     tick(&mut w).unwrap();
 
@@ -843,7 +849,7 @@ fn an_ifs_else_guard_is_counted_under_the_if() {
     )];
     let src = FakeSource::new([record("a", 0, 0), record("", 1, 0)]);
     let mut w = worker(plain_route(), pipelines, &src);
-    w.add_destination(target(0, FakeDestination::new()));
+    w.add_destination(target(DestId(0), FakeDestination::new()));
 
     tick(&mut w).unwrap();
 
@@ -941,7 +947,7 @@ fn pipeline_set_placement_and_id_reach_the_destination_unserialized() {
     let src = FakeSource::new([record("a", 0, 0), record("b", 1, 0)]);
     let mut w = worker(plain_route(), pipelines, &src);
     let dest = FakeDestination::new();
-    w.add_destination(keyed(0, dest.clone()));
+    w.add_destination(keyed(DestId(0), dest.clone()));
 
     tick(&mut w).unwrap();
 
@@ -968,7 +974,7 @@ fn a_literal_placement_and_id_reach_the_destination_on_every_row() {
     let src = FakeSource::new([record("a", 0, 0), record("b", 1, 0)]);
     let mut w = worker(plain_route(), pipelines, &src);
     let dest = FakeDestination::new();
-    w.add_destination(keyed(0, dest.clone()));
+    w.add_destination(keyed(DestId(0), dest.clone()));
 
     tick(&mut w).unwrap();
 
@@ -996,7 +1002,7 @@ fn a_records_source_coordinates_make_a_unique_id() {
     let src = FakeSource::new([record(r#"{"a":1}"#, 7, 0), record(r#"{"a":1}"#, 7, 1)]);
     let mut w = worker(plain_route(), pipelines, &src);
     let dest = FakeDestination::new();
-    w.add_destination(keyed(0, dest.clone()));
+    w.add_destination(keyed(DestId(0), dest.clone()));
 
     tick(&mut w).unwrap();
 
@@ -1031,7 +1037,7 @@ fn a_records_headers_are_an_object_of_text() {
     let src = FakeSource::new([r]);
     let mut w = worker(plain_route(), pipelines, &src);
     let dest = FakeDestination::new();
-    w.add_destination(target(0, dest.clone()));
+    w.add_destination(target(DestId(0), dest.clone()));
 
     tick(&mut w).unwrap();
 
@@ -1048,9 +1054,9 @@ fn a_records_headers_are_an_object_of_text() {
 #[test]
 fn headers_are_read_where_a_route_or_its_pipeline_names_them() {
     let reads = |cond: Option<&str>, body: &str| {
-        let routes = vec![route_cfg(cond, 0, deliver_to(&[0]))];
+        let routes = vec![route_cfg(cond, 0, deliver_to(&[DestId(0)]))];
         let topology = compile_topology(&routes, &[pipeline(0, vec![code(0, body)])]).expect("compiles");
-        topology.reads(0, "__source.headers")
+        topology.reads(SourceId(0), "__source.headers")
     };
     assert!(!reads(None, "a = 1;"));
     assert!(reads(None, "a = __source.headers.trace;"));
@@ -1062,7 +1068,11 @@ fn headers_are_read_where_a_route_or_its_pipeline_names_them() {
 fn a_header_repaired_for_a_route_condition_marks_the_row() {
     let routes = answering(
         tagging_repairs(),
-        vec![route_cfg(Some("__source.headers.bad != null"), 0, deliver_to(&[0]))],
+        vec![route_cfg(
+            Some("__source.headers.bad != null"),
+            0,
+            deliver_to(&[DestId(0)]),
+        )],
     );
     let pipelines = vec![pipeline(0, vec![code(0, "a = 1;")])];
     let mut r = record("{}", 0, 0);
@@ -1070,7 +1080,7 @@ fn a_header_repaired_for_a_route_condition_marks_the_row() {
     let src = FakeSource::new([r]);
     let mut w = worker(routes, pipelines, &src);
     let dest = FakeDestination::new();
-    w.add_destination(target(0, dest.clone()));
+    w.add_destination(target(DestId(0), dest.clone()));
 
     tick(&mut w).unwrap();
 
@@ -1097,7 +1107,7 @@ fn a_reserved_field_is_still_readable_after_a_dynamic_parser() {
         let src = FakeSource::new([record(r#"{"a":1}"#, 7, 3)]);
         let mut w = worker(plain_route(), pipelines, &src);
         let dest = FakeDestination::new();
-        w.add_destination(target(0, dest.clone()));
+        w.add_destination(target(DestId(0), dest.clone()));
 
         tick(&mut w).unwrap();
 
@@ -1111,7 +1121,12 @@ fn a_reserved_field_is_still_readable_after_a_dynamic_parser() {
 /// Identity is the field the destination's `idField` names, read as text, else `__destination.id`, else none.
 #[test]
 fn document_identity_resolves_per_destination() {
-    let routes = vec![route_with_deliver(deliver_to(&[0, 1, 2, 3]))];
+    let routes = vec![route_with_deliver(deliver_to(&[
+        DestId(0),
+        DestId(1),
+        DestId(2),
+        DestId(3),
+    ]))];
     let pipelines = vec![pipeline(
         0,
         vec![
@@ -1129,13 +1144,13 @@ fn document_identity_resolves_per_destination() {
         record(r#"{"other":1}"#, 2, 0),
     ]);
     let mut topology = compile_topology(&routes, &pipelines).expect("compiles");
-    topology.id_fields = vec![(0, "event.id".to_string()), (1, "seq".to_string())];
+    topology.id_fields = vec![(DestId(0), "event.id".to_string()), (DestId(1), "seq".to_string())];
     let mut w = worker_of(topology, &src);
     let dests: Vec<FakeDestination> = (0..4).map(|_| FakeDestination::new()).collect();
-    w.add_destination(keyed(0, dests[0].clone()));
-    w.add_destination(keyed(1, dests[1].clone()));
-    w.add_destination(keyed(2, dests[2].clone()));
-    w.add_destination(target(3, dests[3].clone()));
+    w.add_destination(keyed(DestId(0), dests[0].clone()));
+    w.add_destination(keyed(DestId(1), dests[1].clone()));
+    w.add_destination(keyed(DestId(2), dests[2].clone()));
+    w.add_destination(target(DestId(3), dests[3].clone()));
 
     tick(&mut w).unwrap();
 
@@ -1171,8 +1186,8 @@ fn document_identity_resolves_per_destination() {
 fn a_tagged_row_is_placed_by_the_delivery_rules() {
     let copying = || {
         vec![route_with_deliver(vec![
-            rule(None, &[0]),
-            rule(Some("smeltr.exception != null"), &[1]),
+            rule(None, &[DestId(0)]),
+            rule(Some("smeltr.exception != null"), &[DestId(1)]),
         ])]
     };
     for (label, routes, want_main, want_dlq) in [
@@ -1184,8 +1199,8 @@ fn a_tagged_row_is_placed_by_the_delivery_rules() {
         let src = FakeSource::new([record(r#"{"status":200}"#, 0, 0), record("[1,2,3]", 1, 0)]);
         let mut w = worker(routes, pipelines, &src);
         let (main, dlq) = (FakeDestination::new(), FakeDestination::new());
-        w.add_destination(target(0, main.clone()));
-        w.add_destination(target(1, dlq.clone()));
+        w.add_destination(target(DestId(0), main.clone()));
+        w.add_destination(target(DestId(1), dlq.clone()));
 
         tick(&mut w).unwrap();
 
@@ -1228,8 +1243,8 @@ fn an_exception_tags_its_row_with_its_message() {
         let src = FakeSource::new([record(raw, offset, 0)]);
         let mut w = worker(diverting_route(), vec![pipeline(0, steps)], &src);
         let (main, dlq) = (FakeDestination::new(), FakeDestination::new());
-        w.add_destination(target(0, main.clone()));
-        w.add_destination(target(1, dlq.clone()));
+        w.add_destination(target(DestId(0), main.clone()));
+        w.add_destination(target(DestId(1), dlq.clone()));
 
         tick(&mut w).unwrap();
 
@@ -1256,18 +1271,18 @@ fn an_exception_tags_its_row_with_its_message() {
 #[test]
 fn a_deliver_rule_can_route_on_what_went_wrong() {
     let routes = vec![route_with_deliver(vec![
-        rule(Some("smeltr.exception == null"), &[0]),
+        rule(Some("smeltr.exception == null"), &[DestId(0)]),
         rule(
             Some(r#"startsWith(smeltr.exception.exceptions[0].kind as str, "Unparsable")"#),
-            &[1],
+            &[DestId(1)],
         ),
         rule(
             Some(r#"startsWith(smeltr.exception.exceptions[0].kind as str, "DivideByZero")"#),
-            &[2],
+            &[DestId(2)],
         ),
         rule(
             Some(r#"!startsWith(smeltr.exception.exceptions[0].kind as str, "Unparsable")"#),
-            &[3],
+            &[DestId(3)],
         ),
     ])];
     let pipelines = vec![pipeline(
@@ -1285,7 +1300,7 @@ fn a_deliver_rule_can_route_on_what_went_wrong() {
     let mut w = worker(routes, pipelines, &src);
     let dests: Vec<FakeDestination> = (0..4).map(|_| FakeDestination::new()).collect();
     for (id, d) in dests.iter().enumerate() {
-        w.add_destination(target(id as DestId, d.clone()));
+        w.add_destination(target(DestId::try_from(id).unwrap(), d.clone()));
     }
 
     tick(&mut w).unwrap();
@@ -1314,12 +1329,12 @@ fn run_pipeline_rows(p: PipelineConfig, raw: &[&str]) -> Vec<serde_json::Value> 
 
 /// `run_pipeline_rows`, its route answering exceptions with `on_exception`.
 fn run_answered_rows(on_exception: OnException, p: PipelineConfig, raw: &[&str]) -> Vec<serde_json::Value> {
-    let routes = answering(on_exception, vec![route_with_deliver(vec![rule(None, &[0])])]);
+    let routes = answering(on_exception, vec![route_with_deliver(vec![rule(None, &[DestId(0)])])]);
     let pipelines = vec![p];
     let src = FakeSource::new(raw.iter().enumerate().map(|(i, r)| record(r, i as i64, 0)));
     let mut w = worker(routes, pipelines, &src);
     let d = FakeDestination::new();
-    w.add_destination(target(0, d.clone()));
+    w.add_destination(target(DestId(0), d.clone()));
     tick(&mut w).unwrap();
     d.sent().iter().map(|r| body(&r.value)).collect()
 }
@@ -1453,16 +1468,16 @@ fn a_route_names_its_own_tag_field() {
         ],
     );
     let mut route = route_with_deliver(vec![
-        rule(Some("siem.reason == null"), &[0]),
-        rule(Some("siem.reason != null"), &[1]),
+        rule(Some("siem.reason == null"), &[DestId(0)]),
+        rule(Some("siem.reason != null"), &[DestId(1)]),
     ]);
     route.on_exception.tag_field = "siem.reason".to_string();
     let routes = vec![route];
     let src = FakeSource::new([record(r#"{"status":2}"#, 0, 0), record(r#"{"status":0}"#, 1, 0)]);
     let mut w = worker(routes, vec![p], &src);
     let (main, dlq) = (FakeDestination::new(), FakeDestination::new());
-    w.add_destination(target(0, main.clone()));
-    w.add_destination(target(1, dlq.clone()));
+    w.add_destination(target(DestId(0), main.clone()));
+    w.add_destination(target(DestId(1), dlq.clone()));
 
     tick(&mut w).unwrap();
 
@@ -1495,15 +1510,15 @@ fn a_rule_reads_the_tag_field_as_the_row_holds_it() {
         ),
     ] {
         let mut route = route_with_deliver(vec![
-            rule(Some(r#"verdict as str == "ok""#), &[0]),
-            rule(Some(r#"verdict as str != "ok""#), &[1]),
+            rule(Some(r#"verdict as str == "ok""#), &[DestId(0)]),
+            rule(Some(r#"verdict as str != "ok""#), &[DestId(1)]),
         ]);
         route.on_exception.tag_field = "verdict".to_string();
         let src = FakeSource::new([record(clean, 0, 0), record(r#"{"n":0,"verdict":"ok"}"#, 1, 0)]);
         let mut w = worker(vec![route], vec![pipeline(0, vec![code(0, steps)])], &src);
         let (main, other) = (FakeDestination::new(), FakeDestination::new());
-        w.add_destination(target(0, main.clone()));
-        w.add_destination(target(1, other.clone()));
+        w.add_destination(target(DestId(0), main.clone()));
+        w.add_destination(target(DestId(1), other.clone()));
 
         tick(&mut w).unwrap();
 
@@ -1530,15 +1545,15 @@ fn a_rule_reading_the_tags_parent_sees_the_tag() {
         )],
     );
     let mut route = route_with_deliver(vec![
-        rule(Some("length(keys(siem)) == 1"), &[0]),
-        rule(Some("length(keys(siem)) == 2"), &[1]),
+        rule(Some("length(keys(siem)) == 1"), &[DestId(0)]),
+        rule(Some("length(keys(siem)) == 2"), &[DestId(1)]),
     ]);
     route.on_exception.tag_field = "siem.reason".to_string();
     let src = FakeSource::new([record(r#"{"n":2}"#, 0, 0), record(r#"{"n":0}"#, 1, 0)]);
     let mut w = worker(vec![route], vec![p], &src);
     let (main, dlq) = (FakeDestination::new(), FakeDestination::new());
-    w.add_destination(target(0, main.clone()));
-    w.add_destination(target(1, dlq.clone()));
+    w.add_destination(target(DestId(0), main.clone()));
+    w.add_destination(target(DestId(1), dlq.clone()));
 
     tick(&mut w).unwrap();
 
@@ -1573,7 +1588,7 @@ fn a_pipeline_set_to_drop_lets_a_failed_row_go() {
     let src = FakeSource::new([record(r#"{"status":200}"#, 0, 0), record("[1,2,3]", 1, 0)]);
     let mut w = worker(failing(Answer::Drop), vec![p], &src);
     let dest = FakeDestination::new();
-    w.add_destination(target(0, dest.clone()));
+    w.add_destination(target(DestId(0), dest.clone()));
 
     tick(&mut w).unwrap();
 
@@ -1612,7 +1627,7 @@ fn a_row_takes_the_strongest_answer_of_its_kinds() {
     ]);
     let mut w = worker(answering(on_exception, plain_route()), vec![p], &src);
     let dest = FakeDestination::new();
-    w.add_destination(target(0, dest.clone()));
+    w.add_destination(target(DestId(0), dest.clone()));
 
     tick(&mut w).unwrap();
 
@@ -1641,7 +1656,7 @@ fn a_dropped_failed_row_is_counted_once_across_a_retry() {
     let mut w = worker(failing(Answer::Drop), vec![p], &src);
     let dest = FakeDestination::new();
     dest.fail_next_sends(1);
-    w.add_destination(target(0, dest.clone()));
+    w.add_destination(target(DestId(0), dest.clone()));
     let dropped = |w: &Worker| {
         counter(
             w,
@@ -1671,7 +1686,7 @@ fn a_pipeline_set_to_block_blocks_the_source() {
     let src = FakeSource::new([record(r#"{"status":200}"#, 0, 0), record("[1,2,3]", 1, 0)]);
     let mut w = worker(failing(Answer::Block), vec![p], &src);
     let dest = FakeDestination::new();
-    w.add_destination(target(0, dest.clone()));
+    w.add_destination(target(DestId(0), dest.clone()));
 
     let e = tick(&mut w).expect_err("block fails the tick so nothing commits");
     let e = e.to_string();
@@ -1712,15 +1727,15 @@ fn a_pipeline_set_to_block_blocks_the_source() {
 fn a_block_on_a_later_route_sends_and_counts_nothing_from_an_earlier_one() {
     let blocking = RouteConfig {
         on_exception: OnException::every(Answer::Block),
-        ..route_cfg(None, 1, deliver_to(&[1]))
+        ..route_cfg(None, 1, deliver_to(&[DestId(1)]))
     };
-    let routes = vec![route_cfg(None, 0, deliver_to(&[0])), blocking];
+    let routes = vec![route_cfg(None, 0, deliver_to(&[DestId(0)])), blocking];
     let parsing = pipeline(1, vec![code(0, "status: i64; Object.assign($, json(_raw));")]);
     let src = FakeSource::new([record(r#"{"status":200}"#, 0, 0), record("[1,2,3]", 1, 0)]);
     let mut w = worker(routes, vec![pipeline(0, vec![]), parsing], &src);
     let (first, second) = (AsyncDestination::new(), AsyncDestination::new());
-    w.add_destination(target(0, first.clone()));
-    w.add_destination(target(1, second.clone()));
+    w.add_destination(target(DestId(0), first.clone()));
+    w.add_destination(target(DestId(1), second.clone()));
 
     tick(&mut w).expect_err("the second route blocks");
     tick(&mut w).expect("a held batch is not run again");
@@ -1736,7 +1751,7 @@ fn a_pipeline_set_to_block_passes_a_healthy_batch() {
     let src = FakeSource::new([record(r#"{"status":200}"#, 0, 0)]);
     let mut w = worker(failing(Answer::Block), vec![p], &src);
     let dest = FakeDestination::new();
-    w.add_destination(target(0, dest.clone()));
+    w.add_destination(target(DestId(0), dest.clone()));
 
     tick(&mut w).unwrap();
 
@@ -1757,7 +1772,7 @@ fn an_unroll_fan_out_delivers_every_element_and_commits_once() {
     let src = FakeSource::new([record(r#"{"tags":[1,2,3,4,5]}"#, 0, 0)]);
     let mut w = worker(plain_route(), pipelines, &src);
     let dest = FakeDestination::new();
-    w.add_destination(target(0, dest.clone()));
+    w.add_destination(target(DestId(0), dest.clone()));
 
     let n = tick(&mut w).unwrap();
     assert_eq!(n, 1, "one source record, whatever its fan-out");
@@ -1786,8 +1801,8 @@ fn a_failure_recorded_before_unroll_follows_every_row_it_fanned_out_into() {
     let src = FakeSource::new([record(r#"{"status":1,"tags":[1,2,3]}"#, 0, 0)]);
     let mut w = worker(diverting_route(), pipelines, &src);
     let (main, dlq) = (FakeDestination::new(), FakeDestination::new());
-    w.add_destination(target(0, main.clone()));
-    w.add_destination(target(1, dlq.clone()));
+    w.add_destination(target(DestId(0), main.clone()));
+    w.add_destination(target(DestId(1), dlq.clone()));
 
     tick(&mut w).unwrap();
 
@@ -1824,14 +1839,14 @@ fn a_delivered_row_reaches_its_target_and_not_the_deliver_rules() {
             ],
         );
         p.step_ids = vec!["parse".to_string(), "ratio".to_string()];
-        let routes = answering_kind(&[(ExceptionKind::DivideByZero, deliver(&[1]))]);
+        let routes = answering_kind(&[(ExceptionKind::DivideByZero, deliver(&[DestId(1)]))]);
         // The failed row first, so its target's set is interned before the healthy row's.
         let src = FakeSource::new([record(r#"{"status": 0}"#, 0, 0), record(r#"{"status":2}"#, 1, 0)]);
         let mut w = worker(routes, vec![p], &src);
-        writes(&mut w, 1, payload.clone());
+        writes(&mut w, DestId(1), payload.clone());
         let (main, failed) = (FakeDestination::new(), FakeDestination::new());
-        w.add_destination(target(0, main.clone()));
-        w.add_destination(target(1, failed.clone()));
+        w.add_destination(target(DestId(0), main.clone()));
+        w.add_destination(target(DestId(1), failed.clone()));
 
         tick(&mut w).unwrap();
 
@@ -1881,14 +1896,14 @@ fn source_bytes_survive_an_unroll() {
                 code(2, "unroll(tags);"),
             ],
         );
-        let routes = answering_kind(&[(ExceptionKind::DivideByZero, deliver(&[1]))]);
+        let routes = answering_kind(&[(ExceptionKind::DivideByZero, deliver(&[DestId(1)]))]);
         let raw = r#"{"status":1,"tags":[1,2]}"#;
         let src = FakeSource::new([record(raw, 0, 0)]);
         let mut w = worker(routes, vec![p], &src);
-        writes(&mut w, 1, payload.clone());
+        writes(&mut w, DestId(1), payload.clone());
         let (main, failed) = (FakeDestination::new(), FakeDestination::new());
-        w.add_destination(target(0, main.clone()));
-        w.add_destination(target(1, failed.clone()));
+        w.add_destination(target(DestId(0), main.clone()));
+        w.add_destination(target(DestId(1), failed.clone()));
 
         tick(&mut w).unwrap();
 
@@ -1907,11 +1922,11 @@ fn source_bytes_survive_an_unroll() {
 fn a_text_destination_writes_its_field_and_refuses_a_row_without_it() {
     let p = pipeline(0, vec![code(0, r#"msg: str; Object.assign($, json(_raw));"#)]);
     let src = FakeSource::new([record(r#"{"msg":"hello"}"#, 0, 0), record(r#"{"other":1}"#, 1, 0)]);
-    let mut w = worker_with_dlqs(plain_route(), vec![p], &src, &[(0, vec![1])]);
-    writes(&mut w, 0, Payload::Text { field: "msg".into() });
+    let mut w = worker_with_dlqs(plain_route(), vec![p], &src, &[(DestId(0), vec![DestId(1)])]);
+    writes(&mut w, DestId(0), Payload::Text { field: "msg".into() });
     let (main, dlq) = (FakeDestination::new(), FakeDestination::new());
-    w.add_destination(target_with(0, main.clone(), salvage_to(&[1])));
-    w.add_destination(target_with(1, dlq.clone(), Answer::Drop));
+    w.add_destination(target_with(DestId(0), main.clone(), salvage_to(&[DestId(1)])));
+    w.add_destination(target_with(DestId(1), dlq.clone(), Answer::Drop));
 
     tick(&mut w).unwrap();
 
@@ -1931,9 +1946,9 @@ fn a_source_bytes_destination_gets_the_source_bytes() {
     let raw = r#"{"a": 1}"#;
     let src = FakeSource::new([record(raw, 0, 0)]);
     let mut w = worker(plain_route(), vec![p], &src);
-    writes(&mut w, 0, Payload::source_bytes());
+    writes(&mut w, DestId(0), Payload::source_bytes());
     let dest = FakeDestination::new();
-    w.add_destination(target(0, dest.clone()));
+    w.add_destination(target(DestId(0), dest.clone()));
 
     tick(&mut w).unwrap();
 
@@ -1953,11 +1968,11 @@ fn an_unrolled_record_keeps_one_copy_of_its_source() {
         ],
     );
     let src = FakeSource::new([record(r#"{"tags":[1,2,3]}"#, 0, 0)]);
-    let mut w = worker_with_dlqs(plain_route(), vec![p], &src, &[(0, vec![1])]);
-    writes(&mut w, 1, Payload::source_bytes());
+    let mut w = worker_with_dlqs(plain_route(), vec![p], &src, &[(DestId(0), vec![DestId(1)])]);
+    writes(&mut w, DestId(1), Payload::source_bytes());
     let main = FakeDestination::new();
-    w.add_destination(target_with(0, main.clone(), deliver(&[1])));
-    w.add_destination(target(1, FakeDestination::new()));
+    w.add_destination(target_with(DestId(0), main.clone(), deliver(&[DestId(1)])));
+    w.add_destination(target(DestId(1), FakeDestination::new()));
 
     tick(&mut w).unwrap();
 
@@ -1979,18 +1994,18 @@ fn a_row_two_kinds_deliver_reaches_both_targets() {
         )],
     );
     let routes = answering_kind(&[
-        (ExceptionKind::NaN, deliver(&[1])),
-        (ExceptionKind::DivideByZero, deliver(&[2])),
+        (ExceptionKind::NaN, deliver(&[DestId(1)])),
+        (ExceptionKind::DivideByZero, deliver(&[DestId(2)])),
     ]);
     let raw = r#"{"status":0,"v":NaN}"#;
     let src = FakeSource::new([record(raw, 0, 0)]);
     let mut w = worker(routes, vec![p], &src);
     let dests: Vec<FakeDestination> = (0..3).map(|_| FakeDestination::new()).collect();
     for (id, d) in dests.iter().enumerate() {
-        w.add_destination(target(id as DestId, d.clone()));
+        w.add_destination(target(DestId::try_from(id).unwrap(), d.clone()));
     }
-    writes(&mut w, 1, Payload::source_bytes());
-    writes(&mut w, 2, Payload::source_bytes());
+    writes(&mut w, DestId(1), Payload::source_bytes());
+    writes(&mut w, DestId(2), Payload::source_bytes());
 
     tick(&mut w).unwrap();
 
@@ -2008,14 +2023,14 @@ fn a_row_two_kinds_deliver_reaches_both_targets() {
 /// Routing leaves `__live` holding every row: what makes a row unmatched is the union of the routes' own masks.
 #[test]
 fn a_row_no_route_took_reaches_the_unmatched_destination_as_source_bytes() {
-    let routes = vec![route_cfg(Some("__source.offset == 0"), 0, deliver_to(&[0]))];
+    let routes = vec![route_cfg(Some("__source.offset == 0"), 0, deliver_to(&[DestId(0)]))];
     let pipelines = vec![pipeline(0, vec![code(0, r#"via = "a";"#)])];
     let src = FakeSource::new([record("x", 0, 0), record("y", 1, 0)]);
-    let mut w = worker_with_unmatched(routes, pipelines, &src, deliver(&[1]));
+    let mut w = worker_with_unmatched(routes, pipelines, &src, deliver(&[DestId(1)]));
     let (routed, leftover) = (FakeDestination::new(), FakeDestination::new());
-    w.add_destination(target(0, routed.clone()));
-    w.add_destination(target(1, leftover.clone()));
-    writes(&mut w, 1, Payload::source_bytes());
+    w.add_destination(target(DestId(0), routed.clone()));
+    w.add_destination(target(DestId(1), leftover.clone()));
+    writes(&mut w, DestId(1), Payload::source_bytes());
 
     tick(&mut w).unwrap();
 
@@ -2049,10 +2064,10 @@ fn a_row_no_route_took_reaches_the_unmatched_destination_as_source_bytes() {
 #[test]
 fn an_unmatched_row_delivered_as_record_reaches_every_destination_as_its_raw() {
     let src = FakeSource::new([record(r#"say "hi""#, 0, 0)]);
-    let mut w = worker_with_unmatched(Vec::new(), Vec::new(), &src, deliver(&[0, 1]));
+    let mut w = worker_with_unmatched(Vec::new(), Vec::new(), &src, deliver(&[DestId(0), DestId(1)]));
     let (one, two) = (FakeDestination::new(), FakeDestination::new());
-    w.add_destination(target(0, one.clone()));
-    w.add_destination(target(1, two.clone()));
+    w.add_destination(target(DestId(0), one.clone()));
+    w.add_destination(target(DestId(1), two.clone()));
 
     tick(&mut w).unwrap();
 
@@ -2076,10 +2091,10 @@ fn an_unmatched_row_delivered_as_record_reaches_every_destination_as_its_raw() {
 fn an_unmatched_row_goes_as_its_destination_writes_it() {
     for payload in [raw_text(), Payload::source_bytes()] {
         let src = FakeSource::new([record(r#"say "hi""#, 0, 0)]);
-        let mut w = worker_with_unmatched(Vec::new(), Vec::new(), &src, deliver(&[0]));
-        writes(&mut w, 0, payload.clone());
+        let mut w = worker_with_unmatched(Vec::new(), Vec::new(), &src, deliver(&[DestId(0)]));
+        writes(&mut w, DestId(0), payload.clone());
         let dest = FakeDestination::new();
-        w.add_destination(target(0, dest.clone()));
+        w.add_destination(target(DestId(0), dest.clone()));
         tick(&mut w).unwrap();
         let sent = dest.sent();
         assert_eq!(
@@ -2093,11 +2108,11 @@ fn an_unmatched_row_goes_as_its_destination_writes_it() {
 /// Under drop the row is dropped, and counted.
 #[test]
 fn an_unmatched_row_under_drop_is_dropped_and_counted() {
-    let routes = vec![route_cfg(Some("__source.offset == 0"), 0, deliver_to(&[0]))];
+    let routes = vec![route_cfg(Some("__source.offset == 0"), 0, deliver_to(&[DestId(0)]))];
     let src = FakeSource::new([record("x", 0, 0), record("y", 1, 0)]);
     let mut w = worker_with_unmatched(routes, vec![pipeline(0, vec![])], &src, Answer::Drop);
     let dest = FakeDestination::new();
-    w.add_destination(target(0, dest.clone()));
+    w.add_destination(target(DestId(0), dest.clone()));
 
     tick(&mut w).unwrap();
 
@@ -2117,11 +2132,11 @@ fn an_unmatched_row_under_drop_is_dropped_and_counted() {
 /// the same rows would meet the same routes. Nothing is sent, nothing commits, and the reason names both fixes.
 #[test]
 fn an_unmatched_row_under_block_blocks_the_source_before_any_route_runs() {
-    let routes = vec![route_cfg(Some("__source.offset == 0"), 0, deliver_to(&[0]))];
+    let routes = vec![route_cfg(Some("__source.offset == 0"), 0, deliver_to(&[DestId(0)]))];
     let src = FakeSource::new([record("x", 0, 0), record("y", 1, 0)]);
     let mut w = worker(routes, vec![pipeline(0, vec![])], &src);
     let dest = FakeDestination::new();
-    w.add_destination(target(0, dest.clone()));
+    w.add_destination(target(DestId(0), dest.clone()));
 
     let e = tick(&mut w).expect_err("block fails the tick so nothing commits");
     assert!(e.to_string().contains("matched no route"), "{e}");
@@ -2179,9 +2194,9 @@ fn a_source_with_no_routes_commits_rather_than_blocking_its_reader() {
         let src = FakeSource::new([record("x", 0, 0), record("y", 1, 0)]);
         let mut w = match &dlq {
             Some(d) => {
-                let mut w = worker_with_unmatched(vec![], vec![], &src, deliver(&[0]));
-                w.add_destination(target(0, d.clone()));
-                writes(&mut w, 0, Payload::source_bytes());
+                let mut w = worker_with_unmatched(vec![], vec![], &src, deliver(&[DestId(0)]));
+                w.add_destination(target(DestId(0), d.clone()));
+                writes(&mut w, DestId(0), Payload::source_bytes());
                 w
             }
             None => worker_with_unmatched(vec![], vec![], &src, Answer::Drop),
@@ -2223,10 +2238,10 @@ fn a_source_with_no_routes_commits_rather_than_blocking_its_reader() {
 #[test]
 fn an_unconditional_route_leaves_nothing_unmatched() {
     let src = FakeSource::new([record("x", 0, 0), record("y", 1, 0)]);
-    let mut w = worker_with_unmatched(plain_route(), vec![pipeline(0, vec![])], &src, deliver(&[1]));
+    let mut w = worker_with_unmatched(plain_route(), vec![pipeline(0, vec![])], &src, deliver(&[DestId(1)]));
     let (routed, leftover) = (FakeDestination::new(), FakeDestination::new());
-    w.add_destination(target(0, routed.clone()));
-    w.add_destination(target(1, leftover.clone()));
+    w.add_destination(target(DestId(0), routed.clone()));
+    w.add_destination(target(DestId(1), leftover.clone()));
 
     tick(&mut w).unwrap();
 
@@ -2249,10 +2264,10 @@ fn an_unconditional_route_leaves_nothing_unmatched() {
 fn a_refused_unmatched_row_obeys_the_destination_s_reject_policy() {
     for (label, policy, want_commit) in [("block", Answer::Block, false), ("drop", Answer::Drop, true)] {
         let src = FakeSource::new([record("x", 0, 0)]);
-        let mut w = worker_with_unmatched(vec![], vec![], &src, deliver(&[0]));
+        let mut w = worker_with_unmatched(vec![], vec![], &src, deliver(&[DestId(0)]));
         let dlq = FakeDestination::new();
         dlq.reject_next_sends(usize::MAX);
-        w.add_destination(target_with(0, dlq.clone(), policy));
+        w.add_destination(target_with(DestId(0), dlq.clone(), policy));
 
         tick(&mut w).expect("the row was handed over; the refusal is the destination's answer");
 
@@ -2286,9 +2301,9 @@ fn a_refused_unmatched_row_obeys_the_destination_s_reject_policy() {
 #[test]
 fn an_unmatched_row_carries_no_identity() {
     let src = FakeSource::new([record("x", 0, 0), record("y", 1, 0)]);
-    let mut w = worker_with_unmatched(vec![], vec![], &src, deliver(&[0]));
+    let mut w = worker_with_unmatched(vec![], vec![], &src, deliver(&[DestId(0)]));
     let dlq = FakeDestination::new();
-    w.add_destination(keyed(0, dlq.clone()));
+    w.add_destination(keyed(DestId(0), dlq.clone()));
 
     tick(&mut w).unwrap();
 
@@ -2309,11 +2324,11 @@ fn a_diverted_poison_batch_reaches_the_dlq_exactly_once_under_its_own_id() {
         &src,
     );
     let dlq = AsyncDestination::new();
-    w.add_destination(target(0, FakeDestination::new()));
+    w.add_destination(target(DestId(0), FakeDestination::new()));
     poison(&mut w);
-    w.add_destination(target(1, dlq.clone()));
-    set_unprocessable(&mut w, deliver(&[1]));
-    writes(&mut w, 1, Payload::source_bytes());
+    w.add_destination(target(DestId(1), dlq.clone()));
+    set_unprocessable(&mut w, deliver(&[DestId(1)]));
+    writes(&mut w, DestId(1), Payload::source_bytes());
 
     assert_eq!(tick(&mut w).unwrap(), 1);
 
@@ -2346,10 +2361,15 @@ fn a_diverted_poison_batch_reaches_the_dlq_exactly_once_under_its_own_id() {
 fn a_poison_batch_is_dropped_or_delivered_then_committed_past() {
     for (label, disposition, want_dropped, want_value) in [
         ("drop", Answer::Drop, Some(1), None),
-        ("source bytes", deliver(&[1, 2]), None, Some(br#"{"a":1}"#.to_vec())),
+        (
+            "source bytes",
+            deliver(&[DestId(1), DestId(2)]),
+            None,
+            Some(br#"{"a":1}"#.to_vec()),
+        ),
         (
             "record",
-            deliver(&[1, 2]),
+            deliver(&[DestId(1), DestId(2)]),
             None,
             Some(br#"{"_raw":"{\"a\":1}"}"#.to_vec()),
         ),
@@ -2361,14 +2381,14 @@ fn a_poison_batch_is_dropped_or_delivered_then_committed_past() {
             &src,
         );
         let (one, two) = (FakeDestination::new(), FakeDestination::new());
-        w.add_destination(target(0, FakeDestination::new()));
+        w.add_destination(target(DestId(0), FakeDestination::new()));
         poison(&mut w);
-        w.add_destination(target(1, one.clone()));
-        w.add_destination(target(2, two.clone()));
+        w.add_destination(target(DestId(1), one.clone()));
+        w.add_destination(target(DestId(2), two.clone()));
         set_unprocessable(&mut w, disposition);
         if label == "source bytes" {
-            writes(&mut w, 1, Payload::source_bytes());
-            writes(&mut w, 2, Payload::source_bytes());
+            writes(&mut w, DestId(1), Payload::source_bytes());
+            writes(&mut w, DestId(2), Payload::source_bytes());
         }
 
         assert_eq!(tick(&mut w).unwrap(), 1, "{label}");
@@ -2416,7 +2436,7 @@ fn a_poison_batch_under_block_is_held_and_blocks_the_source() {
         vec![pipeline(0, vec![code(0, "Object.assign($, json(_raw));")])],
         &src,
     );
-    w.add_destination(target(0, FakeDestination::new()));
+    w.add_destination(target(DestId(0), FakeDestination::new()));
     poison(&mut w);
 
     assert_eq!(tick(&mut w).unwrap(), 0);
@@ -2450,10 +2470,10 @@ fn an_unprocessable_destination_that_fails_holds_the_commit_until_it_takes_the_b
     // `FakeDestination::dispatch` flushes, so a flush that fails is a seal the destination would not take.
     let dlq = FakeDestination::new();
     dlq.fail_next_flushes(1);
-    w.add_destination(target(0, FakeDestination::new()));
+    w.add_destination(target(DestId(0), FakeDestination::new()));
     poison(&mut w);
-    w.add_destination(target(1, dlq.clone()));
-    set_unprocessable(&mut w, deliver(&[1]));
+    w.add_destination(target(DestId(1), dlq.clone()));
+    set_unprocessable(&mut w, deliver(&[DestId(1)]));
 
     tick(&mut w).expect_err("the seal failed");
     assert!(
@@ -2497,14 +2517,14 @@ fn an_unprocessable_row_refused_goes_to_that_destinations_dlq() {
     let quarantine = FakeDestination::new();
     let dlq = AsyncDestination::new();
     quarantine.reject_next_sends(1);
-    w.add_destination(target(0, FakeDestination::new()));
+    w.add_destination(target(DestId(0), FakeDestination::new()));
     poison(&mut w);
-    w.add_destination(target_with(1, quarantine.clone(), salvage_to(&[2])));
-    w.add_destination(target(2, dlq.clone()));
+    w.add_destination(target_with(DestId(1), quarantine.clone(), salvage_to(&[DestId(2)])));
+    w.add_destination(target(DestId(2), dlq.clone()));
     let topology = Arc::get_mut(&mut w.transform.topology).expect("a test worker's topology is its own");
-    topology.on_exception.answers[ExceptionKind::Unprocessable.index()] = deliver(&[1]);
-    topology.dlq_of = std::collections::HashMap::from([(1, vec![2])]);
-    topology.payloads.insert(2, Payload::source_bytes());
+    topology.on_exception.answers[ExceptionKind::Unprocessable.index()] = deliver(&[DestId(1)]);
+    topology.dlq_of = std::collections::HashMap::from([(DestId(1), vec![DestId(2)])]);
+    topology.payloads.insert(DestId(2), Payload::source_bytes());
 
     tick(&mut w).unwrap();
 
@@ -2529,14 +2549,14 @@ fn an_unprocessable_batch_run_again_still_waits_for_the_dlq_a_refusal_reached() 
         AsyncDestination::new(),
     );
     other.fail_next_deliver("no answer");
-    w.add_destination(target(0, FakeDestination::new()));
+    w.add_destination(target(DestId(0), FakeDestination::new()));
     poison(&mut w);
-    w.add_destination(target_with(1, named.clone(), salvage_to(&[3])));
-    w.add_destination(target(2, other.clone()));
-    w.add_destination(target(3, dlq.clone()));
+    w.add_destination(target_with(DestId(1), named.clone(), salvage_to(&[DestId(3)])));
+    w.add_destination(target(DestId(2), other.clone()));
+    w.add_destination(target(DestId(3), dlq.clone()));
     let topology = Arc::get_mut(&mut w.transform.topology).expect("a test worker's topology is its own");
-    topology.on_exception.answers[ExceptionKind::Unprocessable.index()] = deliver(&[1, 2]);
-    topology.dlq_of = std::collections::HashMap::from([(1, vec![3])]);
+    topology.on_exception.answers[ExceptionKind::Unprocessable.index()] = deliver(&[DestId(1), DestId(2)]);
+    topology.dlq_of = std::collections::HashMap::from([(DestId(1), vec![DestId(3)])]);
 
     tick(&mut w).expect_err("the second destination fails the hand-over");
     let (batch, _) = named.units()[0].clone();
@@ -2577,7 +2597,7 @@ fn a_reader_that_can_take_no_work_keeps_its_sources_membership() {
     for (after, keeps) in [(Duration::from_secs(3600), false), (Duration::ZERO, true)] {
         let src = FakeSource::new((0..5).map(|i| record("{}", i, 0)));
         let metrics = MetricsHandle::new(Arc::new(Metrics::new()), "test");
-        let mut reader = Reader::new(0, Box::new(src.clone()), vec![0], 1, metrics);
+        let mut reader = Reader::new(SourceId(0), Box::new(src.clone()), vec![DestId(0)], 1, metrics);
         reader.membership_after = after;
         let handoff = Handoff::new();
         let (_reports, acks) = reports();
@@ -2646,13 +2666,13 @@ fn a_revoke_is_applied_by_a_commit_that_follows_no_step() {
 /// A row is counted sent once, by the attempt that goes through.
 #[test]
 fn an_undeliverable_batch_blocks_the_commit_holds_the_source_and_is_retried() {
-    let routes = vec![route_with_deliver(deliver_to(&[0, 1]))];
+    let routes = vec![route_with_deliver(deliver_to(&[DestId(0), DestId(1)]))];
     let src = FakeSource::new([record("a", 10, 0), record("b", 11, 0)]);
     let mut w = worker(routes, vec![pipeline(0, vec![])], &src);
     let (flaky, healthy) = (FakeDestination::new(), FakeDestination::new());
     flaky.fail_next_sends(1);
-    w.add_destination(target(0, flaky.clone()));
-    w.add_destination(target(1, healthy.clone()));
+    w.add_destination(target(DestId(0), flaky.clone()));
+    w.add_destination(target(DestId(1), healthy.clone()));
 
     tick(&mut w).expect_err("an undeliverable batch fails the tick");
     assert_eq!(flaky.sent().len(), 1, "the fake took the row it did not fail on");
@@ -2697,10 +2717,10 @@ fn an_undeliverable_batch_blocks_the_commit_holds_the_source_and_is_retried() {
 fn a_stalled_destination_holds_the_source_and_is_never_poisoned() {
     let src = FakeSource::new([record("a", 10, 0), record("b", 11, 0)]);
     let mut w = worker(plain_route(), vec![pipeline(0, vec![code(0, "x = 1;")])], &src);
-    w.add_destination(target(0, FakeDestination::stalled()));
+    w.add_destination(target(DestId(0), FakeDestination::stalled()));
     let poison = FakeDestination::new();
-    w.add_destination(target(1, poison.clone()));
-    set_unprocessable(&mut w, deliver(&[1]));
+    w.add_destination(target(DestId(1), poison.clone()));
+    set_unprocessable(&mut w, deliver(&[DestId(1)]));
 
     tick(&mut w).expect_err("a destination that will not flush fails the tick");
     assert!(src.is_blocked());
@@ -2725,8 +2745,8 @@ fn a_stalled_destination_holds_the_source_and_is_never_poisoned() {
 fn a_reject_policy_decides_what_happens_to_a_refused_record() {
     for (label, policy, dlq_refuses) in [
         ("drop", Answer::Drop, false),
-        ("dlq", salvage_to(&[1]), false),
-        ("dlq refuses too", salvage_to(&[1]), true),
+        ("dlq", salvage_to(&[DestId(1)]), false),
+        ("dlq refuses too", salvage_to(&[DestId(1)]), true),
         ("block", Answer::Block, false),
     ] {
         let src = FakeSource::new([record("a", 10, 0), record("b", 11, 0), record("c", 12, 0)]);
@@ -2736,8 +2756,8 @@ fn a_reject_policy_decides_what_happens_to_a_refused_record() {
             dlq.reject_next_sends(1);
         }
         let mut w = worker(plain_route(), vec![pipeline(0, vec![])], &src);
-        w.add_destination(target_with(0, main.clone(), policy.clone()));
-        w.add_destination(target_with(1, dlq.clone(), Answer::Drop));
+        w.add_destination(target_with(DestId(0), main.clone(), policy.clone()));
+        w.add_destination(target_with(DestId(1), dlq.clone(), Answer::Drop));
 
         tick(&mut w).expect("a refused record does not fail the tick");
 
@@ -2798,11 +2818,16 @@ fn a_row_keeps_its_own_form_through_a_dlq_that_writes_another() {
     main.reject_next_sends(1);
     bytes.reject_next_sends(1);
     let p = pipeline(0, vec![code(0, "a: i64; Object.assign($, json(_raw)); b = 2;")]);
-    let mut w = worker_with_dlqs(plain_route(), vec![p], &src, &[(0, vec![1, 2]), (1, vec![2])]);
-    writes(&mut w, 1, Payload::source_bytes());
-    w.add_destination(target_with(0, main.clone(), salvage_to(&[1])));
-    w.add_destination(target_with(1, bytes.clone(), salvage_to(&[2])));
-    w.add_destination(target_with(2, last.clone(), Answer::Drop));
+    let mut w = worker_with_dlqs(
+        plain_route(),
+        vec![p],
+        &src,
+        &[(DestId(0), vec![DestId(1), DestId(2)]), (DestId(1), vec![DestId(2)])],
+    );
+    writes(&mut w, DestId(1), Payload::source_bytes());
+    w.add_destination(target_with(DestId(0), main.clone(), salvage_to(&[DestId(1)])));
+    w.add_destination(target_with(DestId(1), bytes.clone(), salvage_to(&[DestId(2)])));
+    w.add_destination(target_with(DestId(2), last.clone(), Answer::Drop));
 
     tick(&mut w).expect("a refused record does not fail the tick");
     tick(&mut w).expect("a refused record does not fail the tick");
@@ -2836,11 +2861,16 @@ fn a_refused_unroll_reaches_a_source_bytes_dlq_once_and_goes_on_whole() {
                 code(1, "unroll(tags);"),
             ],
         );
-        let mut w = worker_with_dlqs(plain_route(), vec![p], &src, &[(0, vec![1, 2]), (1, vec![2])]);
-        writes(&mut w, 1, Payload::source_bytes());
-        w.add_destination(target_with(0, main.clone(), salvage_to(&[1])));
-        w.add_destination(target_with(1, bytes.clone(), salvage_to(&[2])));
-        w.add_destination(target_with(2, last.clone(), Answer::Drop));
+        let mut w = worker_with_dlqs(
+            plain_route(),
+            vec![p],
+            &src,
+            &[(DestId(0), vec![DestId(1), DestId(2)]), (DestId(1), vec![DestId(2)])],
+        );
+        writes(&mut w, DestId(1), Payload::source_bytes());
+        w.add_destination(target_with(DestId(0), main.clone(), salvage_to(&[DestId(1)])));
+        w.add_destination(target_with(DestId(1), bytes.clone(), salvage_to(&[DestId(2)])));
+        w.add_destination(target_with(DestId(2), last.clone(), Answer::Drop));
 
         tick(&mut w).expect("a refused record does not fail the tick");
         tick(&mut w).expect("a refused record does not fail the tick");
@@ -2867,8 +2897,8 @@ fn one_dlq_tallies_both_the_rows_it_took_and_the_rows_it_refused() {
     main.reject_next_sends(3);
     dlq.reject_next_sends(1);
     let mut w = worker(plain_route(), vec![pipeline(0, vec![])], &src);
-    w.add_destination(target_with(0, main.clone(), salvage_to(&[1])));
-    w.add_destination(target_with(1, dlq.clone(), Answer::Drop));
+    w.add_destination(target_with(DestId(0), main.clone(), salvage_to(&[DestId(1)])));
+    w.add_destination(target_with(DestId(1), dlq.clone(), Answer::Drop));
 
     tick(&mut w).expect("a refused record does not fail the tick");
 
@@ -2889,13 +2919,13 @@ fn a_row_already_sent_to_the_dlq_is_not_salvaged_twice() {
     let (main, dlq) = (FakeDestination::new(), FakeDestination::new());
     main.reject_next_sends(1);
     let mut w = worker_with_dlqs(
-        vec![route_with_deliver(deliver_to(&[0, 1]))],
+        vec![route_with_deliver(deliver_to(&[DestId(0), DestId(1)]))],
         vec![pipeline(0, vec![])],
         &src,
-        &[(0, vec![1])],
+        &[(DestId(0), vec![DestId(1)])],
     );
-    w.add_destination(target_with(0, main.clone(), salvage_to(&[1])));
-    w.add_destination(target(1, dlq.clone()));
+    w.add_destination(target_with(DestId(0), main.clone(), salvage_to(&[DestId(1)])));
+    w.add_destination(target(DestId(1), dlq.clone()));
 
     tick(&mut w).expect("a refused record does not fail the tick");
 
@@ -2914,10 +2944,10 @@ fn a_refusal_delivered_as_source_bytes_sends_the_source_bytes() {
         let (main, dlq) = (FakeDestination::new(), FakeDestination::new());
         main.reject_next_sends(1);
         let pipelines = vec![pipeline(0, vec![code(0, r#"via = "a";"#)])];
-        let mut w = worker_with_dlqs(plain_route(), pipelines, &src, &[(0, vec![1])]);
-        writes(&mut w, 1, payload.clone());
-        w.add_destination(target_with(0, main.clone(), deliver(&[1])));
-        w.add_destination(target(1, dlq.clone()));
+        let mut w = worker_with_dlqs(plain_route(), pipelines, &src, &[(DestId(0), vec![DestId(1)])]);
+        writes(&mut w, DestId(1), payload.clone());
+        w.add_destination(target_with(DestId(0), main.clone(), deliver(&[DestId(1)])));
+        w.add_destination(target(DestId(1), dlq.clone()));
 
         tick(&mut w).expect("a refused record does not fail the tick");
 
@@ -2949,22 +2979,22 @@ fn a_refusal_of_an_unmatched_record_is_salvaged_to_the_destinations_dlq() {
         let (leftovers, dlq) = (FakeDestination::new(), FakeDestination::new());
         leftovers.reject_next_sends(1);
         let mut on_exception = OnException::default();
-        on_exception.answers[ExceptionKind::Unmatched.index()] = deliver(&[0]);
-        let metas = SourceMetas::from([(0, SourceMeta::KAFKA)]);
+        on_exception.answers[ExceptionKind::Unmatched.index()] = deliver(&[DestId(0)]);
+        let metas = SourceMetas::from([(SourceId(0), SourceMeta::KAFKA)]);
         let mut topology = compile_topology_with(&[], &[], on_exception, &metas).expect("topology compiles");
-        topology.dlq_of = std::collections::HashMap::from([(0, vec![1])]);
-        topology.payloads = std::collections::HashMap::from([(0, sent.clone()), (1, refused.clone())]);
+        topology.dlq_of = std::collections::HashMap::from([(DestId(0), vec![DestId(1)])]);
+        topology.payloads = std::collections::HashMap::from([(DestId(0), sent.clone()), (DestId(1), refused.clone())]);
         let metrics = MetricsHandle::new(Arc::new(Metrics::new()), "t0");
         let mut w = Worker::new(
-            0,
+            SourceId(0),
             Box::new(src.clone()),
             topology,
             Vec::new(),
             MemoryBudget::unlimited(),
             metrics,
         );
-        w.add_destination(target_with(0, leftovers.clone(), deliver(&[1])));
-        w.add_destination(target(1, dlq.clone()));
+        w.add_destination(target_with(DestId(0), leftovers.clone(), deliver(&[DestId(1)])));
+        w.add_destination(target(DestId(1), dlq.clone()));
 
         tick(&mut w).expect("a refused record does not fail the tick");
 
@@ -2987,7 +3017,7 @@ fn a_rejection_reported_after_the_flush_is_counted_and_committed_past() {
     let dest = FakeDestination::new();
     dest.reject_on_flush(&[1]);
     let mut w = worker(plain_route(), vec![pipeline(0, vec![])], &src);
-    w.add_destination(target_with(0, dest.clone(), Answer::Drop));
+    w.add_destination(target_with(DestId(0), dest.clone(), Answer::Drop));
 
     tick(&mut w).expect("a refused document does not fail the tick");
 
@@ -2999,13 +3029,13 @@ fn a_rejection_reported_after_the_flush_is_counted_and_committed_past() {
 #[test]
 fn a_late_rejection_for_an_older_batch_is_counted_and_both_commit() {
     let routes = vec![
-        route_cfg(None, 0, deliver_to(&[0])),
-        route_cfg(None, 1, deliver_to(&[0])),
+        route_cfg(None, 0, deliver_to(&[DestId(0)])),
+        route_cfg(None, 1, deliver_to(&[DestId(0)])),
     ];
     let src = FakeSource::new([record("{}", 10, 0)]);
     let dest = AsyncDestination::new();
     let mut w = worker(routes, vec![pipeline(0, vec![]), pipeline(1, vec![])], &src);
-    w.add_destination(target_with(0, dest.clone(), Answer::Drop));
+    w.add_destination(target_with(DestId(0), dest.clone(), Answer::Drop));
 
     tick(&mut w).unwrap();
     src.requeue([record("{}", 11, 0), record("{}", 12, 0)]);
@@ -3229,7 +3259,7 @@ fn a_hold_with_nothing_in_hand_clears_once_every_batch_is_acknowledged() {
 fn a_new_egress_reports_its_rows_delivered_at_zero() {
     let registry = Arc::new(Metrics::new());
     let _stage = Egress::start(
-        3,
+        DestId(3),
         "d",
         Box::new(AsyncDestination::new()),
         Duration::from_secs(5),
@@ -3251,7 +3281,7 @@ fn a_failed_delivery_is_re_sent_and_only_then_committed() {
     let dest = AsyncDestination::new();
     let src = FakeSource::new([record("{}", 7, 0)]);
     let mut stage = Egress::start(
-        0,
+        DestId(0),
         "d",
         Box::new(dest.clone()),
         Duration::from_secs(5),
@@ -3259,7 +3289,7 @@ fn a_failed_delivery_is_re_sent_and_only_then_committed() {
         MetricsHandle::new(Arc::new(Metrics::new()), "test"),
     );
     let mut w = worker(plain_route(), vec![pipeline(0, vec![])], &src);
-    w.add_destination(target_with(0, stage.handle(), Answer::Drop));
+    w.add_destination(target_with(DestId(0), stage.handle(), Answer::Drop));
 
     tick(&mut w).unwrap();
     for _ in 0..200 {
@@ -3338,12 +3368,15 @@ fn a_refused_source_commit_is_dropped_and_counted_not_held() {
 /// reads null, and every row is silently delivered nowhere.
 #[test]
 fn a_deliver_rule_reads_metadata_its_pipeline_never_touches() {
-    let routes = dropping_declined(vec![route_with_deliver(vec![rule(Some("__source.offset == 0"), &[0])])]);
+    let routes = dropping_declined(vec![route_with_deliver(vec![rule(
+        Some("__source.offset == 0"),
+        &[DestId(0)],
+    )])]);
     let pipelines = vec![pipeline(0, vec![code(0, "x = 1;")])];
     let src = FakeSource::new([record("a", 0, 0), record("b", 1, 0)]);
     let mut w = worker(routes, pipelines, &src);
     let dest = FakeDestination::new();
-    w.add_destination(target(0, dest.clone()));
+    w.add_destination(target(DestId(0), dest.clone()));
     tick(&mut w).unwrap();
     assert_eq!(dest.sent().len(), 1, "only offset 0 should be delivered");
 }
@@ -3367,7 +3400,7 @@ fn ingest_decodes_utf16_records_into_raw() {
     let pipelines = vec![pipeline(0, vec![code(0, "out = _raw;")])];
     let mut w = worker(answering(tagging_repairs(), plain_route()), pipelines, &src);
     let dest = FakeDestination::new();
-    w.add_destination(target(0, dest.clone()));
+    w.add_destination(target(DestId(0), dest.clone()));
 
     tick(&mut w).unwrap();
 
@@ -3398,7 +3431,7 @@ fn a_guessed_encoding_marks_the_row_with_a_note() {
         let p = pipeline(0, vec![code(0, "out = _raw;")]);
         let mut w = worker(answering(on_exception, plain_route()), vec![p], &src);
         let dest = FakeDestination::new();
-        w.add_destination(target(0, dest.clone()));
+        w.add_destination(target(DestId(0), dest.clone()));
 
         tick(&mut w).unwrap();
 
@@ -3427,7 +3460,7 @@ fn a_declared_encoding_decodes_without_detection() {
     let latin1 = Encoding::for_label("latin1").unwrap();
     let mut w = worker_decoding(routes.clone(), pipelines.clone(), &src, latin1);
     let dest = FakeDestination::new();
-    w.add_destination(target(0, dest.clone()));
+    w.add_destination(target(DestId(0), dest.clone()));
     tick(&mut w).unwrap();
 
     let rows: Vec<serde_json::Value> = dest.sent().iter().map(|r| body(&r.value)).collect();
@@ -3443,7 +3476,7 @@ fn a_declared_encoding_decodes_without_detection() {
     let utf8 = Encoding::for_label("utf-8").unwrap();
     let mut w = worker_decoding(routes, pipelines, &src, utf8);
     let dest = FakeDestination::new();
-    w.add_destination(target(0, dest.clone()));
+    w.add_destination(target(DestId(0), dest.clone()));
     tick(&mut w).unwrap();
 
     let row = body(&dest.sent()[0].value);
@@ -3464,14 +3497,14 @@ fn every_route_over_one_record_reads_the_same_now() {
         pipeline(1, vec![code(0, "t = toString(now());")]),
     ];
     let routes = vec![
-        route_cfg(None, 0, deliver_to(&[0])),
-        route_cfg(None, 1, deliver_to(&[1])),
+        route_cfg(None, 0, deliver_to(&[DestId(0)])),
+        route_cfg(None, 1, deliver_to(&[DestId(1)])),
     ];
     let src = FakeSource::new([record("{}", 0, 0), record("{}", 1, 0)]);
     let mut w = worker(routes, pipelines, &src);
     let (a, b) = (FakeDestination::new(), FakeDestination::new());
-    w.add_destination(target(0, a.clone()));
-    w.add_destination(target(1, b.clone()));
+    w.add_destination(target(DestId(0), a.clone()));
+    w.add_destination(target(DestId(1), b.clone()));
 
     tick(&mut w).unwrap();
 
@@ -3501,16 +3534,16 @@ fn a_decode_note_is_counted_once_however_many_routes_deliver_it() {
     let routes = answering(
         tagging_repairs(),
         vec![
-            route_cfg(None, 0, deliver_to(&[0])),
-            route_cfg(None, 1, deliver_to(&[1])),
+            route_cfg(None, 0, deliver_to(&[DestId(0)])),
+            route_cfg(None, 1, deliver_to(&[DestId(1)])),
         ],
     );
     // One record `auto` has to guess at, so exactly one `GuessedEncoding`.
     let src = FakeSource::new([record_bytes(b"caf\xE9".to_vec(), 0)]);
     let mut w = worker(routes, pipelines, &src);
     let (a, b) = (FakeDestination::new(), FakeDestination::new());
-    w.add_destination(target(0, a.clone()));
-    w.add_destination(target(1, b.clone()));
+    w.add_destination(target(DestId(0), a.clone()));
+    w.add_destination(target(DestId(1), b.clone()));
 
     tick(&mut w).unwrap();
 
@@ -3541,9 +3574,13 @@ fn salvaging_worker(src: &FakeSource) -> (Worker, AsyncDestination, AsyncDestina
         AsyncDestination::new(),
         AsyncDestination::new(),
     );
-    w.add_destination(target_with(0, main.clone(), salvage_to(&[1, 2])));
-    w.add_destination(target(1, dlq1.clone()));
-    w.add_destination(target(2, dlq2.clone()));
+    w.add_destination(target_with(
+        DestId(0),
+        main.clone(),
+        salvage_to(&[DestId(1), DestId(2)]),
+    ));
+    w.add_destination(target(DestId(1), dlq1.clone()));
+    w.add_destination(target(DestId(2), dlq2.clone()));
     (w, main, dlq1, dlq2)
 }
 
@@ -3624,9 +3661,13 @@ fn a_dlq_set_to_drop_loses_a_salvaged_row_it_refuses() {
         AsyncDestination::new(),
         AsyncDestination::new(),
     );
-    w.add_destination(target_with(0, main.clone(), salvage_to(&[1, 2])));
-    w.add_destination(target_with(1, dlq1.clone(), Answer::Drop));
-    w.add_destination(target(2, dlq2.clone()));
+    w.add_destination(target_with(
+        DestId(0),
+        main.clone(),
+        salvage_to(&[DestId(1), DestId(2)]),
+    ));
+    w.add_destination(target_with(DestId(1), dlq1.clone(), Answer::Drop));
+    w.add_destination(target(DestId(2), dlq2.clone()));
     tick(&mut w).unwrap();
     let batch = main.outstanding()[0];
     main.complete_with(batch, vec![refusal(0)]);
@@ -3650,17 +3691,19 @@ fn a_dlq_that_refuses_sends_the_row_on_to_its_own_dlq() {
     let src = FakeSource::new([record("a", 10, 0)]);
     let mut topology =
         compile_topology(&plain_route(), &[pipeline(0, vec![code(0, r#"k = "key-1";"#)])]).expect("compiles");
-    topology.dlq_of = [(0, vec![1, 2]), (1, vec![2])].into_iter().collect();
-    topology.id_fields = vec![(2, "k".to_string())];
+    topology.dlq_of = [(DestId(0), vec![DestId(1), DestId(2)]), (DestId(1), vec![DestId(2)])]
+        .into_iter()
+        .collect();
+    topology.id_fields = vec![(DestId(2), "k".to_string())];
     let mut w = worker_of(topology, &src);
     let (main, first, last) = (
         AsyncDestination::new(),
         AsyncDestination::new(),
         AsyncDestination::new(),
     );
-    w.add_destination(target_with(0, main.clone(), salvage_to(&[1])));
-    w.add_destination(target_with(1, first.clone(), salvage_to(&[2])));
-    w.add_destination(keyed(2, last.clone()));
+    w.add_destination(target_with(DestId(0), main.clone(), salvage_to(&[DestId(1)])));
+    w.add_destination(target_with(DestId(1), first.clone(), salvage_to(&[DestId(2)])));
+    w.add_destination(keyed(DestId(2), last.clone()));
     tick(&mut w).unwrap();
     let batch = main.outstanding()[0];
     main.complete_with(batch, vec![refusal(0)]);
@@ -3707,7 +3750,7 @@ fn a_late_refusal_under_block_holds_the_batch() {
     let src = FakeSource::new([record("a", 10, 0)]);
     let mut w = worker(plain_route(), vec![pipeline(0, vec![])], &src);
     let main = AsyncDestination::new();
-    w.add_destination(target(0, main.clone()));
+    w.add_destination(target(DestId(0), main.clone()));
     tick(&mut w).unwrap();
     main.complete_with(main.outstanding()[0], vec![refusal(0)]);
     let _ = tick(&mut w);
@@ -3729,7 +3772,7 @@ fn a_blocking_destination_blocks_the_source_until_its_refused_row_lands() {
     dest.reject_next_sends(1);
     let src = FakeSource::new([record("a", 7, 0)]);
     let mut stage = Egress::start(
-        0,
+        DestId(0),
         "d",
         Box::new(dest.clone()),
         Duration::from_secs(5),
@@ -3738,7 +3781,7 @@ fn a_blocking_destination_blocks_the_source_until_its_refused_row_lands() {
     )
     .holding_refusals();
     let mut w = worker(plain_route(), vec![pipeline(0, vec![])], &src);
-    w.add_destination(target(0, stage.handle()));
+    w.add_destination(target(DestId(0), stage.handle()));
 
     let _ = tick(&mut w);
     let mut saw_blocked = false;
@@ -3773,7 +3816,7 @@ fn a_batch_waiting_for_room_is_handed_over_without_running_again() {
     let src = FakeSource::new([record("a", 10, 0), record("b", 11, 0)]);
     // One byte: the first batch goes in alone, and the second finds no room until it is acknowledged.
     let mut stage = Egress::start(
-        0,
+        DestId(0),
         "d",
         Box::new(dest.clone()),
         Duration::from_secs(5),
@@ -3781,7 +3824,7 @@ fn a_batch_waiting_for_room_is_handed_over_without_running_again() {
         MetricsHandle::new(Arc::new(Metrics::new()), "test"),
     );
     let mut w = worker(plain_route(), vec![pipeline(0, vec![])], &src);
-    w.add_destination(target(0, stage.handle()));
+    w.add_destination(target(DestId(0), stage.handle()));
     let one = |w: &mut Worker| w.tick(1, 1 << 20, Duration::from_millis(1));
 
     one(&mut w).unwrap();
@@ -3834,7 +3877,7 @@ fn worker_with_dlqs(
 /// A worker running `topology` over `source`, with no destinations yet.
 fn worker_of(topology: CompiledTopology, source: &FakeSource) -> Worker {
     Worker::new(
-        0,
+        SourceId(0),
         Box::new(source.clone()),
         topology,
         Vec::new(),
@@ -3857,19 +3900,19 @@ fn complete_all(w: &mut Worker, dest: &AsyncDestination, batch: BatchId, units: 
 fn a_dlq_owed_two_units_of_a_batch_acknowledges_it_after_both() {
     let src = FakeSource::new([record("a", 10, 0)]);
     let mut w = worker_with_dlqs(
-        vec![route_with_deliver(deliver_to(&[0, 1]))],
+        vec![route_with_deliver(deliver_to(&[DestId(0), DestId(1)]))],
         vec![pipeline(0, vec![])],
         &src,
-        &[(0, vec![2]), (1, vec![2])],
+        &[(DestId(0), vec![DestId(2)]), (DestId(1), vec![DestId(2)])],
     );
     let (a, b, dlq) = (
         AsyncDestination::new(),
         AsyncDestination::new(),
         AsyncDestination::new(),
     );
-    w.add_destination(target_with(0, a.clone(), salvage_to(&[2])));
-    w.add_destination(target_with(1, b.clone(), salvage_to(&[2])));
-    w.add_destination(target(2, dlq.clone()));
+    w.add_destination(target_with(DestId(0), a.clone(), salvage_to(&[DestId(2)])));
+    w.add_destination(target_with(DestId(1), b.clone(), salvage_to(&[DestId(2)])));
+    w.add_destination(target(DestId(2), dlq.clone()));
     tick(&mut w).unwrap();
     let batch = a.outstanding()[0];
     a.complete_with(batch, vec![refusal(0)]);
@@ -3890,17 +3933,21 @@ fn each_dlq_keys_a_salvaged_row_on_its_own_identity() {
     let src = FakeSource::new([record("a", 10, 0)]);
     let mut topology =
         compile_topology(&plain_route(), &[pipeline(0, vec![code(0, r#"k = "key-1";"#)])]).expect("compiles");
-    topology.dlq_of = [(0, vec![1, 2])].into_iter().collect();
-    topology.id_fields = vec![(1, "k".to_string())];
+    topology.dlq_of = [(DestId(0), vec![DestId(1), DestId(2)])].into_iter().collect();
+    topology.id_fields = vec![(DestId(1), "k".to_string())];
     let mut w = worker_of(topology, &src);
     let (main, keyed_dlq, plain_dlq) = (
         AsyncDestination::new(),
         AsyncDestination::new(),
         AsyncDestination::new(),
     );
-    w.add_destination(target_with(0, main.clone(), salvage_to(&[1, 2])));
-    w.add_destination(keyed(1, keyed_dlq.clone()));
-    w.add_destination(target(2, plain_dlq.clone()));
+    w.add_destination(target_with(
+        DestId(0),
+        main.clone(),
+        salvage_to(&[DestId(1), DestId(2)]),
+    ));
+    w.add_destination(keyed(DestId(1), keyed_dlq.clone()));
+    w.add_destination(target(DestId(2), plain_dlq.clone()));
     tick(&mut w).unwrap();
     main.complete_with(main.outstanding()[0], vec![refusal(0)]);
     tick(&mut w).unwrap();
@@ -3916,14 +3963,14 @@ fn each_dlq_keys_a_salvaged_row_on_its_own_identity() {
 fn a_refused_row_is_not_salvaged_to_a_dlq_that_already_has_it() {
     let src = FakeSource::new([record("a", 10, 0)]);
     let mut w = worker_with_dlqs(
-        vec![route_with_deliver(deliver_to(&[0, 1]))],
+        vec![route_with_deliver(deliver_to(&[DestId(0), DestId(1)]))],
         vec![pipeline(0, vec![])],
         &src,
-        &[(0, vec![1])],
+        &[(DestId(0), vec![DestId(1)])],
     );
     let (main, dlq) = (AsyncDestination::new(), AsyncDestination::new());
-    w.add_destination(target_with(0, main.clone(), salvage_to(&[1])));
-    w.add_destination(target(1, dlq.clone()));
+    w.add_destination(target_with(DestId(0), main.clone(), salvage_to(&[DestId(1)])));
+    w.add_destination(target(DestId(1), dlq.clone()));
     tick(&mut w).unwrap();
     let batch = main.outstanding()[0];
     main.complete_with(batch, vec![refusal(0)]);
@@ -3945,15 +3992,15 @@ fn a_parquet_destination_is_handed_columns_and_no_json() {
     use smeltr::plan::config::DEFAULT_TAG_FIELD;
     use smeltr::plan::topology::Compression;
 
-    let deliver = vec![rule(None, &[0]), rule(Some("_raw == \"1\""), &[1])];
+    let deliver = vec![rule(None, &[DestId(0)]), rule(Some("_raw == \"1\""), &[DestId(1)])];
     let routes = answering(tagging_repairs(), vec![route_with_deliver(deliver)]);
     let pipelines = vec![pipeline(0, vec![code(0, "n: i64 = _raw as i64;")])];
     let mut topology = compile_topology(&routes, &pipelines).expect("topology compiles");
-    let written = smeltr::plan::dictionary::record_type(topology.plan_for(0, 0).unwrap(), DEFAULT_TAG_FIELD);
-    topology.records.insert(0, [(Some(0), written)].into());
+    let written = smeltr::plan::dictionary::record_type(topology.plan_for(SourceId(0), 0).unwrap(), DEFAULT_TAG_FIELD);
+    topology.records.insert(DestId(0), [(Some(0), written)].into());
     let src = FakeSource::new([record("1", 10, 0), record("x", 11, 0)]);
     let mut w = Worker::new(
-        0,
+        SourceId(0),
         Box::new(src.clone()),
         topology,
         Vec::new(),
@@ -3961,8 +4008,8 @@ fn a_parquet_destination_is_handed_columns_and_no_json() {
         MetricsHandle::new(Arc::new(Metrics::new()), "t0"),
     );
     let (columnar, json) = (FakeDestination::new(), FakeDestination::new());
-    w.add_destination(target(0, columnar.clone()));
-    w.add_destination(target(1, json.clone()));
+    w.add_destination(target(DestId(0), columnar.clone()));
+    w.add_destination(target(DestId(1), json.clone()));
     assert_eq!(tick(&mut w).unwrap(), 2);
 
     let sent = columnar.sent();
@@ -4003,17 +4050,17 @@ fn a_parquet_destination_is_handed_columns_and_no_json() {
 #[test]
 fn an_unmatched_row_reaches_a_parquet_destination_as_its_raw_text() {
     use smeltr::core::column::DataType;
-    let routes = vec![route_cfg(Some("false"), 0, deliver_to(&[0]))];
+    let routes = vec![route_cfg(Some("false"), 0, deliver_to(&[DestId(0)]))];
     let pipelines = vec![pipeline(0, vec![])];
-    let metas = SourceMetas::from([(0, SourceMeta::KAFKA)]);
+    let metas = SourceMetas::from([(SourceId(0), SourceMeta::KAFKA)]);
     let mut on_exception = OnException::default();
-    on_exception.answers[ExceptionKind::Unmatched.index()] = deliver(&[0]);
+    on_exception.answers[ExceptionKind::Unmatched.index()] = deliver(&[DestId(0)]);
     let mut topology = compile_topology_with(&routes, &pipelines, on_exception, &metas).expect("topology compiles");
     let raw = DataType::Struct(vec![("_raw".into(), DataType::Str)], false);
-    topology.records.insert(0, [(None, raw)].into());
+    topology.records.insert(DestId(0), [(None, raw)].into());
     let src = FakeSource::new([record("a", 10, 0), record("b", 11, 0)]);
     let mut w = Worker::new(
-        0,
+        SourceId(0),
         Box::new(src.clone()),
         topology,
         Vec::new(),
@@ -4021,7 +4068,7 @@ fn an_unmatched_row_reaches_a_parquet_destination_as_its_raw_text() {
         MetricsHandle::new(Arc::new(Metrics::new()), "t0"),
     );
     let dest = FakeDestination::new();
-    w.add_destination(target(0, dest.clone()));
+    w.add_destination(target(DestId(0), dest.clone()));
     tick(&mut w).unwrap();
     let rows: Vec<_> = dest
         .sent()

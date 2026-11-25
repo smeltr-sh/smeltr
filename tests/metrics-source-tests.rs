@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use smeltr::core::buffer::MemoryBudget;
-use smeltr::core::id::FunctionId;
+use smeltr::core::id::{DestId, FunctionId, SourceId};
 use smeltr::io::Source;
 use smeltr::io::fake::FakeDestination;
 use smeltr::metrics::{Metrics, MetricsHandle, MetricsSource, MetricsSourceConfig};
@@ -26,12 +26,12 @@ fn a_worker_around_a_metrics_source_ships_real_counters_as_ordinary_json_rows() 
     let routes = vec![RouteConfig {
         id: "r".to_string(),
         name: "r".to_string(),
-        source: 9,
+        source: SourceId(9),
         cond: None,
         pipeline: 0,
         deliver: vec![DeliverRule {
             when: None,
-            to: vec![0],
+            to: vec![DestId(0)],
         }],
         on_exception: Default::default(),
     }];
@@ -46,11 +46,11 @@ fn a_worker_around_a_metrics_source_ships_real_counters_as_ordinary_json_rows() 
     }];
     // A metrics row carries the topic the source stamps it with, and no
     // partition or offset a pipeline could mean anything by.
-    let metas = SourceMetas::from([(9, SourceMeta::METRICS)]);
+    let metas = SourceMetas::from([(SourceId(9), SourceMeta::METRICS)]);
     let topology = compile_topology_with(&routes, &pipelines, Default::default(), &metas).unwrap();
 
     let mut w = Worker::new(
-        9,
+        SourceId(9),
         Box::new(MetricsSource::new(
             metrics.clone(),
             MetricsSourceConfig { bucket: Duration::ZERO },
@@ -62,7 +62,7 @@ fn a_worker_around_a_metrics_source_ships_real_counters_as_ordinary_json_rows() 
     );
     let dest = FakeDestination::new();
     w.add_destination(DestinationTarget {
-        id: 0,
+        id: DestId(0),
         name: "0".to_string(),
         destination: Box::new(dest.clone()),
         on_reject: Answer::Block,
