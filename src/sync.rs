@@ -1,7 +1,7 @@
 //! The locks smeltr takes. A thread that panics while it holds one leaves the lock poisoned; these locks hand the
 //! data over all the same. What a panic means is decided once, by the thread it happened on: a caught panic fails
-//! its one batch or request, and a panic on a thread started with [`spawn`] ends the process, so nothing runs on
-//! beside a dead thread.
+//! its one batch or request, a panic on a thread started with [`spawn`] ends the process, so nothing runs on beside
+//! a dead thread, and a panic in a task run with [`keep_running`] starts that task again.
 
 use std::sync::PoisonError;
 pub use std::sync::{MutexGuard, RwLockReadGuard, RwLockWriteGuard, WaitTimeoutResult};
@@ -142,6 +142,34 @@ impl Drop for EndsTheProcess {
     }
 }
 
+/// How long after a panic [`keep_running`] waits before it starts the task again, so one that panics each time it
+/// starts does not spin.
+const RESTART_AFTER: Duration = Duration::from_secs(5);
+
+/// Runs the task `make` builds. If it panics, it is started again after [`RESTART_AFTER`]; if it returns or is
+/// cancelled, it is done. Use it for a task whose shared state sits behind this module's locks, which a panic leaves
+/// usable.
+pub fn keep_running<Task>(name: &'static str, mut make: impl FnMut() -> Task + Send + 'static)
+where
+    Task: Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(async move {
+        // Each run is a task of its own: the runtime catches its panic, and this loop outlives it.
+        while let Err(ended) = tokio::spawn(make()).await {
+            if !ended.is_panic() {
+                return;
+            }
+            tracing::error!(
+                name: "task_restarted", target: "processes",
+                task = name,
+                after_secs = RESTART_AFTER.as_secs(),
+                "a background task panicked, so it is started again"
+            );
+            tokio::time::sleep(RESTART_AFTER).await;
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,5 +215,26 @@ mod tests {
             .join()
         });
         assert_eq!(*held.lock(), 7);
+    }
+
+    /// The first run panics, which prints a "thread panicked" line; the second run is the test passing.
+    #[tokio::test]
+    async fn a_task_that_panics_is_started_again() {
+        let runs = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (again, ran_again) = tokio::sync::mpsc::unbounded_channel();
+        keep_running("doomed once", move || {
+            let (runs, again) = (runs.clone(), again.clone());
+            async move {
+                if runs.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
+                    panic!("a bug in a background task");
+                }
+                let _ = again.send(());
+            }
+        });
+        let mut ran_again = ran_again;
+        tokio::time::timeout(RESTART_AFTER * 6, ran_again.recv())
+            .await
+            .expect("the task ran a second time")
+            .expect("the second run reported");
     }
 }
