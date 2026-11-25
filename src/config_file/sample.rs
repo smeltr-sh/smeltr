@@ -278,7 +278,9 @@ mod tests {
             "rows": vec![serde_json::json!({"values": []}); MAX_SAMPLE_RECORDS],
         });
         let refused = serde_json::from_value::<SampleDto>(file).unwrap_err().to_string();
-        assert!(refused.contains("more than a sample may"), "{refused}");
+        let said = "this sample holds too much: the values it repeats on each of its 1,000 rows would take more than \
+                    1 GiB of memory";
+        assert!(refused.contains(said), "{refused}");
     }
     use crate::config_file::DirFileSet;
     use crate::heartbeat::{CaptureBatch, CaptureColumn, CapturedRow};

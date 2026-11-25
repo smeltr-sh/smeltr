@@ -1575,9 +1575,14 @@ impl WireBatch {
             .map(|v| CapturedRow::value_size(v) + EXPANDED_VALUE_COST)
             .sum();
         if constants.saturating_mul(w.rows.len()) > ceiling {
+            let limit = match ceiling >> 30 {
+                0 => format!("{} MiB", ceiling >> 20),
+                gib => format!("{gib} GiB"),
+            };
             return Err(format!(
-                "a batch whose constants over its {} rows would hold more than a {holder} may",
-                w.rows.len()
+                "this {holder} holds too much: the values it repeats on each of its {} rows would take more than \
+                 {limit} of memory",
+                crate::leader::throughput::grouped(w.rows.len() as f64)
             ));
         }
         let carried: Vec<usize> = (0..w.columns.len()).filter(|c| w.columns[*c].value.is_none()).collect();
@@ -2637,7 +2642,10 @@ mod tests {
             "rows": rows,
         });
         let err = serde_json::from_value::<CaptureBatch>(wire).unwrap_err();
-        assert!(err.to_string().contains("more than a capture may"), "{err}");
+        assert!(
+            err.to_string().contains("would take more than 64 MiB of memory"),
+            "{err}"
+        );
 
         let empties = serde_json::json!({
             "columns": (0..100_000).map(|i| serde_json::json!({"name": format!("c{i}"), "type": "str", "value": ""}))
