@@ -3841,6 +3841,7 @@ mod tests {
     use crate::core::buffer::BufferPool;
     use crate::core::column::{StrBuilder, VarType};
     use crate::core::error::ErrorSink;
+    use crate::heartbeat::pasted_from;
 
     #[test]
     fn an_objects_stream_is_its_directories_up_to_the_first_dated_one() {
@@ -4101,18 +4102,6 @@ mod tests {
         assert_eq!(meta.field_bytes(&records[0], SOURCE_BYTES), Some(read));
     }
 
-    /// The table of `records` pasted, each with `fields` as what its source set.
-    fn pasted(records: &[(&crate::io::RecordObject, &crate::io::SourceFields)]) -> crate::heartbeat::CaptureBatch {
-        let whole = records.iter().map(|(record, fields)| {
-            let mut record = (*record).clone();
-            if !fields.is_empty() {
-                record.insert("__source".to_string(), serde_json::Value::Object((*fields).clone()));
-            }
-            record
-        });
-        crate::heartbeat::CaptureBatch::pasted(whole.collect())
-    }
-
     /// A stored `__source` object keeps the payload as base64 `bytes`, so a record reads back byte for byte, whether
     /// its source decodes it or not.
     #[test]
@@ -4130,12 +4119,12 @@ mod tests {
             let fields = meta.objects(&records, None);
             assert_eq!(fields[0]["bytes"], serde_json::json!("Y2Fm6Q=="));
             let record = meta.record_object(&records[0], "caf\u{fffd}");
-            let back = meta.read_table(&pasted(&[(&record, &fields[0])])).unwrap();
+            let back = meta.read_table(&pasted_from(&[(&record, &fields[0])])).unwrap();
             assert_eq!(meta.read_bytes(&back[0]), Some(&read[..]));
         }
         let none = SourceMeta::KAFKA.with_encoding(Encoding::None);
         let err = none
-            .read_table(&pasted(&[(
+            .read_table(&pasted_from(&[(
                 &crate::io::RecordObject::new(),
                 &crate::io::SourceFields::new(),
             )]))
@@ -4151,10 +4140,12 @@ mod tests {
         let fields = crate::io::SourceFields::new();
 
         let raw = object(serde_json::json!({"_raw": "line"}));
-        let records = SourceMeta::KAFKA.read_table(&pasted(&[(&raw, &fields)])).unwrap();
+        let records = SourceMeta::KAFKA.read_table(&pasted_from(&[(&raw, &fields)])).unwrap();
         assert_eq!(records[0].bytes(), Some(&b"line"[..]));
         let typed = object(serde_json::json!({"id": 1}));
-        let err = SourceMeta::KAFKA.read_table(&pasted(&[(&typed, &fields)])).unwrap_err();
+        let err = SourceMeta::KAFKA
+            .read_table(&pasted_from(&[(&typed, &fields)]))
+            .unwrap_err();
         assert!(err.contains("record 1"), "{err}");
 
         let meta = SourceMeta::KAFKA
@@ -4162,14 +4153,16 @@ mod tests {
             .unwrap();
         let good = object(serde_json::json!({"id": 1, "at": "2026-10-10T00:00:00Z"}));
         let bad = object(serde_json::json!({"id": true}));
-        let records = meta.read_table(&pasted(&[(&good, &fields), (&bad, &fields)])).unwrap();
+        let records = meta
+            .read_table(&pasted_from(&[(&good, &fields), (&bad, &fields)]))
+            .unwrap();
         let chunk = &records[1].chunk;
         assert_eq!(chunk.failed(), &[(1, 0, "true".to_string())]);
         assert_eq!(
             meta.record_object(&records[0], ""),
             object(serde_json::json!({"id": 1, "at": "2026-10-10T00:00:00.000000Z"}))
         );
-        let records = meta.read_table(&pasted(&[(&raw, &fields)])).unwrap();
+        let records = meta.read_table(&pasted_from(&[(&raw, &fields)])).unwrap();
         assert!(
             meta.record_object(&records[0], "").is_empty(),
             "a key its record does not declare is left out"
@@ -4205,21 +4198,21 @@ mod tests {
             ])
             .unwrap();
         let stored = object(serde_json::json!({"user": {"name": "ann"}, "labels": {"a.b": 2}}));
-        let records = nested.read_table(&pasted(&[(&stored, &fields)])).unwrap();
+        let records = nested.read_table(&pasted_from(&[(&stored, &fields)])).unwrap();
         assert_eq!(
             nested.record_object(&records[0], ""),
             stored,
             "a path's value is where its path names"
         );
         let extra = object(serde_json::json!({"user": {"name": "ann", "age": 3}}));
-        let records = nested.read_table(&pasted(&[(&extra, &fields)])).unwrap();
+        let records = nested.read_table(&pasted_from(&[(&extra, &fields)])).unwrap();
         assert_eq!(
             nested.record_object(&records[0], ""),
             object(serde_json::json!({"user": {"name": "ann"}})),
             "a key its record does not declare is left out"
         );
         let flat = object(serde_json::json!({"user": "ann", "labels": {"a.b": 2}}));
-        let records = nested.read_table(&pasted(&[(&flat, &fields)])).unwrap();
+        let records = nested.read_table(&pasted_from(&[(&flat, &fields)])).unwrap();
         assert_eq!(
             records[0].chunk.failed(),
             &[(0, 0, r#""ann""#.to_string())],
@@ -4254,7 +4247,9 @@ mod tests {
             serde_json::json!({"tags": [1, 2], "who": {"name": "ann", "at": "2026-10-10T00:00:00Z", "took": 1500}}),
         );
         let bad = object(serde_json::json!({"tags": [1, "x"], "who": {"name": "bo", "at": "never"}}));
-        let records = meta.read_table(&pasted(&[(&good, &fields), (&bad, &fields)])).unwrap();
+        let records = meta
+            .read_table(&pasted_from(&[(&good, &fields), (&bad, &fields)]))
+            .unwrap();
         assert_eq!(
             meta.record_object(&records[0], ""),
             object(
@@ -4275,7 +4270,7 @@ mod tests {
             .declaring(vec![("blobs".into(), DataType::Array(Box::new(DataType::Bytes)))])
             .unwrap();
         let blobs = object(serde_json::json!({"blobs": ["3q0="]}));
-        let read = bytes.read_table(&pasted(&[(&blobs, &fields)])).unwrap();
+        let read = bytes.read_table(&pasted_from(&[(&blobs, &fields)])).unwrap();
         assert_eq!(
             bytes.record_object(&read[0], ""),
             blobs,
@@ -4320,7 +4315,7 @@ mod tests {
             "destination": {"ip": "8.8.8.8", "port": 443, "geo": {"city": "Ashburn", "zip": 20147}},
             "labels": {"env": "prod"},
         }));
-        let read = meta.read_table(&pasted(&[(&stored, &fields)])).unwrap();
+        let read = meta.read_table(&pasted_from(&[(&stored, &fields)])).unwrap();
         assert_eq!(read[0].chunk.failed(), []);
         assert_eq!(
             meta.record_object(&read[0], ""),
@@ -4328,13 +4323,13 @@ mod tests {
             "each leaf and each other key reads back"
         );
         let null = object_of(serde_json::json!({"destination": null, "labels": null}));
-        let read = meta.read_table(&pasted(&[(&null, &fields)])).unwrap();
+        let read = meta.read_table(&pasted_from(&[(&null, &fields)])).unwrap();
         assert!(
             meta.record_object(&read[0], "").is_empty(),
             "a null object holds no field"
         );
         let extra = object_of(serde_json::json!({"destination": {"ip": "8.8.8.8", "mac": "aa"}}));
-        let read = meta.read_table(&pasted(&[(&extra, &fields)])).unwrap();
+        let read = meta.read_table(&pasted_from(&[(&extra, &fields)])).unwrap();
         assert_eq!(
             meta.record_object(&read[0], ""),
             object_of(serde_json::json!({"destination": {"ip": "8.8.8.8"}})),
@@ -4472,18 +4467,18 @@ mod tests {
 
         let objects = meta.objects(&records[1..], None);
         let back = meta
-            .read_table(&pasted(&[(&crate::io::RecordObject::new(), &objects[0])]))
+            .read_table(&pasted_from(&[(&crate::io::RecordObject::new(), &objects[0])]))
             .unwrap();
         assert_eq!(back[0].chunk.time(0), Some(1_700_000_000_250_000));
         let unstamped = meta.objects(&records[..1], None);
         let back = meta
-            .read_table(&pasted(&[(&crate::io::RecordObject::new(), &unstamped[0])]))
+            .read_table(&pasted_from(&[(&crate::io::RecordObject::new(), &unstamped[0])]))
             .unwrap();
         assert_eq!(back[0].chunk.time(0), None);
 
         let typed = serde_json::json!({"time": "2023-11-14T22:13:20.25Z", "bytes": "b25l"});
         let back = meta
-            .read_table(&pasted(&[(
+            .read_table(&pasted_from(&[(
                 &crate::io::RecordObject::new(),
                 typed.as_object().unwrap(),
             )]))

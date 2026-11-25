@@ -9,6 +9,7 @@ use std::time::Duration;
 use crate::live;
 
 use crate::harness::receiver::free_loopback;
+use smeltr::heartbeat::pasted_from;
 use smeltr::io::line_breaker::LineBreaker;
 use smeltr::io::{CommitMap, Source, SourceRecord, TopicPartition, build_source};
 use smeltr::plan::topology::{
@@ -88,18 +89,6 @@ fn request(mut stream: impl Read + Write, method: &str, path: &str, headers: &st
 
 fn send(at: SocketAddr, path: &str, token: Option<&str>, body: &[u8]) -> (u16, String) {
     exchange(TcpStream::connect(at).unwrap(), "POST", path, token, body)
-}
-
-/// The table of `records` pasted, each with `fields` as what its source set.
-fn pasted(records: &[(&smeltr::io::RecordObject, &smeltr::io::SourceFields)]) -> smeltr::heartbeat::CaptureBatch {
-    let whole = records.iter().map(|(record, fields)| {
-        let mut record = (*record).clone();
-        if !fields.is_empty() {
-            record.insert("__source".to_string(), serde_json::Value::Object((*fields).clone()));
-        }
-        record
-    });
-    smeltr::heartbeat::CaptureBatch::pasted(whole.collect())
 }
 
 fn poll_until(source: &mut Box<dyn Source>, n: usize) -> Vec<SourceRecord> {
@@ -437,7 +426,7 @@ fn a_hec_request_is_answered_success_once_its_events_are_committed() {
     let none = smeltr::io::RecordObject::new();
     let stored: Vec<_> = objects.iter().map(|o| (&none, o)).collect();
     let back = smeltr::plan::topology::SourceMeta::HEC_RECEIVER
-        .read_table(&pasted(&stored))
+        .read_table(&pasted_from(&stored))
         .unwrap();
     assert_eq!(
         smeltr::plan::topology::SourceMeta::HEC_RECEIVER.objects(&back, Some("hec")),
@@ -739,7 +728,7 @@ fn an_otlp_export_is_answered_once_its_log_records_are_committed() {
     assert_eq!(objects[1]["scope"]["version"], "1.2");
     assert_eq!(objects[1]["remote"], "127.0.0.1");
     let stored: Vec<_> = rows.iter().zip(&objects).collect();
-    let back = meta.read_table(&pasted(&stored)).unwrap();
+    let back = meta.read_table(&pasted_from(&stored)).unwrap();
     assert_eq!(
         (
             back.iter().map(|r| meta.record_object(r, "")).collect::<Vec<_>>(),
@@ -1527,7 +1516,7 @@ fn a_remote_write_request_is_answered_once_its_samples_are_committed() {
     let objects = meta.objects(&records, Some("prom"));
     assert_eq!(objects[0]["remote"], "127.0.0.1");
     let stored: Vec<_> = rows.iter().zip(&objects).collect();
-    let back = meta.read_table(&pasted(&stored)).unwrap();
+    let back = meta.read_table(&pasted_from(&stored)).unwrap();
     assert_eq!(
         back.iter().map(|r| meta.record_object(r, "")).collect::<Vec<_>>(),
         rows,
@@ -1735,7 +1724,7 @@ fn a_remote_write_2_request_is_read_as_1_0_is_and_answered_with_what_it_wrote() 
     assert!(rows[2].get("startTime").is_none(), "a start time of 0 is unknown");
     let objects = meta.objects(&records, Some("prom"));
     let stored: Vec<_> = rows.iter().zip(&objects).collect();
-    let back = meta.read_table(&pasted(&stored)).unwrap();
+    let back = meta.read_table(&pasted_from(&stored)).unwrap();
     assert_eq!(
         back.iter().map(|r| meta.record_object(r, "")).collect::<Vec<_>>(),
         rows,
@@ -1902,7 +1891,7 @@ fn a_remote_write_histogram_is_a_record_typed_as_an_otlp_histogram_point() {
 
     let objects = meta.objects(&records, Some("prom"));
     let stored: Vec<_> = rows.iter().zip(&objects).collect();
-    let back = meta.read_table(&pasted(&stored)).unwrap();
+    let back = meta.read_table(&pasted_from(&stored)).unwrap();
     assert_eq!(
         back.iter().map(|r| meta.record_object(r, "")).collect::<Vec<_>>(),
         rows,
@@ -1977,7 +1966,7 @@ fn remote_write_exemplars_are_shaped_as_otlp_exemplars_on_a_series_last_record()
 
     let objects = meta.objects(&records, Some("prom"));
     let stored: Vec<_> = rows.iter().zip(&objects).collect();
-    let back = meta.read_table(&pasted(&stored)).unwrap();
+    let back = meta.read_table(&pasted_from(&stored)).unwrap();
     assert_eq!(
         back.iter().map(|r| meta.record_object(r, "")).collect::<Vec<_>>(),
         rows,
@@ -2047,7 +2036,7 @@ fn remote_write_metadata_is_a_record_of_each_metric_family() {
 
     let objects = meta.objects(&records, Some("prom"));
     let stored: Vec<_> = rows.iter().zip(&objects).collect();
-    let back = meta.read_table(&pasted(&stored)).unwrap();
+    let back = meta.read_table(&pasted_from(&stored)).unwrap();
     assert_eq!(
         back.iter().map(|r| meta.record_object(r, "")).collect::<Vec<_>>(),
         rows,
@@ -2415,7 +2404,7 @@ fn a_bulk_request_is_answered_per_action_once_its_documents_are_committed() {
     assert_eq!(objects[1]["type"], "elasticReceiver");
     let none = smeltr::io::RecordObject::new();
     let stored: Vec<_> = objects.iter().map(|o| (&none, o)).collect();
-    let back = meta.read_table(&pasted(&stored)).unwrap();
+    let back = meta.read_table(&pasted_from(&stored)).unwrap();
     assert_eq!(
         meta.objects(&back, Some("es")),
         objects,

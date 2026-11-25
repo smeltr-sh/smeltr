@@ -3935,6 +3935,7 @@ mod tests {
     use crate::config_file;
     use crate::core::column::Scalar;
     use crate::core::error::{Exception, ExceptionKind};
+    use crate::heartbeat::pasted_from;
     use crate::plan::output::{RowException, row_exceptions};
 
     #[test]
@@ -4313,7 +4314,7 @@ mod tests {
         let objects: Vec<crate::io::RecordObject> = objects.iter().map(|o| o.as_object().unwrap().clone()).collect();
         let fields = crate::io::SourceFields::new();
         let stored: Vec<_> = objects.iter().map(|o| (o, &fields)).collect();
-        let records = meta.read_table(&pasted(&stored)).unwrap();
+        let records = meta.read_table(&pasted_from(&stored)).unwrap();
 
         let rows = preview_routes(&compiled, source, &records, preview_memory_budget());
 
@@ -4334,18 +4335,6 @@ mod tests {
         assert_eq!(rows[2].matched, [1], "a route condition reads a declared field");
     }
 
-    /// The table of `records` pasted, each with `fields` as what its source set.
-    fn pasted(records: &[(&crate::io::RecordObject, &crate::io::SourceFields)]) -> crate::heartbeat::CaptureBatch {
-        let whole = records.iter().map(|(record, fields)| {
-            let mut record = (*record).clone();
-            if !fields.is_empty() {
-                record.insert("__source".to_string(), serde_json::Value::Object((*fields).clone()));
-            }
-            record
-        });
-        crate::heartbeat::CaptureBatch::pasted(whole.collect())
-    }
-
     /// A row no pipeline made goes to a destination as its record object, and one field's text is that field's. A
     /// typed record has no `__source.bytes`, so it has no form to write as bytes.
     #[test]
@@ -4355,7 +4344,7 @@ mod tests {
             .unwrap();
         let object = serde_json::json!({"id": 7, "name": "a"}).as_object().unwrap().clone();
         let fields = crate::io::SourceFields::new();
-        let records = meta.read_table(&pasted(&[(&object, &fields)])).unwrap();
+        let records = meta.read_table(&pasted_from(&[(&object, &fields)])).unwrap();
         let form =
             |payload: Payload| source_form(&payload, &meta, &records[0], "").map(|v| String::from_utf8(v).unwrap());
 

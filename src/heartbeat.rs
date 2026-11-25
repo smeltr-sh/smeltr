@@ -1379,6 +1379,18 @@ impl CaptureBatch {
     }
 }
 
+/// The table of `records` pasted (`CaptureBatch::pasted`), each with `fields` as what its source set.
+pub fn pasted_from(records: &[(&crate::io::RecordObject, &crate::io::SourceFields)]) -> CaptureBatch {
+    let whole = records.iter().map(|(record, fields)| {
+        let mut record = (*record).clone();
+        if !fields.is_empty() {
+            record.insert("__source".to_string(), serde_json::Value::Object((*fields).clone()));
+        }
+        record
+    });
+    CaptureBatch::pasted(whole.collect())
+}
+
 impl CapturedRow {
     /// The bytes this row adds to a capture: each value as it travels, a text value its text.
     pub fn size(&self) -> usize {
