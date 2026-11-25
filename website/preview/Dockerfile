@@ -26,9 +26,9 @@ ENV SMELTR_NO_GUI=1
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
     --mount=type=cache,target=/src/target \
-    cargo build --locked --release --bin smeltr-demo \
-    && strip target/release/smeltr-demo \
-    && cp target/release/smeltr-demo /smeltr-demo
+    cargo build --locked --profile optimized --bin smeltr-demo \
+    && strip target/optimized/smeltr-demo \
+    && cp target/optimized/smeltr-demo /smeltr-demo
 
 # It links nothing past glibc and libgcc, which ubi-micro carries.
 FROM registry.access.redhat.com/ubi9/ubi-micro:9.8
