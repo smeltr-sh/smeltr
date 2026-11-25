@@ -387,7 +387,7 @@ fn a_refused_record_comes_back_as_a_rejection_not_a_failed_batch() {
 fn the_requests_a_destination_has_open_are_reported_and_only_when_it_opens_its_own() {
     /// Reports whatever it is told to, so this test is about egress reading the figure, not about what sets it.
     #[derive(Clone)]
-    struct Reporting(Arc<std::sync::Mutex<Option<usize>>>);
+    struct Reporting(Arc<smeltr::sync::Mutex<Option<usize>>>);
 
     impl Destination for Reporting {
         fn deliver(
@@ -401,7 +401,7 @@ fn the_requests_a_destination_has_open_are_reported_and_only_when_it_opens_its_o
             Ok(())
         }
         fn concurrency(&mut self) -> Option<usize> {
-            *self.0.lock().unwrap()
+            *self.0.lock()
         }
     }
 
@@ -412,7 +412,7 @@ fn the_requests_a_destination_has_open_are_reported_and_only_when_it_opens_its_o
         })
     };
 
-    let level = Arc::new(std::sync::Mutex::new(Some(7)));
+    let level = Arc::new(smeltr::sync::Mutex::new(Some(7)));
     let registry = Arc::new(Metrics::new());
     let mut egress = Egress::start(
         0,
@@ -438,7 +438,7 @@ fn the_requests_a_destination_has_open_are_reported_and_only_when_it_opens_its_o
     let mut egress = Egress::start(
         1,
         "d",
-        Box::new(Reporting(Arc::new(std::sync::Mutex::new(None)))),
+        Box::new(Reporting(Arc::new(smeltr::sync::Mutex::new(None)))),
         timeout(),
         BUDGET,
         MetricsHandle::new(quiet.clone(), "egress-1"),

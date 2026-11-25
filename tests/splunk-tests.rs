@@ -1,10 +1,11 @@
 //! The Splunk HEC protocol (`io::splunk`) over the HTTP core: the envelope each row goes in, how an answer is read,
 //! and indexer acknowledgement, against a transport that answers by path.
 
+use smeltr::sync::Mutex;
 use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use smeltr::io::http::{HttpDestination, Response, Transport, agent_config};
@@ -55,7 +56,7 @@ struct ScriptedTransport {
 
 impl Transport for ScriptedTransport {
     fn post(&mut self, path: &str, body: &[u8], _budget: Duration) -> Result<Response, IoError> {
-        self.sent.lock().unwrap().push(Sent {
+        self.sent.lock().push(Sent {
             path: path.to_string(),
             body: String::from_utf8_lossy(body).into_owned(),
         });
@@ -157,7 +158,7 @@ fn each_row_is_the_event_of_one_envelope() {
     .unwrap();
     assert!(refused.is_empty());
 
-    let sent = sent.lock().unwrap();
+    let sent = sent.lock();
     assert_eq!(sent.len(), 1, "receipt asks nothing more");
     assert_eq!(sent[0].path, EVENT);
     let events: Vec<serde_json::Value> = sent[0].body.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
@@ -207,7 +208,7 @@ fn the_raw_endpoint_sends_lines_under_the_destination_s_fields() {
     let refused = deliver(&mut d, vec![r, elsewhere, row(b"[12:00] ERROR")]).unwrap();
     assert_eq!(refused.len(), 1, "{refused:?}");
     assert!(refused[0].reason.contains("\"audit\""), "{refused:?}");
-    assert_eq!(sent.lock().unwrap()[0].body, "{\"_time\":1,\"a\":1}\n[12:00] ERROR\n");
+    assert_eq!(sent.lock()[0].body, "{\"_time\":1,\"a\":1}\n[12:00] ERROR\n");
 
     // Receipt asks `/ack` first too, since this channel would collect acknowledgements; acknowledgement off is the
     // answer it wants.
@@ -228,7 +229,7 @@ fn an_index_is_escaped_not_interpolated() {
     let mut r = row(b"{}");
     r.placement = Some(r#"a","event":"forged"#.to_string());
     deliver(&mut d, vec![r]).unwrap();
-    let event: serde_json::Value = serde_json::from_str(sent.lock().unwrap()[0].body.trim_end()).unwrap();
+    let event: serde_json::Value = serde_json::from_str(sent.lock()[0].body.trim_end()).unwrap();
     assert_eq!(event["index"], r#"a","event":"forged"#);
     assert_eq!(event["event"], serde_json::json!({}));
 }
@@ -257,7 +258,7 @@ fn an_invalid_event_is_refused_alone_and_the_rest_go_again() {
         refused[0].reason
     );
 
-    let sent = sent.lock().unwrap();
+    let sent = sent.lock();
     assert_eq!(sent.len(), 2);
     assert!(sent[1].body.contains(r#"{"n":0}"#) && sent[1].body.contains(r#"{"n":2}"#));
     assert!(!sent[1].body.contains(r#"{"n":1}"#));
@@ -274,7 +275,7 @@ fn several_invalid_events_are_each_refused() {
     let mut docs: Vec<usize> = refused.iter().map(|r| r.doc).collect();
     docs.sort_unstable();
     assert_eq!(docs, [1, 3, 5]);
-    let sent = sent.lock().unwrap();
+    let sent = sent.lock();
     assert_eq!(sent.len(), 4);
     assert_eq!(sent[3].body.lines().count(), 3, "{:?}", sent[3]);
 }
@@ -293,7 +294,7 @@ fn a_bare_refusal_is_split_down_to_the_event_at_fault() {
         "{}",
         refused[0].reason
     );
-    assert_eq!(sent.lock().unwrap().len(), 3);
+    assert_eq!(sent.lock().len(), 3);
 }
 
 /// A request past the collector's `max_content_length` is split, not sent again whole.
@@ -303,7 +304,7 @@ fn a_request_too_large_is_split() {
     let (t, sent) = scripted(vec![too_large, answer(200, SUCCESS), answer(200, SUCCESS)], vec![]);
     let mut d = destination(t, Acknowledgement::Receipt);
     assert!(deliver(&mut d, vec![row(b"{}"), row(b"{}")]).unwrap().is_empty());
-    assert_eq!(sent.lock().unwrap().len(), 3);
+    assert_eq!(sent.lock().len(), 3);
 }
 
 /// A token Splunk refuses gets fixed, so the request fails rather than refusing its rows, and the reason reaches the
@@ -329,7 +330,7 @@ fn a_busy_collector_is_retried() {
     );
     let mut d = destination(t, Acknowledgement::Receipt);
     assert!(deliver(&mut d, numbered(2)).unwrap().is_empty());
-    let sent = sent.lock().unwrap();
+    let sent = sent.lock();
     assert_eq!(sent.len(), 2);
     assert_eq!(sent[0].body, sent[1].body);
 }
@@ -395,7 +396,7 @@ fn a_batch_is_delivered_once_the_indexer_acknowledges_it() {
     let mut d = destination(t, Acknowledgement::Indexer);
     assert!(deliver(&mut d, vec![row(b"{}")]).unwrap().is_empty());
 
-    let sent = sent.lock().unwrap();
+    let sent = sent.lock();
     assert_eq!(sent.len(), 3, "the events, then the ack asked until it is true");
     assert_eq!(sent[1].path, ACK);
     assert_eq!(sent[1].body, r#"{"acks":[7]}"#);
@@ -462,7 +463,7 @@ fn a_collector_asks_once_whether_the_token_acknowledges() {
     let mut t = Collector::new(t, Acknowledgement::Indexer, Endpoint::Event);
     let e = t.post(EVENT, b"{}", Duration::from_secs(5)).unwrap_err();
     assert!(e.to_string().contains("indexer acknowledgement off"), "{e}");
-    assert!(sent.lock().unwrap().iter().all(|s| s.path == ACK));
+    assert!(sent.lock().iter().all(|s| s.path == ACK));
 
     let (t, sent) = scripted(
         vec![answer(200, SUCCESS), answer(200, SUCCESS)],
@@ -472,7 +473,7 @@ fn a_collector_asks_once_whether_the_token_acknowledges() {
     for _ in 0..2 {
         assert_eq!(t.post(EVENT, b"{}", Duration::from_secs(5)).unwrap().status, 200);
     }
-    let paths: Vec<String> = sent.lock().unwrap().iter().map(|s| s.path.clone()).collect();
+    let paths: Vec<String> = sent.lock().iter().map(|s| s.path.clone()).collect();
     assert_eq!(paths, [ACK, EVENT, EVENT]);
 }
 
@@ -486,13 +487,13 @@ fn raw_receipt_asks_once_that_the_token_does_not_acknowledge() {
         .post(EVENT, b"{}", Duration::from_secs(5))
         .unwrap_err();
     assert!(e.to_string().contains("indexer acknowledgement on"), "{e}");
-    assert_eq!(sent.lock().unwrap().len(), 1, "nothing sent past the ask");
+    assert_eq!(sent.lock().len(), 1, "nothing sent past the ask");
 
     let off = answer(400, r#"{"text":"ACK is disabled","code":14}"#);
     let (t, sent) = scripted(vec![answer(200, SUCCESS)], vec![off]);
     let mut t = Collector::new(t, Acknowledgement::Receipt, Endpoint::Raw);
     assert_eq!(t.post(EVENT, b"{}", Duration::from_secs(5)).unwrap().status, 200);
-    assert_eq!(sent.lock().unwrap().len(), 2);
+    assert_eq!(sent.lock().len(), 2);
 }
 
 /// A refusal answers nothing, so there is nothing to wait on.
@@ -501,7 +502,7 @@ fn a_request_refused_whole_polls_no_ack() {
     let (t, sent) = scripted(vec![bad_at(0)], vec![]);
     let mut d = destination(t, Acknowledgement::Indexer);
     assert_eq!(deliver(&mut d, vec![row(b"{}")]).unwrap().len(), 1);
-    assert_eq!(sent.lock().unwrap().len(), 1);
+    assert_eq!(sent.lock().len(), 1);
 }
 
 // --- the transport -------------------------------------------------------

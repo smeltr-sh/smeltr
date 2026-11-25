@@ -904,7 +904,7 @@ fn spawn_embedded_worker(
     let code = smeltr::worker::needs_an_enrollment_code(&state_dir)
         .then(|| mint_embedded_enrollment_code(&store, &group_id, &smeltr::leader::tls::dir_of(data_dir)));
 
-    std::thread::spawn(move || {
+    smeltr::sync::spawn("smeltr-worker", move || {
         start_worker(
             leader_url,
             leader_ca_pem,
@@ -914,7 +914,8 @@ fn spawn_embedded_worker(
             code,
             true,
         )
-    });
+    })
+    .expect("start the worker's thread");
 }
 
 /// An enrollment code for the worker inside this process.

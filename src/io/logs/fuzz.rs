@@ -237,7 +237,7 @@ impl Reader {
 
 #[test]
 fn every_reader_carries_each_event_at_its_level_once_in_order_within_its_batch() {
-    let _taps = crate::logs::TAPS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _taps = crate::logs::TAPS_LOCK.lock();
     let ceiling = crate::logs::max_level();
     let mut cov = Coverage::new(
         (LEVELS.iter().map(|(_, l)| format!("a reader at {l}")))

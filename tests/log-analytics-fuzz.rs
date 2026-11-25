@@ -15,9 +15,10 @@
 //! Live, the same draws, pointed at a real data collection rule and signed in as a real service principal
 //! (`just check-log-analytics`), land in its Log Analytics table and are queried back.
 
+use smeltr::sync::Mutex;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::TcpListener;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
@@ -954,7 +955,7 @@ fn offline_seed(seed: u64, reached: &mut Reached) -> Result<(), String> {
     let delivered = destination::write(d.as_mut(), &batches, Duration::from_secs(60));
     drop(d);
     drop((service, token_service));
-    let script = script.lock().unwrap();
+    let script = script.lock();
     // A batch whose every row is unfit sends nothing to be stalled by.
     let sends = sent.iter().flatten().any(|s| s.row.unfit.is_none());
     if let Some(status) = stall.filter(|_| sends) {

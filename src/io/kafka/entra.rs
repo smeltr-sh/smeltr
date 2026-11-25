@@ -219,7 +219,7 @@ mod tests {
             from_now > Duration::from_secs(3400) && from_now <= Duration::from_secs(3600),
             "{from_now:?}"
         );
-        let seen = seen.lock().unwrap();
+        let seen = seen.lock();
         assert_eq!(seen.len(), 1);
         assert!(
             seen[0].contains("client_id=app-id&client_assertion_type="),

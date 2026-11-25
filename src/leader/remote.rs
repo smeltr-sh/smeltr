@@ -877,24 +877,24 @@ pub struct Syncing {
     /// Held by whatever moves `main`, the fleet or the remote it follows: a sync, a settings save, an Approve, a
     /// rollback.
     pub turn: tokio::sync::Mutex<()>,
-    state: std::sync::Mutex<SyncState>,
+    state: crate::sync::Mutex<SyncState>,
     /// Wakes the timer when the settings change, so a new interval applies at once.
     pub settings_changed: tokio::sync::Notify,
     /// Held by whatever pushes a branch, and by whatever changes the remote, so no push lands on a remote it was not
     /// meant for.
     pub pushing: tokio::sync::Mutex<()>,
     /// Why each branch's latest save is not on the host, by branch.
-    pushes: std::sync::Mutex<std::collections::HashMap<String, PushFailure>>,
+    pushes: crate::sync::Mutex<std::collections::HashMap<String, PushFailure>>,
 }
 
 impl Syncing {
     pub fn state(&self) -> SyncState {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.state.lock().clone()
     }
 
     /// The remote took `head` on its `main` and the leader runs it, as a successful sync would leave things.
     pub fn heard(&self, head: &str) {
-        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = SyncState {
+        *self.state.lock() = SyncState {
             synced_at: Some(super::warnings::now_millis()),
             remote_head: Some(head.to_string()),
             failure: None,
@@ -902,7 +902,7 @@ impl Syncing {
     }
 
     pub fn push_failures(&self) -> std::collections::HashMap<String, PushFailure> {
-        self.pushes.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.pushes.lock().clone()
     }
 }
 
@@ -922,7 +922,7 @@ pub async fn sync_now(state: &AppState) -> Result<SyncState, Refusal> {
         super::prune_lookups(state).await;
     }
     let now = super::warnings::now_millis();
-    let mut held = state.remote.state.lock().unwrap_or_else(|e| e.into_inner());
+    let mut held = state.remote.state.lock();
     match synced {
         Ok(head) => {
             if let Some(failure) = held.failure.take() {
@@ -1038,7 +1038,7 @@ pub async fn push_saves(state: AppState) {
                 if failing.clear() {
                     tracing::info!(name: "push_scan_recovered", target: "git", "branches are being checked for pushes again");
                 }
-                *state.remote.pushes.lock().unwrap_or_else(|e| e.into_inner()) = failures;
+                *state.remote.pushes.lock() = failures;
             }
             Err(e) => scan_failed(&mut failing, e),
         }
@@ -1204,12 +1204,7 @@ pub async fn overwrite(
     .unwrap_or_else(|e| Err(Refusal::internal(e.to_string())));
     match pushed {
         Ok(None) => {
-            state
-                .remote
-                .pushes
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&branch);
+            state.remote.pushes.lock().remove(&branch);
             // The host's branch was replaced, which no commit of ours records.
             super::accounts::record_async(state.store.clone(), &actor, "branch-overwrite", &branch, "ok").await;
             Envelope::done()
@@ -1222,12 +1217,7 @@ pub async fn overwrite(
                 host_tip,
                 at: super::warnings::now_millis(),
             };
-            state
-                .remote
-                .pushes
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(branch.clone(), failed);
+            state.remote.pushes.lock().insert(branch.clone(), failed);
             Envelope::refused(Refusal::conflict(format!(
                 "{branch} on the remote has moved again since it was shown: look at it again before overwriting it"
             )))
@@ -1416,8 +1406,8 @@ pub async fn put_settings(
 /// once it is replaced or gone. What was found about one remote says nothing about another. The caller holds the
 /// remote's turn and its pushing lock.
 pub async fn forget(state: &AppState) {
-    *state.remote.state.lock().unwrap_or_else(|e| e.into_inner()) = SyncState::default();
-    state.remote.pushes.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    *state.remote.state.lock() = SyncState::default();
+    state.remote.pushes.lock().clear();
     let repo = git::repo_path(&state.data_dir);
     if let Ok(Err(e)) = tokio::task::spawn_blocking(move || git::forget_host(&repo)).await {
         tracing::warn!(name: "forget", target: "git", error = %e.message, "the old remote's branches could not be forgotten");
@@ -1443,10 +1433,11 @@ pub async fn post_sync(
 mod tests {
     use super::*;
     use crate::format::bytes_text::BytesForm;
+    use crate::sync::Mutex;
     use std::collections::HashMap;
     use std::path::PathBuf;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
 
     const TOKEN: &str = "s3cret";
 
@@ -1507,7 +1498,7 @@ mod tests {
                         asked["ref"]["name"].as_str().unwrap().starts_with("refs/heads/"),
                         "{asked}"
                     );
-                    let held = objects.lock().unwrap();
+                    let held = objects.lock();
                     let answered: Vec<serde_json::Value> = asked["objects"]
                         .as_array()
                         .unwrap()
@@ -1576,7 +1567,7 @@ mod tests {
                                 // The server's own header is what a download carries, and never the leader's token.
                                 assert!(headers.get("authorization").is_none());
                                 assert_eq!(headers.get("x-ticket").unwrap(), "t");
-                                files.lock().unwrap().get(&oid).cloned().unwrap_or_default()
+                                files.lock().get(&oid).cloned().unwrap_or_default()
                             },
                         )
                         .put(
@@ -1587,7 +1578,7 @@ mod tests {
                                 assert_eq!(headers.get("x-ticket").unwrap(), "t");
                                 // Git LFS uploads declare their length rather than arriving chunked.
                                 assert_eq!(headers.get("content-length").unwrap(), &body.len().to_string());
-                                uploads.lock().unwrap().insert(oid, body.to_vec());
+                                uploads.lock().insert(oid, body.to_vec());
                             },
                         ),
                     )
@@ -1909,12 +1900,12 @@ mod tests {
         assert_ne!(git::main_head(&repo).as_deref(), Some(commit.as_str()));
 
         // Bytes that are not the pointer's: refused, and not kept.
-        host.lfs.lock().unwrap().insert(oid.clone(), b"ip,city\n".to_vec());
+        host.lfs.lock().insert(oid.clone(), b"ip,city\n".to_vec());
         let (_, why) = sync(&repo, roots(), &host.remote()).unwrap_err();
         assert!(why.contains(&oid), "{why}");
         assert!(!store::path_of(&repo, &oid).exists());
 
-        host.lfs.lock().unwrap().insert(oid.clone(), bytes.clone());
+        host.lfs.lock().insert(oid.clone(), bytes.clone());
         assert_eq!(sync(&repo, roots(), &host.remote()), Ok(Some(commit.clone())));
         assert_eq!(std::fs::read(store::path_of(&repo, &oid)).unwrap(), bytes);
         assert!(
@@ -1930,7 +1921,7 @@ mod tests {
         let host = Host::start("lfsconfig-host");
         let lfsconfig = format!("[lfs]\n\turl = {}/moved\n", host.base);
         let (commit, oid) = commit_cities(&host, &[(".lfsconfig", lfsconfig.as_bytes())]);
-        host.lfs.lock().unwrap().insert(oid.clone(), CITIES.to_vec());
+        host.lfs.lock().insert(oid.clone(), CITIES.to_vec());
         let repo = leader("lfsconfig");
         assert_eq!(sync(&repo, roots(), &host.remote()), Ok(Some(commit)));
         assert_eq!(std::fs::read(store::path_of(&repo, &oid)).unwrap(), CITIES);
@@ -1941,7 +1932,7 @@ mod tests {
     fn a_plain_http_remote_s_download_follows_a_redirect() {
         let host = Host::start("hop-host");
         let (commit, oid) = commit_cities(&host, &[]);
-        host.lfs.lock().unwrap().insert(oid.clone(), CITIES.to_vec());
+        host.lfs.lock().insert(oid.clone(), CITIES.to_vec());
         host.hop.store(true, Ordering::SeqCst);
         let repo = leader("hop");
         assert_eq!(sync(&repo, roots(), &host.remote()), Ok(Some(commit)));
@@ -2829,7 +2820,7 @@ mod tests {
             push_all(&repo, &host.remote(), &HashMap::new(), 0, 0),
             Ok(HashMap::new())
         );
-        assert_eq!(host.lfs.lock().unwrap().get(&oid).map(Vec::as_slice), Some(CITIES));
+        assert_eq!(host.lfs.lock().get(&oid).map(Vec::as_slice), Some(CITIES));
     }
 
     #[test]

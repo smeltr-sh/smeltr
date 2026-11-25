@@ -1069,7 +1069,7 @@ mod fuzz;
 mod tests {
     use super::*;
     use crate::io::TopicPartition;
-    use std::sync::Mutex;
+    use crate::sync::Mutex;
 
     /// `v` as a driver reads a JSON column.
     fn json(v: serde_json::Value) -> Value {
@@ -1092,7 +1092,7 @@ mod tests {
 
     impl Scripted {
         fn answer(&self, columns: &[&str], rows: Vec<Vec<Value>>) {
-            self.answers.lock().unwrap().push_back(Ok(Rows {
+            self.answers.lock().push_back(Ok(Rows {
                 columns: columns.iter().map(|c| c.to_string()).collect(),
                 rows,
                 as_text: Vec::new(),
@@ -1100,15 +1100,15 @@ mod tests {
         }
 
         fn fail(&self, why: &str) {
-            self.answers.lock().unwrap().push_back(Err(why.to_string()));
+            self.answers.lock().push_back(Err(why.to_string()));
         }
 
         fn panic_once(&self) {
-            *self.panic_next.lock().unwrap() = true;
+            *self.panic_next.lock() = true;
         }
 
         fn last_asked(&self) -> (Statement, Vec<Value>) {
-            self.asked.lock().unwrap().last().cloned().expect("a run")
+            self.asked.lock().last().cloned().expect("a run")
         }
     }
 
@@ -1118,18 +1118,14 @@ mod tests {
         }
 
         fn run(&mut self, statement: &Statement, values: &[Value]) -> Result<Rows, String> {
-            self.asked.lock().unwrap().push((statement.clone(), values.to_vec()));
-            if std::mem::take(&mut *self.panic_next.lock().unwrap()) {
+            self.asked.lock().push((statement.clone(), values.to_vec()));
+            if std::mem::take(&mut *self.panic_next.lock()) {
                 panic!("the wire said nothing a driver expects");
             }
-            if let Some(gate) = self.gate.lock().unwrap().as_ref() {
+            if let Some(gate) = self.gate.lock().as_ref() {
                 gate.recv().unwrap();
             }
-            self.answers
-                .lock()
-                .unwrap()
-                .pop_front()
-                .unwrap_or_else(|| Ok(Rows::default()))
+            self.answers.lock().pop_front().unwrap_or_else(|| Ok(Rows::default()))
         }
 
         fn describe(&mut self, _: &Statement) -> Result<Vec<Described>, String> {
@@ -1328,7 +1324,7 @@ mod tests {
         assert_eq!(ids(&poll(&mut s, 10)), [1, 2]);
         assert_eq!(ids(&poll(&mut s, 10)), [3]);
         assert!(poll(&mut s, 10).is_empty());
-        assert_eq!(driver.asked.lock().unwrap().len(), 2);
+        assert_eq!(driver.asked.lock().len(), 2);
     }
 
     #[test]
@@ -1381,7 +1377,7 @@ mod tests {
     fn a_statement_that_outlasts_the_timeout_is_picked_up_by_a_later_poll() {
         let driver = Scripted::default();
         let (go, gate) = mpsc::channel();
-        *driver.gate.lock().unwrap() = Some(gate);
+        *driver.gate.lock() = Some(gate);
         driver.answer(COLUMNS, vec![row(1, "a")]);
         let mut s = source(&driver, by_id(), 100);
         let started = Instant::now();
@@ -1398,7 +1394,7 @@ mod tests {
         go.send(()).unwrap();
         let got = s.poll_batch(10, usize::MAX, Duration::from_secs(5)).unwrap();
         assert_eq!(ids(&got), [1]);
-        assert_eq!(driver.asked.lock().unwrap().len(), 1, "one statement ran");
+        assert_eq!(driver.asked.lock().len(), 1, "one statement ran");
     }
 
     #[test]
@@ -1555,7 +1551,7 @@ mod tests {
     #[test]
     fn a_position_read_only_as_text_fails_the_poll() {
         let driver = Scripted::default();
-        driver.answers.lock().unwrap().push_back(Ok(Rows {
+        driver.answers.lock().push_back(Ok(Rows {
             columns: COLUMNS.iter().map(|c| c.to_string()).collect(),
             rows: vec![row(1, "a")],
             as_text: vec!["id".into()],
@@ -1780,11 +1776,7 @@ mod tests {
         assert!(poll(&mut s, 10).is_empty());
         assert_eq!(s.connection_error().as_deref(), Some("connection refused"));
         assert!(poll(&mut s, 10).is_empty());
-        assert_eq!(
-            driver.asked.lock().unwrap().len(),
-            1,
-            "not asked again before the backoff"
-        );
+        assert_eq!(driver.asked.lock().len(), 1, "not asked again before the backoff");
     }
 
     /// A driver parses what the database sent, so a panic in it is the database's failure: reported, backed off
@@ -1801,7 +1793,7 @@ mod tests {
             error.starts_with("the driver panicked running the statement"),
             "{error}"
         );
-        assert_eq!(driver.asked.lock().unwrap().len(), 1);
+        assert_eq!(driver.asked.lock().len(), 1);
         s.pacer.retry_now();
         s.next_poll = Instant::now();
         assert_eq!(poll(&mut s, 10).len(), 1, "the retry runs on the same driver");
@@ -1862,11 +1854,7 @@ mod tests {
         })
         .unwrap();
         poll(&mut s, 10);
-        assert_eq!(
-            driver.asked.lock().unwrap().len(),
-            1,
-            "where it began is not found again"
-        );
+        assert_eq!(driver.asked.lock().len(), 1, "where it began is not found again");
         assert_eq!(driver.last_asked().1, [Value::Int(41)]);
     }
 

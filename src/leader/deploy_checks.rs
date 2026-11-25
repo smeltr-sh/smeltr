@@ -8,8 +8,9 @@
 //! before it. Tests take longer, so one thread runs them, always for the newest deployed commit; until it has, the
 //! last failures known stand, so a test still failing after a deploy is not reported as having started again.
 
+use crate::sync::Mutex;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use super::git;
 use crate::config_file::SchemaFinding;
@@ -95,7 +96,7 @@ impl DeployChecks {
             return Findings::default();
         };
         {
-            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut state = self.state.lock();
             if state.known.commit == commit || state.loading.as_deref() == Some(commit.as_str()) {
                 return state.known.clone();
             }
@@ -103,7 +104,7 @@ impl DeployChecks {
         }
 
         let listed = checked(&repo, &commit);
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self.state.lock();
         // A reader that started on another commit since owns the next answer; this one's is already old.
         if state.loading.as_deref() != Some(commit.as_str()) {
             return state.known.clone();
@@ -161,7 +162,7 @@ fn run_tests(runner: TestRunner, state: Arc<Mutex<State>>, data_dir: PathBuf) {
         .spawn(move || {
             loop {
                 let Some(commit) = ({
-                    let mut state = worker.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut state = worker.lock();
                     let next = state.wanted.take();
                     state.running = next.is_some();
                     next
@@ -174,7 +175,7 @@ fn run_tests(runner: TestRunner, state: Arc<Mutex<State>>, data_dir: PathBuf) {
                 else {
                     continue;
                 };
-                let mut state = worker.lock().unwrap_or_else(|e| e.into_inner());
+                let mut state = worker.lock();
                 if state.known.commit == commit {
                     state.known.tests_at = commit;
                     state.known.failing = failing;
@@ -182,7 +183,7 @@ fn run_tests(runner: TestRunner, state: Arc<Mutex<State>>, data_dir: PathBuf) {
             }
         });
     if let Err(e) = spawned {
-        state.lock().unwrap_or_else(|e| e.into_inner()).running = false;
+        state.lock().running = false;
         tracing::warn!(
             name: "tests_not_run", target: "deploy",
             error = %e,

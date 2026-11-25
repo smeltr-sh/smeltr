@@ -1,10 +1,11 @@
 //! The HTTP destination's protocol (`io::http_post`) over the HTTP core: how rows make a body, what each answer means,
 //! and what goes on the wire.
 
+use smeltr::sync::Mutex;
 use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use smeltr::io::http::{HttpDestination, Response, Transport, agent_config};
@@ -45,7 +46,7 @@ struct ScriptedTransport {
 
 impl Transport for ScriptedTransport {
     fn post(&mut self, path: &str, body: &[u8], _budget: Duration) -> Result<Response, IoError> {
-        self.sent.lock().unwrap().push((path.to_string(), body.to_vec()));
+        self.sent.lock().push((path.to_string(), body.to_vec()));
         Ok(self.answers.pop_front().expect("the script ran out"))
     }
 }
@@ -108,7 +109,6 @@ fn deliver<T: Transport>(d: &mut HttpDestination<Post, T>, rows: Vec<OwnedRecord
 
 fn bodies(sent: &Sent) -> Vec<String> {
     sent.lock()
-        .unwrap()
         .iter()
         .map(|(_, b)| String::from_utf8(b.clone()).unwrap())
         .collect()
@@ -182,7 +182,7 @@ fn gzip_compresses_the_whole_body() {
     };
     let (mut d, sent) = destination(&c, &[200]);
     deliver(&mut d, vec![row(b"{\"a\":1}"), row(b"{\"a\":2}")]).unwrap();
-    let gz = sent.lock().unwrap()[0].1.clone();
+    let gz = sent.lock()[0].1.clone();
     let mut plain = String::new();
     flate2::read::GzDecoder::new(&gz[..])
         .read_to_string(&mut plain)
@@ -195,10 +195,10 @@ fn gzip_compresses_the_whole_body() {
 fn the_url_keeps_its_trailing_slash() {
     let (mut d, sent) = destination(&config("https://intake.example/hook/", RequestBody::Lines), &[200]);
     deliver(&mut d, vec![row(b"{}")]).unwrap();
-    assert_eq!(sent.lock().unwrap()[0].0, "/");
+    assert_eq!(sent.lock()[0].0, "/");
     let (mut d, sent) = destination(&config("https://intake.example/hook?a=b", RequestBody::Lines), &[200]);
     deliver(&mut d, vec![row(b"{}")]).unwrap();
-    assert_eq!(sent.lock().unwrap()[0].0, "");
+    assert_eq!(sent.lock()[0].0, "");
 }
 
 // --- answers -------------------------------------------------------------
@@ -312,7 +312,7 @@ struct Oversizing {
 
 impl Transport for Oversizing {
     fn post(&mut self, path: &str, body: &[u8], _budget: Duration) -> Result<Response, IoError> {
-        self.sent.lock().unwrap().push((path.to_string(), body.to_vec()));
+        self.sent.lock().push((path.to_string(), body.to_vec()));
         if body.split(|b| *b == b'\n').filter(|l| !l.is_empty()).count() > self.fits {
             return Err(IoError::oversized("the answer was larger than 50 MiB"));
         }
