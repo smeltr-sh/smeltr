@@ -1,0 +1,40 @@
+name: diag-auditable
+on:
+  push:
+    branches: [claude/project-thread-6qduot]
+permissions:
+  contents: read
+jobs:
+  diag:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+        with:
+          tool: cargo-auditable@0.7.7
+      - run: cargo install rust-audit-info --locked
+      - name: plain hello
+        run: |
+          cargo new -q hello && cd hello
+          cargo auditable build --release -v 2>&1 | grep -i -E "audit|INCLUDE|warning" || true
+          rust-audit-info target/release/hello.exe | head -c 300; echo; echo "exit=$?"
+      - name: hello with smeltr's rustflags and dist profile
+        run: |
+          cd hello
+          mkdir -p .cargo
+          printf '%s\n' "[target.'cfg(windows)']" 'rustflags = ["-A", "linker_messages"]' \
+            "[target.'cfg(all(windows, target_env = \"msvc\"))']" \
+            'rustflags = ["-C", "link-arg=/NODEFAULTLIB:libcrypto.lib", "-C", "link-arg=/NODEFAULTLIB:libssl.lib"]' > .cargo/config.toml
+          printf '%s\n' '[profile.dist]' 'inherits = "release"' 'lto = "fat"' 'codegen-units = 1' >> Cargo.toml
+          cargo auditable build --profile dist -v 2>&1 | grep -i -E "audit|INCLUDE|rustc " | tail -3 || true
+          rust-audit-info target/dist/hello.exe | head -c 300; echo
+      - name: only the cfg(windows) table removed
+        run: |
+          cd hello
+          printf '%s\n' "[target.'cfg(all(windows, target_env = \"msvc\"))']" \
+            'rustflags = ["-C", "link-arg=/NODEFAULTLIB:libcrypto.lib", "-C", "link-arg=/NODEFAULTLIB:libssl.lib"]' > .cargo/config.toml
+          touch src/main.rs
+          cargo auditable build --profile dist 2>&1 | tail -2
+          rust-audit-info target/dist/hello.exe | head -c 300; echo
