@@ -9,6 +9,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel}
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::commit::WaitsOn;
 use crate::core::id::DestId;
 use crate::io::{BatchId, IoError, SourceRecord};
 
@@ -26,8 +27,8 @@ pub struct Handed {
 
 /// What transform tells the reader about a batch it was given.
 pub enum Report {
-    /// `dest` has finished with `batch`. What it refused was answered for before this was sent.
-    Acked { batch: BatchId, dest: DestId },
+    /// `by` has finished with `batch`. What a destination refused was answered for before this was sent.
+    Acked { batch: BatchId, by: WaitsOn },
     /// `batch` waits on `dest` again: rows another destination refused were sealed there under the same batch.
     /// Sent before the refusing destination's `Acked`, on the same channel, so the batch is never left waiting on
     /// nothing while the DLQ still has them.
@@ -419,7 +420,7 @@ mod tests {
         tx.send(Report::Block(BlockCause::Held, "stop".into()));
         tx.send(Report::Acked {
             batch: 4,
-            dest: DestId(1),
+            by: WaitsOn::Destination(DestId(1)),
         });
         let got = rx.drain();
         assert_eq!(got.len(), 2);
@@ -428,8 +429,7 @@ mod tests {
             got[1],
             Report::Acked {
                 batch: 4,
-                dest: DestId(1),
-                ..
+                by: WaitsOn::Destination(DestId(1)),
             }
         ));
     }
