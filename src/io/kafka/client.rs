@@ -16,10 +16,11 @@
 //! A source's partitions are paused while its inbox is full, while it is blocked or keeping its membership, and
 //! while a partition waits to be placed or is at its stop. [`Slot::sync`] is the one place that decides.
 
+use crate::sync::{Condvar, Mutex, MutexGuard};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
+use std::sync::{Arc, OnceLock, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -107,7 +108,7 @@ impl Clients {
             .collect();
         let slot = Arc::new(Slot::new(config, self.attached.fetch_add(1, Ordering::Relaxed)));
 
-        let mut entries = self.entries.lock().unwrap();
+        let mut entries = self.entries.lock();
         entries.retain(|e| e.client.strong_count() > 0);
         let client = match entries
             .iter()
@@ -151,7 +152,7 @@ impl Clients {
     /// read in one group from different clients (`refuse_overlaps`): broker lists that differ can name one cluster,
     /// and only the cluster can say so.
     fn note_cluster(&self, routes: &Routes, cluster: String) {
-        let entries = self.entries.lock().unwrap();
+        let entries = self.entries.lock();
         let cluster = routes.0.cluster.get_or_init(|| cluster);
         refuse_overlaps(&entries, routes, cluster);
     }
@@ -162,7 +163,7 @@ impl Clients {
         let Some(cluster) = routes.0.cluster.get() else {
             return HashSet::new();
         };
-        read_elsewhere(&self.entries.lock().unwrap(), routes, cluster)
+        read_elsewhere(&self.entries.lock(), routes, cluster)
     }
 }
 
@@ -344,9 +345,7 @@ impl Client {
         let sampler = Sampler::start(Arc::clone(&consumer), routes.clone(), clients.clone());
         let thread = {
             let (consumer, routes, stop) = (Arc::clone(&consumer), routes.clone(), Arc::clone(&stop));
-            std::thread::Builder::new()
-                .name("kafka-client".to_string())
-                .spawn(move || run(&consumer, &routes, &stop, &clients))
+            crate::sync::spawn("kafka-client", move || run(&consumer, &routes, &stop, &clients))
                 .map_err(|e| IoError::transient(format!("could not start the Kafka client's thread: {e}")))?
         };
         Ok(Arc::new(Client {
@@ -579,7 +578,7 @@ impl Slot {
     }
 
     pub(super) fn lock(&self) -> MutexGuard<'_, SlotState> {
-        self.state.lock().unwrap()
+        self.state.lock()
     }
 
     /// This source's name for `topic`, interned: a reference count, not an allocation.
@@ -730,16 +729,16 @@ struct RoutesInner {
 
 impl Routes {
     fn slots(&self) -> Vec<Arc<Slot>> {
-        self.0.slots.lock().unwrap().clone()
+        self.0.slots.lock().clone()
     }
 
     fn slot_for(&self, topic: &str) -> Option<Arc<Slot>> {
-        self.0.by_topic.lock().unwrap().get(topic).cloned()
+        self.0.by_topic.lock().get(topic).cloned()
     }
 
     /// Marks the subscription to be sent once changes settle.
     pub(super) fn changed(&self) {
-        *self.0.changed.lock().unwrap() = Some(Instant::now());
+        *self.0.changed.lock() = Some(Instant::now());
     }
 
     /// The consumer group this client is in, for its lines.
@@ -749,18 +748,18 @@ impl Routes {
 
     /// What `KafkaSource::connection_error` reads of the client.
     pub(super) fn last_error(&self) -> Option<String> {
-        self.0.last_error.lock().unwrap().clone()
+        self.0.last_error.lock().clone()
     }
 
     /// Recovery. Called on a fetched record and a completed assignment: either proves the brokers reachable.
     fn clear_error(&self) {
-        *self.0.last_error.lock().unwrap() = None;
+        *self.0.last_error.lock() = None;
     }
 
     fn attach(&self, slot: &Arc<Slot>) {
-        self.0.slots.lock().unwrap().push(Arc::clone(slot));
+        self.0.slots.lock().push(Arc::clone(slot));
         let taken = {
-            let mut by_topic = self.0.by_topic.lock().unwrap();
+            let mut by_topic = self.0.by_topic.lock();
             match slot.topics.iter().find(|t| by_topic.contains_key(t.as_ref())) {
                 Some(topic) => Some(topic.clone()),
                 None => {
@@ -786,8 +785,8 @@ impl Routes {
     }
 
     fn detach(&self, slot: &Arc<Slot>) {
-        self.0.slots.lock().unwrap().retain(|s| !Arc::ptr_eq(s, slot));
-        self.0.by_topic.lock().unwrap().retain(|_, s| !Arc::ptr_eq(s, slot));
+        self.0.slots.lock().retain(|s| !Arc::ptr_eq(s, slot));
+        self.0.by_topic.lock().retain(|_, s| !Arc::ptr_eq(s, slot));
         self.changed();
     }
 
@@ -809,7 +808,7 @@ impl Routes {
             state.tags.clear();
             state.revoked.extend(owned);
         }
-        self.0.by_topic.lock().unwrap().retain(|_, s| !Arc::ptr_eq(s, slot));
+        self.0.by_topic.lock().retain(|_, s| !Arc::ptr_eq(s, slot));
         slot.arrived.notify_all();
         self.changed();
     }
@@ -824,7 +823,7 @@ impl Routes {
     /// Whether `slot` is attached and not refused. Asked under the `by_topic` lock before a route to it is added:
     /// `detach` and `refuse` take its routes out after they change these, so a route added once they have would stay.
     fn routable(&self, slot: &Arc<Slot>) -> bool {
-        slot.lock().refused.is_none() && self.0.slots.lock().unwrap().iter().any(|s| Arc::ptr_eq(s, slot))
+        slot.lock().refused.is_none() && self.0.slots.lock().iter().any(|s| Arc::ptr_eq(s, slot))
     }
 
     /// Whether any source on this client names a topic pattern.
@@ -854,7 +853,7 @@ impl Routes {
                 gone
             };
             if !gone.is_empty() {
-                let mut by_topic = self.0.by_topic.lock().unwrap();
+                let mut by_topic = self.0.by_topic.lock();
                 for topic in &gone {
                     tracing::info!(name: "topic_gone", target: "sources", topic = %topic, "a topic a Kafka source's pattern matched is gone");
                     if by_topic.get(topic.as_ref()).is_some_and(|s| Arc::ptr_eq(s, &slot)) {
@@ -873,7 +872,7 @@ impl Routes {
                     continue;
                 }
                 {
-                    let mut by_topic = self.0.by_topic.lock().unwrap();
+                    let mut by_topic = self.0.by_topic.lock();
                     match by_topic.get(topic.as_str()) {
                         Some(owner) if Arc::ptr_eq(owner, &slot) => continue,
                         Some(_) => {
@@ -921,7 +920,7 @@ impl Routes {
             state.matched.len() != before
         };
         if held {
-            let mut by_topic = self.0.by_topic.lock().unwrap();
+            let mut by_topic = self.0.by_topic.lock();
             if by_topic.get(topic).is_some_and(|s| Arc::ptr_eq(s, slot)) {
                 by_topic.remove(topic);
             }
@@ -954,7 +953,7 @@ impl Routes {
     /// whose reader stopped reading.
     fn resubscribe_if_due(&self, consumer: &BaseConsumer<Routes>) {
         {
-            let mut changed = self.0.changed.lock().unwrap();
+            let mut changed = self.0.changed.lock();
             match *changed {
                 Some(at) if at.elapsed() >= SUBSCRIBE_SETTLE => *changed = None,
                 _ => return,
@@ -1110,12 +1109,12 @@ impl ClientContext for Routes {
         // librdkafka asks again on its own schedule, so a refusal stalls the client until one is answered.
         match super::entra::token(config) {
             Ok(token) => {
-                self.0.sign_in.lock().unwrap().clear();
+                self.0.sign_in.lock().clear();
                 tracing::debug!(name: "token_refreshed", target: "sources", group = %self.group(), principal = %token.principal_name, "signed in to Kafka as the pod's workload identity");
                 Ok(token)
             }
             Err(e) => {
-                if let Some(error) = self.0.sign_in.lock().unwrap().fail_due(e.to_string()) {
+                if let Some(error) = self.0.sign_in.lock().fail_due(e.to_string()) {
                     tracing::warn!(name: "sign_in_failed", target: "sources", group = %self.group(), error, "a source could not sign in to Kafka as the pod's workload identity, so it cannot connect until a sign-in works");
                 }
                 Err(e)
@@ -1126,7 +1125,7 @@ impl ClientContext for Routes {
     /// The most recent global error wins: a DNS failure that later becomes a connection refusal should read as the
     /// latter, not stay frozen on the first symptom seen.
     fn error(&self, error: KafkaError, reason: &str) {
-        *self.0.last_error.lock().unwrap() = Some(format!("{error}: {reason}"));
+        *self.0.last_error.lock() = Some(format!("{error}: {reason}"));
     }
 }
 
@@ -1462,44 +1461,39 @@ impl Sampler {
         let stop = Arc::new((Mutex::new(false), Condvar::new()));
         let thread = {
             let stop = Arc::clone(&stop);
-            std::thread::Builder::new()
-                .name("kafka-sampler".to_string())
-                .spawn(move || {
-                    // Both are due at once: a fresh source should show its backlog on the first heartbeat, and read
-                    // what its patterns match without waiting out a listing.
-                    let mut sampled: Option<Instant> = None;
-                    // Lag that goes unmeasured round after round is said at debug once in a while, not every round.
-                    let mut unmeasured = crate::logs::Relog::new();
-                    let listed: Cell<Option<Instant>> = Cell::new(None);
-                    // Also run between lag queries, so a slow broker behind one partition does not hold back a new
-                    // topic. A source that names a pattern and attached since the last listing is listed for now.
-                    let list_if_due = || {
-                        if routes.has_patterns()
-                            && (routes.awaits_listing()
-                                || listed.get().is_none_or(|at| at.elapsed() >= TOPIC_LIST_EVERY))
-                        {
-                            listed.set(Some(Instant::now()));
-                            list_topics(&consumer, &routes, &clients);
-                        }
-                    };
-                    loop {
-                        let stopped = || *stop.0.lock().unwrap();
-                        list_if_due();
-                        if sampled.is_none_or(|at| at.elapsed() >= LAG_SAMPLE_INTERVAL) {
-                            sampled = Some(Instant::now());
-                            measure_lag(&consumer, &routes, &stopped, &list_if_due, &mut unmeasured);
-                        }
-                        let (flag, wake) = &*stop;
-                        let guard = flag.lock().unwrap();
-                        let (guard, _) = wake
-                            .wait_timeout_while(guard, SAMPLER_TICK, |stopped| !*stopped)
-                            .unwrap();
-                        if *guard {
-                            return;
-                        }
+            crate::sync::spawn("kafka-sampler", move || {
+                // Both are due at once: a fresh source should show its backlog on the first heartbeat, and read
+                // what its patterns match without waiting out a listing.
+                let mut sampled: Option<Instant> = None;
+                // Lag that goes unmeasured round after round is said at debug once in a while, not every round.
+                let mut unmeasured = crate::logs::Relog::new();
+                let listed: Cell<Option<Instant>> = Cell::new(None);
+                // Also run between lag queries, so a slow broker behind one partition does not hold back a new
+                // topic. A source that names a pattern and attached since the last listing is listed for now.
+                let list_if_due = || {
+                    if routes.has_patterns()
+                        && (routes.awaits_listing() || listed.get().is_none_or(|at| at.elapsed() >= TOPIC_LIST_EVERY))
+                    {
+                        listed.set(Some(Instant::now()));
+                        list_topics(&consumer, &routes, &clients);
                     }
-                })
-                .expect("spawning the Kafka sampler thread")
+                };
+                loop {
+                    let stopped = || *stop.0.lock();
+                    list_if_due();
+                    if sampled.is_none_or(|at| at.elapsed() >= LAG_SAMPLE_INTERVAL) {
+                        sampled = Some(Instant::now());
+                        measure_lag(&consumer, &routes, &stopped, &list_if_due, &mut unmeasured);
+                    }
+                    let (flag, wake) = &*stop;
+                    let guard = flag.lock();
+                    let (guard, _) = wake.wait_timeout_while(guard, SAMPLER_TICK, |stopped| !*stopped);
+                    if *guard {
+                        return;
+                    }
+                }
+            })
+            .expect("spawning the Kafka sampler thread")
         };
         Sampler {
             stop,
@@ -1540,7 +1534,7 @@ impl Drop for Sampler {
     /// wakes. Waits at most one query in flight ([`LAG_QUERY_TIMEOUT`]).
     fn drop(&mut self) {
         let (flag, wake) = &*self.stop;
-        *flag.lock().unwrap() = true;
+        *flag.lock() = true;
         wake.notify_all();
         if let Some(t) = self.thread.take() {
             let _ = t.join();
@@ -1993,7 +1987,7 @@ mod tests {
         };
         // Each open client's group and id, in the order they attached.
         let ids = |clients: &Clients| -> Vec<(String, Option<String>)> {
-            let entries = clients.entries.lock().unwrap();
+            let entries = clients.entries.lock();
             entries
                 .iter()
                 .filter(|e| e.client.strong_count() > 0)

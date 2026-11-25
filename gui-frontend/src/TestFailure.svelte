@@ -6,7 +6,8 @@
   import { type Verdict } from './api';
   import { diffObjects, formatDiffValue, type DiffEntry } from './diff';
   import { count } from './time';
-  import { outcomeText, sentText } from './objectChanges';
+  import { outcomeText } from './objectChanges';
+  import { differenceNote } from './testDiff';
 
   let {
     verdict,
@@ -37,33 +38,21 @@
 
   function failInfo(v: Verdict): FailInfo | null {
     const named = routeName;
-    const d = v.firstDifference;
+    const d = v.differences?.[0];
     if (!d) return null;
     const headline = `Row ${d.row} differs from what the test locks.`;
     const { expected, actual } = d;
-    if (
-      expected?.values &&
-      actual?.values &&
-      sentText(expected, named) === sentText(actual, named)
-    ) {
+    const note = differenceNote(d);
+    if (note === null)
       return {
         headline,
-        note: null,
-        entries: diffObjects(expected.values, actual.values).filter((e) => e.kind !== 'unchanged'),
+        note,
+        entries: diffObjects(expected!.values!, actual!.values!).filter(
+          (e) => e.kind !== 'unchanged',
+        ),
         expectedLine: null,
         actualLine: null,
       };
-    }
-    const note =
-      expected === undefined
-        ? 'The test locks no more documents on this row; this run made another.'
-        : actual === undefined
-          ? 'The test locks another document on this row; this run made none.'
-          : !expected.values && actual.values
-            ? 'The test locked this row as dropped; this run kept it.'
-            : expected.values && !actual.values
-              ? 'The test locked a document here; this run dropped it.'
-              : 'This run sent the document elsewhere.';
     return {
       headline,
       note,

@@ -13,7 +13,7 @@ use crate::core::buffer::{self, BufferPool};
 use crate::core::column::{Column, DataType, Validity};
 use crate::core::ctx::Ctx;
 use crate::core::error::{ErrorSink, ExceptionKind};
-use crate::core::id::{FunctionId, SlotId};
+use crate::core::id::{DestId, FunctionId, SlotId};
 use crate::format::record::RecordView;
 use crate::leader::envelope::{ApiError, Envelope, Refusal};
 use crate::plan;
@@ -350,6 +350,10 @@ pub struct RoutePreviewRequest {
     /// capture at a destination. A sample that names one keeps its own.
     #[serde(default)]
     pub source: Option<String>,
+    /// An end-to-end test over this sample, by id: the preview compares what it routed against what the test locked
+    /// (`RoutePreview::verdict`).
+    #[serde(default)]
+    pub test: Option<String>,
 }
 
 #[derive(Default, serde::Serialize)]
@@ -367,11 +371,14 @@ pub struct RoutePreview {
     /// `route_pipelines`.
     pub route_names: Vec<String>,
     /// Destination names by id.
-    pub destination_names: HashMap<u32, String>,
+    pub destination_names: HashMap<DestId, String>,
     /// The answer to `Unmatched`, with each destination by its author's id. Absent only on failure.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unmatched: Option<config_file::AnswerDto>,
     pub rows: Vec<RoutePreviewRow>,
+    /// What this run made of the test the request names (`RoutePreviewRequest::test`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<config_file::Verdict>,
 }
 
 #[derive(serde::Serialize)]
@@ -406,7 +413,7 @@ pub struct RoutePreviewException {
 #[derive(serde::Serialize)]
 pub struct RoutePreviewDocument {
     pub document: String,
-    pub destinations: Vec<u32>,
+    pub destinations: Vec<DestId>,
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub destination: std::collections::BTreeMap<&'static str, String>,
 }
@@ -562,6 +569,7 @@ pub fn run_route_preview(
                 refused: row.refused,
             })
             .collect(),
+        verdict: None,
     })
 }
 
@@ -1507,9 +1515,7 @@ pub fn run_pipeline_actual(
     Ok(config_file::Run { made, types })
 }
 
-/// An end-to-end test's run: the route preview over the sample, flattened per record, per route that carried it, per
-/// document, each document with where it went, and each field typed as its JSON is. A record that made no document is one entry making none, so a test
-/// can check that too.
+/// An end-to-end test's run: the route preview over the sample, as [`route_run`] holds it.
 pub fn run_route_actual(
     config: &str,
     declared_at: config_file::DeclaredAt,
@@ -1519,6 +1525,13 @@ pub fn run_route_actual(
     if let Some(why) = resp.why_failed() {
         return Err(why);
     }
+    route_run(&resp)
+}
+
+/// What a route preview made, as an end-to-end test compares it: per record, per route that carried it, per document,
+/// each document with where it went, and each field typed as its JSON spells it. A record that made no document is one entry
+/// making none, so a test can check that too.
+pub fn route_run(resp: &RoutePreview) -> Result<config_file::Run, String> {
     if let Some(row) = resp.rows.iter().find(|r| r.refused.is_some()) {
         return Err(format!(
             "record {}: {}",

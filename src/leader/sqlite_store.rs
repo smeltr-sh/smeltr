@@ -4,8 +4,8 @@
 //! The secrets encryption key is not in this file and not in the leader's data directory (`secrets`). It is read per
 //! operation rather than held: operator actions are rare, and a key that is not resident is not in a core dump.
 
+use crate::sync::{Mutex, MutexGuard};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::{Connection, ErrorCode, OptionalExtension};
 
@@ -613,11 +613,9 @@ impl Store {
         })
     }
 
-    /// Locks the connection and returns it, even if a panic poisoned the mutex. A panic that held it poisons the
-    /// mutex but not the file: the open transaction rolls back as it unwinds, so later calls carry on instead of
-    /// failing because an earlier one panicked.
+    /// The connection. A panic that held it leaves the file whole: the open transaction rolls back as it unwinds.
     fn conn(&self) -> MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap_or_else(|e| e.into_inner())
+        self.conn.lock()
     }
 
     /// The key, writing one if there is none and nothing is sealed yet. Refused while the key is broken: a value
@@ -4119,7 +4117,6 @@ mod tests {
         s.add_secret_version("kafka-west-sasl", "hunter3", None).unwrap();
         s.conn
             .lock()
-            .unwrap()
             .execute(
                 "UPDATE secret_versions SET key_id = '0000000000000000' WHERE version = 1",
                 (),
@@ -5057,7 +5054,6 @@ mod tests {
         let version: i64 = again
             .conn
             .lock()
-            .unwrap()
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(version as usize, STEPS.len());
@@ -5248,7 +5244,6 @@ mod tests {
         let left: i64 = s
             .conn
             .lock()
-            .unwrap()
             .query_row(
                 "SELECT (SELECT count(*) FROM role_areas) + (SELECT count(*) FROM role_groups)",
                 [],
@@ -5430,7 +5425,6 @@ mod tests {
         s.put_role(&role("r", &[], &[]), &role_event("role-put", "r")).unwrap();
         s.conn
             .lock()
-            .unwrap()
             .execute_batch(
                 "PRAGMA ignore_check_constraints = ON;
                  INSERT INTO role_areas (role, area, level) VALUES ('r', 'payments', 'owner');

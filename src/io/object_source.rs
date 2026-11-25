@@ -11,11 +11,12 @@
 //! object, so the reader's watermark per partition says how far each read is committed. The cloud is the [`Queue`]'s
 //! business and the bucket's store's; everything here holds for every cloud.
 
+use crate::sync::{Condvar, Mutex, MutexGuard};
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
@@ -402,16 +403,12 @@ impl ObjectSource {
         let held = HeldMap::default();
         let (stop, stopped) = std::sync::mpsc::channel();
         let (q, h) = (queue.clone(), held.clone());
-        let thread = std::thread::Builder::new()
-            .name("object-source-keep".to_string())
-            .spawn(move || keep(&*q, &h, visibility, &stopped))
+        let thread = crate::sync::spawn("object-source-keep", move || keep(&*q, &h, visibility, &stopped))
             .map_err(|e| IoError::transient(format!("could not start extending held messages: {e}")))?;
         let lag = Arc::new(Mutex::new(Vec::new()));
         let (sampler, stopped) = std::sync::mpsc::channel();
         let (q, l) = (queue.clone(), lag.clone());
-        std::thread::Builder::new()
-            .name("object-source-lag".to_string())
-            .spawn(move || sample_lag(&*q, &l, &stopped))
+        crate::sync::spawn("object-source-lag", move || sample_lag(&*q, &l, &stopped))
             .map_err(|e| IoError::transient(format!("could not start sampling the queue's depth: {e}")))?;
         Ok(ObjectSource {
             queue,
@@ -547,7 +544,7 @@ impl ObjectSource {
             }
             let id = self.next_message;
             self.next_message += 1;
-            lock(&self.held).insert(
+            self.held.lock().insert(
                 id,
                 Held {
                     handle: message.handle,
@@ -566,7 +563,7 @@ impl ObjectSource {
         while self.ahead.len() < self.ahead_target
             && let Some((message, object)) = self.waiting.pop_front()
         {
-            if !lock(&self.held).contains_key(&message) {
+            if !self.held.lock().contains_key(&message) {
                 continue;
             }
             match self.start_fetch(&object) {
@@ -589,7 +586,7 @@ impl ObjectSource {
             };
             self.fetch_ahead();
             // Its message was given up meanwhile: dropping `fetched` ends its fetch.
-            if !lock(&self.held).contains_key(&message) {
+            if !self.held.lock().contains_key(&message) {
                 continue;
             }
             let partition = fetched.partition;
@@ -655,7 +652,7 @@ impl ObjectSource {
             unreadable = self.unreadable,
             "an object could not be read; its message is left on the queue"
         );
-        lock(&self.held).remove(&message);
+        self.held.lock().remove(&message);
     }
 
     /// Ends `current`: read to the end, so done once committed up to its last record.
@@ -676,7 +673,7 @@ impl ObjectSource {
         }
         let message = read.message;
         self.reads.remove(&partition);
-        let mut held = lock(&self.held);
+        let mut held = self.held.lock();
         if let Some(h) = held.get_mut(&message) {
             h.open -= 1;
             if h.open == 0 {
@@ -705,7 +702,7 @@ impl Drop for ObjectSource {
         {
             handles.extend(messages.into_iter().map(|m| m.handle));
         }
-        handles.extend(lock(&self.held).drain().map(|(_, h)| h.handle));
+        handles.extend(self.held.lock().drain().map(|(_, h)| h.handle));
         if let Some((_, why)) = self.queue.extend(&handles, Duration::ZERO).first() {
             tracing::warn!(
                 name: "extend", target: "sources",
@@ -722,7 +719,8 @@ fn keep(queue: &dyn Queue, held: &Mutex<HashMap<u64, Held>>, visibility: Duratio
     // A quarter, so each is looked at at least once while between half and a quarter of its time is left.
     while let Err(RecvTimeoutError::Timeout) = stop.recv_timeout(visibility / 4) {
         let now = Instant::now();
-        let due: Vec<String> = lock(held)
+        let due: Vec<String> = held
+            .lock()
             .values()
             .filter(|h| h.until.saturating_duration_since(now) < visibility / 2)
             .map(|h| h.handle.clone())
@@ -731,7 +729,7 @@ fn keep(queue: &dyn Queue, held: &Mutex<HashMap<u64, Held>>, visibility: Duratio
             continue;
         }
         let failed = queue.extend(&due, visibility);
-        for h in lock(held).values_mut() {
+        for h in held.lock().values_mut() {
             if due.contains(&h.handle) && !failed.iter().any(|(f, _)| *f == h.handle) {
                 h.until = now + visibility;
             }
@@ -768,7 +766,7 @@ fn sample_lag(queue: &dyn Queue, lag: &Mutex<Vec<PartitionLag>>, stop: &Receiver
                 if failing.clear() {
                     tracing::info!(name: "depth_unread", target: "sources", "the queue's depth is read again");
                 }
-                *lag.lock().unwrap_or_else(PoisonError::into_inner) = vec![depth];
+                *lag.lock() = vec![depth];
             }
             Some(Err(Unread::Failed(why))) => {
                 failing.fail(why);
@@ -785,11 +783,6 @@ fn sample_lag(queue: &dyn Queue, lag: &Mutex<Vec<PartitionLag>>, stop: &Receiver
             return;
         }
     }
-}
-
-/// `held`, whatever a panicking holder left: each entry is whole at every point a lock is released.
-fn lock(held: &Mutex<HashMap<u64, Held>>) -> MutexGuard<'_, HashMap<u64, Held>> {
-    held.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl Source for ObjectSource {
@@ -912,7 +905,7 @@ impl Source for ObjectSource {
 
     /// The queue's depth, as its sampler last measured it. Never a call to the queue on this thread.
     fn lag(&mut self) -> Vec<PartitionLag> {
-        std::mem::take(&mut *self.lag.lock().unwrap_or_else(PoisonError::into_inner))
+        std::mem::take(&mut *self.lag.lock())
     }
 
     fn counts_messages(&self) -> bool {
@@ -970,7 +963,7 @@ fn fetch(
                 shared.stalled.store(true, Ordering::Relaxed);
             }
             while waiting.bytes >= QUEUED && !waiting.gone {
-                waiting = shared.taken.wait(waiting).unwrap_or_else(PoisonError::into_inner);
+                waiting = shared.taken.wait(waiting);
             }
             waiting.bytes += *size as u64;
         }
@@ -1127,7 +1120,7 @@ struct Waiting {
 
 impl Shared {
     fn waiting(&self) -> MutexGuard<'_, Waiting> {
-        self.waiting.lock().unwrap_or_else(PoisonError::into_inner)
+        self.waiting.lock()
     }
 
     /// The bytes of records sent and not yet taken.

@@ -17,6 +17,7 @@
 use crate::harness;
 use crate::harness::fuzz::{self, Coverage, Rng};
 use crate::live;
+use smeltr::core::id::DestId;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -539,7 +540,7 @@ fn run(catalog: &str, s3: &str, seed: u64, case: &Case) -> Seen {
         let records = smeltr::plan::topology::Records::from([(None, harness::record(&plan))]);
         let d = smeltr::io::build_destination(
             &DestinationKind::Iceberg(config.clone()),
-            0,
+            DestId::new(0),
             "d",
             metrics.clone(),
             &secrets,

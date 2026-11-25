@@ -175,14 +175,14 @@ const FAILED_AGAIN: std::time::Duration = std::time::Duration::from_secs(60);
 /// A failing call by its method, path and status, and what was last said of it: when, and how many have failed since.
 type Failing = std::collections::HashMap<(String, String, u16), (std::time::Instant, u32)>;
 
-static FAILED: std::sync::LazyLock<std::sync::Mutex<Failing>> = std::sync::LazyLock::new(Default::default);
+static FAILED: std::sync::LazyLock<crate::sync::Mutex<Failing>> = std::sync::LazyLock::new(Default::default);
 
 /// Paths carry ids, so what failed is bounded by forgetting everything once this many are held.
 const FAILED_HELD: usize = 1024;
 
 fn log_refused_at(method: &str, path: &str, status: StatusCode, error: &str, now: std::time::Instant) {
     if status.is_server_error() {
-        let mut failed = FAILED.lock().unwrap_or_else(|e| e.into_inner());
+        let mut failed = FAILED.lock();
         let key = (method.to_string(), path.to_string(), status.as_u16());
         let repeats = match failed.get_mut(&key) {
             Some((said, since)) if now.duration_since(*said) < FAILED_AGAIN => {

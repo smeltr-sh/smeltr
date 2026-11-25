@@ -3,8 +3,9 @@
 //! harness that reaches into the engine, so the benchmark log builds each
 //! side with its own copy of this file.
 
+use smeltr::sync::Mutex;
 use std::borrow::Cow;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use smeltr::config_file::{BundleAt, DeclaredAt};
@@ -178,14 +179,14 @@ impl Generator {
 
     /// Records handed out, and the raw bytes they carried.
     pub fn totals(&self) -> (u64, u64) {
-        let g = self.0.lock().unwrap();
+        let g = self.0.lock();
         (g.next, g.bytes)
     }
 }
 
 impl Source for Generator {
     fn poll_batch(&mut self, max_rows: usize, max_bytes: usize, _t: Duration) -> Result<Vec<SourceRecord>, IoError> {
-        let mut g = self.0.lock().unwrap();
+        let mut g = self.0.lock();
         let mut out = smeltr::io::RecordChunkBuilder::new();
         let mut bytes = 0usize;
         while out.len() < max_rows && g.next < g.limit {
@@ -208,7 +209,7 @@ impl Source for Generator {
     }
 
     fn is_exhausted(&self) -> bool {
-        let g = self.0.lock().unwrap();
+        let g = self.0.lock();
         g.next >= g.limit
     }
 }
@@ -237,12 +238,12 @@ impl Counter {
 
     /// Records delivered, and the bytes they serialized to.
     pub fn totals(&self) -> (u64, u64) {
-        let c = self.0.lock().unwrap();
+        let c = self.0.lock();
         (c.records, c.bytes)
     }
 
     pub fn kept(&self) -> Vec<Vec<u8>> {
-        self.0.lock().unwrap().kept.clone()
+        self.0.lock().kept.clone()
     }
 }
 
@@ -252,7 +253,7 @@ impl Destination for Counter {
         _batch: BatchId,
         rows: Cow<'_, [OwnedRecord]>,
     ) -> Result<(Dispatched, Vec<Rejection>), IoError> {
-        let mut c = self.0.lock().unwrap();
+        let mut c = self.0.lock();
         for row in rows.iter() {
             c.records += 1;
             c.bytes += row.value.len() as u64;

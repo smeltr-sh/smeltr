@@ -1679,7 +1679,7 @@ pub async fn get_lookup_mmdb(
 
 /// Network counts by the stored file's hash. A count is a walk of the whole trie, so each file is walked once per
 /// process.
-static NETWORK_COUNTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
+static NETWORK_COUNTS: std::sync::LazyLock<smeltr::sync::Mutex<std::collections::HashMap<String, u64>>> =
     std::sync::LazyLock::new(Default::default);
 
 fn mmdb_info_in(data_dir: &Path, area: &str, q: &LookupFileQuery) -> Result<serde_json::Value, Refusal> {
@@ -1699,11 +1699,11 @@ fn mmdb_info_in(data_dir: &Path, area: &str, q: &LookupFileQuery) -> Result<serd
         .unwrap_or_default();
     let map = file.map().map_err(|e| internal(e.to_string()))?;
     let table = smeltr::lookup::mmdb::MmdbTable::from_map(&q.path, map).map_err(|e| Refusal::invalid(e.to_string()))?;
-    let cached = NETWORK_COUNTS.lock().unwrap().get(&oid).copied();
+    let cached = NETWORK_COUNTS.lock().get(&oid).copied();
     let networks = cached
         .map_or_else(|| table.count_networks(), Ok)
         .map_err(|e| internal(e.to_string()))?;
-    NETWORK_COUNTS.lock().unwrap().insert(oid, networks);
+    NETWORK_COUNTS.lock().insert(oid, networks);
     let meta = table.metadata();
     let mut info = serde_json::json!({
         "databaseType": meta.database_type,

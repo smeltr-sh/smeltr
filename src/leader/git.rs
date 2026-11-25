@@ -11,9 +11,9 @@
 //! builds its tree in memory, and every ref moves by compare-and-swap on what the caller read -- so writers cannot
 //! interleave and none of them holds a lock.
 
+use crate::sync::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::Duration;
 
 use super::envelope::ErrorKind;
@@ -118,7 +118,7 @@ pub fn init_bare_repo(path: &Path) -> Result<(), GitError> {
     }
     // Two requests creating it at once would build in one directory, and one could move the other's half into place.
     static CREATING: Mutex<()> = Mutex::new(());
-    let _creating = CREATING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _creating = CREATING.lock();
     if repo_ready(path) {
         return Ok(());
     }

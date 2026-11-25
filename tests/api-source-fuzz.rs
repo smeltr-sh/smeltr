@@ -9,11 +9,12 @@
 //! Each draws from a deterministic PRNG over a seed range, from `harness::fuzz`: a failure names its seed, and each
 //! fuzzer checks that its seeds reached every option it knows.
 
+use smeltr::sync::Mutex;
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use smeltr::io::{CommitMap, Source, SourceRecord, TopicPartition, build_source};
@@ -106,7 +107,7 @@ impl Service {
                     headers,
                     body,
                 };
-                let (status, head, body) = (respond.lock().unwrap())(&request);
+                let (status, head, body) = (respond.lock())(&request);
                 let mut out = format!("HTTP/1.1 {status} X\r\n").into_bytes();
                 for (name, value) in head {
                     out.extend(format!("{name}: {value}\r\n").bytes());
@@ -993,11 +994,9 @@ fn every_http_api_setting_delivers_each_page_once_and_every_event_in_the_end() {
             None => (None, None),
         };
         let fuzzed_sign_in = sign_in.as_ref().map(|s| (s.issuer, s.scope.clone(), s.key.is_some()));
-        state.lock().unwrap().sign_in = sign_in;
+        state.lock().sign_in = sign_in;
         let serving = state.clone();
-        let service = Service::new(Arc::new(Mutex::new(move |r: &Request| {
-            serving.lock().unwrap().answer(r)
-        })));
+        let service = Service::new(Arc::new(Mutex::new(move |r: &Request| serving.lock().answer(r))));
         let app_sign_in = fuzzed_sign_in.map(|(issuer, scope, key)| AppSignIn {
             client_id: "app".into(),
             token_at: match issuer {
@@ -1024,7 +1023,7 @@ fn every_http_api_setting_delivers_each_page_once_and_every_event_in_the_end() {
             service.url,
             if query { "?limit=50&q=a%20b" } else { "" }
         );
-        state.lock().unwrap().url = url.clone();
+        state.lock().url = url.clone();
         let kind = SourceKind::Api(ApiSourceConfig {
             api: Api::HttpApi(HttpApiConfig {
                 url: url.clone(),
@@ -1063,7 +1062,7 @@ fn every_http_api_setting_delivers_each_page_once_and_every_event_in_the_end() {
         // Some services hold nothing when the source first asks.
         let quiet_start = rng.chance(4);
         if !quiet_start {
-            add_events(&mut rng, &mut state.lock().unwrap().events, &mut next_id);
+            add_events(&mut rng, &mut state.lock().events, &mut next_id);
         }
         let mut source = open(&kind, &secrets, None)?;
         let mut holder = 0;
@@ -1074,13 +1073,13 @@ fn every_http_api_setting_delivers_each_page_once_and_every_event_in_the_end() {
         let mut stored = None;
         for round in 0..4 + rng.below(12) {
             if round > 0 || !quiet_start {
-                add_events(&mut rng, &mut state.lock().unwrap().events, &mut next_id);
+                add_events(&mut rng, &mut state.lock().events, &mut next_id);
             }
             if !failures.is_empty() && rng.chance(3) {
-                state.lock().unwrap().fail = failures.pop();
+                state.lock().fail = failures.pop();
             }
             if follow_links && rng.chance(10) {
-                state.lock().unwrap().loop_back = true;
+                state.lock().loop_back = true;
             }
             for _ in 0..1 + rng.below(4) {
                 poll(&mut rng, &mut source, holder, &mut delivered, &mut committed, &mut cov)?;
@@ -1088,7 +1087,7 @@ fn every_http_api_setting_delivers_each_page_once_and_every_event_in_the_end() {
                 let shown = source.connection_error();
                 if shown.is_some() {
                     failed_shown = true;
-                } else if failed_shown && state.lock().unwrap().pages.last().is_some_and(|p| p.readable) {
+                } else if failed_shown && state.lock().pages.last().is_some_and(|p| p.readable) {
                     cov.reach("a failure shown and then cleared");
                     failed_shown = false;
                 }
@@ -1097,7 +1096,6 @@ fn every_http_api_setting_delivers_each_page_once_and_every_event_in_the_end() {
             if rng.chance(8) {
                 let read = state
                     .lock()
-                    .unwrap()
                     .pages
                     .iter()
                     .filter(|p| p.holder == holder && p.readable)
@@ -1115,7 +1113,7 @@ fn every_http_api_setting_delivers_each_page_once_and_every_event_in_the_end() {
                 });
                 drop(source);
                 holder += 1;
-                state.lock().unwrap().holder = holder;
+                state.lock().holder = holder;
                 resumed.push((
                     millis(SystemTime::now()),
                     stored.as_ref().and_then(|p| p.cursor.clone()),
@@ -1128,7 +1126,7 @@ fn every_http_api_setting_delivers_each_page_once_and_every_event_in_the_end() {
         let total = next_id;
         loop {
             poll(&mut rng, &mut source, holder, &mut delivered, &mut committed, &mut cov)?;
-            let state = state.lock().unwrap();
+            let state = state.lock();
             let expected = state.events.iter().filter(|e| match &since {
                 Some(s) if s.start == ListStart::New => {
                     e.at >= state.firsts.first().and_then(|f| f.2).unwrap_or(opened)
@@ -1148,7 +1146,7 @@ fn every_http_api_setting_delivers_each_page_once_and_every_event_in_the_end() {
             }
         }
 
-        let state = state.lock().unwrap();
+        let state = state.lock();
         if let Some(wrong) = state.wrong.first() {
             return Err(wrong.clone());
         }
@@ -1683,10 +1681,8 @@ fn every_okta_setting_delivers_each_event_in_order_and_resumes_after_what_it_del
             labels: Vec::new(),
         }));
         let serving = state.clone();
-        let service = Service::new(Arc::new(Mutex::new(move |r: &Request| {
-            serving.lock().unwrap().answer(r)
-        })));
-        state.lock().unwrap().org = service.url.clone();
+        let service = Service::new(Arc::new(Mutex::new(move |r: &Request| serving.lock().answer(r))));
+        state.lock().org = service.url.clone();
         let kind = SourceKind::Api(ApiSourceConfig {
             api: Api::OktaLogs(OktaLogsConfig {
                 org: service.url.clone(),
@@ -1719,7 +1715,7 @@ fn every_okta_setting_delivers_each_event_in_order_and_resumes_after_what_it_del
 
         let mut next_id = 0u64;
         let opened = millis(SystemTime::now());
-        add_events(&mut rng, &mut state.lock().unwrap().events, &mut next_id);
+        add_events(&mut rng, &mut state.lock().events, &mut next_id);
         let mut source = open(&kind, &secrets, None)?;
         let mut holder = 0;
         let mut delivered = Delivered::new();
@@ -1748,9 +1744,9 @@ fn every_okta_setting_delivers_each_event_in_order_and_resumes_after_what_it_del
             Ok(())
         };
         for _ in 0..4 + rng.below(12) {
-            add_events(&mut rng, &mut state.lock().unwrap().events, &mut next_id);
+            add_events(&mut rng, &mut state.lock().events, &mut next_id);
             {
-                let mut state = state.lock().unwrap();
+                let mut state = state.lock();
                 if !failures.is_empty() && rng.chance(3) {
                     state.fail = failures.pop();
                 }
@@ -1775,7 +1771,7 @@ fn every_okta_setting_delivers_each_event_in_order_and_resumes_after_what_it_del
             if rng.chance(8) {
                 // What this holder handed on: its pages before the first not wholly committed, and never its last,
                 // which the source may not have finished.
-                let held = state.lock().unwrap();
+                let held = state.lock();
                 let read: Vec<&Page> = held.pages.iter().filter(|p| p.holder == holder && p.readable).collect();
                 let whole = |(p, page): &(usize, &&Page)| {
                     p + 1 < read.len()
@@ -1795,7 +1791,7 @@ fn every_okta_setting_delivers_each_event_in_order_and_resumes_after_what_it_del
                 drop(held);
                 drop(source);
                 holder += 1;
-                state.lock().unwrap().holder = holder;
+                state.lock().holder = holder;
                 source = open(&kind, &secrets, stored.clone())?;
             }
         }
@@ -1812,7 +1808,7 @@ fn every_okta_setting_delivers_each_event_in_order_and_resumes_after_what_it_del
                 &mut stored,
                 &mut cov,
             )?;
-            let state = state.lock().unwrap();
+            let state = state.lock();
             let from = match start {
                 ListStart::New => state.firsts.first().and_then(|f| f.2).unwrap_or(opened),
                 ListStart::Everything => i64::MIN,
@@ -1836,7 +1832,7 @@ fn every_okta_setting_delivers_each_event_in_order_and_resumes_after_what_it_del
             }
         };
 
-        let state = state.lock().unwrap();
+        let state = state.lock();
         if let Some(wrong) = state.wrong.first() {
             return Err(wrong.clone());
         }

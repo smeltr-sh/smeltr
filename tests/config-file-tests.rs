@@ -4,6 +4,7 @@
 
 use smeltr::config_file::{load_bundle_dir, load_str};
 use smeltr::core::batch::{Batch, RAW_SLOTS, SLOT_LIVE, SLOT_RAW, raw_layout};
+use smeltr::core::id::DestId;
 
 /// `__source.offset` for a Kafka source: third of the three fields it declares.
 const SLOT_OFFSET: usize = RAW_SLOTS + 2;
@@ -641,7 +642,11 @@ fn the_reference_bundle_example_loads_compiles_and_runs() {
     assert_eq!(system.topology.destinations.len(), 2);
     assert_eq!(system.topology.routes.len(), 3);
     for route in &system.topology.routes {
-        let to_out = route.deliver.iter().filter(|rule| rule.to == vec![0]).count();
+        let to_out = route
+            .deliver
+            .iter()
+            .filter(|rule| rule.to == vec![DestId::new(0)])
+            .count();
         assert_eq!(to_out, 1, "every route delivers to `kafka-out`: {:?}", route.deliver);
     }
     let main = system
@@ -1552,7 +1557,7 @@ fn a_missing_credential_environment_variable_is_refused_at_construction() {
             stall_after: std::time::Duration::from_secs(30),
         });
     let metrics = smeltr::metrics::MetricsHandle::new(std::sync::Arc::new(smeltr::metrics::Metrics::new()), "test");
-    let Err(e) = smeltr::io::build_destination(&cfg, 0, "d", metrics, &Default::default(), None) else {
+    let Err(e) = smeltr::io::build_destination(&cfg, DestId::new(0), "d", metrics, &Default::default(), None) else {
         panic!("an unset credential variable must not construct one");
     };
     assert!(e.to_string().contains("SMELTR_ES_AUTH_DEFINITELY_NOT_SET"), "{e}");
@@ -1579,7 +1584,7 @@ fn a_route_delivers_to_every_one_of_many_destinations() {
 
     let records = sample_records(&[("t", "{}")]);
     let rows = smeltr::runtime::preview_routes(&compiled, source, &records, budget());
-    let mut every: Vec<u32> = system.topology.destinations.iter().map(|d| d.id).collect();
+    let mut every: Vec<DestId> = system.topology.destinations.iter().map(|d| d.id).collect();
     every.sort_unstable();
     assert_eq!(rows[0].through[0].documents[0].destinations, every);
 }
@@ -2145,14 +2150,14 @@ fn a_route_preview_says_where_each_record_would_go() {
 
     // On `orders`, so the first route matches -- and it is not final, so the catch-all sees the row too.
     assert_eq!(rows[0].matched, vec![0, 1], "a non-final route leaves the row eligible");
-    let reached: Vec<Vec<u32>> = rows[0]
+    let reached: Vec<Vec<DestId>> = rows[0]
         .through
         .iter()
         .flat_map(|t| t.documents.iter().map(|d| d.destinations.clone()))
         .collect();
     assert_eq!(reached.len(), 2, "both routes kept it");
-    assert_eq!(reached[0], vec![0], "the orders route delivers to es-prod");
-    assert_eq!(reached[1], vec![1], "and the catch-all to kafka-audit");
+    assert_eq!(reached[0], vec![DestId::new(0)], "the orders route delivers to es-prod");
+    assert_eq!(reached[1], vec![DestId::new(1)], "and the catch-all to kafka-audit");
     assert!(rows[0].through[0].documents[0].document.contains("\"total\":250"));
 
     // On `other`, so only the catch-all matches -- and its pipeline drops a total under 100.
@@ -2317,7 +2322,7 @@ fn a_record_no_route_matches_is_distinguishable_from_a_dropped_one() {
         .unwrap_or_else(|e| panic!("compile: {}", join_errors(&e)));
     // A source no route names: nothing can match.
     let unrouted = smeltr::plan::topology::SourceConfig {
-        id: smeltr::core::id::SourceId::MAX,
+        id: smeltr::core::id::SourceId::new(u32::MAX),
         ..system.topology.sources[0].clone()
     };
     let records = sample_records(&[("orders", r#"{"total":250}"#)]);

@@ -288,9 +288,9 @@ impl MetricSampleDto {
 /// A registry key's names are `&'static str`. The ones arriving from the other process are the same binary's own
 /// literals, so the set is bounded and leaking each once is what it costs.
 fn intern(name: String) -> &'static str {
-    static NAMES: std::sync::Mutex<std::collections::BTreeSet<&'static str>> =
-        std::sync::Mutex::new(std::collections::BTreeSet::new());
-    let mut names = NAMES.lock().unwrap();
+    static NAMES: crate::sync::Mutex<std::collections::BTreeSet<&'static str>> =
+        crate::sync::Mutex::new(std::collections::BTreeSet::new());
+    let mut names = NAMES.lock();
     if let Some(held) = names.get(name.as_str()) {
         return held;
     }

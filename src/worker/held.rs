@@ -20,9 +20,10 @@
 //! Progress the leader has not taken is bounded. Past [`BACKLOG_FULL`], here or in the supervisor, held sources
 //! read nothing new until it is back under [`BACKLOG_EASED`]; what they already read still commits and reports.
 
+use crate::sync::{Condvar, Mutex};
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use crate::heartbeat::{Hold, LedgerEntry, MAX_CURSOR, MAX_LEDGER_ENTRY, MAX_LEDGER_ITEM, SourceKey, SourceProgress};
@@ -63,25 +64,25 @@ struct Grant {
 
 impl Slot {
     fn grant(&self, from: Progress) {
-        let mut grant = self.grant.lock().unwrap();
+        let mut grant = self.grant.lock();
         grant.generation += 1;
         grant.from = Some(from);
         self.changed.notify_all();
     }
 
     fn revoke(&self) {
-        let mut grant = self.grant.lock().unwrap();
+        let mut grant = self.grant.lock();
         grant.generation += 1;
         grant.from = None;
         self.changed.notify_all();
     }
 
     fn is_held(&self) -> bool {
-        self.grant.lock().unwrap().from.is_some()
+        self.grant.lock().from.is_some()
     }
 
     fn generation(&self) -> u64 {
-        self.grant.lock().unwrap().generation
+        self.grant.lock().generation
     }
 }
 
@@ -99,7 +100,7 @@ pub struct Held {
 impl Held {
     /// A source of this deployment read through a hold: `open` builds it each time it is granted.
     pub fn source(&self, key: SourceKey, open: Opener) -> HeldSource {
-        let slot = self.slots.lock().unwrap().entry(key.clone()).or_default().clone();
+        let slot = self.slots.lock().entry(key.clone()).or_default().clone();
         HeldSource {
             key,
             slot,
@@ -118,7 +119,7 @@ impl Held {
 
     /// Every single-worker source deployed here, for the leader to know which workers may hold it.
     pub fn keys(&self) -> Vec<SourceKey> {
-        let mut keys: Vec<SourceKey> = self.slots.lock().unwrap().keys().cloned().collect();
+        let mut keys: Vec<SourceKey> = self.slots.lock().keys().cloned().collect();
         keys.sort();
         keys
     }
@@ -129,7 +130,6 @@ impl Held {
         let mut keys: Vec<SourceKey> = self
             .slots
             .lock()
-            .unwrap()
             .iter()
             .filter(|(_, slot)| slot.is_held())
             .map(|(key, _)| key.clone())
@@ -151,7 +151,7 @@ impl Held {
     /// be read, is not made: the source stays unheld rather than reading everything again.
     /// The supervisor sees it missing from [`Held::holding`] and offers it again, with the ledger fetched afresh.
     pub fn apply(&self, seq: u64, holdings: Vec<Holding>) {
-        let slots = self.slots.lock().unwrap();
+        let slots = self.slots.lock();
         let named: BTreeSet<&SourceKey> = holdings.iter().map(|h| &h.hold.key).collect();
         for (key, slot) in slots.iter() {
             if slot.is_held() && !named.contains(key) {
@@ -187,7 +187,7 @@ impl Held {
     /// What commits have yielded, oldest first, up to `entries` ledger entries and about `bytes` of JSON. See
     /// [`take_ledger`].
     pub fn take_progress(&self, entries: usize, bytes: usize) -> Vec<SourceProgress> {
-        take_ledger(&mut self.outbox.pending.lock().unwrap(), entries, bytes)
+        take_ledger(&mut self.outbox.pending.lock(), entries, bytes)
     }
 
     /// Progress a report could not carry, ahead of whatever commits have yielded since.
@@ -195,7 +195,7 @@ impl Held {
         if unsent.is_empty() {
             return;
         }
-        let mut outbox = self.outbox.pending.lock().unwrap();
+        let mut outbox = self.outbox.pending.lock();
         let since = std::mem::take(&mut *outbox);
         *outbox = unsent;
         outbox.extend(since);
@@ -254,7 +254,7 @@ struct Outbox {
 
 impl Outbox {
     fn paused(&self) -> bool {
-        let weight = backlog(&self.pending.lock().unwrap());
+        let weight = backlog(&self.pending.lock());
         let was = self.full.load(Ordering::Relaxed);
         let now = backlogged(was, weight);
         // Said once per change, by whichever reader saw it first.
@@ -436,7 +436,7 @@ pub struct HeldSource {
 impl HeldSource {
     /// Act on a grant or revoke the slot has had since the last call.
     fn follow(&mut self) {
-        let grant = self.slot.grant.lock().unwrap();
+        let grant = self.slot.grant.lock();
         if grant.generation == self.seen {
             return;
         }
@@ -479,7 +479,7 @@ impl HeldSource {
             return;
         };
         let progress = admitted(&self.key, progress);
-        self.outbox.pending.lock().unwrap().push(SourceProgress {
+        self.outbox.pending.lock().push(SourceProgress {
             key: self.key.clone(),
             progress,
         });
@@ -498,13 +498,12 @@ impl Source for HeldSource {
         // Unheld, or held with the backlog full: read nothing, waking for a grant or a revoke rather than sleeping
         // through it. What was read already still commits.
         let Some(inner) = self.inner.as_mut().filter(|_| !self.outbox.paused()) else {
-            let grant = self.slot.grant.lock().unwrap();
+            let grant = self.slot.grant.lock();
             let seen = self.seen;
             let _ = self
                 .slot
                 .changed
-                .wait_timeout_while(grant, timeout, |g| g.generation == seen)
-                .unwrap();
+                .wait_timeout_while(grant, timeout, |g| g.generation == seen);
             return Ok(Vec::new());
         };
         let records = inner.poll_batch(max_rows, max_bytes, timeout)?;
@@ -638,7 +637,7 @@ mod tests {
         }
 
         fn resume(&mut self, from: Progress) -> Result<(), IoError> {
-            self.resumed.lock().unwrap().push(from);
+            self.resumed.lock().push(from);
             Ok(())
         }
 
@@ -689,7 +688,7 @@ mod tests {
         let source = held.source(key(), {
             let (fake, opened) = (fake.clone(), opened.clone());
             Box::new(move || {
-                *opened.lock().unwrap() += 1;
+                *opened.lock() += 1;
                 Ok(Box::new(fake.clone()) as Box<dyn Source>)
             })
         });
@@ -751,7 +750,7 @@ mod tests {
 
         assert!(poll(&mut source).is_empty(), "an unheld source was read");
         source.commit(&offsets(1)).expect("an ignored commit");
-        assert_eq!(*opened.lock().unwrap(), 0, "an unheld source was opened");
+        assert_eq!(*opened.lock(), 0, "an unheld source was opened");
         assert!(fake.records.committed().is_empty());
         assert_eq!(
             held.keys(),
@@ -782,8 +781,8 @@ mod tests {
         held.apply(1, vec![grant]);
 
         assert_eq!(poll(&mut source), vec![1, 2]);
-        assert_eq!(*opened.lock().unwrap(), 1);
-        let resumed = fake.resumed.lock().unwrap().clone();
+        assert_eq!(*opened.lock(), 1);
+        let resumed = fake.resumed.lock().clone();
         assert_eq!(resumed.len(), 1, "{resumed:?}");
         assert_eq!(resumed[0].cursor.as_deref(), Some("c7"));
         let items: Vec<&str> = resumed[0].added.iter().map(|e| e.item.as_str()).collect();
@@ -875,8 +874,8 @@ mod tests {
         );
         assert_eq!(source.take_revoked().len(), 1);
         assert_eq!(poll(&mut source), vec![2]);
-        assert_eq!(*opened.lock().unwrap(), 2);
-        let cursors: Vec<Option<String>> = fake.resumed.lock().unwrap().iter().map(|p| p.cursor.clone()).collect();
+        assert_eq!(*opened.lock(), 2);
+        let cursors: Vec<Option<String>> = fake.resumed.lock().iter().map(|p| p.cursor.clone()).collect();
         assert_eq!(cursors, [Some("first".to_string()), Some("second".to_string())]);
     }
 
@@ -895,7 +894,7 @@ mod tests {
         held.apply(1, vec![hold(Some("later"))]);
         fake.records.requeue([record(2)]);
         assert_eq!(poll(&mut source), vec![2]);
-        assert_eq!(*opened.lock().unwrap(), 1, "a hold named again was reopened");
+        assert_eq!(*opened.lock(), 1, "a hold named again was reopened");
     }
 
     fn progress(added: usize, removed: usize, cursor: Option<&str>) -> SourceProgress {
@@ -1030,7 +1029,7 @@ mod tests {
             "a source whose ledger could not be read was granted"
         );
         assert!(poll(&mut source).is_empty());
-        assert_eq!(*opened.lock().unwrap(), 0);
+        assert_eq!(*opened.lock(), 0);
 
         held.apply(6, vec![hold(None)]);
         assert_eq!(held.holding(), vec![key()]);

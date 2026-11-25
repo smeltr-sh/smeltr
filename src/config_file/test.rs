@@ -22,7 +22,7 @@
 //! A run reads the instant its sample was taken as `now()` (`CaptureBatch::instant`), as the editor's preview does, so
 //! a test holds what the preview showed and every run of it is a function of the config alone.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -376,10 +376,28 @@ impl TestDto {
 #[serde(rename_all = "camelCase")]
 pub struct Difference {
     pub row: usize,
+    /// Which of the row's documents, counted from 0 in the order they were made, or locked where the run made fewer.
+    pub document: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expected: Option<Outcome>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actual: Option<Outcome>,
+    /// The values that differ, where both sides made a document.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<FieldDifference>,
+}
+
+/// A value that differs from what a test locked, by its path in the document. An array is followed into its elements,
+/// and an element's own members, so a long array names only the elements that differ.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FieldDifference {
+    pub path: String,
+    /// What the test locked there; absent where it locked no value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locked: Option<Value>,
+    /// Whether the run made a value there.
+    pub made: bool,
 }
 
 /// A field the run types otherwise than the test locked it.
@@ -395,11 +413,10 @@ pub struct Retyped {
 #[serde(rename_all = "camelCase")]
 pub struct Verdict {
     pub passed: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub first_difference: Option<Difference>,
-    /// Every checked row that differs, by its row number in the run, for an editor to mark.
+    /// Every document that differs, row by checked row in the test's order, each row's documents in the order they
+    /// were made.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub differs: Vec<usize>,
+    pub differences: Vec<Difference>,
     /// Each field whose type changed. Its values may read the same and still not be what the test locked: `10` and
     /// `10.0`, or a time and the text of one.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -425,20 +442,25 @@ pub struct RowsIn {
 pub fn compare(test: &TestDto, rows_in: usize, run: &Run) -> Verdict {
     let fields = test.fields();
     let outcomes = test.outcomes();
-    let differences: Vec<Difference> = (test.rows_checked().into_iter())
-        .filter_map(|row| {
-            let mut want = outcomes.iter().filter(|o| o.row == row).cloned();
-            let mut got = made_on(row, &fields, &run.made).into_iter();
-            loop {
-                match (want.next(), got.next()) {
-                    (None, None) => return None,
-                    (Some(w), Some(g)) if w.matches(&g) => continue,
-                    (expected, actual) => return Some(Difference { row, expected, actual }),
-                }
+    let mut differences = Vec::new();
+    for row in test.rows_checked() {
+        let want = outcomes.iter().filter(|o| o.row == row).cloned().map(Some);
+        let got = made_on(row, &fields, &run.made).into_iter().map(Some);
+        let pairs = (want.chain(std::iter::repeat(None))).zip(got.chain(std::iter::repeat(None)));
+        for (document, pair) in pairs.enumerate() {
+            match pair {
+                (None, None) => break,
+                (Some(w), Some(g)) if w.matches(&g) => continue,
+                (expected, actual) => differences.push(Difference {
+                    fields: differing_fields(expected.as_ref(), actual.as_ref()),
+                    row,
+                    document,
+                    expected,
+                    actual,
+                }),
             }
-        })
-        .collect();
-    let differs = differences.iter().map(|d| d.row).collect();
+        }
+    }
     let retyped: Vec<Retyped> = (test.table.columns.iter())
         .filter_map(|c| {
             let now = run.types.get(&c.name)?;
@@ -455,10 +477,54 @@ pub fn compare(test: &TestDto, rows_in: usize, run: &Run) -> Verdict {
     });
     Verdict {
         passed: differences.is_empty() && retyped.is_empty() && rows_in.is_none(),
-        first_difference: differences.into_iter().next(),
-        differs,
+        differences,
         retyped,
         rows_in,
+    }
+}
+
+/// The values that differ between `expected` and `actual`, where both made a document: a value one side holds and the
+/// other lacks is one of them.
+fn differing_fields(expected: Option<&Outcome>, actual: Option<&Outcome>) -> Vec<FieldDifference> {
+    let (Some(Some(a)), Some(Some(b))) = (expected.map(|o| o.values.as_ref()), actual.map(|o| o.values.as_ref()))
+    else {
+        return Vec::new();
+    };
+    let names: BTreeSet<&String> = a.keys().chain(b.keys()).collect();
+    let mut found = Vec::new();
+    for name in names {
+        differing(&mut name.clone(), a.get(name), b.get(name), &mut found);
+    }
+    found
+}
+
+/// Each value under `path` where `locked` and `made` differ, into `found`: arrays element by element and objects member
+/// by member, at any depth.
+fn differing(path: &mut String, locked: Option<&Value>, made: Option<&Value>, found: &mut Vec<FieldDifference>) {
+    let len = path.len();
+    match (locked, made) {
+        (Some(Value::Array(x)), Some(Value::Array(y))) => {
+            for i in 0..x.len().max(y.len()) {
+                path.push_str(&format!("[{i}]"));
+                differing(path, x.get(i), y.get(i), found);
+                path.truncate(len);
+            }
+        }
+        (Some(Value::Object(x)), Some(Value::Object(y))) if !x.is_empty() && !y.is_empty() => {
+            let keys: BTreeSet<&String> = x.keys().chain(y.keys()).collect();
+            for key in keys {
+                crate::plan::tree::push_key(path, key);
+                differing(path, x.get(key), y.get(key), found);
+                path.truncate(len);
+            }
+        }
+        (Some(x), Some(y)) if same(x, y) => {}
+        (None, None) => {}
+        (locked, made) => found.push(FieldDifference {
+            path: path.clone(),
+            locked: locked.cloned(),
+            made: made.is_some(),
+        }),
     }
 }
 
@@ -648,8 +714,8 @@ mod tests {
         let test = locked("ids", &["id"], &[row(0, json!({"id": 1})), row(1, json!({"id": 2}))]);
         let shrunk = [row(0, json!({"id": 1}))];
         let verdict = compare(&test, test.rows_in, &run(&shrunk));
-        assert_eq!(verdict.first_difference.as_ref().map(|d| d.row), Some(1));
-        assert!(verdict.first_difference.unwrap().actual.unwrap().values.is_none());
+        assert_eq!(verdict.differences.first().map(|d| d.row), Some(1));
+        assert!(verdict.differences[0].clone().actual.unwrap().values.is_none());
 
         let again = locked("ids", &["id"], &[shrunk[0].clone(), dropped(1)]);
         assert!(compare(&again, again.rows_in, &run(&shrunk)).passed);
@@ -660,6 +726,63 @@ mod tests {
                 &run(&[row(0, json!({"id": 1})), row(1, json!({"id": 2}))])
             )
             .passed
+        );
+    }
+
+    /// Every row that differs is a difference, not only the first, each with the fields whose values differ in it.
+    #[test]
+    fn every_row_that_differs_is_named_with_its_fields() {
+        let test = locked(
+            "tax",
+            &["id", "tax", "coupon"],
+            &[
+                row(0, json!({"id": 1, "tax": 2.0})),
+                row(1, json!({"id": 2, "tax": 0.0})),
+                row(2, json!({"id": 3, "tax": 1.5, "coupon": "X"})),
+                row(3, json!({"id": 4})),
+            ],
+        );
+        let made = [
+            row(0, json!({"id": 1, "tax": 4.0})),
+            row(1, json!({"id": 2, "tax": 0.0})),
+            row(2, json!({"id": 3, "tax": 1.5})),
+            dropped(3),
+        ];
+        let verdict = compare(&test, 3, &run(&made));
+        let found: Vec<_> = (verdict.differences.iter())
+            .map(|d| {
+                (
+                    d.row,
+                    d.document,
+                    d.fields.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        assert_eq!(found, [(0, 0, vec!["tax"]), (2, 0, vec!["coupon"]), (3, 0, vec![])]);
+    }
+
+    /// An array that differs names only the elements that differ, and the members that differ in an element.
+    #[test]
+    fn an_array_that_differs_names_the_elements_that_differ() {
+        let test = locked(
+            "lists",
+            &["scores", "items"],
+            &[row(0, json!({"scores": [0, 3, 6, 9], "items": [{"a": 1, "b": 2}]}))],
+        );
+        let made = [row(0, json!({"scores": [0, 4, 6.0], "items": [{"a": 1, "b": 3}]}))];
+        let verdict = compare(&test, 3, &run(&made));
+        let field = |path: &str, locked: Value, made: bool| FieldDifference {
+            path: path.to_string(),
+            locked: Some(locked),
+            made,
+        };
+        assert_eq!(
+            verdict.differences[0].fields,
+            [
+                field("items[0].b", json!(2), true),
+                field("scores[1]", json!(3), true),
+                field("scores[3]", json!(9), false),
+            ]
         );
     }
 
@@ -759,7 +882,7 @@ mod tests {
         assert!(compare(&test, 1, &typed("i64")).passed);
         let verdict = compare(&test, 1, &typed("f64"));
         assert!(!verdict.passed);
-        assert_eq!(verdict.first_difference, None, "the value is the same");
+        assert_eq!(verdict.differences, [], "the value is the same");
         assert_eq!(
             verdict.retyped,
             [Retyped {
@@ -831,7 +954,7 @@ mod tests {
         let test = locked("same", &["a"], &made);
         let verdict = compare(&test, 3, &run(&made));
         assert!(verdict.passed);
-        assert_eq!(verdict.first_difference, None);
+        assert_eq!(verdict.differences, []);
     }
 
     /// A change to a field the test does not check, or to a row it does not check, never fails it.
@@ -858,7 +981,7 @@ mod tests {
             &run(&[row(0, json!({})), row(1, json!({"severity": "critical"}))]),
         );
         assert!(!verdict.passed);
-        let d = verdict.first_difference.expect("it differs");
+        let d = verdict.differences.into_iter().next().expect("it differs");
         assert_eq!(d.row, 1);
         assert_eq!(d.expected.unwrap().values.unwrap()["severity"], json!("high"));
         assert_eq!(d.actual.unwrap().values.unwrap()["severity"], json!("critical"));
@@ -877,7 +1000,9 @@ mod tests {
     fn a_row_dropped_or_kept_against_the_lock_is_a_difference() {
         let kept = locked("kept", &["a"], &[row(0, json!({"a": 1}))]);
         let d = compare(&kept, 3, &run(&[dropped(0)]))
-            .first_difference
+            .differences
+            .into_iter()
+            .next()
             .expect("it differs");
         assert_eq!(d.actual.unwrap().values, None);
 
@@ -891,7 +1016,9 @@ mod tests {
     fn a_row_the_run_does_not_reach_is_reported_as_making_nothing() {
         let test = locked("last", &["a"], &[row(4, json!({"a": 1}))]);
         let d = compare(&test, 3, &run(&[row(0, json!({"a": 1}))]))
-            .first_difference
+            .differences
+            .into_iter()
+            .next()
             .expect("it differs");
         assert_eq!(d.row, 4);
         assert!(d.expected.is_some() && d.actual.is_some_and(|a| a.values.is_none()));
@@ -910,7 +1037,11 @@ mod tests {
             sent(0, json!({"a": 1}), "p1", "r1"),
             sent(0, json!({"a": 1}), "p2", "r2"),
         ];
-        let d = compare(&test, 3, &run(&two)).first_difference.expect("it differs");
+        let d = compare(&test, 3, &run(&two))
+            .differences
+            .into_iter()
+            .next()
+            .expect("it differs");
         assert!(d.expected.is_none(), "the test locks nothing past the first route");
         assert_eq!(d.actual.unwrap().sent.unwrap().route, "r2");
     }
@@ -922,7 +1053,7 @@ mod tests {
         let test = locked("grew", &["a"], &made);
         let verdict = compare(&test, 4, &run(&made));
         assert!(!verdict.passed);
-        assert_eq!(verdict.first_difference, None);
+        assert_eq!(verdict.differences, []);
         assert_eq!(verdict.rows_in, Some(RowsIn { locked: 3, now: 4 }));
         assert_eq!(
             compare(&test, 3, &run(&made)).rows_in,

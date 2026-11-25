@@ -47,7 +47,7 @@ use smeltr::config_file;
 use smeltr::leader::envelope::{ApiError, Envelope, Refusal};
 use smeltr::leader::preview::{
     FormatRequest, Formatted, LineBreakerRequest, Preview, PreviewRequest, RoutePreview, RoutePreviewRequest,
-    format_code, line_breaker_verdict, run_preview, run_route_preview, single_origin_declared_at,
+    format_code, line_breaker_verdict, route_run, run_preview, run_route_preview, single_origin_declared_at,
 };
 use smeltr::leader::sessions;
 use smeltr::leader::{blocking, blocking_answer};
@@ -86,16 +86,30 @@ fn route_preview_on(
         Ok(reading) => reading,
         Err(e) => return Envelope::refused(e),
     };
+    // A test is compared only over its own sample: over another, its rows are other rows.
+    let locked = (req.test.as_deref())
+        .filter(|_| given.is_none())
+        .and_then(|id| config_file::read_test(&mut reading.files(), id).ok().flatten())
+        .filter(|test| Some(&test.sample) == req.sample.as_ref() && test.pipeline.is_none());
     match sample_to_run(&reading, given, req.sample.as_deref()) {
         Ok(Some(mut sample)) => {
             sample.source = sample.source.or(req.source.clone());
-            match own_bundle(&req.config).and_then(|own| reading.runnable(own).ok()) {
+            let rows_in = sample.table.rows.len();
+            let mut answer = match own_bundle(&req.config).and_then(|own| reading.runnable(own).ok()) {
                 Some(run) => run_route_preview(&run.config, sample, run.declared_at),
                 None => {
                     let declared_at = single_origin_declared_at(&req.config, &reading.at());
                     run_route_preview(&req.config, sample, declared_at)
                 }
+            };
+            if answer.succeeded()
+                && let Some(test) = locked
+            {
+                answer.body.verdict = route_run(&answer)
+                    .ok()
+                    .map(|run| config_file::compare(&test, rows_in, &run));
             }
+            answer
         }
         Ok(None) => Envelope::refused(Refusal::invalid("name a sample or a held capture to route")),
         Err(refusal) => Envelope::refused(refusal),
@@ -909,7 +923,7 @@ fn spawn_embedded_worker(
     let code = smeltr::worker::needs_an_enrollment_code(&state_dir)
         .then(|| mint_embedded_enrollment_code(&store, &group_id, &smeltr::leader::tls::dir_of(data_dir)));
 
-    std::thread::spawn(move || {
+    smeltr::sync::spawn("smeltr-worker", move || {
         start_worker(
             leader_url,
             leader_ca_pem,
@@ -919,7 +933,8 @@ fn spawn_embedded_worker(
             code,
             true,
         )
-    });
+    })
+    .expect("start the worker's thread");
 }
 
 /// An enrollment code for the worker inside this process.
@@ -1104,16 +1119,34 @@ async fn setup_leader(
     };
     state.deploy_checks.set_runner(Arc::new(test_api::failing_at));
     smeltr::leader::log_levels::keep_stored(&state).await;
-    tokio::spawn(smeltr::leader::remote::poll(state.clone()));
-    tokio::spawn(smeltr::leader::updates::poll(state.clone()));
-    tokio::spawn(smeltr::leader::alerts::run(state.clone()));
-    tokio::spawn(smeltr::leader::housekeeping::run(state.clone()));
-    tokio::spawn(smeltr::leader::remote::push_saves(state.clone()));
+    smeltr::sync::keep_running("git-sync", {
+        let state = state.clone();
+        move || smeltr::leader::remote::poll(state.clone())
+    });
+    smeltr::sync::keep_running("update-check", {
+        let state = state.clone();
+        move || smeltr::leader::updates::poll(state.clone())
+    });
+    smeltr::sync::keep_running("alerts", {
+        let state = state.clone();
+        move || smeltr::leader::alerts::run(state.clone())
+    });
+    smeltr::sync::keep_running("housekeeping", {
+        let state = state.clone();
+        move || smeltr::leader::housekeeping::run(state.clone())
+    });
+    smeltr::sync::keep_running("git-push", {
+        let state = state.clone();
+        move || smeltr::leader::remote::push_saves(state.clone())
+    });
     // Without a worker in this process, what the leader's threads did not raise is the leader's too.
     if !smeltr::startup_config::worker_enabled() {
         smeltr::logs::runs_no_worker();
     }
-    tokio::spawn(smeltr::leader::keep_own_logs(state.clone()));
+    smeltr::sync::keep_running("leader-logs", {
+        let state = state.clone();
+        move || smeltr::leader::keep_own_logs(state.clone())
+    });
 
     // A cutover changes the files and then withdraws the enrollment codes that named the root it retired. A process
     // that stopped between the two came back to a finished cutover with no rotation left to notice it, so the same
@@ -2441,12 +2474,21 @@ async fn run_leader() {
     // What an agent's calls go through: this router, gate and all.
     auth.chats.serve(app.clone());
 
-    tokio::spawn(chat_api::sweep(auth.clone()));
-    tokio::spawn(refresh_oidc_sessions(auth.clone()));
+    smeltr::sync::keep_running("chat-sweep", {
+        let auth = auth.clone();
+        move || chat_api::sweep(auth.clone())
+    });
+    smeltr::sync::keep_running("oidc-refresh", {
+        let auth = auth.clone();
+        move || refresh_oidc_sessions(auth.clone())
+    });
     if let Some(serving) = certificates {
-        tokio::spawn(certificates_api::keep_renewed(auth.clone(), serving, list));
+        let auth = auth.clone();
+        smeltr::sync::keep_running("certificate-renewal", move || {
+            certificates_api::keep_renewed(auth.clone(), serving.clone(), list.clone())
+        });
     }
-    tokio::spawn(sweep_sessions(auth));
+    smeltr::sync::keep_running("session-sweep", move || sweep_sessions(auth.clone()));
 
     match tls {
         Some((resolver, _ca_pem)) => {
@@ -3001,8 +3043,8 @@ mod tests {
         );
         assert!(previewed.succeeded(), "{:?}", previewed.errors);
         let verdict = previewed.verdict.as_ref().expect("a verdict");
-        assert_eq!(verdict.differs, [1, 2]);
-        assert_eq!(verdict.first_difference.as_ref().map(|d| d.row), Some(1));
+        let rows: Vec<usize> = verdict.differences.iter().map(|d| d.row).collect();
+        assert_eq!(rows, [1, 2]);
         let shown: Vec<u32> = previewed.rows.iter().map(|r| r.row).collect();
         assert_eq!(shown, [0, 1]);
         let row = previewed.rows[0].json.as_ref().unwrap();
@@ -3658,6 +3700,7 @@ mod tests {
                 config: serde_json::to_string(&group).unwrap(),
                 sample: Some(sample.id.clone()),
                 source: None,
+                test: None,
             },
             None,
         );
@@ -3688,6 +3731,7 @@ mod tests {
             config: serde_json::to_string(&group).unwrap(),
             sample: None,
             source: source.map(str::to_string),
+            test: None,
         };
         let held = config_file::SampleDto {
             id: "c1".to_string(),

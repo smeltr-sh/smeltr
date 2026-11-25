@@ -8,9 +8,10 @@
 //! `stall_after` bounds total time -- connect, request, every retry -- because it must stay under the Kafka
 //! consumer's `max.poll.interval.ms`.
 
+use crate::sync::Mutex;
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::pipelined::{self, Pool};
@@ -91,7 +92,7 @@ impl Unwritten {
         }
         let labels = [("destination", self.destination.as_str()), ("kind", kind)];
         self.metrics.incr("smeltr_destination_unwritten_total", &labels, count);
-        if !(self.warned.lock().unwrap_or_else(std::sync::PoisonError::into_inner)).due() {
+        if !(self.warned.lock()).due() {
             return;
         }
         tracing::warn!(
@@ -244,8 +245,8 @@ pub struct HttpDestination<P: Protocol, T: Transport> {
 /// senders. Each time is said at trace, and at debug once every [`crate::logs::RELOG_EVERY`].
 #[derive(Default)]
 struct Said {
-    throttled: std::sync::Mutex<crate::logs::Repeat>,
-    halved: std::sync::Mutex<crate::logs::Repeat>,
+    throttled: crate::sync::Mutex<crate::logs::Repeat>,
+    halved: crate::sync::Mutex<crate::logs::Repeat>,
 }
 
 /// Where a destination counts the time it held its sends back because the service asked it to slow down, as
@@ -444,7 +445,7 @@ fn in_halves<P: Protocol, T: Transport>(
         return None;
     }
     let half = group.pending.len() / 2;
-    crate::debug_when!(round.said.halved.lock().unwrap_or_else(std::sync::PoisonError::into_inner).due(), name: "request_halved", target: "destinations", subject = %round.subject, service = protocol.name(), items = group.pending.len(), "a request the service would not take whole is sent as two halves");
+    crate::debug_when!(round.said.halved.lock().due(), name: "request_halved", target: "destinations", subject = %round.subject, service = protocol.name(), items = group.pending.len(), "a request the service would not take whole is sent as two halves");
     let mut tail = Group {
         route: group.route.clone(),
         part: group.part,
@@ -561,7 +562,7 @@ fn deliver<P: Protocol, T: Transport>(
         }
         if !round.throttle_said {
             round.throttle_said = true;
-            crate::debug_when!(round.said.throttled.lock().unwrap_or_else(std::sync::PoisonError::into_inner).due(), name: "throttled", target: "destinations", subject = %round.subject, service = protocol.name(), status = response.status, asked_wait_secs = response.asked_wait().map(|w| w.as_secs()), "the service asked to be sent less, so the destination backs off");
+            crate::debug_when!(round.said.throttled.lock().due(), name: "throttled", target: "destinations", subject = %round.subject, service = protocol.name(), status = response.status, asked_wait_secs = response.asked_wait().map(|w| w.as_secs()), "the service asked to be sent less, so the destination backs off");
         }
         std::thread::sleep(nap);
         round.waited += nap;
@@ -815,11 +816,13 @@ impl Transport for HttpTransport {
         let deadline = Instant::now() + budget;
         let left = || deadline.saturating_duration_since(Instant::now());
         let url = format!("{}{path}", self.url);
-        let mut auth = lock(&sign_in).authorize(&self.agent, super::client_credentials::SIGN_IN_TIMEOUT, &url)?;
+        let mut auth = sign_in
+            .lock()
+            .authorize(&self.agent, super::client_credentials::SIGN_IN_TIMEOUT, &url)?;
         let mut asked_again = false;
         loop {
             let answer = super::api::Answer::from(self.send(path, body, left(), &auth)?);
-            let mut sign_in = lock(&sign_in);
+            let mut sign_in = sign_in.lock();
             if answer.status != 401 {
                 sign_in.used(&answer);
                 return Ok(answer.into());
@@ -844,11 +847,6 @@ impl Transport for HttpTransport {
             }
         }
     }
-}
-
-/// The sign-in, whatever a sender that panicked holding it left: a token is replaced when refused.
-fn lock(sign_in: &SharedSignIn) -> std::sync::MutexGuard<'_, Box<dyn super::api::Authorize>> {
-    sign_in.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl HttpTransport {
@@ -1079,7 +1077,7 @@ mod tests {
         }
 
         fn refused(&mut self, _: &Answer) -> bool {
-            *self.refusals.lock().unwrap() += 1;
+            *self.refusals.lock() += 1;
             self.issued += 1;
             self.replace
         }
@@ -1118,7 +1116,7 @@ mod tests {
                 let mut body = vec![0; length];
                 let _ = reader.read_exact(&mut body);
                 let status = if good.contains(&token.as_str()) { 204 } else { 401 };
-                log.lock().unwrap().push(token);
+                log.lock().push(token);
                 let mut conn = reader.into_inner();
                 let _ = write!(
                     conn,
@@ -1149,8 +1147,8 @@ mod tests {
         let (mut t, refusals) = transport(&url, true);
         let response = t.post("/x", b"[]", Duration::from_secs(5)).unwrap();
         assert_eq!(response.status, 204);
-        assert_eq!(*seen.lock().unwrap(), ["token-1", "token-2"]);
-        assert_eq!(*refusals.lock().unwrap(), 1);
+        assert_eq!(*seen.lock(), ["token-1", "token-2"]);
+        assert_eq!(*refusals.lock(), 1);
     }
 
     #[test]
@@ -1158,7 +1156,7 @@ mod tests {
         let (url, seen) = serve(&[]);
         let (mut t, _) = transport(&url, false);
         assert_eq!(t.post("/x", b"[]", Duration::from_secs(5)).unwrap().status, 401);
-        assert_eq!(seen.lock().unwrap().len(), 1);
+        assert_eq!(seen.lock().len(), 1);
     }
 
     #[test]
@@ -1166,7 +1164,7 @@ mod tests {
         let (url, seen) = serve(&[]);
         let (mut t, _) = transport(&url, true);
         assert_eq!(t.post("/x", b"[]", Duration::from_secs(5)).unwrap().status, 401);
-        assert_eq!(*seen.lock().unwrap(), ["token-1", "token-2"]);
+        assert_eq!(*seen.lock(), ["token-1", "token-2"]);
     }
 
     #[test]
@@ -1185,11 +1183,7 @@ mod tests {
         let stale = vec![("Authorization".to_string(), "Bearer token-1".to_string())];
         assert_eq!(b.send("/x", b"[]", Duration::from_secs(5), &stale).unwrap().status, 401);
         assert_eq!(b.post("/x", b"[]", Duration::from_secs(5)).unwrap().status, 204);
-        assert_eq!(
-            *refusals.lock().unwrap(),
-            1,
-            "only the first refusal replaced the token"
-        );
-        assert_eq!(*seen.lock().unwrap(), ["token-1", "token-2", "token-1", "token-2"]);
+        assert_eq!(*refusals.lock(), 1, "only the first refusal replaced the token");
+        assert_eq!(*seen.lock(), ["token-1", "token-2", "token-1", "token-2"]);
     }
 }

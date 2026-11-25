@@ -11,6 +11,7 @@
 //! Live, the same draws, pointed at the emulators `just live-up` runs and signed with what they take, write there and
 //! read back the same.
 
+use smeltr::core::id::DestId;
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::sync::Arc;
@@ -1118,7 +1119,7 @@ fn live_fuzz(
         let parquet = c.format.writes_columns();
         let mut d = smeltr::io::build_destination(
             &DestinationKind::Objects(c.clone()),
-            0,
+            DestId::new(0),
             "d",
             metrics,
             &secrets,

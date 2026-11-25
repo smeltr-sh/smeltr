@@ -11,8 +11,9 @@
 //! only record of that. Not a warning table -- a key and a millisecond, forgotten the instant its fact is, and now
 //! durable for the same reason `latest_state` is: a fact that began before a restart must keep its true start.
 
+use crate::sync::{Mutex, MutexGuard};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::heartbeat::{MetricValueDto, ThreadHeartbeat, ThreadKind};
@@ -210,16 +211,16 @@ impl Default for Registry {
 }
 
 impl Registry {
-    /// Locks every thread's last report and returns it, even if a panic poisoned the mutex. A panic mid-update
-    /// leaves part of one heartbeat applied, and that worker's next heartbeat replaces it.
+    /// Every thread's last report. A panic mid-update leaves part of one heartbeat applied, and that worker's next
+    /// heartbeat replaces it.
     fn threads(&self) -> MutexGuard<'_, HashMap<(String, String), ThreadState>> {
-        self.threads.lock().unwrap_or_else(|e| e.into_inner())
+        self.threads.lock()
     }
 
-    /// Locks the authority each worker last reported and returns it, even if a panic poisoned the mutex, for the
-    /// same reason.
+    /// The authority each worker last reported. A panic mid-update is repaired the same way: the worker's next
+    /// report replaces it.
     fn authorities(&self) -> MutexGuard<'_, HashMap<String, Reported>> {
-        self.authorities.lock().unwrap_or_else(|e| e.into_inner())
+        self.authorities.lock()
     }
 
     /// Opens (or creates) the registry's own database at `path` and rebuilds in-memory state from what is durable
@@ -540,7 +541,7 @@ impl Registry {
         // Console-only for the duration: a store that will not take a batch says so, and that saying must not
         // join the queue it was failing to empty.
         crate::logs::while_delivering(|| {
-            let mut failing = self.logs_failing.lock().unwrap_or_else(|e| e.into_inner());
+            let mut failing = self.logs_failing.lock();
             match store.record_logs(worker_id, boot_id, group_id, events) {
                 Err(e) => {
                     failing.fail(e.to_string());
@@ -567,7 +568,7 @@ impl Registry {
     /// Every fact the clock holds for one catalog entry: what a caller that cannot yet say whether those facts still
     /// hold passes back to [`Registry::observe_facts`], so their start times are kept rather than forgotten.
     pub fn facts_of(&self, entry: &str) -> Vec<FactKey> {
-        let clock = self.fact_clock.lock().unwrap_or_else(|e| e.into_inner());
+        let clock = self.fact_clock.lock();
         clock.keys().filter(|k| k.entry == entry).cloned().collect()
     }
 
@@ -575,10 +576,7 @@ impl Registry {
     /// clock: the start it holds, or `now_ms` for a key it has not seen. What a caller reads while it is still
     /// working out the rest of what is active, before it observes the whole of it.
     pub fn starts_of(&self, keys: &HashSet<FactKey>, now_ms: i64) -> HashMap<FactKey, i64> {
-        let clock = self
-            .fact_clock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let clock = self.fact_clock.lock();
         keys.iter()
             .map(|k| (k.clone(), clock.get(k).copied().unwrap_or(now_ms)))
             .collect()
@@ -594,10 +592,7 @@ impl Registry {
     /// this runs, and nothing else ticks this clock (design doc, Control plane: "recomputed ... on every
     /// heartbeat").
     pub fn observe_facts(&self, active: &HashSet<FactKey>, now_ms: i64) -> HashMap<FactKey, i64> {
-        let mut clock = self
-            .fact_clock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut clock = self.fact_clock.lock();
         // Catalogs run side by side; one that lost the race to the lock is older than the clock, and applying it
         // would clear and begin again whatever the newer one saw.
         if self.observed_ms.fetch_max(now_ms, std::sync::atomic::Ordering::Relaxed) > now_ms {
@@ -770,7 +765,7 @@ fn persist_heartbeat(
         stopped_at_ms: worker.stopped_at_ms,
         now_ms,
     });
-    let mut failing = failing.lock().unwrap_or_else(|e| e.into_inner());
+    let mut failing = failing.lock();
     match &recorded {
         Err(e) => {
             // One transaction, so this is the whole heartbeat's mirror rather than a count of the rows that failed.
@@ -981,7 +976,7 @@ mod tests {
             .into_iter()
             .find_map(|secs| Instant::now().checked_sub(Duration::from_secs(secs)))
             .expect("a clock that reaches back a minute");
-        for state in r.threads.lock().unwrap().values_mut() {
+        for state in r.threads.lock().values_mut() {
             state.last_seen = long_ago;
         }
 
