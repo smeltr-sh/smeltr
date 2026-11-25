@@ -560,7 +560,7 @@ impl Captures {
         records: Vec<crate::io::RecordObject>,
     ) -> Result<(), String> {
         crate::config_file::refuse_sample_size(records.len())?;
-        let batch = CaptureBatch::pasted(records);
+        let batch = CaptureBatch::pasted(records).stamped(crate::core::ctx::wall_clock_micros());
         let bytes = batch.size();
         if bytes > SESSION_BYTES_CEILING {
             return Err(format!(
