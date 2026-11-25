@@ -1073,11 +1073,19 @@ fn as_sample(
     let keep: Vec<bool> = (table.columns.iter().enumerate())
         .map(|(i, c)| {
             !c.name.starts_with("__capture.")
-                && (cut.fields.as_ref().is_none_or(|f| f.contains(&c.name))
+                && (cut.fields.as_ref().is_none_or(|f| f.iter().any(|f| under(f, &c.name)))
                     || (!tree::is_internal(&c.name) && holds(i)))
         })
         .collect();
     table.keep_columns(&keep);
+    // A `__` column can hold an object, as `__source.headers` does, whose leaves show as fields of their own.
+    if let Some(fields) = &cut.fields {
+        for (i, column) in table.columns.iter().enumerate().filter(|(_, c)| tree::is_internal(&c.name)) {
+            for row in &mut table.rows {
+                row.values[i] = config_file::kept_under(&row.values[i], &column.name, fields).unwrap_or_default();
+            }
+        }
+    }
     for (column, value) in made {
         table.columns.push(column.clone());
         table.rows.iter_mut().for_each(|row| row.values.push(value.clone()));
@@ -1799,6 +1807,54 @@ mod tests {
 
         let meta = SourceMeta::of_columns(&sample.columns).unwrap();
         read_sample(&meta, &sample).expect("the sample reads back by its own columns");
+    }
+
+    /// A header shown saves as a sample, and a header not shown does not: `__source.headers` is one column whose
+    /// leaves show as fields of their own.
+    #[test]
+    fn a_shown_header_saves_as_a_sample_and_a_hidden_one_does_not() {
+        let column = |name: &str, ty: crate::core::column::DataType| crate::heartbeat::CaptureColumn {
+            name: name.into(),
+            ty: ty.spell(),
+        };
+        let batch = crate::heartbeat::CaptureBatch {
+            columns: vec![
+                column("_raw", crate::core::column::DataType::Str),
+                column("__source.headers", crate::core::column::DataType::Variant),
+            ],
+            rows: vec![crate::heartbeat::CapturedRow {
+                values: vec![
+                    serde_json::json!("http://a/x"),
+                    serde_json::json!({ "trace": "t1", "hidden": "h" }),
+                ],
+                ..Default::default()
+            }],
+        };
+        let previewed = run_preview(
+            PreviewRequest {
+                config: compiling(),
+                pipeline: Some("p".into()),
+                sample: None,
+                show_internal: true,
+                filter: None,
+                attribution: false,
+                as_sample: shown(&["x", "__source.headers.trace"], &[0]),
+                dictionary: false,
+                after_dot: None,
+                capture_filter: None,
+                test: None,
+                locked: None,
+            },
+            Default::default(),
+            &batch,
+        );
+        assert!(
+            previewed.succeeded(),
+            "{:?}",
+            previewed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+        let sample = previewed.body.as_sample.unwrap();
+        assert_eq!(cell(&sample, 0, "__source.headers"), serde_json::json!({ "trace": "t1" }));
     }
 
     /// A JSON or key-value parse converts a key a produced schema types as it lays it: a value that does not fit is

@@ -135,6 +135,15 @@ impl Made {
 /// `document` holding only `fields`, named as [`leaves_of`] names them, in the document's own shape. An object left
 /// with none of them is gone.
 pub fn kept(document: &Value, fields: &[String]) -> Map<String, Value> {
+    match kept_under(document, "", fields) {
+        Some(Value::Object(object)) => object,
+        _ => Map::new(),
+    }
+}
+
+/// `value`, the field named `path`, holding only those of `fields` it holds, as [`kept`] cuts a document; `None` when
+/// it holds none.
+pub fn kept_under(value: &Value, path: &str, fields: &[String]) -> Option<Value> {
     fn keep(value: &Value, path: &mut String, fields: &[String]) -> Option<Value> {
         match value {
             Value::Object(object) if !object.is_empty() => {
@@ -152,10 +161,7 @@ pub fn kept(document: &Value, fields: &[String]) -> Map<String, Value> {
             _ => fields.contains(path).then(|| value.clone()),
         }
     }
-    match keep(document, &mut String::new(), fields) {
-        Some(Value::Object(object)) => object,
-        _ => Map::new(),
-    }
+    keep(value, &mut path.to_string(), fields)
 }
 
 /// Every leaf of `value` under `path`, by its name, as the records grid names its columns: an object's keys are
