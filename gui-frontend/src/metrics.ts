@@ -2,18 +2,18 @@
 
 import type { MetricSampleDto } from './api';
 
-/** `core::error::INGEST_FUNCTION`: marked at ingest, before any step. */
-const INGEST_FUNCTION = '4294967295';
+/** `core::error::INGEST_LABEL`: the `function` label of an exception from ingest, which no step raised. */
+const INGEST_LABEL = '4294967295';
 
 /** Label values are joined on a character no label can contain. */
 const SEP = '\u0000';
 
 /** The `function` label is a counter the config loader assigns across the
- * expanded step tree, so only the ingest sentinel has a name here.
+ * expanded step tree, so only the ingest label has a name here.
  * Resolving the rest wants a name from the backend, not a second copy of
  * that numbering. */
 export function formatFunction(id: string): string {
-  return id === INGEST_FUNCTION ? 'ingest' : id;
+  return id === INGEST_LABEL ? 'ingest' : id;
 }
 
 /** Identifies a sample within a thread. One metric appears once per label
