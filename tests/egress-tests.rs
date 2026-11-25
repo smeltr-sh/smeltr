@@ -1503,8 +1503,11 @@ fn a_full_queue_starts_another_copy_with_its_own_client() {
     };
     let row = vec![b'x'; 1000];
     // Four rows fill the queue, so the reader is refused room while the one copy sends.
-    let mut egress =
-        Egress::start(0, "d", first, timeout(), 4 * row.len(), metrics()).copying(3, smeltr::egress::COPY_IDLE, build);
+    let mut egress = Egress::start(DestId(0), "d", first, timeout(), 4 * row.len(), metrics()).copying(
+        3,
+        smeltr::egress::COPY_IDLE,
+        build,
+    );
     let mut h = egress.handle();
 
     // Long enough for a thread to be found spare twice: each reading covers a second.
@@ -1586,7 +1589,7 @@ fn an_idle_copy_ends_and_another_starts_under_load() {
     };
     let row = vec![b'x'; 1000];
     let idle = Duration::from_millis(300);
-    let mut egress = Egress::start(0, "d", first, timeout(), 4 * row.len(), metrics()).copying(3, idle, build);
+    let mut egress = Egress::start(DestId(0), "d", first, timeout(), 4 * row.len(), metrics()).copying(3, idle, build);
     let mut h = egress.handle();
     let (mut handed, mut done) = (0u64, 0);
     // Long enough for a thread to be found spare: a reading covers a second.
@@ -1641,8 +1644,11 @@ fn a_full_queue_behind_a_slow_destination_starts_no_copy() {
         })
     };
     let row = vec![b'x'; 1000];
-    let mut egress =
-        Egress::start(0, "d", first, timeout(), 4 * row.len(), metrics()).copying(3, smeltr::egress::COPY_IDLE, build);
+    let mut egress = Egress::start(DestId(0), "d", first, timeout(), 4 * row.len(), metrics()).copying(
+        3,
+        smeltr::egress::COPY_IDLE,
+        build,
+    );
     let mut h = egress.handle();
     let until = std::time::Instant::now() + Duration::from_millis(2500);
     let (mut handed, mut done) = (0u64, 0);
