@@ -51,6 +51,10 @@ const NOT_DEFINED_HERE: &[(&str, &str)] = &[
     ),
     // The operating system's own calls.
     (
+        "GroupMasks",
+        "the field of Windows' CACHE_RELATIONSHIP that GroupMask lies over",
+    ),
+    (
         "setpgid",
         "the unix call a process leaves its group by, escaping a tree kill",
     ),
