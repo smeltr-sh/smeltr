@@ -1594,11 +1594,16 @@ fn a_full_queue_starts_another_copy_with_its_own_client() {
     );
     let mut h = egress.handle();
 
-    // Long enough for a thread to be found spare twice: each reading covers a second.
-    let until = std::time::Instant::now() + Duration::from_millis(3500);
+    // Until a copy has started and a second reading has passed after it, or the deadline: each reading of a busy and
+    // spare thread covers a second, and a loaded machine may take several.
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let mut until = deadline;
     let mut handed = 0u64;
     let mut done = 0;
     while std::time::Instant::now() < until {
+        if until == deadline && built.load(std::sync::atomic::Ordering::Relaxed) > 0 {
+            until = std::time::Instant::now() + Duration::from_millis(1500);
+        }
         match hand(&mut h, handed, &[OutgoingRecord::new(&row)]) {
             Dispatched::NoRoom { .. } => std::thread::sleep(Duration::from_millis(1)),
             _ => handed += 1,
@@ -1677,9 +1682,11 @@ fn an_idle_copy_ends_and_another_starts_under_load() {
         Egress::start(DestId::new(0), "d", first, timeout(), 4 * row.len(), metrics()).copying(3, idle, build);
     let mut h = egress.handle();
     let (mut handed, mut done) = (0u64, 0);
-    // Long enough for a thread to be found spare: a reading covers a second.
-    let mut load = |h: &mut smeltr::egress::EgressHandle, until: std::time::Instant| {
-        while std::time::Instant::now() < until {
+    // Until a copy past `past` has started, or the deadline: a thread is found busy and spare only over a second's
+    // reading, and a loaded machine may take several.
+    let mut load = |h: &mut smeltr::egress::EgressHandle, past: usize| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while built.load(Relaxed) <= past && std::time::Instant::now() < deadline {
             match hand(h, handed, &[OutgoingRecord::new(&row)]) {
                 Dispatched::NoRoom { .. } => std::thread::sleep(Duration::from_millis(1)),
                 _ => handed += 1,
@@ -1687,18 +1694,15 @@ fn an_idle_copy_ends_and_another_starts_under_load() {
             done += h.poll_completions().unwrap().len();
         }
     };
-    load(&mut h, std::time::Instant::now() + Duration::from_millis(2500));
+    load(&mut h, 0);
     let started = built.load(Relaxed);
     assert!(started >= 1, "a copy started under load");
 
-    std::thread::sleep(idle * 3);
-    assert_eq!(
-        ended.load(Relaxed),
-        started,
-        "every copy past the first ended, and the first stays"
-    );
+    crate::harness::wait_until("every copy past the first to end", Duration::from_secs(10), || {
+        ended.load(Relaxed) == started
+    });
 
-    load(&mut h, std::time::Instant::now() + Duration::from_millis(2500));
+    load(&mut h, started);
     assert!(built.load(Relaxed) > started, "copies start again under load");
     h.flush().unwrap();
     done += h.poll_completions().unwrap().len();

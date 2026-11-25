@@ -6,3 +6,9 @@ leader-starts = { max-threads = 4 }
 [[profile.default.overrides]]
 filter = 'test(/^gate_tests::/) | test(/^worker_tests::/)'
 test-group = 'leader-starts'
+
+# An egress copy starts only on a thread busy for most of a second while another is spare, both read from the CPU time
+# the machine gives: these tests run alone, or a loaded runner starves the thread they measure.
+[[profile.default.overrides]]
+filter = 'test(/^egress_tests::(a_full_queue|an_idle_copy)/)'
+threads-required = 'num-cpus'
