@@ -315,7 +315,11 @@ fn stop(mut child: std::process::Child) -> String {
 /// until somebody noticed, reporting the same line for a fault only an operator can clear.
 fn gives_up(base: &str, code: &str, state_dir: &std::path::Path, within: Duration) -> String {
     let mut child = spawn_worker(base, code, state_dir);
-    if wait_for("the worker to give up enrolling", within, || child.try_wait().ok().flatten()).is_ok() {
+    if wait_for("the worker to give up enrolling", within, || {
+        child.try_wait().ok().flatten()
+    })
+    .is_ok()
+    {
         let mut said = String::new();
         if let Some(mut stderr) = child.stderr.take() {
             use std::io::Read;
