@@ -249,14 +249,11 @@ fn install_crypto_provider() {
 /// against a listener still winding down.
 fn wait_until_port_refuses(port: u16, within: Duration) {
     let addr: std::net::SocketAddr = ([127, 0, 0, 1], port).into();
-    let deadline = Instant::now() + within;
-    while Instant::now() < deadline {
-        if std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_err() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    panic!("port {port} still accepts connections {within:?} after the leader was shut down");
+    crate::harness::wait_until(
+        &format!("port {port} to refuse connections, the leader having been shut down"),
+        within,
+        || std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_err(),
+    );
 }
 
 /// The leader is on this host, which a proxy in the test's environment cannot reach, so the agent takes none.

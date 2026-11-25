@@ -9,7 +9,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::harness::receiver::free_loopback;
+use crate::harness::receiver::{free_loopback, poll_until};
 use smeltr::io::line_breaker::LineBreaker;
 use smeltr::io::{CommitMap, Source, SourceRecord, TopicPartition, build_source};
 use smeltr::plan::topology::{
@@ -46,20 +46,6 @@ fn receiver(listen: SocketAddr, token: Option<&str>, tls: Option<Tls>, secrets: 
     let registry = Arc::new(smeltr::metrics::Metrics::new());
     let subjects = Arc::new(smeltr::metrics::Subjects::default());
     build_source(&SourceKind::Receiver(config), &registry, &subjects, secrets, None).expect("opens")
-}
-
-fn poll_until(source: &mut Box<dyn Source>, n: usize) -> Vec<SourceRecord> {
-    let mut records = Vec::new();
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while records.len() < n {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "only {} records arrived",
-            records.len()
-        );
-        records.extend(source.poll_batch(100, 1 << 20, Duration::from_millis(100)).unwrap());
-    }
-    records
 }
 
 fn nothing_arrives(source: &mut Box<dyn Source>) {

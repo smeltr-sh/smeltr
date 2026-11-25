@@ -212,14 +212,9 @@ fn start_leader_tls() -> (String, Vec<u8>) {
 fn wait_until_serving(base: &str, ca_pem: &[u8]) {
     let agent = smeltr::heartbeat::agent_trusting(Some(ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    loop {
-        if agent.get(format!("{base}/api/health")).call().is_ok() {
-            return;
-        }
-        assert!(std::time::Instant::now() < deadline, "{base} never answered");
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    crate::harness::wait_until(&format!("{base} to answer"), std::time::Duration::from_secs(30), || {
+        agent.get(format!("{base}/api/health")).call().is_ok()
+    });
 }
 
 fn mint_code(base: &str) -> String {
