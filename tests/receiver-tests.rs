@@ -9,6 +9,7 @@ use std::time::Duration;
 use crate::live;
 
 use crate::harness::receiver::{free_loopback, poll_until};
+use crate::harness::wait_until;
 use smeltr::heartbeat::pasted_from;
 use smeltr::io::line_breaker::LineBreaker;
 use smeltr::io::{CommitMap, Source, SourceRecord, TopicPartition, build_source};
@@ -16,6 +17,19 @@ use smeltr::plan::topology::{
     ApiRecords, HecReceiverConfig, HeldSecrets, HttpReceiverConfig, Receiver, ReceiverConfig, SecretRef, Signal,
     SourceKind, Tls,
 };
+
+/// How long a test waits for what it expects.
+const WITHIN: Duration = Duration::from_secs(5);
+
+/// Long enough for a receiver that answers on receipt to have answered.
+const ANSWERED: Duration = Duration::from_millis(200);
+
+/// Long enough for a collector to send an export again when it was refused or never answered: it does so after five
+/// seconds.
+const COLLECTOR_RESENT: Duration = Duration::from_secs(8);
+
+/// Long enough for a shipper to have logged a request it will send again or drop.
+const SHIPPER_LOGGED: Duration = Duration::from_secs(3);
 
 fn token() -> SecretRef {
     SecretRef::LeaderStored {
@@ -113,7 +127,7 @@ fn a_request_is_answered_once_its_records_are_committed() {
     assert_eq!(raw, [br#"{"n":1}"#.as_slice(), br#"{"n":2}"#]);
     assert_eq!(&*records[0].topic, "127.0.0.1", "a record carries its sender's address");
 
-    std::thread::sleep(Duration::from_millis(300));
+    std::thread::sleep(ANSWERED);
     assert!(!sent.is_finished(), "answered before its records were delivered");
     commit(&mut source, &records);
     assert_eq!(sent.join().unwrap().0, 200);
@@ -420,7 +434,7 @@ fn a_hec_request_is_answered_success_once_its_events_are_committed() {
         "a stored record reads back as it was received"
     );
 
-    std::thread::sleep(Duration::from_millis(200));
+    std::thread::sleep(ANSWERED);
     assert!(!sent.is_finished(), "nothing is answered before it is delivered");
     commit(&mut source, &records);
     let (status, answer) = sent.join().unwrap();
@@ -448,7 +462,7 @@ fn a_hec_raw_request_is_its_lines_filed_under_its_query() {
     assert_eq!(raw, [b"first line".as_slice(), b"second line"]);
     let objects = smeltr::plan::topology::SourceMeta::HEC_RECEIVER.objects(&records, Some("hec"));
     assert_eq!(objects[1]["sourcetype"], "syslog");
-    std::thread::sleep(Duration::from_millis(200));
+    std::thread::sleep(ANSWERED);
     assert!(!sent.is_finished(), "nothing is answered before it is delivered");
     commit(&mut source, &records);
     assert_eq!(
@@ -724,7 +738,7 @@ fn an_otlp_export_is_answered_once_its_log_records_are_committed() {
         "a stored record reads back as it was received"
     );
 
-    std::thread::sleep(Duration::from_millis(200));
+    std::thread::sleep(ANSWERED);
     assert!(!sent.is_finished(), "nothing is answered before it is delivered");
     commit(&mut source, &records);
     let (status, answer) = sent.join().unwrap();
@@ -976,7 +990,7 @@ fn a_grpc_export_is_answered_once_its_log_records_are_committed() {
     let record = meta.record_object(&records[0], "");
     assert_eq!(record["body"], "slow");
     assert_eq!(record["severityText"], "WARN");
-    std::thread::sleep(Duration::from_millis(200));
+    std::thread::sleep(ANSWERED);
     assert!(!sent.is_finished(), "nothing is answered before it is delivered");
     commit(&mut source, &records);
     let answer = sent.join().unwrap();
@@ -1101,11 +1115,9 @@ fn otlp_receivers_of_each_signal_share_a_port() {
     assert_eq!(sent.join().unwrap().0, 200, "the others still serve");
 
     drop(logs);
-    std::thread::sleep(Duration::from_millis(100));
-    assert!(
-        TcpStream::connect(at).is_err(),
-        "the port closes with its last receiver"
-    );
+    wait_until("the port to close with its last receiver", WITHIN, || {
+        TcpStream::connect(at).is_err()
+    });
     let _again = otlp_receiver_of(at, Signal::Metrics, 4096);
     assert_eq!(post("/v1/metrics", b"{}").0, 200, "and opens again with the next");
 }
@@ -1187,7 +1199,7 @@ service:
         commit(source, &records);
     }
     // An export the collector heard refused, or never heard answered, it sends again after five seconds.
-    std::thread::sleep(Duration::from_secs(8));
+    std::thread::sleep(COLLECTOR_RESENT);
     for (wire, source) in [("gRPC", &mut over_grpc), ("HTTP", &mut over_http)] {
         let again = source.poll_batch(100, 1 << 20, Duration::from_millis(200)).unwrap();
         assert!(again.is_empty(), "the collector sent its export over {wire} again");
@@ -1509,7 +1521,7 @@ fn a_remote_write_request_is_answered_once_its_samples_are_committed() {
         "a stored sample reads back as it was received"
     );
 
-    std::thread::sleep(Duration::from_millis(200));
+    std::thread::sleep(ANSWERED);
     assert!(!sent.is_finished(), "nothing is answered before it is delivered");
     commit(&mut source, &records);
     assert_eq!(sent.join().unwrap().0, 204);
@@ -2276,7 +2288,7 @@ remote_write:
     assert_eq!(up["attributes"]["instance"], web.to_string());
     // Answered requests leave nothing for Prometheus to retry or drop. Only its remote_write's words are read: a
     // warning of its own about anything else is not this receiver's.
-    std::thread::sleep(Duration::from_secs(3));
+    std::thread::sleep(SHIPPER_LOGGED);
     let logs = std::process::Command::new("docker")
         .args(["logs", &prometheus.0])
         .output()
@@ -2397,7 +2409,7 @@ fn a_bulk_request_is_answered_per_action_once_its_documents_are_committed() {
         "a stored record reads back as it was received"
     );
 
-    std::thread::sleep(Duration::from_millis(200));
+    std::thread::sleep(ANSWERED);
     assert!(!sent.is_finished(), "nothing is answered before it is delivered");
     commit(&mut source, &records);
     let (status, named, answer) = sent.join().unwrap();
@@ -2582,7 +2594,7 @@ setup.ilm.enabled: false
         "{found}"
     );
     // Answered requests leave nothing for Filebeat to retry or drop.
-    std::thread::sleep(Duration::from_secs(3));
+    std::thread::sleep(SHIPPER_LOGGED);
     let logs = logs(&filebeat.0);
     assert!(!logs.contains(r#""log.level":"error""#), "{logs}");
     drop(filebeat);
@@ -2631,7 +2643,7 @@ fn elastic_fluent_bit_ships_a_line_it_tails() {
 
     let found = shipped(&mut source, &fluent_bit, "log", "shipped by fluent bit");
     assert_eq!(found["filed"]["index"], "apps", "{found}");
-    std::thread::sleep(Duration::from_secs(3));
+    std::thread::sleep(SHIPPER_LOGGED);
     let logs = logs(&fluent_bit.0);
     assert!(!logs.contains("[error]") && !logs.contains("[ warn]"), "{logs}");
     drop(fluent_bit);
