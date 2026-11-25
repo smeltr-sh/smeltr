@@ -5,11 +5,22 @@
 
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Once, mpsc};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use crate::harness::wait_for;
 use smeltr::leader::registry::Registry;
 use smeltr::leader::store::Store;
 use smeltr::leader::{AppState, router};
+
+/// Long enough for a worker that was going to enroll to have done so.
+const ENROLLED: Duration = Duration::from_secs(6);
+
+/// Longer than a leader waits before it counts a worker as silent: three of its own heartbeat intervals, 4.5 s at the
+/// default.
+const SILENT: Duration = Duration::from_secs(6);
+
+/// Long enough for a worker to have started and said whether it will run.
+const STARTED: Duration = Duration::from_secs(4);
 
 /// These tests run one at a time.
 ///
@@ -216,30 +227,22 @@ fn holds_only(state_dir: &std::path::Path, fingerprint: &str, within: Duration) 
 
 fn kept_roots_become(state_dir: &std::path::Path, within: Duration, what: impl Fn(&[&str]) -> bool) -> bool {
     let kept = state_dir.join("pinned-ca.pem");
-    let deadline = Instant::now() + within;
-    while Instant::now() < deadline {
-        if std::fs::read(&kept)
+    wait_for("the roots the worker keeps to change", within, || {
+        std::fs::read(&kept)
             .ok()
             .and_then(|pem| smeltr::leader::tls::describe_each(&pem, "kept").ok())
             .is_some_and(|roots| what(&roots.iter().map(|r| r.fingerprint.as_str()).collect::<Vec<_>>()))
-        {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    false
+            .then_some(())
+    })
+    .is_ok()
 }
 
 /// Waits until no rotation is open.
 fn finished(dir: &std::path::Path, within: Duration) -> bool {
-    let deadline = Instant::now() + within;
-    while Instant::now() < deadline {
-        if smeltr::leader::tls::rotation(dir).unwrap().is_none() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    false
+    wait_for("the rotation to finish", within, || {
+        smeltr::leader::tls::rotation(dir).unwrap().is_none().then_some(())
+    })
+    .is_ok()
 }
 
 fn mint(base: &str, ca_pem: &[u8], body: serde_json::Value) -> serde_json::Value {
@@ -281,19 +284,17 @@ fn spawn_worker(base: &str, code: &str, state_dir: &std::path::Path) -> std::pro
 /// handshake.
 fn heartbeating(base: &str, ca_pem: &[u8], within: Duration) -> bool {
     let agent = smeltr::heartbeat::agent_trusting(Some(ca_pem), true, smeltr::heartbeat::REQUEST_BUDGET).unwrap();
-    let deadline = Instant::now() + within;
-    while Instant::now() < deadline {
+    wait_for("the leader to hear a heartbeat", within, || {
         let health = agent
             .get(format!("{base}/api/health"))
             .call()
             .ok()
             .and_then(|mut response| response.body_mut().read_json::<serde_json::Value>().ok());
-        if health.is_some_and(|h| h["threads"].as_array().is_some_and(|t| !t.is_empty())) {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    false
+        health
+            .is_some_and(|h| h["threads"].as_array().is_some_and(|t| !t.is_empty()))
+            .then_some(())
+    })
+    .is_ok()
 }
 
 /// Stops the worker and hands back everything it said.
@@ -314,17 +315,13 @@ fn stop(mut child: std::process::Child) -> String {
 /// until somebody noticed, reporting the same line for a fault only an operator can clear.
 fn gives_up(base: &str, code: &str, state_dir: &std::path::Path, within: Duration) -> String {
     let mut child = spawn_worker(base, code, state_dir);
-    let deadline = Instant::now() + within;
-    while Instant::now() < deadline {
-        if matches!(child.try_wait(), Ok(Some(_))) {
-            let mut said = String::new();
-            if let Some(mut stderr) = child.stderr.take() {
-                use std::io::Read;
-                let _ = stderr.read_to_string(&mut said);
-            }
-            return said;
+    if wait_for("the worker to give up enrolling", within, || child.try_wait().ok().flatten()).is_ok() {
+        let mut said = String::new();
+        if let Some(mut stderr) = child.stderr.take() {
+            use std::io::Read;
+            let _ = stderr.read_to_string(&mut said);
         }
-        std::thread::sleep(Duration::from_millis(100));
+        return said;
     }
     let said = stop(child);
     panic!("it was still retrying after {within:?}:\n{said}");
@@ -333,8 +330,7 @@ fn gives_up(base: &str, code: &str, state_dir: &std::path::Path, within: Duratio
 /// Runs a worker that is expected not to enroll, and gives back what it complained about.
 fn refused(base: &str, code: &str, state_dir: &std::path::Path) -> String {
     let child = spawn_worker(base, code, state_dir);
-    // Long enough for a worker that was going to enroll to have done so.
-    std::thread::sleep(Duration::from_secs(6));
+    std::thread::sleep(ENROLLED);
     stop(child)
 }
 
@@ -389,36 +385,21 @@ fn a_worker_that_says_it_is_stopping_is_not_reported_silent() {
     let killed = spawn_worker(&base, value, &killed_dir);
 
     let outcome = (|| {
-        let deadline = Instant::now() + Duration::from_secs(40);
         let id_of = |dir: &std::path::Path| std::fs::read_to_string(dir.join("worker_id")).ok();
-        let (told_id, killed_id) = loop {
-            if let (Some(told_id), Some(killed_id)) = (id_of(&told_dir), id_of(&killed_dir)) {
-                let threads = heard_from(&agent, &base);
-                let beating = |id: &str| threads.iter().any(|t| t["workerId"] == id);
-                if beating(&told_id) && beating(&killed_id) {
-                    break (told_id, killed_id);
-                }
-            }
-            if Instant::now() >= deadline {
-                return Err("the two workers were never both heartbeating".to_string());
-            }
-            std::thread::sleep(Duration::from_millis(200));
-        };
+        let (told_id, killed_id) = wait_for("both workers to heartbeat", Duration::from_secs(40), || {
+            let (told_id, killed_id) = (id_of(&told_dir)?, id_of(&killed_dir)?);
+            let threads = heard_from(&agent, &base);
+            let beating = |id: &str| threads.iter().any(|t| t["workerId"] == id);
+            (beating(&told_id) && beating(&killed_id)).then_some((told_id, killed_id))
+        })?;
 
         // SAFETY: `kill` takes two numbers and reads no memory of this process's.
         unsafe { libc::kill(killed.id() as libc::pid_t, libc::SIGKILL) };
         // SAFETY: `kill` takes two numbers and reads no memory of this process's.
         unsafe { libc::kill(told.id() as libc::pid_t, libc::SIGTERM) };
-        let deadline = Instant::now() + Duration::from_secs(60);
-        let status = loop {
-            if let Some(status) = told.try_wait().map_err(|e| e.to_string())? {
-                break status;
-            }
-            if Instant::now() >= deadline {
-                return Err("the signaled worker did not exit within a minute".to_string());
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        };
+        let status = wait_for("the signaled worker to exit", Duration::from_secs(60), || {
+            told.try_wait().ok().flatten()
+        })?;
         if !status.success() {
             return Err(format!("the signaled worker exited {status}"));
         }
@@ -433,8 +414,7 @@ fn a_worker_that_says_it_is_stopping_is_not_reported_silent() {
             ));
         }
 
-        // Past what this leader counts as silent: three of its own heartbeat intervals, at the default.
-        std::thread::sleep(Duration::from_secs(6));
+        std::thread::sleep(SILENT);
         let listed: serde_json::Value = agent
             .get(format!("{base}/api/warnings"))
             .call()
@@ -468,16 +448,7 @@ fn a_worker_that_says_it_is_stopping_is_not_reported_silent() {
 /// Waits for `child` to exit, and answers its exit code.
 #[cfg(unix)]
 fn exit_code(child: &mut std::process::Child, within: Duration) -> Result<Option<i32>, String> {
-    let deadline = Instant::now() + within;
-    loop {
-        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
-            return Ok(status.code());
-        }
-        if Instant::now() >= deadline {
-            return Err(format!("it did not exit within {within:?}"));
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    wait_for("the worker to exit", within, || child.try_wait().ok().flatten()).map(|status| status.code())
 }
 
 /// What a container restarted in its pod finds: the state the pod kept. The leader forgot the ephemeral worker that
@@ -509,27 +480,20 @@ fn a_forgotten_ephemeral_worker_enrolls_again_as_a_new_one() {
             .collect()
     };
     let beating = |worker_id: &str, within: Duration| {
-        let deadline = Instant::now() + within;
-        while Instant::now() < deadline {
-            if heard_from(&agent, &base).iter().any(|t| t["workerId"] == worker_id) {
-                return true;
-            }
-            std::thread::sleep(Duration::from_millis(200));
-        }
-        false
+        wait_for("the leader to hear the worker's heartbeat", within, || {
+            heard_from(&agent, &base)
+                .iter()
+                .any(|t| t["workerId"] == worker_id)
+                .then_some(())
+        })
+        .is_ok()
     };
 
     let mut worker = spawn_worker(&base, value, &state);
     let outcome = (|| {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        let first = loop {
-            if let Some(first) = id().filter(|first| beating(first, Duration::from_millis(200))) {
-                break first;
-            }
-            if Instant::now() >= deadline {
-                return Err("the worker never heartbeated".to_string());
-            }
-        };
+        let first = wait_for("the worker to heartbeat", Duration::from_secs(30), || {
+            id().filter(|first| beating(first, Duration::from_millis(200)))
+        })?;
 
         // Stopped on a signal, it says so, and the leader forgets it at once.
         // SAFETY: `kill` takes two numbers and reads no memory of this process's.
@@ -726,12 +690,11 @@ fn an_enrollment_code_minted_for_several_workers_brings_in_that_many() {
         let dir = temp_dir(label);
         let credential = dir.join("credential.token");
         let child = spawn_worker(&base, value, &dir);
-        let deadline = Instant::now() + Duration::from_secs(60);
-        while !credential.exists() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(200));
-        }
+        let enrolled = wait_for("the worker to enroll", Duration::from_secs(60), || {
+            credential.exists().then_some(())
+        });
         let said = stop(child);
-        assert!(credential.exists(), "{label} never enrolled:\n{said}");
+        assert!(enrolled.is_ok(), "{label} never enrolled:\n{said}");
     }
     let said = refused(&base, value, &temp_dir("fleet-3"));
     assert!(said.contains("already brought in every worker"), "{said}");
@@ -762,40 +725,14 @@ fn a_worker_takes_a_rotated_authority_without_being_restarted() {
         smeltr::leader::tls::begin_rotation(&dir, Duration::from_secs(60 * 60), now_ms + 60 * 60 * 1000, now_ms)
             .expect("a rotation");
 
-    let kept = state_dir.join("pinned-ca.pem");
-    let took_it = |within: Duration| {
-        let deadline = Instant::now() + within;
-        while Instant::now() < deadline {
-            if std::fs::read(&kept)
-                .ok()
-                .and_then(|pem| smeltr::leader::tls::describe_each(&pem, "kept").ok())
-                .is_some_and(|roots| roots.iter().any(|r| r.fingerprint == state.incoming))
-            {
-                return true;
-            }
-            std::thread::sleep(Duration::from_millis(200));
-        }
-        false
-    };
     assert!(
-        took_it(Duration::from_secs(20)),
+        kept_roots_become(&state_dir, Duration::from_secs(20), |roots| roots
+            .contains(&state.incoming.as_str())),
         "the worker never took the incoming authority"
     );
 
-    let cut_over = {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            if smeltr::leader::tls::rotation(&dir).unwrap().is_none() {
-                break true;
-            }
-            if Instant::now() >= deadline {
-                break false;
-            }
-            std::thread::sleep(Duration::from_millis(200));
-        }
-    };
     assert!(
-        cut_over,
+        finished(&dir, Duration::from_secs(20)),
         "the fleet held the incoming root and the leader never signed under it"
     );
 
@@ -833,19 +770,10 @@ fn a_rotation_cuts_over_at_its_deadline_without_a_beat() {
     let now_ms = smeltr::leader::warnings::now_millis();
     smeltr::leader::tls::begin_rotation(&dir, Duration::from_secs(60 * 60), now_ms - 1000, now_ms).expect("a rotation");
 
-    let cut_over = {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            if smeltr::leader::tls::rotation(&dir).unwrap().is_none() {
-                break true;
-            }
-            if Instant::now() >= deadline {
-                break false;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-    };
-    assert!(cut_over, "a deadline already past did not end the rotation");
+    assert!(
+        finished(&dir, Duration::from_secs(20)),
+        "a deadline already past did not end the rotation"
+    );
 }
 
 /// The authority is public, and a worker holding an enrollment code has no session to prove anything with.
@@ -1001,7 +929,7 @@ fn an_enrolled_worker_starts_with_an_enrollment_code_it_can_no_longer_read() {
 
     // What a secrets tool leaves behind, which parses as nothing.
     let worker = spawn_worker(&base, "REDACTED", &state_dir);
-    std::thread::sleep(Duration::from_secs(4));
+    std::thread::sleep(STARTED);
     let said = stop(worker);
     assert!(
         !said.contains("refusing to start"),
@@ -1033,7 +961,7 @@ fn an_enrollment_code_naming_the_platforms_roots_puts_aside_a_kept_private_autho
     }
     .to_string();
     let worker = spawn_worker(&base, &system_code, &state_dir);
-    std::thread::sleep(Duration::from_secs(4));
+    std::thread::sleep(STARTED);
     let said = stop(worker);
 
     assert!(
