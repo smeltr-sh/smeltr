@@ -380,7 +380,12 @@ pub fn build(
                 expected: series_store
                     .map(|store| {
                         let subject = throughput::Subject::source(group, id);
-                        throughput::expected_over(store, subject, since_ms, now_ms, point_ms, &live.learning)
+                        let drawn = throughput::Drawn {
+                            since_ms,
+                            now_ms,
+                            point_ms,
+                        };
+                        throughput::expected_over(store, subject, drawn, &live.learning)
                     })
                     .transpose()
                     .unwrap_or_else(|e| {
