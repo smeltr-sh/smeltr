@@ -21,7 +21,7 @@ use smeltr::core::id::DestId;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Int32Type, Int64Type};
@@ -753,6 +753,9 @@ fn amend(s3: &str, root: &str, interval: Option<u32>, identity: Option<(i64, i64
         .expect("commit 1");
 }
 
+/// How long the batches handed over may take to reach the destination.
+const REACH_DESTINATION: Duration = Duration::from_secs(120);
+
 /// Hands `batches` to `d` as egress would, and waits until every one has landed.
 fn drive(d: &mut dyn Destination, batches: Vec<(u64, Vec<OwnedRecord>, Then)>, interval: Duration) {
     let mut waiting = HashSet::new();
@@ -780,12 +783,11 @@ fn drive(d: &mut dyn Destination, batches: Vec<(u64, Vec<OwnedRecord>, Then)>, i
         take(d, &mut waiting);
     }
     d.flush().expect("flushed");
-    let deadline = Instant::now() + Duration::from_secs(120);
-    while !waiting.is_empty() {
+    harness::wait_for("every batch to reach the destination", REACH_DESTINATION, || {
         take(d, &mut waiting);
-        assert!(Instant::now() < deadline, "batches {waiting:?} never landed");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+        waiting.is_empty().then_some(())
+    })
+    .unwrap_or_else(|late| panic!("{late}: batches {waiting:?} have not"));
 }
 
 /// The table's state at one version.

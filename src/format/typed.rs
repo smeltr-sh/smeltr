@@ -10,7 +10,7 @@
 use std::borrow::Cow;
 
 use crate::core::bits;
-use crate::core::buffer::{Buffer, BufferPool};
+use crate::core::buffer::BufferPool;
 use crate::core::column::{Column, DataType, StrBuilder, Validity, VarType};
 use crate::core::tally::TagCounts;
 use crate::core::variant::{self, Encoded};
@@ -81,9 +81,9 @@ enum Store {
     },
     /// Microseconds.
     Duration(Vec<Option<i64>>),
-    Str(Texts),
+    Str(StrBuilder),
     /// Nothing is made bytes but bytes.
-    Bytes(Texts),
+    Bytes(StrBuilder),
     /// `offsets` has one entry more than the rows written: row `r`'s elements are the child's rows
     /// `offsets[r]..offsets[r + 1]`. A row that failed is null, its elements kept in the child.
     List {
@@ -95,122 +95,19 @@ enum Store {
     /// none: it drops each.
     Struct {
         fields: Vec<(String, TypedBuilder)>,
-        unclaimed: Texts,
+        unclaimed: StrBuilder,
         open: bool,
     },
     /// Each value as it arrived, one encoded variant per row: a `variant` takes any value.
-    Variant(Texts),
+    Variant(StrBuilder),
     /// A type no value is written as: every value present fails.
     Refused(DataType),
-}
-
-/// Variable-length rows: text, or a variant's bytes. The bytes stage in a pool buffer, so they are charged to the
-/// budget as they arrive.
-#[derive(Default)]
-struct Texts {
-    /// Taken from the pool at the first bytes pushed.
-    data: Option<Buffer>,
-    /// Bytes written so far.
-    len: usize,
-    /// One entry more than the rows written.
-    offsets: Vec<u32>,
-    valid: Vec<bool>,
-    /// What every row pushed is known to be, so sealing the column need not check it: UTF-8, or one `Encoded`.
-    all_text: bool,
-    all_encoded: bool,
-}
-
-impl Texts {
-    fn new() -> Texts {
-        Texts {
-            data: None,
-            len: 0,
-            offsets: vec![0],
-            valid: Vec::new(),
-            all_text: true,
-            all_encoded: true,
-        }
-    }
-
-    /// Unwinds with `OverBudget` when the pool's budget refuses the bytes.
-    fn push(&mut self, bytes: Option<&[u8]>, pool: &mut BufferPool) {
-        if bytes.is_some() {
-            self.all_text = false;
-            self.all_encoded = false;
-        }
-        self.put(bytes, pool);
-    }
-
-    fn push_text(&mut self, text: &str, pool: &mut BufferPool) {
-        self.all_encoded = false;
-        self.put(Some(text.as_bytes()), pool);
-    }
-
-    fn push_encoded(&mut self, v: Encoded, pool: &mut BufferPool) {
-        self.all_text = false;
-        self.put(Some(v.bytes()), pool);
-    }
-
-    fn put(&mut self, bytes: Option<&[u8]>, pool: &mut BufferPool) {
-        if let Some(b) = bytes {
-            let end = self.len + b.len();
-            let data = match &mut self.data {
-                Some(data) => {
-                    data.grow(pool, end);
-                    data
-                }
-                None => self.data.insert(pool.take(end)),
-            };
-            data.as_mut_slice::<u8>()[self.len..end].copy_from_slice(b);
-            self.len = end;
-        }
-        self.valid.push(bytes.is_some());
-        self.offsets
-            .push(u32::try_from(self.len).expect("a column holds less than 4 GiB"));
-    }
-
-    fn push_null(&mut self) {
-        self.valid.push(false);
-        self.offsets
-            .push(u32::try_from(self.len).expect("a column holds less than 4 GiB"));
-    }
-
-    fn truncate(&mut self, rows: usize) {
-        self.len = self.offsets[rows] as usize;
-        self.offsets.truncate(rows + 1);
-        self.valid.truncate(rows);
-    }
-
-    fn finish(self, var_type: VarType, pool: &mut BufferPool) -> Column {
-        let rows = self.valid.len();
-        let mut b = StrBuilder::new(pool, var_type, rows);
-        b.reserve(pool, self.len);
-        let data = self.data.as_ref().map_or(&[][..], |d| &d.as_slice::<u8>()[..self.len]);
-        let checked = match var_type {
-            VarType::Str => self.all_text,
-            VarType::Variant => self.all_encoded,
-            VarType::Bytes => false,
-        };
-        for (row, &valid) in self.valid.iter().enumerate() {
-            let bytes = &data[self.offsets[row] as usize..self.offsets[row + 1] as usize];
-            match valid {
-                // SAFETY: every row of a text column was pushed as a str, and of a variant column as an `Encoded`.
-                true if checked => unsafe { b.push_checked(bytes) },
-                true => b.push(bytes),
-                false => b.push_null(),
-            }
-        }
-        if let Some(d) = self.data {
-            pool.give(d);
-        }
-        b.finish()
-    }
 }
 
 impl TypedBuilder {
     /// A builder for `ty`. A `datetime` reads text as `time` says, by the automatic reading where it says nothing,
     /// and a reading with no year takes it from `now`.
-    pub fn new(ty: &DataType, time: Option<&TimeSource>, now: i64) -> TypedBuilder {
+    pub fn new(ty: &DataType, time: Option<&TimeSource>, now: i64, pool: &mut BufferPool) -> TypedBuilder {
         let store = match ty {
             DataType::Bool => Store::Bool(Vec::new()),
             DataType::I64 => Store::I64(Vec::new()),
@@ -225,22 +122,22 @@ impl TypedBuilder {
                 now,
             },
             DataType::Duration => Store::Duration(Vec::new()),
-            DataType::Str => Store::Str(Texts::new()),
-            DataType::Bytes => Store::Bytes(Texts::new()),
+            DataType::Str => Store::Str(StrBuilder::growing(pool, VarType::Str)),
+            DataType::Bytes => Store::Bytes(StrBuilder::growing(pool, VarType::Bytes)),
             DataType::Array(elem) => Store::List {
                 offsets: vec![0],
                 valid: Vec::new(),
-                child: Box::new(TypedBuilder::new(elem, None, now)),
+                child: Box::new(TypedBuilder::new(elem, None, now, pool)),
             },
             DataType::Struct(fields, open) => Store::Struct {
                 fields: fields
                     .iter()
-                    .map(|(name, ty)| (name.clone(), TypedBuilder::new(ty, None, now)))
+                    .map(|(name, ty)| (name.clone(), TypedBuilder::new(ty, None, now, pool)))
                     .collect(),
-                unclaimed: Texts::new(),
+                unclaimed: StrBuilder::growing(pool, VarType::Variant),
                 open: *open,
             },
-            DataType::Variant => Store::Variant(Texts::new()),
+            DataType::Variant => Store::Variant(StrBuilder::growing(pool, VarType::Variant)),
             other => Store::Refused(other.clone()),
         };
         TypedBuilder {
@@ -275,9 +172,9 @@ impl TypedBuilder {
     /// `set`, for a scalar, text, or a container the column reads whole.
     fn put(&mut self, row: usize, cell: Cell<'_, '_>, pool: &mut BufferPool) {
         if is_empty(cell, self.blank_is_null) {
-            return self.set_null(row);
+            return self.set_null(row, pool);
         }
-        self.open_row(row);
+        self.open_row(row, pool);
         let (fits, kind) = self.write(row, cell, pool);
         self.close_row(row, fits, kind);
         if !fits {
@@ -291,19 +188,19 @@ impl TypedBuilder {
     }
 
     /// Write nothing at `row`: no kind, no count.
-    fn set_null(&mut self, row: usize) {
-        self.open_row(row);
-        self.push_null();
+    fn set_null(&mut self, row: usize, pool: &mut BufferPool) {
+        self.open_row(row, pool);
+        self.push_null(pool);
         self.last_kind = None;
     }
 
     /// Ready row `row` to be written: the row last written is taken back, and the rows before it padded.
-    fn open_row(&mut self, row: usize) {
+    fn open_row(&mut self, row: usize, pool: &mut BufferPool) {
         if row + 1 == self.filled {
             self.take_back(row);
         }
         debug_assert!(row >= self.filled, "a parser writes rows in order");
-        self.pad(row);
+        self.pad(row, pool);
     }
 
     /// Row `row` is written: whether it fit, and the kind it arrived as.
@@ -324,7 +221,7 @@ impl TypedBuilder {
 
     /// The column, `rows` long, every row not written null, and the rows whose value did not fit.
     pub fn finish(mut self, rows: usize, pool: &mut BufferPool) -> (Column, Vec<Failed>) {
-        self.pad(rows);
+        self.pad(rows, pool);
         let failed = std::mem::take(&mut self.failed);
         (self.into_column(pool), failed)
     }
@@ -377,7 +274,7 @@ impl TypedBuilder {
                     Cell::Tag(t) => tag::stringify_scalar(t),
                     Cell::Variant(b) => tag::json_text(b).into(),
                 };
-                texts.push_text(&text, pool);
+                texts.push_text_grow(pool, &text);
                 (true, arrived(cell, false, Kind::Str))
             }
             // Text reads as `parseBytes` reads it, in base64.
@@ -389,7 +286,10 @@ impl TypedBuilder {
                     Cell::Tag(Tag::Str(s)) => BytesForm::Base64.read(s.as_bytes(), &mut read).then_some(&read[..]),
                     _ => None,
                 };
-                texts.push(bytes, pool);
+                match bytes {
+                    Some(bytes) => texts.push_grow(pool, bytes),
+                    None => texts.push_null_grow(pool),
+                }
                 (bytes.is_some(), arrived(cell, false, Kind::Str))
             }
             // An array or an object the column takes apart arrives through `Slot`; anything else here does not fit.
@@ -399,14 +299,14 @@ impl TypedBuilder {
                 (false, arrived(cell, false, Kind::Array))
             }
             Store::Struct { unclaimed, .. } => {
-                unclaimed.push_null();
+                unclaimed.push_null_grow(pool);
                 (false, arrived(cell, false, Kind::Object))
             }
             Store::Variant(texts) => {
                 match cell {
-                    Cell::Variant(b) => texts.push_encoded(b, pool),
-                    Cell::Tag(t) => texts.push_encoded(tag::encoded(t).get(), pool),
-                    Cell::Text { text, .. } => texts.push_encoded(tag::encoded(&Tag::Str(text.into())).get(), pool),
+                    Cell::Variant(b) => texts.push_encoded(pool, b),
+                    Cell::Tag(t) => texts.push_encoded(pool, tag::encoded(t).get()),
+                    Cell::Text { text, .. } => texts.push_encoded(pool, tag::encoded(&Tag::Str(text.into())).get()),
                 }
                 (true, arrived(cell, false, Kind::Str))
             }
@@ -415,27 +315,27 @@ impl TypedBuilder {
     }
 
     /// Append a null row.
-    fn push_null(&mut self) {
+    fn push_null(&mut self, pool: &mut BufferPool) {
         match &mut self.store {
             Store::Bool(v) => v.push(None),
             Store::I64(v) | Store::Duration(v) | Store::DateTime { values: v, .. } => v.push(None),
             Store::F64(v) => v.push(None),
-            Store::Str(t) | Store::Bytes(t) | Store::Variant(t) => t.push_null(),
+            Store::Str(t) | Store::Bytes(t) | Store::Variant(t) => t.push_null_grow(pool),
             Store::List { offsets, valid, child } => {
                 offsets.push(child.filled as u32);
                 valid.push(false);
             }
             // A field not written on a row is null there, so the fields are padded when they are next written.
-            Store::Struct { unclaimed, .. } => unclaimed.push_null(),
+            Store::Struct { unclaimed, .. } => unclaimed.push_null_grow(pool),
             Store::Refused(_) => {}
         }
         self.filled += 1;
     }
 
     /// Null rows up to `rows`.
-    fn pad(&mut self, rows: usize) {
+    fn pad(&mut self, rows: usize, pool: &mut BufferPool) {
         while self.filled < rows {
-            self.push_null();
+            self.push_null(pool);
         }
     }
 
@@ -501,9 +401,7 @@ impl TypedBuilder {
                 }
                 c
             }
-            Store::Str(texts) => texts.finish(VarType::Str, pool),
-            Store::Bytes(texts) => texts.finish(VarType::Bytes, pool),
-            Store::Variant(texts) => texts.finish(VarType::Variant, pool),
+            Store::Str(texts) | Store::Bytes(texts) | Store::Variant(texts) => texts.finish_growing(),
             Store::List { offsets, valid, child } => {
                 let children = child.filled;
                 let (child, _) = child.finish(children, pool);
@@ -520,11 +418,14 @@ impl TypedBuilder {
                     .into_iter()
                     .map(|(name, f)| (name, f.finish(rows, pool).0))
                     .collect();
-                let unclaimed = unclaimed
-                    .valid
-                    .iter()
-                    .any(|&v| v)
-                    .then(|| unclaimed.finish(VarType::Variant, pool));
+                let unclaimed = unclaimed.finish_growing();
+                let unclaimed = match unclaimed.validity().is_some_and(|v| v.valid_count() > 0) {
+                    true => Some(unclaimed),
+                    false => {
+                        unclaimed.reclaim(pool);
+                        None
+                    }
+                };
                 Column::struct_with_unclaimed_fields(columns, unclaimed, rows)
             }
             Store::Refused(ty) => Column::empty(ty, rows),
@@ -614,7 +515,7 @@ impl Emit for Slot<'_> {
 
     fn null(&mut self) {
         match self {
-            Slot::Row(c) => c.b.set_null(c.row),
+            Slot::Row(c) => c.b.set_null(c.row, c.pool),
             Slot::Bytes(b) => b.null(),
             Slot::Skip => {}
         }
@@ -627,7 +528,7 @@ impl Emit for Slot<'_> {
                     c.state = State::List {
                         before: child.failed.len(),
                     };
-                    c.b.open_row(c.row);
+                    c.b.open_row(c.row, c.pool);
                 }
                 _ => {
                     let mut bytes = c.take_bytes();
@@ -686,7 +587,7 @@ impl Emit for Slot<'_> {
                             count: 0,
                             unclaimed: false,
                         };
-                        c.b.open_row(c.row);
+                        c.b.open_row(c.row, c.pool);
                     }
                     _ => {
                         bytes.begin_object();
@@ -755,9 +656,9 @@ impl Emit for Slot<'_> {
                         .all(|(_, f)| f.failed.last().is_none_or(|&(r, _)| r != row));
                     if *count > 0 {
                         rest.end_object(*count, repeats);
-                        unclaimed.push(Some(&rest.out), c.pool);
+                        unclaimed.push_grow(c.pool, &rest.out);
                     } else {
-                        unclaimed.push_null();
+                        unclaimed.push_null_grow(c.pool);
                     }
                     c.b.bytes = std::mem::take(&mut rest.out);
                     c.b.close_row(row, fits, Kind::Object);
@@ -923,7 +824,7 @@ pub fn build<'a, 'd: 'a>(
     now: i64,
     pool: &mut BufferPool,
 ) -> (Column, Vec<Failed>) {
-    let mut b = TypedBuilder::new(ty, None, now);
+    let mut b = TypedBuilder::new(ty, None, now, pool);
     for (row, v) in values.enumerate() {
         if let Some(v) = v {
             b.set(row, v, pool);
@@ -969,7 +870,7 @@ mod tests {
     #[test]
     fn quoted_text_coerces_and_is_tallied_as_text() {
         let mut pool = BufferPool::new();
-        let mut d = TypedBuilder::new(&DataType::I64, None, 0);
+        let mut d = TypedBuilder::new(&DataType::I64, None, 0, &mut pool);
         d.set(
             0,
             Cell::Text {
@@ -988,7 +889,7 @@ mod tests {
     #[test]
     fn a_string_column_fills_the_rows_it_skips_and_pads_the_end() {
         let mut pool = BufferPool::new();
-        let mut d = TypedBuilder::new(&DataType::Str, None, 0);
+        let mut d = TypedBuilder::new(&DataType::Str, None, 0, &mut pool);
         d.set(1, text("a"), &mut pool);
         d.set(3, text("b"), &mut pool);
         let (col, failed) = d.finish(5, &mut pool);
@@ -1004,7 +905,7 @@ mod tests {
     #[test]
     fn the_last_write_to_a_row_wins() {
         let mut pool = BufferPool::new();
-        let mut d = TypedBuilder::new(&DataType::Str, None, 0);
+        let mut d = TypedBuilder::new(&DataType::Str, None, 0, &mut pool);
         d.set(0, text("first"), &mut pool);
         d.set(0, text("second"), &mut pool);
         d.set(1, Cell::Tag(&Tag::I64(7)), &mut pool);
@@ -1022,7 +923,7 @@ mod tests {
     #[test]
     fn a_failure_is_taken_back_by_a_later_write_to_the_same_row() {
         let mut pool = BufferPool::new();
-        let mut d = TypedBuilder::new(&DataType::I64, None, 0);
+        let mut d = TypedBuilder::new(&DataType::I64, None, 0, &mut pool);
         d.set(0, text("abc"), &mut pool);
         d.set(0, text(" 42 "), &mut pool);
         d.set(1, Cell::Tag(&Tag::F64(1e300)), &mut pool);
@@ -1040,7 +941,7 @@ mod tests {
     #[test]
     fn a_float_column_widens_an_integer_and_a_bool_column_reads_text() {
         let mut pool = BufferPool::new();
-        let mut f = TypedBuilder::new(&DataType::F64, None, 0);
+        let mut f = TypedBuilder::new(&DataType::F64, None, 0, &mut pool);
         f.set(0, Cell::Tag(&Tag::I64(3)), &mut pool);
         f.set(1, text("2.5"), &mut pool);
         let (fc, failed) = f.finish(2, &mut pool);
@@ -1048,7 +949,7 @@ mod tests {
         assert_eq!(fc.f64().unwrap().values, &[3.0, 2.5]);
         fc.reclaim(&mut pool);
 
-        let mut b = TypedBuilder::new(&DataType::Bool, None, 0);
+        let mut b = TypedBuilder::new(&DataType::Bool, None, 0, &mut pool);
         b.set(0, text("true"), &mut pool);
         b.set(2, text("maybe"), &mut pool);
         let (bc, failed) = b.finish(3, &mut pool);
@@ -1203,7 +1104,7 @@ mod tests {
         let big = "x".repeat(1 << 16);
         for ty in [DataType::Str, DataType::Struct(vec![], true)] {
             let mut pool = BufferPool::with_budget(MemoryBudget::new(1 << 12));
-            let mut b = TypedBuilder::new(&ty, None, 0);
+            let mut b = TypedBuilder::new(&ty, None, 0, &mut pool);
             let tag = object_tag(vec![("k", Tag::Str(Cow::Borrowed(big.as_str())))]);
             let cell = match ty {
                 DataType::Str => text(&big),
@@ -1221,7 +1122,7 @@ mod tests {
         let inner = object_tag(vec![("x", Tag::I64(1)), ("y", Tag::I64(2))]);
         let row = object_tag(vec![("a", Tag::Array(vec![Some(inner)])), ("z", Tag::I64(3))]);
         let mut pool = BufferPool::new();
-        let mut b = TypedBuilder::new(&ty, None, 0);
+        let mut b = TypedBuilder::new(&ty, None, 0, &mut pool);
         b.set(0, Cell::Tag(&row), &mut pool);
         b.set(1, Cell::Tag(&object_tag(vec![("z", Tag::I64(4))])), &mut pool);
         let (c, failed) = b.finish(2, &mut pool);
@@ -1248,7 +1149,7 @@ mod tests {
             Some(object_tag(vec![("a", Tag::Str("x".into()))])),
         ]);
         let mut pool = BufferPool::new();
-        let mut b = TypedBuilder::new(&ty, None, 0);
+        let mut b = TypedBuilder::new(&ty, None, 0, &mut pool);
         b.set(0, Cell::Tag(&first), &mut pool);
         b.set(0, Cell::Tag(&second), &mut pool);
         b.set(1, Cell::Tag(&first), &mut pool);
