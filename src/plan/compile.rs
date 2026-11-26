@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use crate::core::batch::SLOT_LIVE;
 use crate::core::column::DataType;
 use crate::core::error::ExceptionKind;
-use crate::core::id::{FunctionId, SlotId};
+use crate::core::id::{FunctionId, SlotId, Slots};
 use crate::expr::ast::{Catch, Expr, ExprKind, Region, Site, Span, Stmt, Value};
 use crate::expr::ir::{Ir, IrKind, Layer, flatten};
 use crate::expr::parse::parse_block_shaped;
@@ -341,14 +341,14 @@ pub struct Plan {
     /// `id` rendered, because it is written as a metric label on every batch and building it there would allocate
     /// per batch on every transform thread. Compiled once, like everything else here.
     pub id_label: String,
-    pub slot_layout: Vec<DataType>,
+    pub slot_layout: Slots<DataType>,
     pub instrs: Vec<Instr>,
     /// Where each slot came from, indexed by slot: entry `s` describes slot `s`, one entry for every slot in
     /// `slot_layout`. Keeps every binding the compiler made, superseded ones and compiler temporaries alike.
     ///
     /// A compiler temporary is bound to no name. Config cannot reach it, and it is never a leaf of `tree`, so the
     /// serializer never writes it. The name it shows here is for reading the plan.
-    pub provenance: Vec<SlotOrigin>,
+    pub provenance: Slots<SlotOrigin>,
     /// Each copy that shares its value's slot under another name, which `provenance` does not see: the slot, the name,
     /// how many slots there were when it was made, and the step that made it.
     pub aliases: Vec<(SlotId, String, usize, FunctionId)>,
@@ -379,16 +379,17 @@ pub struct Plan {
 impl Plan {
     /// `slot_layout` with the tag's column and the origin's appended: the layout the runtime builds its batch with.
     /// No instruction reads or writes them.
-    pub fn delivery_layout(&self) -> Vec<DataType> {
+    pub fn delivery_layout(&self) -> Slots<DataType> {
         let mut layout = self.slot_layout.clone();
-        layout.extend([DataType::Variant, DataType::I64]);
+        layout.push(DataType::Variant);
+        layout.push(DataType::I64);
         layout
     }
 
     /// Each row's record, by its index in the batch the run began with. Written before the first step, so an
     /// `Unroll` carries it to every row it makes.
     pub fn origin_slot(&self) -> SlotId {
-        self.slot_layout.len() + 1
+        SlotId::at(self.slot_layout.len() + 1)
     }
 
     /// Each slot a field holds, by the name a row's exception cites. A copy shares its source's slot, so a slot may
@@ -419,7 +420,7 @@ impl Plan {
     /// The tag field's column: what a route's `when` reads and the serializer writes, under the route's tag field,
     /// beside the pipeline's own fields.
     pub fn tag_slot(&self) -> SlotId {
-        self.slot_layout.len()
+        self.slot_layout.next_id()
     }
 }
 
@@ -847,7 +848,7 @@ fn unread_writes(
             continue;
         }
         // Each name the value was put at, from the slot after which a write of that name replaces it.
-        let names: Vec<(&str, usize)> = std::iter::once((o.name.as_str(), slot + 1))
+        let names: Vec<(&str, usize)> = std::iter::once((o.name.as_str(), slot.index() + 1))
             .chain(
                 aliases
                     .iter()
@@ -860,6 +861,7 @@ fn unread_writes(
             .filter_map(|&(name, from)| {
                 let again = plan
                     .provenance
+                    .as_slice()
                     .get(from..)?
                     .iter()
                     .position(|later| later.name == name)?;
@@ -3878,7 +3880,7 @@ impl Compiler<'_> {
             .chain(self.syms.hidden_slots())
             .chain(clear.iter().copied())
             .collect();
-        clear.extend((0..out_slot).filter(|s| !live.contains(s)));
+        clear.extend((0..out_slot.index()).map(SlotId::at).filter(|s| !live.contains(s)));
         self.emit(
             Op::Unroll {
                 array: array_slot,
@@ -4103,7 +4105,7 @@ impl Compiler<'_> {
         self.unshare_assigned(body, None, id);
         self.unshare_assigned(next, None, id);
         let before = self.syms.bindings();
-        let first = self.syms.slot_count();
+        let first = self.syms.next_slot();
         let mut stay = None;
         let body_instrs = self.compile_isolated(|c| stay = c.trip(Some((cond, next)), body, id));
         let (acc_names, accumulators) = self.accumulators(&before, first, self.outer.len(), None);
@@ -4198,7 +4200,7 @@ impl Compiler<'_> {
                 // element's leaves from it first.
                 self.unshare_assigned(body, Some(var), id);
                 let before = self.syms.bindings();
-                let first = self.syms.slot_count();
+                let first = self.syms.next_slot();
                 let mut stay = None;
                 let body_instrs = self.compile_isolated(|c| {
                     for (slot, ir) in leaves {
@@ -4394,7 +4396,7 @@ impl Compiler<'_> {
 
     fn compile_isolated(&mut self, f: impl FnOnce(&mut Self)) -> Vec<Instr> {
         self.outer.push(std::mem::take(&mut self.instrs));
-        self.loop_firsts.push(self.syms.slot_count());
+        self.loop_firsts.push(self.syms.next_slot());
         f(self);
         self.loop_firsts.pop();
         let saved = self.outer.pop().expect("pushed above");
@@ -4741,7 +4743,7 @@ impl Compiler<'_> {
 /// offered.
 fn liveness(plan: &mut Plan) {
     let n = plan.instrs.len();
-    let mut last_read = vec![usize::MAX; plan.slot_layout.len()];
+    let mut last_read: Slots<usize> = plan.slot_layout.iter().map(|_| usize::MAX).collect();
 
     // A loop body's own slots live on the wave's batch, not this one. What the body reads from the outer batch is
     // gathered into the wave, so it is read here and is marked here.
@@ -4769,7 +4771,12 @@ fn liveness(plan: &mut Plan) {
     // preview or a capture shows none on them.
     let payload = plan.tree.leaf(crate::plan::topology::SOURCE_BYTES);
     let runtime_filled = plan.ingest_slots;
-    for slot in plan.tree.slots().into_iter().chain(0..runtime_filled) {
+    for slot in plan
+        .tree
+        .slots()
+        .into_iter()
+        .chain(plan.slot_layout.ids().take(runtime_filled))
+    {
         if Some(slot) != payload {
             last_read[slot] = n;
         }
@@ -4781,7 +4788,7 @@ fn liveness(plan: &mut Plan) {
         let out = instr.out;
         if let Op::Unroll { clear, live, .. } = &mut instr.op {
             let live = *live;
-            for (s, &lr) in last_read.iter().enumerate().take(out) {
+            for (s, &lr) in last_read.entries().take_while(|(s, _)| *s < out) {
                 if (lr <= i || lr == usize::MAX) && s != live && !clear.contains(&s) {
                     clear.push(s);
                 }
@@ -4799,8 +4806,8 @@ fn liveness(plan: &mut Plan) {
             let dead = available.remove(pos);
             plan.instrs[i].reuse = Some(dead);
         }
-        for (s, &lr) in last_read.iter().enumerate() {
-            if lr == i && !available.contains(&s) && s >= runtime_filled {
+        for (s, &lr) in last_read.entries().skip(runtime_filled) {
+            if lr == i && !available.contains(&s) {
                 available.push(s);
             }
         }
@@ -5231,7 +5238,11 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        let below = |ty: &DataType| (0..out).filter(|&s| plan.slot_layout[s] == *ty).collect::<Vec<_>>();
+        let below = |ty: &DataType| {
+            (plan.slot_layout.ids())
+                .filter(|&s| s < out && plan.slot_layout[s] == *ty)
+                .collect::<Vec<_>>()
+        };
         assert!(!below(&DataType::Duration).is_empty());
         assert!(
             below(&DataType::Duration).iter().all(|s| clear.contains(s)),
@@ -5296,8 +5307,11 @@ mod tests {
             .unwrap();
         let plan = compile(&code_pipeline("next = id + 1;"), &meta).unwrap();
         let first = crate::core::batch::PREFIX_SLOTS;
-        assert_eq!(plan.slot_layout[first..first + 2], [DataType::I64, DataType::Str]);
-        assert_eq!(plan.provenance[first].name, "id");
+        assert_eq!(
+            plan.slot_layout.as_slice()[first..first + 2],
+            [DataType::I64, DataType::Str]
+        );
+        assert_eq!(plan.provenance.as_slice()[first].name, "id");
         assert_eq!(plan.provenance[meta.source_slot(0)].name, "__source.name");
 
         let errs = compile(&code_pipeline("t = _raw;"), &meta).unwrap_err();

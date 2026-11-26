@@ -3,7 +3,7 @@
 //! in. Each system that wants a schema renders this type its own way (`io::elastic_mapping`).
 
 use crate::core::column::DataType;
-use crate::core::id::FunctionId;
+use crate::core::id::{FunctionId, Slots};
 use crate::plan::compile::Plan;
 use crate::plan::tree::{self, Node, Object};
 
@@ -21,7 +21,7 @@ pub fn record_type(plan: &Plan, tag_field: &str) -> DataType {
     meet(object_type(&root, &layout), &tag)
 }
 
-fn object_type(o: &Object, layout: &[DataType]) -> DataType {
+fn object_type(o: &Object, layout: &Slots<DataType>) -> DataType {
     let fields = o.fields.iter().map(|(key, node)| {
         let ty = match node {
             Node::Leaf(slot) => layout[*slot].clone(),
