@@ -728,7 +728,8 @@ impl Source for KafkaSource {
         let deadline = Instant::now() + timeout;
         // Records are moved out under the slot's lock and copied into the batch after it: the client thread routes
         // every record under that lock, and waits on it while the reader holds it.
-        let (mut taken, mut taken_bytes) = (Vec::new(), 0);
+        let mut taken = Vec::new();
+        let mut taken_bytes = 0;
         let slot = Arc::clone(&self.slot);
         let mut state = slot.lock();
         'poll: loop {
