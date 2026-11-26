@@ -1107,7 +1107,13 @@ enum Rest {
         filed: Vec<Arc<hec::Filed>>,
     },
     /// Its typed rows, cut as they are taken, the next cut ahead so the last one is known when it is taken.
-    Rows { rows: Box<Cutter>, next: Option<Cut> },
+    Rows { rows: RowCutter, next: Option<Cut> },
+}
+
+/// What cuts a request's typed rows.
+enum RowCutter {
+    Otlp(otlp::Export),
+    Samples(Box<prometheus::Samples>),
 }
 
 /// One row cut from a request, and what it is filed under. The rows a request files under one value share it.
@@ -1160,11 +1166,8 @@ impl Rest {
                 }
             }
             Cutter::Messages(messages) => messages.each(push),
-            mut rows @ (Cutter::Otlp(_) | Cutter::Samples(_)) => {
-                let next = rows.next_row()?;
-                let rows = Box::new(rows);
-                return Some((Rest::Rows { rows, next: Some(next) }, 0));
-            }
+            Cutter::Otlp(export) => return Rest::rows(RowCutter::Otlp(export)),
+            Cutter::Samples(samples) => return Rest::rows(RowCutter::Samples(Box::new(samples))),
         }
         if out.is_empty() {
             return None;
@@ -1177,6 +1180,12 @@ impl Rest {
         let size = out.size() + shared.map(|(_, under)| filed_size(under)).sum::<usize>();
         let rows = ChunkRows::new(out.into_chunk());
         Some((Rest::Chunk { rows, filed }, size))
+    }
+
+    /// A request of typed rows as the reader takes it. `None` when it holds no row.
+    fn rows(mut rows: RowCutter) -> Option<(Rest, usize)> {
+        let next = rows.next_row()?;
+        Some((Rest::Rows { rows, next: Some(next) }, 0))
     }
 
     /// What the next record holds once taken, with what it is filed under. A row's chunk shares that, but a reader
@@ -1220,16 +1229,15 @@ impl Rest {
     }
 }
 
-impl Cutter {
-    /// The next of its typed rows.
+impl RowCutter {
+    /// The next of its rows.
     fn next_row(&mut self) -> Option<Cut> {
         match self {
-            Cutter::Otlp(export) => export.next_record().map(|(row, filed)| Cut {
+            RowCutter::Otlp(export) => export.next_record().map(|(row, filed)| Cut {
                 row,
                 filed: Some(filed),
             }),
-            Cutter::Samples(samples) => samples.next_record().map(|row| Cut { row, filed: None }),
-            _ => unreachable!("byte records are cut on arrival"),
+            RowCutter::Samples(samples) => samples.next_record().map(|row| Cut { row, filed: None }),
         }
     }
 }
