@@ -20,7 +20,10 @@
   <h2 id="files">What the extras hold</h2>
 
   <h3>Container image</h3>
-  <p><code>smeltr-image.tar.gz</code> (x86-64), <code>smeltr-image-arm64.tar.gz</code> (Arm64)</p>
+  <p>
+    <code>smeltr-image-linux.tar.gz</code> (Linux x86-64),
+    <code>smeltr-image-linux-arm64.tar.gz</code> (Linux Arm64)
+  </p>
   <p>
     The container image, for a host that cannot reach the registry. See
     <a href="/docs/install-leader/container#archive">Load an image archive</a>.
@@ -28,7 +31,9 @@
 
   <h3>SBOM</h3>
   <p>
-    <code>smeltr-sbom.cdx.json</code> (x86-64), <code>smeltr-sbom-arm64.cdx.json</code> (Arm64),
+    <code>smeltr-sbom-linux.cdx.json</code> (Linux x86-64),
+    <code>smeltr-sbom-linux-arm64.cdx.json</code>
+    (Linux Arm64),
     <code>smeltr-sbom-windows.cdx.json</code> (Windows)
   </p>
   <p>
@@ -41,7 +46,8 @@
 
   <h3>CVE report</h3>
   <p>
-    <code>smeltr-cves.txt</code> (x86-64), <code>smeltr-cves-arm64.txt</code> (Arm64),
+    <code>smeltr-cves-linux.txt</code> (Linux x86-64), <code>smeltr-cves-linux-arm64.txt</code>
+    (Linux Arm64),
     <code>smeltr-cves-windows.txt</code> (Windows)
   </p>
   <p>
@@ -51,7 +57,10 @@
   </p>
 
   <h3>STIG report</h3>
-  <p><code>smeltr-stig.html</code> (x86-64), <code>smeltr-stig-arm64.html</code> (Arm64)</p>
+  <p>
+    <code>smeltr-stig-linux.html</code> (Linux x86-64), <code>smeltr-stig-linux-arm64.html</code> (Linux
+    Arm64)
+  </p>
   <p>
     The image checked by <a href="https://www.open-scap.org/">OpenSCAP</a> against DISA's General
     Purpose Operating System
