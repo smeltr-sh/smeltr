@@ -39,7 +39,7 @@ use rdkafka::util::Timeout;
 use regex::Regex;
 
 use crate::io::batch_wait::BatchWait;
-use crate::io::{IoError, PartitionLag, TopicPartition};
+use crate::io::{IoError, PartitionLag, SourceRecord, TopicPartition};
 use crate::plan::topology::{HeldSecrets, KafkaSourceConfig, StartPosition};
 
 use super::{
@@ -459,11 +459,6 @@ fn run(consumer: &BaseConsumer<Routes>, routes: &Routes, stop: &AtomicBool, clie
     let mut stalls_checked = Instant::now();
     // A poll failing: said once per change and on the interval, not per poll.
     let mut polling = crate::logs::Relog::default();
-    // Sources with records routed since their reader last waited, and how many records that is. A reader is woken
-    // once librdkafka holds nothing more, rather than by the first record: woken by the first, it would take a batch
-    // of a fetch's first few records, and every stage after it pays per batch.
-    let mut unwoken: Vec<Arc<Slot>> = Vec::new();
-    let mut routed = 0;
     while !stop.load(Ordering::Relaxed) {
         routes.resubscribe_if_due(consumer);
         routes.refetch_if_due(consumer);
@@ -481,46 +476,183 @@ fn run(consumer: &BaseConsumer<Routes>, routes: &Routes, stop: &AtomicBool, clie
                 clients.note_cluster(routes, cluster);
             }
         }
-        // No wait while a reader is owed a wake: what librdkafka already holds is routed first.
-        let wait = if unwoken.is_empty() {
-            CLIENT_POLL
-        } else {
-            Duration::ZERO
-        };
-        let mut record = false;
-        match consumer.poll(Timeout::from(wait)) {
-            // The timeout, or an event the client handled on the way: a rebalance, a commit's answer, an error.
-            None => {}
-            Some(Ok(msg)) => {
-                // A fetch that returned a real record proves this broker is reachable. The other proof, a completed
-                // assignment, clears from `Routes::post_rebalance`.
-                routes.clear_error();
-                // A source listed twice is woken twice, which costs nothing.
-                unwoken.extend(routes.route(&msg));
-                record = true;
-            }
-            // The client instance is unusable: every source on it says so on its next poll.
-            Some(Err(KafkaError::MessageConsumptionFatal(code))) => {
-                routes.fail(KafkaError::MessageConsumptionFatal(code));
-                std::thread::sleep(CLIENT_POLL);
-            }
-            // Any other consumption error is transient (the client reconnects underneath), or says a partition is
-            // caught up.
-            Some(Err(KafkaError::MessageConsumption(_) | KafkaError::PartitionEOF(_))) => {}
-            Some(Err(e)) => {
-                if let Some(error) = polling.fail_due(e.to_string()) {
-                    tracing::warn!(name: "poll_failed", target: "sources", group = %routes.group(), error, "a source could not read from Kafka; trying again");
+        // The first poll waits for a record; the rest take only what librdkafka already holds, up to a batch's rows,
+        // so a reader is handed a fetch's records together rather than its first few, and records arriving as fast as
+        // they are drained still reach it.
+        let mut drain = Drain::new(routes);
+        let mut wait = CLIENT_POLL;
+        let fatal = loop {
+            match consumer.poll(Timeout::from(wait)) {
+                // The timeout, or an event the client handled on the way: a rebalance, a commit's answer, an error.
+                None => break None,
+                Some(Ok(msg)) => {
+                    drain.push(&msg);
+                    if drain.rows >= crate::worker::TICK_MAX_ROWS {
+                        break None;
+                    }
+                }
+                // The client instance is unusable: every source on it says so on its next poll.
+                Some(Err(KafkaError::MessageConsumptionFatal(code))) => break Some(code),
+                // Any other consumption error is transient (the client reconnects underneath), or says a partition
+                // is caught up.
+                Some(Err(KafkaError::MessageConsumption(_) | KafkaError::PartitionEOF(_))) => {}
+                Some(Err(e)) => {
+                    if let Some(error) = polling.fail_due(e.to_string()) {
+                        tracing::warn!(name: "poll_failed", target: "sources", group = %routes.group(), error, "a source could not read from Kafka; trying again");
+                    }
                 }
             }
+            wait = Duration::ZERO;
+        };
+        for slot in drain.hand_off() {
+            slot.arrived.notify_all();
         }
-        routed += usize::from(record);
-        // Bounded at a batch's rows, so records arriving as fast as they are routed still reach their reader.
-        if !record || routed >= crate::worker::TICK_MAX_ROWS {
-            for slot in unwoken.drain(..) {
-                slot.arrived.notify_all();
+        if let Some(code) = fatal {
+            routes.fail(KafkaError::MessageConsumptionFatal(code));
+            std::thread::sleep(CLIENT_POLL);
+        }
+    }
+}
+
+/// What one consumer took off librdkafka in one pass, built into a chunk per source on the consumer's own thread. The
+/// consumers share nothing per record: a source's inbox takes a pass's records in one hand-off.
+struct Drain<'r> {
+    routes: &'r Routes,
+    /// Each topic this pass met, interned, and which of `sources` reads it: `None` for a topic no source reads.
+    topics: Vec<(Arc<str>, Option<usize>)>,
+    sources: Vec<Drained>,
+    /// Every record taken, routed or not.
+    rows: usize,
+    /// `RoutesInner::revokes` as the pass began.
+    revokes: u64,
+}
+
+/// One source's records of a pass.
+struct Drained {
+    slot: Arc<Slot>,
+    /// Whether these records were copied with their headers.
+    keep_headers: bool,
+    records: crate::io::RecordChunkBuilder,
+}
+
+impl<'r> Drain<'r> {
+    fn new(routes: &'r Routes) -> Drain<'r> {
+        Drain {
+            routes,
+            topics: Vec::new(),
+            sources: Vec::new(),
+            rows: 0,
+            revokes: routes.inner.revokes.load(Ordering::Acquire),
+        }
+    }
+
+    /// Copies `msg` into the chunk of the source reading its topic.
+    fn push(&mut self, msg: &impl Message) {
+        self.rows += 1;
+        // Read once: each read of a message's topic measures and checks the name again.
+        let topic = msg.topic();
+        let (name, at) = match self.topics.iter().find(|(t, _)| t.as_ref() == topic) {
+            Some((name, at)) => (Arc::clone(name), *at),
+            None => self.meet(topic),
+        };
+        let Some(at) = at else {
+            return;
+        };
+        let source = &mut self.sources[at];
+        source.records.push_stamped(
+            msg.payload().unwrap_or(&[]),
+            msg.offset(),
+            msg.partition(),
+            name,
+            headers_of(msg, source.keep_headers),
+            msg.timestamp().to_millis().and_then(|millis| millis.checked_mul(1000)),
+        );
+    }
+
+    /// The source reading `topic`, looked up once a pass, and its name for the topic.
+    fn meet(&mut self, topic: &str) -> (Arc<str>, Option<usize>) {
+        let found = self.routes.slot_for(topic).map(|slot| {
+            let (name, keep_headers) = {
+                let state = slot.lock();
+                (slot.intern(&state, topic), state.keep_headers)
+            };
+            let at = match self.sources.iter().position(|s| Arc::ptr_eq(&s.slot, &slot)) {
+                Some(at) => at,
+                None => {
+                    self.sources.push(Drained {
+                        slot,
+                        keep_headers,
+                        records: crate::io::RecordChunkBuilder::new(),
+                    });
+                    self.sources.len() - 1
+                }
+            };
+            (name, at)
+        });
+        let entry = match found {
+            Some((name, at)) => (name, Some(at)),
+            None => (Arc::from(topic), None),
+        };
+        self.topics.push(entry.clone());
+        entry
+    }
+
+    /// Hands each source its records. A full inbox pauses that source's partitions. Answers the sources whose reader
+    /// needs waking ([`BatchWait::arrived`]), for the caller to wake.
+    fn hand_off(self) -> Vec<Arc<Slot>> {
+        let routes = self.routes;
+        if self.rows > 0 {
+            // A fetch that returned a real record proves this broker is reachable. The other proof, a completed
+            // assignment, clears from `Routes::post_rebalance`.
+            routes.clear_error();
+        }
+        // A revoke while the pass drained took partitions some of its records came from: theirs to their new owner.
+        let revoked = routes.inner.revokes.load(Ordering::Acquire) != self.revokes;
+        let mut woken = Vec::new();
+        for Drained {
+            slot,
+            keep_headers,
+            records,
+        } in self.sources
+        {
+            if records.is_empty() {
+                continue;
             }
-            routed = 0;
+            let mut records = records.finish();
+            let mut state = slot.lock();
+            if revoked {
+                records.retain(|r| state.owned.get(&(r.topic.to_string(), r.partition)) == Some(&routes.member));
+                if records.is_empty() {
+                    continue;
+                }
+            }
+            // Headers were asked for while these were copied without them: fetched again, as those already in the
+            // inbox are (`Slot::refetch`).
+            if state.keep_headers && !keep_headers {
+                let bit = 1 << routes.member;
+                state.refetch |= bit;
+                routes.inner.refetch.fetch_or(bit, Ordering::AcqRel);
+            }
+            let (first, before) = (state.inbox.is_empty(), state.bytes);
+            let after = before + records.iter().map(SourceRecord::size).sum::<usize>();
+            state.bytes = after;
+            (state.inbox).extend(records.into_iter().map(|record| Pending {
+                member: routes.member,
+                record,
+            }));
+            let wake = state.wait.arrived(first, before, after);
+            if !state.full && state.bytes >= slot.cap {
+                state.full = true;
+                if let Err(e) = slot.sync(routes, &state) {
+                    tracing::warn!(name: "pause", target: "sources", error = %e, "could not pause a full source");
+                }
+            }
+            drop(state);
+            if wake {
+                woken.push(slot);
+            }
         }
+        woken
     }
 }
 
@@ -528,19 +660,7 @@ fn run(consumer: &BaseConsumer<Routes>, routes: &Routes, stop: &AtomicBool, clie
 pub(super) struct Pending {
     /// The consumer that fetched it.
     pub(super) member: usize,
-    pub(super) raw: Vec<u8>,
-    pub(super) offset: i64,
-    pub(super) partition: i32,
-    pub(super) topic: Arc<str>,
-    pub(super) headers: Option<Vec<(String, Vec<u8>)>>,
-    pub(super) timestamp: Option<i64>,
-}
-
-impl Pending {
-    /// What `SourceRecord::size` counts of it.
-    pub(super) fn size(&self) -> usize {
-        self.raw.len() + crate::io::headers_size(&self.headers)
-    }
+    pub(super) record: SourceRecord,
 }
 
 /// One source on a client: its topics, where it places a fresh partition, and what it holds between the client
@@ -570,7 +690,7 @@ pub(super) struct Slot {
 pub(super) struct SlotState {
     /// Records routed here and not read yet, oldest first.
     pub(super) inbox: VecDeque<Pending>,
-    /// What `inbox` holds, as `Pending::size` counts it.
+    /// What `inbox` holds, as `SourceRecord::size` counts it.
     bytes: usize,
     /// When the reader hands `inbox` over.
     wait: BatchWait,
@@ -730,7 +850,7 @@ impl Slot {
     /// again.
     pub(super) fn take(&self, routes: &Routes, state: &mut SlotState) -> Option<Pending> {
         let p = state.inbox.pop_front()?;
-        state.bytes -= p.size();
+        state.bytes -= p.record.size();
         if state.full && state.bytes <= self.cap / 2 {
             state.full = false;
             if let Err(e) = self.sync(routes, state) {
@@ -747,7 +867,7 @@ impl Slot {
     /// one whose seek fails, its records read as they were copied. Only the partitions `routes`' consumer owns.
     fn refetch(&self, routes: &Routes, consumer: &BaseConsumer<Routes>, state: &mut SlotState) {
         let mut oldest: HashMap<(Arc<str>, i32), i64> = HashMap::new();
-        for r in &state.inbox {
+        for Pending { record: r, .. } in &state.inbox {
             let key = (r.topic.to_string(), r.partition);
             if state.owned.get(&key) == Some(&routes.member)
                 && !state.unplaced.contains(&key)
@@ -781,8 +901,8 @@ impl Slot {
         };
         state
             .inbox
-            .retain(|r| !sought.contains(&(r.topic.to_string(), r.partition)));
-        state.bytes = state.inbox.iter().map(Pending::size).sum();
+            .retain(|p| !sought.contains(&(p.record.topic.to_string(), p.record.partition)));
+        state.bytes = state.inbox.iter().map(|p| p.record.size()).sum();
         if state.full && state.bytes <= self.cap / 2 {
             state.full = false;
             if let Err(e) = self.sync(routes, state) {
@@ -828,6 +948,9 @@ struct RoutesInner {
     cluster: OnceLock<String>,
     /// The consumers some source waits on to fetch its inbox again (`SlotState::refetch`), one bit per member.
     refetch: AtomicU64,
+    /// How many revokes the client's consumers have been told of: a pass that saw it move filters what it drained
+    /// (`Drain::hand_off`).
+    revokes: AtomicU64,
     /// Whether the client fetches: from the start with one consumer, and with several once they have all joined
     /// (`Routes::release_if_joined`).
     joined: AtomicBool,
@@ -1192,37 +1315,6 @@ impl Routes {
         }
     }
 
-    /// Hands `msg` to the inbox of the source reading its topic. A full inbox pauses that source's partitions.
-    /// Answers the source when its reader needs waking ([`BatchWait::arrived`]), for the caller to wake.
-    fn route(&self, msg: &impl Message) -> Option<Arc<Slot>> {
-        // Read once: each read of a message's topic measures and checks the name again.
-        let topic = msg.topic();
-        let slot = self.slot_for(topic)?;
-        let mut state = slot.lock();
-        let record = Pending {
-            member: self.member,
-            raw: msg.payload().unwrap_or(&[]).to_vec(),
-            offset: msg.offset(),
-            partition: msg.partition(),
-            topic: slot.intern(&state, topic),
-            headers: headers_of(msg, state.keep_headers),
-            timestamp: msg.timestamp().to_millis(),
-        };
-        let (first, before) = (state.inbox.is_empty(), state.bytes);
-        let after = before + record.size();
-        state.bytes = after;
-        state.inbox.push_back(record);
-        let wake = state.wait.arrived(first, before, after);
-        if !state.full && state.bytes >= slot.cap {
-            state.full = true;
-            if let Err(e) = slot.sync(self, &state) {
-                tracing::warn!(name: "pause", target: "sources", error = %e, "could not pause a full source");
-            }
-        }
-        drop(state);
-        wake.then_some(slot)
-    }
-
     /// The client is unusable.
     fn fail(&self, error: KafkaError) {
         for slot in self.slots() {
@@ -1419,6 +1511,7 @@ impl ConsumerContext for Routes {
         let Rebalance::Revoke(tpl) = rebalance else {
             return;
         };
+        self.inner.revokes.fetch_add(1, Ordering::AcqRel);
         for e in tpl.elements() {
             let Some(slot) = self.slot_for(e.topic()) else {
                 continue;
@@ -1428,7 +1521,7 @@ impl ConsumerContext for Routes {
             let before = state.inbox.len();
             state
                 .inbox
-                .retain(|r| !(r.member == self.member && r.partition == key.1 && r.topic.as_ref() == key.0.as_str()));
+                .retain(|p| !(p.member == self.member && p.record.partition == key.1 && *p.record.topic == *key.0));
             // A lost assignment can be told after the group has handed the partition to another of the client's
             // consumers, whose ownership goes on.
             let mine = state.owned.get(&key) == Some(&self.member);
@@ -1439,7 +1532,7 @@ impl ConsumerContext for Routes {
                 state.tags.remove(&key);
             }
             if state.inbox.len() != before {
-                state.bytes = state.inbox.iter().map(Pending::size).sum();
+                state.bytes = state.inbox.iter().map(|p| p.record.size()).sum();
                 // Drained by the revoke rather than by its reader, which may now have nothing to take.
                 if state.full && state.bytes <= slot.cap / 2 {
                     state.full = false;
@@ -1940,37 +2033,78 @@ mod tests {
         assert_eq!(b.lock().commit_results, vec![Ok(()), refused(), Ok(())]);
     }
 
-    /// The first record into an empty inbox wakes its reader, and so does the one that makes it a batch's worth; until
-    /// then the reader waits for more.
+    /// A message of `bytes` at `offset` of partition `partition` of topic `a`.
+    fn message(partition: i32, offset: i64, bytes: usize) -> rdkafka::message::OwnedMessage {
+        rdkafka::message::OwnedMessage::new(
+            Some(vec![b'x'; bytes]),
+            None,
+            "a".into(),
+            rdkafka::Timestamp::NotAvailable,
+            partition,
+            offset,
+            None,
+        )
+    }
+
+    /// What a pass drained of a partition the group revoked before it handed off is the partition's new owner's: the
+    /// hand-off drops it and keeps the rest.
     #[test]
-    fn the_first_record_and_a_batchs_worth_wake_the_reader() {
+    fn a_revoke_during_a_pass_drops_what_it_drained_of_that_partition() {
         let routes = Routes::default();
         let slot = Arc::new(Slot::new(&config(&["a"]), 0));
         routes.attach(&slot);
-        let record = |offset, bytes| {
-            let payload = Some(vec![b'x'; bytes]);
-            rdkafka::message::OwnedMessage::new(
-                payload,
-                None,
-                "a".into(),
-                rdkafka::Timestamp::NotAvailable,
-                0,
-                offset,
-                None,
-            )
-        };
+        for partition in 0..2 {
+            slot.lock().owned.insert(("a".to_string(), partition), routes.member);
+        }
+        let mut drain = Drain::new(&routes);
+        drain.push(&message(0, 7, 1));
+        drain.push(&message(1, 7, 1));
+        // What `pre_rebalance` does for a revoke of partition 1, which runs inside the pass's polls.
+        routes.inner.revokes.fetch_add(1, Ordering::AcqRel);
+        slot.lock().owned.remove(&("a".to_string(), 1));
+        drain.hand_off();
 
-        assert!(routes.route(&record(0, 100)).is_some(), "the first record");
-        assert!(
-            routes.route(&record(1, 100)).is_none(),
-            "one more, short of a batch's worth"
-        );
+        let state = slot.lock();
+        let kept: Vec<i32> = state.inbox.iter().map(|p| p.record.partition).collect();
+        assert_eq!(kept, vec![0]);
+        assert_eq!(state.bytes, 1, "the inbox counts only what it kept");
+    }
+
+    /// Headers asked for while a pass copied records without them: the consumer fetches those again, as it does the
+    /// inbox's (`Slot::refetch`), and the reader takes nothing until it has.
+    #[test]
+    fn records_drained_without_headers_asked_for_meanwhile_are_fetched_again() {
+        let routes = Routes::default();
+        let slot = Arc::new(Slot::new(&config(&["a"]), 0));
+        routes.attach(&slot);
+        let mut drain = Drain::new(&routes);
+        drain.push(&message(0, 7, 1));
+        slot.lock().keep_headers = true;
+        drain.hand_off();
+
+        assert_eq!(slot.lock().refetch, 1 << routes.member);
+        assert_eq!(routes.inner.refetch.load(Ordering::Acquire), 1 << routes.member);
+    }
+
+    /// The first records into an empty inbox wake its reader, and so do those that make it a batch's worth; until
+    /// then the reader waits for more.
+    #[test]
+    fn the_first_records_and_a_batchs_worth_wake_the_reader() {
+        let routes = Routes::default();
+        let slot = Arc::new(Slot::new(&config(&["a"]), 0));
+        routes.attach(&slot);
+        let record = |offset, bytes| message(0, offset, bytes);
+
+        let pass = |records: &[rdkafka::message::OwnedMessage]| {
+            let mut drain = Drain::new(&routes);
+            records.iter().for_each(|r| drain.push(r));
+            !drain.hand_off().is_empty()
+        };
+        assert!(pass(&[record(0, 100), record(1, 100)]), "the first records");
+        assert!(!pass(&[record(2, 100)]), "one more, short of a batch's worth");
         assert!(slot.lock().wait_left() > Duration::ZERO, "the reader waits for more");
         let worth = crate::worker::LEAST_BATCH_BYTES;
-        assert!(
-            routes.route(&record(2, worth)).is_some(),
-            "the record that makes a batch's worth"
-        );
+        assert!(pass(&[record(3, worth)]), "the record that makes a batch's worth");
         assert_eq!(slot.lock().wait_left(), Duration::ZERO, "the reader takes it at once");
     }
 
