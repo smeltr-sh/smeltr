@@ -450,13 +450,15 @@ impl Pacing {
         self.app_limited = (self.delivered + self.inflight).max(1);
     }
 
-    /// A batch of `bytes` was handed to the destination at `now`: OnTransmit and OnPacketSent. The answer goes back
-    /// with its [`Completion`].
-    pub fn dispatched(&mut self, bytes: usize, now: Instant) -> Sent {
+    /// A batch of `bytes` whose handoff to the destination began at `began` and ended at `now`: OnTransmit and
+    /// OnPacketSent. The answer goes back with its [`Completion`].
+    pub fn dispatched(&mut self, bytes: usize, began: Instant, now: Instant) -> Sent {
         self.handle_restart_from_idle(now);
         let bytes = bytes as u64;
-        let send_time = self.next_send_time.max(now);
-        self.next_send_time = send_time + Duration::from_secs_f64(bytes as f64 / self.pacing_rate.max(1.0));
+        // The batch departs when its handoff begins, so the handoff is spent from its own pacing delay.
+        let departed = self.next_send_time.max(began);
+        self.next_send_time = departed + Duration::from_secs_f64(bytes as f64 / self.pacing_rate.max(1.0));
+        let send_time = departed.max(now);
         if self.inflight == 0 {
             self.first_send_time = send_time;
             self.delivered_time = send_time;
@@ -1165,11 +1167,12 @@ impl Pacer {
         self.model.check_app_limited(nothing_to_send);
     }
 
-    /// A batch of `bytes` handed to the destination: what the model is told when it is acknowledged.
-    pub(super) fn dispatched(&mut self, bytes: usize) -> Completion {
+    /// A batch of `bytes` handed to the destination in a handoff that began at `began`: what the model is told when it
+    /// is acknowledged.
+    pub(super) fn dispatched(&mut self, bytes: usize, began: Instant) -> Completion {
         Completion {
             bytes,
-            sent: self.model.dispatched(bytes, Instant::now()),
+            sent: self.model.dispatched(bytes, began, Instant::now()),
             throttled: false,
         }
     }
@@ -1248,6 +1251,7 @@ mod tests {
     /// besides, and each acknowledgment seen up to `late` after it lands (cycling through that span), as an egress
     /// thread that polls between pops sees it. The source has a batch whenever asked, or offers `offered` bytes a
     /// second. A destination with a `limit` asks to be sent less for each batch sent while more than that was out.
+    /// Handing a batch over takes `handoff`, which the egress thread spends before it can send the next.
     #[derive(Clone, Copy)]
     struct Path {
         capacity: f64,
@@ -1255,6 +1259,7 @@ mod tests {
         late: Duration,
         offered: Option<f64>,
         limit: Option<u64>,
+        handoff: Duration,
     }
 
     impl Path {
@@ -1265,6 +1270,7 @@ mod tests {
                 late: Duration::ZERO,
                 offered: None,
                 limit: None,
+                handoff: Duration::ZERO,
             }
         }
     }
@@ -1335,7 +1341,9 @@ mod tests {
 
         fn send(&mut self) {
             let held = self.p.inflight;
-            let sent = self.p.dispatched(BATCH, self.now);
+            let began = self.now;
+            self.now += self.path.handoff;
+            let sent = self.p.dispatched(BATCH, began, self.now);
             let throttled = self.path.limit.is_some_and(|l| held + BATCH as u64 > l);
             self.link_free = self.link_free.max(self.now) + Duration::from_secs_f64(BATCH as f64 / self.path.capacity);
             let span = self.path.late.as_micros() as u64;
@@ -1582,13 +1590,50 @@ mod tests {
         assert!(carried > 0.8 * GIB, "found the wider link: {carried}");
     }
 
+    /// The pacing delay runs from when a handoff begins, so a handoff shorter than a batch's time on the link costs
+    /// nothing.
+    #[test]
+    fn a_handoff_shorter_than_the_pacing_delay_does_not_slow_the_flow() {
+        let path = Path {
+            handoff: Duration::from_millis(2),
+            ..Path::new(GIB, Duration::from_millis(20))
+        };
+        let mut s = Sim::new(BATCH, 1024 * MIB, path);
+        s.run_to(8.0);
+        let carried = s.throughput(4.0, 8.0) / GIB;
+        assert!(carried > 0.9, "{carried:.2} GiB/s");
+    }
+
+    /// When the link narrows, the batches a destination asks to be sent less are the loss that brings the model down
+    /// to it: the measured rate falls to the new link and the window back toward its product.
+    #[test]
+    fn a_narrowed_link_brings_the_model_down_through_its_destination_s_limit() {
+        let path = Path {
+            limit: Some(32 * BATCH as u64),
+            ..Path::new(GIB, Duration::from_millis(20))
+        };
+        let mut s = Sim::new(BATCH, 2048 * MIB, path);
+        s.run_to(5.0);
+        s.path.capacity = 0.1 * GIB;
+        s.run_to(120.0);
+        let rate = s.p.rate() / GIB;
+        assert!(rate < 0.15, "the rate falls to the link: {rate:.2} GiB/s");
+        assert!(
+            s.p.target() <= 16 * BATCH,
+            "the window comes back down: {} MiB",
+            s.p.target() / MIB
+        );
+        let carried = s.throughput(60.0, 120.0) / GIB;
+        assert!(carried > 0.09, "the link stays full: {carried:.3} GiB/s");
+    }
+
     #[test]
     fn sends_are_spaced_at_the_pacing_rate() {
         let mut s = Sim::new(BATCH, 1024 * MIB, Path::new(GIB, Duration::from_millis(20)));
         s.run_to(4.0);
         let before = s.p.next_send_time;
         let rate = s.p.pacing_rate;
-        s.p.dispatched(BATCH, before);
+        s.p.dispatched(BATCH, before, before);
         let gap = s.p.next_send_time.duration_since(before).as_secs_f64();
         assert!(
             (gap - BATCH as f64 / rate).abs() < 1e-6,
@@ -1604,7 +1649,7 @@ mod tests {
     fn a_failed_batch_is_lost_not_in_flight_and_what_landed_counts_delivered() {
         let now = Instant::now();
         let mut p = Pacing::seeded(BATCH, 1024 * MIB, now, 7);
-        let sent = p.dispatched(BATCH, now);
+        let sent = p.dispatched(BATCH, now, now);
         assert_eq!(p.inflight, BATCH as u64);
         let c = Completion {
             bytes: BATCH,

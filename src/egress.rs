@@ -721,6 +721,7 @@ fn run(
             let local = next_local;
             next_local += 1;
             // Borrowed: the unit is kept until acknowledged, to send again or to hand a refused row back.
+            let began = Instant::now();
             let delivered = destination.deliver(local, Cow::Borrowed(&unit.rows));
             tracing::trace!(
                 name: "delivered", target: "destinations",
@@ -740,7 +741,10 @@ fn run(
             // Once the destination has taken it: a Kafka producer at its bound holds `deliver` until it has room,
             // and that wait is this side's, not the link's round trip. A batch it did not take was never in flight.
             let taken = matches!(delivered, Ok((Dispatched::Complete | Dispatched::InFlight, _)));
-            let paced = pacer.as_mut().filter(|_| taken).map(|p| p.dispatched(unit.bytes));
+            let paced = pacer
+                .as_mut()
+                .filter(|_| taken)
+                .map(|p| p.dispatched(unit.bytes, began));
             match delivered {
                 Err(e) => {
                     note_stall(metrics, id, name, &e, &mut stalled);
@@ -883,7 +887,7 @@ fn run(
         note_concurrency(metrics, id, destination.concurrency(), &mut reported);
         note_open(metrics, id, destination.open_bytes(), &mut open_reported);
         if queue.holds_refusals.load(Ordering::Relaxed) {
-            note_kept(metrics, id, &owner, &again, &mut kept_reported);
+            note_kept(metrics, id, &owner, &again, gated.as_ref(), &mut kept_reported);
         }
         if let Some(captures) = queue.captures.get() {
             let keeps = kept_reported.is_some_and(|kept| kept > 0);
@@ -895,7 +899,8 @@ fn run(
                 let units = again
                     .iter_mut()
                     .map(|(_, u)| u)
-                    .chain(owner.values_mut().map(|o| &mut o.unit));
+                    .chain(owner.values_mut().map(|o| &mut o.unit))
+                    .chain(gated.as_mut());
                 show_held(captures, name, units);
             } else {
                 holding = None;
@@ -1184,13 +1189,15 @@ fn note_open(metrics: &MetricsHandle, id: DestId, now: Option<usize>, reported: 
     );
 }
 
-/// Publish how many rows the destination refused and keeps, wherever each is: waiting to be sent again, or sent. The
-/// leader reads it to know which workers a capture at this destination has held rows to wait for.
+/// Publish how many rows the destination refused and keeps, wherever each is: waiting to be sent again, held back by
+/// the pacing model, or sent. The leader reads it to know which workers a capture at this destination has held rows
+/// to wait for.
 fn note_kept(
     metrics: &MetricsHandle,
     id: DestId,
     owner: &HashMap<BatchId, Owed>,
     again: &[(Instant, Unit)],
+    gated: Option<&Unit>,
     reported: &mut Option<u64>,
 ) {
     // A DLQ's carrier stands for its riders too: each is a row of its own.
@@ -1198,7 +1205,13 @@ fn note_kept(
         Some(_) => u.rows.iter().map(OwnedRecord::rows).sum(),
         None => 0,
     };
-    let kept = again.iter().map(|(_, u)| held(u)).sum::<u64>() + owner.values().map(|o| held(&o.unit)).sum::<u64>();
+    let kept = again
+        .iter()
+        .map(|(_, u)| u)
+        .chain(owner.values().map(|o| &o.unit))
+        .chain(gated)
+        .map(held)
+        .sum::<u64>();
     if *reported == Some(kept) {
         return;
     }
