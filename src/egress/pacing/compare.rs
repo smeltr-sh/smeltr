@@ -733,3 +733,80 @@ fn compare_the_two_models() {
         );
     }
 }
+
+#[test]
+#[ignore = "a trace, not a check"]
+fn trace_a_capacity_drop() {
+    let path = Path {
+        capacity: vec![(0.0, GIB), (30.0, 0.1 * GIB)],
+        ..Path::new(GIB, 20)
+    };
+    let mut s = Sim::new(path, vec![(new_model(), Source::Backlogged)]);
+    let mut t = 28.0;
+    while t < 60.0 {
+        s.run_to(t);
+        let p = &s.flows[0].model.0;
+        println!(
+            "t {t:>5.1}  state {:?}  max_bw {:.0} MiB/s  bw {:.0}  min_rtt {:?}  cwnd {:.0} MiB  inflight {:.0} MiB  extra_acked {:.0} MiB  cycle {}",
+            p.state,
+            mib(p.max_bw),
+            mib(p.bw),
+            p.min_rtt,
+            mib(p.cwnd),
+            mib(p.inflight as f64),
+            mib(p.extra_acked),
+            p.cycle_count
+        );
+        t += 1.0;
+    }
+}
+
+/// Sweeps how far capacity drops, and whether the bottleneck's buffer is deep enough never to drop, to find where the
+/// segment-reading model's queue stops draining after a drop with no loss.
+#[test]
+#[ignore = "a sweep for a person to read: cargo nextest run --lib egress::pacing::compare --run-ignored only --no-capture"]
+fn sweep_a_capacity_drop() {
+    for (ceiling, buffer) in [
+        (CEILING, None),
+        (64 * MIB, None),
+        (CEILING, Some(64.0 * MIB as f64)),
+        (CEILING, Some(16.0 * MIB as f64)),
+    ] {
+        for after in [0.5, 0.33, 0.2, 0.1] {
+            let path = || Path {
+                capacity: vec![(0.0, GIB), (30.0, after * GIB)],
+                buffer,
+                ..Path::new(GIB, 20)
+            };
+            let mut new = Sim::new(
+                path(),
+                vec![(
+                    New(Pacing::seeded(BATCH, ceiling, Instant::now(), 7)),
+                    Source::Backlogged,
+                )],
+            );
+            let mut old = Sim::new(
+                path(),
+                vec![(Old(old::Pacing::new(BATCH, ceiling)), Source::Backlogged)],
+            );
+            new.run_to(60.0);
+            old.run_to(60.0);
+            let p = &new.flows[0].model.0;
+            println!(
+                "ceiling {:>4} MiB buffer {:>8}  drop to {after:.2}  before bbr {:>5.0} main {:>5.0}  bbr: {:>5.0} MiB/s queued {:>5.0} MiB p99 {:>6.0} ms max_bw {:>5.0} cycle {:>3}   main: {:>5.0} MiB/s queued {:>4.0} MiB p99 {:>5.0} ms",
+                ceiling / MIB,
+                buffer.map_or("none".to_string(), |b| format!("{:.0} MiB", b / MIB as f64)),
+                mib(new.throughput(None, 10.0, 30.0)),
+                mib(old.throughput(None, 10.0, 30.0)),
+                mib(new.throughput(None, 45.0, 60.0)),
+                mib(new.queued(45.0, 60.0)),
+                new.latency(45.0, 60.0).1,
+                mib(p.max_bw),
+                p.cycle_count,
+                mib(old.throughput(None, 45.0, 60.0)),
+                mib(old.queued(45.0, 60.0)),
+                old.latency(45.0, 60.0).1,
+            );
+        }
+    }
+}
