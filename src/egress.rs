@@ -895,7 +895,7 @@ fn run(
                     if behind {
                         behind_at = Instant::now();
                     }
-                    if pressed && busy.busy() {
+                    if pressed {
                         start_copy(queue, returns, metrics, (id, name));
                     }
                     Some(u)
