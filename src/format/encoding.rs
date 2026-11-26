@@ -106,7 +106,7 @@ fn decode_auto(bytes: &[u8]) -> Decoded<'_> {
     }
     // ASCII text in UTF-16 is also valid UTF-8 -- every other byte is NUL -- so validity alone does not settle it. A
     // NUL does not occur in text, so a record without one that validates is UTF-8, decided.
-    let utf8 = std::str::from_utf8(bytes);
+    let utf8 = simdutf8::basic::from_utf8(bytes);
     if let Ok(text) = utf8
         && !bytes.contains(&0)
     {

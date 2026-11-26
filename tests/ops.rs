@@ -1070,7 +1070,7 @@ fn coalesce_and_ternary_meet_a_struct_field_as_its_columns_hold_it() {
     let rows = |c: &Column| -> Vec<Option<Vec<u8>>> {
         let v = c.variant().expect("the field meets as a variant");
         (0..c.len())
-            .map(|i| v.validity.is_valid(i).then(|| v.get(i).to_vec()))
+            .map(|i| v.validity.is_valid(i).then(|| v.get(i).bytes().to_vec()))
             .collect()
     };
     assert_eq!(coalesced.data_type(), selected.data_type());

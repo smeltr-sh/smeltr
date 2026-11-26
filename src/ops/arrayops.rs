@@ -28,16 +28,16 @@ pub fn array_length(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 pub fn str_split(ctx: &mut Ctx, ins: &[&Column]) -> Column {
     let len = ins[0].len();
     let _out_ty = DataType::Array(Box::new(DataType::Str));
-    let v = ins[0].var().unwrap();
-    let d = side::var(ins[1]).unwrap();
-    let mut rows = ListRows::new(ctx, &v, len);
+    let v = ins[0].str().unwrap();
+    let d = side::str(ins[1]).unwrap();
+    let mut rows = ListRows::new(ctx, v.rows(), len);
     for i in 0..len {
-        if !v.validity.is_valid(i) || !d.is_valid(i) {
+        if !v.rows().validity.is_valid(i) || !d.is_valid(i) {
             rows.null_row();
             continue;
         }
-        let text = row_text(v.get(i));
-        let delim = row_text(d.at(i));
+        let text = v.get(i);
+        let delim = d.get(i);
         if delim.is_empty() {
             rows.row(text, |t| {
                 t.char_indices().map(|(at, c)| Some(&t[at..at + c.len_utf8()]))
@@ -52,16 +52,16 @@ pub fn str_split(ctx: &mut Ctx, ins: &[&Column]) -> Column {
 /// `split(value, /pattern/)`: a piece between every match.
 pub fn regex_split(ctx: &mut Ctx, value: &Column, pattern: &CompiledPattern) -> Column {
     let len = value.len();
-    let Ok(v) = value.var() else {
+    let Ok(v) = value.str() else {
         return Column::empty(DataType::Array(Box::new(DataType::Str)), len);
     };
-    let mut rows = ListRows::new(ctx, &v, len);
+    let mut rows = ListRows::new(ctx, v.rows(), len);
     for i in 0..len {
-        if !v.validity.is_valid(i) {
+        if !v.rows().validity.is_valid(i) {
             rows.null_row();
             continue;
         }
-        let text = row_text(v.get(i));
+        let text = v.get(i);
         rows.row(text, |t| pattern.regex.split(t).map(Some));
     }
     rows.finish(ctx)
@@ -71,18 +71,18 @@ pub fn regex_split(ctx: &mut Ctx, value: &Column, pattern: &CompiledPattern) -> 
 /// element, and a null row when nothing matches.
 pub fn regex_match(ctx: &mut Ctx, value: &Column, pattern: &CompiledPattern) -> Column {
     let len = value.len();
-    let Ok(v) = value.var() else {
+    let Ok(v) = value.str() else {
         return Column::empty(DataType::Array(Box::new(DataType::Str)), len);
     };
     // One set of capture slots for the batch, not one per row.
     let mut locs = pattern.regex.capture_locations();
-    let mut rows = ListRows::new(ctx, &v, len);
+    let mut rows = ListRows::new(ctx, v.rows(), len);
     for i in 0..len {
-        if !v.validity.is_valid(i) {
+        if !v.rows().validity.is_valid(i) {
             rows.null_row();
             continue;
         }
-        let text = row_text(v.get(i));
+        let text = v.get(i);
         if pattern.regex.captures_read(&mut locs, text).is_none() {
             rows.null_row();
             continue;
@@ -90,12 +90,6 @@ pub fn regex_match(ctx: &mut Ctx, value: &Column, pattern: &CompiledPattern) -> 
         rows.row(text, |t| (0..locs.len()).map(|g| locs.get(g).map(|(s, e)| &t[s..e])));
     }
     rows.finish(ctx)
-}
-
-/// A `Str` row as the text it is.
-fn row_text(bytes: &[u8]) -> &str {
-    // SAFETY: a `Str` column holds valid UTF-8 by the columnar model's invariant.
-    unsafe { std::str::from_utf8_unchecked(bytes) }
 }
 
 /// Builds an `Array(Str)` column one row at a time from pieces of the input column's rows. The piece count is only
@@ -756,17 +750,17 @@ fn build_var<'a>(pool: &mut BufferPool, var_type: VarType, pieces: &[Piece<'a>],
     let mut total_bytes = 0usize;
     for piece in pieces {
         let (src, at) = piece.source();
-        if let Some(v) = src.and_then(|c| readers.of(c, |c| c.varlen().ok())) {
-            total_bytes += (v.offsets[at.end] - v.offsets[at.start]) as usize;
+        if let Some(v) = src.and_then(|c| readers.of(c, |c| c.sealed_rows().ok())) {
+            total_bytes += at.map(|i| v.rows.row_len(i)).sum::<usize>();
         }
     }
     b.reserve(pool, total_bytes);
     for piece in pieces {
         let (src, at) = piece.source();
-        let v = src.and_then(|c| readers.of(c, |c| c.varlen().ok()));
+        let v = src.and_then(|c| readers.of(c, |c| c.sealed_rows().ok()));
         for i in at {
             match v {
-                Some(v) if v.validity.is_valid(i) => b.push(v.get(i)),
+                Some(v) if v.rows.validity.is_valid(i) => b.push_row(v, i),
                 _ => b.push_null(),
             }
         }
