@@ -148,7 +148,8 @@ mod tests {
         assert!(errors.is_empty(), "a wide row still parses");
         let written = [SLOT_RAW, fields[0].slot, fields[1].slot];
         assert!(
-            (0..plan.slot_layout.len())
+            plan.slot_layout
+                .ids()
                 .filter(|s| !written.contains(s))
                 .all(|s| batch.peek(s).is_unbound()),
             "nothing else is written"
