@@ -637,6 +637,109 @@ fn gather_with_no_indices_yields_a_zero_row_column() {
     g.reclaim(&mut p);
 }
 
+// --- gather_from --------------------------------------------------------
+
+/// An `I64` column of `values`, each valid.
+fn ints(p: &mut BufferPool, values: &[i64]) -> Column {
+    let mut c = Column::alloc(p, &DataType::I64, values.len());
+    c.i64_mut().unwrap().values.copy_from_slice(values);
+    c
+}
+
+/// A `Str` column of `values`.
+fn texts(p: &mut BufferPool, values: &[Option<&str>]) -> Column {
+    let mut b = StrBuilder::new(p, VarType::Str, values.len());
+    b.reserve(p, values.iter().flatten().map(|v| v.len()).sum());
+    for value in values {
+        match value {
+            Some(v) => b.push(v.as_bytes()),
+            None => b.push_null(),
+        }
+    }
+    b.finish()
+}
+
+#[test]
+fn gather_from_takes_each_picks_rows_in_turn() {
+    let mut p = pool();
+    let (a, b) = (ints(&mut p, &[10, 20, 30]), ints(&mut p, &[40, 50]));
+    let g = Column::gather_from(&mut p, &[(&a, &[2, 0]), (&b, &[1]), (&a, &[1])]);
+    assert_eq!(g.i64().unwrap().values, &[30, 10, 50, 20]);
+    assert!(!g.has_nulls());
+
+    let (s, t) = (texts(&mut p, &[Some("apple"), None]), texts(&mut p, &[Some("cherry")]));
+    let h = Column::gather_from(&mut p, &[(&t, &[0]), (&s, &[1, 0])]);
+    let v = h.var().unwrap();
+    assert_eq!(v.get(0), b"cherry");
+    assert!(!v.validity.is_valid(1));
+    assert_eq!(v.get(2), b"apple");
+    [a, b, g, s, t, h].into_iter().for_each(|c| c.reclaim(&mut p));
+}
+
+#[test]
+fn gather_from_gives_nulls_for_a_pick_that_holds_no_values() {
+    let mut p = pool();
+    let none = Column::empty(DataType::I64, 4);
+    let some = ints(&mut p, &[7, 8]);
+    let g = Column::gather_from(&mut p, &[(&none, &[3, 0]), (&some, &[1])]);
+    let f = g.i64().unwrap();
+    assert!(!f.validity.is_valid(0) && !f.validity.is_valid(1));
+    assert_eq!(f.values[2], 8);
+    assert_eq!(f.validity.valid_count(), 1);
+
+    let all = Column::gather_from(&mut p, &[(&none, &[0]), (&none, &[1, 2])]);
+    assert!(all.is_unbound());
+    assert_eq!((all.data_type(), all.len()), (DataType::I64, 3));
+    [none, some, g, all].into_iter().for_each(|c| c.reclaim(&mut p));
+}
+
+#[test]
+fn gather_from_reads_a_constant_as_its_rows_beside_other_values() {
+    let mut p = pool();
+    let constant = Column::constant(Scalar::I64(5), 3);
+    let rows = ints(&mut p, &[1, 2]);
+    let g = Column::gather_from(&mut p, &[(&constant, &[2, 0]), (&rows, &[1])]);
+    assert_eq!(g.i64().unwrap().values, &[5, 5, 2]);
+
+    let same = Column::gather_from(&mut p, &[(&constant, &[0]), (&constant, &[1, 2])]);
+    assert_eq!(same.constant_value(), Some(&Scalar::I64(5)));
+    assert_eq!(same.len(), 3);
+    [constant, rows, g, same].into_iter().for_each(|c| c.reclaim(&mut p));
+}
+
+#[test]
+fn gather_from_joins_lists_and_structs_of_several_picks() {
+    let mut p = pool();
+    // [ [1,2], [3] ] and [ [4,5,6] ], gathered as the second column's row 0, then the first's row 0.
+    let list = |p: &mut BufferPool, child: &[i64], offsets: &[u32]| {
+        let child = ints(p, child);
+        let mut buf = p.take(offsets.len() * 4);
+        buf.as_mut_slice::<u32>()[..offsets.len()].copy_from_slice(offsets);
+        let validity = Validity::alloc(p, offsets.len() - 1);
+        Column::list_from_parts(buf, child, validity, offsets.len() - 1)
+    };
+    let (a, b) = (list(&mut p, &[1, 2, 3], &[0, 2, 3]), list(&mut p, &[4, 5, 6], &[0, 3]));
+    let none = Column::empty(a.data_type(), 1);
+    let g = Column::gather_from(&mut p, &[(&b, &[0]), (&none, &[0]), (&a, &[0])]);
+    let l = g.list().unwrap();
+    assert_eq!(l.offsets, &[0, 3, 3, 5]);
+    assert_eq!(l.child.i64().unwrap().values, &[4, 5, 6, 1, 2]);
+    assert!(!l.validity.is_valid(1));
+
+    // Only the second struct has unclaimed fields, so the first's rows have none.
+    let plain = Column::struct_from_parts(vec![("n".into(), ints(&mut p, &[1, 2]))], 2);
+    let unclaimed = texts(&mut p, &[Some("x")]);
+    let open = Column::struct_with_unclaimed_fields(vec![("n".into(), ints(&mut p, &[3]))], Some(unclaimed), 1);
+    let s = Column::gather_from(&mut p, &[(&plain, &[1]), (&open, &[0])]);
+    assert_eq!(s.field("n").unwrap().i64().unwrap().values, &[2, 3]);
+    let u = s.unclaimed_fields().unwrap().var().unwrap();
+    assert!(!u.validity.is_valid(0));
+    assert_eq!(u.get(1), b"x");
+    [a, b, none, g, plain, open, s]
+        .into_iter()
+        .for_each(|c| c.reclaim(&mut p));
+}
+
 // --- row sizes --------------------------------------------------------
 
 /// Text counts its bytes, an array its items', an object its fields', and anything else eight.

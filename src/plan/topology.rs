@@ -1031,32 +1031,33 @@ impl SourceMeta {
             batch.put(crate::core::batch::SLOT_RAW, str_column(pool, values), pool);
         } else if !self.reads_bytes() {
             let fields = &self.record;
-            let (chunk, rows) = chunk_rows(records);
+            let rows: Vec<u32> = records.iter().map(|r| r.row).collect();
+            let runs = chunk_runs(records);
             let slot_of = |field: usize| crate::core::id::SlotId::at(crate::core::batch::PREFIX_SLOTS + field);
             for (i, (_, ty)) in fields.iter().enumerate() {
-                let slot = slot_of(i);
-                let column = match &chunk {
-                    Some(chunk) => chunk.column(i).gather(pool, &rows),
-                    None => Column::empty(ty.clone(), 0),
+                let picks: Vec<(&Column, &[u32])> = (runs.iter())
+                    .map(|(chunk, at)| (chunk.column(i), &rows[at.clone()]))
+                    .collect();
+                let column = match picks.is_empty() {
+                    true => Column::empty(ty.clone(), 0),
+                    false => Column::gather_from(pool, &picks),
                 };
-                batch.put(slot, column, pool);
+                batch.put(slot_of(i), column, pool);
             }
-            if let Some(chunk) = &chunk {
-                for (at, &row) in rows.iter().enumerate() {
-                    // A payload that did not read has no field of its own to blame, so its record's first holds it.
-                    if let Some(why) = chunk.unread(row) {
-                        let kind = ExceptionKind::Unparsable;
-                        noted.push((at as u32, slot_of(0), kind, Some(why.to_string())));
-                        continue;
-                    }
-                    let from = chunk.failed().partition_point(|(r, _, _)| *r < row);
-                    for (_, field, value) in chunk.failed()[from..].iter().take_while(|(r, _, _)| *r == row) {
-                        let kind = ExceptionKind::UnparsableField {
-                            to: fields[*field].1.clone(),
-                        };
-                        let slot = slot_of(*field);
-                        noted.push((at as u32, slot, kind, Some(value.clone())));
-                    }
+            for (at, record) in records.iter().enumerate() {
+                let (chunk, row) = (&record.chunk, record.row);
+                // A payload that did not read has no field of its own to blame, so its record's first holds it.
+                if let Some(why) = chunk.unread(row) {
+                    let kind = ExceptionKind::Unparsable;
+                    noted.push((at as u32, slot_of(0), kind, Some(why.to_string())));
+                    continue;
+                }
+                let from = chunk.failed().partition_point(|(r, _, _)| *r < row);
+                for (_, field, value) in chunk.failed()[from..].iter().take_while(|(r, _, _)| *r == row) {
+                    let kind = ExceptionKind::UnparsableField {
+                        to: fields[*field].1.clone(),
+                    };
+                    noted.push((at as u32, slot_of(*field), kind, Some(value.clone())));
                 }
             }
         }
@@ -1159,22 +1160,17 @@ impl SourceMeta {
     }
 }
 
-/// The chunk every one of `records` points into, and each record's row of it. A source hands one poll's rows in one
-/// chunk (`io::SourceRecord::chunk`), and parking keeps a batch's rows in one, so a batch has one.
-fn chunk_rows(records: &[crate::io::SourceRecord]) -> (Option<std::sync::Arc<crate::io::RecordChunk>>, Vec<u32>) {
-    let mut chunk: Option<&std::sync::Arc<crate::io::RecordChunk>> = None;
-    let rows = records
-        .iter()
-        .map(|r| {
-            let first = chunk.get_or_insert(&r.chunk);
-            assert!(
-                std::sync::Arc::ptr_eq(first, &r.chunk),
-                "the records of one batch point into one chunk"
-            );
-            r.row
+/// Each run of `records` that share a chunk: the chunk, and where in `records` the run is. A batch's rows may come
+/// from several chunks, each one a request's or a poll's.
+fn chunk_runs(records: &[crate::io::SourceRecord]) -> Vec<(&crate::io::RecordChunk, std::ops::Range<usize>)> {
+    let mut at = 0;
+    (records.chunk_by(|a, b| std::sync::Arc::ptr_eq(&a.chunk, &b.chunk)))
+        .map(|run| {
+            let from = at;
+            at += run.len();
+            (&*run[0].chunk, from..at)
         })
-        .collect();
-    (chunk.cloned(), rows)
+        .collect()
 }
 
 fn str_column<'a>(
@@ -4069,6 +4065,59 @@ mod tests {
             batch.get(crate::core::batch::SLOT_RAW).varlen().unwrap().get(0),
             "caf\u{fffd}".as_bytes()
         );
+        batch.reclaim(&mut pool);
+    }
+
+    /// A batch's rows may come from several chunks, as a receiver's do from several requests: each field's column
+    /// holds every record's value in the records' order, and a value that could not be read is noted at its batch row.
+    #[test]
+    fn ingest_reads_typed_rows_from_several_chunks() {
+        let meta = SourceMeta::KAFKA
+            .declaring(vec![("n".into(), DataType::I64), ("s".into(), DataType::Str)])
+            .unwrap();
+        let mut pool = crate::core::buffer::BufferPool::new();
+        let mut chunk = |numbers: &[i64], texts: &[&[u8]], failed| {
+            let mut n = Column::alloc(&mut pool, &DataType::I64, numbers.len());
+            n.i64_mut().unwrap().values.copy_from_slice(numbers);
+            let s = var_column(
+                &mut pool,
+                crate::core::column::VarType::Str,
+                texts.iter().map(|t| Some(*t)),
+            );
+            std::sync::Arc::new(crate::io::RecordChunk::new(vec![n, s], failed))
+        };
+        let first = chunk(&[1, 2], &[b"a", b"b"], Vec::new());
+        let second = chunk(&[0, 4], &[b"c", b"d"], vec![(0, 0, "three".to_string())]);
+        let record = |chunk: &std::sync::Arc<crate::io::RecordChunk>, row| crate::io::SourceRecord {
+            chunk: chunk.clone(),
+            row,
+            offset: 0,
+            partition: 0,
+            topic: std::sync::Arc::from("t"),
+            headers: None,
+        };
+        let records = [
+            record(&first, 1),
+            record(&second, 0),
+            record(&second, 1),
+            record(&first, 0),
+        ];
+        let layout: Vec<DataType> = crate::plan::compile::ingest_fields(&meta)
+            .into_iter()
+            .map(|(_, t)| t)
+            .collect();
+        let mut batch = Batch::new(&layout, records.len(), 0);
+        let noted = meta.ingest(&mut batch, &records, &[""; 4], None, |_| false, &mut pool);
+
+        let slot = |field| crate::core::id::SlotId::at(crate::core::batch::PREFIX_SLOTS + field);
+        assert_eq!(batch.get(slot(0)).i64().unwrap().values, &[2, 0, 4, 1]);
+        let texts = batch.get(slot(1)).varlen().unwrap();
+        assert_eq!(
+            (0..4).map(|row| texts.get(row)).collect::<Vec<_>>(),
+            [b"b", b"c", b"d", b"a"]
+        );
+        let kind = ExceptionKind::UnparsableField { to: DataType::I64 };
+        assert_eq!(noted, [(1, slot(0), kind, Some("three".to_string()))]);
         batch.reclaim(&mut pool);
     }
 

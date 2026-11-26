@@ -910,27 +910,66 @@ impl Column {
     /// Row selection: a new column of `indices.len()` rows, row `i` copied from row `indices[i]`. Every index must be
     /// in bounds. The building block of `Batch::gather`, and handles every storage variant.
     pub fn gather(&self, pool: &mut BufferPool, indices: &[u32]) -> Column {
-        let n = indices.len();
-        match &self.storage {
-            Storage::Empty(t) => Column::empty(t.clone(), n),
-            Storage::Constant(value) => Column::constant(value.clone(), n),
+        Column::gather_from(pool, &[(self, indices)])
+    }
 
-            Storage::Fixed {
-                fixed_type,
-                buffer,
-                validity,
-            } => {
-                // Every `FixedType` is 8 bytes; a `u64` view copies the bit pattern regardless of which one this is.
-                let src = &buffer.as_slice::<u64>()[..self.len];
+    /// A new column of rows picked from several columns of one type. Each pick is a column and the indexes of the rows
+    /// to copy from it; the result holds the picks' rows in order, pick after pick. Every index must be in bounds of
+    /// its pick's column, and there is at least one pick.
+    pub fn gather_from(pool: &mut BufferPool, picks: &[(&Column, &[u32])]) -> Column {
+        let n: usize = picks.iter().map(|(_, rows)| rows.len()).sum();
+        // The first pick that holds values gives the result its storage. A pick that holds no values gives null for
+        // each of its rows.
+        let Some((shape, _)) = picks.iter().find(|(c, _)| !matches!(c.storage, Storage::Empty(_))) else {
+            return Column::empty(picks[0].0.data_type(), n);
+        };
+        if let Some(value) = shape.constant_value()
+            && picks.iter().all(|(c, _)| c.constant_value() == Some(value))
+        {
+            return Column::constant(value.clone(), n);
+        }
+        if picks.iter().any(|(c, _)| c.constant_value().is_some()) {
+            return Column::gather_from_rows_of_constants(pool, picks);
+        }
+        let mixed = |c: &Column| -> ! {
+            panic!(
+                "`gather_from` needs picks of one type, got {} and {}",
+                shape.data_type(),
+                c.data_type()
+            )
+        };
+        match &shape.storage {
+            Storage::Empty(_) | Storage::Constant(_) => unreachable!("the shape holds rows"),
+
+            Storage::Fixed { fixed_type, .. } => {
                 let mut buf = pool.take(n * 8);
                 let mut new_validity = Validity::alloc(pool, n);
                 {
                     let dst = &mut buf.as_mut_slice::<u64>()[..n];
-                    for (i, &r) in indices.iter().enumerate() {
-                        let r = r as usize;
-                        dst[i] = src[r];
-                        if !validity.is_valid(r) {
-                            new_validity.set_valid(i, false);
+                    let mut at = 0;
+                    for (c, rows) in picks {
+                        match &c.storage {
+                            Storage::Fixed { buffer, validity, .. } => {
+                                // Every `FixedType` is 8 bytes; a `u64` view copies the bit pattern regardless of
+                                // which one this is.
+                                let src = &buffer.as_slice::<u64>()[..c.len];
+                                for &r in *rows {
+                                    let r = r as usize;
+                                    dst[at] = src[r];
+                                    if !validity.is_valid(r) {
+                                        new_validity.set_valid(at, false);
+                                    }
+                                    at += 1;
+                                }
+                            }
+                            Storage::Empty(_) => {
+                                for _ in *rows {
+                                    dst[at] = 0;
+                                    new_validity.set_valid(at, false);
+                                    at += 1;
+                                }
+                            }
+                            _ => mixed(c),
                         }
                     }
                 }
@@ -945,18 +984,34 @@ impl Column {
                 }
             }
 
-            Storage::Bits { values, validity } => {
-                let src = &values.as_slice::<u64>()[..bits::words_for(self.len)];
+            Storage::Bits { .. } => {
                 let mut buf = pool.take(bits::bytes_for(n));
                 let mut new_validity = Validity::alloc(pool, n);
                 {
                     let dst = &mut buf.as_mut_slice::<u64>()[..bits::words_for(n)];
                     bits::mask_tail(dst, n);
-                    for (i, &r) in indices.iter().enumerate() {
-                        let r = r as usize;
-                        bits::set_row(dst, i, bits::get_row(src, r));
-                        if !validity.is_valid(r) {
-                            new_validity.set_valid(i, false);
+                    let mut at = 0;
+                    for (c, rows) in picks {
+                        match &c.storage {
+                            Storage::Bits { values, validity } => {
+                                let src = &values.as_slice::<u64>()[..bits::words_for(c.len)];
+                                for &r in *rows {
+                                    let r = r as usize;
+                                    bits::set_row(dst, at, bits::get_row(src, r));
+                                    if !validity.is_valid(r) {
+                                        new_validity.set_valid(at, false);
+                                    }
+                                    at += 1;
+                                }
+                            }
+                            Storage::Empty(_) => {
+                                for _ in *rows {
+                                    bits::set_row(dst, at, false);
+                                    new_validity.set_valid(at, false);
+                                    at += 1;
+                                }
+                            }
+                            _ => mixed(c),
                         }
                     }
                 }
@@ -971,54 +1026,108 @@ impl Column {
             }
 
             Storage::VarLen { var_type, .. } => {
-                let v = self.sealed_rows().expect("VarLen storage matched sealed_rows()");
-                let total: usize = indices.iter().map(|&r| v.rows.row_len(r as usize)).sum();
+                let sealed: Vec<Option<SealedRows<'_>>> = (picks.iter())
+                    .map(|(c, _)| match &c.storage {
+                        Storage::Empty(_) => None,
+                        _ => Some(c.sealed_rows().unwrap_or_else(|_| mixed(c))),
+                    })
+                    .collect();
+                let total: usize = (picks.iter().zip(&sealed))
+                    .filter_map(|((_, rows), v)| Some((rows, v.as_ref()?)))
+                    .map(|(rows, v)| rows.iter().map(|&r| v.rows.row_len(r as usize)).sum::<usize>())
+                    .sum();
                 let mut b = StrBuilder::new(pool, *var_type, n);
                 b.reserve(pool, total);
-                for &r in indices {
-                    let r = r as usize;
-                    if v.rows.validity.is_valid(r) {
-                        b.push_row(&v, r);
-                    } else {
-                        b.push_null();
+                for ((_, rows), v) in picks.iter().zip(&sealed) {
+                    for &r in *rows {
+                        match v {
+                            Some(v) if v.rows.validity.is_valid(r as usize) => b.push_row(v, r as usize),
+                            _ => b.push_null(),
+                        }
                     }
                 }
                 b.finish()
             }
 
             Storage::List { .. } => {
-                let l = self.list().expect("List storage matched list()");
-                let mut child_indices = Vec::new();
+                // The child rows to gather are, pick after pick, the element spans of the rows that pick takes.
+                let mut child_picks: Vec<(&Column, Vec<u32>)> = Vec::new();
                 let mut new_offsets = Vec::with_capacity(n + 1);
                 new_offsets.push(0u32);
                 let mut running = 0u32;
                 let mut new_validity = Validity::alloc(pool, n);
-                for (i, &r) in indices.iter().enumerate() {
-                    let r = r as usize;
-                    if !l.validity.is_valid(r) {
-                        new_validity.set_valid(i, false);
+                for (c, rows) in picks {
+                    match &c.storage {
+                        Storage::List { .. } => {
+                            let l = c.list().expect("List storage matched list()");
+                            let mut child_rows = Vec::new();
+                            for &r in *rows {
+                                let r = r as usize;
+                                if !l.validity.is_valid(r) {
+                                    new_validity.set_valid(new_offsets.len() - 1, false);
+                                }
+                                let (s, e) = (l.offsets[r], l.offsets[r + 1]);
+                                child_rows.extend(s..e);
+                                running += e - s;
+                                new_offsets.push(running);
+                            }
+                            child_picks.push((l.child, child_rows));
+                        }
+                        Storage::Empty(_) => {
+                            for _ in *rows {
+                                new_validity.set_valid(new_offsets.len() - 1, false);
+                                new_offsets.push(running);
+                            }
+                        }
+                        _ => mixed(c),
                     }
-                    let (s, e) = (l.offsets[r], l.offsets[r + 1]);
-                    child_indices.extend(s..e);
-                    running += e - s;
-                    new_offsets.push(running);
                 }
                 new_validity.recount();
-                // The selected rows' element spans, concatenated, are a row-selection out of `child`.
-                let new_child = l.child.gather(pool, &child_indices);
+                let child_picks: Vec<(&Column, &[u32])> = child_picks.iter().map(|(c, rows)| (*c, &rows[..])).collect();
+                let new_child = Column::gather_from(pool, &child_picks);
                 let mut offsets_buf = pool.take((n + 1) * 4);
                 offsets_buf.as_mut_slice::<u32>()[..n + 1].copy_from_slice(&new_offsets);
                 Column::list_from_parts(offsets_buf, new_child, new_validity, n)
             }
 
-            Storage::Struct(fields, unclaimed_fields) => Column::struct_with_unclaimed_fields(
-                fields
-                    .iter()
-                    .map(|(name, c)| (name.clone(), c.gather(pool, indices)))
-                    .collect(),
-                unclaimed_fields.as_ref().map(|u| u.gather(pool, indices)),
-                n,
-            ),
+            Storage::Struct(fields, _) => {
+                // A pick that holds no values gives null for each field and for the unclaimed fields.
+                let no_field: Vec<Column> = fields.iter().map(|(_, c)| Column::empty(c.data_type(), 0)).collect();
+                let no_unclaimed = Column::empty(DataType::Variant, 0);
+                let new_fields = (fields.iter().enumerate())
+                    .map(|(k, (name, _))| {
+                        let of_field: Vec<(&Column, &[u32])> = (picks.iter())
+                            .map(|(c, rows)| match &c.storage {
+                                Storage::Struct(fields, _) => (&fields[k].1, *rows),
+                                Storage::Empty(_) => (&no_field[k], *rows),
+                                _ => mixed(c),
+                            })
+                            .collect();
+                        (name.clone(), Column::gather_from(pool, &of_field))
+                    })
+                    .collect();
+                let unclaimed = picks.iter().any(|(c, _)| c.unclaimed_fields().is_some()).then(|| {
+                    let of_unclaimed: Vec<(&Column, &[u32])> = (picks.iter())
+                        .map(|(c, rows)| (c.unclaimed_fields().unwrap_or(&no_unclaimed), *rows))
+                        .collect();
+                    Column::gather_from(pool, &of_unclaimed)
+                });
+                Column::struct_with_unclaimed_fields(new_fields, unclaimed, n)
+            }
         }
+    }
+
+    /// `gather_from` where some pick is a constant column and the picks are not all one constant: each constant is
+    /// expanded to its rows first.
+    fn gather_from_rows_of_constants(pool: &mut BufferPool, picks: &[(&Column, &[u32])]) -> Column {
+        let rows_of: Vec<Option<Column>> = (picks.iter())
+            .map(|(c, _)| c.constant_value().map(|value| Column::filled(pool, value, c.len)))
+            .collect();
+        let as_rows: Vec<(&Column, &[u32])> = (picks.iter().zip(&rows_of))
+            .map(|((c, rows), filled)| (filled.as_ref().unwrap_or(c), *rows))
+            .collect();
+        let gathered = Column::gather_from(pool, &as_rows);
+        rows_of.into_iter().flatten().for_each(|c| c.reclaim(pool));
+        gathered
     }
 }

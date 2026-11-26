@@ -139,13 +139,12 @@ pub fn build_destination(
     }
 }
 
-/// One record read from a source: its row of the chunk its poll's records share, and the coordinates it commits
+/// One record read from a source: its row of a chunk, and the coordinates it commits
 /// against. Which of those coordinates a pipeline may read is the source kind's to declare
 /// (`plan::topology::SourceMeta`). `topic` is an `Arc<str>` so a source interns each name once per poll.
 #[derive(Clone, Debug)]
 pub struct SourceRecord {
-    /// What the source read, as one row of `chunk`. Every record one `Source::poll_batch` of typed rows returns points
-    /// into the same chunk; a poll of bytes may point into several.
+    /// The chunk this record is a row of. The records one `Source::poll_batch` returns may point into several chunks.
     pub chunk: Arc<RecordChunk>,
     pub row: u32,
     pub offset: i64,
@@ -410,9 +409,9 @@ impl ChunkRows {
     }
 }
 
-/// One poll's rows of a source whose data arrives already in typed columns: a column per field the source declares,
-/// in declaration order, and each value that could not be read as its field's type. Lives as long as any record that
-/// points into it.
+/// What a source read together, a poll's or a request's, held as columns: one per field the source declares, in
+/// declaration order, with a note of each value that could not be read as its field's type. Lives as long as any
+/// record that points into it.
 pub struct RecordChunk {
     columns: Vec<crate::core::column::Column>,
     /// Each value that is not its field's type, null in its column: its row, its field's index, and the value as the
