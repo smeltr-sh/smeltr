@@ -25,3 +25,9 @@ impl DateTime {
         self.0.div_euclid(1000)
     }
 }
+
+/// `span` in whole milliseconds, for what is stored or sent in milliseconds. A span longer than `i64::MAX` milliseconds
+/// gives `i64::MAX`.
+pub fn millis(span: std::time::Duration) -> i64 {
+    i64::try_from(span.as_millis()).unwrap_or(i64::MAX)
+}

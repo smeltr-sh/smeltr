@@ -6,6 +6,7 @@
 //! loops over the same lanes.
 //! Both call the same `step`, so a test that ticks and a deployment that threads run the same code.
 
+use crate::core::time::millis;
 use crate::sync::Mutex;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -2396,7 +2397,7 @@ pub(crate) fn truncate(s: &str, max: usize) -> String {
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
+        .map(millis)
         .unwrap_or(0)
 }
 

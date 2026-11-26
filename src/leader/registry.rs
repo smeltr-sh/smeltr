@@ -11,6 +11,7 @@
 //! only record of that. Not a warning table -- a key and a millisecond, forgotten the instant its fact is, and now
 //! durable for the same reason `latest_state` is: a fact that began before a restart must keep its true start.
 
+use crate::core::time::millis;
 use crate::sync::{Mutex, MutexGuard};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -834,12 +835,7 @@ fn due(next_ms: &std::sync::atomic::AtomicI64, now_ms: i64, every: Duration) -> 
     let due = next_ms.load(Ordering::Relaxed);
     now_ms >= due
         && next_ms
-            .compare_exchange(
-                due,
-                now_ms + every.as_millis() as i64,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            )
+            .compare_exchange(due, now_ms + millis(every), Ordering::Relaxed, Ordering::Relaxed)
             .is_ok()
 }
 

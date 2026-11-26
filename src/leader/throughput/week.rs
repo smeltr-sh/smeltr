@@ -12,6 +12,7 @@
 //! Monday's 24 hours, which hold most of Sunday's, would read low every week, and the range, which every day shares,
 //! would widen to take them in.
 
+use crate::core::time::millis;
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{BUCKET, DAY_MS, NEIGHBORHOOD, Rows, USUAL_DAYS, USUAL_MIN_DAYS, Warned, Width, quantile};
@@ -237,7 +238,7 @@ impl Weekly {
     pub(super) fn learn(as_of: i64, width: Width, learned: &[(i64, f64)], week: Week) -> Weekly {
         let step = BUCKET.bucket_ms();
         let per_day = DAY_MS / step;
-        let across = NEIGHBORHOOD.as_millis() as i64 / step;
+        let across = millis(NEIGHBORHOOD) / step;
         let today = week.day(as_of);
         let first = today - WEEKS * 7;
         let index = |day: i64| usize::try_from(day - first).ok();

@@ -1,6 +1,7 @@
 //! The worker↔leader heartbeat (design doc, Control plane): the request a worker POSTs on its interval,
 //! the directive it gets back, and the blocking client that sends it. Every exchange is worker-initiated.
 
+use crate::core::time::millis;
 use std::collections::HashMap;
 
 use crate::core::time::DateTime;
@@ -117,7 +118,7 @@ impl From<&crate::logs::Event> for LogDto {
             timestamp_ms: event
                 .timestamp
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
+                .map(millis)
                 .unwrap_or_default(),
             level: event.level.as_str().to_lowercase(),
             class: event.class.as_deref().map(|class| truncate(class, MAX_TEXT_LEN)),

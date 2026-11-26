@@ -17,6 +17,7 @@
 //!   C-->>K: token, when it expires
 //! ```
 
+use crate::core::time::millis;
 use std::error::Error;
 use std::ffi::CString;
 use std::time::{Instant, SystemTime};
@@ -134,9 +135,7 @@ fn token_from(
     Ok(OAuthToken {
         token: token.value.clone(),
         principal_name: workload.client_id().to_string(),
-        lifetime_ms: expires
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as i64),
+        lifetime_ms: expires.duration_since(SystemTime::UNIX_EPOCH).map_or(0, millis),
     })
 }
 
@@ -261,7 +260,7 @@ mod tests {
         let token = OAuthToken {
             token: "eyJ.e30.sig".into(),
             principal_name: "app-id".into(),
-            lifetime_ms: in_an_hour.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis() as i64,
+            lifetime_ms: millis(in_an_hour.duration_since(SystemTime::UNIX_EPOCH).unwrap()),
         };
         assert_eq!(hand(admin.inner(), Ok(token)), Ok(()));
         assert_eq!(hand(admin.inner(), Err("no file".into())), Err("no file".to_string()));
