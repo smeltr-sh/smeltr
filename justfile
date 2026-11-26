@@ -149,8 +149,8 @@ handoff: need-docker
 
 # A release, from a commit with nothing uncommitted, so its version names a commit anyone can check out:
 # the handoff tarball (binary, license, notices) as `smeltr-linux.tar.gz`, the image built from it as
-# `smeltr-image.tar.gz`, and SHA256SUMS over both. An arm64 machine names them `smeltr-linux-arm64.tar.gz` and
-# `smeltr-image-arm64.tar.gz`. Any branch builds one; the release workflow holds a published
+# `smeltr-image-linux.tar.gz`, and SHA256SUMS over both. An arm64 machine names them `smeltr-linux-arm64.tar.gz` and
+# `smeltr-image-linux-arm64.tar.gz`. Any branch builds one; the release workflow holds a published
 # release to `main`. On Windows, `smeltr-windows.zip` of the binary, the license and the notices, and SHA256SUMS
 # over it. The file names carry no version, so a link to the newest release's file never changes; the release
 # they are attached to, the binary and the image's tags carry it. On a commit tagged `v1.2.0` the image is
@@ -166,9 +166,9 @@ dist: need-docker committed handoff
       && case $(uname -m) in x86_64) a= ;; aarch64) a=-arm64 ;; *) echo "no release for $(uname -m)" >&2; exit 1 ;; esac \
       && mv "smeltr-$v.tar.gz" "smeltr-linux$a.tar.gz" \
       && docker build --build-arg VERSION="$n" -t smeltr:latest -t "smeltr:$(echo "$n" | tr + -)" handoff \
-      && docker save -o "smeltr-image$a.tar" smeltr:latest "smeltr:$(echo "$n" | tr + -)" \
-      && gzip -f "smeltr-image$a.tar" \
-      && sha256sum "smeltr-linux$a.tar.gz" "smeltr-image$a.tar.gz" | tee SHA256SUMS
+      && docker save -o "smeltr-image-linux$a.tar" smeltr:latest "smeltr:$(echo "$n" | tr + -)" \
+      && gzip -f "smeltr-image-linux$a.tar" \
+      && sha256sum "smeltr-linux$a.tar.gz" "smeltr-image-linux$a.tar.gz" | tee SHA256SUMS
 
 # DISA's GPOS SRG (Chainguard's profile for Wolfi), scanned against an image: `stig/report.html` and the rule-by-rule `stig/results.txt`. A
 # report, not a gate. `dist` tags the image it builds `smeltr:latest`.
