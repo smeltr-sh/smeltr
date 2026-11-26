@@ -55,9 +55,9 @@ impl StrBuilder {
         }
     }
 
-    /// A builder for a column whose length is not known until it is done, as a source's poll: each `push_grow` grows
-    /// the offsets as it does the data, and `finish` seals the rows pushed. Every row is a value; `push_null` is for a
-    /// builder of known length.
+    /// A builder for a column whose length is not known until it is done, such as the rows of one poll of a source:
+    /// `push_grow` and `push_null_grow` grow its offsets as they grow its data, and `finish_growing` seals the rows
+    /// pushed.
     pub fn growing(pool: &mut BufferPool, var_type: VarType) -> Self {
         StrBuilder::growing_with(pool, var_type, 0, 0)
     }
@@ -99,15 +99,6 @@ impl StrBuilder {
     #[inline]
     pub fn push(&mut self, s: &[u8]) {
         self.unchecked = true;
-        self.put(s);
-    }
-
-    /// `push` of a row whose text is already checked, so sealing need not check it again.
-    ///
-    /// # Safety
-    /// `s` must be UTF-8 for a `str` builder, and one `variant::Encoded` value for a variant builder.
-    #[inline]
-    pub(crate) unsafe fn push_checked(&mut self, s: &[u8]) {
         self.put(s);
     }
 
@@ -159,6 +150,12 @@ impl StrBuilder {
         self.put_parts_grow(pool, parts);
     }
 
+    /// Like `push_text`, for a `growing` builder: `push_grow` of text known to be UTF-8.
+    pub(crate) fn push_text_grow(&mut self, pool: &mut BufferPool, s: &str) {
+        self.unchecked |= self.var_type != VarType::Str;
+        self.put_parts_grow(pool, &[s.as_bytes()]);
+    }
+
     /// `push_grow` of a variant whose text is already checked, so sealing a variant column need not check it again.
     pub(crate) fn push_encoded(&mut self, pool: &mut BufferPool, v: Encoded) {
         // `v`'s bytes hold checked text only in a variant column; in any other they are unchecked.
@@ -191,8 +188,10 @@ impl StrBuilder {
     /// Grow, as `push_grow` does, so one more row of `len` bytes fits.
     fn room_for(&mut self, pool: &mut BufferPool, len: usize) {
         if self.growing && self.row == self.len {
-            self.len = (self.len * 2).max(64);
-            self.offsets.grow(pool, (self.len + 1) * 4);
+            let len = (self.len * 2).max(64);
+            self.offsets.grow(pool, (len + 1) * 4);
+            self.validity.grow(pool, len);
+            self.len = len;
         }
         debug_assert!(self.row < self.len, "pushed more rows than the column holds");
         let need = self.pos as usize + len;
@@ -212,11 +211,16 @@ impl StrBuilder {
     /// A null row: zero-length span, validity bit clear.
     #[inline]
     pub fn push_null(&mut self) {
-        debug_assert!(!self.growing, "a growing builder's rows are all values");
-        debug_assert!(self.row < self.len);
+        debug_assert!(self.row < self.len, "pushed more rows than the column holds");
         self.validity.set_valid(self.row, false);
         self.row += 1;
         self.offsets.as_mut_slice::<u32>()[self.row] = self.pos;
+    }
+
+    /// `push_null` for a `growing` builder.
+    pub fn push_null_grow(&mut self, pool: &mut BufferPool) {
+        self.room_for(pool, 0);
+        self.push_null();
     }
 
     /// The bytes of the row last pushed.
@@ -229,19 +233,24 @@ impl StrBuilder {
     /// Take back the row last pushed, so the next push replaces it. Its bytes are overwritten by that push.
     pub fn pop_last(&mut self) {
         debug_assert!(self.row > 0, "nothing pushed to take back");
-        self.row -= 1;
-        self.pos = self.offsets.as_slice::<u32>()[self.row];
-        if !self.growing {
-            self.validity.set_valid(self.row, true);
-        }
+        self.truncate(self.row - 1);
     }
 
-    /// Seal a `growing` builder's column: the rows pushed, every one a value.
-    pub fn finish_growing(mut self, pool: &mut BufferPool) -> Column {
+    /// Take back the rows pushed after the first `rows`, so the next push is row `rows`.
+    pub(crate) fn truncate(&mut self, rows: usize) {
+        debug_assert!(rows <= self.row, "taking back rows not pushed");
+        for row in rows..self.row {
+            self.validity.set_valid(row, true);
+        }
+        self.row = rows;
+        self.pos = self.offsets.as_slice::<u32>()[rows];
+    }
+
+    /// Seal a `growing` builder's column, which holds the rows pushed.
+    pub fn finish_growing(mut self) -> Column {
         debug_assert!(self.growing, "a builder of known length finishes with `finish`");
         self.len = self.row;
-        let validity = std::mem::replace(&mut self.validity, Validity::alloc(pool, self.row));
-        validity.reclaim(pool);
+        self.validity.truncate(self.row);
         // A reader's bytes are decoded before a string operation reads them, so a bytes column is not worth the scan.
         let ascii = self.var_type != VarType::Bytes && self.check_text();
         self.seal(ascii)
