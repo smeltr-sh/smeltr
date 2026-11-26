@@ -329,7 +329,7 @@ impl<'e> Part<'e> {
     fn lay(&mut self, value: Source<'e>) {
         match self {
             Part::Leaf(beneath) => {
-                let under = std::mem::replace(beneath, Source::Slot(0));
+                let under = std::mem::replace(beneath, Source::Slot(crate::core::batch::SLOT_LIVE));
                 *beneath = Source::Over(Box::new(value), Box::new(under));
             }
             Part::Object(draft) => draft.lay_variant(value),

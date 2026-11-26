@@ -3,7 +3,7 @@
 //! `SlotId` is a column index fixed by the compiler before any data arrives. Every column in a batch has exactly `rows`
 //! rows; a cardinality change produces a new batch through `gather`.
 
-use super::id::SlotId;
+use super::id::{SlotId, Slots};
 use crate::core::buffer::BufferPool;
 use crate::core::column::{Column, DataType};
 
@@ -13,7 +13,7 @@ use crate::core::column::{Column, DataType};
 ///
 /// The first `RESERVED_SLOTS` of them are reserved: the runtime reads each back after the run at its layout's type,
 /// so no step removes one or changes its type. A record's fields are not: a step may drop or replace any of them.
-pub const SLOT_LIVE: SlotId = 0; // Bool — row liveness, written by routing (`plan::topology::route_masks`) and by `Drop`
+pub const SLOT_LIVE: SlotId = SlotId::new(0); // Bool — row liveness, written by routing (`plan::topology::route_masks`) and by `Drop`
 pub const PREFIX_SLOTS: usize = 1;
 pub const RESERVED_SLOTS: usize = 1;
 
@@ -21,7 +21,7 @@ pub const RESERVED_SLOTS: usize = 1;
 ///
 /// `_raw` is `Str`, not `Bytes`: each record is decoded before routing, from the encoding its source declares
 /// (`format::encoding`), so everything downstream reads valid UTF-8 without revalidating or repairing.
-pub const SLOT_RAW: SlotId = PREFIX_SLOTS; // Str  — the unparsed message, decoded
+pub const SLOT_RAW: SlotId = SlotId::new(1); // Str  — the unparsed message, decoded
 pub const RAW_SLOTS: usize = PREFIX_SLOTS + 1;
 
 /// The prefix every plan's slot layout must begin with.
@@ -36,14 +36,14 @@ pub fn raw_layout() -> Vec<DataType> {
 
 pub struct Batch {
     /// Fixed length = plan.slot_count. Unbound slots hold `Empty`, not `None`.
-    slots: Vec<Column>,
+    slots: Slots<Column>,
     rows: usize,
     partition: i32,
 
     /// Debug-only: which slots have been written. Reading an unwritten slot is a compiler bug (it resolved a read to a
     /// slot no instruction writes), and the design says assert, not fall back.
     #[cfg(debug_assertions)]
-    bound: Vec<bool>,
+    bound: Slots<bool>,
 }
 
 impl Batch {
@@ -55,7 +55,7 @@ impl Batch {
             rows,
             partition,
             #[cfg(debug_assertions)]
-            bound: vec![false; layout.len()],
+            bound: layout.iter().map(|_| false).collect(),
         }
     }
 
@@ -125,7 +125,7 @@ impl Batch {
 
     /// A new batch containing only `indices`: row `i` of the result is row `indices[i]` of `self`, across every slot. Consuming, because `rows` is fixed for a batch's lifetime.
     pub fn gather(self, pool: &mut BufferPool, indices: &[u32]) -> Batch {
-        let new_slots: Vec<Column> = self.slots.iter().map(|c| c.gather(pool, indices)).collect();
+        let new_slots: Slots<Column> = self.slots.iter().map(|c| c.gather(pool, indices)).collect();
         let partition = self.partition;
         #[cfg(debug_assertions)]
         let bound = self.bound.clone();
@@ -140,8 +140,8 @@ impl Batch {
     }
 
     /// Return every buffer to the pool.
-    pub fn reclaim(mut self, pool: &mut BufferPool) {
-        for col in self.slots.drain(..) {
+    pub fn reclaim(self, pool: &mut BufferPool) {
+        for col in self.slots {
             col.reclaim(pool);
         }
     }
@@ -152,9 +152,9 @@ mod tests {
     use super::*;
     use crate::core::column::Column;
 
-    const EXTRA_I64: SlotId = RAW_SLOTS;
-    const EXTRA_STR: SlotId = RAW_SLOTS + 1;
-    const EXTRA_I64_B: SlotId = RAW_SLOTS + 2;
+    const EXTRA_I64: SlotId = SlotId::new(2);
+    const EXTRA_STR: SlotId = SlotId::new(3);
+    const EXTRA_I64_B: SlotId = SlotId::new(4);
 
     fn layout() -> Vec<DataType> {
         let mut l = raw_layout();
@@ -170,13 +170,15 @@ mod tests {
         assert_eq!(prefix_layout().len(), PREFIX_SLOTS);
         assert_eq!(raw_layout().len(), RAW_SLOTS);
         assert_eq!(raw_layout()[..PREFIX_SLOTS], prefix_layout()[..]);
+        assert_eq!(SLOT_RAW.index(), PREFIX_SLOTS);
+        assert_eq!(EXTRA_I64.index(), RAW_SLOTS);
     }
 
     #[test]
     fn each_raw_index_names_its_own_declared_type() {
         let l = raw_layout();
-        assert_eq!(l[SLOT_LIVE], DataType::Bool);
-        assert_eq!(l[SLOT_RAW], DataType::Str);
+        assert_eq!(l[SLOT_LIVE.index()], DataType::Bool);
+        assert_eq!(l[SLOT_RAW.index()], DataType::Str);
     }
 
     #[test]
@@ -184,7 +186,7 @@ mod tests {
         let b = Batch::new(&layout(), 100, 0);
         assert_eq!(b.rows(), 100);
         assert_eq!(b.slot_count(), RAW_SLOTS + 3);
-        for s in 0..b.slot_count() {
+        for s in b.slots.ids() {
             assert!(b.peek(s).is_unbound());
             assert_eq!(b.peek(s).len(), 100);
         }
