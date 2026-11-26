@@ -147,16 +147,14 @@ jobs:
       - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
         with:
           tool: just
-      - name: List the Windows binary's crates as an SBOM
+      - name: List the Windows binary's crates as an SBOM, and their known vulnerabilities
         if: needs.windows.result == 'success'
         run: |
           # A zip keeps no Unix mode, and Trivy reads only executable files.
           unzip -q -d smeltr-windows windows/smeltr-windows.zip && chmod +x smeltr-windows/smeltr.exe
           just --justfile repo/justfile --working-directory . sbom smeltr-windows
-          # The crates come from the record `cargo auditable` writes into the binary; without it the SBOM is empty.
-          test "$(jq '.components | length' sbom/sbom.cdx.json)" -gt 0 \
-            || { echo "::error::smeltr.exe carries no crate record for its SBOM"; exit 1; }
-          mv sbom/sbom.cdx.json windows/smeltr-sbom-windows.cdx.json
+          just --justfile repo/justfile --working-directory . cves smeltr-windows
+          mv sbom/sbom.cdx.json windows/smeltr-sbom-windows.cdx.json && mv cves/report.txt windows/smeltr-cves-windows.txt
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
@@ -222,7 +220,7 @@ jobs:
           zip -j smeltr-extras.zip linux/smeltr-image.tar.gz linux/smeltr-sbom.cdx.json linux/smeltr-stig.html linux/smeltr-cves.txt \
             linux-arm64/smeltr-image-arm64.tar.gz linux-arm64/smeltr-sbom-arm64.cdx.json \
             linux-arm64/smeltr-stig-arm64.html linux-arm64/smeltr-cves-arm64.txt
-          if [ "$WINDOWS" = success ]; then zip -j smeltr-extras.zip windows/smeltr-sbom-windows.cdx.json; fi
+          if [ "$WINDOWS" = success ]; then zip -j smeltr-extras.zip windows/smeltr-sbom-windows.cdx.json windows/smeltr-cves-windows.txt; fi
           # A release's notes are its page on smeltr.sh, as Markdown; a pre-release has none.
           prerelease= notes= latest=
           case "$GITHUB_REF_NAME" in

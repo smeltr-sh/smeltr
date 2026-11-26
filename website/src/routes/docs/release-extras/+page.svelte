@@ -40,10 +40,14 @@
   </p>
 
   <h3>CVE report</h3>
-  <p><code>smeltr-cves.txt</code> (x86-64), <code>smeltr-cves-arm64.txt</code> (Arm64)</p>
+  <p>
+    <code>smeltr-cves.txt</code> (x86-64), <code>smeltr-cves-arm64.txt</code> (Arm64),
+    <code>smeltr-cves-windows.txt</code> (Windows)
+  </p>
   <p>
     Known vulnerabilities in the image's operating system packages and the libraries built into
-    Smeltr, found by <a href="https://trivy.dev/">Trivy</a> when the release was built.
+    Smeltr, found by <a href="https://trivy.dev/">Trivy</a> when the release was built. The Windows
+    report covers the libraries built into <code>smeltr.exe</code>.
   </p>
 
   <h3>STIG report</h3>
@@ -59,8 +63,8 @@
 
   <h2 id="reports">Read the reports</h2>
   <p>
-    The CVE and STIG reports describe the image on the day the release was built. A vulnerability
-    found since then is not in them: scan the image again to see it.
+    The CVE and STIG reports describe the release on the day it was built. A vulnerability found
+    since then is not in them: scan the image or <code>smeltr.exe</code> again to see it.
   </p>
   <p>
     The STIG report, an OpenSCAP scan against the SRG, marks rules a container cannot meet, such as

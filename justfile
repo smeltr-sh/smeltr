@@ -176,28 +176,32 @@ dist: need-docker committed handoff
 stig image="smeltr:latest": need-docker
     docker build --build-arg IMAGE={{image}} --output type=local,dest=stig - < tools/stig.Dockerfile
 
-# Known vulnerabilities in an image's OS packages and in the binary's crates, which `cargo auditable` records in it:
-# `cves/report.txt`, and `cves/report.json` for tools. A report, not a gate.
+# Known vulnerabilities in an image's OS packages and its binary's crates, or in the crates of the executables in a
+# folder: `cves/report.txt`, and `cves/report.json` for tools. A report, not a gate.
 [unix]
-cves image="smeltr:latest": need-docker
-    mkdir -p cves && docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/cves:/out" \
-      aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
-      image --scanners vuln --format json --output /out/report.json {{image}}
+cves target="smeltr:latest": (trivy target "cves" "--scanners vuln --format json --output /out/report.json")
     docker run --rm -v "$PWD/cves:/out" \
       aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
       convert --scanners vuln --format table --output /out/report.txt /out/report.json
 
 # A CycloneDX SBOM, `sbom/sbom.cdx.json`, of an image (its packages and its binary's crates) or of a folder (the
-# crates of the executables in it; Trivy skips files not marked executable). The release attests an image's SBOM on
-# the pushed image.
+# crates of the executables in it). The recipe fails if the SBOM lists no crates: its binary carries no record from
+# `cargo auditable`. The release attests an image's SBOM on the pushed image.
 [unix]
-sbom target="smeltr:latest": need-docker
-    mkdir -p sbom && if [ -d '{{target}}' ]; then \
+sbom target="smeltr:latest": (trivy target "sbom" "--format cyclonedx --output /out/sbom.cdx.json")
+    grep -q '"pkg:cargo/' sbom/sbom.cdx.json \
+      || { echo "sbom/sbom.cdx.json lists no crates: {{target}} carries no record from cargo auditable; build it with \`cargo auditable build\`" >&2; exit 1; }
+
+# Trivy on an image, or on a folder (it reads only the files there marked executable), writing into `out/`.
+[private]
+[unix]
+trivy target out +args: need-docker
+    mkdir -p {{out}} && if [ -d '{{target}}' ]; then \
         kind=rootfs scan=/scan mount="$(realpath '{{target}}'):/scan:ro"; \
       else kind=image scan='{{target}}' mount=/var/run/docker.sock:/var/run/docker.sock; fi \
-      && docker run --rm -v "$mount" -v "$PWD/sbom:/out" \
+      && docker run --rm -v "$mount" -v "$PWD/{{out}}:/out" \
         aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
-        "$kind" --format cyclonedx --output /out/sbom.cdx.json "$scan"
+        "$kind" {{args}} "$scan"
 
 # The integration tests, run in an image's own root, so code that needs something the image lacks fails here and
 # not at a site. They are built in the image's builder (`Dockerfile`'s `tests` stage), so they link the glibc the
