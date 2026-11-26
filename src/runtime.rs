@@ -19,7 +19,7 @@ use crate::core::bits;
 use crate::core::buffer::{self, BufferPool, MemoryBudget};
 use crate::core::column::{Column, DataType};
 use crate::core::ctx::Ctx;
-use crate::core::error::{ErrorSink, ExceptionKind, INGEST_FUNCTION, Read};
+use crate::core::error::{ErrorSink, ExceptionKind, Read};
 use crate::core::id::{DestId, SlotId, SourceId};
 use crate::format::json::scalar_text;
 use crate::format::record::RecordView;
@@ -3450,13 +3450,11 @@ fn run_plan(
     // Ingest's repairs, inside this route's window so a repaired row is marked wherever it goes and an `Unroll`
     // remaps it with the rest.
     for (row, kind) in &raw.notes {
-        let raw = ctx
-            .errors
-            .raise(*row as usize, INGEST_FUNCTION, Some(SLOT_RAW), kind.clone());
+        let raw = ctx.errors.raise(*row as usize, None, Some(SLOT_RAW), kind.clone());
         raw.read = vec![Read::new(Some((SLOT_RAW, String::new())), None)];
     }
     for (row, slot, kind, value) in noted {
-        let at = ctx.errors.raise(row as usize, INGEST_FUNCTION, Some(slot), kind);
+        let at = ctx.errors.raise(row as usize, None, Some(slot), kind);
         if value.is_some() {
             at.read = vec![Read::new(Some((slot, String::new())), value)];
         }
@@ -3478,7 +3476,7 @@ fn marked_block(
     let slot_names = plan.slot_names();
     let exception = |a: &crate::core::error::Exception| {
         let what = a.message(&slot_names);
-        match plan.step_ids.get(a.function.index()) {
+        match a.function.and_then(|f| plan.step_ids.get(f.index())) {
             Some(step) => format!("at step {step}: {what}"),
             None => format!("with: {what}"),
         }
@@ -4028,7 +4026,7 @@ mod tests {
     fn ann(row: u32, field: Option<SlotId>, kind: ExceptionKind) -> Exception {
         Exception {
             row,
-            function: FunctionId::new(0),
+            function: Some(FunctionId::new(0)),
             field,
             kind,
             read: Vec::new(),
@@ -4106,7 +4104,7 @@ mod tests {
     #[test]
     fn a_failure_read_before_any_step_names_none() {
         let mut read = ann(0, Some(0), ExceptionKind::InvalidUtf8);
-        read.function = crate::core::error::INGEST_FUNCTION;
+        read.function = None;
         assert_eq!(raised(&[read])[&0][0].step, None);
     }
 

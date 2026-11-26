@@ -114,15 +114,15 @@ impl<'a> Ctx<'a> {
 
     /// Raise an exception on `row`, about the slot the executing instruction fills.
     pub fn raise(&mut self, row: usize, kind: ExceptionKind) -> &mut Exception {
-        self.errors.raise(row, self.function, self.field, kind)
+        self.errors.raise(row, Some(self.function), self.field, kind)
     }
 
     /// Raise an exception on `row`, about `field` rather than the slot the executing instruction fills.
     pub fn raise_at(&mut self, row: usize, field: SlotId, kind: ExceptionKind) -> &mut Exception {
-        self.errors.raise(row, self.function, Some(field), kind)
+        self.errors.raise(row, Some(self.function), Some(field), kind)
     }
 
     pub fn raise_range(&mut self, rows: std::ops::Range<usize>, kind: ExceptionKind) {
-        self.errors.raise_range(rows, self.function, self.field, kind);
+        self.errors.raise_range(rows, Some(self.function), self.field, kind);
     }
 }

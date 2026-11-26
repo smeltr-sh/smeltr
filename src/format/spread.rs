@@ -682,7 +682,7 @@ impl<'d> Spread<'d> {
         for (row, key) in std::mem::take(&mut self.contradictions) {
             let read = vec![Read::new(Some((input, key.clone())), None)];
             ctx.errors
-                .raise(row, ctx.function, None, ExceptionKind::KeyContradiction { key })
+                .raise(row, Some(ctx.function), None, ExceptionKind::KeyContradiction { key })
                 .read = read;
         }
         for (row, n, key, value) in std::mem::take(&mut self.not_objects) {
