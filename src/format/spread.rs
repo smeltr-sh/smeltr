@@ -240,12 +240,12 @@ impl<'d> Spread<'d> {
                 .and_then(|o| o.schema.clone()),
             misfits: Vec::new(),
             hint: 0,
-            now: ctx.now_micros,
+            now: ctx.now.as_micros(),
         };
         for (i, f) in fields.iter().enumerate() {
             let n = s.node_at(&f.name);
             s.nodes[n].leaf = Some(i);
-            let builder = TypedBuilder::new(&f.ty, f.time_source.as_ref(), ctx.now_micros);
+            let builder = TypedBuilder::new(&f.ty, f.time_source.as_ref(), ctx.now.as_micros());
             s.fields.push((f.slot, f.ty.clone(), f.name.clone(), builder));
         }
         for (i, o) in objects.iter().enumerate() {

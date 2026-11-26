@@ -133,7 +133,7 @@ pub fn sample_bytes(sample: &SampleDto) -> Vec<u8> {
         true => sample,
         false => {
             stamped = SampleDto {
-                table: sample.table.clone().stamped(crate::core::ctx::wall_clock_micros()),
+                table: sample.table.clone().stamped(crate::core::time::DateTime::now()),
                 ..sample.clone()
             };
             &stamped

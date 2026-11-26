@@ -8,6 +8,7 @@
 //! The leader opens no connection of its own here. It hands every heartbeating worker the same invitation and merges
 //! what comes back, so a source running on one worker and a source running on none are the same request.
 
+use crate::core::time::DateTime;
 use crate::sync::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -155,7 +156,7 @@ struct Session {
     used: Instant,
     /// When it opened, in microseconds since the epoch, and the commit the fleet ran then: what a sample saved from
     /// it records ([`Captures::capture_fields`]).
-    opened_micros: i64,
+    opened: DateTime,
     config: Option<String>,
     /// Set by [`Captures::stop`] on a capture still running. Nothing more is folded in and nobody more is invited.
     stopped: bool,
@@ -217,7 +218,7 @@ impl Session {
             owner,
             started: Instant::now(),
             used: Instant::now(),
-            opened_micros: crate::core::ctx::wall_clock_micros(),
+            opened: DateTime::now(),
             config,
             expected: HashSet::new(),
             holding: HashSet::new(),
@@ -421,14 +422,14 @@ fn rows_in(batches: &[CaptureBatch]) -> usize {
 /// its input's: the instant it ran at, the pipeline by id, and the sample it ran over by id. A field with nothing to say
 /// is left out.
 pub fn output_fields(
-    at_micros: i64,
+    at: DateTime,
     pipeline: &str,
     sample: Option<&str>,
 ) -> Vec<(crate::heartbeat::CaptureColumn, serde_json::Value)> {
     use crate::core::column::DataType;
     let text = |v: &str| serde_json::Value::String(v.to_string());
     [
-        ("timestamp", DataType::DateTime, Some(text(&instant(at_micros)))),
+        ("timestamp", DataType::DateTime, Some(text(&instant(at)))),
         ("pipeline", DataType::Str, Some(text(pipeline))),
         ("sample", DataType::Str, sample.map(text)),
     ]
@@ -438,9 +439,9 @@ pub fn output_fields(
 }
 
 /// `micros` as a `__capture.timestamp` spells it.
-fn instant(micros: i64) -> String {
+fn instant(at: DateTime) -> String {
     let mut timestamp = Vec::new();
-    crate::ops::datetime::write_iso8601_micros_bare(micros, &mut timestamp);
+    crate::ops::datetime::write_iso8601_micros_bare(at.as_micros(), &mut timestamp);
     String::from_utf8(timestamp).expect("an instant is written as ASCII")
 }
 
@@ -560,7 +561,7 @@ impl Captures {
         records: Vec<crate::io::RecordObject>,
     ) -> Result<(), String> {
         crate::config_file::refuse_sample_size(records.len())?;
-        let batch = CaptureBatch::pasted(records).stamped(crate::core::ctx::wall_clock_micros());
+        let batch = CaptureBatch::pasted(records).stamped(DateTime::now());
         let bytes = batch.size();
         if bytes > SESSION_BYTES_CEILING {
             return Err(format!(
@@ -723,7 +724,7 @@ impl Captures {
         let Some(s) = sessions.get(session) else {
             return Vec::new();
         };
-        let timestamp = instant(s.opened_micros);
+        let timestamp = instant(s.opened);
         let failed: Vec<serde_json::Value> = s
             .ended
             .iter()
