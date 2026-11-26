@@ -781,7 +781,7 @@ connector-speed: live-up
 [doc("Smeltr, Logstash, Vector and NiFi timed on the same cores, memory and records.")]
 [group("dev")]
 engine-speed:
-    cargo test --profile dist --test connector-speed -- --ignored --exact engines::speed --nocapture
+    cargo test --profile optimized --test connector-speed -- --ignored --exact engines::speed --nocapture
 
 # Stop the live services and the Kerberos and TLS brokers, and discard their
 # data. A line that fails, for a rig that is not up or a Docker that is not
