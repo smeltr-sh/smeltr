@@ -25,6 +25,7 @@
 //! expires. A bucket nothing landed in is a bucket with no row: there is nothing to promote and nothing to delete, so
 //! an outage reads as absent rather than as a zero.
 
+use crate::core::time::millis;
 use crate::sync::Mutex;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -137,7 +138,7 @@ const WIDEST_POINT_MS: i64 = 6 * 60 * 60_000;
 /// [`CHART_POINTS`], or [`WIDEST_POINT_MS`] when none does. The tier a point that wide is summed from holds the whole
 /// window.
 pub fn chart_point_ms(window: std::time::Duration) -> i64 {
-    let window_ms = window.as_millis() as i64;
+    let window_ms = millis(window);
     Tier::ALL
         .map(Tier::bucket_ms)
         .into_iter()
@@ -2405,7 +2406,7 @@ fn write_streams(tx: &Connection, streams: &Streams<'_>, now_ms: i64) -> rusqlit
                     field.failed as i64,
                     now_ms,
                     field.times as i64,
-                    DRIFT_WINDOW.as_millis() as i64,
+                    millis(DRIFT_WINDOW),
                 ],
             )?;
             add_to_day(
@@ -2510,7 +2511,7 @@ fn write_streams(tx: &Connection, streams: &Streams<'_>, now_ms: i64) -> rusqlit
                 streams.rows as i64,
                 dropped,
                 now_ms,
-                DRIFT_WINDOW.as_millis() as i64,
+                millis(DRIFT_WINDOW),
                 config
             ],
         )?;
@@ -2924,7 +2925,7 @@ mod tests {
     #[test]
     fn a_declared_field_keeps_when_it_was_last_present_and_when_its_failures_began() {
         let store = memory_store();
-        let hour = DRIFT_WINDOW.as_millis() as i64;
+        let hour = millis(DRIFT_WINDOW);
         let windows = [
             (10, 0, 1_000),
             (10, 2, 2_000),
@@ -4052,9 +4053,9 @@ mod tests {
         for m in [1, 60, 61, 6 * 60 + 1, 30 * 60 + 1, 15 * 24 * 60 + 1, 30 * 24 * 60] {
             let window = minutes(m);
             let point = chart_point_ms(window);
-            assert!(window.as_millis() as i64 <= CHART_POINTS * point, "{m} minutes");
+            assert!(millis(window) <= CHART_POINTS * point, "{m} minutes");
             assert!(
-                Tier::within_from(point, 0).retention_ms() >= window.as_millis() as i64,
+                Tier::within_from(point, 0).retention_ms() >= millis(window),
                 "{m} minutes"
             );
         }

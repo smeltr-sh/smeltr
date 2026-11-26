@@ -8,6 +8,7 @@
 //! each currently-true fact was first seen -- and it is not itself a warning: no severity, no sentence, nothing to
 //! acknowledge, and an entry is forgotten the instant its fact is.
 
+use crate::core::time::millis;
 use crate::handoff::BlockCause;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -449,7 +450,7 @@ const STALE_AFTER_INTERVALS: u32 = 3;
 /// `stats::queue_fills`, which marks a quiet worker's queue stale for the same reason a warning stops being
 /// evidenced: nobody has said it is still true.
 pub(super) fn stale_after_ms(heartbeat_interval: Duration) -> i64 {
-    (heartbeat_interval * STALE_AFTER_INTERVALS).as_millis() as i64
+    millis(heartbeat_interval * STALE_AFTER_INTERVALS)
 }
 
 /// What [`lag_climbing`] reads lag at: each [`throughput::BUCKET`]'s highest reading. Lag rises between a source's
@@ -468,7 +469,7 @@ const LAG_WARN_BEHIND: Duration = Duration::from_secs(60);
 /// How far back [`recent_logs`] reads a worker's logs for something to look at. Arbitrary, like
 /// [`STALE_AFTER_INTERVALS`]'s window: long enough that a poll landing between two heartbeats still catches
 /// a warning logged just before it, short enough that a warning clears soon after the worker stops logging it.
-const WORKER_LOG_WINDOW_MS: i64 = crate::logs::WARNING_FADES_AFTER.as_millis() as i64;
+const WORKER_LOG_WINDOW: Duration = crate::logs::WARNING_FADES_AFTER;
 
 pub fn now_millis() -> i64 {
     crate::core::time::DateTime::now().as_millis()
@@ -498,7 +499,7 @@ fn authority_expiring(snapshot: &[ThreadHealth], credentials: &[WorkerCredential
         .map(|c| c.worker_id.as_str())
         .collect();
 
-    let notice = AUTHORITY_NOTICE.as_millis() as i64;
+    let notice = millis(AUTHORITY_NOTICE);
     // What this worker said most recently, not the least of what it ever said. The registry never evicts, so a
     // thread a deployment removed keeps its last report forever -- and with it the authority that worker held
     // before it was given a new one. Taking the minimum lets that retired entry outvote every live one, and the
@@ -1884,8 +1885,8 @@ const MEMORY_BOUND_IDLE_BUCKETS: usize = 3;
 fn destinations_memory_bound(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Warning> {
     let Some(store) = store else { return Vec::new() };
     let bucket = Tier::TenSeconds.bucket_ms();
-    let buckets = (MEMORY_BOUND_FOR.as_millis() as i64 / bucket) as usize;
-    let since = now_ms - MEMORY_BOUND_FOR.as_millis() as i64;
+    let buckets = (millis(MEMORY_BOUND_FOR) / bucket) as usize;
+    let since = now_ms - millis(MEMORY_BOUND_FOR);
     let Ok(series) = store.series_since(PACE_HEADROOM_METRIC, Tier::TenSeconds, since) else {
         return Vec::new();
     };
@@ -2350,7 +2351,7 @@ pub fn spans(
 fn lag_climbing(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Warning> {
     let Some(store) = store else { return Vec::new() };
     let open = LAG_TIER.align(now_ms);
-    let since = open - throughput::WINDOW.as_millis() as i64;
+    let since = open - millis(throughput::WINDOW);
     let series = match store.peaks_since(SOURCE_LAG_METRIC, LAG_TIER.bucket_ms(), since) {
         Ok(series) => series,
         Err(e) => {
@@ -2532,7 +2533,7 @@ impl Logged {
     }
 }
 
-/// Every worker's latest row at `warn` or `error` per class and type in the last [`WORKER_LOG_WINDOW_MS`], read once for
+/// Every worker's latest row at `warn` or `error` per class and type in the last [`WORKER_LOG_WINDOW`], read once for
 /// [`worker_logged_warnings`] and [`fold_logged_details`] both. A revoked worker's logs never speak for it, the same
 /// exclusion `worker_silent` and `enrolled_never_heartbeating` apply.
 fn recent_logs(store: Option<&RegistryStore>, credentials: &[WorkerCredentialRecord], now_ms: i64) -> Vec<Logged> {
@@ -2546,7 +2547,7 @@ fn recent_logs(store: Option<&RegistryStore>, credentials: &[WorkerCredentialRec
     let levels = ["warn".to_string(), "error".to_string()];
     // One query, not a page walk: no cap to pick means no cap to pick wrong -- whatever the table holds, past
     // `LOGS_KEPT` or not, this reads the window once and groups as it goes.
-    let rows = match store.latest_log_by_type(&levels, now_ms - WORKER_LOG_WINDOW_MS, now_ms) {
+    let rows = match store.latest_log_by_type(&levels, now_ms - millis(WORKER_LOG_WINDOW), now_ms) {
         Ok(rows) => rows,
         Err(e) => {
             tracing::warn!(
@@ -2572,7 +2573,7 @@ fn recent_logs(store: Option<&RegistryStore>, credentials: &[WorkerCredentialRec
         .collect()
 }
 
-/// A worker that has logged at `warn` or `error` one class and type of line in the last [`WORKER_LOG_WINDOW_MS`] --
+/// A worker that has logged at `warn` or `error` one class and type of line in the last [`WORKER_LOG_WINDOW`] --
 /// not broken,
 /// but worth a look, so [`Severity::Warning`] rather than `Failed`, an error as much as a warning: what a log line
 /// says is worth reading, and the faults that stop work have catalog entries of their own. Reads the log store
@@ -3127,7 +3128,7 @@ fn declared_fields_drifted(store: Option<&RegistryStore>, now_ms: i64) -> Vec<Wa
             return Vec::new();
         }
     };
-    let window = DRIFT_WINDOW.as_millis() as i64;
+    let window = millis(DRIFT_WINDOW);
     // By group, pipeline, step and field, in the store's order, so each warning names its fields as they arrived.
     let current = |f: &DeclaredField| f.failed_last_ms.is_some_and(|at| now_ms - at <= window);
     let mut summed: Vec<DeclaredField> = Vec::new();
@@ -3204,7 +3205,7 @@ fn streams_unrouted(
 ) -> Vec<Warning> {
     let Some(store) = store else { return Vec::new() };
     let deployed = |group: &str| deployed_configs.get(group).cloned();
-    let sources = match store.unrouted_since(now_ms - DRIFT_WINDOW.as_millis() as i64, deployed) {
+    let sources = match store.unrouted_since(now_ms - millis(DRIFT_WINDOW), deployed) {
         Ok(sources) => sources,
         Err(e) => {
             tracing::warn!(
@@ -5122,7 +5123,12 @@ mod tests {
                 "w1",
                 1,
                 Some("g"),
-                &[log_event(0, NOW - WORKER_LOG_WINDOW_MS - 1, "warn", "too long ago")],
+                &[log_event(
+                    0,
+                    NOW - millis(WORKER_LOG_WINDOW) - 1,
+                    "warn",
+                    "too long ago",
+                )],
             )
             .unwrap();
         assert!(log_warnings(&store).is_empty());
@@ -5256,7 +5262,13 @@ mod tests {
                 1,
                 Some("g"),
                 &[
-                    line_event(0, NOW - WORKER_LOG_WINDOW_MS - 1, "deploy.fetch_failed", "old", &[]),
+                    line_event(
+                        0,
+                        NOW - millis(WORKER_LOG_WINDOW) - 1,
+                        "deploy.fetch_failed",
+                        "old",
+                        &[],
+                    ),
                     line_event(1, NOW - 1_000, "heartbeats.failed", "fresh", &[]),
                 ],
             )

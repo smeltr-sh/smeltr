@@ -15,6 +15,7 @@
 //! Every thread in one process belongs to the one group named in `WorkerConfig::group_id`, which is why the
 //! leader's answer is one policy for the process rather than one directive per thread.
 
+use crate::core::time::millis;
 use crate::sync::{Condvar, Mutex};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -4915,7 +4916,7 @@ fn ledger_file_name(key: &heartbeat::SourceKey, epoch: u64) -> String {
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64)
+        .map_or(0, millis)
 }
 
 /// Capped exponential backoff with jitter, so a fleet that all failed on one commit does not retry in step.

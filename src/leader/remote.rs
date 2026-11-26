@@ -12,6 +12,7 @@
 //!
 //! The remote's credential is a leader setting sealed under the secrets key, and never in a bundle.
 
+use crate::core::time::millis;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
@@ -1026,7 +1027,7 @@ pub async fn push_saves(state: AppState) {
                 continue;
             }
         };
-        let retry = remote.poll.unwrap_or(DEFAULT_POLL).as_millis() as i64;
+        let retry = millis(remote.poll.unwrap_or(DEFAULT_POLL));
         let repo = git::repo_path(&state.data_dir);
         let failures = state.remote.push_failures();
         let now = super::warnings::now_millis();

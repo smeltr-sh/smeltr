@@ -18,6 +18,7 @@
 //! Only tables in S3, or a store that speaks its API, are written. Storage is signed with what the destination names,
 //! else with what the catalog vends, renewed before it expires, else with the host's credentials.
 
+use crate::core::time::millis;
 use crate::sync::Mutex;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -906,9 +907,7 @@ impl IcebergCommitter {
             snapshot_id,
             parent_snapshot_id: parent.map(|p| p.snapshot_id),
             sequence_number,
-            timestamp_ms: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |d| d.as_millis() as i64),
+            timestamp_ms: SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, millis),
             manifest_list: self.meta.uri(&list_name),
             summary: summary(files, &entries, parent),
             schema_id: Some(self.schema.schema_id),
