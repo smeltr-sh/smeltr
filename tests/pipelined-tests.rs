@@ -1,11 +1,21 @@
 //! `io::pipelined::Pool` — the shared machinery a blocking destination
 //! gets `dispatch`/`poll_completions` from.
 
+use crate::harness::{wait_for, wait_until};
 use smeltr::io::pipelined::{Delivered, Pool, Sender};
 use smeltr::io::{Rejection, Undelivered};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
+
+/// How long a test waits for what it expects.
+const WITHIN: Duration = Duration::from_secs(5);
+
+/// Long enough for a submit that is not blocked to have returned.
+const SUBMIT_RETURNS: Duration = Duration::from_millis(150);
+
+/// Long enough for a sender that has returned to have handed its answer over.
+const ANSWER_HANDED_OVER: Duration = Duration::from_millis(20);
 
 /// A request that failed, its batch's rows 3 and 4 undelivered.
 fn failed() -> Delivered {
@@ -161,7 +171,7 @@ fn submit_blocks_once_every_sender_is_busy() {
         s2.store(1, Ordering::SeqCst);
         pool
     });
-    std::thread::sleep(Duration::from_millis(150));
+    std::thread::sleep(SUBMIT_RETURNS);
     assert_eq!(
         submitted.load(Ordering::SeqCst),
         0,
@@ -269,10 +279,10 @@ fn a_sender_that_has_answered_is_not_counted_busy() {
     for b in 0..4u64 {
         pool.submit(b, vec![()]).unwrap();
         // Counted as the sender returns: the pause covers only its handing the answer over, not its being scheduled.
-        while sent.load(Ordering::SeqCst) <= b as usize {
-            std::thread::yield_now();
-        }
-        std::thread::sleep(Duration::from_millis(20));
+        wait_until("the sender to return", WITHIN, || {
+            sent.load(Ordering::SeqCst) > b as usize
+        });
+        std::thread::sleep(ANSWER_HANDED_OVER);
     }
     assert_eq!(pool.spawned(), 1);
     assert_eq!(pool.poll().unwrap().len(), 4, "every answer is still reported");
@@ -301,7 +311,7 @@ fn a_sender_past_the_start_waits_to_be_lent_its_memory() {
         done.store(true, Ordering::SeqCst);
         pool
     });
-    std::thread::sleep(Duration::from_millis(150));
+    std::thread::sleep(SUBMIT_RETURNS);
     assert!(
         !submitted.load(Ordering::SeqCst),
         "no sender was lent and none was free"
@@ -342,8 +352,11 @@ fn a_failed_batch_is_reported_beside_the_batches_that_landed() {
     pool.submit(1, vec![0]).unwrap();
     pool.submit(2, vec![51]).unwrap();
     pool.submit(3, vec![100]).unwrap();
-    std::thread::sleep(Duration::from_millis(300));
-    let done = pool.poll().expect("a failure fails no poll");
+    let mut done = Vec::new();
+    wait_until("the three batches to be answered", WITHIN, || {
+        done.extend(pool.poll().expect("a failure fails no poll"));
+        done.len() == 3
+    });
     let failed: Vec<(u64, bool)> = done.iter().map(|c| (c.batch, c.undelivered.is_some())).collect();
     assert_eq!(failed, vec![(1, false), (2, true), (3, false)]);
 
@@ -382,10 +395,13 @@ impl Sender for Part {
 /// what every request refused.
 #[test]
 fn a_batch_of_several_requests_completes_once_with_all_their_refusals() {
+    /// A pause, counted from the submit, that ends after the second request's answer (100 ms) and before the third's
+    /// (150 ms).
+    const BEFORE_THE_LAST_ANSWER: Duration = Duration::from_millis(120);
     let mut pool = Pool::new((0..3).map(|_| Part).collect(), 3);
     pool.submit(7, vec![(50, Some(0)), (100, Some(1)), (150, Some(2))])
         .unwrap();
-    std::thread::sleep(Duration::from_millis(120));
+    std::thread::sleep(BEFORE_THE_LAST_ANSWER);
     assert!(
         pool.poll().unwrap().is_empty(),
         "not before its last request is answered"
@@ -407,14 +423,10 @@ fn a_failed_request_fails_its_batch_and_no_other() {
     let mut pool = Pool::new((0..3).map(|_| Part).collect(), 3);
     pool.submit(1, vec![(0, None), (1000, Some(0))]).unwrap();
     pool.submit(2, vec![(0, Some(5))]).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let done = loop {
-        let done = pool.poll().expect("the batch beside it lands");
-        if !done.is_empty() || Instant::now() > deadline {
-            break done;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    };
+    let done = wait_for("the batch beside the failed one to land", WITHIN, || {
+        Some(pool.poll().expect("the batch beside it lands")).filter(|done| !done.is_empty())
+    })
+    .unwrap_or_default();
     assert_eq!(done.iter().map(|c| c.batch).collect::<Vec<_>>(), vec![2]);
     assert!(pool.poll().unwrap().is_empty(), "not while a request of it is open");
     pool.drain().unwrap();
