@@ -6,8 +6,8 @@
 //! (`alerts_told` in the store). A row is written only once the channel took the send, so a send that failed is
 //! made again on the next look, and a restarted leader neither repeats nor drops one.
 
+use crate::sync::Mutex;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Mutex;
 use std::time::Duration;
 
 use axum::Json;
@@ -167,8 +167,8 @@ pub struct Alerts {
 }
 
 impl Alerts {
-    fn held(&self) -> std::sync::MutexGuard<'_, HashMap<String, Failing>> {
-        self.failing.lock().unwrap_or_else(|e| e.into_inner())
+    fn held(&self) -> crate::sync::MutexGuard<'_, HashMap<String, Failing>> {
+        self.failing.lock()
     }
 
     /// Each channel whose last send failed, by id.

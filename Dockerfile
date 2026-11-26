@@ -37,7 +37,7 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 # packages. The record is a loadable section, which `strip` keeps. It names crates, so a vendored C library shows as
 # its sys crate's version, and advisories reach it only through RUSTSEC; the weekly check lists those libraries.
 RUN --mount=type=cache,target=/root/.cargo/registry \
-    cargo install cargo-auditable --version 0.7.7 --locked
+    cargo install cargo-auditable --version 0.7.8 --locked
 WORKDIR /src
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY src/ src/

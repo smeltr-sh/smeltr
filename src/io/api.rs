@@ -881,8 +881,8 @@ fn links(header: &str) -> Vec<(String, String)> {
 mod tests {
     use super::*;
     use crate::io::TopicPartition;
+    use crate::sync::Mutex;
     use std::collections::VecDeque;
-    use std::sync::Mutex;
 
     /// Answers each GET from a script, and records the address asked.
     struct Scripted {
@@ -892,7 +892,7 @@ mod tests {
 
     impl Fetch for Scripted {
         fn ask(&mut self, url: &str) -> Result<Answer, IoError> {
-            self.asked.lock().unwrap().push(url.to_string());
+            self.asked.lock().push(url.to_string());
             self.answers.pop_front().unwrap_or_else(|| Ok(ok("")))
         }
     }
@@ -974,7 +974,7 @@ mod tests {
         );
         let second = poll(&mut p);
         assert_eq!(second[0].bytes().unwrap(), b"c");
-        assert_eq!(*asked.lock().unwrap(), ["http://api/first?from=start", "http://api/2"]);
+        assert_eq!(*asked.lock(), ["http://api/first?from=start", "http://api/2"]);
 
         // The second page commits first: nothing moves until the first does.
         commit(&mut p, &second);
@@ -1014,7 +1014,7 @@ mod tests {
         p.next_poll = Instant::now();
         poll(&mut p);
         assert_eq!(
-            *asked.lock().unwrap(),
+            *asked.lock(),
             [
                 "http://api/first?from=C",
                 "http://api/first?from=http://api/first?from=C"
@@ -1061,7 +1061,7 @@ mod tests {
         p.pacer.retry_now();
         assert_eq!(poll(&mut p)[0].bytes().unwrap(), b"b");
         assert_eq!(p.connection_error(), None);
-        assert!(asked.lock().unwrap()[1..].iter().all(|u| u == "http://api/2"));
+        assert!(asked.lock()[1..].iter().all(|u| u == "http://api/2"));
     }
 
     /// A kind that always links onward, to `x` appended or to the address its answer names; fixes its start
@@ -1112,7 +1112,7 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        assert_eq!(*asked.lock().unwrap(), ["http://api/1", "http://api/1x"]);
+        assert_eq!(*asked.lock(), ["http://api/1", "http://api/1x"]);
     }
 
     #[test]
@@ -1133,7 +1133,7 @@ mod tests {
         let first = poll(&mut p);
         let second = poll(&mut p);
         assert!(poll(&mut p).is_empty());
-        assert_eq!(*asked.lock().unwrap(), ["http://api/1", "http://api/2"]);
+        assert_eq!(*asked.lock(), ["http://api/1", "http://api/2"]);
         p.take_progress();
         commit(&mut p, &first);
         assert_eq!(p.take_progress(), None, "the poll is not delivered whole");
@@ -1235,7 +1235,7 @@ mod tests {
         let (mut p, asked) = poller(vec![Ok(ok("a"))]);
         p.block().unwrap();
         assert!(poll(&mut p).is_empty());
-        assert!(asked.lock().unwrap().is_empty());
+        assert!(asked.lock().is_empty());
         p.release().unwrap();
         assert_eq!(poll(&mut p).len(), 1);
     }

@@ -12,8 +12,8 @@
 //! A refused attempt still counts. Otherwise the window could be spent and then waited out at the cost of only
 //! the refusals.
 
+use crate::sync::Mutex;
 use std::collections::HashMap;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 /// The window both buckets count over.
@@ -72,7 +72,7 @@ impl Bucket {
     pub fn allow(&self, key: &str, now: Instant) -> bool {
         let key = bounded(key);
         let fresh = |t: &Instant| now.duration_since(*t) < WINDOW;
-        let mut attempts = self.attempts.lock().unwrap_or_else(|e| e.into_inner());
+        let mut attempts = self.attempts.lock();
 
         // A key whose attempts have all aged out goes with them: what the table holds is who is trying now.
         attempts.retain(|_, recent| recent.iter().any(fresh));
@@ -98,7 +98,7 @@ impl Bucket {
     /// interval rather than as a refusal.
     pub fn retry_after(&self, key: &str, now: Instant) -> Duration {
         let key = bounded(key);
-        let attempts = self.attempts.lock().unwrap_or_else(|e| e.into_inner());
+        let attempts = self.attempts.lock();
         let Some(recent) = attempts.get(key) else {
             return Duration::ZERO;
         };
@@ -117,7 +117,7 @@ impl Bucket {
 
     #[cfg(test)]
     fn tracked(&self) -> usize {
-        self.attempts.lock().unwrap().len()
+        self.attempts.lock().len()
     }
 }
 
@@ -265,7 +265,7 @@ mod tests {
         let b = Bucket::new(1);
         let now = Instant::now();
         b.allow(&"x".repeat(100_000), now);
-        let held = b.attempts.lock().unwrap();
+        let held = b.attempts.lock();
         assert!(held.keys().all(|k| k.len() <= MAX_KEY_LEN), "a key was stored whole");
     }
 
@@ -299,7 +299,7 @@ mod tests {
         for _ in 0..1000 {
             b.allow("alice", now);
         }
-        let held = b.attempts.lock().unwrap();
+        let held = b.attempts.lock();
         assert!(held["alice"].len() <= 3, "held {} attempts", held["alice"].len());
     }
 

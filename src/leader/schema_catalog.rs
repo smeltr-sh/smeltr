@@ -606,7 +606,11 @@ mod tests {
             serde_json::from_value(json!({ "config": config.to_string(), "pipeline": "bq" })).unwrap();
         let text = include_str!("../../tests/fixtures/bigquery-table.json");
         let records = records_of(text, Some(r"(\x00)")).unwrap();
-        let preview = crate::leader::preview::run_preview(req, Default::default(), &[], records);
+        let preview = crate::leader::preview::run_preview(
+            req,
+            Default::default(),
+            &crate::heartbeat::CaptureBatch::pasted(records),
+        );
         assert!(preview.succeeded(), "{:?}", preview.errors);
         let schema = from_rows("web", "Web", &preview.body.rows).unwrap().schema;
         let field = |path: &str| {

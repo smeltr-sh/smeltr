@@ -13,59 +13,65 @@
 >
   <h1>Release extras</h1>
   <p>
-    Each release carries <code>smeltr-extras.zip</code> beside its downloads. It holds the container image
-    for each architecture as a file, and the software bill of materials (SBOM) and scan reports for each
-    image. Before you unzip it, compare its SHA-256 checksum with the one shown beside it on the release
-    page, and stop if it differs.
+    Each release carries <code>smeltr-extras.zip</code> beside its downloads. Before you unzip it, compare
+    its SHA-256 checksum with the one shown beside it on the release page, and stop if it differs.
   </p>
 
   <h2 id="files">What the extras hold</h2>
-  <div class="table-scroll">
-    <table>
-      <thead><tr><th>File</th><th>What it is</th></tr></thead>
-      <tbody>
-        <tr
-          ><th><code>smeltr-image.tar.gz</code></th><td
-            >The container image, for a host that cannot reach the registry. See
-            <a href="/docs/install-leader/container#archive">Load an image archive</a>.</td
-          ></tr
-        >
-        <tr
-          ><th><code>smeltr-sbom.cdx.json</code></th><td
-            >The image's SBOM, in
-            <a href="https://cyclonedx.org/">CycloneDX</a> JSON: its operating system packages and
-            the libraries built into Smeltr. The published image carries the same SBOM, signed; see
-            <a href="/docs/install-leader/container#pull">Pull and verify the image</a>.</td
-          ></tr
-        >
-        <tr
-          ><th><code>smeltr-cves.txt</code></th><td
-            >Known vulnerabilities in those packages and libraries, found by
-            <a href="https://trivy.dev/">Trivy</a> when the release was built.</td
-          ></tr
-        >
-        <tr
-          ><th><code>smeltr-stig.html</code></th><td
-            >The image checked by <a href="https://www.open-scap.org/">OpenSCAP</a> against DISA's
-            General Purpose Operating System
-            <a href="https://public.cyber.mil/stigs/">Security Requirements Guide</a> (SRG), the
-            baseline that operating system STIGs are built from, with
-            <a href="https://github.com/chainguard-dev/stigs">Chainguard's profile</a> for Wolfi images.</td
-          ></tr
-        >
-      </tbody>
-    </table>
-  </div>
+
+  <h3>Container image</h3>
   <p>
-    Each file has an Arm64 version, with <code>-arm64</code> added to the name before the extension:
-    <code>smeltr-image-arm64.tar.gz</code>, <code>smeltr-sbom-arm64.cdx.json</code>,
-    <code>smeltr-stig-arm64.html</code> and <code>smeltr-cves-arm64.txt</code>.
+    <code>smeltr-image-linux.tar.gz</code> (Linux x86-64),
+    <code>smeltr-image-linux-arm64.tar.gz</code> (Linux Arm64)
+  </p>
+  <p>
+    The container image, for a host that cannot reach the registry. See
+    <a href="/docs/install-leader/container#archive">Load an image archive</a>.
+  </p>
+
+  <h3>SBOM</h3>
+  <p>
+    <code>smeltr-sbom-linux.cdx.json</code> (Linux x86-64),
+    <code>smeltr-sbom-linux-arm64.cdx.json</code>
+    (Linux Arm64),
+    <code>smeltr-sbom-windows.cdx.json</code> (Windows)
+  </p>
+  <p>
+    The software bill of materials (SBOM), in <a href="https://cyclonedx.org/">CycloneDX</a> JSON:
+    the libraries built into Smeltr, and on Linux the image's operating system packages. The
+    published image carries its SBOM, signed; see
+    <a href="/docs/install-leader/container#pull">Pull and verify the image</a>.
+  </p>
+
+  <h3>CVE report</h3>
+  <p>
+    <code>smeltr-cves-linux.txt</code> (Linux x86-64), <code>smeltr-cves-linux-arm64.txt</code>
+    (Linux Arm64),
+    <code>smeltr-cves-windows.txt</code> (Windows)
+  </p>
+  <p>
+    Known vulnerabilities in the libraries built into Smeltr, and on Linux in the image's operating
+    system packages, found by <a href="https://trivy.dev/">Trivy</a> when the release was built.
+  </p>
+
+  <h3>STIG report</h3>
+  <p>
+    <code>smeltr-stig-linux.html</code> (Linux x86-64), <code>smeltr-stig-linux-arm64.html</code> (Linux
+    Arm64)
+  </p>
+  <p>
+    The image checked by <a href="https://www.open-scap.org/">OpenSCAP</a> against DISA's General
+    Purpose Operating System
+    <a href="https://public.cyber.mil/stigs/">Security Requirements Guide</a>
+    (SRG), the baseline that operating system Security Technical Implementation Guides (STIGs) are built
+    from, with
+    <a href="https://github.com/chainguard-dev/stigs">Chainguard's profile</a> for Wolfi images.
   </p>
 
   <h2 id="reports">Read the reports</h2>
   <p>
-    The CVE and STIG reports describe the image on the day the release was built. A vulnerability
-    found since then is not in them: scan the image again to see it.
+    The CVE and STIG reports describe the release on the day it was built. A vulnerability found
+    since then is not in them: scan the image or <code>smeltr.exe</code> again to see it.
   </p>
   <p>
     The STIG report, an OpenSCAP scan against the SRG, marks rules a container cannot meet, such as

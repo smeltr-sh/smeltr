@@ -6,10 +6,11 @@
 //! invisible to anything but the whole thing.
 
 use crate::harness::receiver::free_loopback;
+use smeltr::sync::Mutex;
 use std::io::BufRead;
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 
 const ORIGIN_HOST: &str = "127.0.0.1";
 
@@ -51,17 +52,17 @@ impl Drop for Leader {
 /// the whole class of failure.
 const CONCURRENT_STARTS: usize = 4;
 
-static STARTS_FREE: std::sync::Mutex<usize> = std::sync::Mutex::new(CONCURRENT_STARTS);
-static A_START_FINISHED: std::sync::Condvar = std::sync::Condvar::new();
+static STARTS_FREE: smeltr::sync::Mutex<usize> = smeltr::sync::Mutex::new(CONCURRENT_STARTS);
+static A_START_FINISHED: smeltr::sync::Condvar = smeltr::sync::Condvar::new();
 
 /// Held from spawning a leader until it answers. Dropping it lets the next one begin.
 struct StartPermit;
 
 impl StartPermit {
     fn acquire() -> StartPermit {
-        let mut free = STARTS_FREE.lock().unwrap_or_else(|e| e.into_inner());
+        let mut free = STARTS_FREE.lock();
         while *free == 0 {
-            free = A_START_FINISHED.wait(free).unwrap_or_else(|e| e.into_inner());
+            free = A_START_FINISHED.wait(free);
         }
         *free -= 1;
         StartPermit
@@ -70,7 +71,7 @@ impl StartPermit {
 
 impl Drop for StartPermit {
     fn drop(&mut self) {
-        *STARTS_FREE.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+        *STARTS_FREE.lock() += 1;
         A_START_FINISHED.notify_one();
     }
 }
@@ -138,7 +139,7 @@ fn serve(dir: &std::path::Path, extra: &[(&str, &str)]) -> Result<Leader, String
     let pipe = child.stderr.take().unwrap();
     std::thread::spawn(move || {
         for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
-            let mut held = sink.lock().unwrap();
+            let mut held = sink.lock();
             held.push_str(&line);
             held.push('\n');
         }
@@ -185,7 +186,7 @@ fn serve(dir: &std::path::Path, extra: &[(&str, &str)]) -> Result<Leader, String
 
 impl Leader {
     fn console(&self) -> String {
-        self.console.lock().unwrap().clone()
+        self.console.lock().clone()
     }
 
     /// Sign in and keep the cookie and the CSRF value, the way the GUI does.
@@ -945,7 +946,7 @@ fn an_administrator_creates_an_account_that_can_then_sign_in() {
 struct FakeModel {
     base: String,
     /// Each request the agent's turns sent.
-    asked: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    asked: std::sync::Arc<smeltr::sync::Mutex<Vec<serde_json::Value>>>,
     _runtime: tokio::runtime::Runtime,
 }
 
@@ -965,7 +966,7 @@ impl FakeModel {
             .block_on(tokio::net::TcpListener::bind((ORIGIN_HOST, 0)))
             .unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
-        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let asked = std::sync::Arc::new(smeltr::sync::Mutex::new(Vec::new()));
         let kept = asked.clone();
         let app = axum::Router::new()
             .route(
@@ -996,7 +997,7 @@ impl FakeModel {
                     move |headers: axum::http::HeaderMap, axum::Json(body): axum::Json<serde_json::Value>| async move {
                         use axum::response::IntoResponse;
                         if body.get("tools").is_some() {
-                            kept.lock().unwrap().push(body.clone());
+                            kept.lock().push(body.clone());
                         }
                         if headers.get("x-api-key").and_then(|v| v.to_str().ok()) != Some(MODEL_KEY) {
                             return (
@@ -1345,7 +1346,7 @@ fn a_persons_agent_calls_the_api_as_them_within_what_they_let_it() {
     );
     assert_eq!(status, 202);
     turn_ended(&leader, &op, &id);
-    let last = model.asked.lock().unwrap().last().cloned().unwrap();
+    let last = model.asked.lock().last().cloned().unwrap();
     assert_eq!(
         (&last["model"], &last["output_config"]["effort"]),
         (&serde_json::json!("claude-haiku-5-5"), &serde_json::json!("low")),
@@ -1378,7 +1379,7 @@ fn a_persons_agent_calls_the_api_as_them_within_what_they_let_it() {
     );
     assert_eq!(status, 202);
     turn_ended(&leader, &op, &id);
-    let first = model.asked.lock().unwrap().last().cloned().unwrap()["messages"][0].clone();
+    let first = model.asked.lock().last().cloned().unwrap()["messages"][0].clone();
     assert_eq!(
         first["content"][0]["text"], "Summary of the conversation before this:\nThey read what runs in shared.",
         "{first}"
@@ -2767,12 +2768,12 @@ impl Provider {
     }
 
     fn becomes(&self, person: Person) {
-        *self.state.person.lock().unwrap() = person;
+        *self.state.person.lock() = person;
     }
 
     /// Withdraw every refresh token handed out, as a provider does when the person's session there ends.
     fn withdraws_grants(&self) {
-        self.state.refresh_tokens.lock().unwrap().clear();
+        self.state.refresh_tokens.lock().clear();
     }
 }
 
@@ -2806,8 +2807,8 @@ async fn authorize(
     assert_eq!(q["client_id"], CLIENT_ID);
     assert_eq!(q["response_type"], "code");
     assert_eq!(q["code_challenge_method"], "S256");
-    let code = format!("code-{}", p.codes.lock().unwrap().len());
-    p.codes.lock().unwrap().insert(
+    let code = format!("code-{}", p.codes.lock().len());
+    p.codes.lock().insert(
         code.clone(),
         Issued {
             nonce: q["nonce"].clone(),
@@ -2849,14 +2850,14 @@ async fn token(
     if form.get("grant_type").map(String::as_str) == Some("refresh_token") {
         let spent = form
             .get("refresh_token")
-            .is_some_and(|t| p.refresh_tokens.lock().unwrap().remove(t));
+            .is_some_and(|t| p.refresh_tokens.lock().remove(t));
         if !spent {
             return refused("unknown refresh token");
         }
         // A refreshed ID token carries no nonce (OpenID Connect Core 12.2).
         return axum::Json(tokens_for(&p, None)).into_response();
     }
-    let Some(issued) = form.get("code").and_then(|c| p.codes.lock().unwrap().remove(c)) else {
+    let Some(issued) = form.get("code").and_then(|c| p.codes.lock().remove(c)) else {
         return refused("unknown code");
     };
     let verifier = form.get("code_verifier").cloned().unwrap_or_default();
@@ -2870,7 +2871,7 @@ async fn token(
 /// The token endpoint's answer for whoever [`Person`] is now: an ID token carrying `nonce` if given, and a fresh
 /// refresh token.
 fn tokens_for(p: &ProviderState, nonce: Option<&str>) -> serde_json::Value {
-    let person = p.person.lock().unwrap().clone();
+    let person = p.person.lock().clone();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -2892,7 +2893,7 @@ fn tokens_for(p: &ProviderState, nonce: Option<&str>) -> serde_json::Value {
     let mut random = [0u8; 16];
     aws_lc_rs::rand::fill(&mut random).unwrap();
     let refresh_token = b64url(&random);
-    p.refresh_tokens.lock().unwrap().insert(refresh_token.clone());
+    p.refresh_tokens.lock().insert(refresh_token.clone());
     serde_json::json!({
         "access_token": "a", "token_type": "Bearer", "id_token": id_token, "refresh_token": refresh_token,
     })

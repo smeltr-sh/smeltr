@@ -3,7 +3,7 @@
 //! A test checks one thing: the fields it names, on the rows it names, and whether each of those rows was dropped.
 //! Nothing else the run makes is held, so a change to another field or another row never fails it, and the file
 //! says exactly what the test checks. Its fields and rows are what the records grid showed when it was locked
-//! (`TestDto::fields`).
+//! (`TestDto::table`).
 //!
 //! Two kinds share one shape -- `TestDto.pipeline` is the discriminant. `Some` checks one pipeline's output rows over
 //! the sample, run exactly as a pipeline preview runs it. `None` checks an end-to-end outcome instead: the sample
@@ -19,19 +19,21 @@
 //! with no payload, and a preview reports exceptions a delivered row never carries -- a test locking those would
 //! fail on noise nothing downstream sees.
 //!
-//! The instant is locked with them. `now()` and a reference-less `parseTime` read the clock, so an output is not a
-//! function of the config alone; re-running against the instant the test was locked at is what makes two runs
-//! comparable. A pipeline that reads no clock is unaffected by it.
+//! A run reads the instant its sample was taken as `now()` (`CaptureBatch::instant`), as the editor's preview does, so
+//! a test holds what the preview showed and every run of it is a function of the config alone.
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use super::bundle::{BundleError, FileSet, slugify};
+use crate::heartbeat::{CaptureBatch, CaptureColumn, CapturedRow};
 
 /// Where tests live inside a bundle, beside `pipelines/` and `samples/`.
 pub const TESTS_DIR: &str = "tests";
 
-/// A sample, what it is run through, and what the run made of the rows and fields the test checks.
+/// A sample, what it is run through, and the rows and fields of the run the test checks, as the preview showed them.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TestDto {
@@ -45,32 +47,42 @@ pub struct TestDto {
     /// The sample it runs over, by id. Held by reference so the two stay one thing: editing the sample is visible
     /// as a test that no longer passes, rather than silently diverging from a copy.
     pub sample: String,
-    /// The instant the test was first locked, in unix microseconds: what `now()` reads on every run of it, and on
-    /// every lock again, so that diff holds only what really changed.
-    pub locked_at: i64,
     /// Records the sample held when the test was locked. A sample that has since gained or lost records is a
     /// changed input, which the run reports rather than absorbs: it would also renumber the rows.
     pub rows_in: usize,
-    /// The fields checked, each named as the records grid names a column: a leaf of the document, its keys joined
-    /// by `plan::tree::push_key`.
-    pub fields: Vec<String>,
-    /// What the run made of each checked row, in the order it made them.
-    pub rows: Vec<Outcome>,
+    /// The rows checked, in the order the run made them, under the fields checked: each field named as the records
+    /// grid names a column, a leaf of the document, and typed as the run typed it. A field a row lacks is null, as a
+    /// sample's is, and so is every field of a row that made no document.
+    pub table: CaptureBatch,
+    /// Each row of `table`, in its order: which row it is, and how it was made.
+    pub shown: Vec<Shown>,
 }
 
-/// One document a run made on a checked row, cut down to the test's fields, or the row making none.
+/// Which row of a run a test's table row is, and how it was made.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Outcome {
+pub struct Shown {
     /// The row as the records grid numbers it: a pipeline test's output row, or an end-to-end test's record of the
     /// sample, which makes one document for each route that carries it.
     pub row: usize,
-    /// Each of the test's fields the document holds, by name. A field it lacks is absent here too, so gaining it
-    /// later is a difference. `None` is a row that made no document: a pipeline dropped it, or no route kept it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub values: Option<Map<String, Value>>,
+    /// The row made no document: a pipeline dropped it, or no route kept it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dropped: bool,
     /// Where an end-to-end test's document went. `None` for a pipeline test, and for a row making no document.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent: Option<Sent>,
+}
+
+/// One document a run made on a checked row, cut down to the test's fields, or the row making none: what a test
+/// compares, and what a difference shows of either side.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Outcome {
+    pub row: usize,
+    /// Each of the test's fields the document holds, by name. `None` is a row that made no document.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub values: Option<Map<String, Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub sent: Option<Sent>,
 }
 
@@ -84,7 +96,7 @@ pub struct Sent {
     pub destinations: Vec<String>,
 }
 
-/// One document a run made, whole, before a test cuts it down: what a run hands [`compare`].
+/// One document a run made, whole, before a test cuts it down.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Made {
     pub row: usize,
@@ -93,15 +105,23 @@ pub struct Made {
     pub sent: Option<Sent>,
 }
 
+/// What a run made, as a preview shows it: every document, and the type of each field, by the name the records grid
+/// gives it. A field the run gives no type is not compared by type.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Run {
+    pub made: Vec<Made>,
+    pub types: BTreeMap<String, String>,
+}
+
 impl Made {
-    /// What `fields` checks of it.
+    /// What `fields` checks of it. A field the document lacks, or holds null, is absent.
     pub fn cut(&self, fields: &[String]) -> Outcome {
         let values = self.document.as_ref().map(|document| {
             let mut leaves = Map::new();
             leaves_of(document, &mut String::new(), &mut leaves);
             fields
                 .iter()
-                .filter_map(|f| leaves.remove(f).map(|v| (f.clone(), v)))
+                .filter_map(|f| leaves.remove(f).filter(|v| !v.is_null()).map(|v| (f.clone(), v)))
                 .collect()
         });
         Outcome {
@@ -110,6 +130,38 @@ impl Made {
             sent: self.sent.clone(),
         }
     }
+}
+
+/// `document` holding only `fields`, named as [`leaves_of`] names them, in the document's own shape. An object left
+/// with none of them is gone.
+pub fn kept(document: &Value, fields: &[String]) -> Map<String, Value> {
+    match kept_under(document, "", fields) {
+        Some(Value::Object(object)) => object,
+        _ => Map::new(),
+    }
+}
+
+/// `value`, the field named `path`, holding only those of `fields` it holds, as [`kept`] cuts a document; `None` when
+/// it holds none.
+pub fn kept_under(value: &Value, path: &str, fields: &[String]) -> Option<Value> {
+    fn keep(value: &Value, path: &mut String, fields: &[String]) -> Option<Value> {
+        match value {
+            Value::Object(object) if !object.is_empty() => {
+                let mut out = Map::new();
+                for (key, v) in object {
+                    let len = path.len();
+                    crate::plan::tree::push_key(path, key);
+                    if let Some(v) = keep(v, path, fields) {
+                        out.insert(key.clone(), v);
+                    }
+                    path.truncate(len);
+                }
+                (!out.is_empty()).then_some(Value::Object(out))
+            }
+            _ => fields.contains(path).then(|| value.clone()),
+        }
+    }
+    keep(value, &mut path.to_string(), fields)
 }
 
 /// Every leaf of `value` under `path`, by its name, as the records grid names its columns: an object's keys are
@@ -141,7 +193,6 @@ pub struct Lock {
     #[serde(default)]
     pub pipeline: Option<String>,
     pub sample: String,
-    pub locked_at: i64,
     /// The fields to check. `None` checks every field the run made.
     #[serde(default)]
     pub fields: Option<Vec<String>>,
@@ -150,21 +201,21 @@ pub struct Lock {
     pub rows: Option<Vec<usize>>,
 }
 
-/// What a lock holds of a run: [`TestDto::rows_in`], [`TestDto::fields`] and [`TestDto::rows`].
+/// What a lock holds of a run: [`TestDto::rows_in`], [`TestDto::table`] and [`TestDto::shown`].
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Locked {
     pub rows_in: usize,
-    pub fields: Vec<String>,
-    pub rows: Vec<Outcome>,
+    pub table: CaptureBatch,
+    pub shown: Vec<Shown>,
 }
 
 impl Lock {
-    /// What `made`, a run over a sample of `rows_in` records, holds of these fields and rows.
-    pub fn locked(&self, rows_in: usize, made: &[Made]) -> Locked {
+    /// What `run`, over a sample of `rows_in` records, holds of these fields and rows.
+    pub fn locked(&self, rows_in: usize, run: &Run) -> Locked {
         let fields = self.fields.clone().unwrap_or_else(|| {
             let mut leaves = Map::new();
-            for document in made.iter().filter_map(|m| m.document.as_ref()) {
+            for document in run.made.iter().filter_map(|m| m.document.as_ref()) {
                 leaves_of(document, &mut String::new(), &mut leaves);
             }
             leaves.into_iter().map(|(field, _)| field).collect()
@@ -172,14 +223,39 @@ impl Lock {
         let rows = self
             .rows
             .clone()
-            .unwrap_or_else(|| made.iter().map(|m| m.row).collect());
+            .unwrap_or_else(|| run.made.iter().map(|m| m.row).collect());
+        let outcomes: Vec<Outcome> = first_seen(rows)
+            .into_iter()
+            .flat_map(|row| made_on(row, &fields, &run.made))
+            .collect();
+        let columns = (fields.iter())
+            .map(|name| CaptureColumn {
+                name: name.clone(),
+                ty: run
+                    .types
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| crate::core::column::DataType::Variant.spell()),
+            })
+            .collect();
+        let rows = (outcomes.iter())
+            .map(|o| CapturedRow {
+                values: (fields.iter())
+                    .map(|f| o.values.as_ref().and_then(|v| v.get(f)).cloned().unwrap_or_default())
+                    .collect(),
+                ..CapturedRow::default()
+            })
+            .collect();
         Locked {
             rows_in,
-            rows: first_seen(rows)
-                .into_iter()
-                .flat_map(|row| made_on(row, &fields, made))
+            table: CaptureBatch { columns, rows },
+            shown: (outcomes.into_iter())
+                .map(|o| Shown {
+                    row: o.row,
+                    dropped: o.values.is_none(),
+                    sent: o.sent,
+                })
                 .collect(),
-            fields,
         }
     }
 
@@ -190,10 +266,9 @@ impl Lock {
             name: self.name,
             pipeline: self.pipeline,
             sample: self.sample,
-            locked_at: self.locked_at,
             rows_in: locked.rows_in,
-            fields: locked.fields,
-            rows: locked.rows,
+            table: locked.table,
+            shown: locked.shown,
         }
     }
 }
@@ -234,9 +309,30 @@ pub struct TestSummary {
 }
 
 impl TestDto {
+    /// The fields it checks, in the table's order.
+    pub fn fields(&self) -> Vec<String> {
+        self.table.columns.iter().map(|c| c.name.clone()).collect()
+    }
+
+    /// Each row it checks, as a run's [`Made::cut`] holds it: the fields its row holds, a null being one it lacks.
+    pub fn outcomes(&self) -> Vec<Outcome> {
+        (self.table.rows.iter().zip(&self.shown))
+            .map(|(row, shown)| Outcome {
+                row: shown.row,
+                values: (!shown.dropped).then(|| {
+                    (self.table.columns.iter().zip(&row.values))
+                        .filter(|(_, v)| !v.is_null())
+                        .map(|(c, v)| (c.name.clone(), v.clone()))
+                        .collect()
+                }),
+                sent: shown.sent.clone(),
+            })
+            .collect()
+    }
+
     /// The rows it checks, each once, in order.
     pub fn rows_checked(&self) -> Vec<usize> {
-        first_seen(self.rows.iter().map(|o| o.row))
+        first_seen(self.shown.iter().map(|s| s.row))
     }
 
     /// Every pipeline this test exercises, in the order first seen.
@@ -255,7 +351,7 @@ impl TestDto {
 
     /// The distinct names `pick` reads off where the outcomes went, in the order first seen.
     fn sent_names(&self, pick: impl Fn(&Sent) -> &String) -> Vec<String> {
-        first_seen(self.rows.iter().filter_map(|o| o.sent.as_ref()).map(pick).cloned())
+        first_seen(self.shown.iter().filter_map(|s| s.sent.as_ref()).map(pick).cloned())
     }
 
     pub fn summary(&self) -> TestSummary {
@@ -265,7 +361,7 @@ impl TestDto {
             pipeline: self.pipeline.clone(),
             sample: self.sample.clone(),
             rows_in: self.rows_in,
-            fields: self.fields.clone(),
+            fields: self.fields(),
             rows: self.rows_checked().len(),
             pipelines: self.pipelines_covered(),
             routes: self.routes_covered(),
@@ -280,10 +376,36 @@ impl TestDto {
 #[serde(rename_all = "camelCase")]
 pub struct Difference {
     pub row: usize,
+    /// Which of the row's documents, counted from 0 in the order they were made, or locked where the run made fewer.
+    pub document: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expected: Option<Outcome>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actual: Option<Outcome>,
+    /// The values that differ, where both sides made a document.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<FieldDifference>,
+}
+
+/// A value that differs from what a test locked, by its path in the document. An array is followed into its elements,
+/// and an element's own members, so a long array names only the elements that differ.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FieldDifference {
+    pub path: String,
+    /// What the test locked there; absent where it locked no value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locked: Option<Value>,
+    /// Whether the run made a value there.
+    pub made: bool,
+}
+
+/// A field the run types otherwise than the test locked it.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct Retyped {
+    pub field: String,
+    pub locked: String,
+    pub now: String,
 }
 
 /// What a run made of a test.
@@ -291,8 +413,14 @@ pub struct Difference {
 #[serde(rename_all = "camelCase")]
 pub struct Verdict {
     pub passed: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub first_difference: Option<Difference>,
+    /// Every document that differs, row by checked row in the test's order, each row's documents in the order they
+    /// were made.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub differences: Vec<Difference>,
+    /// Each field whose type changed. Its values may read the same and still not be what the test locked: `10` and
+    /// `10.0`, or a time and the text of one.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub retyped: Vec<Retyped>,
     /// Present when the sample no longer holds the records it held at lock. The input changed, so the test fails
     /// whatever the output says.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -306,34 +434,97 @@ pub struct RowsIn {
     pub now: usize,
 }
 
-/// Compare a run against what a test locked. `rows_in` is how many records the sample holds now. `made` is every
-/// document the run made, rows it made none on included -- the shape a preview already answers in.
+/// Compare a run against what a test locked. `rows_in` is how many records the sample holds now.
 ///
-/// Row by checked row, in the test's order: a row's documents are compared in the order they were made, each cut
+/// Every checked row, in the test's order: a row's documents are compared in the order they were made, each cut
 /// down to the test's fields; a row the run never reached made nothing, like a dropped one. A row the test does not
-/// check is never read.
-pub fn compare(test: &TestDto, rows_in: usize, made: &[Made]) -> Verdict {
-    let first = test.rows_checked().into_iter().find_map(|row| {
-        let mut want = test.rows.iter().filter(|o| o.row == row).cloned();
-        let mut got = made_on(row, &test.fields, made).into_iter();
-        loop {
-            match (want.next(), got.next()) {
-                (None, None) => return None,
+/// check is never read. Each field the run types is compared by its type too.
+pub fn compare(test: &TestDto, rows_in: usize, run: &Run) -> Verdict {
+    let fields = test.fields();
+    let outcomes = test.outcomes();
+    let mut differences = Vec::new();
+    for row in test.rows_checked() {
+        let want = outcomes.iter().filter(|o| o.row == row).cloned().map(Some);
+        let got = made_on(row, &fields, &run.made).into_iter().map(Some);
+        let pairs = (want.chain(std::iter::repeat(None))).zip(got.chain(std::iter::repeat(None)));
+        for (document, pair) in pairs.enumerate() {
+            match pair {
+                (None, None) => break,
                 (Some(w), Some(g)) if w.matches(&g) => continue,
-                (expected, actual) => {
-                    return Some(Difference { row, expected, actual });
-                }
+                (expected, actual) => differences.push(Difference {
+                    fields: differing_fields(expected.as_ref(), actual.as_ref()),
+                    row,
+                    document,
+                    expected,
+                    actual,
+                }),
             }
         }
-    });
+    }
+    let retyped: Vec<Retyped> = (test.table.columns.iter())
+        .filter_map(|c| {
+            let now = run.types.get(&c.name)?;
+            (*now != c.ty).then(|| Retyped {
+                field: c.name.clone(),
+                locked: c.ty.clone(),
+                now: now.clone(),
+            })
+        })
+        .collect();
     let rows_in = (rows_in != test.rows_in).then_some(RowsIn {
         locked: test.rows_in,
         now: rows_in,
     });
     Verdict {
-        passed: first.is_none() && rows_in.is_none(),
-        first_difference: first,
+        passed: differences.is_empty() && retyped.is_empty() && rows_in.is_none(),
+        differences,
+        retyped,
         rows_in,
+    }
+}
+
+/// The values that differ between `expected` and `actual`, where both made a document: a value one side holds and the
+/// other lacks is one of them.
+fn differing_fields(expected: Option<&Outcome>, actual: Option<&Outcome>) -> Vec<FieldDifference> {
+    let (Some(Some(a)), Some(Some(b))) = (expected.map(|o| o.values.as_ref()), actual.map(|o| o.values.as_ref()))
+    else {
+        return Vec::new();
+    };
+    let names: BTreeSet<&String> = a.keys().chain(b.keys()).collect();
+    let mut found = Vec::new();
+    for name in names {
+        differing(&mut name.clone(), a.get(name), b.get(name), &mut found);
+    }
+    found
+}
+
+/// Each value under `path` where `locked` and `made` differ, into `found`: arrays element by element and objects member
+/// by member, at any depth.
+fn differing(path: &mut String, locked: Option<&Value>, made: Option<&Value>, found: &mut Vec<FieldDifference>) {
+    let len = path.len();
+    match (locked, made) {
+        (Some(Value::Array(x)), Some(Value::Array(y))) => {
+            for i in 0..x.len().max(y.len()) {
+                path.push_str(&format!("[{i}]"));
+                differing(path, x.get(i), y.get(i), found);
+                path.truncate(len);
+            }
+        }
+        (Some(Value::Object(x)), Some(Value::Object(y))) if !x.is_empty() && !y.is_empty() => {
+            let keys: BTreeSet<&String> = x.keys().chain(y.keys()).collect();
+            for key in keys {
+                crate::plan::tree::push_key(path, key);
+                differing(path, x.get(key), y.get(key), found);
+                path.truncate(len);
+            }
+        }
+        (Some(x), Some(y)) if same(x, y) => {}
+        (None, None) => {}
+        (locked, made) => found.push(FieldDifference {
+            path: path.clone(),
+            locked: locked.cloned(),
+            made: made.is_some(),
+        }),
     }
 }
 
@@ -467,18 +658,24 @@ mod tests {
         dir
     }
 
-    /// A pipeline test checking `fields` on what `made` holds of the rows it names.
+    /// A pipeline test checking `fields` on what `made` holds of the rows it names, in the order it names them.
     fn locked(id: &str, fields: &[&str], made: &[Made]) -> TestDto {
-        let fields: Vec<String> = fields.iter().map(|f| f.to_string()).collect();
-        TestDto {
-            id: id.to_string(),
+        let lock = Lock {
             name: id.to_string(),
             pipeline: Some("orders-normalize".to_string()),
             sample: "orders-west, ordinary hour".to_string(),
-            locked_at: 1_757_142_012_000_000,
-            rows_in: 3,
-            rows: made.iter().map(|m| m.cut(&fields)).collect(),
-            fields,
+            fields: Some(fields.iter().map(|f| f.to_string()).collect()),
+            rows: Some(made.iter().map(|m| m.row).collect()),
+        };
+        let locked = lock.locked(3, &run(made));
+        lock.test(id.to_string(), locked)
+    }
+
+    /// A run that made `made` and types none of its fields.
+    fn run(made: &[Made]) -> Run {
+        Run {
+            made: made.to_vec(),
+            types: BTreeMap::new(),
         }
     }
 
@@ -516,22 +713,76 @@ mod tests {
     fn a_checked_row_the_run_never_reaches_fails_and_locks_again_as_making_nothing() {
         let test = locked("ids", &["id"], &[row(0, json!({"id": 1})), row(1, json!({"id": 2}))]);
         let shrunk = [row(0, json!({"id": 1}))];
-        let verdict = compare(&test, test.rows_in, &shrunk);
-        assert_eq!(verdict.first_difference.as_ref().map(|d| d.row), Some(1));
-        assert!(verdict.first_difference.unwrap().actual.unwrap().values.is_none());
+        let verdict = compare(&test, test.rows_in, &run(&shrunk));
+        assert_eq!(verdict.differences.first().map(|d| d.row), Some(1));
+        assert!(verdict.differences[0].clone().actual.unwrap().values.is_none());
 
-        let again = TestDto {
-            rows: vec![shrunk[0].cut(&test.fields), dropped(1).cut(&test.fields)],
-            ..test
-        };
-        assert!(compare(&again, again.rows_in, &shrunk).passed);
+        let again = locked("ids", &["id"], &[shrunk[0].clone(), dropped(1)]);
+        assert!(compare(&again, again.rows_in, &run(&shrunk)).passed);
         assert!(
             !compare(
                 &again,
                 again.rows_in,
-                &[row(0, json!({"id": 1})), row(1, json!({"id": 2}))]
+                &run(&[row(0, json!({"id": 1})), row(1, json!({"id": 2}))])
             )
             .passed
+        );
+    }
+
+    /// Every row that differs is a difference, not only the first, each with the fields whose values differ in it.
+    #[test]
+    fn every_row_that_differs_is_named_with_its_fields() {
+        let test = locked(
+            "tax",
+            &["id", "tax", "coupon"],
+            &[
+                row(0, json!({"id": 1, "tax": 2.0})),
+                row(1, json!({"id": 2, "tax": 0.0})),
+                row(2, json!({"id": 3, "tax": 1.5, "coupon": "X"})),
+                row(3, json!({"id": 4})),
+            ],
+        );
+        let made = [
+            row(0, json!({"id": 1, "tax": 4.0})),
+            row(1, json!({"id": 2, "tax": 0.0})),
+            row(2, json!({"id": 3, "tax": 1.5})),
+            dropped(3),
+        ];
+        let verdict = compare(&test, 3, &run(&made));
+        let found: Vec<_> = (verdict.differences.iter())
+            .map(|d| {
+                (
+                    d.row,
+                    d.document,
+                    d.fields.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        assert_eq!(found, [(0, 0, vec!["tax"]), (2, 0, vec!["coupon"]), (3, 0, vec![])]);
+    }
+
+    /// An array that differs names only the elements that differ, and the members that differ in an element.
+    #[test]
+    fn an_array_that_differs_names_the_elements_that_differ() {
+        let test = locked(
+            "lists",
+            &["scores", "items"],
+            &[row(0, json!({"scores": [0, 3, 6, 9], "items": [{"a": 1, "b": 2}]}))],
+        );
+        let made = [row(0, json!({"scores": [0, 4, 6.0], "items": [{"a": 1, "b": 3}]}))];
+        let verdict = compare(&test, 3, &run(&made));
+        let field = |path: &str, locked: Value, made: bool| FieldDifference {
+            path: path.to_string(),
+            locked: Some(locked),
+            made,
+        };
+        assert_eq!(
+            verdict.differences[0].fields,
+            [
+                field("items[0].b", json!(2), true),
+                field("scores[1]", json!(3), true),
+                field("scores[3]", json!(9), false),
+            ]
         );
     }
 
@@ -551,14 +802,17 @@ mod tests {
             0,
             json!({"f": 0.1 + 0.2, "whole": 10, "id": 9_007_199_254_740_993_u64, "list": [0.1 + 1e-17, {"g": 2.5}]}),
         )];
-        assert!(compare(&test, test.rows_in, &near).passed);
+        assert!(compare(&test, test.rows_in, &run(&near)).passed);
         for far in [
             json!({"f": 0.300_001, "whole": 10.0, "id": 9_007_199_254_740_993_u64, "list": [0.1, {"g": 2.5}]}),
             json!({"f": 0.3, "whole": 10.0, "id": 9_007_199_254_740_992_u64, "list": [0.1, {"g": 2.5}]}),
             json!({"f": 0.3, "whole": 10.0, "id": 9_007_199_254_740_993_u64, "list": [0.1, {"g": 2.6}]}),
             json!({"f": "0.3", "whole": 10.0, "id": 9_007_199_254_740_993_u64, "list": [0.1, {"g": 2.5}]}),
         ] {
-            assert!(!compare(&test, test.rows_in, &[row(0, far.clone())]).passed, "{far}");
+            assert!(
+                !compare(&test, test.rows_in, &run(&[row(0, far.clone())])).passed,
+                "{far}"
+            );
         }
     }
 
@@ -574,26 +828,73 @@ mod tests {
             name: "n".to_string(),
             pipeline: Some("p".to_string()),
             sample: "s".to_string(),
-            locked_at: 7,
             fields: fields.map(|f| f.iter().map(|f| f.to_string()).collect()),
             rows,
         };
 
-        let chosen = lock(Some(&["a"]), Some(vec![2, 1, 2, 5])).locked(3, &made);
-        assert_eq!(chosen.fields, ["a"]);
-        assert_eq!(chosen.rows.iter().map(|o| o.row).collect::<Vec<_>>(), [2, 1, 5]);
+        let typed = Run {
+            made: made.to_vec(),
+            types: BTreeMap::from([("a".to_string(), "f64".to_string())]),
+        };
+        let chosen = lock(Some(&["a"]), Some(vec![2, 1, 2, 5])).locked(3, &typed);
         assert_eq!(
-            chosen.rows[0].values,
-            Some(json!({"a": 3.0}).as_object().unwrap().clone())
+            chosen.table.columns,
+            [CaptureColumn {
+                name: "a".to_string(),
+                ty: "f64".to_string()
+            }],
+            "a field is typed as the run typed it"
         );
-        assert!(chosen.rows[1].values.is_none() && chosen.rows[2].values.is_none());
+        assert_eq!(chosen.shown.iter().map(|s| s.row).collect::<Vec<_>>(), [2, 1, 5]);
+        assert_eq!(chosen.table.rows[0].values, [json!(3.0)]);
+        assert!(chosen.shown[1].dropped && chosen.shown[2].dropped);
 
         let everything = lock(None, None);
-        let test = everything.clone().test("t".to_string(), everything.locked(3, &made));
-        assert_eq!(test.fields, ["a", "b.c"]);
+        let test = everything
+            .clone()
+            .test("t".to_string(), everything.locked(3, &run(&made)));
+        assert_eq!(test.fields(), ["a", "b.c"]);
+        assert_eq!(
+            test.table.columns[1].ty, "variant",
+            "a field the run did not type holds any type"
+        );
         assert_eq!(test.rows_checked(), [0, 1, 2]);
-        assert_eq!((test.rows_in, test.locked_at), (3, 7));
-        assert!(compare(&test, 3, &made).passed);
+        assert_eq!(test.rows_in, 3);
+        assert!(compare(&test, 3, &run(&made)).passed);
+    }
+
+    /// A field whose type changed fails the test even where its value reads the same.
+    #[test]
+    fn a_field_whose_type_changed_fails() {
+        let made = [row(0, json!({"n": 10}))];
+        let typed = |ty: &str| Run {
+            made: made.to_vec(),
+            types: BTreeMap::from([("n".to_string(), ty.to_string())]),
+        };
+        let lock = Lock {
+            name: "n".to_string(),
+            pipeline: Some("p".to_string()),
+            sample: "s".to_string(),
+            fields: None,
+            rows: None,
+        };
+        let test = lock.clone().test("t".to_string(), lock.locked(1, &typed("i64")));
+        assert!(compare(&test, 1, &typed("i64")).passed);
+        let verdict = compare(&test, 1, &typed("f64"));
+        assert!(!verdict.passed);
+        assert_eq!(verdict.differences, [], "the value is the same");
+        assert_eq!(
+            verdict.retyped,
+            [Retyped {
+                field: "n".to_string(),
+                locked: "i64".to_string(),
+                now: "f64".to_string()
+            }]
+        );
+        assert!(
+            compare(&test, 1, &run(&made)).passed,
+            "a field the run does not type is not compared by type"
+        );
     }
 
     #[test]
@@ -609,13 +910,12 @@ mod tests {
 
         let read = read_test(&mut DirFileSet { root: &dir }, &test.id).unwrap().unwrap();
         assert_eq!(read.pipeline.as_deref(), Some("orders-normalize"));
-        assert_eq!(read.locked_at, test.locked_at);
-        assert_eq!(read.rows, test.rows);
+        assert_eq!(read.outcomes(), test.outcomes());
         assert_eq!(
-            read.rows[0].values,
+            read.outcomes()[0].values,
             Some(Map::from_iter([("total".into(), json!(48.2))]))
         );
-        assert_eq!(read.rows[1].values, None, "a dropped row holds no values");
+        assert_eq!(read.outcomes()[1].values, None, "a dropped row holds no values");
     }
 
     /// The test holds only the fields it checks: a nested one by its name, a key the grid quotes the way it quotes it.
@@ -652,9 +952,9 @@ mod tests {
     fn a_run_that_matches_passes() {
         let made = [row(0, json!({"a": 1})), dropped(1), row(2, json!({"a": 3}))];
         let test = locked("same", &["a"], &made);
-        let verdict = compare(&test, 3, &made);
+        let verdict = compare(&test, 3, &run(&made));
         assert!(verdict.passed);
-        assert_eq!(verdict.first_difference, None);
+        assert_eq!(verdict.differences, []);
     }
 
     /// A change to a field the test does not check, or to a row it does not check, never fails it.
@@ -669,15 +969,19 @@ mod tests {
             row(0, json!({"severity": "CHANGED"})),
             row(1, json!({"severity": "high", "port": 2222, "new": true})),
         ];
-        assert!(compare(&test, 3, &made).passed);
+        assert!(compare(&test, 3, &run(&made)).passed);
     }
 
     #[test]
     fn a_changed_field_is_reported_on_its_row() {
         let test = locked("severity", &["severity"], &[row(1, json!({"severity": "high"}))]);
-        let verdict = compare(&test, 3, &[row(0, json!({})), row(1, json!({"severity": "critical"}))]);
+        let verdict = compare(
+            &test,
+            3,
+            &run(&[row(0, json!({})), row(1, json!({"severity": "critical"}))]),
+        );
         assert!(!verdict.passed);
-        let d = verdict.first_difference.expect("it differs");
+        let d = verdict.differences.into_iter().next().expect("it differs");
         assert_eq!(d.row, 1);
         assert_eq!(d.expected.unwrap().values.unwrap()["severity"], json!("high"));
         assert_eq!(d.actual.unwrap().values.unwrap()["severity"], json!("critical"));
@@ -687,7 +991,7 @@ mod tests {
     #[test]
     fn a_field_the_row_gains_is_a_difference() {
         let test = locked("no user", &["user"], &[row(0, json!({"a": 1}))]);
-        let verdict = compare(&test, 3, &[row(0, json!({"a": 1, "user": "ana"}))]);
+        let verdict = compare(&test, 3, &run(&[row(0, json!({"a": 1, "user": "ana"}))]));
         assert!(!verdict.passed);
     }
 
@@ -695,20 +999,26 @@ mod tests {
     #[test]
     fn a_row_dropped_or_kept_against_the_lock_is_a_difference() {
         let kept = locked("kept", &["a"], &[row(0, json!({"a": 1}))]);
-        let d = compare(&kept, 3, &[dropped(0)]).first_difference.expect("it differs");
+        let d = compare(&kept, 3, &run(&[dropped(0)]))
+            .differences
+            .into_iter()
+            .next()
+            .expect("it differs");
         assert_eq!(d.actual.unwrap().values, None);
 
         let gone = locked("dropped", &[], &[dropped(2)]);
-        assert!(compare(&gone, 3, &[dropped(2)]).passed);
-        assert!(!compare(&gone, 3, &[row(2, json!({}))]).passed);
+        assert!(compare(&gone, 3, &run(&[dropped(2)])).passed);
+        assert!(!compare(&gone, 3, &run(&[row(2, json!({}))])).passed);
     }
 
     /// A row the run no longer reaches -- an unroll that made fewer rows -- has nothing on the run's side.
     #[test]
     fn a_row_the_run_does_not_reach_is_reported_as_making_nothing() {
         let test = locked("last", &["a"], &[row(4, json!({"a": 1}))]);
-        let d = compare(&test, 3, &[row(0, json!({"a": 1}))])
-            .first_difference
+        let d = compare(&test, 3, &run(&[row(0, json!({"a": 1}))]))
+            .differences
+            .into_iter()
+            .next()
             .expect("it differs");
         assert_eq!(d.row, 4);
         assert!(d.expected.is_some() && d.actual.is_some_and(|a| a.values.is_none()));
@@ -722,12 +1032,16 @@ mod tests {
             pipeline: None,
             ..locked("routed", &["a"], &one)
         };
-        assert!(compare(&test, 3, &one).passed);
+        assert!(compare(&test, 3, &run(&one)).passed);
         let two = [
             sent(0, json!({"a": 1}), "p1", "r1"),
             sent(0, json!({"a": 1}), "p2", "r2"),
         ];
-        let d = compare(&test, 3, &two).first_difference.expect("it differs");
+        let d = compare(&test, 3, &run(&two))
+            .differences
+            .into_iter()
+            .next()
+            .expect("it differs");
         assert!(d.expected.is_none(), "the test locks nothing past the first route");
         assert_eq!(d.actual.unwrap().sent.unwrap().route, "r2");
     }
@@ -737,12 +1051,12 @@ mod tests {
     fn a_sample_that_changed_size_fails_with_both_counts() {
         let made = [row(0, json!({"a": 1}))];
         let test = locked("grew", &["a"], &made);
-        let verdict = compare(&test, 4, &made);
+        let verdict = compare(&test, 4, &run(&made));
         assert!(!verdict.passed);
-        assert_eq!(verdict.first_difference, None);
+        assert_eq!(verdict.differences, []);
         assert_eq!(verdict.rows_in, Some(RowsIn { locked: 3, now: 4 }));
         assert_eq!(
-            compare(&test, 3, &made).rows_in,
+            compare(&test, 3, &run(&made)).rows_in,
             None,
             "an unchanged count is not reported"
         );

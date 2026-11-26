@@ -24,8 +24,8 @@
 //!   H --> P[answered with its cursor]
 //! ```
 
+use crate::sync::Mutex;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::heartbeat::{Hold, MAX_CURSOR, MAX_LEDGER_ENTRY, MAX_LEDGER_ITEM, SourceKey, SourceProgress};
@@ -130,7 +130,7 @@ impl Holds {
     /// Serialised across workers, so two beats never both take one free source. Blocking: it reads and writes the
     /// store under the lock every other call here takes.
     pub fn beat(&self, store: &Store, mut beat: Beat<'_>, clock: Clock) -> Result<Vec<Hold>, StoreError> {
-        let mut workers = self.lock();
+        let mut workers = self.0.lock();
         if !clock.young() {
             workers.gone.clear();
         }
@@ -170,7 +170,7 @@ impl Holds {
     /// The group `worker` holds `key` in, by its last answer. The store still has the last word: a hold can move
     /// while its former holder is silent. Blocking: it waits on any beat in progress.
     pub fn held_in(&self, worker: &str, key: &SourceKey) -> Option<String> {
-        let workers = self.lock();
+        let workers = self.0.lock();
         let heard = workers.heard.get(worker)?;
         heard
             .answered
@@ -182,7 +182,7 @@ impl Holds {
     /// The worker of `group` whose last answer gave it the source named `source`. Blocking: it waits on any beat in
     /// progress.
     pub fn holder(&self, group: &str, source: &str) -> Option<String> {
-        let workers = self.lock();
+        let workers = self.0.lock();
         workers
             .heard
             .iter()
@@ -195,7 +195,7 @@ impl Holds {
     /// yet and is young enough that it still counts as live. `None` otherwise: the hold is at a place its source no
     /// longer reads, or its holder is gone. Blocking: it waits on any beat in progress.
     pub fn seen(&self, worker: &str, group: &str, key: &SourceKey, clock: Clock) -> Option<Seen> {
-        let workers = self.lock();
+        let workers = self.0.lock();
         match workers.heard.get(worker) {
             Some(heard) => (heard.group == group && heard.answered.iter().any(|h| &h.key == key))
                 .then(|| Seen::Answered(clock.now.saturating_duration_since(heard.at))),
@@ -206,7 +206,7 @@ impl Holds {
     /// Drops `worker`, forgotten or revoked, so the sources it held are free on the next beat that lists them
     /// rather than after the hold time. Blocking: it waits on any beat in progress.
     pub fn forget(&self, worker: &str) {
-        let mut workers = self.lock();
+        let mut workers = self.0.lock();
         workers.heard.remove(worker);
         workers.gone.insert(worker.to_string());
     }
@@ -223,7 +223,7 @@ impl Holds {
         read: &HashSet<(String, SourceKey)>,
         clock: Clock,
     ) -> Result<Vec<HeldSource>, StoreError> {
-        let workers = self.lock();
+        let workers = self.0.lock();
         if clock.up_for <= clock.hold_time.max(FORGET_AFTER_UP) {
             return Ok(Vec::new());
         }
@@ -242,12 +242,6 @@ impl Holds {
             forgotten.push(held);
         }
         Ok(forgotten)
-    }
-
-    /// The lock, even after a beat panicked holding it: what it guards is rebuilt by the next round of beats, and
-    /// refusing every beat after one panic would stop every holder for good.
-    fn lock(&self) -> MutexGuard<'_, Workers> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 

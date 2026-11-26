@@ -82,12 +82,12 @@ pub use load::{
 pub use merge::{ObjectConflict, SectionMerge, Side, is_section_file, merge_section, text_merge_keeps_each_side};
 pub use moving::{MoveRow, Moving};
 pub use sample::{
-    MAX_SAMPLE_RECORDS, SAMPLES_DIR, SampleDto, SampleSummary, list_samples, put_path, read_sample, record_source,
-    refuse_sample_size, sample_bytes, sample_columns, sample_path, sample_records,
+    MAX_SAMPLE_BYTES, MAX_SAMPLE_RECORDS, SAMPLES_DIR, SampleDto, SampleSummary, list_samples, put_path, read_sample,
+    refuse_sample_size, sample_bytes, sample_path, sample_table,
 };
 pub use test::{
-    Difference, Lock, Locked, Made, Outcome, RowsIn, Sent, TESTS_DIR, TestDto, TestSummary, Verdict, compare,
-    list_tests, read_test, test_bytes, test_path,
+    Difference, Lock, Locked, Made, Outcome, Retyped, RowsIn, Run, Sent, Shown, TESTS_DIR, TestDto, TestSummary,
+    Verdict, compare, kept, kept_under, list_tests, read_test, test_bytes, test_path,
 };
 
 /// The `"version"` this build writes and reads. A change to the format bumps it and adds a converter from the
@@ -293,7 +293,7 @@ impl LoadedSystem {
             .iter()
             .find(|p| p.id == pipeline_id)?
             .step_ids
-            .get(function_id as usize)
+            .get(function_id.index())
             .cloned()
     }
 
@@ -771,7 +771,7 @@ mod tests {
         let errors = validation_of(&two_pipeline_json("1 +"));
         assert!(
             errors.iter().any(|e| e.pipeline.as_deref() == Some("second")
-                && e.function == Some(1)
+                && e.function == Some(FunctionId::new(1))
                 && e.step.as_deref() == Some("e2")),
             "{errors:?}"
         );
@@ -820,7 +820,7 @@ mod tests {
         let errors = validation_of(call_expansion_json());
         assert!(
             errors.iter().any(|e| e.pipeline.as_deref() == Some("main")
-                && e.function == Some(2)
+                && e.function == Some(FunctionId::new(2))
                 && e.step.as_deref() == Some("c-bad")),
             "{errors:?}"
         );
@@ -1009,10 +1009,10 @@ mod tests {
     #[test]
     fn step_id_for_resolves_none_rather_than_panicking_out_of_range() {
         let system = load_str(example_json()).unwrap();
-        assert_eq!(system.step_id_for(None, Some(0)), None);
+        assert_eq!(system.step_id_for(None, Some(FunctionId::new(0))), None);
         assert_eq!(system.step_id_for(Some(0), None), None);
-        assert_eq!(system.step_id_for(Some(0), Some(u32::MAX)), None);
-        assert_eq!(system.step_id_for(Some(usize::MAX), Some(0)), None);
+        assert_eq!(system.step_id_for(Some(0), Some(FunctionId::new(u32::MAX))), None);
+        assert_eq!(system.step_id_for(Some(usize::MAX), Some(FunctionId::new(0))), None);
     }
 
     /// A blank assignment is a structural error -- caught before compilation, unlike the call-inlining case above --

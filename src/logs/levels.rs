@@ -4,8 +4,8 @@
 //! override names a class and a type, a service, or a class. A line is kept at the first of these that names it, in
 //! that order, then at the default.
 
+use crate::sync::RwLock;
 use std::collections::BTreeMap;
-use std::sync::{PoisonError, RwLock};
 
 use tracing::Level;
 
@@ -148,10 +148,7 @@ static LEVELS: RwLock<Levels> = RwLock::new(Levels::at(Level::INFO));
 
 /// The level a line of `class` and `kind` from code that talks to `service` is kept at now.
 pub fn kept_at(class: Option<&str>, kind: &str, service: Option<&str>) -> Level {
-    LEVELS
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .kept_at(class, kind, service)
+    LEVELS.read().kept_at(class, kind, service)
 }
 
 /// Whether a line of `class` and `kind` from code that talks to `service`, said at `level`, is kept now.
@@ -161,7 +158,7 @@ pub fn keeps(level: Level, class: Option<&str>, kind: &str, service: Option<&str
 
 /// The levels kept at now.
 pub fn current() -> Levels {
-    LEVELS.read().unwrap_or_else(PoisonError::into_inner).clone()
+    LEVELS.read().clone()
 }
 
 /// Keep lines at `levels` from now on. Every call site is asked again, so one that was off costs nothing until an
@@ -169,7 +166,7 @@ pub fn current() -> Levels {
 pub fn set(levels: Levels) {
     let most = levels.most();
     {
-        let mut held = LEVELS.write().unwrap_or_else(PoisonError::into_inner);
+        let mut held = LEVELS.write();
         if *held == levels {
             return;
         }

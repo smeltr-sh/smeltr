@@ -16,6 +16,7 @@
 //! Event Hubs emulator at `EVENT_HUBS_TEST_BROKERS`. The emulator's hubs are fixed and outlive each run, so there a
 //! seed's ids are its own and it reads past what it did not write.
 
+use smeltr::core::id::DestId;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -691,7 +692,7 @@ fn seed(
     let metrics = smeltr::metrics::MetricsHandle::new(Arc::new(smeltr::metrics::Metrics::new()), "fuzz");
     let mut d = smeltr::io::build_destination(
         &DestinationKind::Kafka(destination_config),
-        0,
+        DestId::new(0),
         "d",
         metrics,
         &secrets,
@@ -820,7 +821,7 @@ const WORKERS: usize = 16;
 fn kafka_avro_fuzz() {
     let seeds: Vec<u64> = fuzz::seeds(0..SEEDS).collect();
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let done = std::sync::Mutex::new(BTreeMap::new());
+    let done = smeltr::sync::Mutex::new(BTreeMap::new());
     std::thread::scope(|scope| {
         for _ in 0..WORKERS {
             scope.spawn(|| {
@@ -833,12 +834,12 @@ fn kafka_avro_fuzz() {
                                 .unwrap_or_default();
                             Err(format!("panicked: {why}"))
                         });
-                    done.lock().unwrap().insert(n, (checked, reached));
+                    done.lock().insert(n, (checked, reached));
                 }
             });
         }
     });
-    let mut done = done.into_inner().unwrap();
+    let mut done = done.into_inner();
     let mut cov = Coverage::new(OPTIONS.iter().copied());
     fuzz::run(0..SEEDS, |n| {
         let (checked, reached) = done.remove(&n).expect("every seed was checked");

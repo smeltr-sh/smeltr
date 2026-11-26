@@ -190,45 +190,6 @@ describe('parseRoute', () => {
     });
   });
 
-  it('reads the pipeline and sample a test locks, both encoded', () => {
-    expect(
-      parseRoute('#/build/tests/lock/orders-normalize/orders-west%2C%20ordinary%20hour'),
-    ).toEqual({
-      tab: 'build',
-      page: 'lock-test',
-      pipeline: 'orders-normalize',
-      sample: 'orders-west, ordinary hour',
-    });
-  });
-
-  it('falls back to samples when the lock route is missing its sample', () => {
-    expect(parseRoute('#/build/tests/lock/orders-normalize')).toEqual({
-      tab: 'build',
-      page: 'samples',
-    });
-    expect(parseRoute('#/build/tests/lock/orders-normalize/')).toEqual({
-      tab: 'build',
-      page: 'samples',
-    });
-  });
-
-  it('reads the sample an end-to-end test locks, naming no pipeline', () => {
-    expect(parseRoute('#/build/tests/lock-e2e/orders-west%2C%20ordinary%20hour')).toEqual({
-      tab: 'build',
-      page: 'lock-test',
-      sample: 'orders-west, ordinary hour',
-    });
-  });
-
-  it('reads the test a re-lock locks again, encoded', () => {
-    expect(parseRoute('#/build/tests/relock/orders%20normal%20hour')).toEqual({
-      tab: 'build',
-      page: 'lock-test',
-      relock: 'orders normal hour',
-    });
-    expect(parseRoute('#/build/tests/relock')).toEqual({ tab: 'build', page: 'samples' });
-  });
-
   it('puts the test chosen in the address, and takes it out again', () => {
     const routes = '#/build/routes/sample?sample=web&back=x';
     const alerts = withTest(routes, { test: 'alerts', sample: 'other' });
@@ -251,17 +212,6 @@ describe('parseRoute', () => {
       const route = parseRoute(testHash('keep id', 'orders sample', pipeline));
       expect(route).toMatchObject({ page, test: { test: 'keep id', sample: 'orders sample' } });
     }
-  });
-
-  it('names a re-lock in the trail', () => {
-    expect(trail({ tab: 'build', page: 'lock-test', relock: 't' }).at(-1)!.label).toBe(
-      'lock a test again',
-    );
-  });
-
-  it('falls back to samples when the end-to-end lock route is missing its sample', () => {
-    expect(parseRoute('#/build/tests/lock-e2e')).toEqual({ tab: 'build', page: 'samples' });
-    expect(parseRoute('#/build/tests/lock-e2e/')).toEqual({ tab: 'build', page: 'samples' });
   });
 
   it('lands on Status for an empty or unknown hash', () => {
@@ -471,52 +421,6 @@ describe('trail', () => {
     expect(label('pipeline-x7k2m9q1')).toBe('pipeline');
   });
 
-  it('names the pipeline a locked test belongs to, behind its tab and own section', () => {
-    const crumbs = trail(
-      {
-        tab: 'build',
-        page: 'lock-test',
-        pipeline: 'pipeline-x7k2m9q1',
-        sample: 'orders-west, ordinary hour',
-      },
-      { 'pipeline-x7k2m9q1': 'orders normalize' },
-    );
-    expect(crumbs.map((c) => c.label)).toEqual([
-      'Build',
-      'Resources',
-      'orders normalize',
-      'lock a test',
-    ]);
-    expect(crumbs.map((c) => c.hash)).toEqual([
-      '#/build/routes',
-      '#/build',
-      '#/build/pipelines/pipeline-x7k2m9q1',
-      undefined,
-    ]);
-  });
-
-  it('routes back through Route a sample for an end-to-end locked test', () => {
-    const crumbs = trail({
-      tab: 'build',
-      page: 'lock-test',
-      sample: 'orders-west, ordinary hour',
-    });
-    expect(crumbs.map((c) => c.label)).toEqual([
-      'Build',
-      'Resources',
-      'routes',
-      'route a sample',
-      'lock a test',
-    ]);
-    expect(crumbs.map((c) => c.hash)).toEqual([
-      '#/build/routes',
-      '#/build',
-      '#/build/routes',
-      '#/build/routes/sample',
-      undefined,
-    ]);
-  });
-
   it("names which of Resources' three pages it is on, not just the shared section", () => {
     expect(trail({ tab: 'build', page: 'samples' }).map((c) => c.label)).toEqual([
       'Build',
@@ -589,7 +493,6 @@ describe('section', () => {
     expect(section({ tab: 'build', page: 'pipeline', id: 'x', json: false })?.here).toBe(
       'Pipelines',
     );
-    expect(section({ tab: 'build', page: 'lock-test', sample: 's' })?.here).toBe('Resources');
     expect(section({ tab: 'changes', page: 'review', branch: 'b' })?.here).toBe('Branches');
   });
 
@@ -654,16 +557,6 @@ describe('exitOf', () => {
       '#/build/pipelines',
     );
     expect(exit({ tab: 'changes', page: 'review', branch: 'work' })).toBe('#/changes');
-  });
-
-  it('goes back to the pipeline a test is being locked from', () => {
-    expect(exit({ tab: 'build', page: 'lock-test', pipeline: 'p', sample: 's' })).toBe(
-      '#/build/pipelines/p',
-    );
-  });
-
-  it('offers no way out of a re-lock, whose Cancel goes back to the change', () => {
-    expect(exit({ tab: 'build', page: 'lock-test', relock: 't' })).toBeUndefined();
   });
 
   it('sends a file back to the page that sent you to it', () => {

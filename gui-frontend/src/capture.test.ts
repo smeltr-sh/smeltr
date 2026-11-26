@@ -5,12 +5,16 @@ import {
   cellText,
   filterHelp,
   heldRows,
+  pastedTable,
+  recordRow,
+  tableRecords,
   heldCount,
   progressText,
   settled,
   shownRecords,
   workerChips,
 } from './capture';
+import cases from '../../tests/fixtures/table-records.json';
 
 const columns = [
   { name: '_raw', type: 'str' },
@@ -92,19 +96,78 @@ describe('heldCount', () => {
   });
 });
 
+describe('tableRecords', () => {
+  // The leader reads a table by the same rule (`a_table_reads_as_the_records_the_gui_shows`): both read these cases.
+  it.each(cases)('reads a table as its records, and a record back as its row: $name', (c) => {
+    expect(tableRecords(c).map((held) => held.record)).toEqual(c.records);
+    expect(c.records.map((record) => recordRow(c.columns, record))).toEqual(c.rows);
+  });
+
+  it('keeps a field named as something every object inherits in its record', () => {
+    const table = {
+      columns: [
+        { name: '__proto__.probe', type: 'str' },
+        { name: '...', type: '{...}' },
+      ],
+      rows: [
+        { values: ['x', { a: 2 }] },
+        { values: [null, JSON.parse('{"__proto__": {"other": 1}}')] },
+      ],
+    };
+    const records = tableRecords(table).map((held) => JSON.stringify(held.record));
+    expect(records).toEqual(['{"__proto__":{"probe":"x"},"a":2}', '{"__proto__":{"other":1}}']);
+    expect(({} as Record<string, unknown>).probe).toBeUndefined();
+  });
+
+  it('shows each row as a record: a constant on every row, unclaimed fields beside the named, a failed cell named and its text no field', () => {
+    const table = {
+      columns: [
+        { name: 'id', type: 'i64' },
+        { name: '__source.topic', type: 'str', value: 'orders' },
+        { name: 'user.name', type: 'str' },
+        { name: 'user....', type: 'variant' },
+        { name: '...', type: 'variant' },
+      ],
+      rows: [
+        { values: ['x', 'ann', { age: 3 }, { extra: true }], failed: [0], worker: 'w-a' },
+        { values: [2, null, null, null] },
+        { values: [3, 'ann', 'ann', null], failed: [1, 2] },
+      ],
+    };
+    expect(tableRecords(table)).toEqual([
+      {
+        record: {
+          id: 'x',
+          __source: { topic: 'orders' },
+          user: { name: 'ann', age: 3 },
+          extra: true,
+        },
+        failed: ['id'],
+        worker: 'w-a',
+      },
+      { record: { id: 2, __source: { topic: 'orders' } } },
+      {
+        record: { id: 3, __source: { topic: 'orders' }, user: { name: 'ann' } },
+        failed: ['user.name', 'user....'],
+      },
+    ]);
+    expect(tableRecords(pastedTable([{ _raw: 'a' }]))).toEqual([{ record: { _raw: 'a' } }]);
+  });
+});
+
 describe('heldRows', () => {
   it('shows each record as its fields, with why it failed apart from them', () => {
     const record = {
       __exception: { message: 'elasticsearch refused it' },
       _raw: 'x',
       code: 'abc',
-      __capture: { group: 'g', mistyped: ['code', 'gone'] },
+      __capture: { group: 'g' },
     };
     const types = [
       { name: 'code', type: 'i64' },
       { name: 'gone', type: 'f64' },
     ];
-    expect(heldRows([{ worker: 'w-a', record }], types)).toEqual([
+    expect(heldRows([{ worker: 'w-a', record, failed: ['code', 'gone'] }], types)).toEqual([
       {
         record: { _raw: 'x', code: 'abc', __capture: { group: 'g' } },
         exceptions: [
@@ -115,8 +178,8 @@ describe('heldRows', () => {
         worker: 'w-a',
       },
     ]);
-    // The record the leader sent is left as it was.
-    expect(record.__capture.mistyped).toEqual(['code', 'gone']);
+    // The record is left as it was.
+    expect(record.__exception.message).toBe('elasticsearch refused it');
     expect(heldRows([{ record: { _raw: 'y' } }], [])).toEqual([
       { record: { _raw: 'y' }, exceptions: [] },
     ]);

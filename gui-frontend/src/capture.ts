@@ -5,13 +5,128 @@
 import { count } from './time';
 import { keySpans } from './names';
 import type {
+  CaptureBatchDto,
+  CaptureColumnDto,
+  CapturedRowDto,
   CaptureStatus,
   CaptureWorkerDto,
   HeldRecord,
+  SampleRecordDto,
   SourceDto,
   StartPosition,
   startCapture,
 } from './api';
+
+/** The name of the column that holds an object's fields no other column names (`plan::tree::UNCLAIMED`): alone for
+ * the root's, after the object's path and a dot for any other's. */
+const UNCLAIMED = '...';
+
+/** `batch` with every row holding every column's value: a constant column's `value` is copied onto each row. */
+export function heldTable(batch: CaptureBatchDto): CaptureBatchDto {
+  const carried = batch.columns.flatMap((c, i) => (c.value == null ? [i] : []));
+  if (carried.length === batch.columns.length) return batch;
+  const at = batch.columns.map((_, i) => carried.indexOf(i));
+  return {
+    columns: batch.columns.map(({ name, type }) => ({ name, type })),
+    rows: batch.rows.map((row) => ({
+      ...row,
+      values: batch.columns.map((c, i) => c.value ?? row.values[at[i]]),
+      failed: row.failed?.map((f) => carried[f]),
+    })),
+  };
+}
+
+/** The table of `records` a person pasted, as the leader makes it (`CaptureBatch::pasted`): one column, the root's
+ * unclaimed fields, which holds each whole. */
+export function pastedTable(records: SampleRecordDto[]): CaptureBatchDto {
+  return {
+    columns: [{ name: UNCLAIMED, type: 'variant' }],
+    rows: records.map((record) => ({ values: [record] })),
+  };
+}
+
+/** The column's place in a record object: the path of its field, or of the object whose unclaimed fields it holds. */
+export function columnPath(name: string): { path: string; unclaimed: boolean } {
+  if (name === UNCLAIMED) return { path: '', unclaimed: true };
+  return name.endsWith(`.${UNCLAIMED}`)
+    ? { path: name.slice(0, -UNCLAIMED.length - 1), unclaimed: true }
+    : { path: name, unclaimed: false };
+}
+
+/** Sets `object`'s own `key`. A field may be named as something every object inherits, like `__proto__`, and
+ * assigning to that name would set the object's prototype instead of a key. */
+function put(object: SampleRecordDto, key: string, value: unknown) {
+  Object.defineProperty(object, key, {
+    value,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+}
+
+/** Each row of `batch` as a record to show, and the names of the columns whose value failed its type on it. */
+export function tableRecords(batch: CaptureBatchDto): HeldRecord[] {
+  const { columns, rows } = heldTable(batch);
+  const places = columns.map((c) => columnPath(c.name));
+  return rows.map((row) => {
+    const record: SampleRecordDto = {};
+    row.values.forEach((value, i) => {
+      if (value == null) return;
+      const keys = keySpans(places[i].path).map((span) => span.key);
+      const last = places[i].unclaimed ? undefined : keys.pop();
+      let at = record;
+      for (const key of keys) {
+        if (!Object.hasOwn(at, key)) put(at, key, {});
+        at = at[key] as SampleRecordDto;
+      }
+      if (last !== undefined) put(at, last, value);
+      else if (typeof value === 'object') for (const [k, v] of Object.entries(value)) put(at, k, v);
+    });
+    const failed = (row.failed ?? []).map((f) => columns[f].name);
+    return { record, ...(row.worker && { worker: row.worker }), ...(failed.length && { failed }) };
+  });
+}
+
+/** `record` as a row under `columns`, which `tableRecords` reads back as the record: each field's column takes its
+ * value from its path, and each column of unclaimed fields what is left of its object once the columns under it have
+ * theirs. */
+export function recordRow(columns: CaptureColumnDto[], record: SampleRecordDto): CapturedRowDto {
+  const left = structuredClone(record);
+  const keysOf = (path: string) => keySpans(path).map((span) => span.key);
+  const take = (keys: string[]): unknown => {
+    const last = keys.pop();
+    // Only what the record itself holds: a path may name something every object inherits, like `__proto__`.
+    const own = (at: unknown, key: string) =>
+      at !== null && typeof at === 'object' && Object.hasOwn(at, key)
+        ? (at as SampleRecordDto)[key]
+        : null;
+    let at: unknown = left;
+    for (const key of keys) at = own(at, key);
+    if (at === null || typeof at !== 'object') return null;
+    if (last === undefined) return at;
+    if (!Object.hasOwn(at, last)) return null;
+    const value = (at as SampleRecordDto)[last];
+    delete (at as SampleRecordDto)[last];
+    return value ?? null;
+  };
+  const places = columns.map((c) => ({
+    ...columnPath(c.name),
+    keys: keysOf(columnPath(c.name).path),
+  }));
+  const values: unknown[] = places.map((p) => (p.unclaimed ? null : take([...p.keys])));
+  // The deepest object first, so the one above it holds what is left.
+  const unclaimed = places.flatMap((p, at) => (p.unclaimed ? [{ p, at }] : []));
+  for (const { p, at } of unclaimed.sort((a, b) => b.p.keys.length - a.p.keys.length)) {
+    const rest = take([...p.keys]);
+    // A key a column under this object claims is that column's, as a capture leaves it out (`io::unclaimed_of`).
+    const claimed = places
+      .filter((o) => o !== p && p.keys.every((key, i) => o.keys[i] === key))
+      .map((o) => o.keys[p.keys.length]);
+    const kept = Object.entries((rest ?? {}) as object).filter(([key]) => !claimed.includes(key));
+    values[at] = kept.length > 0 ? Object.fromEntries(kept) : null;
+  }
+  return { values };
+}
 
 /** One worker in the capture, and how many of the held records it sent. */
 export interface WorkerChip extends CaptureWorkerDto {
@@ -44,8 +159,6 @@ export function shownRecords(status: CaptureStatus, only: string | null): HeldRe
 /** Where a record a block holds says why it blocked (`worker::capture::EXCEPTION_MESSAGE`). It is not a field of
  * the record. */
 export const EXCEPTION_MESSAGE = ['__exception', 'message'];
-/** Where a record lists the fields whose values did not read as their type (`io::MISTYPED_FIELDS`). */
-export const MISTYPED_FIELDS = ['__capture', 'mistyped'];
 
 /** A held record as the grid shows it: its fields, and what failed on it apart from them. */
 export interface CapturedRecord {
@@ -80,25 +193,17 @@ export function valueAt(record: Record<string, unknown>, name: string): unknown 
   return at;
 }
 
-/** Whether a held record's value at `name` did not read as its type. */
-export function mistyped(record: Record<string, unknown>, name: string): boolean {
-  const names = valueAt(record, MISTYPED_FIELDS.join('.'));
-  return Array.isArray(names) && names.includes(name);
-}
-
 /** Each of `held` as the grid shows it: why a block holds it, and each value that did not read as its column's type
  * (`columns`), as exceptions rather than fields. */
 export function heldRows(held: HeldRecord[], columns: CaptureStatus['columns']): CapturedRecord[] {
   const types = new Map(columns.map((c) => [c.name, c.type]));
-  return held.map(({ worker, record: sent }) => {
+  return held.map(({ worker, record: sent, failed }) => {
     const record = { ...sent };
     const exceptions: string[] = [];
     const message = take(record, EXCEPTION_MESSAGE);
     if (message !== undefined && message !== null) exceptions.push(String(message));
-    const mistyped = take(record, MISTYPED_FIELDS);
-    if (Array.isArray(mistyped))
-      for (const name of mistyped)
-        exceptions.push(`${name} could not be read as ${types.get(String(name)) ?? 'its type'}`);
+    for (const name of failed ?? [])
+      exceptions.push(`${name} could not be read as ${types.get(name) ?? 'its type'}`);
     return worker === undefined ? { record, exceptions } : { record, exceptions, worker };
   });
 }

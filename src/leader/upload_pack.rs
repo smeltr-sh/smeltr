@@ -17,9 +17,9 @@
 //! Every request is answered on its own, as the protocol's statelessness over HTTP asks: a fetch carries every
 //! `have` the leader needs to know. The repository is read-only here: nothing is pushed to it.
 
+use crate::sync::Mutex;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use super::git;
@@ -250,12 +250,12 @@ struct Listing {
 /// Drop the remembered listing, so the next asker is answered from the repository. Called where the leader moves a
 /// ref itself; [`LISTING_TTL`] covers every other way one moves.
 pub(crate) fn forget_listing() {
-    *LISTING.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    *LISTING.lock() = None;
 }
 
 /// `ls-refs`, remembered for [`LISTING_TTL`].
 fn ls_refs(repo: &Path, arguments: &[String]) -> Result<Vec<u8>, Refused> {
-    if let Some(last) = LISTING.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+    if let Some(last) = LISTING.lock().as_ref()
         && last.repo == repo
         && last.arguments == arguments
         && last.made.elapsed() < LISTING_TTL
@@ -263,7 +263,7 @@ fn ls_refs(repo: &Path, arguments: &[String]) -> Result<Vec<u8>, Refused> {
         return Ok(last.body.clone());
     }
     let body = listing(repo, arguments)?;
-    *LISTING.lock().unwrap_or_else(|e| e.into_inner()) = Some(Listing {
+    *LISTING.lock() = Some(Listing {
         repo: repo.to_path_buf(),
         arguments: arguments.to_vec(),
         made: Instant::now(),

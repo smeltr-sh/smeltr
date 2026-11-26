@@ -17,11 +17,11 @@ use smeltr::leader::{AppState, router};
 /// the same reason: a box saturated by one test file makes another miss a readiness deadline for no reason but
 /// the load. That limiter cannot see this file, so this one keeps this file from being what starves it. Bounding
 /// only the worker processes was measured still failing a full run; bounding the whole test is not.
-static ALONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static ALONE: smeltr::sync::Mutex<()> = smeltr::sync::Mutex::new(());
 
 /// Held for a whole test. The first line of each, so nothing here overlaps anything else here.
-fn alone() -> std::sync::MutexGuard<'static, ()> {
-    ALONE.lock().unwrap_or_else(|e| e.into_inner())
+fn alone() -> smeltr::sync::MutexGuard<'static, ()> {
+    ALONE.lock()
 }
 
 /// What a leader says once its socket has loaded what is on disk.
@@ -67,7 +67,7 @@ fn start_leader_tls_following(follow: bool) -> (String, Vec<u8>, std::path::Path
     let tls_dir = smeltr::leader::tls::dir_of(&data_dir);
     // The list a served certificate is an entry of, as `main` opens it before anything is served.
     let store = crate::harness::leader_tls::listing(&tls_dir);
-    LISTS.lock().unwrap().push((tls_dir.clone(), store.clone()));
+    LISTS.lock().push((tls_dir.clone(), store.clone()));
     let materials = smeltr::leader::tls::ensure(
         &tls_dir,
         vec!["localhost".to_string(), "127.0.0.1".to_string()],
@@ -133,13 +133,12 @@ fn serve_again(dir: &std::path::Path, names: &[String]) {
 }
 
 /// The certificate lists of these leaders, by their TLS directory.
-static LISTS: std::sync::Mutex<Vec<(std::path::PathBuf, Arc<Store>)>> = std::sync::Mutex::new(Vec::new());
+static LISTS: smeltr::sync::Mutex<Vec<(std::path::PathBuf, Arc<Store>)>> = smeltr::sync::Mutex::new(Vec::new());
 
 /// `chain` and `key` as the newest version of the entry `theirs` in the list of the leader serving from `dir`.
 fn listed(dir: &std::path::Path, chain: &[u8], key: &[u8], ca: &[u8]) -> smeltr::leader::tls::Entry {
     let list = LISTS
         .lock()
-        .unwrap()
         .iter()
         .find(|(d, _)| d == dir)
         .map(|(_, list)| list.clone())
@@ -160,23 +159,17 @@ fn listed(dir: &std::path::Path, chain: &[u8], key: &[u8], ca: &[u8]) -> smeltr:
 }
 
 /// The sockets these leaders serve, by their TLS directory, so a replacement on disk reaches the one presenting it.
-static SOCKETS: std::sync::Mutex<Vec<(std::path::PathBuf, axum_server::tls_rustls::RustlsConfig)>> =
-    std::sync::Mutex::new(Vec::new());
+static SOCKETS: smeltr::sync::Mutex<Vec<(std::path::PathBuf, axum_server::tls_rustls::RustlsConfig)>> =
+    smeltr::sync::Mutex::new(Vec::new());
 
 /// Makes `config` take what `dir` holds whenever a path replaces it, as `main` does for the one leader it runs: a
 /// cutover a heartbeat decides changes what is served, and what this socket presents has to follow.
 fn follow_disk(dir: &std::path::Path, config: axum_server::tls_rustls::RustlsConfig) {
-    SOCKETS.lock().unwrap().push((dir.to_path_buf(), config));
+    SOCKETS.lock().push((dir.to_path_buf(), config));
     static REGISTERED: Once = Once::new();
     REGISTERED.call_once(|| {
         smeltr::leader::tls::on_reload(|dir| {
-            let Some(config) = SOCKETS
-                .lock()
-                .unwrap()
-                .iter()
-                .find(|(d, _)| d == dir)
-                .map(|(_, c)| c.clone())
-            else {
+            let Some(config) = SOCKETS.lock().iter().find(|(d, _)| d == dir).map(|(_, c)| c.clone()) else {
                 return;
             };
             // Off this thread: the replacement holds the lock `to_serve` takes.

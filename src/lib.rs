@@ -1,3 +1,8 @@
+// A test file compiled by both the crate's own tests and `tests/` names the crate `smeltr`; this makes the name
+// resolve in the crate's tests too.
+#[cfg(test)]
+extern crate self as smeltr;
+
 pub mod commit;
 pub mod config_file;
 pub mod core;
@@ -28,6 +33,7 @@ pub mod runtime;
 pub mod schema;
 pub mod startup_config;
 pub mod streams;
+pub mod sync;
 pub mod version;
 pub mod worker;
 

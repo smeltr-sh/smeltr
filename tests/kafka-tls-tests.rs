@@ -10,6 +10,7 @@
 //! -- see `tests/live/mod.rs`.
 
 use crate::live;
+use smeltr::core::id::DestId;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -145,7 +146,7 @@ fn a_destination_under_a_certificate_delivers_to_a_broker_that_demands_one() {
         buffer_bytes: 16 * 1024 * 1024,
         avro: None,
     };
-    let mut dest = KafkaDestination::new(&config, 0, metrics(), &secrets).expect("open a destination");
+    let mut dest = KafkaDestination::new(&config, DestId::new(0), metrics(), &secrets).expect("open a destination");
     hand(&mut dest, &[OutgoingRecord::new(b"under-a-certificate")]);
     dest.flush()
         .expect("delivering a record needs a completed mutual-TLS handshake");

@@ -2,10 +2,10 @@
 //! per-thread [`MetricsHandle`], read through cursors, one per subscriber. Writes are per batch or per instruction,
 //! never per row. [`MetricsSource`] reads it back as an ordinary `Source`.
 
+use crate::sync::Mutex;
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::format::json::write_json_string;
@@ -116,7 +116,7 @@ impl Metrics {
             return;
         }
         let key = MetricKey::new(name, labels);
-        let mut values = self.values.lock().unwrap();
+        let mut values = self.values.lock();
         match values.entry(key).or_insert(MetricValue::Counter(0)) {
             MetricValue::Counter(v) => *v += delta,
             MetricValue::FloatCounter(_) | MetricValue::Gauge(_) => {}
@@ -128,7 +128,7 @@ impl Metrics {
     /// kind.
     pub fn count_to(&self, name: &'static str, labels: &[(&'static str, &str)], total: u64) {
         let key = MetricKey::new(name, labels);
-        let mut values = self.values.lock().unwrap();
+        let mut values = self.values.lock();
         if let MetricValue::Counter(held) = values.entry(key).or_insert(MetricValue::Counter(0)) {
             *held = (*held).max(total);
         }
@@ -141,7 +141,7 @@ impl Metrics {
             return;
         }
         let key = MetricKey::new(name, labels);
-        let mut values = self.values.lock().unwrap();
+        let mut values = self.values.lock();
         match values.entry(key).or_insert(MetricValue::FloatCounter(0.0)) {
             MetricValue::FloatCounter(v) => *v += seconds,
             MetricValue::Counter(_) | MetricValue::Gauge(_) => {}
@@ -152,24 +152,19 @@ impl Metrics {
     /// moves. Once, where the series is known to exist: a thread's start, not its hot path.
     pub fn start(&self, name: &'static str, labels: &[(&'static str, &str)]) {
         let key = MetricKey::new(name, labels);
-        self.values
-            .lock()
-            .unwrap()
-            .entry(key)
-            .or_insert(MetricValue::Counter(0));
+        self.values.lock().entry(key).or_insert(MetricValue::Counter(0));
     }
 
     /// Set `name{labels}` to `value`, overwriting whatever was there.
     pub fn gauge(&self, name: &'static str, labels: &[(&'static str, &str)], value: f64) {
         let key = MetricKey::new(name, labels);
-        self.values.lock().unwrap().insert(key, MetricValue::Gauge(value));
+        self.values.lock().insert(key, MetricValue::Gauge(value));
     }
 
     /// Every current sample, cursors untouched.
     pub fn snapshot(&self) -> Vec<MetricSample> {
         self.values
             .lock()
-            .unwrap()
             .iter()
             .map(|(key, value)| MetricSample {
                 key: key.clone(),
@@ -181,14 +176,14 @@ impl Metrics {
     /// Every counter's increase since `subscriber` last committed, plus every gauge's current value. The cursor moves
     /// only in [`Metrics::commit_delta`], once the samples have landed somewhere.
     pub fn peek_delta(&self, subscriber: &str) -> Vec<MetricSample> {
-        let values = self.values.lock().unwrap();
-        let cursors = self.cursors.lock().unwrap();
+        let values = self.values.lock();
+        let cursors = self.cursors.lock();
         delta(&values, cursors.get(subscriber))
     }
 
     /// Advance `subscriber`'s cursor past `delivered`. Anything not named stays owed.
     pub fn commit_delta(&self, subscriber: &str, delivered: &[MetricSample]) {
-        let mut cursors = self.cursors.lock().unwrap();
+        let mut cursors = self.cursors.lock();
         advance(cursors.entry(subscriber.to_string()).or_default(), delivered);
     }
 
@@ -214,8 +209,8 @@ impl Metrics {
         };
 
         // One lock order everywhere: values, then cursors.
-        let mut values = self.values.lock().unwrap();
-        let mut cursors = self.cursors.lock().unwrap();
+        let mut values = self.values.lock();
+        let mut cursors = self.cursors.lock();
         let before = values.len();
         values.retain(|key, _| !orphan(key));
         for seen in cursors.values_mut() {
@@ -226,7 +221,7 @@ impl Metrics {
 
     /// Fold in samples another process read out of its own registry: a counter's increase adds, a gauge replaces.
     pub fn mirror(&self, samples: impl IntoIterator<Item = MetricSample>) {
-        let mut mirrored = self.mirrored.lock().unwrap();
+        let mut mirrored = self.mirrored.lock();
         for sample in samples {
             let held = mirrored.entry(sample.key).or_insert(MetricValue::Counter(0));
             match (held, sample.value) {
@@ -240,19 +235,19 @@ impl Metrics {
     /// [`Metrics::snapshot`] over what this process mirrors: each counter's total since this process started
     /// mirroring it.
     pub fn snapshot_mirrored(&self) -> Vec<MetricSample> {
-        delta(&self.mirrored.lock().unwrap(), None)
+        delta(&self.mirrored.lock(), None)
     }
 
     /// Drop the mirrored gauges, once the process that sent them is gone, since nothing now says what they measured.
     /// Its counters stay, and the next process's counts add to them: a total this process reports, alone or summed
     /// with its own share, then never falls, which Prometheus would read as a reset and count again.
     pub fn forget_mirrored(&self) {
-        self.mirrored.lock().unwrap().retain(|_, value| value.is_counter());
+        self.mirrored.lock().retain(|_, value| value.is_counter());
     }
 
     /// [`Metrics::take_delta`] over what this process mirrors rather than what it recorded.
     pub fn take_mirrored_delta(&self, cursor: &mut Cursor) -> Vec<MetricSample> {
-        let out = delta(&self.mirrored.lock().unwrap(), Some(cursor));
+        let out = delta(&self.mirrored.lock(), Some(cursor));
         advance(cursor, &out);
         out
     }
@@ -261,7 +256,7 @@ impl Metrics {
     /// (`MetricsSource`). The cursor is the caller's alone, so no other subscriber moves it between the read and the
     /// move.
     pub fn take_delta(&self, cursor: &mut Cursor) -> Vec<MetricSample> {
-        let out = delta(&self.values.lock().unwrap(), Some(cursor));
+        let out = delta(&self.values.lock(), Some(cursor));
         advance(cursor, &out);
         out
     }
@@ -515,8 +510,8 @@ impl Source for MetricsSource {
         let mut out = crate::io::RecordChunkBuilder::new();
         let mut bytes = 0usize;
         // What this process recorded, then what the worker's other process did: one worker, one stream.
-        let own = delta(&self.metrics.values.lock().unwrap(), Some(&self.cursor));
-        let mirrored = delta(&self.metrics.mirrored.lock().unwrap(), Some(&self.mirrored));
+        let own = delta(&self.metrics.values.lock(), Some(&self.cursor));
+        let mirrored = delta(&self.metrics.mirrored.lock(), Some(&self.mirrored));
         let mut samples: Vec<(bool, MetricSample)> = own
             .into_iter()
             .map(|s| (false, s))

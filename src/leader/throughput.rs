@@ -60,8 +60,9 @@
 //! normal is learned again each hour, since it moves slowly, and each reading once per [`BUCKET`] against it, since
 //! nothing it reads changes in between.
 
+use crate::sync::Mutex;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::marks::Marks;
@@ -418,7 +419,7 @@ impl Readings {
         if let Some(fresh) = self.fresh(ended_ms, learning) {
             return fresh;
         }
-        let _computing = self.computing.lock().unwrap_or_else(|e| e.into_inner());
+        let _computing = self.computing.lock();
         // Whoever held the lock before may have just computed this very answer.
         if let Some(fresh) = self.fresh(ended_ms, learning) {
             return fresh;
@@ -426,13 +427,13 @@ impl Readings {
         record_swings(store, ended_ms, heartbeat_interval);
         let learned = self.learned_at(store, ended_ms, learning);
         let readings = Arc::new(compute(store, ended_ms, learning, &learned));
-        *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some((ended_ms, learning.clone(), readings.clone()));
+        *self.last.lock() = Some((ended_ms, learning.clone(), readings.clone()));
         readings
     }
 
     /// The answer for the window ending at `ended_ms` learned with `learning`, if that is the one held.
     fn fresh(&self, ended_ms: i64, learning: &Marks) -> Option<Arc<Vec<Reading>>> {
-        match self.last.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        match self.last.lock().as_ref() {
             Some((at, held, readings)) if *at == ended_ms && held == learning => Some(readings.clone()),
             _ => None,
         }
@@ -440,25 +441,21 @@ impl Readings {
 
     /// The answer held, whatever it was computed for.
     fn last(&self) -> Option<Arc<Vec<Reading>>> {
-        self.last
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .map(|(_, _, readings)| readings.clone())
+        self.last.lock().as_ref().map(|(_, _, readings)| readings.clone())
     }
 
     /// Every source's normal and gap as of the hour `ended_ms` is in, learned again when that hour or `learning` is
     /// new.
     fn learned_at(&self, store: &RegistryStore, ended_ms: i64, learning: &Marks) -> Arc<Learned> {
         let as_of = Tier::OneHour.align(ended_ms);
-        let mut held = self.learned.lock().unwrap_or_else(|e| e.into_inner());
+        let mut held = self.learned.lock();
         if let Some((at, with, learned)) = held.as_ref()
             && *at == as_of
             && with == learning
         {
             return learned.clone();
         }
-        let mut pick = self.pick.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pick = self.pick.lock();
         let learned = Arc::new(learn(store, as_of, learning, pick.clone()));
         // What was learned is kept for the hour, and the senders picked for the day, only once some source has a normal
         // or a gap that judges it. Until then a fleet whose history was just written is learned again, and judged, at
@@ -474,7 +471,7 @@ impl Readings {
 impl Readings {
     /// What was last learned, if anything was: the senders picked, and each one's normal.
     pub fn learned(&self) -> Option<Arc<Learned>> {
-        let held = self.learned.lock().unwrap_or_else(|e| e.into_inner());
+        let held = self.learned.lock();
         held.as_ref().map(|(_, _, learned)| learned.clone())
     }
 }
@@ -2477,7 +2474,7 @@ mod tests {
         let readings = Readings::default();
         let none = Marks::default();
         let old = readings.at(&store, END + 60_000, Duration::from_secs(1), &none);
-        let computing = readings.computing.lock().unwrap();
+        let computing = readings.computing.lock();
         std::thread::scope(|s| {
             let asked = s.spawn(|| readings.at(&store, END + FIVE + 60_000, Duration::from_secs(1), &none));
             std::thread::sleep(Duration::from_millis(100));

@@ -12,8 +12,9 @@
 //! here because the proof has to live on the same socket: TLS-ALPN-01 (RFC 8737) is the authority connecting to
 //! the leader's own port, naming the name it is validating, and asking for `acme-tls/1`.
 
+use crate::sync::{Mutex, RwLock};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
 
 use rustls::pki_types::PrivateKeyDer;
 use rustls::server::{ClientHello, ResolvesServerCert};
@@ -41,7 +42,7 @@ impl Resolver {
     /// leaves what is presented as it was.
     pub fn reload(&self, chain: &[u8], key: &[u8]) -> Result<(), String> {
         let key = read(chain, key)?;
-        *self.served.write().unwrap_or_else(|e| e.into_inner()) = key;
+        *self.served.write() = key;
         Ok(())
     }
 
@@ -49,16 +50,13 @@ impl Resolver {
     /// key authorization, until [`done`](Self::done).
     pub fn prove(&self, name: &str, digest: &[u8]) -> Result<(), String> {
         let proof = proof(name, digest)?;
-        self.proofs
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(asked_as(name), Arc::new(proof));
+        self.proofs.lock().insert(asked_as(name), Arc::new(proof));
         Ok(())
     }
 
     /// Withdraws every proof. An order is over, however it ended.
     pub fn done(&self) {
-        self.proofs.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.proofs.lock().clear();
     }
 
     /// The socket's TLS, over this process's one provider, offering what browsers and workers speak and what a
@@ -84,16 +82,12 @@ impl ResolvesServerCert for Resolver {
     fn resolve(&self, hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
         let asks_for_proof = hello.alpn().is_some_and(|mut offered| offered.any(|p| p == ACME_TLS));
         if !asks_for_proof {
-            return Some(self.served.read().unwrap_or_else(|e| e.into_inner()).clone());
+            return Some(self.served.read().clone());
         }
         // A validator asking for a name nobody is proving gets no certificate at all, which fails its handshake:
         // the right answer to a challenge this leader did not start.
         let name = hello.server_name()?.to_ascii_lowercase();
-        self.proofs
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&name)
-            .cloned()
+        self.proofs.lock().get(&name).cloned()
     }
 }
 
