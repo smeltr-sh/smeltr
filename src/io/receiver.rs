@@ -802,27 +802,24 @@ impl Source for ReceiverSource {
         max_bytes: usize,
         timeout: Duration,
     ) -> Result<Vec<SourceRecord>, IoError> {
-        let taken = self.shared.take(max_rows, max_bytes, timeout);
-        // A receiver speaks one protocol, so a poll's records are all bytes or all rows, of OTLP or of Prometheus.
-        if let Some(joined) = &self.port {
-            return Ok(rows_chunk(taken, &SourceMeta::otlp(joined.signal)));
-        }
-        if matches!(taken.first().map(|q| &q.record), Some(Payload::Row(_))) {
-            return Ok(rows_chunk(taken, &SourceMeta::prometheus_receiver()));
-        }
-        let records = taken.into_iter().map(|q| {
-            let Payload::Chunk(chunk, row) = q.record else {
-                unreachable!("a poll's records are all of one protocol")
-            };
-            SourceRecord {
-                chunk,
-                row,
+        let records = match self.shared.take(max_rows, max_bytes, timeout) {
+            Polled::Records(taken) => taken.into_iter().map(|q| SourceRecord {
+                chunk: q.record.0,
+                row: q.record.1,
                 offset: q.offset,
                 partition: 0,
                 topic: q.remote,
                 headers: q.filed.map(Arc::unwrap_or_clone),
+            }),
+            // Rows are OTLP's on a shared port, and Prometheus's otherwise.
+            Polled::Rows(taken) => {
+                let meta = match &self.port {
+                    Some(joined) => SourceMeta::otlp(joined.signal),
+                    None => SourceMeta::prometheus_receiver(),
+                };
+                return Ok(rows_chunk(taken, &meta));
             }
-        });
+        };
         Ok(records.collect())
     }
 
@@ -879,18 +876,12 @@ impl Source for ReceiverSource {
 
 /// `taken`, each a typed row, as one chunk of `meta`'s record columns. They are filed under one value
 /// (`Shared::take`), which the chunk carries for them all.
-fn rows_chunk(taken: Vec<Queued>, meta: &SourceMeta) -> Vec<SourceRecord> {
+fn rows_chunk(taken: Vec<Queued<otlp::Row>>, meta: &SourceMeta) -> Vec<SourceRecord> {
     use crate::core::column::{Column, DataType, StrBuilder, VarType};
     use otlp::Cell;
 
     let mut pool = crate::core::buffer::BufferPool::new();
-    let rows: Vec<&otlp::Row> = taken
-        .iter()
-        .map(|q| match &q.record {
-            Payload::Row(row) => row,
-            Payload::Chunk(..) => unreachable!("a poll's records are all of one protocol"),
-        })
-        .collect();
+    let rows: Vec<&otlp::Row> = taken.iter().map(|q| &q.record).collect();
     let mismatch = |name: &crate::plan::topology::Entry, ty: &DataType| -> ! {
         unreachable!("{name} is a {ty}, and a row gave it otherwise")
     };
@@ -1130,10 +1121,31 @@ struct Cut {
     filed: Option<Arc<hec::Filed>>,
 }
 
-/// What a taken record holds: its row of a request's chunk, or, where its protocol types records, its fields.
-enum Payload {
-    Chunk(Arc<RecordChunk>, u32),
-    Row(otlp::Row),
+/// What a poll takes, all of one kind: byte records, or, where the protocol types its records, rows of fields.
+enum Polled {
+    Records(Vec<Queued<(Arc<RecordChunk>, u32)>>),
+    Rows(Vec<Queued<otlp::Row>>),
+}
+
+impl Polled {
+    fn len(&self) -> usize {
+        match self {
+            Polled::Records(taken) => taken.len(),
+            Polled::Rows(taken) => taken.len(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// What the first of its rows is filed under. `None` for byte records, and while it holds no row.
+    fn rows_filed(&self) -> Option<&Option<Arc<hec::Filed>>> {
+        match self {
+            Polled::Records(_) => None,
+            Polled::Rows(taken) => taken.first().map(|q| &q.filed),
+        }
+    }
 }
 
 /// The bytes `filed` holds, as a record counts what it is filed under.
@@ -1208,31 +1220,15 @@ impl Rest {
         }
     }
 
-    /// Whether the next record is filed apart from `queued`'s: a poll's rows are one chunk, filed under one value.
-    fn files_apart(&self, queued: &Queued) -> bool {
-        match self {
-            Rest::Chunk { .. } => false,
-            Rest::Rows { next, .. } => match (&next.as_ref().expect("a record left").filed, &queued.filed) {
+    /// Whether the next record is a row filed apart from the rows `taken` holds: a poll's rows are one chunk, filed
+    /// under one value.
+    fn files_apart(&self, taken: &Polled) -> bool {
+        match (self, taken.rows_filed()) {
+            (Rest::Rows { next, .. }, Some(taken)) => match (&next.as_ref().expect("a record left").filed, taken) {
                 (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
                 (a, b) => a.is_some() || b.is_some(),
             },
-        }
-    }
-
-    /// Takes the next record, and whether it was the last.
-    fn take(&mut self) -> (Payload, Option<Arc<hec::Filed>>, bool) {
-        match self {
-            Rest::Chunk { rows, filed } => {
-                let under = filed.get(rows.at()).cloned();
-                let (chunk, row) = rows.take();
-                (Payload::Chunk(chunk, row), under, rows.is_done())
-            }
-            Rest::Rows { rows, next } => {
-                let following = rows.next_row();
-                let last = following.is_none();
-                let Cut { row, filed } = std::mem::replace(next, following).expect("a record left");
-                (Payload::Row(row), filed, last)
-            }
+            _ => false,
         }
     }
 }
@@ -1250,8 +1246,8 @@ impl RowCutter {
     }
 }
 
-struct Queued {
-    record: Payload,
+struct Queued<R> {
+    record: R,
     filed: Option<Arc<hec::Filed>>,
     offset: i64,
     /// The sender's address, which is the record's `__source.remote`.
@@ -1402,13 +1398,13 @@ impl Shared {
     /// Up to `max_rows` records and `max_bytes` of them, the first whatever its size, waiting up to `timeout` for
     /// the first to arrive, and then up to [`SMALL_BATCH_WAIT`] after it for a batch's worth. Nothing while blocked: a
     /// blocked source stops supplying.
-    fn take(&self, max_rows: usize, max_bytes: usize, timeout: Duration) -> Vec<Queued> {
+    fn take(&self, max_rows: usize, max_bytes: usize, timeout: Duration) -> Polled {
         let deadline = Instant::now() + timeout;
         let mut inbox = self.state.lock();
         while inbox.queued.is_empty() || inbox.blocked {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() || inbox.closed {
-                return Vec::new();
+                return Polled::Records(Vec::new());
             }
             inbox = self.arrived.wait_timeout(inbox, left).0;
         }
@@ -1421,31 +1417,49 @@ impl Shared {
             }
             inbox = self.arrived.wait_timeout(inbox, left).0;
         }
-        if inbox.queued.is_empty() {
-            return Vec::new();
-        }
         let inbox = &mut *inbox;
-        let mut taken = Vec::new();
+        // The first request sets the kind the poll takes.
+        let mut taken = match inbox.queued.front().map(|request| &request.records) {
+            Some(Rest::Rows { .. }) => Polled::Rows(Vec::new()),
+            _ => Polled::Records(Vec::new()),
+        };
         let mut bytes = 0usize;
         let mut freed = false;
         while taken.len() < max_rows.max(1) {
             let Some(front) = inbox.queued.front_mut() else { break };
             let size = front.records.next_size();
-            if let Some(first) = taken.first()
-                && (front.records.files_apart(first) || bytes + size > max_bytes)
-            {
+            if !taken.is_empty() && (front.records.files_apart(&taken) || bytes + size > max_bytes) {
                 break;
             }
+            let (offset, remote) = (inbox.next_offset, front.remote.clone());
+            let last = match (&mut front.records, &mut taken) {
+                (Rest::Chunk { rows, filed }, Polled::Records(taken)) => {
+                    let filed = filed.get(rows.at()).cloned();
+                    let record = rows.take();
+                    taken.push(Queued {
+                        record,
+                        filed,
+                        offset,
+                        remote,
+                    });
+                    rows.is_done()
+                }
+                (Rest::Rows { rows, next }, Polled::Rows(taken)) => {
+                    let following = rows.next_row();
+                    let Cut { row, filed } = std::mem::replace(next, following).expect("a record left");
+                    taken.push(Queued {
+                        record: row,
+                        filed,
+                        offset,
+                        remote,
+                    });
+                    next.is_none()
+                }
+                // A request of the other kind waits for the next poll.
+                _ => break,
+            };
             bytes += size;
-            let (record, filed, last) = front.records.take();
-            let offset = inbox.next_offset;
             inbox.next_offset += 1;
-            taken.push(Queued {
-                record,
-                filed,
-                offset,
-                remote: front.remote.clone(),
-            });
             if last {
                 let done = inbox.queued.pop_front().expect("the front was there");
                 inbox.queued_bytes.split_off(done.bytes.total());
@@ -3792,12 +3806,28 @@ mod tests {
         assert!(admits(&[], "192.168.1.1".parse().unwrap()));
     }
 
-    impl Queued {
-        /// The bytes of a record sent as bytes.
+    impl Queued<(Arc<RecordChunk>, u32)> {
+        /// The record's bytes.
         fn bytes(&self) -> &[u8] {
-            match &self.record {
-                Payload::Chunk(chunk, row) => chunk.bytes(*row as usize).expect("a byte record"),
-                Payload::Row(_) => panic!("a row, not bytes"),
+            let (chunk, row) = &self.record;
+            chunk.bytes(*row as usize).expect("a byte record")
+        }
+    }
+
+    impl Polled {
+        /// The byte records a poll took.
+        fn records(self) -> Vec<Queued<(Arc<RecordChunk>, u32)>> {
+            match self {
+                Polled::Records(taken) => taken,
+                Polled::Rows(_) => panic!("rows, not byte records"),
+            }
+        }
+
+        /// The rows a poll took.
+        fn rows(self) -> Vec<Queued<otlp::Row>> {
+            match self {
+                Polled::Rows(taken) => taken,
+                Polled::Records(_) => panic!("byte records, not rows"),
             }
         }
     }
@@ -3903,7 +3933,7 @@ mod tests {
         let Admitted::Later(mut second) = admit(&shared, records(1)) else {
             panic!()
         };
-        let taken = shared.take(10, 1 << 20, Duration::ZERO);
+        let taken = shared.take(10, 1 << 20, Duration::ZERO).records();
         assert_eq!(taken.iter().map(|q| q.offset).collect::<Vec<_>>(), [0, 1, 2]);
 
         shared.answer_through(0);
@@ -3960,7 +3990,7 @@ mod tests {
         );
         shared.answer_through(1);
         assert!(!answered(&mut held));
-        let last = shared.take(10, 1 << 20, Duration::ZERO);
+        let last = shared.take(10, 1 << 20, Duration::ZERO).records();
         assert_eq!(last.iter().map(|q| q.offset).collect::<Vec<_>>(), [2]);
         assert_eq!(shared.state.lock().queued_bytes.total(), 0);
         shared.answer_through(2);
@@ -4023,7 +4053,7 @@ mod tests {
             Admitted::Later(_)
         ));
         for _ in ["r1", "r2"] {
-            let records = rows_chunk(shared.take(10, 1 << 20, Duration::ZERO), &SourceMeta::OTLP_LOGS);
+            let records = rows_chunk(shared.take(10, 1 << 20, Duration::ZERO).rows(), &SourceMeta::OTLP_LOGS);
             assert_eq!(records.len(), 2);
             assert!(
                 records
@@ -4033,6 +4063,23 @@ mod tests {
             let filed = records[0].chunk.filed().expect("the chunk carries it");
             assert!(filed.iter().any(|(k, _)| k == otlp::RESOURCE));
         }
+    }
+
+    /// A receiver speaks one protocol, so its inbox should hold one kind. A poll still takes only one kind, whatever
+    /// the inbox holds.
+    #[test]
+    fn a_poll_takes_byte_records_or_rows_and_never_both() {
+        let shared = Shared::default();
+        assert!(matches!(admit(&shared, records(2)), Admitted::Later(_)));
+        let body = r#"{"resourceLogs": [{"scopeLogs": [{"logRecords": [{}]}]}]}"#;
+        let logs = otlp::Export::json(Signal::Logs, body.as_bytes()).unwrap();
+        let charge = Charge::new(&shared.holdings);
+        assert!(matches!(
+            shared.admit(Cutter::Otlp(logs), body.len(), remote(), None, charge),
+            Admitted::Later(_)
+        ));
+        assert_eq!(shared.take(10, 1 << 20, Duration::ZERO).records().len(), 2);
+        assert_eq!(shared.take(10, 1 << 20, Duration::ZERO).rows().len(), 1);
     }
 
     /// A data point's arrays and structs are columns of their declared types, holding what the decoder wrote.
@@ -4061,7 +4108,7 @@ mod tests {
             ),
             Admitted::Later(_)
         ));
-        let records = rows_chunk(shared.take(10, 1 << 20, Duration::ZERO), &meta);
+        let records = rows_chunk(shared.take(10, 1 << 20, Duration::ZERO).rows(), &meta);
         assert_eq!(records.len(), 3);
         let mut pool = crate::core::buffer::BufferPool::new();
         let mut typed = 0;
@@ -4410,13 +4457,17 @@ mod tests {
     }
 
     /// What `shared` holds once it holds `n` records, taken on a thread of its own since a take blocks.
-    async fn take_all(shared: &Arc<Shared>, n: usize) -> Vec<Queued> {
+    async fn take_all(shared: &Arc<Shared>, n: usize) -> Vec<Queued<(Arc<RecordChunk>, u32)>> {
         let shared = shared.clone();
         tokio::task::spawn_blocking(move || {
             let mut taken = Vec::new();
             let deadline = Instant::now() + Duration::from_secs(10);
             while taken.len() < n && Instant::now() < deadline {
-                taken.extend(shared.take(n - taken.len(), 1 << 20, Duration::from_millis(50)));
+                taken.extend(
+                    shared
+                        .take(n - taken.len(), 1 << 20, Duration::from_millis(50))
+                        .records(),
+                );
             }
             taken
         })
