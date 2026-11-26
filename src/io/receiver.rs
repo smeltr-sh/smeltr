@@ -103,12 +103,6 @@ pub fn open(
     secrets: &HeldSecrets,
     pool: Option<&Arc<QueuePool>>,
 ) -> Result<Box<dyn Source>, IoError> {
-    let shared = || {
-        Arc::new(Shared {
-            holdings: Holdings::reserving(reserve(config), pool.cloned()),
-            ..Shared::default()
-        })
-    };
     let acknowledging = |name: &String| match &config.receiver {
         Receiver::Hec(hec) => hec.acknowledging.contains(name),
         Receiver::Http(_)
@@ -135,103 +129,65 @@ pub fn open(
             }
         })
         .collect::<Result<Vec<_>, IoError>>()?;
-    if let Receiver::Otlp(signal) = config.receiver {
-        let shared = shared();
-        let server = Arc::new(Server {
+    let shared = Arc::new(Shared {
+        holdings: Holdings::reserving(reserve(config), pool.cloned()),
+        ..Shared::default()
+    });
+    let server = |speaks, tokens| {
+        Arc::new(Server {
             shared: shared.clone(),
-            speaks: Speaks::Otlp,
+            speaks,
             tokens,
             max_request_bytes: config.max_request_bytes,
             answer_after_delivery: config.answer_after_delivery,
-        });
-        let joined = OtlpPort::join(config, signal, server, secrets)?;
-        return Ok(Box::new(ReceiverSource {
-            shared,
-            serving: None,
-            port: Some(joined),
-        }));
-    }
-    let shared = shared();
-    let runtime = receiver_runtime()?;
-    if let Receiver::Socket(datagrams) = &config.receiver
-        && datagrams.transport == Transport::Udp
-    {
-        let socket = std::net::UdpSocket::from(bound(config.listens())?);
-        // `from_std` registers the socket with the runtime it is called in.
-        let socket = {
-            let _entered = runtime.enter();
-            tokio::net::UdpSocket::from_std(socket)
-        }
-        .map_err(|e| IoError::transient(format!("receiver could not serve {}: {e}", named(config.listens()))))?;
-        let handler = socket_receiver::Handler::new(datagrams, config.max_request_bytes);
-        let cut = move |datagram: &[u8], peer| handler.datagram(datagram, peer);
-        let allow_from = datagrams.allow_from.clone();
-        let task = runtime.spawn(serve_datagrams(
-            socket,
-            allow_from,
-            shared.clone(),
-            config.max_request_bytes,
-            cut,
-        ));
-        return Ok(Box::new(ReceiverSource {
-            shared,
-            serving: Some(Serving::Task(task)),
-            port: None,
-        }));
-    }
-    let listener = TcpListener::from(bound(config.listens())?);
-    if let Receiver::S2s(_) | Receiver::Socket(_) = &config.receiver {
-        let tls = match &config.tls {
-            Some(tls) => Some(server_tls(tls, secrets)?),
-            None => None,
-        };
-        // `from_std` registers the socket with the runtime it is called in.
-        let listener = {
-            let _entered = runtime.enter();
-            tokio::net::TcpListener::from_std(listener)
-        }
-        .map_err(|e| IoError::transient(format!("receiver could not serve {}: {e}", config.listen)))?;
-        let task = match &config.receiver {
-            Receiver::S2s(s2s) => {
-                let tokens = tokens.into_iter().map(|admits| admits.token).collect();
-                let handler = Arc::new(s2s_receiver::Handler::new(s2s, tokens, config.max_request_bytes));
-                let handle = move |connection| handler.clone().serve(connection);
-                let limits = config.connections;
-                runtime.spawn(serve_streams(listener, Vec::new(), limits, tls, shared.clone(), handle))
-            }
-            Receiver::Socket(socket) => {
-                let handler = Arc::new(socket_receiver::Handler::new(socket, config.max_request_bytes));
-                let handle = move |connection| handler.clone().serve(connection);
-                let allow_from = socket.allow_from.clone();
-                let limits = config.connections;
-                runtime.spawn(serve_streams(listener, allow_from, limits, tls, shared.clone(), handle))
-            }
-            _ => unreachable!("only a receiver that streams is served here"),
-        };
-        return Ok(Box::new(ReceiverSource {
-            shared,
-            serving: Some(Serving::Task(task)),
-            port: None,
-        }));
-    }
-    let speaks = match &config.receiver {
-        Receiver::Http(http) => Speaks::Http(http.records.clone()),
-        Receiver::Hec(hec) => Speaks::Hec(hec.sourcetypes.clone()),
-        Receiver::S2s(_) | Receiver::Otlp(_) | Receiver::Socket(_) => {
-            unreachable!("served above")
-        }
-        Receiver::Prometheus => Speaks::Prometheus,
-        Receiver::Elastic => Speaks::Elastic,
+        })
     };
-    let server = Arc::new(Server {
-        shared: shared.clone(),
-        speaks,
-        tokens,
-        max_request_bytes: config.max_request_bytes,
-        answer_after_delivery: config.answer_after_delivery,
-    });
     use axum::routing::{get, post};
-    let router = match &config.receiver {
+    let (speaks, router) = match &config.receiver {
+        Receiver::Otlp(signal) => {
+            let joined = OtlpPort::join(config, *signal, server(Speaks::Otlp, tokens), secrets)?;
+            return Ok(Box::new(ReceiverSource {
+                shared,
+                serving: None,
+                port: Some(joined),
+            }));
+        }
+        Receiver::Socket(datagrams) if datagrams.transport == Transport::Udp => {
+            let runtime = receiver_runtime()?;
+            let socket = std::net::UdpSocket::from(bound(config.listens())?);
+            // `from_std` registers the socket with the runtime it is called in.
+            let socket = {
+                let _entered = runtime.enter();
+                tokio::net::UdpSocket::from_std(socket)
+            }
+            .map_err(|e| IoError::transient(format!("receiver could not serve {}: {e}", named(config.listens()))))?;
+            let handler = socket_receiver::Handler::new(datagrams, config.max_request_bytes);
+            let cut = move |datagram: &[u8], peer| handler.datagram(datagram, peer);
+            let allow_from = datagrams.allow_from.clone();
+            let task = runtime.spawn(serve_datagrams(
+                socket,
+                allow_from,
+                shared.clone(),
+                config.max_request_bytes,
+                cut,
+            ));
+            return Ok(Box::new(ReceiverSource {
+                shared,
+                serving: Some(Serving::Task(task)),
+                port: None,
+            }));
+        }
+        Receiver::S2s(s2s) => {
+            let tokens = tokens.into_iter().map(|admits| admits.token).collect();
+            let handler = Arc::new(s2s_receiver::Handler::new(s2s, tokens, config.max_request_bytes));
+            let handle = move |connection| handler.clone().serve(connection);
+            return open_streams(config, secrets, shared, Vec::new(), handle);
+        }
+        Receiver::Socket(socket) => {
+            let handler = Arc::new(socket_receiver::Handler::new(socket, config.max_request_bytes));
+            let handle = move |connection| handler.clone().serve(connection);
+            return open_streams(config, secrets, shared, socket.allow_from.clone(), handle);
+        }
         Receiver::Http(http) => {
             // A client percent-encodes what it must of a path, so a path that is not plain ASCII is asked encoded
             // and matched decoded.
@@ -249,46 +205,54 @@ pub fn open(
                     }
                 }
             };
-            axum::Router::new()
+            let router = axum::Router::new()
                 .route(&http.path, post(receive))
                 .route(HEALTH_PATH, get(health))
-                .fallback(encoded)
+                .fallback(encoded);
+            (Speaks::Http(http.records.clone()), router)
         }
         // Each path as Splunk serves it, with and without its version.
-        Receiver::Hec(_) => axum::Router::new()
-            .route("/services/collector", post(hec_event))
-            .route("/services/collector/event", post(hec_event))
-            .route("/services/collector/event/1.0", post(hec_event))
-            .route("/services/collector/raw", post(hec_raw))
-            .route("/services/collector/raw/1.0", post(hec_raw))
-            .route("/services/collector/s2s", post(hec_s2s))
-            .route("/services/collector/ack", post(hec_ack))
-            .route("/services/collector/ack/1.0", post(hec_ack))
-            .route(hec::HEALTH_PATH, get(health))
-            .route("/services/collector/health/1.0", get(health)),
-        Receiver::S2s(_) | Receiver::Otlp(_) | Receiver::Socket(_) => {
-            unreachable!("served above")
-        }
-        Receiver::Prometheus => axum::Router::new()
-            .route(prometheus::WRITE_PATH, post(prometheus_write))
-            .route(HEALTH_PATH, get(health)),
+        Receiver::Hec(hec) => (
+            Speaks::Hec(hec.sourcetypes.clone()),
+            axum::Router::new()
+                .route("/services/collector", post(hec_event))
+                .route("/services/collector/event", post(hec_event))
+                .route("/services/collector/event/1.0", post(hec_event))
+                .route("/services/collector/raw", post(hec_raw))
+                .route("/services/collector/raw/1.0", post(hec_raw))
+                .route("/services/collector/s2s", post(hec_s2s))
+                .route("/services/collector/ack", post(hec_ack))
+                .route("/services/collector/ack/1.0", post(hec_ack))
+                .route(hec::HEALTH_PATH, get(health))
+                .route("/services/collector/health/1.0", get(health)),
+        ),
+        Receiver::Prometheus => (
+            Speaks::Prometheus,
+            axum::Router::new()
+                .route(prometheus::WRITE_PATH, post(prometheus_write))
+                .route(HEALTH_PATH, get(health)),
+        ),
         // A client asks `/` which version it sends to, and a Beat asks `/_license` what it may send under, before
         // either sends; any other path, a template or a lifecycle policy, is one a receiver has none of.
-        Receiver::Elastic => axum::Router::new()
-            .route("/", get(|s, c, h| elastic_about(s, c, h, elastic_receiver::cluster)))
-            .route(
-                "/_license",
-                get(|s, c, h| elastic_about(s, c, h, elastic_receiver::license)),
-            )
-            // Elasticsearch takes a path with a slash after it, as Fluent Bit sends one naming a pipeline.
-            .route("/_bulk", post(elastic_bulk).put(elastic_bulk))
-            .route("/_bulk/", post(elastic_bulk).put(elastic_bulk))
-            .route("/:index/_bulk", post(elastic_bulk_into).put(elastic_bulk_into))
-            .route("/:index/_bulk/", post(elastic_bulk_into).put(elastic_bulk_into))
-            .route(HEALTH_PATH, get(health))
-            .fallback(elastic_unknown),
-    }
-    .with_state(server);
+        Receiver::Elastic => (
+            Speaks::Elastic,
+            axum::Router::new()
+                .route("/", get(|s, c, h| elastic_about(s, c, h, elastic_receiver::cluster)))
+                .route(
+                    "/_license",
+                    get(|s, c, h| elastic_about(s, c, h, elastic_receiver::license)),
+                )
+                // Elasticsearch takes a path with a slash after it, as Fluent Bit sends one naming a pipeline.
+                .route("/_bulk", post(elastic_bulk).put(elastic_bulk))
+                .route("/_bulk/", post(elastic_bulk).put(elastic_bulk))
+                .route("/:index/_bulk", post(elastic_bulk_into).put(elastic_bulk_into))
+                .route("/:index/_bulk/", post(elastic_bulk_into).put(elastic_bulk_into))
+                .route(HEALTH_PATH, get(health))
+                .fallback(elastic_unknown),
+        ),
+    };
+    let router = router.with_state(server(speaks, tokens));
+    let listener = TcpListener::from(bound(config.listens())?);
     let server = serve_router(
         listener,
         http_tls(config, secrets)?,
@@ -301,6 +265,46 @@ pub fn open(
     Ok(Box::new(ReceiverSource {
         shared,
         serving: Some(Serving::Server(server)),
+        port: None,
+    }))
+}
+
+/// Serves `config`'s address as a receiver that streams: `handle` takes each connection, after TLS where `config`
+/// serves it, from a peer in `allow_from`; an empty `allow_from` admits every peer.
+fn open_streams<H, F>(
+    config: &ReceiverConfig,
+    secrets: &HeldSecrets,
+    shared: Arc<Shared>,
+    allow_from: Vec<ipnetwork::IpNetwork>,
+    handle: H,
+) -> Result<Box<dyn Source>, IoError>
+where
+    H: Fn(Connection) -> F + Send + Sync + 'static,
+    F: Future<Output = ()> + Send + 'static,
+{
+    let runtime = receiver_runtime()?;
+    let listener = TcpListener::from(bound(config.listens())?);
+    let tls = match &config.tls {
+        Some(tls) => Some(server_tls(tls, secrets)?),
+        None => None,
+    };
+    // `from_std` registers the socket with the runtime it is called in.
+    let listener = {
+        let _entered = runtime.enter();
+        tokio::net::TcpListener::from_std(listener)
+    }
+    .map_err(|e| IoError::transient(format!("receiver could not serve {}: {e}", config.listen)))?;
+    let task = runtime.spawn(serve_streams(
+        listener,
+        allow_from,
+        config.connections,
+        tls,
+        shared.clone(),
+        handle,
+    ));
+    Ok(Box::new(ReceiverSource {
+        shared,
+        serving: Some(Serving::Task(task)),
         port: None,
     }))
 }
