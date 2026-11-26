@@ -38,10 +38,9 @@
   </p>
   <p>
     The software bill of materials (SBOM), in <a href="https://cyclonedx.org/">CycloneDX</a> JSON:
-    the image's operating system packages and the libraries built into Smeltr. The published image
-    carries its SBOM, signed; see
-    <a href="/docs/install-leader/container#pull">Pull and verify the image</a>. The Windows SBOM
-    lists the libraries built into <code>smeltr.exe</code>.
+    the libraries built into Smeltr, and on Linux the image's operating system packages. The
+    published image carries its SBOM, signed; see
+    <a href="/docs/install-leader/container#pull">Pull and verify the image</a>.
   </p>
 
   <h3>CVE report</h3>
@@ -51,9 +50,8 @@
     <code>smeltr-cves-windows.txt</code> (Windows)
   </p>
   <p>
-    Known vulnerabilities in the image's operating system packages and the libraries built into
-    Smeltr, found by <a href="https://trivy.dev/">Trivy</a> when the release was built. The Windows
-    report covers the libraries built into <code>smeltr.exe</code>.
+    Known vulnerabilities in the libraries built into Smeltr, and on Linux in the image's operating
+    system packages, found by <a href="https://trivy.dev/">Trivy</a> when the release was built.
   </p>
 
   <h3>STIG report</h3>
