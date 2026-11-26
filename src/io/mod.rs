@@ -140,6 +140,25 @@ pub fn build_destination(
     }
 }
 
+/// What reads a source's payloads into rows of the fields it declares, on a transform thread (`read_payloads`), so
+/// the threads that receive them do only I/O. A source that hands its payloads over unread names it on their chunk
+/// (`RecordChunkBuilder::read_by`).
+pub trait ReadPayloads: Send + Sync {
+    /// `records`, one batch of one source's payloads, as rows. A payload may read as any number of rows, none
+    /// included, and the rows may point into several chunks. Each row carries its payload's offset, partition, topic
+    /// and headers: the batch commits as polled, whatever rows it reads as.
+    fn read(&self, records: Vec<SourceRecord>) -> Vec<SourceRecord>;
+}
+
+/// `records`, one batch of one source, read by what their chunk names (`ReadPayloads`), or as they are where it names
+/// nothing. Runs on a transform thread: reading is CPU work, which every other thread leaves to it.
+pub fn read_payloads(records: Vec<SourceRecord>) -> Vec<SourceRecord> {
+    match records.first().and_then(|r| r.chunk.read_by.clone()) {
+        Some(reader) => reader.read(records),
+        None => records,
+    }
+}
+
 /// One record read from a source: its row of the chunk its poll's records share, and the coordinates it commits
 /// against. Which of those coordinates a pipeline may read is the source kind's to declare
 /// (`plan::topology::SourceMeta`). `topic` is an `Arc<str>` so a source interns each name once per poll.
@@ -241,6 +260,8 @@ pub struct RecordChunkBuilder {
     /// Each record's time as its source stamped it, in microseconds since the epoch.
     time: Vec<Option<i64>>,
     size: usize,
+    /// `RecordChunk::read_by`.
+    read_by: Option<Arc<dyn ReadPayloads>>,
 }
 
 impl Default for RecordChunkBuilder {
@@ -263,6 +284,7 @@ impl Default for RecordChunkBuilder {
             at: Vec::with_capacity(rows),
             time: Vec::with_capacity(rows),
             size: 0,
+            read_by: None,
         }
     }
 }
@@ -270,6 +292,12 @@ impl Default for RecordChunkBuilder {
 impl RecordChunkBuilder {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// These records, their payloads read by `reader` on a transform thread (`read_payloads`).
+    pub fn read_by(mut self, reader: Arc<dyn ReadPayloads>) -> Self {
+        self.read_by = Some(reader);
+        self
     }
 
     /// A record of `raw`, read at `offset` of `partition` of `topic`, with `headers`.
@@ -362,6 +390,7 @@ impl RecordChunkBuilder {
         };
         let mut chunk = RecordChunk::new(vec![column], Vec::new());
         chunk.home = Some(self.home);
+        chunk.read_by = self.read_by;
         // A source that stamps nothing pays nothing past the poll.
         if self.time.iter().any(Option::is_some) {
             chunk.time = Some(self.time);
@@ -430,6 +459,8 @@ pub struct RecordChunk {
     unread: Vec<(u32, String)>,
     /// The Avro writers' schemas its rows were read with, newest last, where its source reads Avro.
     avro_writers: Vec<Arc<avro::Parsed>>,
+    /// What reads its rows, where they are payloads not read yet (`read_payloads`).
+    read_by: Option<Arc<dyn ReadPayloads>>,
     /// What each row's values hold, counted once when the chunk is made: every limit asks it of each record.
     sizes: Vec<u32>,
 }
@@ -456,6 +487,7 @@ impl RecordChunk {
             time: None,
             unread: Vec::new(),
             avro_writers: Vec::new(),
+            read_by: None,
         }
     }
 
@@ -556,6 +588,7 @@ impl RecordChunk {
         let mut chunk = RecordChunk::new(columns, failed);
         chunk.filed = self.filed.clone();
         chunk.avro_writers = self.avro_writers.clone();
+        chunk.read_by = self.read_by.clone();
         chunk.time = (self.time.as_ref()).map(|time| rows.iter().map(|&row| time[row as usize]).collect());
         chunk.unread = (rows.iter().enumerate())
             .filter_map(|(to, &row)| Some((to as u32, self.unread(row)?.to_string())))

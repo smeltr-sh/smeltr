@@ -1470,7 +1470,8 @@ fn drive<S: crate::io::Source + ?Sized>(
             crate::worker::TICK_MAX_BYTES,
             POLL_TIMEOUT,
         ) {
-            Ok(records) => records,
+            // A capture shows rows as a pipeline would see them.
+            Ok(records) => crate::io::read_payloads(records),
             Err(e) => {
                 tracing::warn!(
                     name: "poll_failed", target: "captures",

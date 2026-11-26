@@ -1029,6 +1029,9 @@ impl Transform {
             self.collect()?;
             return Ok(0);
         };
+        // Read here, on a transform thread, rather than on the source's. Records already read name nothing to read
+        // them by, so a batch back for room comes through as it is.
+        turn.records = crate::io::read_payloads(std::mem::take(&mut turn.records));
         if turn.unprocessable {
             // Back for room or after a failed hand-over: no pipeline runs it again.
             return self.divert_unprocessable(turn);

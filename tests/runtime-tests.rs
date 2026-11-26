@@ -12,8 +12,8 @@ use smeltr::format::encoding::Encoding;
 use smeltr::handoff::{BlockCause, Handoff, reports};
 use smeltr::io::fake::{AsyncDestination, FakeDestination, FakeSource};
 use smeltr::io::{
-    BatchId, CommitMap, Destination, IoError, OwnedRecord, PartitionLag, Rejection, Source, SourceRecord,
-    TopicPartition,
+    BatchId, CommitMap, Destination, IoError, OwnedRecord, PartitionLag, ReadPayloads, RecordChunkBuilder, Rejection,
+    Source, SourceRecord, TopicPartition,
 };
 use smeltr::metrics::{MetricValue, Metrics, MetricsHandle};
 use smeltr::plan::compile::compile;
@@ -436,6 +436,58 @@ fn a_lag_sample_becomes_a_gauge_labeled_by_source_topic_and_partition() {
 }
 
 // -- routing ----------------------------------------------------------------
+
+/// Reads each payload as a row for each of its comma-separated pieces, and an empty payload as none.
+struct Pieces;
+
+impl ReadPayloads for Pieces {
+    fn read(&self, records: Vec<SourceRecord>) -> Vec<SourceRecord> {
+        let mut rows = RecordChunkBuilder::new();
+        for r in &records {
+            for piece in r.bytes().unwrap().split(|b| *b == b',').filter(|p| !p.is_empty()) {
+                rows.push(piece, r.offset, r.partition, r.topic.clone(), r.headers.clone());
+            }
+        }
+        rows.finish()
+    }
+}
+
+/// One poll of `payloads` at offsets from 10, each read by `Pieces`.
+fn pieces(payloads: &[&str]) -> FakeSource {
+    let mut polled = RecordChunkBuilder::new().read_by(Arc::new(Pieces));
+    for (offset, raw) in (10..).zip(payloads) {
+        polled.push(raw.as_bytes(), offset, 0, Arc::from(TEST_TOPIC), None);
+    }
+    FakeSource::new(polled.finish())
+}
+
+/// Payloads a transform thread reads (`ReadPayloads`) deliver every row they read as, from a payload of several rows
+/// and around one of none, and the batch commits as it was polled.
+#[test]
+fn payloads_read_on_a_transform_thread_deliver_each_row_and_commit_as_polled() {
+    let src = pieces(&["a,b,c", "", "d,e"]);
+    let mut w = worker(plain_route(), vec![pipeline(0, vec![])], &src);
+    let dest = FakeDestination::new();
+    w.add_destination(target(DestId::new(0), dest.clone()));
+
+    tick(&mut w).unwrap();
+    let sent: Vec<String> = dest.sent().iter().map(|r| body(&r.value)["_raw"].to_string()).collect();
+    assert_eq!(sent, [r#""a""#, r#""b""#, r#""c""#, r#""d""#, r#""e""#]);
+    assert_eq!(src.committed(), vec![[(tp(0), 12i64)].into_iter().collect()]);
+}
+
+/// A batch whose payloads all read as no rows delivers nothing and still commits.
+#[test]
+fn a_batch_read_as_no_rows_commits() {
+    let src = pieces(&["", ""]);
+    let mut w = worker(plain_route(), vec![pipeline(0, vec![])], &src);
+    let dest = FakeDestination::new();
+    w.add_destination(target(DestId::new(0), dest.clone()));
+
+    tick(&mut w).unwrap();
+    assert!(dest.sent().is_empty());
+    assert_eq!(src.committed(), vec![[(tp(0), 11i64)].into_iter().collect()]);
+}
 
 /// A batch runs through its pipelines a slice at a time, and is still delivered whole, in source order, and committed
 /// once.
