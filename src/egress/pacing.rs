@@ -1241,6 +1241,11 @@ impl Headroom {
 }
 
 #[cfg(test)]
+mod compare;
+#[cfg(test)]
+mod old;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
