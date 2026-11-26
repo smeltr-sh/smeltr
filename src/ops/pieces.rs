@@ -270,17 +270,17 @@ fn build_var<'a>(pool: &mut BufferPool, var_type: VarType, pieces: &[Piece<'a>],
     let mut total_bytes = 0usize;
     for piece in pieces {
         let (src, at) = piece.source();
-        if let Some(v) = src.and_then(|c| readers.of(c, |c| c.varlen().ok())) {
-            total_bytes += (v.offsets[at.end] - v.offsets[at.start]) as usize;
+        if let Some(v) = src.and_then(|c| readers.of(c, |c| c.sealed_rows().ok())) {
+            total_bytes += (v.rows.offsets[at.end] - v.rows.offsets[at.start]) as usize;
         }
     }
     b.reserve(pool, total_bytes);
     for piece in pieces {
         let (src, at) = piece.source();
-        let v = src.and_then(|c| readers.of(c, |c| c.varlen().ok()));
+        let v = src.and_then(|c| readers.of(c, |c| c.sealed_rows().ok()));
         for i in at {
             match v {
-                Some(v) if v.validity.is_valid(i) => b.push(v.get(i)),
+                Some(v) if v.rows.validity.is_valid(i) => b.push_row(v, i),
                 _ => b.push_null(),
             }
         }

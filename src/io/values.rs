@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::column::DataType;
-use crate::core::variant;
+use crate::core::variant::{self, Encoded, EncodedBuf};
 use crate::format::json_scan::Reader;
 
 /// One value read from outside smeltr, in smeltr's terms. Times and durations are microseconds, times since the Unix epoch.
@@ -25,7 +25,7 @@ pub enum Value {
     Array(Vec<Value>),
     /// A value with a shape of its own: JSON, in `core::variant`'s encoding.
     #[serde(with = "json")]
-    Json(Vec<u8>),
+    Json(EncodedBuf),
 }
 
 impl Value {
@@ -35,7 +35,7 @@ impl Value {
             Value::Str(s) => s.len(),
             Value::Bytes(b) => b.len(),
             Value::Array(items) => items.iter().map(Value::size).sum(),
-            Value::Json(json) => json.len(),
+            Value::Json(json) => json.get().bytes().len(),
             _ => 8,
         }
     }
@@ -47,7 +47,7 @@ impl Value {
                 Value::Str(s) => s.len(),
                 Value::Bytes(b) => b.len(),
                 Value::Array(items) => items.iter().map(Value::held).sum(),
-                Value::Json(json) => json.len(),
+                Value::Json(json) => json.get().bytes().len(),
                 _ => 0,
             }
     }
@@ -114,19 +114,19 @@ mod json {
     use serde::ser::{SerializeMap, SerializeSeq};
     use serde::{Deserializer, Serialize, Serializer};
 
-    use crate::core::variant;
+    use crate::core::variant::{self, Encoded, EncodedBuf};
 
-    pub fn serialize<S: Serializer>(json: &[u8], out: S) -> Result<S::Ok, S::Error> {
-        Shown(json).serialize(out)
+    pub fn serialize<S: Serializer>(json: &EncodedBuf, out: S) -> Result<S::Ok, S::Error> {
+        Shown(json.get()).serialize(out)
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(input: D) -> Result<Vec<u8>, D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>>(input: D) -> Result<EncodedBuf, D::Error> {
         let mut out = Vec::new();
         input.deserialize_any(Written(&mut out))?;
-        Ok(out)
+        Ok(EncodedBuf::check(out))
     }
 
-    struct Shown<'v>(&'v [u8]);
+    struct Shown<'v>(Encoded<'v>);
 
     impl Serialize for Shown<'_> {
         fn serialize<S: Serializer>(&self, out: S) -> Result<S::Ok, S::Error> {
@@ -435,11 +435,11 @@ fn build(
             Column::list_from_parts(offsets, child, validity, n)
         }
         DataType::Struct(members, open) => {
-            let objects: Vec<Option<&[u8]>> = values
+            let objects: Vec<Option<Encoded>> = values
                 .iter()
                 .enumerate()
                 .map(|(row, v)| match v {
-                    Value::Json(o) if variant::is_object(o) => Some(o.as_slice()),
+                    Value::Json(o) if variant::is_object(o.get()) => Some(o.get()),
                     Value::Null => None,
                     _ => {
                         refused.push(row);
@@ -479,7 +479,7 @@ fn build(
 
 /// The members of `object`, an object in `core::variant`'s encoding, whose key `claimed` does not take, as an object
 /// of their own: null where there are none.
-fn rest_of(object: &[u8], claimed: impl Fn(&str) -> bool) -> Value {
+fn rest_of(object: Encoded, claimed: impl Fn(&str) -> bool) -> Value {
     let variant::Value::Object(entries) = variant::read(object) else {
         unreachable!("only an object has members")
     };
@@ -488,13 +488,14 @@ fn rest_of(object: &[u8], claimed: impl Fn(&str) -> bool) -> Value {
     let mut count = 0;
     for (key, member) in entries.filter(|(k, _)| !claimed(k)) {
         variant::put_key(&mut rest, key);
-        rest.extend_from_slice(member);
+        rest.extend_from_slice(member.bytes());
         count += 1;
     }
     variant::end(&mut rest, open, count);
     match count {
         0 => Value::Null,
-        _ => Value::Json(rest),
+        // SAFETY: each key is a `&str` and each member an `Encoded` value, so every string and key in `rest` is UTF-8.
+        _ => Value::Json(unsafe { EncodedBuf::unchecked(rest) }),
     }
 }
 
@@ -506,7 +507,7 @@ pub(crate) fn at<'v>(value: &'v Value, path: &[String]) -> Result<Value, &'v Val
     };
     let mut held = match value {
         Value::Null => return Ok(Value::Null),
-        Value::Json(o) if variant::is_object(o) => o.as_slice(),
+        Value::Json(o) if variant::is_object(o.get()) => o.get(),
         _ => return Err(value),
     };
     for (i, key) in std::iter::once(first).chain(below).enumerate() {
@@ -526,7 +527,7 @@ pub(crate) fn at<'v>(value: &'v Value, path: &[String]) -> Result<Value, &'v Val
 pub(crate) fn rest(value: &Value, claimed: impl Fn(&str) -> bool) -> Result<Value, &Value> {
     match value {
         Value::Null => Ok(Value::Null),
-        Value::Json(o) if variant::is_object(o) => Ok(rest_of(o, claimed)),
+        Value::Json(o) if variant::is_object(o.get()) => Ok(rest_of(o.get(), claimed)),
         _ => Err(value),
     }
 }
@@ -535,7 +536,7 @@ pub(crate) fn rest(value: &Value, claimed: impl Fn(&str) -> bool) -> Result<Valu
 fn as_items(v: &Value) -> Option<Vec<Value>> {
     match v {
         Value::Array(items) => Some(items.clone()),
-        Value::Json(json) => match variant::read(json) {
+        Value::Json(json) => match variant::read(json.get()) {
             variant::Value::Array(items) => Some(items.map(from_variant).collect()),
             _ => None,
         },
@@ -550,14 +551,14 @@ pub(crate) fn json(json: &[u8]) -> Result<Value, String> {
     r.variant(&mut out)
         .map_err(|_| "a JSON value that does not read".to_string())?;
     match r.end() {
-        true => Ok(Value::Json(out)),
+        true => Ok(Value::Json(EncodedBuf::check(out))),
         false => Err("a JSON value with more after it".to_string()),
     }
 }
 
 /// A JSON member or element, in `core::variant`'s encoding, as a value: a whole number is an integer, any other
 /// number a float.
-pub(crate) fn from_variant(v: &[u8]) -> Value {
+pub(crate) fn from_variant(v: Encoded) -> Value {
     match variant::read(v) {
         variant::Value::Null => Value::Null,
         variant::Value::Bool(b) => Value::Bool(b),
@@ -568,13 +569,13 @@ pub(crate) fn from_variant(v: &[u8]) -> Value {
         variant::Value::DateTime(t) => Value::Time(t),
         variant::Value::Duration(d) => Value::Duration(d),
         variant::Value::Bytes(b) => Value::Bytes(b.to_vec()),
-        variant::Value::Object(_) => Value::Json(v.to_vec()),
+        variant::Value::Object(_) => Value::Json(v.into()),
     }
 }
 
 /// A JSON value, in `core::variant`'s encoding, as JSON text: every member and element as it is held, in its order.
 /// A float JSON has no number for is null.
-pub(crate) fn json_text(json: &[u8], out: &mut Vec<u8>) {
+pub(crate) fn json_text(json: Encoded, out: &mut Vec<u8>) {
     use crate::format::json::write_json_string;
     match variant::read(json) {
         variant::Value::Null => out.extend_from_slice(b"null"),
@@ -663,14 +664,14 @@ pub(crate) fn stored(v: &Value, out: &mut Vec<u8>) {
             }
             out.push(b']');
         }
-        Value::Json(json) => stored_json(json, out),
+        Value::Json(json) => stored_json(json.get(), out),
     }
     out.push(b'}');
 }
 
 /// A JSON value, in `core::variant`'s encoding, as it is stored: an object's members in key order, so the same value
 /// is always the same text, and a float spelled as serde_json spells one, or null where JSON has no number for it.
-fn stored_json(json: &[u8], out: &mut Vec<u8>) {
+fn stored_json(json: Encoded, out: &mut Vec<u8>) {
     use crate::format::json::write_json_string;
     match variant::read(json) {
         variant::Value::F64(f) if f.is_finite() => {
@@ -712,7 +713,7 @@ fn text(v: &Value) -> Option<String> {
         Value::Int(x) => Some(x.to_string()),
         Value::Float(x) => Some(x.to_string()),
         Value::Bool(x) => Some(x.to_string()),
-        Value::Json(json) => match variant::read(json) {
+        Value::Json(json) => match variant::read(json.get()) {
             variant::Value::Str(s) => Some(s.to_string()),
             variant::Value::I64(x) => Some(x.to_string()),
             variant::Value::F64(x) => Some(x.to_string()),
@@ -728,7 +729,7 @@ pub(crate) fn spell(v: &Value) -> String {
         Value::Str(s) => s.clone(),
         Value::Json(j) => {
             let mut text = Vec::new();
-            json_text(j, &mut text);
+            json_text(j.get(), &mut text);
             String::from_utf8(text).expect("JSON is UTF-8")
         }
         other => {
@@ -750,7 +751,7 @@ fn put_variant(out: &mut Vec<u8>, v: &Value) {
         Value::Float(x) => variant::put_f64(out, *x),
         Value::Str(s) => variant::put_str(out, s),
         Value::Bytes(b) => variant::put_bytes(out, b),
-        Value::Json(j) => out.extend_from_slice(j),
+        Value::Json(j) => out.extend_from_slice(j.get().bytes()),
         Value::Array(items) => {
             let open = variant::begin_array(out);
             for item in items {
@@ -845,7 +846,7 @@ mod tests {
     }
 
     /// `text` in `core::variant`'s encoding.
-    fn encoded(text: &[u8]) -> Vec<u8> {
+    fn encoded(text: &[u8]) -> EncodedBuf {
         match json(text).unwrap() {
             Value::Json(v) => v,
             other => panic!("not JSON: {other:?}"),
@@ -855,7 +856,12 @@ mod tests {
     #[test]
     fn a_duration_from_json_is_its_microseconds() {
         let mut pool = crate::core::buffer::BufferPool::new();
-        let (c, refused) = column(&mut pool, &DataType::Duration, &[from_variant(&encoded(b"1500000"))]).unwrap();
+        let (c, refused) = column(
+            &mut pool,
+            &DataType::Duration,
+            &[from_variant(encoded(b"1500000").get())],
+        )
+        .unwrap();
         assert_eq!(c.duration().unwrap().values[0], 1_500_000);
         assert!(refused.is_empty());
         c.reclaim(&mut pool);

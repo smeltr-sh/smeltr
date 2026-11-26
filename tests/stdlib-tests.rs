@@ -11,7 +11,6 @@ use smeltr::core::batch::Batch;
 use smeltr::plan::topology::SourceMeta;
 
 use smeltr::core::column::{Column, DataType};
-use smeltr::core::id::FunctionId;
 use smeltr::plan::compile::compile;
 use smeltr::plan::config::{CompileError, PipelineConfig, Step};
 
@@ -1311,7 +1310,7 @@ fn bracket_and_at_are_the_same_call_on_every_receiver() {
     let open = || vec![parser(0)];
     let closed = || vec![parser(0), code(1, "geo: {name: str} = geo as {name: str};")];
     let then = |mut steps: Vec<Step>, expr: &str| {
-        steps.push(code(steps.len() as FunctionId, &format!("out = {expr};")));
+        steps.push(code(u32::try_from(steps.len()).unwrap(), &format!("out = {expr};")));
         steps
     };
     // Each pair is the same call written both ways.

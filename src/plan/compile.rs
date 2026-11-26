@@ -4867,7 +4867,7 @@ mod tests {
             id: 0,
             name: "p".into(),
             body: vec![Step::Function(FunctionConfig::new(
-                0,
+                FunctionId::new(0),
                 FunctionKind::Eval {
                     assignments: assignments
                         .iter()
@@ -4918,7 +4918,7 @@ mod tests {
     fn code_pipeline(body: &str) -> PipelineConfig {
         let mut p = eval_pipeline(&[]);
         p.body = vec![Step::Function(FunctionConfig::new(
-            0,
+            FunctionId::new(0),
             FunctionKind::Code { body: body.into() },
         ))];
         p
@@ -4969,7 +4969,7 @@ mod tests {
         let compiled = |fields: &[&str], filter: Option<&str>| {
             let mut p = code_pipeline("Object.assign($, json(_raw)); x = when; y = 1; o = {a: 1, b: 2}");
             let mut remove = FunctionConfig::new(
-                1,
+                FunctionId::new(1),
                 FunctionKind::Remove {
                     fields: fields.iter().map(|f| f.to_string()).collect(),
                 },
@@ -5093,7 +5093,7 @@ mod tests {
         };
         p.body = vec![
             Step::Function(FunctionConfig::new(
-                0,
+                FunctionId::new(0),
                 FunctionKind::Parser {
                     input: "_raw".into(),
                     into: tree::ROOT.to_string(),
@@ -5102,7 +5102,7 @@ mod tests {
                 },
             )),
             Step::Function(FunctionConfig::new(
-                1,
+                FunctionId::new(1),
                 FunctionKind::Drop {
                     cond: r#"service == "NTP""#.into(),
                 },

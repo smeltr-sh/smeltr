@@ -2225,7 +2225,7 @@ mod tests {
     fn with_fields(fields: &[(&str, DataType)]) -> SymbolTable {
         let mut t = table();
         for (n, ty) in fields {
-            t.bind(n, ty.clone(), Origin::Function(0));
+            t.bind(n, ty.clone(), Origin::Function(FunctionId::new(0)));
         }
         t
     }
@@ -2295,8 +2295,8 @@ mod tests {
     fn bind_allocates_a_fresh_slot_each_time() {
         // SSA. `x = x + 1` must not reuse x's slot.
         let mut t = table();
-        let first = t.bind("x", DataType::I64, Origin::Function(0));
-        let second = t.bind("x", DataType::I64, Origin::Function(1));
+        let first = t.bind("x", DataType::I64, Origin::Function(FunctionId::new(0)));
+        let second = t.bind("x", DataType::I64, Origin::Function(FunctionId::new(1)));
         assert_ne!(first, second);
         assert_eq!(t.lookup("x"), Some(second), "the name follows the new slot");
     }
@@ -2346,8 +2346,8 @@ mod tests {
     #[test]
     fn binding_a_scalar_over_an_object_replaces_it() {
         let mut t = with_fields(&[("source.ip", DataType::Str), ("source.port", DataType::I64)]);
-        t.bind_unclaimed("source", Origin::Function(0));
-        let slot = t.bind("source", DataType::Str, Origin::Function(1));
+        t.bind_unclaimed("source", Origin::Function(FunctionId::new(0)));
+        let slot = t.bind("source", DataType::Str, Origin::Function(FunctionId::new(1)));
         assert_eq!(t.node("source"), Some(&Node::Leaf(slot)));
         let under: Vec<Place> = t
             .root()
@@ -2366,7 +2366,7 @@ mod tests {
         // either.
         let mut t = with_fields(&[("source.ip", DataType::Str)]);
         let before = t.warnings.len();
-        t.bind("source.port", DataType::I64, Origin::Function(0));
+        t.bind("source.port", DataType::I64, Origin::Function(FunctionId::new(0)));
         assert_eq!(t.warnings.len(), before, "siblings aren't a conflict");
     }
 
@@ -2376,7 +2376,7 @@ mod tests {
         // binding a DIFFERENT, dot-nested name is flagged.
         let mut t = with_fields(&[("x", DataType::I64)]);
         let before = t.warnings.len();
-        t.bind("x", DataType::I64, Origin::Function(1));
+        t.bind("x", DataType::I64, Origin::Function(FunctionId::new(1)));
         assert_eq!(t.warnings.len(), before);
     }
 
@@ -2386,7 +2386,7 @@ mod tests {
         // test.
         let mut t = with_fields(&[("source", DataType::Str)]);
         let before = t.warnings.len();
-        t.bind("sourceX", DataType::Str, Origin::Function(0));
+        t.bind("sourceX", DataType::Str, Origin::Function(FunctionId::new(0)));
         assert_eq!(t.warnings.len(), before);
     }
 
@@ -2466,7 +2466,7 @@ mod tests {
             None,
             "not even by the name provenance shows"
         );
-        t.bind("b", DataType::I64, Origin::Function(0));
+        t.bind("b", DataType::I64, Origin::Function(FunctionId::new(0)));
         // The runtime reads a slot's provenance at the slot's index.
         assert_eq!(t.origins.len(), t.slot_count());
         assert!(t.origins.iter().enumerate().all(|(i, o)| o.slot == i));
@@ -2502,7 +2502,7 @@ mod tests {
         // Under the null propagation every other operator gets, `x != null` would be null on every row and guard
         // nothing. `d` is a variant. Row 1 of each field is its null.
         let mut t = with_fields(&[("s", DataType::Str)]);
-        t.bind("d", DataType::Variant, Origin::Function(0));
+        t.bind("d", DataType::Variant, Origin::Function(FunctionId::new(0)));
         let fields = [("s", DataType::Str), ("d", DataType::I64)];
         let is_null = [Some(false), Some(true), Some(false), Some(false)];
         let not_null = [Some(true), Some(false), Some(true), Some(true)];
@@ -2524,7 +2524,7 @@ mod tests {
     #[test]
     fn a_variant_is_refused_by_an_operator_and_read_by_a_nullness_test() {
         let mut t = table();
-        t.bind("kind", DataType::Variant, Origin::Function(0));
+        t.bind("kind", DataType::Variant, Origin::Function(FunctionId::new(0)));
         let e = lower("kind == \"a\"", &mut t).unwrap_err();
         assert!(e.message.contains("`kind` is a variant"), "{}", e.message);
         assert!(e.message.contains("`kind: type = kind;`"), "{}", e.message);

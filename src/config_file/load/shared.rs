@@ -35,7 +35,7 @@ pub(super) use super::super::dto::*;
 #[derive(Clone, Debug, PartialEq)]
 pub struct ValidationError {
     pub pipeline: Option<String>,
-    pub function: Option<u32>,
+    pub function: Option<crate::core::id::FunctionId>,
     /// `function`, resolved to the step's own string id through that pipeline's `step_ids`. Stable across a `call`
     /// step's inlining, where `function` alone is not.
     pub step: Option<String>,

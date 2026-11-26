@@ -41,6 +41,8 @@ zmij = "1"
 base64 = "0.23"
 # `indexOf`, `lastIndexOf` and `includes` on bytes. Already in the build under regex.
 memchr = "2"
+# Checks that text is UTF-8, faster than the standard library. Already in the build, as encoding_rs uses it.
+simdutf8 = "0.1"
 
 # ECS's `ecs_flat.yml`, read as a schema (`schema::ecs`). yaml-rust2 because it is pure Rust and maintained;
 # serde_yaml is archived.

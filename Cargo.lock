@@ -5529,6 +5529,7 @@ dependencies = [
  "rustls-native-certs",
  "serde",
  "serde_json",
+ "simdutf8",
  "snap",
  "socket2",
  "tikv-jemalloc-sys",

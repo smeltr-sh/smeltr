@@ -27,10 +27,12 @@ const ALL: &[&Pipeline] = &[
     &reference::nginx::PIPELINE,
     &reference::cloudtrail::PIPELINE,
     &reference::asa::PIPELINE,
+    &reference::suricata::PIPELINE,
 ];
 
 fn maps(p: &Pipeline) {
-    let (r, sink) = reference::run(&(p.bundle)(), p.line, 2_000, 500, 8);
+    // Enough documents that each pipeline's rarer shapes are among them.
+    let (r, sink) = reference::run(&(p.bundle)(), p.line, 2_000, 500, 300);
     let kept: Vec<serde_json::Value> = sink
         .kept()
         .iter()
@@ -73,6 +75,11 @@ fn cloudtrail_maps() {
 #[test]
 fn asa_maps() {
     maps(&reference::asa::PIPELINE);
+}
+
+#[test]
+fn suricata_maps() {
+    maps(&reference::suricata::PIPELINE);
 }
 
 /// One run of the pipeline `BENCH_PIPELINE` names, printed as the line the

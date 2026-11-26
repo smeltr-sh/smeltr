@@ -7,7 +7,7 @@ use super::helpers::{self, One, Operand, Side, side};
 use super::pieces::{self, Piece};
 use crate::core::bits;
 use crate::core::buffer::BufferPool;
-use crate::core::column::{Column, DataType, Scalar, StrBuilder, VarType};
+use crate::core::column::{Column, DataType, Scalar, SealedRows, StrBuilder, VarType};
 use crate::core::ctx::Ctx;
 
 /// A Bool column's `(values, validity)` words; an unbound operand reads as all-null (`zero` for both).
@@ -269,6 +269,12 @@ fn meet(ins: &[&Column]) -> DataType {
     ty
 }
 
+/// A constant `take_varlen` writes in each row it wins. Text is pushed as text, so the column need not check it again.
+enum Constant<'a> {
+    Text(&'a str),
+    Bytes(&'a [u8]),
+}
+
 /// A varlen column cannot be patched in place, so text is a rebuild. The reserve is what every source holds, read
 /// off its offsets, rather than a pass over the rows to find each winner's length first.
 fn take_varlen(ctx: &mut Ctx, ins: &[&Column], takes: &[&[u64]], ty: &DataType, len: usize) -> Column {
@@ -277,17 +283,27 @@ fn take_varlen(ctx: &mut Ctx, ins: &[&Column], takes: &[&[u64]], ty: &DataType, 
         DataType::Variant => VarType::Variant,
         _ => VarType::Str,
     };
-    let readers: Vec<_> = ins
+    // A source's rows are copied as they are; a constant's text is pushed in each row it wins.
+    let readers: Vec<Option<Side<'_, SealedRows<'_>, Constant<'_>>>> = ins
         .iter()
-        .map(|c| match var_type {
-            VarType::Variant => c.variant().ok().map(|v| {
-                let validity = v.validity;
-                Side::Rows(v, validity)
-            }),
-            _ => side::var(c),
+        .map(|c| match (c.sealed_rows(), c.constant_value()) {
+            (Ok(_), _) if (var_type == VarType::Variant) != (c.data_type() == DataType::Variant) => None,
+            (Ok(r), _) => {
+                let validity = r.rows.validity;
+                Some(Side::Rows(r, validity))
+            }
+            (Err(_), Some(Scalar::Str(s))) if var_type != VarType::Variant => Some(Side::One(Constant::Text(s))),
+            (Err(_), Some(Scalar::Bytes(b))) if var_type != VarType::Variant => Some(Side::One(Constant::Bytes(b))),
+            (Err(_), _) => None,
         })
         .collect();
-    let total: usize = readers.iter().flatten().map(|r| r.total_bytes(len)).sum();
+    let total: usize = (readers.iter().flatten())
+        .map(|r| match r {
+            Side::Rows(r, _) => r.rows.total_bytes(),
+            Side::One(Constant::Text(s)) => s.len() * len,
+            Side::One(Constant::Bytes(s)) => s.len() * len,
+        })
+        .sum();
     let mut b = StrBuilder::new(ctx.pool, var_type, len);
     b.reserve(ctx.pool, total);
     // A word at a time: which source holds a value under its mask, for 64 rows at once.
@@ -309,7 +325,11 @@ fn take_varlen(ctx: &mut Ctx, ins: &[&Column], takes: &[&[u64]], ty: &DataType, 
                 .iter()
                 .position(|h| h >> bit & 1 != 0)
                 .expect("a source holds this row");
-            b.push(readers[k].as_ref().expect("held").at(w * 64 + bit));
+            match readers[k].as_ref().expect("held") {
+                Side::Rows(r, _) => b.push_row(r, w * 64 + bit),
+                Side::One(Constant::Text(s)) => b.push_text(s),
+                Side::One(Constant::Bytes(s)) => b.push(s),
+            }
         }
     }
     b.finish()

@@ -667,8 +667,12 @@ mod testing {
     /// A variant as JSON that keeps its type: an i64 an integer, an f64 a float, bytes `"bytes:<hex>"` and a datetime
     /// `"datetime:<micros>"`.
     pub fn shown(encoded: &[u8]) -> Value {
+        shown_value(variant::Encoded::check(encoded))
+    }
+
+    fn shown_value(v: variant::Encoded) -> Value {
         use variant::Value as V;
-        match variant::read(encoded) {
+        match variant::read(v) {
             V::Null => Value::Null,
             V::Bool(b) => b.into(),
             V::I64(i) => i.into(),
@@ -679,8 +683,8 @@ mod testing {
             V::Str(s) => s.into(),
             V::Bytes(b) => format!("bytes:{}", hex(b)).into(),
             V::DateTime(micros) => format!("datetime:{micros}").into(),
-            V::Array(items) => Value::Array(items.map(shown).collect()),
-            V::Object(entries) => Value::Object(entries.map(|(k, v)| (k.to_string(), shown(v))).collect()),
+            V::Array(items) => Value::Array(items.map(shown_value).collect()),
+            V::Object(entries) => Value::Object(entries.map(|(k, v)| (k.to_string(), shown_value(v))).collect()),
             other => panic!("not written here: {other:?}"),
         }
     }

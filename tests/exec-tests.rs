@@ -16,7 +16,6 @@
 
 use smeltr::core::batch::Batch;
 use smeltr::core::column::DataType;
-use smeltr::core::id::FunctionId;
 use smeltr::format::json::scalar_text;
 use smeltr::plan::compile::Plan;
 use smeltr::plan::config::{FunctionKind, Step};
@@ -24,7 +23,7 @@ use smeltr::plan::config::{FunctionKind, Step};
 use crate::harness;
 use harness::*;
 
-fn drop_step(id: FunctionId, cond: &str) -> Step {
+fn drop_step(id: u32, cond: &str) -> Step {
     func(id, FunctionKind::Drop { cond: cond.to_string() })
 }
 

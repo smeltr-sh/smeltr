@@ -1,6 +1,5 @@
 pub type SlotId = usize;
 pub type PatternId = usize;
-pub type FunctionId = u32;
 
 /// Makes `$name` a number of its own kind, so one kind of id cannot be passed for another.
 macro_rules! id {
@@ -45,4 +44,8 @@ id!(
 id!(
     /// A source, by its number among those the loaded configuration holds.
     SourceId
+);
+id!(
+    /// A step of a pipeline, by its number among that pipeline's steps.
+    FunctionId
 );
