@@ -53,7 +53,7 @@ fn pipeline(id: usize, body: Vec<Step>) -> PipelineConfig {
         id,
         name: format!("pipeline-{id}"),
         body,
-        step_ids: Vec::new(),
+        step_ids: Default::default(),
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
         produces: Vec::new(),
@@ -1692,7 +1692,7 @@ fn a_dropped_failed_row_is_counted_once_across_a_retry() {
 #[test]
 fn a_pipeline_set_to_block_blocks_the_source() {
     let mut p = pipeline(0, vec![code(0, "status: i64; Object.assign($, json(_raw));")]);
-    p.step_ids = vec!["parse".to_string()];
+    p.step_ids = vec!["parse".to_string()].into();
     let src = FakeSource::new([record(r#"{"status":200}"#, 0, 0), record("[1,2,3]", 1, 0)]);
     let mut w = worker(failing(Answer::Block), vec![p], &src);
     let dest = FakeDestination::new();
@@ -1848,7 +1848,7 @@ fn a_delivered_row_reaches_its_target_and_not_the_deliver_rules() {
                 code(1, "ratio = 100 / status;"),
             ],
         );
-        p.step_ids = vec!["parse".to_string(), "ratio".to_string()];
+        p.step_ids = vec!["parse".to_string(), "ratio".to_string()].into();
         let routes = answering_kind(&[(ExceptionKind::DivideByZero, deliver(&[DestId::new(1)]))]);
         // The failed row first, so its target's set is interned before the healthy row's.
         let src = FakeSource::new([record(r#"{"status": 0}"#, 0, 0), record(r#"{"status":2}"#, 1, 0)]);

@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use crate::core::batch::SLOT_LIVE;
 use crate::core::column::DataType;
 use crate::core::error::ExceptionKind;
-use crate::core::id::{FunctionId, SlotId, Slots};
+use crate::core::id::{ById, FunctionId, Id, PatternId, SlotId, Slots};
 use crate::expr::ast::{Catch, Expr, ExprKind, Region, Site, Span, Stmt, Value};
 use crate::expr::ir::{Ir, IrKind, Layer, flatten};
 use crate::expr::parse::parse_block_shaped;
@@ -337,7 +337,7 @@ pub struct Plan {
     /// `PipelineConfig::name`: what a person reading a block reason knows this pipeline by.
     pub name: String,
     /// `PipelineConfig::step_ids`, indexed by `FunctionId`: the step an exception came from, as its author named it.
-    pub step_ids: Vec<String>,
+    pub step_ids: ById<FunctionId, String>,
     /// `id` rendered, because it is written as a metric label on every batch and building it there would allocate
     /// per batch on every transform thread. Compiled once, like everything else here.
     pub id_label: String,
@@ -352,7 +352,7 @@ pub struct Plan {
     /// Each copy that shares its value's slot under another name, which `provenance` does not see: the slot, the name,
     /// how many slots there were when it was made, and the step that made it.
     pub aliases: Vec<(SlotId, String, usize, FunctionId)>,
-    pub patterns: Vec<crate::expr::ast::PatternSrc>,
+    pub patterns: ById<PatternId, crate::expr::ast::PatternSrc>,
     pub warnings: Vec<CompileError>,
     /// Instruction indices that are row barriers. Declared by the function, never discovered from the data: finding
     /// one at runtime would cost roughly a thousandfold over the vectorized path while looking identical in the config.
@@ -373,7 +373,7 @@ pub struct Plan {
     /// the `__source` fields.
     pub ingest_slots: usize,
     /// `patterns`, compiled. Indices line up with `patterns`.
-    pub compiled_patterns: Vec<crate::core::ctx::CompiledPattern>,
+    pub compiled_patterns: ById<PatternId, crate::core::ctx::CompiledPattern>,
 }
 
 impl Plan {
@@ -964,8 +964,8 @@ fn name_tries(instrs: &mut [Instr], names: &mut impl FnMut() -> std::sync::Arc<H
 /// Compile every interned regex once. `i`/`m`/`s` map onto the `regex` crate; `g` is carried on `CompiledPattern` for
 /// `replace`; the other JS flags are accepted and ignored.
 pub(crate) fn compile_patterns(
-    patterns: &[crate::expr::ast::PatternSrc],
-) -> Result<Vec<crate::core::ctx::CompiledPattern>, CompileError> {
+    patterns: &ById<PatternId, crate::expr::ast::PatternSrc>,
+) -> Result<ById<PatternId, crate::core::ctx::CompiledPattern>, CompileError> {
     patterns
         .iter()
         .map(|p| {
@@ -4882,7 +4882,7 @@ mod tests {
                         .collect(),
                 },
             ))],
-            step_ids: vec!["eval-1".into()],
+            step_ids: vec!["eval-1".into()].into(),
             lookup_tables: Default::default(),
             grok_patterns: Default::default(),
             produces: Vec::new(),
@@ -5115,7 +5115,7 @@ mod tests {
                 },
             )),
         ];
-        p.step_ids = vec!["parse-1".into(), "drop-1".into()];
+        p.step_ids = vec!["parse-1".into(), "drop-1".into()].into();
         let plan = compile(&p, &SourceMeta::KAFKA).unwrap();
         assert_eq!(plan.warnings, Vec::new());
     }

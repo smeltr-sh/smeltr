@@ -22,7 +22,7 @@ fn compile_err(body: Vec<Step>) -> Vec<CompileError> {
         id: 0,
         name: "test".into(),
         body,
-        step_ids: Vec::new(),
+        step_ids: Default::default(),
         lookup_tables: Default::default(),
         grok_patterns: Default::default(),
         produces: Vec::new(),

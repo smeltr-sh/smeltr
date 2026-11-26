@@ -8,7 +8,7 @@ use crate::core::buffer::BufferPool;
 use crate::core::column::{Bits, Column, DataType, StrBuilder, VarType};
 use crate::core::ctx::Ctx;
 use crate::core::error::{ErrorSink, Exception};
-use crate::core::id::SlotId;
+use crate::core::id::{ById, FunctionId, PatternId, SlotId};
 use crate::core::variant;
 use crate::format::record::RecordView;
 use crate::plan::compile::Plan;
@@ -123,7 +123,7 @@ pub fn run_to_json_marked<'a>(
         let messages = by_row.entry(a.row).or_default();
         // Two different coercions on one row are two different facts; dedup on the message, not the kind.
         if !messages.iter().any(|(_, m, _)| *m == message) {
-            let step = a.function.and_then(|f| plan.step_ids.get(f.index())).cloned();
+            let step = a.function.and_then(|f| plan.step_ids.get(f)).cloned();
             messages.push((on_exception.answer(&a.kind).label(), message, step));
         }
     }
@@ -141,7 +141,7 @@ pub fn run_to_json_marked<'a>(
 /// A Bool over a pipeline's finished record (`topology::output_condition`): the rows a preview shows.
 pub struct RowFilter {
     pub ir: crate::expr::ir::Ir,
-    pub patterns: Vec<crate::core::ctx::CompiledPattern>,
+    pub patterns: ById<PatternId, crate::core::ctx::CompiledPattern>,
 }
 
 /// Each row's answer: its exceptions' answers joined (`Answer::join`), `Ignore` on a row nothing marked or the pipeline
@@ -153,7 +153,7 @@ pub fn answer_rows(
     live: &Bits,
     rows: usize,
     slot_names: &HashMap<SlotId, String>,
-    step_ids: &[String],
+    step_ids: &ById<FunctionId, String>,
 ) -> (Vec<Answer>, HashMap<u32, Vec<RowException>>) {
     let mut answers = vec![Answer::Ignore; rows];
     for a in entries {
@@ -282,12 +282,12 @@ pub fn tag_or_not<'s, 'a>(
 pub fn row_exceptions<'a>(
     entries: impl IntoIterator<Item = &'a Exception>,
     slot_names: &HashMap<SlotId, String>,
-    step_ids: &[String],
+    step_ids: &ById<FunctionId, String>,
 ) -> HashMap<u32, Vec<RowException>> {
     let mut out: HashMap<u32, Vec<RowException>> = HashMap::new();
     for a in entries {
         let exception = RowException {
-            step: a.function.and_then(|f| step_ids.get(f.index())).cloned(),
+            step: a.function.and_then(|f| step_ids.get(f)).cloned(),
             kind: a.kind.label(),
             message: a.message(slot_names),
         };

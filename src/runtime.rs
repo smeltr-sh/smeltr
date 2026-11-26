@@ -20,7 +20,7 @@ use crate::core::buffer::{self, BufferPool, MemoryBudget};
 use crate::core::column::{Column, DataType};
 use crate::core::ctx::Ctx;
 use crate::core::error::{ErrorSink, ExceptionKind, Read};
-use crate::core::id::{DestId, SlotId, SourceId};
+use crate::core::id::{ById, DestId, Id, SlotId, SourceId};
 use crate::core::time::DateTime;
 use crate::format::json::scalar_text;
 use crate::format::record::RecordView;
@@ -1993,9 +1993,9 @@ impl Transform {
         // to. `id == index` is not assumed: the caller may hold any subset, in any order. Ids are allocated densely at
         // load, so a vector indexed by id is small.
         let width = self.destinations.iter().map(|t| t.id.index() + 1).max().unwrap_or(0);
-        let mut slot_of: Vec<Option<usize>> = vec![None; width];
+        let mut slot_of: ById<DestId, Option<usize>> = (0..width).map(|_| None).collect();
         for (idx, t) in self.destinations.iter().enumerate() {
-            slot_of[t.id.index()] = Some(idx);
+            slot_of[t.id] = Some(idx);
         }
         // What each destination writes, and the forms a row keeps for the DLQs down its chain, by position in
         // `destinations`.
@@ -2019,7 +2019,7 @@ impl Transform {
             );
             for (i, &dest) in dests.iter().enumerate() {
                 // A row naming a destination this worker does not hold goes nowhere, and is not counted as Unmatched either.
-                let Some(slot) = slot_of.get(dest.index()).copied().flatten() else {
+                let Some(slot) = slot_of.get(dest).copied().flatten() else {
                     continue;
                 };
                 let target = &self.destinations[slot];
@@ -3047,7 +3047,7 @@ struct Egress<'a> {
 /// A capture at a destination's filter, compiled against one route's output (`topology::output_condition`).
 struct OutputFilter {
     ir: crate::expr::ir::Ir,
-    patterns: Vec<crate::core::ctx::CompiledPattern>,
+    patterns: crate::core::id::ById<crate::core::id::PatternId, crate::core::ctx::CompiledPattern>,
 }
 
 /// A capture at a destination's filter, as one route delivering there makes of it.
@@ -3475,7 +3475,7 @@ fn marked_block(
     let slot_names = plan.slot_names();
     let exception = |a: &crate::core::error::Exception| {
         let what = a.message(&slot_names);
-        match a.function.and_then(|f| plan.step_ids.get(f.index())) {
+        match a.function.and_then(|f| plan.step_ids.get(f)) {
             Some(step) => format!("at step {step}: {what}"),
             None => format!("with: {what}"),
         }
@@ -4074,7 +4074,7 @@ mod tests {
     }
 
     fn raised(entries: &[Exception]) -> HashMap<u32, Vec<RowException>> {
-        row_exceptions(entries, &names(), &["parse".to_string()])
+        row_exceptions(entries, &names(), &vec!["parse".to_string()].into())
     }
 
     fn exception(kind: &'static str, message: &str) -> RowException {
