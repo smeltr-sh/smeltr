@@ -90,12 +90,10 @@ fn an_enrolled_worker_needs_neither_an_enrollment_code_nor_a_group() {
     // A worker that demands a code exits during startup, which the test above shows finishing well inside a second.
     // So this waits only long enough to outlast startup, and stops the moment the child settles it by exiting -- a
     // fixed sleep paid the whole wait even when the answer arrived immediately.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(750);
-    let mut status = None;
-    while status.is_none() && std::time::Instant::now() < deadline {
-        status = child.try_wait().expect("poll smeltr");
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    let status = crate::harness::wait_for("the worker to exit", std::time::Duration::from_millis(750), || {
+        child.try_wait().expect("poll smeltr")
+    })
+    .ok();
     let still_running = status.is_none();
     let _ = child.kill();
     let _ = child.wait();

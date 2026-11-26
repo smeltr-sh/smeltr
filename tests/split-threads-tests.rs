@@ -302,13 +302,7 @@ fn a_lane_waiting_on_a_full_destination_leaves_the_pool_to_the_others() {
         "a full queue is not waited on: {:?}",
         started.elapsed()
     );
-    for _ in 0..200 {
-        if slow.outstanding().len() == 1 {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert_eq!(slow.outstanding().len(), 1, "the first batch went out alone");
+    until("the first batch to go out alone", || slow.outstanding().len() == 1);
     assert!(
         !acks[0].drain().iter().any(|r| matches!(r, Report::Block(..))),
         "a wait is not a block until it has lasted"
