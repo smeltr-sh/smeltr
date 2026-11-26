@@ -27,7 +27,7 @@ flowchart LR
 
 | Engine | Image | License |
 |---|---|---|
-| smeltr | the `dist` binary on Ubuntu 24.04 | - |
+| smeltr | the `optimized` binary on Ubuntu 24.04 | - |
 | Logstash | `docker.elastic.co/logstash/logstash-oss:9.5.6` | Apache-2.0 |
 | Vector | `timberio/vector:0.62.0-debian` | MPL-2.0 |
 | NiFi | `apache/nifi:2.12.0` | Apache-2.0 |
