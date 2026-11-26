@@ -13,7 +13,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use crate::core::column::DataType;
-use crate::core::id::{FunctionId, PatternId, SlotId, Slots};
+use crate::core::id::{ById, FunctionId, Id, PatternId, SlotId, Slots};
 use crate::expr::ast::{Expr, ExprKind, PatternSrc, Site, Span, Value};
 use crate::expr::inline::PRELUDE_FUNCTIONS;
 use crate::expr::ir::{Ir, IrKind, Layer};
@@ -47,7 +47,7 @@ pub enum Origin {
 /// Interned compile-time constants.
 #[derive(Clone, Default, Debug)]
 pub struct ResourceBuilder {
-    pub patterns: Vec<PatternSrc>,
+    pub patterns: ById<PatternId, PatternSrc>,
 }
 
 impl ResourceBuilder {
@@ -56,11 +56,8 @@ impl ResourceBuilder {
     /// The grammar guarantees every regex is a compile-time constant, which is what makes this possible — a pattern
     /// built from a runtime value could not be compiled once and shared across every batch.
     pub fn intern(&mut self, p: &PatternSrc) -> PatternId {
-        let i = self.patterns.iter().position(|q| q == p).unwrap_or_else(|| {
-            self.patterns.push(p.clone());
-            self.patterns.len() - 1
-        });
-        PatternId::try_from(i).expect("the regex literals of one plan fit a u32")
+        let held = self.patterns.entries().find(|(_, q)| *q == p).map(|(id, _)| id);
+        held.unwrap_or_else(|| self.patterns.push(p.clone()))
     }
 }
 
@@ -2249,9 +2246,9 @@ mod tests {
             let col = rows_of(&mut pool, ty);
             batch.put(t.lookup(name).unwrap(), col, &mut pool);
         }
-        let patterns = [CompiledPattern {
+        let patterns = ById::from(vec![CompiledPattern {
             regex: regex::Regex::new("x").unwrap(),
-        }];
+        }]);
         let mut errors = ErrorSink::new();
         let out = {
             let mut ctx = Ctx::new(&mut pool, &mut errors);

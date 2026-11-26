@@ -4,7 +4,7 @@
 
 use smeltr::config_file::{load_bundle_dir, load_str};
 use smeltr::core::batch::{Batch, RAW_SLOTS, SLOT_LIVE, SLOT_RAW, raw_layout};
-use smeltr::core::id::{DestId, SlotId};
+use smeltr::core::id::{DestId, Id, SlotId};
 
 /// `__source.offset` for a Kafka source: third of the three fields it declares.
 const SLOT_OFFSET: usize = RAW_SLOTS + 2;

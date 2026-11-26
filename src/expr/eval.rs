@@ -570,7 +570,7 @@ fn name_reads(
 /// `None` for an id outside `Ctx::patterns`: an empty column rather than a panic.
 fn pattern_of<'a>(ir: &Ir, ctx: &Ctx<'a>) -> Option<&'a crate::core::ctx::CompiledPattern> {
     match ir.kind {
-        IrKind::Regex(id) => ctx.patterns.get(id.index()),
+        IrKind::Regex(id) => ctx.patterns.get(id),
         _ => None,
     }
 }

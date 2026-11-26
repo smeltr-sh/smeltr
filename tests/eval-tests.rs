@@ -4,11 +4,12 @@
 //! phase-2 milestone. This is the first code in the project that computes.
 
 use smeltr::core::batch::{Batch, RAW_SLOTS, raw_layout};
+use smeltr::core::bits;
 use smeltr::core::buffer::BufferPool;
 use smeltr::core::column::{Column, DataType, Scalar, StrBuilder, Validity, VarType};
 use smeltr::core::ctx::Ctx;
 use smeltr::core::error::{ErrorSink, ExceptionKind};
-use smeltr::core::{bits, id::SlotId};
+use smeltr::core::id::{Id, SlotId};
 use smeltr::expr::ast::{Span, Value};
 use smeltr::expr::eval::{eval, eval_for_slot};
 use smeltr::expr::ir::{Ir, IrKind, flatten};

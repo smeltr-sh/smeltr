@@ -20,8 +20,11 @@ pub struct ById<I, T> {
 }
 
 impl<I: Id, T> ById<I, T> {
-    pub fn new() -> Self {
-        Self::from(Vec::new())
+    pub const fn new() -> Self {
+        ById {
+            entries: Vec::new(),
+            read_by: PhantomData,
+        }
     }
 
     /// Adds `entry` and gives the id that reads it.
@@ -142,16 +145,11 @@ macro_rules! id {
             pub const fn new(n: u32) -> Self {
                 Self(n)
             }
-
-            /// Its place in a list that holds one entry per id.
-            pub fn index(self) -> usize {
-                self.0 as usize
-            }
         }
 
         impl Id for $name {
             fn index(self) -> usize {
-                $name::index(self)
+                self.0 as usize
             }
 
             fn at(index: usize) -> Self {
@@ -195,13 +193,6 @@ id!(
     /// A slot: a column of a batch, by its number in the plan's layout.
     SlotId
 );
-
-impl SlotId {
-    /// The slot at `index` of a layout.
-    pub fn at(index: usize) -> SlotId {
-        <SlotId as Id>::at(index)
-    }
-}
 
 /// A list with one entry per slot.
 pub type Slots<T> = ById<SlotId, T>;

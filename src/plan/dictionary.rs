@@ -233,7 +233,7 @@ mod tests {
                 code(FunctionId::new(1), "x = 1;"),
                 code(FunctionId::new(2), "y = x; $[\"@t\"] = _raw;"),
             ],
-            step_ids: Vec::new(),
+            step_ids: Default::default(),
             lookup_tables: Default::default(),
             grok_patterns: Default::default(),
             produces: Vec::new(),

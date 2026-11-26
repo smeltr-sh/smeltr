@@ -151,6 +151,7 @@ impl Batch {
 mod tests {
     use super::*;
     use crate::core::column::Column;
+    use crate::core::id::Id;
 
     const EXTRA_I64: SlotId = SlotId::new(2);
     const EXTRA_STR: SlotId = SlotId::new(3);

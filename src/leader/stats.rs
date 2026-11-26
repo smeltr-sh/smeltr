@@ -20,7 +20,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::config_file::LoadedSystem;
-use crate::core::id::SourceId;
+use crate::core::id::{ById, FunctionId, SourceId};
 use crate::heartbeat::{MetricSampleDto, MetricValueDto};
 use crate::plan::config::{FunctionKind, Step};
 
@@ -505,19 +505,19 @@ fn pipeline_stats(
 /// skipped at compile (`plan::compile`), but both take a `FunctionId` and a place in `step_ids`, so listing that
 /// directly would show a reader steps that cost nothing because they do not exist at runtime.
 fn running_steps(system: &LoadedSystem, index: usize) -> Vec<String> {
-    fn walk(steps: &[Step], step_ids: &[String], out: &mut Vec<String>) {
+    fn walk(steps: &[Step], step_ids: &ById<FunctionId, String>, out: &mut Vec<String>) {
         for step in steps {
             match step {
                 Step::Function(f) => {
                     if !f.disabled
                         && !matches!(f.kind, FunctionKind::Comment { .. })
-                        && let Some(id) = step_ids.get(f.id.index())
+                        && let Some(id) = step_ids.get(f.id)
                     {
                         out.push(id.clone());
                     }
                 }
                 Step::If { id, then, else_, .. } => {
-                    if let Some(step) = step_ids.get(id.index()) {
+                    if let Some(step) = step_ids.get(*id) {
                         out.push(step.clone());
                     }
                     walk(then, step_ids, out);
